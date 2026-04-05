@@ -236,14 +236,12 @@ TArray<USWheelSubBody*> USpeedWheeledComponent::CreateWheelSubBodies()
 
 UBoxSubBody* USpeedWheeledComponent::CreateHitboxSubBody()
 {
-	// return CreateDefaultSubobject<UBoxSubBody, UBoxSubBody>(TEXT("HitboxSubBody"));
-	return nullptr;
+	return CreateDefaultSubobject<UBoxSubBody, UBoxSubBody>(TEXT("HitboxSubBody"));
 }
 
 USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex)
 {
-	// return CreateDefaultSubobject<USWheelSubBody, USWheelSubBody>(*FString::Printf(TEXT("WheelSubBody_%d"), WheelIndex));
-	return nullptr;
+	return CreateDefaultSubobject<USWheelSubBody, USWheelSubBody>(*FString::Printf(TEXT("WheelSubBody_%d"), WheelIndex));
 }
 
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
