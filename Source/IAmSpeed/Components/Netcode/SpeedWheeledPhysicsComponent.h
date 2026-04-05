@@ -8,8 +8,11 @@
 #include "SpeedWheeledPhysicsComponent.generated.h"
 
 
-struct SWheeledGameState
+USTRUCT()
+struct FWheeledGameState
 {
+	GENERATED_BODY()
+
 	// whether the car has all its wheels on the ground
 	UPROPERTY()
 	bool bGroundState = false;

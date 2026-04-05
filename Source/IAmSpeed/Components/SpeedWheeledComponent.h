@@ -406,7 +406,7 @@ private:
 	//=========== Internal state variables for the movement component ===========
 	SBaseGameState BaseGameState; // current game state of the component
 	FBasePhysicsState BasePhysicsState; // current physics state of the component (replicated on network)
-	SWheeledGameState WheeledGameState; // current wheeled game state of the component
+	FWheeledGameState WheeledGameState; // current wheeled game state of the component
 	FWheeledPhysicsState WheeledPhysicsState; // current wheeled physics state of the component (replicated on network)
 	FWheeledInputState WheeledUserInput; // input state given by the user for this component (replicated on network)
 	FWheeledInputState WheeledPhysicalInput; // input state used for physics simulation (e.g. after being processed from the user input)
