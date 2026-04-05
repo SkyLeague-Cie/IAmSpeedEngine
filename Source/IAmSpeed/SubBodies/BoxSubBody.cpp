@@ -20,6 +20,7 @@ UBoxSubBody::UBoxSubBody(const FObjectInitializer& ObjectInitializer):
 {
 	SubBodyType = ESubBodyType::Hitbox;
     bUseEditorCompositing = true;
+    BoxExtent = FVector(32.f, 32.f, 32.f);
 }
 
 void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
