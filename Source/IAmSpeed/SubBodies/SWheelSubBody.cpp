@@ -177,6 +177,8 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     FVector Start = WorldRestingPos + SuspensionMaxRaise() * CarUpVector;
     float NewSpringDisplacement = PredictNextDisplacement(delta); // if wheel will be in air next frame
     FVector End = CurrentPos + (NewSpringDisplacement - SpringDisplacement() - CollisionMargin()) * CarUpVector;
+    // auto Sphere = SSphere(WorldPos(), Radius(), FVector::ZeroVector, FVector::ZeroVector);
+    // Sphere.DrawDebug(GetWorld());
 
     FCollisionQueryParams Params(NAME_None, false);
     Params.bReturnFaceIndex = true;

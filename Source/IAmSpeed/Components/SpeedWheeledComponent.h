@@ -267,7 +267,7 @@ public:
 	// Time in seconds before the component can move at the start of the simulation or after being reset (e.g. after a respawn)
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float TimeBeforeCanMove = 0.15f;
+	float TimeBeforeCanMove = 0.2f;
 	// Mass of the component in kg
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
@@ -285,7 +285,7 @@ public:
 	// max angular speed of the component in rad/s
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float PhysMaxAngularSpeed = 100.0f;
+	float PhysMaxAngularSpeed = 4.f;
 	// damping factor of the component (0.0 means no damping, 1.0 means full damping)
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))

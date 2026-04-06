@@ -1605,8 +1605,8 @@ bool USpeedWheeledComponent::NoSteeringAllowed() const
 
 float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity, const float& AbsSteeringInput) const
 {
-	const float MinRadius = 400.f; // cm, at low speed
-	const float MaxRadius = 900.f; // cm, at high speed
+	const float MinRadius = 2100.f; // cm, at low speed
+	const float MaxRadius = 6000.f; // cm, at high speed
 	const float SpeedForMinRadius = 500.f; // cm/s
 	const float SpeedForMaxRadius = 2000.f; // cm/s
 	float speedFactor = FMath::Clamp((FMath::Abs(ForwardVelocity) - SpeedForMinRadius) / (SpeedForMaxRadius - SpeedForMinRadius), 0.f, 1.f);
@@ -1685,7 +1685,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (!SpeedHistory || !WheeledSpeedHistory)
 		return;
 
-	const int32 CurrentFrame = SpeedHistory->GetLatestFrame();
+	const int32 CurrentFrame = NumFrame();
 	// ----------------------------
 	// Find last server state
 	// ----------------------------
@@ -1750,6 +1750,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// ----------------------------
 	// Find corresponding predicted state
 	// ----------------------------
+
+	// Last Client Frame received from Server
 	const int32 LocalFrame = Target.LocalFrame;
 	FBasePhysicsState PastPredictedState;
 	if (!GetPredictedState(LocalFrame, PastPredictedState))
@@ -1776,8 +1778,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 	// check nbFramesbeforeCanMove alignment
 	if (bNewTarget && (WheeledPhysicsState.nbFramesbeforeCanMove > NumPredictedFrames - 1) && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
-		&& (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
-		&& (WheeledPhysicsState.nbFramesbeforeCanMove != WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames - 1))
+		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
+		&& (WheeledPhysicsState.nbFramesbeforeCanMove != WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames))
 	{
 		if (WheeledTarget.WheeledState.nbFramesbeforeCanMove == 0 && WheeledPhysicsState.nbFramesbeforeCanMove != 0)
 		{
@@ -1793,7 +1795,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Log, TEXT("[CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
 #endif
-			WheeledPhysicsState.nbFramesbeforeCanMove = WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames - 1;
+			WheeledPhysicsState.nbFramesbeforeCanMove = WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames;
 		}
 	}
 	/*else

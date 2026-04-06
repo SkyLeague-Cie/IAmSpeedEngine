@@ -203,7 +203,7 @@ bool UBoxSubBody::SweepVsGround(SHitResult& OutHit, const float& Delta, const fl
     SHitResult Hit;
     bGroundHitFromSweep = false;
     // SSBox CarBox(Kinematics.Location, BoxExtent, Kinematics.Rotation, Kinematics.Velocity, Kinematics.Acceleration, Kinematics.AngularVelocity, Kinematics.AngularAcceleration);
-    //CarBox.DrawDebug(GetWorld());
+    // CarBox.DrawDebug(GetWorld());
     if (!InternalSweep(Start, End, Hit, Delta))
         return false;
 
