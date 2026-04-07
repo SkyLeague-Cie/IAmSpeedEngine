@@ -14,6 +14,9 @@ DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
 
+const FName USpeedWheeledComponent::HitboxName = TEXT("Hitbox");
+const TArray<FName> USpeedWheeledComponent::WheelNames = { TEXT("Wheel_0"), TEXT("Wheel_1"), TEXT("Wheel_2"), TEXT("Wheel_3")};
+
 USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer)
 {
@@ -30,7 +33,7 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 	SetSubBodies(CreateSubBodies());
 	if (SubBodies.Num() > 0)
 	{
-		HitboxSubBody = Cast<UBoxSubBody>(SubBodies[0]);
+		HitboxSubBody = CastChecked<UBoxSubBody>(SubBodies[0]);
 	}
 
 	for (USSubBody* SubBody : SubBodies)
@@ -236,12 +239,12 @@ TArray<USWheelSubBody*> USpeedWheeledComponent::CreateWheelSubBodies()
 
 UBoxSubBody* USpeedWheeledComponent::CreateHitboxSubBody()
 {
-	return CreateDefaultSubobject<UBoxSubBody, UBoxSubBody>(TEXT("HitboxSubBody"));
+	return CreateDefaultSubobject<UBoxSubBody, UBoxSubBody>(HitboxName);
 }
 
 USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex)
 {
-	return CreateDefaultSubobject<USWheelSubBody, USWheelSubBody>(*FString::Printf(TEXT("WheelSubBody_%d"), WheelIndex));
+	return CreateDefaultSubobject<USWheelSubBody, USWheelSubBody>(WheelNames[WheelIndex]);
 }
 
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)

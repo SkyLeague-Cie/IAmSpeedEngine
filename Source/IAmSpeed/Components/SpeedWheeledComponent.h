@@ -387,7 +387,13 @@ public:
 	/** Hit Box component */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Collision, meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UBoxSubBody> HitboxSubBody = nullptr; // pointer to the hitbox sub-body (if any) owned by this component
+	/** Wheel Sub Bodies*/
+	TArray< TObjectPtr<USWheelSubBody>> WheelSubBodies; // array of wheel sub-bodies owned by this component (e.g. for a car body, this would be the wheels)
 
+	/** Name of the HitboxSubBody */
+	static const FName HitboxName;
+	/** Names of the Wheel Subodies*/
+	static const TArray<FName> WheelNames;
 private:
 	USpeedSimulation* SkySimulation = nullptr;
 	ASpeedCar* SpeedCarOwner = nullptr;
@@ -421,7 +427,6 @@ private:
 	TArray<USSubBody*> SubBodies; // array of sub-bodies owned by this component (e.g. for a car body, this would be the hitbox and the wheels)
 	TArray<USSubBody*> ExtSubBodies; // array of external sub-bodies
 
-	TArray< TObjectPtr<USWheelSubBody>> WheelSubBodies; // array of wheel sub-bodies owned by this component (e.g. for a car body, this would be the wheels)
 	TArray<SWheelGroundContact> PendingWheelContacts; // array of pending wheel ground contacts to be registered at the end of the frame
 
 	// ========== Netcode variables ==========
