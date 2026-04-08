@@ -68,7 +68,8 @@ void USpeedWorldSubsystem::RebuildSortedIfNeeded()
     // Deterministic order:
     // - first Owner->GetUniqueID (stable during a run)
     // - then Object UniqueID of the component
-    Algo::Sort(ComponentsSorted, [](const ISpeedComponent* A, const ISpeedComponent* B)
+    // Commented for the moment since there is a crash happening in the sort
+    /*Algo::Sort(ComponentsSorted, [](const ISpeedComponent* A, const ISpeedComponent* B)
         {
             const UObject* OA = reinterpret_cast<const UObject*>(A);
             const UObject* OB = reinterpret_cast<const UObject*>(B);
@@ -84,7 +85,7 @@ void USpeedWorldSubsystem::RebuildSortedIfNeeded()
                 return AOwnerId < BOwnerId;
 
             return OA->GetUniqueID() < OB->GetUniqueID();
-        });
+        });*/
 
     bDirtyOrder = false;
 }
