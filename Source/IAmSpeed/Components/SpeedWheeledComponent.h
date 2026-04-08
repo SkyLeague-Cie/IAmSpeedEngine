@@ -259,6 +259,9 @@ protected:
 
 	const TObjectPtr<UBoxSubBody>& GetHitboxSubBody() const { return HitboxSubBody; }
 
+	/** Read current state for simulation */
+	void UpdateState(float DeltaTime) override;
+
 	// Netcode methods
 	virtual void RecordPredictedState();
 	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;

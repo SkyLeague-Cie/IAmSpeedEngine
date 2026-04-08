@@ -486,6 +486,11 @@ void USpeedWheeledComponent::UpdateInputs()
 	WheeledPhysicalInput = WheeledUserInput; // copy all inputs for physics simulation
 }
 
+void USpeedWheeledComponent::UpdateState(float DeltaTime)
+{
+	// DO NOTHING HERE
+}
+
 void USpeedWheeledComponent::RecordPredictedState()
 {
 	const int32 LF = NumFrame();
