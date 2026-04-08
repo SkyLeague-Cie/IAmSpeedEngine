@@ -118,6 +118,7 @@ protected:
 	virtual void QuantizePhysicalState();
 
 	virtual void TagStateHistoryProxyRole();
+	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
 	
 	//=========== Configuration parameters for the movement component ===========
@@ -198,6 +199,9 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float RotCorrDeadzone = 0.5f;
+	/** Network Settings*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Netcode, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 private:
 	//=========== Internal state variables for the movement component ===========
 	SBaseGameState BaseGameState; // current game state of the component
@@ -211,8 +215,6 @@ private:
 	TArray<USolidSubBody*> SolidSubBodies; // array of solid sub-bodes (i.e. sub-bodies that are not purely for hit detection but also have a physical representation in the physics engine, e.g. for a car body, this would be the hitbox and the wheels)
 
 	// ========== Netcode variables ==========
-	UPROPERTY()
-	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 	int32 NetCorr_LastServerFrame = INDEX_NONE;
 	int32 NetCorr_LastLocalFrame = INDEX_NONE;
 	int32 NetCorr_BaseNumPredictedFrames = 1;

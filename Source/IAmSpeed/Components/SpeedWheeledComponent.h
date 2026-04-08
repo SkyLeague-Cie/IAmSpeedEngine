@@ -261,6 +261,7 @@ protected:
 
 	// Netcode methods
 	virtual void RecordPredictedState();
+	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
 
 	//=========== Configuration parameters for the movement component ===========
@@ -388,7 +389,11 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Collision, meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UBoxSubBody> HitboxSubBody = nullptr; // pointer to the hitbox sub-body (if any) owned by this component
 	/** Wheel Sub Bodies*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Collision, meta = (AllowPrivateAccess = "true"))
 	TArray< TObjectPtr<USWheelSubBody>> WheelSubBodies; // array of wheel sub-bodies owned by this component (e.g. for a car body, this would be the wheels)
+	/** Network Settings*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Netcode, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 
 	/** Name of the HitboxSubBody */
 	static const FName HitboxName;
@@ -434,8 +439,6 @@ private:
 	TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent = nullptr;
 	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> WheeledNetworkPhysicsComponent = nullptr;
-	UPROPERTY()
-	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 	int32 NetCorr_LastServerFrame = INDEX_NONE;
 	int32 NetCorr_LastLocalFrame = INDEX_NONE;
 	int32 NetCorr_BaseNumPredictedFrames = 1;

@@ -434,7 +434,7 @@ void USpeedMovementComponent::StartTestWithVelocityMulti_Implementation(const FV
 
 void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 {
-	if (HasAuthority())
+	if (HasAuthority() || !SNetworkPhysicsComponent)
 	{
 		return;
 	}
@@ -648,19 +648,6 @@ void USpeedMovementComponent::InitNetwork()
 
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
-
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideEnableReliableFlow = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bEnableReliableFlow = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantInputs = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantInputs = 0;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantStates = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantStates = 3;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideCompareStateToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewind = true;
-	SNetworkSettings->GeneralSettings.bOverrideSimProxyRepMode = true;
-	SNetworkSettings->GeneralSettings.SimProxyRepMode = EPhysicsReplicationMode::Resimulation;
-
-	// Simulated Proxy settings
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverridebCompareStateToTriggerRewindIncludeSimProxies = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewindIncludeSimProxies = true;
+	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("NetPhysicsSettingsDataAsset"));
+	SNetworkSettings->SettingsDataAsset = NetDataAsset;
 }

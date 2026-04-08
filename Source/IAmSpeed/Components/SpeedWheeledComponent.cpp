@@ -1642,7 +1642,7 @@ FVector USpeedWheeledComponent::ComputeTurningForce(const float& SteeringInput_,
 
 void USpeedWheeledComponent::TagStateHistoryProxyRole()
 {
-	if (HasAuthority())
+	if (HasAuthority() || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent)
 		return;
 
 	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetStateHistory_Internal();
@@ -1673,7 +1673,7 @@ void USpeedWheeledComponent::TagStateHistoryProxyRole()
 
 void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 {
-	if (HasAuthority())
+	if (HasAuthority() || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent)
 	{
 		return;
 	}
@@ -2128,34 +2128,8 @@ void USpeedWheeledComponent::InitNetwork()
 {
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideEnableReliableFlow = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bEnableReliableFlow = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantInputs = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantInputs = 11;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantRemoteInputs = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantRemoteInputs = 16;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantStates = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantStates = 1;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideCompareInputToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareInputToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideCompareStateToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideAllowInputExtrapolation = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bAllowInputExtrapolation = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideApplyDataInsteadOfMergeData = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bApplyDataInsteadOfMergeData = true;
-
-	// Simulated Proxy settings
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyInputAtRuntime = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bApplySimProxyInputAtRuntime = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverridebCompareStateToTriggerRewindIncludeSimProxies = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewindIncludeSimProxies = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyStateAtRuntime = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bApplySimProxyStateAtRuntime = true;
-
-	// Resimulation settings
-	SNetworkSettings->GeneralSettings.bOverrideSimProxyRepMode = true;
-	SNetworkSettings->GeneralSettings.SimProxyRepMode = EPhysicsReplicationMode::Resimulation;
+	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("SpeedSettingsDataAsset"));
+	SNetworkSettings->SettingsDataAsset = NetDataAsset;
 
 	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
 	SNetworkPhysicsComponent = CreateDefaultSubobject<UNetworkPhysicsComponent, UNetworkPhysicsComponent>(SpeedNetPCName);
