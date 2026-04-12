@@ -22,8 +22,6 @@ public:
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);
 
 	void InitNetwork();
-	// Set the owner of this component. Call this at begin play
-	virtual void SetOwner(AActor* NewOwner);
 	/** Used to create any physics engine information for this component */
 	virtual void OnCreatePhysicsState() override;
 	/** Used to shut down and physics engine structure for this component */
@@ -86,7 +84,10 @@ public:
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
 	UFUNCTION(reliable, NetMulticast)
 	void StartTestWithVelocityMulti(const FVector& InitialVelocity);
+	unsigned int GetEngineFPS() const;
 private:
+	// Set the owner of this component. Call this at begin play
+	void SetOwner(AActor* NewOwner);
 	void SetEngineFPS(const unsigned int& FPS);
 
 	void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) override final;
@@ -122,6 +123,9 @@ protected:
 public:
 	
 	//=========== Configuration parameters for the movement component ===========
+	// whether to enable the movement component (if false, the component will not perform any physics simulation and will not update its kinematic state)
+	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	bool bEnableSimulation = true;
 	// Mass of the component in kg
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))

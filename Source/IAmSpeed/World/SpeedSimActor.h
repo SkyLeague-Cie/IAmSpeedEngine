@@ -24,7 +24,7 @@ public:
 	void AsyncPhysicsTickActor(float DeltaTime, float SimTime) override;
 	void Simulate(const float& DeltaTime, const float& SimTime);
 	bool ShouldTickIfViewportsOnly() const override { return true; }
-	void SetEngineFPS(const unsigned int& FPS);
+	static unsigned int GetEngineFPS() { return EngineFPS; }
 protected:
 	void UpdateNumFrame(const float& SimTime);
 	unsigned int NumFrame() const;
@@ -33,5 +33,5 @@ private:
 	USpeedWorldSubsystem* SpeedWorldSubsystem = nullptr;
 
 	unsigned int _NumFrame = 0;
-	unsigned int EngineFPS = 120; // default value, will be updated at runtime with the real engine fps
+	static unsigned int EngineFPS; // The FPS at which the IAmSpeed Engine is running
 };

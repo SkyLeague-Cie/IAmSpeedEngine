@@ -173,7 +173,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         {
             if (!Comp) continue;
 
-            const SComponentTOI Ctoi = Comp->SweepTOISubBodies(Remaining, TimePassed, LastSubDelta);
+            const SComponentTOI Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta);
 
             // TOI sanity
             if (!Ctoi.bHit)
@@ -260,7 +260,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         }
 
         // Resolve at current substep time
-        Resolver->ResolveCurrentHit(SubDelta, TimePassed, SimTime);
+        Resolver->ResolveCurrentHit(SubDelta, SimTime);
 
         // Optional: post update at each substep (useful if certain gameplay sensors need to react "immediately")
         /*

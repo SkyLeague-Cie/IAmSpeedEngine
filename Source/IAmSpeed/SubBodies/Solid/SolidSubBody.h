@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "SSubBody.h"
+#include "IAmSpeed/SubBodies/SSubBody.h"
 #include "SolidSubBody.generated.h"
 
 UENUM()
