@@ -98,7 +98,7 @@ public:
 	virtual void ResetForFrame(const float& Delta);
 	// overload this function to sweep all sub-bodies for the remaining delta time and return the earliest time of impact and the sub-body that should resolve it
 	// (e.g. for a car body, if a wheel hits before the hitbox, then the wheel sub-body should resolve first)
-	SComponentTOI SweepTOISubBodies(const float& RemainingDelta, const float& TimePassed, const float& LastSubDelta);
+	SComponentTOI SweepTOISubBodies(const float& RemainingDelta, const float& LastSubDelta);
 	// overload this function for the component to perform any necessary updates after the physics state has been updated
 	void PostPhysicsUpdate(const float& delta);
 	// overload this function to set whether the component is upside down (e.g. for a car body, this would be whether the car is flipped over)

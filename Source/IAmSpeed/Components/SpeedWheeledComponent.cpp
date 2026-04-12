@@ -4,8 +4,8 @@
 #include "ChaosVehicleManager.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/SubBodies/Configs/WheelSubBodyConfig.h"
-#include "IAmSpeed/SubBodies/BoxSubBody.h"
-#include "IAmSpeed/SubBodies/SWheelSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/World/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "ChaosVehicleWheel.h"
@@ -122,6 +122,8 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 		WheelSubBody->Initialize(this);
 	}
 	CarLocalInvI = Speed::SBox::ComputeLocalInverseInertiaTensor(HitboxSubBody->GetBoxExtent(), GetPhysMass());
+
+	UpdateSubBodiesKinematics();
 
 	// start physics thread
 	SetAsyncPhysicsTickEnabled(true);

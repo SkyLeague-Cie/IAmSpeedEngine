@@ -5,7 +5,7 @@
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
-#include "IAmSpeed/SubBodies/SolidSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/World/SpeedWorldSubsystem.h"
 
 USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& ObjectInitializer):
@@ -36,12 +36,16 @@ void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 	{
 		return;
 	}
+
 	SetPhysLocation(NewOwner->GetActorLocation());
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
-	SetPhysVelocity(FVector::ZeroVector);
-	SetPhysAngularVelocity(FVector::ZeroVector);
-	SetPhysAcceleration(FVector::ZeroVector);
-	SetPhysAngularAcceleration(FVector::ZeroVector);
+
+	for (USSubBody* SubBody : SubBodies)
+	{
+		SubBody->Initialize(this);
+	}
+
+	UpdateSubBodiesKinematics();
 }
 
 void USpeedMovementComponent::OnCreatePhysicsState()
@@ -197,6 +201,11 @@ void USpeedMovementComponent::AsyncPhysicsTickComponent(float DeltaTime, float S
 	PhysicsTick(DeltaTime, SimTime);
 }
 
+unsigned int USpeedMovementComponent::GetEngineFPS() const
+{
+	return EngineFPS;
+}
+
 void USpeedMovementComponent::SetEngineFPS(const unsigned int& FPS)
 {
 	EngineFPS = FPS;
@@ -256,7 +265,7 @@ void USpeedMovementComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodie
 
 void USpeedMovementComponent::HandleGravity()
 {
-	if (bEnableGravity)
+	if (bEnableGravity && bEnableSimulation)
 	{
 		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityZ));
 	}
@@ -264,7 +273,7 @@ void USpeedMovementComponent::HandleGravity()
 
 void USpeedMovementComponent::HandleDamping(const float& delta)
 {
-	if (PhysDamping <= 0.0)
+	if (PhysDamping <= 0.0 || !bEnableSimulation)
 	{
 		return;
 	}
@@ -281,6 +290,11 @@ void USpeedMovementComponent::HandleDamping(const float& delta)
 
 void USpeedMovementComponent::HandleRestForce()
 {
+	if (!bEnableSimulation)
+	{
+		return;
+	}
+
 	for (USolidSubBody* SubBody : SolidSubBodies)
 	{
 		if (!SubBody)
@@ -311,6 +325,10 @@ void USpeedMovementComponent::GameplayTick(const float& DeltaTime, const float& 
 
 void USpeedMovementComponent::ApplyAccelKinematicsConstraint(const float& delta)
 {
+	if (!bEnableSimulation)
+	{
+		return;
+	}
 	applyAccelerationConstraint(delta);
 	applyAngularAccelerationConstraint(delta);
 }
@@ -390,14 +408,16 @@ void USpeedMovementComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	SetAsyncPhysicsTickEnabled(true);
+	AActor* NewOwner = GetOwner();
+	SetOwner(NewOwner);
 
+	SetAsyncPhysicsTickEnabled(true);
 	// Register in SpeedWorldSubsystem
 	if (UWorld* World = GetWorld())
 	{
 		if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
 		{
-			// UE_LOG(LogTemp, Warning, TEXT("[%s(%s)][BeginPlay] RESPAWN"), *GetName(), *GetOwner()->GetName());
+			UE_LOG(LogTemp, Warning, TEXT("[%s(%s)][BeginPlay] RESPAWN"), *GetName(), *GetOwner()->GetName());
 			SpeedWorldSubsystem->RegisterSpeedComponent(this);
 		}
 	}
@@ -423,6 +443,10 @@ void USpeedMovementComponent::StartTestWithVelocity(const FVector& InitialVeloci
 
 void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialVelocity)
 {
+	if (!bEnableSimulation)
+	{
+		return;
+	}
 	RegisterTestVelocity(InitialVelocity);
 }
 
@@ -434,7 +458,7 @@ void USpeedMovementComponent::StartTestWithVelocityMulti_Implementation(const FV
 
 void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 {
-	if (HasAuthority() || !SNetworkPhysicsComponent)
+	if (HasAuthority() || !SNetworkPhysicsComponent || !bEnableSimulation)
 	{
 		return;
 	}
@@ -616,7 +640,7 @@ void USpeedMovementComponent::QuantizePhysicalState()
 
 void USpeedMovementComponent::TagStateHistoryProxyRole()
 {
-	if (HasAuthority())
+	if (HasAuthority() || !bEnableSimulation)
 		return;
 
 	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetStateHistory_Internal();
@@ -641,10 +665,13 @@ void USpeedMovementComponent::TagStateHistoryProxyRole()
 
 void USpeedMovementComponent::InitNetwork()
 {
-	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
-	SNetworkPhysicsComponent = CreateDefaultSubobject<UNetworkPhysicsComponent, UNetworkPhysicsComponent>(SpeedNetPCName);
-	SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
-	SNetworkPhysicsComponent->SetIsReplicated(true);
+	if (bEnableSimulation)
+	{
+		static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
+		SNetworkPhysicsComponent = CreateDefaultSubobject<UNetworkPhysicsComponent, UNetworkPhysicsComponent>(SpeedNetPCName);
+		SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
+		SNetworkPhysicsComponent->SetIsReplicated(true);
+	}
 
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);

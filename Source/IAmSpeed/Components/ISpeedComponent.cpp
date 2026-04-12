@@ -1,6 +1,5 @@
 #include "ISpeedComponent.h"
-#include "IAmSpeed/SubBodies/SSubBody.h"
-#include "IAmSpeed/SubBodies/SolidSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
 
 void ISpeedComponent:: ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint, const USolidSubBody* SubBody)
@@ -49,7 +48,7 @@ void ISpeedComponent::ResetForFrame(const float& Delta)
 	}
 }
 
-SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, const float& TimePassed, const float& LastSubDelta)
+SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, const float& LastSubDelta)
 {
     SComponentTOI Best;
     Best.bHit = false;
@@ -65,7 +64,7 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, co
         constexpr float MinSubDelta = 0.0f;
         // if (LastSubDelta > MinSubDelta)
         {
-            if (!Sweeper->SweepTOI(RemainingDelta, TimePassed, TOI))
+            if (!Sweeper->SweepTOI(RemainingDelta, TOI))
                 continue;
         }
         /*else if (Sweeper->WillHit())
@@ -126,6 +125,15 @@ void ISpeedComponent::PostPhysicsUpdate(const float& delta)
 	// reset accelerations after physics update so that they can be set again during the next tick
 	SetPhysAcceleration(FVector::ZeroVector);
 	SetPhysAngularAcceleration(FVector::ZeroVector);
+
+	const TArray<USSubBody*>& InSubBodies = GetSubBodies();
+    for (USSubBody* SubBody : InSubBodies)
+    {
+        if (SubBody)
+        {
+            SubBody->PostPhysicsUpdate();
+        }
+	}
 
     PostPhysicsUpdatePrv(delta);
 }

@@ -5,8 +5,7 @@
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include "Configs/WheelSubBodyConfig.h"
 #include "ChaosVehicleWheel.h"
-#include "IAmSpeed/Base/SpeedConstant.h"
-#include "IAmSpeed/SubBodies/BoxSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 
 DEFINE_LOG_CATEGORY(WheelSubBodyLog);
 
@@ -88,7 +87,7 @@ SKinematic USWheelSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) 
 // =============== SweepTOI methods =================
 // ==================================================
 
-bool USWheelSubBody::SweepTOI(const float& RemainingDelta, const float& TimePassed, float& OutTOI)
+bool USWheelSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {
     // wheel does not do TOI sweep, it only sweeps for suspension.
     // We could implement it in the future if we want to detect early collision on wheels
@@ -96,43 +95,6 @@ bool USWheelSubBody::SweepTOI(const float& RemainingDelta, const float& TimePass
     // and rely on hitboxes and "real" spheres to detect collision with other cars and spheres which is sufficient for now)
 	return false;
 }
-
-bool USWheelSubBody::SweepVsGround(SHitResult& OutHit, const float& delta, float& OutTOI)
-{
-    OutTOI = delta;
-    float TOIground = delta;
-    // integrate car kinematics to compute future wheel trace
-    SKinematic CarState = ParentComponent->GetKinematicState();
-    SKinematic FutureCarState = CarState.Integrate(delta);
-    FVector FutureCarLocation = FutureCarState.Location;
-    FQuat FutureCarRotation = FutureCarState.Rotation;
-    FVector FutureCarUpVector = FutureCarRotation.GetUpVector();
-    FTransform FutureChassisTM = FTransform(FutureCarRotation, FutureCarLocation);
-
-
-    // Compute future wheel position
-    float NewSpringDisplacement = PredictNextDisplacement(delta); // if wheel will be in air next frame
-    FVector FutureWheelPos = WorldPosFromCarTransform(FutureChassisTM);
-    FVector Start = WorldPos();
-    // auto Sphere = SSphere(Start, Radius(), FVector::ZeroVector, FVector::ZeroVector);
-    // Sphere.DrawDebug(GetWorld());
-    FVector End = FutureWheelPos + (NewSpringDisplacement - SpringDisplacement()) * FutureCarUpVector; // take into account suspension compression/extension
-    bool bHitGround = InternalSweep(Start, End, OutHit, delta);
-
-    if (bHitGround)
-    {
-        OutTOI = OutHit.TOI;
-        if (OutTOI > KINDA_SMALL_NUMBER)
-        {
-            // UE_LOG(WheelSubBodyLog, Log, TEXT("[%s][CCDWheel(%d)] NumFrame=%d, SweepVSGround at TOI=%f"), *ParentComponent->GetRole(),
-            //    Idx(), ParentComponent->NumFrame(), OutTOI);
-        }
-        return true;
-    }
-
-    return false;
-}
-
 
 // ==================================================
 // =========== Sweep suspension methods =============
@@ -264,7 +226,7 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
         if (IgnoredComponents.Contains(OtherSphere.Get()))
             continue;
 
-        SSphere OSphere = OtherSphere->MakeSphere(ParentComponent->NumFrame(), delta, /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
+        SSphere OSphere = OtherSphere->MakeSphere();
 
         SHitResult Hit = ThisSphere.IntersectDuringMovement(OSphere, Start, End, delta);
         if (!Hit.bHit)
@@ -336,7 +298,7 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
         if (IgnoredComponents.Contains(OtherBox.Get()))
             continue;
 
-        SSBox OBox = OtherBox->MakeBox(ParentComponent->NumFrame(), /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
+        SSBox OBox = OtherBox->MakeBox();
 
         SHitResult Hit = ThisSphere.IntersectDuringMovement(OBox, Start, End, delta);
         if (!Hit.bHit)
@@ -435,7 +397,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 
 
 
-SSphere USWheelSubBody::MakeSphere(const unsigned int& NumFrame, const float& RemainingDelta, const float& TimePassed) const
+/*SSphere USWheelSubBody::MakeSphere(const unsigned int& NumFrame, const float& RemainingDelta, const float& TimePassed) const
 {
     // --- 1) Car kinematics ---
     SKinematic CarKS0 = ParentComponent->GetKinematicStateForFrame(NumFrame);
@@ -480,7 +442,7 @@ SSphere USWheelSubBody::MakeSphere(const unsigned int& NumFrame, const float& Re
         v1,
         a
     );
-}
+}*/
 
 void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint)
 {

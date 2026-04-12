@@ -7,7 +7,6 @@
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "Configs/SubBodyConfig.h"
-#include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/BodySetup.h"
 
 DEFINE_LOG_CATEGORY(SphereSubBodyLog);
@@ -54,7 +53,7 @@ void USphereSubBody::ResetForFrame(const float& Delta)
 // Sweep Methods
 //======================================================
 
-bool USphereSubBody::SweepTOI(const float& RemainingDelta, const float& TimePassed, float& OutTOI)
+bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {
     if (!ParentComponent)
     {
@@ -71,10 +70,10 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, const float& TimePass
 	SHitResult BoxHitresult;
 	SHitResult SphereHitresult;
 	SHitResult WheelHitresult;
-    bool bHitGround = SweepVsGround(GroundHitresult, RemainingDelta, TOI_ground);
-    bool bHitBox = SweepVsBoxes(BoxHitresult, RemainingDelta, TimePassed, TOI_Box);
-    bool bHitSphere = SweepVsSpheres(SphereHitresult, RemainingDelta, TimePassed, TOI_Sphere);
-	bool bHitWheel = SweepVsWheels(WheelHitresult, RemainingDelta, TimePassed, TOI_Wheel);
+    bool bHitGround = SweepVsGround(GetWorld(), GroundHitresult, RemainingDelta, TOI_ground);
+    bool bHitBox = SweepVsBoxes(GetWorld(), BoxHitresult, RemainingDelta, TOI_Box);
+    bool bHitSphere = SweepVsSpheres(GetWorld(), SphereHitresult, RemainingDelta, TOI_Sphere);
+	bool bHitWheel = SweepVsWheels(GetWorld(), WheelHitresult, RemainingDelta, TOI_Wheel);
 
     if (!bHitGround && !bHitBox && !bHitSphere && !bHitWheel)
         return false;
@@ -112,193 +111,12 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, const float& TimePass
     return true;
 }
 
-bool USphereSubBody::SweepVsGround(SHitResult& OutHit, const float& DeltaTime, float& OutTOI)
-{
-    OutTOI = DeltaTime;
-    OutHit = SHitResult();
-
-    const FVector Start = Kinematics.Location;
-    const FVector End =
-        Start +
-        Kinematics.Velocity * DeltaTime +
-        0.5f * Kinematics.Acceleration * DeltaTime * DeltaTime;
-
-    SHitResult Hit;
-    if (!InternalSweep(Start, End, Hit, DeltaTime))
-        return false;
-
-    OutHit = Hit;
-    OutTOI = Hit.TOI;
-    return true;
-}
-
-bool USphereSubBody::SweepVsBoxes(SHitResult& OutHit, const float& DeltaTime, const float& TimePassed, float& OutTOI)
-{
-    OutTOI = DeltaTime;
-    OutHit = SHitResult();
-    const SSphere ThisSphere(
-        Kinematics.Location,
-        GetRadiusWithMargin(),
-        Kinematics.Velocity,
-        Kinematics.Acceleration
-    );
-
-    const uint8 NbSteps = SpeedConstants::NbCCDSubsteps;
-
-    bool bHit = false;
-    float BestTime = DeltaTime + 1.f;
-    SHitResult LocalBest(false, FVector::ZeroVector, FVector::ZeroVector, 0);
-    TWeakObjectPtr<UBoxSubBody> BestBox = nullptr;
-    const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = ExternalBoxSubBodies;
-
-    for (auto& Box : OtherBoxes)
-    {
-        if (!Box.IsValid()) continue;
-
-        // Ignore if box's hitbox already hit this frame
-        if (IgnoredComponents.Contains(Box.Get()))
-            continue;
-
-        SSBox BoxShape = Box->MakeBox(ParentComponent->NumFrame(), TimePassed);
-        SHitResult Hit = ThisSphere.IntersectNextFrame(BoxShape, DeltaTime, NbSteps);
-        if (!Hit.bHit) continue;
-
-        const float t = Hit.TOI;
-        if (t < BestTime)
-        {
-            BestTime = t;
-            LocalBest = Hit;
-            BestBox = Box;
-            bHit = true;
-        }
-    }
-
-    if (!bHit)
-        return false;
-
-    OutTOI = BestTime;
-	OutHit = LocalBest;
-    OutHit.Component = BestBox;
-	OutHit.bBlockingHit = true;
-	OutHit.SubBody = BestBox;
-
-    return true;
-}
-
-bool USphereSubBody::SweepVsSpheres(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI)
-{
-    OutTOI = Delta;
-    OutHit = SHitResult();
-    const SSphere ThisSphere(
-        Kinematics.Location,
-        GetRadiusWithMargin(),
-        Kinematics.Velocity,
-        Kinematics.Acceleration
-    );
-
-    bool bHit = false;
-    float BestTOI = Delta;
-
-    SHitResult BestHit;
-    TWeakObjectPtr<USphereSubBody> BestSphere = nullptr;
-	const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = ExternalSphereSubBodies;
-
-    for (auto& OtherSphere : OtherSpheres)
-    {
-        if (!OtherSphere.IsValid()) continue;
-
-        // Ignore already-hit Spheres this frame
-        if (IgnoredComponents.Contains(OtherSphere.Get()))
-            continue;
-
-		SSphere OSphere = OtherSphere->MakeSphere(ParentComponent->NumFrame(), Delta, /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
-
-        SHitResult Hit = ThisSphere.IntersectNextFrame(OSphere, Delta);
-        if (!Hit.bHit)
-            continue;
-
-        if (Hit.TOI < BestTOI)
-        {
-            BestTOI = Hit.TOI;
-            BestHit = Hit;
-            BestSphere = OtherSphere;
-            bHit = true;
-        }
-    }
-
-    if (!bHit)
-    {
-        return false;
-    }
-
-    // Fill hit result (DO NOT resolve yet)
-	OutHit = BestHit;
-    OutHit.bBlockingHit = true;
-    OutHit.Component = BestSphere;
-    OutHit.SubBody = BestSphere;
-    OutTOI = BestTOI;
-    return true;
-}
-
-bool USphereSubBody::SweepVsWheels(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI)
-{
-    OutTOI = Delta;
-    OutHit = SHitResult();
-    const SSphere ThisSphere(
-        Kinematics.Location,
-        GetRadiusWithMargin(),
-        Kinematics.Velocity,
-        Kinematics.Acceleration
-    );
-
-    bool bHit = false;
-    float BestTOI = Delta;
-
-    SHitResult BestHit;
-    TWeakObjectPtr<USWheelSubBody> BestWheel = nullptr;
-    const TArray<TWeakObjectPtr<USWheelSubBody>>& OtherWheels = ExternalWheelSubBodies;
-
-    for (auto& OtherWheel : OtherWheels)
-    {
-        if (!OtherWheel.IsValid()) continue;
-
-        // Ignore already-hit Wheels this frame
-        if (IgnoredComponents.Contains(OtherWheel.Get()))
-            continue;
-
-        SSphere OSphere = OtherWheel->MakeSphere(ParentComponent->NumFrame(), Delta, /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
-
-        SHitResult Hit = ThisSphere.IntersectNextFrame(OSphere, Delta);
-        if (!Hit.bHit)
-            continue;
-
-        if (Hit.TOI < BestTOI)
-        {
-            BestTOI = Hit.TOI;
-            BestHit = Hit;
-            BestWheel = OtherWheel;
-            bHit = true;
-        }
-    }
-
-    if (!bHit)
-        return false;
-
-    // Fill hit result (DO NOT resolve yet)
-    OutHit = BestHit;
-    OutHit.bBlockingHit = true;
-    OutHit.Component = BestWheel;
-    OutHit.SubBody = BestWheel;
-    OutTOI = BestTOI;
-    return true;
-}
-
 
 //======================================================
 // Hit resolution
 //======================================================
 
-void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& TimePassed, const float& SimTime)
+void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 {
     if (!HasHit() || !ParentComponent)
     {
@@ -316,11 +134,11 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& TimeP
     }
     else if (Sphere)
     {
-        ResolveHitVsSphere(*Sphere, delta, TimePassed, SimTime);
+        ResolveHitVsSphere(*Sphere, delta, SimTime);
     }
     else if (Box)
     {
-        ResolveHitVsBox(*Box, delta, TimePassed, SimTime);
+        ResolveHitVsBox(*Box, delta, SimTime);
     }
 }
 
@@ -383,15 +201,13 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
     HandleMicroOscillation();
 }
 
-void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, const float& TimePassed, const float& SimTime)
+void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, const float& SimTime)
 {
     //===============================
     // 1) Access kinematics at TOI
     //===============================
-    const unsigned frame = ParentComponent->NumFrame();
-
     // Box state at TOI (its PhysicsTick may not have run yet)
-	SSBox BBox = OtherBox.MakeBox(frame, /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
+	SSBox BBox = OtherBox.MakeBox();
     SKinematic BoxKSAtTOI;
     BoxKSAtTOI.Location = BBox.WorldCenter;
     BoxKSAtTOI.Velocity = BBox.Vel;
@@ -501,7 +317,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 	HandleMicroOscillation();
 }
 
-void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta, const float& TimePassed, const float& SimTime)
+void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta, const float& SimTime)
 {
     const float TOI = CurrentHit.TOI;
 
@@ -509,7 +325,7 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
     const SKinematic& ThisKS = Kinematics;
 
     // --- Sphere kinematics at TOI ---
-    SSphere OSSphere = OtherSphere.MakeSphere(GetParentComponent()->NumFrame(), delta, /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
+    SSphere OSSphere = OtherSphere.MakeSphere();
     SKinematic OtherKS;
     OtherKS.Location = OSSphere.Center;
     OtherKS.Velocity = OSSphere.Vel;
@@ -657,10 +473,9 @@ FCollisionShape USphereSubBody::GetCollisionShape(float Inflation) const
     return FCollisionShape::MakeSphere(GetRadiusWithMargin());
 }
 
-SSphere USphereSubBody::MakeSphere(const unsigned int& NumFrame, const float& RemainingDelta, const float& TimePassed) const
+SSphere USphereSubBody::MakeSphere() const
 {
-    SKinematic KS = GetKinematicsFromOwner(NumFrame);
-    KS = KS.Integrate(TimePassed);
+    const SKinematic& KS = Kinematics;
     return SSphere(
         KS.Location,
         GetRadiusWithMargin(),
