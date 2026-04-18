@@ -259,15 +259,19 @@ protected:
 
 	const TObjectPtr<UBoxSubBody>& GetHitboxSubBody() const { return HitboxSubBody; }
 
+	/** Read current state for simulation */
+	void UpdateState(float DeltaTime) override;
+
 	// Netcode methods
 	virtual void RecordPredictedState();
+	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
 
 	//=========== Configuration parameters for the movement component ===========
 	// Time in seconds before the component can move at the start of the simulation or after being reset (e.g. after a respawn)
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float TimeBeforeCanMove = 0.15f;
+	float TimeBeforeCanMove = 0.2f;
 	// Mass of the component in kg
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
@@ -285,7 +289,7 @@ public:
 	// max angular speed of the component in rad/s
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float PhysMaxAngularSpeed = 100.0f;
+	float PhysMaxAngularSpeed = 4.f;
 	// damping factor of the component (0.0 means no damping, 1.0 means full damping)
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
@@ -387,7 +391,17 @@ public:
 	/** Hit Box component */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Collision, meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UBoxSubBody> HitboxSubBody = nullptr; // pointer to the hitbox sub-body (if any) owned by this component
+	/** Wheel Sub Bodies*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Collision, meta = (AllowPrivateAccess = "true"))
+	TArray< TObjectPtr<USWheelSubBody>> WheelSubBodies; // array of wheel sub-bodies owned by this component (e.g. for a car body, this would be the wheels)
+	/** Network Settings*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Netcode, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 
+	/** Name of the HitboxSubBody */
+	static const FName HitboxName;
+	/** Names of the Wheel Subodies*/
+	static const TArray<FName> WheelNames;
 private:
 	USpeedSimulation* SkySimulation = nullptr;
 	ASpeedCar* SpeedCarOwner = nullptr;
@@ -421,7 +435,6 @@ private:
 	TArray<USSubBody*> SubBodies; // array of sub-bodies owned by this component (e.g. for a car body, this would be the hitbox and the wheels)
 	TArray<USSubBody*> ExtSubBodies; // array of external sub-bodies
 
-	TArray< TObjectPtr<USWheelSubBody>> WheelSubBodies; // array of wheel sub-bodies owned by this component (e.g. for a car body, this would be the wheels)
 	TArray<SWheelGroundContact> PendingWheelContacts; // array of pending wheel ground contacts to be registered at the end of the frame
 
 	// ========== Netcode variables ==========
@@ -429,8 +442,6 @@ private:
 	TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent = nullptr;
 	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> WheeledNetworkPhysicsComponent = nullptr;
-	UPROPERTY()
-	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 	int32 NetCorr_LastServerFrame = INDEX_NONE;
 	int32 NetCorr_LastLocalFrame = INDEX_NONE;
 	int32 NetCorr_BaseNumPredictedFrames = 1;

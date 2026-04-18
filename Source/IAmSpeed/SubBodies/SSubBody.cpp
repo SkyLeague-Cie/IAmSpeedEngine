@@ -48,7 +48,7 @@ void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 {
     for (USSubBody* SubBody : SubBodies)
     {
-        if (SubBody && !AlwaysIgnoredComponents.Contains(SubBody))
+        if (SubBody && !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor())
         {
             switch (SubBody->GetSubBodyType())
             {
@@ -105,7 +105,7 @@ void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
 	Kinematics.AngularAcceleration = ParentKinematic.AngularAcceleration;
 }
 
-bool USSubBody::SweepTOI(const float& RemainingDelta, const float& TimePassed, float& OutTOI)
+bool USSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {
     OutTOI = RemainingDelta;
     FutureHit = SHitResult();
@@ -159,13 +159,10 @@ bool USSubBody::ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) co
 	return IgnoredComponents.Contains(&OtherComp);
 }
 
-void USSubBody::ResolveCurrentHit(const float& delta, const float& TimePassed, const float& SimTime)
+void USSubBody::ResolveCurrentHit(const float& delta, const float& SimTime)
 {
-	// update kinematics from owner for the current frame (in case the owner has changed the kinematics since the last sweep)
-	// UpdateKinematicsFromOwner(ParentComponent ? ParentComponent->NumFrame() + 1 : 0); // useless since the parent component already update the kinematics of the SubBody
-
     if (CurrentHit.bBlockingHit)
-        ResolveCurrentHitPrv(delta, TimePassed, SimTime);
+        ResolveCurrentHitPrv(delta, SimTime);
 }
 
 bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResult& OutHit, const float& delta)
@@ -231,6 +228,10 @@ USSubBody* USSubBody::PickResolver(USSubBody* A, USSubBody* B)
     if (!A) return B;
     if (!B) return A; // world/static
 
+    // Sensor always resolves (gameplay first, no physical response)
+    if (A->IsSensor()) return A;
+    if (B->IsSensor()) return B;
+
     const int32 PA = SubBodyPriority(A->GetSubBodyType());
     const int32 PB = SubBodyPriority(B->GetSubBodyType());
     if (PA != PB) return (PA > PB) ? A : B;
@@ -238,3 +239,20 @@ USSubBody* USSubBody::PickResolver(USSubBody* A, USSubBody* B)
     // tie-break deterministic
     return (A->GetUniqueID() < B->GetUniqueID()) ? A : B;
 }
+
+const TArray<TWeakObjectPtr<UBoxSubBody>> USSubBody::GetExternalBoxSubBodies() const
+{
+    return ExternalBoxSubBodies;
+}
+
+const TArray<TWeakObjectPtr<USphereSubBody>> USSubBody::GetExternalSphereSubBodies() const
+{
+    return ExternalSphereSubBodies;
+}
+
+const TArray<TWeakObjectPtr<USWheelSubBody>> USSubBody::GetExternalWheelSubBodies() const
+{
+    return ExternalWheelSubBodies;
+}
+
+

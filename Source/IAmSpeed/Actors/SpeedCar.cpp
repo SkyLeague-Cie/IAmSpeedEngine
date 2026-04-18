@@ -10,6 +10,7 @@ ASpeedCar::ASpeedCar(const FObjectInitializer& ObjectInitializer) :
 	SetReplicateMovement(false); // we do not want to replicate movement, we use our own replication system
 	// Configure the car mesh
 	GetMesh()->SetSimulatePhysics(false);
+	GetMesh()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
 	SpeedWheeledComponent = Cast<USpeedWheeledComponent>(GetVehicleMovement());
 }
 
@@ -91,9 +92,33 @@ void ASpeedCar::DemoedBy(ASpeedCar* otherCar)
 	}
 }
 
+void ASpeedCar::StartConfrontationInSec(int TimeSec)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	SpeedWheeledComponent->StartConfrontationInSec(TimeSec);
+}
+
 bool ASpeedCar::OnTheSameTeamAs(const ASpeedCar& OtherCar) const
 {
 	return false;
+}
+
+bool ASpeedCar::HasAuthority() const
+{
+	return SpeedWheeledComponent->HasAuthority();
+}
+
+bool ASpeedCar::IsOwningClient() const
+{
+	return SpeedWheeledComponent->IsOwningClient();
+}
+
+bool ASpeedCar::IsRemoteClient() const
+{
+	return SpeedWheeledComponent->IsRemoteClient();
 }
 
 void ASpeedCar::CheckDemo()

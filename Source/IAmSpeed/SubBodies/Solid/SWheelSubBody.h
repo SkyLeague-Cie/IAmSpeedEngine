@@ -48,9 +48,9 @@ public:
     // --- overrides SubBody behaviour ---
     virtual void ResetForFrame(const float& Delta) override;
     void AcceptHit() override;
-    virtual bool SweepTOI(const float& RemainingDelta, const float& TimePassed, float& OutTOI) override;
+    virtual bool SweepTOI(const float& RemainingDelta, float& OutTOI) override;
     SKinematic GetKinematicsFromOwner(const unsigned int& NumFrame) const;
-    SSphere MakeSphere(const unsigned int& NumFrame, const float& RemainingDelta, const float& TimePassed) const;
+    // SSphere MakeSphere(const unsigned int& NumFrame, const float& RemainingDelta, const float& TimePassed) const override;
     void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint) override;
 
     // --- steering methods ---
@@ -95,8 +95,6 @@ public:
 
     void HandleTimers();
 private:
-    bool SweepVsGround(SHitResult& OutHit, const float& DeltaTime, float& OutTOI);
-
     bool SweepSuspensionOnGround(SHitResult& OutHit, const float& delta);
     bool SweepSuspensionOnSpheres(SHitResult& OutHit, const float& delta);
     bool SweepSuspensionOnBoxes(SHitResult& OutHit, const float& delta);

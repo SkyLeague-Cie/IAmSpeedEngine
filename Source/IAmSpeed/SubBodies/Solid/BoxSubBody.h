@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "SolidSubBody.h"
+#include "IAmSpeed/SubBodies/Common/IBoxSweeper.h"
+#include "IAmSpeed/SubBodies/Common/ISolidSweeper.h"
 #include "UObject/ObjectMacros.h"
 #include "BoxSubBody.generated.h"
 
@@ -16,7 +17,7 @@ DECLARE_LOG_CATEGORY_EXTERN(BoxSubBodyLog, Log, All);
  * UBoxSubBody : A sub-body representing a box. It provides functionality for collision detection and response specific for each shape.
  */
 UCLASS(ClassGroup = "Collision", hidecategories = (Object, LOD, Lighting, TextureStreaming), editinlinenew, meta = (DisplayName = "Box Collision", BlueprintSpawnableComponent))
-class IAMSPEED_API UBoxSubBody : public USolidSubBody
+class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, public ISolidSweeper
 {
     GENERATED_UCLASS_BODY()
 	
@@ -24,11 +25,12 @@ public:
     virtual void Initialize(ISpeedComponent* InParentComponent) override;
 
     // --- USubBody overrides ---
-    bool SweepTOI(const float& RemainingDelta, const float& TimePassed, float& OutTOI) override;
-    void ResolveCurrentHitPrv(const float& delta, const float& TimePassed, const float& SimTime) override;
+    bool SweepTOI(const float& RemainingDelta, float& OutTOI) override;
+    void ResolveCurrentHitPrv(const float& delta, const float& SimTime) override;
+    const Speed::FKinematicState& GetKinematicState() const { return USolidSubBody::GetKinematicState(); }
     SKinematic GetKinematicsFromOwner(const unsigned int& NumFrame) const;
     SKinematic GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const;
-    SSBox MakeBox(const unsigned int& NumFrame, const float& TimePassed) const;
+    SSBox MakeBox() const;
     SSBox MakeBoxFromKS(const SKinematic& CarKinematicState) const;
     void ResetForFrame(const float& Delta) override;
     void AcceptHit() override;
@@ -66,17 +68,31 @@ protected:
     FEngineShowFlags GetShowFlags() const { return ShowFlags; }
     void SetShowFlags(const FEngineShowFlags& InShowFlags);
 #endif // WITH_EDITOR
+    /*
+    * Overriden methods
+    */
+    bool InternalSweep(UWorld* World, const FVector& Start,
+        const FVector& End, SHitResult& OutHit, const float& delta) {
+        return ISolidSweeper::InternalSweep(World, Start, End, OutHit, delta);
+    }
+    virtual ECollisionChannel GetCollisionChannel() const { return USolidSubBody::GetCollisionChannel(); }
+    virtual const FCollisionResponseParams& GetResponseParams() const { return USolidSubBody::GetResponseParams(); }
+    virtual FCollisionQueryParams BuildTraceParams() const { return USolidSubBody::BuildTraceParams(); }
+    bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const { return USolidSubBody::ComponentHasBeenIgnored(OtherComp); }
+    const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const { return USolidSubBody::GetExternalBoxSubBodies(); }
+    const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
+    const TArray<TWeakObjectPtr<USWheelSubBody>> GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 private:
-    void ResolveHitVsGround(const float& delta, const float& TimePassed);
-    void ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta, const float& TimePassed);
-    // void ResolveHitVsWheel(USWheelSubBody& OtherWheel, const float& delta, const float& TimePassed);
-    void ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, const float& TimePassed);
+    void ResolveHitVsGround(const float& delta);
+    void ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta);
+    // void ResolveHitVsWheel(USWheelSubBody& OtherWheel, const float& delta);
+    void ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta);
 
     // --- Internal helpers ---
-    bool SweepVsGround(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI);
-    bool SweepVsSpheres(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI);
-    bool SweepVsWheels(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI);
-    bool SweepVsBoxes(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI);
+    bool SweepVsGround(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI);
+    bool SweepVsSpheres(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI);
+    bool SweepVsWheels(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI);
+    bool SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI);
 
     void BuildContactPoints(const FVector& Nworld, const FVector& CenterWS, const FQuat& BoxRotWS, const FVector& Ext, TArray<FVector>& OutPointsWS) const;
     FVector BuildCompositeGroundNormal() const;
@@ -247,11 +263,6 @@ protected:
     FEngineShowFlags ShowFlags;
 #endif // WITH_EDITOR
 private:
-    SHitResult GroundHit;
-    SHitResult SphereHit;
-    SHitResult WheelHit;
-    SHitResult BoxHit;
-
     TArray<FVector> CurrentGroundContactsWS;
     TArray<FVector> CurrentGroundNormalsWS; // per contact point normal
     TArray<FVector> PrevGroundContactsLS; // local hitbox space (COM frame)

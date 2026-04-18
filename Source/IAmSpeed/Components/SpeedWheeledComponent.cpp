@@ -4,8 +4,8 @@
 #include "ChaosVehicleManager.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/SubBodies/Configs/WheelSubBodyConfig.h"
-#include "IAmSpeed/SubBodies/BoxSubBody.h"
-#include "IAmSpeed/SubBodies/SWheelSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/World/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "ChaosVehicleWheel.h"
@@ -13,6 +13,9 @@
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
+
+const FName USpeedWheeledComponent::HitboxName = TEXT("Hitbox");
+const TArray<FName> USpeedWheeledComponent::WheelNames = { TEXT("Wheel_0"), TEXT("Wheel_1"), TEXT("Wheel_2"), TEXT("Wheel_3")};
 
 USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer)
@@ -30,7 +33,7 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 	SetSubBodies(CreateSubBodies());
 	if (SubBodies.Num() > 0)
 	{
-		HitboxSubBody = Cast<UBoxSubBody>(SubBodies[0]);
+		HitboxSubBody = CastChecked<UBoxSubBody>(SubBodies[0]);
 	}
 
 	for (USSubBody* SubBody : SubBodies)
@@ -119,6 +122,8 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 		WheelSubBody->Initialize(this);
 	}
 	CarLocalInvI = Speed::SBox::ComputeLocalInverseInertiaTensor(HitboxSubBody->GetBoxExtent(), GetPhysMass());
+
+	UpdateSubBodiesKinematics();
 
 	// start physics thread
 	SetAsyncPhysicsTickEnabled(true);
@@ -236,12 +241,12 @@ TArray<USWheelSubBody*> USpeedWheeledComponent::CreateWheelSubBodies()
 
 UBoxSubBody* USpeedWheeledComponent::CreateHitboxSubBody()
 {
-	return CreateDefaultSubobject<UBoxSubBody, UBoxSubBody>(TEXT("HitboxSubBody"));
+	return CreateDefaultSubobject<UBoxSubBody, UBoxSubBody>(HitboxName);
 }
 
 USWheelSubBody* USpeedWheeledComponent::CreateWheelSubBody(const int& WheelIndex)
 {
-	return CreateDefaultSubobject<USWheelSubBody, USWheelSubBody>(*FString::Printf(TEXT("WheelSubBody_%d"), WheelIndex));
+	return CreateDefaultSubobject<USWheelSubBody, USWheelSubBody>(WheelNames[WheelIndex]);
 }
 
 void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
@@ -481,6 +486,11 @@ void USpeedWheeledComponent::UpdateInputs()
 {
 	// Update inputs
 	WheeledPhysicalInput = WheeledUserInput; // copy all inputs for physics simulation
+}
+
+void USpeedWheeledComponent::UpdateState(float DeltaTime)
+{
+	// DO NOTHING HERE
 }
 
 void USpeedWheeledComponent::RecordPredictedState()
@@ -1605,8 +1615,8 @@ bool USpeedWheeledComponent::NoSteeringAllowed() const
 
 float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity, const float& AbsSteeringInput) const
 {
-	const float MinRadius = 400.f; // cm, at low speed
-	const float MaxRadius = 900.f; // cm, at high speed
+	const float MinRadius = 2100.f; // cm, at low speed
+	const float MaxRadius = 6000.f; // cm, at high speed
 	const float SpeedForMinRadius = 500.f; // cm/s
 	const float SpeedForMaxRadius = 2000.f; // cm/s
 	float speedFactor = FMath::Clamp((FMath::Abs(ForwardVelocity) - SpeedForMinRadius) / (SpeedForMaxRadius - SpeedForMinRadius), 0.f, 1.f);
@@ -1639,7 +1649,7 @@ FVector USpeedWheeledComponent::ComputeTurningForce(const float& SteeringInput_,
 
 void USpeedWheeledComponent::TagStateHistoryProxyRole()
 {
-	if (HasAuthority())
+	if (HasAuthority() || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent)
 		return;
 
 	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetStateHistory_Internal();
@@ -1670,7 +1680,7 @@ void USpeedWheeledComponent::TagStateHistoryProxyRole()
 
 void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 {
-	if (HasAuthority())
+	if (HasAuthority() || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent)
 	{
 		return;
 	}
@@ -1685,7 +1695,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (!SpeedHistory || !WheeledSpeedHistory)
 		return;
 
-	const int32 CurrentFrame = SpeedHistory->GetLatestFrame();
+	const int32 CurrentFrame = NumFrame();
 	// ----------------------------
 	// Find last server state
 	// ----------------------------
@@ -1750,6 +1760,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// ----------------------------
 	// Find corresponding predicted state
 	// ----------------------------
+
+	// Last Client Frame received from Server
 	const int32 LocalFrame = Target.LocalFrame;
 	FBasePhysicsState PastPredictedState;
 	if (!GetPredictedState(LocalFrame, PastPredictedState))
@@ -1776,8 +1788,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 	// check nbFramesbeforeCanMove alignment
 	if (bNewTarget && (WheeledPhysicsState.nbFramesbeforeCanMove > NumPredictedFrames - 1) && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
-		&& (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
-		&& (WheeledPhysicsState.nbFramesbeforeCanMove != WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames - 1))
+		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
+		&& (WheeledPhysicsState.nbFramesbeforeCanMove != WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames))
 	{
 		if (WheeledTarget.WheeledState.nbFramesbeforeCanMove == 0 && WheeledPhysicsState.nbFramesbeforeCanMove != 0)
 		{
@@ -1793,7 +1805,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Log, TEXT("[CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
 #endif
-			WheeledPhysicsState.nbFramesbeforeCanMove = WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames - 1;
+			WheeledPhysicsState.nbFramesbeforeCanMove = WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames;
 		}
 	}
 	/*else
@@ -2123,34 +2135,8 @@ void USpeedWheeledComponent::InitNetwork()
 {
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideEnableReliableFlow = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bEnableReliableFlow = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantInputs = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantInputs = 11;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantRemoteInputs = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantRemoteInputs = 16;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantStates = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantStates = 1;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideCompareInputToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareInputToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideCompareStateToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideAllowInputExtrapolation = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bAllowInputExtrapolation = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideApplyDataInsteadOfMergeData = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bApplyDataInsteadOfMergeData = true;
-
-	// Simulated Proxy settings
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyInputAtRuntime = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bApplySimProxyInputAtRuntime = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverridebCompareStateToTriggerRewindIncludeSimProxies = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewindIncludeSimProxies = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyStateAtRuntime = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bApplySimProxyStateAtRuntime = true;
-
-	// Resimulation settings
-	SNetworkSettings->GeneralSettings.bOverrideSimProxyRepMode = true;
-	SNetworkSettings->GeneralSettings.SimProxyRepMode = EPhysicsReplicationMode::Resimulation;
+	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("SpeedSettingsDataAsset"));
+	SNetworkSettings->SettingsDataAsset = NetDataAsset;
 
 	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
 	SNetworkPhysicsComponent = CreateDefaultSubobject<UNetworkPhysicsComponent, UNetworkPhysicsComponent>(SpeedNetPCName);
