@@ -22,8 +22,6 @@ public:
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);
 
 	void InitNetwork();
-	// Set the owner of this component. Call this at begin play
-	virtual void SetOwner(AActor* NewOwner);
 	/** Used to create any physics engine information for this component */
 	virtual void OnCreatePhysicsState() override;
 	/** Used to shut down and physics engine structure for this component */
@@ -86,7 +84,10 @@ public:
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
 	UFUNCTION(reliable, NetMulticast)
 	void StartTestWithVelocityMulti(const FVector& InitialVelocity);
+	unsigned int GetEngineFPS() const;
 private:
+	// Set the owner of this component. Call this at begin play
+	void SetOwner(AActor* NewOwner);
 	void SetEngineFPS(const unsigned int& FPS);
 
 	void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) override final;
@@ -118,9 +119,13 @@ protected:
 	virtual void QuantizePhysicalState();
 
 	virtual void TagStateHistoryProxyRole();
+	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
 	
 	//=========== Configuration parameters for the movement component ===========
+	// whether to enable the movement component (if false, the component will not perform any physics simulation and will not update its kinematic state)
+	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	bool bEnableSimulation = true;
 	// Mass of the component in kg
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
@@ -198,6 +203,9 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float RotCorrDeadzone = 0.5f;
+	/** Network Settings*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Netcode, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 private:
 	//=========== Internal state variables for the movement component ===========
 	SBaseGameState BaseGameState; // current game state of the component
@@ -211,8 +219,6 @@ private:
 	TArray<USolidSubBody*> SolidSubBodies; // array of solid sub-bodes (i.e. sub-bodies that are not purely for hit detection but also have a physical representation in the physics engine, e.g. for a car body, this would be the hitbox and the wheels)
 
 	// ========== Netcode variables ==========
-	UPROPERTY()
-	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 	int32 NetCorr_LastServerFrame = INDEX_NONE;
 	int32 NetCorr_LastLocalFrame = INDEX_NONE;
 	int32 NetCorr_BaseNumPredictedFrames = 1;

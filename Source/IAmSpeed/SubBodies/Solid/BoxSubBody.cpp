@@ -93,7 +93,7 @@ void UBoxSubBody::AcceptHit()
 //======================================================
 // =============== Sweep Methods =======================
 // =====================================================
-bool UBoxSubBody::SweepTOI(const float& RemainingDelta, const float& TimePassed, float& OutTOI)
+bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {
     if (!ParentComponent)
     {
@@ -111,10 +111,10 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, const float& TimePassed,
     SHitResult BoxHitresult;
     SHitResult SphereHitresult;
 	SHitResult WheelHitresult;
-    bool bHitGround = SweepVsGround(GroundHitresult, RemainingDelta, TimePassed, TOI_ground);
-    bool bHitBox = SweepVsBoxes(BoxHitresult, RemainingDelta, TimePassed, TOI_Box);
-    bool bHitSphere = SweepVsSpheres(SphereHitresult, RemainingDelta, TimePassed, TOI_Sphere);
-    bool bHitWheel = SweepVsWheels(WheelHitresult, RemainingDelta, TimePassed, TOI_Wheel);
+    bool bHitGround = SweepVsGround(GetWorld(), GroundHitresult, RemainingDelta, TOI_ground);
+    bool bHitBox = SweepVsBoxes(GetWorld(), BoxHitresult, RemainingDelta, TOI_Box);
+    bool bHitSphere = SweepVsSpheres(GetWorld(), SphereHitresult, RemainingDelta, TOI_Sphere);
+    bool bHitWheel = SweepVsWheels(GetWorld(), WheelHitresult, RemainingDelta, TOI_Wheel);
     if (!bHitGround && !bHitBox && !bHitSphere && !bHitWheel)
     {
         // IMPORTANT : ground can exist even without a hit (persistent contact)
@@ -182,16 +182,10 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, const float& TimePassed,
 }
 
 
-bool UBoxSubBody::SweepVsGround(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI)
+bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI)
 {
     OutTOI = Delta;
     // GroundHit = SHitResult();
-
-    if (!ParentComponent)
-        return false;
-
-    // Kinematics at TimePassed
-    // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
 
     const FVector Start = Kinematics.Location;
 
@@ -203,8 +197,8 @@ bool UBoxSubBody::SweepVsGround(SHitResult& OutHit, const float& Delta, const fl
     SHitResult Hit;
     bGroundHitFromSweep = false;
     // SSBox CarBox(Kinematics.Location, BoxExtent, Kinematics.Rotation, Kinematics.Velocity, Kinematics.Acceleration, Kinematics.AngularVelocity, Kinematics.AngularAcceleration);
-    //CarBox.DrawDebug(GetWorld());
-    if (!InternalSweep(Start, End, Hit, Delta))
+    // CarBox.DrawDebug(GetWorld());
+    if (!InternalSweep(World, Start, End, Hit, Delta))
         return false;
 
     auto AddGroundNormal = [&](const FVector& Nnew)
@@ -226,161 +220,26 @@ bool UBoxSubBody::SweepVsGround(SHitResult& OutHit, const float& Delta, const fl
     return true;
 }
 
-bool UBoxSubBody::SweepVsSpheres(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI)
+bool UBoxSubBody::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI)
 {
-    OutTOI = Delta;
-    OutHit = SHitResult();
-    bool bHit = false;
-    float BestTOI = Delta;
-
-    // --- Build hitbox OBB from SubBody kinematics ---
-    SSBox ThisBox = MakeBox(ParentComponent->NumFrame(), 0.0f); // no need to integrate TimePassed because Box is already at TimePassed
-
-    SHitResult BestHit;
-    TWeakObjectPtr<USphereSubBody> BestSphere = nullptr;
-    const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = ExternalSphereSubBodies;
-
-    for (auto& OtherSphere : OtherSpheres)
-    {
-        if (!OtherSphere.IsValid()) continue;
-
-        // Ignore already-hit Spheres this frame
-        if (IgnoredComponents.Contains(OtherSphere.Get()))
-            continue;
-
-        SSphere OSphere = OtherSphere->MakeSphere(ParentComponent->NumFrame(), Delta, /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
-
-        SHitResult Hit = ThisBox.IntersectNextFrame(OSphere, Delta, SpeedConstants::NbCCDSubsteps);
-        if (!Hit.bHit)
-            continue;
-
-        if (Hit.TOI < BestTOI)
-        {
-            BestTOI = Hit.TOI;
-            BestHit = Hit;
-            BestSphere = OtherSphere;
-            bHit = true;
-        }
-    }
-
-    if (!bHit)
-        return false;
-
-    // --- Fill OutHit ---
-    OutHit = BestHit;
-    OutHit.bBlockingHit = true;
-    OutHit.Component = BestSphere;
-    OutHit.SubBody = BestSphere;
-    OutTOI = BestHit.TOI;
-    return true;
+	return IBoxSweeper::SweepVsSpheres(World, OutHit, Delta, OutTOI);
 }
 
-bool UBoxSubBody::SweepVsWheels(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI)
+bool UBoxSubBody::SweepVsWheels(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI)
 {
-    OutTOI = Delta;
-    OutHit = SHitResult();
-    bool bHit = false;
-    float BestTOI = Delta;
-    // --- Build hitbox OBB from SubBody kinematics ---
-    SSBox ThisBox = MakeBox(ParentComponent->NumFrame(), 0.0f); // no need to integrate TimePassed because Box is already at TimePassed
-    SHitResult BestHit;
-    TWeakObjectPtr<USWheelSubBody> BestWheel = nullptr;
-    const TArray<TWeakObjectPtr<USWheelSubBody>>& OtherWheels = ExternalWheelSubBodies;
-    for (auto& OtherWheel : OtherWheels)
-    {
-        if (!OtherWheel.IsValid()) continue;
-
-        // Ignore already-hit Wheels this frame
-        if (IgnoredComponents.Contains(OtherWheel.Get()))
-            continue;
-
-        SSphere OWheel = OtherWheel->MakeSphere(ParentComponent->NumFrame(), Delta, /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
-
-        SHitResult Hit = ThisBox.IntersectNextFrame(OWheel, Delta, SpeedConstants::NbCCDSubsteps);
-        if (!Hit.bHit)
-            continue;
-
-        if (Hit.TOI < BestTOI)
-        {
-            BestTOI = Hit.TOI;
-            BestHit = Hit;
-            BestWheel = OtherWheel;
-            bHit = true;
-        }
-    }
-
-    if (!bHit)
-        return false;
-
-    // --- Fill OutHit ---
-    OutHit = BestHit;
-    OutHit.bBlockingHit = true;
-    OutHit.Component = BestWheel;
-    OutHit.SubBody = BestWheel;
-    OutTOI = BestHit.TOI;
-	return true;
+	return IBoxSweeper::SweepVsWheels(World, OutHit, Delta, OutTOI);
 }
 
-bool UBoxSubBody::SweepVsBoxes(SHitResult& OutHit, const float& Delta, const float& TimePassed, float& OutTOI)
+bool UBoxSubBody::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI)
 {
-    OutTOI = Delta;
-
-    if (!ParentComponent)
-        return false;
-
-    BoxHit = SHitResult();
-
-    bool bHit = false;
-    float BestTOI = Delta + 1.f;
-    SHitResult BestHit;
-    SHitResult LocalBest;
-
-    // This hitbox (already at TimePassed)
-    SSBox ThisBox = MakeBox(ParentComponent->NumFrame(), 0.0f);
-    TWeakObjectPtr<UBoxSubBody> BestBox = nullptr;
-	const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = ExternalBoxSubBodies;
-
-    for (auto& Box : OtherBoxes)
-    {
-        if (!Box.IsValid()) continue;
-
-        // Ignore if box's hitbox already hit this frame
-        if (IgnoredComponents.Contains(Box.Get()))
-            continue;
-
-		SSBox BoxShape = Box->MakeBox(ParentComponent->NumFrame(), /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
-        SHitResult Hit = ThisBox.IntersectNextFrame(BoxShape, Delta, SpeedConstants::NbCCDSubsteps);
-        if (!Hit.bHit) continue;
-
-        const float t = Hit.TOI;
-        if (t < BestTOI)
-        {
-            BestTOI = t;
-            LocalBest = Hit;
-            BestBox = Box;
-            bHit = true;
-        }
-    }
-
-    if (!bHit)
-        return false;
-
-    // Fill BoxHit (future hit result for selection)
-    BoxHit.bBlockingHit = true;
-    OutHit = LocalBest;
-    OutHit.Component = BestBox;
-    OutHit.bBlockingHit = true;
-    OutHit.SubBody = BestBox;
-
-    OutTOI = BestTOI;
-    return true;
+	return IBoxSweeper::SweepVsBoxes(World, OutHit, Delta, OutTOI);
 }
 
 // ============================================================================
 // ======= ResolveHit Methods =================================================
 // ============================================================================
 
-void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& TimePassed, const float& SimTime)
+void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 {
     if (!CurrentHit.bBlockingHit || !ParentComponent)
         return;
@@ -391,15 +250,15 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& TimePass
     if (CurrentHit.Component.IsValid() &&
         CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic)
     {
-        ResolveHitVsGround(delta, TimePassed);
+        ResolveHitVsGround(delta);
     }
     else if (Sphere)
     {
-        ResolveHitVsSphere(*Sphere, delta, TimePassed);
+        ResolveHitVsSphere(*Sphere, delta);
     }
     else if (Box)
     {
-        ResolveHitVsBox(*Box, delta, TimePassed);
+        ResolveHitVsBox(*Box, delta);
     }
 }
 
@@ -409,7 +268,7 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& TimePass
 //     - Orchestrates: classify -> event solve -> update persistence -> apply support.
 //     - Handles concave rule consistently.
 // ============================================================================
-void UBoxSubBody::ResolveHitVsGround(const float& Dt, const float& TimePassed)
+void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 {
     if (!ParentComponent) return;
 
@@ -486,12 +345,12 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt, const float& TimePassed)
 }
 
 
-void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta, const float& TimePassed)
+void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 {
     // --- Box kinematics at TOI ---
     // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
     const SKinematic& BoxKS = Kinematics; // already correct
-    SSBox BBox = MakeBox(ParentComponent->NumFrame(), /*TimePassed*/ 0.0f); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
+    SSBox BBox = MakeBox();
 
     // --- Sphere kinematics at TOI ---
     const SKinematic& SphereKS0 =
@@ -593,11 +452,9 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta,
 
 void UBoxSubBody::ResolveHitVsBox(
     UBoxSubBody& OtherBox,
-    const float& delta,
-    const float& TimePassed
+    const float& delta
 )
 {
-    const unsigned frame = ParentComponent->NumFrame();
     const SKinematic& KA = Kinematics; // current
 
     // KB courant
@@ -609,8 +466,8 @@ void UBoxSubBody::ResolveHitVsBox(
     // -------- Overlap branch (Box - Box) --------
     // EstimateOBBOverlapAlongNormal + SolveOverlap
     {
-        SSBox A = MakeBox(frame, 0.f);
-        SSBox B = OtherBox.MakeBox(frame, 0.f);
+        SSBox A = MakeBox();
+        SSBox B = OtherBox.MakeBox();
         const float pen = SSBox::EstimateOBBOverlapAlongNormal(A, B, N);
         if (pen > MinSlopCm)
         {
@@ -1442,10 +1299,9 @@ SKinematic UBoxSubBody::GetKinematicsFromOwnerKS(const SKinematic& CarKinematicS
     return CrtKinematics;
 }
 
-SSBox UBoxSubBody::MakeBox(const unsigned int& NumFrame, const float& TimePassed) const
+SSBox UBoxSubBody::MakeBox() const
 {
-    auto CrtKinematics = GetKinematicsFromOwner(NumFrame);
-    CrtKinematics = CrtKinematics.Integrate(TimePassed);
+    const auto& CrtKinematics = Kinematics;
     return SSBox(
         CrtKinematics.Location,
         BoxExtent,

@@ -47,7 +47,14 @@ public:
 	void Demo(ASpeedCar* car, bool isOnOpponentCar);
 	void DemoedBy(ASpeedCar* car);
 
+	UFUNCTION(BlueprintCallable, Category = "Utils")
+	void StartConfrontationInSec(int TimeSec);
+
 	virtual bool OnTheSameTeamAs(const ASpeedCar& OtherCar) const;
+
+	bool HasAuthority() const;
+	bool IsOwningClient() const;
+	bool IsRemoteClient() const;
 protected:
 	virtual void HandleKinematics();
 	virtual void HandleSparkle();
