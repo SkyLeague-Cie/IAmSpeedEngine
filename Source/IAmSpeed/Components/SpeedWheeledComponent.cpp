@@ -1035,12 +1035,12 @@ bool USpeedWheeledComponent::CountdownHasStarted() const
 	return WheeledPhysicsState.bStartCountdown;
 }
 
-void USpeedWheeledComponent::StartConfrontationInSec(const unsigned int& Time)
+void USpeedWheeledComponent::StartConfrontationInSec(const float& Time)
 {
 	StartConfrontationMulti(Time);
 }
 
-void USpeedWheeledComponent::StartConfrontationLocal(const unsigned int& TimeSec)
+void USpeedWheeledComponent::StartConfrontationLocal(const float& TimeSec)
 {
 	/*
 	GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, FString::Printf(TEXT("[%s] Car will be able to move in %ds"),
@@ -1048,12 +1048,12 @@ void USpeedWheeledComponent::StartConfrontationLocal(const unsigned int& TimeSec
 	}*/
 	WheeledPhysicsState.bStartCountdown = true;
 	const uint32 Now = NumFrame();
-	uint16 BaseNbFrame = TimeSec * EngineFPS;
+	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * EngineFPS);
 	constexpr uint16 MinNbFrames = 45; // 150ms @300Hz
 	WheeledPhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
 }
 
-void USpeedWheeledComponent::StartConfrontationMulti_Implementation(const unsigned int& TimeSec)
+void USpeedWheeledComponent::StartConfrontationMulti_Implementation(const float& TimeSec)
 {
 	StartConfrontationLocal(TimeSec);
 }

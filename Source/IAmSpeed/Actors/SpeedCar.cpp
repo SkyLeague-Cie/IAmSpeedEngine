@@ -92,7 +92,7 @@ void ASpeedCar::DemoedBy(ASpeedCar* otherCar)
 	}
 }
 
-void ASpeedCar::StartConfrontationInSec(int TimeSec)
+void ASpeedCar::StartConfrontationInSec(const float& TimeSec)
 {
 	if (!HasAuthority())
 	{

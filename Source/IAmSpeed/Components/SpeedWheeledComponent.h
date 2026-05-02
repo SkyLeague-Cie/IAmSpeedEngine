@@ -156,10 +156,10 @@ public:
 
 	bool CanMove() const;
 	bool CountdownHasStarted() const;
-	void StartConfrontationInSec(const unsigned int& TimeSec);
-	void StartConfrontationLocal(const unsigned int& TimeSec);
+	void StartConfrontationInSec(const float& TimeSec);
+	void StartConfrontationLocal(const float& TimeSec);
 	UFUNCTION(reliable, NetMulticast)
-	void StartConfrontationMulti(const unsigned int& TimeSec);
+	void StartConfrontationMulti(const float& TimeSec);
 	void StartTestWithVelocity(const FVector& InitialVelocity);
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
 	UFUNCTION(reliable, NetMulticast)
