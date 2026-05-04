@@ -70,7 +70,7 @@ protected:
     const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
     const TArray<TWeakObjectPtr<USWheelSubBody>> GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 
-	virtual float CollisionMargin() const { return KINDA_SMALL_NUMBER; }
+	virtual float CollisionMargin() const { return 0.01f; }
 	void SetRadius(const float& NewRadius);
     float GetRadiusWithMargin() const;
 protected:
