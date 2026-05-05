@@ -38,32 +38,117 @@ void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& Wo
 
 void USolidSubBody::RegisterCurrentHitAsConstraint()
 {
-	if (!ParentComponent || !CurrentHit.bBlockingHit || !CurrentHit.Component.IsValid())
-	{
-		return;
-	}
+    if (!CurrentHit.bBlockingHit || !CurrentHit.Component.IsValid())
+    {
+        return;
+    }
 
-	UPrimitiveComponent* OtherComponent = CurrentHit.Component.Get();
-	if (!OtherComponent || OtherComponent->GetCollisionObjectType() != ECC_WorldStatic)
-	{
-		return;
-	}
+    RegisterContactAsConstraint(
+        CurrentHit.ImpactPoint,
+        CurrentHit.ImpactNormal,
+        CurrentHit.Component.Get(),
+        CurrentHit.PenetrationDepth,
+        CurrentHit.TOI,
+        false
+    );
+}
 
-	const FVector Normal = CurrentHit.ImpactNormal.GetSafeNormal();
-	if (Normal.IsNearlyZero())
-	{
-		return;
-	}
+void USolidSubBody::RegisterContactAsConstraint(
+    const FVector& ContactPointWS,
+    const FVector& NormalWS,
+    UPrimitiveComponent* OtherComponent,
+    float PenetrationDepth,
+    float TOI,
+    bool bPersistent)
+{
+    if (!ParentComponent || !OtherComponent)
+    {
+        return;
+    }
 
-	FPhysicalContactConstraint Constraint;
-	Constraint.Normal = Normal;
-	Constraint.ContactPoint = CurrentHit.ImpactPoint;
-	Constraint.OtherComponent = OtherComponent;
-	Constraint.SourceSubBody = this;
-	Constraint.PenetrationDepth = CurrentHit.PenetrationDepth;
-	Constraint.TOI = CurrentHit.TOI;
-	Constraint.PairKey = USSubBody::MakePairKey(this, OtherComponent);
-	ParentComponent->RegisterPhysicalConstraint(Constraint);
+    // Pour l’instant je garderais ce filtre, comme ton implémentation actuelle.
+    // Plus tard tu pourras l’élargir aux SubBodies dynamiques si nécessaire.
+    if (OtherComponent->GetCollisionObjectType() != ECC_WorldStatic)
+    {
+        return;
+    }
+
+    const FVector N = NormalWS.GetSafeNormal();
+    if (N.IsNearlyZero())
+    {
+        return;
+    }
+
+    FPhysicalContactConstraint Constraint;
+    Constraint.Normal = N;
+    Constraint.ContactPoint = ContactPointWS;
+    Constraint.OtherComponent = OtherComponent;
+    Constraint.SourceSubBody = this;
+    Constraint.PenetrationDepth = PenetrationDepth;
+    Constraint.TOI = TOI;
+    Constraint.PairKey = USSubBody::MakePairKey(this, OtherComponent);
+    Constraint.bPersistent = bPersistent;
+
+    ParentComponent->RegisterPhysicalConstraint(Constraint);
+#if !UE_BUILD_SHIPPING
+    /*
+    UE_LOG(LogTemp, Log,
+        TEXT("[Constraint] Frame=%d SubBody=%s P=%s N=%s Persistent=%d"),
+        ParentComponent ? ParentComponent->NumFrame() : -1,
+        *GetName(),
+        *ContactPointWS.ToString(),
+        *N.ToString(),
+        bPersistent ? 1 : 0
+    );
+    */
+#endif
+}
+
+void USolidSubBody::RegisterContactManifoldAsConstraints(
+    const TArray<FVector>& ContactPointsWS,
+    const FVector& NormalWS,
+    UPrimitiveComponent* OtherComponent,
+    float PenetrationDepth,
+    float TOI,
+    bool bPersistent,
+    int32 MaxContacts)
+{
+    if (!ParentComponent || !OtherComponent || ContactPointsWS.Num() == 0)
+    {
+        return;
+    }
+
+    const FVector N = NormalWS.GetSafeNormal();
+    if (N.IsNearlyZero())
+    {
+        return;
+    }
+
+    // Cas simple : peu de points, on les enregistre tous.
+    if (ContactPointsWS.Num() <= MaxContacts)
+    {
+        for (const FVector& P : ContactPointsWS)
+        {
+            RegisterContactAsConstraint(P, N, OtherComponent, PenetrationDepth, TOI, bPersistent);
+        }
+        return;
+    }
+
+    // Cas rare : trop de points. On garde des points répartis autour du COM,
+    // ce qui donne de meilleurs bras de levier pour la projection angulaire.
+    const FVector COM = GetKinematicState().Location                     ;
+
+    TArray<FVector> Sorted = ContactPointsWS;
+    Sorted.Sort([&COM](const FVector& A, const FVector& B)
+        {
+            return FVector::DistSquared(A, COM) > FVector::DistSquared(B, COM);
+        });
+
+    const int32 NumToRegister = FMath::Min(MaxContacts, Sorted.Num());
+    for (int32 i = 0; i < NumToRegister; ++i)
+    {
+        RegisterContactAsConstraint(Sorted[i], N, OtherComponent, PenetrationDepth, TOI, bPersistent);
+    }
 }
 
 float USolidSubBody::MixRestitution(float eA, float eB, EMixMode Mode)

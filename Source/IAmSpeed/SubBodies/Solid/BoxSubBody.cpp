@@ -300,42 +300,35 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     const float vN_atImpact = FVector::DotProduct(GetVelocityAtPoint(CurrentHit.ImpactPoint), N);
     // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] Start of Hit vs Ground for frame = %d, vN_start = %.2f cm/s, bIsSupportingContact = %d, Box Kinematic = %s"),
     //    ParentComponent->NumFrame(), vN_atImpact, bIsSupportingContact, *ParentComponent->GetCurrentKinematicState().ToString());
+    bool bDidDirectSupportSolve = false;
+
     if (vN_atImpact >= VN_EPS)
     {
-        // Still update persistence (you might be resting and sweep didn't hit)
         UpdatePersistentGroundContact(Dt);
-        const bool bEdgeRecoverActive =
-            ParentComponent->IsInAutoRecover();
-        const bool bEdgeSupportNow = (GetGroundContacts().Num() == 2);
-        if (HasPersistentGroundContact() && bIsSupportingContact)
+
+        // Optional: persistent only if no fresh sweep support was solved.
+        if (HasPersistentGroundContact() && bIsSupportingContact && !bGroundHitFromSweep)
         {
-            if (!(bEdgeRecoverActive && bEdgeSupportNow))
-            {
-                ApplyPersistentSupportConstraint(Dt);
-            }
+            ApplyPersistentSupportConstraint(Dt);
         }
+
         return;
     }
 
-    // Event resolution
     if (bIsSupportingContact)
     {
         ResolveDirectGroundSupport(Dt, CurrentHit);
+        bDidDirectSupportSolve = true;
     }
     else
     {
-        // Wall / gutter / edge contact
         ResolveWallOrGutter(Dt, CurrentHit);
-
-        // IMPORTANT: do NOT destroy the stored ground plane just because current event is a wall.
-        // We want the support constraint to still run, as long as it remains valid.
-        // (So: do NOT set bGroundPlaneValid=false here.)
     }
 
-    // Refresh persistence after event solve (so the manifold is built from the post-impulse state)
     UpdatePersistentGroundContact(Dt);
 
-    if (HasPersistentGroundContact() && bIsSupportingContact)
+    // Do NOT apply persistent support immediately after direct support.
+    if (!bDidDirectSupportSolve && HasPersistentGroundContact() && bIsSupportingContact)
     {
         ApplyPersistentSupportConstraint(Dt);
     }
@@ -743,6 +736,20 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const int32 NumC = CurrentGroundContactsWS.Num();
     if (NumC <= 0) return;
 
+	// Register constraints for this manifold
+    if (CurrentHit.Component.IsValid())
+    {
+        RegisterContactManifoldAsConstraints(
+            CurrentGroundContactsWS,
+            N,
+            CurrentHit.Component.Get(),
+            CurrentHit.PenetrationDepth,
+            CurrentHit.TOI,
+            false,
+            4
+        );
+    }
+
     if (PrevLambdaN.Num() != NumC)
         PrevLambdaN.Reset();
 
@@ -944,6 +951,19 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
         bHadGroundContactPrevFrame = true;
         PrevGroundNormal = N;
         return;
+    }
+	// Register constraints for this manifold
+    if (GroundComp.IsValid())
+    {
+        RegisterContactManifoldAsConstraints(
+            SupportPts,
+            N,
+            GroundComp.Get(),
+            0.f,
+            0.f,
+            true,
+            4
+        );
     }
 
     // Apply a *distributed* correction impulse across manifold points.

@@ -23,6 +23,10 @@ struct IAMSPEED_API FPhysicalContactConstraint
 	uint64 PairKey = 0;
 	// Whether this contact is persistent, meaning it was already present in the previous frame. This is useful for stability and filtering, as we can treat new contacts differently from persistent contacts.
 	uint8 FramesSinceSeen = 0;
+	// Whether this contact should be treated as a persistent support constraint.
+	// This is useful for implementing the “keep rear edge down” constraint, where we want to maintain a stable contact
+	// with the ground even when the normal velocity is zero or slightly positive.
+	bool bPersistent = false;
 
 	bool IsValid() const
 	{

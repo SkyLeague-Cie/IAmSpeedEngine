@@ -54,9 +54,16 @@ void ISpeedComponent::ResetForFrame(const float& Delta)
 	for (int32 ConstraintIdx = PhysicalConstraints.Num() - 1; ConstraintIdx >= 0; --ConstraintIdx)
 	{
 		FPhysicalContactConstraint& Constraint = PhysicalConstraints[ConstraintIdx];
-		Constraint.FramesSinceSeen++;
 
-		if (Constraint.FramesSinceSeen > MaxConstraintPersistenceFrames)
+		if (!Constraint.bPersistent)
+		{
+			PhysicalConstraints.RemoveAtSwap(ConstraintIdx);
+			continue;
+		}
+
+		Constraint.FramesSinceSeen++;
+		if (Constraint.FramesSinceSeen > MaxConstraintPersistenceFrames ||
+			!IsPhysicalConstraintStillRelevant(Constraint))
 		{
 			PhysicalConstraints.RemoveAtSwap(ConstraintIdx);
 		}
@@ -481,11 +488,11 @@ void ISpeedComponent::ProjectPointDeltaAgainstConstraints(FVector& DeltaLinear, 
 	}
 
 	const FVector COM = GetPhysCOM();
-	const bool bCanUseLinearCorrection = !DeltaLinear.IsNearlyZero();
 
 	for (int32 PassIdx = 0; PassIdx < ConstraintProjectionPasses; ++PassIdx)
 	{
 		bool bChanged = false;
+
 		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
 		{
 			if (!IsPhysicalConstraintStillRelevant(Constraint))
@@ -493,30 +500,36 @@ void ISpeedComponent::ProjectPointDeltaAgainstConstraints(FVector& DeltaLinear, 
 				continue;
 			}
 
-			const FVector Normal = Constraint.Normal.GetSafeNormal();
-			const FVector DeltaAtPoint = DeltaLinear + FVector::CrossProduct(DeltaAngular, Constraint.ContactPoint - COM);
-			const float IntoSurface = FVector::DotProduct(DeltaAtPoint, Normal);
-			if (IntoSurface >= 0.0f)
+			const FVector N = Constraint.Normal.GetSafeNormal();
+			if (N.IsNearlyZero())
 			{
 				continue;
 			}
 
-			if (bCanUseLinearCorrection)
+			const FVector R = Constraint.ContactPoint - COM;
+			const FVector DeltaAtPoint =
+				DeltaLinear + FVector::CrossProduct(DeltaAngular, R);
+
+			const float IntoSurface = FVector::DotProduct(DeltaAtPoint, N);
+			if (IntoSurface >= 0.f)
 			{
-				DeltaLinear -= IntoSurface * Normal;
+				continue;
+			}
+
+			const FVector LeverArmAxis = FVector::CrossProduct(R, N);
+			const float AxisSizeSq = LeverArmAxis.SizeSquared();
+
+			// Prefer angular correction, because this is a point constraint.
+			if (AxisSizeSq > KINDA_SMALL_NUMBER && !DeltaAngular.IsNearlyZero())
+			{
+				DeltaAngular -= (IntoSurface / AxisSizeSq) * LeverArmAxis;
 				bChanged = true;
-				continue;
 			}
-
-			const FVector LeverArmAxis = FVector::CrossProduct(Constraint.ContactPoint - COM, Normal);
-			const float AxisSizeSquared = LeverArmAxis.SizeSquared();
-			if (AxisSizeSquared <= KINDA_SMALL_NUMBER)
+			else if (!DeltaLinear.IsNearlyZero())
 			{
-				continue;
+				DeltaLinear -= IntoSurface * N;
+				bChanged = true;
 			}
-
-			DeltaAngular -= (IntoSurface / AxisSizeSquared) * LeverArmAxis;
-			bChanged = true;
 		}
 
 		if (!bChanged)
