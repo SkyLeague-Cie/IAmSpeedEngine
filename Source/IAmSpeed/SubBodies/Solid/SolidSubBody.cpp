@@ -3,6 +3,7 @@
 
 #include "SolidSubBody.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "Configs/SubBodyConfig.h"
 
 void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
@@ -33,6 +34,36 @@ void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& Wo
 	{
 		ParentComponent->ApplyImpulse(LinearImpulse, WorldPoint, this);
 	}
+}
+
+void USolidSubBody::RegisterCurrentHitAsConstraint()
+{
+	if (!ParentComponent || !CurrentHit.bBlockingHit || !CurrentHit.Component.IsValid())
+	{
+		return;
+	}
+
+	UPrimitiveComponent* OtherComponent = CurrentHit.Component.Get();
+	if (!OtherComponent || OtherComponent->GetCollisionObjectType() != ECC_WorldStatic)
+	{
+		return;
+	}
+
+	const FVector Normal = CurrentHit.ImpactNormal.GetSafeNormal();
+	if (Normal.IsNearlyZero())
+	{
+		return;
+	}
+
+	FPhysicalContactConstraint Constraint;
+	Constraint.Normal = Normal;
+	Constraint.ContactPoint = CurrentHit.ImpactPoint;
+	Constraint.OtherComponent = OtherComponent;
+	Constraint.SourceSubBody = this;
+	Constraint.PenetrationDepth = CurrentHit.PenetrationDepth;
+	Constraint.TOI = CurrentHit.TOI;
+	Constraint.PairKey = USSubBody::MakePairKey(this, OtherComponent);
+	ParentComponent->RegisterPhysicalConstraint(Constraint);
 }
 
 float USolidSubBody::MixRestitution(float eA, float eB, EMixMode Mode)

@@ -123,6 +123,8 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
         return;
     }
 
+	RegisterCurrentHitAsConstraint();
+
     UPrimitiveComponent* OtherComponent = CurrentHit.Component.Get();
     USSubBody* OtherSubBody = Cast<USSubBody>(OtherComponent);
 	UBoxSubBody* Box = Cast<UBoxSubBody>(OtherSubBody);

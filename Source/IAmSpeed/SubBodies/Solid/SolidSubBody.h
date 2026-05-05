@@ -62,6 +62,7 @@ public:
 	bool HasToApplyRestForce() const { return bApplyRestForce; }
 
 protected:
+	void RegisterCurrentHitAsConstraint();
 	virtual FMatrix InitInvInertiaTensor() const { return FMatrix::Identity; }
 
 	// Mass of the subbody, used for physics simulation and collision resolution. Note that the actual mass used in physics simulation may be different if the parent component implements a custom GetPhysMass() function that returns a different mass for the subbody.

@@ -1,6 +1,15 @@
 #include "ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
+namespace
+{
+	constexpr uint8 MaxConstraintPersistenceFrames = 1;
+	constexpr float ConstraintNormalDotThreshold = 0.995f;
+	constexpr float ConstraintPointThresholdCm = 10.0f;
+	constexpr int32 ConstraintProjectionPasses = 4;
+	constexpr float ConstraintPersistSignedDistCm = 5.0f;
+	constexpr float ConstraintPersistSeparatingSpeed = 50.0f;
+}
 
 void ISpeedComponent:: ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint, const USolidSubBody* SubBody)
 {
@@ -42,6 +51,17 @@ void ISpeedComponent::UpdateSubBodiesKinematics()
 
 void ISpeedComponent::ResetForFrame(const float& Delta)
 {
+	for (int32 ConstraintIdx = PhysicalConstraints.Num() - 1; ConstraintIdx >= 0; --ConstraintIdx)
+	{
+		FPhysicalContactConstraint& Constraint = PhysicalConstraints[ConstraintIdx];
+		Constraint.FramesSinceSeen++;
+
+		if (Constraint.FramesSinceSeen > MaxConstraintPersistenceFrames)
+		{
+			PhysicalConstraints.RemoveAtSwap(ConstraintIdx);
+		}
+	}
+
 	for (USSubBody* SubBody : GetSubBodies())
 	{
 		SubBody->ResetForFrame(Delta);
@@ -168,6 +188,11 @@ const FVector& ISpeedComponent::GetPhysVelocity() const
     return GetKinematicState().Velocity;
 }
 
+void ISpeedComponent::SetPhysVelocity(const FVector& NewVelocity)
+{
+	SetPhysVelocityRaw(NewVelocity.GetClampedToMaxSize(GetPhysMaxSpeed()));
+}
+
 FVector ISpeedComponent::GetPhysVelocityAtPoint(const FVector& Point) const
 {
     // v + w x r
@@ -178,6 +203,11 @@ FVector ISpeedComponent::GetPhysVelocityAtPoint(const FVector& Point) const
 const FVector& ISpeedComponent::GetPhysAngularVelocity() const
 {
 	return GetKinematicState().AngularVelocity;
+}
+
+void ISpeedComponent::SetPhysAngularVelocity(const FVector& NewAngularVelocity)
+{
+	SetPhysAngularVelocityRaw(NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
 }
 
 void ISpeedComponent::SetPhysVelocityAtPoint(const FVector& NewVelocity, const FVector& Point)
@@ -220,14 +250,32 @@ FVector ISpeedComponent::GetPhysAccelerationAtPoint(const FVector& Point) const
     return GetPhysAcceleration() + FVector::CrossProduct(GetPhysAngularAcceleration(), R) + FVector::CrossProduct(GetPhysAngularVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), R));
 }
 
+void ISpeedComponent::AddPhysVelocity(const FVector& DeltaVelocity)
+{
+	FVector ProjectedDeltaVelocity = DeltaVelocity;
+	ProjectLinearDeltaAgainstConstraints(ProjectedDeltaVelocity);
+	SetPhysVelocity(GetPhysVelocity() + ProjectedDeltaVelocity);
+}
+
+void ISpeedComponent::AddPhysAngularVelocity(const FVector& DeltaAngularVelocity)
+{
+	FVector ProjectedDeltaAngularVelocity = DeltaAngularVelocity;
+	ProjectAngularDeltaAgainstConstraints(ProjectedDeltaAngularVelocity);
+	SetPhysAngularVelocity(GetPhysAngularVelocity() + ProjectedDeltaAngularVelocity);
+}
+
 void ISpeedComponent::AddPhysAcceleration(const FVector& DeltaAcceleration)
 {
-    SetPhysAcceleration(GetPhysAcceleration() + DeltaAcceleration);
+	FVector ProjectedDeltaAcceleration = DeltaAcceleration;
+	ProjectLinearDeltaAgainstConstraints(ProjectedDeltaAcceleration);
+    SetPhysAcceleration(GetPhysAcceleration() + ProjectedDeltaAcceleration);
 }
 
 void ISpeedComponent::AddPhysAngularAcceleration(const FVector& DeltaAngularAcceleration)
 {
-    SetPhysAngularAcceleration(GetPhysAngularAcceleration() + DeltaAngularAcceleration);
+	FVector ProjectedDeltaAngularAcceleration = DeltaAngularAcceleration;
+	ProjectAngularDeltaAgainstConstraints(ProjectedDeltaAngularAcceleration);
+    SetPhysAngularAcceleration(GetPhysAngularAcceleration() + ProjectedDeltaAngularAcceleration);
 }
 
 void ISpeedComponent::AddPhysAngularAccelerationLocal(const FVector& LocalAngularAccel)
@@ -242,26 +290,30 @@ void ISpeedComponent::AddPhysImpulseAtPoint(const FVector& Impulse, const FVecto
 {
     // delta v = impulse / mass
     float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f; // avoid divide by zero
-    const FVector DeltaV = Impulse / PhysMass;
-    AddPhysVelocity(DeltaV);
+    FVector DeltaV = Impulse / PhysMass;
     // delta w = I^-1 * (r x impulse)
     const FVector R = Point - GetPhysLocation();
 	const FMatrix WorldInvInertiaTensor = SubBody? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
-    const FVector DeltaW = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Impulse));
-    AddPhysAngularVelocity(DeltaW);
+    FVector DeltaW = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Impulse));
+
+	ProjectPointDeltaAgainstConstraints(DeltaV, DeltaW);
+    SetPhysVelocity(GetPhysVelocity() + DeltaV);
+    SetPhysAngularVelocity(GetPhysAngularVelocity() + DeltaW);
 }
 
 void ISpeedComponent::AddPhysForceAtPoint(const FVector& Force, const FVector& WorldPoint, const USolidSubBody* SubBody)
 {
     // F = m * a => a = F / m
     float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f; // avoid divide by zero
-    const FVector DeltaA = Force / PhysMass;
-    AddPhysAcceleration(DeltaA);
+    FVector DeltaA = Force / PhysMass;
     // alpha = I^-1 * (r x F)
     const FVector R = WorldPoint - GetPhysLocation();
 	const FMatrix WorldInvInertiaTensor = SubBody? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
-    const FVector DeltaAlpha = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Force));
-    AddPhysAngularAcceleration(DeltaAlpha);
+    FVector DeltaAlpha = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Force));
+
+	ProjectPointDeltaAgainstConstraints(DeltaA, DeltaAlpha);
+    SetPhysAcceleration(GetPhysAcceleration() + DeltaA);
+    SetPhysAngularAcceleration(GetPhysAngularAcceleration() + DeltaAlpha);
 }
 
 void ISpeedComponent::SetPhysVelocityRaw(const FVector& NewVelocity)
@@ -276,4 +328,227 @@ void ISpeedComponent::SetPhysAngularVelocityRaw(const FVector& NewAngularVelocit
     SKinematic K = GetKinematicState();
     K.AngularVelocity = NewAngularVelocity;
 	SetKinematicState(K);
+}
+
+void ISpeedComponent::RegisterPhysicalConstraint(const FPhysicalContactConstraint& Constraint)
+{
+	if (!Constraint.IsValid())
+	{
+		return;
+	}
+
+	FPhysicalContactConstraint NewConstraint = Constraint;
+	NewConstraint.Normal = NewConstraint.Normal.GetSafeNormal();
+	NewConstraint.FramesSinceSeen = 0;
+	if (NewConstraint.Normal.IsNearlyZero())
+	{
+		return;
+	}
+
+	for (FPhysicalContactConstraint& ExistingConstraint : PhysicalConstraints)
+	{
+		if (!AreSimilarPhysicalConstraints(ExistingConstraint, NewConstraint))
+		{
+			continue;
+		}
+
+		if (NewConstraint.PenetrationDepth >= ExistingConstraint.PenetrationDepth)
+		{
+			ExistingConstraint = NewConstraint;
+		}
+		else
+		{
+			ExistingConstraint.FramesSinceSeen = 0;
+		}
+		return;
+	}
+
+	PhysicalConstraints.Add(NewConstraint);
+}
+
+void ISpeedComponent::ClearPhysicalConstraints()
+{
+	PhysicalConstraints.Reset();
+}
+
+bool ISpeedComponent::IsPhysicalConstraintStillRelevant(const FPhysicalContactConstraint& Constraint) const
+{
+	if (!Constraint.IsValid())
+	{
+		return false;
+	}
+
+	if (Constraint.FramesSinceSeen == 0)
+	{
+		return true;
+	}
+
+	const FVector Normal = Constraint.Normal.GetSafeNormal();
+	if (Normal.IsNearlyZero())
+	{
+		return false;
+	}
+
+	const float SignedDist = FVector::DotProduct(GetPhysCOM() - Constraint.ContactPoint, Normal);
+	if (SignedDist > ConstraintPersistSignedDistCm)
+	{
+		return false;
+	}
+
+	const float PointSpeedAlongNormal = FVector::DotProduct(GetPhysVelocityAtPoint(Constraint.ContactPoint), Normal);
+	return PointSpeedAlongNormal <= ConstraintPersistSeparatingSpeed;
+}
+
+void ISpeedComponent::ProjectLinearDeltaAgainstConstraints(FVector& DeltaLinear) const
+{
+	if (DeltaLinear.IsNearlyZero())
+	{
+		return;
+	}
+
+	for (int32 PassIdx = 0; PassIdx < ConstraintProjectionPasses; ++PassIdx)
+	{
+		bool bChanged = false;
+		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
+		{
+			if (!IsPhysicalConstraintStillRelevant(Constraint))
+			{
+				continue;
+			}
+
+			const FVector Normal = Constraint.Normal.GetSafeNormal();
+			const float IntoSurface = FVector::DotProduct(DeltaLinear, Normal);
+			if (IntoSurface < 0.0f)
+			{
+				DeltaLinear -= IntoSurface * Normal;
+				bChanged = true;
+			}
+		}
+
+		if (!bChanged)
+		{
+			break;
+		}
+	}
+}
+
+void ISpeedComponent::ProjectAngularDeltaAgainstConstraints(FVector& DeltaAngular) const
+{
+	if (DeltaAngular.IsNearlyZero())
+	{
+		return;
+	}
+
+	const FVector COM = GetPhysCOM();
+	for (int32 PassIdx = 0; PassIdx < ConstraintProjectionPasses; ++PassIdx)
+	{
+		bool bChanged = false;
+		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
+		{
+			if (!IsPhysicalConstraintStillRelevant(Constraint))
+			{
+				continue;
+			}
+
+			const FVector Normal = Constraint.Normal.GetSafeNormal();
+			const FVector LeverArmAxis = FVector::CrossProduct(Constraint.ContactPoint - COM, Normal);
+			const float AxisSizeSquared = LeverArmAxis.SizeSquared();
+			if (AxisSizeSquared <= KINDA_SMALL_NUMBER)
+			{
+				continue;
+			}
+
+			const float IntoSurface = FVector::DotProduct(DeltaAngular, LeverArmAxis);
+			if (IntoSurface < 0.0f)
+			{
+				DeltaAngular -= (IntoSurface / AxisSizeSquared) * LeverArmAxis;
+				bChanged = true;
+			}
+		}
+
+		if (!bChanged)
+		{
+			break;
+		}
+	}
+}
+
+void ISpeedComponent::ProjectPointDeltaAgainstConstraints(FVector& DeltaLinear, FVector& DeltaAngular) const
+{
+	if (DeltaLinear.IsNearlyZero() && DeltaAngular.IsNearlyZero())
+	{
+		return;
+	}
+
+	const FVector COM = GetPhysCOM();
+	const bool bCanUseLinearCorrection = !DeltaLinear.IsNearlyZero();
+
+	for (int32 PassIdx = 0; PassIdx < ConstraintProjectionPasses; ++PassIdx)
+	{
+		bool bChanged = false;
+		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
+		{
+			if (!IsPhysicalConstraintStillRelevant(Constraint))
+			{
+				continue;
+			}
+
+			const FVector Normal = Constraint.Normal.GetSafeNormal();
+			const FVector DeltaAtPoint = DeltaLinear + FVector::CrossProduct(DeltaAngular, Constraint.ContactPoint - COM);
+			const float IntoSurface = FVector::DotProduct(DeltaAtPoint, Normal);
+			if (IntoSurface >= 0.0f)
+			{
+				continue;
+			}
+
+			if (bCanUseLinearCorrection)
+			{
+				DeltaLinear -= IntoSurface * Normal;
+				bChanged = true;
+				continue;
+			}
+
+			const FVector LeverArmAxis = FVector::CrossProduct(Constraint.ContactPoint - COM, Normal);
+			const float AxisSizeSquared = LeverArmAxis.SizeSquared();
+			if (AxisSizeSquared <= KINDA_SMALL_NUMBER)
+			{
+				continue;
+			}
+
+			DeltaAngular -= (IntoSurface / AxisSizeSquared) * LeverArmAxis;
+			bChanged = true;
+		}
+
+		if (!bChanged)
+		{
+			break;
+		}
+	}
+}
+
+bool ISpeedComponent::AreSimilarPhysicalConstraints(const FPhysicalContactConstraint& A, const FPhysicalContactConstraint& B)
+{
+	if (!A.OtherComponent.IsValid() || !B.OtherComponent.IsValid())
+	{
+		return false;
+	}
+
+	if (A.OtherComponent != B.OtherComponent)
+	{
+		return false;
+	}
+
+	const FVector ANormal = A.Normal.GetSafeNormal();
+	const FVector BNormal = B.Normal.GetSafeNormal();
+	if (ANormal.IsNearlyZero() || BNormal.IsNearlyZero())
+	{
+		return false;
+	}
+
+	if (FVector::DotProduct(ANormal, BNormal) < ConstraintNormalDotThreshold)
+	{
+		return false;
+	}
+
+	return FVector::DistSquared(A.ContactPoint, B.ContactPoint) <= FMath::Square(ConstraintPointThresholdCm);
 }

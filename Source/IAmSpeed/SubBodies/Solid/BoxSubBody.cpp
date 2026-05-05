@@ -250,6 +250,8 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
         return;
     }
 
+	RegisterCurrentHitAsConstraint();
+
     USphereSubBody* Sphere = Cast<USphereSubBody>(CurrentHit.Component.Get());
     UBoxSubBody* Box = Cast<UBoxSubBody>(CurrentHit.Component.Get());
 
