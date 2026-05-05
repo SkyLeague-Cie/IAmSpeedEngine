@@ -11,6 +11,11 @@ USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
     PrimaryComponentTick.bCanEverTick = false;
     ResponseParams.CollisionResponse.SetAllChannels(ECollisionResponse::ECR_Ignore);
     ResponseParams.CollisionResponse.SetResponse(ECollisionChannel::ECC_WorldStatic, ECollisionResponse::ECR_Block);
+	SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore); // For UE
+	SetCollisionObjectType(ECollisionChannel::ECC_WorldDynamic); // For UE
+    SetSimulatePhysics(false); // For UE
+    SetGenerateOverlapEvents(false); // For UE
+    SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
 
 void USSubBody::Initialize(ISpeedComponent* InParentComponent)
@@ -48,7 +53,21 @@ void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 {
     for (USSubBody* SubBody : SubBodies)
     {
-        if (SubBody && !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor())
+        if (!SubBody || AlwaysIgnoredComponents.Contains(SubBody))
+        {
+            continue;
+        }
+
+        if (SubBody->IsSensor())
+        {
+            // Sensors are gameplay-only. Never let world sweeps resolve against them,
+            // even if Unreal ends up classifying them as static in an attachment hierarchy.
+            AlwaysIgnoredComponents.AddUnique(SubBody);
+            IgnoredComponents.AddUnique(SubBody);
+            continue;
+        }
+
+        if (!SubBody->IsSensor())
         {
             switch (SubBody->GetSubBodyType())
             {
@@ -75,6 +94,13 @@ void USSubBody::RemoveExternalSubBodies(const TArray<USSubBody*>& SubBodies)
     {
         if (SubBody)
         {
+            if (SubBody->IsSensor())
+            {
+                AlwaysIgnoredComponents.Remove(SubBody);
+                IgnoredComponents.Remove(SubBody);
+                continue;
+            }
+
             switch (SubBody->GetSubBodyType())
             {
             case ESubBodyType::Hitbox:

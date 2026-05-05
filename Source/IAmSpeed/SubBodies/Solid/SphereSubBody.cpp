@@ -128,17 +128,17 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
 	UBoxSubBody* Box = Cast<UBoxSubBody>(OtherSubBody);
 	USphereSubBody* Sphere = Cast<USphereSubBody>(OtherSubBody);
 
-    if (OtherComponent && OtherComponent->GetCollisionObjectType() == ECC_WorldStatic)
-    {
-        ResolveHitVsGround(delta, SimTime);
-    }
-    else if (Sphere)
+    if (Sphere)
     {
         ResolveHitVsSphere(*Sphere, delta, SimTime);
     }
     else if (Box)
     {
         ResolveHitVsBox(*Box, delta, SimTime);
+    }
+    else if (OtherComponent && OtherComponent->GetCollisionObjectType() == ECC_WorldStatic)
+    {
+        ResolveHitVsGround(delta, SimTime);
     }
 }
 

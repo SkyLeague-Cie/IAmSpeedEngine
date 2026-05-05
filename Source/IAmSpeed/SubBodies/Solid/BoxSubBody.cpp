@@ -1,4 +1,4 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+Ôªø// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "BoxSubBody.h"
@@ -6,6 +6,7 @@
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "SphereSubBody.h"
 #include "SWheelSubBody.h"
+#include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -206,7 +207,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
             const FVector nn = Nnew.GetSafeNormal();
             for (const FVector& Nprev : CurrentGroundNormalsWS)
             {
-                if (FVector::DotProduct(nn, Nprev) > 0.995f) // ~5∞
+                if (FVector::DotProduct(nn, Nprev) > 0.995f) // ~5¬∞
                     return; // already have essentially same normal
             }
             CurrentGroundNormalsWS.Add(nn);
@@ -244,21 +245,26 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
     if (!CurrentHit.bBlockingHit || !ParentComponent)
         return;
 
+    if (Cast<USensorSubBody>(CurrentHit.Component.Get()))
+    {
+        return;
+    }
+
     USphereSubBody* Sphere = Cast<USphereSubBody>(CurrentHit.Component.Get());
     UBoxSubBody* Box = Cast<UBoxSubBody>(CurrentHit.Component.Get());
 
-    if (CurrentHit.Component.IsValid() &&
-        CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic)
-    {
-        ResolveHitVsGround(delta);
-    }
-    else if (Sphere)
+    if (Sphere)
     {
         ResolveHitVsSphere(*Sphere, delta);
     }
     else if (Box)
     {
         ResolveHitVsBox(*Box, delta);
+    }
+    else if (CurrentHit.Component.IsValid() &&
+        CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic)
+    {
+        ResolveHitVsGround(delta);
     }
 }
 
@@ -529,7 +535,7 @@ void UBoxSubBody::ResolveHitVsBox(
 
 // ============================================================================
 //  ResolveWallOrGutter
-//     - Single contact, no ìsupportî logic, no persistence.
+//     - Single contact, no ‚Äúsupport‚Äù logic, no persistence.
 //     - Only prevents penetration along N and applies optional friction.
 //     - Uses sequential impulse with minimal policy decisions.
 // ============================================================================
@@ -543,7 +549,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     const FVector Vp = GetVelocityAtPoint(P);
     const float vN = FVector::DotProduct(Vp, N);
 
-    // If not approaching, do nothing (prevents ìstickyî contacts on edges).
+    // If not approaching, do nothing (prevents ‚Äústicky‚Äù contacts on edges).
     constexpr float VN_EPS = 1.0f; // cm/s
     if (vN >= VN_EPS)
         return;
@@ -565,7 +571,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     // Restitution policy for walls/gutters:
     // - Usually you want NO bounce in a gutter because it creates wedging artifacts.
-    // - Keep it at 0 unless you have a very clear ìimpactî situation.
+    // - Keep it at 0 unless you have a very clear ‚Äúimpact‚Äù situation.
     // constexpr float ImpactThreshold = 80.f; // cm/s (higher than ground)
     const bool bImpact = (vN < -GetImpactThreshold());
 
@@ -581,7 +587,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     float jn = -(1.f + Rest) * vN / denomN;
 
     // Guard against absurd impulses in 1-point concave contacts.
-    // This is NOT a ìwedging clampî; itís a numerical safety for edge cases.
+    // This is NOT a ‚Äúwedging clamp‚Äù; it‚Äôs a numerical safety for edge cases.
     // Tune with care. If you prefer, delete it and rely on correct CCD.
     const float jnMax = 5.f * GetMass(); // (kg? but your Mass seems scalar) tweak
     jn = FMath::Clamp(jn, 0.f, jnMax);
@@ -589,8 +595,8 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     FVector J = jn * N;
 
     // Friction on walls/gutters:
-    // - If your gutter is meant to be ìsmoothî, keep mu small.
-    // - If you set mu too big, youíll reintroduce wedging via tangential coupling.
+    // - If your gutter is meant to be ‚Äúsmooth‚Äù, keep mu small.
+    // - If you set mu too big, you‚Äôll reintroduce wedging via tangential coupling.
     const float mu = 0.05f; // conservative; consider exposing as ParentComponent->HitboxFrictionWall
 
     const FVector vT = Vp - vN * N;
@@ -640,7 +646,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 // ============================================================================
 //  ResolveDirectGroundSupport
 //     - Multi-point support contact resolution (sequential impulses)
-//     - Restitution only for ìsharp new impactsî
+//     - Restitution only for ‚Äúsharp new impacts‚Äù
 //     - Coulomb friction only for support contacts
 //     - Stores plane for persistence when appropriate
 // ============================================================================
@@ -712,7 +718,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     }
 
 
-    // Store plane for persistence (only if the hit came from sweep and is ìsupport-likeî).
+    // Store plane for persistence (only if the hit came from sweep and is ‚Äúsupport-like‚Äù).
     if (bGroundHitFromSweep)
     {
         bGroundPlaneValid = true;
@@ -774,7 +780,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             if (denomN <= KINDA_SMALL_NUMBER)
                 continue;
 
-            // ìSharp impactî detection (optional, based on your old logic)
+            // ‚ÄúSharp impact‚Äù detection (optional, based on your old logic)
             float Rest = 0.f;
             const bool bImpact = (vN < -GetImpactThreshold());
 
@@ -856,7 +862,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
 // ============================================================================
 //  ApplyPersistentSupportConstraint
-//     - This is the ìkeep rear edge downî constraint.
+//     - This is the ‚Äúkeep rear edge down‚Äù constraint.
 //     - Runs AFTER event resolution (wall/gutter and/or direct ground hit).
 //     - Uses the stored ground plane and recomputes a manifold on that plane.
 //     - Applies a small corrective impulse to kill normal velocity into the plane,
@@ -880,18 +886,10 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     if (!HasPersistentGroundContact())
         return;
 
-    // IMPORTANT: use the stored plane normal (support direction), not the latest wall normal
-    // Use composite normal when inverted / in gutter
-    FVector SupportN = GroundPlaneN.GetSafeNormal();
-
-    const FVector CompositeN = CompositeGroundNormal.GetSafeNormal();
-
-    // If the composite normal is significantly different, use it
-    if (FVector::DotProduct(CompositeN, SupportN) < 0.85f)
-    {
-        SupportN = CompositeN;
-    }
-    const FVector N = SupportN;
+    // IMPORTANT: keep the persistent support constrained to the stored ground plane.
+    // Mixing in a wall normal here can create a fake support plane in floor/wall corners
+    // and pull the hitbox into the ground.
+    const FVector N = GroundPlaneN.GetSafeNormal();
 
 
     // If the plane became non-support (e.g. got overwritten), bail.
@@ -929,7 +927,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
         return;
     }
 
-    // Measure ìworstî normal velocity into the plane among support points.
+    // Measure ‚Äúworst‚Äù normal velocity into the plane among support points.
     float worstInto = 0.f;
     for (const FVector& P : SupportPts)
     {
@@ -1019,8 +1017,8 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     }
     else if (minDist > ContactTol)
     {
-        // If weíre clearly leaving the plane, stop persisting.
-        // (Otherwise you ìfloatî and keep canceling gravity.)
+        // If we‚Äôre clearly leaving the plane, stop persisting.
+        // (Otherwise you ‚Äúfloat‚Äù and keep canceling gravity.)
         bGroundPlaneValid = false;
         bHasGroundContact = false;
     }
@@ -1062,7 +1060,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
         return;
     }
 
-    const FVector N = CompositeGroundNormal.GetSafeNormal();
+    const FVector N = GroundPlaneN.GetSafeNormal();
     const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
 
     TArray<FVector> Verts;
