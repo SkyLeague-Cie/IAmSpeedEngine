@@ -6,7 +6,6 @@
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "SphereSubBody.h"
 #include "SWheelSubBody.h"
-#include "IAmSpeed/SubBodies/Sensor/SensorSubBody.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -244,11 +243,6 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 {
     if (!CurrentHit.bBlockingHit || !ParentComponent)
         return;
-
-    if (Cast<USensorSubBody>(CurrentHit.Component.Get()))
-    {
-        return;
-    }
 
 	RegisterCurrentHitAsConstraint();
 

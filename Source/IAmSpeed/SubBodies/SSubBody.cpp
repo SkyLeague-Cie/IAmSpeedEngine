@@ -53,21 +53,7 @@ void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 {
     for (USSubBody* SubBody : SubBodies)
     {
-        if (!SubBody || AlwaysIgnoredComponents.Contains(SubBody))
-        {
-            continue;
-        }
-
-        if (SubBody->IsSensor())
-        {
-            // Sensors are gameplay-only. Never let world sweeps resolve against them,
-            // even if Unreal ends up classifying them as static in an attachment hierarchy.
-            AlwaysIgnoredComponents.AddUnique(SubBody);
-            IgnoredComponents.AddUnique(SubBody);
-            continue;
-        }
-
-        if (!SubBody->IsSensor())
+        if (SubBody && !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor())
         {
             switch (SubBody->GetSubBodyType())
             {
@@ -94,13 +80,6 @@ void USSubBody::RemoveExternalSubBodies(const TArray<USSubBody*>& SubBodies)
     {
         if (SubBody)
         {
-            if (SubBody->IsSensor())
-            {
-                AlwaysIgnoredComponents.Remove(SubBody);
-                IgnoredComponents.Remove(SubBody);
-                continue;
-            }
-
             switch (SubBody->GetSubBodyType())
             {
             case ESubBodyType::Hitbox:
@@ -162,16 +141,33 @@ void USSubBody::AdvanceToTOI(const float& t)
 void USSubBody::AcceptHit()
 {
     CurrentHit = FutureHit;
-	FutureHit = SHitResult();
+    FutureHit = SHitResult();
 
     if (CurrentHit.SubBody.IsValid())
     {
-        IgnoredComponents.AddUnique(CurrentHit.SubBody.Get());
-		// if Other sub-body will hit, accept the hit for it too to ensure both sides are in sync and won't try to resolve the same hit again
-        auto OtherSubBody = CurrentHit.SubBody.Get();
+        USSubBody* OtherSubBody = CurrentHit.SubBody.Get();
+        IgnoredComponents.AddUnique(OtherSubBody);
+
+        // Do NOT blindly accept OtherSubBody->FutureHit.
+        // It may be an unrelated hit, e.g. Hitbox vs Stadium while Sensor vs Hitbox is being resolved.
+
         if (OtherSubBody->WillHit())
         {
-            OtherSubBody->AcceptHit();
+            const SHitResult& OtherFutureHit = OtherSubBody->GetFutureHit();
+
+            const bool bIsReciprocal =
+                OtherFutureHit.SubBody.Get() == this ||
+                OtherFutureHit.Component.Get() == this;
+
+            const bool bSensorInvolved =
+                IsSensor() || OtherSubBody->IsSensor();
+
+            // For sensors, never consume the other's FutureHit.
+            // Sensors are gameplay-only and must not steal physical hits.
+            if (bIsReciprocal && !bSensorInvolved)
+            {
+                OtherSubBody->AcceptHit();
+            }
         }
     }
     else if (CurrentHit.Component.IsValid())
