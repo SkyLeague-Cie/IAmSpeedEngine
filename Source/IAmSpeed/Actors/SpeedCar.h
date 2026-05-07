@@ -58,12 +58,10 @@ public:
 protected:
 	virtual void HandleKinematics();
 	virtual void HandleSparkle();
+	virtual void DemoedByPrv(ASpeedCar* car);
 
-	void CheckDemo();
 private:
 	bool hasSparkleLocation = false;
 	FVector SparkleLocation = FVector::ZeroVector;
 	FTimerHandle SparkleTimerHandler;
-
-	TWeakObjectPtr<ASpeedCar> CarWhichDemoed = nullptr;
 };

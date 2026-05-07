@@ -25,7 +25,6 @@ void ASpeedCar::Tick(float Delta)
 	Super::Tick(Delta);
 	HandleKinematics();
 	HandleSparkle();
-	CheckDemo();
 }
 
 void ASpeedCar::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -78,6 +77,11 @@ void ASpeedCar::HandleSparkle()
 	}
 }
 
+void ASpeedCar::DemoedByPrv(ASpeedCar* car)
+{
+
+}
+
 void ASpeedCar::StartSparkleTimer()
 {
 	OnStartSparkle();
@@ -88,7 +92,7 @@ void ASpeedCar::DemoedBy(ASpeedCar* otherCar)
 {
 	if (otherCar != nullptr && otherCar->IsValidLowLevelFast())
 	{
-		CarWhichDemoed = otherCar;
+		DemoedByPrv(otherCar);
 	}
 }
 
@@ -119,13 +123,4 @@ bool ASpeedCar::IsOwningClient() const
 bool ASpeedCar::IsRemoteClient() const
 {
 	return SpeedWheeledComponent->IsRemoteClient();
-}
-
-void ASpeedCar::CheckDemo()
-{
-	if (CarWhichDemoed.IsValid())
-	{
-		Demo(this, !OnTheSameTeamAs(*CarWhichDemoed.Get()));
-		CarWhichDemoed = nullptr;
-	}
 }
