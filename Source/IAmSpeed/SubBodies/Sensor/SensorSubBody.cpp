@@ -7,7 +7,7 @@
 USensorSubBody::USensorSubBody(const FObjectInitializer& ObjectInitializer) :
     Super(ObjectInitializer)
 {
-
+	SetVisibility(false);
 }
 
 void USensorSubBody::BeginPlay()
