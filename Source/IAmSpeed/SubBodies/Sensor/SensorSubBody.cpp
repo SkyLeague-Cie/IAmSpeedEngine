@@ -10,6 +10,12 @@ USensorSubBody::USensorSubBody(const FObjectInitializer& ObjectInitializer) :
 
 }
 
+void USensorSubBody::BeginPlay()
+{
+    Super::BeginPlay();
+	BindDelegates();
+}
+
 void USensorSubBody::Initialize(ISpeedComponent* InParentComponent)
 {
     Super::Initialize(InParentComponent);
@@ -98,6 +104,12 @@ UPrimitiveComponent* USensorSubBody::GetFirstOverlappingComponent() const
     return nullptr;
 }
 
+void USensorSubBody::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	UnbindDelegates();
+	Super::EndPlay(EndPlayReason);
+}
+
 bool USensorSubBody::ShouldIgnore(const UPrimitiveComponent& Other) const
 {
     return ComponentHasBeenIgnored(Other); // uses IgnoredComponents :contentReference[oaicite:5]{index=5}
@@ -108,5 +120,35 @@ FCollisionQueryParams USensorSubBody::BuildTraceParams() const
     FCollisionQueryParams Params = Super::BuildTraceParams();
     Params.bFindInitialOverlaps = true;   // IMPORTANT for persistent overlaps
     return Params;
+}
+
+void USensorSubBody::BindDelegates()
+{
+
+}
+
+void USensorSubBody::UnbindDelegates()
+{
+    if (ContinuousOverlapHandle.IsValid())
+    {
+        ContinuousOverlapHandle.Reset();
+    }
+
+    if (BeginOverlapHandle.IsValid())
+    {
+        BeginOverlapHandle.Reset();
+    }
+
+    if (EndOverlapHandle.IsValid())
+    {
+        EndOverlapHandle.Reset();
+    }
+    OnBeginOverlap.Clear();
+    OnEndOverlap.Clear();
+    OnContinuousOverlap.Clear();
+
+    OverlapsOrdered.Reset();
+    OverlapsSet.Reset();
+    TouchedThisFrame.Reset();
 }
 

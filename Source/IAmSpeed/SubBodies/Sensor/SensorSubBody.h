@@ -12,6 +12,7 @@ class IAMSPEED_API USensorSubBody : public USSubBody
     GENERATED_UCLASS_BODY()
 
 public:
+	virtual void BeginPlay() override;
     virtual bool IsSensor() const override { return true; }
 
     // Called once at setup
@@ -32,10 +33,13 @@ public:
     FOnSensorOverlap OnEndOverlap;
     FOnSensorOverlap OnContinuousOverlap;
 
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 protected:
     // --- shape is provided by derived (sphere/box) through GetCollisionShape() ---
     bool ShouldIgnore(const UPrimitiveComponent& Other) const;
     FCollisionQueryParams BuildTraceParams() const override;
+	virtual void BindDelegates();
+	virtual void UnbindDelegates();
 protected:
     // Overlaps in strict begin order
     UPROPERTY()
@@ -44,4 +48,11 @@ protected:
     TSet<TWeakObjectPtr<UPrimitiveComponent>> OverlapsSet;
 	// Components we touched this frame, to trigger continuous overlap events
     TSet<TWeakObjectPtr<UPrimitiveComponent>> TouchedThisFrame;
+
+	// Handles to the Continuous delegates, to be able to unbind them on destruction
+    FDelegateHandle ContinuousOverlapHandle;
+	// Handles to the Begin delegates, to be able to unbind them on destruction
+    FDelegateHandle BeginOverlapHandle;
+	// Handles to the End delegates, to be able to unbind them on destruction
+    FDelegateHandle EndOverlapHandle;
 };
