@@ -58,6 +58,8 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 		if (SNetworkPhysicsComponent)
 		{
 			SNetworkPhysicsComponent->CreateDataHistory<FPhysicsSpeedTraits>(this);
+			SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
+			SNetworkPhysicsComponent->SetIsReplicated(true);
 		}
 	}
 }
@@ -68,6 +70,7 @@ void USpeedMovementComponent::OnDestroyPhysicsState()
 	if (SNetworkPhysicsComponent)
 	{
 		SNetworkPhysicsComponent->RemoveDataHistory();
+		SNetworkPhysicsComponent = nullptr;
 	}
 }
 
