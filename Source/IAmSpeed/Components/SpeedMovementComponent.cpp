@@ -7,6 +7,7 @@
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/World/SpeedWorldSubsystem.h"
+#include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 
 USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
@@ -55,8 +56,16 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 	UWorld* World = GetWorld();
 	if (World->IsGameWorld())
 	{
-		if (SNetworkPhysicsComponent)
+		if (SNetworkPhysicsComponent && bEnableSimulation)
 		{
+			if (SNetworkSettings && !SNetworkSettings->IsRegistered())
+			{
+				SNetworkSettings->RegisterComponent();
+			}
+			if (!SNetworkPhysicsComponent->IsRegistered())
+			{
+				SNetworkPhysicsComponent->RegisterComponent();
+			}
 			SNetworkPhysicsComponent->CreateDataHistory<FPhysicsSpeedTraits>(this);
 			SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
 			SNetworkPhysicsComponent->SetIsReplicated(true);
@@ -70,7 +79,6 @@ void USpeedMovementComponent::OnDestroyPhysicsState()
 	if (SNetworkPhysicsComponent)
 	{
 		SNetworkPhysicsComponent->RemoveDataHistory();
-		SNetworkPhysicsComponent = nullptr;
 	}
 }
 
@@ -438,6 +446,16 @@ void USpeedMovementComponent::BeginPlay()
 
 void USpeedMovementComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (IsValid(SNetworkPhysicsComponent) && SNetworkPhysicsComponent->IsRegistered())
+	{
+		SNetworkPhysicsComponent->UnregisterComponent();
+	}
+
+	if (IsValid(SNetworkSettings) && SNetworkSettings->IsRegistered())
+	{
+		SNetworkSettings->UnregisterComponent();
+	}
+
 	Super::EndPlay(EndPlayReason);
 	// Unregister from SpeedWorldSubsystem
 	if (UWorld* World = GetWorld())
@@ -687,7 +705,7 @@ void USpeedMovementComponent::InitNetwork()
 	if (bEnableSimulation)
 	{
 		static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
-		SNetworkPhysicsComponent = CreateDefaultSubobject<UNetworkPhysicsComponent, UNetworkPhysicsComponent>(SpeedNetPCName);
+		SNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
 		SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
 		SNetworkPhysicsComponent->SetIsReplicated(true);
 	}
@@ -696,4 +714,5 @@ void USpeedMovementComponent::InitNetwork()
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
 	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("NetPhysicsSettingsDataAsset"));
 	SNetworkSettings->SettingsDataAsset = NetDataAsset;
+	SNetworkSettings->bAutoRegister = false;
 }

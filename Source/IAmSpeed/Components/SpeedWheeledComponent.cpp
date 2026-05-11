@@ -8,6 +8,7 @@
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/World/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
+#include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 #include "ChaosVehicleWheel.h"
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
@@ -184,12 +185,24 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	// only create data history in game
 	if (World->IsGameWorld())
 	{
+		if (SNetworkSettings && !SNetworkSettings->IsRegistered())
+		{
+			SNetworkSettings->RegisterComponent();
+		}
 		if (SNetworkPhysicsComponent)
 		{
+			if (!SNetworkPhysicsComponent->IsRegistered())
+			{
+				SNetworkPhysicsComponent->RegisterComponent();
+			}
 			SNetworkPhysicsComponent->CreateDataHistory<FPhysicsSpeedTraits>(this);
 		}
 		if (WheeledNetworkPhysicsComponent)
 		{
+			if (!WheeledNetworkPhysicsComponent->IsRegistered())
+			{
+				WheeledNetworkPhysicsComponent->RegisterComponent();
+			}
 			WheeledNetworkPhysicsComponent->CreateDataHistory<FPhysicsWheeledTraits>(this);
 		}
 	}
@@ -419,6 +432,27 @@ void USpeedWheeledComponent::DemoedBy(ASpeedCar* otherCar)
 
 void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// Make car sleeps else suspension will crash the game
+	if (VehicleSimulationPT)
+	{
+		VehicleSimulationPT->VehicleState.bSleeping = true;
+	}
+
+	if (IsValid(SNetworkPhysicsComponent) && SNetworkPhysicsComponent->IsRegistered())
+	{
+		SNetworkPhysicsComponent->UnregisterComponent();
+	}
+
+	if (IsValid(WheeledNetworkPhysicsComponent) && WheeledNetworkPhysicsComponent->IsRegistered())
+	{
+		WheeledNetworkPhysicsComponent->UnregisterComponent();
+	}
+
+	if (IsValid(SNetworkSettings) && SNetworkSettings->IsRegistered())
+	{
+		SNetworkSettings->UnregisterComponent();
+	}
+
 	Super::EndPlay(EndPlayReason);
 	// Unregister from SpeedWorldSubsystem
 	if (UWorld* World = GetWorld())
@@ -429,8 +463,6 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		}
 	}
 
-	// Make car sleeps else suspension will crash the game
-	VehicleSimulationPT->VehicleState.bSleeping = true;
 }
 
 bool USpeedWheeledComponent::IsFrozen() const
@@ -2168,16 +2200,19 @@ void USpeedWheeledComponent::InitNetwork()
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
 	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("SpeedSettingsDataAsset"));
 	SNetworkSettings->SettingsDataAsset = NetDataAsset;
+	SNetworkSettings->bAutoRegister = false;
 
 	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
-	SNetworkPhysicsComponent = CreateDefaultSubobject<UNetworkPhysicsComponent, UNetworkPhysicsComponent>(SpeedNetPCName);
+	SNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
 	SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
 	SNetworkPhysicsComponent->SetIsReplicated(true);
+	SNetworkPhysicsComponent->bAutoRegister = false;
 
 	static const FName WheeledNetPCName(TEXT("PC_WheeledNetPCName"));
-	WheeledNetworkPhysicsComponent = CreateDefaultSubobject<UNetworkPhysicsComponent, UNetworkPhysicsComponent>(WheeledNetPCName);
+	WheeledNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(WheeledNetPCName);
 	WheeledNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
 	WheeledNetworkPhysicsComponent->SetIsReplicated(true);
+	WheeledNetworkPhysicsComponent->bAutoRegister = false;
 
 	PredictedBaseFrames.Init(INDEX_NONE, SpeedConstants::PredictedHistorySize);
 	PredictedBaseFrames.SetNum(SpeedConstants::PredictedHistorySize);
