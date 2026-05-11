@@ -56,6 +56,7 @@ struct FBasePhysicsState
 
 	// current kinematic state of the component
 	SKinematic Kinematic;
+	bool bIsFrozen = false; // whether the component is currently frozen, meaning it should just stay still
 };
 
 USTRUCT()

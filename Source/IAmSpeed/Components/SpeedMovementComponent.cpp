@@ -209,6 +209,16 @@ unsigned int USpeedMovementComponent::GetEngineFPS() const
 	return EngineFPS;
 }
 
+bool USpeedMovementComponent::IsFrozen() const
+{
+	return BasePhysicsState.bIsFrozen;
+}
+
+void USpeedMovementComponent::SetIsFrozen(bool bFrozen)
+{
+	BasePhysicsState.bIsFrozen = bFrozen;
+}
+
 void USpeedMovementComponent::SetEngineFPS(const unsigned int& FPS)
 {
 	EngineFPS = FPS;
@@ -533,6 +543,12 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	}
 
 	const SKinematic& TargetKS = Target.BaseState.Kinematic;
+
+	// Correct isFrozen state immediately if mismatch, to avoid diverging too much (e.g. if we are frozen but server says we should be moving, or vice versa)
+	if (Target.BaseState.bIsFrozen != PastPredictedState.bIsFrozen)
+	{
+		SetIsFrozen(Target.BaseState.bIsFrozen);
+	}
 
 	// ------------------------------------------------------------
 	// (A) Historical error at the SAME frame:

@@ -23,6 +23,9 @@ void ISpeedComponent::IntegrateKinematicsPrv(const float& SubDelta)
 
 void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 {
+	if (IsFrozen())
+		return;
+
     if (SubDelta <= 0.f)
 		return;
 
@@ -197,6 +200,10 @@ const FVector& ISpeedComponent::GetPhysVelocity() const
 
 void ISpeedComponent::SetPhysVelocity(const FVector& NewVelocity)
 {
+	if (IsFrozen())
+	{
+		return;
+	}
 	SetPhysVelocityRaw(NewVelocity.GetClampedToMaxSize(GetPhysMaxSpeed()));
 }
 
@@ -214,6 +221,10 @@ const FVector& ISpeedComponent::GetPhysAngularVelocity() const
 
 void ISpeedComponent::SetPhysAngularVelocity(const FVector& NewAngularVelocity)
 {
+	if (IsFrozen())
+	{
+		return;
+	}
 	SetPhysAngularVelocityRaw(NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
 }
 
@@ -238,6 +249,11 @@ const FVector& ISpeedComponent::GetPhysAngularAcceleration() const
 
 void ISpeedComponent::SetPhysAcceleration(const FVector& NewAcceleration)
 {
+	if (IsFrozen())
+	{
+		return;
+	}
+
     SKinematic K = GetKinematicState();
     K.Acceleration = NewAcceleration;
 	SetKinematicState(K);
@@ -245,6 +261,11 @@ void ISpeedComponent::SetPhysAcceleration(const FVector& NewAcceleration)
 
 void ISpeedComponent::SetPhysAngularAcceleration(const FVector& NewAngularAcceleration)
 {
+	if (IsFrozen())
+	{
+		return;
+	}
+
     SKinematic K = GetKinematicState();
     K.AngularAcceleration = NewAngularAcceleration;
 	SetKinematicState(K);
@@ -564,4 +585,19 @@ bool ISpeedComponent::AreSimilarPhysicalConstraints(const FPhysicalContactConstr
 	}
 
 	return FVector::DistSquared(A.ContactPoint, B.ContactPoint) <= FMath::Square(ConstraintPointThresholdCm);
+}
+
+void ISpeedComponent::FreezeMovement()
+{
+	SetPhysVelocityRaw(FVector::ZeroVector);
+	SetPhysAngularVelocityRaw(FVector::ZeroVector);
+	SetPhysAcceleration(FVector::ZeroVector);
+	SetPhysAngularAcceleration(FVector::ZeroVector);
+
+	SetIsFrozen(true);
+}
+
+void ISpeedComponent::UnFreezeMovement()
+{
+	SetIsFrozen(false);
 }

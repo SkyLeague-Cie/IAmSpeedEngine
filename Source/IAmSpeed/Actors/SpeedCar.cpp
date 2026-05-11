@@ -35,6 +35,11 @@ void ASpeedCar::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	GetWorld()->GetTimerManager().ClearAllTimersForObject(this);
 }
 
+void ASpeedCar::FreezeMovement()
+{
+	SpeedWheeledComponent->FreezeMovement();
+}
+
 void ASpeedCar::HandleKinematics()
 {
 	SetActorLocation(SpeedWheeledComponent->GetPhysLocation());

@@ -85,6 +85,11 @@ public:
 	UFUNCTION(reliable, NetMulticast)
 	void StartTestWithVelocityMulti(const FVector& InitialVelocity);
 	unsigned int GetEngineFPS() const;
+
+	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
+	bool IsFrozen() const override;
+	// Set whether the movement is currently frozen (e.g. due to the game being paused)
+	void SetIsFrozen(bool bFrozen) override;
 private:
 	// Set the owner of this component. Call this at begin play
 	void SetOwner(AActor* NewOwner);

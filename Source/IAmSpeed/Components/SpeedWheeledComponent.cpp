@@ -433,6 +433,16 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	VehicleSimulationPT->VehicleState.bSleeping = true;
 }
 
+bool USpeedWheeledComponent::IsFrozen() const
+{
+	return BasePhysicsState.bIsFrozen;
+}
+
+void USpeedWheeledComponent::SetIsFrozen(bool bFrozen)
+{
+	BasePhysicsState.bIsFrozen = bFrozen;
+}
+
 void USpeedWheeledComponent::SetEngineFPS(const unsigned int& FPS)
 {
 	EngineFPS = FPS;
@@ -1120,18 +1130,33 @@ float USpeedWheeledComponent::GetPhysSteeringInput() const
 
 void USpeedWheeledComponent::SetPhysThrottleInput(const float& Throttle)
 {
+	if (IsFrozen())
+	{
+		WheeledUserInput.Throttle = 0;
+		return;
+	}
 	auto ClampedThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
 	WheeledUserInput.Throttle = static_cast<uint8>(FMath::RoundToInt(ClampedThrottle * 255));
 }
 
 void USpeedWheeledComponent::SetPhysBrakeInput(const float& Brake)
 {
+	if (IsFrozen())
+	{
+		WheeledUserInput.Brake = 0;
+		return;
+	}
 	auto ClampedBrake = FMath::Clamp(Brake, 0.0f, 1.0f);
 	WheeledUserInput.Brake = static_cast<uint8>(FMath::RoundToInt(ClampedBrake * 255));
 }
 
 void USpeedWheeledComponent::SetPhysSteeringInput(const float& Steering)
 {
+	if (IsFrozen())
+	{
+		WheeledUserInput.Steer = 0;
+		return;
+	}
 	auto ClampedSteering = FMath::Clamp(Steering, -1.0f, 1.0f);
 	WheeledUserInput.Steer = static_cast<int8>(FMath::RoundToInt(ClampedSteering * 127));
 }
@@ -1774,6 +1799,12 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	const int32 NumPredictedFrames = CurrentFrame - LocalFrame - NetCorrTickCount;
 	if (NetCorrTickCount >= FramesToCorrect || NumPredictedFrames <= 0)
 		return;
+
+	// Correct isFrozen state immediately if mismatch, to avoid diverging too much (e.g. if we are frozen but server says we should be moving, or vice versa)
+	if (Target.BaseState.bIsFrozen != PastPredictedState.bIsFrozen)
+	{
+		SetIsFrozen(Target.BaseState.bIsFrozen);
+	}
 
 	// check coutdown mismatch
 	if (bNewTarget && (WheeledTarget.WheeledState.bStartCountdown != PastPredictedWheeledState.bStartCountdown))

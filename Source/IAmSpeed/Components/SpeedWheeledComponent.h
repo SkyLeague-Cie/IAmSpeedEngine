@@ -173,6 +173,11 @@ public:
 	void DemoedBy(ASpeedCar* otherCar);
 
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
+	bool IsFrozen() const override;
+	// Set whether the movement is currently frozen (e.g. due to the game being paused)
+	void SetIsFrozen(bool bFrozen) override;
 private:
 	void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) override final;
 	void PhysicsTick(const float& DeltaTime, const float& SimTime);

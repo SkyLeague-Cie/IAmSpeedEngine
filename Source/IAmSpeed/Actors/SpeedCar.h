@@ -55,6 +55,9 @@ public:
 	bool HasAuthority() const;
 	bool IsOwningClient() const;
 	bool IsRemoteClient() const;
+
+	// Freezes car movement. It serves when we want to pause the game
+	void FreezeMovement();
 protected:
 	virtual void HandleKinematics();
 	virtual void HandleSparkle();

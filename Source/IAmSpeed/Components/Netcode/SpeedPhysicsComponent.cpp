@@ -46,6 +46,7 @@ bool FNetworkBaseSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& 
 {
 	FNetworkPhysicsData::SerializeFrames(Ar);
 	Ar << BaseState.Kinematic;
+	Ar << BaseState.bIsFrozen;
 	bOutSuccess = true;
 	return true;
 }
@@ -59,6 +60,7 @@ void FNetworkBaseSpeedState::InterpolateData(const FNetworkPhysicsData& MinData,
 		? 1.0f / (MaxState.LocalFrame - MinState.LocalFrame + 1) // Merge from min into max
 		: (LocalFrame - MinState.LocalFrame) / (MaxState.LocalFrame - MinState.LocalFrame); // Interpolate from min to max
 	BaseState.Kinematic = Lerp(MinState.BaseState.Kinematic, MaxState.BaseState.Kinematic, LerpFactor);
+	BaseState.bIsFrozen = LerpFactor < 0.5f ? MinState.BaseState.bIsFrozen : MaxState.BaseState.bIsFrozen; // take the frozen state of the closest frame
 }
 
 bool FNetworkBaseSpeedState::CompareData(const FNetworkPhysicsData& PredictedData)

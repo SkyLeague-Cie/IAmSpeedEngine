@@ -38,6 +38,13 @@ public:
 	// overload this function to create the sub-bodies owned by this component (e.g. for a car body, this would be creating the wheel sub-bodies and the hitbox sub-body)
 	virtual TArray<USSubBody*> CreateSubBodies() = 0;
 
+	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
+	virtual bool IsFrozen() const = 0;
+	// Freezes the Movement. It serves when we want to pause the game
+	void FreezeMovement();
+	// Unfreezes the Movement. It serves when we want to resume the game after being paused
+	void UnFreezeMovement();
+
 	// ==================== SubBody-specific info retrieval functions ====================
 	virtual SubBodyConfig GetSubBodyConfig(const USSubBody& SubBody) const = 0;
 	//===================================================================================
@@ -139,6 +146,8 @@ protected:
 	void ProjectAngularDeltaAgainstConstraints(FVector& DeltaAngular) const;
 	void ProjectPointDeltaAgainstConstraints(FVector& DeltaLinear, FVector& DeltaAngular) const;
 	static bool AreSimilarPhysicalConstraints(const FPhysicalContactConstraint& A, const FPhysicalContactConstraint& B);
+
+	virtual void SetIsFrozen(bool bFrozen) = 0;
 
 	TArray<FPhysicalContactConstraint> PhysicalConstraints;
 };
