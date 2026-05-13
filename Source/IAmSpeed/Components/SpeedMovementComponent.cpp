@@ -502,12 +502,14 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (!SpeedHistory)
 		return;
 
-	const int32 CurrentFrame = SpeedHistory->GetLatestFrame();
+	const int32 CurrentFrame = static_cast<int32>(NumFrame());
+	const int32 LatestHistoryFrame = SpeedHistory->GetLatestFrame();
+	const int32 SearchStartFrame = FMath::Min(CurrentFrame, LatestHistoryFrame);
 	// ----------------------------
 	// Find last server state
 	// ----------------------------
 	const FNetworkBaseSpeedState* LastServerState = nullptr;
-	for (int32 f = CurrentFrame; f >= 0; --f)
+	for (int32 f = SearchStartFrame; f >= 0; --f)
 	{
 		if (!SpeedHistory->EvalData(f))
 			continue;
@@ -702,13 +704,10 @@ void USpeedMovementComponent::TagStateHistoryProxyRole()
 
 void USpeedMovementComponent::InitNetwork()
 {
-	if (bEnableSimulation)
-	{
-		static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
-		SNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
-		SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
-		SNetworkPhysicsComponent->SetIsReplicated(true);
-	}
+	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
+	SNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
+	SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
+	SNetworkPhysicsComponent->SetIsReplicated(true);
 
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);

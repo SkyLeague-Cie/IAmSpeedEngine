@@ -30,6 +30,7 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 	GravityZ = GetDefault<UPhysicsSettings>()->DefaultGravityZ;
 	MinNbFramesBeforeCanMove = TimeBeforeCanMove * EngineFPS;
 	WheeledPhysicsState.nbFramesbeforeCanMove = MinNbFramesBeforeCanMove;
+	BasePhysicsState.bIsFrozen = true;
 
 	SetSubBodies(CreateSubBodies());
 	if (SubBodies.Num() > 0)
@@ -1088,6 +1089,7 @@ void USpeedWheeledComponent::StartConfrontationLocal(const float& TimeSec)
 	GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, FString::Printf(TEXT("[%s] Car will be able to move in %ds"),
 		*GetRole(), TimeSec));
 	}*/
+	FreezeMovement();
 	WheeledPhysicsState.bStartCountdown = true;
 	const uint32 Now = NumFrame();
 	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * EngineFPS);
@@ -1123,6 +1125,7 @@ void USpeedWheeledComponent::SetCannotMove()
 
 void USpeedWheeledComponent::SetCannotMoveLocal()
 {
+	FreezeMovement();
 	WheeledPhysicsState.bStartCountdown = false;
 	WheeledPhysicsState.nbFramesbeforeCanMove = 1;
 }
@@ -1433,6 +1436,8 @@ void USpeedWheeledComponent::HandleCountdownTimer()
 		WheeledPhysicsState.nbFramesbeforeCanMove--;
 		if (CanMove())
 		{
+			WheeledPhysicsState.bStartCountdown = false;
+			UnFreezeMovement();
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
 				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
 		}
@@ -1852,11 +1857,13 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// check nbFramesbeforeCanMove alignment
 	if (bNewTarget && (WheeledPhysicsState.nbFramesbeforeCanMove > NumPredictedFrames - 1) && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
 		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
-		&& (WheeledPhysicsState.nbFramesbeforeCanMove != WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames))
+		&& (WheeledPhysicsState.nbFramesbeforeCanMove != FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - NumPredictedFrames)))
 	{
 		if (WheeledTarget.WheeledState.nbFramesbeforeCanMove == 0 && WheeledPhysicsState.nbFramesbeforeCanMove != 0)
 		{
 			WheeledPhysicsState.nbFramesbeforeCanMove = 0;
+			WheeledPhysicsState.bStartCountdown = false;
+			UnFreezeMovement();
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Log, TEXT("[LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][LATE CAN MOVE] At Frame = %d, Kinematics: %s"),
@@ -1868,7 +1875,18 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Log, TEXT("[CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
 #endif
-			WheeledPhysicsState.nbFramesbeforeCanMove = WheeledTarget.WheeledState.nbFramesbeforeCanMove - NumPredictedFrames;
+			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - NumPredictedFrames));
+			if (!WheeledPhysicsState.bStartCountdown && WheeledPhysicsState.nbFramesbeforeCanMove == 0)
+			{
+				// If countdown has not started, we cannot start to move immediately
+				WheeledPhysicsState.nbFramesbeforeCanMove = 1;
+			}
+
+			if (CanMove())
+			{
+				WheeledPhysicsState.bStartCountdown = false;
+				UnFreezeMovement();
+			}
 		}
 	}
 	/*else

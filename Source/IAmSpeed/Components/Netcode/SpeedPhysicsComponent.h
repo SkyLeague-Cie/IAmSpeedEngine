@@ -69,9 +69,9 @@ struct FClientNetSettings
 	// whether to compare rotation to trigger resimulation when comparing client and server data
 	bool bEnableRotationResimulation = true;
 	// whether to compare velocity to trigger resimulation when comparing client and server data
-	bool bEnableVelocityResimulation = true;
+	bool bEnableVelocityResimulation = false;
 	// whether to compare angular velocity to trigger resimulation when comparing client and server data
-	bool bEnableAngularVelocityResimulation = true;
+	bool bEnableAngularVelocityResimulation = false;
 
 	// in cm, if the position difference between client and server is above this threshold, it will trigger a resimulation
 	float PositionResimulationThreshold = 400.0f;
