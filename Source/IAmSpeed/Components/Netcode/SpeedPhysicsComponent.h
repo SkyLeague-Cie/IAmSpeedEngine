@@ -116,6 +116,9 @@ struct IAMSPEED_API FNetworkBaseSpeedState : public FNetworkPhysicsData
 	/** Physical state of the skycar */
 	FBasePhysicsState BaseState;
 
+	UPROPERTY()
+	int32 SourceLocalFrame = INDEX_NONE;
+
 	// true iff this state is corresponding to an autonomous proxy on this simulation
 	bool bIsAutonomousProxy = false;
 
@@ -132,6 +135,8 @@ struct IAMSPEED_API FNetworkBaseSpeedState : public FNetworkPhysicsData
 
 	/**  Serialize data function that will be used to transfer the struct across the network */
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+	int32 GetSourceLocalFrame() const;
 
 	/** Interpolate the data in between two inputs data */
 	virtual void InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData) override;

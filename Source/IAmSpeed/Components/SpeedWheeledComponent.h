@@ -184,8 +184,8 @@ private:
 
 	void UpdateFrameState(const float& SimTime);
 	void UpdateNumFrame(const float& SimTime);
-	bool GetPredictedState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
-	bool GetPredictedState(const int32& LocalFrame, FWheeledPhysicsState& OutState) const;
+	bool GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
+	bool GetWheeledState(const int32& LocalFrame, FWheeledPhysicsState& OutState) const;
 
 	void HandleGravity();
 	void HandleDamping(const float& delta);
@@ -207,6 +207,7 @@ protected:
 
 	void SetEngineFPS(const unsigned int& FPS);
 	float GetEngineFPS() const;
+	int32 GetSinceCanMoveFrame() const;
 
 	// Update Inputs
 	virtual void UpdateInputs();
@@ -268,7 +269,7 @@ protected:
 	void UpdateState(float DeltaTime) override;
 
 	// Netcode methods
-	virtual void RecordPredictedState();
+	virtual void RecordPhysicsState();
 	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
 
@@ -431,9 +432,9 @@ private:
 	FWheeledInputState WheeledPhysicalInput; // input state used for physics simulation (e.g. after being processed from the user input)
 	FVector CarLocalInvI = FVector::ZeroVector; // local inverse inertia tensor of the car body (in local space)
 
-	TArray<int32> PredictedBaseFrames;
-	TArray<FBasePhysicsState> PredictedBaseStates; // array of predicted states for network correction
-	TArray<FWheeledPhysicsState> PredictedWheeledStates; // array of predicted states for network correction
+	TArray<int32> RecordedBaseFrames;
+	TArray<FBasePhysicsState> RecordedBaseStates; // array of recorded states for network correction
+	TArray<FWheeledPhysicsState> RecordedWheeledStates; // array of recorded states for network correction
 
 	float EngineFPS = 120.0; // physics simulation FPS (Hz)
 	uint16 MinNbFramesBeforeCanMove = 0; // minimal number of frames before the component can move at the start of the simulation or after being reset (e.g. after a respawn)
@@ -456,4 +457,9 @@ private:
 	FNetCorrAccum NetCorrAccum;
 	FVector NetCorr_LastContactN = FVector::UpVector;
 	uint8 NetCorr_StableNFrames = 0;
+
+	int32 SinceCanMoveFrame = INDEX_NONE;
+	bool bSimTimelineWasCanMove = false;
+	bool bSimTimelineWasGrounded = false;
+	bool bSimTimelineHasGroundState = false;
 };

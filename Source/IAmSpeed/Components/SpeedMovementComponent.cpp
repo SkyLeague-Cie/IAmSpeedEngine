@@ -15,8 +15,8 @@ USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& Objec
 	SetIsReplicatedByDefault(true);
 
 	InitNetwork();
-	PredictedBaseFrames.Init(INDEX_NONE, SpeedConstants::PredictedHistorySize);
-	PredictedBaseStates.SetNum(SpeedConstants::PredictedHistorySize);
+	RecordedBaseFrames.Init(INDEX_NONE, SpeedConstants::RecordedHistorySize);
+	RecordedBaseStates.SetNum(SpeedConstants::RecordedHistorySize);
 
 
 	SetEngineFPS(Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize));
@@ -114,10 +114,10 @@ SubBodyConfig USpeedMovementComponent::GetSubBodyConfig(const USSubBody& SubBody
 
 const SKinematic& USpeedMovementComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		return PredictedBaseStates[Idx].Kinematic;
+		return RecordedBaseStates[Idx].Kinematic;
 	}
 	return BasePhysicsState.Kinematic;
 }
@@ -139,10 +139,10 @@ const SKinematic& USpeedMovementComponent::GetKinematicState() const
 
 const SKinematic& USpeedMovementComponent::GetKinematicStateForFrame(const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		return PredictedBaseStates[Idx].Kinematic;
+		return RecordedBaseStates[Idx].Kinematic;
 	}
 	return BasePhysicsState.Kinematic;
 }
@@ -161,7 +161,7 @@ void USpeedMovementComponent::PostPhysicsUpdatePrv(const float& delta)
 {
 	ApplyNetworkCorrection(delta);
 	QuantizePhysicalState();
-	RecordPredictedState();
+	RecordPhysicsState();
 }
 
 void USpeedMovementComponent::SetIsUpsideDown(bool bUpsideDown)
@@ -259,21 +259,21 @@ void USpeedMovementComponent::UpdateNumFrame(const float& SimTime)
 	BaseGameState.NumFrame = Speed::SimUtils::ComputeNumFrameFromSimTime(EngineFPS, SimTime);
 }
 
-void USpeedMovementComponent::RecordPredictedState()
+void USpeedMovementComponent::RecordPhysicsState()
 {
 	const int32 LF = NumFrame();
-	const int32 Idx = LF % SpeedConstants::PredictedHistorySize;
+	const int32 Idx = LF % SpeedConstants::RecordedHistorySize;
 
-	PredictedBaseFrames[Idx] = LF;
-	PredictedBaseStates[Idx] = BasePhysicsState;
+	RecordedBaseFrames[Idx] = LF;
+	RecordedBaseStates[Idx] = BasePhysicsState;
 }
 
-bool USpeedMovementComponent::GetPredictedState(const int32& LocalFrame, FBasePhysicsState& OutState) const
+bool USpeedMovementComponent::GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		OutState = PredictedBaseStates[Idx];
+		OutState = RecordedBaseStates[Idx];
 		return true;
 	}
 	return false;
@@ -526,16 +526,21 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		return;
 
 	const FNetworkBaseSpeedState& Target = *LastServerState;
+	const int32 TargetSourceLocalFrame = Target.GetSourceLocalFrame();
+	if (TargetSourceLocalFrame < 0 || TargetSourceLocalFrame > CurrentFrame)
+	{
+		return;
+	}
 
 	const bool bNewTarget = (Target.ServerFrame != NetCorr_LastServerFrame)
-		|| (Target.LocalFrame != NetCorr_LastLocalFrame);
+		|| (TargetSourceLocalFrame != NetCorr_LastLocalFrame);
 
 	if (bNewTarget)
 	{
 		NetCorr_LastServerFrame = Target.ServerFrame;
-		NetCorr_LastLocalFrame = Target.LocalFrame;
+		NetCorr_LastLocalFrame = TargetSourceLocalFrame;
 		NetCorrTickCount = 0;
-		NetCorr_BaseNumPredictedFrames = FMath::Max(1, CurrentFrame - Target.LocalFrame);
+		NetCorr_BaseNumPredictedFrames = FMath::Max(1, CurrentFrame - TargetSourceLocalFrame);
 	}
 	else
 	{
@@ -547,10 +552,10 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// ----------------------------
 	// Find corresponding predicted state (at Target.LocalFrame)
 	// ----------------------------
-	const int32 LocalFrame = Target.LocalFrame;
+	const int32 LocalFrame = TargetSourceLocalFrame;
 
 	FBasePhysicsState PastPredictedState;
-	if (!GetPredictedState(LocalFrame, PastPredictedState))
+	if (!GetBaseState(LocalFrame, PastPredictedState))
 	{
 		// Too old / overwritten in our local ring, nothing to do
 		return;

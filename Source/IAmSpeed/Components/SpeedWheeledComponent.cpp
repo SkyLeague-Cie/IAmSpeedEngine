@@ -311,10 +311,10 @@ WheelSubBodyConfig USpeedWheeledComponent::GetWheelSubBodyConfig(const USWheelSu
 
 const SKinematic& USpeedWheeledComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		return PredictedBaseStates[Idx].Kinematic;
+		return RecordedBaseStates[Idx].Kinematic;
 	}
 	return BasePhysicsState.Kinematic;
 }
@@ -337,10 +337,10 @@ const SKinematic& USpeedWheeledComponent::GetKinematicState() const
 
 const SKinematic& USpeedWheeledComponent::GetKinematicStateForFrame(const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		return PredictedBaseStates[Idx].Kinematic;
+		return RecordedBaseStates[Idx].Kinematic;
 	}
 	return BasePhysicsState.Kinematic;
 }
@@ -360,7 +360,7 @@ void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 	ISpeedWheeledComponent::PostPhysicsUpdatePrv(delta);
 	ApplyNetworkCorrection(delta);
 	QuantizePhysicalState();
-	RecordPredictedState();
+	RecordPhysicsState();
 	RegisterWheelState();
 }
 
@@ -486,6 +486,11 @@ float USpeedWheeledComponent::GetEngineFPS() const
 	return EngineFPS;
 }
 
+int32 USpeedWheeledComponent::GetSinceCanMoveFrame() const
+{
+	return SinceCanMoveFrame;
+}
+
 void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& SimTime)
 {
 	// Update NumFrame at the beginning of the tick so that it can be used in the rest of the tick functions
@@ -536,33 +541,33 @@ void USpeedWheeledComponent::UpdateState(float DeltaTime)
 	// DO NOTHING HERE
 }
 
-void USpeedWheeledComponent::RecordPredictedState()
+void USpeedWheeledComponent::RecordPhysicsState()
 {
 	const int32 LF = NumFrame();
-	const int32 Idx = LF % SpeedConstants::PredictedHistorySize;
+	const int32 Idx = LF % SpeedConstants::RecordedHistorySize;
 
-	PredictedBaseFrames[Idx] = LF;
-	PredictedBaseStates[Idx] = BasePhysicsState;
-	PredictedWheeledStates[Idx] = WheeledPhysicsState;
+	RecordedBaseFrames[Idx] = LF;
+	RecordedBaseStates[Idx] = BasePhysicsState;
+	RecordedWheeledStates[Idx] = WheeledPhysicsState;
 }
 
-bool USpeedWheeledComponent::GetPredictedState(const int32& LocalFrame, FBasePhysicsState& OutState) const
+bool USpeedWheeledComponent::GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		OutState = PredictedBaseStates[Idx];
+		OutState = RecordedBaseStates[Idx];
 		return true;
 	}
 	return false;
 }
 
-bool USpeedWheeledComponent::GetPredictedState(const int32& LocalFrame, FWheeledPhysicsState& OutState) const
+bool USpeedWheeledComponent::GetWheeledState(const int32& LocalFrame, FWheeledPhysicsState& OutState) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		OutState = PredictedWheeledStates[Idx];
+		OutState = RecordedWheeledStates[Idx];
 		return true;
 	}
 	return false;
@@ -1437,6 +1442,10 @@ void USpeedWheeledComponent::HandleCountdownTimer()
 		if (CanMove())
 		{
 			WheeledPhysicsState.bStartCountdown = false;
+			SinceCanMoveFrame = NumFrame();
+			bSimTimelineWasCanMove = true;
+			bSimTimelineHasGroundState = true;
+			bSimTimelineWasGrounded = IsOnTheGround();
 			UnFreezeMovement();
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
 				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
@@ -1779,16 +1788,21 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		return;
 
 	const FNetworkBaseSpeedState& Target = *LastServerState;
+	const int32 TargetSourceLocalFrame = Target.GetSourceLocalFrame();
+	if (TargetSourceLocalFrame < 0 || TargetSourceLocalFrame > CurrentFrame)
+	{
+		return;
+	}
 
 	const bool bNewTarget = (Target.ServerFrame != NetCorr_LastServerFrame)
-		|| (Target.LocalFrame != NetCorr_LastLocalFrame);
+		|| (TargetSourceLocalFrame != NetCorr_LastLocalFrame);
 
 	if (bNewTarget)
 	{
 		NetCorr_LastServerFrame = Target.ServerFrame;
-		NetCorr_LastLocalFrame = Target.LocalFrame;
+		NetCorr_LastLocalFrame = TargetSourceLocalFrame;
 		NetCorrTickCount = 0;
-		NetCorr_BaseNumPredictedFrames = FMath::Max(1, CurrentFrame - Target.LocalFrame);
+		NetCorr_BaseNumPredictedFrames = FMath::Max(1, CurrentFrame - TargetSourceLocalFrame);
 	}
 	else
 	{
@@ -1818,22 +1832,28 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		return;
 
 	const FNetworkWheeledSpeedState& WheeledTarget = *LastWheeledServerState;
+	const int32 WheeledSourceLocalFrame = WheeledTarget.GetSourceLocalFrame();
+	if (WheeledSourceLocalFrame < 0 || WheeledSourceLocalFrame > CurrentFrame)
+	{
+		return;
+	}
 
 	// ----------------------------
 	// Find corresponding predicted state
 	// ----------------------------
 
 	// Last Client Frame received from Server
-	const int32 LocalFrame = Target.LocalFrame;
+	const int32 LocalFrame = TargetSourceLocalFrame;
 	FBasePhysicsState PastPredictedState;
-	if (!GetPredictedState(LocalFrame, PastPredictedState))
+	if (!GetBaseState(LocalFrame, PastPredictedState))
 		return;
 
 	FWheeledPhysicsState PastPredictedWheeledState;
-	if (!GetPredictedState(LocalFrame, PastPredictedWheeledState))
+	if (!GetWheeledState(WheeledSourceLocalFrame, PastPredictedWheeledState))
 		return;
 
 	const int32 NumPredictedFrames = CurrentFrame - LocalFrame - NetCorrTickCount;
+	const int32 WheeledNumPredictedFrames = CurrentFrame - WheeledSourceLocalFrame - NetCorrTickCount;
 	if (NetCorrTickCount >= FramesToCorrect || NumPredictedFrames <= 0)
 		return;
 
@@ -1855,9 +1875,9 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	}*/
 
 	// check nbFramesbeforeCanMove alignment
-	if (bNewTarget && (WheeledPhysicsState.nbFramesbeforeCanMove > NumPredictedFrames - 1) && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
+	if (bNewTarget && (WheeledPhysicsState.nbFramesbeforeCanMove > WheeledNumPredictedFrames - 1) && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
 		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
-		&& (WheeledPhysicsState.nbFramesbeforeCanMove != FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - NumPredictedFrames)))
+		&& (WheeledPhysicsState.nbFramesbeforeCanMove != FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames)))
 	{
 		if (WheeledTarget.WheeledState.nbFramesbeforeCanMove == 0 && WheeledPhysicsState.nbFramesbeforeCanMove != 0)
 		{
@@ -1875,7 +1895,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Log, TEXT("[CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
 #endif
-			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - NumPredictedFrames));
+			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames));
 			if (!WheeledPhysicsState.bStartCountdown && WheeledPhysicsState.nbFramesbeforeCanMove == 0)
 			{
 				// If countdown has not started, we cannot start to move immediately
@@ -1906,7 +1926,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (bNewTarget)
 	{
 		NetCorrAccum.SourceServerFrame = Target.ServerFrame;
-		NetCorrAccum.SourceLocalFrame = Target.LocalFrame;
+		NetCorrAccum.SourceLocalFrame = TargetSourceLocalFrame;
 
 		NetCorrAccum.RemPos = ErrPos;
 
@@ -2232,8 +2252,8 @@ void USpeedWheeledComponent::InitNetwork()
 	WheeledNetworkPhysicsComponent->SetIsReplicated(true);
 	WheeledNetworkPhysicsComponent->bAutoRegister = false;
 
-	PredictedBaseFrames.Init(INDEX_NONE, SpeedConstants::PredictedHistorySize);
-	PredictedBaseFrames.SetNum(SpeedConstants::PredictedHistorySize);
-	PredictedBaseStates.SetNum(SpeedConstants::PredictedHistorySize);
-	PredictedWheeledStates.SetNum(SpeedConstants::PredictedHistorySize);
+	RecordedBaseFrames.Init(INDEX_NONE, SpeedConstants::RecordedHistorySize);
+	RecordedBaseFrames.SetNum(SpeedConstants::RecordedHistorySize);
+	RecordedBaseStates.SetNum(SpeedConstants::RecordedHistorySize);
+	RecordedWheeledStates.SetNum(SpeedConstants::RecordedHistorySize);
 }

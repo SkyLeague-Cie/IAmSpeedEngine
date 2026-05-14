@@ -23,7 +23,28 @@ void FNetworkWheeledSpeedState::BuildData(const UActorComponent* NetworkComponen
 	{
 		if (const USpeedWheeledComponent* Mover = Cast<const USpeedWheeledComponent>(NetworkComponent))
 		{
-			WheeledState = Mover->WheeledPhysicsState;
+			const int32 CurrentRecordedFrame = FMath::Max(int32(LocalFrame), 0);
+			const int32 PreviousRecordedFrame = Speed::SimUtils::GetRecordedFrameFromNetworkLocalFrame(LocalFrame);
+			const int32 ComponentFrame = FMath::Max(int32(Mover->NumFrame()), 0);
+			const int32 PreviousComponentFrame = FMath::Max(ComponentFrame - 1, 0);
+			const auto TryGetWheeledState = [this, Mover](const int32 Frame)
+			{
+				if (Mover->GetWheeledState(Frame, WheeledState))
+				{
+					SourceLocalFrame = Frame;
+					return true;
+				}
+				return false;
+			};
+			const bool bGotState = TryGetWheeledState(CurrentRecordedFrame)
+				|| (PreviousRecordedFrame != CurrentRecordedFrame && TryGetWheeledState(PreviousRecordedFrame))
+				|| (ComponentFrame != CurrentRecordedFrame && ComponentFrame != PreviousRecordedFrame && TryGetWheeledState(ComponentFrame))
+				|| (PreviousComponentFrame != CurrentRecordedFrame && PreviousComponentFrame != PreviousRecordedFrame && PreviousComponentFrame != ComponentFrame && TryGetWheeledState(PreviousComponentFrame));
+			if (!bGotState)
+			{
+				SourceLocalFrame = ComponentFrame;
+				WheeledState = Mover->WheeledPhysicsState;
+			}
 		}
 	}
 }
@@ -31,6 +52,7 @@ void FNetworkWheeledSpeedState::BuildData(const UActorComponent* NetworkComponen
 bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
 	FNetworkPhysicsData::SerializeFrames(Ar);
+	Ar << SourceLocalFrame;
 	Ar << WheeledState.nbFramesbeforeCanMove;
 	Ar << WheeledState.AllowedSideVelocity;
 	Ar << WheeledState.AllowedAngularVelocity;
@@ -67,6 +89,16 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 	return true;
 }
 
+int32 FNetworkWheeledSpeedState::GetSourceLocalFrame() const
+{
+	if (SourceLocalFrame == INDEX_NONE)
+	{
+		return LocalFrame;
+	}
+
+	return bReceivedData ? SourceLocalFrame - (ServerFrame - LocalFrame) : SourceLocalFrame;
+}
+
 void FNetworkWheeledSpeedState::InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData)
 {
 	const FNetworkWheeledSpeedState& MinState = static_cast<const FNetworkWheeledSpeedState&>(MinData);
@@ -76,11 +108,14 @@ void FNetworkWheeledSpeedState::InterpolateData(const FNetworkPhysicsData& MinDa
 		? 1.0f / (MaxState.LocalFrame - MinState.LocalFrame + 1) // Merge from min into max
 		: (LocalFrame - MinState.LocalFrame) / (MaxState.LocalFrame - MinState.LocalFrame); // Interpolate from min to max
 
-	WheeledState.bStartCountdown = LerpFactor < 0.5 ? MinState.WheeledState.bStartCountdown : MaxState.WheeledState.bStartCountdown;
-	WheeledState.nbFramesbeforeCanMove = Speed::Interpolate(MinState.WheeledState.nbFramesbeforeCanMove, MaxState.WheeledState.nbFramesbeforeCanMove, LerpFactor);
+	const FWheeledPhysicsState& DiscreteState = LerpFactor < 0.5f ? MinState.WheeledState : MaxState.WheeledState;
+	WheeledState.bStartCountdown = DiscreteState.bStartCountdown;
+	WheeledState.nbFramesbeforeCanMove = DiscreteState.nbFramesbeforeCanMove;
 	WheeledState.AllowedSideVelocity = FMath::Lerp(MinState.WheeledState.AllowedSideVelocity, MaxState.WheeledState.AllowedSideVelocity, LerpFactor);
 	WheeledState.AllowedAngularVelocity = FMath::Lerp(MinState.WheeledState.AllowedAngularVelocity, MaxState.WheeledState.AllowedAngularVelocity, LerpFactor);
-	WheeledState.NbFramesSinceGroundContact = Speed::Interpolate(MinState.WheeledState.NbFramesSinceGroundContact, MaxState.WheeledState.NbFramesSinceGroundContact, LerpFactor);
+	WheeledState.NbFramesSinceGroundContact = DiscreteState.NbFramesSinceGroundContact;
+	WheeledState.FramesSinceLastImpact = DiscreteState.FramesSinceLastImpact;
+	SourceLocalFrame = LerpFactor < 0.5f ? MinState.SourceLocalFrame : MaxState.SourceLocalFrame;
 
 	int32 NumWheels = 4;
 	for (int32 WheelIdx = 0; WheelIdx < NumWheels; ++WheelIdx)
@@ -118,6 +153,10 @@ void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent
 	if (USpeedWheeledComponent* Mover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
 		Mover->WheeledUserInput = WheeledInput;
+		if (int32(LocalFrame) == Mover->NumFrame())
+		{
+			Mover->WheeledPhysicalInput = WheeledInput;
+		}
 	}
 }
 

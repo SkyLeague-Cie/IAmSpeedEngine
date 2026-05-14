@@ -239,6 +239,11 @@ namespace Speed
 			return FMath::CeilToInt32(SimTime * FPS) + 1; // +1 to be aligned with netcode local frame counting (starts at 1)
 		}
 
+		static int32 GetRecordedFrameFromNetworkLocalFrame(const int32& NetworkLocalFrame)
+		{
+			return FMath::Max(NetworkLocalFrame - 1, 0);
+		}
+
 		static unsigned short int ComputePhysicsFPS(const float& EngineFixedDeltaTime)
 		{
 			if (EngineFixedDeltaTime > 0.0)

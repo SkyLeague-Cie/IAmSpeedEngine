@@ -106,8 +106,8 @@ private:
 	void applyAccelerationConstraint(const float& delta);
 	void applyAngularAccelerationConstraint(const float& delta);
 protected:
-	virtual void RecordPredictedState();
-	bool GetPredictedState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
+	virtual void RecordPhysicsState();
+	bool GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
 	void SetSubBodies(const TArray<USSubBody*>& NewSubBodies);
 
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay
@@ -216,8 +216,8 @@ private:
 	SBaseGameState BaseGameState; // current game state of the component
 	FBasePhysicsState BasePhysicsState; // current physics state of the component (replicated on network)
 
-	TArray<int32> PredictedBaseFrames;
-	TArray<FBasePhysicsState> PredictedBaseStates; // array of predicted states for network correction
+	TArray<int32> RecordedBaseFrames;
+	TArray<FBasePhysicsState> RecordedBaseStates; // array of predicted states for network correction
 
 	float EngineFPS = 120.0; // physics simulation FPS (Hz)
 	TArray<USSubBody*> SubBodies; // array of sub-bodies owned by this component (e.g. for a car body, this would be the hitbox and the wheels)

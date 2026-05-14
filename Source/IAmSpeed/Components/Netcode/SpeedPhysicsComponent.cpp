@@ -32,11 +32,53 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 	{
 		if (const USpeedMovementComponent* Mover = Cast<const USpeedMovementComponent>(NetworkComponent))
 		{
-			BaseState = Mover->BasePhysicsState;
+			const int32 CurrentRecordedFrame = FMath::Max(int32(LocalFrame), 0);
+			const int32 PreviousRecordedFrame = Speed::SimUtils::GetRecordedFrameFromNetworkLocalFrame(LocalFrame);
+			const int32 ComponentFrame = FMath::Max(int32(Mover->NumFrame()), 0);
+			const int32 PreviousComponentFrame = FMath::Max(ComponentFrame - 1, 0);
+			const auto TryGetBaseState = [this, Mover](const int32 Frame)
+			{
+				if (Mover->GetBaseState(Frame, BaseState))
+				{
+					SourceLocalFrame = Frame;
+					return true;
+				}
+				return false;
+			};
+			const bool bGotState = TryGetBaseState(CurrentRecordedFrame)
+				|| (PreviousRecordedFrame != CurrentRecordedFrame && TryGetBaseState(PreviousRecordedFrame))
+				|| (ComponentFrame != CurrentRecordedFrame && ComponentFrame != PreviousRecordedFrame && TryGetBaseState(ComponentFrame))
+				|| (PreviousComponentFrame != CurrentRecordedFrame && PreviousComponentFrame != PreviousRecordedFrame && PreviousComponentFrame != ComponentFrame && TryGetBaseState(PreviousComponentFrame));
+			if (!bGotState)
+			{
+				SourceLocalFrame = ComponentFrame;
+				BaseState = Mover->BasePhysicsState;
+			}
 		}
 		else if (const USpeedWheeledComponent* WheeledMover = Cast<const USpeedWheeledComponent>(NetworkComponent))
 		{
-			BaseState = WheeledMover->BasePhysicsState;
+			const int32 CurrentRecordedFrame = FMath::Max(int32(LocalFrame), 0);
+			const int32 PreviousRecordedFrame = Speed::SimUtils::GetRecordedFrameFromNetworkLocalFrame(LocalFrame);
+			const int32 ComponentFrame = FMath::Max(int32(WheeledMover->NumFrame()), 0);
+			const int32 PreviousComponentFrame = FMath::Max(ComponentFrame - 1, 0);
+			const auto TryGetBaseState = [this, WheeledMover](const int32 Frame)
+			{
+				if (WheeledMover->GetBaseState(Frame, BaseState))
+				{
+					SourceLocalFrame = Frame;
+					return true;
+				}
+				return false;
+			};
+			const bool bGotState = TryGetBaseState(CurrentRecordedFrame)
+				|| (PreviousRecordedFrame != CurrentRecordedFrame && TryGetBaseState(PreviousRecordedFrame))
+				|| (ComponentFrame != CurrentRecordedFrame && ComponentFrame != PreviousRecordedFrame && TryGetBaseState(ComponentFrame))
+				|| (PreviousComponentFrame != CurrentRecordedFrame && PreviousComponentFrame != PreviousRecordedFrame && PreviousComponentFrame != ComponentFrame && TryGetBaseState(PreviousComponentFrame));
+			if (!bGotState)
+			{
+				SourceLocalFrame = ComponentFrame;
+				BaseState = WheeledMover->BasePhysicsState;
+			}
 		}
 	}
 }
@@ -45,10 +87,21 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 bool FNetworkBaseSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
 	FNetworkPhysicsData::SerializeFrames(Ar);
+	Ar << SourceLocalFrame;
 	Ar << BaseState.Kinematic;
 	Ar << BaseState.bIsFrozen;
 	bOutSuccess = true;
 	return true;
+}
+
+int32 FNetworkBaseSpeedState::GetSourceLocalFrame() const
+{
+	if (SourceLocalFrame == INDEX_NONE)
+	{
+		return LocalFrame;
+	}
+
+	return bReceivedData ? SourceLocalFrame - (ServerFrame - LocalFrame) : SourceLocalFrame;
 }
 
 void FNetworkBaseSpeedState::InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData)
@@ -61,6 +114,7 @@ void FNetworkBaseSpeedState::InterpolateData(const FNetworkPhysicsData& MinData,
 		: (LocalFrame - MinState.LocalFrame) / (MaxState.LocalFrame - MinState.LocalFrame); // Interpolate from min to max
 	BaseState.Kinematic = Lerp(MinState.BaseState.Kinematic, MaxState.BaseState.Kinematic, LerpFactor);
 	BaseState.bIsFrozen = LerpFactor < 0.5f ? MinState.BaseState.bIsFrozen : MaxState.BaseState.bIsFrozen; // take the frozen state of the closest frame
+	SourceLocalFrame = LerpFactor < 0.5f ? MinState.SourceLocalFrame : MaxState.SourceLocalFrame;
 }
 
 bool FNetworkBaseSpeedState::CompareData(const FNetworkPhysicsData& PredictedData)
