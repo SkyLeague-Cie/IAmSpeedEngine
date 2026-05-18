@@ -83,40 +83,6 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 		WheelSubBody->SetSuspensionSim(&SkySimulation->PVehicle->Suspension[WheelIdx]);
 	}
 
-	// Adjust wheel local offsets to be symmetric on both sides of the vehicle
-	for (auto& Axle : SkySimulation->PVehicle->GetAxles())
-	{
-		uint16 WheelIdxA = Axle.Setup.WheelIndex[0];
-		uint16 WheelIdxB = Axle.Setup.WheelIndex[1];
-
-		auto& WheelA = *WheelSubBodies[WheelIdxA].Get();
-		auto& WheelB = *WheelSubBodies[WheelIdxB].Get();
-
-		FVector WheelALocalPos = WheelA.GetLocalOffset();
-		FVector WheelBLocalPos = WheelB.GetLocalOffset();
-		auto xLocalOffset = 0.5f * (WheelALocalPos.X + WheelBLocalPos.X);
-		auto yMeanLocalOffset = 0.5f * (FMath::Abs(WheelALocalPos.Y) + FMath::Abs(WheelBLocalPos.Y));
-		auto yALocalOffset = -yMeanLocalOffset;
-		auto yBLocalOffset = yMeanLocalOffset;
-		auto zLocalOffset = 0.5f * (WheelALocalPos.Z + WheelBLocalPos.Z);
-		FVector ALocalOffset = FVector(xLocalOffset, yALocalOffset, zLocalOffset);
-		WheelA.SetLocalOffset(ALocalOffset);
-		FVector BLocalOffset = FVector(xLocalOffset, yBLocalOffset, zLocalOffset);
-		WheelB.SetLocalOffset(BLocalOffset);
-#if !(UE_BUILD_SHIPPING)
-		/*UE_LOG(LogTemp, Log,
-			TEXT("Wheel[%d] Local Offset: %s"),
-			WheelIdxA,
-			*WheelALocalPos.ToString()
-		);
-		UE_LOG(LogTemp, Log,
-			TEXT("Wheel[%d] Local Offset: %s"),
-			WheelIdxB,
-			*WheelBLocalPos.ToString()
-		);*/
-#endif
-	}
-
 	// init all sub-bodies with the owner
 	HitboxSubBody->Initialize(this);
 	for (auto& WheelSubBody : WheelSubBodies)
@@ -359,9 +325,9 @@ void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 {
 	ISpeedWheeledComponent::PostPhysicsUpdatePrv(delta);
 	ApplyNetworkCorrection(delta);
+	RegisterWheelState();
 	QuantizePhysicalState();
 	RecordPhysicsState();
-	RegisterWheelState();
 }
 
 void USpeedWheeledComponent::SetIsUpsideDown(bool bUpsideDown)
@@ -549,6 +515,13 @@ void USpeedWheeledComponent::RecordPhysicsState()
 	RecordedBaseFrames[Idx] = LF;
 	RecordedBaseStates[Idx] = BasePhysicsState;
 	RecordedWheeledStates[Idx] = WheeledPhysicsState;
+
+	// Print Kinematic state for debugging for the first 3 frames after can move
+	/*if (CanMove() && NumFrame() - SinceCanMoveFrame < 3)
+	{
+		// Print kinematic state here
+		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] Recorded Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), LF, *BasePhysicsState.Kinematic.ToString());
+	}*/
 }
 
 bool USpeedWheeledComponent::GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const
@@ -818,7 +791,6 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 							TEXT("[ApplyWheelSuspension] For Frame=%d on wheel=%d. ChassisUp=%s, HitNormal=%s, ApplicationPoint=%s, HitDistance=%fcm Force=%f Vel=%fcm/s SpringDisplacement=%fcm"), NumFrame(), W.Idx(), *GetPhysUpVector().ToString(),
 							*W.GetHitContactNormal().ToString(), *ApplicationPoint.ToString(), W.GetHit().Distance, Load, GetPhysVelocity().Size(), W.SpringDisplacement());
 					}*/
-
 				AddPhysForceAtPoint(Force, ApplicationPoint);
 			};
 
@@ -956,6 +928,12 @@ void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& del
 void USpeedWheeledComponent::PostGameplayTick(const float& DeltaTime, const float& SimTime)
 {
 	WheeledUserInput.bCanMove = CanMove();
+	/*// Print Kinematic state for debugging for the first 3 frames after can move
+	if (CanMove() && NumFrame() - GetSinceCanMoveFrame() < 3)
+	{
+		// Print kinematic state here
+		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] PostGameplayTick Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+	}*/
 }
 
 
@@ -1061,6 +1039,21 @@ void USpeedWheeledComponent::RegisterWheelState()
 	for (auto& W : WheelSubBodies)
 	{
 		WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()] = W->GetLastDisplacement();
+	}
+}
+
+void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose()
+{
+	WheeledPhysicsState.AllowedSideVelocity = FVector::ZeroVector;
+	WheeledPhysicsState.AllowedAngularVelocity = FVector::ZeroVector;
+	WheeledPhysicsState.FramesSinceLastImpact = 0;
+
+	for (auto& W : WheelSubBodies)
+	{
+		const float CurrentDisplacement = W->SpringDisplacement();
+		W->SetLastDisplacement(CurrentDisplacement);
+		W->SetAngularVelocity(0.0f);
+		WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()] = CurrentDisplacement;
 	}
 }
 
@@ -1446,6 +1439,7 @@ void USpeedWheeledComponent::HandleCountdownTimer()
 			bSimTimelineWasCanMove = true;
 			bSimTimelineHasGroundState = true;
 			bSimTimelineWasGrounded = IsOnTheGround();
+			ResetWheelTransientStateForCurrentPose();
 			UnFreezeMovement();
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
 				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
@@ -1883,6 +1877,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		{
 			WheeledPhysicsState.nbFramesbeforeCanMove = 0;
 			WheeledPhysicsState.bStartCountdown = false;
+			ResetWheelTransientStateForCurrentPose();
 			UnFreezeMovement();
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Log, TEXT("[LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
@@ -1905,6 +1900,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			if (CanMove())
 			{
 				WheeledPhysicsState.bStartCountdown = false;
+				ResetWheelTransientStateForCurrentPose();
 				UnFreezeMovement();
 			}
 		}
@@ -1936,7 +1932,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 		// vel budgets : Target - PastPred - "impulse mismatch"
 		NetCorrAccum.RemVel = ErrVel;
-		NetCorrAccum.RemAngVel = ErrAngVel;
+		NetCorrAccum.RemAngVel = (ErrAngVel.Size() > AngVelCorrDeadzone) ? ErrAngVel : FVector::ZeroVector;
 
 		NetCorrAccum.bActive = true;
 	}
@@ -2029,6 +2025,11 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (bStableContact)
 	{
 		dW = FNetCorrAccum::RejectNormal(dW, ContactN);
+	}
+	if (NetCorrAccum.RemAngVel.Size() <= AngVelCorrDeadzone)
+	{
+		dW = FVector::ZeroVector;
+		NetCorrAccum.RemAngVel = FVector::ZeroVector;
 	}
 
 	// ----------------------------

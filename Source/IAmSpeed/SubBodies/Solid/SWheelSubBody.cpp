@@ -609,8 +609,8 @@ FVector USWheelSubBody::SteeringPos() const
 
 FVector USWheelSubBody::WorldPosFromCarTransform(const FTransform& CarTransform) const
 {
-    return CarTransform.TransformPosition(GetLocalOffset() +
-        (PSuspension->GetSpringLength() + PSuspension->Setup().MaxLength) * FVector::UpVector);
+	return CarTransform.TransformPosition(GetLocalOffset() +
+        SpringDisplacement() * FVector::UpVector);
 }
 
 FVector USWheelSubBody::GetSuspensionDirectionWS() const
@@ -635,7 +635,7 @@ void USWheelSubBody::SetAngularVelocity(const float& InOmega)
 
 float USWheelSubBody::SpringDisplacement() const
 {
-    return PSuspension->GetSpringLength() + PSuspension->Setup().MaxLength;
+    return PSuspension ? PSuspension->GetLastDisplacement() : 0.0f;
 }
 float USWheelSubBody::SpringLength() const
 {
@@ -728,7 +728,7 @@ float USWheelSubBody::MaxSteeringAngle() const
 
 float USWheelSubBody::GetSuspensionOffset() const
 {
-    return PSuspension->GetSuspensionOffset() + SuspensionMaxDrop();
+    return SpringDisplacement();
 }
 
 FVector USWheelSubBody::GetHitContactNormal() const
@@ -784,7 +784,7 @@ void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
 void USWheelSubBody::SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension)
 {
     PSuspension = InPSuspension;
-	SetLocalOffset(PSuspension->GetLocalRestingPosition());
+	// SetLocalOffset(PSuspension->GetLocalRestingPosition());
 }
 
 void USWheelSubBody::SetLocalOffset(const FVector& InLocalOffset)
