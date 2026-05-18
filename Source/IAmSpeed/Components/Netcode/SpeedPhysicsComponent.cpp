@@ -109,12 +109,19 @@ void FNetworkBaseSpeedState::InterpolateData(const FNetworkPhysicsData& MinData,
 	const FNetworkBaseSpeedState& MinState = static_cast<const FNetworkBaseSpeedState&>(MinData);
 	const FNetworkBaseSpeedState& MaxState = static_cast<const FNetworkBaseSpeedState&>(MaxData);
 
-	const float LerpFactor = MaxState.LocalFrame == LocalFrame
-		? 1.0f / (MaxState.LocalFrame - MinState.LocalFrame + 1) // Merge from min into max
-		: (LocalFrame - MinState.LocalFrame) / (MaxState.LocalFrame - MinState.LocalFrame); // Interpolate from min to max
-	BaseState.Kinematic = Lerp(MinState.BaseState.Kinematic, MaxState.BaseState.Kinematic, LerpFactor);
-	BaseState.bIsFrozen = LerpFactor < 0.5f ? MinState.BaseState.bIsFrozen : MaxState.BaseState.bIsFrozen; // take the frozen state of the closest frame
-	SourceLocalFrame = LerpFactor < 0.5f ? MinState.SourceLocalFrame : MaxState.SourceLocalFrame;
+	const int32 MinFrame = static_cast<int32>(MinState.LocalFrame);
+	const int32 MaxFrame = static_cast<int32>(MaxState.LocalFrame);
+	const int32 ThisFrame = static_cast<int32>(LocalFrame);
+	const int32 FrameDelta = MaxFrame - MinFrame;
+	const float LerpFactor = FrameDelta != 0 ? float(ThisFrame - MinFrame) / float(FrameDelta) : 1.f;
+	const bool bUseMaxState = (MaxFrame == ThisFrame) || LerpFactor >= 0.5f;
+	const FNetworkBaseSpeedState& SourceState = bUseMaxState ? MaxState : MinState;
+
+	BaseState = SourceState.BaseState;
+	SourceLocalFrame = SourceState.SourceLocalFrame;
+	bIsAutonomousProxy = SourceState.bIsAutonomousProxy;
+	ClientNetSettings = SourceState.ClientNetSettings;
+	SimProxyNetSettings = SourceState.SimProxyNetSettings;
 }
 
 bool FNetworkBaseSpeedState::CompareData(const FNetworkPhysicsData& PredictedData)

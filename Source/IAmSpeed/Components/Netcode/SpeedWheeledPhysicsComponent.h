@@ -51,7 +51,7 @@ struct FWheeledPhysicsState
 	FVector_NetQuantize100 AllowedSideVelocity = FVector::ZeroVector;
 	// allowed angular velocity for steering
 	UPROPERTY()
-	FVector_NetQuantize100 AllowedAngularVelocity = FVector::ZeroVector;
+	FVector AllowedAngularVelocity = FVector::ZeroVector;
 
 	// Wheel states
 	/** Suspension latest displacement to be used while simulating(to compute spring displacement speed)*/
@@ -70,9 +70,9 @@ struct FWheeledPhysicsState
 		return (int16)FMath::Clamp(q, -32767, 32767);
 	}
 
-	static FORCEINLINE float DequantizeSigned(int16 q, float invScale)
+	static FORCEINLINE float DequantizeSigned(int16 q, float scale)
 	{
-		return (float)q * invScale;
+		return (float)q / FMath::Max(scale, SMALL_NUMBER);
 	}
 };
 

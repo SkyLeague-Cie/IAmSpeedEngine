@@ -203,7 +203,7 @@ public:
 	// Deadzone for the correction to apply on the angular velocity in rad/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float AngVelCorrDeadzone = 0.01f;
+	float AngVelCorrDeadzone = 0.0001f;
 	// Deadzone for the correction to apply on the rotation in deg (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))

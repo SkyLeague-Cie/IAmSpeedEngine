@@ -104,24 +104,16 @@ void FNetworkWheeledSpeedState::InterpolateData(const FNetworkPhysicsData& MinDa
 	const FNetworkWheeledSpeedState& MinState = static_cast<const FNetworkWheeledSpeedState&>(MinData);
 	const FNetworkWheeledSpeedState& MaxState = static_cast<const FNetworkWheeledSpeedState&>(MaxData);
 
-	const float LerpFactor = MaxState.LocalFrame == LocalFrame
-		? 1.0f / (MaxState.LocalFrame - MinState.LocalFrame + 1) // Merge from min into max
-		: (LocalFrame - MinState.LocalFrame) / (MaxState.LocalFrame - MinState.LocalFrame); // Interpolate from min to max
+	const int32 MinFrame = static_cast<int32>(MinState.LocalFrame);
+	const int32 MaxFrame = static_cast<int32>(MaxState.LocalFrame);
+	const int32 ThisFrame = static_cast<int32>(LocalFrame);
+	const int32 FrameDelta = MaxFrame - MinFrame;
+	const float LerpFactor = FrameDelta != 0 ? float(ThisFrame - MinFrame) / float(FrameDelta) : 1.f;
+	const bool bUseMaxState = (MaxFrame == ThisFrame) || LerpFactor >= 0.5f;
+	const FNetworkWheeledSpeedState& SourceState = bUseMaxState ? MaxState : MinState;
 
-	const FWheeledPhysicsState& DiscreteState = LerpFactor < 0.5f ? MinState.WheeledState : MaxState.WheeledState;
-	WheeledState.bStartCountdown = DiscreteState.bStartCountdown;
-	WheeledState.nbFramesbeforeCanMove = DiscreteState.nbFramesbeforeCanMove;
-	WheeledState.AllowedSideVelocity = FMath::Lerp(MinState.WheeledState.AllowedSideVelocity, MaxState.WheeledState.AllowedSideVelocity, LerpFactor);
-	WheeledState.AllowedAngularVelocity = FMath::Lerp(MinState.WheeledState.AllowedAngularVelocity, MaxState.WheeledState.AllowedAngularVelocity, LerpFactor);
-	WheeledState.NbFramesSinceGroundContact = DiscreteState.NbFramesSinceGroundContact;
-	WheeledState.FramesSinceLastImpact = DiscreteState.FramesSinceLastImpact;
-	SourceLocalFrame = LerpFactor < 0.5f ? MinState.SourceLocalFrame : MaxState.SourceLocalFrame;
-
-	int32 NumWheels = 4;
-	for (int32 WheelIdx = 0; WheelIdx < NumWheels; ++WheelIdx)
-	{
-		WheeledState.SuspensionLastDisplacement[WheelIdx] = FMath::Lerp(MinState.WheeledState.SuspensionLastDisplacement[WheelIdx], MaxState.WheeledState.SuspensionLastDisplacement[WheelIdx], LerpFactor);
-	}
+	WheeledState = SourceState.WheeledState;
+	SourceLocalFrame = SourceState.SourceLocalFrame;
 }
 
 bool FNetworkWheeledSpeedState::CompareData(const FNetworkPhysicsData& PredictedData)
