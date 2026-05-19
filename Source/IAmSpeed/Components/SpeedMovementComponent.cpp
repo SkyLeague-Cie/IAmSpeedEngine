@@ -73,6 +73,27 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 	}
 }
 
+bool USpeedMovementComponent::ShouldCreatePhysicsState() const
+{
+	if (!IsRegistered() || IsBeingDestroyed())
+	{
+		return false;
+	}
+
+	// only create 'Physics' state in game
+	UWorld* World = GetWorld();
+	if (World->IsGameWorld())
+	{
+		FPhysScene* PhysScene = World->GetPhysicsScene();
+		if (PhysScene && UpdatedComponent)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 void USpeedMovementComponent::OnDestroyPhysicsState()
 {
 	Super::OnDestroyPhysicsState();

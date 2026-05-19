@@ -24,6 +24,7 @@ public:
 	void InitNetwork();
 	/** Used to create any physics engine information for this component */
 	virtual void OnCreatePhysicsState() override;
+	bool ShouldCreatePhysicsState() const override;
 	/** Used to shut down and physics engine structure for this component */
 	virtual void OnDestroyPhysicsState() override;
 	// Used to create the sub-bodies owned by this component (e.g. for a car body, this would be creating the wheel sub-bodies and the hitbox sub-body)
