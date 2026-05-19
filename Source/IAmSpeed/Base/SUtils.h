@@ -236,7 +236,7 @@ namespace Speed
 		// Compute the number of frames to simulate for a given simulation time and FPS, adding 1 to be aligned with netcode local frame counting (which starts at 1).
 		static int32 ComputeNumFrameFromSimTime(const unsigned int& FPS, const float& SimTime)
 		{
-			return FMath::CeilToInt32(SimTime * FPS) + 1; // +1 to be aligned with netcode local frame counting (starts at 1)
+			return FMath::RoundToInt(SimTime * FPS) + 1; // +1 to be aligned with netcode local frame counting (starts at 1)
 		}
 
 		static int32 GetRecordedFrameFromNetworkLocalFrame(const int32& NetworkLocalFrame)
