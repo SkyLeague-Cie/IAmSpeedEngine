@@ -778,7 +778,6 @@ void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
         return;
     }
     PWheel = InPWheel;
-    SetRadius(PWheel->GetEffectiveRadius());
 }
 
 void USWheelSubBody::SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension)
