@@ -1063,6 +1063,10 @@ float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 	{
 		return 0.0f;
 	}
+	if (!CanMove())
+	{
+		return 0.0f;
+	}
 	return WheelSubBodies[WheelIndex]->GetSuspensionOffset();
 }
 
