@@ -253,7 +253,36 @@ namespace Speed
 			return DefaultEnginePhysicsFPS;
 		}
 	};
-	
+
+	static uint8 MoveTowardUInt8(const uint8 Current, const uint8 Target, const uint8 Step)
+	{
+		if (Current < Target)
+		{
+			return uint8(FMath::Min<int32>(int32(Current) + int32(Step), int32(Target)));
+		}
+
+		if (Current > Target)
+		{
+			return uint8(FMath::Max<int32>(int32(Current) - int32(Step), int32(Target)));
+		}
+
+		return Current;
+	}
+
+	static int8 MoveTowardInt8(const int8 Current, const int8 Target, const int8 Step)
+	{
+		if (Current < Target)
+		{
+			return int8(FMath::Min<int32>(int32(Current) + int32(Step), int32(Target)));
+		}
+
+		if (Current > Target)
+		{
+			return int8(FMath::Max<int32>(int32(Current) - int32(Step), int32(Target)));
+		}
+
+		return Current;
+	}
 }
 
 using SSBox = Speed::SBox;

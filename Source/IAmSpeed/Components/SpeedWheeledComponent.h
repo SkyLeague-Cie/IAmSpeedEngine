@@ -45,6 +45,12 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+	struct FPendingWheeledInputCommand
+	{
+		int32 ActivationFrame = INDEX_NONE;
+		FWheeledInputState Input;
+	};
+
 	USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer);
 
 	// Set the owner of this component. Call this at begin play
@@ -432,6 +438,8 @@ private:
 	void UpdateWheeledPhysicalInputFromUser(bool bForce = false);
 	void RestoreWheeledPhysicalInputFromState();
 	void SyncWheeledPhysicalInputToState();
+	void ConsumeQueuedWheeledInputsForFrame(const int32 CurrentFrame);
+	void QueueWheeledInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input);
 
 
 	//=========== Internal state variables for the movement component ===========
@@ -475,4 +483,7 @@ private:
 	bool bSimTimelineWasCanMove = false;
 	bool bSimTimelineWasGrounded = false;
 	bool bSimTimelineHasGroundState = false;
+
+	static constexpr int32 MaxPendingWheeledInputs = 256;
+	TArray<FPendingWheeledInputCommand> PendingWheeledInputCommands;
 };

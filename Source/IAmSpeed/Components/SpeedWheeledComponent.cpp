@@ -15,40 +15,6 @@ DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
 
-namespace
-{
-	constexpr int32 SpeedInputSlewStepPerFrame = 16;
-
-	uint8 MoveUnsignedInputTowards(uint8 Current, uint8 Target)
-	{
-		const int32 CurrentValue = int32(Current);
-		const int32 TargetValue = int32(Target);
-		if (CurrentValue < TargetValue)
-		{
-			return uint8(FMath::Min(CurrentValue + SpeedInputSlewStepPerFrame, TargetValue));
-		}
-		if (CurrentValue > TargetValue)
-		{
-			return uint8(FMath::Max(CurrentValue - SpeedInputSlewStepPerFrame, TargetValue));
-		}
-		return Current;
-	}
-
-	int8 MoveSignedInputTowards(int8 Current, int8 Target)
-	{
-		const int32 CurrentValue = int32(Current);
-		const int32 TargetValue = int32(Target);
-		if (CurrentValue < TargetValue)
-		{
-			return int8(FMath::Min(CurrentValue + SpeedInputSlewStepPerFrame, TargetValue));
-		}
-		if (CurrentValue > TargetValue)
-		{
-			return int8(FMath::Max(CurrentValue - SpeedInputSlewStepPerFrame, TargetValue));
-		}
-		return Current;
-	}
-}
 const FName USpeedWheeledComponent::HitboxName = TEXT("Hitbox");
 const TArray<FName> USpeedWheeledComponent::WheelNames = { TEXT("Wheel_0"), TEXT("Wheel_1"), TEXT("Wheel_2"), TEXT("Wheel_3")};
 
@@ -707,12 +673,17 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 		return;
 	}
 
-	// Re-simulation case: if the candidate frame is less than the previous frame,
-	// it means we are doing a re-simulation and we should update the NumFrame to the candidate frame to reflect the current simulation time.
-	// This can happen when we receive a correction from the server that requires us to roll back and re-simulate some frames.
 	if (CandidateFrame < PreviousFrame)
 	{
-		BaseGameState.NumFrame = CandidateFrame;
+		constexpr int32 MinRollbackFramesForResim = 4;
+		const int32 RollbackFrames = PreviousFrame - CandidateFrame;
+		if (!HasAuthority() && RollbackFrames >= MinRollbackFramesForResim)
+		{
+			BaseGameState.NumFrame = CandidateFrame;
+			return;
+		}
+
+		BaseGameState.NumFrame = PreviousFrame + 1;
 		return;
 	}
 
@@ -731,32 +702,59 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 	BaseGameState.NumFrame = CandidateFrame;
 }
 
+void USpeedWheeledComponent::ConsumeQueuedWheeledInputsForFrame(const int32 CurrentFrame)
+{
+	for (int32 i = PendingWheeledInputCommands.Num() - 1; i >= 0; --i)
+	{
+		const FPendingWheeledInputCommand& Cmd = PendingWheeledInputCommands[i];
+
+		if (Cmd.ActivationFrame <= CurrentFrame)
+		{
+			WheeledUserInput = Cmd.Input;
+			PendingWheeledInputCommands.RemoveAt(i);
+		}
+	}
+}
+
 void USpeedWheeledComponent::UpdateInputs()
 {
-	UpdateWheeledPhysicalInputFromUser();
+	const int32 CurrentFrame = NumFrame();
+
+	ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
+
+	UpdateWheeledPhysicalInputFromUser(false);
 }
 
 void USpeedWheeledComponent::UpdateWheeledPhysicalInputFromUser(bool bForce)
 {
-	const int32 CurrentFrame = int32(NumFrame());
-	const bool bAlreadyUpdatedThisFrame = LastWheeledInputSlewFrame == CurrentFrame;
-	if (bAlreadyUpdatedThisFrame && !bForce)
+	const int32 CurrentFrame = NumFrame();
+
+	if (!bForce && LastWheeledInputSlewFrame == CurrentFrame)
 	{
 		return;
 	}
-	if (!bAlreadyUpdatedThisFrame)
-	{
-		WheeledPhysicalInputBeforeSlew = WheeledPhysicalInput;
-	}
+
 	LastWheeledInputSlewFrame = CurrentFrame;
 
-	const FWheeledInputState& FrameStartInput = bAlreadyUpdatedThisFrame ? WheeledPhysicalInputBeforeSlew : WheeledPhysicalInput;
-	WheeledPhysicalInput.bCanMove = WheeledUserInput.bCanMove;
-	WheeledPhysicalInput.Throttle = MoveUnsignedInputTowards(FrameStartInput.Throttle, WheeledUserInput.Throttle);
-	WheeledPhysicalInput.Brake = MoveUnsignedInputTowards(FrameStartInput.Brake, WheeledUserInput.Brake);
-	WheeledPhysicalInput.Steer = MoveSignedInputTowards(FrameStartInput.Steer, WheeledUserInput.Steer);
+	constexpr uint8 StepPerFrame = 16;
 
-	SyncWheeledPhysicalInputToState();
+	WheeledPhysicalInput.Throttle = Speed::MoveTowardUInt8(
+		WheeledPhysicalInput.Throttle,
+		WheeledUserInput.Throttle,
+		StepPerFrame
+	);
+
+	WheeledPhysicalInput.Brake = Speed::MoveTowardUInt8(
+		WheeledPhysicalInput.Brake,
+		WheeledUserInput.Brake,
+		StepPerFrame
+	);
+
+	WheeledPhysicalInput.Steer = Speed::MoveTowardInt8(
+		WheeledPhysicalInput.Steer,
+		WheeledUserInput.Steer,
+		StepPerFrame
+	);
 }
 
 void USpeedWheeledComponent::RestoreWheeledPhysicalInputFromState()
@@ -766,7 +764,7 @@ void USpeedWheeledComponent::RestoreWheeledPhysicalInputFromState()
 	WheeledPhysicalInput.Brake = WheeledPhysicsState.PhysicalBrakeInput;
 	WheeledPhysicalInput.Steer = WheeledPhysicsState.PhysicalSteerInput;
 	WheeledPhysicalInputBeforeSlew = WheeledPhysicalInput;
-	LastWheeledInputSlewFrame = INDEX_NONE;
+	LastWheeledInputSlewFrame = NumFrame();
 }
 
 void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
@@ -774,6 +772,42 @@ void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
 	WheeledPhysicsState.PhysicalThrottleInput = WheeledPhysicalInput.Throttle;
 	WheeledPhysicsState.PhysicalBrakeInput = WheeledPhysicalInput.Brake;
 	WheeledPhysicsState.PhysicalSteerInput = WheeledPhysicalInput.Steer;
+}
+
+void USpeedWheeledComponent::QueueWheeledInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
+{
+	if (ActivationFrame == INDEX_NONE)
+	{
+		return;
+	}
+
+	// If a command already exists for this frame -> replace it
+	for (FPendingWheeledInputCommand& Cmd : PendingWheeledInputCommands)
+	{
+		if (Cmd.ActivationFrame == ActivationFrame)
+		{
+			Cmd.Input = Input;
+			return;
+		}
+	}
+
+	FPendingWheeledInputCommand NewCmd;
+	NewCmd.ActivationFrame = ActivationFrame;
+	NewCmd.Input = Input;
+
+	PendingWheeledInputCommands.Add(NewCmd);
+
+	PendingWheeledInputCommands.Sort(
+		[](const FPendingWheeledInputCommand& A, const FPendingWheeledInputCommand& B)
+		{
+			return A.ActivationFrame < B.ActivationFrame;
+		}
+	);
+
+	while (PendingWheeledInputCommands.Num() > MaxPendingWheeledInputs)
+	{
+		PendingWheeledInputCommands.RemoveAt(0);
+	}
 }
 
 void USpeedWheeledComponent::UpdateState(float DeltaTime)
@@ -2054,7 +2088,19 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		return;
 
 	const FNetworkBaseSpeedState& Target = *LastServerState;
-	const int32 TargetSourceLocalFrame = Target.GetSourceLocalFrame();
+	const auto ResolveSourceFrame = [this](const int32 OffsetSourceLocalFrame, const int32 SourceFramesSinceCanMove)
+	{
+		if (SourceFramesSinceCanMove != INDEX_NONE)
+		{
+			if (SinceCanMoveFrame != INDEX_NONE)
+			{
+				return SinceCanMoveFrame + SourceFramesSinceCanMove;
+			}
+		}
+
+		return OffsetSourceLocalFrame;
+	};
+	const int32 TargetSourceLocalFrame = ResolveSourceFrame(Target.GetSourceLocalFrame(), Target.SourceFramesSinceCanMove);
 	if (TargetSourceLocalFrame < 0 || TargetSourceLocalFrame > CurrentFrame)
 	{
 		return;
@@ -2098,7 +2144,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		return;
 
 	const FNetworkWheeledSpeedState& WheeledTarget = *LastWheeledServerState;
-	const int32 WheeledSourceLocalFrame = WheeledTarget.GetSourceLocalFrame();
+	const int32 WheeledSourceLocalFrame = ResolveSourceFrame(WheeledTarget.GetSourceLocalFrame(), WheeledTarget.SourceFramesSinceCanMove);
 	if (WheeledSourceLocalFrame < 0 || WheeledSourceLocalFrame > CurrentFrame)
 	{
 		return;

@@ -41,6 +41,7 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 				if (Mover->GetBaseState(Frame, BaseState))
 				{
 					SourceLocalFrame = Frame;
+					SourceFramesSinceCanMove = INDEX_NONE;
 					return true;
 				}
 				return false;
@@ -52,6 +53,7 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 			if (!bGotState)
 			{
 				SourceLocalFrame = ComponentFrame;
+				SourceFramesSinceCanMove = INDEX_NONE;
 				BaseState = Mover->BasePhysicsState;
 			}
 		}
@@ -66,6 +68,10 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 				if (WheeledMover->GetBaseState(Frame, BaseState))
 				{
 					SourceLocalFrame = Frame;
+					const int32 SinceCanMoveFrame = WheeledMover->GetSinceCanMoveFrame();
+					SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && Frame >= SinceCanMoveFrame)
+						? Frame - SinceCanMoveFrame
+						: INDEX_NONE;
 					return true;
 				}
 				return false;
@@ -77,6 +83,10 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 			if (!bGotState)
 			{
 				SourceLocalFrame = ComponentFrame;
+				const int32 SinceCanMoveFrame = WheeledMover->GetSinceCanMoveFrame();
+				SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && ComponentFrame >= SinceCanMoveFrame)
+					? ComponentFrame - SinceCanMoveFrame
+					: INDEX_NONE;
 				BaseState = WheeledMover->BasePhysicsState;
 			}
 		}
@@ -88,6 +98,7 @@ bool FNetworkBaseSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& 
 {
 	FNetworkPhysicsData::SerializeFrames(Ar);
 	Ar << SourceLocalFrame;
+	Ar << SourceFramesSinceCanMove;
 	Ar << BaseState.Kinematic;
 	Ar << BaseState.bIsFrozen;
 	bOutSuccess = true;
@@ -119,6 +130,7 @@ void FNetworkBaseSpeedState::InterpolateData(const FNetworkPhysicsData& MinData,
 
 	BaseState = SourceState.BaseState;
 	SourceLocalFrame = SourceState.SourceLocalFrame;
+	SourceFramesSinceCanMove = SourceState.SourceFramesSinceCanMove;
 	bIsAutonomousProxy = SourceState.bIsAutonomousProxy;
 	ClientNetSettings = SourceState.ClientNetSettings;
 	SimProxyNetSettings = SourceState.SimProxyNetSettings;

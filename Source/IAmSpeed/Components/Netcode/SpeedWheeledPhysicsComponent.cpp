@@ -33,6 +33,10 @@ void FNetworkWheeledSpeedState::BuildData(const UActorComponent* NetworkComponen
 				if (Mover->GetWheeledState(Frame, WheeledState))
 				{
 					SourceLocalFrame = Frame;
+					const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
+					SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && Frame >= SinceCanMoveFrame)
+						? Frame - SinceCanMoveFrame
+						: INDEX_NONE;
 					return true;
 				}
 				return false;
@@ -44,6 +48,10 @@ void FNetworkWheeledSpeedState::BuildData(const UActorComponent* NetworkComponen
 			if (!bGotState)
 			{
 				SourceLocalFrame = ComponentFrame;
+				const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
+				SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && ComponentFrame >= SinceCanMoveFrame)
+					? ComponentFrame - SinceCanMoveFrame
+					: INDEX_NONE;
 				WheeledState = Mover->WheeledPhysicsState;
 			}
 		}
@@ -54,6 +62,7 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 {
 	FNetworkPhysicsData::SerializeFrames(Ar);
 	Ar << SourceLocalFrame;
+	Ar << SourceFramesSinceCanMove;
 	Ar << WheeledState.nbFramesbeforeCanMove;
 	Ar << WheeledState.AllowedSideVelocity;
 	Ar << WheeledState.AllowedAngularVelocity;
@@ -118,6 +127,7 @@ void FNetworkWheeledSpeedState::InterpolateData(const FNetworkPhysicsData& MinDa
 
 	WheeledState = SourceState.WheeledState;
 	SourceLocalFrame = SourceState.SourceLocalFrame;
+	SourceFramesSinceCanMove = SourceState.SourceFramesSinceCanMove;
 }
 
 bool FNetworkWheeledSpeedState::CompareData(const FNetworkPhysicsData& PredictedData)
@@ -148,11 +158,17 @@ void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent
 {
 	if (USpeedWheeledComponent* Mover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
-		Mover->WheeledUserInput = WheeledInput;
-		if (int32(LocalFrame) == Mover->NumFrame())
-		{
-			Mover->UpdateWheeledPhysicalInputFromUser(true);
-		}
+		const int32 ActivationFrame = int32(LocalFrame);
+		const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
+		const int32 TimelineActivationFrame =
+			(ClientFramesSinceCanMove != INDEX_NONE && SinceCanMoveFrame != INDEX_NONE)
+			? SinceCanMoveFrame + ClientFramesSinceCanMove
+			: ActivationFrame;
+
+		Mover->QueueWheeledInputForFrame(
+			TimelineActivationFrame,
+			WheeledInput
+		);
 	}
 }
 
@@ -164,6 +180,10 @@ void FNetworkWheeledSpeedInputState::BuildData(const UActorComponent* NetworkCom
 		{
 			WheeledInput = Mover->WheeledUserInput;
 			ClientFrame = Mover->NumFrame();
+			const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
+			ClientFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && int32(ClientFrame) >= SinceCanMoveFrame)
+				? int32(ClientFrame) - SinceCanMoveFrame
+				: INDEX_NONE;
 			bIsAutonomousProxy = Mover->GetOwnerRole() == ROLE_AutonomousProxy;
 		}
 	}
@@ -176,6 +196,7 @@ bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map
 	Ar << WheeledInput.Brake;
 	Ar << WheeledInput.Steer;
 	Ar << ClientFrame;
+	Ar << ClientFramesSinceCanMove;
 	Ar << bIsAutonomousProxy;
 	bOutSuccess = true;
 	return true;
@@ -196,6 +217,13 @@ void FNetworkWheeledSpeedInputState::InterpolateData(const FNetworkPhysicsData& 
 	WheeledInput.Throttle = Speed::Interpolate(MinState.WheeledInput.Throttle, MaxState.WheeledInput.Throttle, LerpFactor);
 	WheeledInput.Brake = Speed::Interpolate(MinState.WheeledInput.Brake, MaxState.WheeledInput.Brake, LerpFactor);
 	WheeledInput.Steer = Speed::Interpolate(MinState.WheeledInput.Steer, MaxState.WheeledInput.Steer, LerpFactor);
+	ClientFrame = MaxState.LocalFrame == LocalFrame
+		? MaxState.ClientFrame
+		: static_cast<uint32>(FMath::RoundToInt(FMath::Lerp(float(MinState.ClientFrame), float(MaxState.ClientFrame), LerpFactor)));
+	ClientFramesSinceCanMove = (MinState.ClientFramesSinceCanMove != INDEX_NONE && MaxState.ClientFramesSinceCanMove != INDEX_NONE)
+		? FMath::RoundToInt(FMath::Lerp(float(MinState.ClientFramesSinceCanMove), float(MaxState.ClientFramesSinceCanMove), LerpFactor))
+		: (MaxState.ClientFramesSinceCanMove != INDEX_NONE ? MaxState.ClientFramesSinceCanMove : MinState.ClientFramesSinceCanMove);
+	bIsAutonomousProxy = MaxState.bIsAutonomousProxy;
 }
 
 bool FNetworkWheeledSpeedInputState::CompareData(const FNetworkPhysicsData& PredictedData)

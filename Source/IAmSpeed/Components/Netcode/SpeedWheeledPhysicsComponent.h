@@ -111,6 +111,9 @@ struct FNetworkWheeledSpeedState : public FNetworkPhysicsData
 	UPROPERTY()
 	int32 SourceLocalFrame = INDEX_NONE;
 
+	UPROPERTY()
+	int32 SourceFramesSinceCanMove = INDEX_NONE;
+
 	// true iff this state is corresponding to an autonomous proxy on this simulation
 	bool bIsAutonomousProxy = false;
 
@@ -158,6 +161,9 @@ struct FNetworkWheeledSpeedInputState : public FNetworkPhysicsData
 
 	UPROPERTY()
 	uint32 ClientFrame = 0; // NumFrame() client side when the input was sent
+
+	UPROPERTY()
+	int32 ClientFramesSinceCanMove = INDEX_NONE;
 
 	UPROPERTY()
 	bool bIsAutonomousProxy = false;
