@@ -4,7 +4,7 @@
 
 namespace Speed
 {
-	struct FKinematicState
+	struct IAMSPEED_API FKinematicState
 	{
 		FKinematicState() = default;
 

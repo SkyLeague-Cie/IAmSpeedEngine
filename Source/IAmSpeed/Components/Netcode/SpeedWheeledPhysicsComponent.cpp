@@ -14,6 +14,7 @@ void FNetworkWheeledSpeedState::ApplyData(UActorComponent* NetworkComponent) con
 		UE_LOG(WheelNetcodeLog, Warning, TEXT("[WheeledSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
 #endif
 		Mover->WheeledPhysicsState = WheeledState;
+		Mover->RestoreWheeledPhysicalInputFromState();
 	}
 }
 
@@ -58,6 +59,9 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 	Ar << WheeledState.AllowedAngularVelocity;
 	Ar << WheeledState.NbFramesSinceGroundContact;
 	Ar << WheeledState.FramesSinceLastImpact;
+	Ar << WheeledState.PhysicalThrottleInput;
+	Ar << WheeledState.PhysicalBrakeInput;
+	Ar << WheeledState.PhysicalSteerInput;
 
 	uint8 Flags = 0;
 	if (Ar.IsSaving())
@@ -147,7 +151,7 @@ void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent
 		Mover->WheeledUserInput = WheeledInput;
 		if (int32(LocalFrame) == Mover->NumFrame())
 		{
-			Mover->WheeledPhysicalInput = WheeledInput;
+			Mover->UpdateWheeledPhysicalInputFromUser(true);
 		}
 	}
 }

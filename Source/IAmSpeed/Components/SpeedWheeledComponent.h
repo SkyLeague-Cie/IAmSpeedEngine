@@ -211,6 +211,7 @@ protected:
 	void SetEngineFPS(const unsigned int& FPS);
 	float GetEngineFPS() const;
 	int32 GetSinceCanMoveFrame() const;
+	unsigned int NbFramesSinceCanMove() const;
 	// Get the current frame number for this component (e.g. to be used for network replication)
 	unsigned int GetCurrentFrame() const;
 
@@ -428,6 +429,9 @@ private:
 	}
 
 	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
+	void UpdateWheeledPhysicalInputFromUser(bool bForce = false);
+	void RestoreWheeledPhysicalInputFromState();
+	void SyncWheeledPhysicalInputToState();
 
 
 	//=========== Internal state variables for the movement component ===========
@@ -437,6 +441,8 @@ private:
 	FWheeledPhysicsState WheeledPhysicsState; // current wheeled physics state of the component (replicated on network)
 	FWheeledInputState WheeledUserInput; // input state given by the user for this component (replicated on network)
 	FWheeledInputState WheeledPhysicalInput; // input state used for physics simulation (e.g. after being processed from the user input)
+	FWheeledInputState WheeledPhysicalInputBeforeSlew;
+	int32 LastWheeledInputSlewFrame = INDEX_NONE;
 	FVector CarLocalInvI = FVector::ZeroVector; // local inverse inertia tensor of the car body (in local space)
 
 	TArray<int32> RecordedBaseFrames;

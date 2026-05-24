@@ -59,6 +59,13 @@ struct FWheeledPhysicsState
 	float SuspensionLastDisplacement[4] = { 0,0,0,0 };
 
 	UPROPERTY()
+	uint8 PhysicalThrottleInput = 0;
+	UPROPERTY()
+	uint8 PhysicalBrakeInput = 0;
+	UPROPERTY()
+	int8 PhysicalSteerInput = 0;
+
+	UPROPERTY()
 	uint8 NbFramesSinceGroundContact = 0; // number of frames since last ground contact
 
 	int16 QuantizeLastSuspensionDisplacement(int wheelIndex) const;

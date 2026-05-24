@@ -15,6 +15,40 @@ DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
 
+namespace
+{
+	constexpr int32 SpeedInputSlewStepPerFrame = 16;
+
+	uint8 MoveUnsignedInputTowards(uint8 Current, uint8 Target)
+	{
+		const int32 CurrentValue = int32(Current);
+		const int32 TargetValue = int32(Target);
+		if (CurrentValue < TargetValue)
+		{
+			return uint8(FMath::Min(CurrentValue + SpeedInputSlewStepPerFrame, TargetValue));
+		}
+		if (CurrentValue > TargetValue)
+		{
+			return uint8(FMath::Max(CurrentValue - SpeedInputSlewStepPerFrame, TargetValue));
+		}
+		return Current;
+	}
+
+	int8 MoveSignedInputTowards(int8 Current, int8 Target)
+	{
+		const int32 CurrentValue = int32(Current);
+		const int32 TargetValue = int32(Target);
+		if (CurrentValue < TargetValue)
+		{
+			return int8(FMath::Min(CurrentValue + SpeedInputSlewStepPerFrame, TargetValue));
+		}
+		if (CurrentValue > TargetValue)
+		{
+			return int8(FMath::Max(CurrentValue - SpeedInputSlewStepPerFrame, TargetValue));
+		}
+		return Current;
+	}
+}
 const FName USpeedWheeledComponent::HitboxName = TEXT("Hitbox");
 const TArray<FName> USpeedWheeledComponent::WheelNames = { TEXT("Wheel_0"), TEXT("Wheel_1"), TEXT("Wheel_2"), TEXT("Wheel_3")};
 
@@ -605,6 +639,11 @@ int32 USpeedWheeledComponent::GetSinceCanMoveFrame() const
 	return SinceCanMoveFrame;
 }
 
+unsigned int USpeedWheeledComponent::NbFramesSinceCanMove() const
+{
+	return NumFrame() - GetSinceCanMoveFrame();
+}
+
 unsigned int USpeedWheeledComponent::GetCurrentFrame() const
 {
 	// Look up the current frame in the recorded history to get the most up-to-date frame number
@@ -649,6 +688,7 @@ void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& Si
 void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 {
 	UpdateNumFrame(SimTime);
+	HandleCountdownTimer();
 	UpdateInputs();
 	TagStateHistoryProxyRole();
 	RecoverWheelState();
@@ -661,8 +701,47 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 
 void USpeedWheeledComponent::UpdateInputs()
 {
-	// Update inputs
-	WheeledPhysicalInput = WheeledUserInput; // copy all inputs for physics simulation
+	UpdateWheeledPhysicalInputFromUser();
+}
+
+void USpeedWheeledComponent::UpdateWheeledPhysicalInputFromUser(bool bForce)
+{
+	const int32 CurrentFrame = int32(NumFrame());
+	const bool bAlreadyUpdatedThisFrame = LastWheeledInputSlewFrame == CurrentFrame;
+	if (bAlreadyUpdatedThisFrame && !bForce)
+	{
+		return;
+	}
+	if (!bAlreadyUpdatedThisFrame)
+	{
+		WheeledPhysicalInputBeforeSlew = WheeledPhysicalInput;
+	}
+	LastWheeledInputSlewFrame = CurrentFrame;
+
+	const FWheeledInputState& FrameStartInput = bAlreadyUpdatedThisFrame ? WheeledPhysicalInputBeforeSlew : WheeledPhysicalInput;
+	WheeledPhysicalInput.bCanMove = WheeledUserInput.bCanMove;
+	WheeledPhysicalInput.Throttle = MoveUnsignedInputTowards(FrameStartInput.Throttle, WheeledUserInput.Throttle);
+	WheeledPhysicalInput.Brake = MoveUnsignedInputTowards(FrameStartInput.Brake, WheeledUserInput.Brake);
+	WheeledPhysicalInput.Steer = MoveSignedInputTowards(FrameStartInput.Steer, WheeledUserInput.Steer);
+
+	SyncWheeledPhysicalInputToState();
+}
+
+void USpeedWheeledComponent::RestoreWheeledPhysicalInputFromState()
+{
+	WheeledPhysicalInput.bCanMove = WheeledUserInput.bCanMove;
+	WheeledPhysicalInput.Throttle = WheeledPhysicsState.PhysicalThrottleInput;
+	WheeledPhysicalInput.Brake = WheeledPhysicsState.PhysicalBrakeInput;
+	WheeledPhysicalInput.Steer = WheeledPhysicsState.PhysicalSteerInput;
+	WheeledPhysicalInputBeforeSlew = WheeledPhysicalInput;
+	LastWheeledInputSlewFrame = INDEX_NONE;
+}
+
+void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
+{
+	WheeledPhysicsState.PhysicalThrottleInput = WheeledPhysicalInput.Throttle;
+	WheeledPhysicsState.PhysicalBrakeInput = WheeledPhysicalInput.Brake;
+	WheeledPhysicsState.PhysicalSteerInput = WheeledPhysicalInput.Steer;
 }
 
 void USpeedWheeledComponent::UpdateState(float DeltaTime)
@@ -674,6 +753,8 @@ void USpeedWheeledComponent::RecordPhysicsState()
 {
 	const int32 LF = GetCurrentFrame();
 	const int32 Idx = LF % SpeedConstants::RecordedHistorySize;
+
+	SyncWheeledPhysicalInputToState();
 
 	RecordedBaseFrames[Idx] = LF;
 	RecordedBaseStates[Idx] = BasePhysicsState;
@@ -1583,7 +1664,6 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 
 void USpeedWheeledComponent::HandleTimers()
 {
-	HandleCountdownTimer();
 	HandleWheelTimers();
 }
 
@@ -2222,8 +2302,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// Apply to current state
 	// ------------------------------------------------------------
 	// Deadzones (on the quantity applied) -> avoids micro jitter at convergence
-	constexpr float PosApplyDeadzone = 0.001f;  // cm
-	constexpr float VelApplyDeadzone = 0.002f;   // cm/s
+	constexpr float PosApplyDeadzone = 0.01f;  // cm
+	constexpr float VelApplyDeadzone = 0.01f;   // cm/s
 	constexpr float AngVelApplyDeadzone = 0.00005f; // rad/s
 	constexpr float RotApplyDeadzoneDeg = 0.001f;
 	const int32 kickoff = 0;
