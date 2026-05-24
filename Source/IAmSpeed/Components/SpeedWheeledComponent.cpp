@@ -696,7 +696,39 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 {
-	BaseGameState.NumFrame = Speed::SimUtils::ComputeNumFrameFromSimTime(EngineFPS, SimTime);
+	const int32 CandidateFrame =
+		FMath::RoundToInt32(double(SimTime) * double(EngineFPS)) + 1;
+
+	const int32 PreviousFrame = int32(BaseGameState.NumFrame);
+
+	if (PreviousFrame <= 0)
+	{
+		BaseGameState.NumFrame = CandidateFrame;
+		return;
+	}
+
+	// Re-simulation case: if the candidate frame is less than the previous frame,
+	// it means we are doing a re-simulation and we should update the NumFrame to the candidate frame to reflect the current simulation time.
+	// This can happen when we receive a correction from the server that requires us to roll back and re-simulate some frames.
+	if (CandidateFrame < PreviousFrame)
+	{
+		BaseGameState.NumFrame = CandidateFrame;
+		return;
+	}
+
+	if (CandidateFrame == PreviousFrame)
+	{
+		BaseGameState.NumFrame = PreviousFrame + 1;
+		return;
+	}
+
+	if (CandidateFrame > PreviousFrame + 1)
+	{
+		BaseGameState.NumFrame = PreviousFrame + 1;
+		return;
+	}
+
+	BaseGameState.NumFrame = CandidateFrame;
 }
 
 void USpeedWheeledComponent::UpdateInputs()
