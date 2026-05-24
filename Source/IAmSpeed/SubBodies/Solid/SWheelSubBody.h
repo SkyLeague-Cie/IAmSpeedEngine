@@ -80,6 +80,8 @@ public:
     float SuspensionRestLength() const;
     float SuspensionMaxRaise() const;
     float SuspensionMaxDrop() const;
+    float SuspensionSpringRateCm() const;
+    float SuspensionDampingRatio() const;
     float GetSuspensionForce() const;
     float GetSuspensionOffset() const;
     FVector GetHitContactNormal() const;
@@ -110,6 +112,15 @@ private:
     UChaosVehicleWheel* ChaosWheel = nullptr;
     Chaos::FSimpleWheelSim* PWheel = nullptr;
     Chaos::FSimpleSuspensionSim* PSuspension = nullptr;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Wheel, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", UIMin = "0.0"))
+    float WheelMass = 18.0f;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", UIMin = "0.0"))
+    float SuspensionSpringRate = 1625.0f;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+    float SuspensionDampingRatioValue = 0.5f;
 
     // --- State variables ---
     float SuspensionForce = 0.0; // suspension force to apply this frame

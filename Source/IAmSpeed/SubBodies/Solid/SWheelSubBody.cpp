@@ -3,11 +3,60 @@
 
 #include "SWheelSubBody.h"
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
+#include "IAmSpeed/Base/SpeedConstant.h"
 #include "Configs/WheelSubBodyConfig.h"
 #include "ChaosVehicleWheel.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 
 DEFINE_LOG_CATEGORY(WheelSubBodyLog);
+
+namespace
+{
+    constexpr float MaxSuspensionForce = 5e6f;
+
+    float QuantizeSuspensionDisplacement(const float Displacement)
+    {
+        const int32 QuantizedDisplacement = FMath::RoundToInt(Displacement * SpeedConstants::SuspScale);
+        return static_cast<float>(QuantizedDisplacement) / SpeedConstants::SuspScale;
+    }
+
+    float QuantizeSuspensionForce(const float Force)
+    {
+        const float ClampedForce = FMath::Clamp(Force, -MaxSuspensionForce, MaxSuspensionForce);
+        return static_cast<float>(FMath::RoundToInt(ClampedForce));
+    }
+
+    float QuantizeSuspensionDelta(const float Delta)
+    {
+        const int32 StepRate = FMath::Max(1, FMath::RoundToInt(1.f / FMath::Max(Delta, SMALL_NUMBER)));
+        return 1.f / static_cast<float>(StepRate);
+    }
+
+    float ComputeQuantizedSuspensionForce(
+        const Chaos::FSimpleSuspensionSim& Suspension,
+        const float LastDisplacement,
+        const float CurrentDisplacement,
+        const float Delta)
+    {
+        const float Damping = (CurrentDisplacement < LastDisplacement)
+            ? Suspension.Setup().CompressionDamping
+            : Suspension.Setup().ReboundDamping;
+        const double SpringSpeed = (static_cast<double>(LastDisplacement) - static_cast<double>(CurrentDisplacement)) / static_cast<double>(Delta);
+        const double StiffnessForce = static_cast<double>(CurrentDisplacement) * static_cast<double>(Suspension.Setup().SpringRate);
+        const double DampingForce = SpringSpeed * static_cast<double>(Damping);
+        return QuantizeSuspensionForce(static_cast<float>(StiffnessForce - DampingForce));
+    }
+
+    void SetQuantizedSuspensionLength(Chaos::FSimpleSuspensionSim& Suspension, const float Length, const float WheelRadius)
+    {
+        const float DisplacementInput = FMath::Max(0.f, Length - Suspension.Setup().RaycastSafetyMargin - WheelRadius);
+        const float SpringDisplacement = Suspension.Setup().MaxLength - DisplacementInput;
+        const float QuantizedSpringDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement);
+        const float QuantizedDisplacementInput = Suspension.Setup().MaxLength - QuantizedSpringDisplacement;
+        const float QuantizedLength = QuantizedDisplacementInput + Suspension.Setup().RaycastSafetyMargin + WheelRadius;
+        Suspension.SetSuspensionLength(QuantizedLength, WheelRadius);
+    }
+}
 
 USWheelSubBody::USWheelSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
@@ -15,6 +64,7 @@ USWheelSubBody::USWheelSubBody(const FObjectInitializer& ObjectInitializer):
 	SubBodyType = ESubBodyType::Wheel;
     IgnoredSubBodyTypes.AddUnique(ESubBodyType::Wheel);
 	bApplyRestForce = false; // wheel apply suspension force directly, so we do not want rest force to interfere with it
+    SetMass(WheelMass);
 }
 
 void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
@@ -36,7 +86,8 @@ void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
                 PSuspension = Config.PSuspension;
                 // keep consistency with radius and mass
                 SetRadius(PWheel->GetEffectiveRadius());
-                SetMass(PWheel->MassPerWheel);
+                PWheel->SetMassPerWheel(WheelMass);
+                SetMass(WheelMass);
                 InvInertiaLocal = InitInvInertiaTensor();
             }
 		}
@@ -349,12 +400,14 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         const float ProjectedCompression = FVector::DotProduct(SuspensionAnchorWorldPos - CurrentHit.Location, SuspensionAxis);
 
         // update suspension state
-        float LastDisplacement = SpringDisplacement();
+        const float LastDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
         float NewDesiredLength = ProjectedCompression + Radius();
-        PSuspension->SetSuspensionLength(NewDesiredLength, Radius());
-        PSuspension->Simulate(delta);
-        float CurrentDisplacement = SpringDisplacement();
-        SuspensionForce = PSuspension->GetSuspensionForce();
+        SetQuantizedSuspensionLength(*PSuspension, NewDesiredLength, Radius());
+        const float SuspensionDelta = QuantizeSuspensionDelta(delta);
+        PSuspension->Simulate(SuspensionDelta);
+        const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
+        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement, CurrentDisplacement, SuspensionDelta);
+        PSuspension->SetLastDisplacement(CurrentDisplacement);
 
         float Dot = FVector::DotProduct(CurrentHit.ImpactNormal, FVector::UpVector);
         // mapping : ground=1, wall=1, ceiling=0
@@ -363,7 +416,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 
         // apply suspension scale
         SuspensionForce *= SuspensionScale;
-        const float SuspensionMaxValue = 5e6;
+        const float SuspensionMaxValue = MaxSuspensionForce;
         /*if (FMath::Abs(SuspensionForce) > SuspensionMaxValue)
         {
             UE_LOG(WheelSubBodyLog, Warning, TEXT("[%s] Suspension in frame %d is way too strong!!!! For Wheel num %d SuspensionForce = %f"),
@@ -380,6 +433,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         {
             SuspensionForce /= 100;
         }
+        SuspensionForce = QuantizeSuspensionForce(SuspensionForce);
 #if !(UE_BUILD_SHIPPING)
         // UE_LOG(WheelSubBodyLog, Warning, TEXT("[%s] Suspension in frame %d for Wheel num %d SuspensionForce= %.2f N (Scale= %.2f, Dot= %.2f)"),
         //    *ParentComponent->GetRole(), ParentComponent->NumFrame(), WheelIndex, SuspensionForce, SuspensionScale, Dot);
@@ -389,9 +443,10 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
     {
         SuspensionForce = 0.0;
 
-        PSuspension->SetSuspensionLength(ComputeNextAirLength(delta), Radius());
+        SetQuantizedSuspensionLength(*PSuspension, ComputeNextAirLength(delta), Radius());
         PWheel->SetWheelLoadForce(0.f);
-        PSuspension->Simulate(delta);
+        PSuspension->Simulate(QuantizeSuspensionDelta(delta));
+        PSuspension->SetLastDisplacement(QuantizeSuspensionDisplacement(SpringDisplacement()));
     }
 }
 
@@ -672,6 +727,16 @@ float USWheelSubBody::SuspensionMaxDrop() const
     return ChaosWheel->SuspensionMaxDrop;
 }
 
+float USWheelSubBody::SuspensionSpringRateCm() const
+{
+    return SuspensionSpringRate * 100.0f;
+}
+
+float USWheelSubBody::SuspensionDampingRatio() const
+{
+    return SuspensionDampingRatioValue;
+}
+
 float USWheelSubBody::GetSuspensionForce() const
 {
     return SuspensionForce;
@@ -778,12 +843,16 @@ void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
         return;
     }
     PWheel = InPWheel;
+    PWheel->SetMassPerWheel(WheelMass);
+    SetMass(WheelMass);
 }
 
 void USWheelSubBody::SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension)
 {
     PSuspension = InPSuspension;
-	// SetLocalOffset(PSuspension->GetLocalRestingPosition());
+	// Print parameters for debug
+	// UE_LOG(WheelSubBodyLog, Warning, TEXT("WheelSubBody %d Suspension parameters: MaxLength= %.2f, SpringRate= %.2f, CompressionDamping= %.2f, ReboundDamping= %.2f"),
+    //    Idx(), PSuspension->Setup().MaxLength, PSuspension->Setup().SpringRate, PSuspension->Setup().CompressionDamping, PSuspension->Setup().ReboundDamping);
 }
 
 void USWheelSubBody::SetLocalOffset(const FVector& InLocalOffset)

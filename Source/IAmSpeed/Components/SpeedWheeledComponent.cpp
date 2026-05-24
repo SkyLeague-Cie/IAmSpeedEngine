@@ -105,6 +105,154 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	}
 }
 
+void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
+{
+	Super::SetupVehicle(PVehicle);
+	SetupSpeedSuspension(PVehicle);
+}
+
+void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
+{
+	if (!PVehicle.IsValid() || PVehicle->Suspension.Num() == 0 || WheelSubBodies.Num() == 0)
+	{
+		return;
+	}
+
+	const int32 NumSuspensions = FMath::Min(PVehicle->Suspension.Num(), WheelSubBodies.Num());
+	TArray<float> SprungMasses;
+	SprungMasses.Init(PhysMass / FMath::Max(1, NumSuspensions), NumSuspensions);
+
+	if (NumSuspensions == 4)
+	{
+		TArray<int32> FrontWheelIndices;
+		TArray<int32> RearWheelIndices;
+		double MinX = TNumericLimits<double>::Max();
+		double MaxX = TNumericLimits<double>::Lowest();
+
+		for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
+		{
+			const USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+			if (!WheelSubBody)
+			{
+				continue;
+			}
+
+			const double X = static_cast<double>(WheelSubBody->GetLocalOffset().X);
+			MinX = FMath::Min(MinX, X);
+			MaxX = FMath::Max(MaxX, X);
+		}
+
+		if (MaxX - MinX > KINDA_SMALL_NUMBER)
+		{
+			const double MidX = 0.5 * (MinX + MaxX);
+			double FrontX = 0.0;
+			double RearX = 0.0;
+
+			for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
+			{
+				const USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+				if (!WheelSubBody)
+				{
+					continue;
+				}
+
+				const double X = static_cast<double>(WheelSubBody->GetLocalOffset().X);
+				if (X >= MidX)
+				{
+					FrontWheelIndices.Add(WheelIdx);
+					FrontX += X;
+				}
+				else
+				{
+					RearWheelIndices.Add(WheelIdx);
+					RearX += X;
+				}
+			}
+
+			if (FrontWheelIndices.Num() > 0 && RearWheelIndices.Num() > 0)
+			{
+				FrontX /= FrontWheelIndices.Num();
+				RearX /= RearWheelIndices.Num();
+
+				const double TotalMass = static_cast<double>(PhysMass);
+				const double CenterX = static_cast<double>(CenterOfMass.X);
+				const double FrontMass = FMath::Clamp(TotalMass * (CenterX - RearX) / (FrontX - RearX), 0.0, TotalMass);
+				const double RearMass = TotalMass - FrontMass;
+
+				auto AssignAxleMass = [this, &SprungMasses](const TArray<int32>& AxleWheelIndices, const double AxleMass)
+				{
+					if (AxleWheelIndices.Num() == 0)
+					{
+						return;
+					}
+
+					if (AxleWheelIndices.Num() != 2)
+					{
+						const float MassPerWheel = static_cast<float>(AxleMass / AxleWheelIndices.Num());
+						for (const int32 WheelIdx : AxleWheelIndices)
+						{
+							SprungMasses[WheelIdx] = MassPerWheel;
+						}
+						return;
+					}
+
+					const int32 WheelIdxA = AxleWheelIndices[0];
+					const int32 WheelIdxB = AxleWheelIndices[1];
+					const double YA = static_cast<double>(WheelSubBodies[WheelIdxA]->GetLocalOffset().Y);
+					const double YB = static_cast<double>(WheelSubBodies[WheelIdxB]->GetLocalOffset().Y);
+					const double CenterY = static_cast<double>(CenterOfMass.Y);
+
+					if (FMath::Abs(YA - YB) <= KINDA_SMALL_NUMBER)
+					{
+						SprungMasses[WheelIdxA] = static_cast<float>(0.5 * AxleMass);
+						SprungMasses[WheelIdxB] = static_cast<float>(0.5 * AxleMass);
+						return;
+					}
+
+					const double MassA = FMath::Clamp(AxleMass * (CenterY - YB) / (YA - YB), 0.0, AxleMass);
+					SprungMasses[WheelIdxA] = static_cast<float>(MassA);
+					SprungMasses[WheelIdxB] = static_cast<float>(AxleMass - MassA);
+				};
+
+				AssignAxleMass(FrontWheelIndices, FrontMass);
+				AssignAxleMass(RearWheelIndices, RearMass);
+			}
+		}
+	}
+
+	for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
+	{
+		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+		if (!WheelSubBody)
+		{
+			continue;
+		}
+
+		Chaos::FSimpleSuspensionSim& Suspension = PVehicle->Suspension[WheelIdx];
+		const float SpringRate = WheelSubBody->SuspensionSpringRateCm();
+		const float DampingRatio = WheelSubBody->SuspensionDampingRatio();
+		const float SprungMass = FMath::Max(SprungMasses[WheelIdx], KINDA_SMALL_NUMBER);
+		const float Damping = static_cast<float>(FMath::RoundToInt(DampingRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
+
+		Suspension.AccessSetup().SpringRate = SpringRate;
+		Suspension.AccessSetup().DampingRatio = DampingRatio;
+		Suspension.AccessSetup().MaxLength = Suspension.Setup().SuspensionMaxDrop + Suspension.Setup().SuspensionMaxRaise;
+		Suspension.AccessSetup().ReboundDamping = Damping;
+		Suspension.AccessSetup().CompressionDamping = Damping;
+		Suspension.AccessSetup().RestingForce = SprungMass * -GetGravityZ();
+		Suspension.SetLocalRestingPosition(WheelSubBody->GetLocalOffset());
+
+		if (PVehicle->Wheels.IsValidIndex(WheelIdx))
+		{
+			PVehicle->Wheels[WheelIdx].SetMassPerWheel(WheelSubBody->GetMass());
+		}
+
+#if !(UE_BUILD_SHIPPING)
+		// UE_LOG(WheelSubBodyLog, Warning, TEXT("[SpeedSuspensionSetup] WheelSubBody %d Suspension parameters: MaxLength= %.2f, SpringRate= %.2f, SprungMass= %.2f, WheelMass= %.2f, CompressionDamping= %.2f, ReboundDamping= %.2f"),
+		//	WheelIdx, Suspension.Setup().MaxLength, Suspension.Setup().SpringRate, SprungMass, WheelSubBody->GetMass(), Suspension.Setup().CompressionDamping, Suspension.Setup().ReboundDamping);
+#endif
+	}
+}
 ASpeedCar* USpeedWheeledComponent::GetSpeedCarOwner() const
 {
 	return SpeedCarOwner;
@@ -457,6 +605,21 @@ int32 USpeedWheeledComponent::GetSinceCanMoveFrame() const
 	return SinceCanMoveFrame;
 }
 
+unsigned int USpeedWheeledComponent::GetCurrentFrame() const
+{
+	// Look up the current frame in the recorded history to get the most up-to-date frame number
+	/*const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetInputHistory_Internal();
+	if (History.IsValid())
+	{
+		int32 LatestFrame = History->GetLatestFrame();
+		if (LatestFrame >= 0)
+		{
+			return LatestFrame - 1;
+		}
+	}*/
+	return NumFrame();
+}
+
 void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& SimTime)
 {
 	// Update NumFrame at the beginning of the tick so that it can be used in the rest of the tick functions
@@ -509,7 +672,7 @@ void USpeedWheeledComponent::UpdateState(float DeltaTime)
 
 void USpeedWheeledComponent::RecordPhysicsState()
 {
-	const int32 LF = NumFrame();
+	const int32 LF = GetCurrentFrame();
 	const int32 Idx = LF % SpeedConstants::RecordedHistorySize;
 
 	RecordedBaseFrames[Idx] = LF;
@@ -778,6 +941,14 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 				FVector Force = SuspensionDir * Load * Scale;
 				// const FVector ApplicationPoint = W.WorldPos();
 				const FVector ApplicationPoint = W.GetHit().Location - W.GetHitContactNormal() * W.Radius();
+				/*if (NumFrame() - SinceCanMoveFrame < 3)
+				{
+					UE_LOG(
+						LogTemp,
+						Warning,
+						TEXT("[ApplyWheelSuspension] For Frame=%d on wheel=%d. Delta=%fs, HitNormal=%s, ApplicationPoint=%s, Force=%f SpringDisplacement=%fcm"), NumFrame(), W.Idx(), delta,
+						*W.GetHitContactNormal().ToString(), *ApplicationPoint.ToString(), Load, W.SpringDisplacement());
+				}*/
 				/*UE_LOG(
 					SpeedPhysicsLog,
 					Warning,
@@ -1167,33 +1338,18 @@ float USpeedWheeledComponent::GetPhysSteeringInput() const
 
 void USpeedWheeledComponent::SetPhysThrottleInput(const float& Throttle)
 {
-	if (IsFrozen())
-	{
-		WheeledUserInput.Throttle = 0;
-		return;
-	}
 	auto ClampedThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
 	WheeledUserInput.Throttle = static_cast<uint8>(FMath::RoundToInt(ClampedThrottle * 255));
 }
 
 void USpeedWheeledComponent::SetPhysBrakeInput(const float& Brake)
 {
-	if (IsFrozen())
-	{
-		WheeledUserInput.Brake = 0;
-		return;
-	}
 	auto ClampedBrake = FMath::Clamp(Brake, 0.0f, 1.0f);
 	WheeledUserInput.Brake = static_cast<uint8>(FMath::RoundToInt(ClampedBrake * 255));
 }
 
 void USpeedWheeledComponent::SetPhysSteeringInput(const float& Steering)
 {
-	if (IsFrozen())
-	{
-		WheeledUserInput.Steer = 0;
-		return;
-	}
 	auto ClampedSteering = FMath::Clamp(Steering, -1.0f, 1.0f);
 	WheeledUserInput.Steer = static_cast<int8>(FMath::RoundToInt(ClampedSteering * 127));
 }
@@ -1764,7 +1920,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (!SpeedHistory || !WheeledSpeedHistory)
 		return;
 
-	const int32 CurrentFrame = NumFrame();
+	const int32 CurrentFrame = GetCurrentFrame();
 	// ----------------------------
 	// Find last server state
 	// ----------------------------
@@ -1885,8 +2041,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			UnFreezeMovement();
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Log, TEXT("[LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
-			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][LATE CAN MOVE] At Frame = %d, Kinematics: %s"),
-				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
+				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsState.Kinematic.ToString());
 #endif
 		}
 		else
@@ -2170,9 +2326,12 @@ void USpeedWheeledComponent::QuantizePhysicalState()
 	BasePhysicsState.Kinematic.Quantize(GetKinematicStateForFrame(NumFrame() - 1).Rotation);
 
 	// round trip on last suspension length to avoid precision drift on client and server
-	for (int WheelIdx = 0; WheelIdx < WheelSubBodies.Num(); WheelIdx++)
+	for (const auto& W : WheelSubBodies)
 	{
-		WheeledPhysicsState.SuspensionLastDisplacement[WheelIdx] = WheeledPhysicsState.DequantizeLastSuspensionDisplacement(WheeledPhysicsState.QuantizeLastSuspensionDisplacement(WheelIdx));
+		const int32 WheelIdx = W->Idx();
+		const float QuantizedDisplacement = WheeledPhysicsState.DequantizeLastSuspensionDisplacement(WheeledPhysicsState.QuantizeLastSuspensionDisplacement(WheelIdx));
+		WheeledPhysicsState.SuspensionLastDisplacement[WheelIdx] = QuantizedDisplacement;
+		W->SetLastDisplacement(QuantizedDisplacement);
 	}
 }
 

@@ -54,6 +54,8 @@ public:
 	virtual void OnCreatePhysicsState() override;
 	/** Used to shut down and physics engine structure for this component */
 	virtual void OnDestroyPhysicsState() override;
+	/** Applies the Speed-specific deterministic suspension setup after Chaos creates the vehicle. */
+	virtual void SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle) override;
 	// Used to create all sub bodies
 	virtual TArray<USSubBody*> CreateSubBodies() override;
 	// Used to create wheel sub bodies
@@ -209,6 +211,8 @@ protected:
 	void SetEngineFPS(const unsigned int& FPS);
 	float GetEngineFPS() const;
 	int32 GetSinceCanMoveFrame() const;
+	// Get the current frame number for this component (e.g. to be used for network replication)
+	unsigned int GetCurrentFrame() const;
 
 	// Update Inputs
 	virtual void UpdateInputs();
@@ -422,6 +426,8 @@ private:
 
 		return UChaosVehicleMovementComponent::CreatePhysicsVehicle();
 	}
+
+	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
 
 
 	//=========== Internal state variables for the movement component ===========
