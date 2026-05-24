@@ -162,7 +162,7 @@ void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent
 		const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
 		const int32 TimelineActivationFrame =
 			(ClientFramesSinceCanMove != INDEX_NONE && SinceCanMoveFrame != INDEX_NONE)
-			? SinceCanMoveFrame + ClientFramesSinceCanMove
+			? SinceCanMoveFrame + ClientFramesSinceCanMove + 1
 			: ActivationFrame;
 
 		Mover->QueueWheeledInputForFrame(
@@ -204,26 +204,32 @@ bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map
 
 void FNetworkWheeledSpeedInputState::InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData)
 {
-	const FNetworkWheeledSpeedInputState& MinState = static_cast<const FNetworkWheeledSpeedInputState&>(MinData);
-	const FNetworkWheeledSpeedInputState& MaxState = static_cast<const FNetworkWheeledSpeedInputState&>(MaxData);
-	const float LerpFactor = MaxState.LocalFrame == LocalFrame
-		? 1.0f / (MaxState.LocalFrame - MinState.LocalFrame + 1) // Merge from min into max
-		: (LocalFrame - MinState.LocalFrame) / (MaxState.LocalFrame - MinState.LocalFrame); // Interpolate from min to max
-	/*UE_LOG(WheelNetcodeLog, Log, TEXT("[WheeledSpeed] InterpolateData Triggered for frame = %d -> ")
-		TEXT("Min(Throttle=%u Brake=%u Steer=%d) ")
-		TEXT("Max(Throttle=%u Brake=%u Steer=%d)"), LocalFrame,
-		(uint8)MinState.WheeledInput.Throttle, (uint8)MinState.WheeledInput.Brake, (int8)MinState.WheeledInput.Steer,
-		(uint8)MaxState.WheeledInput.Throttle, (uint8)MaxState.WheeledInput.Brake, (int8)MaxState.WheeledInput.Steer);*/
-	WheeledInput.Throttle = Speed::Interpolate(MinState.WheeledInput.Throttle, MaxState.WheeledInput.Throttle, LerpFactor);
-	WheeledInput.Brake = Speed::Interpolate(MinState.WheeledInput.Brake, MaxState.WheeledInput.Brake, LerpFactor);
-	WheeledInput.Steer = Speed::Interpolate(MinState.WheeledInput.Steer, MaxState.WheeledInput.Steer, LerpFactor);
-	ClientFrame = MaxState.LocalFrame == LocalFrame
-		? MaxState.ClientFrame
-		: static_cast<uint32>(FMath::RoundToInt(FMath::Lerp(float(MinState.ClientFrame), float(MaxState.ClientFrame), LerpFactor)));
-	ClientFramesSinceCanMove = (MinState.ClientFramesSinceCanMove != INDEX_NONE && MaxState.ClientFramesSinceCanMove != INDEX_NONE)
-		? FMath::RoundToInt(FMath::Lerp(float(MinState.ClientFramesSinceCanMove), float(MaxState.ClientFramesSinceCanMove), LerpFactor))
-		: (MaxState.ClientFramesSinceCanMove != INDEX_NONE ? MaxState.ClientFramesSinceCanMove : MinState.ClientFramesSinceCanMove);
-	bIsAutonomousProxy = MaxState.bIsAutonomousProxy;
+	const FNetworkWheeledSpeedInputState& MinState =
+		static_cast<const FNetworkWheeledSpeedInputState&>(MinData);
+
+	const FNetworkWheeledSpeedInputState& MaxState =
+		static_cast<const FNetworkWheeledSpeedInputState&>(MaxData);
+
+	const int32 MinFrame = int32(MinState.LocalFrame);
+	const int32 MaxFrame = int32(MaxState.LocalFrame);
+	const int32 ThisFrame = int32(LocalFrame);
+
+	const int32 FrameDelta = MaxFrame - MinFrame;
+	const float LerpFactor =
+		FrameDelta != 0
+		? float(ThisFrame - MinFrame) / float(FrameDelta)
+		: 1.f;
+
+	const bool bUseMax =
+		(ThisFrame >= MaxFrame) || (LerpFactor >= 0.5f);
+
+	const FNetworkWheeledSpeedInputState& Source =
+		bUseMax ? MaxState : MinState;
+
+	WheeledInput = Source.WheeledInput;
+	ClientFrame = Source.ClientFrame;
+	ClientFramesSinceCanMove = Source.ClientFramesSinceCanMove;
+	bIsAutonomousProxy = Source.bIsAutonomousProxy;
 }
 
 bool FNetworkWheeledSpeedInputState::CompareData(const FNetworkPhysicsData& PredictedData)
