@@ -1003,7 +1003,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 		// Dampen forward velocity
 		if (ForwardSpeed != 0.0f)
 		{
-			if (abs(ForwardSpeed) < LocalForwardFriction * delta)
+			if (FMath::Abs(ForwardSpeed) < LocalForwardFriction * delta)
 			{
 				// AddPhysAcceleration(-(ForwardSpeed / delta) * ForwardVector); // may not work now with quantization of velocity, so we directly set velocity to 0
 				SetPhysVelocity(GetPhysVelocity() - ForwardSpeed * ForwardVector); // remove forward velocity
@@ -1679,7 +1679,7 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 	float accel = 0.0f;
 	unsigned char nbWheelsOnGround = NumWheelsOnGround();
 	float forwardSpeed = GetPhysForwardSpeed();
-	float absForwardSpeed = abs(forwardSpeed);
+	float absForwardSpeed = FMath::Abs(forwardSpeed);
 	const float steeringSpeedCap = GetSteeringSpeedCap();
 	const float steeringAbs = FMath::Abs(GetPhysSteeringInput());
 	constexpr float SteeringFadeExponent = 1.3f;
@@ -1693,6 +1693,9 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 		float baseAccel = wantToMoveForward ? absBaseAccel : -absBaseAccel;
 		float inputAccel = 0.0;
 		const float subSteeringSpeedCap = FMath::Max(0.0, steeringSpeedCap - 10.0);
+		constexpr float SteeringSpeedCapNeutralZone = 2.0f; // cm/s
+		const float neutralSteeringSpeedCapMin = FMath::Max(subSteeringSpeedCap, steeringSpeedCap - SteeringSpeedCapNeutralZone);
+		const float neutralSteeringSpeedCapMax = steeringSpeedCap + SteeringSpeedCapNeutralZone;
 		const float airAccel = wantToMoveForward ? InputValue * AirForwardThrottle * (4 - nbWheelsOnGround) / 4 :
 			-InputValue * AirBackwardThrottle * (4 - nbWheelsOnGround) / 4;
 		if (absForwardSpeed <= subSteeringSpeedCap)
@@ -1701,12 +1704,17 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 			const float groundAccel = wantToMoveForward ? absGroundAccel : -absGroundAccel;
 			inputAccel = groundAccel + airAccel;
 		}
-		else if (absForwardSpeed <= steeringSpeedCap)
+		else if (absForwardSpeed < neutralSteeringSpeedCapMin)
 		{
-			float ratio = (absForwardSpeed - subSteeringSpeedCap) / (steeringSpeedCap - subSteeringSpeedCap);
+			const float capBlendRange = FMath::Max(neutralSteeringSpeedCapMin - subSteeringSpeedCap, KINDA_SMALL_NUMBER);
+			float ratio = (absForwardSpeed - subSteeringSpeedCap) / capBlendRange;
 			const float absGroundAccel = InputValue * FMath::Lerp(160, 0.0, ratio) * (nbWheelsOnGround / 4);
 			const float groundAccel = wantToMoveForward ? absGroundAccel : -absGroundAccel;
 			inputAccel = groundAccel + airAccel;
+		}
+		else if (absForwardSpeed <= neutralSteeringSpeedCapMax)
+		{
+			inputAccel = airAccel;
 		}
 		else
 		{
@@ -1964,12 +1972,12 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
 	{
 		float radius = speed / FMath::Abs(yawRate);
-		UE_LOG(SpeedPhysicsLog, Log, TEXT("AllowedYaw=%.3f | RealYaw=%.3f | TargetYaw=%.3f"), allowedYaw, yawRate, targetYaw);
+		// UE_LOG(SpeedPhysicsLog, Log, TEXT("AllowedYaw=%.3f | RealYaw=%.3f | TargetYaw=%.3f"), allowedYaw, yawRate, targetYaw);
 		UE_LOG(SpeedPhysicsLog, Log,
-			TEXT("[Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
-			NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
+			TEXT("[%s(%s)][Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, AllowedYaw=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
 			FVector::DotProduct(WheeledPhysicsState.AllowedSideVelocity, RightSurface),
-			radius, desiredRadiusWall);
+			allowedYaw, radius, desiredRadiusWall);
 	}*/
 #endif
 }
@@ -2237,22 +2245,28 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	FVector ErrVel = Target.BaseState.Kinematic.Velocity - PastPredictedState.Kinematic.Velocity;
 	FVector ErrAngVel = Target.BaseState.Kinematic.AngularVelocity - PastPredictedState.Kinematic.AngularVelocity;
 	FQuat ErrRot = PastPredictedState.Kinematic.Rotation.Inverse() * Target.BaseState.Kinematic.Rotation;
+	ErrRot.Normalize();
+	const float ErrRotDeg = FMath::RadiansToDegrees(ErrRot.AngularDistance(FQuat::Identity));
 	if (bNewTarget)
 	{
 		NetCorrAccum.SourceServerFrame = Target.ServerFrame;
 		NetCorrAccum.SourceLocalFrame = TargetSourceLocalFrame;
 
-		NetCorrAccum.RemPos = ErrPos;
+		NetCorrAccum.RemPos = (ErrPos.Size() > PosCorrDeadzone) ? ErrPos : FVector::ZeroVector;
 
 		// delta rot : Past^-1 * Target
-		NetCorrAccum.RemRot = ErrRot;
+		NetCorrAccum.RemRot = (ErrRotDeg > RotCorrDeadzone) ? ErrRot : FQuat::Identity;
 		NetCorrAccum.RemRot.Normalize();
 
 		// vel budgets : Target - PastPred - "impulse mismatch"
-		NetCorrAccum.RemVel = ErrVel;
+		NetCorrAccum.RemVel = (ErrVel.Size() > VelCorrDeadzone) ? ErrVel : FVector::ZeroVector;
 		NetCorrAccum.RemAngVel = (ErrAngVel.Size() > AngVelCorrDeadzone) ? ErrAngVel : FVector::ZeroVector;
 
-		NetCorrAccum.bActive = true;
+		NetCorrAccum.bActive =
+			!NetCorrAccum.RemPos.IsNearlyZero() ||
+			!NetCorrAccum.RemVel.IsNearlyZero() ||
+			!NetCorrAccum.RemAngVel.IsNearlyZero() ||
+			NetCorrAccum.RemRot.AngularDistance(FQuat::Identity) > FMath::DegreesToRadians(RotCorrDeadzone);
 	}
 
 	if (!NetCorrAccum.bActive)
@@ -2354,10 +2368,14 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// Rotation drain (delta quat restant)
 	// ----------------------------
 	FQuat dR = FQuat::Identity;
+	if (NetCorrAccum.RemRot.AngularDistance(FQuat::Identity) > FMath::DegreesToRadians(RotCorrDeadzone))
 	{
 		FVector Axis; float Angle;
 		NetCorrAccum.RemRot.ToAxisAndAngle(Axis, Angle);
-		Axis.Normalize();
+		if (!Axis.Normalize())
+		{
+			Axis = FVector::UpVector;
+		}
 
 		// if persistent contact, yaw-only around the contact normal
 		if (bHasN)
@@ -2367,9 +2385,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		}
 
 		const float StepAngle = Angle * aR;
-		// clamp en degrés/sec
-		constexpr float MaxRotCorrDegPerSec = 180.f;
-		const float MaxStepAngle = FMath::DegreesToRadians(MaxRotCorrDegPerSec) * DeltaSeconds;
+		const float MaxStepAngle = FMath::DegreesToRadians(MaxRotCorrectionPerSecond) * DeltaSeconds;
 		const float ClampedStepAngle = FMath::Clamp(StepAngle, -MaxStepAngle, +MaxStepAngle);
 
 		dR = FQuat(Axis, ClampedStepAngle);
@@ -2463,10 +2479,10 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 	// Stop condition
 	const bool bDone =
-		NetCorrAccum.RemPos.Size() < 0.005f &&
-		NetCorrAccum.RemVel.Size() < 0.005f &&
-		NetCorrAccum.RemAngVel.Size() < 0.0001f &&
-		NetCorrAccum.RemRot.AngularDistance(FQuat::Identity) < FMath::DegreesToRadians(0.05f);
+		NetCorrAccum.RemPos.Size() <= PosCorrDeadzone &&
+		NetCorrAccum.RemVel.Size() <= VelCorrDeadzone &&
+		NetCorrAccum.RemAngVel.Size() <= AngVelCorrDeadzone &&
+		NetCorrAccum.RemRot.AngularDistance(FQuat::Identity) <= FMath::DegreesToRadians(RotCorrDeadzone);
 
 	if (bDone)
 	{

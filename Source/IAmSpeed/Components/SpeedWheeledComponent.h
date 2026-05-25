@@ -392,19 +392,19 @@ public:
 	// Deadzone for the correction to apply on the position in cm (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float PosCorrDeadzone = 0.1f;
+	float PosCorrDeadzone = 0.02f;
 	// Deadzone for the correction to apply on the velocity in cm/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float VelCorrDeadzone = 0.2f;
+	float VelCorrDeadzone = 0.02f;
 	// Deadzone for the correction to apply on the angular velocity in rad/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float AngVelCorrDeadzone = 0.0001f;
+	float AngVelCorrDeadzone = 0.0002f;
 	// Deadzone for the correction to apply on the rotation in deg (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float RotCorrDeadzone = 0.5f;
+	float RotCorrDeadzone = 0.01f;
 
 	/** Hit Box component */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Collision, meta = (AllowPrivateAccess = "true"))
