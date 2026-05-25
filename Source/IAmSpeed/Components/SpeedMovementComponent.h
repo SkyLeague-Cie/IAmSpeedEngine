@@ -166,7 +166,7 @@ public:
 	// how much of the velocity error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float VelStabilityMultiplier = 0.8f;
+	float VelStabilityMultiplier = 1.0f;
 	// how much of the rotation error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
@@ -196,19 +196,19 @@ public:
 	// Deadzone for the correction to apply on the position in cm (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float PosCorrDeadzone = 0.1f;
+	float PosCorrDeadzone = 0.01f;
 	// Deadzone for the correction to apply on the velocity in cm/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float VelCorrDeadzone = 0.2f;
+	float VelCorrDeadzone = 0.01f;
 	// Deadzone for the correction to apply on the angular velocity in rad/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float AngVelCorrDeadzone = 0.0001f;
+	float AngVelCorrDeadzone = 0.00005f;
 	// Deadzone for the correction to apply on the rotation in deg (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float RotCorrDeadzone = 0.5f;
+	float RotCorrDeadzone = 0.001f;
 	/** Network Settings*/
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Netcode, meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;

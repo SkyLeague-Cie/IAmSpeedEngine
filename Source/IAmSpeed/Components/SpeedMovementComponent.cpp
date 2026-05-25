@@ -643,7 +643,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		const FVector CorrEuler = (ErrEuler0 * alphaR).GetClampedToMaxSize(MaxRotCorrectionPerSecond * DeltaSeconds);
 		const FQuat   CorrQuat = FQuat::MakeFromEuler(CorrEuler);
 
-		if (ErrV0.Size() > VelCorrDeadzone)
+		if (CorrV.Size() > VelCorrDeadzone)
 		{
 			SetPhysVelocity(GetPhysVelocity() + CorrV);
 			if (bNewTarget)
@@ -656,7 +656,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			}
 		}
 
-		if (ErrX0.Size() > PosCorrDeadzone)
+		if (CorrX.Size() > PosCorrDeadzone)
 		{
 			SetPhysLocation(GetPhysLocation() + CorrX);
 			if (bNewTarget)
@@ -669,7 +669,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			}
 		}
 
-		if (ErrW0.Size() > AngVelCorrDeadzone)
+		if (CorrW.Size() > AngVelCorrDeadzone)
 		{
 			SetPhysAngularVelocity(GetPhysAngularVelocity() + CorrW);
 			if (bNewTarget)
@@ -682,7 +682,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			}
 		}
 
-		if (ErrEuler0.Size() > RotCorrDeadzone)
+		if (CorrEuler.Size() > RotCorrDeadzone)
 		{
 			SetPhysRotation((GetPhysRotation() * CorrQuat).GetNormalized());
 			if (bNewTarget)

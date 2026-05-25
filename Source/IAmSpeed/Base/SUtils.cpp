@@ -481,7 +481,7 @@ std::optional<FVector> Speed::SBox::Intersect(const SBox& OtherBox) const
 // ==== Continuous CCD for sphere vs OBB with full kinematics ====
 SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& deltaTime, const uint8 NbSubsteps) const
 {
-	if (deltaTime <= 0.f) return SHitResult();
+	if (deltaTime <= 0.f || NbSubsteps == 0) return SHitResult();
 	if (Extent() == FVector::ZeroVector || Sphere.Radius == 0.0f)
 	{
 		return SHitResult();
@@ -518,28 +518,90 @@ SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& d
 	auto BoxQ = [&](float t) { return IntegrateRotation(Qb0, Wb0, Alphab0, t); }; // Absolute box rotation at time t
 	auto SphereC = [&](float t) { return AdvancePosition(Xs0, Vs0, As0, t); }; // Absolute sphere center at time t
 
+	auto EvalSeparation = [&](float t, FVector& OutClosestPoint, FVector& OutNormal) -> float
+		{
+			const FVector BoxPos = BoxX(t);
+			const FQuat BoxRot = BoxQ(t);
+			const FVector SpherePos = SphereC(t);
+
+			const float Sep = SphereOBBSeparation(BoxRot, BoxPos, SpherePos, Rs, &OutClosestPoint);
+			OutNormal = (OutClosestPoint - SpherePos).GetSafeNormal();
+			if (OutNormal.IsNearlyZero())
+			{
+				OutNormal = (BoxPos - SpherePos).GetSafeNormal();
+			}
+			return Sep;
+		};
+
+	constexpr int32 MaxRootIterations = 16;
+	constexpr float SeparationToleranceCm = 1e-4f;
 	const float dtStep = deltaTime / NbSubsteps;
 
-	for (uint8 i = 0; i < NbSubsteps; ++i)
+	FVector PrevContactPoint;
+	FVector PrevNormal;
+	float PrevT = 0.f;
+	float PrevSep = EvalSeparation(PrevT, PrevContactPoint, PrevNormal);
+
+	if (PrevSep <= 0.f)
 	{
-		float t = i * dtStep;
+		return SHitResult(true, PrevContactPoint, PrevNormal, 0.f);
+	}
 
-		const FVector BoxPos = BoxX(t);
-		const FQuat BoxRot = BoxQ(t);
-		const FVector SpherePos = SphereC(t);
+	for (int32 i = 1; i <= static_cast<int32>(NbSubsteps); ++i)
+	{
+		const float T = FMath::Min(static_cast<float>(i) * dtStep, deltaTime);
 
-		FVector ClosestPoint;
-		float distSq = 0.f;
-		ClosestPointOnOBB(BoxRot, BoxPos, SpherePos, ClosestPoint, distSq);
+		FVector ContactPoint;
+		FVector Normal;
+		const float Sep = EvalSeparation(T, ContactPoint, Normal);
 
-		if (distSq <= FMath::Square(Rs))
+		if (Sep <= 0.f)
 		{
-			const FVector Vbt = Vb0 + Ab0 * t; // Box velocity at time t
-			const FVector Vst = Vs0 + As0 * t; // Sphere velocity at time t
-			const FVector Wbt = Wb0 + Alphab0 * t; // Box angular velocity at time t
-			auto ImpactNormal = (ClosestPoint - SpherePos).GetSafeNormal();
-			return SHitResult(true, ClosestPoint, ImpactNormal, t);
+			float LowT = PrevT;
+			float HighT = T;
+			FVector BestContactPoint = ContactPoint;
+			FVector BestNormal = Normal;
+
+			for (int32 Iter = 0; Iter < MaxRootIterations; ++Iter)
+			{
+				const float MidT = 0.5f * (LowT + HighT);
+				FVector MidContactPoint;
+				FVector MidNormal;
+				const float MidSep = EvalSeparation(MidT, MidContactPoint, MidNormal);
+
+				if (FMath::Abs(MidSep) <= SeparationToleranceCm)
+				{
+					BestContactPoint = MidContactPoint;
+					BestNormal = MidNormal;
+					HighT = MidT;
+					break;
+				}
+
+				if (MidSep > 0.f)
+				{
+					LowT = MidT;
+				}
+				else
+				{
+					HighT = MidT;
+					BestContactPoint = MidContactPoint;
+					BestNormal = MidNormal;
+				}
+			}
+
+			FVector FinalContactPoint;
+			FVector FinalNormal;
+			EvalSeparation(HighT, FinalContactPoint, FinalNormal);
+			if (!FinalNormal.IsNearlyZero())
+			{
+				BestContactPoint = FinalContactPoint;
+				BestNormal = FinalNormal;
+			}
+
+			return SHitResult(true, BestContactPoint, BestNormal, HighT);
 		}
+
+		PrevT = T;
 	}
 
 	return SHitResult();
