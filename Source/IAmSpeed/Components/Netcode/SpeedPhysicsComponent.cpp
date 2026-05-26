@@ -15,6 +15,10 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
 	#endif
 		Mover->BasePhysicsState = BaseState;
+		if (SourceFramesSinceCanMove != INDEX_NONE)
+		{
+			Mover->SinceCanMoveFrame = FMath::Max(0, int32(LocalFrame) - SourceFramesSinceCanMove);
+		}
 	}
 	else if (USpeedWheeledComponent* WheeledMover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
@@ -41,7 +45,10 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 				if (Mover->GetBaseState(Frame, BaseState))
 				{
 					SourceLocalFrame = Frame;
-					SourceFramesSinceCanMove = INDEX_NONE;
+					const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
+					SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && Frame >= SinceCanMoveFrame)
+						? Frame - SinceCanMoveFrame
+						: INDEX_NONE;
 					return true;
 				}
 				return false;
@@ -53,7 +60,10 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 			if (!bGotState)
 			{
 				SourceLocalFrame = ComponentFrame;
-				SourceFramesSinceCanMove = INDEX_NONE;
+				const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
+				SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && ComponentFrame >= SinceCanMoveFrame)
+					? ComponentFrame - SinceCanMoveFrame
+					: INDEX_NONE;
 				BaseState = Mover->BasePhysicsState;
 			}
 		}
@@ -101,6 +111,8 @@ bool FNetworkBaseSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& 
 	Ar << SourceFramesSinceCanMove;
 	Ar << BaseState.Kinematic;
 	Ar << BaseState.bIsFrozen;
+	Ar << BaseState.nbFramesbeforeCanMove;
+	Ar << BaseState.bStartCountdown;
 	bOutSuccess = true;
 	return true;
 }

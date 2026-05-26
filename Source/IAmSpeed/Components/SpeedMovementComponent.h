@@ -85,6 +85,21 @@ public:
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
 	UFUNCTION(reliable, NetMulticast)
 	void StartTestWithVelocityMulti(const FVector& InitialVelocity);
+
+	UFUNCTION(BlueprintCallable)
+	bool CanMove() const;
+	UFUNCTION(BlueprintCallable)
+	bool CountdownHasStarted() const;
+	UFUNCTION(BlueprintCallable)
+	void StartConfrontationInSec(const float& TimeSec);
+	void StartConfrontationLocal(const float& TimeSec);
+	UFUNCTION(reliable, NetMulticast)
+	void StartConfrontationMulti(const float& TimeSec);
+	void SetCannotMove();
+	void SetCannotMoveLocal();
+	UFUNCTION(reliable, NetMulticast)
+	void SetCannotMoveMulti();
+
 	unsigned int GetEngineFPS() const;
 
 	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
@@ -101,6 +116,7 @@ private:
 
 	void UpdateNumFrame(const float& SimTime);
 
+	void HandleCountdownTimer();
 	void HandleGravity();
 	void HandleDamping(const float& delta);
 
@@ -109,6 +125,8 @@ private:
 protected:
 	virtual void RecordPhysicsState();
 	bool GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
+	int32 GetSinceCanMoveFrame() const;
+	unsigned int NbFramesSinceCanMove() const;
 	void SetSubBodies(const TArray<USSubBody*>& NewSubBodies);
 
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay
@@ -166,7 +184,7 @@ public:
 	// how much of the velocity error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float VelStabilityMultiplier = 1.0f;
+	float VelStabilityMultiplier = 0.8f;
 	// how much of the rotation error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
@@ -231,6 +249,8 @@ private:
 	bool bNetCorrHasTarget = false;
 	int32 NetCorrTickCount = 0;
 	FNetworkBaseSpeedState NetCorrTarget;
+	uint16 MinNbFramesBeforeCanMove = 0;
+	int32 SinceCanMoveFrame = INDEX_NONE;
 protected:
 	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent = nullptr;

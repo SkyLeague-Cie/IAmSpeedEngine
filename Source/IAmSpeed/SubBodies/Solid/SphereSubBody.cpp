@@ -447,6 +447,11 @@ void USphereSubBody::HandleMicroOscillation()
     {
         return;
     }
+    if (CurrentHit.Component->GetCollisionObjectType() != ECC_WorldStatic)
+    {
+        return;
+    }
+
     FVector vel = ParentComponent->GetPhysVelocity();
     float vN = FVector::DotProduct(vel, CurrentHit.ImpactNormal);
     FVector VelN = vN * CurrentHit.ImpactNormal;

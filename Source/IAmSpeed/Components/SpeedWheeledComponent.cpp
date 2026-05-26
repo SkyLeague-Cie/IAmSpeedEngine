@@ -1413,7 +1413,6 @@ void USpeedWheeledComponent::StartConfrontationLocal(const float& TimeSec)
 	WheeledPhysicsState.bStartCountdown = true;
 	const uint32 Now = NumFrame();
 	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * EngineFPS);
-	constexpr uint16 MinNbFrames = 45; // 150ms @300Hz
 	WheeledPhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
 }
 
