@@ -10,6 +10,7 @@
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 #include "ChaosVehicleWheel.h"
+#include "UObject/UnrealType.h"
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
@@ -17,6 +18,62 @@ DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
 
 const FName USpeedWheeledComponent::HitboxName = TEXT("Hitbox");
 const TArray<FName> USpeedWheeledComponent::WheelNames = { TEXT("Wheel_0"), TEXT("Wheel_1"), TEXT("Wheel_2"), TEXT("Wheel_3")};
+
+namespace
+{
+void ConfigureWheeledSpeedNetworkPhysicsSettings(UNetworkPhysicsSettingsDataAsset* DataAsset)
+{
+	if (!DataAsset)
+	{
+		return;
+	}
+
+	FStructProperty* SettingsProperty = FindFProperty<FStructProperty>(
+		UNetworkPhysicsSettingsDataAsset::StaticClass(),
+		TEXT("Settings"));
+	if (!SettingsProperty)
+	{
+		return;
+	}
+
+	FNetworkPhysicsSettingsData* Settings = SettingsProperty->ContainerPtrToValuePtr<FNetworkPhysicsSettingsData>(DataAsset);
+	if (!Settings)
+	{
+		return;
+	}
+
+	Settings->NetworkPhysicsComponentSettings.bOverrideEnableReliableFlow = true;
+	Settings->NetworkPhysicsComponentSettings.bEnableReliableFlow = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideRedundantInputs = true;
+	Settings->NetworkPhysicsComponentSettings.RedundantInputs = 11;
+	Settings->NetworkPhysicsComponentSettings.bOverrideRedundantRemoteInputs = true;
+	Settings->NetworkPhysicsComponentSettings.RedundantRemoteInputs = 16;
+	Settings->NetworkPhysicsComponentSettings.bOverrideRedundantStates = true;
+	Settings->NetworkPhysicsComponentSettings.RedundantStates = 1;
+	Settings->NetworkPhysicsComponentSettings.bOverrideCompareInputToTriggerRewind = true;
+	Settings->NetworkPhysicsComponentSettings.bCompareInputToTriggerRewind = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideCompareStateToTriggerRewind = true;
+	Settings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewind = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideAllowInputExtrapolation = true;
+	Settings->NetworkPhysicsComponentSettings.bAllowInputExtrapolation = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideApplyDataInsteadOfMergeData = true;
+	Settings->NetworkPhysicsComponentSettings.bApplyDataInsteadOfMergeData = true;
+
+	// Simulated Proxy settings
+	Settings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyInputAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bApplySimProxyInputAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bOverridebCompareStateToTriggerRewindIncludeSimProxies = true;
+	Settings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewindIncludeSimProxies = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyStateAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bApplySimProxyStateAtRuntime = true;
+
+	// Resimulation settings
+	Settings->GeneralSettings.bOverrideSimProxyRepMode = true;
+	Settings->GeneralSettings.SimProxyRepMode = EPhysicsReplicationMode::Resimulation;
+
+	DataAsset->MarkUninitialized();
+}
+}
 
 USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer)
@@ -2230,6 +2287,25 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			}
 		}
 	}
+	else if (bNewTarget
+		&& CanMove()
+		&& WheeledTarget.WheeledState.nbFramesbeforeCanMove > 0
+		&& WheeledTarget.WheeledState.bStartCountdown)
+	{
+		const int32 CorrectedFramesBeforeCanMove = FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames);
+		if (CorrectedFramesBeforeCanMove > 0)
+		{
+			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
+			WheeledPhysicsState.bStartCountdown = true;
+			SinceCanMoveFrame = INDEX_NONE;
+			FreezeMovement();
+#if !(UE_BUILD_SHIPPING)
+			UE_LOG(WheelNetcodeLog, Log, TEXT("[EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"),
+				WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove, WheeledPhysicsState.nbFramesbeforeCanMove);
+#endif
+		}
+	}
+
 	/*else
 	{
 		UE_LOG(WheelNetcodeLog, Log, TEXT("[CAN MOVE] No nbFramesbeforeCanMove mismatch?: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
@@ -2574,6 +2650,7 @@ void USpeedWheeledComponent::InitNetwork()
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
 	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("SpeedSettingsDataAsset"));
+	ConfigureWheeledSpeedNetworkPhysicsSettings(NetDataAsset);
 	SNetworkSettings->SettingsDataAsset = NetDataAsset;
 	SNetworkSettings->bAutoRegister = false;
 

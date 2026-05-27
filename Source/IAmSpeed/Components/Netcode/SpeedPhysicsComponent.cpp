@@ -26,6 +26,10 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 		UE_LOG(WheelNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), WheeledMover->NumFrame());
 #endif
 		WheeledMover->BasePhysicsState = BaseState;
+		if (SourceFramesSinceCanMove != INDEX_NONE)
+		{
+			WheeledMover->SinceCanMoveFrame = FMath::Max(0, int32(LocalFrame) - SourceFramesSinceCanMove);
+		}
 	}
 }
 

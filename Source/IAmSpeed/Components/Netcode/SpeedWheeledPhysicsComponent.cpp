@@ -14,6 +14,10 @@ void FNetworkWheeledSpeedState::ApplyData(UActorComponent* NetworkComponent) con
 		UE_LOG(WheelNetcodeLog, Warning, TEXT("[WheeledSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
 #endif
 		Mover->WheeledPhysicsState = WheeledState;
+		if (SourceFramesSinceCanMove != INDEX_NONE)
+		{
+			Mover->SinceCanMoveFrame = FMath::Max(0, int32(LocalFrame) - SourceFramesSinceCanMove);
+		}
 		Mover->RestoreWheeledPhysicalInputFromState();
 	}
 }

@@ -8,6 +8,46 @@
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/World/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
+#include "UObject/UnrealType.h"
+
+namespace
+{
+void ConfigureBaseSpeedNetworkPhysicsSettings(UNetworkPhysicsSettingsDataAsset* DataAsset)
+{
+	if (!DataAsset)
+	{
+		return;
+	}
+
+	FStructProperty* SettingsProperty = FindFProperty<FStructProperty>(
+		UNetworkPhysicsSettingsDataAsset::StaticClass(),
+		TEXT("Settings"));
+	if (!SettingsProperty)
+	{
+		return;
+	}
+
+	FNetworkPhysicsSettingsData* Settings = SettingsProperty->ContainerPtrToValuePtr<FNetworkPhysicsSettingsData>(DataAsset);
+	if (!Settings)
+	{
+		return;
+	}
+
+	Settings->GeneralSettings.bOverrideSimProxyRepMode = true;
+	Settings->GeneralSettings.SimProxyRepMode = EPhysicsReplicationMode::Resimulation;
+
+	Settings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyStateAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bApplySimProxyStateAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyInputAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bApplySimProxyInputAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideTriggerResimOnInputReceive = true;
+	Settings->NetworkPhysicsComponentSettings.bTriggerResimOnInputReceive = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideAllowInputExtrapolation = true;
+	Settings->NetworkPhysicsComponentSettings.bAllowInputExtrapolation = true;
+
+	DataAsset->MarkUninitialized();
+}
+}
 
 USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
@@ -794,6 +834,24 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			}
 		}
 	}
+	else if (bNewTarget
+		&& CanMove()
+		&& Target.BaseState.nbFramesbeforeCanMove > 0
+		&& Target.BaseState.bStartCountdown)
+	{
+		const int32 CorrectedFramesBeforeCanMove = FMath::Max(0, int32(Target.BaseState.nbFramesbeforeCanMove) - NumPredictedFrames);
+		if (CorrectedFramesBeforeCanMove > 0)
+		{
+			BasePhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
+			BasePhysicsState.bStartCountdown = true;
+			SinceCanMoveFrame = INDEX_NONE;
+			FreezeMovement();
+#if !(UE_BUILD_SHIPPING)
+			UE_LOG(SpeedNetcodeLog, Log, TEXT("[BASE EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"),
+				Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove, BasePhysicsState.nbFramesbeforeCanMove);
+#endif
+		}
+	}
 
 	// ------------------------------------------------------------
 	// (A) Historical error at the SAME frame:
@@ -937,6 +995,7 @@ void USpeedMovementComponent::InitNetwork()
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
 	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("NetPhysicsSettingsDataAsset"));
+	ConfigureBaseSpeedNetworkPhysicsSettings(NetDataAsset);
 	SNetworkSettings->SettingsDataAsset = NetDataAsset;
 	SNetworkSettings->bAutoRegister = false;
 }
