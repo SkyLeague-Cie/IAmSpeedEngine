@@ -1457,7 +1457,7 @@ bool USpeedWheeledComponent::CountdownHasStarted() const
 
 void USpeedWheeledComponent::StartConfrontationInSec(const float& Time)
 {
-	StartConfrontationMulti(Time);
+	StartConfrontationLocal(Time);
 }
 
 void USpeedWheeledComponent::StartConfrontationLocal(const float& TimeSec)
@@ -1467,10 +1467,16 @@ void USpeedWheeledComponent::StartConfrontationLocal(const float& TimeSec)
 		*GetRole(), TimeSec));
 	}*/
 	FreezeMovement();
-	WheeledPhysicsState.bStartCountdown = true;
 	const uint32 Now = NumFrame();
 	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * EngineFPS);
 	WheeledPhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
+	WheeledPhysicsState.bStartCountdown = WheeledPhysicsState.nbFramesbeforeCanMove > 0;
+	SinceCanMoveFrame = INDEX_NONE;
+	if (!WheeledPhysicsState.bStartCountdown)
+	{
+		SinceCanMoveFrame = NumFrame();
+		UnFreezeMovement();
+	}
 }
 
 void USpeedWheeledComponent::StartConfrontationMulti_Implementation(const float& TimeSec)
@@ -1504,6 +1510,8 @@ void USpeedWheeledComponent::SetCannotMoveLocal()
 	FreezeMovement();
 	WheeledPhysicsState.bStartCountdown = false;
 	WheeledPhysicsState.nbFramesbeforeCanMove = 1;
+	SinceCanMoveFrame = INDEX_NONE;
+	bSimTimelineWasCanMove = false;
 }
 
 void USpeedWheeledComponent::SetCannotMoveMulti_Implementation()
@@ -2242,7 +2250,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// check coutdown mismatch
 	if (bNewTarget && (WheeledTarget.WheeledState.bStartCountdown != PastPredictedWheeledState.bStartCountdown))
 	{
-		// UE_LOG(WheelNetcodeLog, Log, TEXT("[CAN MOVE MISMATCH] Countdown mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.bStartCountdown, PastPredictedWheeledState.bStartCountdown);
+		UE_LOG(WheelNetcodeLog, Verbose, TEXT("[%s(%s)][COUNTDOWN MISMATCH] Countdown mismatch: Target=%d, PastPred=%d, NbFramesBeforeCanMove=%d, NumPredictedFrames=%d"), *GetOwner()->GetName(), *GetRole(),
+			WheeledTarget.WheeledState.bStartCountdown, PastPredictedWheeledState.bStartCountdown, WheeledPhysicsState.nbFramesbeforeCanMove, NumPredictedFrames);
 		WheeledPhysicsState.bStartCountdown = WheeledTarget.WheeledState.bStartCountdown;
 	}
 	/*else
@@ -2251,7 +2260,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	}*/
 
 	// check nbFramesbeforeCanMove alignment
-	if (bNewTarget && (WheeledPhysicsState.nbFramesbeforeCanMove > WheeledNumPredictedFrames - 1) && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
+	if (bNewTarget && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
+		// && (WheeledPhysicsState.nbFramesbeforeCanMove > WheeledNumPredictedFrames - 1)
 		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
 		&& (WheeledPhysicsState.nbFramesbeforeCanMove != FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames)))
 	{
@@ -2262,17 +2272,24 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			ResetWheelTransientStateForCurrentPose();
 			UnFreezeMovement();
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Log, TEXT("[LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
-			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
+			UE_LOG(WheelNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
+			UE_LOG(SpeedPhysicsLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
 				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsState.Kinematic.ToString());
 #endif
 		}
 		else
 		{
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Log, TEXT("[CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
+			UE_LOG(WheelNetcodeLog, Verbose, TEXT("[%s(%s)][CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
 #endif
-			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames));
+			const bool bStartupCountdownCatchup =
+				WheeledTarget.WheeledState.bStartCountdown
+				&& PastPredictedWheeledState.nbFramesbeforeCanMove <= 1
+				&& WheeledTarget.WheeledState.nbFramesbeforeCanMove > MinNbFramesBeforeCanMove;
+			const int32 CorrectedFramesBeforeCanMove = bStartupCountdownCatchup
+				? int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove)
+				: FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames);
+			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
 			if (!WheeledPhysicsState.bStartCountdown && WheeledPhysicsState.nbFramesbeforeCanMove == 0)
 			{
 				// If countdown has not started, we cannot start to move immediately
@@ -2300,7 +2317,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			SinceCanMoveFrame = INDEX_NONE;
 			FreezeMovement();
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(WheelNetcodeLog, Log, TEXT("[EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"),
+			UE_LOG(WheelNetcodeLog, Warning, TEXT("[%s(%s)][EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"), *GetOwner()->GetName(), *GetRole(),
 				WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove, WheeledPhysicsState.nbFramesbeforeCanMove);
 #endif
 		}

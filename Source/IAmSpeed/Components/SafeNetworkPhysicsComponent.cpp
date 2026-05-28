@@ -49,15 +49,17 @@ void USafeNetworkPhysicsComponent::LogLifecycle(const TCHAR* Stage) const
 	const FString WorldName = World ? World->GetName() : TEXT("<null>");
 	const FString OwnerName = GetOwner() ? GetOwner()->GetName() : TEXT("<null>");
 
+#if !(UE_BUILD_SHIPPING)
 	UE_LOG(
 		SafeNetworkPhysicsLog,
-		Log,
+		VeryVerbose,
 		TEXT("[SafeNetworkPhysicsComponent] %s on %s (Owner=%s, World=%s, IsRegistered=%d)"),
 		Stage,
 		*GetName(),
 		*OwnerName,
 		*WorldName,
 		IsRegistered());
+#endif
 }
 
 void USafeNetworkPhysicsComponent::PrepareAsyncShutdown(const TCHAR* Stage)
@@ -76,13 +78,14 @@ void USafeNetworkPhysicsComponent::PrepareAsyncShutdown(const TCHAR* Stage)
 			AsyncInput->bCompareStateToTriggerRewindIncludeSimProxies = false;
 			AsyncInput->bCompareInputToTriggerRewind = false;
 			AsyncInput->bUnregisterDataHistoryFromRewindData = true;
-
+#if !(UE_BUILD_SHIPPING)
 			UE_LOG(
 				SafeNetworkPhysicsLog,
-				Log,
+				VeryVerbose,
 				TEXT("[SafeNetworkPhysicsComponent] Prepared async shutdown during %s on %s"),
 				Stage,
 				*GetName());
+#endif
 		}
 	}
 }

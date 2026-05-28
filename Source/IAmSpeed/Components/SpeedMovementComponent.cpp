@@ -406,10 +406,10 @@ void USpeedMovementComponent::HandleCountdownTimer()
 		BasePhysicsState.bStartCountdown = false;
 		SinceCanMoveFrame = NumFrame();
 		UnFreezeMovement();
-#if !(UE_BUILD_SHIPPING)
+// #if !(UE_BUILD_SHIPPING)
 		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
-#endif
+// #endif
 	}
 }
 
@@ -631,7 +631,7 @@ void USpeedMovementComponent::StartConfrontationInSec(const float& TimeSec)
 	{
 		return;
 	}
-	StartConfrontationMulti(TimeSec);
+	StartConfrontationLocal(TimeSec);
 }
 
 void USpeedMovementComponent::StartConfrontationLocal(const float& TimeSec)
@@ -646,14 +646,15 @@ void USpeedMovementComponent::StartConfrontationLocal(const float& TimeSec)
 	const uint16 BaseNbFrame = static_cast<uint16>(ClampedFrameCount);
 	BasePhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
 	BasePhysicsState.bStartCountdown = BasePhysicsState.nbFramesbeforeCanMove > 0;
+	SinceCanMoveFrame = INDEX_NONE;
 	if (!BasePhysicsState.bStartCountdown)
 	{
 		SinceCanMoveFrame = NumFrame();
 		UnFreezeMovement();
-#if !(UE_BUILD_SHIPPING)
+// #if !(UE_BUILD_SHIPPING)
 		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
-#endif
+// #endif
 	}
 }
 
@@ -787,49 +788,58 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		SetIsFrozen(Target.BaseState.bIsFrozen);
 	}
 
+	// check coutdown mismatch
 	if (bNewTarget && (Target.BaseState.bStartCountdown != PastPredictedState.bStartCountdown))
 	{
+		UE_LOG(SpeedNetcodeLog, Verbose, TEXT("[%s(%s)][COUNTDOWN MISMATCH] Countdown mismatch: Target=%d, PastPred=%d, NbFramesBeforeCanMove=%d, NumPredictedFrames=%d"), *GetOwner()->GetName(), *GetRole(),
+			Target.BaseState.bStartCountdown, PastPredictedState.bStartCountdown, BasePhysicsState.nbFramesbeforeCanMove, NumPredictedFrames);
 		BasePhysicsState.bStartCountdown = Target.BaseState.bStartCountdown;
 	}
+	/*else
+	{
+		UE_LOG(SpeedNetcodeLog, Log, TEXT("[CAN MOVE] No Countdown mismatch?: Target=%d, PastPred=%d"), Target.BaseState.bStartCountdown, PastPredictedWheeledState.bStartCountdown);
+	}*/
 
-	if (bNewTarget
-		&& (BasePhysicsState.nbFramesbeforeCanMove > NumPredictedFrames - 1)
-		&& (Target.BaseState.nbFramesbeforeCanMove != PastPredictedState.nbFramesbeforeCanMove)
+	// check nbFramesbeforeCanMove alignment
+	if (bNewTarget && (Target.BaseState.nbFramesbeforeCanMove != PastPredictedState.nbFramesbeforeCanMove)
+		// && (BasePhysicsState.nbFramesbeforeCanMove > NumPredictedFrames - 1)
+		// && (Target.BaseState.nbFramesbeforeCanMove != BasePhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
 		&& (BasePhysicsState.nbFramesbeforeCanMove != FMath::Max(0, int32(Target.BaseState.nbFramesbeforeCanMove) - NumPredictedFrames)))
 	{
 		if (Target.BaseState.nbFramesbeforeCanMove == 0 && BasePhysicsState.nbFramesbeforeCanMove != 0)
 		{
 			BasePhysicsState.nbFramesbeforeCanMove = 0;
 			BasePhysicsState.bStartCountdown = false;
-			SinceCanMoveFrame = Target.SourceFramesSinceCanMove != INDEX_NONE
-				? FMath::Max(0, TargetSourceLocalFrame - Target.SourceFramesSinceCanMove)
-				: CurrentFrame;
 			UnFreezeMovement();
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(SpeedNetcodeLog, Log, TEXT("[BASE LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"),
-				Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
-			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
+			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
+			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
 				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsState.Kinematic.ToString());
 #endif
 		}
 		else
 		{
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(SpeedNetcodeLog, Log, TEXT("[BASE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"),
-				Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
+			UE_LOG(SpeedNetcodeLog, Verbose, TEXT("[%s(%s)][CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"),
+				*GetOwner()->GetName(), *GetRole(), Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
 #endif
-			BasePhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(FMath::Max(0, int32(Target.BaseState.nbFramesbeforeCanMove) - NumPredictedFrames));
+			const bool bStartupCountdownCatchup =
+				Target.BaseState.bStartCountdown
+				&& PastPredictedState.nbFramesbeforeCanMove <= 1
+				&& Target.BaseState.nbFramesbeforeCanMove > MinNbFramesBeforeCanMove;
+			const int32 CorrectedFramesBeforeCanMove = bStartupCountdownCatchup
+				? int32(Target.BaseState.nbFramesbeforeCanMove)
+				: FMath::Max(0, int32(Target.BaseState.nbFramesbeforeCanMove) - NumPredictedFrames);
+			BasePhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
 			if (!BasePhysicsState.bStartCountdown && BasePhysicsState.nbFramesbeforeCanMove == 0)
 			{
+				// If countdown has not started, we cannot start to move immediately
 				BasePhysicsState.nbFramesbeforeCanMove = 1;
 			}
 
 			if (CanMove())
 			{
 				BasePhysicsState.bStartCountdown = false;
-				SinceCanMoveFrame = Target.SourceFramesSinceCanMove != INDEX_NONE
-					? FMath::Max(0, TargetSourceLocalFrame - Target.SourceFramesSinceCanMove)
-					: CurrentFrame;
 				UnFreezeMovement();
 			}
 		}
@@ -847,7 +857,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			SinceCanMoveFrame = INDEX_NONE;
 			FreezeMovement();
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(SpeedNetcodeLog, Log, TEXT("[BASE EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"),
+			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"), *GetOwner()->GetName(), *GetRole(),
 				Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove, BasePhysicsState.nbFramesbeforeCanMove);
 #endif
 		}

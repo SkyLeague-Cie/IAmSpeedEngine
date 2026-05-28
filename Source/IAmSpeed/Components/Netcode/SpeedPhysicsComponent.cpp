@@ -17,7 +17,7 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 		Mover->BasePhysicsState = BaseState;
 		if (SourceFramesSinceCanMove != INDEX_NONE)
 		{
-			Mover->SinceCanMoveFrame = FMath::Max(0, int32(LocalFrame) - SourceFramesSinceCanMove);
+			Mover->SinceCanMoveFrame = FMath::Max(0, GetSourceLocalFrame() - SourceFramesSinceCanMove);
 		}
 	}
 	else if (USpeedWheeledComponent* WheeledMover = Cast<USpeedWheeledComponent>(NetworkComponent))
@@ -28,7 +28,7 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 		WheeledMover->BasePhysicsState = BaseState;
 		if (SourceFramesSinceCanMove != INDEX_NONE)
 		{
-			WheeledMover->SinceCanMoveFrame = FMath::Max(0, int32(LocalFrame) - SourceFramesSinceCanMove);
+			WheeledMover->SinceCanMoveFrame = FMath::Max(0, GetSourceLocalFrame() - SourceFramesSinceCanMove);
 		}
 	}
 }

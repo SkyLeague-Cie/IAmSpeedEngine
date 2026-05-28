@@ -16,7 +16,7 @@ void FNetworkWheeledSpeedState::ApplyData(UActorComponent* NetworkComponent) con
 		Mover->WheeledPhysicsState = WheeledState;
 		if (SourceFramesSinceCanMove != INDEX_NONE)
 		{
-			Mover->SinceCanMoveFrame = FMath::Max(0, int32(LocalFrame) - SourceFramesSinceCanMove);
+			Mover->SinceCanMoveFrame = FMath::Max(0, GetSourceLocalFrame() - SourceFramesSinceCanMove);
 		}
 		Mover->RestoreWheeledPhysicalInputFromState();
 	}

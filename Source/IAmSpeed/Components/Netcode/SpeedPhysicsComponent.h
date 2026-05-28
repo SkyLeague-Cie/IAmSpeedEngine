@@ -57,7 +57,7 @@ struct FBasePhysicsState
 	// current kinematic state of the component
 	SKinematic Kinematic;
 	bool bIsFrozen = false; // whether the component is currently frozen, meaning it should just stay still
-	uint16 nbFramesbeforeCanMove = 0;
+	uint16 nbFramesbeforeCanMove = 1;
 	bool bStartCountdown = false;
 };
 
