@@ -1063,7 +1063,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 			if (FMath::Abs(ForwardSpeed) < LocalForwardFriction * delta)
 			{
 				// AddPhysAcceleration(-(ForwardSpeed / delta) * ForwardVector); // may not work now with quantization of velocity, so we directly set velocity to 0
-				SetPhysVelocity(GetPhysVelocity() - ForwardSpeed * ForwardVector); // remove forward velocity
+				AddPhysVelocity(-ForwardSpeed * ForwardVector); // remove forward velocity
 			}
 			else
 			{
@@ -1089,7 +1089,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 			if (overSpeed < LocalSideDamping * delta)
 			{
 				// addForce(-FMath::Sign(SideSpeed) * overSpeed * RightVector / delta, delta); // may not work now with quantization of velocity, so we directly set velocity to allowed side speed
-				SetPhysVelocity(GetPhysVelocity() - FMath::Sign(SideSpeed) * overSpeed * RightVector); // remove side velocity
+				AddPhysVelocity(- FMath::Sign(SideSpeed) * overSpeed * RightVector); // remove side velocity
 			}
 			else
 			{
@@ -1204,7 +1204,7 @@ void USpeedWheeledComponent::DampenAngularVelocity(const float& DampingFactor, c
 	}
 	if (velocityLength <= DampingFactor * delta)
 	{
-		SetPhysAngularVelocity(GetPhysAngularVelocity() - VelocityToDampen);
+		AddPhysAngularVelocity(-VelocityToDampen);
 	}
 	else
 	{
@@ -2497,7 +2497,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 	if (dV.Size() > VelApplyDeadzone)
 	{
-		SetPhysVelocity(GetPhysVelocity() + dV);
+		AddPhysVelocity(dV);
 		if (canLog)
 		{
 #if !(UE_BUILD_SHIPPING)
@@ -2509,7 +2509,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	}
 	if (dW.Size() > AngVelApplyDeadzone)
 	{
-		SetPhysAngularVelocity(GetPhysAngularVelocity() + dW);
+		AddPhysAngularVelocity(dW);
 		if (canLog)
 		{
 #if !(UE_BUILD_SHIPPING)

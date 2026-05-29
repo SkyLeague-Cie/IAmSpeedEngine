@@ -912,7 +912,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 		if (CorrV.Size() > VelCorrDeadzone)
 		{
-			SetPhysVelocity(GetPhysVelocity() + CorrV);
+			AddPhysVelocity(CorrV);
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
@@ -938,7 +938,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 		if (CorrW.Size() > AngVelCorrDeadzone)
 		{
-			SetPhysAngularVelocity(GetPhysAngularVelocity() + CorrW);
+			AddPhysAngularVelocity(CorrW);
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
