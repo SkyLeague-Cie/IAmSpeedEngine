@@ -1,8 +1,20 @@
 #include "ISphereSweeper.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
+#include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+
+namespace
+{
+    constexpr float SphereBoxContactPointQuantizationCm = 0.1f; // 1 mm
+
+    void QuantizeSphereBoxContactHit(SHitResult& Hit)
+    {
+        Hit.ImpactNormal = Speed::QuantizeUnitNormal(Hit.ImpactNormal);
+        Hit.ImpactPoint = Speed::QuantizeVectorCm(Hit.ImpactPoint, SphereBoxContactPointQuantizationCm);
+    }
+}
 
 bool ISphereSweeper::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& DeltaTime, float& OutTOI)
 {
@@ -73,6 +85,7 @@ bool ISphereSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float
 
     OutTOI = BestTime;
     OutHit = LocalBest;
+    QuantizeSphereBoxContactHit(OutHit);
     OutHit.Component = BestBox;
     OutHit.bBlockingHit = true;
     OutHit.SubBody = BestBox;
