@@ -96,6 +96,7 @@ private:
 
     void BuildContactPoints(const FVector& Nworld, const FVector& CenterWS, const FQuat& BoxRotWS, const FVector& Ext, TArray<FVector>& OutPointsWS) const;
     FVector BuildCompositeGroundNormal() const;
+    bool ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVector& HitN, float HitUpDot, float Dt, SHitResult& OutSupportHit) const;
     void ResolveWallOrGutter(const float& Dt, const SHitResult& Hit);
     void ResolveDirectGroundSupport(const float& Dt, const SHitResult& Hit);
     void ApplyPersistentSupportConstraint(const float& Dt);
@@ -284,9 +285,17 @@ private:
     FVector GroundPlaneN = FVector::UpVector;
     float GroundPlaneD = 0.f; // plane equation: dot(X, N) - D = 0
     TWeakObjectPtr<UPrimitiveComponent> GroundComp;
+    int32 FreshSupportClampUntilFrame = INDEX_NONE;
+    FVector FreshSupportClampN = FVector::UpVector;
+    TWeakObjectPtr<UPrimitiveComponent> FreshSupportClampComp;
     FVector PrevGroundNormal = FVector::UpVector; // normal from previous frame ground plane
     bool bHadGroundContactPrevFrame = false;
     FVector PrevContactNormal = FVector::UpVector; // average contact normal from previous frame
     bool bHadContactPrevFrame = false;
     float MinSlopCm = 0.05f; // Minimum allowed penetration depth in cm, used as slop in the solver to prevent jittering when resolving penetrations
+
+	// ======= Debug Netcode =======
+    int32 LastWallOrGutterFrame = INDEX_NONE;
+    FVector LastWallOrGutterN = FVector::ZeroVector;
+    float LastWallOrGutterUpDot = 0.f;
 };

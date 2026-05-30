@@ -145,6 +145,9 @@ namespace Speed
 	FRotator DecompressAllAxisRotator(const FRotator& compressedRotator);
 
 	FVector QuantizeUnitNormal(const FVector& n, float q = 1e-3f);
+	float QuantizeScalar(float X, float Step);
+
+	FVector QuantizeVectorCm(const FVector& V, float StepCm);
 
 	struct SEarlyOut
 	{

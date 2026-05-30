@@ -3,6 +3,7 @@
 
 #include "BoxSubBody.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
+#include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "SphereSubBody.h"
 #include "SWheelSubBody.h"
@@ -214,7 +215,11 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
 
 
     OutHit = Hit;
-    OutTOI = Hit.TOI;
+    OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
+    OutHit.TOI = Speed::QuantizeScalar(Hit.TOI, 1e-5f);
+	OutTOI = OutHit.TOI;
+    OutHit.ImpactPoint = Speed::QuantizeVectorCm(Hit.ImpactPoint, 0.1f); // 1 mm
+    OutHit.PenetrationDepth = Speed::QuantizeScalar(Hit.PenetrationDepth, 0.01f);
     bGroundHitFromSweep = true;
     AddGroundNormal(OutHit.ImpactNormal);
     return true;
@@ -274,14 +279,70 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 {
     if (!ParentComponent) return;
 
-    // Update composite normal set (you already maintain CurrentGroundNormalsWS)
     CompositeGroundNormal = BuildCompositeGroundNormal();
 
-    const FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
-    const float UpDot = FVector::DotProduct(N, FVector::UpVector);
+    const FVector RawN = CurrentHit.ImpactNormal.GetSafeNormal();
+    const float RawUpDot = FVector::DotProduct(RawN, FVector::UpVector);
+    const FVector VelBeforeResolve = ParentComponent->GetPhysVelocity();
+    const FVector AngBeforeResolve = ParentComponent->GetPhysAngularVelocity();
 
-    const bool bIsSupportingContact = (UpDot > 0.85f);
-    // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    SHitResult EffectiveHit = CurrentHit;
+    FVector EffectiveN = RawN;
+    float EffectiveUpDot = RawUpDot;
+
+    bool bPromotedWallToSupport = false;
+
+    if (RawUpDot < 0.85f)
+    {
+        SHitResult PromotedHit;
+		// Check if we can promote this wall/gutter hit to a support contact by reclassifying
+        // it with a more vertical normal (composite of current hit normal and other ground contacts normals)
+        if (ShouldPromoteWallHitToSupport(CurrentHit, RawN, RawUpDot, Dt, PromotedHit))
+        {
+            EffectiveHit = PromotedHit;
+            EffectiveN = EffectiveHit.ImpactNormal.GetSafeNormal();
+            EffectiveUpDot = FVector::DotProduct(EffectiveN, FVector::UpVector);
+            bPromotedWallToSupport = true;
+        }
+    }
+
+    constexpr float DirectSupportUpDot = 0.97f;
+    constexpr float CandidateSupportUpDot = 0.85f;
+
+    const bool bIsDirectSupportNormal = EffectiveUpDot >= DirectSupportUpDot;
+    const bool bIsCandidateSupport = EffectiveUpDot >= CandidateSupportUpDot;
+    const bool bHasLatchedEdgeSupport =
+        bEdgeSupportLatched &&
+        LatchedEdgeContactsLS.Num() == 2;
+    const bool bHasPreviousEdgeSupport = PrevGroundContactsLS.Num() == 2;
+
+    bool bIsSupportingContact = false;
+    int32 PreviewSupportContacts = 0;
+
+    if (bIsCandidateSupport)
+    {
+        TArray<FVector> PreviewPts;
+        BuildSupportManifoldFromNormal(
+            EffectiveN,
+            Kinematics.Location,
+            Kinematics.Rotation,
+            BoxExtent,
+            PreviewPts,
+            0.5f
+        );
+
+        PreviewSupportContacts = PreviewPts.Num();
+
+        const bool bStableSupportManifold =
+            PreviewPts.Num() >= 3 ||
+            bHasLatchedEdgeSupport ||
+            bHasPreviousEdgeSupport;
+
+        bIsSupportingContact =
+            bStableSupportManifold &&
+            (bIsDirectSupportNormal || EffectiveUpDot >= CandidateSupportUpDot);
+    }
+
     const FVector HitboxUpVector = Kinematics.Rotation.GetUpVector();
 
     if (FMath::Abs(HitboxUpVector.Z) > 0.75f)
@@ -289,18 +350,73 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         ParentComponent->SetIsUpsideDown(true);
     }
 
-    // Early exit if separating at the impact point.
-    constexpr float VN_EPS = 1.0f; // cm/s
-    const float vN_atImpact = FVector::DotProduct(GetVelocityAtPoint(CurrentHit.ImpactPoint), N);
-    // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] Start of Hit vs Ground for frame = %d, vN_start = %.2f cm/s, bIsSupportingContact = %d, Box Kinematic = %s"),
-    //    ParentComponent->NumFrame(), vN_atImpact, bIsSupportingContact, *ParentComponent->GetCurrentKinematicState().ToString());
+    constexpr float VN_EPS = 1.0f;
+    const float vN_atImpact =
+        FVector::DotProduct(GetVelocityAtPoint(EffectiveHit.ImpactPoint), EffectiveN);
+	// Debug log at start of hit resolution
+    /*UE_LOG(BoxSubBodyLog, Log,
+        TEXT("[CCDBox] Start of Hit vs Ground for frame = %d, vN_start = %.2f cm/s, bIsSupportingContact = %d, Parent Kinematic = (%s)"),
+        ParentComponent->NumFrame(),
+        vN_atImpact,
+        bIsSupportingContact ? 1 : 0,
+        *ParentComponent->GetKinematicState().ToString());*/
+
+// #if !UE_BUILD_SHIPPING
+    /*const bool bLogContactDecision =
+        bIsSupportingContact ||
+        bPromotedWallToSupport ||
+        FMath::Abs(vN_atImpact) > 50.f ||
+        HasPersistentGroundContact() ||
+        bGroundPlaneValid ||
+        bEdgeSupportLatched;
+
+    if (bLogContactDecision)
+    {
+        const int32 FramesSinceWall =
+            LastWallOrGutterFrame == INDEX_NONE
+            ? INDEX_NONE
+            : ParentComponent->NumFrame() - LastWallOrGutterFrame;
+
+        const bool bRecentlyHadWallOrGutter =
+            FramesSinceWall != INDEX_NONE && FramesSinceWall <= 8;
+        UE_LOG(BoxSubBodyLog, Log,
+            TEXT("[CCDBoxDecision] Frame=%d Branch=%s RawUpDot=%.4f EffUpDot=%.4f Promoted=%d PreviewContacts=%d vN=%.2f RawN=%s EffN=%s HitP=%s TOI=%.6f Sweep=%d Persistent=%d PlaneValid=%d PlaneN=%s Contacts=%d Normals=%d PrevLS=%d Latched=%d LatchedLS=%d LatchFrame=%d Comp=%s,"
+                "RecentlyHadWallOrGutter=%d FramesSinceWall=%d LastWallOrGutterUpDot=%.4f LastWallOrGutterN=%s"),
+            ParentComponent->NumFrame(),
+            bIsSupportingContact ? TEXT("Support") : TEXT("Wall"),
+            RawUpDot,
+            EffectiveUpDot,
+            bPromotedWallToSupport ? 1 : 0,
+            PreviewSupportContacts,
+            vN_atImpact,
+            *RawN.ToString(),
+            *EffectiveN.ToString(),
+            *EffectiveHit.ImpactPoint.ToString(),
+            EffectiveHit.TOI,
+            bGroundHitFromSweep ? 1 : 0,
+            HasPersistentGroundContact() ? 1 : 0,
+            bGroundPlaneValid ? 1 : 0,
+            *GroundPlaneN.ToString(),
+            CurrentGroundContactsWS.Num(),
+            CurrentGroundNormalsWS.Num(),
+            PrevGroundContactsLS.Num(),
+            bEdgeSupportLatched ? 1 : 0,
+            LatchedEdgeContactsLS.Num(),
+            EdgeSupportLatchFrame,
+            EffectiveHit.Component.IsValid() ? *EffectiveHit.Component->GetName() : TEXT("None"),
+            bRecentlyHadWallOrGutter ? 1 : 0,
+            FramesSinceWall,
+            LastWallOrGutterUpDot,
+            * LastWallOrGutterN.ToString());
+    }*/
+// #endif
+
     bool bDidDirectSupportSolve = false;
 
     if (vN_atImpact >= VN_EPS)
     {
         UpdatePersistentGroundContact(Dt);
 
-        // Optional: persistent only if no fresh sweep support was solved.
         if (HasPersistentGroundContact() && bIsSupportingContact && !bGroundHitFromSweep)
         {
             ApplyPersistentSupportConstraint(Dt);
@@ -311,32 +427,49 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     if (bIsSupportingContact)
     {
-        ResolveDirectGroundSupport(Dt, CurrentHit);
+        ResolveDirectGroundSupport(Dt, EffectiveHit);
         bDidDirectSupportSolve = true;
     }
     else
     {
-        ResolveWallOrGutter(Dt, CurrentHit);
+        ResolveWallOrGutter(Dt, EffectiveHit);
     }
 
     UpdatePersistentGroundContact(Dt);
 
-    // Do NOT apply persistent support immediately after direct support.
     if (!bDidDirectSupportSolve && HasPersistentGroundContact() && bIsSupportingContact)
     {
         ApplyPersistentSupportConstraint(Dt);
     }
 
-    // Bookkeeping for new contact logic in future frames
-    PrevContactNormal = N;
+    PrevContactNormal = EffectiveN;
     bHadContactPrevFrame = true;
 
-    // Debug
-    const FVector vImpactEnd = GetVelocityAtPoint(CurrentHit.ImpactPoint);
-    const float vN_end = FVector::DotProduct(vImpactEnd, N);
-    const FVector omega_end = ParentComponent->GetPhysAngularVelocity();
-    // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] End of Hit vs Ground for frame = %d, vN_end = %.2f cm/s, omega_end = %s rad/s, Rotation = %s"),
-    //    ParentComponent->NumFrame(), vN_end, *omega_end.ToString(), *ParentComponent->GetPhysRotation().ToString());
+	// Debug log at end of hit resolution
+    /*const FVector vImpactEnd = GetVelocityAtPoint(EffectiveHit.ImpactPoint);
+    const float vN_end = FVector::DotProduct(vImpactEnd, EffectiveN);
+    const FVector VelAfterResolve = ParentComponent->GetPhysVelocity();
+    const FVector AngAfterResolve = ParentComponent->GetPhysAngularVelocity();
+    if ((VelAfterResolve - VelBeforeResolve).Size() > 5.f ||
+        (AngAfterResolve - AngBeforeResolve).Size() > 0.01f ||
+        bIsSupportingContact ||
+        bPromotedWallToSupport)
+    {
+        UE_LOG(BoxSubBodyLog, Log,
+            TEXT("[CCDBoxResolveDelta] Frame=%d Branch=%s RawUpDot=%.4f EffUpDot=%.4f Promoted=%d ")
+            TEXT("VelBefore=%s VelAfter=%s dV=%s AngBefore=%s AngAfter=%s dW=%s"),
+            ParentComponent->NumFrame(),
+            bIsSupportingContact ? TEXT("Support") : TEXT("Wall"),
+            RawUpDot,
+            EffectiveUpDot,
+            bPromotedWallToSupport ? 1 : 0,
+            *VelBeforeResolve.ToString(),
+            *VelAfterResolve.ToString(),
+            *(VelAfterResolve - VelBeforeResolve).ToString(),
+            *AngBeforeResolve.ToString(),
+            *AngAfterResolve.ToString(),
+            *(AngAfterResolve - AngBeforeResolve).ToString());
+    }*/
 }
 
 
@@ -521,7 +654,6 @@ void UBoxSubBody::ResolveHitVsBox(
 // ================= Helper Methods for ResolveHitVsGround ====================
 // ============================================================================
 
-
 // ============================================================================
 //  ResolveWallOrGutter
 //     - Single contact, no “support” logic, no persistence.
@@ -532,8 +664,8 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 {
     if (!ParentComponent) return;
 
-    const FVector N = Hit.ImpactNormal.GetSafeNormal();
-    const FVector P = Hit.ImpactPoint;
+    const FVector N = Speed::QuantizeUnitNormal(Hit.ImpactNormal.GetSafeNormal());
+    const FVector P = Speed::QuantizeVectorCm(Hit.ImpactPoint, 0.1f); // 1 mm
 
     const FVector Vp = GetVelocityAtPoint(P);
     const float vN = FVector::DotProduct(Vp, N);
@@ -552,6 +684,65 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     const float denomN = EffectiveMassAlongDir(InvMass, InvI, r, N);
     if (denomN <= KINDA_SMALL_NUMBER)
         return;
+
+    int32 PreviewSupportContacts = 0;
+    const float UpDot = FVector::DotProduct(N, FVector::UpVector);
+    LastWallOrGutterFrame = ParentComponent->NumFrame();
+    LastWallOrGutterN = N;
+    LastWallOrGutterUpDot = UpDot;
+    if (UpDot >= 0.85f)
+    {
+        TArray<FVector> PreviewPts;
+        BuildSupportManifoldFromNormal(
+            N,
+            Kinematics.Location,
+            Kinematics.Rotation,
+            BoxExtent,
+            PreviewPts,
+            0.5f
+        );
+        PreviewSupportContacts = PreviewPts.Num();
+    }
+
+    const bool bHasValidSupportPlane =
+        bGroundPlaneValid &&
+        FVector::DotProduct(GroundPlaneN.GetSafeNormal(), FVector::UpVector) >= 0.85f;
+
+    const bool bIsGutterLikeWall =
+        UpDot >= 0.10f && UpDot < 0.85f;
+
+    const bool bIsInclinedWall =
+        UpDot >= 0.15f && UpDot < 0.85f;
+
+    const bool bIsLowSlopePenetratingWall =
+        Hit.bStartPenetrating &&
+        Hit.PenetrationDepth > 0.f &&
+        UpDot >= 0.0f &&
+        UpDot < 0.10f;
+
+    const bool bIsLowSlopeGutterImpact =
+        UpDot >= 0.0f &&
+        UpDot < 0.10f &&
+        bGroundHitFromSweep &&
+        FMath::Abs(vN) > 300.f;
+
+    const bool bIsNearHorizontalEdge =
+        UpDot >= 0.85f && PreviewSupportContacts >= 2;
+
+    const bool bIsSinglePointSteepSupportLikeWall =
+        UpDot >= 0.85f && PreviewSupportContacts < 2;
+
+    const bool bIsPenetratingStaticWall =
+        Hit.bStartPenetrating && Hit.PenetrationDepth > 0.f;
+
+    const bool bSoftWall =
+        bIsNearHorizontalEdge ||
+        bIsSinglePointSteepSupportLikeWall ||
+        bIsInclinedWall ||
+        bIsLowSlopePenetratingWall ||
+        bIsLowSlopeGutterImpact ||
+        (bIsGutterLikeWall && bHasValidSupportPlane) ||
+        (bIsGutterLikeWall && bIsPenetratingStaticWall);
 
     // Debug
     // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
@@ -574,11 +765,22 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     // Normal impulse to cancel vN (or bounce if enabled)
     float jn = -(1.f + Rest) * vN / denomN;
+    const bool bHardImpact = !Hit.bStartPenetrating && vN < -300.f;
+
+    const float MaxWallDeltaVCmS =
+        bSoftWall ? 50.f :
+        bHardImpact ? 180.f :
+        100.f;
+
+    const float jnMaxByMass =
+        (bSoftWall ? 1.0f : 5.0f) * GetMass();
+
+    const float jnMaxByDeltaV = MaxWallDeltaVCmS / FMath::Max(denomN, KINDA_SMALL_NUMBER);
 
     // Guard against absurd impulses in 1-point concave contacts.
     // This is NOT a “wedging clamp”; it’s a numerical safety for edge cases.
     // Tune with care. If you prefer, delete it and rely on correct CCD.
-    const float jnMax = 5.f * GetMass(); // (kg? but your Mass seems scalar) tweak
+    const float jnMax = FMath::Min(jnMaxByDeltaV, jnMaxByMass);
     jn = FMath::Clamp(jn, 0.f, jnMax);
 
     FVector J = jn * N;
@@ -609,6 +811,30 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     }
 
     ApplyImpulse(J, P);
+
+// #if !UE_BUILD_SHIPPING
+    /*
+    if (FMath::Abs(vN) > 5.f || Hit.bStartPenetrating)
+    {
+        UE_LOG(BoxSubBodyLog, Warning,
+            TEXT("[CCDBoxWallSolve] Frame=%d vN=%.2f N=%s P=%s J=%s jn=%.4f jnMax=%.4f SoftWall=%d PreviewContacts=%d denomN=%.6f TOI=%.6f Pen=%d Depth=%.3f Kinematic=%s"),
+            ParentComponent->NumFrame(),
+            vN,
+            *N.ToString(),
+            *P.ToString(),
+            *J.ToString(),
+            jn,
+            jnMax,
+            bSoftWall ? 1 : 0,
+            PreviewSupportContacts,
+            denomN,
+            Hit.TOI,
+            Hit.bStartPenetrating ? 1 : 0,
+            Hit.PenetrationDepth,
+            *Kinematics.ToString());
+    }
+    */
+// #endif
 
     // Optional positional correction when starting in penetration.
     // Use Hit.ImpactNormal (depenetration direction) when bStartPenetrating.
@@ -698,7 +924,78 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 #endif
     }
 
+    const float UpDot = FVector::DotProduct(N, FVector::UpVector);
+    const bool bFreshTwoPointEdgeSupport =
+        ContactPtsWS.Num() == 2 &&
+        !bUseLatchedEdge &&
+        !(bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2) &&
+        PrevGroundContactsLS.Num() != 2;
+
+    if (bFreshTwoPointEdgeSupport)
+    {
+        CurrentGroundContactsWS.Reset();
+
+        /*UE_LOG(BoxSubBodyLog, Warning,
+            TEXT("[CCDBoxSupportReject] Frame=%d Reason=FreshEdge UpDot=%.4f Contacts=%d UseLatched=%d PrevLS=%d Latched=%d LatchedLS=%d -> Wall/Gutter N=%s HitP=%s TOI=%.6f"),
+            ParentComponent->NumFrame(),
+            UpDot,
+            ContactPtsWS.Num(),
+            bUseLatchedEdge ? 1 : 0,
+            PrevGroundContactsLS.Num(),
+            bEdgeSupportLatched ? 1 : 0,
+            LatchedEdgeContactsLS.Num(),
+            *N.ToString(),
+            *ImpactP.ToString(),
+            Hit.TOI);*/
+
+        ResolveWallOrGutter(Dt, Hit);
+        return;
+    }
+
+    if (ContactPtsWS.Num() < 2 && UpDot < 0.97f)
+    {
+        CurrentGroundContactsWS.Reset();
+
+        /*UE_LOG(BoxSubBodyLog, Warning,
+            TEXT("[CCDBoxSupportReject] Frame=%d Reason=InclinedSinglePoint UpDot=%.4f Contacts=%d UseLatched=%d -> Wall/Gutter N=%s HitP=%s TOI=%.6f"),
+            ParentComponent->NumFrame(),
+            UpDot,
+            ContactPtsWS.Num(),
+            bUseLatchedEdge ? 1 : 0,
+            *N.ToString(),
+            *ImpactP.ToString(),
+            Hit.TOI);*/
+
+        ResolveWallOrGutter(Dt, Hit);
+        return;
+    }
+
+    const bool bFreshSweepSupport =
+        bGroundHitFromSweep &&
+        !bGroundPlaneValid &&
+        !bUseLatchedEdge &&
+        !bHasGroundContact &&
+        PrevGroundContactsLS.Num() == 0 &&
+        !(bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2);
+
     CurrentGroundContactsWS = ContactPtsWS;
+
+// #if !UE_BUILD_SHIPPING
+    /*UE_LOG(BoxSubBodyLog, Warning,
+        TEXT("[CCDBoxSupportPrep] Frame=%d vN=%.2f Fresh=%d UseLatched=%d Contacts=%d Latched=%d LatchedLS=%d PlaneValidBefore=%d HitN=%s HitP=%s TOI=%.6f Sweep=%d"),
+        ParentComponent->NumFrame(),
+        vN_atImpact,
+        bFreshSweepSupport ? 1 : 0,
+        bUseLatchedEdge ? 1 : 0,
+        CurrentGroundContactsWS.Num(),
+        bEdgeSupportLatched ? 1 : 0,
+        LatchedEdgeContactsLS.Num(),
+        bGroundPlaneValid ? 1 : 0,
+        *N.ToString(),
+        *ImpactP.ToString(),
+        Hit.TOI,
+        bGroundHitFromSweep ? 1 : 0);*/
+// #endif
 
     // if we end up with 2 points, renew too (even without override)
     if (CurrentGroundContactsWS.Num() == 2 && bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2)
@@ -748,6 +1045,59 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         PrevLambdaN.Reset();
 
     const int32 Iter = FMath::Clamp(NumC * 2, 6, 12);
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const bool bRecentlyHadWallOrGutter =
+        LastWallOrGutterFrame != INDEX_NONE &&
+        CurrentFrame - LastWallOrGutterFrame <= 8;
+    if (FreshSupportClampUntilFrame != INDEX_NONE && CurrentFrame > FreshSupportClampUntilFrame)
+    {
+        FreshSupportClampUntilFrame = INDEX_NONE;
+        FreshSupportClampComp.Reset();
+        FreshSupportClampN = FVector::UpVector;
+    }
+
+    const bool bSameFreshClampComponent =
+        Hit.Component.IsValid() &&
+        FreshSupportClampComp.IsValid() &&
+        Hit.Component.Get() == FreshSupportClampComp.Get();
+    const bool bFreshClampNormalCompatible =
+        FVector::DotProduct(N, FreshSupportClampN) >= 0.98f;
+
+    bool bInFreshSupportClampWindow =
+        FreshSupportClampUntilFrame != INDEX_NONE &&
+        CurrentFrame <= FreshSupportClampUntilFrame &&
+        bSameFreshClampComponent &&
+        bFreshClampNormalCompatible;
+
+    if (bFreshSweepSupport && NumC >= 3 && Hit.Component.IsValid())
+    {
+        FreshSupportClampUntilFrame = CurrentFrame + 4;
+        FreshSupportClampN = N;
+        FreshSupportClampComp = Hit.Component;
+        bInFreshSupportClampWindow = true;
+    }
+
+    float RemainingFreshSupportImpulse = TNumericLimits<float>::Max();
+    if ((bFreshSweepSupport || bInFreshSupportClampWindow) && NumC >= 3)
+    {
+        const float MaxFreshSupportDeltaVCmS = bRecentlyHadWallOrGutter ? 10.f : 25.f;
+        const float VnCom = FVector::DotProduct(ParentComponent->GetPhysVelocity(), N);
+        RemainingFreshSupportImpulse =
+            GetMass() * FMath::Min(FMath::Max(-VnCom, 0.f), MaxFreshSupportDeltaVCmS);
+
+        /*UE_LOG(BoxSubBodyLog, Warning,
+            TEXT("[CCDBoxFreshSupportClamp] Frame=%d Fresh=%d Window=%d Until=%d Contacts=%d vNCom=%.2f MaxImpulse=%.3f N=%s HitP=%s RecentlyHadWallOrGutter=%d"),
+            CurrentFrame,
+            bFreshSweepSupport ? 1 : 0,
+            bInFreshSupportClampWindow ? 1 : 0,
+            FreshSupportClampUntilFrame,
+            NumC,
+            VnCom,
+            RemainingFreshSupportImpulse,
+            *N.ToString(),
+            *ImpactP.ToString(),
+            bRecentlyHadWallOrGutter ? 1 : 0);*/
+    }
 
     TArray<float> LambdaN;
     LambdaN.SetNum(NumC);
@@ -756,7 +1106,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     const float InvMass = 1.f / GetMass();
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
-    // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d CurrentGroundContactsWS.Num = %d, ImpactNormal = %s, Kinematic = %s"),
+    // (BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d CurrentGroundContactsWS.Num = %d, ImpactNormal = %s, Kinematic = %s"),
     //     ParentComponent->NumFrame(), CurrentGroundContactsWS.Num(), *N.ToString(), *Kinematics.ToString());
 
     // Restitution policy (ground):
@@ -804,11 +1154,28 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             float dLambda = dvN / denomN;
 
             const float lambdaPrev = LambdaN[i];
-            const float lambdaNew = FMath::Max(lambdaPrev + dLambda, 0.f);
-            const float applied = lambdaNew - lambdaPrev;
+            float lambdaNew = FMath::Max(lambdaPrev + dLambda, 0.f);
+            float applied = lambdaNew - lambdaPrev;
+
+            if (RemainingFreshSupportImpulse < TNumericLimits<float>::Max())
+            {
+                const float AppliedClamped = FMath::Min(applied, RemainingFreshSupportImpulse);
+                RemainingFreshSupportImpulse -= AppliedClamped;
+                applied = AppliedClamped;
+                lambdaNew = lambdaPrev + applied;
+
+                if (applied <= KINDA_SMALL_NUMBER)
+                {
+                    LambdaN[i] = lambdaPrev;
+                    continue;
+                }
+            }
+
             LambdaN[i] = lambdaNew;
 
             FVector J = applied * N;
+            const float appliedRaw = applied;
+            const float BudgetBefore = RemainingFreshSupportImpulse;
 
             // friction (Coulomb) on supporting contact
             const float mu = GetDynamicFriction();
@@ -830,10 +1197,31 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                     }
                 }
             }
+            const float BudgetAfter = RemainingFreshSupportImpulse;
 
             ApplyImpulse(J, P);
-            // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d, On point %s, applied J= %s, Kinematic = %s"),
-            //    ParentComponent->NumFrame(), *P.ToString(), *J.ToString(), *Kinematics.ToString());
+            /*(BoxSubBodyLog, Log,
+                TEXT("[CCDBoxSupportImpulse] Frame=%d It=%d Pt=%d Fresh=%d Window=%d RecentlyWall=%d ")
+                TEXT("NumC=%d vN=%.2f denomN=%.6f appliedRaw=%.3f appliedFinal=%.3f BudgetBefore=%.3f BudgetAfter=%.3f ")
+                TEXT("P=%s N=%s J=%s Vel=%s AngVel=%s"),
+                ParentComponent->NumFrame(),
+                it,
+                i,
+                bFreshSweepSupport ? 1 : 0,
+                bInFreshSupportClampWindow ? 1 : 0,
+                bRecentlyHadWallOrGutter ? 1 : 0,
+                NumC,
+                vN,
+                denomN,
+                appliedRaw,
+                applied,
+                BudgetBefore,
+                RemainingFreshSupportImpulse,
+                *P.ToString(),
+                *N.ToString(),
+                *J.ToString(),
+                *ParentComponent->GetPhysVelocity().ToString(),
+                *ParentComponent->GetPhysAngularVelocity().ToString());*/
         }
     }
 
@@ -968,7 +1356,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     // Debug
     Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
     // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d, ImpactNormal = %s, Kinematic = %s"),
-    //    ParentComponent->NumFrame(), *N.ToString(), *Kinematics.ToString());
+    //     ParentComponent->NumFrame(), *N.ToString(), *Kinematics.ToString());
 
     constexpr int32 Iter = 6;
     for (int32 it = 0; it < Iter; ++it)
@@ -1698,6 +2086,119 @@ FVector UBoxSubBody::BuildCompositeGroundNormal() const
     }
 
     return Nsum;
+}
+
+bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVector& HitN, float HitUpDot, float Dt, SHitResult& OutSupportHit) const
+{
+    if (!ParentComponent)
+    {
+        return false;
+    }
+
+    constexpr int32 WallToSupportPromotionCooldownFrames = 8;
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const int32 FramesSinceWallOrGutter =
+        LastWallOrGutterFrame == INDEX_NONE
+        ? INDEX_NONE
+        : CurrentFrame - LastWallOrGutterFrame;
+
+    if (FramesSinceWallOrGutter != INDEX_NONE &&
+        FramesSinceWallOrGutter >= 0 &&
+        FramesSinceWallOrGutter <= WallToSupportPromotionCooldownFrames)
+    {
+        /*UE_LOG(BoxSubBodyLog, Log,
+            TEXT("[CCDBoxPromoteReject] Frame=%d Reason=RecentWallOrGutter FramesSinceWall=%d RawUpDot=%.4f LastWallUpDot=%.4f HitN=%s LastWallN=%s HitP=%s TOI=%.6f"),
+            CurrentFrame,
+            FramesSinceWallOrGutter,
+            HitUpDot,
+            LastWallOrGutterUpDot,
+            *HitN.ToString(),
+            *LastWallOrGutterN.ToString(),
+            *Hit.ImpactPoint.ToString(),
+            Hit.TOI);*/
+
+        return false;
+    }
+
+    // Already support : not a promotion.
+    if (HitUpDot >= 0.85f)
+    {
+        return false;
+    }
+
+    // True vertical wall : do not promote.
+    // Here we only target gutter normals with a notable Z component.
+    if (HitUpDot < 0.15f)
+    {
+        return false;
+    }
+
+	// If the hit is too far in the future, don't promote: we want to be reactive to new ground contacts.
+    if (Hit.TOI > 0.0015f)
+    {
+        return false;
+    }
+
+    if (!bGroundPlaneValid || !GroundComp.IsValid())
+    {
+        return false;
+    }
+
+    const FVector PlaneN = GroundPlaneN.GetSafeNormal();
+    const float PlaneUpDot = FVector::DotProduct(PlaneN, FVector::UpVector);
+
+    if (PlaneUpDot < 0.97f)
+    {
+        return false;
+    }
+
+    // Avoid promoting a hit against a component other than the remembered ground/stadium.
+    if (Hit.Component.IsValid() && GroundComp.IsValid() && Hit.Component.Get() != GroundComp.Get())
+    {
+        return false;
+    }
+
+    const FVector Vcm = ParentComponent->GetPhysVelocity();
+    const float Vz = Vcm.Z;
+
+    // Velocity normal to the support plane.
+    const FVector Pbox = ComputeBoxSupportPointWS(
+        Kinematics.Location,
+        Kinematics.Rotation,
+        BoxExtent,
+        PlaneN
+    );
+
+    const float vPlane = FVector::DotProduct(GetVelocityAtPoint(Pbox), PlaneN);
+
+    // Only promote if the car is falling towards the plane.
+    if (Vz > -50.f && vPlane > -50.f)
+    {
+        return false;
+    }
+
+    const float DistToPlane = PlaneSignedDist(Pbox, PlaneN, GroundPlanePointWS);
+
+    // Large band intentionally: the hitbox center/point can be high in the gutters.
+    // To tune with your logs. I would start wide, then narrow it.
+    constexpr float MaxAbovePlaneCm = 90.f;
+    constexpr float MaxBelowPlaneCm = 15.f;
+
+    if (DistToPlane > MaxAbovePlaneCm || DistToPlane < -MaxBelowPlaneCm)
+    {
+        return false;
+    }
+
+    OutSupportHit = Hit;
+    OutSupportHit.ImpactNormal = PlaneN;
+
+    // Use a consistent point on the plane rather than the point on the inclined wall.
+    OutSupportHit.ImpactPoint = Pbox - DistToPlane * PlaneN;
+
+    // Keep the TOI of the original hit: the event remains at the same moment.
+    OutSupportHit.TOI = Hit.TOI;
+
+    return true;
 }
 
 

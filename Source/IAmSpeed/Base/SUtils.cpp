@@ -1277,6 +1277,19 @@ FVector Speed::QuantizeUnitNormal(const FVector& n, float q)
 	return nCopy;
 }
 
+float Speed::QuantizeScalar(float X, float Step)
+{
+	return FMath::RoundToFloat(X / Step) * Step;
+}
+
+FVector Speed::QuantizeVectorCm(const FVector& V, float StepCm)
+{
+	return FVector(
+		QuantizeScalar(V.X, StepCm),
+		QuantizeScalar(V.Y, StepCm),
+		QuantizeScalar(V.Z, StepCm)
+	);
+}
 bool SImpulseSolver::ComputeCollisionImpulse(
 	const FVector& ContactPoint,
 	FVector Normal,
