@@ -85,7 +85,12 @@ bool IBoxSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const float&
     OutHit.bBlockingHit = true;
     OutHit.Component = BestSphere;
     OutHit.SubBody = BestSphere;
-    OutTOI = BestHit.TOI;
+    OutTOI = OutHit.TOI;
+
+    // Debug Log
+	// UE_LOG(LogTemp, Log, TEXT("BoxSweeper with kinematics = (%s) might hit SphereSubBody with kinematics = (%s) at ImpactPoint %s and ImpactNormal %s at time %f"), *GetKinematicState().ToString(),
+    //    *BestSphere->GetKinematicState().ToString(), *OutHit.ImpactPoint.ToString(), *OutHit.ImpactNormal.ToString(), OutHit.TOI);
+
     return true;
 }
 

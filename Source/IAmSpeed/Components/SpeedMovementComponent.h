@@ -180,11 +180,11 @@ public:
 	// how much of the position error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float PosStabilityMultiplier = 0.4f;
+	float PosStabilityMultiplier = 0.2f;
 	// how much of the velocity error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float VelStabilityMultiplier = 0.8f;
+	float VelStabilityMultiplier = 0.6f;
 	// how much of the rotation error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
@@ -192,7 +192,7 @@ public:
 	// how much of the angular velocity error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float AngVelStabilityMultiplier = 0.8f;
+	float AngVelStabilityMultiplier = 0.6f;
 	
 	// Limit of the correction to apply on the position per second (to avoid visible jerk)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,

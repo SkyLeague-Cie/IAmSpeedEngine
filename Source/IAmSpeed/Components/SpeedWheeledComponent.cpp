@@ -715,6 +715,11 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 	UpdateInputs();
 	TagStateHistoryProxyRole();
 	RecoverWheelState();
+	/*if (CanMove())
+	{
+		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, Kinematic state = (%s)"),
+			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), *GetKinematicState().ToString());
+	}*/
 }
 
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
@@ -2521,7 +2526,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	}
 	if (dX.Size() > PosApplyDeadzone)
 	{
-		SetPhysLocation(GetPhysLocation() + dX);
+		dX = AddPhysLocation(dX);
 		if (canLog)
 		{
 #if !(UE_BUILD_SHIPPING)
@@ -2538,13 +2543,13 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		const float AngleDeg = FMath::RadiansToDegrees(FMath::Abs(AngleTmp));
 		if (AngleDeg > RotApplyDeadzoneDeg)
 		{
-			SetPhysRotation((GetPhysRotation() * dR).GetNormalized());
+			dR = AddPhysRotation(dR);
 			if (canLog)
 			{
 #if !(UE_BUILD_SHIPPING)
 				UE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrRot=%.2fdeg AppliedRotCorr=%.2fdeg"),
 					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames,
-					FMath::RadiansToDegrees(NetCorrAccum.RemRot.GetAngle()), AngleDeg);
+					FMath::RadiansToDegrees(NetCorrAccum.RemRot.GetAngle()), FMath::RadiansToDegrees(FMath::Abs(dR.GetAngle())));
 #endif
 			}
 		}

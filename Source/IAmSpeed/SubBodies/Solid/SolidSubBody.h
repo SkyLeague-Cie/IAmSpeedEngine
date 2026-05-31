@@ -68,6 +68,7 @@ protected:
 		const FVector& ContactPointWS,
 		const FVector& NormalWS,
 		UPrimitiveComponent* OtherComponent,
+		USolidSubBody* OtherSubBody = nullptr,
 		float PenetrationDepth = 0.f,
 		float TOI = 0.f,
 		bool bPersistent = false

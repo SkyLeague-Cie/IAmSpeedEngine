@@ -925,13 +925,13 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 		if (CorrX.Size() > PosCorrDeadzone)
 		{
-			SetPhysLocation(GetPhysLocation() + CorrX);
+			const FVector AppliedCorrX = AddPhysLocation(CorrX);
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
 				UE_LOG(SpeedNetcodeLog, Log,
 					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d PosDiff0=%.2fcm Corr=%.2fcm TargetPosNow=%s"),
-					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrX0.Size(), CorrX.Size(), *GetPhysLocation().ToString());
+					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrX0.Size(), AppliedCorrX.Size(), *GetPhysLocation().ToString());
 #endif
 			}
 		}
@@ -951,13 +951,14 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 		if (CorrEuler.Size() > RotCorrDeadzone)
 		{
-			SetPhysRotation((GetPhysRotation() * CorrQuat).GetNormalized());
+			const FQuat AppliedCorrQuat = AddPhysRotation(CorrQuat);
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
+				const float AppliedCorrDeg = FMath::RadiansToDegrees(AppliedCorrQuat.GetAngle());
 				UE_LOG(SpeedNetcodeLog, Log,
 					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d RotDiff0=%.2fdeg Corr=%.2fdeg"),
-					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrEuler0.Size(), CorrEuler.Size());
+					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrEuler0.Size(), AppliedCorrDeg);
 #endif
 			}
 		}

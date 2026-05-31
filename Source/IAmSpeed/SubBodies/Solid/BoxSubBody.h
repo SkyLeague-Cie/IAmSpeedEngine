@@ -97,6 +97,7 @@ private:
     void BuildContactPoints(const FVector& Nworld, const FVector& CenterWS, const FQuat& BoxRotWS, const FVector& Ext, TArray<FVector>& OutPointsWS) const;
     FVector BuildCompositeGroundNormal() const;
     bool ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVector& HitN, float HitUpDot, float Dt, SHitResult& OutSupportHit) const;
+    bool TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const SHitResult& SweepSphereHit, SHitResult& OutHit, float& OutTOI) const;
     void ResolveWallOrGutter(const float& Dt, const SHitResult& Hit);
     void ResolveDirectGroundSupport(const float& Dt, const SHitResult& Hit);
     void ApplyPersistentSupportConstraint(const float& Dt);
@@ -298,4 +299,6 @@ private:
     int32 LastWallOrGutterFrame = INDEX_NONE;
     FVector LastWallOrGutterN = FVector::ZeroVector;
     float LastWallOrGutterUpDot = 0.f;
+    SHitResult LastResolvedSphereHit;
+    int32 LastResolvedSphereHitFrame = INDEX_NONE;
 };

@@ -285,6 +285,51 @@ void ISpeedComponent::AddPhysVelocity(const FVector& DeltaVelocity)
 	SetPhysVelocity(GetPhysVelocity() + ProjectedDeltaVelocity);
 }
 
+FVector ISpeedComponent::AddPhysLocation(const FVector& DeltaLocation)
+{
+	FVector ProjectedDeltaLocation = DeltaLocation;
+	ProjectLinearDeltaAgainstConstraints(ProjectedDeltaLocation);
+	if (!ProjectedDeltaLocation.IsNearlyZero())
+	{
+		SetPhysLocation(GetPhysLocation() + ProjectedDeltaLocation);
+	}
+	return ProjectedDeltaLocation;
+}
+
+FQuat ISpeedComponent::AddPhysRotation(const FQuat& DeltaRotation)
+{
+	FQuat NormalizedDeltaRotation = DeltaRotation.GetNormalized();
+	if (NormalizedDeltaRotation.Equals(FQuat::Identity))
+	{
+		return FQuat::Identity;
+	}
+
+	FVector Axis = FVector::ZeroVector;
+	float Angle = 0.f;
+	NormalizedDeltaRotation.ToAxisAndAngle(Axis, Angle);
+	if (!Axis.Normalize())
+	{
+		return FQuat::Identity;
+	}
+
+	if (Angle > PI)
+	{
+		Angle -= 2.f * PI;
+	}
+
+	FVector DeltaAngular = Axis * Angle;
+	ProjectAngularDeltaAgainstConstraints(DeltaAngular);
+
+	const float ProjectedAngle = DeltaAngular.Size();
+	if (ProjectedAngle <= KINDA_SMALL_NUMBER)
+	{
+		return FQuat::Identity;
+	}
+
+	const FQuat AppliedDeltaRotation(DeltaAngular / ProjectedAngle, ProjectedAngle);
+	SetPhysRotation((GetPhysRotation() * AppliedDeltaRotation).GetNormalized());
+	return AppliedDeltaRotation;
+}
 void ISpeedComponent::AddPhysAngularVelocity(const FVector& DeltaAngularVelocity)
 {
 	FVector ProjectedDeltaAngularVelocity = DeltaAngularVelocity;

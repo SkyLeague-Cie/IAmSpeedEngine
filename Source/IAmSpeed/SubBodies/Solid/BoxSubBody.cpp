@@ -62,6 +62,13 @@ void UBoxSubBody::AcceptHit()
     if (!CurrentHit.Component.IsValid())
         return;
 
+    if (Cast<USphereSubBody>(CurrentHit.SubBody.Get()))
+    {
+        SphereHit = CurrentHit;
+        LastResolvedSphereHit = CurrentHit;
+        LastResolvedSphereHitFrame = ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE;
+    }
+
     UPrimitiveComponent* Comp = CurrentHit.Component.Get();
     if (CurrentHit.Component.IsValid() && CurrentHit.Component->GetMobility() == EComponentMobility::Static)
     {
@@ -94,6 +101,94 @@ void UBoxSubBody::AcceptHit()
 //======================================================
 // =============== Sweep Methods =======================
 // =====================================================
+bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const SHitResult& SweepSphereHit, SHitResult& OutHit, float& OutTOI) const
+{
+    if (!ParentComponent || !LastResolvedSphereHit.bBlockingHit || !LastResolvedSphereHit.SubBody.IsValid())
+    {
+        return false;
+    }
+
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    if (LastResolvedSphereHitFrame == INDEX_NONE || CurrentFrame - LastResolvedSphereHitFrame != 1)
+    {
+        return false;
+    }
+
+    USphereSubBody* OtherSphere = Cast<USphereSubBody>(LastResolvedSphereHit.SubBody.Get());
+    if (!OtherSphere || ComponentHasBeenIgnored(*OtherSphere))
+    {
+        return false;
+    }
+
+    if (bHasSweepSphereHit && SweepSphereHit.SubBody.IsValid() && SweepSphereHit.SubBody.Get() != OtherSphere)
+    {
+        return false;
+    }
+
+    constexpr float PersistentSphereMaxSepCm = 0.35f;
+    constexpr float PersistentSphereSeparatingSpeedCmS = 1.0f;
+    constexpr float ContactPointQuantizationCm = 0.1f;
+
+    const SSBox ThisBox = MakeBox();
+    const SSphere OtherSphereShape = OtherSphere->MakeSphere();
+
+    FVector ContactPoint = FVector::ZeroVector;
+    const float Sep0 = ThisBox.SphereOBBSeparation(
+        ThisBox.Rot,
+        ThisBox.AbsoluteCenter(),
+        OtherSphereShape.Center,
+        OtherSphereShape.Radius,
+        &ContactPoint);
+
+    if (Sep0 > PersistentSphereMaxSepCm)
+    {
+        return false;
+    }
+
+    FVector N = (ContactPoint - OtherSphereShape.Center).GetSafeNormal();
+    if (N.IsNearlyZero())
+    {
+        N = LastResolvedSphereHit.ImpactNormal.GetSafeNormal();
+    }
+    if (N.IsNearlyZero())
+    {
+        return false;
+    }
+
+    const FVector BoxVp = GetVelocityAtPoint(ContactPoint);
+    const FVector SphereVp = OtherSphere->GetVelocityAtPoint(ContactPoint);
+    const float RelVN = FVector::DotProduct(BoxVp - SphereVp, N);
+    if (RelVN > PersistentSphereSeparatingSpeedCmS)
+    {
+        return false;
+    }
+
+    OutHit = SHitResult(
+        true,
+        Speed::QuantizeVectorCm(ContactPoint, ContactPointQuantizationCm),
+        Speed::QuantizeUnitNormal(N),
+        0.0f);
+    OutHit.bBlockingHit = true;
+    OutHit.Component = OtherSphere;
+    OutHit.SubBody = OtherSphere;
+    OutTOI = 0.0f;
+
+    /*UE_LOG(BoxSubBodyLog, Log,
+        TEXT("[PersistentBoxSphereContact] Frame=%d PrevFrame=%d Sep0=%.4f RelVN=%.2f SweepHit=%d SweepTOI=%.6f OldTOI=%.6f NewTOI=0.000000 P=%s N=%s Sphere=%s"),
+        CurrentFrame,
+        LastResolvedSphereHitFrame,
+        Sep0,
+        RelVN,
+        bHasSweepSphereHit ? 1 : 0,
+        bHasSweepSphereHit ? SweepSphereHit.TOI : -1.0f,
+        LastResolvedSphereHit.TOI,
+        *OutHit.ImpactPoint.ToString(),
+        *OutHit.ImpactNormal.ToString(),
+        *OtherSphere->GetName());*/
+
+    return true;
+}
+
 bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {
     if (!ParentComponent)
@@ -116,6 +211,18 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
     bool bHitBox = SweepVsBoxes(GetWorld(), BoxHitresult, RemainingDelta, TOI_Box);
     bool bHitSphere = SweepVsSpheres(GetWorld(), SphereHitresult, RemainingDelta, TOI_Sphere);
     bool bHitWheel = SweepVsWheels(GetWorld(), WheelHitresult, RemainingDelta, TOI_Wheel);
+    bool bPersistentSphereContact = false;
+
+    SHitResult PersistentSphereHit;
+    float PersistentSphereTOI = RemainingDelta;
+    if (TryBuildPersistentSphereContact(bHitSphere, SphereHitresult, PersistentSphereHit, PersistentSphereTOI))
+    {
+        bPersistentSphereContact = true;
+        bHitSphere = true;
+        SphereHitresult = PersistentSphereHit;
+        TOI_Sphere = PersistentSphereTOI;
+    }
+
     if (!bHitGround && !bHitBox && !bHitSphere && !bHitWheel)
     {
         // IMPORTANT : ground can exist even without a hit (persistent contact)
@@ -158,7 +265,7 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
         FutureHit = GroundHit;
     }
 
-    if (bHitSphere && TOI_Sphere < OutTOI)
+    if (bHitSphere && (TOI_Sphere < OutTOI || (bPersistentSphereContact && FMath::IsNearlyEqual(TOI_Sphere, OutTOI))))
     {
         OutTOI = TOI_Sphere;
 		SphereHit = SphereHitresult;

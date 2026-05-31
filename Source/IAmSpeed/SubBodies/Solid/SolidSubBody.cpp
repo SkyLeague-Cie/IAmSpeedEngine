@@ -47,6 +47,7 @@ void USolidSubBody::RegisterCurrentHitAsConstraint()
         CurrentHit.ImpactPoint,
         CurrentHit.ImpactNormal,
         CurrentHit.Component.Get(),
+        Cast<USolidSubBody>(CurrentHit.SubBody.Get()),
         CurrentHit.PenetrationDepth,
         CurrentHit.TOI,
         false
@@ -57,6 +58,7 @@ void USolidSubBody::RegisterContactAsConstraint(
     const FVector& ContactPointWS,
     const FVector& NormalWS,
     UPrimitiveComponent* OtherComponent,
+    USolidSubBody* OtherSubBody,
     float PenetrationDepth,
     float TOI,
     bool bPersistent)
@@ -66,9 +68,14 @@ void USolidSubBody::RegisterContactAsConstraint(
         return;
     }
 
-    // Pour l’instant je garderais ce filtre, comme ton implémentation actuelle.
-    // Plus tard tu pourras l’élargir aux SubBodies dynamiques si nécessaire.
-    if (OtherComponent->GetCollisionObjectType() != ECC_WorldStatic)
+    if (!OtherSubBody)
+    {
+        OtherSubBody = Cast<USolidSubBody>(OtherComponent);
+    }
+
+    const bool bStaticConstraint = OtherComponent->GetCollisionObjectType() == ECC_WorldStatic;
+    const bool bDynamicSolidConstraint = OtherSubBody && OtherSubBody->ParentComponent;
+    if (!bStaticConstraint && !bDynamicSolidConstraint)
     {
         return;
     }
@@ -87,21 +94,34 @@ void USolidSubBody::RegisterContactAsConstraint(
     Constraint.PenetrationDepth = PenetrationDepth;
     Constraint.TOI = TOI;
     Constraint.PairKey = USSubBody::MakePairKey(this, OtherComponent);
-    Constraint.bPersistent = bPersistent;
+    Constraint.bPersistent = bStaticConstraint && bPersistent;
 
     ParentComponent->RegisterPhysicalConstraint(Constraint);
-#if !UE_BUILD_SHIPPING
-    /*
-    UE_LOG(LogTemp, Log,
-        TEXT("[Constraint] Frame=%d SubBody=%s P=%s N=%s Persistent=%d"),
-        ParentComponent ? ParentComponent->NumFrame() : -1,
-        *GetName(),
-        *ContactPointWS.ToString(),
-        *N.ToString(),
-        bPersistent ? 1 : 0
-    );
-    */
-#endif
+
+    if (bDynamicSolidConstraint && OtherSubBody->ParentComponent != ParentComponent)
+    {
+        FPhysicalContactConstraint OtherConstraint;
+        OtherConstraint.Normal = -N;
+        OtherConstraint.ContactPoint = ContactPointWS;
+        OtherConstraint.OtherComponent = this;
+        OtherConstraint.SourceSubBody = OtherSubBody;
+        OtherConstraint.PenetrationDepth = PenetrationDepth;
+        OtherConstraint.TOI = TOI;
+        OtherConstraint.PairKey = USSubBody::MakePairKey(OtherSubBody, this);
+        OtherConstraint.bPersistent = false;
+        OtherSubBody->ParentComponent->RegisterPhysicalConstraint(OtherConstraint);
+
+        /*
+        UE_LOG(LogTemp, Log,
+            TEXT("[Constraint] Frame=%d SubBody=%s P=%s N=%s Persistent=%d"),
+            ParentComponent ? ParentComponent->NumFrame() : -1,
+            *GetName(),
+            *ContactPointWS.ToString(),
+            *N.ToString(),
+            bPersistent ? 1 : 0
+        );
+        */
+    }
 }
 
 void USolidSubBody::RegisterContactManifoldAsConstraints(
@@ -129,7 +149,7 @@ void USolidSubBody::RegisterContactManifoldAsConstraints(
     {
         for (const FVector& P : ContactPointsWS)
         {
-            RegisterContactAsConstraint(P, N, OtherComponent, PenetrationDepth, TOI, bPersistent);
+            RegisterContactAsConstraint(P, N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent);
         }
         return;
     }
@@ -147,7 +167,7 @@ void USolidSubBody::RegisterContactManifoldAsConstraints(
     const int32 NumToRegister = FMath::Min(MaxContacts, Sorted.Num());
     for (int32 i = 0; i < NumToRegister; ++i)
     {
-        RegisterContactAsConstraint(Sorted[i], N, OtherComponent, PenetrationDepth, TOI, bPersistent);
+        RegisterContactAsConstraint(Sorted[i], N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent);
     }
 }
 

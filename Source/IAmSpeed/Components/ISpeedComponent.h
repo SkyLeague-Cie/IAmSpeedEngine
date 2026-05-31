@@ -87,6 +87,8 @@ public:
 	// ==============================
 
 	// ===== Kinematics modifiers (e.g. for applying impulses) =======
+	FVector AddPhysLocation(const FVector& DeltaLocation);
+	FQuat AddPhysRotation(const FQuat& DeltaRotation);
 	void AddPhysVelocity(const FVector& DeltaVelocity);
 	void AddPhysAngularVelocity(const FVector& DeltaAngularVelocity);
 	void AddPhysImpulseAtPoint(const FVector& Impulse, const FVector& WorldPoint, const USolidSubBody* SubBody = nullptr);
