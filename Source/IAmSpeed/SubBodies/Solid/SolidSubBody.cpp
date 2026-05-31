@@ -3,6 +3,7 @@
 
 #include "SolidSubBody.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "Configs/SubBodyConfig.h"
 
 void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
@@ -33,6 +34,141 @@ void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& Wo
 	{
 		ParentComponent->ApplyImpulse(LinearImpulse, WorldPoint, this);
 	}
+}
+
+void USolidSubBody::RegisterCurrentHitAsConstraint()
+{
+    if (!CurrentHit.bBlockingHit || !CurrentHit.Component.IsValid())
+    {
+        return;
+    }
+
+    RegisterContactAsConstraint(
+        CurrentHit.ImpactPoint,
+        CurrentHit.ImpactNormal,
+        CurrentHit.Component.Get(),
+        Cast<USolidSubBody>(CurrentHit.SubBody.Get()),
+        CurrentHit.PenetrationDepth,
+        CurrentHit.TOI,
+        false
+    );
+}
+
+void USolidSubBody::RegisterContactAsConstraint(
+    const FVector& ContactPointWS,
+    const FVector& NormalWS,
+    UPrimitiveComponent* OtherComponent,
+    USolidSubBody* OtherSubBody,
+    float PenetrationDepth,
+    float TOI,
+    bool bPersistent)
+{
+    if (!ParentComponent || !OtherComponent)
+    {
+        return;
+    }
+
+    if (!OtherSubBody)
+    {
+        OtherSubBody = Cast<USolidSubBody>(OtherComponent);
+    }
+
+    const bool bStaticConstraint = OtherComponent->GetCollisionObjectType() == ECC_WorldStatic;
+    const bool bDynamicSolidConstraint = OtherSubBody && OtherSubBody->ParentComponent;
+    if (!bStaticConstraint && !bDynamicSolidConstraint)
+    {
+        return;
+    }
+
+    const FVector N = NormalWS.GetSafeNormal();
+    if (N.IsNearlyZero())
+    {
+        return;
+    }
+
+    FPhysicalContactConstraint Constraint;
+    Constraint.Normal = N;
+    Constraint.ContactPoint = ContactPointWS;
+    Constraint.OtherComponent = OtherComponent;
+    Constraint.SourceSubBody = this;
+    Constraint.PenetrationDepth = PenetrationDepth;
+    Constraint.TOI = TOI;
+    Constraint.PairKey = USSubBody::MakePairKey(this, OtherComponent);
+    Constraint.bPersistent = bStaticConstraint && bPersistent;
+
+    ParentComponent->RegisterPhysicalConstraint(Constraint);
+
+    if (bDynamicSolidConstraint && OtherSubBody->ParentComponent != ParentComponent)
+    {
+        FPhysicalContactConstraint OtherConstraint;
+        OtherConstraint.Normal = -N;
+        OtherConstraint.ContactPoint = ContactPointWS;
+        OtherConstraint.OtherComponent = this;
+        OtherConstraint.SourceSubBody = OtherSubBody;
+        OtherConstraint.PenetrationDepth = PenetrationDepth;
+        OtherConstraint.TOI = TOI;
+        OtherConstraint.PairKey = USSubBody::MakePairKey(OtherSubBody, this);
+        OtherConstraint.bPersistent = false;
+        OtherSubBody->ParentComponent->RegisterPhysicalConstraint(OtherConstraint);
+
+        /*
+        UE_LOG(LogTemp, Log,
+            TEXT("[Constraint] Frame=%d SubBody=%s P=%s N=%s Persistent=%d"),
+            ParentComponent ? ParentComponent->NumFrame() : -1,
+            *GetName(),
+            *ContactPointWS.ToString(),
+            *N.ToString(),
+            bPersistent ? 1 : 0
+        );
+        */
+    }
+}
+
+void USolidSubBody::RegisterContactManifoldAsConstraints(
+    const TArray<FVector>& ContactPointsWS,
+    const FVector& NormalWS,
+    UPrimitiveComponent* OtherComponent,
+    float PenetrationDepth,
+    float TOI,
+    bool bPersistent,
+    int32 MaxContacts)
+{
+    if (!ParentComponent || !OtherComponent || ContactPointsWS.Num() == 0)
+    {
+        return;
+    }
+
+    const FVector N = NormalWS.GetSafeNormal();
+    if (N.IsNearlyZero())
+    {
+        return;
+    }
+
+    // Cas simple : peu de points, on les enregistre tous.
+    if (ContactPointsWS.Num() <= MaxContacts)
+    {
+        for (const FVector& P : ContactPointsWS)
+        {
+            RegisterContactAsConstraint(P, N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent);
+        }
+        return;
+    }
+
+    // Cas rare : trop de points. On garde des points répartis autour du COM,
+    // ce qui donne de meilleurs bras de levier pour la projection angulaire.
+    const FVector COM = GetKinematicState().Location                     ;
+
+    TArray<FVector> Sorted = ContactPointsWS;
+    Sorted.Sort([&COM](const FVector& A, const FVector& B)
+        {
+            return FVector::DistSquared(A, COM) > FVector::DistSquared(B, COM);
+        });
+
+    const int32 NumToRegister = FMath::Min(MaxContacts, Sorted.Num());
+    for (int32 i = 0; i < NumToRegister; ++i)
+    {
+        RegisterContactAsConstraint(Sorted[i], N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent);
+    }
 }
 
 float USolidSubBody::MixRestitution(float eA, float eB, EMixMode Mode)

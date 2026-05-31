@@ -10,6 +10,7 @@ ASpeedCar::ASpeedCar(const FObjectInitializer& ObjectInitializer) :
 	SetReplicateMovement(false); // we do not want to replicate movement, we use our own replication system
 	// Configure the car mesh
 	GetMesh()->SetSimulatePhysics(false);
+	GetMesh()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
 	SpeedWheeledComponent = Cast<USpeedWheeledComponent>(GetVehicleMovement());
 }
 
@@ -24,7 +25,6 @@ void ASpeedCar::Tick(float Delta)
 	Super::Tick(Delta);
 	HandleKinematics();
 	HandleSparkle();
-	CheckDemo();
 }
 
 void ASpeedCar::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -33,6 +33,11 @@ void ASpeedCar::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	// Alternatively you can clear ALL timers that belong to this (Actor) instance.
 	GetWorld()->GetTimerManager().ClearAllTimersForObject(this);
+}
+
+void ASpeedCar::FreezeMovement()
+{
+	SpeedWheeledComponent->FreezeMovement();
 }
 
 void ASpeedCar::HandleKinematics()
@@ -77,6 +82,11 @@ void ASpeedCar::HandleSparkle()
 	}
 }
 
+void ASpeedCar::DemoedByPrv(ASpeedCar* car)
+{
+
+}
+
 void ASpeedCar::StartSparkleTimer()
 {
 	OnStartSparkle();
@@ -87,8 +97,17 @@ void ASpeedCar::DemoedBy(ASpeedCar* otherCar)
 {
 	if (otherCar != nullptr && otherCar->IsValidLowLevelFast())
 	{
-		CarWhichDemoed = otherCar;
+		DemoedByPrv(otherCar);
 	}
+}
+
+void ASpeedCar::StartConfrontationInSec(const float& TimeSec)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	SpeedWheeledComponent->StartConfrontationInSec(TimeSec);
 }
 
 bool ASpeedCar::OnTheSameTeamAs(const ASpeedCar& OtherCar) const
@@ -96,11 +115,17 @@ bool ASpeedCar::OnTheSameTeamAs(const ASpeedCar& OtherCar) const
 	return false;
 }
 
-void ASpeedCar::CheckDemo()
+bool ASpeedCar::HasAuthority() const
 {
-	if (CarWhichDemoed.IsValid())
-	{
-		Demo(this, !OnTheSameTeamAs(*CarWhichDemoed.Get()));
-		CarWhichDemoed = nullptr;
-	}
+	return SpeedWheeledComponent->HasAuthority();
+}
+
+bool ASpeedCar::IsOwningClient() const
+{
+	return SpeedWheeledComponent->IsOwningClient();
+}
+
+bool ASpeedCar::IsRemoteClient() const
+{
+	return SpeedWheeledComponent->IsRemoteClient();
 }

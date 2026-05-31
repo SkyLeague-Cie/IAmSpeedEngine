@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/SHitResult.h"
 #include "IAmSpeed/Base/Kinematic.h"
 
@@ -37,6 +38,13 @@ public:
 	// overload this function to create the sub-bodies owned by this component (e.g. for a car body, this would be creating the wheel sub-bodies and the hitbox sub-body)
 	virtual TArray<USSubBody*> CreateSubBodies() = 0;
 
+	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
+	virtual bool IsFrozen() const = 0;
+	// Freezes the Movement. It serves when we want to pause the game
+	void FreezeMovement();
+	// Unfreezes the Movement. It serves when we want to resume the game after being paused
+	void UnFreezeMovement();
+
 	// ==================== SubBody-specific info retrieval functions ====================
 	virtual SubBodyConfig GetSubBodyConfig(const USSubBody& SubBody) const = 0;
 	//===================================================================================
@@ -60,9 +68,9 @@ public:
 	const FVector& GetPhysAngularVelocity() const;
 	virtual float GetPhysMaxSpeed() const = 0;
 	virtual float GetPhysMaxAngularSpeed() const = 0;
-	void SetPhysVelocity(const FVector& NewVelocity) { SetPhysVelocityRaw(NewVelocity.GetClampedToMaxSize(GetPhysMaxSpeed())); }
+	void SetPhysVelocity(const FVector& NewVelocity);
 	void SetPhysVelocityAtPoint(const FVector& NewVelocity, const FVector& WorldPoint);
-	void SetPhysAngularVelocity(const FVector& NewAngularVelocity) { SetPhysAngularVelocityRaw(NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed())); }
+	void SetPhysAngularVelocity(const FVector& NewAngularVelocity);
 	const FVector& GetPhysAcceleration() const;
 	const FVector& GetPhysAngularAcceleration() const;
 	void SetPhysAcceleration(const FVector& NewAcceleration);
@@ -79,8 +87,10 @@ public:
 	// ==============================
 
 	// ===== Kinematics modifiers (e.g. for applying impulses) =======
-	void AddPhysVelocity(const FVector& DeltaVelocity) { SetPhysVelocity(GetPhysVelocity() + DeltaVelocity); }
-	void AddPhysAngularVelocity(const FVector& DeltaAngularVelocity) { SetPhysAngularVelocity(GetPhysAngularVelocity() + DeltaAngularVelocity); }
+	FVector AddPhysLocation(const FVector& DeltaLocation);
+	FQuat AddPhysRotation(const FQuat& DeltaRotation);
+	void AddPhysVelocity(const FVector& DeltaVelocity);
+	void AddPhysAngularVelocity(const FVector& DeltaAngularVelocity);
 	void AddPhysImpulseAtPoint(const FVector& Impulse, const FVector& WorldPoint, const USolidSubBody* SubBody = nullptr);
 	void AddPhysAcceleration(const FVector& DeltaAcceleration);
 	void AddPhysAngularAcceleration(const FVector& DeltaAngularAcceleration);
@@ -98,7 +108,7 @@ public:
 	virtual void ResetForFrame(const float& Delta);
 	// overload this function to sweep all sub-bodies for the remaining delta time and return the earliest time of impact and the sub-body that should resolve it
 	// (e.g. for a car body, if a wheel hits before the hitbox, then the wheel sub-body should resolve first)
-	SComponentTOI SweepTOISubBodies(const float& RemainingDelta, const float& TimePassed, const float& LastSubDelta);
+	SComponentTOI SweepTOISubBodies(const float& RemainingDelta, const float& LastSubDelta);
 	// overload this function for the component to perform any necessary updates after the physics state has been updated
 	void PostPhysicsUpdate(const float& delta);
 	// overload this function to set whether the component is upside down (e.g. for a car body, this would be whether the car is flipped over)
@@ -113,6 +123,10 @@ public:
 
 	void AddExternalSubBodies(const TArray<USSubBody*>& ExtSubBodies);
 	void RemoveExternalSubBodies(const TArray<USSubBody*>& ExtSubBodies);
+
+	void RegisterPhysicalConstraint(const FPhysicalContactConstraint& Constraint);
+	void ClearPhysicalConstraints();
+	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PhysicalConstraints; }
 
 	virtual ~ISpeedComponent() = default;
 protected:
@@ -129,4 +143,13 @@ protected:
 	virtual void SetKinematicState(const SKinematic& NewKinematicState) = 0;
 	void SetPhysVelocityRaw(const FVector& NewVelocity);
 	void SetPhysAngularVelocityRaw(const FVector& NewAngularVelocity);
+	bool IsPhysicalConstraintStillRelevant(const FPhysicalContactConstraint& Constraint) const;
+	void ProjectLinearDeltaAgainstConstraints(FVector& DeltaLinear) const;
+	void ProjectAngularDeltaAgainstConstraints(FVector& DeltaAngular) const;
+	void ProjectPointDeltaAgainstConstraints(FVector& DeltaLinear, FVector& DeltaAngular) const;
+	static bool AreSimilarPhysicalConstraints(const FPhysicalContactConstraint& A, const FPhysicalContactConstraint& B);
+
+	virtual void SetIsFrozen(bool bFrozen) = 0;
+
+	TArray<FPhysicalContactConstraint> PhysicalConstraints;
 };

@@ -7,6 +7,7 @@
 #include "SpeedWorldSubsystem.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 
+unsigned int ASpeedSimActor::EngineFPS = 120; // Default value, can be overridden by config or in-game
 
 // Sets default values
 ASpeedSimActor::ASpeedSimActor()
@@ -16,7 +17,7 @@ ASpeedSimActor::ASpeedSimActor()
     SetNetUpdateFrequency(100.f);
     SetReplicateMovement(false);
 	bAsyncPhysicsTickEnabled = true;
-	SetEngineFPS(Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize));
+	EngineFPS = Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize);
 }
 
 void ASpeedSimActor::UpdateNumFrame(const float& SimTime)
@@ -55,9 +56,4 @@ void ASpeedSimActor::Simulate(const float& DeltaTime, const float& SimTime)
 	}
 
 	SpeedWorldSubsystem->Step(DeltaTime, SimTime, NumFrame());
-}
-
-void ASpeedSimActor::SetEngineFPS(const unsigned int& FPS)
-{
-	EngineFPS = FPS;
 }

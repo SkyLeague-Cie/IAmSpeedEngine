@@ -51,12 +51,19 @@ struct FWheeledPhysicsState
 	FVector_NetQuantize100 AllowedSideVelocity = FVector::ZeroVector;
 	// allowed angular velocity for steering
 	UPROPERTY()
-	FVector_NetQuantize100 AllowedAngularVelocity = FVector::ZeroVector;
+	FVector AllowedAngularVelocity = FVector::ZeroVector;
 
 	// Wheel states
 	/** Suspension latest displacement to be used while simulating(to compute spring displacement speed)*/
 	UPROPERTY()
 	float SuspensionLastDisplacement[4] = { 0,0,0,0 };
+
+	UPROPERTY()
+	uint8 PhysicalThrottleInput = 0;
+	UPROPERTY()
+	uint8 PhysicalBrakeInput = 0;
+	UPROPERTY()
+	int8 PhysicalSteerInput = 0;
 
 	UPROPERTY()
 	uint8 NbFramesSinceGroundContact = 0; // number of frames since last ground contact
@@ -70,9 +77,9 @@ struct FWheeledPhysicsState
 		return (int16)FMath::Clamp(q, -32767, 32767);
 	}
 
-	static FORCEINLINE float DequantizeSigned(int16 q, float invScale)
+	static FORCEINLINE float DequantizeSigned(int16 q, float scale)
 	{
-		return (float)q * invScale;
+		return (float)q / FMath::Max(scale, SMALL_NUMBER);
 	}
 };
 
@@ -101,6 +108,12 @@ struct FNetworkWheeledSpeedState : public FNetworkPhysicsData
 	UPROPERTY()
 	FWheeledPhysicsState WheeledState;
 
+	UPROPERTY()
+	int32 SourceLocalFrame = INDEX_NONE;
+
+	UPROPERTY()
+	int32 SourceFramesSinceCanMove = INDEX_NONE;
+
 	// true iff this state is corresponding to an autonomous proxy on this simulation
 	bool bIsAutonomousProxy = false;
 
@@ -112,6 +125,8 @@ struct FNetworkWheeledSpeedState : public FNetworkPhysicsData
 
 	/**  Serialize data function that will be used to transfer the struct across the network */
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+	int32 GetSourceLocalFrame() const;
 
 	/** Interpolate the data in between two inputs data */
 	virtual void InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData) override;
@@ -146,6 +161,9 @@ struct FNetworkWheeledSpeedInputState : public FNetworkPhysicsData
 
 	UPROPERTY()
 	uint32 ClientFrame = 0; // NumFrame() client side when the input was sent
+
+	UPROPERTY()
+	int32 ClientFramesSinceCanMove = INDEX_NONE;
 
 	UPROPERTY()
 	bool bIsAutonomousProxy = false;

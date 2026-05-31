@@ -22,11 +22,7 @@ class USWheelSubBody;
  *  - Storing and resolving the current hit
  *
  * Subclasses must implement:
- *  - GetMass()
- *  - GetInvInertiaWS()
- *  - GetCenterOfMassWS()
- *  - ApplyImpulse(...)
- *  - ResolveCurrentHit()
+ *  - ResolveCurrentHitPrv for hit resolution specific to the shape
  */
 
 UCLASS()
@@ -45,19 +41,21 @@ public:
 	};
 
     virtual void Initialize(ISpeedComponent* InParentComponent);
+    virtual bool IsSensor() const { return false; }
 	virtual void AddExternalSubBodies(const TArray<USSubBody*>& SubBodies);
 	virtual void RemoveExternalSubBodies(const TArray<USSubBody*>& SubBodies);
 
     // --- Called once per physics frame ---
     virtual void ResetForFrame(const float& Delta);
+	virtual void PostPhysicsUpdate() {};
 
     // --- Set/Get kinematics ---
 	virtual void UpdateKinematicsFromOwner(const SKinematic& ParentKinematic);
     void SetKinematicState(const Speed::FKinematicState& State) { Kinematics = State; }
     const Speed::FKinematicState& GetKinematicState() const { return Kinematics; }
 
-    // --- Sweep for delta time; return true if a hit occurred ---
-    virtual bool SweepTOI(const float& RemainingDelta, const float& TimePassed, float& OutTOI);
+    // --- Sweep for remaining delta time; return true if a hit occurred ---
+    virtual bool SweepTOI(const float& RemainingDelta, float& OutTOI);
 
     // --- Advance the kinematic state by `t` seconds (where t <= delta) ---
     virtual void AdvanceToTOI(const float& t);
@@ -67,7 +65,7 @@ public:
     bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const;
 
     // --- Resolve the impact (subclass-specific behaviour) ---
-    void ResolveCurrentHit(const float& delta, const float& TimePassed, const float& SimTime);
+    virtual void ResolveCurrentHit(const float& delta, const float& SimTime);
 
     // --- Returns true if a valid hit exists ---
     bool HasHit() const { return CurrentHit.bBlockingHit; }
@@ -95,7 +93,10 @@ public:
     static int32 SubBodyPriority(USSubBody::ESubBodyType T);
     static USSubBody* PickResolver(USSubBody* A, USSubBody* B);
 protected:
-    virtual void ResolveCurrentHitPrv(const float& delta, const float& TimePassed, const float& SimTime) {};
+    virtual void ResolveCurrentHitPrv(const float& delta, const float& SimTime) {};
+    const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const;
+    const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const;
+    const TArray<TWeakObjectPtr<USWheelSubBody>> GetExternalWheelSubBodies() const;
 protected:
 
 	ISpeedComponent* ParentComponent;
@@ -110,6 +111,10 @@ protected:
     // Cached hit info
     SHitResult FutureHit;
     SHitResult CurrentHit;
+    SHitResult GroundHit;
+    SHitResult BoxHit;
+    SHitResult SphereHit;
+    SHitResult WheelHit;
 
 	// Components always ignored for this sub-body (e.g. the car body for the wheel sub-body)
 	TArray<UPrimitiveComponent*> AlwaysIgnoredComponents;
@@ -126,5 +131,5 @@ protected:
     // Internal sweep helper
     bool InternalSweep(const FVector& Start, const FVector& End, SHitResult& OutHit, const float& delta);
 
-    FCollisionQueryParams BuildTraceParams() const;
+    virtual FCollisionQueryParams BuildTraceParams() const;
 };

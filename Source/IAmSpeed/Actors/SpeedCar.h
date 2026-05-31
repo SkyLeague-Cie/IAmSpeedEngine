@@ -47,16 +47,24 @@ public:
 	void Demo(ASpeedCar* car, bool isOnOpponentCar);
 	void DemoedBy(ASpeedCar* car);
 
+	UFUNCTION(BlueprintCallable, Category = "Utils")
+	void StartConfrontationInSec(const float& TimeSec);
+
 	virtual bool OnTheSameTeamAs(const ASpeedCar& OtherCar) const;
+
+	bool HasAuthority() const;
+	bool IsOwningClient() const;
+	bool IsRemoteClient() const;
+
+	// Freezes car movement. It serves when we want to pause the game
+	void FreezeMovement();
 protected:
 	virtual void HandleKinematics();
 	virtual void HandleSparkle();
+	virtual void DemoedByPrv(ASpeedCar* car);
 
-	void CheckDemo();
 private:
 	bool hasSparkleLocation = false;
 	FVector SparkleLocation = FVector::ZeroVector;
 	FTimerHandle SparkleTimerHandler;
-
-	TWeakObjectPtr<ASpeedCar> CarWhichDemoed = nullptr;
 };

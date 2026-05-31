@@ -45,6 +45,12 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+	struct FPendingWheeledInputCommand
+	{
+		int32 ActivationFrame = INDEX_NONE;
+		FWheeledInputState Input;
+	};
+
 	USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer);
 
 	// Set the owner of this component. Call this at begin play
@@ -54,6 +60,8 @@ public:
 	virtual void OnCreatePhysicsState() override;
 	/** Used to shut down and physics engine structure for this component */
 	virtual void OnDestroyPhysicsState() override;
+	/** Applies the Speed-specific deterministic suspension setup after Chaos creates the vehicle. */
+	virtual void SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle) override;
 	// Used to create all sub bodies
 	virtual TArray<USSubBody*> CreateSubBodies() override;
 	// Used to create wheel sub bodies
@@ -152,14 +160,15 @@ public:
 	virtual void RecoverWheelState();
 	// register wheel state for network replication
 	virtual void RegisterWheelState();
+	void ResetWheelTransientStateForCurrentPose();
 	float GetSuspensionOffset(int WheelIndex) override;
 
 	bool CanMove() const;
 	bool CountdownHasStarted() const;
-	void StartConfrontationInSec(const unsigned int& TimeSec);
-	void StartConfrontationLocal(const unsigned int& TimeSec);
+	void StartConfrontationInSec(const float& TimeSec);
+	void StartConfrontationLocal(const float& TimeSec);
 	UFUNCTION(reliable, NetMulticast)
-	void StartConfrontationMulti(const unsigned int& TimeSec);
+	void StartConfrontationMulti(const float& TimeSec);
 	void StartTestWithVelocity(const FVector& InitialVelocity);
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
 	UFUNCTION(reliable, NetMulticast)
@@ -173,14 +182,19 @@ public:
 	void DemoedBy(ASpeedCar* otherCar);
 
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
+	bool IsFrozen() const override;
+	// Set whether the movement is currently frozen (e.g. due to the game being paused)
+	void SetIsFrozen(bool bFrozen) override;
 private:
 	void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) override final;
 	void PhysicsTick(const float& DeltaTime, const float& SimTime);
 
 	void UpdateFrameState(const float& SimTime);
 	void UpdateNumFrame(const float& SimTime);
-	bool GetPredictedState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
-	bool GetPredictedState(const int32& LocalFrame, FWheeledPhysicsState& OutState) const;
+	bool GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
+	bool GetWheeledState(const int32& LocalFrame, FWheeledPhysicsState& OutState) const;
 
 	void HandleGravity();
 	void HandleDamping(const float& delta);
@@ -202,6 +216,10 @@ protected:
 
 	void SetEngineFPS(const unsigned int& FPS);
 	float GetEngineFPS() const;
+	int32 GetSinceCanMoveFrame() const;
+	unsigned int NbFramesSinceCanMove() const;
+	// Get the current frame number for this component (e.g. to be used for network replication)
+	unsigned int GetCurrentFrame() const;
 
 	// Update Inputs
 	virtual void UpdateInputs();
@@ -259,15 +277,19 @@ protected:
 
 	const TObjectPtr<UBoxSubBody>& GetHitboxSubBody() const { return HitboxSubBody; }
 
+	/** Read current state for simulation */
+	void UpdateState(float DeltaTime) override;
+
 	// Netcode methods
-	virtual void RecordPredictedState();
+	virtual void RecordPhysicsState();
+	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
 
 	//=========== Configuration parameters for the movement component ===========
 	// Time in seconds before the component can move at the start of the simulation or after being reset (e.g. after a respawn)
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float TimeBeforeCanMove = 0.15f;
+	float TimeBeforeCanMove = 0.2f;
 	// Mass of the component in kg
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
@@ -285,7 +307,7 @@ public:
 	// max angular speed of the component in rad/s
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float PhysMaxAngularSpeed = 100.0f;
+	float PhysMaxAngularSpeed = 4.f;
 	// damping factor of the component (0.0 means no damping, 1.0 means full damping)
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
@@ -370,24 +392,34 @@ public:
 	// Deadzone for the correction to apply on the position in cm (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float PosCorrDeadzone = 0.1f;
+	float PosCorrDeadzone = 0.02f;
 	// Deadzone for the correction to apply on the velocity in cm/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float VelCorrDeadzone = 0.2f;
+	float VelCorrDeadzone = 0.02f;
 	// Deadzone for the correction to apply on the angular velocity in rad/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float AngVelCorrDeadzone = 0.01f;
+	float AngVelCorrDeadzone = 0.0002f;
 	// Deadzone for the correction to apply on the rotation in deg (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float RotCorrDeadzone = 0.5f;
+	float RotCorrDeadzone = 0.01f;
 
 	/** Hit Box component */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Collision, meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UBoxSubBody> HitboxSubBody = nullptr; // pointer to the hitbox sub-body (if any) owned by this component
+	/** Wheel Sub Bodies*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Collision, meta = (AllowPrivateAccess = "true"))
+	TArray< TObjectPtr<USWheelSubBody>> WheelSubBodies; // array of wheel sub-bodies owned by this component (e.g. for a car body, this would be the wheels)
+	/** Network Settings*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Netcode, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 
+	/** Name of the HitboxSubBody */
+	static const FName HitboxName;
+	/** Names of the Wheel Subodies*/
+	static const TArray<FName> WheelNames;
 private:
 	USpeedSimulation* SkySimulation = nullptr;
 	ASpeedCar* SpeedCarOwner = nullptr;
@@ -402,6 +434,13 @@ private:
 		return UChaosVehicleMovementComponent::CreatePhysicsVehicle();
 	}
 
+	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
+	void UpdateWheeledPhysicalInputFromUser(bool bForce = false);
+	void RestoreWheeledPhysicalInputFromState();
+	void SyncWheeledPhysicalInputToState();
+	void ConsumeQueuedWheeledInputsForFrame(const int32 CurrentFrame);
+	void QueueWheeledInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input);
+
 
 	//=========== Internal state variables for the movement component ===========
 	SBaseGameState BaseGameState; // current game state of the component
@@ -410,18 +449,19 @@ private:
 	FWheeledPhysicsState WheeledPhysicsState; // current wheeled physics state of the component (replicated on network)
 	FWheeledInputState WheeledUserInput; // input state given by the user for this component (replicated on network)
 	FWheeledInputState WheeledPhysicalInput; // input state used for physics simulation (e.g. after being processed from the user input)
+	FWheeledInputState WheeledPhysicalInputBeforeSlew;
+	int32 LastWheeledInputSlewFrame = INDEX_NONE;
 	FVector CarLocalInvI = FVector::ZeroVector; // local inverse inertia tensor of the car body (in local space)
 
-	TArray<int32> PredictedBaseFrames;
-	TArray<FBasePhysicsState> PredictedBaseStates; // array of predicted states for network correction
-	TArray<FWheeledPhysicsState> PredictedWheeledStates; // array of predicted states for network correction
+	TArray<int32> RecordedBaseFrames;
+	TArray<FBasePhysicsState> RecordedBaseStates; // array of recorded states for network correction
+	TArray<FWheeledPhysicsState> RecordedWheeledStates; // array of recorded states for network correction
 
 	float EngineFPS = 120.0; // physics simulation FPS (Hz)
 	uint16 MinNbFramesBeforeCanMove = 0; // minimal number of frames before the component can move at the start of the simulation or after being reset (e.g. after a respawn)
 	TArray<USSubBody*> SubBodies; // array of sub-bodies owned by this component (e.g. for a car body, this would be the hitbox and the wheels)
 	TArray<USSubBody*> ExtSubBodies; // array of external sub-bodies
 
-	TArray< TObjectPtr<USWheelSubBody>> WheelSubBodies; // array of wheel sub-bodies owned by this component (e.g. for a car body, this would be the wheels)
 	TArray<SWheelGroundContact> PendingWheelContacts; // array of pending wheel ground contacts to be registered at the end of the frame
 
 	// ========== Netcode variables ==========
@@ -429,8 +469,6 @@ private:
 	TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent = nullptr;
 	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> WheeledNetworkPhysicsComponent = nullptr;
-	UPROPERTY()
-	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 	int32 NetCorr_LastServerFrame = INDEX_NONE;
 	int32 NetCorr_LastLocalFrame = INDEX_NONE;
 	int32 NetCorr_BaseNumPredictedFrames = 1;
@@ -440,4 +478,12 @@ private:
 	FNetCorrAccum NetCorrAccum;
 	FVector NetCorr_LastContactN = FVector::UpVector;
 	uint8 NetCorr_StableNFrames = 0;
+
+	int32 SinceCanMoveFrame = INDEX_NONE;
+	bool bSimTimelineWasCanMove = false;
+	bool bSimTimelineWasGrounded = false;
+	bool bSimTimelineHasGroundState = false;
+
+	static constexpr int32 MaxPendingWheeledInputs = 256;
+	TArray<FPendingWheeledInputCommand> PendingWheeledInputCommands;
 };

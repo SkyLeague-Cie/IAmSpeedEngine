@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "SSubBody.h"
+#include "IAmSpeed/SubBodies/SSubBody.h"
 #include "SolidSubBody.generated.h"
 
 UENUM()
@@ -63,6 +63,25 @@ public:
 
 protected:
 	virtual FMatrix InitInvInertiaTensor() const { return FMatrix::Identity; }
+	void RegisterCurrentHitAsConstraint();
+	void RegisterContactAsConstraint(
+		const FVector& ContactPointWS,
+		const FVector& NormalWS,
+		UPrimitiveComponent* OtherComponent,
+		USolidSubBody* OtherSubBody = nullptr,
+		float PenetrationDepth = 0.f,
+		float TOI = 0.f,
+		bool bPersistent = false
+	);
+	void RegisterContactManifoldAsConstraints(
+		const TArray<FVector>& ContactPointsWS,
+		const FVector& NormalWS,
+		UPrimitiveComponent* OtherComponent,
+		float PenetrationDepth = 0.f,
+		float TOI = 0.f,
+		bool bPersistent = false,
+		int32 MaxContacts = 4
+	);
 
 	// Mass of the subbody, used for physics simulation and collision resolution. Note that the actual mass used in physics simulation may be different if the parent component implements a custom GetPhysMass() function that returns a different mass for the subbody.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Physics,

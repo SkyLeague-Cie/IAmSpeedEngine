@@ -68,7 +68,8 @@ void USpeedWorldSubsystem::RebuildSortedIfNeeded()
     // Deterministic order:
     // - first Owner->GetUniqueID (stable during a run)
     // - then Object UniqueID of the component
-    Algo::Sort(ComponentsSorted, [](const ISpeedComponent* A, const ISpeedComponent* B)
+    // Commented for the moment since there is a crash happening in the sort
+    /*Algo::Sort(ComponentsSorted, [](const ISpeedComponent* A, const ISpeedComponent* B)
         {
             const UObject* OA = reinterpret_cast<const UObject*>(A);
             const UObject* OB = reinterpret_cast<const UObject*>(B);
@@ -84,7 +85,7 @@ void USpeedWorldSubsystem::RebuildSortedIfNeeded()
                 return AOwnerId < BOwnerId;
 
             return OA->GetUniqueID() < OB->GetUniqueID();
-        });
+        });*/
 
     bDirtyOrder = false;
 }
@@ -172,7 +173,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         {
             if (!Comp) continue;
 
-            const SComponentTOI Ctoi = Comp->SweepTOISubBodies(Remaining, TimePassed, LastSubDelta);
+            const SComponentTOI Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta);
 
             // TOI sanity
             if (!Ctoi.bHit)
@@ -259,7 +260,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         }
 
         // Resolve at current substep time
-        Resolver->ResolveCurrentHit(SubDelta, TimePassed, SimTime);
+        Resolver->ResolveCurrentHit(SubDelta, SimTime);
 
         // Optional: post update at each substep (useful if certain gameplay sensors need to react "immediately")
         /*

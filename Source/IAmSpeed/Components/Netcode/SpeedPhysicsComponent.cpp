@@ -15,6 +15,10 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 		UE_LOG(SpeedNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
 	#endif
 		Mover->BasePhysicsState = BaseState;
+		if (SourceFramesSinceCanMove != INDEX_NONE)
+		{
+			Mover->SinceCanMoveFrame = FMath::Max(0, GetSourceLocalFrame() - SourceFramesSinceCanMove);
+		}
 	}
 	else if (USpeedWheeledComponent* WheeledMover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
@@ -22,6 +26,10 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 		UE_LOG(WheelNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), WheeledMover->NumFrame());
 #endif
 		WheeledMover->BasePhysicsState = BaseState;
+		if (SourceFramesSinceCanMove != INDEX_NONE)
+		{
+			WheeledMover->SinceCanMoveFrame = FMath::Max(0, GetSourceLocalFrame() - SourceFramesSinceCanMove);
+		}
 	}
 }
 
@@ -32,11 +40,69 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 	{
 		if (const USpeedMovementComponent* Mover = Cast<const USpeedMovementComponent>(NetworkComponent))
 		{
-			BaseState = Mover->BasePhysicsState;
+			const int32 CurrentRecordedFrame = FMath::Max(int32(LocalFrame), 0);
+			const int32 PreviousRecordedFrame = Speed::SimUtils::GetRecordedFrameFromNetworkLocalFrame(LocalFrame);
+			const int32 ComponentFrame = FMath::Max(int32(Mover->NumFrame()), 0);
+			const int32 PreviousComponentFrame = FMath::Max(ComponentFrame - 1, 0);
+			const auto TryGetBaseState = [this, Mover](const int32 Frame)
+			{
+				if (Mover->GetBaseState(Frame, BaseState))
+				{
+					SourceLocalFrame = Frame;
+					const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
+					SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && Frame >= SinceCanMoveFrame)
+						? Frame - SinceCanMoveFrame
+						: INDEX_NONE;
+					return true;
+				}
+				return false;
+			};
+			const bool bGotState = TryGetBaseState(CurrentRecordedFrame)
+				|| (PreviousRecordedFrame != CurrentRecordedFrame && TryGetBaseState(PreviousRecordedFrame))
+				|| (ComponentFrame != CurrentRecordedFrame && ComponentFrame != PreviousRecordedFrame && TryGetBaseState(ComponentFrame))
+				|| (PreviousComponentFrame != CurrentRecordedFrame && PreviousComponentFrame != PreviousRecordedFrame && PreviousComponentFrame != ComponentFrame && TryGetBaseState(PreviousComponentFrame));
+			if (!bGotState)
+			{
+				SourceLocalFrame = ComponentFrame;
+				const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
+				SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && ComponentFrame >= SinceCanMoveFrame)
+					? ComponentFrame - SinceCanMoveFrame
+					: INDEX_NONE;
+				BaseState = Mover->BasePhysicsState;
+			}
 		}
 		else if (const USpeedWheeledComponent* WheeledMover = Cast<const USpeedWheeledComponent>(NetworkComponent))
 		{
-			BaseState = WheeledMover->BasePhysicsState;
+			const int32 CurrentRecordedFrame = FMath::Max(int32(LocalFrame), 0);
+			const int32 PreviousRecordedFrame = Speed::SimUtils::GetRecordedFrameFromNetworkLocalFrame(LocalFrame);
+			const int32 ComponentFrame = FMath::Max(int32(WheeledMover->NumFrame()), 0);
+			const int32 PreviousComponentFrame = FMath::Max(ComponentFrame - 1, 0);
+			const auto TryGetBaseState = [this, WheeledMover](const int32 Frame)
+			{
+				if (WheeledMover->GetBaseState(Frame, BaseState))
+				{
+					SourceLocalFrame = Frame;
+					const int32 SinceCanMoveFrame = WheeledMover->GetSinceCanMoveFrame();
+					SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && Frame >= SinceCanMoveFrame)
+						? Frame - SinceCanMoveFrame
+						: INDEX_NONE;
+					return true;
+				}
+				return false;
+			};
+			const bool bGotState = TryGetBaseState(CurrentRecordedFrame)
+				|| (PreviousRecordedFrame != CurrentRecordedFrame && TryGetBaseState(PreviousRecordedFrame))
+				|| (ComponentFrame != CurrentRecordedFrame && ComponentFrame != PreviousRecordedFrame && TryGetBaseState(ComponentFrame))
+				|| (PreviousComponentFrame != CurrentRecordedFrame && PreviousComponentFrame != PreviousRecordedFrame && PreviousComponentFrame != ComponentFrame && TryGetBaseState(PreviousComponentFrame));
+			if (!bGotState)
+			{
+				SourceLocalFrame = ComponentFrame;
+				const int32 SinceCanMoveFrame = WheeledMover->GetSinceCanMoveFrame();
+				SourceFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && ComponentFrame >= SinceCanMoveFrame)
+					? ComponentFrame - SinceCanMoveFrame
+					: INDEX_NONE;
+				BaseState = WheeledMover->BasePhysicsState;
+			}
 		}
 	}
 }
@@ -45,9 +111,24 @@ void FNetworkBaseSpeedState::BuildData(const UActorComponent* NetworkComponent)
 bool FNetworkBaseSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
 	FNetworkPhysicsData::SerializeFrames(Ar);
+	Ar << SourceLocalFrame;
+	Ar << SourceFramesSinceCanMove;
 	Ar << BaseState.Kinematic;
+	Ar << BaseState.bIsFrozen;
+	Ar << BaseState.nbFramesbeforeCanMove;
+	Ar << BaseState.bStartCountdown;
 	bOutSuccess = true;
 	return true;
+}
+
+int32 FNetworkBaseSpeedState::GetSourceLocalFrame() const
+{
+	if (SourceLocalFrame == INDEX_NONE)
+	{
+		return LocalFrame;
+	}
+
+	return bReceivedData ? SourceLocalFrame - (ServerFrame - LocalFrame) : SourceLocalFrame;
 }
 
 void FNetworkBaseSpeedState::InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData)
@@ -55,10 +136,20 @@ void FNetworkBaseSpeedState::InterpolateData(const FNetworkPhysicsData& MinData,
 	const FNetworkBaseSpeedState& MinState = static_cast<const FNetworkBaseSpeedState&>(MinData);
 	const FNetworkBaseSpeedState& MaxState = static_cast<const FNetworkBaseSpeedState&>(MaxData);
 
-	const float LerpFactor = MaxState.LocalFrame == LocalFrame
-		? 1.0f / (MaxState.LocalFrame - MinState.LocalFrame + 1) // Merge from min into max
-		: (LocalFrame - MinState.LocalFrame) / (MaxState.LocalFrame - MinState.LocalFrame); // Interpolate from min to max
-	BaseState.Kinematic = Lerp(MinState.BaseState.Kinematic, MaxState.BaseState.Kinematic, LerpFactor);
+	const int32 MinFrame = static_cast<int32>(MinState.LocalFrame);
+	const int32 MaxFrame = static_cast<int32>(MaxState.LocalFrame);
+	const int32 ThisFrame = static_cast<int32>(LocalFrame);
+	const int32 FrameDelta = MaxFrame - MinFrame;
+	const float LerpFactor = FrameDelta != 0 ? float(ThisFrame - MinFrame) / float(FrameDelta) : 1.f;
+	const bool bUseMaxState = (MaxFrame == ThisFrame) || LerpFactor >= 0.5f;
+	const FNetworkBaseSpeedState& SourceState = bUseMaxState ? MaxState : MinState;
+
+	BaseState = SourceState.BaseState;
+	SourceLocalFrame = SourceState.SourceLocalFrame;
+	SourceFramesSinceCanMove = SourceState.SourceFramesSinceCanMove;
+	bIsAutonomousProxy = SourceState.bIsAutonomousProxy;
+	ClientNetSettings = SourceState.ClientNetSettings;
+	SimProxyNetSettings = SourceState.SimProxyNetSettings;
 }
 
 bool FNetworkBaseSpeedState::CompareData(const FNetworkPhysicsData& PredictedData)

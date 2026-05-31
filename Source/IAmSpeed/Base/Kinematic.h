@@ -4,7 +4,7 @@
 
 namespace Speed
 {
-	struct FKinematicState
+	struct IAMSPEED_API FKinematicState
 	{
 		FKinematicState() = default;
 
@@ -18,7 +18,7 @@ namespace Speed
 		// Rotation in absolute space
 		FQuat Rotation = FQuat::Identity;
 		// Angular velocity in rad/s
-		FVector_NetQuantize100 AngularVelocity = FVector::ZeroVector; // angular velocity in rad/s
+		FVector AngularVelocity = FVector::ZeroVector; // angular velocity in rad/s
 		// Angular acceleration in rad/s^2
 		FVector_NetQuantize100 AngularAcceleration = FVector::ZeroVector; // angular acceleration in rad/s^2
 

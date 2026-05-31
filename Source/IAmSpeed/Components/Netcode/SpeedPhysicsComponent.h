@@ -56,6 +56,9 @@ struct FBasePhysicsState
 
 	// current kinematic state of the component
 	SKinematic Kinematic;
+	bool bIsFrozen = false; // whether the component is currently frozen, meaning it should just stay still
+	uint16 nbFramesbeforeCanMove = 1;
+	bool bStartCountdown = false;
 };
 
 USTRUCT()
@@ -68,9 +71,9 @@ struct FClientNetSettings
 	// whether to compare rotation to trigger resimulation when comparing client and server data
 	bool bEnableRotationResimulation = true;
 	// whether to compare velocity to trigger resimulation when comparing client and server data
-	bool bEnableVelocityResimulation = true;
+	bool bEnableVelocityResimulation = false;
 	// whether to compare angular velocity to trigger resimulation when comparing client and server data
-	bool bEnableAngularVelocityResimulation = true;
+	bool bEnableAngularVelocityResimulation = false;
 
 	// in cm, if the position difference between client and server is above this threshold, it will trigger a resimulation
 	float PositionResimulationThreshold = 400.0f;
@@ -115,6 +118,12 @@ struct IAMSPEED_API FNetworkBaseSpeedState : public FNetworkPhysicsData
 	/** Physical state of the skycar */
 	FBasePhysicsState BaseState;
 
+	UPROPERTY()
+	int32 SourceLocalFrame = INDEX_NONE;
+
+	UPROPERTY()
+	int32 SourceFramesSinceCanMove = INDEX_NONE;
+
 	// true iff this state is corresponding to an autonomous proxy on this simulation
 	bool bIsAutonomousProxy = false;
 
@@ -131,6 +140,8 @@ struct IAMSPEED_API FNetworkBaseSpeedState : public FNetworkPhysicsData
 
 	/**  Serialize data function that will be used to transfer the struct across the network */
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+	int32 GetSourceLocalFrame() const;
 
 	/** Interpolate the data in between two inputs data */
 	virtual void InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData) override;

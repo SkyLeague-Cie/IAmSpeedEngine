@@ -145,6 +145,9 @@ namespace Speed
 	FRotator DecompressAllAxisRotator(const FRotator& compressedRotator);
 
 	FVector QuantizeUnitNormal(const FVector& n, float q = 1e-3f);
+	float QuantizeScalar(float X, float Step);
+
+	FVector QuantizeVectorCm(const FVector& V, float StepCm);
 
 	struct SEarlyOut
 	{
@@ -236,7 +239,12 @@ namespace Speed
 		// Compute the number of frames to simulate for a given simulation time and FPS, adding 1 to be aligned with netcode local frame counting (which starts at 1).
 		static int32 ComputeNumFrameFromSimTime(const unsigned int& FPS, const float& SimTime)
 		{
-			return FMath::CeilToInt32(SimTime * FPS) + 1; // +1 to be aligned with netcode local frame counting (starts at 1)
+			return FMath::RoundToInt(SimTime * FPS) + 1; // +1 to be aligned with netcode local frame counting (starts at 1)
+		}
+
+		static int32 GetRecordedFrameFromNetworkLocalFrame(const int32& NetworkLocalFrame)
+		{
+			return FMath::Max(NetworkLocalFrame - 1, 0);
 		}
 
 		static unsigned short int ComputePhysicsFPS(const float& EngineFixedDeltaTime)
@@ -248,7 +256,36 @@ namespace Speed
 			return DefaultEnginePhysicsFPS;
 		}
 	};
-	
+
+	static uint8 MoveTowardUInt8(const uint8 Current, const uint8 Target, const uint8 Step)
+	{
+		if (Current < Target)
+		{
+			return uint8(FMath::Min<int32>(int32(Current) + int32(Step), int32(Target)));
+		}
+
+		if (Current > Target)
+		{
+			return uint8(FMath::Max<int32>(int32(Current) - int32(Step), int32(Target)));
+		}
+
+		return Current;
+	}
+
+	static int8 MoveTowardInt8(const int8 Current, const int8 Target, const int8 Step)
+	{
+		if (Current < Target)
+		{
+			return int8(FMath::Min<int32>(int32(Current) + int32(Step), int32(Target)));
+		}
+
+		if (Current > Target)
+		{
+			return int8(FMath::Max<int32>(int32(Current) - int32(Step), int32(Target)));
+		}
+
+		return Current;
+	}
 }
 
 using SSBox = Speed::SBox;

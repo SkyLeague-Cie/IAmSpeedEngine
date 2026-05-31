@@ -22,10 +22,9 @@ public:
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);
 
 	void InitNetwork();
-	// Set the owner of this component. Call this at begin play
-	virtual void SetOwner(AActor* NewOwner);
 	/** Used to create any physics engine information for this component */
 	virtual void OnCreatePhysicsState() override;
+	bool ShouldCreatePhysicsState() const override;
 	/** Used to shut down and physics engine structure for this component */
 	virtual void OnDestroyPhysicsState() override;
 	// Used to create the sub-bodies owned by this component (e.g. for a car body, this would be creating the wheel sub-bodies and the hitbox sub-body)
@@ -86,7 +85,30 @@ public:
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
 	UFUNCTION(reliable, NetMulticast)
 	void StartTestWithVelocityMulti(const FVector& InitialVelocity);
+
+	UFUNCTION(BlueprintCallable)
+	bool CanMove() const;
+	UFUNCTION(BlueprintCallable)
+	bool CountdownHasStarted() const;
+	UFUNCTION(BlueprintCallable)
+	void StartConfrontationInSec(const float& TimeSec);
+	void StartConfrontationLocal(const float& TimeSec);
+	UFUNCTION(reliable, NetMulticast)
+	void StartConfrontationMulti(const float& TimeSec);
+	void SetCannotMove();
+	void SetCannotMoveLocal();
+	UFUNCTION(reliable, NetMulticast)
+	void SetCannotMoveMulti();
+
+	unsigned int GetEngineFPS() const;
+
+	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
+	bool IsFrozen() const override;
+	// Set whether the movement is currently frozen (e.g. due to the game being paused)
+	void SetIsFrozen(bool bFrozen) override;
 private:
+	// Set the owner of this component. Call this at begin play
+	void SetOwner(AActor* NewOwner);
 	void SetEngineFPS(const unsigned int& FPS);
 
 	void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) override final;
@@ -94,14 +116,17 @@ private:
 
 	void UpdateNumFrame(const float& SimTime);
 
+	void HandleCountdownTimer();
 	void HandleGravity();
 	void HandleDamping(const float& delta);
 
 	void applyAccelerationConstraint(const float& delta);
 	void applyAngularAccelerationConstraint(const float& delta);
 protected:
-	virtual void RecordPredictedState();
-	bool GetPredictedState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
+	virtual void RecordPhysicsState();
+	bool GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
+	int32 GetSinceCanMoveFrame() const;
+	unsigned int NbFramesSinceCanMove() const;
 	void SetSubBodies(const TArray<USSubBody*>& NewSubBodies);
 
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay
@@ -118,9 +143,13 @@ protected:
 	virtual void QuantizePhysicalState();
 
 	virtual void TagStateHistoryProxyRole();
+	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
 	
 	//=========== Configuration parameters for the movement component ===========
+	// whether to enable the movement component (if false, the component will not perform any physics simulation and will not update its kinematic state)
+	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly)
+	bool bEnableSimulation = true;
 	// Mass of the component in kg
 	UPROPERTY(BlueprintReadWrite, Category = Base, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
@@ -151,11 +180,11 @@ public:
 	// how much of the position error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float PosStabilityMultiplier = 0.4f;
+	float PosStabilityMultiplier = 0.2f;
 	// how much of the velocity error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float VelStabilityMultiplier = 0.8f;
+	float VelStabilityMultiplier = 0.6f;
 	// how much of the rotation error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
@@ -163,7 +192,7 @@ public:
 	// how much of the angular velocity error to correct (0.0 means no correction, 1.0 means full correction)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-	float AngVelStabilityMultiplier = 0.8f;
+	float AngVelStabilityMultiplier = 0.6f;
 	
 	// Limit of the correction to apply on the position per second (to avoid visible jerk)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
@@ -185,40 +214,43 @@ public:
 	// Deadzone for the correction to apply on the position in cm (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float PosCorrDeadzone = 0.1f;
+	float PosCorrDeadzone = 0.01f;
 	// Deadzone for the correction to apply on the velocity in cm/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float VelCorrDeadzone = 0.2f;
+	float VelCorrDeadzone = 0.01f;
 	// Deadzone for the correction to apply on the angular velocity in rad/s (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float AngVelCorrDeadzone = 0.01f;
+	float AngVelCorrDeadzone = 0.00005f;
 	// Deadzone for the correction to apply on the rotation in deg (if the error is below this threshold, no correction will be applied)
 	UPROPERTY(BlueprintReadWrite, Category = BaseNetcode, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
-	float RotCorrDeadzone = 0.5f;
+	float RotCorrDeadzone = 0.001f;
+	/** Network Settings*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Netcode, meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 private:
 	//=========== Internal state variables for the movement component ===========
 	SBaseGameState BaseGameState; // current game state of the component
 	FBasePhysicsState BasePhysicsState; // current physics state of the component (replicated on network)
 
-	TArray<int32> PredictedBaseFrames;
-	TArray<FBasePhysicsState> PredictedBaseStates; // array of predicted states for network correction
+	TArray<int32> RecordedBaseFrames;
+	TArray<FBasePhysicsState> RecordedBaseStates; // array of predicted states for network correction
 
 	float EngineFPS = 120.0; // physics simulation FPS (Hz)
 	TArray<USSubBody*> SubBodies; // array of sub-bodies owned by this component (e.g. for a car body, this would be the hitbox and the wheels)
 	TArray<USolidSubBody*> SolidSubBodies; // array of solid sub-bodes (i.e. sub-bodies that are not purely for hit detection but also have a physical representation in the physics engine, e.g. for a car body, this would be the hitbox and the wheels)
 
 	// ========== Netcode variables ==========
-	UPROPERTY()
-	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 	int32 NetCorr_LastServerFrame = INDEX_NONE;
 	int32 NetCorr_LastLocalFrame = INDEX_NONE;
 	int32 NetCorr_BaseNumPredictedFrames = 1;
 	bool bNetCorrHasTarget = false;
 	int32 NetCorrTickCount = 0;
 	FNetworkBaseSpeedState NetCorrTarget;
+	uint16 MinNbFramesBeforeCanMove = 0;
+	int32 SinceCanMoveFrame = INDEX_NONE;
 protected:
 	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent = nullptr;

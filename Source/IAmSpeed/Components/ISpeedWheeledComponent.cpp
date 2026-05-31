@@ -1,5 +1,5 @@
 #include "ISpeedWheeledComponent.h"
-#include "IAmSpeed/SubBodies/SWheelSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 
 void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delta)
 {

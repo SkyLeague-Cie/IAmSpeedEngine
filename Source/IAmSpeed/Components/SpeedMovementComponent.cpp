@@ -5,8 +5,49 @@
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
-#include "IAmSpeed/SubBodies/SolidSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/World/SpeedWorldSubsystem.h"
+#include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
+#include "UObject/UnrealType.h"
+
+namespace
+{
+void ConfigureBaseSpeedNetworkPhysicsSettings(UNetworkPhysicsSettingsDataAsset* DataAsset)
+{
+	if (!DataAsset)
+	{
+		return;
+	}
+
+	FStructProperty* SettingsProperty = FindFProperty<FStructProperty>(
+		UNetworkPhysicsSettingsDataAsset::StaticClass(),
+		TEXT("Settings"));
+	if (!SettingsProperty)
+	{
+		return;
+	}
+
+	FNetworkPhysicsSettingsData* Settings = SettingsProperty->ContainerPtrToValuePtr<FNetworkPhysicsSettingsData>(DataAsset);
+	if (!Settings)
+	{
+		return;
+	}
+
+	Settings->GeneralSettings.bOverrideSimProxyRepMode = true;
+	Settings->GeneralSettings.SimProxyRepMode = EPhysicsReplicationMode::Resimulation;
+
+	Settings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyStateAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bApplySimProxyStateAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideApplySimProxyInputAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bApplySimProxyInputAtRuntime = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideTriggerResimOnInputReceive = true;
+	Settings->NetworkPhysicsComponentSettings.bTriggerResimOnInputReceive = true;
+	Settings->NetworkPhysicsComponentSettings.bOverrideAllowInputExtrapolation = true;
+	Settings->NetworkPhysicsComponentSettings.bAllowInputExtrapolation = true;
+
+	DataAsset->MarkUninitialized();
+}
+}
 
 USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
@@ -14,8 +55,8 @@ USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& Objec
 	SetIsReplicatedByDefault(true);
 
 	InitNetwork();
-	PredictedBaseFrames.Init(INDEX_NONE, SpeedConstants::PredictedHistorySize);
-	PredictedBaseStates.SetNum(SpeedConstants::PredictedHistorySize);
+	RecordedBaseFrames.Init(INDEX_NONE, SpeedConstants::RecordedHistorySize);
+	RecordedBaseStates.SetNum(SpeedConstants::RecordedHistorySize);
 
 
 	SetEngineFPS(Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize));
@@ -36,12 +77,16 @@ void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 	{
 		return;
 	}
+
 	SetPhysLocation(NewOwner->GetActorLocation());
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
-	SetPhysVelocity(FVector::ZeroVector);
-	SetPhysAngularVelocity(FVector::ZeroVector);
-	SetPhysAcceleration(FVector::ZeroVector);
-	SetPhysAngularAcceleration(FVector::ZeroVector);
+
+	for (USSubBody* SubBody : SubBodies)
+	{
+		SubBody->Initialize(this);
+	}
+
+	UpdateSubBodiesKinematics();
 }
 
 void USpeedMovementComponent::OnCreatePhysicsState()
@@ -51,11 +96,42 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 	UWorld* World = GetWorld();
 	if (World->IsGameWorld())
 	{
-		if (SNetworkPhysicsComponent)
+		if (SNetworkPhysicsComponent && bEnableSimulation)
 		{
+			if (SNetworkSettings && !SNetworkSettings->IsRegistered())
+			{
+				SNetworkSettings->RegisterComponent();
+			}
+			if (!SNetworkPhysicsComponent->IsRegistered())
+			{
+				SNetworkPhysicsComponent->RegisterComponent();
+			}
 			SNetworkPhysicsComponent->CreateDataHistory<FPhysicsSpeedTraits>(this);
+			SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
+			SNetworkPhysicsComponent->SetIsReplicated(true);
 		}
 	}
+}
+
+bool USpeedMovementComponent::ShouldCreatePhysicsState() const
+{
+	if (!IsRegistered() || IsBeingDestroyed())
+	{
+		return false;
+	}
+
+	// only create 'Physics' state in game
+	UWorld* World = GetWorld();
+	if (World->IsGameWorld())
+	{
+		FPhysScene* PhysScene = World->GetPhysicsScene();
+		if (PhysScene && UpdatedComponent)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void USpeedMovementComponent::OnDestroyPhysicsState()
@@ -99,10 +175,10 @@ SubBodyConfig USpeedMovementComponent::GetSubBodyConfig(const USSubBody& SubBody
 
 const SKinematic& USpeedMovementComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		return PredictedBaseStates[Idx].Kinematic;
+		return RecordedBaseStates[Idx].Kinematic;
 	}
 	return BasePhysicsState.Kinematic;
 }
@@ -124,10 +200,10 @@ const SKinematic& USpeedMovementComponent::GetKinematicState() const
 
 const SKinematic& USpeedMovementComponent::GetKinematicStateForFrame(const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		return PredictedBaseStates[Idx].Kinematic;
+		return RecordedBaseStates[Idx].Kinematic;
 	}
 	return BasePhysicsState.Kinematic;
 }
@@ -146,7 +222,7 @@ void USpeedMovementComponent::PostPhysicsUpdatePrv(const float& delta)
 {
 	ApplyNetworkCorrection(delta);
 	QuantizePhysicalState();
-	RecordPredictedState();
+	RecordPhysicsState();
 }
 
 void USpeedMovementComponent::SetIsUpsideDown(bool bUpsideDown)
@@ -184,7 +260,7 @@ void USpeedMovementComponent::RegisterTestVelocity(const FVector& InitialVelocit
 
 void USpeedMovementComponent::ApplyTestVelocity()
 {
-	if (BaseGameState.TestVelocity.IsZero())
+	if (BaseGameState.TestVelocity.IsZero() || IsFrozen())
 	{
 		return;
 	}
@@ -197,6 +273,21 @@ void USpeedMovementComponent::AsyncPhysicsTickComponent(float DeltaTime, float S
 	PhysicsTick(DeltaTime, SimTime);
 }
 
+unsigned int USpeedMovementComponent::GetEngineFPS() const
+{
+	return EngineFPS;
+}
+
+bool USpeedMovementComponent::IsFrozen() const
+{
+	return BasePhysicsState.bIsFrozen;
+}
+
+void USpeedMovementComponent::SetIsFrozen(bool bFrozen)
+{
+	BasePhysicsState.bIsFrozen = bFrozen;
+}
+
 void USpeedMovementComponent::SetEngineFPS(const unsigned int& FPS)
 {
 	EngineFPS = FPS;
@@ -206,6 +297,7 @@ void USpeedMovementComponent::PhysicsTick(const float& DeltaTime, const float& S
 {
 	// Update NumFrame at the beginning of the tick so that it can be used in the rest of the tick functions
 	UpdateNumFrame(SimTime);
+	HandleCountdownTimer();
 	TagStateHistoryProxyRole();
 
 	// Handle forces that should be applied before the gameplay tick (e.g. gravity, damping, rest force)
@@ -226,27 +318,74 @@ void USpeedMovementComponent::PhysicsTick(const float& DeltaTime, const float& S
 
 void USpeedMovementComponent::UpdateNumFrame(const float& SimTime)
 {
-	BaseGameState.NumFrame = Speed::SimUtils::ComputeNumFrameFromSimTime(EngineFPS, SimTime);
+	const int32 CandidateFrame =
+		FMath::RoundToInt32(double(SimTime) * double(EngineFPS)) + 1;
+
+	const int32 PreviousFrame = int32(BaseGameState.NumFrame);
+
+	if (PreviousFrame <= 0)
+	{
+		BaseGameState.NumFrame = CandidateFrame;
+		return;
+	}
+
+	if (CandidateFrame < PreviousFrame)
+	{
+		constexpr int32 MinRollbackFramesForResim = 4;
+		const int32 RollbackFrames = PreviousFrame - CandidateFrame;
+		if (!HasAuthority() && RollbackFrames >= MinRollbackFramesForResim)
+		{
+			BaseGameState.NumFrame = CandidateFrame;
+			return;
+		}
+
+		BaseGameState.NumFrame = PreviousFrame + 1;
+		return;
+	}
+
+	if (CandidateFrame == PreviousFrame)
+	{
+		BaseGameState.NumFrame = PreviousFrame + 1;
+		return;
+	}
+
+	if (CandidateFrame > PreviousFrame + 1)
+	{
+		BaseGameState.NumFrame = PreviousFrame + 1;
+		return;
+	}
+
+	BaseGameState.NumFrame = CandidateFrame;
 }
 
-void USpeedMovementComponent::RecordPredictedState()
+void USpeedMovementComponent::RecordPhysicsState()
 {
 	const int32 LF = NumFrame();
-	const int32 Idx = LF % SpeedConstants::PredictedHistorySize;
+	const int32 Idx = LF % SpeedConstants::RecordedHistorySize;
 
-	PredictedBaseFrames[Idx] = LF;
-	PredictedBaseStates[Idx] = BasePhysicsState;
+	RecordedBaseFrames[Idx] = LF;
+	RecordedBaseStates[Idx] = BasePhysicsState;
 }
 
-bool USpeedMovementComponent::GetPredictedState(const int32& LocalFrame, FBasePhysicsState& OutState) const
+bool USpeedMovementComponent::GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::PredictedHistorySize;
-	if (PredictedBaseFrames[Idx] == LocalFrame)
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFrames[Idx] == LocalFrame)
 	{
-		OutState = PredictedBaseStates[Idx];
+		OutState = RecordedBaseStates[Idx];
 		return true;
 	}
 	return false;
+}
+
+int32 USpeedMovementComponent::GetSinceCanMoveFrame() const
+{
+	return SinceCanMoveFrame;
+}
+
+unsigned int USpeedMovementComponent::NbFramesSinceCanMove() const
+{
+	return NumFrame() - GetSinceCanMoveFrame();
 }
 
 void USpeedMovementComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies)
@@ -254,9 +393,29 @@ void USpeedMovementComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodie
 	SubBodies = NewSubBodies;
 }
 
+void USpeedMovementComponent::HandleCountdownTimer()
+{
+	if (!bEnableSimulation || CanMove() || !CountdownHasStarted())
+	{
+		return;
+	}
+
+	BasePhysicsState.nbFramesbeforeCanMove--;
+	if (CanMove())
+	{
+		BasePhysicsState.bStartCountdown = false;
+		SinceCanMoveFrame = NumFrame();
+		UnFreezeMovement();
+// #if !(UE_BUILD_SHIPPING)
+		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+// #endif
+	}
+}
+
 void USpeedMovementComponent::HandleGravity()
 {
-	if (bEnableGravity)
+	if (bEnableGravity && bEnableSimulation)
 	{
 		AddPhysAcceleration(FVector(0.0f, 0.0f, GravityZ));
 	}
@@ -264,7 +423,7 @@ void USpeedMovementComponent::HandleGravity()
 
 void USpeedMovementComponent::HandleDamping(const float& delta)
 {
-	if (PhysDamping <= 0.0)
+	if (PhysDamping <= 0.0 || !bEnableSimulation)
 	{
 		return;
 	}
@@ -281,6 +440,11 @@ void USpeedMovementComponent::HandleDamping(const float& delta)
 
 void USpeedMovementComponent::HandleRestForce()
 {
+	if (!bEnableSimulation)
+	{
+		return;
+	}
+
 	for (USolidSubBody* SubBody : SolidSubBodies)
 	{
 		if (!SubBody)
@@ -311,6 +475,10 @@ void USpeedMovementComponent::GameplayTick(const float& DeltaTime, const float& 
 
 void USpeedMovementComponent::ApplyAccelKinematicsConstraint(const float& delta)
 {
+	if (!bEnableSimulation)
+	{
+		return;
+	}
 	applyAccelerationConstraint(delta);
 	applyAngularAccelerationConstraint(delta);
 }
@@ -390,8 +558,10 @@ void USpeedMovementComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	SetAsyncPhysicsTickEnabled(true);
+	AActor* NewOwner = GetOwner();
+	SetOwner(NewOwner);
 
+	SetAsyncPhysicsTickEnabled(true);
 	// Register in SpeedWorldSubsystem
 	if (UWorld* World = GetWorld())
 	{
@@ -405,6 +575,16 @@ void USpeedMovementComponent::BeginPlay()
 
 void USpeedMovementComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (IsValid(SNetworkPhysicsComponent) && SNetworkPhysicsComponent->IsRegistered())
+	{
+		SNetworkPhysicsComponent->UnregisterComponent();
+	}
+
+	if (IsValid(SNetworkSettings) && SNetworkSettings->IsRegistered())
+	{
+		SNetworkSettings->UnregisterComponent();
+	}
+
 	Super::EndPlay(EndPlayReason);
 	// Unregister from SpeedWorldSubsystem
 	if (UWorld* World = GetWorld())
@@ -423,6 +603,10 @@ void USpeedMovementComponent::StartTestWithVelocity(const FVector& InitialVeloci
 
 void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialVelocity)
 {
+	if (!bEnableSimulation)
+	{
+		return;
+	}
 	RegisterTestVelocity(InitialVelocity);
 }
 
@@ -431,10 +615,85 @@ void USpeedMovementComponent::StartTestWithVelocityMulti_Implementation(const FV
 	StartTestWithVelocityLocal(InitialVelocity);
 }
 
+bool USpeedMovementComponent::CanMove() const
+{
+	return BasePhysicsState.nbFramesbeforeCanMove == 0;
+}
+
+bool USpeedMovementComponent::CountdownHasStarted() const
+{
+	return BasePhysicsState.bStartCountdown;
+}
+
+void USpeedMovementComponent::StartConfrontationInSec(const float& TimeSec)
+{
+	if (!bEnableSimulation)
+	{
+		return;
+	}
+	StartConfrontationLocal(TimeSec);
+}
+
+void USpeedMovementComponent::StartConfrontationLocal(const float& TimeSec)
+{
+	if (!bEnableSimulation)
+	{
+		return;
+	}
+
+	FreezeMovement();
+	const int32 ClampedFrameCount = FMath::Clamp(FMath::RoundToInt(TimeSec * EngineFPS), 0, int32(TNumericLimits<uint16>::Max()));
+	const uint16 BaseNbFrame = static_cast<uint16>(ClampedFrameCount);
+	BasePhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
+	BasePhysicsState.bStartCountdown = BasePhysicsState.nbFramesbeforeCanMove > 0;
+	SinceCanMoveFrame = INDEX_NONE;
+	if (!BasePhysicsState.bStartCountdown)
+	{
+		SinceCanMoveFrame = NumFrame();
+		UnFreezeMovement();
+// #if !(UE_BUILD_SHIPPING)
+		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+// #endif
+	}
+}
+
+void USpeedMovementComponent::StartConfrontationMulti_Implementation(const float& TimeSec)
+{
+	StartConfrontationLocal(TimeSec);
+}
+
+void USpeedMovementComponent::SetCannotMove()
+{
+	if (!bEnableSimulation)
+	{
+		return;
+	}
+	SetCannotMoveMulti();
+}
+
+void USpeedMovementComponent::SetCannotMoveLocal()
+{
+	if (!bEnableSimulation)
+	{
+		return;
+	}
+
+	FreezeMovement();
+	BasePhysicsState.bStartCountdown = false;
+	BasePhysicsState.nbFramesbeforeCanMove = 1;
+	SinceCanMoveFrame = INDEX_NONE;
+}
+
+void USpeedMovementComponent::SetCannotMoveMulti_Implementation()
+{
+	SetCannotMoveLocal();
+}
+
 
 void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 {
-	if (HasAuthority())
+	if (HasAuthority() || !SNetworkPhysicsComponent || !bEnableSimulation)
 	{
 		return;
 	}
@@ -447,12 +706,14 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (!SpeedHistory)
 		return;
 
-	const int32 CurrentFrame = SpeedHistory->GetLatestFrame();
+	const int32 CurrentFrame = static_cast<int32>(NumFrame());
+	const int32 LatestHistoryFrame = SpeedHistory->GetLatestFrame();
+	const int32 SearchStartFrame = FMath::Min(CurrentFrame, LatestHistoryFrame);
 	// ----------------------------
 	// Find last server state
 	// ----------------------------
 	const FNetworkBaseSpeedState* LastServerState = nullptr;
-	for (int32 f = CurrentFrame; f >= 0; --f)
+	for (int32 f = SearchStartFrame; f >= 0; --f)
 	{
 		if (!SpeedHistory->EvalData(f))
 			continue;
@@ -469,16 +730,30 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		return;
 
 	const FNetworkBaseSpeedState& Target = *LastServerState;
+	const auto ResolveSourceFrame = [this](const int32 OffsetSourceLocalFrame, const int32 SourceFramesSinceCanMove)
+	{
+		if (SourceFramesSinceCanMove != INDEX_NONE && SinceCanMoveFrame != INDEX_NONE)
+		{
+			return SinceCanMoveFrame + SourceFramesSinceCanMove;
+		}
+
+		return OffsetSourceLocalFrame;
+	};
+	const int32 TargetSourceLocalFrame = ResolveSourceFrame(Target.GetSourceLocalFrame(), Target.SourceFramesSinceCanMove);
+	if (TargetSourceLocalFrame < 0 || TargetSourceLocalFrame > CurrentFrame)
+	{
+		return;
+	}
 
 	const bool bNewTarget = (Target.ServerFrame != NetCorr_LastServerFrame)
-		|| (Target.LocalFrame != NetCorr_LastLocalFrame);
+		|| (TargetSourceLocalFrame != NetCorr_LastLocalFrame);
 
 	if (bNewTarget)
 	{
 		NetCorr_LastServerFrame = Target.ServerFrame;
-		NetCorr_LastLocalFrame = Target.LocalFrame;
+		NetCorr_LastLocalFrame = TargetSourceLocalFrame;
 		NetCorrTickCount = 0;
-		NetCorr_BaseNumPredictedFrames = FMath::Max(1, CurrentFrame - Target.LocalFrame);
+		NetCorr_BaseNumPredictedFrames = FMath::Max(1, CurrentFrame - TargetSourceLocalFrame);
 	}
 	else
 	{
@@ -490,10 +765,10 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// ----------------------------
 	// Find corresponding predicted state (at Target.LocalFrame)
 	// ----------------------------
-	const int32 LocalFrame = Target.LocalFrame;
+	const int32 LocalFrame = TargetSourceLocalFrame;
 
 	FBasePhysicsState PastPredictedState;
-	if (!GetPredictedState(LocalFrame, PastPredictedState))
+	if (!GetBaseState(LocalFrame, PastPredictedState))
 	{
 		// Too old / overwritten in our local ring, nothing to do
 		return;
@@ -506,6 +781,87 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	}
 
 	const SKinematic& TargetKS = Target.BaseState.Kinematic;
+
+	// Correct isFrozen state immediately if mismatch, to avoid diverging too much (e.g. if we are frozen but server says we should be moving, or vice versa)
+	if (Target.BaseState.bIsFrozen != PastPredictedState.bIsFrozen)
+	{
+		SetIsFrozen(Target.BaseState.bIsFrozen);
+	}
+
+	// check coutdown mismatch
+	if (bNewTarget && (Target.BaseState.bStartCountdown != PastPredictedState.bStartCountdown))
+	{
+		UE_LOG(SpeedNetcodeLog, Verbose, TEXT("[%s(%s)][COUNTDOWN MISMATCH] Countdown mismatch: Target=%d, PastPred=%d, NbFramesBeforeCanMove=%d, NumPredictedFrames=%d"), *GetOwner()->GetName(), *GetRole(),
+			Target.BaseState.bStartCountdown, PastPredictedState.bStartCountdown, BasePhysicsState.nbFramesbeforeCanMove, NumPredictedFrames);
+		BasePhysicsState.bStartCountdown = Target.BaseState.bStartCountdown;
+	}
+	/*else
+	{
+		UE_LOG(SpeedNetcodeLog, Log, TEXT("[CAN MOVE] No Countdown mismatch?: Target=%d, PastPred=%d"), Target.BaseState.bStartCountdown, PastPredictedWheeledState.bStartCountdown);
+	}*/
+
+	// check nbFramesbeforeCanMove alignment
+	if (bNewTarget && (Target.BaseState.nbFramesbeforeCanMove != PastPredictedState.nbFramesbeforeCanMove)
+		// && (BasePhysicsState.nbFramesbeforeCanMove > NumPredictedFrames - 1)
+		// && (Target.BaseState.nbFramesbeforeCanMove != BasePhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
+		&& (BasePhysicsState.nbFramesbeforeCanMove != FMath::Max(0, int32(Target.BaseState.nbFramesbeforeCanMove) - NumPredictedFrames)))
+	{
+		if (Target.BaseState.nbFramesbeforeCanMove == 0 && BasePhysicsState.nbFramesbeforeCanMove != 0)
+		{
+			BasePhysicsState.nbFramesbeforeCanMove = 0;
+			BasePhysicsState.bStartCountdown = false;
+			UnFreezeMovement();
+#if !(UE_BUILD_SHIPPING)
+			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
+			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
+				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsState.Kinematic.ToString());
+#endif
+		}
+		else
+		{
+#if !(UE_BUILD_SHIPPING)
+			UE_LOG(SpeedNetcodeLog, Verbose, TEXT("[%s(%s)][CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"),
+				*GetOwner()->GetName(), *GetRole(), Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
+#endif
+			const bool bStartupCountdownCatchup =
+				Target.BaseState.bStartCountdown
+				&& PastPredictedState.nbFramesbeforeCanMove <= 1
+				&& Target.BaseState.nbFramesbeforeCanMove > MinNbFramesBeforeCanMove;
+			const int32 CorrectedFramesBeforeCanMove = bStartupCountdownCatchup
+				? int32(Target.BaseState.nbFramesbeforeCanMove)
+				: FMath::Max(0, int32(Target.BaseState.nbFramesbeforeCanMove) - NumPredictedFrames);
+			BasePhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
+			if (!BasePhysicsState.bStartCountdown && BasePhysicsState.nbFramesbeforeCanMove == 0)
+			{
+				// If countdown has not started, we cannot start to move immediately
+				BasePhysicsState.nbFramesbeforeCanMove = 1;
+			}
+
+			if (CanMove())
+			{
+				BasePhysicsState.bStartCountdown = false;
+				UnFreezeMovement();
+			}
+		}
+	}
+	else if (bNewTarget
+		&& CanMove()
+		&& Target.BaseState.nbFramesbeforeCanMove > 0
+		&& Target.BaseState.bStartCountdown)
+	{
+		const int32 CorrectedFramesBeforeCanMove = FMath::Max(0, int32(Target.BaseState.nbFramesbeforeCanMove) - NumPredictedFrames);
+		if (CorrectedFramesBeforeCanMove > 0)
+		{
+			BasePhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
+			BasePhysicsState.bStartCountdown = true;
+			SinceCanMoveFrame = INDEX_NONE;
+			FreezeMovement();
+#if !(UE_BUILD_SHIPPING)
+			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"), *GetOwner()->GetName(), *GetRole(),
+				Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove, BasePhysicsState.nbFramesbeforeCanMove);
+#endif
+		}
+	}
 
 	// ------------------------------------------------------------
 	// (A) Historical error at the SAME frame:
@@ -554,54 +910,55 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		const FVector CorrEuler = (ErrEuler0 * alphaR).GetClampedToMaxSize(MaxRotCorrectionPerSecond * DeltaSeconds);
 		const FQuat   CorrQuat = FQuat::MakeFromEuler(CorrEuler);
 
-		if (ErrV0.Size() > VelCorrDeadzone)
+		if (CorrV.Size() > VelCorrDeadzone)
 		{
-			SetPhysVelocity(GetPhysVelocity() + CorrV);
+			AddPhysVelocity(CorrV);
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
 				UE_LOG(SpeedNetcodeLog, Log,
-					TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d LinVelDiff0=%.2f Corr=%.2f TargetVelNow=%fcm/s"),
-					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, ErrV0.Size(), CorrV.Size(), GetPhysVelocity().Size());
+					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d LinVelDiff0=%.2f Corr=%.2f TargetVelNow=%fcm/s"),
+					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrV0.Size(), CorrV.Size(), GetPhysVelocity().Size());
 #endif
 			}
 		}
 
-		if (ErrX0.Size() > PosCorrDeadzone)
+		if (CorrX.Size() > PosCorrDeadzone)
 		{
-			SetPhysLocation(GetPhysLocation() + CorrX);
+			const FVector AppliedCorrX = AddPhysLocation(CorrX);
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
 				UE_LOG(SpeedNetcodeLog, Log,
-					TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d PosDiff0=%.2fcm Corr=%.2fcm TargetPosNow=%s"),
-					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, ErrX0.Size(), CorrX.Size(), *GetPhysLocation().ToString());
+					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d PosDiff0=%.2fcm Corr=%.2fcm TargetPosNow=%s"),
+					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrX0.Size(), AppliedCorrX.Size(), *GetPhysLocation().ToString());
 #endif
 			}
 		}
 
-		if (ErrW0.Size() > AngVelCorrDeadzone)
+		if (CorrW.Size() > AngVelCorrDeadzone)
 		{
-			SetPhysAngularVelocity(GetPhysAngularVelocity() + CorrW);
+			AddPhysAngularVelocity(CorrW);
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
 				UE_LOG(SpeedNetcodeLog, Log,
-					TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d AngVelDiff0=%.4f Corr=%.4f TargetAngVelNow=%.4frad/s"),
-					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, ErrW0.Size(), CorrW.Size(), GetPhysAngularVelocity().Size());
+					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d AngVelDiff0=%.4f Corr=%.4f TargetAngVelNow=%.4frad/s"),
+					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrW0.Size(), CorrW.Size(), GetPhysAngularVelocity().Size());
 #endif
 			}
 		}
 
-		if (ErrEuler0.Size() > RotCorrDeadzone)
+		if (CorrEuler.Size() > RotCorrDeadzone)
 		{
-			SetPhysRotation((GetPhysRotation() * CorrQuat).GetNormalized());
+			const FQuat AppliedCorrQuat = AddPhysRotation(CorrQuat);
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
+				const float AppliedCorrDeg = FMath::RadiansToDegrees(AppliedCorrQuat.GetAngle());
 				UE_LOG(SpeedNetcodeLog, Log,
-					TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d RotDiff0=%.2fdeg Corr=%.2fdeg"),
-					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, ErrEuler0.Size(), CorrEuler.Size());
+					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d RotDiff0=%.2fdeg Corr=%.2fdeg"),
+					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrEuler0.Size(), AppliedCorrDeg);
 #endif
 			}
 		}
@@ -616,7 +973,7 @@ void USpeedMovementComponent::QuantizePhysicalState()
 
 void USpeedMovementComponent::TagStateHistoryProxyRole()
 {
-	if (HasAuthority())
+	if (HasAuthority() || !bEnableSimulation)
 		return;
 
 	const TSharedPtr<Chaos::FBaseRewindHistory>& History = SNetworkPhysicsComponent->GetStateHistory_Internal();
@@ -642,25 +999,14 @@ void USpeedMovementComponent::TagStateHistoryProxyRole()
 void USpeedMovementComponent::InitNetwork()
 {
 	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
-	SNetworkPhysicsComponent = CreateDefaultSubobject<UNetworkPhysicsComponent, UNetworkPhysicsComponent>(SpeedNetPCName);
+	SNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
 	SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
 	SNetworkPhysicsComponent->SetIsReplicated(true);
 
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
-
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideEnableReliableFlow = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bEnableReliableFlow = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantInputs = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantInputs = 0;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideRedundantStates = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.RedundantStates = 3;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverrideCompareStateToTriggerRewind = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewind = true;
-	SNetworkSettings->GeneralSettings.bOverrideSimProxyRepMode = true;
-	SNetworkSettings->GeneralSettings.SimProxyRepMode = EPhysicsReplicationMode::Resimulation;
-
-	// Simulated Proxy settings
-	SNetworkSettings->NetworkPhysicsComponentSettings.bOverridebCompareStateToTriggerRewindIncludeSimProxies = true;
-	SNetworkSettings->NetworkPhysicsComponentSettings.bCompareStateToTriggerRewindIncludeSimProxies = true;
+	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("NetPhysicsSettingsDataAsset"));
+	ConfigureBaseSpeedNetworkPhysicsSettings(NetDataAsset);
+	SNetworkSettings->SettingsDataAsset = NetDataAsset;
+	SNetworkSettings->bAutoRegister = false;
 }
