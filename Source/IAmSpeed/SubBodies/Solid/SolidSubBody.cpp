@@ -80,6 +80,17 @@ void USolidSubBody::RegisterContactAsConstraint(
         return;
     }
 
+    const bool bRegisterThisConstraint =
+        bStaticConstraint || (bDynamicSolidConstraint && bEnableConstraintOnSubBodyHit);
+    const bool bRegisterOtherConstraint =
+        bDynamicSolidConstraint &&
+        OtherSubBody->bEnableConstraintOnSubBodyHit &&
+        OtherSubBody->ParentComponent != ParentComponent;
+    if (!bRegisterThisConstraint && !bRegisterOtherConstraint)
+    {
+        return;
+    }
+
     const FVector N = NormalWS.GetSafeNormal();
     if (N.IsNearlyZero())
     {
@@ -96,9 +107,12 @@ void USolidSubBody::RegisterContactAsConstraint(
     Constraint.PairKey = USSubBody::MakePairKey(this, OtherComponent);
     Constraint.bPersistent = bStaticConstraint && bPersistent;
 
-    ParentComponent->RegisterPhysicalConstraint(Constraint);
+    if (bRegisterThisConstraint)
+    {
+        ParentComponent->RegisterPhysicalConstraint(Constraint);
+    }
 
-    if (bDynamicSolidConstraint && OtherSubBody->ParentComponent != ParentComponent)
+    if (bRegisterOtherConstraint)
     {
         FPhysicalContactConstraint OtherConstraint;
         OtherConstraint.Normal = -N;

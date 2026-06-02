@@ -96,6 +96,9 @@ protected:
 	// If true, the subbody will be able to apply custom impulses on itself or other subbodies
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Physics)
 	bool EnableFakePhysics = false;
+	// If true, dynamic subbody contacts register constraints on this subbody's parent component.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Physics)
+	bool bEnableConstraintOnSubBodyHit = false;
 
 	// Restitution coefficient for the subbody, used in collision resolution
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Physics,
