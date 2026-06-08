@@ -1057,7 +1057,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 
 	float ForwardSpeed = GetPhysVelocity().Dot(ForwardVector);
 	float SideSpeed = GetPhysVelocity().Dot(RightVector);
-	auto LocalForwardFriction = GetLocalForwardFriction();
+	auto LocalForwardFriction = (GetLocalForwardFriction() * NumWheelsOnGround()) / 4;
 
 	//linearDamping = 600;
 	if (GroundSpeed != 0.0)
@@ -1757,7 +1757,7 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 	if (wantToMoveForward == IsPhysGoingForward())
 	{
 		// Throttle case
-		auto forward_damping = GetForwardFriction();
+		auto forward_damping = GetLocalForwardFriction();
 		const float absBaseAccel = InputValue > 0 ? (forward_damping * nbWheelsOnGround / 4) : 0;
 		float baseAccel = wantToMoveForward ? absBaseAccel : -absBaseAccel;
 		float inputAccel = 0.0;
