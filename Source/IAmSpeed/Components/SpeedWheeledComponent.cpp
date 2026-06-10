@@ -581,7 +581,7 @@ void USpeedWheeledComponent::RegisterTestVelocity(const FVector& InitialVelocity
 
 void USpeedWheeledComponent::ApplyTestVelocity()
 {
-	if (BaseGameState.TestVelocity.IsZero())
+	if (BaseGameState.TestVelocity.IsZero() || !CanMove())
 	{
 		return;
 	}
