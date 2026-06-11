@@ -10,8 +10,19 @@
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedAutoRecoverContactDebug(
+    TEXT("p.IAmSpeed.AutoRecoverContactDebug"),
+    0,
+    TEXT("Logs hitbox ground-contact persistence data used by Skycar auto-recover."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRoofSlideSupportMinUpDot(
+    TEXT("p.IAmSpeed.RoofSlideSupportMinUpDot"),
+    0.35f,
+    TEXT("Minimum world-up dot for upside-down roof contacts to be resolved as sliding gutter support."));
 
 UBoxSubBody::UBoxSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
@@ -46,12 +57,43 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
 {
     Super::ResetForFrame(Delta);
 
+    PreviousFrameGroundContactsWS.Reset();
+    if (bHasGroundContact && CurrentGroundContactsWS.Num() > 0)
+    {
+        PreviousFrameGroundContactsWS = CurrentGroundContactsWS;
+    }
+
+#if !UE_BUILD_SHIPPING
+    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+        (bHasGroundContact ||
+            CurrentGroundContactsWS.Num() > 0 ||
+            PreviousFrameGroundContactsWS.Num() > 0 ||
+            PrevGroundContactsLS.Num() > 0 ||
+            bEdgeSupportLatched))
+    {
+        UE_LOG(
+            BoxSubBodyLog,
+            Log,
+            TEXT("[ARContact.Reset] Frame=%d HasCurrent=%d Current=%d CachedPrev=%d PrevLS=%d Latched=%d LatchedLS=%d PlaneValid=%d GroundComp=%s"),
+            ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+            bHasGroundContact ? 1 : 0,
+            CurrentGroundContactsWS.Num(),
+            PreviousFrameGroundContactsWS.Num(),
+            PrevGroundContactsLS.Num(),
+            bEdgeSupportLatched ? 1 : 0,
+            LatchedEdgeContactsLS.Num(),
+            bGroundPlaneValid ? 1 : 0,
+            GroundComp.IsValid() ? *GroundComp->GetName() : TEXT("None"));
+    }
+#endif
+
     HitCountThisFrame.Empty();
     CurrentGroundContactsWS.Empty();
     CurrentGroundNormalsWS.Empty();
 
     bGroundHitFromSweep = false;
     bHasGroundContact = false;
+    bFreshEdgeRecoverCandidate = false;
 }
 
 void UBoxSubBody::AcceptHit()
@@ -415,9 +457,20 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     constexpr float DirectSupportUpDot = 0.97f;
     constexpr float CandidateSupportUpDot = 0.85f;
+    const float RoofSlideSupportMinUpDot =
+        CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
 
     const bool bIsDirectSupportNormal = EffectiveUpDot >= DirectSupportUpDot;
-    const bool bIsCandidateSupport = EffectiveUpDot >= CandidateSupportUpDot;
+    const FVector HitboxUpVector = Kinematics.Rotation.GetUpVector();
+    const bool bRoofFacingSurface =
+        FVector::DotProduct(HitboxUpVector, EffectiveN) < -0.45f;
+    const bool bUpsideDownRoofSlideCandidate =
+        EffectiveUpDot >= RoofSlideSupportMinUpDot &&
+        EffectiveUpDot < DirectSupportUpDot &&
+        bRoofFacingSurface;
+    const bool bIsCandidateSupport =
+        EffectiveUpDot >= CandidateSupportUpDot ||
+        bUpsideDownRoofSlideCandidate;
     const bool bHasLatchedEdgeSupport =
         bEdgeSupportLatched &&
         LatchedEdgeContactsLS.Num() == 2;
@@ -440,17 +493,16 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
         PreviewSupportContacts = PreviewPts.Num();
 
-        const bool bStableSupportManifold =
-            PreviewPts.Num() >= 3 ||
+        const bool bSupportManifoldForResolution =
+            PreviewPts.Num() >= 2 ||
+            (PreviewPts.Num() == 1 && (bIsDirectSupportNormal || bUpsideDownRoofSlideCandidate)) ||
             bHasLatchedEdgeSupport ||
             bHasPreviousEdgeSupport;
 
         bIsSupportingContact =
-            bStableSupportManifold &&
-            (bIsDirectSupportNormal || EffectiveUpDot >= CandidateSupportUpDot);
+            bSupportManifoldForResolution &&
+            (bIsDirectSupportNormal || EffectiveUpDot >= CandidateSupportUpDot || bUpsideDownRoofSlideCandidate);
     }
-
-    const FVector HitboxUpVector = Kinematics.Rotation.GetUpVector();
 
     if (FMath::Abs(HitboxUpVector.Z) > 0.75f)
     {
@@ -460,6 +512,40 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     constexpr float VN_EPS = 1.0f;
     const float vN_atImpact =
         FVector::DotProduct(GetVelocityAtPoint(EffectiveHit.ImpactPoint), EffectiveN);
+
+#if !UE_BUILD_SHIPPING
+    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+        (bIsCandidateSupport ||
+            PreviewSupportContacts > 0 ||
+            bHasLatchedEdgeSupport ||
+            bHasPreviousEdgeSupport ||
+            bGroundPlaneValid ||
+            bEdgeSupportLatched))
+    {
+        UE_LOG(
+            BoxSubBodyLog,
+            Log,
+            TEXT("[ARContact.ResolveGround] Frame=%d RawUpDot=%.3f EffUpDot=%.3f Promoted=%d RoofSlide=%d Candidate=%d Supporting=%d Preview=%d vN=%.2f Sweep=%d Current=%d PrevLS=%d Latched=%d LatchedLS=%d PlaneValid=%d N=%s HitP=%s"),
+            ParentComponent->NumFrame(),
+            RawUpDot,
+            EffectiveUpDot,
+            bPromotedWallToSupport ? 1 : 0,
+            bUpsideDownRoofSlideCandidate ? 1 : 0,
+            bIsCandidateSupport ? 1 : 0,
+            bIsSupportingContact ? 1 : 0,
+            PreviewSupportContacts,
+            vN_atImpact,
+            bGroundHitFromSweep ? 1 : 0,
+            CurrentGroundContactsWS.Num(),
+            PrevGroundContactsLS.Num(),
+            bEdgeSupportLatched ? 1 : 0,
+            LatchedEdgeContactsLS.Num(),
+            bGroundPlaneValid ? 1 : 0,
+            *EffectiveN.ToString(),
+            *EffectiveHit.ImpactPoint.ToString());
+    }
+#endif
+
 	// Debug log at start of hit resolution
     /*UE_LOG(BoxSubBodyLog, Log,
         TEXT("[CCDBox] Start of Hit vs Ground for frame = %d, vN_start = %.2f cm/s, bIsSupportingContact = %d, Parent Kinematic = (%s)"),
@@ -851,10 +937,19 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         (bIsGutterLikeWall && bHasValidSupportPlane) ||
         (bIsGutterLikeWall && bIsPenetratingStaticWall);
 
-    // Debug
-    // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
-    // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveWallOrGutter for frame = %d ImpactPoint = %s, ImpactNormal = %s, Kinematic = %s"),
-    //     ParentComponent->NumFrame(), *P.ToString(), *N.ToString(), *Kinematics.ToString());
+#if !UE_BUILD_SHIPPING
+    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+    {
+        UE_LOG(
+            BoxSubBodyLog,
+            Log,
+            TEXT("[CCDBox] ResolveWallOrGutter for frame = %d ImpactPoint = %s, ImpactNormal = %s, Box Kinematic = (%s)"),
+            ParentComponent->NumFrame(),
+            *P.ToString(),
+            *N.ToString(),
+            *Kinematics.ToString());
+    }
+#endif
 
     // Restitution policy for walls/gutters:
     // - Usually you want NO bounce in a gutter because it creates wedging artifacts.
@@ -879,8 +974,28 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         bHardImpact ? 180.f :
         100.f;
 
+    float SoftWallMassScale = 1.0f;
+    if (bIsNearHorizontalEdge)
+    {
+        const float EdgeT = FMath::Clamp((UpDot - 0.85f) / (1.f - 0.85f), 0.f, 1.f);
+        SoftWallMassScale = FMath::Lerp(0.25f, 0.35f, EdgeT);
+    }
+    else if (bIsSinglePointSteepSupportLikeWall)
+    {
+        SoftWallMassScale = 0.22f;
+    }
+    else if (bIsGutterLikeWall)
+    {
+        const float GutterT = FMath::Clamp((UpDot - 0.10f) / (0.85f - 0.10f), 0.f, 1.f);
+        SoftWallMassScale = FMath::Lerp(0.55f, 0.25f, GutterT);
+    }
+    else if (bIsLowSlopePenetratingWall || bIsLowSlopeGutterImpact)
+    {
+        SoftWallMassScale = 0.25f;
+    }
+
     const float jnMaxByMass =
-        (bSoftWall ? 1.0f : 5.0f) * GetMass();
+        (bSoftWall ? SoftWallMassScale : 5.0f) * GetMass();
 
     const float jnMaxByDeltaV = MaxWallDeltaVCmS / FMath::Max(denomN, KINDA_SMALL_NUMBER);
 
@@ -919,12 +1034,12 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     ApplyImpulse(J, P);
 
-// #if !UE_BUILD_SHIPPING
-    /*
-    if (FMath::Abs(vN) > 5.f || Hit.bStartPenetrating)
+#if !UE_BUILD_SHIPPING
+    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+        (FMath::Abs(vN) > 5.f || Hit.bStartPenetrating))
     {
         UE_LOG(BoxSubBodyLog, Warning,
-            TEXT("[CCDBoxWallSolve] Frame=%d vN=%.2f N=%s P=%s J=%s jn=%.4f jnMax=%.4f SoftWall=%d PreviewContacts=%d denomN=%.6f TOI=%.6f Pen=%d Depth=%.3f Kinematic=%s"),
+            TEXT("[CCDBoxWallSolve] Frame=%d vN=%.2f N=%s P=%s J=%s jn=%.4f jnMax=%.4f SoftWall=%d SoftMassScale=%.2f PreviewContacts=%d denomN=%.6f TOI=%.6f Pen=%d Depth=%.3f Kinematic=%s"),
             ParentComponent->NumFrame(),
             vN,
             *N.ToString(),
@@ -933,6 +1048,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             jn,
             jnMax,
             bSoftWall ? 1 : 0,
+            SoftWallMassScale,
             PreviewSupportContacts,
             denomN,
             Hit.TOI,
@@ -940,8 +1056,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             Hit.PenetrationDepth,
             *Kinematics.ToString());
     }
-    */
-// #endif
+#endif
 
     // Optional positional correction when starting in penetration.
     // Use Hit.ImpactNormal (depenetration direction) when bStartPenetrating.
@@ -1040,7 +1155,43 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     if (bFreshTwoPointEdgeSupport)
     {
-        CurrentGroundContactsWS.Reset();
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Warning,
+                TEXT("[ARContact.FreshEdge] Frame=%d Contacts=%d UpDot=%.3f UseLatched=%d PrevLS=%d Latched=%d LatchedLS=%d Sweep=%d PlaneValidBefore=%d N=%s HitP=%s TOI=%.6f"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                ContactPtsWS.Num(),
+                UpDot,
+                bUseLatchedEdge ? 1 : 0,
+                PrevGroundContactsLS.Num(),
+                bEdgeSupportLatched ? 1 : 0,
+                LatchedEdgeContactsLS.Num(),
+                bGroundHitFromSweep ? 1 : 0,
+                bGroundPlaneValid ? 1 : 0,
+                *N.ToString(),
+                *ImpactP.ToString(),
+                Hit.TOI);
+        }
+#endif
+
+        // Do not solve a fresh edge as a stable support, otherwise the box can
+        // balance on an edge. Keep the contact manifold/plane though: car-level
+        // auto-recover needs those two points to bias the hitbox toward a face.
+        CurrentGroundContactsWS = ContactPtsWS;
+        bFreshEdgeRecoverCandidate = true;
+
+        if (bGroundHitFromSweep)
+        {
+            bGroundPlaneValid = true;
+            GroundPlaneN = N;
+            GroundPlanePointWS = Hit.ImpactPoint;
+            GroundPlaneD = FVector::DotProduct(ImpactP, N);
+            GroundComp = Hit.Component;
+            ParentComponent->RcvImpactOnSubBody(*this, ImpactP);
+        }
 
         /*UE_LOG(BoxSubBodyLog, Warning,
             TEXT("[CCDBoxSupportReject] Frame=%d Reason=FreshEdge UpDot=%.4f Contacts=%d UseLatched=%d PrevLS=%d Latched=%d LatchedLS=%d -> Wall/Gutter N=%s HitP=%s TOI=%.6f"),
@@ -1059,7 +1210,18 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         return;
     }
 
-    if (ContactPtsWS.Num() < 2 && UpDot < 0.97f)
+    const float RoofSlideSupportMinUpDot =
+        CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
+    const FVector HitboxUpVector = Kinematics.Rotation.GetUpVector();
+    const bool bRoofFacingSurface =
+        FVector::DotProduct(HitboxUpVector, N) < -0.45f;
+    const bool bUpsideDownRoofSlideSupport =
+        ContactPtsWS.Num() == 1 &&
+        UpDot >= RoofSlideSupportMinUpDot &&
+        UpDot < 0.97f &&
+        bRoofFacingSurface;
+
+    if (ContactPtsWS.Num() < 2 && UpDot < 0.97f && !bUpsideDownRoofSlideSupport)
     {
         CurrentGroundContactsWS.Reset();
 
@@ -1081,6 +1243,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         bGroundHitFromSweep &&
         !bGroundPlaneValid &&
         !bUseLatchedEdge &&
+        !bUpsideDownRoofSlideSupport &&
         !bHasGroundContact &&
         PrevGroundContactsLS.Num() == 0 &&
         !(bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2);
@@ -1555,13 +1718,63 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
 	const bool bEdgeRecoverActive = ParentComponent->IsInAutoRecover();
 
     if (!bGroundPlaneValid || !GroundComp.IsValid())
+    {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+            (CurrentGroundContactsWS.Num() > 0 || PrevGroundContactsLS.Num() > 0 || bFreshEdgeRecoverCandidate))
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Log,
+                TEXT("[ARContact.PersistentReject] Frame=%d Reason=NoPlane PlaneValid=%d GroundComp=%s Current=%d PrevLS=%d FreshEdge=%d"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                bGroundPlaneValid ? 1 : 0,
+                GroundComp.IsValid() ? *GroundComp->GetName() : TEXT("None"),
+                CurrentGroundContactsWS.Num(),
+                PrevGroundContactsLS.Num(),
+                bFreshEdgeRecoverCandidate ? 1 : 0);
+        }
+#endif
         return;
+    }
 
-    if (FVector::DotProduct(GroundPlaneN, FVector::UpVector) < 0.5f)
+    const float GroundPlaneUpDot = FVector::DotProduct(GroundPlaneN, FVector::UpVector);
+    if (GroundPlaneUpDot < 0.5f)
+    {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Log,
+                TEXT("[ARContact.PersistentReject] Frame=%d Reason=LowUpDot UpDot=%.3f Current=%d PrevLS=%d FreshEdge=%d N=%s"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                GroundPlaneUpDot,
+                CurrentGroundContactsWS.Num(),
+                PrevGroundContactsLS.Num(),
+                bFreshEdgeRecoverCandidate ? 1 : 0,
+                *GroundPlaneN.ToString());
+        }
+#endif
         return;
+    }
 
     if (IsConcaveGroundContact())
     {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Log,
+                TEXT("[ARContact.PersistentReject] Frame=%d Reason=Concave Current=%d Normals=%d PrevLS=%d FreshEdge=%d"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                CurrentGroundContactsWS.Num(),
+                CurrentGroundNormalsWS.Num(),
+                PrevGroundContactsLS.Num(),
+                bFreshEdgeRecoverCandidate ? 1 : 0);
+        }
+#endif
         bGroundPlaneValid = false;
         bHasGroundContact = false;
         bGroundContactStable = false;
@@ -1609,8 +1822,90 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     const bool bStableNormalMotion =
         (worstVN <= SepVelTol);
 
+#if !UE_BUILD_SHIPPING
+    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+        (CurrentGroundContactsWS.Num() > 0 || PrevGroundContactsLS.Num() > 0 || bFreshEdgeRecoverCandidate))
+    {
+        UE_LOG(
+            BoxSubBodyLog,
+            Log,
+            TEXT("[ARContact.PersistentCheck] Frame=%d Current=%d PrevLS=%d FreshEdge=%d EdgeRecoverActive=%d minDist=%.3f worstVN=%.2f WithinBand=%d StableMotion=%d NotExploding=%d PlaneN=%s"),
+            ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+            CurrentGroundContactsWS.Num(),
+            PrevGroundContactsLS.Num(),
+            bFreshEdgeRecoverCandidate ? 1 : 0,
+            bEdgeRecoverActive ? 1 : 0,
+            minDist,
+            worstVN,
+            bWithinSupportBand ? 1 : 0,
+            bStableNormalMotion ? 1 : 0,
+            bNotExploding ? 1 : 0,
+            *GroundPlaneN.ToString());
+    }
+#endif
+
+    if (bFreshEdgeRecoverCandidate && CurrentGroundContactsWS.Num() == 2)
+    {
+        const FVector& P0 = CurrentGroundContactsWS[0];
+        const FVector& P1 = CurrentGroundContactsWS[1];
+        if ((P1 - P0).SizeSquared() > FMath::Square(1.0f))
+        {
+#if !UE_BUILD_SHIPPING
+            if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+            {
+                UE_LOG(
+                    BoxSubBodyLog,
+                    Log,
+                    TEXT("[ARContact.PersistentFreshEdgeAccepted] Frame=%d P0=%s P1=%s PlaneN=%s GroundComp=%s"),
+                    ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                    *P0.ToString(),
+                    *P1.ToString(),
+                    *GroundPlaneN.ToString(),
+                    GroundComp.IsValid() ? *GroundComp->GetName() : TEXT("None"));
+            }
+#endif
+            bHasGroundContact = true;
+            bEdgeSupportLatched = true;
+            EdgeSupportLatchFrame = ParentComponent->NumFrame();
+
+            LatchedEdgeContactsLS.Reset(2);
+            LatchedEdgeContactsLS.Add(K.Rotation.UnrotateVector(P0 - K.Location));
+            LatchedEdgeContactsLS.Add(K.Rotation.UnrotateVector(P1 - K.Location));
+
+            PrevGroundContactsLS.Reset(2);
+            PrevGroundContactsLS.Add(LatchedEdgeContactsLS[0]);
+            PrevGroundContactsLS.Add(LatchedEdgeContactsLS[1]);
+
+            GroundHit = SHitResult();
+            GroundHit.bBlockingHit = true;
+            GroundHit.Component = GroundComp;
+            GroundHit.ImpactNormal = GroundPlaneN;
+            GroundHit.TOI = 0.f;
+            GroundHit.ImpactPoint = 0.5f * (P0 + P1);
+            return;
+        }
+    }
+
     if (!(bWithinSupportBand && bStableNormalMotion && bNotExploding))
     {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Log,
+                TEXT("[ARContact.PersistentReject] Frame=%d Reason=BandOrMotion Current=%d PrevLS=%d FreshEdge=%d minDist=%.3f worstVN=%.2f WithinBand=%d StableMotion=%d NotExploding=%d"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                CurrentGroundContactsWS.Num(),
+                PrevGroundContactsLS.Num(),
+                bFreshEdgeRecoverCandidate ? 1 : 0,
+                minDist,
+                worstVN,
+                bWithinSupportBand ? 1 : 0,
+                bStableNormalMotion ? 1 : 0,
+                bNotExploding ? 1 : 0);
+        }
+#endif
         bEdgeSupportLatched = false;
         LatchedEdgeContactsLS.Reset();
         PrevGroundContactsLS.Reset();
@@ -1619,6 +1914,19 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     // If clearly separating, drop persistence
     if (worstVN > 0.5f)
     {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Log,
+                TEXT("[ARContact.PersistentReject] Frame=%d Reason=Separating worstVN=%.2f Current=%d PrevLS=%d"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                worstVN,
+                CurrentGroundContactsWS.Num(),
+                PrevGroundContactsLS.Num());
+        }
+#endif
         bHasGroundContact = false;
         bGroundPlaneValid = false;
         CurrentGroundContactsWS.Reset();
@@ -1870,6 +2178,11 @@ const TArray<FVector>& UBoxSubBody::GetGroundContacts() const
     return CurrentGroundContactsWS;
 }
 
+const TArray<FVector>& UBoxSubBody::GetPhysicsTickGroundContacts() const
+{
+    return CurrentGroundContactsWS.Num() > 0 ? CurrentGroundContactsWS : PreviousFrameGroundContactsWS;
+}
+
 bool UBoxSubBody::IsConcaveGroundContact() const
 {
     if (CurrentGroundNormalsWS.Num() >= 2)
@@ -1930,6 +2243,11 @@ bool UBoxSubBody::IsPointSupportedByPersistentContact(const FVector& P, float Ma
 bool UBoxSubBody::HasPersistentGroundContact() const
 {
     return bHasGroundContact;
+}
+
+bool UBoxSubBody::HasPhysicsTickGroundContact() const
+{
+    return bHasGroundContact || PreviousFrameGroundContactsWS.Num() > 0;
 }
 
 bool UBoxSubBody::HasPersistentEdgeSupport() const

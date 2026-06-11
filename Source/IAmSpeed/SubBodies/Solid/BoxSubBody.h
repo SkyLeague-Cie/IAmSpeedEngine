@@ -38,6 +38,7 @@ public:
     static void GetBoxVertices(const FVector& Center, const FQuat& Rot, const FVector& Ext, TArray<FVector>& OutVerts);
     static FVector ComputeBoxSupportPointWS(const FVector& Center, const FQuat& Rot, const FVector& Ext, const FVector& N);
     const TArray<FVector>& GetGroundContacts() const;
+    const TArray<FVector>& GetPhysicsTickGroundContacts() const;
     bool IsConcaveGroundContact() const;
     FVector GetGroundPlaneNormal() const;
     float GetGroundPlaneD() const;
@@ -45,6 +46,7 @@ public:
     bool IsPointSupportedByPersistentContact(const FVector& P, float Margin = 2.f) const;
 
     bool HasPersistentGroundContact() const;
+    bool HasPhysicsTickGroundContact() const;
     void UpdatePersistentGroundContact(const float& delta);
     bool HasPersistentEdgeSupport() const;
     bool IsInEdgeBalance() const;
@@ -266,6 +268,7 @@ protected:
 #endif // WITH_EDITOR
 private:
     TArray<FVector> CurrentGroundContactsWS;
+    TArray<FVector> PreviousFrameGroundContactsWS;
     TArray<FVector> CurrentGroundNormalsWS; // per contact point normal
     TArray<FVector> PrevGroundContactsLS; // local hitbox space (COM frame)
     TArray<FVector> LatchedEdgeContactsLS; // size = 2
@@ -278,6 +281,7 @@ private:
 
     bool bGroundContactStable = false; // true if every contact point were stable last frame
     bool bHasGroundContact = false; // true if we have at least one ground contact this frame
+    bool bFreshEdgeRecoverCandidate = false; // one-frame edge contact kept for car-level auto-recover
     float StableTime = 0.f;
 
     bool bGroundHitFromSweep = false; // true if ground hit was generated from sweep this frame
