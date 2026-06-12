@@ -44,6 +44,21 @@ static TAutoConsoleVariable<float> CVarIAmSpeedVertexSupportSeparatingSpeedCmS(
     3.0f,
     TEXT("Separating speed tolerated for single-vertex hitbox contacts during auto-recover, in cm/s."));
 
+static TAutoConsoleVariable<float> CVarIAmSpeedSoftWallDepenMaxNormalKillCmS(
+    TEXT("p.IAmSpeed.SoftWallDepenMaxNormalKillCmS"),
+    350.0f,
+    TEXT("Maximum inward normal velocity removed in one penetration frame for soft wall/gutter contacts, in cm/s. <= 0 disables the clamp."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedGutterDepenMaxUpDeltaCmS(
+    TEXT("p.IAmSpeed.GutterDepenMaxUpDeltaCmS"),
+    90.0f,
+    TEXT("Maximum upward velocity added by one soft gutter depenetration velocity correction, in cm/s. <= 0 disables the clamp."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedNearGutterVerticalDepenMaxNormalKillCmS(
+    TEXT("p.IAmSpeed.NearGutterVerticalDepenMaxNormalKillCmS"),
+    800.0f,
+    TEXT("Maximum inward normal velocity removed in one penetration frame for near-vertical gutter seam contacts, in cm/s. <= 0 uses the regular soft wall clamp."));
+
 namespace
 {
     FVector IAmSpeedFaceLocalNormal(int32 FaceIndex)
@@ -1056,6 +1071,11 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         bGroundHitFromSweep &&
         FMath::Abs(vN) > 300.f;
 
+    const bool bIsNearGutterVerticalWall =
+        UpDot >= -0.10f &&
+        UpDot < 0.10f &&
+        (bHasValidSupportPlane || (Hit.bStartPenetrating && Hit.PenetrationDepth > 0.f));
+
     const bool bIsNearHorizontalEdge =
         UpDot >= 0.85f && PreviewSupportContacts >= 2;
 
@@ -1071,6 +1091,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         bIsInclinedWall ||
         bIsLowSlopePenetratingWall ||
         bIsLowSlopeGutterImpact ||
+        bIsNearGutterVerticalWall ||
         (bIsGutterLikeWall && bHasValidSupportPlane) ||
         (bIsGutterLikeWall && bIsPenetratingStaticWall);
 
@@ -1127,6 +1148,10 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         SoftWallMassScale = FMath::Lerp(0.55f, 0.25f, GutterT);
     }
     else if (bIsLowSlopePenetratingWall || bIsLowSlopeGutterImpact)
+    {
+        SoftWallMassScale = 0.25f;
+    }
+    else if (bIsNearGutterVerticalWall)
     {
         SoftWallMassScale = 0.25f;
     }
@@ -1212,7 +1237,68 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             FVector V = ParentComponent->GetPhysVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
             if (vIn < 0.f)
-                ParentComponent->AddPhysVelocity(-vIn * DepenDir);
+            {
+                FVector DepenVelocityDelta = -vIn * DepenDir;
+                float DepenScale = 1.f;
+
+                if (bSoftWall)
+                {
+                    float MaxNormalKill = CVarIAmSpeedSoftWallDepenMaxNormalKillCmS.GetValueOnAnyThread();
+                    const float NearVerticalMaxNormalKill =
+                        CVarIAmSpeedNearGutterVerticalDepenMaxNormalKillCmS.GetValueOnAnyThread();
+                    if (bIsNearGutterVerticalWall && NearVerticalMaxNormalKill > 0.f)
+                    {
+                        MaxNormalKill = FMath::Max(MaxNormalKill, NearVerticalMaxNormalKill);
+                    }
+
+                    if (MaxNormalKill > 0.f)
+                    {
+                        DepenScale = FMath::Min(DepenScale, MaxNormalKill / FMath::Max(-vIn, KINDA_SMALL_NUMBER));
+                    }
+
+                    const bool bCanInjectUpwardVelocity =
+                        bIsGutterLikeWall ||
+                        bIsInclinedWall ||
+                        bIsLowSlopePenetratingWall ||
+                        bIsLowSlopeGutterImpact ||
+                        bIsNearGutterVerticalWall ||
+                        bIsNearHorizontalEdge ||
+                        bIsSinglePointSteepSupportLikeWall;
+
+                    if (bCanInjectUpwardVelocity)
+                    {
+                        const float UpDelta = FVector::DotProduct(DepenVelocityDelta, FVector::UpVector);
+                        const float MaxUpDelta = CVarIAmSpeedGutterDepenMaxUpDeltaCmS.GetValueOnAnyThread();
+                        if (MaxUpDelta > 0.f && UpDelta > MaxUpDelta)
+                        {
+                            DepenScale = FMath::Min(DepenScale, MaxUpDelta / UpDelta);
+                        }
+                    }
+
+                    DepenVelocityDelta *= FMath::Clamp(DepenScale, 0.f, 1.f);
+                }
+
+                ParentComponent->AddPhysVelocity(DepenVelocityDelta);
+
+#if !UE_BUILD_SHIPPING
+                if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+                    (FMath::Abs(vIn) > 50.f || DepenScale < 0.999f))
+                {
+                    UE_LOG(BoxSubBodyLog, Warning,
+                        TEXT("[CCDBoxWallDepenVelocity] Frame=%d vIn=%.2f DepenDir=%s DeltaV=%s Scale=%.3f SoftWall=%d GutterLike=%d UpDot=%.3f Depth=%.3f Kinematic=%s"),
+                        ParentComponent->NumFrame(),
+                        vIn,
+                        *DepenDir.ToString(),
+                        *DepenVelocityDelta.ToString(),
+                        DepenScale,
+                        bSoftWall ? 1 : 0,
+                        bIsGutterLikeWall ? 1 : 0,
+                        UpDot,
+                        Hit.PenetrationDepth,
+                        *Kinematics.ToString());
+                }
+#endif
+            }
         }
     }
 }
