@@ -24,6 +24,143 @@ static TAutoConsoleVariable<float> CVarIAmSpeedRoofSlideSupportMinUpDot(
     0.35f,
     TEXT("Minimum world-up dot for upside-down roof contacts to be resolved as sliding gutter support."));
 
+static TAutoConsoleVariable<float> CVarIAmSpeedEdgeLatchFaceReleaseDot(
+    TEXT("p.IAmSpeed.EdgeLatchFaceReleaseDot"),
+    0.995f,
+    TEXT("Abs dot between hitbox up and support normal above which a latched edge is released so face support can take over."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedFaceSupportContactEpsilonCm(
+    TEXT("p.IAmSpeed.FaceSupportContactEpsilonCm"),
+    3.0f,
+    TEXT("Contact manifold tolerance used when the hitbox is nearly face-aligned with a support plane."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedVertexSupportContactTolCm(
+    TEXT("p.IAmSpeed.VertexSupportContactTolCm"),
+    0.35f,
+    TEXT("Positive support-plane tolerance kept for single-vertex hitbox contacts during auto-recover."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedVertexSupportSeparatingSpeedCmS(
+    TEXT("p.IAmSpeed.VertexSupportSeparatingSpeedCmS"),
+    3.0f,
+    TEXT("Separating speed tolerated for single-vertex hitbox contacts during auto-recover, in cm/s."));
+
+namespace
+{
+    FVector IAmSpeedFaceLocalNormal(int32 FaceIndex)
+    {
+        switch (FaceIndex)
+        {
+        case 0: return FVector(+1, 0, 0);
+        case 1: return FVector(-1, 0, 0);
+        case 2: return FVector(0, +1, 0);
+        case 3: return FVector(0, -1, 0);
+        case 4: return FVector(0, 0, +1);
+        case 5: return FVector(0, 0, -1);
+        default: return FVector::ZeroVector;
+        }
+    }
+
+    void IAmSpeedFaceLocalVertices(int32 FaceIndex, const FVector& Ext, FVector Out[4])
+    {
+        const float Ex = Ext.X;
+        const float Ey = Ext.Y;
+        const float Ez = Ext.Z;
+
+        switch (FaceIndex)
+        {
+        case 0:
+            Out[0] = FVector(+Ex, -Ey, -Ez);
+            Out[1] = FVector(+Ex, -Ey, +Ez);
+            Out[2] = FVector(+Ex, +Ey, +Ez);
+            Out[3] = FVector(+Ex, +Ey, -Ez);
+            break;
+        case 1:
+            Out[0] = FVector(-Ex, -Ey, -Ez);
+            Out[1] = FVector(-Ex, +Ey, -Ez);
+            Out[2] = FVector(-Ex, +Ey, +Ez);
+            Out[3] = FVector(-Ex, -Ey, +Ez);
+            break;
+        case 2:
+            Out[0] = FVector(-Ex, +Ey, -Ez);
+            Out[1] = FVector(-Ex, +Ey, +Ez);
+            Out[2] = FVector(+Ex, +Ey, +Ez);
+            Out[3] = FVector(+Ex, +Ey, -Ez);
+            break;
+        case 3:
+            Out[0] = FVector(-Ex, -Ey, -Ez);
+            Out[1] = FVector(+Ex, -Ey, -Ez);
+            Out[2] = FVector(+Ex, -Ey, +Ez);
+            Out[3] = FVector(-Ex, -Ey, +Ez);
+            break;
+        case 4:
+            Out[0] = FVector(-Ex, -Ey, +Ez);
+            Out[1] = FVector(+Ex, -Ey, +Ez);
+            Out[2] = FVector(+Ex, +Ey, +Ez);
+            Out[3] = FVector(-Ex, +Ey, +Ez);
+            break;
+        case 5:
+            Out[0] = FVector(-Ex, -Ey, -Ez);
+            Out[1] = FVector(-Ex, +Ey, -Ez);
+            Out[2] = FVector(+Ex, +Ey, -Ez);
+            Out[3] = FVector(+Ex, -Ey, -Ez);
+            break;
+        default:
+            Out[0] = Out[1] = Out[2] = Out[3] = FVector::ZeroVector;
+            break;
+        }
+    }
+
+    float IAmSpeedFindBestSupportFaceAlignment(const FVector& N, const FQuat& RotWS, int32* OutFaceIndex = nullptr)
+    {
+        int32 BestFaceIndex = INDEX_NONE;
+        float BestOpposingDot = FLT_MAX;
+
+        for (int32 FaceIndex = 0; FaceIndex < 6; ++FaceIndex)
+        {
+            const FVector FaceNormalWS = RotWS.RotateVector(IAmSpeedFaceLocalNormal(FaceIndex)).GetSafeNormal();
+            const float Dot = FVector::DotProduct(FaceNormalWS, N);
+            if (Dot < BestOpposingDot)
+            {
+                BestOpposingDot = Dot;
+                BestFaceIndex = FaceIndex;
+            }
+        }
+
+        if (OutFaceIndex)
+        {
+            *OutFaceIndex = BestFaceIndex;
+        }
+
+        return BestFaceIndex != INDEX_NONE ? FMath::Abs(BestOpposingDot) : 0.0f;
+    }
+
+    bool IAmSpeedBuildSupportFaceManifoldFromNormal(
+        const FVector& N,
+        const FVector& CenterWS,
+        const FQuat& RotWS,
+        const FVector& Ext,
+        TArray<FVector>& OutPts,
+        float MinFaceAlignmentAbs)
+    {
+        int32 FaceIndex = INDEX_NONE;
+        const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, RotWS, &FaceIndex);
+        if (FaceIndex == INDEX_NONE || FaceAlignmentAbs < MinFaceAlignmentAbs)
+        {
+            return false;
+        }
+
+        FVector FaceVertsLS[4];
+        IAmSpeedFaceLocalVertices(FaceIndex, Ext, FaceVertsLS);
+
+        OutPts.Reset(4);
+        for (int32 Index = 0; Index < 4; ++Index)
+        {
+            OutPts.Add(CenterWS + RotWS.RotateVector(FaceVertsLS[Index]));
+        }
+        return true;
+    }
+}
+
 UBoxSubBody::UBoxSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
 #if WITH_EDITOR
@@ -1106,9 +1243,39 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const FVector CenterWS = Kinematics.Location;
     const FQuat BoxRotWS = Kinematics.Rotation;
     const FVector Ext = BoxExtent;
+    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, BoxRotWS);
+    const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
+
+    if (bNearlyFaceAligned && bEdgeSupportLatched)
+    {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Log,
+                TEXT("[ARContact.EdgeLatchRelease] Frame=%d Source=ResolveDirect FaceDot=%.5f PrevLS=%d LatchedLS=%d"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                FaceAlignmentAbs,
+                PrevGroundContactsLS.Num(),
+                LatchedEdgeContactsLS.Num());
+        }
+#endif
+        bEdgeSupportLatched = false;
+        LatchedEdgeContactsLS.Reset();
+        PrevGroundContactsLS.Reset();
+    }
 
     TArray<FVector> ContactPtsWS;
-    BuildSupportManifoldFromNormal(N, CenterWS, BoxRotWS, Ext, ContactPtsWS, /*eps*/0.5f);
+    const float SupportContactEps = bNearlyFaceAligned
+        ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        : 0.5f;
+    BuildSupportManifoldFromNormal(N, CenterWS, BoxRotWS, Ext, ContactPtsWS, SupportContactEps);
+    if (bNearlyFaceAligned)
+    {
+        IAmSpeedBuildSupportFaceManifoldFromNormal(N, CenterWS, BoxRotWS, Ext, ContactPtsWS, FaceReleaseDot);
+    }
     /*UE_LOG(BoxSubBodyLog, Log,
         TEXT("[EdgeLatchState] frame=%d latched=%d latchedLS=%d latchFrame=%d"),
         ParentComponent->NumFrame(),
@@ -1149,6 +1316,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const float UpDot = FVector::DotProduct(N, FVector::UpVector);
     const bool bFreshTwoPointEdgeSupport =
         ContactPtsWS.Num() == 2 &&
+        !bNearlyFaceAligned &&
         !bUseLatchedEdge &&
         !(bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2) &&
         PrevGroundContactsLS.Num() != 2;
@@ -1268,7 +1436,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 // #endif
 
     // if we end up with 2 points, renew too (even without override)
-    if (CurrentGroundContactsWS.Num() == 2 && bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2)
+    if (!bNearlyFaceAligned && CurrentGroundContactsWS.Num() == 2 && bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2)
     {
         EdgeSupportLatchFrame = ParentComponent->NumFrame();
     }
@@ -1565,8 +1733,31 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     // This is key: it keeps 2+ points, so you don't pivot on the gutter edge.
     const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
     TArray<FVector> SupportPts;
+    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
+    const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
 
-    if (bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2)
+    if (bNearlyFaceAligned && bEdgeSupportLatched)
+    {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Log,
+                TEXT("[ARContact.EdgeLatchRelease] Frame=%d Source=PersistentConstraint FaceDot=%.5f PrevLS=%d LatchedLS=%d"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                FaceAlignmentAbs,
+                PrevGroundContactsLS.Num(),
+                LatchedEdgeContactsLS.Num());
+        }
+#endif
+        bEdgeSupportLatched = false;
+        LatchedEdgeContactsLS.Reset();
+        PrevGroundContactsLS.Reset();
+    }
+
+    if (!bNearlyFaceAligned && bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2)
     {
         // Force edge support from latched memory
         SupportPts.Add(
@@ -1578,9 +1769,16 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     }
     else
     {
+        const float SupportContactEps = bNearlyFaceAligned
+            ? FMath::Max(0.75f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+            : 0.75f;
         BuildSupportManifoldFromNormal(
-            N, K.Location, K.Rotation, BoxExtent, SupportPts, 0.75f
+            N, K.Location, K.Rotation, BoxExtent, SupportPts, SupportContactEps
         );
+        if (bNearlyFaceAligned)
+        {
+            IAmSpeedBuildSupportFaceManifoldFromNormal(N, K.Location, K.Rotation, BoxExtent, SupportPts, FaceReleaseDot);
+        }
     }
 
     if (SupportPts.Num() < 2)
@@ -1786,6 +1984,33 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
 
     const FVector N = GroundPlaneN.GetSafeNormal();
     const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
+    const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
+    const bool bVertexRecoverCandidate =
+        CurrentGroundContactsWS.Num() == 1 &&
+        PrevGroundContactsLS.Num() <= 1 &&
+        FaceAlignmentAbs < FaceReleaseDot;
+
+    if (bNearlyFaceAligned && bEdgeSupportLatched)
+    {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Log,
+                TEXT("[ARContact.EdgeLatchRelease] Frame=%d Source=PersistentUpdate FaceDot=%.5f PrevLS=%d LatchedLS=%d"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                FaceAlignmentAbs,
+                PrevGroundContactsLS.Num(),
+                LatchedEdgeContactsLS.Num());
+        }
+#endif
+        bEdgeSupportLatched = false;
+        LatchedEdgeContactsLS.Reset();
+        PrevGroundContactsLS.Reset();
+    }
 
     TArray<FVector> Verts;
     GetBoxVertices(K.Location, K.Rotation, BoxExtent, Verts);
@@ -1811,9 +2036,12 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     constexpr float PenTolSupport = 1.0f;
     constexpr float PenTolReject = 2.5f;
     constexpr float SepVelTol = 3.0f;
+    const float ActiveContactTol = bVertexRecoverCandidate
+        ? FMath::Max(ContactTol, CVarIAmSpeedVertexSupportContactTolCm.GetValueOnAnyThread())
+        : ContactTol;
 
     const bool bWithinSupportBand =
-        (minDist <= ContactTol) &&
+        (minDist <= ActiveContactTol) &&
         (minDist >= -PenTolSupport);
 
     const bool bNotExploding =
@@ -1829,13 +2057,16 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
         UE_LOG(
             BoxSubBodyLog,
             Log,
-            TEXT("[ARContact.PersistentCheck] Frame=%d Current=%d PrevLS=%d FreshEdge=%d EdgeRecoverActive=%d minDist=%.3f worstVN=%.2f WithinBand=%d StableMotion=%d NotExploding=%d PlaneN=%s"),
+            TEXT("[ARContact.PersistentCheck] Frame=%d Current=%d PrevLS=%d FreshEdge=%d EdgeRecoverActive=%d VertexCandidate=%d FaceDot=%.5f minDist=%.3f ContactTol=%.3f worstVN=%.2f WithinBand=%d StableMotion=%d NotExploding=%d PlaneN=%s"),
             ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
             CurrentGroundContactsWS.Num(),
             PrevGroundContactsLS.Num(),
             bFreshEdgeRecoverCandidate ? 1 : 0,
             bEdgeRecoverActive ? 1 : 0,
+            bVertexRecoverCandidate ? 1 : 0,
+            FaceAlignmentAbs,
             minDist,
+            ActiveContactTol,
             worstVN,
             bWithinSupportBand ? 1 : 0,
             bStableNormalMotion ? 1 : 0,
@@ -1844,7 +2075,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     }
 #endif
 
-    if (bFreshEdgeRecoverCandidate && CurrentGroundContactsWS.Num() == 2)
+    if (!bNearlyFaceAligned && bFreshEdgeRecoverCandidate && CurrentGroundContactsWS.Num() == 2)
     {
         const FVector& P0 = CurrentGroundContactsWS[0];
         const FVector& P1 = CurrentGroundContactsWS[1];
@@ -1894,12 +2125,14 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
             UE_LOG(
                 BoxSubBodyLog,
                 Log,
-                TEXT("[ARContact.PersistentReject] Frame=%d Reason=BandOrMotion Current=%d PrevLS=%d FreshEdge=%d minDist=%.3f worstVN=%.2f WithinBand=%d StableMotion=%d NotExploding=%d"),
+                TEXT("[ARContact.PersistentReject] Frame=%d Reason=BandOrMotion Current=%d PrevLS=%d FreshEdge=%d VertexCandidate=%d minDist=%.3f ContactTol=%.3f worstVN=%.2f WithinBand=%d StableMotion=%d NotExploding=%d"),
                 ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
                 CurrentGroundContactsWS.Num(),
                 PrevGroundContactsLS.Num(),
                 bFreshEdgeRecoverCandidate ? 1 : 0,
+                bVertexRecoverCandidate ? 1 : 0,
                 minDist,
+                ActiveContactTol,
                 worstVN,
                 bWithinSupportBand ? 1 : 0,
                 bStableNormalMotion ? 1 : 0,
@@ -1911,8 +2144,17 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
         PrevGroundContactsLS.Reset();
         return;
     }
-    // If clearly separating, drop persistence
-    if (worstVN > 0.5f)
+    // If clearly separating, drop persistence. Near a face support we keep a
+    // wider hysteresis band. Vertex auto-recover also needs a small grace band,
+    // otherwise tiny upward drift erases the single point before it can fall to
+    // an edge or face.
+    const float VertexSeparatingReleaseSpeed =
+        FMath::Max(0.5f, CVarIAmSpeedVertexSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+    const float SeparatingReleaseSpeed =
+        bNearlyFaceAligned ? SepVelTol :
+        bVertexRecoverCandidate ? VertexSeparatingReleaseSpeed :
+        0.5f;
+    if (worstVN > SeparatingReleaseSpeed)
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
@@ -1920,16 +2162,21 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
             UE_LOG(
                 BoxSubBodyLog,
                 Log,
-                TEXT("[ARContact.PersistentReject] Frame=%d Reason=Separating worstVN=%.2f Current=%d PrevLS=%d"),
+                TEXT("[ARContact.PersistentReject] Frame=%d Reason=Separating worstVN=%.2f ReleaseSpeed=%.2f VertexCandidate=%d FaceDot=%.5f Current=%d PrevLS=%d"),
                 ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
                 worstVN,
+                SeparatingReleaseSpeed,
+                bVertexRecoverCandidate ? 1 : 0,
+                FaceAlignmentAbs,
                 CurrentGroundContactsWS.Num(),
                 PrevGroundContactsLS.Num());
         }
 #endif
         bHasGroundContact = false;
         bGroundPlaneValid = false;
+        bEdgeSupportLatched = false;
         CurrentGroundContactsWS.Reset();
+        LatchedEdgeContactsLS.Reset();
         PrevGroundContactsLS.Reset();
         return;
     }
@@ -1940,7 +2187,9 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     bHasGroundContact = true;
 
     CurrentGroundContactsWS.Reset();
-    constexpr float ContactEps = 0.5f;
+    const float ContactEps = bNearlyFaceAligned
+        ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        : 0.5f;
 
     for (const FVector& V : Verts)
     {
@@ -1948,11 +2197,21 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
         if (dist <= minDist + ContactEps)
             CurrentGroundContactsWS.Add(V);
     }
+    if (bNearlyFaceAligned)
+    {
+        IAmSpeedBuildSupportFaceManifoldFromNormal(
+            N,
+            K.Location,
+            K.Rotation,
+            BoxExtent,
+            CurrentGroundContactsWS,
+            FaceReleaseDot);
+    }
 
     // ------------------------------------------------------------
     // EDGE PERSISTENCE HYSTERESIS (local-space robust)
     // ------------------------------------------------------------
-    if (!bEdgeRecoverActive && PrevGroundContactsLS.Num() == 2 && CurrentGroundContactsWS.Num() == 1)
+    if (!bNearlyFaceAligned && !bEdgeRecoverActive && PrevGroundContactsLS.Num() == 2 && CurrentGroundContactsWS.Num() == 1)
     {
         const FVector& P = CurrentGroundContactsWS[0];
 
@@ -2000,7 +2259,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     }
 
     // Latch edge contacts if we have exactly 2 contacts this frame
-    if (!bEdgeRecoverActive && CurrentGroundContactsWS.Num() == 2)
+    if (!bNearlyFaceAligned && !bEdgeRecoverActive && CurrentGroundContactsWS.Num() == 2)
     {
         const FVector& P0 = CurrentGroundContactsWS[0];
         const FVector& P1 = CurrentGroundContactsWS[1];
@@ -2046,7 +2305,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
         // local around COM frame: (Pw - K.Location) in hitbox local
         PrevGroundContactsLS.Add(K.Rotation.UnrotateVector(Pw - K.Location));
     }
-    if (PrevGroundContactsLS.Num() == 2)
+    if (!bNearlyFaceAligned && PrevGroundContactsLS.Num() == 2)
     {
         bEdgeSupportLatched = true;
         EdgeSupportLatchFrame = ParentComponent->NumFrame();
