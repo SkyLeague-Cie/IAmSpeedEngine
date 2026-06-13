@@ -34,6 +34,26 @@ static TAutoConsoleVariable<float> CVarIAmSpeedFaceSupportContactEpsilonCm(
     3.0f,
     TEXT("Contact manifold tolerance used when the hitbox is nearly face-aligned with a support plane."));
 
+static TAutoConsoleVariable<float> CVarIAmSpeedFaceSupportPenetrationTolCm(
+    TEXT("p.IAmSpeed.FaceSupportPenetrationTolCm"),
+    3.0f,
+    TEXT("Penetration depth tolerated while preserving nearly face-aligned hitbox support contacts, in cm."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedFaceSupportSeparatingSpeedCmS(
+    TEXT("p.IAmSpeed.FaceSupportSeparatingSpeedCmS"),
+    12.0f,
+    TEXT("Separating normal speed tolerated while preserving nearly face-aligned hitbox support contacts, in cm/s."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedEdgeRecoverPenetrationTolCm(
+    TEXT("p.IAmSpeed.EdgeRecoverPenetrationTolCm"),
+    3.0f,
+    TEXT("Penetration depth tolerated while preserving a latched two-point hitbox edge for auto-recover, in cm."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS(
+    TEXT("p.IAmSpeed.EdgeRecoverSeparatingSpeedCmS"),
+    12.0f,
+    TEXT("Separating normal speed tolerated while preserving a latched two-point hitbox edge for auto-recover, in cm/s."));
+
 static TAutoConsoleVariable<float> CVarIAmSpeedVertexSupportContactTolCm(
     TEXT("p.IAmSpeed.VertexSupportContactTolCm"),
     0.35f,
@@ -59,8 +79,121 @@ static TAutoConsoleVariable<float> CVarIAmSpeedNearGutterVerticalDepenMaxNormalK
     800.0f,
     TEXT("Maximum inward normal velocity removed in one penetration frame for near-vertical gutter seam contacts, in cm/s. <= 0 uses the regular soft wall clamp."));
 
+static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideDamping(
+    TEXT("p.IAmSpeed.GutterSlideDamping"),
+    3.5f,
+    TEXT("Exponential tangential velocity damping applied while the main hitbox slides upside-down in gutters, in 1/s. <= 0 disables it."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideMaxDeltaCmS(
+    TEXT("p.IAmSpeed.GutterSlideMaxDeltaCmS"),
+    45.0f,
+    TEXT("Maximum tangential velocity removed per physics frame by gutter slide damping, in cm/s. <= 0 disables the per-frame cap."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideMinSpeedCmS(
+    TEXT("p.IAmSpeed.GutterSlideMinSpeedCmS"),
+    120.0f,
+    TEXT("Minimum tangential speed required before gutter slide damping is applied, in cm/s."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideMaxClimbSpeedCmS(
+    TEXT("p.IAmSpeed.GutterSlideMaxClimbSpeedCmS"),
+    850.0f,
+    TEXT("Maximum uphill speed allowed while the main hitbox slides upside-down along a gutter slope, in cm/s. <= 0 disables the clamp."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS(
+    TEXT("p.IAmSpeed.GutterSlideMaxClimbBrakeDeltaCmS"),
+    40.0f,
+    TEXT("Maximum uphill velocity removed per physics frame by the gutter climb-speed clamp, in cm/s."));
+
 namespace
 {
+    void IAmSpeedApplyGutterSlideDamping(
+        ISpeedComponent* ParentComponent,
+        const bool bIsMainSubBody,
+        const FVector& SupportNormal,
+        const float Dt,
+        const bool bEnableDamping,
+        const TCHAR* Source)
+    {
+        if (!ParentComponent || !bIsMainSubBody || !bEnableDamping || Dt <= 0.f)
+        {
+            return;
+        }
+
+        const float Damping = CVarIAmSpeedGutterSlideDamping.GetValueOnAnyThread();
+        const FVector N = SupportNormal.GetSafeNormal();
+        if (N.IsNearlyZero())
+        {
+            return;
+        }
+
+        const FVector V = ParentComponent->GetPhysVelocity();
+        const FVector VT = V - FVector::DotProduct(V, N) * N;
+        const float TangentSpeed = VT.Size();
+        const float MinSpeed = FMath::Max(0.f, CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread());
+        FVector DeltaV = FVector::ZeroVector;
+
+        if (Damping > 0.f && TangentSpeed > MinSpeed)
+        {
+            const float Alpha = FMath::Clamp(1.f - FMath::Exp(-Damping * Dt), 0.f, 1.f);
+            DeltaV = -Alpha * VT;
+
+            const float MaxDelta = CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread();
+            if (MaxDelta > 0.f)
+            {
+                DeltaV = DeltaV.GetClampedToMaxSize(MaxDelta);
+            }
+        }
+
+        FVector ClimbDeltaV = FVector::ZeroVector;
+        const float MaxClimbSpeed = CVarIAmSpeedGutterSlideMaxClimbSpeedCmS.GetValueOnAnyThread();
+        const float MaxClimbBrakeDelta =
+            FMath::Max(0.f, CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS.GetValueOnAnyThread());
+        const bool bGutterSlope = N.Z > 0.20f && N.Z < 0.98f;
+        float ClimbSpeed = 0.f;
+        if (MaxClimbSpeed > 0.f && MaxClimbBrakeDelta > 0.f && bGutterSlope)
+        {
+            const FVector Uphill = (FVector::UpVector - FVector::DotProduct(FVector::UpVector, N) * N).GetSafeNormal();
+            if (!Uphill.IsNearlyZero())
+            {
+                ClimbSpeed = FVector::DotProduct(V, Uphill);
+                if (ClimbSpeed > MaxClimbSpeed)
+                {
+                    const float BrakeDelta = FMath::Min(ClimbSpeed - MaxClimbSpeed, MaxClimbBrakeDelta);
+                    ClimbDeltaV = -BrakeDelta * Uphill;
+                    DeltaV += ClimbDeltaV;
+                }
+            }
+        }
+
+        if (DeltaV.IsNearlyZero())
+        {
+            return;
+        }
+
+        ParentComponent->AddPhysVelocity(DeltaV);
+
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(
+                BoxSubBodyLog,
+                Warning,
+                TEXT("[CCDBoxGutterSlideDamping] Frame=%d Source=%s N=%s TangentSpeed=%.2f ClimbSpeed=%.2f DeltaV=%s ClimbDeltaV=%s Damping=%.2f MaxDelta=%.2f MaxClimb=%.2f Velocity=%s"),
+                ParentComponent->NumFrame(),
+                Source,
+                *N.ToString(),
+                TangentSpeed,
+                ClimbSpeed,
+                *DeltaV.ToString(),
+                *ClimbDeltaV.ToString(),
+                Damping,
+                CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(),
+                MaxClimbSpeed,
+                *V.ToString());
+        }
+#endif
+    }
+
     FVector IAmSpeedFaceLocalNormal(int32 FaceIndex)
     {
         switch (FaceIndex)
@@ -760,6 +893,14 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     if (vN_atImpact >= VN_EPS)
     {
+        IAmSpeedApplyGutterSlideDamping(
+            ParentComponent,
+            IsMainSubBody(),
+            EffectiveN,
+            Dt,
+            bUpsideDownRoofSlideCandidate,
+            TEXT("SeparatingRoofSlide"));
+
         UpdatePersistentGroundContact(Dt);
 
         if (HasPersistentGroundContact() && bIsSupportingContact && !bGroundHitFromSweep)
@@ -778,6 +919,44 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     else
     {
         ResolveWallOrGutter(Dt, EffectiveHit);
+
+        const bool bHasFacePersistentSupport = PrevGroundContactsLS.Num() >= 3;
+        const bool bSteepWallOrGutterHit = EffectiveUpDot < 0.5f;
+        const bool bPersistentPlaneDisagreesWithHit =
+            bGroundPlaneValid &&
+            FVector::DotProduct(GroundPlaneN.GetSafeNormal(), EffectiveN) < 0.5f;
+        const bool bUprightHitbox =
+            FVector::DotProduct(HitboxUpVector, FVector::UpVector) > 0.2f;
+
+        if (bHasFacePersistentSupport &&
+            bSteepWallOrGutterHit &&
+            bPersistentPlaneDisagreesWithHit &&
+            bUprightHitbox)
+        {
+#if !UE_BUILD_SHIPPING
+            if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+            {
+                UE_LOG(
+                    BoxSubBodyLog,
+                    Log,
+                    TEXT("[ARContact.PersistentInvalidate] Frame=%d Reason=UprightSteepWallVsFace PrevLS=%d HitUpDot=%.3f PlaneN=%s HitN=%s"),
+                    ParentComponent->NumFrame(),
+                    PrevGroundContactsLS.Num(),
+                    EffectiveUpDot,
+                    *GroundPlaneN.ToString(),
+                    *EffectiveN.ToString());
+            }
+#endif
+
+            bHasGroundContact = false;
+            bGroundPlaneValid = false;
+            bGroundContactStable = false;
+            StableTime = 0.f;
+            CurrentGroundContactsWS.Reset();
+            PrevGroundContactsLS.Reset();
+            LatchedEdgeContactsLS.Reset();
+            bEdgeSupportLatched = false;
+        }
     }
 
     UpdatePersistentGroundContact(Dt);
@@ -1196,6 +1375,21 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     ApplyImpulse(J, P);
 
+    const bool bApplyWallGutterSlideDamping =
+        ParentComponent->IsUpsideDown() &&
+        (bIsGutterLikeWall ||
+            bIsInclinedWall ||
+            bIsLowSlopePenetratingWall ||
+            bIsLowSlopeGutterImpact ||
+            bIsNearGutterVerticalWall);
+    IAmSpeedApplyGutterSlideDamping(
+        ParentComponent,
+        IsMainSubBody(),
+        N,
+        Dt,
+        bApplyWallGutterSlideDamping,
+        TEXT("WallGutter"));
+
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
         (FMath::Abs(vN) > 5.f || Hit.bStartPenetrating))
@@ -1503,6 +1697,14 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         !(bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2);
 
     CurrentGroundContactsWS = ContactPtsWS;
+
+    IAmSpeedApplyGutterSlideDamping(
+        ParentComponent,
+        IsMainSubBody(),
+        N,
+        Dt,
+        bUpsideDownRoofSlideSupport,
+        TEXT("DirectRoofSlide"));
 
 // #if !UE_BUILD_SHIPPING
     /*UE_LOG(BoxSubBodyLog, Warning,
@@ -2073,6 +2275,9 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
+    const bool bEdgeRecoverCandidate =
+        !bNearlyFaceAligned &&
+        (PrevGroundContactsLS.Num() == 2 || bEdgeSupportLatched || bFreshEdgeRecoverCandidate);
     const bool bVertexRecoverCandidate =
         CurrentGroundContactsWS.Num() == 1 &&
         PrevGroundContactsLS.Num() <= 1 &&
@@ -2125,16 +2330,26 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     const float ActiveContactTol = bVertexRecoverCandidate
         ? FMath::Max(ContactTol, CVarIAmSpeedVertexSupportContactTolCm.GetValueOnAnyThread())
         : ContactTol;
+    const float ActivePenTolSupport = bNearlyFaceAligned
+        ? FMath::Max(PenTolSupport, CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread())
+        : bEdgeRecoverCandidate
+        ? FMath::Max(PenTolSupport, CVarIAmSpeedEdgeRecoverPenetrationTolCm.GetValueOnAnyThread())
+        : PenTolSupport;
+    const float ActiveSepVelTol = bNearlyFaceAligned
+        ? FMath::Max(SepVelTol, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread())
+        : bEdgeRecoverCandidate
+        ? FMath::Max(SepVelTol, CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS.GetValueOnAnyThread())
+        : SepVelTol;
 
     const bool bWithinSupportBand =
         (minDist <= ActiveContactTol) &&
-        (minDist >= -PenTolSupport);
+        (minDist >= -ActivePenTolSupport);
 
     const bool bNotExploding =
         (minDist >= -PenTolReject);
 
     const bool bStableNormalMotion =
-        (worstVN <= SepVelTol);
+        (worstVN <= ActiveSepVelTol);
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
@@ -2143,7 +2358,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
         UE_LOG(
             BoxSubBodyLog,
             Log,
-            TEXT("[ARContact.PersistentCheck] Frame=%d Current=%d PrevLS=%d FreshEdge=%d EdgeRecoverActive=%d VertexCandidate=%d FaceDot=%.5f minDist=%.3f ContactTol=%.3f worstVN=%.2f WithinBand=%d StableMotion=%d NotExploding=%d PlaneN=%s"),
+            TEXT("[ARContact.PersistentCheck] Frame=%d Current=%d PrevLS=%d FreshEdge=%d EdgeRecoverActive=%d VertexCandidate=%d FaceDot=%.5f minDist=%.3f ContactTol=%.3f PenTol=%.3f worstVN=%.2f SepVelTol=%.2f WithinBand=%d StableMotion=%d NotExploding=%d PlaneN=%s"),
             ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
             CurrentGroundContactsWS.Num(),
             PrevGroundContactsLS.Num(),
@@ -2153,7 +2368,9 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
             FaceAlignmentAbs,
             minDist,
             ActiveContactTol,
+            ActivePenTolSupport,
             worstVN,
+            ActiveSepVelTol,
             bWithinSupportBand ? 1 : 0,
             bStableNormalMotion ? 1 : 0,
             bNotExploding ? 1 : 0,
@@ -2211,7 +2428,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
             UE_LOG(
                 BoxSubBodyLog,
                 Log,
-                TEXT("[ARContact.PersistentReject] Frame=%d Reason=BandOrMotion Current=%d PrevLS=%d FreshEdge=%d VertexCandidate=%d minDist=%.3f ContactTol=%.3f worstVN=%.2f WithinBand=%d StableMotion=%d NotExploding=%d"),
+                TEXT("[ARContact.PersistentReject] Frame=%d Reason=BandOrMotion Current=%d PrevLS=%d FreshEdge=%d VertexCandidate=%d minDist=%.3f ContactTol=%.3f PenTol=%.3f worstVN=%.2f SepVelTol=%.2f WithinBand=%d StableMotion=%d NotExploding=%d"),
                 ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
                 CurrentGroundContactsWS.Num(),
                 PrevGroundContactsLS.Num(),
@@ -2219,7 +2436,9 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
                 bVertexRecoverCandidate ? 1 : 0,
                 minDist,
                 ActiveContactTol,
+                ActivePenTolSupport,
                 worstVN,
+                ActiveSepVelTol,
                 bWithinSupportBand ? 1 : 0,
                 bStableNormalMotion ? 1 : 0,
                 bNotExploding ? 1 : 0);
