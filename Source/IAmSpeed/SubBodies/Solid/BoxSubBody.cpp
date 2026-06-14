@@ -2456,8 +2456,9 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     const float VertexSeparatingReleaseSpeed =
         FMath::Max(0.5f, CVarIAmSpeedVertexSupportSeparatingSpeedCmS.GetValueOnAnyThread());
     const float SeparatingReleaseSpeed =
-        bNearlyFaceAligned ? SepVelTol :
+        bNearlyFaceAligned ? ActiveSepVelTol :
         bVertexRecoverCandidate ? VertexSeparatingReleaseSpeed :
+        bEdgeRecoverCandidate ? ActiveSepVelTol :
         0.5f;
     if (worstVN > SeparatingReleaseSpeed)
     {
