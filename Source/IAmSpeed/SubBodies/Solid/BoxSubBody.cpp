@@ -576,10 +576,6 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
                 }
             }
         }
-        else
-        {
-            ParentComponent->SetIsUpsideDown(false);
-        }
         return false;
     }
 
@@ -787,11 +783,6 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         bIsSupportingContact =
             bSupportManifoldForResolution &&
             (bIsDirectSupportNormal || EffectiveUpDot >= CandidateSupportUpDot || bUpsideDownRoofSlideCandidate);
-    }
-
-    if (FMath::Abs(HitboxUpVector.Z) > 0.75f)
-    {
-        ParentComponent->SetIsUpsideDown(true);
     }
 
     constexpr float VN_EPS = 1.0f;
