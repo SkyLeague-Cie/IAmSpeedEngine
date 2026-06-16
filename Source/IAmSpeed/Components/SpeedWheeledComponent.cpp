@@ -10,11 +10,24 @@
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 #include "ChaosVehicleWheel.h"
+#include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSteeringTimeConstant(
+	TEXT("p.SkyLeague.Steering.TimeConstant"),
+	0.09f,
+	TEXT("Time constant, in seconds, used to blend toward the steering target yaw velocity. Higher values make steering less twitchy."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSteeringYawScale(
+	TEXT("p.SkyLeague.Steering.YawScale"),
+	0.85f,
+	TEXT("Scale applied to the target steering yaw velocity. Lower values increase the effective turn time without changing the turn radius curve."),
+	ECVF_Default);
 
 const FName USpeedWheeledComponent::HitboxName = TEXT("Hitbox");
 const TArray<FName> USpeedWheeledComponent::WheelNames = { TEXT("Wheel_0"), TEXT("Wheel_1"), TEXT("Wheel_2"), TEXT("Wheel_3")};
@@ -1883,7 +1896,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	// Desired turning radius
 	// -------------------------------------
-	const float speed = GetPhysVelocity().Size();
+	const float speed = FMath::Abs(forwardVelocity);
 	const float desiredRadius = ComputeSteeringRadius(forwardVelocity, FMath::Abs(steeringInput));
 
 	// Wall radius boost (+20% on full wall)
@@ -1892,7 +1905,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	const float desiredRadiusWall = desiredRadius * radiusBoost;
 
 	// Target yaw-rate (physics)
-	const float absTargetYawRate = speed / desiredRadiusWall; // rad/s
+	const float SteeringYawScale = FMath::Clamp(CVarSkyLeagueSteeringYawScale.GetValueOnAnyThread(), 0.1f, 2.0f);
+	const float absTargetYawRate = SteeringYawScale * speed / desiredRadiusWall; // rad/s
 	const float targetYaw = FMath::Sign(steeringInput) * FMath::Sign(forwardVelocity) * absTargetYawRate;
 	FVector TargetAngularVelocity = targetYaw * UpVector;
 
@@ -1991,7 +2005,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	FVector newAccel = GetPhysAcceleration();
 	FVector deltaAccel = newAccel - oldAccel;
 	WheeledPhysicsState.AllowedSideVelocity += deltaAccel * delta * steerGain;
-	const float SteeringTimeConstant = 0.05f; // seconds
+	const float SteeringTimeConstant = FMath::Clamp(CVarSkyLeagueSteeringTimeConstant.GetValueOnAnyThread(), 0.005f, 0.25f);
 	const float alpha = 1.f - FMath::Exp(-delta / SteeringTimeConstant);
 	WheeledPhysicsState.AllowedAngularVelocity = FMath::Lerp(WheeledPhysicsState.AllowedAngularVelocity, TargetAngularVelocity, alpha);
 
