@@ -1,5 +1,54 @@
 #include "ISpeedWheeledComponent.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "HAL/IConsoleManager.h"
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactNormalVelTimeConstant(
+	TEXT("p.IAmSpeed.WheelContact.NormalVelTimeConstant"),
+	0.0075f,
+	TEXT("Time constant used by the grouped wheel contact solver to reduce inward normal velocity. Lower values absorb contact velocity faster."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactSoftness(
+	TEXT("p.IAmSpeed.WheelContact.Softness"),
+	0.0008f,
+	TEXT("Softness added to the effective inverse mass denominator in the grouped wheel contact solver."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactNormalVelocityDeadzone(
+	TEXT("p.IAmSpeed.WheelContact.NormalVelocityDeadzone"),
+	0.001f,
+	TEXT("Normal contact velocity deadzone in cm/s for the grouped wheel contact solver."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactImpulseDeadzone(
+	TEXT("p.IAmSpeed.WheelContact.ImpulseDeadzone"),
+	0.5f,
+	TEXT("Minimum wheel contact impulse magnitude applied by the grouped wheel contact solver."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactLockedSeparatingDamping(
+	TEXT("p.IAmSpeed.WheelContact.LockedSeparatingDamping"),
+	0,
+	TEXT("When non-zero, damps separating normal velocity after a wheel has passed its first contact rebound."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant(
+	TEXT("p.IAmSpeed.WheelContact.LockedSeparatingNormalVelTimeConstant"),
+	0.0075f,
+	TEXT("Time constant used to damp separating normal wheel contact velocity after contact lock."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity(
+	TEXT("p.IAmSpeed.WheelContact.LockedSeparatingMaxNormalVelocity"),
+	100000.0f,
+	TEXT("Maximum separating normal velocity, in cm/s, damped after wheel contact lock."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactDebug(
+	TEXT("p.IAmSpeed.WheelContact.Debug"),
+	0,
+	TEXT("Logs grouped wheel contact solver impulses when non-zero."),
+	ECVF_Default);
 
 void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delta)
 {
@@ -8,16 +57,20 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 	const float dt = FMath::Max(delta, 1e-6f);
 
-	constexpr float NormalVelTimeConstant = 0.0075f; // sec (greater values => car falls faster into the ground) -> be careful with greater values than 0.075, car can be blocked in convex surfaces
+	const float NormalVelTimeConstant = FMath::Max(CVarIAmSpeedWheelContactNormalVelTimeConstant.GetValueOnAnyThread(), 1e-6f);
 	const float gamma = 1.f - FMath::Exp(-dt / NormalVelTimeConstant);
+	const float LockedSeparatingNormalVelTimeConstant = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant.GetValueOnAnyThread(), 1e-6f);
+	const float LockedSeparatingGamma = 1.f - FMath::Exp(-dt / LockedSeparatingNormalVelTimeConstant);
+	const float LockedSeparatingMaxNormalVelocity = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity.GetValueOnAnyThread(), 0.0f);
+	const bool bLockedSeparatingDampingEnabled = CVarIAmSpeedWheelContactLockedSeparatingDamping.GetValueOnAnyThread() != 0;
 
 	// --- Deadzones ---
-	constexpr float VNDeadzone = 0.001f;        // cm/s : ignore micro-jitter
-	constexpr float JDeadzone = 0.5f;        // impulse units (same as your AddImpulseAtLocation expects)
+	const float VNDeadzone = FMath::Max(CVarIAmSpeedWheelContactNormalVelocityDeadzone.GetValueOnAnyThread(), 0.0f);
+	const float JDeadzone = FMath::Max(CVarIAmSpeedWheelContactImpulseDeadzone.GetValueOnAnyThread(), 0.0f);
 	// (smaller are those, more network stability)
 
 	// softening (CFM-ish)
-	constexpr float Softness = 0.0008f;
+	const float Softness = FMath::Max(CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread(), 0.0f);
 
 	// Snapshot
 	const FVector V0 = GetPhysVelocity();
@@ -32,23 +85,53 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 		const FVector vContact = V0 + FVector::CrossProduct(W0, C.r);
 		const float vN = FVector::DotProduct(vContact, N);
 
-		// only if meaningfully moving into the surface
-		if (vN >= -VNDeadzone)
+		const bool bMovingIntoSurface = vN < -VNDeadzone;
+		const bool bDampSeparating =
+			bLockedSeparatingDampingEnabled &&
+			C.bVelocityLocked &&
+			vN > VNDeadzone;
+
+		if (!bMovingIntoSurface && !bDampSeparating)
 			continue;
 
 		const float denom = C.InvMassEff + Softness;
 		if (denom <= SMALL_NUMBER) continue;
 
-		float jn = -gamma * vN / denom;
+		const float NormalVelocityToSolve = bMovingIntoSurface
+			? -vN
+			: FMath::Min(vN, LockedSeparatingMaxNormalVelocity);
+		const float SolverGamma = bMovingIntoSurface ? gamma : LockedSeparatingGamma;
+		float jn = SolverGamma * NormalVelocityToSolve / denom;
 		if (jn <= 0.f) continue;
 
-		const FVector Impulse = jn * N;
+		const FVector Impulse = (bMovingIntoSurface ? jn : -jn) * N;
 
 		// ignore tiny impulses (stops “buzzing” at rest)
 		if (Impulse.SizeSquared() < (JDeadzone * JDeadzone))
 			continue;
 
 		AddPhysImpulseAtPoint(Impulse, C.WorldPos);
+
+#if !(UE_BUILD_SHIPPING)
+		if (CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
+		{
+			UE_LOG(LogTemp, Log,
+				TEXT("[WheelContactSolver] Mode=%s dt=%.5f Tau=%.5f Gamma=%.4f vN=%.3f SolvedVN=%.3f SpringDisp=%.3f Locked=%d InvMassEff=%.6f Softness=%.6f Impulse=%s Pos=%s Normal=%s"),
+				bMovingIntoSurface ? TEXT("Inward") : TEXT("Separating"),
+				dt,
+				bMovingIntoSurface ? NormalVelTimeConstant : LockedSeparatingNormalVelTimeConstant,
+				SolverGamma,
+				vN,
+				NormalVelocityToSolve,
+				C.SpringDisplacement,
+				C.bVelocityLocked ? 1 : 0,
+				C.InvMassEff,
+				Softness,
+				*Impulse.ToString(),
+				*C.WorldPos.ToString(),
+				*N.ToString());
+		}
+#endif
 	}
 
 	PendingWheelGroundContacts.Reset();

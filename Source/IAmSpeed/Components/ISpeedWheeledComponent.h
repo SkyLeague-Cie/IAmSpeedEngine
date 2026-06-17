@@ -14,6 +14,8 @@ struct SWheelGroundContact
 	FVector r = FVector::ZeroVector;              // WorldPos - COM
 	float   vN = 0.f;             // normal velocity at contact
 	float   InvMassEff = 0.f;     // inverse effective mass
+	float   SpringDisplacement = 0.f; // positive when compressed, negative when over-extended
+	bool    bVelocityLocked = false; // true after the wheel has gone through its first contact rebound
 };
 
 /*

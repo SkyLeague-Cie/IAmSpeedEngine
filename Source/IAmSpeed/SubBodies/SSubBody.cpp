@@ -3,6 +3,9 @@
 
 #include "SSubBody.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
 
 USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):

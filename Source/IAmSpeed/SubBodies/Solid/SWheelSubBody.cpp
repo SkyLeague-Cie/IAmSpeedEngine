@@ -7,12 +7,99 @@
 #include "Configs/WheelSubBodyConfig.h"
 #include "ChaosVehicleWheel.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY(WheelSubBodyLog);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionCompressionDampingScale(
+	TEXT("p.SkyLeague.Suspension.CompressionDampingScale"),
+	1.0f,
+	TEXT("Scale applied to suspension compression damping."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionReboundDampingScale(
+	TEXT("p.SkyLeague.Suspension.ReboundDampingScale"),
+	1.0f,
+	TEXT("Scale applied to suspension rebound damping."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionClampPositiveForce(
+	TEXT("p.SkyLeague.Suspension.ClampPositiveForce"),
+	0,
+	TEXT("When non-zero, suspension force is clamped to zero instead of pulling the vehicle toward the surface."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionRestingForceScale(
+	TEXT("p.SkyLeague.Suspension.RestingForceScale"),
+	0.0f,
+	TEXT("Scale applied to the suspension resting force before adding spring displacement and damping. 0 restores the old model."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionClampNegativeDisplacement(
+	TEXT("p.SkyLeague.Suspension.ClampNegativeDisplacement"),
+	0,
+	TEXT("When non-zero, over-extended suspension displacement is clamped to zero for force computation."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionRestingForceRequiresCompression(
+	TEXT("p.SkyLeague.Suspension.RestingForceRequiresCompression"),
+	0,
+	TEXT("When non-zero, suspension resting force is applied only after the spring has positive compression."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionSkipOverextendedWheelContact(
+	TEXT("p.SkyLeague.Suspension.SkipOverextendedWheelContact"),
+	0,
+	TEXT("When non-zero, wheel contact velocity solving is skipped while suspension displacement is negative."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinGroundDot(
+	TEXT("p.SkyLeague.Suspension.SkipOverextendedWheelContactMinGroundDot"),
+	0.95f,
+	TEXT("Minimum contact normal dot with world up required to skip over-extended wheel contact solving."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinCarUpDot(
+	TEXT("p.SkyLeague.Suspension.SkipOverextendedWheelContactMinCarUpDot"),
+	0.95f,
+	TEXT("Minimum car up dot with world up required to skip over-extended wheel contact solving."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardNormalVelocity(
+	TEXT("p.SkyLeague.Suspension.SkipOverextendedWheelContactMaxInwardNormalVelocity"),
+	40.0f,
+	TEXT("Maximum inward normal velocity, in cm/s, allowing over-extended wheel contact solving to be skipped. Faster impacts still use the wheel contact solver."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardBodyNormalVelocity(
+	TEXT("p.SkyLeague.Suspension.SkipOverextendedWheelContactMaxInwardBodyNormalVelocity"),
+	40.0f,
+	TEXT("Maximum chassis inward normal velocity, in cm/s, allowing over-extended wheel contact solving to be skipped. This keeps inclined landings from skipping while the car body is still falling fast."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionForceDebug(
+	TEXT("p.SkyLeague.Suspension.ForceDebug"),
+	0,
+	TEXT("Logs per-wheel suspension force components when non-zero."),
+	ECVF_Default);
 
 namespace
 {
     constexpr float MaxSuspensionForce = 5e6f;
+
+    struct FSuspensionForceDebugData
+    {
+        float RestingForce = 0.0f;
+        float StiffnessForce = 0.0f;
+        float DampingForce = 0.0f;
+        float UnclampedForce = 0.0f;
+        float QuantizedForce = 0.0f;
+        float SpringSpeed = 0.0f;
+        float Damping = 0.0f;
+        float ForceLastDisplacement = 0.0f;
+        float ForceCurrentDisplacement = 0.0f;
+        bool bCompression = false;
+    };
 
     float QuantizeSuspensionDisplacement(const float Displacement)
     {
@@ -36,15 +123,49 @@ namespace
         const Chaos::FSimpleSuspensionSim& Suspension,
         const float LastDisplacement,
         const float CurrentDisplacement,
-        const float Delta)
+        const float Delta,
+        FSuspensionForceDebugData* DebugData = nullptr)
     {
-        const float Damping = (CurrentDisplacement < LastDisplacement)
+        const bool bClampNegativeDisplacement = CVarSkyLeagueSuspensionClampNegativeDisplacement.GetValueOnAnyThread() != 0;
+        const float ForceLastDisplacement = bClampNegativeDisplacement ? FMath::Max(0.0f, LastDisplacement) : LastDisplacement;
+        const float ForceCurrentDisplacement = bClampNegativeDisplacement ? FMath::Max(0.0f, CurrentDisplacement) : CurrentDisplacement;
+        const bool bCompression = ForceCurrentDisplacement < ForceLastDisplacement;
+        const float DampingScale = bCompression
+            ? CVarSkyLeagueSuspensionCompressionDampingScale.GetValueOnAnyThread()
+            : CVarSkyLeagueSuspensionReboundDampingScale.GetValueOnAnyThread();
+        const float Damping = (bCompression
             ? Suspension.Setup().CompressionDamping
-            : Suspension.Setup().ReboundDamping;
-        const double SpringSpeed = (static_cast<double>(LastDisplacement) - static_cast<double>(CurrentDisplacement)) / static_cast<double>(Delta);
-        const double StiffnessForce = static_cast<double>(CurrentDisplacement) * static_cast<double>(Suspension.Setup().SpringRate);
+            : Suspension.Setup().ReboundDamping) * FMath::Max(0.0f, DampingScale);
+        const double SpringSpeed = (static_cast<double>(ForceLastDisplacement) - static_cast<double>(ForceCurrentDisplacement)) / static_cast<double>(Delta);
+        const bool bApplyRestingForce = CVarSkyLeagueSuspensionRestingForceRequiresCompression.GetValueOnAnyThread() == 0 ||
+            ForceCurrentDisplacement > 0.0f;
+        const double RestingForce = bApplyRestingForce
+            ? static_cast<double>(Suspension.Setup().RestingForce) *
+                static_cast<double>(FMath::Max(0.0f, CVarSkyLeagueSuspensionRestingForceScale.GetValueOnAnyThread()))
+            : 0.0;
+        const double StiffnessForce = static_cast<double>(ForceCurrentDisplacement) * static_cast<double>(Suspension.Setup().SpringRate);
         const double DampingForce = SpringSpeed * static_cast<double>(Damping);
-        return QuantizeSuspensionForce(static_cast<float>(StiffnessForce - DampingForce));
+        float Force = static_cast<float>(RestingForce + StiffnessForce - DampingForce);
+        const float UnclampedForce = Force;
+        if (CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0)
+        {
+            Force = FMath::Max(Force, 0.0f);
+        }
+        const float QuantizedForce = QuantizeSuspensionForce(Force);
+        if (DebugData)
+        {
+            DebugData->RestingForce = static_cast<float>(RestingForce);
+            DebugData->StiffnessForce = static_cast<float>(StiffnessForce);
+            DebugData->DampingForce = static_cast<float>(DampingForce);
+            DebugData->UnclampedForce = UnclampedForce;
+            DebugData->QuantizedForce = QuantizedForce;
+            DebugData->SpringSpeed = static_cast<float>(SpringSpeed);
+            DebugData->Damping = Damping;
+            DebugData->ForceLastDisplacement = ForceLastDisplacement;
+            DebugData->ForceCurrentDisplacement = ForceCurrentDisplacement;
+            DebugData->bCompression = bCompression;
+        }
+        return QuantizedForce;
     }
 
     void SetQuantizedSuspensionLength(Chaos::FSimpleSuspensionSim& Suspension, const float Length, const float WheelRadius)
@@ -181,6 +302,7 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     if (!World || !ParentComponent) return false;
 
     FVector CurrentPos = WorldPos();
+    const bool bWasOnGround = IsOnGround();
 
     FTransform ChassisTM(ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
     const FVector Up = ChassisTM.GetUnitAxis(EAxis::Z);
@@ -189,6 +311,7 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     FVector CarUpVector = ChassisTM.GetUnitAxis(EAxis::Z);
     FVector Start = WorldRestingPos + SuspensionMaxRaise() * CarUpVector;
     float NewSpringDisplacement = PredictNextDisplacement(delta); // if wheel will be in air next frame
+    SHitResult OldCurrentHit = CurrentHit;
     FVector End = CurrentPos + (NewSpringDisplacement - SpringDisplacement() - CollisionMargin()) * CarUpVector;
     // auto Sphere = SSphere(WorldPos(), Radius(), FVector::ZeroVector, FVector::ZeroVector);
     // Sphere.DrawDebug(GetWorld());
@@ -196,7 +319,6 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     FCollisionQueryParams Params(NAME_None, false);
     Params.bReturnFaceIndex = true;
     Params.bReturnPhysicalMaterial = true;
-    SHitResult OldCurrentHit = CurrentHit;
     bool ret = false;
     FHitResult UnrealHit;
     if (World->SweepSingleByChannel(
@@ -227,6 +349,29 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     }
     else
     {
+#if !(UE_BUILD_SHIPPING)
+        if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+        {
+            UE_LOG(WheelSubBodyLog, Log,
+                TEXT("[SuspensionSweep] Frame=%d Wheel=%d Result=Miss WasGrounded=%d Start=%s End=%s CurrentPos=%s Rest=%s CarUp=%s SpringDisp=%.3f NewDisp=%.3f MaxRaise=%.3f MaxDrop=%.3f Radius=%.3f PrevHitN=%s PrevHitLoc=%s Vel=%s"),
+                ParentComponent->NumFrame(),
+                Idx(),
+                bWasOnGround ? 1 : 0,
+                *Start.ToString(),
+                *End.ToString(),
+                *CurrentPos.ToString(),
+                *WorldRestingPos.ToString(),
+                *CarUpVector.ToString(),
+                SpringDisplacement(),
+                NewSpringDisplacement,
+                SuspensionMaxRaise(),
+                SuspensionMaxDrop(),
+                Radius(),
+                *OldCurrentHit.ImpactNormal.ToString(),
+                *OldCurrentHit.Location.ToString(),
+                *ParentComponent->GetPhysVelocity().ToString());
+        }
+#endif
         SetOnGround(false);
     }
     if (WheelComponent)
@@ -406,7 +551,8 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         const float SuspensionDelta = QuantizeSuspensionDelta(delta);
         PSuspension->Simulate(SuspensionDelta);
         const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
-        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement, CurrentDisplacement, SuspensionDelta);
+        FSuspensionForceDebugData ForceDebugData;
+        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement, CurrentDisplacement, SuspensionDelta, &ForceDebugData);
         PSuspension->SetLastDisplacement(CurrentDisplacement);
 
         float Dot = FVector::DotProduct(CurrentHit.ImpactNormal, FVector::UpVector);
@@ -422,7 +568,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
             UE_LOG(WheelSubBodyLog, Warning, TEXT("[%s] Suspension in frame %d is way too strong!!!! For Wheel num %d SuspensionForce = %f"),
                 *ParentComponent->GetRole(), ParentComponent->NumFrame(), WheelIndex, SuspensionForce);
         }*/
-        SuspensionForce = FMath::Clamp(SuspensionForce, -SuspensionMaxValue, SuspensionMaxValue);
+        SuspensionForce = FMath::Clamp(SuspensionForce, CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0 ? 0.0f : -SuspensionMaxValue, SuspensionMaxValue);
 
         // Special Actor case: if we do not hit the ground but an other actor, we reduce suspension force
         // to avoid wheel to stick to it too much and create unrealistic behavior.
@@ -435,18 +581,72 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         }
         SuspensionForce = QuantizeSuspensionForce(SuspensionForce);
 #if !(UE_BUILD_SHIPPING)
-        // UE_LOG(WheelSubBodyLog, Warning, TEXT("[%s] Suspension in frame %d for Wheel num %d SuspensionForce= %.2f N (Scale= %.2f, Dot= %.2f)"),
-        //    *ParentComponent->GetRole(), ParentComponent->NumFrame(), WheelIndex, SuspensionForce, SuspensionScale, Dot);
+        if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+        {
+            const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
+            UE_LOG(WheelSubBodyLog, Log,
+                TEXT("[SuspensionForce] Frame=%d Wheel=%d Dt=%.5f SuspDt=%.5f HitTOI=%.5f PenDepth=%.3f LastDisp=%.3f CurDisp=%.3f ForceLastDisp=%.3f ForceCurDisp=%.3f SpringLen=%.3f NewDesiredLen=%.3f ProjectedCompression=%.3f Rest=%.1f Stiff=%.1f Damp=%.1f SpringSpeed=%.3f Damping=%.1f Compress=%d Raw=%.1f Quant=%.1f Scale=%.3f Final=%.1f VelZ=%.3f HitN=%s HitLoc=%s"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                Idx(),
+                delta,
+                SuspensionDelta,
+                CurrentHit.TOI,
+                CurrentHit.PenetrationDepth,
+                LastDisplacement,
+                CurrentDisplacement,
+                ForceDebugData.ForceLastDisplacement,
+                ForceDebugData.ForceCurrentDisplacement,
+                SpringLength(),
+                NewDesiredLength,
+                ProjectedCompression,
+                ForceDebugData.RestingForce,
+                ForceDebugData.StiffnessForce,
+                ForceDebugData.DampingForce,
+                ForceDebugData.SpringSpeed,
+                ForceDebugData.Damping,
+                ForceDebugData.bCompression ? 1 : 0,
+                ForceDebugData.UnclampedForce,
+                ForceDebugData.QuantizedForce,
+                SuspensionScale,
+                SuspensionForce,
+                ParentVelocity.Z,
+                *CurrentHit.ImpactNormal.ToString(),
+                *CurrentHit.Location.ToString());
+        }
 #endif
     }
     else
     {
         SuspensionForce = 0.0;
 
-        SetQuantizedSuspensionLength(*PSuspension, ComputeNextAirLength(delta), Radius());
+        const float LastDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
+        const float NextAirLength = ComputeNextAirLength(delta);
+        SetQuantizedSuspensionLength(*PSuspension, NextAirLength, Radius());
         PWheel->SetWheelLoadForce(0.f);
         PSuspension->Simulate(QuantizeSuspensionDelta(delta));
         PSuspension->SetLastDisplacement(QuantizeSuspensionDisplacement(SpringDisplacement()));
+#if !(UE_BUILD_SHIPPING)
+        if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+        {
+            const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
+            const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
+            const FVector ParentUp = ParentComponent ? ParentComponent->GetPhysUpVector().GetSafeNormal() : FVector::UpVector;
+            UE_LOG(WheelSubBodyLog, Log,
+                TEXT("[SuspensionAir] Frame=%d Wheel=%d Dt=%.5f LastDisp=%.3f CurDisp=%.3f NextAirLength=%.3f SpringLen=%.3f WorldPos=%s CarUp=%s Vel=%s PrevHitN=%s PrevHitLoc=%s"),
+                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                Idx(),
+                delta,
+                LastDisplacement,
+                CurrentDisplacement,
+                NextAirLength,
+                SpringLength(),
+                *WorldPos().ToString(),
+                *ParentUp.ToString(),
+                *ParentVelocity.ToString(),
+                *CurrentHit.ImpactNormal.ToString(),
+                *CurrentHit.Location.ToString());
+        }
+#endif
     }
 }
 
@@ -503,13 +703,41 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
 {
     if (WheelComponent)
     {
-        FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
-
+        const FVector ContactNormal = CurrentHit.ImpactNormal.GetSafeNormal();
+        const float ContactGroundDot = FVector::DotProduct(ContactNormal, FVector::UpVector);
+        const float CarUpGroundDot = FVector::DotProduct(WheelComponent->GetPhysUpVector().GetSafeNormal(), FVector::UpVector);
         const FVector VelAtPoint = WheelComponent->GetPhysVelocityAtPoint(WorldPoint);
-        const float vN = FVector::DotProduct(VelAtPoint, N);
-
-        if (vN >= 0.f)
+        const float vN = FVector::DotProduct(VelAtPoint, ContactNormal);
+        const float BodyVN = FVector::DotProduct(WheelComponent->GetPhysVelocity(), ContactNormal);
+        const float SkipMaxInwardNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardNormalVelocity.GetValueOnAnyThread());
+        const float SkipMaxInwardBodyNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardBodyNormalVelocity.GetValueOnAnyThread());
+        if (CVarSkyLeagueSuspensionSkipOverextendedWheelContact.GetValueOnAnyThread() != 0 &&
+            QuantizeSuspensionDisplacement(SpringDisplacement()) < 0.0f &&
+            ContactGroundDot >= CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinGroundDot.GetValueOnAnyThread() &&
+            CarUpGroundDot >= CVarSkyLeagueSuspensionSkipOverextendedWheelContactMinCarUpDot.GetValueOnAnyThread() &&
+            vN >= -SkipMaxInwardNormalVelocity &&
+            BodyVN >= -SkipMaxInwardBodyNormalVelocity)
+        {
+#if !(UE_BUILD_SHIPPING)
+            if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+            {
+                UE_LOG(WheelSubBodyLog, Log,
+                    TEXT("[SuspensionForce] Frame=%d Wheel=%d SkipOverextendedWheelContact Disp=%.3f ContactGroundDot=%.3f CarUpGroundDot=%.3f vN=%.3f BodyVN=%.3f VelZ=%.3f"),
+                    WheelComponent->NumFrame(),
+                    Idx(),
+                    QuantizeSuspensionDisplacement(SpringDisplacement()),
+                    ContactGroundDot,
+                    CarUpGroundDot,
+                    vN,
+                    BodyVN,
+                    WheelComponent->GetPhysVelocity().Z);
+            }
+#endif
             return;
+        }
+
+        FVector N = ContactNormal;
+        UpdateContactVelocityLock();
 
         const FVector r = WorldPos() - WheelComponent->GetPhysCOM();
         const FMatrix InvI = WheelComponent->ComputeWorldInvInertiaTensor();
@@ -528,7 +756,9 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
             N,
             r,
             vN,
-            invMassEff
+            invMassEff,
+            QuantizeSuspensionDisplacement(SpringDisplacement()),
+            IsContactVelocityLocked()
             });
 	}
 }
@@ -742,6 +972,11 @@ float USWheelSubBody::GetSuspensionForce() const
     return SuspensionForce;
 }
 
+bool USWheelSubBody::IsContactVelocityLocked() const
+{
+    return bContactVelocityLocked;
+}
+
 bool USWheelSubBody::IsOnGround() const
 {
     return PWheel->InContact();
@@ -767,6 +1002,10 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
     {
         ApplyImpulse(FVector::UpVector, CurrentHit.ImpactPoint);
     }
+    else
+    {
+        ResetContactVelocityLock();
+    }
 
     PWheel->SetOnGround(on_ground);
 }
@@ -774,11 +1013,28 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
 void USWheelSubBody::SetIsJumping(const uint8 NbFrames)
 {
     bIsJumping = NbFrames;
+    if (NbFrames > 0)
+    {
+        ResetContactVelocityLock();
+    }
 }
 
 uint8 USWheelSubBody::IsJumping() const
 {
     return bIsJumping;
+}
+
+void USWheelSubBody::UpdateContactVelocityLock()
+{
+    if (QuantizeSuspensionDisplacement(SpringDisplacement()) >= 0.0f)
+    {
+        bContactVelocityLocked = true;
+    }
+}
+
+void USWheelSubBody::ResetContactVelocityLock()
+{
+    bContactVelocityLocked = false;
 }
 
 bool USWheelSubBody::IsSteeringEnabled() const

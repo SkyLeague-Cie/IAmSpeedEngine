@@ -83,6 +83,7 @@ public:
     float SuspensionSpringRateCm() const;
     float SuspensionDampingRatio() const;
     float GetSuspensionForce() const;
+    bool IsContactVelocityLocked() const;
     float GetSuspensionOffset() const;
     FVector GetHitContactNormal() const;
     void SetHitContactNormal(const FVector& ImpactNormal);
@@ -104,6 +105,8 @@ private:
     // Predicts spring displacement / wheel travel
     float PredictNextDisplacement(const float& Delta) const;
     float ComputeNextAirLength(const float& DeltaTime) const;
+    void UpdateContactVelocityLock();
+    void ResetContactVelocityLock();
 
 private:
     ISpeedWheeledComponent* WheelComponent = nullptr;
@@ -129,6 +132,7 @@ private:
     float Omega = 0.0f; // current angular velocity of the wheel (rad/s)
     float RollAngle = 0.0f; // current roll angle of the wheel (for rendering)
     bool bWasOnGroundPrevFrame = false;
+    bool bContactVelocityLocked = false;
 
     FVector ForwardAxis = FVector::ForwardVector;
     FVector RightAxis = FVector::RightVector;
