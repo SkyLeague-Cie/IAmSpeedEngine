@@ -85,11 +85,26 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 		const FVector vContact = V0 + FVector::CrossProduct(W0, C.r);
 		const float vN = FVector::DotProduct(vContact, N);
 
-		const bool bMovingIntoSurface = vN < -VNDeadzone;
+		const bool bUnlockedMovingIntoSurface = !C.bVelocityLocked && vN < -VNDeadzone;
+		const bool bMovingIntoSurface = C.bVelocityLocked && vN < -VNDeadzone;
 		const bool bDampSeparating =
 			bLockedSeparatingDampingEnabled &&
 			C.bVelocityLocked &&
 			vN > VNDeadzone;
+
+#if !(UE_BUILD_SHIPPING)
+		if (bUnlockedMovingIntoSurface && CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
+		{
+			UE_LOG(LogTemp, Log,
+				TEXT("[WheelContactSolver] Mode=UnlockedInwardSkipped dt=%.5f vN=%.3f SpringDisp=%.3f Locked=%d Pos=%s Normal=%s"),
+				dt,
+				vN,
+				C.SpringDisplacement,
+				C.bVelocityLocked ? 1 : 0,
+				*C.WorldPos.ToString(),
+				*N.ToString());
+		}
+#endif
 
 		if (!bMovingIntoSurface && !bDampSeparating)
 			continue;
