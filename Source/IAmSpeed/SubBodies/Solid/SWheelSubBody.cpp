@@ -23,6 +23,12 @@ static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionReboundDampingScale(
 	TEXT("Scale applied to suspension rebound damping."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionPreRestCompressionDampingScale(
+	TEXT("p.SkyLeague.Suspension.PreRestCompressionDampingScale"),
+	0.35f,
+	TEXT("Scale applied to damping while a contacted wheel is still above rest height and moving toward compression."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionClampPositiveForce(
 	TEXT("p.SkyLeague.Suspension.ClampPositiveForce"),
 	0,
@@ -99,6 +105,7 @@ namespace
         float ForceLastDisplacement = 0.0f;
         float ForceCurrentDisplacement = 0.0f;
         bool bCompression = false;
+        bool bPreRestCompression = false;
     };
 
     float QuantizeSuspensionDisplacement(const float Displacement)
@@ -129,14 +136,22 @@ namespace
         const bool bClampNegativeDisplacement = CVarSkyLeagueSuspensionClampNegativeDisplacement.GetValueOnAnyThread() != 0;
         const float ForceLastDisplacement = bClampNegativeDisplacement ? FMath::Max(0.0f, LastDisplacement) : LastDisplacement;
         const float ForceCurrentDisplacement = bClampNegativeDisplacement ? FMath::Max(0.0f, CurrentDisplacement) : CurrentDisplacement;
-        const bool bCompression = ForceCurrentDisplacement < ForceLastDisplacement;
-        const float DampingScale = bCompression
-            ? CVarSkyLeagueSuspensionCompressionDampingScale.GetValueOnAnyThread()
-            : CVarSkyLeagueSuspensionReboundDampingScale.GetValueOnAnyThread();
+        const bool bPreRestCompression = bClampNegativeDisplacement &&
+            LastDisplacement < 0.0f &&
+            CurrentDisplacement < 0.0f &&
+            CurrentDisplacement > LastDisplacement;
+        const bool bCompression = bPreRestCompression || ForceCurrentDisplacement < ForceLastDisplacement;
+        const float DampingScale = bPreRestCompression
+            ? CVarSkyLeagueSuspensionPreRestCompressionDampingScale.GetValueOnAnyThread()
+            : (bCompression
+                ? CVarSkyLeagueSuspensionCompressionDampingScale.GetValueOnAnyThread()
+                : CVarSkyLeagueSuspensionReboundDampingScale.GetValueOnAnyThread());
         const float Damping = (bCompression
             ? Suspension.Setup().CompressionDamping
             : Suspension.Setup().ReboundDamping) * FMath::Max(0.0f, DampingScale);
-        const double SpringSpeed = (static_cast<double>(ForceLastDisplacement) - static_cast<double>(ForceCurrentDisplacement)) / static_cast<double>(Delta);
+        const double SpringSpeed = bPreRestCompression
+            ? (static_cast<double>(LastDisplacement) - static_cast<double>(CurrentDisplacement)) / static_cast<double>(Delta)
+            : (static_cast<double>(ForceLastDisplacement) - static_cast<double>(ForceCurrentDisplacement)) / static_cast<double>(Delta);
         const bool bApplyRestingForce = CVarSkyLeagueSuspensionRestingForceRequiresCompression.GetValueOnAnyThread() == 0 ||
             ForceCurrentDisplacement > 0.0f;
         const double RestingForce = bApplyRestingForce
@@ -164,6 +179,7 @@ namespace
             DebugData->ForceLastDisplacement = ForceLastDisplacement;
             DebugData->ForceCurrentDisplacement = ForceCurrentDisplacement;
             DebugData->bCompression = bCompression;
+            DebugData->bPreRestCompression = bPreRestCompression;
         }
         return QuantizedForce;
     }
@@ -585,7 +601,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         {
             const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
             UE_LOG(WheelSubBodyLog, Log,
-                TEXT("[SuspensionForce] Frame=%d Wheel=%d Dt=%.5f SuspDt=%.5f HitTOI=%.5f PenDepth=%.3f LastDisp=%.3f CurDisp=%.3f ForceLastDisp=%.3f ForceCurDisp=%.3f SpringLen=%.3f NewDesiredLen=%.3f ProjectedCompression=%.3f Rest=%.1f Stiff=%.1f Damp=%.1f SpringSpeed=%.3f Damping=%.1f Compress=%d Raw=%.1f Quant=%.1f Scale=%.3f Final=%.1f VelZ=%.3f HitN=%s HitLoc=%s"),
+                TEXT("[SuspensionForce] Frame=%d Wheel=%d Dt=%.5f SuspDt=%.5f HitTOI=%.5f PenDepth=%.3f LastDisp=%.3f CurDisp=%.3f ForceLastDisp=%.3f ForceCurDisp=%.3f SpringLen=%.3f NewDesiredLen=%.3f ProjectedCompression=%.3f Rest=%.1f Stiff=%.1f Damp=%.1f SpringSpeed=%.3f Damping=%.1f Compress=%d PreRestCompress=%d Raw=%.1f Quant=%.1f Scale=%.3f Final=%.1f VelZ=%.3f HitN=%s HitLoc=%s"),
                 ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
                 Idx(),
                 delta,
@@ -605,6 +621,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
                 ForceDebugData.SpringSpeed,
                 ForceDebugData.Damping,
                 ForceDebugData.bCompression ? 1 : 0,
+                ForceDebugData.bPreRestCompression ? 1 : 0,
                 ForceDebugData.UnclampedForce,
                 ForceDebugData.QuantizedForce,
                 SuspensionScale,
