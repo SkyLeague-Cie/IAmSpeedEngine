@@ -44,6 +44,8 @@ public:
     void SetOnGround(const bool& on_ground);
     void SetIsJumping(const uint8 NbFrames);
     uint8 IsJumping() const;
+    uint8 GetConsecutiveGroundFrames() const;
+    void SetConsecutiveGroundFrames(uint8 Frames);
 
     // --- overrides SubBody behaviour ---
     virtual void ResetForFrame(const float& Delta) override;
@@ -128,10 +130,13 @@ private:
     // --- State variables ---
     float SuspensionForce = 0.0; // suspension force to apply this frame
     uint8 bIsJumping = 0; // 0 = not jumping else countdown of frames before wheel is in max drop position
+    uint8 ConsecutiveGroundFrames = 0; // saturated to 31 for compact gameplay replication
     float SteeringAngle = 0.0f; // radians
     float Omega = 0.0f; // current angular velocity of the wheel (rad/s)
     float RollAngle = 0.0f; // current roll angle of the wheel (for rendering)
     bool bWasOnGroundPrevFrame = false;
+
+    bool bCountedGroundFrame = false;
     bool bContactVelocityLocked = false;
 
     FVector ForwardAxis = FVector::ForwardVector;

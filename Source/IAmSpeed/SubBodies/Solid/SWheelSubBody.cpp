@@ -238,6 +238,7 @@ void USWheelSubBody::ResetForFrame(const float& Delta)
     FutureHit = SHitResult();
     IgnoredComponents.Empty();
     bWasOnGroundPrevFrame = IsOnGround();
+    bCountedGroundFrame = false;
 	IgnoredComponents.Append(AlwaysIgnoredComponents);
 }
 
@@ -1017,10 +1018,16 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
     // RegisterWheelContact
     if (on_ground)
     {
+        if (!bCountedGroundFrame)
+        {
+            ConsecutiveGroundFrames = FMath::Min<uint8>(ConsecutiveGroundFrames + 1, 31);
+            bCountedGroundFrame = true;
+        }
         ApplyImpulse(FVector::UpVector, CurrentHit.ImpactPoint);
     }
     else
     {
+        ConsecutiveGroundFrames = 0;
         ResetContactVelocityLock();
     }
 
@@ -1032,6 +1039,7 @@ void USWheelSubBody::SetIsJumping(const uint8 NbFrames)
     bIsJumping = NbFrames;
     if (NbFrames > 0)
     {
+        ConsecutiveGroundFrames = 0;
         ResetContactVelocityLock();
     }
 }
@@ -1039,6 +1047,16 @@ void USWheelSubBody::SetIsJumping(const uint8 NbFrames)
 uint8 USWheelSubBody::IsJumping() const
 {
     return bIsJumping;
+}
+
+uint8 USWheelSubBody::GetConsecutiveGroundFrames() const
+{
+    return ConsecutiveGroundFrames;
+}
+
+void USWheelSubBody::SetConsecutiveGroundFrames(const uint8 Frames)
+{
+    ConsecutiveGroundFrames = FMath::Min<uint8>(Frames, 31);
 }
 
 void USWheelSubBody::UpdateContactVelocityLock()
