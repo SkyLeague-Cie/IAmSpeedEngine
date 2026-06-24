@@ -582,19 +582,18 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         const float SuspensionMaxValue = MaxSuspensionForce;
         /*if (FMath::Abs(SuspensionForce) > SuspensionMaxValue)
         {
-            UE_LOG(WheelSubBodyLog, Warning, TEXT("[%s] Suspension in frame %d is way too strong!!!! For Wheel num %d SuspensionForce = %f"),
-                *ParentComponent->GetRole(), ParentComponent->NumFrame(), WheelIndex, SuspensionForce);
+            UE_LOG(WheelSubBodyLog, Warning, TEXT("[Suspension] In frame %d, Suspension is way too strong!!!! For Wheel num %d SuspensionForce = %f"),
+                ParentComponent->NumFrame(), Idx(), SuspensionForce);
         }*/
         SuspensionForce = FMath::Clamp(SuspensionForce, CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0 ? 0.0f : -SuspensionMaxValue, SuspensionMaxValue);
 
-        // Special Actor case: if we do not hit the ground but an other actor, we reduce suspension force
+		// Special Actor case: if we do not hit the ground but an other actor, we keep suspension force only for positive values
         // to avoid wheel to stick to it too much and create unrealistic behavior.
-        // This is a quick fix to tune, we might want to find a more physical solution
         if (CurrentHit.Component.IsValid() &&
             CurrentHit.Component->Mobility !=
             EComponentMobility::Static)
         {
-            SuspensionForce /= 100;
+            SuspensionForce = FMath::Max(0.0f, SuspensionForce);
         }
         SuspensionForce = QuantizeSuspensionForce(SuspensionForce);
 #if !(UE_BUILD_SHIPPING)
@@ -980,9 +979,14 @@ float USWheelSubBody::SuspensionSpringRateCm() const
     return SuspensionSpringRate * 100.0f;
 }
 
-float USWheelSubBody::SuspensionDampingRatio() const
+float USWheelSubBody::GetSuspensionDampingReboundRatio() const
 {
-    return SuspensionDampingRatioValue;
+    return SuspensionDampingReboundRatio;
+}
+
+float USWheelSubBody::GetSuspensionDampingCompressionRatio() const
+{
+    return SuspensionDampingCompressionRatio;
 }
 
 float USWheelSubBody::GetSuspensionForce() const

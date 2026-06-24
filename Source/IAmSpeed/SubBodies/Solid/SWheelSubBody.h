@@ -83,7 +83,8 @@ public:
     float SuspensionMaxRaise() const;
     float SuspensionMaxDrop() const;
     float SuspensionSpringRateCm() const;
-    float SuspensionDampingRatio() const;
+    float GetSuspensionDampingReboundRatio() const;
+    float GetSuspensionDampingCompressionRatio() const;
     float GetSuspensionForce() const;
     bool IsContactVelocityLocked() const;
     float GetSuspensionOffset() const;
@@ -122,10 +123,12 @@ private:
     float WheelMass = 18.0f;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", UIMin = "0.0"))
-    float SuspensionSpringRate = 1625.0f;
+    float SuspensionSpringRate = 2750.0f;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-    float SuspensionDampingRatioValue = 0.5f;
+    float SuspensionDampingCompressionRatio = 0.3f;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+    float SuspensionDampingReboundRatio = 0.5f;
 
     // --- State variables ---
     float SuspensionForce = 0.0; // suspension force to apply this frame

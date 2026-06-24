@@ -318,15 +318,17 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 		Chaos::FSimpleSuspensionSim& Suspension = PVehicle->Suspension[WheelIdx];
 		const float SpringRate = WheelSubBody->SuspensionSpringRateCm();
-		const float DampingRatio = WheelSubBody->SuspensionDampingRatio();
+		const float DampingReboundRatio = WheelSubBody->GetSuspensionDampingReboundRatio();
+		const float DampingCompressionRatio = WheelSubBody->GetSuspensionDampingCompressionRatio();
 		const float SprungMass = FMath::Max(SprungMasses[WheelIdx], KINDA_SMALL_NUMBER);
-		const float Damping = static_cast<float>(FMath::RoundToInt(DampingRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
+		const float ReboundDamping = static_cast<float>(FMath::RoundToInt(DampingReboundRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
+		const float CompressionDamping = static_cast<float>(FMath::RoundToInt(DampingCompressionRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
 
 		Suspension.AccessSetup().SpringRate = SpringRate;
-		Suspension.AccessSetup().DampingRatio = DampingRatio;
+		Suspension.AccessSetup().DampingRatio = DampingReboundRatio;
 		Suspension.AccessSetup().MaxLength = Suspension.Setup().SuspensionMaxDrop + Suspension.Setup().SuspensionMaxRaise;
-		Suspension.AccessSetup().ReboundDamping = Damping;
-		Suspension.AccessSetup().CompressionDamping = Damping;
+		Suspension.AccessSetup().ReboundDamping = ReboundDamping;
+		Suspension.AccessSetup().CompressionDamping = CompressionDamping;
 		Suspension.AccessSetup().RestingForce = SprungMass * -GetGravityZ();
 		Suspension.SetLocalRestingPosition(WheelSubBody->GetLocalOffset());
 
@@ -746,11 +748,11 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 	UpdateInputs();
 	TagStateHistoryProxyRole();
 	RecoverWheelState();
-	if (CanMove())
+	/*if (CanMove())
 	{
 		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
 			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
-	}
+	}*/
 }
 
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
