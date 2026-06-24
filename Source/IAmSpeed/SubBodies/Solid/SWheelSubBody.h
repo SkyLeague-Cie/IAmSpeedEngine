@@ -44,6 +44,8 @@ public:
     void SetOnGround(const bool& on_ground);
     void SetIsJumping(const uint8 NbFrames);
     uint8 IsJumping() const;
+    uint8 GetConsecutiveGroundFrames() const;
+    void SetConsecutiveGroundFrames(uint8 Frames);
 
     // --- overrides SubBody behaviour ---
     virtual void ResetForFrame(const float& Delta) override;
@@ -81,8 +83,10 @@ public:
     float SuspensionMaxRaise() const;
     float SuspensionMaxDrop() const;
     float SuspensionSpringRateCm() const;
-    float SuspensionDampingRatio() const;
+    float GetSuspensionDampingReboundRatio() const;
+    float GetSuspensionDampingCompressionRatio() const;
     float GetSuspensionForce() const;
+    bool IsContactVelocityLocked() const;
     float GetSuspensionOffset() const;
     FVector GetHitContactNormal() const;
     void SetHitContactNormal(const FVector& ImpactNormal);
@@ -104,6 +108,8 @@ private:
     // Predicts spring displacement / wheel travel
     float PredictNextDisplacement(const float& Delta) const;
     float ComputeNextAirLength(const float& DeltaTime) const;
+    void UpdateContactVelocityLock();
+    void ResetContactVelocityLock();
 
 private:
     ISpeedWheeledComponent* WheelComponent = nullptr;
@@ -117,18 +123,24 @@ private:
     float WheelMass = 18.0f;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", UIMin = "0.0"))
-    float SuspensionSpringRate = 1625.0f;
+    float SuspensionSpringRate = 2750.0f;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
-    float SuspensionDampingRatioValue = 0.5f;
+    float SuspensionDampingCompressionRatio = 0.3f;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+    float SuspensionDampingReboundRatio = 0.5f;
 
     // --- State variables ---
     float SuspensionForce = 0.0; // suspension force to apply this frame
     uint8 bIsJumping = 0; // 0 = not jumping else countdown of frames before wheel is in max drop position
+    uint8 ConsecutiveGroundFrames = 0; // saturated to 31 for compact gameplay replication
     float SteeringAngle = 0.0f; // radians
     float Omega = 0.0f; // current angular velocity of the wheel (rad/s)
     float RollAngle = 0.0f; // current roll angle of the wheel (for rendering)
     bool bWasOnGroundPrevFrame = false;
+
+    bool bCountedGroundFrame = false;
+    bool bContactVelocityLocked = false;
 
     FVector ForwardAxis = FVector::ForwardVector;
     FVector RightAxis = FVector::RightVector;

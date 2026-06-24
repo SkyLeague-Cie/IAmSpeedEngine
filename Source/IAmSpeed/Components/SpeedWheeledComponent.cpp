@@ -28,6 +28,24 @@ static TAutoConsoleVariable<float> CVarSkyLeagueSteeringYawScale(
 	0.85f,
 	TEXT("Scale applied to the target steering yaw velocity. Lower values increase the effective turn time without changing the turn radius curve."),
 	ECVF_Default);
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionNormalBlend(
+	TEXT("p.SkyLeague.Suspension.NormalBlend"),
+	1.0f,
+	TEXT("Blend between chassis up force direction (0) and contact normal force direction (1)."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionInvDotBlend(
+	TEXT("p.SkyLeague.Suspension.InvDotBlend"),
+	0.0f,
+	TEXT("Blend between legacy dot scaling (0) and RocketSim-style inverse contact dot scaling (1)."),
+	ECVF_Default);
+
+
+static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionDebug(
+	TEXT("p.SkyLeague.Suspension.Debug"),
+	0,
+	TEXT("Logs suspension force application when non-zero."),
+	ECVF_Default);
 
 const FName USpeedWheeledComponent::HitboxName = TEXT("Hitbox");
 const TArray<FName> USpeedWheeledComponent::WheelNames = { TEXT("Wheel_0"), TEXT("Wheel_1"), TEXT("Wheel_2"), TEXT("Wheel_3")};
@@ -300,15 +318,17 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 		Chaos::FSimpleSuspensionSim& Suspension = PVehicle->Suspension[WheelIdx];
 		const float SpringRate = WheelSubBody->SuspensionSpringRateCm();
-		const float DampingRatio = WheelSubBody->SuspensionDampingRatio();
+		const float DampingReboundRatio = WheelSubBody->GetSuspensionDampingReboundRatio();
+		const float DampingCompressionRatio = WheelSubBody->GetSuspensionDampingCompressionRatio();
 		const float SprungMass = FMath::Max(SprungMasses[WheelIdx], KINDA_SMALL_NUMBER);
-		const float Damping = static_cast<float>(FMath::RoundToInt(DampingRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
+		const float ReboundDamping = static_cast<float>(FMath::RoundToInt(DampingReboundRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
+		const float CompressionDamping = static_cast<float>(FMath::RoundToInt(DampingCompressionRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
 
 		Suspension.AccessSetup().SpringRate = SpringRate;
-		Suspension.AccessSetup().DampingRatio = DampingRatio;
+		Suspension.AccessSetup().DampingRatio = DampingReboundRatio;
 		Suspension.AccessSetup().MaxLength = Suspension.Setup().SuspensionMaxDrop + Suspension.Setup().SuspensionMaxRaise;
-		Suspension.AccessSetup().ReboundDamping = Damping;
-		Suspension.AccessSetup().CompressionDamping = Damping;
+		Suspension.AccessSetup().ReboundDamping = ReboundDamping;
+		Suspension.AccessSetup().CompressionDamping = CompressionDamping;
 		Suspension.AccessSetup().RestingForce = SprungMass * -GetGravityZ();
 		Suspension.SetLocalRestingPosition(WheelSubBody->GetLocalOffset());
 
@@ -730,8 +750,8 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 	RecoverWheelState();
 	/*if (CanMove())
 	{
-		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, Kinematic state = (%s)"),
-			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), *GetKinematicState().ToString());
+		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
+			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
 	}*/
 }
 
@@ -1153,16 +1173,22 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 				if (!W.IsOnGround())
 					return;
 
-				const FVector SuspensionDir = GetPhysUpVector();
+				const FVector SuspensionDir = GetPhysUpVector().GetSafeNormal();
+				const FVector ContactNormal = W.GetHitContactNormal().GetSafeNormal();
 				const float Load = W.GetSuspensionForce();
+				const float Dot = FVector::DotProduct(SuspensionDir, ContactNormal);
+				const float LegacyScale = 1.f;
 
-				// optionnal projection on wall
-				float Dot = FVector::DotProduct(SuspensionDir, W.GetHitContactNormal());
-				float Scale = FMath::Clamp(Dot, 0.f, 1.f);
+				const float Denominator = FMath::Max(Dot, 0.1f);
+				const float InvDotScale = FMath::Clamp(1.0f / Denominator, 0.0f, 10.0f);
+				const float InvDotBlend = FMath::Clamp(CVarSkyLeagueSuspensionInvDotBlend.GetValueOnAnyThread(), 0.0f, 1.0f);
+				const float Scale = FMath::Lerp(LegacyScale, InvDotScale, InvDotBlend);
 
-				FVector Force = SuspensionDir * Load * Scale;
+				const float NormalBlend = FMath::Clamp(CVarSkyLeagueSuspensionNormalBlend.GetValueOnAnyThread(), 0.0f, 1.0f);
+				const FVector ForceDirection = FMath::Lerp(SuspensionDir, ContactNormal, NormalBlend).GetSafeNormal();
+				FVector Force = ForceDirection * Load * Scale;
 				// const FVector ApplicationPoint = W.WorldPos();
-				const FVector ApplicationPoint = W.GetHit().Location - W.GetHitContactNormal() * W.Radius();
+				const FVector ApplicationPoint = W.GetHit().ImpactPoint;
 				/*if (NumFrame() - SinceCanMoveFrame < 3)
 				{
 					UE_LOG(
@@ -1185,11 +1211,21 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 							*W.GetHitContactNormal().ToString(), *ApplicationPoint.ToString(), W.GetHit().Distance, Load, GetPhysVelocity().Size(), W.SpringDisplacement());
 					}*/
 				AddPhysForceAtPoint(Force, ApplicationPoint);
+
+#if !(UE_BUILD_SHIPPING)
+				if (CVarSkyLeagueSuspensionDebug.GetValueOnAnyThread() != 0)
+				{
+					UE_LOG(SpeedPhysicsLog, Log,
+						TEXT("[Suspension] Frame=%d Wheel=%d Load=%.2f Dot=%.3f Scale=%.3f NormalBlend=%.2f InvDotBlend=%.2f Force=%s Point=%s"),
+						NumFrame(), W.Idx(), Load, Dot, Scale, NormalBlend, InvDotBlend, *Force.ToString(), *ApplicationPoint.ToString());
+				}
+#endif
 			};
 
 		ApplyWheelSuspension(*WheelA);
 		ApplyWheelSuspension(*WheelB);
 	}
+
 }
 
 void USpeedWheeledComponent::HandleAngularDamping(const float& delta)
