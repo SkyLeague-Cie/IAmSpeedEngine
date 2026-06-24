@@ -30,7 +30,7 @@ static TAutoConsoleVariable<float> CVarSkyLeagueSteeringYawScale(
 	ECVF_Default);
 static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionNormalBlend(
 	TEXT("p.SkyLeague.Suspension.NormalBlend"),
-	0.0f,
+	1.0f,
 	TEXT("Blend between chassis up force direction (0) and contact normal force direction (1)."),
 	ECVF_Default);
 
@@ -1175,7 +1175,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 				const FVector ContactNormal = W.GetHitContactNormal().GetSafeNormal();
 				const float Load = W.GetSuspensionForce();
 				const float Dot = FVector::DotProduct(SuspensionDir, ContactNormal);
-				const float LegacyScale = FMath::Clamp(Dot, 0.f, 1.f);
+				const float LegacyScale = 1.f;
 
 				const float Denominator = FMath::Max(Dot, 0.1f);
 				const float InvDotScale = FMath::Clamp(1.0f / Denominator, 0.0f, 10.0f);
@@ -1186,7 +1186,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 				const FVector ForceDirection = FMath::Lerp(SuspensionDir, ContactNormal, NormalBlend).GetSafeNormal();
 				FVector Force = ForceDirection * Load * Scale;
 				// const FVector ApplicationPoint = W.WorldPos();
-				const FVector ApplicationPoint = W.GetHit().Location - ContactNormal * W.Radius();
+				const FVector ApplicationPoint = W.GetHit().ImpactPoint;
 				/*if (NumFrame() - SinceCanMoveFrame < 3)
 				{
 					UE_LOG(
