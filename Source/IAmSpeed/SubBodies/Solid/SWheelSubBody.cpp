@@ -100,7 +100,7 @@ namespace
         float DampingForce = 0.0f;
         float UnclampedForce = 0.0f;
         float QuantizedForce = 0.0f;
-        float SpringSpeed = 0.0f;
+        float WheelRelativeVelocity = 0.0f;
         float Damping = 0.0f;
         float ForceLastDisplacement = 0.0f;
         float ForceCurrentDisplacement = 0.0f;
@@ -130,7 +130,7 @@ namespace
         const Chaos::FSimpleSuspensionSim& Suspension,
         const float LastDisplacement,
         const float CurrentDisplacement,
-        const float Delta,
+        const float WheelRelativeVelocity,
         FSuspensionForceDebugData* DebugData = nullptr)
     {
         const bool bClampNegativeDisplacement = CVarSkyLeagueSuspensionClampNegativeDisplacement.GetValueOnAnyThread() != 0;
@@ -149,9 +149,6 @@ namespace
         const float Damping = (bCompression
             ? Suspension.Setup().CompressionDamping
             : Suspension.Setup().ReboundDamping) * FMath::Max(0.0f, DampingScale);
-        const double SpringSpeed = bPreRestCompression
-            ? (static_cast<double>(LastDisplacement) - static_cast<double>(CurrentDisplacement)) / static_cast<double>(Delta)
-            : (static_cast<double>(ForceLastDisplacement) - static_cast<double>(ForceCurrentDisplacement)) / static_cast<double>(Delta);
         const bool bApplyRestingForce = CVarSkyLeagueSuspensionRestingForceRequiresCompression.GetValueOnAnyThread() == 0 ||
             ForceCurrentDisplacement > 0.0f;
         const double RestingForce = bApplyRestingForce
@@ -159,7 +156,7 @@ namespace
                 static_cast<double>(FMath::Max(0.0f, CVarSkyLeagueSuspensionRestingForceScale.GetValueOnAnyThread()))
             : 0.0;
         const double StiffnessForce = static_cast<double>(ForceCurrentDisplacement) * static_cast<double>(Suspension.Setup().SpringRate);
-        const double DampingForce = SpringSpeed * static_cast<double>(Damping);
+        const double DampingForce = WheelRelativeVelocity * static_cast<double>(Damping);
         float Force = static_cast<float>(RestingForce + StiffnessForce - DampingForce);
         const float UnclampedForce = Force;
         if (CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0)
@@ -174,7 +171,7 @@ namespace
             DebugData->DampingForce = static_cast<float>(DampingForce);
             DebugData->UnclampedForce = UnclampedForce;
             DebugData->QuantizedForce = QuantizedForce;
-            DebugData->SpringSpeed = static_cast<float>(SpringSpeed);
+            DebugData->WheelRelativeVelocity = static_cast<float>(WheelRelativeVelocity);
             DebugData->Damping = Damping;
             DebugData->ForceLastDisplacement = ForceLastDisplacement;
             DebugData->ForceCurrentDisplacement = ForceCurrentDisplacement;
@@ -569,7 +566,8 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         PSuspension->Simulate(SuspensionDelta);
         const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
         FSuspensionForceDebugData ForceDebugData;
-        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement, CurrentDisplacement, SuspensionDelta, &ForceDebugData);
+		const float ProjectedVelocity = ParentComponent->GetPhysVelocityAtPoint(CurrentHit.ImpactPoint).Dot(CurrentHit.ImpactNormal);
+        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement, CurrentDisplacement, ProjectedVelocity, &ForceDebugData);
         PSuspension->SetLastDisplacement(CurrentDisplacement);
 
         float Dot = FVector::DotProduct(CurrentHit.ImpactNormal, FVector::UpVector);
@@ -601,7 +599,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         {
             const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
             UE_LOG(WheelSubBodyLog, Log,
-                TEXT("[SuspensionForce] Frame=%d Wheel=%d Dt=%.5f SuspDt=%.5f HitTOI=%.5f PenDepth=%.3f LastDisp=%.3f CurDisp=%.3f ForceLastDisp=%.3f ForceCurDisp=%.3f SpringLen=%.3f NewDesiredLen=%.3f ProjectedCompression=%.3f Rest=%.1f Stiff=%.1f Damp=%.1f SpringSpeed=%.3f Damping=%.1f Compress=%d PreRestCompress=%d Raw=%.1f Quant=%.1f Scale=%.3f Final=%.1f VelZ=%.3f HitN=%s HitLoc=%s"),
+                TEXT("[SuspensionForce] Frame=%d Wheel=%d Dt=%.5f SuspDt=%.5f HitTOI=%.5f PenDepth=%.3f LastDisp=%.3f CurDisp=%.3f ForceLastDisp=%.3f ForceCurDisp=%.3f SpringLen=%.3f NewDesiredLen=%.3f ProjectedCompression=%.3f Rest=%.1f Stiff=%.1f Damp=%.1f WheelRelativeVelocity=%.3f Damping=%.1f Compress=%d PreRestCompress=%d Raw=%.1f Quant=%.1f Scale=%.3f Final=%.1f VelZ=%.3f HitN=%s HitLoc=%s"),
                 ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
                 Idx(),
                 delta,
@@ -618,7 +616,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
                 ForceDebugData.RestingForce,
                 ForceDebugData.StiffnessForce,
                 ForceDebugData.DampingForce,
-                ForceDebugData.SpringSpeed,
+                ForceDebugData.WheelRelativeVelocity,
                 ForceDebugData.Damping,
                 ForceDebugData.bCompression ? 1 : 0,
                 ForceDebugData.bPreRestCompression ? 1 : 0,
