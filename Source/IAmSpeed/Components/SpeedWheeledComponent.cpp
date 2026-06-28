@@ -748,11 +748,11 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 	UpdateInputs();
 	TagStateHistoryProxyRole();
 	RecoverWheelState();
-	/*if (CanMove())
+	if (CanMove())
 	{
-		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
-			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
-	}*/
+		// UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
+		//	*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
+	}
 }
 
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
@@ -1123,7 +1123,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 				return;
 			}
 
-			float LocalSideDamping = (GetLocalSideFriction()) * (NbWheelsOnGround / 4);
+			float LocalSideDamping = (GetLocalSideFriction()) * (static_cast<float>(NbWheelsOnGround) / 4.0f);
 			if (overSpeed < LocalSideDamping * delta)
 			{
 				// addForce(-FMath::Sign(SideSpeed) * overSpeed * RightVector / delta, delta); // may not work now with quantization of velocity, so we directly set velocity to allowed side speed
@@ -1899,8 +1899,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 		return;
 	}
 
-	// Reset accumulators when going straight or very slow or powersliding
-	if (NoSteeringAllowed())
+	// Reset accumulators when going straight or very slow
+	if (MustReduceAllowedVelocityForSteering())
 	{
 		WheeledPhysicsState.AllowedSideVelocity = FMath::VInterpTo(
 			WheeledPhysicsState.AllowedSideVelocity, FVector::ZeroVector, delta, 8.f
@@ -1908,6 +1908,10 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 		WheeledPhysicsState.AllowedAngularVelocity = FMath::VInterpTo(
 			WheeledPhysicsState.AllowedAngularVelocity, FVector::ZeroVector, delta, 8.f
 		);
+		return;
+	}
+	if (NoSteeringAllowed())
+	{
 		return;
 	}
 	/*UE_LOG(SpeedPhysicsLog, Log,
@@ -1943,7 +1947,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// Target yaw-rate (physics)
 	const float SteeringYawScale = FMath::Clamp(CVarSkyLeagueSteeringYawScale.GetValueOnAnyThread(), 0.1f, 2.0f);
 	const float absTargetYawRate = SteeringYawScale * speed / desiredRadiusWall; // rad/s
-	const float targetYaw = FMath::Sign(steeringInput) * FMath::Sign(forwardVelocity) * absTargetYawRate;
+	const float targetYaw = ComputeSteeringTargetYawRate(steeringInput, forwardVelocity, absTargetYawRate);
 	FVector TargetAngularVelocity = targetYaw * UpVector;
 
 	// -------------------------------------
@@ -2041,6 +2045,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	FVector newAccel = GetPhysAcceleration();
 	FVector deltaAccel = newAccel - oldAccel;
 	WheeledPhysicsState.AllowedSideVelocity += deltaAccel * delta * steerGain;
+
 	const float SteeringTimeConstant = FMath::Clamp(CVarSkyLeagueSteeringTimeConstant.GetValueOnAnyThread(), 0.005f, 0.25f);
 	const float alpha = 1.f - FMath::Exp(-delta / SteeringTimeConstant);
 	WheeledPhysicsState.AllowedAngularVelocity = FMath::Lerp(WheeledPhysicsState.AllowedAngularVelocity, TargetAngularVelocity, alpha);
@@ -2071,7 +2076,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	float allowedYaw = FVector::DotProduct(WheeledPhysicsState.AllowedAngularVelocity, UpVector);
 	float yawSign = FMath::Sign(allowedYaw);
-	float allowedYawAbs = FMath::Min(FMath::Abs(allowedYaw), absTargetYawRate);
+	float allowedYawAbs = FMath::Min(FMath::Abs(allowedYaw), GetSteeringAllowedYawClamp(absTargetYawRate));
 	float clampedYaw = yawSign * allowedYawAbs;
 
 	WheeledPhysicsState.AllowedAngularVelocity += (clampedYaw - allowedYaw) * UpVector;
@@ -2080,24 +2085,30 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	{
 		FVector currentAngVel = GetPhysAngularVelocity();
 		FVector correctedAngVel = WheeledPhysicsState.AllowedAngularVelocity - FVector::DotProduct(currentAngVel, UpVector) * UpVector;
-		FVector torqueToAdd = (correctedAngVel) / delta;
+		const float YawCorrectionTimeConstant = GetSteeringYawCorrectionTimeConstant();
+		if (YawCorrectionTimeConstant > KINDA_SMALL_NUMBER)
+		{
+			const float Alpha = 1.0f - FMath::Exp(-delta / YawCorrectionTimeConstant);
+			correctedAngVel *= Alpha;
+		}
+		FVector torqueToAdd = correctedAngVel / delta;
 		AddPhysAngularAcceleration(torqueToAdd);
 	}
 
 
 #if !(UE_BUILD_SHIPPING)
-	/*FVector up = GetPhysUpVector();
+	FVector up = GetPhysUpVector();
 	float yawRate = FVector::DotProduct(GetPhysAngularVelocity(), up); // rad/s
 	if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
 	{
 		float radius = speed / FMath::Abs(yawRate);
 		// UE_LOG(SpeedPhysicsLog, Log, TEXT("AllowedYaw=%.3f | RealYaw=%.3f | TargetYaw=%.3f"), allowedYaw, yawRate, targetYaw);
-		UE_LOG(SpeedPhysicsLog, Log,
+		/*UE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, AllowedYaw=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
 			FVector::DotProduct(WheeledPhysicsState.AllowedSideVelocity, RightSurface),
-			allowedYaw, radius, desiredRadiusWall);
-	}*/
+			allowedYaw, radius, desiredRadiusWall);*/
+	}
 #endif
 }
 
@@ -2109,6 +2120,26 @@ bool USpeedWheeledComponent::DisableSuspensionThisFrame() const
 bool USpeedWheeledComponent::NoSteeringAllowed() const
 {
 	return FMath::Abs(GetPhysForwardSpeed()) < 50.f || FMath::IsNearlyZero(GetPhysSteeringInput());
+}
+
+bool USpeedWheeledComponent::MustReduceAllowedVelocityForSteering() const
+{
+	return FMath::Abs(GetPhysForwardSpeed()) < 50.f || FMath::IsNearlyZero(GetPhysSteeringInput());
+}
+
+float USpeedWheeledComponent::GetSteeringYawCorrectionTimeConstant() const
+{
+	return 0.0f;
+}
+
+float USpeedWheeledComponent::ComputeSteeringTargetYawRate(float InSteeringInput, float InForwardVelocity, float InAbsTargetYawRate) const
+{
+	return FMath::Sign(InSteeringInput) * FMath::Sign(InForwardVelocity) * InAbsTargetYawRate;
+}
+
+float USpeedWheeledComponent::GetSteeringAllowedYawClamp(float InAbsTargetYawRate) const
+{
+	return InAbsTargetYawRate;
 }
 
 float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity, const float& AbsSteeringInput) const
