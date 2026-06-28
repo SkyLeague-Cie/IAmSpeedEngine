@@ -220,6 +220,8 @@ protected:
 	unsigned int NbFramesSinceCanMove() const;
 	// Get the current frame number for this component (e.g. to be used for network replication)
 	unsigned int GetCurrentFrame() const;
+	FVector GetAllowedAngularVelocity() const { return WheeledPhysicsState.AllowedAngularVelocity; }
+	void SetAllowedAngularVelocity(const FVector& NewAllowedAngularVelocity) { WheeledPhysicsState.AllowedAngularVelocity = NewAllowedAngularVelocity; }
 
 	// Update Inputs
 	virtual void UpdateInputs();
@@ -268,6 +270,10 @@ protected:
 
 	// return true iff the component is not allowed to steer
 	virtual bool NoSteeringAllowed() const;
+	virtual bool MustReduceAllowedVelocityForSteering() const;
+	virtual float GetSteeringYawCorrectionTimeConstant() const;
+	virtual float ComputeSteeringTargetYawRate(float InSteeringInput, float InForwardVelocity, float InAbsTargetYawRate) const;
+	virtual float GetSteeringAllowedYawClamp(float InAbsTargetYawRate) const;
 	virtual float ComputeSteeringRadius(const float& ForwardVelocity, const float& AbsSteeringInput) const;
 	FVector ComputeTurningForce(const float& SteeringInput, const float& UpDot,
 		const float& ForwardVelocity, const float& DesiredRadius, const FVector& WheelRight) const;
