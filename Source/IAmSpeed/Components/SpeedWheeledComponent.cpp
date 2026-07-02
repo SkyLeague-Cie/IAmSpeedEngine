@@ -17,17 +17,46 @@ DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedDebugKinematics(
+	TEXT("p.IAmSpeed.DebugKinematics"),
+	0,
+	TEXT("Logs wheeled component kinematic state each physics frame when non-zero."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedDebugSteering(
+	TEXT("p.IAmSpeed.DebugSteering"),
+	0,
+	TEXT("Logs wheeled component steering state each physics frame when non-zero."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarSkyLeagueSteeringTimeConstant(
 	TEXT("p.SkyLeague.Steering.TimeConstant"),
-	0.09f,
+	0.075f,
 	TEXT("Time constant, in seconds, used to blend toward the steering target yaw velocity. Higher values make steering less twitchy."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarSkyLeagueSteeringYawScale(
 	TEXT("p.SkyLeague.Steering.YawScale"),
-	0.85f,
+	1.0f,
 	TEXT("Scale applied to the target steering yaw velocity. Lower values increase the effective turn time without changing the turn radius curve."),
 	ECVF_Default);
+static TAutoConsoleVariable<float> CVarSkyLeagueSteeringThrottleTimeConstant(
+	TEXT("p.SkyLeague.Steering.ThrottleTimeConstant"),
+	0.85f,
+	TEXT("Time constant used to reduce throttle acceleration while steering."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarSkyLeagueSteeringMinForwardSpeed(
+	TEXT("p.SkyLeague.Steering.MinForwardSpeed"),
+	0.01f,
+	TEXT("Minimum absolute forward speed, in cm/s, required before ground steering starts."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSteeringReleaseInterpSpeed(
+	TEXT("p.SkyLeague.Steering.ReleaseInterpSpeed"),
+	16.0f,
+	TEXT("Interp speed used to bring allowed steering side and yaw velocities back to zero when steering is released or the car is too slow."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionNormalBlend(
 	TEXT("p.SkyLeague.Suspension.NormalBlend"),
 	1.0f,
@@ -748,10 +777,10 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 	UpdateInputs();
 	TagStateHistoryProxyRole();
 	RecoverWheelState();
-	if (CanMove())
+	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0)
 	{
-		// UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
-		//	*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
+		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
+			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
 	}
 }
 
@@ -1807,18 +1836,31 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 	{
 		// Throttle case
 		auto forward_damping = GetLocalForwardFriction();
-		const float absBaseAccel = InputValue > 0 ? (forward_damping * nbWheelsOnGround / 4) : 0;
+		const float absBaseAccel = InputValue > 0 ? (forward_damping * nbWheelsOnGround / 4.0f) : 0;
 		float baseAccel = wantToMoveForward ? absBaseAccel : -absBaseAccel;
 		float inputAccel = 0.0;
 		const float subSteeringSpeedCap = FMath::Max(0.0, steeringSpeedCap - 10.0);
 		constexpr float SteeringSpeedCapNeutralZone = 2.0f; // cm/s
 		const float neutralSteeringSpeedCapMin = FMath::Max(subSteeringSpeedCap, steeringSpeedCap - SteeringSpeedCapNeutralZone);
 		const float neutralSteeringSpeedCapMax = steeringSpeedCap + SteeringSpeedCapNeutralZone;
-		const float airAccel = wantToMoveForward ? InputValue * AirForwardThrottle * (4 - nbWheelsOnGround) / 4 :
-			-InputValue * AirBackwardThrottle * (4 - nbWheelsOnGround) / 4;
+		const float airAccel = wantToMoveForward ? InputValue * AirForwardThrottle * (4 - nbWheelsOnGround) / 4.0f :
+			-InputValue * AirBackwardThrottle * (4 - nbWheelsOnGround) / 4.0f;
+		const auto ApplySteeringThrottleLimit = [InputValue, steeringAbs, steeringSpeedCap, absForwardSpeed, nbWheelsOnGround](const float BaseGroundAccel)
+			{
+				const float SteeringThrottleBlend = FMath::Clamp(steeringAbs, 0.0f, 1.0f);
+				if (SteeringThrottleBlend <= KINDA_SMALL_NUMBER)
+				{
+					return BaseGroundAccel;
+				}
+				const float SteeringThrottleTimeConstant = FMath::Max(0.01f, CVarSkyLeagueSteeringThrottleTimeConstant.GetValueOnAnyThread());
+				const float GroundRatio = static_cast<float>(nbWheelsOnGround) / 4.0f;
+				const float SteeringGroundAccel = InputValue * FMath::Max(0.0f, (steeringSpeedCap - absForwardSpeed) / SteeringThrottleTimeConstant) * GroundRatio;
+				return FMath::Lerp(BaseGroundAccel, SteeringGroundAccel, SteeringThrottleBlend);
+			};
 		if (absForwardSpeed <= subSteeringSpeedCap)
 		{
-			const float absGroundAccel = InputValue * FMath::Lerp(ThrottleAccel, 160, absForwardSpeed / subSteeringSpeedCap) * (nbWheelsOnGround / 4);
+			float absGroundAccel = InputValue * FMath::Lerp(ThrottleAccel, 160, absForwardSpeed / subSteeringSpeedCap) * (nbWheelsOnGround / 4.0f);
+			absGroundAccel = ApplySteeringThrottleLimit(absGroundAccel);
 			const float groundAccel = wantToMoveForward ? absGroundAccel : -absGroundAccel;
 			inputAccel = groundAccel + airAccel;
 		}
@@ -1826,7 +1868,8 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 		{
 			const float capBlendRange = FMath::Max(neutralSteeringSpeedCapMin - subSteeringSpeedCap, KINDA_SMALL_NUMBER);
 			float ratio = (absForwardSpeed - subSteeringSpeedCap) / capBlendRange;
-			const float absGroundAccel = InputValue * FMath::Lerp(160, 0.0, ratio) * (nbWheelsOnGround / 4);
+			float absGroundAccel = InputValue * FMath::Lerp(160, 0.0, ratio) * (nbWheelsOnGround / 4.0f);
+			absGroundAccel = ApplySteeringThrottleLimit(absGroundAccel);
 			const float groundAccel = wantToMoveForward ? absGroundAccel : -absGroundAccel;
 			inputAccel = groundAccel + airAccel;
 		}
@@ -1844,10 +1887,10 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 	else
 	{
 		// Brake case
-		auto GroundAccel = (BrakeAccel * nbWheelsOnGround) / 4;
+		auto GroundAccel = (BrakeAccel * nbWheelsOnGround) / 4.0f;
 		accel = wantToMoveForward ?
-			InputValue * (GroundAccel + AirForwardThrottle * (4 - nbWheelsOnGround) / 4) :
-			-InputValue * (GroundAccel + AirBackwardThrottle * (4 - nbWheelsOnGround) / 4);
+			InputValue * (GroundAccel + AirForwardThrottle * (4 - nbWheelsOnGround) / 4.0f) :
+			-InputValue * (GroundAccel + AirBackwardThrottle * (4 - nbWheelsOnGround) / 4.0f);
 
 	}
 
@@ -1902,11 +1945,12 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// Reset accumulators when going straight or very slow
 	if (MustReduceAllowedVelocityForSteering())
 	{
+		const float ReleaseInterpSpeed = FMath::Max(0.01f, CVarSkyLeagueSteeringReleaseInterpSpeed.GetValueOnAnyThread());
 		WheeledPhysicsState.AllowedSideVelocity = FMath::VInterpTo(
-			WheeledPhysicsState.AllowedSideVelocity, FVector::ZeroVector, delta, 8.f
+			WheeledPhysicsState.AllowedSideVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
 		);
 		WheeledPhysicsState.AllowedAngularVelocity = FMath::VInterpTo(
-			WheeledPhysicsState.AllowedAngularVelocity, FVector::ZeroVector, delta, 8.f
+			WheeledPhysicsState.AllowedAngularVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
 		);
 		return;
 	}
@@ -2097,17 +2141,20 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 
 
 #if !(UE_BUILD_SHIPPING)
-	FVector up = GetPhysUpVector();
-	float yawRate = FVector::DotProduct(GetPhysAngularVelocity(), up); // rad/s
-	if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
+	if (CVarIAmSpeedDebugSteering.GetValueOnAnyThread() != 0)
 	{
-		float radius = speed / FMath::Abs(yawRate);
-		// UE_LOG(SpeedPhysicsLog, Log, TEXT("AllowedYaw=%.3f | RealYaw=%.3f | TargetYaw=%.3f"), allowedYaw, yawRate, targetYaw);
-		/*UE_LOG(SpeedPhysicsLog, Log,
-			TEXT("[%s(%s)][Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, AllowedYaw=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
-			*GetOwner()->GetName(), *GetRole(), NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
-			FVector::DotProduct(WheeledPhysicsState.AllowedSideVelocity, RightSurface),
-			allowedYaw, radius, desiredRadiusWall);*/
+		FVector up = GetPhysUpVector();
+		float yawRate = FVector::DotProduct(GetPhysAngularVelocity(), up); // rad/s
+		if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
+		{
+			float radius = speed / FMath::Abs(yawRate);
+			// UE_LOG(SpeedPhysicsLog, Log, TEXT("AllowedYaw=%.3f | RealYaw=%.3f | TargetYaw=%.3f"), allowedYaw, yawRate, targetYaw);
+			UE_LOG(SpeedPhysicsLog, Log,
+				TEXT("[%s(%s)][Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, AllowedYaw=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
+				*GetOwner()->GetName(), *GetRole(), NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
+				FVector::DotProduct(WheeledPhysicsState.AllowedSideVelocity, RightSurface),
+				allowedYaw, radius, desiredRadiusWall);
+		}
 	}
 #endif
 }
@@ -2119,12 +2166,14 @@ bool USpeedWheeledComponent::DisableSuspensionThisFrame() const
 
 bool USpeedWheeledComponent::NoSteeringAllowed() const
 {
-	return FMath::Abs(GetPhysForwardSpeed()) < 50.f || FMath::IsNearlyZero(GetPhysSteeringInput());
+	const float MinForwardSpeed = FMath::Max(0.0f, CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread());
+	return FMath::Abs(GetPhysForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
 }
 
 bool USpeedWheeledComponent::MustReduceAllowedVelocityForSteering() const
 {
-	return FMath::Abs(GetPhysForwardSpeed()) < 50.f || FMath::IsNearlyZero(GetPhysSteeringInput());
+	const float MinForwardSpeed = FMath::Max(0.0f, CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread());
+	return FMath::Abs(GetPhysForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
 }
 
 float USpeedWheeledComponent::GetSteeringYawCorrectionTimeConstant() const
@@ -2158,7 +2207,8 @@ float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity
 FVector USpeedWheeledComponent::ComputeTurningForce(const float& SteeringInput_, const float& UpDot, const float& ForwardVelocity, const float& DesiredRadius, const FVector& WheelRight) const
 {
 	// 1) If no speed -> no steering force
-	if (FMath::Abs(ForwardVelocity) < 50.f)
+	const float MinForwardSpeed = FMath::Max(0.0f, CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread());
+	if (FMath::Abs(ForwardVelocity) < MinForwardSpeed)
 		return FVector::ZeroVector;
 
 	// 2) Determine turn direction
