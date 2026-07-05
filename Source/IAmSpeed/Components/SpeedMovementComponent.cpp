@@ -255,17 +255,27 @@ void USpeedMovementComponent::SetKinematicState(const SKinematic& NewKinematicSt
 
 void USpeedMovementComponent::RegisterTestVelocity(const FVector& InitialVelocity)
 {
+	RegisterTestVelocity(InitialVelocity, FVector::ZeroVector);
+}
+
+void USpeedMovementComponent::RegisterTestVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity)
+{
 	BaseGameState.TestVelocity = InitialVelocity;
+	BaseGameState.TestAngularVelocity = InitialAngularVelocity;
+	BaseGameState.bHasTestVelocity = !InitialVelocity.IsZero() || !InitialAngularVelocity.IsZero();
 }
 
 void USpeedMovementComponent::ApplyTestVelocity()
 {
-	if (BaseGameState.TestVelocity.IsZero() || IsFrozen())
+	if (!BaseGameState.bHasTestVelocity || IsFrozen())
 	{
 		return;
 	}
 	SetPhysVelocity(BaseGameState.TestVelocity);
+	SetPhysAngularVelocity(BaseGameState.TestAngularVelocity);
 	BaseGameState.TestVelocity = FVector::ZeroVector;
+	BaseGameState.TestAngularVelocity = FVector::ZeroVector;
+	BaseGameState.bHasTestVelocity = false;
 }
 
 void USpeedMovementComponent::AsyncPhysicsTickComponent(float DeltaTime, float SimTime)
@@ -601,6 +611,11 @@ void USpeedMovementComponent::StartTestWithVelocity(const FVector& InitialVeloci
 	StartTestWithVelocityMulti(InitialVelocity);
 }
 
+void USpeedMovementComponent::StartTestWithVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity)
+{
+	StartTestWithVelocityAndAngularVelocityMulti(InitialVelocity, InitialAngularVelocity);
+}
+
 void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialVelocity)
 {
 	if (!bEnableSimulation)
@@ -610,9 +625,23 @@ void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialV
 	RegisterTestVelocity(InitialVelocity);
 }
 
+void USpeedMovementComponent::StartTestWithVelocityLocal(const FVector& InitialVelocity, const FVector& InitialAngularVelocity)
+{
+	if (!bEnableSimulation)
+	{
+		return;
+	}
+	RegisterTestVelocity(InitialVelocity, InitialAngularVelocity);
+}
+
 void USpeedMovementComponent::StartTestWithVelocityMulti_Implementation(const FVector& InitialVelocity)
 {
 	StartTestWithVelocityLocal(InitialVelocity);
+}
+
+void USpeedMovementComponent::StartTestWithVelocityAndAngularVelocityMulti_Implementation(const FVector& InitialVelocity, const FVector& InitialAngularVelocity)
+{
+	StartTestWithVelocityLocal(InitialVelocity, InitialAngularVelocity);
 }
 
 bool USpeedMovementComponent::CanMove() const

@@ -8,8 +8,24 @@
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY(SphereSubBodyLog);
+
+namespace
+{
+    bool IAmSpeedSphereBoxImpulseDebugEnabled()
+    {
+        const IConsoleVariable* DebugCVar =
+            IConsoleManager::Get().FindConsoleVariable(TEXT("p.IAmSpeed.Collision.DebugSphereBoxImpulse"));
+        return DebugCVar && DebugCVar->GetInt() != 0;
+    }
+
+    FVector IAmSpeedSphereVelocityAtPointFromKS(const SKinematic& KS, const FVector& Point)
+    {
+        return KS.Velocity + FVector::CrossProduct(KS.AngularVelocity, Point - KS.Location);
+    }
+}
 
 USphereSubBody::USphereSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
@@ -265,6 +281,19 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         }
     }*/
 
+    const FVector BoxLocalContactPoint = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKSAtTOI.Location);
+    const FVector BoxLocalContactNormal = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactNormal.GetSafeNormal());
+    const float MixedRestitution = ResolveSphereBoxRestitutionAtContact(
+        *this,
+        OtherBox,
+        MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max),
+        BoxLocalContactPoint,
+        BoxLocalContactNormal,
+        OtherBox.GetBoxExtent(),
+        CurrentHit.ImpactPoint);
+    const float MixedFriction = ResolveSphereBoxFriction(
+        MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
+
 	// Compute collision impulse at TOI
     FVector ImpThis, ImpOther;
     bool ok = Speed::SImpulseSolver::ComputeCollisionImpulse(
@@ -274,8 +303,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         SphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
         BoxKSAtTOI, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
 
-        MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max),
-        MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max),
+        MixedRestitution,
+        MixedFriction,
 
         ImpThis,
         ImpOther,
@@ -284,6 +313,57 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 
     if (ok)
     {
+#if !UE_BUILD_SHIPPING
+        if (IAmSpeedSphereBoxImpulseDebugEnabled())
+        {
+            const FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
+            const FVector SphereVp = IAmSpeedSphereVelocityAtPointFromKS(SphereKS, CurrentHit.ImpactPoint);
+            const FVector BoxVp = IAmSpeedSphereVelocityAtPointFromKS(BoxKSAtTOI, CurrentHit.ImpactPoint);
+            const FVector RelVp = SphereVp - BoxVp;
+            const float RelNormalSpeed = FVector::DotProduct(RelVp, N);
+            const FVector LocalNormal = BoxLocalContactNormal;
+            const FVector BoxForward = BoxKSAtTOI.Rotation.GetForwardVector();
+            const FVector BoxRight = BoxKSAtTOI.Rotation.GetRightVector();
+            const FVector BoxUp = BoxKSAtTOI.Rotation.GetUpVector();
+
+            UE_LOG(
+                SphereSubBodyLog,
+                Warning,
+                TEXT("[SphereBoxImpulse][SphereResolve] Frame=%d Delta=%.6f SimTime=%.6f TOI=%.6f Sphere=%s Box=%s Point=%s LocalPoint=%s Normal(BoxToSphere)=%s LocalNormal=%s Restitution=%.3f Friction=%.3f Threshold=%.3f RelN(SphereMinusBox)=%.3f RelVp=%s SphereImpulse=%s BoxImpulse=%s SphereLoc=%s SphereV=%s SphereW=%s BoxLoc=%s BoxRot=%s BoxForward=%s BoxRight=%s BoxUp=%s BoxV=%s BoxW=%s SphereVp=%s BoxVp=%s SphereMass=%.3f BoxMass=%.3f"),
+                ParentComponent ? ParentComponent->NumFrame() : -1,
+                delta,
+                SimTime,
+                CurrentHit.TOI,
+                GetOwner() ? *GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
+                OtherBox.GetOwner() ? *OtherBox.GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
+                *CurrentHit.ImpactPoint.ToString(),
+                *BoxLocalContactPoint.ToString(),
+                *N.ToString(),
+                *LocalNormal.ToString(),
+                MixedRestitution,
+                MixedFriction,
+                GetImpactThreshold(),
+                RelNormalSpeed,
+                *RelVp.ToString(),
+                *ImpThis.ToString(),
+                *ImpOther.ToString(),
+                *SphereKS.Location.ToString(),
+                *SphereKS.Velocity.ToString(),
+                *SphereKS.AngularVelocity.ToString(),
+                *BoxKSAtTOI.Location.ToString(),
+                *BoxKSAtTOI.Rotation.ToString(),
+                *BoxForward.ToString(),
+                *BoxRight.ToString(),
+                *BoxUp.ToString(),
+                *BoxKSAtTOI.Velocity.ToString(),
+                *BoxKSAtTOI.AngularVelocity.ToString(),
+                *SphereVp.ToString(),
+                *BoxVp.ToString(),
+                GetMass(),
+                OtherBox.GetMass());
+        }
+#endif
+
         // Debug
         /*UE_LOG(SphereSubBodyLog, Log, TEXT("[CCDSphere] Resolving Box hit for frame = %d, with ImpactPoint = %s, ImpactNormal = %s, at TOI = %fs"),
             ParentComponent->NumFrame(), *CurrentHit.ImpactPoint.ToString(), *CurrentHit.ImpactNormal.ToString(), TimePassed);
@@ -295,6 +375,36 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         // Apply impulses
         ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
 		OtherBox.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
+
+#if !UE_BUILD_SHIPPING
+        if (IAmSpeedSphereBoxImpulseDebugEnabled())
+        {
+            const ISpeedComponent* BoxParent = OtherBox.GetParentComponent();
+            const FVector SphereVPost = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
+            const FVector SphereWPost = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
+            const FVector BoxVPost = BoxParent ? BoxParent->GetPhysVelocity() : FVector::ZeroVector;
+            const FVector BoxWPost = BoxParent ? BoxParent->GetPhysAngularVelocity() : FVector::ZeroVector;
+
+            UE_LOG(
+                SphereSubBodyLog,
+                Warning,
+                TEXT("[SphereBoxImpulse][SphereResolvePost] Frame=%d Sphere=%s Box=%s Point=%s SphereVPost=%s SphereWPost=%s BoxVPost=%s BoxWPost=%s DeltaSphereV=%s DeltaSphereW=%s DeltaBoxV=%s DeltaBoxW=%s SphereImpulse=%s BoxImpulse=%s"),
+                ParentComponent ? ParentComponent->NumFrame() : -1,
+                GetOwner() ? *GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
+                OtherBox.GetOwner() ? *OtherBox.GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
+                *CurrentHit.ImpactPoint.ToString(),
+                *SphereVPost.ToString(),
+                *SphereWPost.ToString(),
+                *BoxVPost.ToString(),
+                *BoxWPost.ToString(),
+                *(SphereVPost - SphereKS.Velocity).ToString(),
+                *(SphereWPost - SphereKS.AngularVelocity).ToString(),
+                *(BoxVPost - BoxKSAtTOI.Velocity).ToString(),
+                *(BoxWPost - BoxKSAtTOI.AngularVelocity).ToString(),
+                *ImpThis.ToString(),
+                *ImpOther.ToString());
+        }
+#endif
 
         // apply fake physics
         if (IsFakePhysicsEnabled())

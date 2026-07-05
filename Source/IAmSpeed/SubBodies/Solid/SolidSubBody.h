@@ -15,6 +15,22 @@ enum class EMixMode : uint8
 	E_Max UMETA(DisplayName = "Max"),
 };
 
+UENUM()
+enum class ERestitutionResolveMode : uint8
+{
+	Global UMETA(DisplayName = "Global"),
+	AtContact UMETA(DisplayName = "At Contact"),
+	Custom UMETA(DisplayName = "Custom"),
+};
+
+struct FRestitutionResolveContext
+{
+	FVector ContactPointWS = FVector::ZeroVector;
+	FVector BoxLocalContactPoint = FVector::ZeroVector;
+	FVector BoxLocalContactNormal = FVector::ZeroVector;
+	FVector BoxExtent = FVector::ZeroVector;
+};
+
 /**
  * USolidSubBody : Base class for any solid physics sub-body (box, sphere, etc.)
  * It handles:
@@ -38,19 +54,36 @@ public:
 	bool IsMainSubBody() const { return bIsMainSubBody; }
 	bool IsFakePhysicsEnabled() const { return EnableFakePhysics; }
 	float GetRestitution() const { return Restitution; }
+	float GetSphereBoxRestitutionOverride() const { return SphereBoxRestitutionOverride; }
 	float GetStaticFriction() const { return StaticFriction; }
 	float GetDynamicFriction() const { return DynamicFriction; }
 	float GetImpactThreshold() const { return ImpactThreshold; }
 	float GetHitDamping() const { return HitDamping; }
+	UFUNCTION(BlueprintCallable, Category = "Physics")
+	void SetSphereBoxRestitutionOverride(float InRestitution);
 
 	// Override this function to apply custom impulses on the subbody itself when a hit is resolved.
 	virtual void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint);
 	// Override this function to apply custom impulses on the subbody itself or other subbodies when a hit is resolved.
 	virtual void ApplyFakePhysicsOn(USolidSubBody& OtherSubBody, const SHitResult& Hit, const float& DeltaTime) {};
+	virtual float ResolveRestitutionCustom(
+		const USolidSubBody& OtherSubBody,
+		const FRestitutionResolveContext& Context,
+		float GlobalRestitution) const { return GlobalRestitution; }
 	virtual FVector GetVelocityAtPoint(const FVector& Point) const;
 
 	static float MixRestitution(float eA, float eB, EMixMode Mode);
 	static float MixFriction(float muA, float muB, EMixMode Mode);
+	static float ResolveSphereBoxFriction(float FallbackFriction);
+	static float ResolveSphereBoxRestitution(const USolidSubBody& Sphere, const USolidSubBody& Box, float FallbackRestitution);
+	static float ResolveSphereBoxRestitutionAtContact(
+		const USolidSubBody& Sphere,
+		const USolidSubBody& Box,
+		float FallbackRestitution,
+		const FVector& BoxLocalContactPoint,
+		const FVector& BoxLocalContactNormal,
+		const FVector& BoxExtent,
+		const FVector& ContactPointWS);
 	static void SolveOverlap(ISpeedComponent& ThisComp, float MassA, const FMatrix& InvIA, const SKinematic& KA,
 		ISpeedComponent* OtherComp, float MassB, const FMatrix& InvIB, const SKinematic& KB,
 		const FVector& P, const FVector& N_OtherToThis,
@@ -104,6 +137,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Physics,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float Restitution = 0.0f;
+	// Optional restitution override for sphere/box contacts. Negative values keep the normal mix rule.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics,
+		meta = (ClampMin = "-1.0", UIMin = "-1.0", ClampMax = "1.0", UIMax = "1.0"))
+	float SphereBoxRestitutionOverride = -1.0f;
 	// Static friction coefficient for the subbody, used in collision resolution
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Physics,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))

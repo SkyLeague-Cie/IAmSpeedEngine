@@ -47,6 +47,8 @@ struct SBaseGameState
 {
 	unsigned int NumFrame = 0; // number of frames that have passed since the start of simulation
 	FVector TestVelocity = FVector::ZeroVector; // Velocity set for testing purpose
+	FVector TestAngularVelocity = FVector::ZeroVector; // Angular velocity set for testing purpose, in rad/s
+	bool bHasTestVelocity = false;
 };
 
 USTRUCT()
