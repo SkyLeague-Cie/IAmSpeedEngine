@@ -68,6 +68,7 @@ public:
 	virtual void SetKinematicState(const SKinematic& NewKinematicState);
 
 	void RegisterTestVelocity(const FVector& InitialVelocity);
+	void RegisterTestVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
@@ -82,9 +83,13 @@ public:
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	void StartTestWithVelocity(const FVector& InitialVelocity);
+	void StartTestWithVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
+	void StartTestWithVelocityLocal(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	UFUNCTION(reliable, NetMulticast)
 	void StartTestWithVelocityMulti(const FVector& InitialVelocity);
+	UFUNCTION(reliable, NetMulticast)
+	void StartTestWithVelocityAndAngularVelocityMulti(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 
 	UFUNCTION(BlueprintCallable)
 	bool CanMove() const;

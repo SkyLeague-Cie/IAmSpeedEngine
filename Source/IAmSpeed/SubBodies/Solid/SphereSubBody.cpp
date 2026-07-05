@@ -281,8 +281,18 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         }
     }*/
 
-    const float MixedRestitution = MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max);
-    const float MixedFriction = MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max);
+    const FVector BoxLocalContactPoint = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKSAtTOI.Location);
+    const FVector BoxLocalContactNormal = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactNormal.GetSafeNormal());
+    const float MixedRestitution = ResolveSphereBoxRestitutionAtContact(
+        *this,
+        OtherBox,
+        MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max),
+        BoxLocalContactPoint,
+        BoxLocalContactNormal,
+        OtherBox.GetBoxExtent(),
+        CurrentHit.ImpactPoint);
+    const float MixedFriction = ResolveSphereBoxFriction(
+        MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
 
 	// Compute collision impulse at TOI
     FVector ImpThis, ImpOther;
@@ -311,8 +321,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
             const FVector BoxVp = IAmSpeedSphereVelocityAtPointFromKS(BoxKSAtTOI, CurrentHit.ImpactPoint);
             const FVector RelVp = SphereVp - BoxVp;
             const float RelNormalSpeed = FVector::DotProduct(RelVp, N);
-            const FVector LocalPoint = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKSAtTOI.Location);
-            const FVector LocalNormal = BoxKSAtTOI.Rotation.UnrotateVector(N);
+            const FVector LocalNormal = BoxLocalContactNormal;
             const FVector BoxForward = BoxKSAtTOI.Rotation.GetForwardVector();
             const FVector BoxRight = BoxKSAtTOI.Rotation.GetRightVector();
             const FVector BoxUp = BoxKSAtTOI.Rotation.GetUpVector();
@@ -328,7 +337,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
                 GetOwner() ? *GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
                 OtherBox.GetOwner() ? *OtherBox.GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
                 *CurrentHit.ImpactPoint.ToString(),
-                *LocalPoint.ToString(),
+                *BoxLocalContactPoint.ToString(),
                 *N.ToString(),
                 *LocalNormal.ToString(),
                 MixedRestitution,

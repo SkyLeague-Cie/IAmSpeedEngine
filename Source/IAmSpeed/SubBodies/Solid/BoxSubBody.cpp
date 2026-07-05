@@ -1056,8 +1056,18 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         }
     }*/
 
-    const float MixedRestitution = MixRestitution(Sphere.GetRestitution(), GetRestitution(), EMixMode::E_Max);
-    const float MixedFriction = MixFriction(Sphere.GetDynamicFriction(), GetDynamicFriction(), EMixMode::E_Max);
+    const FVector BoxLocalContactPoint = BoxKS.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKS.Location);
+    const FVector BoxLocalContactNormal = BoxKS.Rotation.UnrotateVector(CurrentHit.ImpactNormal.GetSafeNormal());
+    const float MixedRestitution = ResolveSphereBoxRestitutionAtContact(
+        Sphere,
+        *this,
+        MixRestitution(Sphere.GetRestitution(), GetRestitution(), EMixMode::E_Max),
+        BoxLocalContactPoint,
+        BoxLocalContactNormal,
+        BoxExtent,
+        CurrentHit.ImpactPoint);
+    const float MixedFriction = ResolveSphereBoxFriction(
+        MixFriction(Sphere.GetDynamicFriction(), GetDynamicFriction(), EMixMode::E_Max));
 
     FVector ImpThis, ImpOther;
     bool ok = Speed::SImpulseSolver::ComputeCollisionImpulse(
@@ -1085,8 +1095,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         const FVector SphereVp = IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHit.ImpactPoint);
         const FVector RelVp = BoxVp - SphereVp;
         const float RelNormalSpeed = FVector::DotProduct(RelVp, N);
-        const FVector LocalPoint = BoxKS.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKS.Location);
-        const FVector LocalNormal = BoxKS.Rotation.UnrotateVector(N);
+        const FVector LocalNormal = BoxLocalContactNormal;
         const FVector BoxForward = BoxKS.Rotation.GetForwardVector();
         const FVector BoxRight = BoxKS.Rotation.GetRightVector();
         const FVector BoxUp = BoxKS.Rotation.GetUpVector();
@@ -1101,7 +1110,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
             GetOwner() ? *GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
             Sphere.GetOwner() ? *Sphere.GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
             *CurrentHit.ImpactPoint.ToString(),
-            *LocalPoint.ToString(),
+            *BoxLocalContactPoint.ToString(),
             *N.ToString(),
             *LocalNormal.ToString(),
             MixedRestitution,
@@ -1182,7 +1191,9 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     {
         // UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
         // Sphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        Sphere.ApplyFakePhysicsOn(*this, Sphere.GetHit(), delta);
+        SHitResult InvertedHit = CurrentHit;
+        InvertedHit.ImpactNormal *= -1.f;
+        Sphere.ApplyFakePhysicsOn(*this, InvertedHit, delta);
     }
 
     // Handle micro-oscillations
