@@ -2197,13 +2197,63 @@ float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity
 	const float MaxRadius = 6000.f; // cm, at high speed
 	const float SpeedForMinRadius = 500.f; // cm/s
 	const float SpeedForMaxRadius = 2000.f; // cm/s
-	float speedFactor = FMath::Clamp((FMath::Abs(ForwardVelocity) - SpeedForMinRadius) / (SpeedForMaxRadius - SpeedForMinRadius), 0.f, 1.f);
-	float radius = FMath::Lerp(MinRadius, MaxRadius, speedFactor);
-	// Steering input effect (more input -> smaller radius)
-	radius /= FMath::Lerp(1.f, 3.f, AbsSteeringInput); // up to 3x smaller radius at full lock
-	return radius;
-}
+	const float absForwardSpeed = FMath::Abs(ForwardVelocity);
+	float speedFactor = FMath::Clamp((absForwardSpeed - SpeedForMinRadius) / (SpeedForMaxRadius - SpeedForMinRadius), 0.f, 1.f);
+	const float baseRadius = FMath::Lerp(MinRadius, MaxRadius, speedFactor);
 
+	// Keep the full-steer radius that was previously tuned, but make partial
+	// steering follow RocketSim's wheel-angle scaling: tan(maxAngle * input) / tan(maxAngle).
+	const float fullSteerRadius = baseRadius / 3.f;
+	const float input = FMath::Clamp(AbsSteeringInput, 0.f, 1.f);
+	if (input <= KINDA_SMALL_NUMBER)
+	{
+		return BIG_NUMBER;
+	}
+
+	const auto GetRocketSimSteerAngle = [](const float Speed)
+		{
+			struct FSteerPoint
+			{
+				float Speed;
+				float Angle;
+			};
+
+			const FSteerPoint Points[] = {
+				{0.f, 0.53356f},
+				{500.f, 0.31930f},
+				{1000.f, 0.18203f},
+				{1500.f, 0.10570f},
+				{1750.f, 0.08507f},
+				{3000.f, 0.03454f}
+			};
+
+			if (Speed <= Points[0].Speed)
+			{
+				return Points[0].Angle;
+			}
+
+			for (int32 Idx = 1; Idx < UE_ARRAY_COUNT(Points); ++Idx)
+			{
+				if (Speed <= Points[Idx].Speed)
+				{
+					const float T = (Speed - Points[Idx - 1].Speed) / (Points[Idx].Speed - Points[Idx - 1].Speed);
+					return FMath::Lerp(Points[Idx - 1].Angle, Points[Idx].Angle, T);
+				}
+			}
+
+			return Points[UE_ARRAY_COUNT(Points) - 1].Angle;
+		};
+
+	const float maxSteerAngle = GetRocketSimSteerAngle(absForwardSpeed);
+	const float fullSteerTan = FMath::Tan(maxSteerAngle);
+	if (FMath::Abs(fullSteerTan) <= KINDA_SMALL_NUMBER)
+	{
+		return fullSteerRadius / input;
+	}
+
+	const float steerRatio = FMath::Clamp(FMath::Tan(maxSteerAngle * input) / fullSteerTan, KINDA_SMALL_NUMBER, 1.f);
+	return fullSteerRadius / steerRatio;
+}
 FVector USpeedWheeledComponent::ComputeTurningForce(const float& SteeringInput_, const float& UpDot, const float& ForwardVelocity, const float& DesiredRadius, const FVector& WheelRight) const
 {
 	// 1) If no speed -> no steering force
