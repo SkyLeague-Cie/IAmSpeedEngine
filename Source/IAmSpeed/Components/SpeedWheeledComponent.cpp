@@ -29,6 +29,42 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedDebugSteering(
 	TEXT("Logs wheeled component steering state each physics frame when non-zero."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedDebugWheelFriction(
+	TEXT("p.IAmSpeed.DebugWheelFriction"),
+	0,
+	TEXT("Logs aggregate wheel-frame drive and lateral friction forces each physics frame when non-zero."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameLateralFrictionScale(
+	TEXT("p.IAmSpeed.WheelFrame.LateralFrictionScale"),
+	-1.0f,
+	TEXT("Overrides WheelFrameLateralFrictionScale when >= 0. Negative values keep the Blueprint/component value."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameLongitudinalScrubScale(
+	TEXT("p.IAmSpeed.WheelFrame.LongitudinalScrubScale"),
+	-1.0f,
+	TEXT("Overrides WheelFrameLongitudinalScrubScale when >= 0. Negative values keep the Blueprint/component value."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameSteeringCurvatureScale(
+	TEXT("p.IAmSpeed.WheelFrame.SteeringCurvatureScale"),
+	-1.0f,
+	TEXT("Overrides WheelFrameSteeringCurvatureScale when >= 0. Negative values keep the Blueprint/component value."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameLateralForwardLossScale(
+	TEXT("p.IAmSpeed.WheelFrame.LateralForwardLossScale"),
+	-1.0f,
+	TEXT("Overrides the WheelFrameLateralForwardLossScale multiplier when >= 0. Negative values keep the Blueprint/component value."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameTurnSummaryIntervalFrames(
+	TEXT("p.IAmSpeed.WheelFrame.TurnSummaryIntervalFrames"),
+	30,
+	TEXT("Frame interval between WheelTurnSummary logs when wheel friction debug is enabled."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarSkyLeagueSteeringTimeConstant(
 	TEXT("p.SkyLeague.Steering.TimeConstant"),
 	0.075f,
@@ -78,6 +114,34 @@ static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionDebug(
 
 const FName USpeedWheeledComponent::HitboxName = TEXT("Hitbox");
 const TArray<FName> USpeedWheeledComponent::WheelNames = { TEXT("Wheel_0"), TEXT("Wheel_1"), TEXT("Wheel_2"), TEXT("Wheel_3")};
+static float EvaluateLinearFloatCurve(const TArray<FVector2D>& Curve, const float Input, const float Fallback)
+{
+	if (Curve.Num() == 0)
+	{
+		return Fallback;
+	}
+
+	if (Input <= Curve[0].X)
+	{
+		return Curve[0].Y;
+	}
+
+	for (int32 Idx = 1; Idx < Curve.Num(); ++Idx)
+	{
+		if (Input <= Curve[Idx].X)
+		{
+			const float Denom = Curve[Idx].X - Curve[Idx - 1].X;
+			if (FMath::Abs(Denom) <= KINDA_SMALL_NUMBER)
+			{
+				return Curve[Idx].Y;
+			}
+			const float T = (Input - Curve[Idx - 1].X) / Denom;
+			return FMath::Lerp(Curve[Idx - 1].Y, Curve[Idx].Y, T);
+		}
+	}
+
+	return Curve.Last().Y;
+}
 
 namespace
 {
@@ -995,6 +1059,11 @@ void USpeedWheeledComponent::PreGameplayTick(const float& DeltaTime, const float
 	HandleDamping(DeltaTime);
 	HandleAngularDamping(DeltaTime);
 	HandleSuspension(DeltaTime);
+	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0)
+	{
+		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][PreGameplayTick] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
+			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
+	}
 }
 
 void USpeedWheeledComponent::HandleDamping(const float& delta)
@@ -1100,9 +1169,211 @@ void USpeedWheeledComponent::UpdateAutoRecoverState()
 {
 }
 
+void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
+{
+	if (delta <= KINDA_SMALL_NUMBER)
+		return;
+
+	if (GetLocalSideFriction() <= KINDA_SMALL_NUMBER)
+		return;
+
+	const float ForwardSpeed = GetPhysForwardSpeed();
+	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
+	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
+	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
+	float Wheelbase = 0.0f;
+	{
+		const FVector SurfaceNormal = GetNormalFromWheels().GetSafeNormal();
+		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		if (ForwardDir.Normalize())
+		{
+			float MinForwardOffset = BIG_NUMBER;
+			float MaxForwardOffset = -BIG_NUMBER;
+			for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodies)
+			{
+				if (!Wheel)
+					continue;
+
+				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysLocation(), ForwardDir);
+				MinForwardOffset = FMath::Min(MinForwardOffset, ForwardOffset);
+				MaxForwardOffset = FMath::Max(MaxForwardOffset, ForwardOffset);
+			}
+			Wheelbase = FMath::Max(0.0f, MaxForwardOffset - MinForwardOffset);
+		}
+	}
+	float MaxSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurve, AbsForwardSpeed, 0.0f);
+	const float CurvatureScaleOverride = CVarIAmSpeedWheelFrameSteeringCurvatureScale.GetValueOnAnyThread();
+	const float CurvatureScale = FMath::Max(KINDA_SMALL_NUMBER, CurvatureScaleOverride >= 0.0f ? CurvatureScaleOverride : WheelFrameSteeringCurvatureScale);
+	if (Wheelbase > KINDA_SMALL_NUMBER && FMath::IsFinite(TargetRadius) && TargetRadius > KINDA_SMALL_NUMBER)
+	{
+		MaxSteerAngle = FMath::Atan((Wheelbase * CurvatureScale) / FMath::Max(10.0f, TargetRadius));
+	}
+	const float SteerAngle = FMath::Sign(GetPhysSteeringInput()) * MaxSteerAngle;
+	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
+	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
+	const bool bDebugWheelFriction = CVarIAmSpeedDebugWheelFriction.GetValueOnAnyThread() != 0;
+	int32 DebugGroundedWheels = 0;
+	float DebugAbsLatSpeedSum = 0.0f;
+	float DebugAbsLongSpeedSum = 0.0f;
+	float DebugMaxAbsLatSpeed = 0.0f;
+	float DebugFrictionInputSum = 0.0f;
+	float DebugFrictionScaleSum = 0.0f;
+	float DebugLatAccelSum = 0.0f;
+	float DebugScrubAccelSum = 0.0f;
+	FVector DebugTotalForce = FVector::ZeroVector;
+	FVector DebugAppliedAccel = FVector::ZeroVector;
+	float DebugYawTorque = 0.0f;
+
+	for (int32 WheelIndex = 0; WheelIndex < WheelSubBodies.Num(); ++WheelIndex)
+	{
+		const TObjectPtr<USWheelSubBody>& Wheel = WheelSubBodies[WheelIndex];
+		if (!Wheel || !Wheel->IsOnGround())
+			continue;
+
+		const FVector SurfaceNormal = Wheel->GetHitContactNormal().GetSafeNormal();
+		if (SurfaceNormal.IsNearlyZero())
+			continue;
+
+		const float FrictionStateScale = bIsAccelerating ? 1.0f :
+			FMath::Max(0.0f, EvaluateLinearFloatCurve(NonAcceleratingFrictionScaleCurve, SurfaceNormal.Z, 1.0f));
+
+		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		if (!ForwardDir.Normalize())
+			continue;
+
+		FVector LateralDir = FVector::CrossProduct(SurfaceNormal, ForwardDir).GetSafeNormal();
+		const bool bFrontWheel = WheelIndex < 2;
+		if (bFrontWheel && !FMath::IsNearlyZero(SteerAngle))
+		{
+			LateralDir = FQuat(SurfaceNormal, SteerAngle).RotateVector(LateralDir).GetSafeNormal();
+		}
+
+		const FVector LongitudinalDir = FVector::CrossProduct(LateralDir, SurfaceNormal).GetSafeNormal();
+		const FVector WheelPoint = Wheel->SteeringPos();
+		const FVector WheelVelocity = GetPhysVelocityAtPoint(WheelPoint);
+		const float LateralSpeed = FVector::DotProduct(WheelVelocity, LateralDir);
+		const float LongitudinalSpeed = FVector::DotProduct(WheelVelocity, LongitudinalDir);
+		const float AbsLongitudinalSpeed = FMath::Abs(LongitudinalSpeed);
+		if (bDebugWheelFriction)
+		{
+			++DebugGroundedWheels;
+			const float AbsLateralSpeed = FMath::Abs(LateralSpeed);
+			DebugAbsLatSpeedSum += AbsLateralSpeed;
+			DebugAbsLongSpeedSum += AbsLongitudinalSpeed;
+			DebugMaxAbsLatSpeed = FMath::Max(DebugMaxAbsLatSpeed, AbsLateralSpeed);
+		}
+		if (!FMath::IsNearlyZero(LateralSpeed))
+		{
+			const float AbsLateralSpeed = FMath::Abs(LateralSpeed);
+			float FrictionCurveInput = 0.0f;
+			if (AbsLateralSpeed > SlipThreshold)
+			{
+				FrictionCurveInput = AbsLateralSpeed / FMath::Max(KINDA_SMALL_NUMBER, AbsLongitudinalSpeed + AbsLateralSpeed);
+			}
+
+			const float FrictionScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralFrictionScaleCurve, FrictionCurveInput, 1.0f));
+			constexpr float LateralImpulseRelaxation = 0.2f;
+			const float LateralScaleOverride = CVarIAmSpeedWheelFrameLateralFrictionScale.GetValueOnAnyThread();
+			const float LateralScale = LateralScaleOverride >= 0.0f ? LateralScaleOverride : WheelFrameLateralFrictionScale;
+			const float ScrubScaleOverride = CVarIAmSpeedWheelFrameLongitudinalScrubScale.GetValueOnAnyThread();
+			const float ScrubScale = ScrubScaleOverride >= 0.0f ? ScrubScaleOverride : WheelFrameLongitudinalScrubScale;
+			const float CombinedFrictionScale = FrictionScale * FrictionStateScale * FMath::Max(0.0f, LateralScale) * LateralImpulseRelaxation;
+			const FVector WheelArm = WheelPoint - GetPhysCOM();
+			const FMatrix InvInertia = ComputeWorldInvInertiaTensor();
+			const FVector RxAxis = FVector::CrossProduct(WheelArm, LateralDir);
+			const FVector EffectiveMassTerm = FVector::CrossProduct(InvInertia.TransformVector(RxAxis), WheelArm);
+			const float InvEffectiveMass = FMath::Max(KINDA_SMALL_NUMBER, (1.0f / Mass) + FVector::DotProduct(EffectiveMassTerm, LateralDir));
+			const float LateralImpulse = (AbsLateralSpeed / InvEffectiveMass) * CombinedFrictionScale;
+			const float AccelToApply = LateralImpulse / (Mass * delta);
+			const FVector RawLateralForce = -FMath::Sign(LateralSpeed) * LateralDir * (LateralImpulse / delta);
+			const float ForwardLossScaleOverride = CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread();
+			const float ForwardLossScaleMultiplier = FMath::Max(0.0f, ForwardLossScaleOverride >= 0.0f ? ForwardLossScaleOverride : WheelFrameLateralForwardLossScale);
+			const float ForwardLossCurveScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f));
+			const float ForwardLossScale = ForwardLossCurveScale * ForwardLossScaleMultiplier;
+			FVector LateralForce = RawLateralForce;
+			if (!FMath::IsNearlyEqual(ForwardLossScale, 1.0f))
+			{
+				const FVector ForwardComponent = FVector::DotProduct(RawLateralForce, ForwardDir) * ForwardDir;
+				LateralForce = (RawLateralForce - ForwardComponent) + ForwardComponent * ForwardLossScale;
+			}
+			const float ScrubAccel = AccelToApply * FMath::Clamp(AbsSteeringInput, 0.0f, 1.0f) * FMath::Max(0.0f, ScrubScale);
+			const FVector ScrubForce = AbsLongitudinalSpeed > KINDA_SMALL_NUMBER
+				? -FMath::Sign(LongitudinalSpeed) * LongitudinalDir * ScrubAccel * (Mass / 3.0f)
+				: FVector::ZeroVector;
+			const FVector Force = LateralForce + ScrubForce;
+			const FVector AccelBefore = GetPhysAcceleration();
+			AddPhysForceAtPoint(Force, WheelPoint);
+			if (bDebugWheelFriction)
+			{
+				DebugFrictionInputSum += FrictionCurveInput;
+				DebugFrictionScaleSum += FrictionScale;
+				DebugLatAccelSum += AccelToApply;
+				DebugScrubAccelSum += ScrubAccel;
+				DebugTotalForce += Force;
+				DebugAppliedAccel += GetPhysAcceleration() - AccelBefore;
+				DebugYawTorque += FVector::DotProduct(FVector::CrossProduct(WheelPoint - GetPhysCOM(), Force), SurfaceNormal);
+			}
+		}
+
+	}
+	if (bDebugWheelFriction && DebugGroundedWheels > 0)
+	{
+		const bool bTurnTimingActive = GetPhysThrottleInput() > 0.3f && FMath::Abs(GetPhysSteeringInput()) > 0.3f;
+		if (bTurnTimingActive && TurnStartFrame == INDEX_NONE)
+		{
+			TurnStartFrame = NumFrame();
+			LastTurnSummaryFrame = INDEX_NONE;
+		}
+		else if (!bTurnTimingActive)
+		{
+			TurnStartFrame = INDEX_NONE;
+			LastTurnSummaryFrame = INDEX_NONE;
+		}
+		const FVector UpVector = GetNormalFromWheels();
+		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
+		const float Radius = FMath::Abs(YawRate) > KINDA_SMALL_NUMBER ? AbsForwardSpeed / FMath::Abs(YawRate) : 0.0f;
+		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+		ForwardDir.Normalize();
+		const FVector RightDir = FVector::CrossProduct(UpVector, ForwardDir).GetSafeNormal();
+		const float ForwardAccel = FVector::DotProduct(DebugTotalForce, ForwardDir) / Mass;
+		const float SideAccel = FVector::DotProduct(DebugTotalForce, RightDir) / Mass;
+		const float AppliedForwardAccel = FVector::DotProduct(DebugAppliedAccel, ForwardDir);
+		const float AppliedSideAccel = FVector::DotProduct(DebugAppliedAccel, RightDir);
+		const float SideSpeed = FVector::DotProduct(GetPhysVelocity(), RightDir);
+		const float GroundSpeed = (GetPhysVelocity() - FVector::DotProduct(GetPhysVelocity(), UpVector) * UpVector).Size();
+		const float BasisForwardRate = FVector::DotProduct(GetPhysVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
+		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
+		const float TurnTime = (NumFrame() - TurnStartFrame) / 300.f;
+		const float SmishTargetSpeed = 1234.f * (1.f - FMath::Exp(-TurnTime / 0.74704f));
+		const uint32 SummaryIntervalFrames = static_cast<uint32>(FMath::Max(1, CVarIAmSpeedWheelFrameTurnSummaryIntervalFrames.GetValueOnAnyThread()));
+		if (TurnStartFrame != INDEX_NONE && (LastTurnSummaryFrame == INDEX_NONE || NumFrame() - LastTurnSummaryFrame >= SummaryIntervalFrames))
+		{
+			LastTurnSummaryFrame = NumFrame();
+			const float SpeedError = GetPhysForwardSpeed() - SmishTargetSpeed;
+			const float RadiusRatio = TargetRadius > KINDA_SMALL_NUMBER ? Radius / TargetRadius : 0.0f;
+			UE_LOG(SpeedPhysicsLog, Log,
+				TEXT("[%s(%s)][WheelTurnSummary] Frame=%d TurnTime=%.3f Speed=%.1f SmishTargetSpeed=%.1f SpeedError=%.1f Radius=%.1f TargetRadius=%.1f RadiusRatio=%.3f Steering=%.2f SteerAngle=%.4f SideSpeed=%.1f ForwardLossCurveScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrictionForwardAccel=%.1f FrictionSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f"),
+				*GetOwner()->GetName(), *GetRole(), NumFrame(), TurnTime, GetPhysForwardSpeed(), SmishTargetSpeed, SpeedError, Radius, TargetRadius, RadiusRatio,
+				GetPhysSteeringInput(), SteerAngle, SideSpeed, FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f)), DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
+				ForwardAccel, SideAccel, BasisForwardRate, TotalForwardRateNow);
+		}
+		UE_LOG(SpeedPhysicsLog, Verbose,
+			TEXT("[%s(%s)][WheelFrameFriction] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Steering=%.2f SteerAngle=%.4f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f MaxAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgFrictionScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f"
+				"BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f TurnTime=%.3f SmishTargetSpeed=%.1f"),
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), GetPhysForwardSpeed(), GroundSpeed, SideSpeed, GetPhysSteeringInput(), SteerAngle, TargetRadius, Wheelbase, DebugGroundedWheels,
+			DebugAbsLatSpeedSum / DebugGroundedWheels, DebugMaxAbsLatSpeed, DebugAbsLongSpeedSum / DebugGroundedWheels,
+			DebugFrictionInputSum / DebugGroundedWheels, DebugFrictionScaleSum / DebugGroundedWheels, DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
+			ForwardAccel, SideAccel, AppliedForwardAccel, AppliedSideAccel, BasisForwardRate, TotalForwardRateNow, *DebugTotalForce.ToString(), DebugYawTorque, YawRate, Radius, TurnTime, SmishTargetSpeed);
+	}
+}
 void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 {
 	unsigned char NbWheelsOnGround = NumWheelsOnGround();
+	if (NbWheelsOnGround == 0)
+	{
+		return;
+	}
+
 	FVector UpVector = GetNormalFromWheels(); // surface normal
 	FVector GroundVelocity = GetPhysVelocity() - (GetPhysVelocity().Dot(UpVector)) * UpVector;
 	float GroundSpeed = GroundVelocity.Size();
@@ -1120,12 +1391,20 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 	float ForwardSpeed = GetPhysVelocity().Dot(ForwardVector);
 	float SideSpeed = GetPhysVelocity().Dot(RightVector);
 	auto LocalForwardFriction = (GetLocalForwardFriction() * NumWheelsOnGround()) / 4;
+	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0)
+	{
+		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][HandleGroundFriction] For NbFramesSinceCanMove = %d, LocalForwardFriction=%f, SideFriction=%f"),
+			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), LocalForwardFriction, GetLocalSideFriction());
+	}
 
 	//linearDamping = 600;
 	if (GroundSpeed != 0.0)
 	{
-		// Dampen forward velocity
-		if (ForwardSpeed != 0.0f)
+		const bool bNoDriveInput = !HasDriveInputForGroundFriction();
+		const bool bNoSteeringInput = FMath::Abs(GetPhysSteeringInput()) < ThrottleDeadzone;
+
+// Dampen forward velocity
+		if (!bUseDriveModelLongitudinalFriction && ForwardSpeed != 0.0f)
 		{
 			if (FMath::Abs(ForwardSpeed) < LocalForwardFriction * delta)
 			{
@@ -1139,6 +1418,36 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 				// GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Red, FString::Printf(TEXT("[%s] LocalForwardFriction: %f"), *SkycarOwner->GetRole(),
 				//	LocalForwardFriction));
 			}
+		}
+		if (bUseDriveModelLongitudinalFriction && bNoDriveInput && ForwardSpeed != 0.0f)
+		{
+			if (FMath::Abs(ForwardSpeed) < LocalForwardFriction * delta)
+			{
+				AddPhysVelocity(-ForwardSpeed * ForwardVector);
+			}
+			else
+			{
+				AddPhysAcceleration(-LocalForwardFriction * FMath::Sign(ForwardSpeed) * ForwardVector);
+			}
+		}
+
+		if (bUseWheelFrameLateralFriction)
+		{
+			if ((bNoDriveInput || bNoSteeringInput) && SideSpeed != 0.0f)
+			{
+				const float LocalSideDamping = GetLocalSideFriction() * (static_cast<float>(NbWheelsOnGround) / 4.0f);
+				if (FMath::Abs(SideSpeed) < LocalSideDamping * delta)
+				{
+					AddPhysVelocity(-SideSpeed * RightVector);
+				}
+				else
+				{
+					AddPhysAcceleration(-LocalSideDamping * FMath::Sign(SideSpeed) * RightVector);
+				}
+			}
+
+			ApplyWheelFrameLateralFriction(delta);
+			return;
 		}
 
 		// Dampen side velocity
@@ -1349,6 +1658,11 @@ void USpeedWheeledComponent::SetDampenedAirAngularVelocity(const FVector& Target
 void USpeedWheeledComponent::GameplayTick(const float& DeltaTime, const float& SimTime)
 {
 	HandleInputs(DeltaTime);
+	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0)
+	{
+		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][GameplayTick] For NbFramesSinceCanMove = %d, Kinematic state = (%s)"),
+			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), *GetKinematicState().ToString());
+	}
 }
 
 void USpeedWheeledComponent::HandleInputs(const float& DeltaTime)
@@ -1787,30 +2101,162 @@ void USpeedWheeledComponent::HandleAcceleration()
 		// GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Red, FString::Printf(TEXT("[%s] Cannot move for the moment!!!!"), *GetRole()));
 		return;
 	}
-	float throttleAccel = 0.0f;
-	if (GetPhysThrottleInput() > 0)
-	{
-		throttleAccel = ComputeThrottleAccel();
-	}
-
-	float brakeAccel = 0.0f;
-	if (GetPhysBrakeInput() > 0)
-	{
-		brakeAccel = ComputeBrakeAccel();
-	}
-
-	const float TotalAccel = throttleAccel + brakeAccel;
-	if (TotalAccel != 0)
-	{
-		// UE_LOG(SpeedInputLog, Log, TEXT("[%s(%s)] At NumFrame=%d throttle=%f brake=%f TotalAccel = %fcm/s^2"), *GetName(), *GetRole(), NumFrame(),
-		//	GetPhysThrottleInput(), GetPhysBrakeInput(), TotalAccel);
-		auto GroundNormal = GetNormalFromWheels();
-		auto AccelVector = GetPhysForwardVector() - GetPhysForwardVector().Dot(GroundNormal) * GroundNormal;
-		AccelVector.Normalize();
-		AddPhysAcceleration(AccelVector * TotalAccel);
-	}
+	const float TotalAccel = ComputeDriveAccel();
+	ApplyDriveAcceleration(TotalAccel);
 }
 
+bool USpeedWheeledComponent::IsAcceleratingForWheelFriction() const
+{
+	return FMath::Abs(GetPhysThrottleInput() - GetPhysBrakeInput()) >= ThrottleDeadzone;
+}
+
+bool USpeedWheeledComponent::HasDriveInputForGroundFriction() const
+{
+	return FMath::Abs(GetPhysThrottleInput()) >= ThrottleDeadzone || FMath::Abs(GetPhysBrakeInput()) >= ThrottleDeadzone;
+}
+void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
+{
+	if (Accel == 0.0f)
+		return;
+
+	const uint8 GroundedWheelCount = NumWheelsOnGround();
+	if (!bUseWheelFrameLateralFriction || GroundedWheelCount == 0)
+	{
+		auto GroundNormal = GetNormalFromWheels();
+		auto AccelVector = GetPhysForwardVector() - GetPhysForwardVector().Dot(GroundNormal) * GroundNormal;
+		if (AccelVector.Normalize())
+		{
+			AddPhysAcceleration(AccelVector * Accel);
+		}
+		return;
+	}
+
+	const float ForwardSpeed = GetPhysForwardSpeed();
+	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
+	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
+	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
+	float Wheelbase = 0.0f;
+	{
+		const FVector SurfaceNormal = GetNormalFromWheels().GetSafeNormal();
+		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		if (ForwardDir.Normalize())
+		{
+			float MinForwardOffset = BIG_NUMBER;
+			float MaxForwardOffset = -BIG_NUMBER;
+			for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodies)
+			{
+				if (!Wheel)
+					continue;
+
+				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysLocation(), ForwardDir);
+				MinForwardOffset = FMath::Min(MinForwardOffset, ForwardOffset);
+				MaxForwardOffset = FMath::Max(MaxForwardOffset, ForwardOffset);
+			}
+			Wheelbase = FMath::Max(0.0f, MaxForwardOffset - MinForwardOffset);
+		}
+	}
+	float MaxSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurve, AbsForwardSpeed, 0.0f);
+	const float CurvatureScaleOverride = CVarIAmSpeedWheelFrameSteeringCurvatureScale.GetValueOnAnyThread();
+	const float CurvatureScale = FMath::Max(KINDA_SMALL_NUMBER, CurvatureScaleOverride >= 0.0f ? CurvatureScaleOverride : WheelFrameSteeringCurvatureScale);
+	if (Wheelbase > KINDA_SMALL_NUMBER && FMath::IsFinite(TargetRadius) && TargetRadius > KINDA_SMALL_NUMBER)
+	{
+		MaxSteerAngle = FMath::Atan((Wheelbase * CurvatureScale) / FMath::Max(10.0f, TargetRadius));
+	}
+	const float SteerAngle = FMath::Sign(GetPhysSteeringInput()) * MaxSteerAngle;
+	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
+	const float AccelPerWheel = Accel / static_cast<float>(GroundedWheelCount);
+	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
+	const bool bDebugWheelFriction = CVarIAmSpeedDebugWheelFriction.GetValueOnAnyThread() != 0;
+	int32 DebugDriveWheelCount = 0;
+	float DebugDriveAbsLatSpeedSum = 0.0f;
+	float DebugDriveAbsLongSpeedSum = 0.0f;
+	float DebugDriveFrictionInputSum = 0.0f;
+	float DebugDriveLongitudinalScaleSum = 0.0f;
+	FVector DebugDriveTotalForce = FVector::ZeroVector;
+	FVector DebugDriveAppliedAccel = FVector::ZeroVector;
+	float DebugDriveYawTorque = 0.0f;
+
+	for (int32 WheelIndex = 0; WheelIndex < WheelSubBodies.Num(); ++WheelIndex)
+	{
+		const TObjectPtr<USWheelSubBody>& Wheel = WheelSubBodies[WheelIndex];
+		if (!Wheel || !Wheel->IsOnGround())
+			continue;
+
+		const FVector SurfaceNormal = Wheel->GetHitContactNormal().GetSafeNormal();
+		if (SurfaceNormal.IsNearlyZero())
+			continue;
+
+		const float FrictionStateScale = bIsAccelerating ? 1.0f :
+			FMath::Max(0.0f, EvaluateLinearFloatCurve(NonAcceleratingFrictionScaleCurve, SurfaceNormal.Z, 1.0f));
+
+		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		if (!ForwardDir.Normalize())
+			continue;
+
+		FVector LateralDir = FVector::CrossProduct(SurfaceNormal, ForwardDir).GetSafeNormal();
+		const bool bFrontWheel = WheelIndex < 2;
+		if (bFrontWheel && !FMath::IsNearlyZero(SteerAngle))
+		{
+			LateralDir = FQuat(SurfaceNormal, SteerAngle).RotateVector(LateralDir).GetSafeNormal();
+		}
+
+		const FVector LongitudinalDir = FVector::CrossProduct(LateralDir, SurfaceNormal).GetSafeNormal();
+		const FVector WheelVelocity = GetPhysVelocityAtPoint(Wheel->SteeringPos());
+		const float LateralSpeed = FVector::DotProduct(WheelVelocity, LateralDir);
+		const float LongitudinalSpeed = FVector::DotProduct(WheelVelocity, LongitudinalDir);
+		const float AbsLateralSpeed = FMath::Abs(LateralSpeed);
+		const float AbsLongitudinalSpeed = FMath::Abs(LongitudinalSpeed);
+		if (bDebugWheelFriction)
+		{
+			++DebugDriveWheelCount;
+			DebugDriveAbsLatSpeedSum += AbsLateralSpeed;
+			DebugDriveAbsLongSpeedSum += AbsLongitudinalSpeed;
+		}
+		float FrictionCurveInput = 0.0f;
+		if (AbsLateralSpeed > SlipThreshold)
+		{
+			FrictionCurveInput = AbsLateralSpeed / FMath::Max(KINDA_SMALL_NUMBER, AbsLongitudinalSpeed + AbsLateralSpeed);
+		}
+
+		const float LongitudinalFrictionScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LongitudinalFrictionScaleCurve, FrictionCurveInput, 1.0f));
+		const FVector WheelPoint = Wheel->SteeringPos();
+		const FVector Force = LongitudinalDir * AccelPerWheel * LongitudinalFrictionScale * FrictionStateScale * Mass;
+		const FVector AccelBefore = GetPhysAcceleration();
+		AddPhysForceAtPoint(Force, WheelPoint);
+		if (bDebugWheelFriction)
+		{
+			DebugDriveFrictionInputSum += FrictionCurveInput;
+			DebugDriveLongitudinalScaleSum += LongitudinalFrictionScale * FrictionStateScale;
+			DebugDriveTotalForce += Force;
+			DebugDriveAppliedAccel += GetPhysAcceleration() - AccelBefore;
+			DebugDriveYawTorque += FVector::DotProduct(FVector::CrossProduct(WheelPoint - GetPhysCOM(), Force), SurfaceNormal);
+		}
+	}
+
+	if (bDebugWheelFriction && DebugDriveWheelCount > 0)
+	{
+		const FVector UpVector = GetNormalFromWheels();
+		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
+		const float Radius = FMath::Abs(YawRate) > KINDA_SMALL_NUMBER ? AbsForwardSpeed / FMath::Abs(YawRate) : 0.0f;
+		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+		ForwardDir.Normalize();
+		const FVector RightDir = FVector::CrossProduct(UpVector, ForwardDir).GetSafeNormal();
+		const float ForwardAccel = FVector::DotProduct(DebugDriveTotalForce, ForwardDir) / Mass;
+		const float SideAccel = FVector::DotProduct(DebugDriveTotalForce, RightDir) / Mass;
+		const float AppliedForwardAccel = FVector::DotProduct(DebugDriveAppliedAccel, ForwardDir);
+		const float AppliedSideAccel = FVector::DotProduct(DebugDriveAppliedAccel, RightDir);
+		const float SideSpeed = FVector::DotProduct(GetPhysVelocity(), RightDir);
+		const float GroundSpeed = (GetPhysVelocity() - FVector::DotProduct(GetPhysVelocity(), UpVector) * UpVector).Size();
+		const float BasisForwardRate = FVector::DotProduct(GetPhysVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
+		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
+		UE_LOG(SpeedPhysicsLog, Verbose,
+			TEXT("[%s(%s)][WheelDriveForce] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Accel=%.1f AccelPerWheel=%.1f Steering=%.2f SteerAngle=%.4f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgLongitudinalScale=%.3f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f"),
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), GetPhysForwardSpeed(), GroundSpeed, SideSpeed, Accel, AccelPerWheel, GetPhysSteeringInput(), SteerAngle, TargetRadius, Wheelbase, DebugDriveWheelCount,
+			DebugDriveAbsLatSpeedSum / DebugDriveWheelCount, DebugDriveAbsLongSpeedSum / DebugDriveWheelCount,
+			DebugDriveFrictionInputSum / DebugDriveWheelCount, DebugDriveLongitudinalScaleSum / DebugDriveWheelCount,
+			ForwardAccel, SideAccel, AppliedForwardAccel, AppliedSideAccel, BasisForwardRate, TotalForwardRateNow, *DebugDriveTotalForce.ToString(), DebugDriveYawTorque, YawRate, Radius);
+	}
+}
 float USpeedWheeledComponent::ComputeThrottleAccel() const
 {
 	return ComputeAccel(GetPhysThrottleInput(), true);
@@ -1821,82 +2267,70 @@ float USpeedWheeledComponent::ComputeBrakeAccel() const
 	return ComputeAccel(GetPhysBrakeInput(), false);
 }
 
+float USpeedWheeledComponent::ComputeDriveAccel() const
+{
+	const float signedThrottle = FMath::Clamp(GetPhysThrottleInput() - GetPhysBrakeInput(), -1.0f, 1.0f);
+	return ComputeAccelFromSignedThrottle(signedThrottle);
+}
+
 float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToMoveForward) const
 {
-	float accel = 0.0f;
-	unsigned char nbWheelsOnGround = NumWheelsOnGround();
-	float forwardSpeed = GetPhysForwardSpeed();
-	float absForwardSpeed = FMath::Abs(forwardSpeed);
-	const float steeringSpeedCap = GetSteeringSpeedCap();
-	const float steeringAbs = FMath::Abs(GetPhysSteeringInput());
-	constexpr float SteeringFadeExponent = 1.3f;
-	float steeringAuthority = FMath::Pow(1.f - steeringAbs, SteeringFadeExponent);
+	const float signedThrottle = wantToMoveForward ? InputValue : -InputValue;
+	return ComputeAccelFromSignedThrottle(FMath::Clamp(signedThrottle, -1.0f, 1.0f));
+}
 
-	if (wantToMoveForward == IsPhysGoingForward())
+float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottle) const
+{
+	const uint8 nbWheelsOnGround = NumWheelsOnGround();
+	const float groundRatio = static_cast<float>(nbWheelsOnGround) / 4.0f;
+	const float airRatio = 1.0f - groundRatio;
+	const float forwardSpeed = GetPhysForwardSpeed();
+	const float absForwardSpeed = FMath::Abs(forwardSpeed);
+	const float absThrottle = FMath::Abs(SignedThrottle);
+
+	float engineThrottle = SignedThrottle;
+	float realBrake = 0.0f;
+
+	if (absThrottle >= ThrottleDeadzone)
 	{
-		// Throttle case
-		auto forward_damping = GetLocalForwardFriction();
-		const float absBaseAccel = InputValue > 0 ? (forward_damping * nbWheelsOnGround / 4.0f) : 0;
-		float baseAccel = wantToMoveForward ? absBaseAccel : -absBaseAccel;
-		float inputAccel = 0.0;
-		const float subSteeringSpeedCap = FMath::Max(0.0, steeringSpeedCap - 10.0);
-		constexpr float SteeringSpeedCapNeutralZone = 2.0f; // cm/s
-		const float neutralSteeringSpeedCapMin = FMath::Max(subSteeringSpeedCap, steeringSpeedCap - SteeringSpeedCapNeutralZone);
-		const float neutralSteeringSpeedCapMax = steeringSpeedCap + SteeringSpeedCapNeutralZone;
-		const float airAccel = wantToMoveForward ? InputValue * AirForwardThrottle * (4 - nbWheelsOnGround) / 4.0f :
-			-InputValue * AirBackwardThrottle * (4 - nbWheelsOnGround) / 4.0f;
-		const auto ApplySteeringThrottleLimit = [InputValue, steeringAbs, steeringSpeedCap, absForwardSpeed, nbWheelsOnGround](const float BaseGroundAccel)
+		if (absForwardSpeed > StoppingForwardSpeed && FMath::Sign(SignedThrottle) != FMath::Sign(forwardSpeed))
+		{
+			realBrake = 1.0f;
+			if (absForwardSpeed > BrakingNoThrottleSpeedThreshold)
 			{
-				const float SteeringThrottleBlend = FMath::Clamp(steeringAbs, 0.0f, 1.0f);
-				if (SteeringThrottleBlend <= KINDA_SMALL_NUMBER)
-				{
-					return BaseGroundAccel;
-				}
-				const float SteeringThrottleTimeConstant = FMath::Max(0.01f, CVarSkyLeagueSteeringThrottleTimeConstant.GetValueOnAnyThread());
-				const float GroundRatio = static_cast<float>(nbWheelsOnGround) / 4.0f;
-				const float SteeringGroundAccel = InputValue * FMath::Max(0.0f, (steeringSpeedCap - absForwardSpeed) / SteeringThrottleTimeConstant) * GroundRatio;
-				return FMath::Lerp(BaseGroundAccel, SteeringGroundAccel, SteeringThrottleBlend);
-			};
-		if (absForwardSpeed <= subSteeringSpeedCap)
-		{
-			float absGroundAccel = InputValue * FMath::Lerp(ThrottleAccel, 160, absForwardSpeed / subSteeringSpeedCap) * (nbWheelsOnGround / 4.0f);
-			absGroundAccel = ApplySteeringThrottleLimit(absGroundAccel);
-			const float groundAccel = wantToMoveForward ? absGroundAccel : -absGroundAccel;
-			inputAccel = groundAccel + airAccel;
+				engineThrottle = 0.0f;
+			}
 		}
-		else if (absForwardSpeed < neutralSteeringSpeedCapMin)
-		{
-			const float capBlendRange = FMath::Max(neutralSteeringSpeedCapMin - subSteeringSpeedCap, KINDA_SMALL_NUMBER);
-			float ratio = (absForwardSpeed - subSteeringSpeedCap) / capBlendRange;
-			float absGroundAccel = InputValue * FMath::Lerp(160, 0.0, ratio) * (nbWheelsOnGround / 4.0f);
-			absGroundAccel = ApplySteeringThrottleLimit(absGroundAccel);
-			const float groundAccel = wantToMoveForward ? absGroundAccel : -absGroundAccel;
-			inputAccel = groundAccel + airAccel;
-		}
-		else if (absForwardSpeed <= neutralSteeringSpeedCapMax)
-		{
-			inputAccel = airAccel;
-		}
-		else
-		{
-			inputAccel = airAccel;
-			baseAccel = steeringAuthority * baseAccel;
-		}
-		accel = baseAccel + inputAccel;
 	}
 	else
 	{
-		// Brake case
-		auto GroundAccel = (BrakeAccel * nbWheelsOnGround) / 4.0f;
-		accel = wantToMoveForward ?
-			InputValue * (GroundAccel + AirForwardThrottle * (4 - nbWheelsOnGround) / 4.0f) :
-			-InputValue * (GroundAccel + AirBackwardThrottle * (4 - nbWheelsOnGround) / 4.0f);
-
+		engineThrottle = 0.0f;
+		realBrake = CoastingBrakeFactor;
 	}
 
-	return accel;
-}
+	float driveSpeedScale = EvaluateLinearFloatCurve(
+		DriveSpeedAccelScaleCurve,
+		absForwardSpeed,
+		FMath::Clamp(1.0f - absForwardSpeed / FMath::Max(MaxThrottleSpeed, 1.0f), 0.0f, 1.0f));
 
+	if (nbWheelsOnGround < 3)
+	{
+		driveSpeedScale *= 0.25f;
+	}
+
+	const float groundEngineAccel = engineThrottle * ThrottleAccel * driveSpeedScale * groundRatio;
+	float groundBrakeAccel = 0.0f;
+	if (realBrake > 0.0f && absForwardSpeed > KINDA_SMALL_NUMBER)
+	{
+		groundBrakeAccel = -FMath::Sign(forwardSpeed) * realBrake * BrakeAccel * groundRatio;
+	}
+
+	const float airAccel = engineThrottle >= 0.0f ?
+		engineThrottle * AirForwardThrottle * airRatio :
+		engineThrottle * AirBackwardThrottle * airRatio;
+
+	return groundEngineAccel + groundBrakeAccel + airAccel;
+}
 void USpeedWheeledComponent::HandleTimers()
 {
 	HandleWheelTimers();
@@ -2024,6 +2458,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	// Wheel-by-wheel steering force
 	// -------------------------------------
+	if (bUseExplicitSteeringForce)
+	{
 	for (int i = 0; i < 4; i++)
 	{
 		auto& W = WheelSubBodies[i];
@@ -2082,7 +2518,26 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 			// FVector::DotProduct(Right, idealForce));
 #endif
 	}
-
+	}
+	if (!bUseLegacySteeringVelocityState)
+	{
+#if !(UE_BUILD_SHIPPING)
+		if (CVarIAmSpeedDebugSteering.GetValueOnAnyThread() != 0)
+		{
+			FVector up = GetPhysUpVector();
+			float yawRate = FVector::DotProduct(GetPhysAngularVelocity(), up);
+			if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
+			{
+				float radius = speed / FMath::Abs(yawRate);
+				UE_LOG(SpeedPhysicsLog, Log,
+					TEXT("[%s(%s)][Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, AllowedYaw=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
+					*GetOwner()->GetName(), *GetRole(), NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
+					0.0f, 0.0f, radius, desiredRadiusWall);
+			}
+		}
+#endif
+		return;
+	}
 	// -------------------------------------
 	// Update AllowedSideVelocity / Angular
 	// -------------------------------------
@@ -2198,11 +2653,9 @@ float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity
 	const float SpeedForMinRadius = 500.f; // cm/s
 	const float SpeedForMaxRadius = 2000.f; // cm/s
 	const float absForwardSpeed = FMath::Abs(ForwardVelocity);
-	float speedFactor = FMath::Clamp((absForwardSpeed - SpeedForMinRadius) / (SpeedForMaxRadius - SpeedForMinRadius), 0.f, 1.f);
+	const float speedFactor = FMath::Clamp((absForwardSpeed - SpeedForMinRadius) / (SpeedForMaxRadius - SpeedForMinRadius), 0.f, 1.f);
 	const float baseRadius = FMath::Lerp(MinRadius, MaxRadius, speedFactor);
 
-	// Keep the full-steer radius that was previously tuned, but make partial
-	// steering follow RocketSim's wheel-angle scaling: tan(maxAngle * input) / tan(maxAngle).
 	const float fullSteerRadius = baseRadius / 3.f;
 	const float input = FMath::Clamp(AbsSteeringInput, 0.f, 1.f);
 	if (input <= KINDA_SMALL_NUMBER)
@@ -2210,41 +2663,7 @@ float USpeedWheeledComponent::ComputeSteeringRadius(const float& ForwardVelocity
 		return BIG_NUMBER;
 	}
 
-	const auto GetRocketSimSteerAngle = [](const float Speed)
-		{
-			struct FSteerPoint
-			{
-				float Speed;
-				float Angle;
-			};
-
-			const FSteerPoint Points[] = {
-				{0.f, 0.53356f},
-				{500.f, 0.31930f},
-				{1000.f, 0.18203f},
-				{1500.f, 0.10570f},
-				{1750.f, 0.08507f},
-				{3000.f, 0.03454f}
-			};
-
-			if (Speed <= Points[0].Speed)
-			{
-				return Points[0].Angle;
-			}
-
-			for (int32 Idx = 1; Idx < UE_ARRAY_COUNT(Points); ++Idx)
-			{
-				if (Speed <= Points[Idx].Speed)
-				{
-					const float T = (Speed - Points[Idx - 1].Speed) / (Points[Idx].Speed - Points[Idx - 1].Speed);
-					return FMath::Lerp(Points[Idx - 1].Angle, Points[Idx].Angle, T);
-				}
-			}
-
-			return Points[UE_ARRAY_COUNT(Points) - 1].Angle;
-		};
-
-	const float maxSteerAngle = GetRocketSimSteerAngle(absForwardSpeed);
+	const float maxSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurve, absForwardSpeed, 0.1f);
 	const float fullSteerTan = FMath::Tan(maxSteerAngle);
 	if (FMath::Abs(fullSteerTan) <= KINDA_SMALL_NUMBER)
 	{
@@ -2802,6 +3221,45 @@ void USpeedWheeledComponent::InitChaosVehicle()
 
 	// Setup the wheels
 	bLegacyWheelFrictionPosition = true;
+	bUseDriveModelLongitudinalFriction = true;
+
+	DriveSpeedAccelScaleCurve = {
+		FVector2D(0.0f, 1.0f),
+		FVector2D(1400.0f, 0.1f),
+		FVector2D(1410.0f, 0.0f)
+	};
+
+	SteerAngleFromSpeedCurve = {
+		FVector2D(0.0f, 0.53356f),
+		FVector2D(500.0f, 0.31930f),
+		FVector2D(1000.0f, 0.18203f),
+		FVector2D(1500.0f, 0.10570f),
+		FVector2D(1750.0f, 0.08507f),
+		FVector2D(3000.0f, 0.03454f)
+	};
+
+	bUseWheelFrameLateralFriction = true;
+	bUseExplicitSteeringForce = false;
+	bUseLegacySteeringVelocityState = false;
+	WheelFrameLateralFrictionScale = 1.0f;
+	WheelFrameLongitudinalScrubScale = 0.0f;
+	WheelFrameSteeringCurvatureScale = 1.0f;
+	WheelFrameLateralForwardLossScale = 1.0f;
+	LateralForwardLossScaleCurve = {
+	};
+	LateralFrictionScaleCurve = {
+		FVector2D(0.0f, 1.0f),
+		FVector2D(1.0f, 0.2f)
+	};
+	LongitudinalFrictionScaleCurve = {
+	};
+	NonAcceleratingFrictionScaleCurve = {
+		FVector2D(0.0f, 0.1f),
+		FVector2D(0.7075f, 0.5f),
+		FVector2D(1.0f, 1.0f)
+	};
+	LateralFrictionSlipThreshold = 5.0f;
+
 	WheelSetups.SetNum(4);
 
 	WheelSetups[0].WheelClass = UChaosVehicleWheel::StaticClass();
