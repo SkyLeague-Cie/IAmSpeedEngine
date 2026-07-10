@@ -1101,6 +1101,16 @@ FVector USWheelSubBody::GetHitContactNormal() const
     }
 }
 
+FVector USWheelSubBody::GetHitContactPoint() const
+{
+    if (IsOnGround())
+    {
+        return CurrentHit.ImpactPoint;
+    }
+
+    return WorldPos();
+}
+
 void USWheelSubBody::SetHitContactNormal(const FVector& ImpactNormal)
 {
     CurrentHit.ImpactNormal = ImpactNormal;
