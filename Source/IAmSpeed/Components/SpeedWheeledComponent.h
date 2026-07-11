@@ -114,6 +114,7 @@ public:
 	virtual void SetKinematicState(const SKinematic& NewKinematicState);
 
 	void RegisterTestVelocity(const FVector& InitialVelocity);
+	void RegisterTestVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
@@ -170,9 +171,13 @@ public:
 	UFUNCTION(reliable, NetMulticast)
 	void StartConfrontationMulti(const float& TimeSec);
 	void StartTestWithVelocity(const FVector& InitialVelocity);
+	void StartTestWithVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
+	void StartTestWithVelocityLocal(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	UFUNCTION(reliable, NetMulticast)
 	void StartTestWithVelocityMulti(const FVector& InitialVelocity);
+	UFUNCTION(reliable, NetMulticast)
+	void StartTestWithVelocityAndAngularVelocityMulti(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	void SetCannotMove();
 	void SetCannotMoveLocal();
 	UFUNCTION(reliable, NetMulticast)
@@ -405,6 +410,15 @@ public:
 	// Global multiplier for the wheel-frame lateral friction model.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameLateralFrictionScale = 1.0f;
+	// Lateral friction retained at zero steering input, blended to full authority as steering increases.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameZeroSteerLateralFrictionScale = 1.0f;
+	// Rear lateral friction at full normal steering, blended from one by steering input magnitude.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameSteeringRearLateralFrictionScale = 1.0f;
+	// Optional safety cap for each wheel-frame lateral impulse.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	bool bClampWheelFrameLateralImpulse = true;
 	// Additional impulse relaxation applied to wheel-frame lateral friction while handbraking.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameHandbrakeLateralImpulseScale = 1.0f;
@@ -420,6 +434,12 @@ public:
 	// Speed-to-forward-loss scale curve for wheel-frame lateral friction.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	TArray<FVector2D> LateralForwardLossScaleCurve;
+	// Slip-to-forward-loss scale curve for wheel-frame lateral friction. X uses the lateral slip ratio.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> LateralForwardLossSlipScaleCurve;
+	// Speed-to-forward-loss scale curve used while steering without handbrake.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> SteeringForwardLossSpeedScaleCurve;
 	// Lateral friction scale by slip ratio. X is lateral slip / (forward slip + lateral slip), Y is friction scale.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	TArray<FVector2D> LateralFrictionScaleCurve;
@@ -580,7 +600,7 @@ private:
 	FWheeledInputState WheeledPhysicalInput; // input state used for physics simulation (e.g. after being processed from the user input)
 	FWheeledInputState WheeledPhysicalInputBeforeSlew;
 	int32 LastWheeledInputSlewFrame = INDEX_NONE;
-	FVector CarLocalInvI = FVector::ZeroVector; // local inverse inertia tensor of the car body (in local space)
+	FMatrix CarLocalInvI = FMatrix::Identity; // local inverse inertia tensor of the car body, expressed about the physical COM
 
 	TArray<int32> RecordedBaseFrames;
 	TArray<FBasePhysicsState> RecordedBaseStates; // array of recorded states for network correction

@@ -3456,8 +3456,11 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
     FVector HitboxRelLoc = GetLocalOffset(); // cm
     FQuat HitboxRelRot = GetLocalRotation();
 
-    // 1. Compute d in hitbox local frame (important)
-    FVector d_localChassis = HitboxRelLoc; // -COMLocal; // chassis center is the COM so COMLocal = FVectore::ZeroVector
+    // 1. Compute the box-center-to-COM offset in hitbox local space.
+    const FVector COMLocal = ParentComponent->GetPhysRotation().UnrotateVector(
+        ParentComponent->GetPhysCOM() - ParentComponent->GetPhysLocation()
+    );
+    const FVector d_localChassis = HitboxRelLoc - COMLocal;
     FVector d_in_box = HitboxRelRot.UnrotateVector(d_localChassis);
 
 	// 2. Compute inverse inertia tensor at COM, expressed in box local frame

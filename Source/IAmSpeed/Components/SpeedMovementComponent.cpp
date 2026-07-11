@@ -160,7 +160,7 @@ float USpeedMovementComponent::GetPhysMass() const
 
 FVector USpeedMovementComponent::GetPhysCOM() const
 {
-	return GetPhysLocation() + CenterOfMass;
+	return GetPhysLocation() + GetPhysRotation().RotateVector(CenterOfMass);
 }
 
 const TArray<USSubBody*>& USpeedMovementComponent::GetSubBodies() const

@@ -18,6 +18,14 @@ void ISpeedComponent:: ApplyImpulse(const FVector& LinearImpulse, const FVector&
 
 void ISpeedComponent::IntegrateKinematicsPrv(const float& SubDelta)
 {
+    // The stored kinematic state is attached to the component origin. Account
+    // for the centripetal acceleration of that origin around the physical COM.
+    const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+    if (!OriginToCOM.IsNearlyZero())
+    {
+        const FVector AngularVelocity = GetPhysAngularVelocity();
+        SetPhysAcceleration(GetPhysAcceleration() - FVector::CrossProduct(AngularVelocity, FVector::CrossProduct(AngularVelocity, OriginToCOM)));
+    }
     SetKinematicState(GetKinematicState().Integrate(SubDelta));
 }
 
@@ -225,7 +233,11 @@ void ISpeedComponent::SetPhysAngularVelocity(const FVector& NewAngularVelocity)
 	{
 		return;
 	}
-	SetPhysAngularVelocityRaw(NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
+	const FVector ClampedAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
+	const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+	const FVector COMVelocity = GetPhysVelocity() + FVector::CrossProduct(GetPhysAngularVelocity(), OriginToCOM);
+	SetPhysAngularVelocityRaw(ClampedAngularVelocity);
+	SetPhysVelocityRaw(COMVelocity - FVector::CrossProduct(ClampedAngularVelocity, OriginToCOM));
 }
 
 void ISpeedComponent::SetPhysVelocityAtPoint(const FVector& NewVelocity, const FVector& Point)
@@ -348,6 +360,8 @@ void ISpeedComponent::AddPhysAngularAcceleration(const FVector& DeltaAngularAcce
 {
 	FVector ProjectedDeltaAngularAcceleration = DeltaAngularAcceleration;
 	ProjectAngularDeltaAgainstConstraints(ProjectedDeltaAngularAcceleration);
+    const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+    AddPhysAcceleration(-FVector::CrossProduct(ProjectedDeltaAngularAcceleration, OriginToCOM));
     SetPhysAngularAcceleration(GetPhysAngularAcceleration() + ProjectedDeltaAngularAcceleration);
 }
 
@@ -365,13 +379,15 @@ void ISpeedComponent::AddPhysImpulseAtPoint(const FVector& Impulse, const FVecto
     float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f; // avoid divide by zero
     FVector DeltaV = Impulse / PhysMass;
     // delta w = I^-1 * (r x impulse)
-    const FVector R = Point - GetPhysLocation();
+	const FVector COM = GetPhysCOM();
+    const FVector R = Point - COM;
 	const FMatrix WorldInvInertiaTensor = SubBody? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
     FVector DeltaW = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Impulse));
 
 	ProjectPointDeltaAgainstConstraints(DeltaV, DeltaW);
-    SetPhysVelocity(GetPhysVelocity() + DeltaV);
-    SetPhysAngularVelocity(GetPhysAngularVelocity() + DeltaW);
+	const FVector OriginToCOM = COM - GetPhysLocation();
+    SetPhysVelocityRaw(GetPhysVelocity() + DeltaV - FVector::CrossProduct(DeltaW, OriginToCOM));
+    SetPhysAngularVelocityRaw((GetPhysAngularVelocity() + DeltaW).GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
 }
 
 void ISpeedComponent::AddPhysForceAtPoint(const FVector& Force, const FVector& WorldPoint, const USolidSubBody* SubBody)
@@ -380,12 +396,14 @@ void ISpeedComponent::AddPhysForceAtPoint(const FVector& Force, const FVector& W
     float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f; // avoid divide by zero
     FVector DeltaA = Force / PhysMass;
     // alpha = I^-1 * (r x F)
-    const FVector R = WorldPoint - GetPhysLocation();
+	const FVector COM = GetPhysCOM();
+    const FVector R = WorldPoint - COM;
 	const FMatrix WorldInvInertiaTensor = SubBody? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
     FVector DeltaAlpha = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Force));
 
 	ProjectPointDeltaAgainstConstraints(DeltaA, DeltaAlpha);
-    SetPhysAcceleration(GetPhysAcceleration() + DeltaA);
+	const FVector OriginToCOM = COM - GetPhysLocation();
+    SetPhysAcceleration(GetPhysAcceleration() + DeltaA - FVector::CrossProduct(DeltaAlpha, OriginToCOM));
     SetPhysAngularAcceleration(GetPhysAngularAcceleration() + DeltaAlpha);
 }
 
