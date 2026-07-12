@@ -78,8 +78,8 @@ void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 		return;
 	}
 
-	SetPhysLocation(NewOwner->GetActorLocation());
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
+	SetPhysLocation(NewOwner->GetActorLocation());
 
 	for (USSubBody* SubBody : SubBodies)
 	{
@@ -158,9 +158,14 @@ float USpeedMovementComponent::GetPhysMass() const
 	return PhysMass;
 }
 
-FVector USpeedMovementComponent::GetPhysCOM() const
+const FVector& USpeedMovementComponent::GetPhysCOM() const
 {
-	return GetPhysLocation() + GetPhysRotation().RotateVector(CenterOfMass);
+	return BasePhysicsState.Kinematic.Location;
+}
+
+const FVector& USpeedMovementComponent::GetPhysCenterOfMassLocal() const
+{
+	return CenterOfMass;
 }
 
 const TArray<USSubBody*>& USpeedMovementComponent::GetSubBodies() const
@@ -173,14 +178,9 @@ SubBodyConfig USpeedMovementComponent::GetSubBodyConfig(const USSubBody& SubBody
 	return SubBodyConfig();
 }
 
-const SKinematic& USpeedMovementComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
+SKinematic USpeedMovementComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
-	if (RecordedBaseFrames[Idx] == LocalFrame)
-	{
-		return RecordedBaseStates[Idx].Kinematic;
-	}
-	return BasePhysicsState.Kinematic;
+	return GetOriginKinematicStateForFrame(LocalFrame);
 }
 
 FMatrix USpeedMovementComponent::ComputeWorldInvInertiaTensor() const
@@ -496,20 +496,10 @@ void USpeedMovementComponent::ApplyAccelKinematicsConstraint(const float& delta)
 
 void USpeedMovementComponent::applyAccelerationConstraint(const float& delta)
 {
-	const FVector Acceleration = GetPhysAcceleration();
-	const FVector OriginVelocity = GetPhysVelocity();
-	const FVector AngularVelocity = GetPhysAngularVelocity();
-	const FVector AngularAcceleration = GetPhysAngularAcceleration();
-	const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
-
-	const FVector NewOriginVelocity = SSBox::AdvanceVelocity(OriginVelocity, Acceleration, delta);
-	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAcceleration, delta);
-	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
-
-	const FVector NewCOMVelocity = NewOriginVelocity + FVector::CrossProduct(NewAngularVelocity, OriginToCOM);
+	const FVector COMVelocity = GetPhysCOMVelocity();
+	const FVector NewCOMVelocity = SSBox::AdvanceVelocity(COMVelocity, GetPhysAcceleration(), delta);
 	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
-	const FVector ClampedOriginVelocity = ClampedCOMVelocity - FVector::CrossProduct(NewAngularVelocity, OriginToCOM);
-	const FVector ActualAcceleration = (ClampedOriginVelocity - OriginVelocity) / delta;
+	const FVector ActualAcceleration = (ClampedCOMVelocity - COMVelocity) / delta;
 	SetPhysAcceleration(ActualAcceleration);
 }
 
@@ -520,15 +510,6 @@ void USpeedMovementComponent::applyAngularAccelerationConstraint(const float& de
 	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAccel, delta);
 	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
 	const FVector ActualAngularAccel = (NewAngularVelocity - AngularVelocity) / delta;
-
-	// Keep the origin compensation in sync with the angular acceleration that
-	// survives the speed cap, so clamping cannot accelerate the COM.
-	const FVector AngularAccelDelta = ActualAngularAccel - AngularAccel;
-	if (!AngularAccelDelta.IsNearlyZero())
-	{
-		const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
-		AddPhysAcceleration(-FVector::CrossProduct(AngularAccelDelta, OriginToCOM));
-	}
 
 	SetPhysAngularAcceleration(ActualAngularAccel);
 }

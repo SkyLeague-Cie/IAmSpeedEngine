@@ -256,7 +256,7 @@ SKinematic USWheelSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) 
     SKinematic WheelKinematics;
     if (!ParentComponent)
         return WheelKinematics;
-    SKinematic CarKinematics = ParentComponent->GetKinematicStateForFrame(NumFrame);
+    SKinematic CarKinematics = ParentComponent->GetOriginKinematicStateForFrame(NumFrame);
     FTransform ChassisTM(CarKinematics.Rotation, CarKinematics.Location);
     auto WheelPos = WorldPosFromCarTransform(ChassisTM);
     auto WheelVel = ParentComponent->GetPhysVelocityAtPoint(WheelPos);

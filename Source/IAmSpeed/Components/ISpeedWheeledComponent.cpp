@@ -73,7 +73,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 	const float Softness = FMath::Max(CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread(), 0.0f);
 
 	// Snapshot
-	const FVector V0 = GetPhysVelocity();
+	const FVector V0 = GetPhysCOMVelocity();
 	const FVector W0 = GetPhysAngularVelocity();
 
 	for (const SWheelGroundContact& C : PendingWheelGroundContacts)

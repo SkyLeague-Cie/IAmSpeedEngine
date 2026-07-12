@@ -321,11 +321,8 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 		return;
 	}
 	SpeedCarOwner = Cast<ASpeedCar>(NewOwner);
-	SetPhysLocation(NewOwner->GetActorLocation());
-	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
-	// Prefer the inherited Blueprint override when it is configured. Keep both
-	// representations synchronized: IAmSpeed uses CenterOfMass, Chaos uses
-	// CenterOfMassOverride.
+	// Resolve the fixed local COM before placing the origin. The canonical
+	// kinematic state is COM-based, while the actor starts at its mesh origin.
 	if (!CenterOfMassOverride.IsNearlyZero())
 	{
 		CenterOfMass = CenterOfMassOverride;
@@ -336,7 +333,8 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	}
 
 	bEnableCenterOfMassOverride = true;
-	// init sub-bodies
+	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
+	SetPhysLocation(NewOwner->GetActorLocation());	// init sub-bodies
 	if (SubBodies.Num() > 0)
 	{
 		HitboxSubBody = Cast<UBoxSubBody>(SubBodies[0]);
@@ -687,11 +685,15 @@ float USpeedWheeledComponent::GetPhysMass() const
 	return PhysMass;
 }
 
-FVector USpeedWheeledComponent::GetPhysCOM() const
+const FVector& USpeedWheeledComponent::GetPhysCOM() const
 {
-	return GetPhysLocation() + GetPhysRotation().RotateVector(CenterOfMass);
+	return BasePhysicsState.Kinematic.Location;
 }
 
+const FVector& USpeedWheeledComponent::GetPhysCenterOfMassLocal() const
+{
+	return CenterOfMass;
+}
 const TArray<USSubBody*>& USpeedWheeledComponent::GetSubBodies() const
 {
 	return SubBodies;
@@ -713,16 +715,10 @@ WheelSubBodyConfig USpeedWheeledComponent::GetWheelSubBodyConfig(const USWheelSu
 	return WheelSubBodyConfig();
 }
 
-const SKinematic& USpeedWheeledComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
+SKinematic USpeedWheeledComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
-	if (RecordedBaseFrames[Idx] == LocalFrame)
-	{
-		return RecordedBaseStates[Idx].Kinematic;
-	}
-	return BasePhysicsState.Kinematic;
+	return GetOriginKinematicStateForFrame(LocalFrame);
 }
-
 FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
 {
 	const FMatrix ChassisToWorld = FRotationMatrix::Make(GetPhysRotation().Rotator());
@@ -1331,7 +1327,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				if (!Wheel)
 					continue;
 
-				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysLocation(), ForwardDir);
+				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysCOM(), ForwardDir);
 				MinForwardOffset = FMath::Min(MinForwardOffset, ForwardOffset);
 				MaxForwardOffset = FMath::Max(MaxForwardOffset, ForwardOffset);
 			}
@@ -1839,7 +1835,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 		if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 		{
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][End HandleGroundFriction] SinceCanMove=%d Wheels=%d COMKinematic=(%s)"),
-				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *GetCOMKinematicState().ToString());
+				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *GetKinematicState().ToString());
 		}
 	}
 }
@@ -2055,26 +2051,12 @@ void USpeedWheeledComponent::ApplyAccelKinematicsConstraint(const float& delta)
 
 void USpeedWheeledComponent::applyAccelerationConstraint(const float& delta)
 {
-	const FVector Acceleration = GetPhysAcceleration();
-	const FVector OriginVelocity = GetPhysVelocity();
-	const FVector AngularVelocity = GetPhysAngularVelocity();
-	const FVector AngularAcceleration = GetPhysAngularAcceleration();
-	const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
-
-	const FVector NewOriginVelocity = SSBox::AdvanceVelocity(OriginVelocity, Acceleration, delta);
-	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAcceleration, delta);
-	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
-
-	// The linear speed cap is a property of the rigid body, hence it applies to
-	// its centre of mass. Predict the capped angular velocity too, otherwise
-	// angular acceleration around an offset COM would spuriously consume linear speed.
-	const FVector NewCOMVelocity = NewOriginVelocity + FVector::CrossProduct(NewAngularVelocity, OriginToCOM);
+	const FVector COMVelocity = GetPhysCOMVelocity();
+	const FVector NewCOMVelocity = SSBox::AdvanceVelocity(COMVelocity, GetPhysAcceleration(), delta);
 	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
-	const FVector ClampedOriginVelocity = ClampedCOMVelocity - FVector::CrossProduct(NewAngularVelocity, OriginToCOM);
-	const FVector ActualAcceleration = (ClampedOriginVelocity - OriginVelocity) / delta;
+	const FVector ActualAcceleration = (ClampedCOMVelocity - COMVelocity) / delta;
 	SetPhysAcceleration(ActualAcceleration);
 }
-
 void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& delta)
 {
 	const FVector AngularAccel = GetPhysAngularAcceleration();
@@ -2083,30 +2065,17 @@ void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& del
 	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
 	const FVector ActualAngularAccel = (NewAngularVelocity - AngularVelocity) / delta;
 
-	// AddPhysAngularAcceleration already converted the requested angular
-	// acceleration into origin acceleration to preserve the COM trajectory.
-	// If the angular-speed cap reduces it, undo the excess linear compensation.
-	const FVector AngularAccelDelta = ActualAngularAccel - AngularAccel;
-	FVector COMCompensation = FVector::ZeroVector;
-	if (!AngularAccelDelta.IsNearlyZero())
-	{
-		const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
-		COMCompensation = -FVector::CrossProduct(AngularAccelDelta, OriginToCOM);
-		AddPhysAcceleration(COMCompensation);
-	}
-
 	if (CVarIAmSpeedDebugSteering.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 	{
 		UE_LOG(SpeedPhysicsLog, Log,
-			TEXT("[%s(%s)][AngularConstraint] Frame=%d W=%s RequestedA=%s ActualA=%s CapDelta=%s COMComp=%s MaxW=%.3f"),
+			TEXT("[%s(%s)][AngularConstraint] Frame=%d W=%s RequestedA=%s ActualA=%s CapDelta=%s MaxW=%.3f"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(),
 			*AngularVelocity.ToString(), *AngularAccel.ToString(), *ActualAngularAccel.ToString(),
-			*AngularAccelDelta.ToString(), *COMCompensation.ToString(), GetPhysMaxAngularSpeed());
+			*(ActualAngularAccel - AngularAccel).ToString(), GetPhysMaxAngularSpeed());
 	}
 
 	SetPhysAngularAcceleration(ActualAngularAccel);
 }
-
 void USpeedWheeledComponent::PostGameplayTick(const float& DeltaTime, const float& SimTime)
 {
 	WheeledUserInput.bCanMove = CanMove();
@@ -2637,7 +2606,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 				if (!Wheel)
 					continue;
 
-				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysLocation(), ForwardDir);
+				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysCOM(), ForwardDir);
 				MinForwardOffset = FMath::Min(MinForwardOffset, ForwardOffset);
 				MaxForwardOffset = FMath::Max(MaxForwardOffset, ForwardOffset);
 			}

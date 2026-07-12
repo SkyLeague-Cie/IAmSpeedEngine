@@ -77,8 +77,9 @@ public:
 	uint16 GetMinNbFramesBeforeCanMove() const;
 	// Mass to use for physics simulation
 	float GetPhysMass() const override;
-	// Center of mass to use for physics simulation (in world space)
-	FVector GetPhysCOM() const override;
+	// Center-of-mass state and its fixed local offset from the component origin.
+	const FVector& GetPhysCOM() const override;
+	const FVector& GetPhysCenterOfMassLocal() const override;
 	// Get array of sub-bodies owned by this component
 	const TArray<USSubBody*>& GetSubBodies() const;
 	// Get SubBody Config by SubBody
@@ -87,7 +88,7 @@ public:
 	WheelSubBodyConfig GetWheelSubBodyConfig(const USWheelSubBody& SubBody) const override;
 
 	// Get appropriate kinematic state for SubBody (e.g. wheel kinematics or hitbox kinematics from car body)
-	const SKinematic& GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& NumFrame) const;
+	SKinematic GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& NumFrame) const;
 	// overload this function to return the appropriate inertia tensor in world space
 	virtual FMatrix ComputeWorldInvInertiaTensor() const;
 	// overload this function to return the appropriate inertia tensor in world space for the given sub-body (e.g. for a car body, the inertia tensor of the wheel sub-body would be different from the inertia tensor of the hitbox sub-body)

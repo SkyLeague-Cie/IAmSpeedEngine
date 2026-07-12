@@ -2798,10 +2798,8 @@ SKinematic UBoxSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) con
 {
     if (!ParentComponent)
         return SKinematic();
-    const SKinematic& CarKinematicState = ParentComponent->GetKinematicStateForFrame(NumFrame);
-    return GetKinematicsFromOwnerKS(CarKinematicState);
+    return GetKinematicsFromOwnerKS(ParentComponent->GetOriginKinematicStateForFrame(NumFrame));
 }
-
 SKinematic UBoxSubBody::GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const
 {
     auto HitboxRelativeLocation = GetLocalOffset();
