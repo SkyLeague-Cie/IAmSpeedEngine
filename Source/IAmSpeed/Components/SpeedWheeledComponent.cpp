@@ -1365,8 +1365,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 	float DebugRearAbsLatSpeedSum = 0.0f;
 	int32 DebugFrontWheelCount = 0;
 	int32 DebugRearWheelCount = 0;
-	const bool bIsHandbraking = IsHandbrakingForWheelFriction();
-	const float HandbrakeFrictionValue = bIsHandbraking ? 1.0f : WheelFrameHandbrakeValue;
+	const float HandbrakeFrictionValue = WheelFrameHandbrakeValue;
 	float DebugSteeringRearReleaseScale = 1.0f;
 
 	for (int32 WheelIndex = 0; WheelIndex < WheelSubBodies.Num(); ++WheelIndex)
@@ -1525,7 +1524,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				FrictionScale *= FMath::Lerp(1.0f, HandbrakeFactor, HandbrakeFrictionValue);
 			}
 
-			constexpr float LateralImpulseRelaxation = 0.2f;
+			const float LateralImpulseRelaxation = 1.0f - FMath::Exp(-delta / FMath::Max(KINDA_SMALL_NUMBER, WheelFrameLateralImpulseTimeConstant));
 			const float LateralScaleOverride = CVarIAmSpeedWheelFrameLateralFrictionScale.GetValueOnAnyThread();
 			const float LateralScale = LateralScaleOverride >= 0.0f ? LateralScaleOverride : WheelFrameLateralFrictionScale;
 			const float ZeroSteerLateralScaleOverride = CVarIAmSpeedWheelFrameZeroSteerLateralFrictionScale.GetValueOnAnyThread();
@@ -1566,12 +1565,12 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const bool bLateralImpulseClamped = bClampLateralImpulse && MaxLateralImpulse > 0.0f && UnclampedLateralImpulse > MaxLateralImpulse;
 			if (bDebugWheelFrictionDetailed && NumFrame() % DetailedDebugIntervalFrames == 0)
 			{
-				const float ContactArmForward = FVector::DotProduct(ContactArm, ForwardDir);
+				const float ContactArmForward = FVector::DotProduct(ContactArm, LongitudinalDir);
 				const float ContactArmLateral = FVector::DotProduct(ContactArm, LateralDir);
-				const float ProjectedArmForward = FVector::DotProduct(ProjectedContactArm, ForwardDir);
+				const float ProjectedArmForward = FVector::DotProduct(ProjectedContactArm, LongitudinalDir);
 				const float ProjectedArmLateral = FVector::DotProduct(ProjectedContactArm, LateralDir);
 				UE_LOG(SpeedPhysicsLog, Log,
-					TEXT("[%s(%s)][WheelFrameBilateral] COMLocal=%s COMWorld=%s Frame=%d Wheel=%d ContactArm(F=%.2f,R=%.2f) ProjectedArm(F=%.2f,R=%.2f) Denom=%.8f EffectiveMass=%.2f RawImpulse=%.2f AppliedImpulse=%.2f"),
+					TEXT("[%s(%s)][WheelFrameBilateral] COMLocal=%s COMWorld=%s Frame=%d Wheel=%d ContactArm(Long=%.2f,Lat=%.2f) ProjectedArm(Long=%.2f,Lat=%.2f) Denom=%.8f EffectiveMass=%.2f RawImpulse=%.2f AppliedImpulse=%.2f"),
 					*GetOwner()->GetName(), *GetRole(), *CenterOfMass.ToString(), *PhysCOM.ToString(), NumFrame(), WheelIndex,
 					ContactArmForward, ContactArmLateral, ProjectedArmForward, ProjectedArmLateral,
 					InvEffectiveMass, 1.0f / InvEffectiveMass, UnclampedLateralImpulse, LateralImpulse);
@@ -1586,7 +1585,12 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float SteeringForwardLossSpeedScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER
 				? 1.0f
 				: FMath::Max(0.0f, EvaluateLinearFloatCurve(SteeringForwardLossSpeedScaleCurve, AbsForwardSpeed, 1.0f));
-			const float ForwardLossScale = ForwardLossCurveScale * ForwardLossSlipScale * SteeringForwardLossSpeedScale * ForwardLossScaleMultiplier;
+			// RocketSim applies the lateral wheel impulse directly along the steered axle.
+			// Its natural forward component is enough during a handbrake; scaling it again
+			// adds artificial longitudinal drag and changes the yaw moment balance.
+			const float ForwardLossScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER
+				? 1.0f
+				: ForwardLossCurveScale * ForwardLossSlipScale * SteeringForwardLossSpeedScale * ForwardLossScaleMultiplier;
 			FVector LateralForce = RawLateralForce;
 			const FVector ForwardComponent = FVector::DotProduct(RawLateralForce, ForwardDir) * ForwardDir;
 			const bool bForwardComponentOpposesTravel =
@@ -1621,16 +1625,16 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float WheelYawTorque = FVector::DotProduct(FVector::CrossProduct(ProjectedContactArm, Force), SurfaceNormal);
 			if (bDebugWheelFrictionDetailed && NumFrame() % DetailedDebugIntervalFrames == 0)
 			{
-				const float ArmForward = FVector::DotProduct(ContactArm, ForwardDir);
+				const float ArmForward = FVector::DotProduct(ContactArm, LongitudinalDir);
 				const float ArmRight = FVector::DotProduct(ContactArm, LateralDir);
 				const float ArmUp = FVector::DotProduct(ContactArm, ChassisUp);
-				const float ForceForward = FVector::DotProduct(Force, ForwardDir);
+				const float ForceForward = FVector::DotProduct(Force, LongitudinalDir);
 				const float ForceRight = FVector::DotProduct(Force, LateralDir);
 				UE_LOG(SpeedPhysicsLog, Log,
-					TEXT("[%s(%s)][WheelFrameWheel] Frame=%d Wheel=%d Front=%d Handbrake=%.3f Clamp=%d Clamped=%d Arm(F=%.2f,R=%.2f,U=%.2f) CurveV(Lat=%.2f,Long=%.2f) ContactLat=%.2f FrictionInput=%.3f FrictionScale=%.3f CombinedScale=%.4f ForwardLoss(Speed=%.3f,Slip=%.3f,Steering=%.3f) UnclampedAccel=%.1f AppliedAccel=%.1f Force(F=%.1f,R=%.1f) YawTorque=%.1f"),
+					TEXT("[%s(%s)][WheelFrameWheel] Frame=%d Wheel=%d Front=%d Handbrake=%.3f Clamp=%d Clamped=%d Arm(Long=%.2f,Lat=%.2f,U=%.2f) HardPoint=%s ContactPoint=%s CurveV(Lat=%.2f,Long=%.2f) ContactLat=%.2f FrictionInput=%.3f FrictionScale=%.3f CombinedScale=%.4f ForwardLoss(Speed=%.3f,Slip=%.3f,Steering=%.3f) UnclampedAccel=%.1f AppliedAccel=%.1f Force(Long=%.1f,Lat=%.1f) YawTorque=%.1f"),
 					*GetOwner()->GetName(), *GetRole(), NumFrame(), WheelIndex, bFrontWheel ? 1 : 0, HandbrakeFrictionValue,
 					bClampLateralImpulse ? 1 : 0, bLateralImpulseClamped ? 1 : 0,
-					ArmForward, ArmRight, ArmUp, CurveLateralSpeed, CurveLongitudinalSpeed, LateralSpeed,
+					ArmForward, ArmRight, ArmUp, *HardPoint.ToString(), *ContactPoint.ToString(), CurveLateralSpeed, CurveLongitudinalSpeed, LateralSpeed,
 					FrictionCurveInput, FrictionScale, CombinedFrictionScale, ForwardLossCurveScale, ForwardLossSlipScale, SteeringForwardLossSpeedScale, UnclampedAccelToApply, AccelToApply,
 					ForceForward, ForceRight, WheelYawTorque);
 			}
@@ -2280,6 +2284,13 @@ void USpeedWheeledComponent::StartTestWithVelocityLocal(const FVector& InitialVe
 	RegisterTestVelocity(InitialVelocity, InitialAngularVelocity);
 }
 
+void USpeedWheeledComponent::InitializeWheelFrameHandbrakeState(const float InitialValue, const float InitialActiveTime)
+{
+	WheelFrameHandbrakeValue = FMath::Clamp(InitialValue, 0.0f, 1.0f);
+	WheelFrameHandbrakeActiveTime = FMath::Max(0.0f, InitialActiveTime);
+	LastWheelFrameHandbrakeUpdateFrame = INDEX_NONE;
+}
+
 void USpeedWheeledComponent::StartTestWithVelocityMulti_Implementation(const FVector& InitialVelocity)
 {
 	StartTestWithVelocityLocal(InitialVelocity);
@@ -2618,8 +2629,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
 	const float AccelPerWheel = Accel / static_cast<float>(GroundedWheelCount);
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
-	const bool bIsHandbraking = IsHandbrakingForWheelFriction();
-	const float HandbrakeFrictionValue = bIsHandbraking ? 1.0f : WheelFrameHandbrakeValue;
+	const float HandbrakeFrictionValue = WheelFrameHandbrakeValue;
 	float DebugSteeringRearReleaseScale = 1.0f;
 	const bool bDebugWheelFriction = CVarIAmSpeedDebugWheelFriction.GetValueOnAnyThread() != 0;
 	int32 DebugDriveWheelCount = 0;
@@ -3727,6 +3737,7 @@ void USpeedWheeledComponent::InitChaosVehicle()
 	bUseExplicitSteeringForce = false;
 	bUseLegacySteeringVelocityState = false;
 	WheelFrameLateralFrictionScale = 1.0f;
+	WheelFrameLateralImpulseTimeConstant = 0.037345f;
 	WheelFrameSteeringRearLateralFrictionScale = 1.0f;
 	WheelFrameLongitudinalScrubScale = 0.0f;
 	WheelFrameSteeringCurvatureScale = 1.0f;

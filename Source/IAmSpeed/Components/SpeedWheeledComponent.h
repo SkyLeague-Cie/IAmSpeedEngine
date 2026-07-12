@@ -173,6 +173,8 @@ public:
 	void StartConfrontationMulti(const float& TimeSec);
 	void StartTestWithVelocity(const FVector& InitialVelocity);
 	void StartTestWithVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
+	// Restores the handbrake phase when a deterministic scenario starts mid-powerslide.
+	void InitializeWheelFrameHandbrakeState(float InitialValue, float InitialActiveTime = 0.0f);
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	UFUNCTION(reliable, NetMulticast)
@@ -411,6 +413,9 @@ public:
 	// Global multiplier for the wheel-frame lateral friction model.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameLateralFrictionScale = 1.0f;
+	// Response time for the wheel-frame bilateral lateral impulse. This keeps tire response stable across physics tick rates.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameLateralImpulseTimeConstant = 0.037345f;
 	// Lateral friction retained at zero steering input, blended to full authority as steering increases.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameZeroSteerLateralFrictionScale = 1.0f;
@@ -419,7 +424,7 @@ public:
 	float WheelFrameSteeringRearLateralFrictionScale = 1.0f;
 	// Optional safety cap for each wheel-frame lateral impulse.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
-	bool bClampWheelFrameLateralImpulse = true;
+	bool bClampWheelFrameLateralImpulse = false;
 	// Additional impulse relaxation applied to wheel-frame lateral friction while handbraking.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameHandbrakeLateralImpulseScale = 1.0f;
