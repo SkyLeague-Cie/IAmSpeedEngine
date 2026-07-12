@@ -505,11 +505,21 @@ void USpeedMovementComponent::applyAccelerationConstraint(const float& delta)
 
 void USpeedMovementComponent::applyAngularAccelerationConstraint(const float& delta)
 {
-	auto angularAccel = GetPhysAngularAcceleration();
-	auto angularVel = GetPhysAngularVelocity();
-	auto newAngularVel = SSBox::AdvanceAngularVelocity(angularVel, angularAccel, delta);
-	newAngularVel = newAngularVel.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
-	auto ActualAngularAccel = (newAngularVel - angularVel) / delta;
+	const FVector AngularAccel = GetPhysAngularAcceleration();
+	const FVector AngularVelocity = GetPhysAngularVelocity();
+	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAccel, delta);
+	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
+	const FVector ActualAngularAccel = (NewAngularVelocity - AngularVelocity) / delta;
+
+	// Keep the origin compensation in sync with the angular acceleration that
+	// survives the speed cap, so clamping cannot accelerate the COM.
+	const FVector AngularAccelDelta = ActualAngularAccel - AngularAccel;
+	if (!AngularAccelDelta.IsNearlyZero())
+	{
+		const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+		AddPhysAcceleration(-FVector::CrossProduct(AngularAccelDelta, OriginToCOM));
+	}
+
 	SetPhysAngularAcceleration(ActualAngularAccel);
 }
 

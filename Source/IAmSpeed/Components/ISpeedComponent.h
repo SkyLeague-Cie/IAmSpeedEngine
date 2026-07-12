@@ -65,6 +65,9 @@ public:
 	void SetPhysRotation(const FQuat& NewRotation);
 	const FVector& GetPhysVelocity() const;
 	FVector GetPhysVelocityAtPoint(const FVector& Point) const;
+	// The stored kinematic velocity is attached to the component origin.
+	// Use this when gameplay needs the rigid body's center-of-mass velocity.
+	FVector GetPhysCOMVelocity() const;
 	const FVector& GetPhysAngularVelocity() const;
 	virtual float GetPhysMaxSpeed() const = 0;
 	virtual float GetPhysMaxAngularSpeed() const = 0;

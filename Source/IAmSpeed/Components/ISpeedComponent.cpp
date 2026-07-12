@@ -222,6 +222,11 @@ FVector ISpeedComponent::GetPhysVelocityAtPoint(const FVector& Point) const
     return GetPhysVelocity() + FVector::CrossProduct(GetPhysAngularVelocity(), R);
 }
 
+FVector ISpeedComponent::GetPhysCOMVelocity() const
+{
+	return GetPhysVelocityAtPoint(GetPhysCOM());
+}
+
 const FVector& ISpeedComponent::GetPhysAngularVelocity() const
 {
 	return GetKinematicState().AngularVelocity;

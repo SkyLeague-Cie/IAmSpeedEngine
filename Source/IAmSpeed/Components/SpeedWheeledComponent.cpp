@@ -2040,11 +2040,22 @@ void USpeedWheeledComponent::applyAccelerationConstraint(const float& delta)
 
 void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& delta)
 {
-	auto angularAccel = GetPhysAngularAcceleration();
-	auto angularVel = GetPhysAngularVelocity();
-	auto newAngularVel = SSBox::AdvanceAngularVelocity(angularVel, angularAccel, delta);
-	newAngularVel = newAngularVel.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
-	auto ActualAngularAccel = (newAngularVel - angularVel) / delta;
+	const FVector AngularAccel = GetPhysAngularAcceleration();
+	const FVector AngularVelocity = GetPhysAngularVelocity();
+	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAccel, delta);
+	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
+	const FVector ActualAngularAccel = (NewAngularVelocity - AngularVelocity) / delta;
+
+	// AddPhysAngularAcceleration already converted the requested angular
+	// acceleration into origin acceleration to preserve the COM trajectory.
+	// If the angular-speed cap reduces it, undo the excess linear compensation.
+	const FVector AngularAccelDelta = ActualAngularAccel - AngularAccel;
+	if (!AngularAccelDelta.IsNearlyZero())
+	{
+		const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+		AddPhysAcceleration(-FVector::CrossProduct(AngularAccelDelta, OriginToCOM));
+	}
+
 	SetPhysAngularAcceleration(ActualAngularAccel);
 }
 
