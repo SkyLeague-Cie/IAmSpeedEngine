@@ -63,6 +63,9 @@ public:
 	void SetPhysLocation(const FVector& NewLocation);
 	const FQuat& GetPhysRotation() const;
 	void SetPhysRotation(const FQuat& NewRotation);
+	// Applies an instantaneous orientation correction without teleporting the
+	// rigid body's center of mass or changing its COM velocity.
+	void SetPhysRotationPreserveCOM(const FQuat& NewRotation);
 	const FVector& GetPhysVelocity() const;
 	FVector GetPhysVelocityAtPoint(const FVector& Point) const;
 	// The stored kinematic velocity is attached to the component origin.

@@ -1222,7 +1222,7 @@ void USpeedWheeledComponent::HandleRestForce()
 	const FVector Accel = GetPhysAcceleration();
 
 	// --- HARD STOP: never apply rest force if we are separating from the plane ---
-	const FVector Vcm = GetPhysVelocity();
+	const FVector Vcm = GetPhysCOMVelocity();
 	const float vN = FVector::DotProduct(Vcm, N);
 
 	// If separating or stationary relative to plane, DO NOT apply rest force

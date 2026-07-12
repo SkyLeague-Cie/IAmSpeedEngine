@@ -201,6 +201,20 @@ void ISpeedComponent::SetPhysRotation(const FQuat& NewRotation)
 	SetKinematicState(K);
 }
 
+void ISpeedComponent::SetPhysRotationPreserveCOM(const FQuat& NewRotation)
+{
+	const FQuat OldRotation = GetPhysRotation();
+	const FVector COMLocation = GetPhysCOM();
+	const FVector COMVelocity = GetPhysCOMVelocity();
+	const FVector OldOriginToCOM = COMLocation - GetPhysLocation();
+	const FQuat RotationDelta = (NewRotation * OldRotation.Inverse()).GetNormalized();
+	const FVector NewOriginToCOM = RotationDelta.RotateVector(OldOriginToCOM);
+
+	SetPhysRotation(NewRotation);
+	SetPhysLocation(COMLocation - NewOriginToCOM);
+	SetPhysVelocity(COMVelocity - FVector::CrossProduct(GetPhysAngularVelocity(), NewOriginToCOM));
+}
+
 const FVector& ISpeedComponent::GetPhysVelocity() const
 {
     return GetKinematicState().Velocity;

@@ -723,7 +723,7 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
         const float CarUpGroundDot = FVector::DotProduct(WheelComponent->GetPhysUpVector().GetSafeNormal(), FVector::UpVector);
         const FVector VelAtPoint = WheelComponent->GetPhysVelocityAtPoint(WorldPoint);
         const float vN = FVector::DotProduct(VelAtPoint, ContactNormal);
-        const float BodyVN = FVector::DotProduct(WheelComponent->GetPhysVelocity(), ContactNormal);
+        const float BodyVN = FVector::DotProduct(WheelComponent->GetPhysCOMVelocity(), ContactNormal);
         const float SkipMaxInwardNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardNormalVelocity.GetValueOnAnyThread());
         const float SkipMaxInwardBodyNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardBodyNormalVelocity.GetValueOnAnyThread());
         if (CVarSkyLeagueSuspensionSkipOverextendedWheelContact.GetValueOnAnyThread() != 0 &&
