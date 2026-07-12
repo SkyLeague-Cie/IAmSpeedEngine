@@ -1650,7 +1650,10 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 	}
 	if (bDebugWheelFriction && DebugGroundedWheels > 0)
 	{
-		const bool bTurnTimingActive = GetPhysThrottleInput() > 0.3f && FMath::Abs(GetPhysSteeringInput()) > 0.3f;
+		const bool bHasDriveInput =
+			FMath::Abs(GetPhysThrottleInput()) > 0.3f ||
+			FMath::Abs(GetPhysBrakeInput()) > 0.3f;
+		const bool bTurnTimingActive = bHasDriveInput && FMath::Abs(GetPhysSteeringInput()) > 0.3f;
 		if (bTurnTimingActive && TurnStartFrame == INDEX_NONE)
 		{
 			TurnStartFrame = NumFrame();
@@ -1688,10 +1691,13 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float SpeedError = GetPhysForwardSpeed() - SmishTargetSpeed;
 			const float RadiusRatio = TargetRadius > KINDA_SMALL_NUMBER ? Radius / TargetRadius : 0.0f;
 			const float SlipAngleDeg = FMath::RadiansToDegrees(FMath::Atan2(SideSpeed, ForwardSpeed));
+			const float DebugAverageFrictionInput = DebugFrictionInputSum / DebugGroundedWheels;
+			const float DebugForwardLossSlipScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossSlipScaleCurve, DebugAverageFrictionInput, 1.0f));
+			const float DebugSteeringForwardLossSpeedScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER ? 1.0f : FMath::Max(0.0f, EvaluateLinearFloatCurve(SteeringForwardLossSpeedScaleCurve, AbsForwardSpeed, 1.0f));
 			UE_LOG(SpeedPhysicsLog, Warning,
-				TEXT("[%s(%s)][WheelTurnSummary] Frame=%d TurnTime=%.3f Speed=%.1f SmishTargetSpeed=%.1f SpeedError=%.1f Radius=%.1f TargetRadius=%.1f RadiusRatio=%.3f YawRate=%.3f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f WheelFrame=%d LegacySteering=%d AllowedYaw=%.3f SideSpeed=%.1f SlipAngleDeg=%.2fdeg ForwardLossCurveScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrictionForwardAccel=%.1f FrictionSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f"),
+				TEXT("[%s(%s)][WheelTurnSummary] Frame=%d TurnTime=%.3f Speed=%.1f SmishTargetSpeed=%.1f SpeedError=%.1f Radius=%.1f TargetRadius=%.1f RadiusRatio=%.3f YawRate=%.3f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f WheelFrame=%d LegacySteering=%d AllowedYaw=%.3f SideSpeed=%.1f SlipAngleDeg=%.2fdeg ForwardLossCurveScale=%.3f ForwardLossSlipScale=%.3f SteeringForwardLossSpeedScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrictionForwardAccel=%.1f FrictionSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f"),
 				*GetOwner()->GetName(), *GetRole(), NumFrame(), TurnTime, GetPhysForwardSpeed(), SmishTargetSpeed, SpeedError, Radius, TargetRadius, RadiusRatio,
-				YawRate, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, bUseWheelFrameLateralFriction ? 1 : 0, bUseLegacySteeringVelocityState ? 1 : 0, AllowedYawRate, SideSpeed, SlipAngleDeg, FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f)), DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
+				YawRate, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, bUseWheelFrameLateralFriction ? 1 : 0, bUseLegacySteeringVelocityState ? 1 : 0, AllowedYawRate, SideSpeed, SlipAngleDeg, FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f)), DebugForwardLossSlipScale, DebugSteeringForwardLossSpeedScale, DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
 				ForwardAccel, SideAccel, BasisForwardRate, TotalForwardRateNow);
 		}
 		const uint32 DebugIntervalFrames = static_cast<uint32>(FMath::Max(1, CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread()));
@@ -1910,17 +1916,19 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 
 void USpeedWheeledComponent::HandleAngularDamping(const float& delta)
 {
-	// generic case
-	// aerial damping
-	auto angularVelocityToDampen = GetPhysAngularVelocity() - WheeledPhysicsState.AllowedAngularVelocity;
-	DampenAirAngularVelocity(angularVelocityToDampen, delta);
-
-	// The wheel-frame model already generates the ground yaw response through its tire forces.
-	// Keep this legacy damping out of that path so it does not counteract wheel-generated yaw.
-	if ((!bUseWheelFrameLateralFriction || bUseLegacySteeringVelocityState) && OneWheelOnGround())
+	const auto AngularVelocityToDampen = GetPhysAngularVelocity() - WheeledPhysicsState.AllowedAngularVelocity;
+	if (!OneWheelOnGround())
 	{
-		auto GroundNormal = GetNormalFromWheels();
-		auto GroundAngularVelocity = FVector::DotProduct(angularVelocityToDampen, GroundNormal) * GroundNormal;
+		DampenAirAngularVelocity(AngularVelocityToDampen, delta);
+		return;
+	}
+
+	// The wheel-frame model owns ground yaw through tire forces. Neither the
+	// aerial drag nor the legacy ground damping may counteract that response.
+	if (!bUseWheelFrameLateralFriction || bUseLegacySteeringVelocityState)
+	{
+		const auto GroundNormal = GetNormalFromWheels();
+		const auto GroundAngularVelocity = FVector::DotProduct(AngularVelocityToDampen, GroundNormal) * GroundNormal;
 		DampenAngularVelocity(GroundAngularDamping, GroundAngularVelocity, delta);
 	}
 }
@@ -2667,7 +2675,8 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		}
 	}
 
-	if (bDebugWheelFriction && DebugDriveWheelCount > 0)
+	const uint32 DebugIntervalFrames = static_cast<uint32>(FMath::Max(1, CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread()));
+	if (bDebugWheelFriction && DebugDriveWheelCount > 0 && NumFrame() % DebugIntervalFrames == 0)
 	{
 		const FVector UpVector = GetNormalFromWheels();
 		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
@@ -2684,7 +2693,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		const float GroundSpeed = (GetPhysVelocity() - FVector::DotProduct(GetPhysVelocity(), UpVector) * UpVector).Size();
 		const float BasisForwardRate = FVector::DotProduct(GetPhysVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
 		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
-		UE_LOG(SpeedPhysicsLog, Verbose,
+		UE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][WheelDriveForce] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Accel=%.1f AccelPerWheel=%.1f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgLongitudinalScale=%.3f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(), GetPhysForwardSpeed(), GroundSpeed, SideSpeed, Accel, AccelPerWheel, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugDriveWheelCount,
 			DebugDriveAbsLatSpeedSum / DebugDriveWheelCount, DebugDriveAbsLongSpeedSum / DebugDriveWheelCount,
