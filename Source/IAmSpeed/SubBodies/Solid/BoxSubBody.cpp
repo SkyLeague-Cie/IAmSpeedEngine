@@ -733,7 +733,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     const FVector RawN = CurrentHit.ImpactNormal.GetSafeNormal();
     const float RawUpDot = FVector::DotProduct(RawN, FVector::UpVector);
-    const FVector VelBeforeResolve = ParentComponent->GetPhysVelocity();
+    const FVector VelBeforeResolve = ParentComponent->GetPhysCOMVelocity();
     const FVector AngBeforeResolve = ParentComponent->GetPhysAngularVelocity();
 
     SHitResult EffectiveHit = CurrentHit;
@@ -983,7 +983,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 	// Debug log at end of hit resolution
     /*const FVector vImpactEnd = GetVelocityAtPoint(EffectiveHit.ImpactPoint);
     const float vN_end = FVector::DotProduct(vImpactEnd, EffectiveN);
-    const FVector VelAfterResolve = ParentComponent->GetPhysVelocity();
+    const FVector VelAfterResolve = ParentComponent->GetPhysCOMVelocity();
     const FVector AngAfterResolve = ParentComponent->GetPhysAngularVelocity();
     if ((VelAfterResolve - VelBeforeResolve).Size() > 5.f ||
         (AngAfterResolve - AngBeforeResolve).Size() > 0.01f ||
@@ -1152,6 +1152,13 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     UE_LOG(BoxSubBodyLog, Log, TEXT("[%s(%d)][CCDBox] Box applies impulse %s on Sphere at TOI = %fs"), *GetOwner()->GetName(), GetOwnerRole(),
         *ImpOther.ToString(), CurrentHit.TOI);*/
 
+#if !UE_BUILD_SHIPPING
+    const ISpeedComponent* SphereParentForDebug = Sphere.GetParentComponent();
+    const FVector BoxCOMVPre = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
+    const FVector BoxWPre = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
+    const FVector SphereCOMVPre = SphereParentForDebug ? SphereParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
+    const FVector SphereWPre = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
+#endif
         // --- Apply impulses ---
     ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
     Sphere.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
@@ -1159,28 +1166,27 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
     {
-        const ISpeedComponent* SphereParent = Sphere.GetParentComponent();
-        const FVector BoxVPost = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
+        const FVector BoxCOMVPost = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
         const FVector BoxWPost = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
-        const FVector SphereVPost = SphereParent ? SphereParent->GetPhysVelocity() : FVector::ZeroVector;
-        const FVector SphereWPost = SphereParent ? SphereParent->GetPhysAngularVelocity() : FVector::ZeroVector;
+        const FVector SphereCOMVPost = SphereParentForDebug ? SphereParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
+        const FVector SphereWPost = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
 
         UE_LOG(
             BoxSubBodyLog,
             Warning,
-            TEXT("[SphereBoxImpulse][BoxResolvePost] Frame=%d Box=%s Sphere=%s Point=%s BoxVPost=%s BoxWPost=%s SphereVPost=%s SphereWPost=%s DeltaBoxV=%s DeltaBoxW=%s DeltaSphereV=%s DeltaSphereW=%s BoxImpulse=%s SphereImpulse=%s"),
+            TEXT("[SphereBoxImpulse][BoxResolvePost] Frame=%d Box=%s Sphere=%s Point=%s BoxCOMVPost=%s BoxWPost=%s SphereCOMVPost=%s SphereWPost=%s DeltaBoxCOMV=%s DeltaBoxW=%s DeltaSphereCOMV=%s DeltaSphereW=%s BoxImpulse=%s SphereImpulse=%s"),
             ParentComponent ? ParentComponent->NumFrame() : -1,
             GetOwner() ? *GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
             Sphere.GetOwner() ? *Sphere.GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
             *CurrentHit.ImpactPoint.ToString(),
-            *BoxVPost.ToString(),
+            *BoxCOMVPost.ToString(),
             *BoxWPost.ToString(),
-            *SphereVPost.ToString(),
+            *SphereCOMVPost.ToString(),
             *SphereWPost.ToString(),
-            *(BoxVPost - BoxKS.Velocity).ToString(),
-            *(BoxWPost - BoxKS.AngularVelocity).ToString(),
-            *(SphereVPost - SphereKS0.Velocity).ToString(),
-            *(SphereWPost - SphereKS0.AngularVelocity).ToString(),
+            *(BoxCOMVPost - BoxCOMVPre).ToString(),
+            *(BoxWPost - BoxWPre).ToString(),
+            *(SphereCOMVPost - SphereCOMVPre).ToString(),
+            *(SphereWPost - SphereWPre).ToString(),
             *ImpThis.ToString(),
             *ImpOther.ToString());
     }
@@ -2068,7 +2074,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 *P.ToString(),
                 *N.ToString(),
                 *J.ToString(),
-                *ParentComponent->GetPhysVelocity().ToString(),
+                *ParentComponent->GetPhysCOMVelocity().ToString(),
                 *ParentComponent->GetPhysAngularVelocity().ToString());*/
         }
     }

@@ -826,7 +826,7 @@ void USpeedWheeledComponent::ApplyTestVelocity()
 	{
 		return;
 	}
-	SetPhysVelocity(BaseGameState.TestVelocity);
+	SetPhysCOMVelocity(BaseGameState.TestVelocity);
 	SetPhysAngularVelocity(BaseGameState.TestAngularVelocity);
 	UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][TestInitialKinematics] At Frame = %d, Kinematics: %s"),
 		*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
@@ -961,11 +961,19 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 	RecoverWheelState();
 	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 	{
-		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][UpdateFrameState] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
-			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
+		UE_LOG(SpeedPhysicsLog, Log,
+			TEXT("[%s(%s)][UpdateFrameState] SinceCanMove=%d Wheels=%d COM=%s COMV=%s COMA=%s W=%s Alpha=%s"),
+			*GetOwner()->GetName(),
+			*GetRole(),
+			NbFramesSinceCanMove(),
+			NumWheelsOnGround(),
+			*GetPhysCOM().ToString(),
+			*GetPhysCOMVelocity().ToString(),
+			*GetPhysAccelerationAtPoint(GetPhysCOM()).ToString(),
+			*GetPhysAngularVelocity().ToString(),
+			*GetPhysAngularAcceleration().ToString());
 	}
 }
-
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 {
 	const int32 CandidateFrame =
@@ -1179,11 +1187,19 @@ void USpeedWheeledComponent::PreGameplayTick(const float& DeltaTime, const float
 	HandleSuspension(DeltaTime);
 	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 	{
-		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][End PreGameplayTick] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
-			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NumWheelsOnGround(), *GetKinematicState().ToString());
+		UE_LOG(SpeedPhysicsLog, Log,
+			TEXT("[%s(%s)][End PreGameplayTick] SinceCanMove=%d Wheels=%d COM=%s COMV=%s COMA=%s W=%s Alpha=%s"),
+			*GetOwner()->GetName(),
+			*GetRole(),
+			NbFramesSinceCanMove(),
+			NumWheelsOnGround(),
+			*GetPhysCOM().ToString(),
+			*GetPhysCOMVelocity().ToString(),
+			*GetPhysAccelerationAtPoint(GetPhysCOM()).ToString(),
+			*GetPhysAngularVelocity().ToString(),
+			*GetPhysAngularAcceleration().ToString());
 	}
 }
-
 void USpeedWheeledComponent::HandleDamping(const float& delta)
 {
 	if (PhysDamping <= 0.0)
@@ -1191,16 +1207,16 @@ void USpeedWheeledComponent::HandleDamping(const float& delta)
 		return;
 	}
 
-	FVector newVelocity = (1 - PhysDamping) * GetPhysVelocity();
-	auto speed = GetPhysVelocity().Size();
-	if (speed <= 1.0)
+	const FVector COMVelocity = GetPhysCOMVelocity();
+	FVector NewCOMVelocity = (1 - PhysDamping) * COMVelocity;
+	const float Speed = COMVelocity.Size();
+	if (Speed <= 1.0f)
 	{
-		newVelocity = FVector::ZeroVector;
+		NewCOMVelocity = FVector::ZeroVector;
 	}
-	auto ForceToApply = (newVelocity - GetPhysVelocity()) / delta;
-	AddPhysAcceleration(ForceToApply);
+	const FVector AccelerationToApply = (NewCOMVelocity - COMVelocity) / delta;
+	AddPhysAcceleration(AccelerationToApply);
 }
-
 void USpeedWheeledComponent::HandleRestForce()
 {
 	if (!HitboxSubBody)
@@ -1299,7 +1315,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 
 	const float ForwardSpeed = GetPhysForwardSpeed();
 	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
-	const float PlanarGroundSpeed = GetPhysVelocity().Size2D();
+	const float PlanarGroundSpeed = GetPhysCOMVelocity().Size2D();
 	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
 	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
 	float Wheelbase = 0.0f;
@@ -1675,12 +1691,13 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		const float SideAccel = FVector::DotProduct(DebugTotalForce, RightDir) / Mass;
 		const float AppliedForwardAccel = FVector::DotProduct(DebugAppliedAccel, ForwardDir);
 		const float AppliedSideAccel = FVector::DotProduct(DebugAppliedAccel, RightDir);
-		const float SideSpeed = FVector::DotProduct(GetPhysVelocity(), RightDir);
+		const float SideSpeed = FVector::DotProduct(GetPhysCOMVelocity(), RightDir);
 		const FVector DebugAverageApplicationPoint = DebugApplicationPointCount > 0 ? DebugApplicationPointSum / static_cast<float>(DebugApplicationPointCount) : FVector::ZeroVector;
-		const float GroundSpeed = (GetPhysVelocity() - FVector::DotProduct(GetPhysVelocity(), UpVector) * UpVector).Size();
+		const FVector COMVelocity = GetPhysCOMVelocity();
+		const float GroundSpeed = (COMVelocity - FVector::DotProduct(COMVelocity, UpVector) * UpVector).Size();
 		const float DebugAvgFrontAbsLatSpeed = DebugFrontWheelCount > 0 ? DebugFrontAbsLatSpeedSum / DebugFrontWheelCount : 0.0f;
 		const float DebugAvgRearAbsLatSpeed = DebugRearWheelCount > 0 ? DebugRearAbsLatSpeedSum / DebugRearWheelCount : 0.0f;
-		const float BasisForwardRate = FVector::DotProduct(GetPhysVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
+		const float BasisForwardRate = FVector::DotProduct(GetPhysCOMVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
 		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
 		const float TurnTime = (NumFrame() - TurnStartFrame) / 300.f;
 		const float SmishTargetSpeed = GetSmishTurnTargetSpeed(TurnTime, GetPhysForwardSpeed());
@@ -1721,7 +1738,8 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 	}
 
 	FVector UpVector = GetNormalFromWheels(); // surface normal
-	FVector GroundVelocity = GetPhysVelocity() - (GetPhysVelocity().Dot(UpVector)) * UpVector;
+	const FVector COMVelocity = GetPhysCOMVelocity();
+	FVector GroundVelocity = COMVelocity - (COMVelocity.Dot(UpVector)) * UpVector;
 	float GroundSpeed = GroundVelocity.Size();
 
 	// compute right vector
@@ -1734,8 +1752,8 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 	FVector ForwardVector = PhysForwardVector - (PhysForwardVector.Dot(UpVector)) * UpVector;
 	ForwardVector.Normalize();
 
-	float ForwardSpeed = GetPhysVelocity().Dot(ForwardVector);
-	float SideSpeed = GetPhysVelocity().Dot(RightVector);
+	float ForwardSpeed = COMVelocity.Dot(ForwardVector);
+	float SideSpeed = COMVelocity.Dot(RightVector);
 	auto LocalForwardFriction = (GetLocalForwardFriction() * NumWheelsOnGround()) / 4;
 	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 	{
@@ -1820,8 +1838,8 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 		ApplyWheelFrameLateralFriction(delta);
 		if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 		{
-			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][End HandleGroundFriction] For NbFramesSinceCanMove = %d, NbWheelsOnGround=%d, Kinematic state = (%s)"),
-				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *GetKinematicState().ToString());
+			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][End HandleGroundFriction] SinceCanMove=%d Wheels=%d COMKinematic=(%s)"),
+				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *GetCOMKinematicState().ToString());
 		}
 	}
 }
@@ -1894,7 +1912,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 							SpeedPhysicsLog,
 							Warning,
 							TEXT("[ApplyWheelSuspension] For Frame=%d on wheel=%d. ChassisUp=%s, HitNormal=%s, ApplicationPoint=%s, HitDistance=%fcm Force=%f Vel=%fcm/s SpringDisplacement=%fcm"), NumFrame(), W.Idx(), *GetPhysUpVector().ToString(),
-							*W.GetHitContactNormal().ToString(), *ApplicationPoint.ToString(), W.GetHit().Distance, Load, GetPhysVelocity().Size(), W.SpringDisplacement());
+							*W.GetHitContactNormal().ToString(), *ApplicationPoint.ToString(), W.GetHit().Distance, Load, GetPhysCOMVelocity().Size(), W.SpringDisplacement());
 					}*/
 				AddPhysForceAtPoint(Force, ApplicationPoint);
 
@@ -2011,11 +2029,18 @@ void USpeedWheeledComponent::GameplayTick(const float& DeltaTime, const float& S
 	HandleInputs(DeltaTime);
 	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 	{
-		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][GameplayTick] For NbFramesSinceCanMove = %d, Kinematic state = (%s)"),
-			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), *GetKinematicState().ToString());
+		UE_LOG(SpeedPhysicsLog, Log,
+			TEXT("[%s(%s)][GameplayTick] SinceCanMove=%d COM=%s COMV=%s COMA=%s W=%s Alpha=%s"),
+			*GetOwner()->GetName(),
+			*GetRole(),
+			NbFramesSinceCanMove(),
+			*GetPhysCOM().ToString(),
+			*GetPhysCOMVelocity().ToString(),
+			*GetPhysAccelerationAtPoint(GetPhysCOM()).ToString(),
+			*GetPhysAngularVelocity().ToString(),
+			*GetPhysAngularAcceleration().ToString());
 	}
 }
-
 void USpeedWheeledComponent::HandleInputs(const float& DeltaTime)
 {
 	HandleSteering(DeltaTime);
@@ -2030,12 +2055,24 @@ void USpeedWheeledComponent::ApplyAccelKinematicsConstraint(const float& delta)
 
 void USpeedWheeledComponent::applyAccelerationConstraint(const float& delta)
 {
-	auto accel = GetPhysAcceleration();
-	auto vel = GetPhysVelocity();
-	auto newVel = SSBox::AdvanceVelocity(vel, accel, delta);
-	newVel = newVel.GetClampedToMaxSize(GetPhysMaxSpeed());
-	auto ActualAccel = (newVel - vel) / delta;
-	SetPhysAcceleration(ActualAccel);
+	const FVector Acceleration = GetPhysAcceleration();
+	const FVector OriginVelocity = GetPhysVelocity();
+	const FVector AngularVelocity = GetPhysAngularVelocity();
+	const FVector AngularAcceleration = GetPhysAngularAcceleration();
+	const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+
+	const FVector NewOriginVelocity = SSBox::AdvanceVelocity(OriginVelocity, Acceleration, delta);
+	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAcceleration, delta);
+	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
+
+	// The linear speed cap is a property of the rigid body, hence it applies to
+	// its centre of mass. Predict the capped angular velocity too, otherwise
+	// angular acceleration around an offset COM would spuriously consume linear speed.
+	const FVector NewCOMVelocity = NewOriginVelocity + FVector::CrossProduct(NewAngularVelocity, OriginToCOM);
+	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
+	const FVector ClampedOriginVelocity = ClampedCOMVelocity - FVector::CrossProduct(NewAngularVelocity, OriginToCOM);
+	const FVector ActualAcceleration = (ClampedOriginVelocity - OriginVelocity) / delta;
+	SetPhysAcceleration(ActualAcceleration);
 }
 
 void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& delta)
@@ -2584,7 +2621,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 
 	const float ForwardSpeed = GetPhysForwardSpeed();
 	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
-	const float PlanarGroundSpeed = GetPhysVelocity().Size2D();
+	const float PlanarGroundSpeed = GetPhysCOMVelocity().Size2D();
 	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
 	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
 	float Wheelbase = 0.0f;
@@ -2711,9 +2748,10 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		const float SideAccel = FVector::DotProduct(DebugDriveTotalForce, RightDir) / Mass;
 		const float AppliedForwardAccel = FVector::DotProduct(DebugDriveAppliedAccel, ForwardDir);
 		const float AppliedSideAccel = FVector::DotProduct(DebugDriveAppliedAccel, RightDir);
-		const float SideSpeed = FVector::DotProduct(GetPhysVelocity(), RightDir);
-		const float GroundSpeed = (GetPhysVelocity() - FVector::DotProduct(GetPhysVelocity(), UpVector) * UpVector).Size();
-		const float BasisForwardRate = FVector::DotProduct(GetPhysVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
+		const float SideSpeed = FVector::DotProduct(GetPhysCOMVelocity(), RightDir);
+		const FVector COMVelocity = GetPhysCOMVelocity();
+		const float GroundSpeed = (COMVelocity - FVector::DotProduct(COMVelocity, UpVector) * UpVector).Size();
+		const float BasisForwardRate = FVector::DotProduct(GetPhysCOMVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
 		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
 		UE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][WheelDriveForce] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Accel=%.1f AccelPerWheel=%.1f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgLongitudinalScale=%.3f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f"),
@@ -3497,7 +3535,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// Velocity drain (+ clamp)
 	// ----------------------------
 	FVector dV = NetCorrAccum.RemVel * aV;
-	constexpr float MaxVelCorrPerSec = 3600.f; // cm/s²
+	constexpr float MaxVelCorrPerSec = 3600.f; // cm/s°
 	dV = dV.GetClampedToMaxSize(MaxVelCorrPerSec * DeltaSeconds);
 	// all wheel on ground -> reject correction along the ground normal
 	if (bStableContact)

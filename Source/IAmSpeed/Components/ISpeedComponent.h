@@ -59,6 +59,9 @@ public:
 	// =========== Kinematics getters and setters =================
 	virtual const SKinematic& GetKinematicState() const = 0;
 	virtual const SKinematic& GetKinematicStateForFrame(const unsigned int& NumFrame) const = 0;
+	// Returns a diagnostic/gameplay view of the current rigid body centered on
+	// its physical COM. The stored kinematic state itself remains origin-based.
+	SKinematic GetCOMKinematicState() const;
 	const FVector& GetPhysLocation() const;
 	void SetPhysLocation(const FVector& NewLocation);
 	const FQuat& GetPhysRotation() const;
@@ -74,6 +77,11 @@ public:
 	const FVector& GetPhysAngularVelocity() const;
 	virtual float GetPhysMaxSpeed() const = 0;
 	virtual float GetPhysMaxAngularSpeed() const = 0;
+	// Sets the rigid body's center-of-mass velocity and clamps that physical
+	// velocity, while keeping the stored component-origin velocity coherent.
+	void SetPhysCOMVelocity(const FVector& NewCOMVelocity);
+	// Sets the velocity of the stored component origin. The speed limit is
+	// nevertheless evaluated from the corresponding COM velocity.
 	void SetPhysVelocity(const FVector& NewVelocity);
 	void SetPhysVelocityAtPoint(const FVector& NewVelocity, const FVector& WorldPoint);
 	void SetPhysAngularVelocity(const FVector& NewAngularVelocity);
@@ -88,7 +96,7 @@ public:
 	FVector GetPhysForwardVector() const { return GetPhysRotation().GetForwardVector(); }
 	FVector GetPhysRightVector() const { return GetPhysRotation().GetRightVector(); }
 	FVector GetPhysUpVector() const { return GetPhysRotation().GetUpVector(); }
-	float GetPhysForwardSpeed() const { return FVector::DotProduct(GetPhysVelocity(), GetPhysForwardVector()); }
+	float GetPhysForwardSpeed() const { return FVector::DotProduct(GetPhysCOMVelocity(), GetPhysForwardVector()); }
 	bool IsPhysGoingForward() const { return GetPhysForwardSpeed() > 0; }
 	// ==============================
 

@@ -271,7 +271,7 @@ void USpeedMovementComponent::ApplyTestVelocity()
 	{
 		return;
 	}
-	SetPhysVelocity(BaseGameState.TestVelocity);
+	SetPhysCOMVelocity(BaseGameState.TestVelocity);
 	SetPhysAngularVelocity(BaseGameState.TestAngularVelocity);
 	BaseGameState.TestVelocity = FVector::ZeroVector;
 	BaseGameState.TestAngularVelocity = FVector::ZeroVector;
@@ -438,14 +438,15 @@ void USpeedMovementComponent::HandleDamping(const float& delta)
 		return;
 	}
 
-	FVector newVelocity = (1 - PhysDamping) * GetPhysVelocity();
-	auto speed = GetPhysVelocity().Size();
-	if (speed <= 1.0)
+	const FVector COMVelocity = GetPhysCOMVelocity();
+	FVector NewCOMVelocity = (1 - PhysDamping) * COMVelocity;
+	const float Speed = COMVelocity.Size();
+	if (Speed <= 1.0)
 	{
-		newVelocity = FVector::ZeroVector;
+		NewCOMVelocity = FVector::ZeroVector;
 	}
-	auto ForceToApply = (newVelocity - GetPhysVelocity()) / delta;
-	AddPhysAcceleration(ForceToApply);
+	const FVector AccelerationToApply = (NewCOMVelocity - COMVelocity) / delta;
+	AddPhysAcceleration(AccelerationToApply);
 }
 
 void USpeedMovementComponent::HandleRestForce()
@@ -495,12 +496,21 @@ void USpeedMovementComponent::ApplyAccelKinematicsConstraint(const float& delta)
 
 void USpeedMovementComponent::applyAccelerationConstraint(const float& delta)
 {
-	auto accel = GetPhysAcceleration();
-	auto vel = GetPhysVelocity();
-	auto newVel = SSBox::AdvanceVelocity(vel, accel, delta);
-	newVel = newVel.GetClampedToMaxSize(GetPhysMaxSpeed());
-	auto ActualAccel = (newVel - vel) / delta;
-	SetPhysAcceleration(ActualAccel);
+	const FVector Acceleration = GetPhysAcceleration();
+	const FVector OriginVelocity = GetPhysVelocity();
+	const FVector AngularVelocity = GetPhysAngularVelocity();
+	const FVector AngularAcceleration = GetPhysAngularAcceleration();
+	const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+
+	const FVector NewOriginVelocity = SSBox::AdvanceVelocity(OriginVelocity, Acceleration, delta);
+	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAcceleration, delta);
+	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
+
+	const FVector NewCOMVelocity = NewOriginVelocity + FVector::CrossProduct(NewAngularVelocity, OriginToCOM);
+	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
+	const FVector ClampedOriginVelocity = ClampedCOMVelocity - FVector::CrossProduct(NewAngularVelocity, OriginToCOM);
+	const FVector ActualAcceleration = (ClampedOriginVelocity - OriginVelocity) / delta;
+	SetPhysAcceleration(ActualAcceleration);
 }
 
 void USpeedMovementComponent::applyAngularAccelerationConstraint(const float& delta)
@@ -957,7 +967,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 #if !(UE_BUILD_SHIPPING)
 				UE_LOG(SpeedNetcodeLog, Log,
 					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d LinVelDiff0=%.2f Corr=%.2f TargetVelNow=%fcm/s"),
-					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrV0.Size(), CorrV.Size(), GetPhysVelocity().Size());
+					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrV0.Size(), CorrV.Size(), GetPhysCOMVelocity().Size());
 #endif
 			}
 		}

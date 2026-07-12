@@ -40,8 +40,9 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 	// Advance component kinematics only
 	IntegrateKinematicsPrv(SubDelta);
 
-	// enforce max speed limits after integrating kinematics to the time of impact
-    SetPhysVelocity(GetPhysVelocity());
+	// Enforce the linear limit on the rigid body's physical velocity, not on
+	// the component-origin velocity used for integration and rendering.
+	SetPhysCOMVelocity(GetPhysCOMVelocity());
 	SetPhysAngularVelocity(GetPhysAngularVelocity());
 
 	// update sub-body kinematics to the time of impact
@@ -58,6 +59,15 @@ void ISpeedComponent::UpdateSubBodiesKinematics()
     {
         SubBody->UpdateKinematicsFromOwner(GetKinematicState());
     }
+}
+
+SKinematic ISpeedComponent::GetCOMKinematicState() const
+{
+	SKinematic COMState = GetKinematicState();
+	COMState.Location = GetPhysCOM();
+	COMState.Velocity = GetPhysCOMVelocity();
+	COMState.Acceleration = GetPhysAccelerationAtPoint(COMState.Location);
+	return COMState;
 }
 
 void ISpeedComponent::ResetForFrame(const float& Delta)
@@ -226,7 +236,21 @@ void ISpeedComponent::SetPhysVelocity(const FVector& NewVelocity)
 	{
 		return;
 	}
-	SetPhysVelocityRaw(NewVelocity.GetClampedToMaxSize(GetPhysMaxSpeed()));
+
+	const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+	SetPhysCOMVelocity(NewVelocity + FVector::CrossProduct(GetPhysAngularVelocity(), OriginToCOM));
+}
+
+void ISpeedComponent::SetPhysCOMVelocity(const FVector& NewCOMVelocity)
+{
+	if (IsFrozen())
+	{
+		return;
+	}
+
+	const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
+	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
+	SetPhysVelocityRaw(ClampedCOMVelocity - FVector::CrossProduct(GetPhysAngularVelocity(), OriginToCOM));
 }
 
 FVector ISpeedComponent::GetPhysVelocityAtPoint(const FVector& Point) const
@@ -253,10 +277,11 @@ void ISpeedComponent::SetPhysAngularVelocity(const FVector& NewAngularVelocity)
 		return;
 	}
 	const FVector ClampedAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
-	const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
-	const FVector COMVelocity = GetPhysVelocity() + FVector::CrossProduct(GetPhysAngularVelocity(), OriginToCOM);
+	const FVector COMVelocity = GetPhysCOMVelocity();
 	SetPhysAngularVelocityRaw(ClampedAngularVelocity);
-	SetPhysVelocityRaw(COMVelocity - FVector::CrossProduct(ClampedAngularVelocity, OriginToCOM));
+	// Rebuild the origin velocity from the preserved COM velocity through the
+	// COM setter so an angular update can never bypass the linear speed cap.
+	SetPhysCOMVelocity(COMVelocity);
 }
 
 void ISpeedComponent::SetPhysVelocityAtPoint(const FVector& NewVelocity, const FVector& Point)
@@ -313,7 +338,7 @@ void ISpeedComponent::AddPhysVelocity(const FVector& DeltaVelocity)
 {
 	FVector ProjectedDeltaVelocity = DeltaVelocity;
 	ProjectLinearDeltaAgainstConstraints(ProjectedDeltaVelocity);
-	SetPhysVelocity(GetPhysVelocity() + ProjectedDeltaVelocity);
+	SetPhysCOMVelocity(GetPhysCOMVelocity() + ProjectedDeltaVelocity);
 }
 
 FVector ISpeedComponent::AddPhysLocation(const FVector& DeltaLocation)
@@ -404,9 +429,9 @@ void ISpeedComponent::AddPhysImpulseAtPoint(const FVector& Impulse, const FVecto
     FVector DeltaW = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Impulse));
 
 	ProjectPointDeltaAgainstConstraints(DeltaV, DeltaW);
-	const FVector OriginToCOM = COM - GetPhysLocation();
-    SetPhysVelocityRaw(GetPhysVelocity() + DeltaV - FVector::CrossProduct(DeltaW, OriginToCOM));
-    SetPhysAngularVelocityRaw((GetPhysAngularVelocity() + DeltaW).GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
+	const FVector NewCOMVelocity = GetPhysCOMVelocity() + DeltaV;
+	SetPhysAngularVelocityRaw((GetPhysAngularVelocity() + DeltaW).GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
+	SetPhysCOMVelocity(NewCOMVelocity);
 }
 
 void ISpeedComponent::AddPhysForceAtPoint(const FVector& Force, const FVector& WorldPoint, const USolidSubBody* SubBody)
