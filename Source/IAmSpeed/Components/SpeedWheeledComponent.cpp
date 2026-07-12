@@ -1695,9 +1695,9 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float DebugForwardLossSlipScale = FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossSlipScaleCurve, DebugAverageFrictionInput, 1.0f));
 			const float DebugSteeringForwardLossSpeedScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER ? 1.0f : FMath::Max(0.0f, EvaluateLinearFloatCurve(SteeringForwardLossSpeedScaleCurve, AbsForwardSpeed, 1.0f));
 			UE_LOG(SpeedPhysicsLog, Warning,
-				TEXT("[%s(%s)][WheelTurnSummary] Frame=%d TurnTime=%.3f Speed=%.1f SmishTargetSpeed=%.1f SpeedError=%.1f Radius=%.1f TargetRadius=%.1f RadiusRatio=%.3f YawRate=%.3f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f WheelFrame=%d LegacySteering=%d AllowedYaw=%.3f SideSpeed=%.1f SlipAngleDeg=%.2fdeg ForwardLossCurveScale=%.3f ForwardLossSlipScale=%.3f SteeringForwardLossSpeedScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrictionForwardAccel=%.1f FrictionSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f"),
+				TEXT("[%s(%s)][WheelTurnSummary] Frame=%d TurnTime=%.3f Speed=%.1f SmishTargetSpeed=%.1f SpeedError=%.1f Radius=%.1f TargetRadius=%.1f RadiusRatio=%.3f YawRate=%.3f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f WheelFrame=%d LegacySteering=%d AllowedYaw=%.3f SideSpeed=%.1f SlipAngleDeg=%.2fdeg ForwardLossCurveScale=%.3f ForwardLossSlipScale=%.3f SteeringForwardLossSpeedScale=%.3f ForwardLossMultiplier=%.3f EffectiveForwardLossScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrictionForwardAccel=%.1f FrictionSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f"),
 				*GetOwner()->GetName(), *GetRole(), NumFrame(), TurnTime, GetPhysForwardSpeed(), SmishTargetSpeed, SpeedError, Radius, TargetRadius, RadiusRatio,
-				YawRate, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, bUseWheelFrameLateralFriction ? 1 : 0, bUseLegacySteeringVelocityState ? 1 : 0, AllowedYawRate, SideSpeed, SlipAngleDeg, FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f)), DebugForwardLossSlipScale, DebugSteeringForwardLossSpeedScale, DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
+				YawRate, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, bUseWheelFrameLateralFriction ? 1 : 0, bUseLegacySteeringVelocityState ? 1 : 0, AllowedYawRate, SideSpeed, SlipAngleDeg, FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f)), DebugForwardLossSlipScale, DebugSteeringForwardLossSpeedScale, FMath::Max(0.0f, CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread() >= 0.0f ? CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread() : WheelFrameLateralForwardLossScale), FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurve, AbsForwardSpeed, 1.0f)) * DebugForwardLossSlipScale * DebugSteeringForwardLossSpeedScale * FMath::Max(0.0f, CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread() >= 0.0f ? CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread() : WheelFrameLateralForwardLossScale), DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
 				ForwardAccel, SideAccel, BasisForwardRate, TotalForwardRateNow);
 		}
 		const uint32 DebugIntervalFrames = static_cast<uint32>(FMath::Max(1, CVarIAmSpeedWheelFrameDebugIntervalFrames.GetValueOnAnyThread()));
@@ -2050,10 +2050,21 @@ void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& del
 	// acceleration into origin acceleration to preserve the COM trajectory.
 	// If the angular-speed cap reduces it, undo the excess linear compensation.
 	const FVector AngularAccelDelta = ActualAngularAccel - AngularAccel;
+	FVector COMCompensation = FVector::ZeroVector;
 	if (!AngularAccelDelta.IsNearlyZero())
 	{
 		const FVector OriginToCOM = GetPhysCOM() - GetPhysLocation();
-		AddPhysAcceleration(-FVector::CrossProduct(AngularAccelDelta, OriginToCOM));
+		COMCompensation = -FVector::CrossProduct(AngularAccelDelta, OriginToCOM);
+		AddPhysAcceleration(COMCompensation);
+	}
+
+	if (CVarIAmSpeedDebugSteering.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
+	{
+		UE_LOG(SpeedPhysicsLog, Log,
+			TEXT("[%s(%s)][AngularConstraint] Frame=%d W=%s RequestedA=%s ActualA=%s CapDelta=%s COMComp=%s MaxW=%.3f"),
+			*GetOwner()->GetName(), *GetRole(), NumFrame(),
+			*AngularVelocity.ToString(), *AngularAccel.ToString(), *ActualAngularAccel.ToString(),
+			*AngularAccelDelta.ToString(), *COMCompensation.ToString(), GetPhysMaxAngularSpeed());
 	}
 
 	SetPhysAngularAcceleration(ActualAngularAccel);
