@@ -77,8 +77,9 @@ public:
 	uint16 GetMinNbFramesBeforeCanMove() const;
 	// Mass to use for physics simulation
 	float GetPhysMass() const override;
-	// Center of mass to use for physics simulation (in world space)
-	FVector GetPhysCOM() const override;
+	// Center-of-mass state and its fixed local offset from the component origin.
+	const FVector& GetPhysCOM() const override;
+	const FVector& GetPhysCenterOfMassLocal() const override;
 	// Get array of sub-bodies owned by this component
 	const TArray<USSubBody*>& GetSubBodies() const;
 	// Get SubBody Config by SubBody
@@ -87,7 +88,7 @@ public:
 	WheelSubBodyConfig GetWheelSubBodyConfig(const USWheelSubBody& SubBody) const override;
 
 	// Get appropriate kinematic state for SubBody (e.g. wheel kinematics or hitbox kinematics from car body)
-	const SKinematic& GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& NumFrame) const;
+	SKinematic GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& NumFrame) const;
 	// overload this function to return the appropriate inertia tensor in world space
 	virtual FMatrix ComputeWorldInvInertiaTensor() const;
 	// overload this function to return the appropriate inertia tensor in world space for the given sub-body (e.g. for a car body, the inertia tensor of the wheel sub-body would be different from the inertia tensor of the hitbox sub-body)
@@ -114,6 +115,7 @@ public:
 	virtual void SetKinematicState(const SKinematic& NewKinematicState);
 
 	void RegisterTestVelocity(const FVector& InitialVelocity);
+	void RegisterTestVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
@@ -170,9 +172,15 @@ public:
 	UFUNCTION(reliable, NetMulticast)
 	void StartConfrontationMulti(const float& TimeSec);
 	void StartTestWithVelocity(const FVector& InitialVelocity);
+	void StartTestWithVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
+	// Restores the handbrake phase when a deterministic scenario starts mid-powerslide.
+	void InitializeWheelFrameHandbrakeState(float InitialValue, float InitialActiveTime = 0.0f);
 	void StartTestWithVelocityLocal(const FVector& InitialVelocity);
+	void StartTestWithVelocityLocal(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	UFUNCTION(reliable, NetMulticast)
 	void StartTestWithVelocityMulti(const FVector& InitialVelocity);
+	UFUNCTION(reliable, NetMulticast)
+	void StartTestWithVelocityAndAngularVelocityMulti(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);
 	void SetCannotMove();
 	void SetCannotMoveLocal();
 	UFUNCTION(reliable, NetMulticast)
@@ -199,6 +207,7 @@ private:
 	void HandleGravity();
 	void HandleDamping(const float& delta);
 	void HandleGroundFriction(const float& delta);
+	void ApplyWheelFrameLateralFriction(const float& delta);
 	void HandleSuspension(const float& delta);
 
 	void applyAccelerationConstraint(const float& delta);
@@ -247,6 +256,12 @@ protected:
 
 	float ComputeThrottleAccel() const;
 	float ComputeBrakeAccel() const;
+	float ComputeDriveAccel() const;
+	void ApplyDriveAcceleration(float Accel);
+	virtual bool IsAcceleratingForWheelFriction() const;
+	virtual bool HasDriveInputForGroundFriction() const;
+	virtual bool IsHandbrakingForWheelFriction() const;
+	virtual bool IsHandbrakingForwardForWheelFriction() const;
 
 	virtual void ApplyAccelKinematicsConstraint(const float& delta);
 	virtual void TagStateHistoryProxyRole();
@@ -263,6 +278,7 @@ protected:
 	// =========== Acceleration and steering functions ===========
 	// return the acceleration to apply in cm/s^2 based on the throttle/brake input and whether we want to move forward or backward
 	virtual float ComputeAccel(const float& InputValue, bool wantToMoveForward) const;
+	virtual float ComputeAccelFromSignedThrottle(float SignedThrottle) const;
 	// return the maximum speed in cm/s that the component can reach based on steering input with the given input (value between -1 and 1)
 	virtual float GetSteeringSpeedCap() const;
 	// return the maximum throttle speed in cm/s that the component can reach based on whether it is on the ground or not
@@ -275,6 +291,8 @@ protected:
 	virtual float ComputeSteeringTargetYawRate(float InSteeringInput, float InForwardVelocity, float InAbsTargetYawRate) const;
 	virtual float GetSteeringAllowedYawClamp(float InAbsTargetYawRate) const;
 	virtual float ComputeSteeringRadius(const float& ForwardVelocity, const float& AbsSteeringInput) const;
+	void UpdateWheelFrameHandbrakeValue(const float& Delta);
+	float ComputeWheelFrameSteerAngle(const float& AbsForwardSpeed, const float& TargetRadius, const float& Wheelbase) const;
 	FVector ComputeTurningForce(const float& SteeringInput, const float& UpDot,
 		const float& ForwardVelocity, const float& DesiredRadius, const FVector& WheelRight) const;
 	virtual void DampenAngularVelocity(const float& DampingFactor, const FVector& VelocityToDampen, const float& delta);
@@ -359,6 +377,137 @@ public:
 	// Brake acceleration in cm/s^2 when the component is on the ground
 	UPROPERTY(BlueprintReadWrite, Category = Acceleration, EditDefaultsOnly)
 	float BrakeAccel = 4000.0f;
+	// Speed-to-throttle scale curve. X is absolute forward speed in cm/s, Y is acceleration scale.
+	UPROPERTY(BlueprintReadWrite, Category = Acceleration, EditDefaultsOnly)
+	TArray<FVector2D> DriveSpeedAccelScaleCurve;
+	// When enabled, longitudinal ground friction is handled by the drive/brake model instead of HandleGroundFriction.
+	UPROPERTY(BlueprintReadWrite, Category = Acceleration, EditDefaultsOnly)
+	bool bUseDriveModelLongitudinalFriction = true;
+	// If throttle magnitude is below this value, the car coasts instead of applying engine force.
+	UPROPERTY(BlueprintReadWrite, Category = Acceleration, EditDefaultsOnly)
+	float ThrottleDeadzone = 0.001f;
+	// Coasting brake scale applied when neither throttle nor brake is pressed.
+	UPROPERTY(BlueprintReadWrite, Category = Acceleration, EditDefaultsOnly)
+	float CoastingBrakeFactor = 0.0f;
+	// Below this speed, coasting applies full brake to settle the car.
+	UPROPERTY(BlueprintReadWrite, Category = Acceleration, EditDefaultsOnly)
+	float StoppingForwardSpeed = 25.0f;
+	// Above this speed, applying opposite throttle/brake suppresses engine throttle and applies brake.
+	UPROPERTY(BlueprintReadWrite, Category = Acceleration, EditDefaultsOnly)
+	float BrakingNoThrottleSpeedThreshold = 0.01f;
+	// Speed-to-max-steer-angle curve. X is absolute forward speed in cm/s, Y is wheel steer angle in radians.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> SteerAngleFromSpeedCurve;
+	// Speed-to-max-steer-angle curve blended in when handbraking/powersliding.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeSteerAngleFromSpeedCurve;
+	// When enabled, lateral ground friction is computed in the wheel frame, so steered wheels naturally slow the car in turns.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	bool bUseWheelFrameLateralFriction = true;
+	// Legacy steering helper that applies explicit lateral forces in addition to wheel-frame friction.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	bool bUseExplicitSteeringForce = false;
+	// Legacy steering helper that drives AllowedSideVelocity/AllowedAngularVelocity directly.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	bool bUseLegacySteeringVelocityState = false;
+	// Global multiplier for the wheel-frame lateral friction model.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameLateralFrictionScale = 1.0f;
+	// Response time for the wheel-frame bilateral lateral impulse. This keeps tire response stable across physics tick rates.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameLateralImpulseTimeConstant = 0.037345f;
+	// Lateral friction retained at zero steering input, blended to full authority as steering increases.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameZeroSteerLateralFrictionScale = 1.0f;
+	// Rear lateral friction at full normal steering, blended from one by steering input magnitude.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameSteeringRearLateralFrictionScale = 1.0f;
+	// Optional safety cap for each wheel-frame lateral impulse.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	bool bClampWheelFrameLateralImpulse = false;
+	// Additional impulse relaxation applied to wheel-frame lateral friction while handbraking.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeLateralImpulseScale = 1.0f;
+	// Longitudinal scrub generated by lateral tire force while steering.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameLongitudinalScrubScale = 0.0f;
+	// Curvature multiplier for the wheel-frame steering geometry.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameSteeringCurvatureScale = 1.0f;
+	// Scales the forward/backward component produced by wheel-frame lateral friction.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameLateralForwardLossScale = 1.0f;
+	// Speed-to-forward-loss scale curve for wheel-frame lateral friction.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> LateralForwardLossScaleCurve;
+	// Slip-to-forward-loss scale curve for wheel-frame lateral friction. X uses the lateral slip ratio.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> LateralForwardLossSlipScaleCurve;
+	// Speed-to-forward-loss scale curve used while steering without handbrake.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> SteeringForwardLossSpeedScaleCurve;
+	// Lateral friction scale by slip ratio. X is lateral slip / (forward slip + lateral slip), Y is friction scale.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> LateralFrictionScaleCurve;
+	// Longitudinal friction scale by slip ratio. X is lateral slip / (forward slip + lateral slip), Y is friction scale.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> LongitudinalFrictionScaleCurve;
+	// Friction scale by contact normal Z when the vehicle is not accelerating.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> NonAcceleratingFrictionScaleCurve;
+
+	// Lateral friction factor blended in when handbraking/powersliding for front wheels. X is lateral slip ratio, Y is friction factor.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeFrontLateralFrictionFactorCurve;
+	// Lateral friction factor blended in when handbraking/powersliding for rear wheels. X is lateral slip ratio, Y is friction factor.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeRearLateralFrictionFactorCurve;
+	// Lateral friction scale blended in when handbraking/powersliding for front wheels. X is absolute forward speed, Y is scale.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeFrontLateralFrictionSpeedScaleCurve;
+	// Lateral friction scale blended in when handbraking/powersliding for rear wheels. X is absolute forward speed, Y is scale.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeRearLateralFrictionSpeedScaleCurve;
+	// Extra travel-rear grip release at full steering while handbraking. X is planar ground speed, Y is the full-steering scale.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeSteeringRearLateralFrictionScaleCurve;
+	// Scales the additional steering-driven travel-rear grip release while handbraking. X is lateral slip ratio, Y is the release alpha.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeSteeringRearLateralFrictionSlipScaleCurve;
+	// Scales the handbrake/powerslide front-rear friction imbalance by lateral slip ratio.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeLowSlipYawCorrectionScaleCurve;
+
+	// Longitudinal friction factor blended in when handbraking/powersliding. X is lateral slip ratio, Y is friction factor.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	TArray<FVector2D> HandbrakeLongitudinalFrictionFactorCurve;
+	// Duration in seconds where handbrake can temporarily release the travel-rear lateral friction to start a slide.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeEntryDuration = 0.0f;
+	// Minimum absolute forward speed for the handbrake entry release to start blending in.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeEntryMinSpeed = 0.0f;
+	// Absolute forward speed where the handbrake entry release reaches full speed weight.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeEntryFullSpeed = 1400.0f;
+	// Minimum absolute steering input for the handbrake entry release to start blending in.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeEntryMinSteering = 0.8f;
+	// Temporary multiplier applied to the travel-rear lateral friction while handbrake entry release is active.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeEntryRearReleaseScale = 1.0f;
+	// Rate at which the generic wheel-frame handbrake value rises toward 1.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeRiseRate = 5.0f;
+	// Rate at which the generic wheel-frame handbrake value falls toward 0.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameHandbrakeFallRate = 2.0f;
+	// Below this point-speed slip, the lateral friction curve input stays at 0.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float LateralFrictionSlipThreshold = 5.0f;
+	float WheelFrameHandbrakeValue = 0.0f;
+	float WheelFrameHandbrakeActiveTime = 0.0f;
+	int32 LastWheelFrameHandbrakeUpdateFrame = INDEX_NONE;
 
 	//=========== Netcode parameters for the movement component ===========
 	// how much of the position error to correct (0.0 means no correction, 1.0 means full correction)
@@ -457,7 +606,7 @@ private:
 	FWheeledInputState WheeledPhysicalInput; // input state used for physics simulation (e.g. after being processed from the user input)
 	FWheeledInputState WheeledPhysicalInputBeforeSlew;
 	int32 LastWheeledInputSlewFrame = INDEX_NONE;
-	FVector CarLocalInvI = FVector::ZeroVector; // local inverse inertia tensor of the car body (in local space)
+	FMatrix CarLocalInvI = FMatrix::Identity; // local inverse inertia tensor of the car body, expressed about the physical COM
 
 	TArray<int32> RecordedBaseFrames;
 	TArray<FBasePhysicsState> RecordedBaseStates; // array of recorded states for network correction
@@ -492,4 +641,6 @@ private:
 
 	static constexpr int32 MaxPendingWheeledInputs = 256;
 	TArray<FPendingWheeledInputCommand> PendingWheeledInputCommands;
+	int TurnStartFrame = INDEX_NONE;
+	int LastTurnSummaryFrame = INDEX_NONE;
 };

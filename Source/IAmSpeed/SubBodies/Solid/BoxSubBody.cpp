@@ -29,6 +29,11 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedAutoRecoverContactDebug(
     0,
     TEXT("Logs hitbox ground-contact persistence data used by Skycar auto-recover."));
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedBoxGroundSupportDebug(
+    TEXT("p.IAmSpeed.Box.DebugGroundSupport"),
+    0,
+    TEXT("Logs cumulative normal and tangential impulses applied by box ground support."));
+
 static TAutoConsoleVariable<float> CVarIAmSpeedRoofSlideSupportMinUpDot(
     TEXT("p.IAmSpeed.RoofSlideSupportMinUpDot"),
     0.35f,
@@ -141,7 +146,7 @@ namespace
             return;
         }
 
-        const FVector V = ParentComponent->GetPhysVelocity();
+        const FVector V = ParentComponent->GetPhysCOMVelocity();
         const FVector VT = V - FVector::DotProduct(V, N) * N;
         const float TangentSpeed = VT.Size();
         const float MinSpeed = FMath::Max(0.f, CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread());
@@ -728,7 +733,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     const FVector RawN = CurrentHit.ImpactNormal.GetSafeNormal();
     const float RawUpDot = FVector::DotProduct(RawN, FVector::UpVector);
-    const FVector VelBeforeResolve = ParentComponent->GetPhysVelocity();
+    const FVector VelBeforeResolve = ParentComponent->GetPhysCOMVelocity();
     const FVector AngBeforeResolve = ParentComponent->GetPhysAngularVelocity();
 
     SHitResult EffectiveHit = CurrentHit;
@@ -978,7 +983,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 	// Debug log at end of hit resolution
     /*const FVector vImpactEnd = GetVelocityAtPoint(EffectiveHit.ImpactPoint);
     const float vN_end = FVector::DotProduct(vImpactEnd, EffectiveN);
-    const FVector VelAfterResolve = ParentComponent->GetPhysVelocity();
+    const FVector VelAfterResolve = ParentComponent->GetPhysCOMVelocity();
     const FVector AngAfterResolve = ParentComponent->GetPhysAngularVelocity();
     if ((VelAfterResolve - VelBeforeResolve).Size() > 5.f ||
         (AngAfterResolve - AngBeforeResolve).Size() > 0.01f ||
@@ -1147,6 +1152,13 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     UE_LOG(BoxSubBodyLog, Log, TEXT("[%s(%d)][CCDBox] Box applies impulse %s on Sphere at TOI = %fs"), *GetOwner()->GetName(), GetOwnerRole(),
         *ImpOther.ToString(), CurrentHit.TOI);*/
 
+#if !UE_BUILD_SHIPPING
+    const ISpeedComponent* SphereParentForDebug = Sphere.GetParentComponent();
+    const FVector BoxCOMVPre = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
+    const FVector BoxWPre = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
+    const FVector SphereCOMVPre = SphereParentForDebug ? SphereParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
+    const FVector SphereWPre = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
+#endif
         // --- Apply impulses ---
     ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
     Sphere.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
@@ -1154,28 +1166,27 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
     {
-        const ISpeedComponent* SphereParent = Sphere.GetParentComponent();
-        const FVector BoxVPost = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
+        const FVector BoxCOMVPost = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
         const FVector BoxWPost = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
-        const FVector SphereVPost = SphereParent ? SphereParent->GetPhysVelocity() : FVector::ZeroVector;
-        const FVector SphereWPost = SphereParent ? SphereParent->GetPhysAngularVelocity() : FVector::ZeroVector;
+        const FVector SphereCOMVPost = SphereParentForDebug ? SphereParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
+        const FVector SphereWPost = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
 
         UE_LOG(
             BoxSubBodyLog,
             Warning,
-            TEXT("[SphereBoxImpulse][BoxResolvePost] Frame=%d Box=%s Sphere=%s Point=%s BoxVPost=%s BoxWPost=%s SphereVPost=%s SphereWPost=%s DeltaBoxV=%s DeltaBoxW=%s DeltaSphereV=%s DeltaSphereW=%s BoxImpulse=%s SphereImpulse=%s"),
+            TEXT("[SphereBoxImpulse][BoxResolvePost] Frame=%d Box=%s Sphere=%s Point=%s BoxCOMVPost=%s BoxWPost=%s SphereCOMVPost=%s SphereWPost=%s DeltaBoxCOMV=%s DeltaBoxW=%s DeltaSphereCOMV=%s DeltaSphereW=%s BoxImpulse=%s SphereImpulse=%s"),
             ParentComponent ? ParentComponent->NumFrame() : -1,
             GetOwner() ? *GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
             Sphere.GetOwner() ? *Sphere.GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
             *CurrentHit.ImpactPoint.ToString(),
-            *BoxVPost.ToString(),
+            *BoxCOMVPost.ToString(),
             *BoxWPost.ToString(),
-            *SphereVPost.ToString(),
+            *SphereCOMVPost.ToString(),
             *SphereWPost.ToString(),
-            *(BoxVPost - BoxKS.Velocity).ToString(),
-            *(BoxWPost - BoxKS.AngularVelocity).ToString(),
-            *(SphereVPost - SphereKS0.Velocity).ToString(),
-            *(SphereWPost - SphereKS0.AngularVelocity).ToString(),
+            *(BoxCOMVPost - BoxCOMVPre).ToString(),
+            *(BoxWPost - BoxWPre).ToString(),
+            *(SphereCOMVPost - SphereCOMVPre).ToString(),
+            *(SphereWPost - SphereWPre).ToString(),
             *ImpThis.ToString(),
             *ImpOther.ToString());
     }
@@ -1529,7 +1540,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             ParentComponent->SetPhysLocation(ParentComponent->GetPhysLocation() + DepenDir * (BetaPos * pushOut));
 
             // Kill inward velocity along depen dir
-            FVector V = ParentComponent->GetPhysVelocity();
+            const FVector V = ParentComponent->GetPhysCOMVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
             if (vIn < 0.f)
             {
@@ -1627,6 +1638,13 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, BoxRotWS);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
+    // A face that replaces a supporting edge on the same plane is a
+    // continuation of that ground contact, not a new bouncing impact.
+    const bool bContinuingEdgeSupport =
+        bGroundPlaneValid &&
+        FVector::DotProduct(GroundPlaneN.GetSafeNormal(), N) >= 0.95f &&
+        (PrevGroundContactsLS.Num() == 2 ||
+            (bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2));
 
     if (bNearlyFaceAligned && bEdgeSupportLatched)
     {
@@ -1908,7 +1926,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     if ((bFreshSweepSupport || bInFreshSupportClampWindow) && NumC >= 3)
     {
         const float MaxFreshSupportDeltaVCmS = bRecentlyHadWallOrGutter ? 10.f : 25.f;
-        const float VnCom = FVector::DotProduct(ParentComponent->GetPhysVelocity(), N);
+        const float VnCom = FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N);
         RemainingFreshSupportImpulse =
             GetMass() * FMath::Min(FMath::Max(-VnCom, 0.f), MaxFreshSupportDeltaVCmS);
 
@@ -1933,6 +1951,9 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     const float InvMass = 1.f / GetMass();
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
+    const FVector COMVelocityBeforeSolve = ParentComponent->GetPhysCOMVelocity();
+    FVector TotalNormalImpulse = FVector::ZeroVector;
+    FVector TotalTangentialImpulse = FVector::ZeroVector;
     // (BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d CurrentGroundContactsWS.Num = %d, ImpactNormal = %s, Kinematic = %s"),
     //     ParentComponent->NumFrame(), CurrentGroundContactsWS.Num(), *N.ToString(), *Kinematics.ToString());
 
@@ -1965,7 +1986,10 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             const bool bImpact = (vN < -GetImpactThreshold());
 
             const float cosAngle = bHadContactPrevFrame ? FVector::DotProduct(N, PrevContactNormal) : 0.f;
-            const bool bNewContact = (!bHadGroundContactPrevFrame && bGroundHitFromSweep);
+            const bool bNewContact =
+                !bContinuingEdgeSupport &&
+                !bHadGroundContactPrevFrame &&
+                bGroundHitFromSweep;
             const bool bSharpImpact = (bNewContact && bImpact && cosAngle > 0.95f);
 
             if (bSharpImpact)
@@ -2001,6 +2025,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             LambdaN[i] = lambdaNew;
 
             FVector J = applied * N;
+            const FVector NormalImpulse = J;
             const float appliedRaw = applied;
             const float BudgetBefore = RemainingFreshSupportImpulse;
 
@@ -2027,6 +2052,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             const float BudgetAfter = RemainingFreshSupportImpulse;
 
             ApplyImpulse(J, P);
+            TotalNormalImpulse += NormalImpulse;
+            TotalTangentialImpulse += J - NormalImpulse;
             /*(BoxSubBodyLog, Log,
                 TEXT("[CCDBoxSupportImpulse] Frame=%d It=%d Pt=%d Fresh=%d Window=%d RecentlyWall=%d ")
                 TEXT("NumC=%d vN=%.2f denomN=%.6f appliedRaw=%.3f appliedFinal=%.3f BudgetBefore=%.3f BudgetAfter=%.3f ")
@@ -2047,10 +2074,32 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 *P.ToString(),
                 *N.ToString(),
                 *J.ToString(),
-                *ParentComponent->GetPhysVelocity().ToString(),
+                *ParentComponent->GetPhysCOMVelocity().ToString(),
                 *ParentComponent->GetPhysAngularVelocity().ToString());*/
         }
     }
+
+#if !UE_BUILD_SHIPPING
+    if (CVarIAmSpeedBoxGroundSupportDebug.GetValueOnAnyThread() != 0)
+    {
+        const FVector COMVelocityAfterSolve = ParentComponent->GetPhysCOMVelocity();
+        UE_LOG(
+            BoxSubBodyLog,
+            Log,
+            TEXT("[BoxGroundSupport] Frame=%d Contacts=%d Iter=%d Mu=%.3f Fresh=%d ContinuingEdge=%d COMVBefore=%s COMVAfter=%s DeltaCOMV=%s NormalImpulse=%s TangentialImpulse=%s"),
+            ParentComponent->NumFrame(),
+            NumC,
+            Iter,
+            GetDynamicFriction(),
+            bFreshSweepSupport ? 1 : 0,
+            bContinuingEdgeSupport ? 1 : 0,
+            *COMVelocityBeforeSolve.ToString(),
+            *COMVelocityAfterSolve.ToString(),
+            *(COMVelocityAfterSolve - COMVelocityBeforeSolve).ToString(),
+            *TotalNormalImpulse.ToString(),
+            *TotalTangentialImpulse.ToString());
+    }
+#endif
 
     PrevLambdaN = LambdaN;
 
@@ -2066,7 +2115,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         {
             ParentComponent->SetPhysLocation(ParentComponent->GetPhysLocation() + DepenDir * (BetaPos * pushOut));
 
-            FVector V = ParentComponent->GetPhysVelocity();
+            const FVector V = ParentComponent->GetPhysCOMVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
             if (vIn < 0.f)
                 ParentComponent->AddPhysVelocity(-vIn * DepenDir);
@@ -2271,7 +2320,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
         ParentComponent->SetPhysLocation(ParentComponent->GetPhysLocation() + N * (BetaPos * pushOut));
 
         // Kill inward normal component at COM
-        FVector Vcm = ParentComponent->GetPhysVelocity();
+        const FVector Vcm = ParentComponent->GetPhysCOMVelocity();
         const float vIn = FVector::DotProduct(Vcm, N);
         if (vIn < 0.f)
             ParentComponent->AddPhysVelocity(-vIn * N);
@@ -2428,7 +2477,9 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     constexpr float PenTolSupport = 1.0f;
     constexpr float PenTolReject = 2.5f;
     constexpr float SepVelTol = 3.0f;
-    const float ActiveContactTol = bVertexRecoverCandidate
+    const float ActiveContactTol = bNearlyFaceAligned
+        ? FMath::Max(ContactTol, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        : bVertexRecoverCandidate
         ? FMath::Max(ContactTol, CVarIAmSpeedVertexSupportContactTolCm.GetValueOnAnyThread())
         : ContactTol;
     const float ActivePenTolSupport = bNearlyFaceAligned
@@ -2747,10 +2798,8 @@ SKinematic UBoxSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) con
 {
     if (!ParentComponent)
         return SKinematic();
-    const SKinematic& CarKinematicState = ParentComponent->GetKinematicStateForFrame(NumFrame);
-    return GetKinematicsFromOwnerKS(CarKinematicState);
+    return GetKinematicsFromOwnerKS(ParentComponent->GetOriginKinematicStateForFrame(NumFrame));
 }
-
 SKinematic UBoxSubBody::GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const
 {
     auto HitboxRelativeLocation = GetLocalOffset();
@@ -3079,7 +3128,11 @@ FVector UBoxSubBody::GetCOM() const
     {
         return FVector::ZeroVector;
     }
-    return ParentComponent->GetPhysLocation() + GetLocalOffset();
+    // The rigid body is integrated around the component's physical COM.
+    // Using the box's local offset here was only valid while the COM happened
+    // to coincide with the component origin; it produces incorrect lever arms
+    // as soon as a vehicle defines an offset CenterOfMass.
+    return ParentComponent->GetPhysCOM();
 }
 
 FVector UBoxSubBody::GetBoxExtent() const
@@ -3249,7 +3302,7 @@ bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVe
         return false;
     }
 
-    const FVector Vcm = ParentComponent->GetPhysVelocity();
+    const FVector Vcm = ParentComponent->GetPhysCOMVelocity();
     const float Vz = Vcm.Z;
 
     // Velocity normal to the support plane.
@@ -3332,7 +3385,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
         return false;
 
     // if plane is too far away -> NO SUPPORT
-    const float distCOM = PlaneSignedDist(ParentComponent->GetPhysLocation(), N, GroundPlanePointWS);
+    const float distCOM = PlaneSignedDist(ParentComponent->GetPhysCOM(), N, GroundPlanePointWS);
     constexpr float MaxSupportDist = 1.0f; // cm
     if (distCOM > MaxSupportDist)
     {
@@ -3340,7 +3393,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     }
 
     const float vN_com = FVector::DotProduct(
-        ParentComponent->GetPhysVelocity(), N
+        ParentComponent->GetPhysCOMVelocity(), N
     );
     // if COM is getting away from ground plane -> NO SUPPORT
     constexpr float COM_SEP_EPS = -0.5f; // cm/s
@@ -3456,8 +3509,11 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
     FVector HitboxRelLoc = GetLocalOffset(); // cm
     FQuat HitboxRelRot = GetLocalRotation();
 
-    // 1. Compute d in hitbox local frame (important)
-    FVector d_localChassis = HitboxRelLoc; // -COMLocal; // chassis center is the COM so COMLocal = FVectore::ZeroVector
+    // 1. Compute the box-center-to-COM offset in hitbox local space.
+    const FVector COMLocal = ParentComponent->GetPhysRotation().UnrotateVector(
+        ParentComponent->GetPhysCOM() - ParentComponent->GetPhysLocation()
+    );
+    const FVector d_localChassis = HitboxRelLoc - COMLocal;
     FVector d_in_box = HitboxRelRot.UnrotateVector(d_localChassis);
 
 	// 2. Compute inverse inertia tensor at COM, expressed in box local frame

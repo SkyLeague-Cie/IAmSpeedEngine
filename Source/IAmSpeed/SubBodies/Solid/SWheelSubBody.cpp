@@ -256,7 +256,7 @@ SKinematic USWheelSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) 
     SKinematic WheelKinematics;
     if (!ParentComponent)
         return WheelKinematics;
-    SKinematic CarKinematics = ParentComponent->GetKinematicStateForFrame(NumFrame);
+    SKinematic CarKinematics = ParentComponent->GetOriginKinematicStateForFrame(NumFrame);
     FTransform ChassisTM(CarKinematics.Rotation, CarKinematics.Location);
     auto WheelPos = WorldPosFromCarTransform(ChassisTM);
     auto WheelVel = ParentComponent->GetPhysVelocityAtPoint(WheelPos);
@@ -383,7 +383,7 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
                 Radius(),
                 *OldCurrentHit.ImpactNormal.ToString(),
                 *OldCurrentHit.Location.ToString(),
-                *ParentComponent->GetPhysVelocity().ToString());
+                *ParentComponent->GetPhysCOMVelocity().ToString());
         }
 #endif
         SetOnGround(false);
@@ -597,7 +597,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 #if !(UE_BUILD_SHIPPING)
         if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
         {
-            const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
+            const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
             UE_LOG(WheelSubBodyLog, Log,
                 TEXT("[SuspensionForce] Frame=%d Wheel=%d Dt=%.5f SuspDt=%.5f HitTOI=%.5f PenDepth=%.3f LastDisp=%.3f CurDisp=%.3f ForceLastDisp=%.3f ForceCurDisp=%.3f SpringLen=%.3f NewDesiredLen=%.3f ProjectedCompression=%.3f Rest=%.1f Stiff=%.1f Damp=%.1f WheelRelativeVelocity=%.3f Damping=%.1f Compress=%d PreRestCompress=%d Raw=%.1f Quant=%.1f Scale=%.3f Final=%.1f VelZ=%.3f HitN=%s HitLoc=%s"),
                 ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
@@ -644,7 +644,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
         {
             const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
-            const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
+            const FVector ParentVelocity = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
             const FVector ParentUp = ParentComponent ? ParentComponent->GetPhysUpVector().GetSafeNormal() : FVector::UpVector;
             UE_LOG(WheelSubBodyLog, Log,
                 TEXT("[SuspensionAir] Frame=%d Wheel=%d Dt=%.5f LastDisp=%.3f CurDisp=%.3f NextAirLength=%.3f SpringLen=%.3f WorldPos=%s CarUp=%s Vel=%s PrevHitN=%s PrevHitLoc=%s"),
@@ -723,7 +723,7 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
         const float CarUpGroundDot = FVector::DotProduct(WheelComponent->GetPhysUpVector().GetSafeNormal(), FVector::UpVector);
         const FVector VelAtPoint = WheelComponent->GetPhysVelocityAtPoint(WorldPoint);
         const float vN = FVector::DotProduct(VelAtPoint, ContactNormal);
-        const float BodyVN = FVector::DotProduct(WheelComponent->GetPhysVelocity(), ContactNormal);
+        const float BodyVN = FVector::DotProduct(WheelComponent->GetPhysCOMVelocity(), ContactNormal);
         const float SkipMaxInwardNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardNormalVelocity.GetValueOnAnyThread());
         const float SkipMaxInwardBodyNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardBodyNormalVelocity.GetValueOnAnyThread());
         if (CVarSkyLeagueSuspensionSkipOverextendedWheelContact.GetValueOnAnyThread() != 0 &&
@@ -745,7 +745,7 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
                     CarUpGroundDot,
                     vN,
                     BodyVN,
-                    WheelComponent->GetPhysVelocity().Z);
+                    WheelComponent->GetPhysCOMVelocity().Z);
             }
 #endif
             return;
@@ -860,7 +860,7 @@ void USWheelSubBody::UpdateSteerAngle(const float& delta)
 
     if (IsSteeringEnabled())
     {
-        float speed = ParentComponent->GetPhysVelocity().Size();
+        float speed = ParentComponent->GetPhysCOMVelocity().Size();
 
         // saturation max speed
         float normSpeed = FMath::Clamp(speed / ParentComponent->GetPhysMaxSpeed(), 0.f, 1.f);
@@ -1099,6 +1099,16 @@ FVector USWheelSubBody::GetHitContactNormal() const
     {
         return FVector::ZeroVector;
     }
+}
+
+FVector USWheelSubBody::GetHitContactPoint() const
+{
+    if (IsOnGround())
+    {
+        return CurrentHit.ImpactPoint;
+    }
+
+    return WorldPos();
 }
 
 void USWheelSubBody::SetHitContactNormal(const FVector& ImpactNormal)

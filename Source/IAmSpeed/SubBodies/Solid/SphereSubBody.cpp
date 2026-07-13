@@ -372,6 +372,13 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         // UE_LOG(SphereSubBodyLog, Log, TEXT("[%s][CCDSphere] Sphere applies impulse %s at TOI = %fs at frame=%d"), *ParentComponent->GetRole(),
         //    *ImpThis.ToString(), TimePassed, ParentComponent->NumFrame());
 
+#if !UE_BUILD_SHIPPING
+        const ISpeedComponent* BoxParentForDebug = OtherBox.GetParentComponent();
+        const FVector SphereCOMVPre = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
+        const FVector SphereWPre = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
+        const FVector BoxCOMVPre = BoxParentForDebug ? BoxParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
+        const FVector BoxWPre = BoxParentForDebug ? BoxParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
+#endif
         // Apply impulses
         ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
 		OtherBox.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
@@ -379,28 +386,27 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 #if !UE_BUILD_SHIPPING
         if (IAmSpeedSphereBoxImpulseDebugEnabled())
         {
-            const ISpeedComponent* BoxParent = OtherBox.GetParentComponent();
-            const FVector SphereVPost = ParentComponent ? ParentComponent->GetPhysVelocity() : FVector::ZeroVector;
+            const FVector SphereCOMVPost = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
             const FVector SphereWPost = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
-            const FVector BoxVPost = BoxParent ? BoxParent->GetPhysVelocity() : FVector::ZeroVector;
-            const FVector BoxWPost = BoxParent ? BoxParent->GetPhysAngularVelocity() : FVector::ZeroVector;
+            const FVector BoxCOMVPost = BoxParentForDebug ? BoxParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
+            const FVector BoxWPost = BoxParentForDebug ? BoxParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
 
             UE_LOG(
                 SphereSubBodyLog,
                 Warning,
-                TEXT("[SphereBoxImpulse][SphereResolvePost] Frame=%d Sphere=%s Box=%s Point=%s SphereVPost=%s SphereWPost=%s BoxVPost=%s BoxWPost=%s DeltaSphereV=%s DeltaSphereW=%s DeltaBoxV=%s DeltaBoxW=%s SphereImpulse=%s BoxImpulse=%s"),
+                TEXT("[SphereBoxImpulse][SphereResolvePost] Frame=%d Sphere=%s Box=%s Point=%s SphereCOMVPost=%s SphereWPost=%s BoxCOMVPost=%s BoxWPost=%s DeltaSphereCOMV=%s DeltaSphereW=%s DeltaBoxCOMV=%s DeltaBoxW=%s SphereImpulse=%s BoxImpulse=%s"),
                 ParentComponent ? ParentComponent->NumFrame() : -1,
                 GetOwner() ? *GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
                 OtherBox.GetOwner() ? *OtherBox.GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
                 *CurrentHit.ImpactPoint.ToString(),
-                *SphereVPost.ToString(),
+                *SphereCOMVPost.ToString(),
                 *SphereWPost.ToString(),
-                *BoxVPost.ToString(),
+                *BoxCOMVPost.ToString(),
                 *BoxWPost.ToString(),
-                *(SphereVPost - SphereKS.Velocity).ToString(),
-                *(SphereWPost - SphereKS.AngularVelocity).ToString(),
-                *(BoxVPost - BoxKSAtTOI.Velocity).ToString(),
-                *(BoxWPost - BoxKSAtTOI.AngularVelocity).ToString(),
+                *(SphereCOMVPost - SphereCOMVPre).ToString(),
+                *(SphereWPost - SphereWPre).ToString(),
+                *(BoxCOMVPost - BoxCOMVPre).ToString(),
+                *(BoxWPost - BoxWPre).ToString(),
                 *ImpThis.ToString(),
                 *ImpOther.ToString());
         }
@@ -562,7 +568,7 @@ void USphereSubBody::HandleMicroOscillation()
         return;
     }*/
 
-    FVector vel = ParentComponent->GetPhysVelocity();
+    FVector vel = ParentComponent->GetPhysCOMVelocity();
     float vN = FVector::DotProduct(vel, CurrentHit.ImpactNormal);
     FVector VelN = vN * CurrentHit.ImpactNormal;
     if (vel.Size() < 0.01f)

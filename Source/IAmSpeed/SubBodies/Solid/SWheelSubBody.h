@@ -89,6 +89,7 @@ public:
     bool IsContactVelocityLocked() const;
     float GetSuspensionOffset() const;
     FVector GetHitContactNormal() const;
+    FVector GetHitContactPoint() const;
     void SetHitContactNormal(const FVector& ImpactNormal);
     const SWheelRenderData& GetRenderData() const;
     void SetRollAngle(const float& angle);

@@ -31,8 +31,13 @@ public:
 	virtual unsigned int NumFrame() const = 0;
 	// overload this function to return the mass of the component (e.g. for a car body, this would be the mass of the car body without the wheels)
 	virtual float GetPhysMass() const = 0;
-	// overload this function to return the center of mass of the component in world space (e.g. for a car body, this would be the center of mass of the car body without the wheels)
-	virtual FVector GetPhysCOM() const = 0;
+	// Physical center of mass in world space. The canonical kinematic state is
+	// stored at this point and can therefore be read without reconstruction.
+	virtual const FVector& GetPhysCOM() const = 0;
+	const FVector& GetPhysCOMLocation() const { return GetPhysCOM(); }
+	// Center of mass relative to the component/mesh origin. This geometry is
+	// fixed for the lifetime of a physics state and is used to derive origin data.
+	virtual const FVector& GetPhysCenterOfMassLocal() const = 0;
 	// overload this function to return the array of sub-bodies owned by this component
 	virtual const TArray<USSubBody*>& GetSubBodies() const = 0;
 	// overload this function to create the sub-bodies owned by this component (e.g. for a car body, this would be creating the wheel sub-bodies and the hitbox sub-body)
@@ -50,7 +55,7 @@ public:
 	//===================================================================================
 
 	// overload this function to return the appropriate kinematic state for SubBody (e.g. wheel kinematics or hitbox kinematics from car body)
-	virtual const SKinematic& GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& NumFrame) const = 0;
+	virtual SKinematic GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& NumFrame) const = 0;
 	// overload this function to return the appropriate inertia tensor in world space
 	virtual FMatrix ComputeWorldInvInertiaTensor() const = 0;
 	// overload this function to return the appropriate inertia tensor in world space for the given sub-body (e.g. for a car body, the inertia tensor of the wheel sub-body would be different from the inertia tensor of the hitbox sub-body)
@@ -59,15 +64,30 @@ public:
 	// =========== Kinematics getters and setters =================
 	virtual const SKinematic& GetKinematicState() const = 0;
 	virtual const SKinematic& GetKinematicStateForFrame(const unsigned int& NumFrame) const = 0;
-	const FVector& GetPhysLocation() const;
+	// Derives the component/mesh-origin state for rendering and local sub-body geometry.
+	SKinematic GetOriginKinematicState() const;
+	SKinematic GetOriginKinematicStateForFrame(const unsigned int& NumFrame) const;
+	FVector GetPhysLocation() const;
+	void SetPhysCOMLocation(const FVector& NewCOMLocation);
 	void SetPhysLocation(const FVector& NewLocation);
 	const FQuat& GetPhysRotation() const;
 	void SetPhysRotation(const FQuat& NewRotation);
-	const FVector& GetPhysVelocity() const;
+	// Applies an instantaneous orientation correction without teleporting the
+	// rigid body's center of mass or changing its COM velocity.
+	void SetPhysRotationPreserveCOM(const FQuat& NewRotation);
+	FVector GetPhysVelocity() const;
 	FVector GetPhysVelocityAtPoint(const FVector& Point) const;
+	// The stored kinematic velocity is attached to the component origin.
+	// Use this when gameplay needs the rigid body's center-of-mass velocity.
+	const FVector& GetPhysCOMVelocity() const;
 	const FVector& GetPhysAngularVelocity() const;
 	virtual float GetPhysMaxSpeed() const = 0;
 	virtual float GetPhysMaxAngularSpeed() const = 0;
+	// Sets the rigid body's center-of-mass velocity and clamps that physical
+	// velocity, while keeping the stored component-origin velocity coherent.
+	void SetPhysCOMVelocity(const FVector& NewCOMVelocity);
+	// Sets the velocity of the stored component origin. The speed limit is
+	// nevertheless evaluated from the corresponding COM velocity.
 	void SetPhysVelocity(const FVector& NewVelocity);
 	void SetPhysVelocityAtPoint(const FVector& NewVelocity, const FVector& WorldPoint);
 	void SetPhysAngularVelocity(const FVector& NewAngularVelocity);
@@ -82,7 +102,7 @@ public:
 	FVector GetPhysForwardVector() const { return GetPhysRotation().GetForwardVector(); }
 	FVector GetPhysRightVector() const { return GetPhysRotation().GetRightVector(); }
 	FVector GetPhysUpVector() const { return GetPhysRotation().GetUpVector(); }
-	float GetPhysForwardSpeed() const { return FVector::DotProduct(GetPhysVelocity(), GetPhysForwardVector()); }
+	float GetPhysForwardSpeed() const { return FVector::DotProduct(GetPhysCOMVelocity(), GetPhysForwardVector()); }
 	bool IsPhysGoingForward() const { return GetPhysForwardSpeed() > 0; }
 	// ==============================
 
@@ -141,7 +161,7 @@ protected:
 	virtual void PostPhysicsUpdatePrv(const float& delta) = 0;
 
 	virtual void SetKinematicState(const SKinematic& NewKinematicState) = 0;
-	void SetPhysVelocityRaw(const FVector& NewVelocity);
+	void SetPhysCOMVelocityRaw(const FVector& NewVelocity);
 	void SetPhysAngularVelocityRaw(const FVector& NewAngularVelocity);
 	bool IsPhysicalConstraintStillRelevant(const FPhysicalContactConstraint& Constraint) const;
 	void ProjectLinearDeltaAgainstConstraints(FVector& DeltaLinear) const;
