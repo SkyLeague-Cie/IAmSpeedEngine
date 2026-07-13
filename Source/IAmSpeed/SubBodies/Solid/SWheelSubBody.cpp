@@ -999,6 +999,10 @@ bool USWheelSubBody::IsContactVelocityLocked() const
 
 bool USWheelSubBody::IsOnGround() const
 {
+	if(PWheel == nullptr)
+	{
+		return false;
+	}
     return PWheel->InContact();
 }
 

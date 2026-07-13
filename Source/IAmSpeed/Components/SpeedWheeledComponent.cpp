@@ -955,10 +955,13 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 	UpdateInputs();
 	TagStateHistoryProxyRole();
 	RecoverWheelState();
-	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
+	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 1 == 0)
 	{
+		const FVector Forward = GetPhysForwardVector();
+		const FVector Right = GetPhysRightVector();
+		const FVector Up = GetPhysUpVector();
 		UE_LOG(SpeedPhysicsLog, Log,
-			TEXT("[%s(%s)][UpdateFrameState] SinceCanMove=%d Wheels=%d COM=%s COMV=%s COMA=%s W=%s Alpha=%s"),
+			TEXT("[%s(%s)][UpdateFrameState] SinceCanMove=%d Wheels=%d COM=%s COMV=%s COMA=%s W=%s Alpha=%s Forward=%s Right=%s Up=%s"),
 			*GetOwner()->GetName(),
 			*GetRole(),
 			NbFramesSinceCanMove(),
@@ -967,7 +970,10 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 			*GetPhysCOMVelocity().ToString(),
 			*GetPhysAccelerationAtPoint(GetPhysCOM()).ToString(),
 			*GetPhysAngularVelocity().ToString(),
-			*GetPhysAngularAcceleration().ToString());
+			*GetPhysAngularAcceleration().ToString(),
+			*Forward.ToString(),
+			*Right.ToString(),
+			*Up.ToString());
 	}
 }
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
@@ -1181,7 +1187,7 @@ void USpeedWheeledComponent::PreGameplayTick(const float& DeltaTime, const float
 	HandleDamping(DeltaTime);
 	HandleAngularDamping(DeltaTime);
 	HandleSuspension(DeltaTime);
-	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
+	/*if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 	{
 		UE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][End PreGameplayTick] SinceCanMove=%d Wheels=%d COM=%s COMV=%s COMA=%s W=%s Alpha=%s"),
@@ -1194,7 +1200,7 @@ void USpeedWheeledComponent::PreGameplayTick(const float& DeltaTime, const float
 			*GetPhysAccelerationAtPoint(GetPhysCOM()).ToString(),
 			*GetPhysAngularVelocity().ToString(),
 			*GetPhysAngularAcceleration().ToString());
-	}
+	}*/
 }
 void USpeedWheeledComponent::HandleDamping(const float& delta)
 {
@@ -1755,11 +1761,11 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 	float ForwardSpeed = COMVelocity.Dot(ForwardVector);
 	float SideSpeed = COMVelocity.Dot(RightVector);
 	auto LocalForwardFriction = (GetLocalForwardFriction() * NumWheelsOnGround()) / 4;
-	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
+	/*if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 	{
 		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][Start HandleGroundFriction] For NbFramesSinceCanMove = %d, LocalForwardFriction=%f, SideFriction=%f"),
 			*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), LocalForwardFriction, GetLocalSideFriction());
-	}
+	}*/
 
 	const bool bNoDriveInput = !HasDriveInputForGroundFriction();
 	const bool bNoSteeringInput = FMath::Abs(GetPhysSteeringInput()) < ThrottleDeadzone;
@@ -1836,11 +1842,11 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 
 		// Wheel point velocity may be non-zero even while the chassis COM is stationary (e.g. a beyblade landing).
 		ApplyWheelFrameLateralFriction(delta);
-		if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
+		/*if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 		{
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][End HandleGroundFriction] SinceCanMove=%d Wheels=%d COMKinematic=(%s)"),
 				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *GetKinematicState().ToString());
-		}
+		}*/
 	}
 }
 
@@ -2027,7 +2033,7 @@ void USpeedWheeledComponent::SetDampenedAirAngularVelocity(const FVector& Target
 void USpeedWheeledComponent::GameplayTick(const float& DeltaTime, const float& SimTime)
 {
 	HandleInputs(DeltaTime);
-	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
+	/*if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 1 == 0)
 	{
 		UE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][GameplayTick] SinceCanMove=%d COM=%s COMV=%s COMA=%s W=%s Alpha=%s"),
@@ -2039,7 +2045,7 @@ void USpeedWheeledComponent::GameplayTick(const float& DeltaTime, const float& S
 			*GetPhysAccelerationAtPoint(GetPhysCOM()).ToString(),
 			*GetPhysAngularVelocity().ToString(),
 			*GetPhysAngularAcceleration().ToString());
-	}
+	}*/
 }
 void USpeedWheeledComponent::HandleInputs(const float& DeltaTime)
 {
@@ -3468,7 +3474,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (bAllWheelsContact && !WheelN.IsNearlyZero())
 	{
 		const float d = FVector::DotProduct(WheelN, NetCorr_LastContactN);
-		if (d > 0.995f) // ~5.7° max
+		if (d > 0.995f) // ~5.7 deg max
 		{
 			if (NetCorr_StableNFrames < 255) NetCorr_StableNFrames++;
 		}
@@ -3514,7 +3520,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// Velocity drain (+ clamp)
 	// ----------------------------
 	FVector dV = NetCorrAccum.RemVel * aV;
-	constexpr float MaxVelCorrPerSec = 3600.f; // cm/s°
+	constexpr float MaxVelCorrPerSec = 3600.f; // cm/s^2
 	dV = dV.GetClampedToMaxSize(MaxVelCorrPerSec * DeltaSeconds);
 	// all wheel on ground -> reject correction along the ground normal
 	if (bStableContact)
