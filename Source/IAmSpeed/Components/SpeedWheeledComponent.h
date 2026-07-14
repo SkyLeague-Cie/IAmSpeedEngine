@@ -234,6 +234,12 @@ protected:
 
 	// Update Inputs
 	virtual void UpdateInputs();
+
+public:
+	// Queues a complete continuous input snapshot for deterministic consumers such as netcode and test scenarios.
+	void QueueWheeledInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
+
+protected:
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay
 	virtual void PreGameplayTick(const float& DeltaTime, const float& SimTime);
 	// Apply here gameplay forces (e.g. from player input or AI)
@@ -594,7 +600,6 @@ private:
 	void RestoreWheeledPhysicalInputFromState();
 	void SyncWheeledPhysicalInputToState();
 	void ConsumeQueuedWheeledInputsForFrame(const int32 CurrentFrame);
-	void QueueWheeledInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input);
 
 
 	//=========== Internal state variables for the movement component ===========
