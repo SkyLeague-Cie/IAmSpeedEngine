@@ -2,7 +2,7 @@
 
 #include "ISweeper.h"
 
-class ISensorSweeper : public ISweeper
+class IAMSPEED_API ISensorSweeper : public ISweeper
 {
 public:
 	bool InternalSweep(UWorld* World, const FVector& Start, const FVector& End, SHitResult& OutHit, const float& delta);
