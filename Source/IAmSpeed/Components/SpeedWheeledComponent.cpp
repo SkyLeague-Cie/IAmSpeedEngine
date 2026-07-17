@@ -1027,6 +1027,13 @@ void USpeedWheeledComponent::ConsumeQueuedWheeledInputsForFrame(const int32 Curr
 		if (Cmd.ActivationFrame <= CurrentFrame)
 		{
 			WheeledUserInput = Cmd.Input;
+			if (Cmd.bBypassSlew)
+			{
+				WheeledPhysicalInput = WheeledUserInput;
+				WheeledPhysicalInputBeforeSlew = WheeledPhysicalInput;
+				LastWheeledInputSlewFrame = CurrentFrame;
+				SyncWheeledPhysicalInputToState();
+			}
 			PendingWheeledInputCommands.RemoveAt(i);
 		}
 	}
@@ -1103,6 +1110,7 @@ void USpeedWheeledComponent::QueueWheeledInputForFrame(const int32 ActivationFra
 		if (Cmd.ActivationFrame == ActivationFrame)
 		{
 			Cmd.Input = Input;
+			Cmd.bBypassSlew = false;
 			return;
 		}
 	}
@@ -1111,6 +1119,42 @@ void USpeedWheeledComponent::QueueWheeledInputForFrame(const int32 ActivationFra
 	NewCmd.ActivationFrame = ActivationFrame;
 	NewCmd.Input = Input;
 
+	PendingWheeledInputCommands.Add(NewCmd);
+
+	PendingWheeledInputCommands.Sort(
+		[](const FPendingWheeledInputCommand& A, const FPendingWheeledInputCommand& B)
+		{
+			return A.ActivationFrame < B.ActivationFrame;
+		}
+	);
+
+	while (PendingWheeledInputCommands.Num() > MaxPendingWheeledInputs)
+	{
+		PendingWheeledInputCommands.RemoveAt(0);
+	}
+}
+
+void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
+{
+	if (ActivationFrame == INDEX_NONE)
+	{
+		return;
+	}
+
+	for (FPendingWheeledInputCommand& Cmd : PendingWheeledInputCommands)
+	{
+		if (Cmd.ActivationFrame == ActivationFrame)
+		{
+			Cmd.Input = Input;
+			Cmd.bBypassSlew = true;
+			return;
+		}
+	}
+
+	FPendingWheeledInputCommand NewCmd;
+	NewCmd.ActivationFrame = ActivationFrame;
+	NewCmd.Input = Input;
+	NewCmd.bBypassSlew = true;
 	PendingWheeledInputCommands.Add(NewCmd);
 
 	PendingWheeledInputCommands.Sort(

@@ -49,6 +49,7 @@ public:
 	{
 		int32 ActivationFrame = INDEX_NONE;
 		FWheeledInputState Input;
+		bool bBypassSlew = false;
 	};
 
 	USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer);
@@ -238,6 +239,8 @@ protected:
 public:
 	// Queues a complete continuous input snapshot for deterministic consumers such as netcode and test scenarios.
 	void QueueWheeledInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
+	// Test-only counterpart that applies the physical wheel input directly at its activation frame.
+	void QueueTestWheeledPhysicalInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
 
 protected:
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay
