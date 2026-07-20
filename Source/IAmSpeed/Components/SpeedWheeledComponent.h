@@ -241,6 +241,8 @@ public:
 	void QueueWheeledInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
 	// Test-only counterpart that applies the physical wheel input directly at its activation frame.
 	void QueueTestWheeledPhysicalInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
+	// Configuration access for native deterministic vehicle profiles.
+	UBoxSubBody* GetHitboxSubBodyForConfiguration() const { return HitboxSubBody.Get(); }
 
 protected:
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay

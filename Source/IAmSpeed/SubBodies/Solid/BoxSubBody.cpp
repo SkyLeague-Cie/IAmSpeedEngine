@@ -3140,6 +3140,11 @@ FVector UBoxSubBody::GetBoxExtent() const
 	return BoxExtent;
 }
 
+void UBoxSubBody::SetBoxExtent(const FVector& InBoxExtent)
+{
+	BoxExtent = InBoxExtent.ComponentMax(FVector::ZeroVector);
+}
+
 FCollisionShape UBoxSubBody::GetCollisionShape(float Inflation) const
 {
     return FCollisionShape::MakeBox(BoxExtent + FVector(Inflation));

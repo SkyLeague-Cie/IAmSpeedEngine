@@ -58,6 +58,7 @@ public:
     void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint) override;
     FVector GetCOM() const;
 	FVector GetBoxExtent() const;
+	void SetBoxExtent(const FVector& InBoxExtent);
     FMatrix ComputeWorldInvInertiaTensor() const override;
 
     FPrimitiveSceneProxy* CreateSceneProxy() override;
