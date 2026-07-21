@@ -37,6 +37,7 @@ public:
     void UpdateBodySetup();
 	void HandleMicroOscillation();
     float GetRadius() const { return Radius; }
+    void SetRadiusForConfiguration(float NewRadius) { SetRadius(NewRadius); }
 protected:
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const override;
 

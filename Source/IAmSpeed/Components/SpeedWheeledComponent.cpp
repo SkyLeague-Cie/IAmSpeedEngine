@@ -75,6 +75,18 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeLateralImpulse
 	-1.0f,
 	TEXT("Overrides WheelFrameHandbrakeLateralImpulseScale when >= 0. Negative values keep the Blueprint/component value."),
 	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeFrontLateralFrictionFactor(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeFrontLateralFrictionFactor"),
+	-1.0f,
+	TEXT("Overrides the handbrake front lateral-friction curve when >= 0. Negative values keep the component curve."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeRearLateralFrictionFactor(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeRearLateralFrictionFactor"),
+	-1.0f,
+	TEXT("Overrides the handbrake rear lateral-friction curve when >= 0. Negative values keep the component curve."),
+	ECVF_Default);
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameSteeringCurvatureScale(
 	TEXT("p.IAmSpeed.WheelFrame.SteeringCurvatureScale"),
 	-1.0f,
@@ -1027,6 +1039,13 @@ void USpeedWheeledComponent::ConsumeQueuedWheeledInputsForFrame(const int32 Curr
 		if (Cmd.ActivationFrame <= CurrentFrame)
 		{
 			WheeledUserInput = Cmd.Input;
+			if (Cmd.bBypassSlew)
+			{
+				WheeledPhysicalInput = WheeledUserInput;
+				WheeledPhysicalInputBeforeSlew = WheeledPhysicalInput;
+				LastWheeledInputSlewFrame = CurrentFrame;
+				SyncWheeledPhysicalInputToState();
+			}
 			PendingWheeledInputCommands.RemoveAt(i);
 		}
 	}
@@ -1103,6 +1122,7 @@ void USpeedWheeledComponent::QueueWheeledInputForFrame(const int32 ActivationFra
 		if (Cmd.ActivationFrame == ActivationFrame)
 		{
 			Cmd.Input = Input;
+			Cmd.bBypassSlew = false;
 			return;
 		}
 	}
@@ -1111,6 +1131,42 @@ void USpeedWheeledComponent::QueueWheeledInputForFrame(const int32 ActivationFra
 	NewCmd.ActivationFrame = ActivationFrame;
 	NewCmd.Input = Input;
 
+	PendingWheeledInputCommands.Add(NewCmd);
+
+	PendingWheeledInputCommands.Sort(
+		[](const FPendingWheeledInputCommand& A, const FPendingWheeledInputCommand& B)
+		{
+			return A.ActivationFrame < B.ActivationFrame;
+		}
+	);
+
+	while (PendingWheeledInputCommands.Num() > MaxPendingWheeledInputs)
+	{
+		PendingWheeledInputCommands.RemoveAt(0);
+	}
+}
+
+void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
+{
+	if (ActivationFrame == INDEX_NONE)
+	{
+		return;
+	}
+
+	for (FPendingWheeledInputCommand& Cmd : PendingWheeledInputCommands)
+	{
+		if (Cmd.ActivationFrame == ActivationFrame)
+		{
+			Cmd.Input = Input;
+			Cmd.bBypassSlew = true;
+			return;
+		}
+	}
+
+	FPendingWheeledInputCommand NewCmd;
+	NewCmd.ActivationFrame = ActivationFrame;
+	NewCmd.Input = Input;
+	NewCmd.bBypassSlew = true;
 	PendingWheeledInputCommands.Add(NewCmd);
 
 	PendingWheeledInputCommands.Sort(
@@ -1453,13 +1509,19 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				const bool bIsFrontWheel = WheelIndex <= 1;
 				const float DirectionBlend = IsHandbrakingForwardForWheelFriction() ? 1.0f : 0.0f;
 
+				const float FrontFactorOverride = CVarIAmSpeedWheelFrameHandbrakeFrontLateralFrictionFactor.GetValueOnAnyThread();
 				const float FrontCurveFactor = FMath::Max(
 					0.0f,
-					EvaluateLinearFloatCurve(HandbrakeFrontLateralFrictionFactorCurve, FrictionCurveInput, 1.0f)
+					FrontFactorOverride >= 0.0f
+						? FrontFactorOverride
+						: EvaluateLinearFloatCurve(HandbrakeFrontLateralFrictionFactorCurve, FrictionCurveInput, 1.0f)
 				);
+				const float RearFactorOverride = CVarIAmSpeedWheelFrameHandbrakeRearLateralFrictionFactor.GetValueOnAnyThread();
 				const float RearCurveFactor = FMath::Max(
 					0.0f,
-					EvaluateLinearFloatCurve(HandbrakeRearLateralFrictionFactorCurve, FrictionCurveInput, 1.0f)
+					RearFactorOverride >= 0.0f
+						? RearFactorOverride
+						: EvaluateLinearFloatCurve(HandbrakeRearLateralFrictionFactorCurve, FrictionCurveInput, 1.0f)
 				);
 				const float FrontSpeedScale = FMath::Max(
 					0.0f,
