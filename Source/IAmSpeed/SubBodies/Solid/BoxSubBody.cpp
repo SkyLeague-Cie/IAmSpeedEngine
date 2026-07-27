@@ -1303,7 +1303,24 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     const FVector N = Speed::QuantizeUnitNormal(Hit.ImpactNormal.GetSafeNormal());
     const FVector P = Speed::QuantizeVectorCm(Hit.ImpactPoint, 0.1f); // 1 mm
 
-    const FVector Vp = GetVelocityAtPoint(P);
+    const FVector COM = GetCOM();
+    const float FaceAlignment = FMath::Max(
+        FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisX(), N)),
+        FMath::Max(
+            FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisY(), N)),
+            FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisZ(), N))));
+    const bool bFaceOnVerticalWallContact =
+        !Hit.bStartPenetrating &&
+        FMath::Abs(FVector::DotProduct(N, FVector::UpVector)) < 0.10f &&
+        FaceAlignment >= 0.98f;
+
+    // A face-on box/plane impact is a contact manifold, even if the sweep
+    // reports only one corner. Resolve it through the face center so a
+    // sampling artifact cannot turn most of the rebound into angular motion.
+    const FVector SolveP = bFaceOnVerticalWallContact
+        ? COM + N * FVector::DotProduct(P - COM, N)
+        : P;
+    const FVector Vp = GetVelocityAtPoint(SolveP);
     const float vN = FVector::DotProduct(Vp, N);
 
     // If not approaching, do nothing (prevents “sticky” contacts on edges).
@@ -1311,8 +1328,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     if (vN >= VN_EPS)
         return;
 
-    const FVector COM = GetCOM();
-    const FVector r = P - COM;
+    const FVector r = SolveP - COM;
 
     const float InvMass = 1.f / GetMass();
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
@@ -1323,9 +1339,16 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     int32 PreviewSupportContacts = 0;
     const float UpDot = FVector::DotProduct(N, FVector::UpVector);
-    LastWallOrGutterFrame = ParentComponent->NumFrame();
-    LastWallOrGutterN = N;
-    LastWallOrGutterUpDot = UpDot;
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const int32 FramesSinceLastWallContact =
+        LastWallOrGutterFrame == INDEX_NONE
+        ? INDEX_NONE
+        : CurrentFrame - LastWallOrGutterFrame;
+    const bool bContinuesVerticalWallManifold =
+        FramesSinceLastWallContact >= 0 &&
+        FramesSinceLastWallContact <= 1 &&
+        FMath::Abs(LastWallOrGutterUpDot) < 0.10f &&
+        FVector::DotProduct(LastWallOrGutterN, N) >= 0.98f;
     if (UpDot >= 0.85f)
     {
         TArray<FVector> PreviewPts;
@@ -1386,6 +1409,18 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         (bIsGutterLikeWall && bHasValidSupportPlane) ||
         (bIsGutterLikeWall && bIsPenetratingStaticWall);
 
+    // A clean aerial impact against a vertical wall is not a gutter contact.
+    // It must be allowed to resolve its full restitution impulse in one hit.
+    const bool bHardVerticalWallImpact =
+        FMath::Abs(UpDot) < 0.10f &&
+        !bHasValidSupportPlane &&
+        (!Hit.bStartPenetrating || bContinuesVerticalWallManifold);
+    const bool bUseSoftWallResponse = bSoftWall && !bHardVerticalWallImpact;
+
+    LastWallOrGutterFrame = CurrentFrame;
+    LastWallOrGutterN = N;
+    LastWallOrGutterUpDot = UpDot;
+
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
     {
@@ -1400,15 +1435,13 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     }
 #endif
 
-    // Restitution policy for walls/gutters:
-    // - Usually you want NO bounce in a gutter because it creates wedging artifacts.
-    // - Keep it at 0 unless you have a very clear “impact” situation.
-    // constexpr float ImpactThreshold = 80.f; // cm/s (higher than ground)
+    // Preserve restitution for clean wall impacts, while gutters and other
+    // soft-wall contacts remain non-bouncy to avoid wedging artifacts.
     const bool bImpact = (vN < -GetImpactThreshold());
 
-    float Rest = 0.f;
-    // If you really want micro-bounce on hard impacts, you can enable this:
-    // if (bImpact) Rest = FMath::Clamp(GetRestitution(), 0.f, 0.15f);
+    const float Rest = bImpact && !bUseSoftWallResponse
+        ? FMath::Clamp(GetRestitution(), 0.f, 1.f)
+        : 0.f;
     if (bImpact)
     {
         // ParentComponent->SetHadImpactThisFrame(true);
@@ -1416,11 +1449,13 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     // Normal impulse to cancel vN (or bounce if enabled)
     float jn = -(1.f + Rest) * vN / denomN;
-    const bool bHardImpact = !Hit.bStartPenetrating && vN < -300.f;
+    const bool bHardImpact =
+        (!Hit.bStartPenetrating || bHardVerticalWallImpact) &&
+        vN < -300.f;
 
     const float MaxWallDeltaVCmS =
-        bSoftWall ? 50.f :
-        bHardImpact ? 180.f :
+        bUseSoftWallResponse ? 50.f :
+        bHardImpact ? FMath::Max(180.f, FMath::Abs(vN) * (1.f + Rest)) :
         100.f;
 
     float SoftWallMassScale = 1.0f;
@@ -1448,14 +1483,16 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     }
 
     const float jnMaxByMass =
-        (bSoftWall ? SoftWallMassScale : 5.0f) * GetMass();
+        (bUseSoftWallResponse ? SoftWallMassScale : 5.0f) * GetMass();
 
     const float jnMaxByDeltaV = MaxWallDeltaVCmS / FMath::Max(denomN, KINDA_SMALL_NUMBER);
 
     // Guard against absurd impulses in 1-point concave contacts.
     // This is NOT a “wedging clamp”; it’s a numerical safety for edge cases.
     // Tune with care. If you prefer, delete it and rely on correct CCD.
-    const float jnMax = FMath::Min(jnMaxByDeltaV, jnMaxByMass);
+    const float jnMax = bUseSoftWallResponse
+        ? FMath::Min(jnMaxByDeltaV, jnMaxByMass)
+        : jnMaxByDeltaV;
     jn = FMath::Clamp(jn, 0.f, jnMax);
 
     FVector J = jn * N;
@@ -1485,7 +1522,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         }
     }
 
-    ApplyImpulse(J, P);
+    ApplyImpulse(J, SolveP);
 
     const bool bApplyWallGutterSlideDamping =
         ParentComponent->IsUpsideDown() &&
@@ -1515,7 +1552,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             *J.ToString(),
             jn,
             jnMax,
-            bSoftWall ? 1 : 0,
+            bUseSoftWallResponse ? 1 : 0,
             SoftWallMassScale,
             PreviewSupportContacts,
             denomN,
@@ -1542,12 +1579,12 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             // Kill inward velocity along depen dir
             const FVector V = ParentComponent->GetPhysCOMVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
-            if (vIn < 0.f)
+            if (vIn < 0.f && !bHardVerticalWallImpact)
             {
                 FVector DepenVelocityDelta = -vIn * DepenDir;
                 float DepenScale = 1.f;
 
-                if (bSoftWall)
+                if (bUseSoftWallResponse)
                 {
                     float MaxNormalKill = CVarIAmSpeedSoftWallDepenMaxNormalKillCmS.GetValueOnAnyThread();
                     const float NearVerticalMaxNormalKill =
@@ -1597,7 +1634,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
                         *DepenDir.ToString(),
                         *DepenVelocityDelta.ToString(),
                         DepenScale,
-                        bSoftWall ? 1 : 0,
+                        bUseSoftWallResponse ? 1 : 0,
                         bIsGutterLikeWall ? 1 : 0,
                         UpDot,
                         Hit.PenetrationDepth,
