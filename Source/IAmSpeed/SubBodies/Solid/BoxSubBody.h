@@ -47,7 +47,8 @@ public:
 
     bool HasPersistentGroundContact() const;
     bool HasPhysicsTickGroundContact() const;
-    void UpdatePersistentGroundContact(const float& delta);
+    bool HasRoofSurfaceTraversalSupport() const;
+    void UpdatePersistentGroundContact(const float& delta, bool bDirectSupportSolved = false);
     bool HasPersistentEdgeSupport() const;
     bool IsInEdgeBalance() const;
     int GetBestSupportingFace() const;
@@ -105,7 +106,7 @@ private:
     void ResolveDirectGroundSupport(const float& Dt, const SHitResult& Hit);
     void ApplyPersistentSupportConstraint(const float& Dt);
     bool SolveEdgeSupportConstraint(const FVector& SupportN, const TArray<FVector>& SupportPts, const float Dt, const bool bDoFriction /*= false*/,
-        const float Mu /*= 0.0f*/);
+        const float Mu /*= 0.0f*/, const bool bAllowTraversalTorque /*= false*/);
 
     static FORCEINLINE FVector SafeNormal(const FVector& v)
     {
@@ -275,6 +276,9 @@ private:
     TArray<FVector> LatchedEdgeContactsLS; // size = 2
     bool bEdgeSupportLatched = false;
     int32 EdgeSupportLatchFrame = -1;
+    bool bRoofSurfaceTraversalLatched = false;
+    int32 LastRoofSurfaceContactFrame = INDEX_NONE;
+    TWeakObjectPtr<UPrimitiveComponent> RoofSurfaceComp;
     FVector CompositeGroundNormal; // average normal from all ground contacts this frame
     TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> HitCountThisFrame;
     uint32 MaxHitsPerComponentPerFrame = 4; // face = 4 corners
