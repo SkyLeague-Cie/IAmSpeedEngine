@@ -1686,10 +1686,22 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         constexpr float Slop = 0.5f;     // cm
         constexpr float BetaPos = 0.35f; // stronger than ground to escape concave edges
 
-        const float pushOut = FMath::Max(Hit.PenetrationDepth - Slop, 0.f);
+        // A nearly motionless unsupported body can otherwise remain inside the
+        // slop forever: CCD keeps returning the same zero-TOI hit and gravity
+        // never gets a chance to advance it.
+        const bool bStalledUnsupportedShallowContact =
+            Hit.PenetrationDepth <= Slop &&
+            !HasPersistentGroundContact() &&
+            ParentComponent->GetPhysCOMVelocity().SizeSquared() <= FMath::Square(5.f) &&
+            vN >= -VN_EPS;
+        const float pushOut = bStalledUnsupportedShallowContact
+            ? Hit.PenetrationDepth + 0.1f
+            : FMath::Max(Hit.PenetrationDepth - Slop, 0.f);
         if (pushOut > 0.f)
         {
-            ParentComponent->SetPhysLocation(ParentComponent->GetPhysLocation() + DepenDir * (BetaPos * pushOut));
+            const float PositionScale = bStalledUnsupportedShallowContact ? 1.f : BetaPos;
+            ParentComponent->SetPhysLocation(
+                ParentComponent->GetPhysLocation() + DepenDir * (PositionScale * pushOut));
 
             // Kill inward velocity along depen dir
             const FVector V = ParentComponent->GetPhysCOMVelocity();
@@ -1971,9 +1983,12 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         return;
     }
 
+    const bool bHasCompatiblePersistentPlane =
+        bGroundPlaneValid &&
+        FVector::DotProduct(GroundPlaneN.GetSafeNormal(), N) >= 0.95f;
     const bool bFreshSweepSupport =
         bGroundHitFromSweep &&
-        !bGroundPlaneValid &&
+        !bHasCompatiblePersistentPlane &&
         !bUseLatchedEdge &&
         !bUpsideDownRoofSlideSupport &&
         !bHasGroundContact &&
@@ -2842,6 +2857,27 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
                 bNotExploding ? 1 : 0);
         }
 #endif
+        // An upright bottom-face manifold rejected on a nearly horizontal
+        // surface is not a persistent support candidate. Keeping its plane
+        // valid lets a following gutter-wall hit rebuild the stale four-point
+        // manifold and cancel gravity after all contacts vanish. This covers
+        // separation, excessive penetration, and an invalid support band.
+        // Keep it narrow: roof traversal and wall landings rely on their own
+        // support hysteresis.
+        const float PlaneUpDot = FVector::DotProduct(N, FVector::UpVector);
+        const float CarUpToPlaneDot =
+            FVector::DotProduct(K.Rotation.GetUpVector(), N);
+        if (bNearlyFaceAligned &&
+            CurrentGroundContactsWS.Num() >= 3 &&
+            PlaneUpDot >= 0.95f &&
+            CarUpToPlaneDot >= 0.9f)
+        {
+            bHasGroundContact = false;
+            bGroundPlaneValid = false;
+            bGroundContactStable = false;
+            StableTime = 0.f;
+            CurrentGroundContactsWS.Reset();
+        }
         bEdgeSupportLatched = false;
         LatchedEdgeContactsLS.Reset();
         PrevGroundContactsLS.Reset();
