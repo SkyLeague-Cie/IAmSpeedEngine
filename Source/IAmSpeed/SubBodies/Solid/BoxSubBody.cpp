@@ -96,8 +96,13 @@ static TAutoConsoleVariable<float> CVarIAmSpeedNearGutterVerticalDepenMaxNormalK
 
 static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideDamping(
     TEXT("p.IAmSpeed.GutterSlideDamping"),
-    3.5f,
+    3.25f,
     TEXT("Exponential tangential velocity damping applied while the main hitbox slides upside-down in gutters, in 1/s. <= 0 disables it."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideCrossDamping(
+    TEXT("p.IAmSpeed.GutterSlideCrossDamping"),
+    25.0f,
+    TEXT("Additional damping applied only across the gutter while the roof follows a curved stadium surface, in 1/s."));
 
 static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideMaxDeltaCmS(
     TEXT("p.IAmSpeed.GutterSlideMaxDeltaCmS"),
@@ -121,6 +126,9 @@ static TAutoConsoleVariable<float> CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS(
 
 namespace
 {
+    // Stadium gutter seams can leave the roof unsupported for several 300 Hz frames.
+    constexpr int32 RoofSurfaceTraversalGraceFrames = 60;
+
     FVector IAmSpeedVelocityAtPointFromKS(const SKinematic& KS, const FVector& Point)
     {
         return KS.Velocity + FVector::CrossProduct(KS.AngularVelocity, Point - KS.Location);
@@ -181,6 +189,17 @@ namespace
                     const float BrakeDelta = FMath::Min(ClimbSpeed - MaxClimbSpeed, MaxClimbBrakeDelta);
                     ClimbDeltaV = -BrakeDelta * Uphill;
                     DeltaV += ClimbDeltaV;
+                }
+
+                const FVector CrossGutter = FVector::CrossProduct(N, Uphill).GetSafeNormal();
+                const float CrossDamping =
+                    FMath::Max(0.f, CVarIAmSpeedGutterSlideCrossDamping.GetValueOnAnyThread());
+                if (!CrossGutter.IsNearlyZero() && CrossDamping > 0.f)
+                {
+                    const float CrossSpeed = FVector::DotProduct(V, CrossGutter);
+                    const float CrossAlpha =
+                        FMath::Clamp(1.f - FMath::Exp(-CrossDamping * Dt), 0.f, 1.f);
+                    DeltaV -= CrossAlpha * CrossSpeed * CrossGutter;
                 }
             }
         }
@@ -327,6 +346,49 @@ namespace
         }
         return true;
     }
+
+    bool IAmSpeedBuildRoofTransitionEdge(
+        const FVector& N,
+        const FVector& CenterWS,
+        const FQuat& RotWS,
+        const FVector& Ext,
+        TArray<FVector>& OutPts)
+    {
+        const FVector RoofNormalWS = RotWS.GetUpVector();
+        if (FVector::DotProduct(RoofNormalWS, N) >= -0.45f)
+        {
+            return false;
+        }
+
+        FVector RoofVertsLS[4];
+        IAmSpeedFaceLocalVertices(4, Ext, RoofVertsLS);
+
+        FVector RoofVertsWS[4];
+        float Projections[4];
+        for (int32 Index = 0; Index < 4; ++Index)
+        {
+            RoofVertsWS[Index] = CenterWS + RotWS.RotateVector(RoofVertsLS[Index]);
+            Projections[Index] = FVector::DotProduct(RoofVertsWS[Index], N);
+        }
+
+        int32 BestEdgeStart = 0;
+        float BestProjectionSum = TNumericLimits<float>::Max();
+        for (int32 EdgeStart = 0; EdgeStart < 4; ++EdgeStart)
+        {
+            const int32 EdgeEnd = (EdgeStart + 1) % 4;
+            const float ProjectionSum = Projections[EdgeStart] + Projections[EdgeEnd];
+            if (ProjectionSum < BestProjectionSum)
+            {
+                BestProjectionSum = ProjectionSum;
+                BestEdgeStart = EdgeStart;
+            }
+        }
+
+        OutPts.Reset(2);
+        OutPts.Add(RoofVertsWS[BestEdgeStart]);
+        OutPts.Add(RoofVertsWS[(BestEdgeStart + 1) % 4]);
+        return true;
+    }
 }
 
 UBoxSubBody::UBoxSubBody(const FObjectInitializer& ObjectInitializer):
@@ -361,6 +423,19 @@ void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
 void UBoxSubBody::ResetForFrame(const float& Delta)
 {
     Super::ResetForFrame(Delta);
+
+    const bool bContinueRoofTraversalSupport =
+        HasRoofSurfaceTraversalSupport() &&
+        bGroundPlaneValid &&
+        GroundComp.IsValid();
+    if (bContinueRoofTraversalSupport)
+    {
+        UpdatePersistentGroundContact(Delta);
+        if (HasPersistentGroundContact())
+        {
+            ApplyPersistentSupportConstraint(Delta);
+        }
+    }
 
     PreviousFrameGroundContactsWS.Reset();
     if (bHasGroundContact && CurrentGroundContactsWS.Num() > 0)
@@ -397,7 +472,9 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
     CurrentGroundNormalsWS.Empty();
 
     bGroundHitFromSweep = false;
-    bHasGroundContact = false;
+    bHasGroundContact =
+        bContinueRoofTraversalSupport &&
+        bGroundPlaneValid;
     bFreshEdgeRecoverCandidate = false;
 }
 
@@ -761,14 +838,32 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     const float RoofSlideSupportMinUpDot =
         CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
 
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
+    const bool bSameRoofSurfaceComponent =
+        EffectiveHit.Component.IsValid() &&
+        GroundComp.IsValid() &&
+        EffectiveHit.Component.Get() == GroundComp.Get();
+    if (bRoofSurfaceTraversalActive &&
+        bSameRoofSurfaceComponent &&
+        (EffectiveUpDot < 0.f ||
+            FVector::DotProduct(EffectiveN, GroundPlaneN.GetSafeNormal()) < 0.8f) &&
+        bGroundPlaneValid &&
+        GroundPlaneN.Z > 0.f)
+    {
+        EffectiveN = GroundPlaneN.GetSafeNormal();
+        EffectiveHit.ImpactNormal = EffectiveN;
+        EffectiveUpDot = FVector::DotProduct(EffectiveN, FVector::UpVector);
+    }
     const bool bIsDirectSupportNormal = EffectiveUpDot >= DirectSupportUpDot;
     const FVector HitboxUpVector = Kinematics.Rotation.GetUpVector();
     const bool bRoofFacingSurface =
         FVector::DotProduct(HitboxUpVector, EffectiveN) < -0.45f;
     const bool bUpsideDownRoofSlideCandidate =
-        EffectiveUpDot >= RoofSlideSupportMinUpDot &&
-        EffectiveUpDot < DirectSupportUpDot &&
-        bRoofFacingSurface;
+        (bRoofFacingSurface &&
+            EffectiveUpDot >= RoofSlideSupportMinUpDot &&
+            EffectiveUpDot < DirectSupportUpDot) ||
+        bRoofSurfaceTraversalActive;
     const bool bIsCandidateSupport =
         EffectiveUpDot >= CandidateSupportUpDot ||
         bUpsideDownRoofSlideCandidate;
@@ -901,9 +996,19 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 // #endif
 
     bool bDidDirectSupportSolve = false;
+    constexpr float RoofTraversalTargetNormalSpeed = -5.f;
 
     if (vN_atImpact >= VN_EPS)
     {
+        if (bRoofSurfaceTraversalActive)
+        {
+            const float SeparationSpeed = FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), EffectiveN);
+            if (SeparationSpeed > RoofTraversalTargetNormalSpeed)
+            {
+                ParentComponent->AddPhysVelocity(
+                    (RoofTraversalTargetNormalSpeed - SeparationSpeed) * EffectiveN);
+            }
+        }
         IAmSpeedApplyGutterSlideDamping(
             ParentComponent,
             IsMainSubBody(),
@@ -926,6 +1031,16 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     {
         ResolveDirectGroundSupport(Dt, EffectiveHit);
         bDidDirectSupportSolve = true;
+        if (bRoofSurfaceTraversalActive)
+        {
+            const float SeparationSpeed =
+                FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), EffectiveN);
+            if (SeparationSpeed > RoofTraversalTargetNormalSpeed)
+            {
+                ParentComponent->AddPhysVelocity(
+                    (RoofTraversalTargetNormalSpeed - SeparationSpeed) * EffectiveN);
+            }
+        }
     }
     else
     {
@@ -970,7 +1085,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         }
     }
 
-    UpdatePersistentGroundContact(Dt);
+    UpdatePersistentGroundContact(Dt, bDidDirectSupportSolve);
 
     if (!bDidDirectSupportSolve && HasPersistentGroundContact() && bIsSupportingContact)
     {
@@ -1303,7 +1418,24 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     const FVector N = Speed::QuantizeUnitNormal(Hit.ImpactNormal.GetSafeNormal());
     const FVector P = Speed::QuantizeVectorCm(Hit.ImpactPoint, 0.1f); // 1 mm
 
-    const FVector Vp = GetVelocityAtPoint(P);
+    const FVector COM = GetCOM();
+    const float FaceAlignment = FMath::Max(
+        FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisX(), N)),
+        FMath::Max(
+            FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisY(), N)),
+            FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisZ(), N))));
+    const bool bFaceOnVerticalWallContact =
+        !Hit.bStartPenetrating &&
+        FMath::Abs(FVector::DotProduct(N, FVector::UpVector)) < 0.10f &&
+        FaceAlignment >= 0.98f;
+
+    // A face-on box/plane impact is a contact manifold, even if the sweep
+    // reports only one corner. Resolve it through the face center so a
+    // sampling artifact cannot turn most of the rebound into angular motion.
+    const FVector SolveP = bFaceOnVerticalWallContact
+        ? COM + N * FVector::DotProduct(P - COM, N)
+        : P;
+    const FVector Vp = GetVelocityAtPoint(SolveP);
     const float vN = FVector::DotProduct(Vp, N);
 
     // If not approaching, do nothing (prevents “sticky” contacts on edges).
@@ -1311,8 +1443,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     if (vN >= VN_EPS)
         return;
 
-    const FVector COM = GetCOM();
-    const FVector r = P - COM;
+    const FVector r = SolveP - COM;
 
     const float InvMass = 1.f / GetMass();
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
@@ -1323,9 +1454,16 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     int32 PreviewSupportContacts = 0;
     const float UpDot = FVector::DotProduct(N, FVector::UpVector);
-    LastWallOrGutterFrame = ParentComponent->NumFrame();
-    LastWallOrGutterN = N;
-    LastWallOrGutterUpDot = UpDot;
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const int32 FramesSinceLastWallContact =
+        LastWallOrGutterFrame == INDEX_NONE
+        ? INDEX_NONE
+        : CurrentFrame - LastWallOrGutterFrame;
+    const bool bContinuesVerticalWallManifold =
+        FramesSinceLastWallContact >= 0 &&
+        FramesSinceLastWallContact <= 1 &&
+        FMath::Abs(LastWallOrGutterUpDot) < 0.10f &&
+        FVector::DotProduct(LastWallOrGutterN, N) >= 0.98f;
     if (UpDot >= 0.85f)
     {
         TArray<FVector> PreviewPts;
@@ -1386,6 +1524,18 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         (bIsGutterLikeWall && bHasValidSupportPlane) ||
         (bIsGutterLikeWall && bIsPenetratingStaticWall);
 
+    // A clean aerial impact against a vertical wall is not a gutter contact.
+    // It must be allowed to resolve its full restitution impulse in one hit.
+    const bool bHardVerticalWallImpact =
+        FMath::Abs(UpDot) < 0.10f &&
+        !bHasValidSupportPlane &&
+        (!Hit.bStartPenetrating || bContinuesVerticalWallManifold);
+    const bool bUseSoftWallResponse = bSoftWall && !bHardVerticalWallImpact;
+
+    LastWallOrGutterFrame = CurrentFrame;
+    LastWallOrGutterN = N;
+    LastWallOrGutterUpDot = UpDot;
+
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
     {
@@ -1400,15 +1550,13 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     }
 #endif
 
-    // Restitution policy for walls/gutters:
-    // - Usually you want NO bounce in a gutter because it creates wedging artifacts.
-    // - Keep it at 0 unless you have a very clear “impact” situation.
-    // constexpr float ImpactThreshold = 80.f; // cm/s (higher than ground)
+    // Preserve restitution for clean wall impacts, while gutters and other
+    // soft-wall contacts remain non-bouncy to avoid wedging artifacts.
     const bool bImpact = (vN < -GetImpactThreshold());
 
-    float Rest = 0.f;
-    // If you really want micro-bounce on hard impacts, you can enable this:
-    // if (bImpact) Rest = FMath::Clamp(GetRestitution(), 0.f, 0.15f);
+    const float Rest = bImpact && !bUseSoftWallResponse
+        ? FMath::Clamp(GetRestitution(), 0.f, 1.f)
+        : 0.f;
     if (bImpact)
     {
         // ParentComponent->SetHadImpactThisFrame(true);
@@ -1416,11 +1564,13 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     // Normal impulse to cancel vN (or bounce if enabled)
     float jn = -(1.f + Rest) * vN / denomN;
-    const bool bHardImpact = !Hit.bStartPenetrating && vN < -300.f;
+    const bool bHardImpact =
+        (!Hit.bStartPenetrating || bHardVerticalWallImpact) &&
+        vN < -300.f;
 
     const float MaxWallDeltaVCmS =
-        bSoftWall ? 50.f :
-        bHardImpact ? 180.f :
+        bUseSoftWallResponse ? 50.f :
+        bHardImpact ? FMath::Max(180.f, FMath::Abs(vN) * (1.f + Rest)) :
         100.f;
 
     float SoftWallMassScale = 1.0f;
@@ -1448,14 +1598,16 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     }
 
     const float jnMaxByMass =
-        (bSoftWall ? SoftWallMassScale : 5.0f) * GetMass();
+        (bUseSoftWallResponse ? SoftWallMassScale : 5.0f) * GetMass();
 
     const float jnMaxByDeltaV = MaxWallDeltaVCmS / FMath::Max(denomN, KINDA_SMALL_NUMBER);
 
     // Guard against absurd impulses in 1-point concave contacts.
     // This is NOT a “wedging clamp”; it’s a numerical safety for edge cases.
     // Tune with care. If you prefer, delete it and rely on correct CCD.
-    const float jnMax = FMath::Min(jnMaxByDeltaV, jnMaxByMass);
+    const float jnMax = bUseSoftWallResponse
+        ? FMath::Min(jnMaxByDeltaV, jnMaxByMass)
+        : jnMaxByDeltaV;
     jn = FMath::Clamp(jn, 0.f, jnMax);
 
     FVector J = jn * N;
@@ -1485,7 +1637,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         }
     }
 
-    ApplyImpulse(J, P);
+    ApplyImpulse(J, SolveP);
 
     const bool bApplyWallGutterSlideDamping =
         ParentComponent->IsUpsideDown() &&
@@ -1515,7 +1667,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             *J.ToString(),
             jn,
             jnMax,
-            bSoftWall ? 1 : 0,
+            bUseSoftWallResponse ? 1 : 0,
             SoftWallMassScale,
             PreviewSupportContacts,
             denomN,
@@ -1534,20 +1686,32 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         constexpr float Slop = 0.5f;     // cm
         constexpr float BetaPos = 0.35f; // stronger than ground to escape concave edges
 
-        const float pushOut = FMath::Max(Hit.PenetrationDepth - Slop, 0.f);
+        // A nearly motionless unsupported body can otherwise remain inside the
+        // slop forever: CCD keeps returning the same zero-TOI hit and gravity
+        // never gets a chance to advance it.
+        const bool bStalledUnsupportedShallowContact =
+            Hit.PenetrationDepth <= Slop &&
+            !HasPersistentGroundContact() &&
+            ParentComponent->GetPhysCOMVelocity().SizeSquared() <= FMath::Square(5.f) &&
+            vN >= -VN_EPS;
+        const float pushOut = bStalledUnsupportedShallowContact
+            ? Hit.PenetrationDepth + 0.1f
+            : FMath::Max(Hit.PenetrationDepth - Slop, 0.f);
         if (pushOut > 0.f)
         {
-            ParentComponent->SetPhysLocation(ParentComponent->GetPhysLocation() + DepenDir * (BetaPos * pushOut));
+            const float PositionScale = bStalledUnsupportedShallowContact ? 1.f : BetaPos;
+            ParentComponent->SetPhysLocation(
+                ParentComponent->GetPhysLocation() + DepenDir * (PositionScale * pushOut));
 
             // Kill inward velocity along depen dir
             const FVector V = ParentComponent->GetPhysCOMVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
-            if (vIn < 0.f)
+            if (vIn < 0.f && !bHardVerticalWallImpact)
             {
                 FVector DepenVelocityDelta = -vIn * DepenDir;
                 float DepenScale = 1.f;
 
-                if (bSoftWall)
+                if (bUseSoftWallResponse)
                 {
                     float MaxNormalKill = CVarIAmSpeedSoftWallDepenMaxNormalKillCmS.GetValueOnAnyThread();
                     const float NearVerticalMaxNormalKill =
@@ -1597,7 +1761,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
                         *DepenDir.ToString(),
                         *DepenVelocityDelta.ToString(),
                         DepenScale,
-                        bSoftWall ? 1 : 0,
+                        bUseSoftWallResponse ? 1 : 0,
                         bIsGutterLikeWall ? 1 : 0,
                         UpDot,
                         Hit.PenetrationDepth,
@@ -1638,6 +1802,12 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, BoxRotWS);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const bool bRoofFacingSurface =
+        FVector::DotProduct(BoxRotWS.GetUpVector(), N) < -0.45f;
+    const bool bRoofFaceNearlyAligned =
+        FVector::DotProduct(BoxRotWS.GetUpVector(), N) <= -FaceReleaseDot;
+    const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
     // A face that replaces a supporting edge on the same plane is a
     // continuation of that ground contact, not a new bouncing impact.
     const bool bContinuingEdgeSupport =
@@ -1671,9 +1841,17 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
         : 0.5f;
     BuildSupportManifoldFromNormal(N, CenterWS, BoxRotWS, Ext, ContactPtsWS, SupportContactEps);
-    if (bNearlyFaceAligned)
+    if (bRoofSurfaceTraversalActive && !bRoofFaceNearlyAligned)
+    {
+        IAmSpeedBuildRoofTransitionEdge(N, CenterWS, BoxRotWS, Ext, ContactPtsWS);
+    }
+    else if (bNearlyFaceAligned)
     {
         IAmSpeedBuildSupportFaceManifoldFromNormal(N, CenterWS, BoxRotWS, Ext, ContactPtsWS, FaceReleaseDot);
+    }
+    else if (bRoofSurfaceTraversalActive && ContactPtsWS.Num() < 2)
+    {
+        IAmSpeedBuildRoofTransitionEdge(N, CenterWS, BoxRotWS, Ext, ContactPtsWS);
     }
     /*UE_LOG(BoxSubBodyLog, Log,
         TEXT("[EdgeLatchState] frame=%d latched=%d latchedLS=%d latchFrame=%d"),
@@ -1716,6 +1894,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const bool bFreshTwoPointEdgeSupport =
         ContactPtsWS.Num() == 2 &&
         !bNearlyFaceAligned &&
+        !bRoofSurfaceTraversalActive &&
         !bUseLatchedEdge &&
         !(bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2) &&
         PrevGroundContactsLS.Num() != 2;
@@ -1779,14 +1958,12 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     const float RoofSlideSupportMinUpDot =
         CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
-    const FVector HitboxUpVector = Kinematics.Rotation.GetUpVector();
-    const bool bRoofFacingSurface =
-        FVector::DotProduct(HitboxUpVector, N) < -0.45f;
     const bool bUpsideDownRoofSlideSupport =
-        ContactPtsWS.Num() == 1 &&
-        UpDot >= RoofSlideSupportMinUpDot &&
-        UpDot < 0.97f &&
-        bRoofFacingSurface;
+        bRoofFacingSurface &&
+        (bRoofSurfaceTraversalActive ||
+            (ContactPtsWS.Num() == 1 &&
+                UpDot >= RoofSlideSupportMinUpDot &&
+                UpDot < 0.97f));
 
     if (ContactPtsWS.Num() < 2 && UpDot < 0.97f && !bUpsideDownRoofSlideSupport)
     {
@@ -1806,9 +1983,12 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         return;
     }
 
+    const bool bHasCompatiblePersistentPlane =
+        bGroundPlaneValid &&
+        FVector::DotProduct(GroundPlaneN.GetSafeNormal(), N) >= 0.95f;
     const bool bFreshSweepSupport =
         bGroundHitFromSweep &&
-        !bGroundPlaneValid &&
+        !bHasCompatiblePersistentPlane &&
         !bUseLatchedEdge &&
         !bUpsideDownRoofSlideSupport &&
         !bHasGroundContact &&
@@ -1817,12 +1997,38 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     CurrentGroundContactsWS = ContactPtsWS;
 
+    const bool bStableRoofFaceSupport =
+        IsMainSubBody() && bRoofFaceNearlyAligned &&
+        ContactPtsWS.Num() >= 3;
+    const bool bInclinedRoofTraversalSupport =
+        bRoofFacingSurface &&
+        UpDot >= RoofSlideSupportMinUpDot &&
+        UpDot < 0.97f &&
+        ContactPtsWS.Num() >= 2;
+    const FVector TangentialVelocity =
+        ParentComponent->GetPhysCOMVelocity() -
+        FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N) * N;
+    constexpr float MinTraversalLatchSpeedCmS = 1000.f;
+    const bool bCanStartRoofTraversal =
+        !ParentComponent->IsInAutoRecover() &&
+        TangentialVelocity.Size() >= MinTraversalLatchSpeedCmS &&
+        (bStableRoofFaceSupport ||
+            bUpsideDownRoofSlideSupport ||
+            bInclinedRoofTraversalSupport);
+    if ((bCanStartRoofTraversal || bRoofSurfaceTraversalActive) &&
+        Hit.Component.IsValid())
+    {
+        bRoofSurfaceTraversalLatched = true;
+        LastRoofSurfaceContactFrame = CurrentFrame;
+        RoofSurfaceComp = Hit.Component;
+    }
+
     IAmSpeedApplyGutterSlideDamping(
         ParentComponent,
         IsMainSubBody(),
         N,
         Dt,
-        bUpsideDownRoofSlideSupport,
+        bUpsideDownRoofSlideSupport || HasRoofSurfaceTraversalSupport(),
         TEXT("DirectRoofSlide"));
 
 // #if !UE_BUILD_SHIPPING
@@ -1890,7 +2096,6 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         PrevLambdaN.Reset();
 
     const int32 Iter = FMath::Clamp(NumC * 2, 6, 12);
-    const int32 CurrentFrame = ParentComponent->NumFrame();
     const bool bRecentlyHadWallOrGutter =
         LastWallOrGutterFrame != INDEX_NONE &&
         CurrentFrame - LastWallOrGutterFrame <= 8;
@@ -1963,7 +2168,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     {
         if (NumC == 2)
         {
-            SolveEdgeSupportConstraint(N, CurrentGroundContactsWS, Dt, /*bDoFriction=*/false, /*Mu=*/0.f);
+            SolveEdgeSupportConstraint(
+                N, CurrentGroundContactsWS, Dt, /*bDoFriction=*/false, /*Mu=*/0.f, bRoofSurfaceTraversalActive);
             break;
         }
         for (int32 i = 0; i < NumC; ++i)
@@ -2157,10 +2363,10 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     // Mixing in a wall normal here can create a fake support plane in floor/wall corners
     // and pull the hitbox into the ground.
     const FVector N = GroundPlaneN.GetSafeNormal();
-
+    const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
 
     // If the plane became non-support (e.g. got overwritten), bail.
-    if (FVector::DotProduct(N, FVector::UpVector) < 0.5f)
+    if (FVector::DotProduct(N, FVector::UpVector) < 0.5f && !bRoofSurfaceTraversalActive)
         return;
 
     // Concave rule: never persist there
@@ -2269,7 +2475,8 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     {
         if (SupportPts.Num() == 2)
         {
-            SolveEdgeSupportConstraint(N, SupportPts, Dt, /*bDoFriction=*/false, /*Mu=*/0.f);
+            SolveEdgeSupportConstraint(
+                N, SupportPts, Dt, /*bDoFriction=*/false, /*Mu=*/0.f, bRoofSurfaceTraversalActive);
             break;
         }
         for (const FVector& P : SupportPts)
@@ -2327,10 +2534,26 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     }
     else if (minDist > ContactTol)
     {
-        // If we’re clearly leaving the plane, stop persisting.
-        // (Otherwise you “float” and keep canceling gravity.)
-        bGroundPlaneValid = false;
-        bHasGroundContact = false;
+        constexpr float MaxRoofTraversalDrift = 25.f;
+        if (bRoofSurfaceTraversalActive && minDist <= MaxRoofTraversalDrift)
+        {
+            ParentComponent->SetPhysLocation(
+                ParentComponent->GetPhysLocation() - N * (minDist - ContactTol));
+
+            const FVector Vcm = ParentComponent->GetPhysCOMVelocity();
+            const float vOut = FVector::DotProduct(Vcm, N);
+            if (vOut > 0.f)
+            {
+                ParentComponent->AddPhysVelocity(-vOut * N);
+            }
+        }
+        else
+        {
+            // If we’re clearly leaving the plane, stop persisting.
+            // (Otherwise you “float” and keep canceling gravity.)
+            bGroundPlaneValid = false;
+            bHasGroundContact = false;
+        }
     }
 
     // Hard release conditions for latched edge
@@ -2348,7 +2571,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     PrevGroundNormal = N;
 }
 
-void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
+void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDirectSupportSolved)
 {
     bHasGroundContact = false;
 	const bool bEdgeRecoverActive = ParentComponent->IsInAutoRecover();
@@ -2375,7 +2598,9 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     }
 
     const float GroundPlaneUpDot = FVector::DotProduct(GroundPlaneN, FVector::UpVector);
-    if (GroundPlaneUpDot < 0.5f)
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
+    if (GroundPlaneUpDot < 0.5f && !bRoofSurfaceTraversalActive)
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
@@ -2477,21 +2702,48 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     constexpr float PenTolSupport = 1.0f;
     constexpr float PenTolReject = 2.5f;
     constexpr float SepVelTol = 3.0f;
-    const float ActiveContactTol = bNearlyFaceAligned
+    const float ActiveContactTol = bNearlyFaceAligned || bRoofSurfaceTraversalActive
         ? FMath::Max(ContactTol, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
         : bVertexRecoverCandidate
         ? FMath::Max(ContactTol, CVarIAmSpeedVertexSupportContactTolCm.GetValueOnAnyThread())
         : ContactTol;
-    const float ActivePenTolSupport = bNearlyFaceAligned
+    const float ActivePenTolSupport = bNearlyFaceAligned || bRoofSurfaceTraversalActive
         ? FMath::Max(PenTolSupport, CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread())
         : bEdgeRecoverCandidate
         ? FMath::Max(PenTolSupport, CVarIAmSpeedEdgeRecoverPenetrationTolCm.GetValueOnAnyThread())
         : PenTolSupport;
-    const float ActiveSepVelTol = bNearlyFaceAligned
+    constexpr float RoofTraversalSeparatingSpeedTolerance = 20.f;
+    const float ActiveSepVelTol = bRoofSurfaceTraversalActive
+        ? FMath::Max(
+            RoofTraversalSeparatingSpeedTolerance,
+            CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread())
+        : bNearlyFaceAligned
         ? FMath::Max(SepVelTol, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread())
         : bEdgeRecoverCandidate
         ? FMath::Max(SepVelTol, CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS.GetValueOnAnyThread())
         : SepVelTol;
+
+    constexpr float MaxRoofTraversalDrift = 25.f;
+    if (bRoofSurfaceTraversalActive &&
+        minDist > ActiveContactTol &&
+        minDist <= MaxRoofTraversalDrift)
+    {
+        constexpr float TargetRoofTraversalDistance = 0.5f;
+        ParentComponent->SetPhysLocation(
+            ParentComponent->GetPhysLocation() -
+            N * (minDist - TargetRoofTraversalDistance));
+        minDist = TargetRoofTraversalDistance;
+    }
+    else if (bRoofSurfaceTraversalActive &&
+        minDist < -ActivePenTolSupport &&
+        minDist >= -MaxRoofTraversalDrift)
+    {
+        constexpr float TargetRoofTraversalPenetration = -0.5f;
+        ParentComponent->SetPhysLocation(
+            ParentComponent->GetPhysLocation() +
+            N * (TargetRoofTraversalPenetration - minDist));
+        minDist = TargetRoofTraversalPenetration;
+    }
 
     const bool bWithinSupportBand =
         (minDist <= ActiveContactTol) &&
@@ -2500,8 +2752,15 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     const bool bNotExploding =
         (minDist >= -PenTolReject);
 
+    const float MeasuredSupportSeparatingSpeed = bRoofSurfaceTraversalActive
+        ? FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N)
+        : worstVN;
+    const float SupportSeparatingSpeed =
+        bRoofSurfaceTraversalActive && bDirectSupportSolved
+        ? FMath::Min(MeasuredSupportSeparatingSpeed, 0.f)
+        : MeasuredSupportSeparatingSpeed;
     const bool bStableNormalMotion =
-        (worstVN <= ActiveSepVelTol);
+        (SupportSeparatingSpeed <= ActiveSepVelTol);
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
@@ -2510,18 +2769,20 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
         UE_LOG(
             BoxSubBodyLog,
             Log,
-            TEXT("[ARContact.PersistentCheck] Frame=%d Current=%d PrevLS=%d FreshEdge=%d EdgeRecoverActive=%d VertexCandidate=%d FaceDot=%.5f minDist=%.3f ContactTol=%.3f PenTol=%.3f worstVN=%.2f SepVelTol=%.2f WithinBand=%d StableMotion=%d NotExploding=%d PlaneN=%s"),
+            TEXT("[ARContact.PersistentCheck] Frame=%d Current=%d PrevLS=%d FreshEdge=%d EdgeRecoverActive=%d VertexCandidate=%d RoofTraversal=%d FaceDot=%.5f minDist=%.3f ContactTol=%.3f PenTol=%.3f worstVN=%.2f SupportSep=%.2f SepVelTol=%.2f WithinBand=%d StableMotion=%d NotExploding=%d PlaneN=%s"),
             ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
             CurrentGroundContactsWS.Num(),
             PrevGroundContactsLS.Num(),
             bFreshEdgeRecoverCandidate ? 1 : 0,
             bEdgeRecoverActive ? 1 : 0,
             bVertexRecoverCandidate ? 1 : 0,
+            bRoofSurfaceTraversalActive ? 1 : 0,
             FaceAlignmentAbs,
             minDist,
             ActiveContactTol,
             ActivePenTolSupport,
             worstVN,
+            SupportSeparatingSpeed,
             ActiveSepVelTol,
             bWithinSupportBand ? 1 : 0,
             bStableNormalMotion ? 1 : 0,
@@ -2596,6 +2857,27 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
                 bNotExploding ? 1 : 0);
         }
 #endif
+        // An upright bottom-face manifold rejected on a nearly horizontal
+        // surface is not a persistent support candidate. Keeping its plane
+        // valid lets a following gutter-wall hit rebuild the stale four-point
+        // manifold and cancel gravity after all contacts vanish. This covers
+        // separation, excessive penetration, and an invalid support band.
+        // Keep it narrow: roof traversal and wall landings rely on their own
+        // support hysteresis.
+        const float PlaneUpDot = FVector::DotProduct(N, FVector::UpVector);
+        const float CarUpToPlaneDot =
+            FVector::DotProduct(K.Rotation.GetUpVector(), N);
+        if (bNearlyFaceAligned &&
+            CurrentGroundContactsWS.Num() >= 3 &&
+            PlaneUpDot >= 0.95f &&
+            CarUpToPlaneDot >= 0.9f)
+        {
+            bHasGroundContact = false;
+            bGroundPlaneValid = false;
+            bGroundContactStable = false;
+            StableTime = 0.f;
+            CurrentGroundContactsWS.Reset();
+        }
         bEdgeSupportLatched = false;
         LatchedEdgeContactsLS.Reset();
         PrevGroundContactsLS.Reset();
@@ -2608,11 +2890,11 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     const float VertexSeparatingReleaseSpeed =
         FMath::Max(0.5f, CVarIAmSpeedVertexSupportSeparatingSpeedCmS.GetValueOnAnyThread());
     const float SeparatingReleaseSpeed =
-        bNearlyFaceAligned ? ActiveSepVelTol :
+        (bNearlyFaceAligned || bRoofSurfaceTraversalActive) ? ActiveSepVelTol :
         bVertexRecoverCandidate ? VertexSeparatingReleaseSpeed :
         bEdgeRecoverCandidate ? ActiveSepVelTol :
         0.5f;
-    if (worstVN > SeparatingReleaseSpeed)
+    if (SupportSeparatingSpeed > SeparatingReleaseSpeed)
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
@@ -2644,8 +2926,13 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
     // ------------------------------------------------------------
     bHasGroundContact = true;
 
+    if (bRoofSurfaceTraversalActive)
+    {
+        LastRoofSurfaceContactFrame = CurrentFrame;
+    }
+
     CurrentGroundContactsWS.Reset();
-    const float ContactEps = bNearlyFaceAligned
+    const float ContactEps = bNearlyFaceAligned || bRoofSurfaceTraversalActive
         ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
         : 0.5f;
 
@@ -2654,6 +2941,10 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt)
         const float dist = PlaneSignedDist(V, GroundPlaneN, GroundPlanePointWS);
         if (dist <= minDist + ContactEps)
             CurrentGroundContactsWS.Add(V);
+    }
+    if (bRoofSurfaceTraversalActive && !bNearlyFaceAligned)
+    {
+        IAmSpeedBuildRoofTransitionEdge(N, K.Location, K.Rotation, BoxExtent, CurrentGroundContactsWS);
     }
     if (bNearlyFaceAligned)
     {
@@ -2963,6 +3254,68 @@ bool UBoxSubBody::HasPersistentGroundContact() const
 bool UBoxSubBody::HasPhysicsTickGroundContact() const
 {
     return bHasGroundContact || PreviousFrameGroundContactsWS.Num() > 0;
+}
+
+bool UBoxSubBody::HasRoofSurfaceTraversalSupport() const
+{
+    if (!ParentComponent ||
+        !IsMainSubBody() ||
+        !bRoofSurfaceTraversalLatched ||
+        LastRoofSurfaceContactFrame == INDEX_NONE ||
+        !RoofSurfaceComp.IsValid())
+    {
+        return false;
+    }
+
+    const FVector N = GroundPlaneN.GetSafeNormal();
+    if (N.IsNearlyZero())
+    {
+        return false;
+    }
+
+    const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    if (FVector::DotProduct(K.Rotation.GetUpVector(), N) > -0.25f)
+    {
+        return false;
+    }
+
+    const float SeparatingSpeedTolerance = FMath::Max(
+        20.0f, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+    const float NearestPointNormalSpeed = FVector::DotProduct(K.Velocity, N);
+    if (NearestPointNormalSpeed > SeparatingSpeedTolerance)
+    {
+        return false;
+    }
+
+    const int32 CurrentFrame = int32(ParentComponent->NumFrame());
+    if (CurrentFrame >= LastRoofSurfaceContactFrame &&
+        CurrentFrame - LastRoofSurfaceContactFrame <= RoofSurfaceTraversalGraceFrames)
+    {
+        return true;
+    }
+
+    TArray<FVector> Verts;
+    GetBoxVertices(K.Location, K.Rotation, BoxExtent, Verts);
+
+    float MinDistance = FLT_MAX;
+    FVector NearestPoint = K.Location;
+    for (const FVector& Vertex : Verts)
+    {
+        const float Distance = PlaneSignedDist(Vertex, N, GroundPlanePointWS);
+        if (Distance < MinDistance)
+        {
+            MinDistance = Distance;
+            NearestPoint = Vertex;
+        }
+    }
+
+    const float ContactTolerance = FMath::Max(
+        0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread());
+    const float PenetrationTolerance = FMath::Max(
+        1.0f, CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread());
+    return MinDistance >= -PenetrationTolerance &&
+        MinDistance <= ContactTolerance &&
+        NearestPointNormalSpeed <= SeparatingSpeedTolerance;
 }
 
 bool UBoxSubBody::HasPersistentEdgeSupport() const
@@ -3356,7 +3709,8 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     const TArray<FVector>& SupportPts,
     const float Dt,
     const bool bDoFriction /*= false*/,
-    const float Mu /*= 0.0f*/)
+    const float Mu /*= 0.0f*/,
+    const bool bAllowTraversalTorque /*= false*/)
 {
     if (!ParentComponent)
         return false;
@@ -3389,22 +3743,27 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     if (FMath::Abs(FVector::DotProduct(EdgeDir, N)) > 0.95f)
         return false;
 
-    // if plane is too far away -> NO SUPPORT
-    const float distCOM = PlaneSignedDist(ParentComponent->GetPhysCOM(), N, GroundPlanePointWS);
-    constexpr float MaxSupportDist = 1.0f; // cm
-    if (distCOM > MaxSupportDist)
-    {
-        return false;
-    }
+    const FVector COM = ParentComponent->GetPhysCOM();
+    const FVector COMVelocity = ParentComponent->GetPhysCOMVelocity();
+    const float vN_com = FVector::DotProduct(COMVelocity, N);
+    const bool bIsInAutoRecover = ParentComponent->IsInAutoRecover();
 
-    const float vN_com = FVector::DotProduct(
-        ParentComponent->GetPhysCOMVelocity(), N
-    );
-    // if COM is getting away from ground plane -> NO SUPPORT
-    constexpr float COM_SEP_EPS = -0.5f; // cm/s
-    if (vN_com > COM_SEP_EPS)
+    if (!bAllowTraversalTorque)
     {
-        return false;
+        // Normal edge support must remain close to its original plane.
+        const float distCOM = PlaneSignedDist(COM, N, GroundPlanePointWS);
+        constexpr float MaxSupportDist = 1.0f; // cm
+        if (distCOM > MaxSupportDist)
+        {
+            return false;
+        }
+
+        // A normal edge cannot pull a separating body back toward the plane.
+        constexpr float COM_SEP_EPS = -0.5f; // cm/s
+        if (vN_com > COM_SEP_EPS)
+        {
+            return false;
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -3413,7 +3772,6 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     // ---------------------------------------------------------------------
     const FVector v1 = GetVelocityAtPoint(P1);
     const FVector v2 = GetVelocityAtPoint(P2);
-    const bool bIsInAutoRecover = ParentComponent->IsInAutoRecover();
 
     const float vN = bIsInAutoRecover ? vN_com :
         0.5f * (FVector::DotProduct(v1, N) + FVector::DotProduct(v2, N));
@@ -3423,11 +3781,23 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     {
         if (!bIsInAutoRecover)
         {
-            // Apply impulse at COM -> zero angular coupling by construction
-            const float lambdaN = -vN * GetMass();
-            const FVector J = lambdaN * N;
-
-            ApplyImpulse(J, GetCOM());
+            if (bAllowTraversalTorque)
+            {
+                // The roof follows a gutter by rotating around its supporting edge.
+                const FVector EdgeMidpoint = 0.5f * (P1 + P2);
+                const FVector R = EdgeMidpoint - COM;
+                const float Denominator = EffectiveMassAlongDir(
+                    1.f / GetMass(), ComputeWorldInvInertiaTensor(), R, N);
+                if (Denominator > KINDA_SMALL_NUMBER)
+                {
+                    ApplyImpulse((-vN / Denominator) * N, EdgeMidpoint);
+                }
+            }
+            else
+            {
+                const float lambdaN = -vN * GetMass();
+                ApplyImpulse(lambdaN * N, COM);
+            }
 #if !UE_BUILD_SHIPPING
             // UE_LOG(BoxSubBodyLog, Log, TEXT("[EdgeSupport] Linear support @COM vN=%.3f J=%s"), vN, *J.ToString());
 #endif
@@ -3440,6 +3810,16 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
             // UE_LOG(BoxSubBodyLog, Log, TEXT("[EdgeSupport] Linear support @COM vN=%.3f"), vN);
 #endif
         }
+    if (bAllowTraversalTorque && !bIsInAutoRecover)
+    {
+        const float MaxSeparationSpeed =
+            FMath::Max(0.f, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+        const float SeparationSpeed = FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N);
+        if (SeparationSpeed > MaxSeparationSpeed)
+        {
+            ParentComponent->AddPhysVelocity((MaxSeparationSpeed - SeparationSpeed) * N);
+        }
+    }
     }
 
     // ---------------------------------------------------------------------
@@ -3448,7 +3828,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     constexpr float SupportVNThreshold = -5.0f; // cm/s
     const bool bEdgeStillSupporting =
         vN < SupportVNThreshold &&
-        FVector::DotProduct(N, FVector::UpVector) > 0.7f;
+        (bAllowTraversalTorque || FVector::DotProduct(N, FVector::UpVector) > 0.7f);
 
     if (ParentComponent->IsSubBodyInAutoRecoverMode())
     {

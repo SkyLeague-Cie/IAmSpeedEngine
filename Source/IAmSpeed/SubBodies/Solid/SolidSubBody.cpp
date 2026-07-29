@@ -15,7 +15,7 @@ static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionOverride(
 static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxFrictionOverride(
     TEXT("p.IAmSpeed.Collision.SphereBoxFrictionOverride"),
     -1.0f,
-    TEXT("Forces friction for sphere/box contacts when >= 0. Negative values use the normal friction mix."));
+    TEXT("Forces friction for sphere/box contacts when >= 0. Values above 1 are valid. Negative values use the normal friction mix."));
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxRestitutionMode(
     TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionMode"),
@@ -377,7 +377,7 @@ float USolidSubBody::ResolveSphereBoxFriction(float FallbackFriction)
     const float ForcedOverride = CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread();
     if (ForcedOverride >= 0.0f)
     {
-        return FMath::Clamp(ForcedOverride, 0.0f, 1.0f);
+        return ForcedOverride;
     }
     return FallbackFriction;
 }
