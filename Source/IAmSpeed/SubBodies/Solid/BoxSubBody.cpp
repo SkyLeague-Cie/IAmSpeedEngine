@@ -1133,6 +1133,12 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     // --- Sphere kinematics at TOI ---
     const SKinematic& SphereKS0 =
         Sphere.GetKinematicState();
+    FFakePhysicsImpactContext FakePhysicsContext;
+    FakePhysicsContext.SelfParentKinematics = ParentComponent->GetKinematicState();
+    if (const ISpeedComponent* SphereParent = Sphere.GetParentComponent())
+    {
+        FakePhysicsContext.OtherParentKinematics = SphereParent->GetKinematicState();
+    }
     // const SKinematic SphereKSAtTOI = SphereKS0.Integrate(TimePassed);
 
     // Current frame
@@ -1186,7 +1192,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         BoxLocalContactNormal,
         BoxExtent,
         CurrentHit.ImpactPoint);
-    const float MixedFriction = ResolveSphereBoxFriction(
+    const float MixedFriction = ResolveSphereBoxFriction(Sphere, *this,
         MixFriction(Sphere.GetDynamicFriction(), GetDynamicFriction(), EMixMode::E_Max));
 
     FVector ImpThis, ImpOther;
@@ -1201,7 +1207,10 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         MixedFriction,
         ImpThis,
         ImpOther,
-        GetImpactThreshold()
+        GetImpactThreshold(),
+        (UsesCoupledContactImpulse() || Sphere.UsesCoupledContactImpulse()) &&
+        Sphere.AllowsCoupledContactImpulseFor(SphereKS0) &&
+        AllowsCoupledContactNormal(BoxLocalContactNormal)
     );
 
     if (!ok)
@@ -1311,7 +1320,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     {
 		// (ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
 		// Sphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        ApplyFakePhysicsOn(Sphere, CurrentHit, delta);
+        ApplyFakePhysicsOn(Sphere, CurrentHit, delta, &FakePhysicsContext);
     }
     if (Sphere.IsFakePhysicsEnabled())
     {
@@ -1319,7 +1328,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         // Sphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
         SHitResult InvertedHit = CurrentHit;
         InvertedHit.ImpactNormal *= -1.f;
-        Sphere.ApplyFakePhysicsOn(*this, InvertedHit, delta);
+        const FFakePhysicsImpactContext InvertedContext = FakePhysicsContext.Inverted();
+        Sphere.ApplyFakePhysicsOn(*this, InvertedHit, delta, &InvertedContext);
     }
 
     // Handle micro-oscillations

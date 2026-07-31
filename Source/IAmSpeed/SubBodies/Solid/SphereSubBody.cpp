@@ -236,6 +236,12 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 
     // Sphere state at TOI (already integrated)
     const SKinematic& SphereKS = Kinematics;
+    FFakePhysicsImpactContext FakePhysicsContext;
+    FakePhysicsContext.SelfParentKinematics = ParentComponent->GetKinematicState();
+    if (const ISpeedComponent* BoxParent = OtherBox.GetParentComponent())
+    {
+        FakePhysicsContext.OtherParentKinematics = BoxParent->GetKinematicState();
+    }
     /*
     // --- Overlap branch sphere-box ---
     {
@@ -291,7 +297,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         BoxLocalContactNormal,
         OtherBox.GetBoxExtent(),
         CurrentHit.ImpactPoint);
-    const float MixedFriction = ResolveSphereBoxFriction(
+    const float MixedFriction = ResolveSphereBoxFriction(*this, OtherBox,
         MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
 
 	// Compute collision impulse at TOI
@@ -308,7 +314,10 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 
         ImpThis,
         ImpOther,
-        GetImpactThreshold()
+        GetImpactThreshold(),
+        (UsesCoupledContactImpulse() || OtherBox.UsesCoupledContactImpulse()) &&
+        AllowsCoupledContactImpulseFor(SphereKS) &&
+        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal)
     );
 
     if (ok)
@@ -417,7 +426,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         {
 			// UpdateKinematicsFromOwner(frame); // update kinematics to current frame before applying fake physics
 			// OtherBox.UpdateKinematicsFromOwner(frame);
-            ApplyFakePhysicsOn(OtherBox, CurrentHit, delta);
+            ApplyFakePhysicsOn(OtherBox, CurrentHit, delta, &FakePhysicsContext);
         }
         if (OtherBox.IsFakePhysicsEnabled())
         {
@@ -425,7 +434,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 			InvertedHit.ImpactNormal *= -1.f; // invert normal for correct fake physics application on the box
 			// UpdateKinematicsFromOwner(frame); // update kinematics to current frame before applying fake physics
 			// OtherBox.UpdateKinematicsFromOwner(frame);
-            OtherBox.ApplyFakePhysicsOn(*this, InvertedHit, delta);
+            const FFakePhysicsImpactContext InvertedContext = FakePhysicsContext.Inverted();
+            OtherBox.ApplyFakePhysicsOn(*this, InvertedHit, delta, &InvertedContext);
 		}
     }
 

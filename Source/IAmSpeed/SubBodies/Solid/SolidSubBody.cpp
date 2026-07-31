@@ -372,12 +372,21 @@ float USolidSubBody::MixFriction(float muA, float muB, EMixMode Mode)
 	return 0.f; // default case, should not happen
 }
 
-float USolidSubBody::ResolveSphereBoxFriction(float FallbackFriction)
+float USolidSubBody::ResolveSphereBoxFriction(
+    const USolidSubBody& Sphere,
+    const USolidSubBody& Box,
+    float FallbackFriction)
 {
     const float ForcedOverride = CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread();
     if (ForcedOverride >= 0.0f)
     {
         return ForcedOverride;
+    }
+    const float SphereOverride = Sphere.GetSphereBoxFrictionOverride();
+    const float BoxOverride = Box.GetSphereBoxFrictionOverride();
+    if (SphereOverride >= 0.0f || BoxOverride >= 0.0f)
+    {
+        return FMath::Max(SphereOverride, BoxOverride);
     }
     return FallbackFriction;
 }

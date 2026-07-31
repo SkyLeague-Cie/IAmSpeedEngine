@@ -1,7 +1,23 @@
 #include "SUtils.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 
 using namespace Speed;
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledContactImpulse(
+	TEXT("p.IAmSpeed.Collision.CoupledContactImpulse"),
+	0,
+	TEXT("Uses an iterative coupled normal/tangential effective-mass solve for dynamic body contacts."));
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledContactImpulseIterations(
+	TEXT("p.IAmSpeed.Collision.CoupledContactImpulseIterations"),
+	8,
+	TEXT("Iteration count for the coupled dynamic contact impulse solve."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedCoupledContactImpulseMinNormalSpeed(
+	TEXT("p.IAmSpeed.Collision.CoupledContactImpulseMinNormalSpeed"),
+	100.0f,
+	TEXT("Minimum approaching normal speed for per-subbody coupled impulse opt-ins. The global diagnostic override still forces the solver at every speed."));
 
 SSphere::SSphere(const FVector& InCenter, const float& InRadius, const FVector& Velocity, const FVector& Acceleration) :
 	Center(InCenter), Radius(InRadius), Vel(Velocity), Accel(Acceleration)
@@ -1424,7 +1440,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	if (vRelN >= 0.f)
 		return false;
 
-	// Compute angular terms: n · ( (InvI * (r×n)) × r )
+	// Compute angular terms: n Â· ( (InvI * (rÃ—n)) Ã— r )
 	const FVector rAxn = FVector::CrossProduct(rA, Normal);
 	const FVector rBxn = FVector::CrossProduct(rB, Normal);
 
@@ -1469,7 +1485,8 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 
 	FVector& OutImpulseA,
 	FVector& OutImpulseB,
-	const float& ImpactThreshold
+	const float& ImpactThreshold,
+	const bool bUseCoupledContactImpulse
 )
 {
 	OutImpulseA = FVector::ZeroVector;
@@ -1507,6 +1524,97 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// -------------------------------------------------------
 	if (vRelN >= 0.f)
 		return false;
+
+	const bool bForceCoupledContactImpulse =
+		CVarIAmSpeedCoupledContactImpulse.GetValueOnAnyThread() != 0;
+	const float CoupledMinNormalSpeed = FMath::Max(
+		0.0f,
+		CVarIAmSpeedCoupledContactImpulseMinNormalSpeed.GetValueOnAnyThread());
+	if (bForceCoupledContactImpulse ||
+		(bUseCoupledContactImpulse && FMath::Abs(vRelN) >= CoupledMinNormalSpeed))
+	{
+		const auto ApplyContactEffectiveMass = [
+			InvMassA, InvMassB, &InvInertiaA, &InvInertiaB, &rA, &rB](
+			const FVector& Impulse)
+		{
+			const FVector AngularA = InvInertiaA.TransformVector(
+				FVector::CrossProduct(rA, Impulse));
+			const FVector AngularB = InvInertiaB.TransformVector(
+				FVector::CrossProduct(rB, Impulse));
+			return (InvMassA + InvMassB) * Impulse +
+				FVector::CrossProduct(AngularA, rA) +
+				FVector::CrossProduct(AngularB, rB);
+		};
+
+		const float NormalEffectiveMass = FVector::DotProduct(
+			N, ApplyContactEffectiveMass(N));
+		if (NormalEffectiveMass <= KINDA_SMALL_NUMBER)
+		{
+			return false;
+		}
+
+		const float ClampedRestitution =
+			FMath::Abs(vRelN) > ImpactThreshold
+			? FMath::Clamp(Restitution, 0.f, 1.f)
+			: 0.f;
+		const float TargetNormalVelocity = -ClampedRestitution * vRelN;
+		const float ClampedFriction = FMath::Max(0.f, Friction);
+		FVector AccumulatedImpulse = FVector::ZeroVector;
+		float AccumulatedNormalImpulse = 0.f;
+		const int32 Iterations = FMath::Clamp(
+			CVarIAmSpeedCoupledContactImpulseIterations.GetValueOnAnyThread(),
+			1, 32);
+
+		for (int32 Iteration = 0; Iteration < Iterations; ++Iteration)
+		{
+			FVector CurrentRelativeVelocity =
+				vRel + ApplyContactEffectiveMass(AccumulatedImpulse);
+			const float CurrentNormalVelocity =
+				FVector::DotProduct(CurrentRelativeVelocity, N);
+			const float NormalIncrement =
+				(TargetNormalVelocity - CurrentNormalVelocity) /
+				NormalEffectiveMass;
+			const float NewNormalImpulse = FMath::Max(
+				0.f, AccumulatedNormalImpulse + NormalIncrement);
+			AccumulatedImpulse +=
+				(NewNormalImpulse - AccumulatedNormalImpulse) * N;
+			AccumulatedNormalImpulse = NewNormalImpulse;
+
+			CurrentRelativeVelocity =
+				vRel + ApplyContactEffectiveMass(AccumulatedImpulse);
+			const FVector TangentialVelocity = CurrentRelativeVelocity -
+				FVector::DotProduct(CurrentRelativeVelocity, N) * N;
+			const float TangentialSpeed = TangentialVelocity.Size();
+			if (TangentialSpeed <= KINDA_SMALL_NUMBER ||
+				ClampedFriction <= 0.f)
+			{
+				continue;
+			}
+
+			const FVector Tangent = TangentialVelocity / TangentialSpeed;
+			const float TangentialEffectiveMass = FVector::DotProduct(
+				Tangent, ApplyContactEffectiveMass(Tangent));
+			if (TangentialEffectiveMass <= KINDA_SMALL_NUMBER)
+			{
+				continue;
+			}
+
+			const FVector CurrentTangentialImpulse = AccumulatedImpulse -
+				AccumulatedNormalImpulse * N;
+			FVector NewTangentialImpulse = CurrentTangentialImpulse -
+				(TangentialSpeed / TangentialEffectiveMass) * Tangent;
+			const float MaxTangentialImpulse =
+				ClampedFriction * AccumulatedNormalImpulse;
+			NewTangentialImpulse = NewTangentialImpulse.GetClampedToMaxSize(
+				MaxTangentialImpulse);
+			AccumulatedImpulse =
+				AccumulatedNormalImpulse * N + NewTangentialImpulse;
+		}
+
+		OutImpulseA = AccumulatedImpulse;
+		OutImpulseB = -AccumulatedImpulse;
+		return !AccumulatedImpulse.IsNearlyZero();
+	}
 
 	// -------------------------------------------------------
 	// 5) Normal effective mass

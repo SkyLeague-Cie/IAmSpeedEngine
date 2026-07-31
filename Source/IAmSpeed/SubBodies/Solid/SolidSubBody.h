@@ -31,6 +31,20 @@ struct FRestitutionResolveContext
 	FVector BoxExtent = FVector::ZeroVector;
 };
 
+struct FFakePhysicsImpactContext
+{
+	SKinematic SelfParentKinematics;
+	SKinematic OtherParentKinematics;
+
+	FFakePhysicsImpactContext Inverted() const
+	{
+		FFakePhysicsImpactContext Result;
+		Result.SelfParentKinematics = OtherParentKinematics;
+		Result.OtherParentKinematics = SelfParentKinematics;
+		return Result;
+	}
+};
+
 /**
  * USolidSubBody : Base class for any solid physics sub-body (box, sphere, etc.)
  * It handles:
@@ -55,17 +69,54 @@ public:
 	bool IsFakePhysicsEnabled() const { return EnableFakePhysics; }
 	float GetRestitution() const { return Restitution; }
 	float GetSphereBoxRestitutionOverride() const { return SphereBoxRestitutionOverride; }
+	float GetSphereBoxFrictionOverride() const { return SphereBoxFrictionOverride; }
+	bool UsesCoupledContactImpulse() const { return bUseCoupledContactImpulse; }
+	bool AllowsCoupledContactImpulseFor(const SKinematic& State) const
+	{
+		return (CoupledContactMaxLinearSpeed < 0.0f ||
+			State.Velocity.Size() <= CoupledContactMaxLinearSpeed) &&
+			(CoupledContactMaxAngularSpeed < 0.0f ||
+			State.AngularVelocity.Size() <= CoupledContactMaxAngularSpeed);
+	}
+	bool AllowsCoupledContactNormal(const FVector& LocalNormal) const
+	{
+		return CoupledContactMaxAbsLocalNormalY < 0.0f ||
+			FMath::Abs(LocalNormal.Y) <= CoupledContactMaxAbsLocalNormalY;
+	}
 	float GetStaticFriction() const { return StaticFriction; }
 	float GetDynamicFriction() const { return DynamicFriction; }
 	float GetImpactThreshold() const { return ImpactThreshold; }
 	float GetHitDamping() const { return HitDamping; }
 	UFUNCTION(BlueprintCallable, Category = "Physics")
 	void SetSphereBoxRestitutionOverride(float InRestitution);
+	void SetSphereBoxFrictionOverride(float InFriction)
+	{
+		SphereBoxFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
+	}
+	void SetUseCoupledContactImpulse(bool bInEnabled)
+	{
+		bUseCoupledContactImpulse = bInEnabled;
+	}
+	void SetCoupledContactKinematicLimits(
+		float MaxLinearSpeed,
+		float MaxAngularSpeed)
+	{
+		CoupledContactMaxLinearSpeed = MaxLinearSpeed;
+		CoupledContactMaxAngularSpeed = MaxAngularSpeed;
+	}
+	void SetCoupledContactMaxAbsLocalNormalY(float MaxAbsLocalNormalY)
+	{
+		CoupledContactMaxAbsLocalNormalY = MaxAbsLocalNormalY;
+	}
 
 	// Override this function to apply custom impulses on the subbody itself when a hit is resolved.
 	virtual void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint);
 	// Override this function to apply custom impulses on the subbody itself or other subbodies when a hit is resolved.
-	virtual void ApplyFakePhysicsOn(USolidSubBody& OtherSubBody, const SHitResult& Hit, const float& DeltaTime) {};
+	virtual void ApplyFakePhysicsOn(
+		USolidSubBody& OtherSubBody,
+		const SHitResult& Hit,
+		const float& DeltaTime,
+		const FFakePhysicsImpactContext* ImpactContext = nullptr) {};
 	virtual float ResolveRestitutionCustom(
 		const USolidSubBody& OtherSubBody,
 		const FRestitutionResolveContext& Context,
@@ -74,7 +125,10 @@ public:
 
 	static float MixRestitution(float eA, float eB, EMixMode Mode);
 	static float MixFriction(float muA, float muB, EMixMode Mode);
-	static float ResolveSphereBoxFriction(float FallbackFriction);
+	static float ResolveSphereBoxFriction(
+		const USolidSubBody& Sphere,
+		const USolidSubBody& Box,
+		float FallbackFriction);
 	static float ResolveSphereBoxRestitution(const USolidSubBody& Sphere, const USolidSubBody& Box, float FallbackRestitution);
 	static float ResolveSphereBoxRestitutionAtContact(
 		const USolidSubBody& Sphere,
@@ -141,6 +195,24 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics,
 		meta = (ClampMin = "-1.0", UIMin = "-1.0", ClampMax = "1.0", UIMax = "1.0"))
 	float SphereBoxRestitutionOverride = -1.0f;
+	// Optional contact-specific friction. This lets a vehicle hitbox use the
+	// car/ball coefficient without changing ball/stadium contacts.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics,
+		meta = (ClampMin = "-1.0", UIMin = "-1.0"))
+	float SphereBoxFrictionOverride = -1.0f;
+	// Opts contacts involving this subbody into the coupled normal/tangent
+	// impulse solve. Kept per-body so unrelated collision families are stable.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)
+	bool bUseCoupledContactImpulse = false;
+	// Optional eligibility bounds for this body's coupled contacts. Negative
+	// values disable a bound. Useful when a solver model is calibrated only for
+	// a known kinematic family.
+	float CoupledContactMaxLinearSpeed = -1.0f;
+	float CoupledContactMaxAngularSpeed = -1.0f;
+	// Optional box-local contact-normal bound. This lets an opt-in box limit a
+	// calibrated solver to near-centred impacts without coupling unrelated
+	// lateral contacts. Negative values disable the bound.
+	float CoupledContactMaxAbsLocalNormalY = -1.0f;
 	// Static friction coefficient for the subbody, used in collision resolution
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Physics,
 		meta = (ClampMin = "0.0", UIMin = "0.0"))
