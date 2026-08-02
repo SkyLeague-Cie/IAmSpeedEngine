@@ -229,7 +229,8 @@ namespace Speed
 			FVector& OutImpulseA,                   // impulse to apply to THIS
 			FVector& OutImpulseB,                   // impulse to apply to OTHER
 			const float& ImpactThreshold,			// impact threshold (normal velocity below which restitution is disabled, in cm/s)
-			bool bUseCoupledContactImpulse = false
+			bool bUseCoupledContactImpulse = false,
+			bool bUsePostNormalFrictionImpulse = false
 		);
 	};
 

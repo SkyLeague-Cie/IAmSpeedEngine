@@ -41,6 +41,24 @@ static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionRestingForceScale(
 	TEXT("Scale applied to the suspension resting force before adding spring displacement and damping. 0 restores the old model."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionCeilingFadeStartNormalZ(
+	TEXT("p.SkyLeague.Suspension.CeilingFadeStartNormalZ"),
+	-0.98f,
+	TEXT("Surface-normal Z below which wheel suspension smoothly fades to zero at the ceiling."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionBumpStopStartCompression(
+	TEXT("p.SkyLeague.Suspension.BumpStopStartCompression"),
+	5.0f,
+	TEXT("Spring compression in cm above which the progressive suspension bump stop starts."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionBumpStopRate(
+	TEXT("p.SkyLeague.Suspension.BumpStopRate"),
+	150000.0f,
+	TEXT("Quadratic bump-stop force coefficient in force units per squared cm."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionClampNegativeDisplacement(
 	TEXT("p.SkyLeague.Suspension.ClampNegativeDisplacement"),
 	0,
@@ -131,6 +149,7 @@ namespace
         const float LastDisplacement,
         const float CurrentDisplacement,
         const float WheelRelativeVelocity,
+        const bool bForcePositive,
         FSuspensionForceDebugData* DebugData = nullptr)
     {
         const bool bClampNegativeDisplacement = CVarSkyLeagueSuspensionClampNegativeDisplacement.GetValueOnAnyThread() != 0;
@@ -153,13 +172,20 @@ namespace
             ForceCurrentDisplacement > 0.0f;
         const double RestingForce = bApplyRestingForce
             ? static_cast<double>(Suspension.Setup().RestingForce) *
-                static_cast<double>(FMath::Max(0.0f, CVarSkyLeagueSuspensionRestingForceScale.GetValueOnAnyThread()))
+				static_cast<double>(FMath::Max(0.0f,
+					CVarSkyLeagueSuspensionRestingForceScale.GetValueOnAnyThread()))
             : 0.0;
         const double StiffnessForce = static_cast<double>(ForceCurrentDisplacement) * static_cast<double>(Suspension.Setup().SpringRate);
         const double DampingForce = WheelRelativeVelocity * static_cast<double>(Damping);
         float Force = static_cast<float>(RestingForce + StiffnessForce - DampingForce);
+		const float BumpStopStart = FMath::Max(0.0f,
+			CVarSkyLeagueSuspensionBumpStopStartCompression.GetValueOnAnyThread());
+		const float BumpStopCompression = FMath::Max(
+			0.0f, ForceCurrentDisplacement - BumpStopStart);
+		Force += FMath::Square(BumpStopCompression) * FMath::Max(
+			0.0f, CVarSkyLeagueSuspensionBumpStopRate.GetValueOnAnyThread());
         const float UnclampedForce = Force;
-        if (CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0)
+        if (bForcePositive || CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0)
         {
             Force = FMath::Max(Force, 0.0f);
         }
@@ -237,6 +263,38 @@ void USWheelSubBody::ResetForFrame(const float& Delta)
     bWasOnGroundPrevFrame = IsOnGround();
     bCountedGroundFrame = false;
 	IgnoredComponents.Append(AlwaysIgnoredComponents);
+}
+
+void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
+{
+    Super::UpdateKinematicsFromOwner(ParentKinematic);
+
+    const FVector SuspensionOffset = ParentKinematic.Rotation.RotateVector(
+        SpringDisplacement() * FVector::UpVector);
+    Kinematics.Location += SuspensionOffset;
+    Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(
+        ParentKinematic.AngularVelocity,
+        Kinematics.Location - ParentKinematic.Location);
+}
+
+SSphere USWheelSubBody::MakeSphere() const
+{
+    const SKinematic& KS = GetKinematicState();
+    return SSphere(
+        KS.Location,
+        Radius() + CollisionMargin(),
+        KS.Velocity,
+        KS.Acceleration);
+}
+
+FCollisionShape USWheelSubBody::GetCollisionShape(const float Inflation) const
+{
+    if (!bUseEffectiveSuspensionSweepRadius)
+    {
+        return Super::GetCollisionShape(Inflation);
+    }
+    return FCollisionShape::MakeSphere(
+        FMath::Max(KINDA_SMALL_NUMBER, Radius() + CollisionMargin() + Inflation));
 }
 
 void USWheelSubBody::AcceptHit()
@@ -333,6 +391,10 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     FCollisionQueryParams Params(NAME_None, false);
     Params.bReturnFaceIndex = true;
     Params.bReturnPhysicalMaterial = true;
+    if (const AActor* VehicleOwner = GetOwner())
+    {
+        Params.AddIgnoredActor(VehicleOwner);
+    }
     bool ret = false;
     FHitResult UnrealHit;
     if (World->SweepSingleByChannel(
@@ -431,6 +493,7 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
     for (auto& OtherSphere : OtherSpheres)
     {
         if (!OtherSphere.IsValid()) continue;
+        if (OtherSphere->GetOwner() == GetOwner()) continue;
 
         // Ignore already-hit Spheres this frame
         if (IgnoredComponents.Contains(OtherSphere.Get()))
@@ -504,6 +567,7 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
     for (auto& OtherBox : OtherBoxes)
     {
         if (!OtherBox.IsValid()) continue;
+        if (OtherBox->GetOwner() == GetOwner()) continue;
         // Ignore already-hit Boxes this frame
         if (IgnoredComponents.Contains(OtherBox.Get()))
             continue;
@@ -567,13 +631,21 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
         FSuspensionForceDebugData ForceDebugData;
 		const float ProjectedVelocity = ParentComponent->GetPhysVelocityAtPoint(CurrentHit.ImpactPoint).Dot(CurrentHit.ImpactNormal);
-        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement, CurrentDisplacement, ProjectedVelocity, &ForceDebugData);
+        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement,
+            CurrentDisplacement, ProjectedVelocity, ClampsSuspensionForceToPositive(),
+            &ForceDebugData);
         PSuspension->SetLastDisplacement(CurrentDisplacement);
 
-        float Dot = FVector::DotProduct(CurrentHit.ImpactNormal, FVector::UpVector);
-        // mapping : ground=1, wall=1, ceiling=0
-        float SuspensionScale = FMath::Clamp(Dot + 1.f, 0.f, 1.f);
-        SuspensionScale = FMath::Pow(SuspensionScale, 1.5f);  // soften transition
+		const float Dot = FVector::DotProduct(CurrentHit.ImpactNormal, FVector::UpVector);
+		// Keep full support through both gutters. Only fade at the final ceiling
+		// approach so gravity can release the car without letting the chassis
+		// bottom out throughout the upper transition.
+		const float CeilingFadeStart = FMath::Clamp(
+			CVarSkyLeagueSuspensionCeilingFadeStartNormalZ.GetValueOnAnyThread(),
+			-0.999f, 0.0f);
+		const float CeilingFadeAlpha = FMath::GetMappedRangeValueClamped(
+			FVector2D(-1.0f, CeilingFadeStart), FVector2D(0.0f, 1.0f), Dot);
+		const float SuspensionScale = FMath::SmoothStep(0.0f, 1.0f, CeilingFadeAlpha);
 
         // apply suspension scale
         SuspensionForce *= SuspensionScale;
@@ -583,7 +655,10 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
             UE_LOG(WheelSubBodyLog, Warning, TEXT("[Suspension] In frame %d, Suspension is way too strong!!!! For Wheel num %d SuspensionForce = %f"),
                 ParentComponent->NumFrame(), Idx(), SuspensionForce);
         }*/
-        SuspensionForce = FMath::Clamp(SuspensionForce, CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0 ? 0.0f : -SuspensionMaxValue, SuspensionMaxValue);
+        const bool bClampPositive = ClampsSuspensionForceToPositive() ||
+            CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0;
+        SuspensionForce = FMath::Clamp(SuspensionForce,
+            bClampPositive ? 0.0f : -SuspensionMaxValue, SuspensionMaxValue);
 
 		// Special Actor case: if we do not hit the ground but an other actor, we keep suspension force only for positive values
         // to avoid wheel to stick to it too much and create unrealistic behavior.
@@ -959,7 +1034,7 @@ float USWheelSubBody::MaxLength() const
 
 float USWheelSubBody::SuspensionRestLength() const
 {
-    return ChaosWheel->SuspensionMaxRaise;
+	return ChaosWheel->SuspensionMaxRaise;
 }
 
 float USWheelSubBody::SuspensionMaxRaise() const
@@ -974,7 +1049,45 @@ float USWheelSubBody::SuspensionMaxDrop() const
 
 float USWheelSubBody::SuspensionSpringRateCm() const
 {
-    return SuspensionSpringRate * 100.0f;
+    return bUseSuspensionForceModelOverride
+        ? SuspensionSpringRateCmOverride
+        : SuspensionSpringRate * 100.0f;
+}
+
+float USWheelSubBody::SuspensionCompressionDamping() const
+{
+    return SuspensionCompressionDampingOverride;
+}
+
+float USWheelSubBody::SuspensionReboundDamping() const
+{
+    return SuspensionReboundDampingOverride;
+}
+
+bool USWheelSubBody::UsesDirectSuspensionDamping() const
+{
+    return bUseSuspensionForceModelOverride;
+}
+
+bool USWheelSubBody::ClampsSuspensionForceToPositive() const
+{
+    return bUseSuspensionForceModelOverride && bClampSuspensionForceToPositive;
+}
+
+void USWheelSubBody::ConfigureSuspensionForceModel(const float SpringRateCm,
+    const float CompressionDamping, const float ReboundDamping,
+	const bool bClampForceToPositive)
+{
+    bUseSuspensionForceModelOverride = true;
+    bClampSuspensionForceToPositive = bClampForceToPositive;
+    SuspensionSpringRateCmOverride = FMath::Max(0.0f, SpringRateCm);
+    SuspensionCompressionDampingOverride = FMath::Max(0.0f, CompressionDamping);
+    SuspensionReboundDampingOverride = FMath::Max(0.0f, ReboundDamping);
+}
+
+void USWheelSubBody::SetUseEffectiveSuspensionSweepRadius(const bool bEnabled)
+{
+    bUseEffectiveSuspensionSweepRadius = bEnabled;
 }
 
 float USWheelSubBody::GetSuspensionDampingReboundRatio() const

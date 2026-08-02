@@ -39,6 +39,7 @@ public:
     static FVector ComputeBoxSupportPointWS(const FVector& Center, const FQuat& Rot, const FVector& Ext, const FVector& N);
     const TArray<FVector>& GetGroundContacts() const;
     const TArray<FVector>& GetPhysicsTickGroundContacts() const;
+    int32 GetLastResolvedGroundHitFrame() const { return LastResolvedGroundHitFrame; }
     bool IsConcaveGroundContact() const;
     FVector GetGroundPlaneNormal() const;
     float GetGroundPlaneD() const;
@@ -285,6 +286,7 @@ private:
     TArray<float> PrevLambdaN;
 
     bool bGroundContactStable = false; // true if every contact point were stable last frame
+    int32 LastResolvedGroundHitFrame = INDEX_NONE;
     bool bHasGroundContact = false; // true if we have at least one ground contact this frame
     bool bFreshEdgeRecoverCandidate = false; // one-frame edge contact kept for car-level auto-recover
     float StableTime = 0.f;

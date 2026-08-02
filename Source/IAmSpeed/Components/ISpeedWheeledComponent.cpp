@@ -121,7 +121,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 		const FVector Impulse = (bMovingIntoSurface ? jn : -jn) * N;
 
-		// ignore tiny impulses (stops “buzzing” at rest)
+		// ignore tiny impulses (stops buzzing at rest)
 		if (Impulse.SizeSquared() < (JDeadzone * JDeadzone))
 			continue;
 

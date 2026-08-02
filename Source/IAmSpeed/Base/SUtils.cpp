@@ -1486,7 +1486,8 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	FVector& OutImpulseA,
 	FVector& OutImpulseB,
 	const float& ImpactThreshold,
-	const bool bUseCoupledContactImpulse
+	const bool bUseCoupledContactImpulse,
+	const bool bUsePostNormalFrictionImpulse
 )
 {
 	OutImpulseA = FVector::ZeroVector;
@@ -1527,6 +1528,64 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 
 	const bool bForceCoupledContactImpulse =
 		CVarIAmSpeedCoupledContactImpulse.GetValueOnAnyThread() != 0;
+	if (bUsePostNormalFrictionImpulse)
+	{
+		const auto ApplyContactEffectiveMass = [
+			InvMassA, InvMassB, &InvInertiaA, &InvInertiaB, &rA, &rB](
+			const FVector& Impulse)
+		{
+			const FVector AngularA = InvInertiaA.TransformVector(
+				FVector::CrossProduct(rA, Impulse));
+			const FVector AngularB = InvInertiaB.TransformVector(
+				FVector::CrossProduct(rB, Impulse));
+			return (InvMassA + InvMassB) * Impulse +
+				FVector::CrossProduct(AngularA, rA) +
+				FVector::CrossProduct(AngularB, rB);
+		};
+
+		const float NormalEffectiveMass = FVector::DotProduct(
+			N, ApplyContactEffectiveMass(N));
+		if (NormalEffectiveMass <= KINDA_SMALL_NUMBER)
+		{
+			return false;
+		}
+
+		const float ClampedRestitution = FMath::Abs(vRelN) > ImpactThreshold
+			? FMath::Clamp(Restitution, 0.f, 1.f)
+			: 0.f;
+		const float NormalImpulseMagnitude =
+			-(1.f + ClampedRestitution) * vRelN / NormalEffectiveMass;
+		const FVector NormalImpulse = NormalImpulseMagnitude * N;
+
+		const FVector RelativeVelocityAfterNormal =
+			vRel + ApplyContactEffectiveMass(NormalImpulse);
+		const FVector TangentialVelocity = RelativeVelocityAfterNormal -
+			FVector::DotProduct(RelativeVelocityAfterNormal, N) * N;
+		FVector TangentialImpulse = FVector::ZeroVector;
+		const float TangentialSpeed = TangentialVelocity.Size();
+		if (TangentialSpeed > KINDA_SMALL_NUMBER && Friction > 0.f)
+		{
+			const FVector Tangent = TangentialVelocity / TangentialSpeed;
+			const float TangentialEffectiveMass = FVector::DotProduct(
+				Tangent, ApplyContactEffectiveMass(Tangent));
+			if (TangentialEffectiveMass > KINDA_SMALL_NUMBER)
+			{
+				const float UnclampedTangentialImpulse =
+					-TangentialSpeed / TangentialEffectiveMass;
+				const float MaxTangentialImpulse =
+					FMath::Max(0.f, Friction) * NormalImpulseMagnitude;
+				TangentialImpulse = FMath::Clamp(
+					UnclampedTangentialImpulse,
+					-MaxTangentialImpulse,
+					MaxTangentialImpulse) * Tangent;
+			}
+		}
+
+		OutImpulseA = NormalImpulse + TangentialImpulse;
+		OutImpulseB = -OutImpulseA;
+		return !OutImpulseA.IsNearlyZero();
+	}
+
 	const float CoupledMinNormalSpeed = FMath::Max(
 		0.0f,
 		CVarIAmSpeedCoupledContactImpulseMinNormalSpeed.GetValueOnAnyThread());

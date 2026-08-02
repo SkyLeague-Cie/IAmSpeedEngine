@@ -301,13 +301,21 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
 
 	// Compute collision impulse at TOI
+    const bool bUsePostNormalFriction =
+        UsesPostNormalFrictionImpulse() || OtherBox.UsesPostNormalFrictionImpulse();
+    const SKinematic& ImpulseSphereKS = bUsePostNormalFriction
+        ? FakePhysicsContext.SelfParentKinematics
+        : SphereKS;
+    const SKinematic& ImpulseBoxKS = bUsePostNormalFriction
+        ? FakePhysicsContext.OtherParentKinematics
+        : BoxKSAtTOI;
     FVector ImpThis, ImpOther;
     bool ok = Speed::SImpulseSolver::ComputeCollisionImpulse(
         CurrentHit.ImpactPoint,
         CurrentHit.ImpactNormal,   // Other -> Sphere
 
-        SphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
-        BoxKSAtTOI, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
+        ImpulseSphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
+        ImpulseBoxKS, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
 
         MixedRestitution,
         MixedFriction,
@@ -317,7 +325,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         GetImpactThreshold(),
         (UsesCoupledContactImpulse() || OtherBox.UsesCoupledContactImpulse()) &&
         AllowsCoupledContactImpulseFor(SphereKS) &&
-        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal)
+        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal),
+        bUsePostNormalFriction
     );
 
     if (ok)

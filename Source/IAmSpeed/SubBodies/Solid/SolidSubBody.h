@@ -71,6 +71,7 @@ public:
 	float GetSphereBoxRestitutionOverride() const { return SphereBoxRestitutionOverride; }
 	float GetSphereBoxFrictionOverride() const { return SphereBoxFrictionOverride; }
 	bool UsesCoupledContactImpulse() const { return bUseCoupledContactImpulse; }
+	bool UsesPostNormalFrictionImpulse() const { return bUsePostNormalFrictionImpulse; }
 	bool AllowsCoupledContactImpulseFor(const SKinematic& State) const
 	{
 		return (CoupledContactMaxLinearSpeed < 0.0f ||
@@ -96,6 +97,10 @@ public:
 	void SetUseCoupledContactImpulse(bool bInEnabled)
 	{
 		bUseCoupledContactImpulse = bInEnabled;
+	}
+	void SetUsePostNormalFrictionImpulse(bool bInEnabled)
+	{
+		bUsePostNormalFrictionImpulse = bInEnabled;
 	}
 	void SetCoupledContactKinematicLimits(
 		float MaxLinearSpeed,
@@ -204,6 +209,11 @@ protected:
 	// impulse solve. Kept per-body so unrelated collision families are stable.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)
 	bool bUseCoupledContactImpulse = false;
+	// Resolves the normal impulse first, then evaluates friction from the
+	// resulting point velocity. This mirrors Bullet-style sequential contacts
+	// without changing the default simultaneous/legacy solvers.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)
+	bool bUsePostNormalFrictionImpulse = false;
 	// Optional eligibility bounds for this body's coupled contacts. Negative
 	// values disable a bound. Useful when a solver model is calibrated only for
 	// a known kinematic family.

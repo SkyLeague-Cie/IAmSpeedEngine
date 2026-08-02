@@ -49,8 +49,11 @@ public:
 
     // --- overrides SubBody behaviour ---
     virtual void ResetForFrame(const float& Delta) override;
+    virtual void UpdateKinematicsFromOwner(const SKinematic& ParentKinematic) override;
     void AcceptHit() override;
     virtual bool SweepTOI(const float& RemainingDelta, float& OutTOI) override;
+    virtual SSphere MakeSphere() const override;
+    virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const override;
     SKinematic GetKinematicsFromOwner(const unsigned int& NumFrame) const;
     // SSphere MakeSphere(const unsigned int& NumFrame, const float& RemainingDelta, const float& TimePassed) const override;
     void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint) override;
@@ -83,6 +86,13 @@ public:
     float SuspensionMaxRaise() const;
     float SuspensionMaxDrop() const;
     float SuspensionSpringRateCm() const;
+    float SuspensionCompressionDamping() const;
+    float SuspensionReboundDamping() const;
+    bool UsesDirectSuspensionDamping() const;
+    bool ClampsSuspensionForceToPositive() const;
+    void ConfigureSuspensionForceModel(float SpringRateCm, float CompressionDamping,
+		float ReboundDamping, bool bClampForceToPositive);
+    void SetUseEffectiveSuspensionSweepRadius(bool bEnabled);
     float GetSuspensionDampingReboundRatio() const;
     float GetSuspensionDampingCompressionRatio() const;
     float GetSuspensionForce() const;
@@ -130,6 +140,13 @@ private:
     float SuspensionDampingCompressionRatio = 0.3f;
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
     float SuspensionDampingReboundRatio = 0.5f;
+
+    bool bUseSuspensionForceModelOverride = false;
+    bool bClampSuspensionForceToPositive = false;
+    bool bUseEffectiveSuspensionSweepRadius = false;
+    float SuspensionSpringRateCmOverride = 0.0f;
+    float SuspensionCompressionDampingOverride = 0.0f;
+    float SuspensionReboundDampingOverride = 0.0f;
 
     // --- State variables ---
     float SuspensionForce = 0.0; // suspension force to apply this frame

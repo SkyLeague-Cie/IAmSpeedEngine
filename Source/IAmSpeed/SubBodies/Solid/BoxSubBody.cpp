@@ -806,6 +806,9 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 {
     if (!ParentComponent) return;
 
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    LastResolvedGroundHitFrame = CurrentFrame;
+
     CompositeGroundNormal = BuildCompositeGroundNormal();
 
     const FVector RawN = CurrentHit.ImpactNormal.GetSafeNormal();
@@ -838,7 +841,6 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     const float RoofSlideSupportMinUpDot =
         CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
 
-    const int32 CurrentFrame = ParentComponent->NumFrame();
     const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
     const bool bSameRoofSurfaceComponent =
         EffectiveHit.Component.IsValid() &&
@@ -1195,13 +1197,21 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     const float MixedFriction = ResolveSphereBoxFriction(Sphere, *this,
         MixFriction(Sphere.GetDynamicFriction(), GetDynamicFriction(), EMixMode::E_Max));
 
+    const bool bUsePostNormalFriction =
+        UsesPostNormalFrictionImpulse() || Sphere.UsesPostNormalFrictionImpulse();
+    const SKinematic& ImpulseBoxKS = bUsePostNormalFriction
+        ? FakePhysicsContext.SelfParentKinematics
+        : BoxKS;
+    const SKinematic& ImpulseSphereKS = bUsePostNormalFriction
+        ? FakePhysicsContext.OtherParentKinematics
+        : SphereKS0;
     FVector ImpThis, ImpOther;
     bool ok = Speed::SImpulseSolver::ComputeCollisionImpulse(
         CurrentHit.ImpactPoint,
 		CurrentHit.ImpactNormal,   // Sphere -> Box
 
-        BoxKS, GetMass(), ComputeWorldInvInertiaTensor(),
-        SphereKS0, Sphere.GetMass(), Sphere.ComputeWorldInvInertiaTensor(),
+        ImpulseBoxKS, GetMass(), ComputeWorldInvInertiaTensor(),
+        ImpulseSphereKS, Sphere.GetMass(), Sphere.ComputeWorldInvInertiaTensor(),
 
         MixedRestitution,
         MixedFriction,
@@ -1210,7 +1220,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         GetImpactThreshold(),
         (UsesCoupledContactImpulse() || Sphere.UsesCoupledContactImpulse()) &&
         Sphere.AllowsCoupledContactImpulseFor(SphereKS0) &&
-        AllowsCoupledContactNormal(BoxLocalContactNormal)
+        AllowsCoupledContactNormal(BoxLocalContactNormal),
+        bUsePostNormalFriction
     );
 
     if (!ok)

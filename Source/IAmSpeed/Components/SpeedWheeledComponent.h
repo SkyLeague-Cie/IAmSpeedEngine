@@ -76,6 +76,9 @@ public:
 	unsigned int NumFrame() const override;
 	// Number of frames before the component can move after spawning
 	uint16 GetMinNbFramesBeforeCanMove() const;
+	// Investigation hook for local deterministic probes that intentionally
+	// bypass the network-alignment startup countdown.
+	void SetImmediateMovementForTesting();
 	// Mass to use for physics simulation
 	float GetPhysMass() const override;
 	// Center-of-mass state and its fixed local offset from the component origin.
