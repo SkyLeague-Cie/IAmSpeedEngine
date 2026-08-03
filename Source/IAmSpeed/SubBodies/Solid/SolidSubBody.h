@@ -72,6 +72,7 @@ public:
 	float GetSphereBoxFrictionOverride() const { return SphereBoxFrictionOverride; }
 	bool UsesCoupledContactImpulse() const { return bUseCoupledContactImpulse; }
 	bool UsesPostNormalFrictionImpulse() const { return bUsePostNormalFrictionImpulse; }
+	bool UsesPersistentBilateralContact() const { return bUsePersistentBilateralContact; }
 	bool AllowsCoupledContactImpulseFor(const SKinematic& State) const
 	{
 		return (CoupledContactMaxLinearSpeed < 0.0f ||
@@ -101,6 +102,10 @@ public:
 	void SetUsePostNormalFrictionImpulse(bool bInEnabled)
 	{
 		bUsePostNormalFrictionImpulse = bInEnabled;
+	}
+	void SetUsePersistentBilateralContact(bool bInEnabled)
+	{
+		bUsePersistentBilateralContact = bInEnabled;
 	}
 	void SetCoupledContactKinematicLimits(
 		float MaxLinearSpeed,
@@ -214,6 +219,10 @@ protected:
 	// without changing the default simultaneous/legacy solvers.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)
 	bool bUsePostNormalFrictionImpulse = false;
+	// Dynamic contacts between two opted-in solids are maintained by the
+	// world-level finite-mass pair solver instead of unilateral projection.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)
+	bool bUsePersistentBilateralContact = false;
 	// Optional eligibility bounds for this body's coupled contacts. Negative
 	// values disable a bound. Useful when a solver model is calibrated only for
 	// a known kinematic family.

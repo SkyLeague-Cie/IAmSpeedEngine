@@ -5,6 +5,7 @@
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/World/SpeedWorldSubsystem.h"
 #include "SphereSubBody.h"
 #include "SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
@@ -1296,7 +1297,17 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 #endif
         // --- Apply impulses ---
     ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
-    Sphere.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
+	const float RelativeNormalSpeedForSphere = FMath::Abs(FVector::DotProduct(
+		IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHit.ImpactPoint) -
+		IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHit.ImpactPoint),
+		CurrentHit.ImpactNormal.GetSafeNormal()));
+    Sphere.ApplySphereBoxImpulse(
+		ImpOther,
+		CurrentHit.ImpactPoint,
+		CurrentHit.ImpactNormal,
+		RelativeNormalSpeedForSphere,
+		SphereKS0,
+		BoxKS);
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
@@ -1345,6 +1356,21 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 
     // Handle micro-oscillations
     Sphere.HandleMicroOscillation();
+	if (Sphere.ShouldMaintainSphereBoxContact(
+		RelativeNormalSpeedForSphere,
+		CurrentHit.ImpactNormal,
+		FakePhysicsContext.OtherParentKinematics,
+		FakePhysicsContext.SelfParentKinematics))
+	{
+		if (UWorld* World = GetWorld())
+		{
+			if (USpeedWorldSubsystem* SpeedWorld = World->GetSubsystem<USpeedWorldSubsystem>())
+			{
+				SpeedWorld->RegisterDynamicContactPair(
+					Sphere, *this, CurrentHit.ImpactPoint, -CurrentHit.ImpactNormal);
+			}
+		}
+	}
 
     // --- Gameplay hooks ---
     ParentComponent->RcvImpactOnSubBody(*this, CurrentHit.ImpactPoint);

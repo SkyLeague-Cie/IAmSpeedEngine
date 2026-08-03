@@ -8,11 +8,26 @@
 #include "SpeedWorldSubsystem.generated.h"
 
 class ISpeedComponent;
+class USolidSubBody;
 
 struct FPendingOp
 {
     bool bAdd = false;
     ISpeedComponent* Comp = nullptr;
+};
+
+struct FDynamicContactPair
+{
+	TWeakObjectPtr<USolidSubBody> BodyA;
+	TWeakObjectPtr<USolidSubBody> BodyB;
+	FVector LocalAnchorA = FVector::ZeroVector;
+	FVector LocalAnchorB = FVector::ZeroVector;
+	FVector LocalNormalB = FVector::UpVector;
+	FVector LastCOMA = FVector::ZeroVector;
+	FVector LastCOMB = FVector::ZeroVector;
+	uint64 PairKey = 0;
+	unsigned int FirstSeenFrame = 0;
+	unsigned int LastSeenFrame = 0;
 };
 
 /**
@@ -26,10 +41,17 @@ public:
     void RegisterSpeedComponent(ISpeedComponent* Comp);
     void UnregisterSpeedComponent(ISpeedComponent* Comp);
     void ApplyPendingOps();
+	void RegisterDynamicContactPair(
+		USolidSubBody& BodyA,
+		USolidSubBody& BodyB,
+		const FVector& ContactPoint,
+		const FVector& NormalBToA);
 
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
     TArray<ISpeedComponent*> Components;
+	TArray<FDynamicContactPair> DynamicContactPairs;
+	unsigned int CurrentStepFrame = 0;
 
 	// Sorted array of components based on their UObject ID
     TArray<ISpeedComponent*> ComponentsSorted;
@@ -38,6 +60,7 @@ private:
     void RebuildSortedIfNeeded();
 	void AddComponent(ISpeedComponent& Comp);
 	void RemoveComponent(ISpeedComponent& Comp);
+	void SolveDynamicContactPairs(float Dt);
 
     FCriticalSection PendingCS;
     TArray<FPendingOp> PendingOps;

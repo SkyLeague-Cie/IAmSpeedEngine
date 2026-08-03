@@ -4,9 +4,23 @@
 
 #include "SpeedWorldSubsystem.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
 #include "Algo/Sort.h"
+#include "HAL/IConsoleManager.h"
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedPersistentDynamicPairs(
+	TEXT("p.IAmSpeed.Collision.PersistentDynamicPairs"),
+	1,
+	TEXT("Enables finite-mass persistent constraints for opted-in dynamic body pairs."));
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedDebugPersistentDynamicPairs(
+	TEXT("p.IAmSpeed.Collision.DebugPersistentDynamicPairs"),
+	0,
+	TEXT("Logs registration, rejection and impulses for persistent dynamic pairs."));
 
 void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 {
@@ -123,8 +137,200 @@ void USpeedWorldSubsystem::RemoveComponent(ISpeedComponent& Comp)
 	}
 }
 
+void USpeedWorldSubsystem::RegisterDynamicContactPair(
+	USolidSubBody& BodyA,
+	USolidSubBody& BodyB,
+	const FVector& ContactPoint,
+	const FVector& NormalBToA)
+{
+	if (CVarIAmSpeedPersistentDynamicPairs.GetValueOnAnyThread() == 0)
+	{
+		return;
+	}
+
+	ISpeedComponent* CompA = BodyA.GetParentComponent();
+	ISpeedComponent* CompB = BodyB.GetParentComponent();
+	if (!CompA || !CompB || CompA == CompB ||
+		!BodyA.UsesPersistentBilateralContact() ||
+		!BodyB.UsesPersistentBilateralContact())
+	{
+		return;
+	}
+
+	const uint32 IdA = BodyA.GetUniqueID();
+	const uint32 IdB = BodyB.GetUniqueID();
+	const uint32 Lo = FMath::Min(IdA, IdB);
+	const uint32 Hi = FMath::Max(IdA, IdB);
+	const uint64 PairKey = (static_cast<uint64>(Lo) << 32) | Hi;
+	FDynamicContactPair* Pair = DynamicContactPairs.FindByPredicate(
+		[PairKey](const FDynamicContactPair& Candidate)
+		{
+			return Candidate.PairKey == PairKey;
+		});
+	if (!Pair)
+	{
+		Pair = &DynamicContactPairs.AddDefaulted_GetRef();
+		Pair->BodyA = &BodyA;
+		Pair->BodyB = &BodyB;
+		Pair->PairKey = PairKey;
+		Pair->FirstSeenFrame = CurrentStepFrame;
+	}
+
+	Pair->LastSeenFrame = CurrentStepFrame;
+	Pair->LastCOMA = CompA->GetPhysCOM();
+	Pair->LastCOMB = CompB->GetPhysCOM();
+	Pair->LocalAnchorA = CompA->GetPhysRotation().UnrotateVector(ContactPoint - CompA->GetPhysCOM());
+	Pair->LocalAnchorB = CompB->GetPhysRotation().UnrotateVector(ContactPoint - CompB->GetPhysCOM());
+	Pair->LocalNormalB = CompB->GetPhysRotation().UnrotateVector(NormalBToA.GetSafeNormal());
+	if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PersistentPair][Register] Frame=%u A=%s B=%s Normal=%s Point=%s"),
+			CurrentStepFrame, *BodyA.GetName(), *BodyB.GetName(),
+			*NormalBToA.ToString(), *ContactPoint.ToString());
+	}
+}
+
+void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
+{
+	constexpr unsigned int MaxUnseenFrames = 2;
+	constexpr float SeparationToleranceCm = 2.0f;
+
+	for (int32 Index = DynamicContactPairs.Num() - 1; Index >= 0; --Index)
+	{
+		FDynamicContactPair& Pair = DynamicContactPairs[Index];
+		USolidSubBody* BodyA = Pair.BodyA.Get();
+		USolidSubBody* BodyB = Pair.BodyB.Get();
+		ISpeedComponent* CompA = BodyA ? BodyA->GetParentComponent() : nullptr;
+		ISpeedComponent* CompB = BodyB ? BodyB->GetParentComponent() : nullptr;
+		if (!BodyA || !BodyB || !CompA || !CompB ||
+			CurrentStepFrame - Pair.LastSeenFrame > MaxUnseenFrames)
+		{
+			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			continue;
+		}
+
+		// The CCD impact already resolved this pair on its first frame.
+		if (CurrentStepFrame <= Pair.FirstSeenFrame)
+		{
+			continue;
+		}
+
+		const FVector CurrentCOMA = CompA->GetPhysCOM();
+		const FVector CurrentCOMB = CompB->GetPhysCOM();
+		const float MaxExpectedMoveA = CompA->GetPhysCOMVelocity().Size() * Dt * 2.0f + 10.0f;
+		const float MaxExpectedMoveB = CompB->GetPhysCOMVelocity().Size() * Dt * 2.0f + 10.0f;
+		if (FVector::DistSquared(CurrentCOMA, Pair.LastCOMA) > FMath::Square(MaxExpectedMoveA) ||
+			FVector::DistSquared(CurrentCOMB, Pair.LastCOMB) > FMath::Square(MaxExpectedMoveB))
+		{
+			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			continue;
+		}
+		Pair.LastCOMA = CurrentCOMA;
+		Pair.LastCOMB = CurrentCOMB;
+
+		const FQuat RotA = CompA->GetPhysRotation();
+		const FQuat RotB = CompB->GetPhysRotation();
+		const FVector N = RotB.RotateVector(Pair.LocalNormalB).GetSafeNormal();
+		if (N.IsNearlyZero())
+		{
+			continue;
+		}
+
+		USphereSubBody* Sphere = Cast<USphereSubBody>(BodyA);
+		UBoxSubBody* Box = Cast<UBoxSubBody>(BodyB);
+		if (!Sphere || !Box)
+		{
+			Sphere = Cast<USphereSubBody>(BodyB);
+			Box = Cast<UBoxSubBody>(BodyA);
+		}
+		if (Sphere && Box)
+		{
+			const SSphere SphereShape = Sphere->MakeSphere();
+			const SSBox BoxShape = Box->MakeBox();
+			FVector ClosestPoint = FVector::ZeroVector;
+			const float ShapeSeparation = BoxShape.SphereOBBSeparation(
+				BoxShape.Rot,
+				BoxShape.AbsoluteCenter(),
+				SphereShape.Center,
+				SphereShape.Radius,
+				&ClosestPoint);
+			const FVector CurrentBoxToSphereNormal =
+				(SphereShape.Center - ClosestPoint).GetSafeNormal();
+			const FVector StoredBoxToSphereNormal = Sphere == BodyA ? N : -N;
+			if (ShapeSeparation > SeparationToleranceCm ||
+				CurrentBoxToSphereNormal.IsNearlyZero() ||
+				FVector::DotProduct(CurrentBoxToSphereNormal, StoredBoxToSphereNormal) < 0.5f)
+			{
+				if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+				{
+					UE_LOG(LogTemp, Warning,
+						TEXT("[PersistentPair][RejectGeometry] Frame=%u Separation=%.3f CurrentNormal=%s StoredNormal=%s"),
+						CurrentStepFrame, ShapeSeparation,
+						*CurrentBoxToSphereNormal.ToString(), *StoredBoxToSphereNormal.ToString());
+				}
+				DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+				continue;
+			}
+		}
+
+		const FVector AnchorA = CompA->GetPhysCOM() + RotA.RotateVector(Pair.LocalAnchorA);
+		const FVector AnchorB = CompB->GetPhysCOM() + RotB.RotateVector(Pair.LocalAnchorB);
+
+		const FVector OffsetA = AnchorA - CompA->GetPhysCOM();
+		const FVector OffsetB = AnchorB - CompB->GetPhysCOM();
+		const FVector VelocityA = CompA->GetPhysCOMVelocity() +
+			FVector::CrossProduct(CompA->GetPhysAngularVelocity(), OffsetA);
+		const FVector VelocityB = CompB->GetPhysCOMVelocity() +
+			FVector::CrossProduct(CompB->GetPhysAngularVelocity(), OffsetB);
+		const float Separation = FVector::DotProduct(AnchorA - AnchorB, N);
+		const float RelativeNormalVelocity = FVector::DotProduct(VelocityA - VelocityB, N);
+		if (Separation > SeparationToleranceCm && RelativeNormalVelocity >= 0.0f)
+		{
+			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			continue;
+		}
+
+		const float PredictedRelativeNormalVelocity = RelativeNormalVelocity +
+			Dt * FVector::DotProduct(
+				CompA->GetPhysAcceleration() - CompB->GetPhysAcceleration(), N);
+		if (PredictedRelativeNormalVelocity >= 0.0f)
+		{
+			continue;
+		}
+
+		const float InvMassA = 1.0f / FMath::Max(CompA->GetPhysMass(), 1.0f);
+		const float InvMassB = 1.0f / FMath::Max(CompB->GetPhysMass(), 1.0f);
+		const FVector AngularA = FVector::CrossProduct(
+			BodyA->ComputeWorldInvInertiaTensor().TransformVector(
+				FVector::CrossProduct(OffsetA, N)), OffsetA);
+		const FVector AngularB = FVector::CrossProduct(
+			BodyB->ComputeWorldInvInertiaTensor().TransformVector(
+				FVector::CrossProduct(OffsetB, N)), OffsetB);
+		const float Denominator = InvMassA + InvMassB +
+			FVector::DotProduct(N, AngularA + AngularB);
+		if (Denominator <= KINDA_SMALL_NUMBER)
+		{
+			continue;
+		}
+
+		const FVector Impulse = (-PredictedRelativeNormalVelocity / Denominator) * N;
+		const FVector ContactPoint = 0.5f * (AnchorA + AnchorB);
+		if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[PersistentPair][Impulse] Frame=%u A=%s B=%s J=%s Separation=%.3f RelN=%.3f"),
+				CurrentStepFrame, *BodyA->GetName(), *BodyB->GetName(),
+				*Impulse.ToString(), Separation, RelativeNormalVelocity);
+		}
+		BodyA->ApplyImpulse(Impulse, ContactPoint);
+		BodyB->ApplyImpulse(-Impulse, ContactPoint);
+	}
+}
+
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
+	CurrentStepFrame = Frame;
     ApplyPendingOps();
     RebuildSortedIfNeeded();
 
@@ -280,4 +486,6 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         if (!Comp) continue;
         Comp->PostPhysicsUpdate(Dt);
     }
+
+	SolveDynamicContactPairs(Dt);
 }
