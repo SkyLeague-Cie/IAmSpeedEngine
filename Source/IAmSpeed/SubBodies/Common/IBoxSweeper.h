@@ -12,6 +12,7 @@ protected:
 	virtual SSBox MakeBox() const;
 
 	virtual FVector GetBoxExtent() const = 0;
+	virtual bool ShouldSkipSphereSweep(const USphereSubBody& Sphere) const { return false; }
 public:
 	virtual ~IBoxSweeper() = default;
 };

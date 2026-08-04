@@ -35,12 +35,34 @@ struct FFakePhysicsImpactContext
 {
 	SKinematic SelfParentKinematics;
 	SKinematic OtherParentKinematics;
+	// Scales the velocity delta produced by fake physics. Discrete impacts use
+	// the default value; persistent manifolds can supply a time-normalized share.
+	float FakeImpulseScale = 1.0f;
+	// A supported manifold owns the normal response. Its fake-physics share may
+	// therefore accelerate only along the current contact plane.
+	bool bProjectFakeImpulseOntoContactPlane = false;
+	// Velocity that a discrete solver would have accumulated between impacts but
+	// which the continuously enforced normal constraint has already removed.
+	FVector FakeRelativeVelocityBias = FVector::ZeroVector;
+	// Persistent contacts may feed only a fraction of their already accumulated
+	// tangential slip back into the shot-amplitude model.
+	float FakeTangentialVelocityScale = 1.0f;
+	// A moving-surface manifold measures slip where the two shapes touch rather
+	// than reusing their center-of-mass relative velocity.
+	bool bUseContactPointRelativeVelocity = false;
 
 	FFakePhysicsImpactContext Inverted() const
 	{
 		FFakePhysicsImpactContext Result;
 		Result.SelfParentKinematics = OtherParentKinematics;
 		Result.OtherParentKinematics = SelfParentKinematics;
+		Result.FakeImpulseScale = FakeImpulseScale;
+		Result.bProjectFakeImpulseOntoContactPlane =
+			bProjectFakeImpulseOntoContactPlane;
+		Result.FakeRelativeVelocityBias = -FakeRelativeVelocityBias;
+		Result.FakeTangentialVelocityScale = FakeTangentialVelocityScale;
+		Result.bUseContactPointRelativeVelocity =
+			bUseContactPointRelativeVelocity;
 		return Result;
 	}
 };

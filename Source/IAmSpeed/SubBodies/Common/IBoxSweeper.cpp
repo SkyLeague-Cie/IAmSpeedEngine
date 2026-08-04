@@ -56,6 +56,8 @@ bool IBoxSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const float&
     for (auto& OtherSphere : OtherSpheres)
     {
         if (!OtherSphere.IsValid()) continue;
+		if (ShouldSkipSphereSweep(*OtherSphere))
+			continue;
 
         // Ignore already-hit Spheres this frame
         if (ComponentHasBeenIgnored(*OtherSphere.Get()))

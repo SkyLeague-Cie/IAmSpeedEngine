@@ -28,6 +28,7 @@ struct FDynamicContactPair
 	uint64 PairKey = 0;
 	unsigned int FirstSeenFrame = 0;
 	unsigned int LastSeenFrame = 0;
+	bool bRollingManifoldReady = false;
 };
 
 /**
@@ -38,6 +39,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
 public:
+    static bool AreUnilateralRollingPairsEnabled();
     void RegisterSpeedComponent(ISpeedComponent* Comp);
     void UnregisterSpeedComponent(ISpeedComponent* Comp);
     void ApplyPendingOps();
@@ -46,12 +48,18 @@ public:
 		USolidSubBody& BodyB,
 		const FVector& ContactPoint,
 		const FVector& NormalBToA);
+	bool IsDynamicContactPairOwnedByRollingManifold(
+		const USolidSubBody& BodyA,
+		const USolidSubBody& BodyB) const;
 
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
     TArray<ISpeedComponent*> Components;
 	TArray<FDynamicContactPair> DynamicContactPairs;
+	TArray<FDynamicContactPair> PendingRollingContactPairs;
 	unsigned int CurrentStepFrame = 0;
+	mutable bool bLoggedRollingOwnershipState = false;
+	bool bLoggedRollingSolveState = false;
 
 	// Sorted array of components based on their UObject ID
     TArray<ISpeedComponent*> ComponentsSorted;

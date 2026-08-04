@@ -15,6 +15,16 @@
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
 
+bool UBoxSubBody::ShouldSkipSphereSweep(const USphereSubBody& Sphere) const
+{
+	UWorld* World = GetWorld();
+	const USpeedWorldSubsystem* SpeedWorld = World
+		? World->GetSubsystem<USpeedWorldSubsystem>()
+		: nullptr;
+	return SpeedWorld &&
+		SpeedWorld->IsDynamicContactPairOwnedByRollingManifold(*this, Sphere);
+}
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedCollisionDebugSphereBoxImpulse(
     TEXT("p.IAmSpeed.Collision.DebugSphereBoxImpulse"),
     0,

@@ -17,10 +17,65 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedPersistentDynamicPairs(
 	1,
 	TEXT("Enables finite-mass persistent constraints for opted-in dynamic body pairs."));
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedUnilateralRollingPairs(
+	TEXT("p.IAmSpeed.Collision.UnilateralRollingPairs"),
+	0,
+	TEXT("Experimental: maintains opted-in sphere/box contacts from current geometry as unilateral rolling manifolds."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingSeparationTolerance(
+	TEXT("p.IAmSpeed.Collision.RollingSeparationToleranceCm"),
+	0.25f,
+	TEXT("Maximum positive sphere/box gap retained by the experimental rolling manifold."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingPenetrationSlop(
+	TEXT("p.IAmSpeed.Collision.RollingPenetrationSlopCm"),
+	0.02f,
+	TEXT("Penetration ignored by rolling-manifold velocity stabilization."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingBaumgarte(
+	TEXT("p.IAmSpeed.Collision.RollingBaumgarte"),
+	0.20f,
+	TEXT("Fraction of rolling-manifold penetration corrected per simulation step."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingMaxCorrectionSpeed(
+	TEXT("p.IAmSpeed.Collision.RollingMaxCorrectionSpeed"),
+	50.0f,
+	TEXT("Maximum separating speed requested by rolling-manifold penetration correction, in cm/s."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingFrictionScale(
+	TEXT("p.IAmSpeed.Collision.RollingFrictionScale"),
+	1.0f,
+	TEXT("Scale applied to the existing mixed sphere/box friction in persistent rolling contact."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingReleaseSpeed(
+	TEXT("p.IAmSpeed.Collision.RollingReleaseSpeedCmS"),
+	1.0f,
+	TEXT("Separating normal speed above which a zero-gap rolling pair releases."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingFakePhysicsRate(
+	TEXT("p.IAmSpeed.Collision.RollingFakePhysicsRateHz"),
+	60.0f,
+	TEXT("Equivalent discrete fake-physics applications per second while a rolling manifold is supported."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingFakePhysicsScale(
+	TEXT("p.IAmSpeed.Collision.RollingFakePhysicsScale"),
+	1.0f,
+	TEXT("Amplitude scale for the time-normalized fake-physics share of a rolling manifold."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedRollingFakeTangentialVelocityScale(
+	TEXT("p.IAmSpeed.Collision.RollingFakeTangentialVelocityScale"),
+	1.0f,
+	TEXT("Tangential relative-velocity fraction fed back into persistent fake physics."));
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedDebugPersistentDynamicPairs(
 	TEXT("p.IAmSpeed.Collision.DebugPersistentDynamicPairs"),
 	0,
 	TEXT("Logs registration, rejection and impulses for persistent dynamic pairs."));
+
+bool USpeedWorldSubsystem::AreUnilateralRollingPairsEnabled()
+{
+	return CVarIAmSpeedUnilateralRollingPairs.GetValueOnAnyThread() != 0;
+}
 
 void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 {
@@ -167,9 +222,22 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 		{
 			return Candidate.PairKey == PairKey;
 		});
+	TArray<FDynamicContactPair>* DestinationPairs = &DynamicContactPairs;
+	if (!Pair && AreUnilateralRollingPairsEnabled())
+	{
+		// Collision resolution runs inside the TOI iteration. Queue structural
+		// changes so the active pair array remains immutable until the iteration
+		// has completed.
+		DestinationPairs = &PendingRollingContactPairs;
+		Pair = PendingRollingContactPairs.FindByPredicate(
+			[PairKey](const FDynamicContactPair& Candidate)
+			{
+				return Candidate.PairKey == PairKey;
+			});
+	}
 	if (!Pair)
 	{
-		Pair = &DynamicContactPairs.AddDefaulted_GetRef();
+		Pair = &DestinationPairs->AddDefaulted_GetRef();
 		Pair->BodyA = &BodyA;
 		Pair->BodyB = &BodyB;
 		Pair->PairKey = PairKey;
@@ -191,10 +259,46 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	}
 }
 
+bool USpeedWorldSubsystem::IsDynamicContactPairOwnedByRollingManifold(
+	const USolidSubBody& BodyA,
+	const USolidSubBody& BodyB) const
+{
+	if (!bLoggedRollingOwnershipState && AreUnilateralRollingPairsEnabled())
+	{
+		bLoggedRollingOwnershipState = true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PersistentPair][OwnershipQueryState] Frame=%u PairCount=%d A=%s B=%s"),
+			CurrentStepFrame, DynamicContactPairs.Num(),
+			*BodyA.GetName(), *BodyB.GetName());
+	}
+	if (DynamicContactPairs.IsEmpty() ||
+		!AreUnilateralRollingPairsEnabled())
+	{
+		return false;
+	}
+
+	const uint32 IdA = BodyA.GetUniqueID();
+	const uint32 IdB = BodyB.GetUniqueID();
+	const uint32 Lo = FMath::Min(IdA, IdB);
+	const uint32 Hi = FMath::Max(IdA, IdB);
+	const uint64 PairKey = (static_cast<uint64>(Lo) << 32) | Hi;
+	return DynamicContactPairs.ContainsByPredicate(
+		[PairKey, this](const FDynamicContactPair& Pair)
+		{
+			// Registration happens inside CCD resolution. Ownership may only change
+			// at the following physics-frame boundary, never midway through a TOI
+			// iteration that was built with the pair still collidable.
+			return Pair.PairKey == PairKey &&
+				Pair.bRollingManifoldReady &&
+				Pair.BodyA.IsValid() && Pair.BodyB.IsValid();
+		});
+}
+
 void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 {
 	constexpr unsigned int MaxUnseenFrames = 2;
-	constexpr float SeparationToleranceCm = 2.0f;
+	const float SeparationToleranceCm = FMath::Max(
+		0.0f, CVarIAmSpeedRollingSeparationTolerance.GetValueOnAnyThread());
 
 	for (int32 Index = DynamicContactPairs.Num() - 1; Index >= 0; --Index)
 	{
@@ -203,16 +307,55 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 		USolidSubBody* BodyB = Pair.BodyB.Get();
 		ISpeedComponent* CompA = BodyA ? BodyA->GetParentComponent() : nullptr;
 		ISpeedComponent* CompB = BodyB ? BodyB->GetParentComponent() : nullptr;
-		if (!BodyA || !BodyB || !CompA || !CompB ||
+		if (!BodyA || !BodyB || !CompA || !CompB)
+		{
+			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			continue;
+		}
+
+		USphereSubBody* Sphere = Cast<USphereSubBody>(BodyA);
+		UBoxSubBody* Box = Cast<UBoxSubBody>(BodyB);
+		if (!Sphere || !Box)
+		{
+			Sphere = Cast<USphereSubBody>(BodyB);
+			Box = Cast<UBoxSubBody>(BodyA);
+		}
+		const bool bUseRollingManifold =
+			AreUnilateralRollingPairsEnabled() &&
+			Sphere != nullptr && Box != nullptr;
+		if (bUseRollingManifold && !bLoggedRollingSolveState)
+		{
+			bLoggedRollingSolveState = true;
+			UE_LOG(LogTemp, Warning,
+				TEXT("[PersistentPair][RollingSolveState] Frame=%u FirstSeen=%u LastSeen=%u PairCount=%d A=%s B=%s"),
+				CurrentStepFrame, Pair.FirstSeenFrame, Pair.LastSeenFrame,
+				DynamicContactPairs.Num(), *BodyA->GetName(), *BodyB->GetName());
+		}
+		if (!bUseRollingManifold &&
 			CurrentStepFrame - Pair.LastSeenFrame > MaxUnseenFrames)
 		{
 			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 			continue;
 		}
 
-		// The CCD impact already resolved this pair on its first frame.
-		if (CurrentStepFrame <= Pair.FirstSeenFrame)
+		// Scenario resets can rewind the component frame counter. A pair from the
+		// previous timeline must never retain ownership of CCD in the new one.
+		if (CurrentStepFrame < Pair.FirstSeenFrame)
 		{
+			if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("[PersistentPair][ReleaseFrameRewind] Frame=%u FirstSeenFrame=%u"),
+					CurrentStepFrame, Pair.FirstSeenFrame);
+			}
+			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			continue;
+		}
+
+		// The CCD impact already resolved this pair on its first frame.
+		if (CurrentStepFrame == Pair.FirstSeenFrame)
+		{
+			Pair.bRollingManifoldReady = bUseRollingManifold;
 			continue;
 		}
 
@@ -231,25 +374,16 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 
 		const FQuat RotA = CompA->GetPhysRotation();
 		const FQuat RotB = CompB->GetPhysRotation();
-		const FVector N = RotB.RotateVector(Pair.LocalNormalB).GetSafeNormal();
-		if (N.IsNearlyZero())
-		{
-			continue;
-		}
-
-		USphereSubBody* Sphere = Cast<USphereSubBody>(BodyA);
-		UBoxSubBody* Box = Cast<UBoxSubBody>(BodyB);
-		if (!Sphere || !Box)
-		{
-			Sphere = Cast<USphereSubBody>(BodyB);
-			Box = Cast<UBoxSubBody>(BodyA);
-		}
+		FVector N = RotB.RotateVector(Pair.LocalNormalB).GetSafeNormal();
+		FVector AnchorA = CompA->GetPhysCOM() + RotA.RotateVector(Pair.LocalAnchorA);
+		FVector AnchorB = CompB->GetPhysCOM() + RotB.RotateVector(Pair.LocalAnchorB);
+		float ShapeSeparation = FVector::DotProduct(AnchorA - AnchorB, N);
 		if (Sphere && Box)
 		{
 			const SSphere SphereShape = Sphere->MakeSphere();
 			const SSBox BoxShape = Box->MakeBox();
 			FVector ClosestPoint = FVector::ZeroVector;
-			const float ShapeSeparation = BoxShape.SphereOBBSeparation(
+			ShapeSeparation = BoxShape.SphereOBBSeparation(
 				BoxShape.Rot,
 				BoxShape.AbsoluteCenter(),
 				SphereShape.Center,
@@ -260,7 +394,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 			const FVector StoredBoxToSphereNormal = Sphere == BodyA ? N : -N;
 			if (ShapeSeparation > SeparationToleranceCm ||
 				CurrentBoxToSphereNormal.IsNearlyZero() ||
-				FVector::DotProduct(CurrentBoxToSphereNormal, StoredBoxToSphereNormal) < 0.5f)
+				(!bUseRollingManifold &&
+					FVector::DotProduct(CurrentBoxToSphereNormal, StoredBoxToSphereNormal) < 0.5f))
 			{
 				if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
 				{
@@ -272,10 +407,46 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 				DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 				continue;
 			}
+
+			if (bUseRollingManifold)
+			{
+				const FVector PreviousNormal = N;
+				N = Sphere == BodyA
+					? CurrentBoxToSphereNormal
+					: -CurrentBoxToSphereNormal;
+				const FVector SphereContactPoint =
+					SphereShape.Center - CurrentBoxToSphereNormal * SphereShape.Radius;
+				if (Sphere == BodyA)
+				{
+					AnchorA = SphereContactPoint;
+					AnchorB = ClosestPoint;
+				}
+				else
+				{
+					AnchorA = ClosestPoint;
+					AnchorB = SphereContactPoint;
+				}
+
+				Pair.LocalAnchorA = RotA.UnrotateVector(AnchorA - CompA->GetPhysCOM());
+				Pair.LocalAnchorB = RotB.UnrotateVector(AnchorB - CompB->GetPhysCOM());
+				Pair.LocalNormalB = RotB.UnrotateVector(N);
+				Pair.LastSeenFrame = CurrentStepFrame;
+				if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0 &&
+					FVector::DotProduct(PreviousNormal, N) < 0.995f)
+				{
+					UE_LOG(LogTemp, Warning,
+						TEXT("[PersistentPair][FeatureTransition] Frame=%u Separation=%.3f PreviousNormal=%s CurrentNormal=%s"),
+						CurrentStepFrame, ShapeSeparation,
+						*PreviousNormal.ToString(), *N.ToString());
+				}
+			}
 		}
 
-		const FVector AnchorA = CompA->GetPhysCOM() + RotA.RotateVector(Pair.LocalAnchorA);
-		const FVector AnchorB = CompB->GetPhysCOM() + RotB.RotateVector(Pair.LocalAnchorB);
+		if (N.IsNearlyZero())
+		{
+			continue;
+		}
+		Pair.bRollingManifoldReady = bUseRollingManifold;
 
 		const FVector OffsetA = AnchorA - CompA->GetPhysCOM();
 		const FVector OffsetB = AnchorB - CompB->GetPhysCOM();
@@ -283,7 +454,9 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 			FVector::CrossProduct(CompA->GetPhysAngularVelocity(), OffsetA);
 		const FVector VelocityB = CompB->GetPhysCOMVelocity() +
 			FVector::CrossProduct(CompB->GetPhysAngularVelocity(), OffsetB);
-		const float Separation = FVector::DotProduct(AnchorA - AnchorB, N);
+		const float Separation = bUseRollingManifold
+			? ShapeSeparation
+			: FVector::DotProduct(AnchorA - AnchorB, N);
 		const float RelativeNormalVelocity = FVector::DotProduct(VelocityA - VelocityB, N);
 		if (Separation > SeparationToleranceCm && RelativeNormalVelocity >= 0.0f)
 		{
@@ -293,9 +466,35 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 
 		const float PredictedRelativeNormalVelocity = RelativeNormalVelocity +
 			Dt * FVector::DotProduct(
-				CompA->GetPhysAcceleration() - CompB->GetPhysAcceleration(), N);
-		if (PredictedRelativeNormalVelocity >= 0.0f)
+				CompA->GetPhysAccelerationAtPoint(AnchorA) -
+				CompB->GetPhysAccelerationAtPoint(AnchorB), N);
+		const float PenetrationDepth = FMath::Max(0.0f, -Separation);
+		const float PenetrationSlop = FMath::Max(
+			0.0f, CVarIAmSpeedRollingPenetrationSlop.GetValueOnAnyThread());
+		const float TargetRelativeNormalVelocity = bUseRollingManifold &&
+			PenetrationDepth > PenetrationSlop
+			? FMath::Min(
+				FMath::Max(0.0f, CVarIAmSpeedRollingMaxCorrectionSpeed.GetValueOnAnyThread()),
+				FMath::Max(0.0f, CVarIAmSpeedRollingBaumgarte.GetValueOnAnyThread()) *
+					(PenetrationDepth - PenetrationSlop) / Dt)
+			: 0.0f;
+		if (PredictedRelativeNormalVelocity >= TargetRelativeNormalVelocity)
 		{
+			if (bUseRollingManifold && Separation >= -PenetrationSlop &&
+				PredictedRelativeNormalVelocity > FMath::Max(
+					0.0f, CVarIAmSpeedRollingReleaseSpeed.GetValueOnAnyThread()))
+			{
+				DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+				continue;
+			}
+			if (bUseRollingManifold &&
+				CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("[PersistentPair][SupportedNoImpulse] Frame=%u Separation=%.3f RelN=%.3f PredictedRelN=%.3f"),
+					CurrentStepFrame, Separation, RelativeNormalVelocity,
+					PredictedRelativeNormalVelocity);
+			}
 			continue;
 		}
 
@@ -314,8 +513,40 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 			continue;
 		}
 
-		const FVector Impulse = (-PredictedRelativeNormalVelocity / Denominator) * N;
+		const float NormalImpulseMagnitude =
+			(TargetRelativeNormalVelocity - PredictedRelativeNormalVelocity) / Denominator;
+		const FVector Impulse = NormalImpulseMagnitude * N;
 		const FVector ContactPoint = 0.5f * (AnchorA + AnchorB);
+		FFakePhysicsImpactContext RollingFakePhysicsContext;
+		if (bUseRollingManifold)
+		{
+			const float RollingFakePhysicsRate = FMath::Max(
+				0.0f, CVarIAmSpeedRollingFakePhysicsRate.GetValueOnAnyThread());
+			RollingFakePhysicsContext.SelfParentKinematics = Sphere == BodyA
+				? CompA->GetKinematicState()
+				: CompB->GetKinematicState();
+			RollingFakePhysicsContext.OtherParentKinematics = Sphere == BodyA
+				? CompB->GetKinematicState()
+				: CompA->GetKinematicState();
+			RollingFakePhysicsContext.FakeImpulseScale = Dt * RollingFakePhysicsRate *
+				FMath::Max(0.0f, CVarIAmSpeedRollingFakePhysicsScale.GetValueOnAnyThread());
+			RollingFakePhysicsContext.bProjectFakeImpulseOntoContactPlane = true;
+			RollingFakePhysicsContext.FakeTangentialVelocityScale = FMath::Max(
+				0.0f,
+				CVarIAmSpeedRollingFakeTangentialVelocityScale.GetValueOnAnyThread());
+			RollingFakePhysicsContext.bUseContactPointRelativeVelocity = true;
+			if (RollingFakePhysicsRate > KINDA_SMALL_NUMBER)
+			{
+				const FVector BoxToSphereNormal = Sphere == BodyA ? N : -N;
+				const float IncidentRelativeNormalVelocity = FMath::Min(
+					RelativeNormalVelocity, PredictedRelativeNormalVelocity);
+				const float DiscreteIntervalScale = FMath::Max(
+					1.0f, 1.0f / (RollingFakePhysicsRate * Dt));
+				RollingFakePhysicsContext.FakeRelativeVelocityBias =
+					BoxToSphereNormal * IncidentRelativeNormalVelocity *
+					(DiscreteIntervalScale - 1.0f);
+			}
+		}
 		if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
 		{
 			UE_LOG(LogTemp, Warning,
@@ -325,6 +556,63 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(const float Dt)
 		}
 		BodyA->ApplyImpulse(Impulse, ContactPoint);
 		BodyB->ApplyImpulse(-Impulse, ContactPoint);
+
+		if (bUseRollingManifold && NormalImpulseMagnitude > KINDA_SMALL_NUMBER)
+		{
+			const FVector PostVelocityA = CompA->GetPhysVelocityAtPoint(AnchorA);
+			const FVector PostVelocityB = CompB->GetPhysVelocityAtPoint(AnchorB);
+			const FVector RelativeVelocity = PostVelocityA - PostVelocityB;
+			const FVector TangentialVelocity = RelativeVelocity -
+				FVector::DotProduct(RelativeVelocity, N) * N;
+			const float TangentialSpeed = TangentialVelocity.Size();
+			if (TangentialSpeed > KINDA_SMALL_NUMBER)
+			{
+				const FVector Tangent = TangentialVelocity / TangentialSpeed;
+				const FVector TangentialAngularA = FVector::CrossProduct(
+					BodyA->ComputeWorldInvInertiaTensor().TransformVector(
+						FVector::CrossProduct(OffsetA, Tangent)), OffsetA);
+				const FVector TangentialAngularB = FVector::CrossProduct(
+					BodyB->ComputeWorldInvInertiaTensor().TransformVector(
+						FVector::CrossProduct(OffsetB, Tangent)), OffsetB);
+				const float TangentialDenominator = InvMassA + InvMassB +
+					FVector::DotProduct(Tangent, TangentialAngularA + TangentialAngularB);
+				if (TangentialDenominator > KINDA_SMALL_NUMBER)
+				{
+					const float MixedFriction = USolidSubBody::ResolveSphereBoxFriction(
+						*Sphere,
+						*Box,
+						USolidSubBody::MixFriction(
+							Sphere->GetStaticFriction(), Box->GetStaticFriction(), EMixMode::E_Max));
+					const float MaxFrictionImpulse = NormalImpulseMagnitude * MixedFriction *
+						FMath::Max(0.0f, CVarIAmSpeedRollingFrictionScale.GetValueOnAnyThread());
+					const float TangentialImpulseMagnitude = FMath::Min(
+						TangentialSpeed / TangentialDenominator, MaxFrictionImpulse);
+					const FVector TangentialImpulse = -TangentialImpulseMagnitude * Tangent;
+					BodyA->ApplyImpulse(TangentialImpulse, ContactPoint);
+					BodyB->ApplyImpulse(-TangentialImpulse, ContactPoint);
+				}
+			}
+
+			// RL repeatedly resolves a supported ball/car contact and therefore also
+			// repeatedly contributes its fake shot response. A CCD manifold owns the
+			// pair instead, so apply the same response as a time-normalized rate.
+			if (RollingFakePhysicsContext.FakeImpulseScale > 0.0f)
+			{
+				const FVector BoxToSphereNormal = Sphere == BodyA ? N : -N;
+				SHitResult RollingHit(
+					true,
+					ContactPoint,
+					BoxToSphereNormal,
+					0.0f);
+				RollingHit.Location = Sphere->GetKinematicState().Location;
+				RollingHit.PenetrationDepth = PenetrationDepth;
+				RollingHit.ContactPointThis = Sphere == BodyA ? AnchorA : AnchorB;
+				RollingHit.ContactPointOther = Sphere == BodyA ? AnchorB : AnchorA;
+				RollingHit.SubBody = Box;
+				Sphere->ApplyFakePhysicsOn(
+					*Box, RollingHit, Dt, &RollingFakePhysicsContext);
+			}
+		}
 	}
 }
 
@@ -340,7 +628,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     // ------------------------------------------------------------
     // 1) Reset frame
     // ------------------------------------------------------------
-    for (ISpeedComponent* Comp : ComponentsSorted)
+	for (ISpeedComponent* Comp : ComponentsSorted)
     {
         if (!Comp) continue;
 
@@ -484,8 +772,24 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     for (ISpeedComponent* Comp : ComponentsSorted)
     {
         if (!Comp) continue;
-        Comp->PostPhysicsUpdate(Dt);
-    }
+		Comp->PostPhysicsUpdate(Dt);
+	}
+
+	if (!PendingRollingContactPairs.IsEmpty())
+	{
+		for (FDynamicContactPair& PendingPair : PendingRollingContactPairs)
+		{
+			if (!DynamicContactPairs.ContainsByPredicate(
+				[Key = PendingPair.PairKey](const FDynamicContactPair& ActivePair)
+				{
+					return ActivePair.PairKey == Key;
+				}))
+			{
+				DynamicContactPairs.Add(MoveTemp(PendingPair));
+			}
+		}
+		PendingRollingContactPairs.Reset();
+	}
 
 	SolveDynamicContactPairs(Dt);
 }

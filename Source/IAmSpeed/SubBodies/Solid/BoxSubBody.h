@@ -83,6 +83,7 @@ protected:
     virtual ECollisionChannel GetCollisionChannel() const { return USolidSubBody::GetCollisionChannel(); }
     virtual const FCollisionResponseParams& GetResponseParams() const { return USolidSubBody::GetResponseParams(); }
     virtual FCollisionQueryParams BuildTraceParams() const { return USolidSubBody::BuildTraceParams(); }
+	bool ShouldSkipSphereSweep(const USphereSubBody& Sphere) const override;
     bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const { return USolidSubBody::ComponentHasBeenIgnored(OtherComp); }
     const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const { return USolidSubBody::GetExternalBoxSubBodies(); }
     const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
@@ -129,7 +130,7 @@ private:
         return InvMass + ang;
     }
 
-    // ìContact setî helper: build manifold from support plane normal.
+    // ‚ÄúContact set‚Äù helper: build manifold from support plane normal.
     static FORCEINLINE void BuildSupportManifoldFromNormal(
         const FVector& N,
         const FVector& CenterWS,

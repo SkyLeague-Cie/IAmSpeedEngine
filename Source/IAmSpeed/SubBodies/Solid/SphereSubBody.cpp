@@ -22,6 +22,11 @@ namespace
         return DebugCVar && DebugCVar->GetInt() != 0;
     }
 
+    bool IAmSpeedUnilateralRollingPairsEnabled()
+    {
+        return USpeedWorldSubsystem::AreUnilateralRollingPairsEnabled();
+    }
+
     FVector IAmSpeedSphereVelocityAtPointFromKS(const SKinematic& KS, const FVector& Point)
     {
         return KS.Velocity + FVector::CrossProduct(KS.AngularVelocity, Point - KS.Location);
@@ -761,11 +766,28 @@ bool USphereSubBody::ShouldMaintainSphereBoxContact(
 	{
 		return false;
 	}
+	if (IAmSpeedUnilateralRollingPairsEnabled())
+	{
+		// The experimental manifold owns the low-speed continuation and release.
+		// Registration itself is intentionally broad: a genuinely separating
+		// impact receives no constraint impulse and is discarded geometrically.
+		return true;
+	}
 
 	const bool bSlowSupport = RelativeNormalSpeed <= 50.0f &&
 		BoxState.Velocity.Size() <= 100.0f;
 	return bSlowSupport ||
 		IsTangentialContactArmEligible(SphereState, BoxState);
+}
+
+bool USphereSubBody::ShouldSkipBoxSweep(const UBoxSubBody& Box) const
+{
+	UWorld* World = GetWorld();
+	const USpeedWorldSubsystem* SpeedWorld = World
+		? World->GetSubsystem<USpeedWorldSubsystem>()
+		: nullptr;
+	return SpeedWorld &&
+		SpeedWorld->IsDynamicContactPairOwnedByRollingManifold(*this, Box);
 }
 
 FMatrix USphereSubBody::InitInvInertiaTensor() const
