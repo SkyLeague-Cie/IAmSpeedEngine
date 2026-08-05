@@ -330,7 +330,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         ImpulseSphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
         ImpulseBoxKS, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
 
-        MixedRestitution,
+		MixedRestitution,
         MixedFriction,
 
         ImpThis,
@@ -371,7 +371,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
                 *BoxLocalContactPoint.ToString(),
                 *N.ToString(),
                 *LocalNormal.ToString(),
-                MixedRestitution,
+				MixedRestitution,
                 MixedFriction,
                 GetImpactThreshold(),
                 RelNormalSpeed,
@@ -469,7 +469,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 
     // ------------------------------------------------------------------
     // 3) MICRO-OSCILLATION PREVENTION (VERY IMPORTANT)
-    // ------------------------------------------------------------------
+	// ------------------------------------------------------------------
 	HandleMicroOscillation();
 	if (ShouldMaintainSphereBoxContact(
 		PreRelativeNormalSpeed,
@@ -482,7 +482,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 			if (USpeedWorldSubsystem* SpeedWorld = World->GetSubsystem<USpeedWorldSubsystem>())
 			{
 				SpeedWorld->RegisterDynamicContactPair(
-					*this, OtherBox, CurrentHit.ImpactPoint, CurrentHit.ImpactNormal);
+					*this, OtherBox, CurrentHit.ImpactPoint, CurrentHit.ImpactNormal,
+					PreRelativeNormalSpeed);
 			}
 		}
 	}
@@ -760,20 +761,21 @@ bool USphereSubBody::ShouldMaintainSphereBoxContact(
 	const SKinematic& BoxState) const
 {
 	const FVector BoxUp = BoxState.Rotation.GetUpVector();
+	if (IAmSpeedUnilateralRollingPairsEnabled())
+	{
+		// The geometric manifold is valid on faces, edges and corners. Its
+		// acquisition is determined by the measured pre-impact normal speed;
+		// later geometry and signed separation own release.
+		return USpeedWorldSubsystem::ShouldAcquireUnilateralRollingPair(
+			RelativeNormalSpeed);
+	}
+
 	const bool bHasSupportComponent =
 		FMath::Abs(FVector::DotProduct(ContactNormal.GetSafeNormal(), BoxUp)) >= 0.2f;
 	if (!bHasSupportComponent)
 	{
 		return false;
 	}
-	if (IAmSpeedUnilateralRollingPairsEnabled())
-	{
-		// The experimental manifold owns the low-speed continuation and release.
-		// Registration itself is intentionally broad: a genuinely separating
-		// impact receives no constraint impulse and is discarded geometrically.
-		return true;
-	}
-
 	const bool bSlowSupport = RelativeNormalSpeed <= 50.0f &&
 		BoxState.Velocity.Size() <= 100.0f;
 	return bSlowSupport ||

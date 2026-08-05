@@ -92,6 +92,7 @@ public:
 	float GetRestitution() const { return Restitution; }
 	float GetSphereBoxRestitutionOverride() const { return SphereBoxRestitutionOverride; }
 	float GetSphereBoxFrictionOverride() const { return SphereBoxFrictionOverride; }
+	float GetSphereBoxManifoldFrictionOverride() const { return SphereBoxManifoldFrictionOverride; }
 	bool UsesCoupledContactImpulse() const { return bUseCoupledContactImpulse; }
 	bool UsesPostNormalFrictionImpulse() const { return bUsePostNormalFrictionImpulse; }
 	bool UsesPersistentBilateralContact() const { return bUsePersistentBilateralContact; }
@@ -116,6 +117,10 @@ public:
 	void SetSphereBoxFrictionOverride(float InFriction)
 	{
 		SphereBoxFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
+	}
+	void SetSphereBoxManifoldFrictionOverride(float InFriction)
+	{
+		SphereBoxManifoldFrictionOverride = InFriction < 0.0f ? -1.0f : InFriction;
 	}
 	void SetUseCoupledContactImpulse(bool bInEnabled)
 	{
@@ -158,6 +163,10 @@ public:
 	static float MixRestitution(float eA, float eB, EMixMode Mode);
 	static float MixFriction(float muA, float muB, EMixMode Mode);
 	static float ResolveSphereBoxFriction(
+		const USolidSubBody& Sphere,
+		const USolidSubBody& Box,
+		float FallbackFriction);
+	static float ResolveSphereBoxManifoldFriction(
 		const USolidSubBody& Sphere,
 		const USolidSubBody& Box,
 		float FallbackFriction);
@@ -232,6 +241,11 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics,
 		meta = (ClampMin = "-1.0", UIMin = "-1.0"))
 	float SphereBoxFrictionOverride = -1.0f;
+	// Optional friction used only by a persistent sphere/box manifold. It is
+	// deliberately independent from the coefficient used by discrete impacts.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics,
+		meta = (ClampMin = "-1.0", UIMin = "-1.0"))
+	float SphereBoxManifoldFrictionOverride = -1.0f;
 	// Opts contacts involving this subbody into the coupled normal/tangent
 	// impulse solve. Kept per-body so unrelated collision families are stable.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, export, Category = Physics)

@@ -1207,6 +1207,10 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         CurrentHit.ImpactPoint);
     const float MixedFriction = ResolveSphereBoxFriction(Sphere, *this,
         MixFriction(Sphere.GetDynamicFriction(), GetDynamicFriction(), EMixMode::E_Max));
+	const float RelativeNormalSpeedForSphere = FMath::Abs(FVector::DotProduct(
+		IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHit.ImpactPoint) -
+		IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHit.ImpactPoint),
+		CurrentHit.ImpactNormal.GetSafeNormal()));
 
     const bool bUsePostNormalFriction =
         UsesPostNormalFrictionImpulse() || Sphere.UsesPostNormalFrictionImpulse();
@@ -1224,7 +1228,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         ImpulseBoxKS, GetMass(), ComputeWorldInvInertiaTensor(),
         ImpulseSphereKS, Sphere.GetMass(), Sphere.ComputeWorldInvInertiaTensor(),
 
-        MixedRestitution,
+		MixedRestitution,
         MixedFriction,
         ImpThis,
         ImpOther,
@@ -1264,7 +1268,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
             *BoxLocalContactPoint.ToString(),
             *N.ToString(),
             *LocalNormal.ToString(),
-            MixedRestitution,
+			MixedRestitution,
             MixedFriction,
             GetImpactThreshold(),
             RelNormalSpeed,
@@ -1307,11 +1311,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 #endif
         // --- Apply impulses ---
     ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
-	const float RelativeNormalSpeedForSphere = FMath::Abs(FVector::DotProduct(
-		IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHit.ImpactPoint) -
-		IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHit.ImpactPoint),
-		CurrentHit.ImpactNormal.GetSafeNormal()));
-    Sphere.ApplySphereBoxImpulse(
+	Sphere.ApplySphereBoxImpulse(
 		ImpOther,
 		CurrentHit.ImpactPoint,
 		CurrentHit.ImpactNormal,
@@ -1364,8 +1364,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         Sphere.ApplyFakePhysicsOn(*this, InvertedHit, delta, &InvertedContext);
     }
 
-    // Handle micro-oscillations
-    Sphere.HandleMicroOscillation();
+	// Handle micro-oscillations
+	Sphere.HandleMicroOscillation();
 	if (Sphere.ShouldMaintainSphereBoxContact(
 		RelativeNormalSpeedForSphere,
 		CurrentHit.ImpactNormal,
@@ -1377,7 +1377,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 			if (USpeedWorldSubsystem* SpeedWorld = World->GetSubsystem<USpeedWorldSubsystem>())
 			{
 				SpeedWorld->RegisterDynamicContactPair(
-					Sphere, *this, CurrentHit.ImpactPoint, -CurrentHit.ImpactNormal);
+					Sphere, *this, CurrentHit.ImpactPoint, -CurrentHit.ImpactNormal,
+					RelativeNormalSpeedForSphere);
 			}
 		}
 	}
