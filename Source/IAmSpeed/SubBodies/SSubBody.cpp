@@ -56,7 +56,8 @@ void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 {
     for (USSubBody* SubBody : SubBodies)
     {
-        if (SubBody && !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor())
+        if (SubBody && SubBody->GetParentComponent() != ParentComponent &&
+            !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor())
         {
             switch (SubBody->GetSubBodyType())
             {

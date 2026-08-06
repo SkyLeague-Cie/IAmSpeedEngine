@@ -531,12 +531,19 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 		const float DampingReboundRatio = WheelSubBody->GetSuspensionDampingReboundRatio();
 		const float DampingCompressionRatio = WheelSubBody->GetSuspensionDampingCompressionRatio();
 		const float SprungMass = FMath::Max(SprungMasses[WheelIdx], KINDA_SMALL_NUMBER);
-		const float ReboundDamping = static_cast<float>(FMath::RoundToInt(DampingReboundRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
-		const float CompressionDamping = static_cast<float>(FMath::RoundToInt(DampingCompressionRatio * 2.0f * FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
+		const float ReboundDamping = WheelSubBody->UsesDirectSuspensionDamping()
+			? WheelSubBody->SuspensionReboundDamping()
+			: static_cast<float>(FMath::RoundToInt(DampingReboundRatio * 2.0f *
+				FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
+		const float CompressionDamping = WheelSubBody->UsesDirectSuspensionDamping()
+			? WheelSubBody->SuspensionCompressionDamping()
+			: static_cast<float>(FMath::RoundToInt(DampingCompressionRatio * 2.0f *
+				FMath::Sqrt(SpringRate * SprungMass) * 100.0f)) / 100.0f;
 
 		Suspension.AccessSetup().SpringRate = SpringRate;
 		Suspension.AccessSetup().DampingRatio = DampingReboundRatio;
-		Suspension.AccessSetup().MaxLength = Suspension.Setup().SuspensionMaxDrop + Suspension.Setup().SuspensionMaxRaise;
+		Suspension.AccessSetup().MaxLength =
+			Suspension.Setup().SuspensionMaxDrop + Suspension.Setup().SuspensionMaxRaise;
 		Suspension.AccessSetup().ReboundDamping = ReboundDamping;
 		Suspension.AccessSetup().CompressionDamping = CompressionDamping;
 		Suspension.AccessSetup().RestingForce = SprungMass * -GetGravityZ();
@@ -690,6 +697,16 @@ unsigned int USpeedWheeledComponent::NumFrame() const
 uint16 USpeedWheeledComponent::GetMinNbFramesBeforeCanMove() const
 {
 	return MinNbFramesBeforeCanMove;
+}
+
+void USpeedWheeledComponent::SetImmediateMovementForTesting()
+{
+	TimeBeforeCanMove = 0.0f;
+	MinNbFramesBeforeCanMove = 0;
+	WheeledPhysicsState.nbFramesbeforeCanMove = 0;
+	WheeledPhysicsState.bStartCountdown = false;
+	SinceCanMoveFrame = NumFrame();
+	UnFreezeMovement();
 }
 
 float USpeedWheeledComponent::GetPhysMass() const

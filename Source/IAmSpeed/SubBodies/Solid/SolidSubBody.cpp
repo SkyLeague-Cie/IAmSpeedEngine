@@ -17,6 +17,11 @@ static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxFrictionOverride(
     -1.0f,
     TEXT("Forces friction for sphere/box contacts when >= 0. Values above 1 are valid. Negative values use the normal friction mix."));
 
+static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxManifoldFrictionOverride(
+    TEXT("p.IAmSpeed.Collision.SphereBoxManifoldFrictionOverride"),
+    -1.0f,
+    TEXT("Forces friction only for persistent sphere/box manifolds when >= 0. Negative values use subbody manifold overrides or ordinary sphere/box friction."));
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxRestitutionMode(
     TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionMode"),
     0,
@@ -372,14 +377,44 @@ float USolidSubBody::MixFriction(float muA, float muB, EMixMode Mode)
 	return 0.f; // default case, should not happen
 }
 
-float USolidSubBody::ResolveSphereBoxFriction(float FallbackFriction)
+float USolidSubBody::ResolveSphereBoxFriction(
+    const USolidSubBody& Sphere,
+    const USolidSubBody& Box,
+    float FallbackFriction)
 {
     const float ForcedOverride = CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread();
     if (ForcedOverride >= 0.0f)
     {
         return ForcedOverride;
     }
+    const float SphereOverride = Sphere.GetSphereBoxFrictionOverride();
+    const float BoxOverride = Box.GetSphereBoxFrictionOverride();
+    if (SphereOverride >= 0.0f || BoxOverride >= 0.0f)
+    {
+        return FMath::Max(SphereOverride, BoxOverride);
+    }
     return FallbackFriction;
+}
+
+float USolidSubBody::ResolveSphereBoxManifoldFriction(
+    const USolidSubBody& Sphere,
+    const USolidSubBody& Box,
+    const float FallbackFriction)
+{
+    const float ForcedOverride =
+        CVarIAmSpeedSphereBoxManifoldFrictionOverride.GetValueOnAnyThread();
+    if (ForcedOverride >= 0.0f)
+    {
+        return ForcedOverride;
+    }
+
+    const float SphereOverride = Sphere.GetSphereBoxManifoldFrictionOverride();
+    const float BoxOverride = Box.GetSphereBoxManifoldFrictionOverride();
+    if (SphereOverride >= 0.0f || BoxOverride >= 0.0f)
+    {
+        return FMath::Max(SphereOverride, BoxOverride);
+    }
+    return ResolveSphereBoxFriction(Sphere, Box, FallbackFriction);
 }
 
 float USolidSubBody::ResolveSphereBoxRestitution(const USolidSubBody& Sphere, const USolidSubBody& Box, float FallbackRestitution)

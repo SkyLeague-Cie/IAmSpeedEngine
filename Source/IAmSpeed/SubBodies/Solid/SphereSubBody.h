@@ -37,8 +37,50 @@ public:
     void UpdateBodySetup();
 	void HandleMicroOscillation();
     float GetRadius() const { return Radius; }
-    void SetRadiusForConfiguration(float NewRadius) { SetRadius(NewRadius); }
+	void SetRadiusForConfiguration(float NewRadius)
+	{
+		SetRadius(NewRadius);
+		InvInertiaLocal = InitInvInertiaTensor();
+	}
+	void SetSphereBoxTangentialContactArmScale(float InScale)
+	{
+		SphereBoxTangentialContactArmScale = FMath::Max(0.0f, InScale);
+	}
+	void SetSphereBoxTangentialContactArmSpeedRange(float InStartSpeed, float InFullSpeed)
+	{
+		SphereBoxTangentialContactArmStartSpeed = FMath::Max(0.0f, InStartSpeed);
+		SphereBoxTangentialContactArmFullSpeed = FMath::Max(
+			SphereBoxTangentialContactArmStartSpeed, InFullSpeed);
+	}
+	void SetSphereBoxTangentialContactArmKinematicWindow(
+		float InMinSphereSpeed,
+		float InMaxSphereSpeed,
+		float InMinSphereAngularSpeed,
+		float InMaxSphereAngularSpeed,
+		float InMinBoxSpeed)
+	{
+		SphereBoxTangentialArmMinSphereSpeed = InMinSphereSpeed;
+		SphereBoxTangentialArmMaxSphereSpeed = InMaxSphereSpeed;
+		SphereBoxTangentialArmMinSphereAngularSpeed = InMinSphereAngularSpeed;
+		SphereBoxTangentialArmMaxSphereAngularSpeed = InMaxSphereAngularSpeed;
+		SphereBoxTangentialArmMinBoxSpeed = InMinBoxSpeed;
+	}
+	void ApplySphereBoxImpulse(
+		const FVector& LinearImpulse,
+		const FVector& WorldPoint,
+		const FVector& ContactNormal,
+		float RelativeNormalSpeed,
+		const SKinematic& SphereState,
+		const SKinematic& BoxState);
+	bool ShouldMaintainSphereBoxContact(
+		float RelativeNormalSpeed,
+		const FVector& ContactNormal,
+		const SKinematic& SphereState,
+		const SKinematic& BoxState) const;
 protected:
+	bool IsTangentialContactArmEligible(
+		const SKinematic& SphereState,
+		const SKinematic& BoxState) const;
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const override;
 
     virtual void ResolveCurrentHitPrv(const float& delta, const float& SimTime) override;
@@ -66,6 +108,7 @@ protected:
     virtual ECollisionChannel GetCollisionChannel() const { return USolidSubBody::GetCollisionChannel(); }
     virtual const FCollisionResponseParams& GetResponseParams() const { return USolidSubBody::GetResponseParams(); }
     virtual FCollisionQueryParams BuildTraceParams() const { return USolidSubBody::BuildTraceParams(); }
+	bool ShouldSkipBoxSweep(const UBoxSubBody& Box) const override;
     bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const { return USolidSubBody::ComponentHasBeenIgnored(OtherComp); }
     const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const { return USolidSubBody::GetExternalBoxSubBodies(); }
     const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
@@ -80,4 +123,14 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Shape)
     float Radius = 0.f; // Real radius of the sphere
 	float MinSlopCm = 0.05f; // Minimum allowed penetration depth in cm, used as slop in the solver to prevent jittering when resolving penetrations
+	// Scales only the angular response caused by the tangential sphere/box
+	// impulse. Translation keeps the full rigid impulse.
+	float SphereBoxTangentialContactArmScale = 1.0f;
+	float SphereBoxTangentialContactArmStartSpeed = 0.0f;
+	float SphereBoxTangentialContactArmFullSpeed = 0.0f;
+	float SphereBoxTangentialArmMinSphereSpeed = -1.0f;
+	float SphereBoxTangentialArmMaxSphereSpeed = -1.0f;
+	float SphereBoxTangentialArmMinSphereAngularSpeed = -1.0f;
+	float SphereBoxTangentialArmMaxSphereAngularSpeed = -1.0f;
+	float SphereBoxTangentialArmMinBoxSpeed = -1.0f;
 };

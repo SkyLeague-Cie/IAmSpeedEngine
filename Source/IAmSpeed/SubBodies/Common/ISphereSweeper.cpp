@@ -61,6 +61,8 @@ bool ISphereSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float
     for (auto& Box : OtherBoxes)
     {
         if (!Box.IsValid()) continue;
+		if (ShouldSkipBoxSweep(*Box))
+			continue;
 
         // Ignore if box's hitbox already hit this frame
         if (ComponentHasBeenIgnored(*Box.Get()))

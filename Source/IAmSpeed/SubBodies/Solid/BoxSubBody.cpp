@@ -5,6 +5,7 @@
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/World/SpeedWorldSubsystem.h"
 #include "SphereSubBody.h"
 #include "SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
@@ -13,6 +14,16 @@
 #include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+
+bool UBoxSubBody::ShouldSkipSphereSweep(const USphereSubBody& Sphere) const
+{
+	UWorld* World = GetWorld();
+	const USpeedWorldSubsystem* SpeedWorld = World
+		? World->GetSubsystem<USpeedWorldSubsystem>()
+		: nullptr;
+	return SpeedWorld &&
+		SpeedWorld->IsDynamicContactPairOwnedByRollingManifold(*this, Sphere);
+}
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedCollisionDebugSphereBoxImpulse(
     TEXT("p.IAmSpeed.Collision.DebugSphereBoxImpulse"),
@@ -806,6 +817,9 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 {
     if (!ParentComponent) return;
 
+    const int32 CurrentFrame = ParentComponent->NumFrame();
+    LastResolvedGroundHitFrame = CurrentFrame;
+
     CompositeGroundNormal = BuildCompositeGroundNormal();
 
     const FVector RawN = CurrentHit.ImpactNormal.GetSafeNormal();
@@ -838,7 +852,6 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     const float RoofSlideSupportMinUpDot =
         CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
 
-    const int32 CurrentFrame = ParentComponent->NumFrame();
     const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
     const bool bSameRoofSurfaceComponent =
         EffectiveHit.Component.IsValid() &&
@@ -1133,6 +1146,12 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     // --- Sphere kinematics at TOI ---
     const SKinematic& SphereKS0 =
         Sphere.GetKinematicState();
+    FFakePhysicsImpactContext FakePhysicsContext;
+    FakePhysicsContext.SelfParentKinematics = ParentComponent->GetKinematicState();
+    if (const ISpeedComponent* SphereParent = Sphere.GetParentComponent())
+    {
+        FakePhysicsContext.OtherParentKinematics = SphereParent->GetKinematicState();
+    }
     // const SKinematic SphereKSAtTOI = SphereKS0.Integrate(TimePassed);
 
     // Current frame
@@ -1186,22 +1205,38 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         BoxLocalContactNormal,
         BoxExtent,
         CurrentHit.ImpactPoint);
-    const float MixedFriction = ResolveSphereBoxFriction(
+    const float MixedFriction = ResolveSphereBoxFriction(Sphere, *this,
         MixFriction(Sphere.GetDynamicFriction(), GetDynamicFriction(), EMixMode::E_Max));
+	const float RelativeNormalSpeedForSphere = FMath::Abs(FVector::DotProduct(
+		IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHit.ImpactPoint) -
+		IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHit.ImpactPoint),
+		CurrentHit.ImpactNormal.GetSafeNormal()));
 
+    const bool bUsePostNormalFriction =
+        UsesPostNormalFrictionImpulse() || Sphere.UsesPostNormalFrictionImpulse();
+    const SKinematic& ImpulseBoxKS = bUsePostNormalFriction
+        ? FakePhysicsContext.SelfParentKinematics
+        : BoxKS;
+    const SKinematic& ImpulseSphereKS = bUsePostNormalFriction
+        ? FakePhysicsContext.OtherParentKinematics
+        : SphereKS0;
     FVector ImpThis, ImpOther;
     bool ok = Speed::SImpulseSolver::ComputeCollisionImpulse(
         CurrentHit.ImpactPoint,
 		CurrentHit.ImpactNormal,   // Sphere -> Box
 
-        BoxKS, GetMass(), ComputeWorldInvInertiaTensor(),
-        SphereKS0, Sphere.GetMass(), Sphere.ComputeWorldInvInertiaTensor(),
+        ImpulseBoxKS, GetMass(), ComputeWorldInvInertiaTensor(),
+        ImpulseSphereKS, Sphere.GetMass(), Sphere.ComputeWorldInvInertiaTensor(),
 
-        MixedRestitution,
+		MixedRestitution,
         MixedFriction,
         ImpThis,
         ImpOther,
-        GetImpactThreshold()
+        GetImpactThreshold(),
+        (UsesCoupledContactImpulse() || Sphere.UsesCoupledContactImpulse()) &&
+        Sphere.AllowsCoupledContactImpulseFor(SphereKS0) &&
+        AllowsCoupledContactNormal(BoxLocalContactNormal),
+        bUsePostNormalFriction
     );
 
     if (!ok)
@@ -1233,7 +1268,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
             *BoxLocalContactPoint.ToString(),
             *N.ToString(),
             *LocalNormal.ToString(),
-            MixedRestitution,
+			MixedRestitution,
             MixedFriction,
             GetImpactThreshold(),
             RelNormalSpeed,
@@ -1276,7 +1311,13 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 #endif
         // --- Apply impulses ---
     ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
-    Sphere.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
+	Sphere.ApplySphereBoxImpulse(
+		ImpOther,
+		CurrentHit.ImpactPoint,
+		CurrentHit.ImpactNormal,
+		RelativeNormalSpeedForSphere,
+		SphereKS0,
+		BoxKS);
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
@@ -1311,7 +1352,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     {
 		// (ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
 		// Sphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        ApplyFakePhysicsOn(Sphere, CurrentHit, delta);
+        ApplyFakePhysicsOn(Sphere, CurrentHit, delta, &FakePhysicsContext);
     }
     if (Sphere.IsFakePhysicsEnabled())
     {
@@ -1319,11 +1360,28 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         // Sphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
         SHitResult InvertedHit = CurrentHit;
         InvertedHit.ImpactNormal *= -1.f;
-        Sphere.ApplyFakePhysicsOn(*this, InvertedHit, delta);
+        const FFakePhysicsImpactContext InvertedContext = FakePhysicsContext.Inverted();
+        Sphere.ApplyFakePhysicsOn(*this, InvertedHit, delta, &InvertedContext);
     }
 
-    // Handle micro-oscillations
-    Sphere.HandleMicroOscillation();
+	// Handle micro-oscillations
+	Sphere.HandleMicroOscillation();
+	if (Sphere.ShouldMaintainSphereBoxContact(
+		RelativeNormalSpeedForSphere,
+		CurrentHit.ImpactNormal,
+		FakePhysicsContext.OtherParentKinematics,
+		FakePhysicsContext.SelfParentKinematics))
+	{
+		if (UWorld* World = GetWorld())
+		{
+			if (USpeedWorldSubsystem* SpeedWorld = World->GetSubsystem<USpeedWorldSubsystem>())
+			{
+				SpeedWorld->RegisterDynamicContactPair(
+					Sphere, *this, CurrentHit.ImpactPoint, -CurrentHit.ImpactNormal,
+					RelativeNormalSpeedForSphere);
+			}
+		}
+	}
 
     // --- Gameplay hooks ---
     ParentComponent->RcvImpactOnSubBody(*this, CurrentHit.ImpactPoint);

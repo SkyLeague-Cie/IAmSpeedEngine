@@ -39,6 +39,7 @@ public:
     static FVector ComputeBoxSupportPointWS(const FVector& Center, const FQuat& Rot, const FVector& Ext, const FVector& N);
     const TArray<FVector>& GetGroundContacts() const;
     const TArray<FVector>& GetPhysicsTickGroundContacts() const;
+    int32 GetLastResolvedGroundHitFrame() const { return LastResolvedGroundHitFrame; }
     bool IsConcaveGroundContact() const;
     FVector GetGroundPlaneNormal() const;
     float GetGroundPlaneD() const;
@@ -82,6 +83,7 @@ protected:
     virtual ECollisionChannel GetCollisionChannel() const { return USolidSubBody::GetCollisionChannel(); }
     virtual const FCollisionResponseParams& GetResponseParams() const { return USolidSubBody::GetResponseParams(); }
     virtual FCollisionQueryParams BuildTraceParams() const { return USolidSubBody::BuildTraceParams(); }
+	bool ShouldSkipSphereSweep(const USphereSubBody& Sphere) const override;
     bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const { return USolidSubBody::ComponentHasBeenIgnored(OtherComp); }
     const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const { return USolidSubBody::GetExternalBoxSubBodies(); }
     const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
@@ -128,7 +130,7 @@ private:
         return InvMass + ang;
     }
 
-    // ìContact setî helper: build manifold from support plane normal.
+    // ‚ÄúContact set‚Äù helper: build manifold from support plane normal.
     static FORCEINLINE void BuildSupportManifoldFromNormal(
         const FVector& N,
         const FVector& CenterWS,
@@ -285,6 +287,7 @@ private:
     TArray<float> PrevLambdaN;
 
     bool bGroundContactStable = false; // true if every contact point were stable last frame
+    int32 LastResolvedGroundHitFrame = INDEX_NONE;
     bool bHasGroundContact = false; // true if we have at least one ground contact this frame
     bool bFreshEdgeRecoverCandidate = false; // one-frame edge contact kept for car-level auto-recover
     float StableTime = 0.f;

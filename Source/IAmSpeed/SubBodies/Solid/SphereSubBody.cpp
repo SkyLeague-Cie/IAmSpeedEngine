@@ -6,6 +6,7 @@
 #include "SWheelSubBody.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/World/SpeedWorldSubsystem.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HAL/IConsoleManager.h"
@@ -19,6 +20,11 @@ namespace
         const IConsoleVariable* DebugCVar =
             IConsoleManager::Get().FindConsoleVariable(TEXT("p.IAmSpeed.Collision.DebugSphereBoxImpulse"));
         return DebugCVar && DebugCVar->GetInt() != 0;
+    }
+
+    bool IAmSpeedUnilateralRollingPairsEnabled()
+    {
+        return USpeedWorldSubsystem::AreUnilateralRollingPairsEnabled();
     }
 
     FVector IAmSpeedSphereVelocityAtPointFromKS(const SKinematic& KS, const FVector& Point)
@@ -236,6 +242,12 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 
     // Sphere state at TOI (already integrated)
     const SKinematic& SphereKS = Kinematics;
+    FFakePhysicsImpactContext FakePhysicsContext;
+    FakePhysicsContext.SelfParentKinematics = ParentComponent->GetKinematicState();
+    if (const ISpeedComponent* BoxParent = OtherBox.GetParentComponent())
+    {
+        FakePhysicsContext.OtherParentKinematics = BoxParent->GetKinematicState();
+    }
     /*
     // --- Overlap branch sphere-box ---
     {
@@ -291,24 +303,43 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         BoxLocalContactNormal,
         OtherBox.GetBoxExtent(),
         CurrentHit.ImpactPoint);
-    const float MixedFriction = ResolveSphereBoxFriction(
+    const float MixedFriction = ResolveSphereBoxFriction(*this, OtherBox,
         MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
+	const FVector PreSpherePointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
+		SphereKS, CurrentHit.ImpactPoint);
+	const FVector PreBoxPointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
+		BoxKSAtTOI, CurrentHit.ImpactPoint);
+	const float PreRelativeNormalSpeed = FMath::Abs(FVector::DotProduct(
+		PreSpherePointVelocity - PreBoxPointVelocity,
+		CurrentHit.ImpactNormal.GetSafeNormal()));
 
 	// Compute collision impulse at TOI
+    const bool bUsePostNormalFriction =
+        UsesPostNormalFrictionImpulse() || OtherBox.UsesPostNormalFrictionImpulse();
+    const SKinematic& ImpulseSphereKS = bUsePostNormalFriction
+        ? FakePhysicsContext.SelfParentKinematics
+        : SphereKS;
+    const SKinematic& ImpulseBoxKS = bUsePostNormalFriction
+        ? FakePhysicsContext.OtherParentKinematics
+        : BoxKSAtTOI;
     FVector ImpThis, ImpOther;
     bool ok = Speed::SImpulseSolver::ComputeCollisionImpulse(
         CurrentHit.ImpactPoint,
         CurrentHit.ImpactNormal,   // Other -> Sphere
 
-        SphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
-        BoxKSAtTOI, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
+        ImpulseSphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
+        ImpulseBoxKS, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
 
-        MixedRestitution,
+		MixedRestitution,
         MixedFriction,
 
         ImpThis,
         ImpOther,
-        GetImpactThreshold()
+        GetImpactThreshold(),
+        (UsesCoupledContactImpulse() || OtherBox.UsesCoupledContactImpulse()) &&
+        AllowsCoupledContactImpulseFor(SphereKS) &&
+        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal),
+        bUsePostNormalFriction
     );
 
     if (ok)
@@ -340,7 +371,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
                 *BoxLocalContactPoint.ToString(),
                 *N.ToString(),
                 *LocalNormal.ToString(),
-                MixedRestitution,
+				MixedRestitution,
                 MixedFriction,
                 GetImpactThreshold(),
                 RelNormalSpeed,
@@ -380,7 +411,13 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         const FVector BoxWPre = BoxParentForDebug ? BoxParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
 #endif
         // Apply impulses
-        ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
+		ApplySphereBoxImpulse(
+			ImpThis,
+			CurrentHit.ImpactPoint,
+			CurrentHit.ImpactNormal,
+			PreRelativeNormalSpeed,
+			SphereKS,
+			BoxKSAtTOI);
 		OtherBox.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
 
 #if !UE_BUILD_SHIPPING
@@ -417,7 +454,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         {
 			// UpdateKinematicsFromOwner(frame); // update kinematics to current frame before applying fake physics
 			// OtherBox.UpdateKinematicsFromOwner(frame);
-            ApplyFakePhysicsOn(OtherBox, CurrentHit, delta);
+            ApplyFakePhysicsOn(OtherBox, CurrentHit, delta, &FakePhysicsContext);
         }
         if (OtherBox.IsFakePhysicsEnabled())
         {
@@ -425,14 +462,31 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 			InvertedHit.ImpactNormal *= -1.f; // invert normal for correct fake physics application on the box
 			// UpdateKinematicsFromOwner(frame); // update kinematics to current frame before applying fake physics
 			// OtherBox.UpdateKinematicsFromOwner(frame);
-            OtherBox.ApplyFakePhysicsOn(*this, InvertedHit, delta);
+            const FFakePhysicsImpactContext InvertedContext = FakePhysicsContext.Inverted();
+            OtherBox.ApplyFakePhysicsOn(*this, InvertedHit, delta, &InvertedContext);
 		}
     }
 
     // ------------------------------------------------------------------
     // 3) MICRO-OSCILLATION PREVENTION (VERY IMPORTANT)
-    // ------------------------------------------------------------------
+	// ------------------------------------------------------------------
 	HandleMicroOscillation();
+	if (ShouldMaintainSphereBoxContact(
+		PreRelativeNormalSpeed,
+		CurrentHit.ImpactNormal,
+		FakePhysicsContext.SelfParentKinematics,
+		FakePhysicsContext.OtherParentKinematics))
+	{
+		if (UWorld* World = GetWorld())
+		{
+			if (USpeedWorldSubsystem* SpeedWorld = World->GetSubsystem<USpeedWorldSubsystem>())
+			{
+				SpeedWorld->RegisterDynamicContactPair(
+					*this, OtherBox, CurrentHit.ImpactPoint, CurrentHit.ImpactNormal,
+					PreRelativeNormalSpeed);
+			}
+		}
+	}
 }
 
 void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta, const float& SimTime)
@@ -621,6 +675,121 @@ SKinematic USphereSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) 
 float USphereSubBody::GetRadiusWithMargin() const
 {
     return GetRadius() + CollisionMargin();
+}
+
+void USphereSubBody::ApplySphereBoxImpulse(
+	const FVector& LinearImpulse,
+	const FVector& WorldPoint,
+	const FVector& ContactNormal,
+	const float RelativeNormalSpeed,
+	const SKinematic& SphereState,
+	const SKinematic& BoxState)
+{
+	// SphereState can alias this subbody's live kinematics. Snapshot eligibility
+	// before applying the rigid impulse.
+	const bool bEligible = IsTangentialContactArmEligible(SphereState, BoxState);
+
+	ApplyImpulse(LinearImpulse, WorldPoint);
+
+	if (!ParentComponent || !bEligible ||
+		FMath::IsNearlyEqual(SphereBoxTangentialContactArmScale, 1.0f))
+	{
+		return;
+	}
+
+	const FVector N = ContactNormal.GetSafeNormal();
+	if (N.IsNearlyZero())
+	{
+		return;
+	}
+
+	const FVector TangentialImpulse = LinearImpulse - FVector::DotProduct(LinearImpulse, N) * N;
+	if (TangentialImpulse.IsNearlyZero())
+	{
+		return;
+	}
+
+	float Blend = 1.0f;
+	if (SphereBoxTangentialContactArmFullSpeed > SphereBoxTangentialContactArmStartSpeed)
+	{
+		Blend = FMath::SmoothStep(
+			0.0f,
+			1.0f,
+			FMath::Clamp(
+				(RelativeNormalSpeed - SphereBoxTangentialContactArmStartSpeed) /
+				(SphereBoxTangentialContactArmFullSpeed - SphereBoxTangentialContactArmStartSpeed),
+				0.0f,
+				1.0f));
+	}
+	const float EffectiveScale = FMath::Lerp(1.0f, SphereBoxTangentialContactArmScale, Blend);
+	if (FMath::IsNearlyEqual(EffectiveScale, 1.0f))
+	{
+		return;
+	}
+
+	const FVector Lever = WorldPoint - ParentComponent->GetPhysCOM();
+	const FVector TangentialDeltaW = ComputeWorldInvInertiaTensor().TransformVector(
+		FVector::CrossProduct(Lever, TangentialImpulse));
+	ParentComponent->SetPhysAngularVelocity(
+		ParentComponent->GetPhysAngularVelocity() +
+		(EffectiveScale - 1.0f) * TangentialDeltaW);
+}
+
+bool USphereSubBody::IsTangentialContactArmEligible(
+	const SKinematic& SphereState,
+	const SKinematic& BoxState) const
+{
+	const float SphereSpeed = SphereState.Velocity.Size();
+	const float SphereAngularSpeed = SphereState.AngularVelocity.Size();
+	const float BoxSpeed = BoxState.Velocity.Size();
+	return !((SphereBoxTangentialArmMinSphereSpeed >= 0.0f &&
+		SphereSpeed < SphereBoxTangentialArmMinSphereSpeed) ||
+		(SphereBoxTangentialArmMaxSphereSpeed >= 0.0f &&
+		SphereSpeed > SphereBoxTangentialArmMaxSphereSpeed) ||
+		(SphereBoxTangentialArmMinSphereAngularSpeed >= 0.0f &&
+		SphereAngularSpeed < SphereBoxTangentialArmMinSphereAngularSpeed) ||
+		(SphereBoxTangentialArmMaxSphereAngularSpeed >= 0.0f &&
+		SphereAngularSpeed > SphereBoxTangentialArmMaxSphereAngularSpeed) ||
+		(SphereBoxTangentialArmMinBoxSpeed >= 0.0f &&
+		BoxSpeed < SphereBoxTangentialArmMinBoxSpeed));
+}
+
+bool USphereSubBody::ShouldMaintainSphereBoxContact(
+	const float RelativeNormalSpeed,
+	const FVector& ContactNormal,
+	const SKinematic& SphereState,
+	const SKinematic& BoxState) const
+{
+	const FVector BoxUp = BoxState.Rotation.GetUpVector();
+	if (IAmSpeedUnilateralRollingPairsEnabled())
+	{
+		// The geometric manifold is valid on faces, edges and corners. Its
+		// acquisition is determined by the measured pre-impact normal speed;
+		// later geometry and signed separation own release.
+		return USpeedWorldSubsystem::ShouldAcquireUnilateralRollingPair(
+			RelativeNormalSpeed);
+	}
+
+	const bool bHasSupportComponent =
+		FMath::Abs(FVector::DotProduct(ContactNormal.GetSafeNormal(), BoxUp)) >= 0.2f;
+	if (!bHasSupportComponent)
+	{
+		return false;
+	}
+	const bool bSlowSupport = RelativeNormalSpeed <= 50.0f &&
+		BoxState.Velocity.Size() <= 100.0f;
+	return bSlowSupport ||
+		IsTangentialContactArmEligible(SphereState, BoxState);
+}
+
+bool USphereSubBody::ShouldSkipBoxSweep(const UBoxSubBody& Box) const
+{
+	UWorld* World = GetWorld();
+	const USpeedWorldSubsystem* SpeedWorld = World
+		? World->GetSubsystem<USpeedWorldSubsystem>()
+		: nullptr;
+	return SpeedWorld &&
+		SpeedWorld->IsDynamicContactPairOwnedByRollingManifold(*this, Box);
 }
 
 FMatrix USphereSubBody::InitInvInertiaTensor() const

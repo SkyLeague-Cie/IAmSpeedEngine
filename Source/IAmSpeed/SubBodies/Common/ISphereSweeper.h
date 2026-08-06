@@ -12,6 +12,7 @@ protected:
 	virtual SSphere MakeSphere() const;
 
 	virtual float GetRadiusWithMargin() const = 0;
+	virtual bool ShouldSkipBoxSweep(const UBoxSubBody& Box) const { return false; }
 public:
 	virtual ~ISphereSweeper() = default;
 };
