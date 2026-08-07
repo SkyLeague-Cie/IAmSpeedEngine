@@ -995,7 +995,15 @@ FVector USWheelSubBody::GetSuspensionDirectionWS() const
 
 float USWheelSubBody::Radius() const
 {
-    return PWheel->GetEffectiveRadius();
+    // IAmSpeed models gameplay wheels as spheres. The serialized sub-body
+    // radius is therefore authoritative; the Chaos wheel class only supplies
+    // legacy vehicle/suspension setup and may intentionally use disk geometry.
+    return GetRadius();
+}
+
+float USWheelSubBody::ChaosEffectiveRadius() const
+{
+    return PWheel ? PWheel->GetEffectiveRadius() : 0.0f;
 }
 
 float USWheelSubBody::AngularVelocity() const

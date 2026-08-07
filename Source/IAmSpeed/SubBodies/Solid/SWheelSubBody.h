@@ -75,6 +75,7 @@ public:
     FVector WorldPosFromCarTransform(const FTransform& CarTransform) const;
     FVector GetSuspensionDirectionWS() const;
     float Radius() const;
+    float ChaosEffectiveRadius() const;
     float AngularVelocity() const;
     void SetAngularVelocity(const float& InOmega);
     float SpringDisplacement() const; // current spring displacement (positive when compressed)
