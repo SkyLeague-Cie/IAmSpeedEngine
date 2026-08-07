@@ -16,6 +16,8 @@ struct SWheelGroundContact
 	float   InvMassEff = 0.f;     // inverse effective mass
 	float   SpringDisplacement = 0.f; // positive when compressed, negative when over-extended
 	bool    bVelocityLocked = false; // true after the wheel has gone through its first contact rebound
+	bool    bNewContact = false;
+	bool    bAtBumpStop = false;
 };
 
 /*
@@ -43,6 +45,8 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 
 	virtual void RegisterWheelGroundContact(const SWheelGroundContact& Contact) = 0;
 	virtual void ResolveGroupedWheelGroundContacts(const float& delta);
+	virtual bool ProjectWheelSupportNonPenetration();
+	virtual bool TryProjectCanonicalWheelSupportPose();
 
 	// =========== Wheel functions ===========
 	// overload this function to return every wheel sub-bodies owned by this component (e.g. for a car body, this would be the 4 wheel sub-bodies)

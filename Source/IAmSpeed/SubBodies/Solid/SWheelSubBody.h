@@ -79,6 +79,7 @@ public:
     float AngularVelocity() const;
     void SetAngularVelocity(const float& InOmega);
     float SpringDisplacement() const; // current spring displacement (positive when compressed)
+    float ContactSpringDisplacement() const;
     float GetLastDisplacement() const;
     void SetLastDisplacement(const float& displacement);
     float SpringLength() const;
@@ -86,7 +87,9 @@ public:
     float SuspensionRestLength() const;
     float SuspensionMaxRaise() const;
     float SuspensionMaxDrop() const;
+    bool IsAtSuspensionBumpStop() const;
     float SuspensionSpringRateCm() const;
+    float StaticSpringCompression() const;
     float SuspensionCompressionDamping() const;
     float SuspensionReboundDamping() const;
     bool UsesDirectSuspensionDamping() const;
@@ -98,6 +101,7 @@ public:
     float GetSuspensionDampingCompressionRatio() const;
     float GetSuspensionForce() const;
     bool IsContactVelocityLocked() const;
+    bool WasOnGroundPreviousFrame() const;
     float GetSuspensionOffset() const;
     FVector GetHitContactNormal() const;
     FVector GetHitContactPoint() const;

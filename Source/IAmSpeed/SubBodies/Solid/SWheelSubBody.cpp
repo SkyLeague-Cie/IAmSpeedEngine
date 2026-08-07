@@ -848,7 +848,9 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
             vN,
             invMassEff,
             QuantizeSuspensionDisplacement(SpringDisplacement()),
-            IsContactVelocityLocked()
+            IsContactVelocityLocked(),
+            !WasOnGroundPreviousFrame(),
+            IsAtSuspensionBumpStop()
             });
 	}
 }
@@ -1020,6 +1022,26 @@ float USWheelSubBody::SpringDisplacement() const
 {
     return PSuspension ? PSuspension->GetLastDisplacement() : 0.0f;
 }
+
+float USWheelSubBody::ContactSpringDisplacement() const
+{
+    if (!PSuspension || !ParentComponent || !IsOnGround())
+    {
+        return SpringDisplacement();
+    }
+
+    const FTransform ChassisTM(
+        ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+    const FVector Up = ChassisTM.GetUnitAxis(EAxis::Z);
+    const FVector SuspensionAnchor = ChassisTM.TransformPosition(
+        GetLocalOffset() + PSuspension->Setup().MaxLength * FVector::UpVector);
+    const float ProjectedCompression = FVector::DotProduct(
+        SuspensionAnchor - CurrentHit.Location, Up);
+    const float DisplacementInput = FMath::Max(
+        0.0f, ProjectedCompression - PSuspension->Setup().RaycastSafetyMargin);
+    return QuantizeSuspensionDisplacement(
+        PSuspension->Setup().MaxLength - DisplacementInput);
+}
 float USWheelSubBody::SpringLength() const
 {
     return PSuspension->GetSpringLength();
@@ -1060,6 +1082,23 @@ float USWheelSubBody::SuspensionSpringRateCm() const
     return bUseSuspensionForceModelOverride
         ? SuspensionSpringRateCmOverride
         : SuspensionSpringRate * 100.0f;
+}
+
+bool USWheelSubBody::IsAtSuspensionBumpStop() const
+{
+    return ContactSpringDisplacement() >= FMath::Max(
+        0.0f, CVarSkyLeagueSuspensionBumpStopStartCompression.GetValueOnAnyThread());
+}
+
+float USWheelSubBody::StaticSpringCompression() const
+{
+    if (!PSuspension || PSuspension->Setup().SpringRate <= SMALL_NUMBER)
+    {
+        return 0.0f;
+    }
+
+    return QuantizeSuspensionDisplacement(
+        PSuspension->Setup().RestingForce / PSuspension->Setup().SpringRate);
 }
 
 float USWheelSubBody::SuspensionCompressionDamping() const
@@ -1116,6 +1155,11 @@ float USWheelSubBody::GetSuspensionForce() const
 bool USWheelSubBody::IsContactVelocityLocked() const
 {
     return bContactVelocityLocked;
+}
+
+bool USWheelSubBody::WasOnGroundPreviousFrame() const
+{
+    return bWasOnGroundPrevFrame;
 }
 
 bool USWheelSubBody::IsOnGround() const
