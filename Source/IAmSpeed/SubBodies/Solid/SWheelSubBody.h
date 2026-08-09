@@ -68,6 +68,8 @@ public:
     void UpdateSuspension(const float& delta);
     // sweep for suspension
     void SweepSuspension(const float& delta);
+	bool SweepSuspensionAlongNormal(
+		const FVector& Normal, float SearchDistance, float Delta, SHitResult& OutHit) const;
 
     // Utils methods
     FVector WorldPos() const;

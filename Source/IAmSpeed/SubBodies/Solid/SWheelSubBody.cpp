@@ -368,6 +368,44 @@ void USWheelSubBody::SweepSuspension(const float& delta)
     }
 }
 
+bool USWheelSubBody::SweepSuspensionAlongNormal(
+    const FVector& Normal, const float SearchDistance, const float Delta, SHitResult& OutHit) const
+{
+    UWorld* World = GetWorld();
+    const FVector SweepNormal = Normal.GetSafeNormal();
+    if (!World || !ParentComponent || SweepNormal.IsNearlyZero() || SearchDistance <= 0.0f)
+    {
+        return false;
+    }
+
+    FCollisionQueryParams Params(NAME_None, false);
+    Params.bReturnFaceIndex = true;
+    Params.bReturnPhysicalMaterial = true;
+    if (const AActor* VehicleOwner = GetOwner())
+    {
+        Params.AddIgnoredActor(VehicleOwner);
+    }
+
+    FHitResult UnrealHit;
+    const FVector CurrentPos = WorldPos();
+    if (!World->SweepSingleByChannel(
+        UnrealHit,
+        CurrentPos + SearchDistance * SweepNormal,
+        CurrentPos - SearchDistance * SweepNormal,
+        Kinematics.Rotation,
+        GetCollisionChannel(),
+        GetCollisionShape(),
+        Params,
+        GetResponseParams()))
+    {
+        return false;
+    }
+
+    OutHit = SHitResult::FromUnrealHit(UnrealHit, Delta);
+    OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
+    return true;
+}
+
 bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& delta)
 {
     UWorld* World = GetWorld();
