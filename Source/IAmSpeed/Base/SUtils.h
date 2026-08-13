@@ -17,6 +17,16 @@ class USSubBody;
 namespace Speed
 {
 	struct SBox;
+	struct SSphere;
+
+	/** Deterministic zero-radius segment used by ray-supported sub-bodies. */
+	struct SRay
+	{
+		SHitResult IntersectDuringMovement(const SSphere& StaticSphere,
+			const FVector& Start, const FVector& End, float DeltaTime) const;
+		SHitResult IntersectDuringMovement(const SBox& StaticBox,
+			const FVector& Start, const FVector& End, float DeltaTime) const;
+	};
 
 	/**
 	* Geometric Sphere Collision
@@ -292,3 +302,4 @@ namespace Speed
 
 using SSBox = Speed::SBox;
 using SSphere = Speed::SSphere;
+using SSRay = Speed::SRay;

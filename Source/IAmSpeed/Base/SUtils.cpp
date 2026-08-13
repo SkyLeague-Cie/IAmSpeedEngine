@@ -24,6 +24,125 @@ SSphere::SSphere(const FVector& InCenter, const float& InRadius, const FVector& 
 {
 }
 
+SHitResult SRay::IntersectDuringMovement(const SSphere& StaticSphere,
+	const FVector& Start, const FVector& End, const float DeltaTime) const
+{
+	SHitResult Result;
+	if (StaticSphere.Radius <= 0.0f)
+	{
+		return Result;
+	}
+
+	const FVector Segment = End - Start;
+	const FVector RelativeStart = Start - StaticSphere.Center;
+	const float A = Segment.SizeSquared();
+	const float C = RelativeStart.SizeSquared()
+		- FMath::Square(StaticSphere.Radius);
+	if (C <= 0.0f)
+	{
+		FVector Normal = RelativeStart.GetSafeNormal();
+		if (Normal.IsNearlyZero())
+		{
+			Normal = -Segment.GetSafeNormal();
+			if (Normal.IsNearlyZero())
+			{
+				Normal = FVector::UpVector;
+			}
+		}
+		return SHitResult(true, Start, Normal, 0.0f);
+	}
+	if (A <= KINDA_SMALL_NUMBER)
+	{
+		return Result;
+	}
+
+	const float B = 2.0f * FVector::DotProduct(RelativeStart, Segment);
+	const float Discriminant = B * B - 4.0f * A * C;
+	if (Discriminant < 0.0f)
+	{
+		return Result;
+	}
+	const float Root = FMath::Sqrt(Discriminant);
+	const float T0 = (-B - Root) / (2.0f * A);
+	const float T1 = (-B + Root) / (2.0f * A);
+	const float T = T0 >= 0.0f && T0 <= 1.0f ? T0
+		: (T1 >= 0.0f && T1 <= 1.0f ? T1 : -1.0f);
+	if (T < 0.0f)
+	{
+		return Result;
+	}
+
+	const FVector Point = Start + T * Segment;
+	return SHitResult(true, Point,
+		(Point - StaticSphere.Center).GetSafeNormal(), T * DeltaTime);
+}
+
+SHitResult SRay::IntersectDuringMovement(const SBox& StaticBox,
+	const FVector& Start, const FVector& End, const float DeltaTime) const
+{
+	SHitResult Result;
+	const FVector LocalStart = StaticBox.Rot.UnrotateVector(
+		Start - StaticBox.WorldCenter);
+	const FVector LocalEnd = StaticBox.Rot.UnrotateVector(
+		End - StaticBox.WorldCenter);
+	const FVector LocalDelta = LocalEnd - LocalStart;
+	float Enter = 0.0f;
+	float Exit = 1.0f;
+	FVector EnterNormal = FVector::ZeroVector;
+
+	for (int32 Axis = 0; Axis < 3; ++Axis)
+	{
+		const float Origin = LocalStart[Axis];
+		const float Direction = LocalDelta[Axis];
+		const float Minimum = StaticBox.Min[Axis];
+		const float Maximum = StaticBox.Max[Axis];
+		if (FMath::Abs(Direction) <= KINDA_SMALL_NUMBER)
+		{
+			if (Origin < Minimum || Origin > Maximum)
+			{
+				return Result;
+			}
+			continue;
+		}
+
+		float Near = (Minimum - Origin) / Direction;
+		float Far = (Maximum - Origin) / Direction;
+		float NormalSign = -1.0f;
+		if (Near > Far)
+		{
+			Swap(Near, Far);
+			NormalSign = 1.0f;
+		}
+		if (Near > Enter)
+		{
+			Enter = Near;
+			EnterNormal = FVector::ZeroVector;
+			EnterNormal[Axis] = NormalSign;
+		}
+		Exit = FMath::Min(Exit, Far);
+		if (Enter > Exit)
+		{
+			return Result;
+		}
+	}
+
+	if (Exit < 0.0f || Enter > 1.0f)
+	{
+		return Result;
+	}
+	const float T = FMath::Clamp(Enter, 0.0f, 1.0f);
+	if (EnterNormal.IsNearlyZero())
+	{
+		EnterNormal = -LocalDelta.GetSafeNormal();
+		if (EnterNormal.IsNearlyZero())
+		{
+			EnterNormal = FVector::UpVector;
+		}
+	}
+	return SHitResult(true, Start + T * (End - Start),
+		StaticBox.Rot.RotateVector(EnterNormal).GetSafeNormal(), T * DeltaTime);
+}
+
 bool SSphere::IsInside(const FVector& Point) const
 {
 	return (FVector::DistSquared(Point, Center) <= FMath::Square(Radius));

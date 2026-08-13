@@ -44,6 +44,14 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 	virtual float GetPhysSteeringInput() const = 0;
 
 	virtual void RegisterWheelGroundContact(const SWheelGroundContact& Contact) = 0;
+	// Vehicle presets may replace the per-wheel suspension law while retaining
+	// IAmSpeed's geometry, ordering, force application, and contact solver.
+	virtual bool TryComputeWheelSuspensionForceOverride(
+		const USWheelSubBody& Wheel,
+		float LastDisplacement,
+		float CurrentDisplacement,
+		float NormalVelocity,
+		float& OutForce) const;
 	virtual void ResolveGroupedWheelGroundContacts(const float& delta);
 	virtual bool ProjectWheelSupportNonPenetration();
 	virtual bool TryProjectCanonicalWheelSupportPose();
@@ -66,6 +74,12 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 	virtual ~ISpeedWheeledComponent() = default;
 protected:
 	virtual TArray<SWheelGroundContact>& GetPendingWheelContacts() = 0;
+	// Negative means that the diagnostic CVar is disabled and the vehicle preset
+	// remains authoritative.
+	static float GetWheelContactNormalVelocityTimeConstantOverride();
+	virtual float GetWheelContactNormalVelocityTimeConstant() const;
+	virtual float GetWheelContactNormalVelocityDeadzone() const;
+	virtual float GetWheelContactMaxInwardNormalVelocityToSolve() const;
 	static FVector QuantizeUnitNormal(const FVector& n, float q = 1e-3f);
 	// overload this function for the component to perform any necessary updates after the physics state has been updated
 	void PostPhysicsUpdatePrv(const float& delta) override;

@@ -4,8 +4,8 @@
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactNormalVelTimeConstant(
 	TEXT("p.IAmSpeed.WheelContact.NormalVelTimeConstant"),
-	0.0075f,
-	TEXT("Time constant used by the grouped wheel contact solver to reduce inward normal velocity. Lower values absorb contact velocity faster."),
+	-1.0f,
+	TEXT("Diagnostic override, in seconds, for the grouped wheel contact inward-normal-velocity response. Negative values keep the vehicle preset."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactSoftness(
@@ -68,6 +68,43 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactDebug(
 	TEXT("Logs grouped wheel contact solver impulses when non-zero."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactSolverMode(
+	TEXT("p.IAmSpeed.WheelContact.SolverMode"),
+	1,
+	TEXT("Grouped-wheel solver: 0 keeps the legacy shared snapshot, 1 solves inward contacts as one deterministic block."),
+	ECVF_Default);
+
+float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstantOverride()
+{
+	return CVarIAmSpeedWheelContactNormalVelTimeConstant.GetValueOnAnyThread();
+}
+
+float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstant() const
+{
+	const float DiagnosticOverride = GetWheelContactNormalVelocityTimeConstantOverride();
+	return DiagnosticOverride >= 0.0f ? DiagnosticOverride : 0.0075f;
+}
+
+float ISpeedWheeledComponent::GetWheelContactNormalVelocityDeadzone() const
+{
+	return CVarIAmSpeedWheelContactNormalVelocityDeadzone.GetValueOnAnyThread();
+}
+
+float ISpeedWheeledComponent::GetWheelContactMaxInwardNormalVelocityToSolve() const
+{
+	return TNumericLimits<float>::Max();
+}
+
+bool ISpeedWheeledComponent::TryComputeWheelSuspensionForceOverride(
+	const USWheelSubBody& Wheel,
+	const float LastDisplacement,
+	const float CurrentDisplacement,
+	const float NormalVelocity,
+	float& OutForce) const
+{
+	return false;
+}
+
 void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delta)
 {
 	TArray<SWheelGroundContact>& PendingWheelGroundContacts = GetPendingWheelContacts();
@@ -75,31 +112,250 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 	const float dt = FMath::Max(delta, 1e-6f);
 
-	const float NormalVelTimeConstant = FMath::Max(CVarIAmSpeedWheelContactNormalVelTimeConstant.GetValueOnAnyThread(), 1e-6f);
+	// A response faster than one simulation step is not representable by this
+	// first-order solver. Keep tuning in seconds while bounding its discrete form.
+	const float NormalVelTimeConstant = FMath::Max(GetWheelContactNormalVelocityTimeConstant(), dt);
 	const float gamma = 1.f - FMath::Exp(-dt / NormalVelTimeConstant);
 	const float LockedSeparatingNormalVelTimeConstant = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant.GetValueOnAnyThread(), 1e-6f);
 	const float LockedSeparatingGamma = 1.f - FMath::Exp(-dt / LockedSeparatingNormalVelTimeConstant);
 	const float LockedSeparatingMaxNormalVelocity = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity.GetValueOnAnyThread(), 0.0f);
+	const float MaxInwardNormalVelocityToSolve = FMath::Max(
+		GetWheelContactMaxInwardNormalVelocityToSolve(), 0.0f);
 	const bool bLockedSeparatingDampingEnabled = CVarIAmSpeedWheelContactLockedSeparatingDamping.GetValueOnAnyThread() != 0;
 	// --- Deadzones ---
-	const float VNDeadzone = FMath::Max(CVarIAmSpeedWheelContactNormalVelocityDeadzone.GetValueOnAnyThread(), 0.0f);
+	const float VNDeadzone = FMath::Max(GetWheelContactNormalVelocityDeadzone(), 0.0f);
 	const float JDeadzone = FMath::Max(CVarIAmSpeedWheelContactImpulseDeadzone.GetValueOnAnyThread(), 0.0f);
 	// (smaller are those, more network stability)
 
 	// softening (CFM-ish)
 	const float Softness = FMath::Max(CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread(), 0.0f);
 
-	// Snapshot
+	// Legacy solves every wheel from the same snapshot. The diagnostic coupled
+	// modes update the virtual rigid state after each impulse so later contacts
+	// observe the response already supplied by earlier contacts.
 	const FVector V0 = GetPhysCOMVelocity();
 	const FVector W0 = GetPhysAngularVelocity();
-
-	for (const SWheelGroundContact& C : PendingWheelGroundContacts)
+	FVector CurrentV = V0;
+	FVector CurrentW = W0;
+	const int32 SolverMode = FMath::Clamp(
+		CVarIAmSpeedWheelContactSolverMode.GetValueOnAnyThread(), 0, 1);
+	TArray<int32, TInlineAllocator<4>> ContactOrder;
+	ContactOrder.Reserve(PendingWheelGroundContacts.Num());
+	for (int32 ContactIndex = 0; ContactIndex < PendingWheelGroundContacts.Num(); ++ContactIndex)
 	{
+		ContactOrder.Add(ContactIndex);
+	}
+	ContactOrder.Sort([&PendingWheelGroundContacts](const int32 A, const int32 B)
+	{
+		const USWheelSubBody* WheelA = PendingWheelGroundContacts[A].Wheel;
+		const USWheelSubBody* WheelB = PendingWheelGroundContacts[B].Wheel;
+		const int32 WheelIndexA = WheelA ? WheelA->Idx() : INDEX_NONE;
+		const int32 WheelIndexB = WheelB ? WheelB->Idx() : INDEX_NONE;
+		return WheelIndexA < WheelIndexB;
+	});
+	if (SolverMode == 1 && ContactOrder.Num() <= 4)
+	{
+		TArray<int32, TInlineAllocator<4>> ActiveContacts;
+		TArray<double, TInlineAllocator<4>> TargetNormalVelocityChanges;
+		bool bHasSeparatingConstraint = false;
+		for (const int32 ContactIndex : ContactOrder)
+		{
+			const SWheelGroundContact& C = PendingWheelGroundContacts[ContactIndex];
+			if (C.InvMassEff <= SMALL_NUMBER)
+			{
+				continue;
+			}
+			const FVector N = C.Normal.GetSafeNormal();
+			const float vN = FVector::DotProduct(
+				V0 + FVector::CrossProduct(W0, C.r), N);
+			const bool bMovingIntoSurface =
+				(C.bNewContact || C.bAtBumpStop) && vN < -VNDeadzone;
+			const bool bDampSeparating =
+				bLockedSeparatingDampingEnabled && C.bVelocityLocked && vN > VNDeadzone;
+			if (bDampSeparating)
+			{
+				bHasSeparatingConstraint = true;
+				break;
+			}
+			if (!bMovingIntoSurface)
+			{
+				continue;
+			}
+			ActiveContacts.Add(ContactIndex);
+			TargetNormalVelocityChanges.Add(double(gamma) * double(FMath::Min(
+				-vN, MaxInwardNormalVelocityToSolve)));
+		}
+
+		// Separating damping deliberately applies an attractive impulse and is not
+		// part of the unilateral inward-contact complementarity problem.
+		if (!bHasSeparatingConstraint && ActiveContacts.Num() > 0)
+		{
+			const int32 ConstraintCount = ActiveContacts.Num();
+			double Response[4][4] = {};
+			const double InvMass = 1.0 / double(FMath::Max(GetPhysMass(), 1.0f));
+			const FMatrix InvInertia = ComputeWorldInvInertiaTensor();
+			for (int32 Row = 0; Row < ConstraintCount; ++Row)
+			{
+				const SWheelGroundContact& ContactI =
+					PendingWheelGroundContacts[ActiveContacts[Row]];
+				const FVector NormalI = ContactI.Normal.GetSafeNormal();
+				for (int32 Column = 0; Column < ConstraintCount; ++Column)
+				{
+					const SWheelGroundContact& ContactJ =
+						PendingWheelGroundContacts[ActiveContacts[Column]];
+					const FVector NormalJ = ContactJ.Normal.GetSafeNormal();
+					const FVector DeltaAngularVelocity = InvInertia.TransformVector(
+						FVector::CrossProduct(ContactJ.r, NormalJ));
+					const FVector DeltaVelocityAtI = float(InvMass) * NormalJ
+						+ FVector::CrossProduct(DeltaAngularVelocity, ContactI.r);
+					Response[Row][Column] = double(FVector::DotProduct(
+						DeltaVelocityAtI, NormalI));
+					if (Row == Column)
+					{
+						Response[Row][Column] += double(Softness);
+					}
+				}
+			}
+
+			auto SolveSubset = [&Response, &TargetNormalVelocityChanges,
+				ConstraintCount](const uint32 ActiveMask, double OutLambda[4])
+			{
+				int32 SubsetIndices[4] = {};
+				int32 SubsetCount = 0;
+				for (int32 Index = 0; Index < ConstraintCount; ++Index)
+				{
+					OutLambda[Index] = 0.0;
+					if ((ActiveMask & (1u << Index)) != 0)
+					{
+						SubsetIndices[SubsetCount++] = Index;
+					}
+				}
+				double Augmented[4][5] = {};
+				for (int32 Row = 0; Row < SubsetCount; ++Row)
+				{
+					for (int32 Column = 0; Column < SubsetCount; ++Column)
+					{
+						Augmented[Row][Column] =
+							Response[SubsetIndices[Row]][SubsetIndices[Column]];
+					}
+					Augmented[Row][SubsetCount] =
+						TargetNormalVelocityChanges[SubsetIndices[Row]];
+				}
+				for (int32 PivotColumn = 0; PivotColumn < SubsetCount; ++PivotColumn)
+				{
+					int32 PivotRow = PivotColumn;
+					for (int32 Candidate = PivotColumn + 1; Candidate < SubsetCount; ++Candidate)
+					{
+						if (FMath::Abs(Augmented[Candidate][PivotColumn]) >
+							FMath::Abs(Augmented[PivotRow][PivotColumn]))
+						{
+							PivotRow = Candidate;
+						}
+					}
+					if (FMath::Abs(Augmented[PivotRow][PivotColumn]) <= 1.0e-12)
+					{
+						return false;
+					}
+					if (PivotRow != PivotColumn)
+					{
+						for (int32 Column = PivotColumn; Column <= SubsetCount; ++Column)
+						{
+							Swap(Augmented[PivotColumn][Column], Augmented[PivotRow][Column]);
+						}
+					}
+					const double Pivot = Augmented[PivotColumn][PivotColumn];
+					for (int32 Column = PivotColumn; Column <= SubsetCount; ++Column)
+					{
+						Augmented[PivotColumn][Column] /= Pivot;
+					}
+					for (int32 Row = 0; Row < SubsetCount; ++Row)
+					{
+						if (Row == PivotColumn)
+						{
+							continue;
+						}
+						const double Factor = Augmented[Row][PivotColumn];
+						for (int32 Column = PivotColumn; Column <= SubsetCount; ++Column)
+						{
+							Augmented[Row][Column] -= Factor * Augmented[PivotColumn][Column];
+						}
+					}
+				}
+				for (int32 Row = 0; Row < SubsetCount; ++Row)
+				{
+					OutLambda[SubsetIndices[Row]] = Augmented[Row][SubsetCount];
+				}
+				return true;
+			};
+
+			double Lambda[4] = {};
+			bool bFoundSolution = false;
+			const uint32 SubsetCount = 1u << ConstraintCount;
+			for (uint32 ActiveMask = 1; ActiveMask < SubsetCount && !bFoundSolution; ++ActiveMask)
+			{
+				double CandidateLambda[4] = {};
+				if (!SolveSubset(ActiveMask, CandidateLambda))
+				{
+					continue;
+				}
+				bool bFeasible = true;
+				for (int32 Row = 0; Row < ConstraintCount && bFeasible; ++Row)
+				{
+					if ((ActiveMask & (1u << Row)) != 0 && CandidateLambda[Row] <= 1.0e-9)
+					{
+						bFeasible = false;
+						break;
+					}
+					double AchievedChange = 0.0;
+					for (int32 Column = 0; Column < ConstraintCount; ++Column)
+					{
+						AchievedChange += Response[Row][Column] * CandidateLambda[Column];
+					}
+					if ((ActiveMask & (1u << Row)) == 0 &&
+						AchievedChange + 1.0e-7 < TargetNormalVelocityChanges[Row])
+					{
+						bFeasible = false;
+					}
+				}
+				if (bFeasible)
+				{
+					for (int32 Index = 0; Index < ConstraintCount; ++Index)
+					{
+						Lambda[Index] = CandidateLambda[Index];
+					}
+					bFoundSolution = true;
+				}
+			}
+
+			if (bFoundSolution)
+			{
+				for (int32 Index = 0; Index < ConstraintCount; ++Index)
+				{
+					const SWheelGroundContact& C =
+						PendingWheelGroundContacts[ActiveContacts[Index]];
+					const FVector Impulse = float(Lambda[Index]) * C.Normal.GetSafeNormal();
+					if (Impulse.SizeSquared() < JDeadzone * JDeadzone)
+					{
+						continue;
+					}
+					AddPhysImpulseAtPoint(Impulse, C.WorldPos);
+				}
+				PendingWheelGroundContacts.Reset();
+				return;
+			}
+		}
+	}
+
+	for (const int32 ContactIndex : ContactOrder)
+	{
+		const SWheelGroundContact& C = PendingWheelGroundContacts[ContactIndex];
 		if (C.InvMassEff <= SMALL_NUMBER) continue;
 
 		const FVector N = C.Normal.GetSafeNormal();
 
-		const FVector vContact = V0 + FVector::CrossProduct(W0, C.r);
+		const FVector& SolverV = SolverMode == 0 ? V0 : CurrentV;
+		const FVector& SolverW = SolverMode == 0 ? W0 : CurrentW;
+		const FVector vContact = SolverV + FVector::CrossProduct(SolverW, C.r);
 		const float vN = FVector::DotProduct(vContact, N);
 
 		const bool bMovingIntoSurface =
@@ -130,7 +386,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 		if (denom <= SMALL_NUMBER) continue;
 
 		const float NormalVelocityToSolve = bMovingIntoSurface
-			? -vN
+			? FMath::Min(-vN, MaxInwardNormalVelocityToSolve)
 			: FMath::Min(vN, LockedSeparatingMaxNormalVelocity);
 		const float SolverGamma = bMovingIntoSurface ? gamma : LockedSeparatingGamma;
 		float jn = SolverGamma * NormalVelocityToSolve / denom;
@@ -143,13 +399,19 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 			continue;
 
 		AddPhysImpulseAtPoint(Impulse, C.WorldPos);
+		if (SolverMode != 0)
+		{
+			CurrentV = GetPhysCOMVelocity();
+			CurrentW = GetPhysAngularVelocity();
+		}
 
 #if !(UE_BUILD_SHIPPING)
 		if (CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
 		{
 			UE_LOG(LogTemp, Log,
-				TEXT("[WheelContactSolver] Mode=%s dt=%.5f Tau=%.5f Gamma=%.4f vN=%.3f SolvedVN=%.3f SpringDisp=%.3f Locked=%d InvMassEff=%.6f Softness=%.6f Impulse=%s Pos=%s Normal=%s"),
+				TEXT("[WheelContactSolver] Mode=%s Coupling=%d dt=%.5f Tau=%.5f Gamma=%.4f vN=%.3f SolvedVN=%.3f SpringDisp=%.3f Locked=%d InvMassEff=%.6f Softness=%.6f Impulse=%s Pos=%s Normal=%s"),
 				bMovingIntoSurface ? TEXT("Inward") : TEXT("Separating"),
+				SolverMode,
 				dt,
 				bMovingIntoSurface ? NormalVelTimeConstant : LockedSeparatingNormalVelTimeConstant,
 				SolverGamma,
