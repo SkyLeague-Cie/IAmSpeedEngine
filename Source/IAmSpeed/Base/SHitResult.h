@@ -21,6 +21,7 @@ namespace Speed
 		FVector ImpactPoint = FVector::ZeroVector; // point of impact in absolute space, only relevant if bHit is true. For a blocking hit, this is the point where the two shapes would touch. For an overlapping hit, this is the point where the two shapes are the most overlapped (for example, if the sphere starts inside the box and goes outside, this would be the point where the sphere is the deepest inside the box). Note that for an overlapping hit, this point may not be on the surface of either shape.
 		FVector ImpactNormal = FVector::ZeroVector; // normal at the impact point, pointing from other into THIS object (box, sphere) that asked this SHitResult
 		float TOI = 0.0; // time of impact
+		int32 FaceIndex = INDEX_NONE; // triangle/face reported by Unreal for static-world queries
 
 		TWeakObjectPtr<UPrimitiveComponent> Component = nullptr; // The component that was hit, useful for applying damage or other effects. Only relevant if bHit is true and bBlocking is true (blocking hit).
 		TWeakObjectPtr<USSubBody> SubBody = nullptr; // The subbody that was hit, useful for applying damage or other effects. Only relevant if bHit is true and bBlocking is true (blocking hit).
@@ -37,6 +38,7 @@ namespace Speed
 			ret.Location = UnrealHit.Location;
 			ret.bStartPenetrating = UnrealHit.bStartPenetrating;
 			ret.PenetrationDepth = UnrealHit.PenetrationDepth;
+			ret.FaceIndex = UnrealHit.FaceIndex;
 			ret.FrameTag = InFrameTag;
 			return ret;
 		}

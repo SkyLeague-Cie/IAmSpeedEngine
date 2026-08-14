@@ -3986,6 +3986,12 @@ FMatrix UBoxSubBody::ComputeWorldInvInertiaTensor() const
     return Iworld;
 }
 
+FMatrix UBoxSubBody::ComputeChassisLocalInvInertiaTensor() const
+{
+    const FMatrix HitboxToChassis = FRotationMatrix::Make(GetLocalRotation().Rotator());
+    return HitboxToChassis * InvInertiaLocal * HitboxToChassis.GetTransposed();
+}
+
 
 #if WITH_EDITOR
 void UBoxSubBody::SetShowFlags(const FEngineShowFlags& InShowFlags)

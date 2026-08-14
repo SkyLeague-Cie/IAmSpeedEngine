@@ -16,6 +16,8 @@ struct SWheelGroundContact
 	float   InvMassEff = 0.f;     // inverse effective mass
 	float   SpringDisplacement = 0.f; // positive when compressed, negative when over-extended
 	bool    bVelocityLocked = false; // true after the wheel has gone through its first contact rebound
+	bool    bNewContact = false;
+	bool    bAtBumpStop = false;
 };
 
 /*
@@ -33,6 +35,7 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 
 	// overload this function to update the on-ground states of the wheel sub-bodies
 	virtual void UpdateWheelOnGroundStates() = 0;
+	void NotifyWheelOnGroundStateChanged();
 
 	// overload this function to return a value between -1 and 1 representing the throttle input for the current frame
 	virtual float GetPhysThrottleInput() const = 0;
@@ -42,7 +45,19 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 	virtual float GetPhysSteeringInput() const = 0;
 
 	virtual void RegisterWheelGroundContact(const SWheelGroundContact& Contact) = 0;
+	// Vehicle presets may replace the per-wheel suspension law while retaining
+	// IAmSpeed's geometry, ordering, force application, and contact solver.
+	virtual bool TryComputeWheelSuspensionForceOverride(
+		const USWheelSubBody& Wheel,
+		float LastDisplacement,
+		float CurrentDisplacement,
+		float NormalVelocity,
+		float& OutForce) const;
 	virtual void ResolveGroupedWheelGroundContacts(const float& delta);
+	virtual bool ProjectWheelSupportNonPenetration();
+	virtual bool TryProjectCanonicalWheelSupportPose();
+	virtual bool CanBypassCanonicalSupportContactWarmup() const { return false; }
+	virtual bool CanPreserveCanonicalSupportNormalRotation() const { return false; }
 
 	// =========== Wheel functions ===========
 	// overload this function to return every wheel sub-bodies owned by this component (e.g. for a car body, this would be the 4 wheel sub-bodies)
@@ -61,8 +76,17 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 
 	virtual ~ISpeedWheeledComponent() = default;
 protected:
+	void BeginDeferredWheelGroundStateUpdate();
+	void EndDeferredWheelGroundStateUpdate();
 	virtual TArray<SWheelGroundContact>& GetPendingWheelContacts() = 0;
+	// Negative means that the diagnostic CVar is disabled and the vehicle preset
+	// remains authoritative.
+	static float GetWheelContactNormalVelocityTimeConstantOverride();
+	virtual float GetWheelContactNormalVelocityTimeConstant() const;
+	virtual float GetWheelContactNormalVelocityDeadzone() const;
+	virtual float GetWheelContactMaxInwardNormalVelocityToSolve() const;
 	static FVector QuantizeUnitNormal(const FVector& n, float q = 1e-3f);
 	// overload this function for the component to perform any necessary updates after the physics state has been updated
 	void PostPhysicsUpdatePrv(const float& delta) override;
+	bool bDeferWheelGroundStateUpdate = false;
 };

@@ -44,6 +44,8 @@ public:
     void SetOnGround(const bool& on_ground);
     void SetIsJumping(const uint8 NbFrames);
     uint8 IsJumping() const;
+    void SetJumpUnilateralSupport(bool bEnabled);
+    bool HasJumpUnilateralSupport() const;
     uint8 GetConsecutiveGroundFrames() const;
     void SetConsecutiveGroundFrames(uint8 Frames);
 
@@ -65,9 +67,13 @@ public:
     void UpdatePhysicsState(const float& delta);
 
     // --- suspension methods ---
-    void UpdateSuspension(const float& delta);
+    virtual void UpdateSuspension(const float& delta);
     // sweep for suspension
-    void SweepSuspension(const float& delta);
+    virtual void SweepSuspension(const float& delta);
+	bool ProbeSuspensionOnGround(SHitResult& OutHit, float Delta) const;
+	void GetSuspensionSweepSegment(float Delta, FVector& OutStart, FVector& OutEnd) const;
+	virtual bool SweepSuspensionAlongNormal(
+		const FVector& Normal, float SearchDistance, float Delta, SHitResult& OutHit) const;
 
     // Utils methods
     FVector WorldPos() const;
@@ -75,9 +81,12 @@ public:
     FVector WorldPosFromCarTransform(const FTransform& CarTransform) const;
     FVector GetSuspensionDirectionWS() const;
     float Radius() const;
+    float ChaosEffectiveRadius() const;
+    const UChaosVehicleWheel* GetChaosWheelConfiguration() const { return ChaosWheel; }
     float AngularVelocity() const;
     void SetAngularVelocity(const float& InOmega);
     float SpringDisplacement() const; // current spring displacement (positive when compressed)
+    float ContactSpringDisplacement() const;
     float GetLastDisplacement() const;
     void SetLastDisplacement(const float& displacement);
     float SpringLength() const;
@@ -85,18 +94,36 @@ public:
     float SuspensionRestLength() const;
     float SuspensionMaxRaise() const;
     float SuspensionMaxDrop() const;
+    // Vehicle layers may replace serialized Chaos travel before SetupVehicle.
+    // IAmSpeed keeps no game-specific policy for choosing these limits.
+    void ConfigureSuspensionTravel(float MaxRaise, float MaxDrop);
+    bool HasConfiguredSuspensionTravel() const;
+    bool IsAtSuspensionBumpStop() const;
     float SuspensionSpringRateCm() const;
+    float StaticSpringCompression() const;
     float SuspensionCompressionDamping() const;
     float SuspensionReboundDamping() const;
     bool UsesDirectSuspensionDamping() const;
     bool ClampsSuspensionForceToPositive() const;
     void ConfigureSuspensionForceModel(float SpringRateCm, float CompressionDamping,
 		float ReboundDamping, bool bClampForceToPositive);
+    void SetUseIncreasingDisplacementAsCompression(bool bEnabled);
+    void SetClampPositiveUntilFirstCompression(bool bEnabled);
     void SetUseEffectiveSuspensionSweepRadius(bool bEnabled);
+    void SetUseCompressionCrossingContactImpulse(bool bEnabled);
+	void SetGroundForceApplicationMode(uint8 Mode);
+	void SetContactImpulseApplicationMode(uint8 Mode);
+	FVector GetSuspensionForceApplicationPoint() const;
+	FVector GetContactImpulseApplicationPoint() const;
+    void ConfigureSuspensionForceBehavior(float StiffnessScale,
+        float StiffnessReferenceDisplacement,
+        float PreRestCompressionDampingScale, bool bClampNegativeDisplacement,
+        bool bDisableBumpStopForce);
     float GetSuspensionDampingReboundRatio() const;
     float GetSuspensionDampingCompressionRatio() const;
     float GetSuspensionForce() const;
     bool IsContactVelocityLocked() const;
+    bool WasOnGroundPreviousFrame() const;
     float GetSuspensionOffset() const;
     FVector GetHitContactNormal() const;
     FVector GetHitContactPoint() const;
@@ -111,10 +138,10 @@ public:
 	void SetLocalOffset(const FVector& InLocalOffset);
 
     void HandleTimers();
-private:
-    bool SweepSuspensionOnGround(SHitResult& OutHit, const float& delta);
-    bool SweepSuspensionOnSpheres(SHitResult& OutHit, const float& delta);
-    bool SweepSuspensionOnBoxes(SHitResult& OutHit, const float& delta);
+protected:
+    virtual bool SweepSuspensionOnGround(SHitResult& OutHit, const float& delta);
+    virtual bool SweepSuspensionOnSpheres(SHitResult& OutHit, const float& delta);
+    virtual bool SweepSuspensionOnBoxes(SHitResult& OutHit, const float& delta);
 
     // Predicts spring displacement / wheel travel
     float PredictNextDisplacement(const float& Delta) const;
@@ -122,7 +149,7 @@ private:
     void UpdateContactVelocityLock();
     void ResetContactVelocityLock();
 
-private:
+protected:
     ISpeedWheeledComponent* WheelComponent = nullptr;
 
     // --- Wheel configuration ---
@@ -143,14 +170,27 @@ private:
 
     bool bUseSuspensionForceModelOverride = false;
     bool bClampSuspensionForceToPositive = false;
+    bool bClampPositiveUntilFirstCompression = false;
     bool bUseEffectiveSuspensionSweepRadius = false;
+    bool bUseIncreasingDisplacementAsCompression = false;
+    bool bUseCompressionCrossingContactImpulse = false;
+	uint8 GroundForceApplicationMode = 0;
+	uint8 ContactImpulseApplicationMode = 0;
+    float SuspensionStiffnessForceScale = 1.0f;
+    float SuspensionStiffnessReferenceDisplacement = 0.0f;
+    float SuspensionPreRestCompressionDampingScale = -1.0f;
+    bool bClampNegativeSuspensionDisplacement = false;
+    bool bDisableSuspensionBumpStopForce = false;
     float SuspensionSpringRateCmOverride = 0.0f;
     float SuspensionCompressionDampingOverride = 0.0f;
     float SuspensionReboundDampingOverride = 0.0f;
+    float SuspensionMaxRaiseOverride = -1.0f;
+    float SuspensionMaxDropOverride = -1.0f;
 
     // --- State variables ---
     float SuspensionForce = 0.0; // suspension force to apply this frame
     uint8 bIsJumping = 0; // 0 = not jumping else countdown of frames before wheel is in max drop position
+    bool bJumpUnilateralSupport = false;
     uint8 ConsecutiveGroundFrames = 0; // saturated to 31 for compact gameplay replication
     float SteeringAngle = 0.0f; // radians
     float Omega = 0.0f; // current angular velocity of the wheel (rad/s)
@@ -159,6 +199,7 @@ private:
 
     bool bCountedGroundFrame = false;
     bool bContactVelocityLocked = false;
+    bool bCrossedIntoCompressionThisFrame = false;
 
     FVector ForwardAxis = FVector::ForwardVector;
     FVector RightAxis = FVector::RightVector;

@@ -61,6 +61,7 @@ public:
     FVector GetCOM() const;
 	FVector GetBoxExtent() const;
 	void SetBoxExtent(const FVector& InBoxExtent);
+    FMatrix ComputeChassisLocalInvInertiaTensor() const;
     FMatrix ComputeWorldInvInertiaTensor() const override;
 
     FPrimitiveSceneProxy* CreateSceneProxy() override;

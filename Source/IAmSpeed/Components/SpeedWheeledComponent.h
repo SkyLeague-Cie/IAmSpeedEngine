@@ -166,10 +166,14 @@ public:
 	virtual void RecoverWheelState();
 	// register wheel state for network replication
 	virtual void RegisterWheelState();
-	void ResetWheelTransientStateForCurrentPose();
+	void ResetWheelTransientStateForCurrentPose(bool bUseGroundContactGeometry = false);
 	float GetSuspensionOffset(int WheelIndex) override;
 
 	bool CanMove() const;
+	void RequestCanonicalSupportStartupInitialization()
+	{
+		bCanonicalSupportStartupInitializationRequested = true;
+	}
 	bool CountdownHasStarted() const;
 	void StartConfrontationInSec(const float& TimeSec);
 	void StartConfrontationLocal(const float& TimeSec);
@@ -230,6 +234,8 @@ protected:
 	void SetEngineFPS(const unsigned int& FPS);
 	float GetEngineFPS() const;
 	int32 GetSinceCanMoveFrame() const;
+	bool CanBypassCanonicalSupportContactWarmup() const override;
+	bool CanPreserveCanonicalSupportNormalRotation() const override;
 	unsigned int NbFramesSinceCanMove() const;
 	// Get the current frame number for this component (e.g. to be used for network replication)
 	unsigned int GetCurrentFrame() const;
@@ -261,6 +267,9 @@ protected:
 	virtual void HandleRestForce();
 	virtual void UpdateAutoRecoverState();
 	virtual void HandleAngularDamping(const float& delta);
+	// Vehicle presets may snapshot the rigid/wheel state immediately before the
+	// suspension update without replacing the component tick ordering.
+	virtual void BeforeSuspensionUpdate(float DeltaTime) {}
 	virtual void HandlePhysicsAutoRecover();
 	virtual void HandleAcceleration();
 	virtual void HandleSteering(const float& delta);
@@ -276,6 +285,14 @@ protected:
 	virtual bool HasDriveInputForGroundFriction() const;
 	virtual bool IsHandbrakingForWheelFriction() const;
 	virtual bool IsHandbrakingForwardForWheelFriction() const;
+	virtual bool TryApplyWheelFramePassiveLongitudinalFriction(
+		float DeltaTime,
+		float MaxTotalDeceleration);
+	virtual bool TryApplyCustomWheelFrameLateralFriction(float DeltaTime);
+	virtual FVector GetWheelFrictionApplicationPoint(
+		const USWheelSubBody& Wheel,
+		const FVector& ContactPoint,
+		const FVector& SurfaceNormal) const;
 
 	virtual void ApplyAccelKinematicsConstraint(const float& delta);
 	virtual void TagStateHistoryProxyRole();
@@ -283,6 +300,7 @@ protected:
 	virtual void QuantizePhysicalState();
 
 	TArray<SWheelGroundContact>& GetPendingWheelContacts() override;
+	float GetWheelContactNormalVelocityTimeConstant() const override;
 
 	void SetGroundState();
 	void SetAirState();
@@ -360,6 +378,11 @@ public:
 	// Friction applied (in cm/s^2) when the component is on the ground (Forward, Side, Up)
 	UPROPERTY(BlueprintReadWrite, Category = Physics, EditDefaultsOnly)
 	FVector GroundFriction = FVector(510.0, 6120.0, 0.0);
+	// Response time, in seconds, used to absorb inward normal velocity on a new
+	// wheel contact. Vehicle presets may tune it independently of physics rate.
+	UPROPERTY(BlueprintReadWrite, Category = Physics, EditDefaultsOnly,
+		meta = (ClampMin = "0.000001", UIMin = "0.000001", Units = "s"))
+	float WheelContactNormalVelocityTimeConstant = 0.0075f;
 	// Ground angular damping coefficient to dampen angular velocity when car is on the ground (in %)
 	UPROPERTY(BlueprintReadWrite, Category = Physics, EditDefaultsOnly,
 		meta = (ClampMin = "0.0", ClampMax = "100.0", UIMin = "0.0", UIMax = "100.0"))
@@ -433,6 +456,16 @@ public:
 	// Lateral friction retained at zero steering input, blended to full authority as steering increases.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameZeroSteerLateralFrictionScale = 1.0f;
+	// Optional tire self-alignment under high lateral slip with no steering.
+	// Zero disables it so IAmSpeed retains a neutral generic default.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameUnsteeredAligningYawMaxRate = 0.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameUnsteeredAligningYawFullSlipSpeed = 600.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameUnsteeredAligningYawMinSlipSpeed = 0.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameUnsteeredAligningYawTimeConstant = 0.025f;
 	// Rear lateral friction at full normal steering, blended from one by steering input magnitude.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameSteeringRearLateralFrictionScale = 1.0f;
@@ -648,6 +681,8 @@ private:
 	uint8 NetCorr_StableNFrames = 0;
 
 	int32 SinceCanMoveFrame = INDEX_NONE;
+	bool bCanonicalSupportStartupInitializationRequested = false;
+	bool bCanonicalSupportStartupPoseConfirmed = false;
 	bool bSimTimelineWasCanMove = false;
 	bool bSimTimelineWasGrounded = false;
 	bool bSimTimelineHasGroundState = false;
