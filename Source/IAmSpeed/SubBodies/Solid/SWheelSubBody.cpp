@@ -59,6 +59,18 @@ static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionJumpSweepRetractionSpe
 	TEXT("Interpolation speed used to extend the sweep of a jumping wheel toward full air length."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionJumpStateAffectsAirLength(
+	TEXT("p.SkyLeague.Suspension.JumpStateAffectsAirLength"),
+	1,
+	TEXT("Diagnostic control. When zero, SetIsJumping remains logical state but no longer changes ComputeNextAirLength."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionJumpStateClampsNegativeForce(
+	TEXT("p.SkyLeague.Suspension.JumpStateClampsNegativeForce"),
+	1,
+	TEXT("Diagnostic control. When zero, jumping/constraint-release state no longer clamps signed suspension force."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionRestingForceScale(
 	TEXT("p.SkyLeague.Suspension.RestingForceScale"),
 	0.0f,
@@ -415,7 +427,7 @@ void USWheelSubBody::SweepSuspension(const float& delta)
         SetOnGround(false);
         if (WheelComponent)
         {
-            WheelComponent->UpdateWheelOnGroundStates();
+            WheelComponent->NotifyWheelOnGroundStateChanged();
         }
     }
 }
@@ -458,6 +470,59 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
     return true;
 }
 
+void USWheelSubBody::GetSuspensionSweepSegment(
+    const float Delta, FVector& OutStart, FVector& OutEnd) const
+{
+    const FTransform ChassisTM(
+        ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+    const FVector CarUp = ChassisTM.GetUnitAxis(EAxis::Z);
+    const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
+    OutStart = WorldRest + SuspensionMaxRaise() * CarUp;
+    const float NewDisplacement = PredictNextDisplacement(Delta);
+    OutEnd = WorldPos()
+        + (NewDisplacement - SpringDisplacement() - CollisionMargin()) * CarUp;
+}
+
+bool USWheelSubBody::ProbeSuspensionOnGround(
+    SHitResult& OutHit, const float Delta) const
+{
+    UWorld* World = GetWorld();
+    if (!World || !ParentComponent)
+    {
+        return false;
+    }
+
+    FVector Start = FVector::ZeroVector;
+    FVector End = FVector::ZeroVector;
+    GetSuspensionSweepSegment(Delta, Start, End);
+
+    FCollisionQueryParams Params(NAME_None, false);
+    Params.bReturnFaceIndex = true;
+    Params.bReturnPhysicalMaterial = true;
+    if (const AActor* VehicleOwner = GetOwner())
+    {
+        Params.AddIgnoredActor(VehicleOwner);
+    }
+
+    FHitResult UnrealHit;
+    if (!World->SweepSingleByChannel(
+        UnrealHit,
+        Start,
+        End,
+        Kinematics.Rotation,
+        GetCollisionChannel(),
+        GetCollisionShape(),
+        Params,
+        GetResponseParams()))
+    {
+        return false;
+    }
+
+    OutHit = SHitResult::FromUnrealHit(UnrealHit, Delta);
+    OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
+    return true;
+}
+
 bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& delta)
 {
     UWorld* World = GetWorld();
@@ -469,35 +534,20 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     FTransform ChassisTM(ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
     FVector WorldRestingPos = ChassisTM.TransformPosition(GetLocalOffset());
     FVector CarUpVector = ChassisTM.GetUnitAxis(EAxis::Z);
-    FVector Start = WorldRestingPos + SuspensionMaxRaise() * CarUpVector;
+    FVector Start = FVector::ZeroVector;
+    FVector End = FVector::ZeroVector;
+    GetSuspensionSweepSegment(delta, Start, End);
     float NewSpringDisplacement = PredictNextDisplacement(delta); // if wheel will be in air next frame
     SHitResult OldCurrentHit = CurrentHit;
-    FVector End = CurrentPos + (NewSpringDisplacement - SpringDisplacement() - CollisionMargin()) * CarUpVector;
     // auto Sphere = SSphere(WorldPos(), Radius(), FVector::ZeroVector, FVector::ZeroVector);
     // Sphere.DrawDebug(GetWorld());
 
-    FCollisionQueryParams Params(NAME_None, false);
-    Params.bReturnFaceIndex = true;
-    Params.bReturnPhysicalMaterial = true;
-    if (const AActor* VehicleOwner = GetOwner())
-    {
-        Params.AddIgnoredActor(VehicleOwner);
-    }
     bool ret = false;
-    FHitResult UnrealHit;
-    const bool bHasGroundHit = World->SweepSingleByChannel(
-		UnrealHit,
-		Start,
-		End,
-		Kinematics.Rotation,
-		GetCollisionChannel(),
-		GetCollisionShape(),
-		Params,
-		GetResponseParams());
+    SHitResult ProbeHit;
+    const bool bHasGroundHit = ProbeSuspensionOnGround(ProbeHit, delta);
     if (bHasGroundHit)
     {
-        OutHit = SHitResult::FromUnrealHit(UnrealHit, delta);
-        OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
+        OutHit = ProbeHit;
         SetOnGround(true);
         ret = true;
         auto OldNormal = OldCurrentHit.ImpactNormal;
@@ -540,7 +590,7 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     }
     if (WheelComponent)
     {
-        WheelComponent->UpdateWheelOnGroundStates();
+        WheelComponent->NotifyWheelOnGroundStateChanged();
     }
     return ret;
 }
@@ -612,7 +662,7 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
     SetOnGround(true);
     if (WheelComponent)
     {
-        WheelComponent->UpdateWheelOnGroundStates();
+        WheelComponent->NotifyWheelOnGroundStateChanged();
     }
     // ParentComponent->SetHadImpactThisFrame(true);
 
@@ -685,7 +735,7 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
     SetOnGround(true);
     if (WheelComponent)
     {
-        WheelComponent->UpdateWheelOnGroundStates();
+        WheelComponent->NotifyWheelOnGroundStateChanged();
     }
     // ParentComponent->SetHadImpactThisFrame(true);
 
@@ -762,7 +812,10 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         }*/
         // A jumping wheel may keep a sweep hit while its suspension extends,
         // but it must no longer pull the chassis back toward that support.
-        const bool bClampPositive = IsJumping() || HasJumpUnilateralSupport() || ClampsSuspensionForceToPositive() ||
+        const bool bClampJumpForce =
+            CVarSkyLeagueSuspensionJumpStateClampsNegativeForce.GetValueOnAnyThread() != 0 &&
+            (IsJumping() || HasJumpUnilateralSupport());
+        const bool bClampPositive = bClampJumpForce || ClampsSuspensionForceToPositive() ||
             CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0;
         SuspensionForce = FMath::Clamp(SuspensionForce,
             bClampPositive ? 0.0f : -SuspensionMaxValue, SuspensionMaxValue);
@@ -973,7 +1026,8 @@ float USWheelSubBody::ComputeNextAirLength(const float& DeltaTime) const
 {
     auto TargetPos = MaxLength() + SuspensionMaxDrop() + Radius();
     auto CurrentPos = TargetPos - SpringDisplacement() - SuspensionMaxDrop();
-    if (!IsJumping())
+    if (!IsJumping() ||
+        CVarSkyLeagueSuspensionJumpStateAffectsAirLength.GetValueOnAnyThread() == 0)
     {
         return TargetPos;
     }

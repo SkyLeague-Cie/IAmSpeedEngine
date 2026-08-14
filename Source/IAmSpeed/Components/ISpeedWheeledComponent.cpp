@@ -74,9 +74,88 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactSolverMode(
 	TEXT("Grouped-wheel solver: 0 keeps the legacy shared snapshot, 1 solves inward contacts as one deterministic block."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportTransactionalProjection(
+	TEXT("p.IAmSpeed.WheelSupport.TransactionalProjection"),
+	1,
+	TEXT("Probes all static ground supports, locally reacquires established patches, projects the coupled support set, then publishes one final wheel mask."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionMaxGap(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionMaxGap"),
+	5.0f,
+	TEXT("Maximum local same-surface separation, in cm, admitted by support projection."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionNormalDot(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionNormalDot"),
+	0.995f,
+	TEXT("Minimum old/new support-normal dot for same-surface projection."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionMinGravityAlignment(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionMinGravityAlignment"),
+	0.9f,
+	TEXT("Minimum support-normal alignment with world up. Near-vertical wall and gutter retention remains on the established sweep path."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionPatchTravelSlack(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionPatchTravelSlack"),
+	5.0f,
+	TEXT("Tangential patch-travel tolerance, in cm, added to the rigid-point displacement predicted for one physics step."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionPasses(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionPasses"),
+	12,
+	TEXT("Bounded deterministic Gauss-Seidel passes used by support projection."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionRotationLength(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionRotationLength"),
+	50.0f,
+	TEXT("Characteristic length, in cm, balancing translation and rotation in support projection."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionMaxRotationDegrees"),
+	10.0f,
+	TEXT("Maximum total support-projection rotation in degrees."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionReachSkin(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionReachSkin"),
+	0.05f,
+	TEXT("Small inward reach margin, in cm, used to make the projected pose robust to sweep boundary tolerance."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionDebug(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionDebug"),
+	0,
+	TEXT("Logs established-support patch admission and pose projection when non-zero."),
+	ECVF_Default);
+
 float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstantOverride()
 {
 	return CVarIAmSpeedWheelContactNormalVelTimeConstant.GetValueOnAnyThread();
+}
+
+void ISpeedWheeledComponent::NotifyWheelOnGroundStateChanged()
+{
+	if (!bDeferWheelGroundStateUpdate)
+	{
+		UpdateWheelOnGroundStates();
+	}
+}
+
+void ISpeedWheeledComponent::BeginDeferredWheelGroundStateUpdate()
+{
+	bDeferWheelGroundStateUpdate = true;
+}
+
+void ISpeedWheeledComponent::EndDeferredWheelGroundStateUpdate()
+{
+	bDeferWheelGroundStateUpdate = false;
+	UpdateWheelOnGroundStates();
 }
 
 float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstant() const
@@ -685,12 +764,300 @@ bool ISpeedWheeledComponent::WheelIdxIsOnGround(const int32& WheelIdx) const
 
 void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 {
+	TArray<TPair<USWheelSubBody*, SHitResult>, TInlineAllocator<4>> EstablishedSupports;
+	bool bDeferredWheelGroundState = false;
+	const bool bTransactionalProjection =
+		CVarIAmSpeedWheelSupportTransactionalProjection.GetValueOnAnyThread() != 0;
+	if (bTransactionalProjection)
+	{
+		struct FGroundProbe
+		{
+			USWheelSubBody* Wheel = nullptr;
+			bool bWasGrounded = false;
+			SHitResult PreviousHit;
+			bool bHasProbeHit = false;
+			SHitResult ProbeHit;
+		};
+
+		TArray<FGroundProbe, TInlineAllocator<4>> Probes;
+		Probes.Reserve(GetWheelSubBodies().Num());
+		for (USWheelSubBody* Wheel : GetWheelSubBodies())
+		{
+			if (!Wheel)
+			{
+				continue;
+			}
+			FGroundProbe& Probe = Probes.AddDefaulted_GetRef();
+			Probe.Wheel = Wheel;
+			Probe.bWasGrounded = Wheel->IsOnGround();
+			Probe.PreviousHit = Wheel->GetHit();
+			Probe.bHasProbeHit = Wheel->ProbeSuspensionOnGround(Probe.ProbeHit, delta);
+		}
+
+		TArray<int32, TInlineAllocator<4>> EstablishedMisses;
+		const float MaxGap = FMath::Max(
+			0.0f, CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread());
+		const float NormalDot = FMath::Clamp(
+			CVarIAmSpeedWheelSupportProjectionNormalDot.GetValueOnAnyThread(), -1.0f, 1.0f);
+		const float MinGravityAlignment = FMath::Clamp(
+			CVarIAmSpeedWheelSupportProjectionMinGravityAlignment.GetValueOnAnyThread(), -1.0f, 1.0f);
+		const float PatchTravelSlack = FMath::Max(0.0f,
+			CVarIAmSpeedWheelSupportProjectionPatchTravelSlack.GetValueOnAnyThread());
+		for (int32 Index = 0; Index < Probes.Num(); ++Index)
+		{
+			const FGroundProbe& Probe = Probes[Index];
+			USWheelSubBody* Wheel = Probe.Wheel;
+			UPrimitiveComponent* PreviousSurface = Probe.PreviousHit.Component.Get();
+			const FVector PreviousNormal = Probe.PreviousHit.ImpactNormal.GetSafeNormal();
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0 &&
+				Probe.bWasGrounded && !Probe.bHasProbeHit)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[WheelSupportProjectionCandidate] Frame=%d Wheel=%d Surface=%d Static=%d NormalZ=%.3f Locked=%d Jump=%d Unilateral=%d"),
+					NumFrame(), Index, PreviousSurface ? 1 : 0,
+					PreviousSurface && PreviousSurface->Mobility == EComponentMobility::Static ? 1 : 0,
+					PreviousNormal.Z, Wheel->IsContactVelocityLocked() ? 1 : 0,
+					Wheel->IsJumping() ? 1 : 0,
+					Wheel->HasJumpUnilateralSupport() ? 1 : 0);
+			}
+#endif
+			if (!Probe.bWasGrounded || Probe.bHasProbeHit || !PreviousSurface ||
+				PreviousSurface->Mobility != EComponentMobility::Static ||
+				PreviousNormal.IsNearlyZero() || PreviousNormal.Z < MinGravityAlignment ||
+				!Wheel->IsContactVelocityLocked() ||
+				Wheel->IsJumping() || Wheel->HasJumpUnilateralSupport())
+			{
+				continue;
+			}
+
+			// Reacquire the patch locally under this wheel. Another wheel hitting the
+			// same stadium component is not evidence that this historical plane still
+			// exists here (notably across gutter seams).
+			SHitResult LocalPatchHit;
+			const bool bHasLocalPatch = Wheel->SweepSuspensionAlongNormal(
+				PreviousNormal, MaxGap, delta, LocalPatchHit);
+			const FVector LocalNormal = LocalPatchHit.ImpactNormal.GetSafeNormal();
+			const FVector PatchTravel = LocalPatchHit.ImpactPoint - Probe.PreviousHit.ImpactPoint;
+			const float TangentialPatchTravel = FVector::VectorPlaneProject(
+				PatchTravel, PreviousNormal).Size();
+			const float PredictedPatchTravel =
+				GetPhysVelocityAtPoint(Probe.PreviousHit.ImpactPoint).Size() * delta;
+			const float MaxPatchTravel = PredictedPatchTravel + PatchTravelSlack;
+			const bool bSameLocalPatch = bHasLocalPatch &&
+				LocalPatchHit.Component.Get() == PreviousSurface &&
+				!LocalNormal.IsNearlyZero() &&
+				FVector::DotProduct(LocalNormal, PreviousNormal) >= NormalDot &&
+				TangentialPatchTravel <= MaxPatchTravel;
+			if (!bSameLocalPatch)
+			{
+#if !(UE_BUILD_SHIPPING)
+				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+				{
+					UE_LOG(LogTemp, Log,
+						TEXT("[WheelSupportPatchRejected] Frame=%d Wheel=%d LocalHit=%d SameComponent=%d NormalDot=%.5f TangentialTravel=%.3f MaxTravel=%.3f PreviousFace=%d LocalFace=%d PreviousPoint=%s LocalPoint=%s"),
+						NumFrame(), Index, bHasLocalPatch ? 1 : 0,
+						bHasLocalPatch && LocalPatchHit.Component.Get() == PreviousSurface ? 1 : 0,
+						bHasLocalPatch ? FVector::DotProduct(LocalNormal, PreviousNormal) : -1.0f,
+						TangentialPatchTravel, MaxPatchTravel,
+						Probe.PreviousHit.FaceIndex, LocalPatchHit.FaceIndex,
+						*Probe.PreviousHit.ImpactPoint.ToString(),
+						*LocalPatchHit.ImpactPoint.ToString());
+				}
+#endif
+				continue;
+			}
+
+			FVector SweepStart = FVector::ZeroVector;
+			FVector SweepEnd = FVector::ZeroVector;
+			Wheel->GetSuspensionSweepSegment(delta, SweepStart, SweepEnd);
+			const float SweepRadius = Wheel->GetCollisionShape().GetSphereRadius();
+			const float ReachGap = FVector::DotProduct(
+				SweepEnd - LocalPatchHit.ImpactPoint, LocalNormal) - SweepRadius;
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[WheelSupportProjectionCandidateResult] Frame=%d Wheel=%d LocalPatch=1 Gap=%.4f PreviousFace=%d LocalFace=%d NormalDot=%.5f TangentialTravel=%.3f MaxTravel=%.3f"),
+					NumFrame(), Index, ReachGap, Probe.PreviousHit.FaceIndex,
+					LocalPatchHit.FaceIndex, FVector::DotProduct(LocalNormal, PreviousNormal),
+					TangentialPatchTravel, MaxPatchTravel);
+			}
+#endif
+			if (ReachGap <= MaxGap && ReachGap >= -MaxGap)
+			{
+				EstablishedSupports.Emplace(Wheel, LocalPatchHit);
+				Probes[Index].PreviousHit = LocalPatchHit;
+				if (ReachGap > 0.01f)
+				{
+					EstablishedMisses.Add(Index);
+				}
+			}
+		}
+
+		if (EstablishedMisses.Num() > 0)
+		{
+			const FVector OriginalCOM = GetPhysCOM();
+			const FQuat OriginalRotation = GetPhysRotation();
+			const float RotationLength = FMath::Max(1.0f,
+				CVarIAmSpeedWheelSupportProjectionRotationLength.GetValueOnAnyThread());
+			const float RotationLengthSquared = RotationLength * RotationLength;
+			const float ReachSkin = FMath::Max(
+				0.0f, CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+			const int32 Passes = FMath::Clamp(
+				CVarIAmSpeedWheelSupportProjectionPasses.GetValueOnAnyThread(), 1, 32);
+
+			auto ApplyConstraint = [this, RotationLengthSquared](
+				const FVector& Direction, const FVector& WorldPoint, const float Violation)
+			{
+				if (Violation <= 0.001f)
+				{
+					return;
+				}
+				const FVector N = Direction.GetSafeNormal();
+				const FVector AngularJacobian = FVector::CrossProduct(
+					WorldPoint - GetPhysCOM(), N);
+				const float Denominator = 1.0f
+					+ AngularJacobian.SizeSquared() / RotationLengthSquared;
+				const float Lambda = Violation / FMath::Max(Denominator, 1.0f);
+				SetPhysCOMLocation(GetPhysCOM() + Lambda * N);
+				const FVector DeltaAngular =
+					(Lambda / RotationLengthSquared) * AngularJacobian;
+				const float DeltaAngle = DeltaAngular.Size();
+				if (DeltaAngle > SMALL_NUMBER)
+				{
+					const FQuat WorldDelta(DeltaAngular / DeltaAngle, DeltaAngle);
+					SetPhysRotation((WorldDelta * GetPhysRotation()).GetNormalized());
+				}
+				UpdateSubBodiesKinematics();
+			};
+
+			for (int32 Pass = 0; Pass < Passes; ++Pass)
+			{
+				for (const int32 Index : EstablishedMisses)
+				{
+					const FGroundProbe& Probe = Probes[Index];
+					const FVector N = Probe.PreviousHit.ImpactNormal.GetSafeNormal();
+					FVector SweepStart = FVector::ZeroVector;
+					FVector SweepEnd = FVector::ZeroVector;
+					Probe.Wheel->GetSuspensionSweepSegment(delta, SweepStart, SweepEnd);
+					const float Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+					const float Gap = FVector::DotProduct(
+						SweepEnd - Probe.PreviousHit.ImpactPoint, N) - Radius;
+					ApplyConstraint(-N, SweepEnd, Gap + ReachSkin);
+				}
+
+				for (const FGroundProbe& Probe : Probes)
+				{
+					if (!Probe.bHasProbeHit)
+					{
+						continue;
+					}
+					const FVector N = Probe.ProbeHit.ImpactNormal.GetSafeNormal();
+					const float Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+					FVector SweepStart = FVector::ZeroVector;
+					FVector SweepEnd = FVector::ZeroVector;
+					Probe.Wheel->GetSuspensionSweepSegment(delta, SweepStart, SweepEnd);
+					const float ReachGap = FVector::DotProduct(
+						SweepEnd - Probe.ProbeHit.ImpactPoint, N) - Radius;
+					ApplyConstraint(-N, SweepEnd, ReachGap);
+
+					const float Clearance = FVector::DotProduct(
+						Probe.Wheel->WorldPos() - Probe.ProbeHit.ImpactPoint, N) - Radius;
+					ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance);
+				}
+			}
+
+			FQuat RelativeRotation = (OriginalRotation.Inverse()
+				* GetPhysRotation()).GetNormalized();
+			float RotationAngle = 0.0f;
+			FVector RotationAxis = FVector::ZeroVector;
+			RelativeRotation.ToAxisAndAngle(RotationAxis, RotationAngle);
+			RotationAngle = FMath::Min(RotationAngle, 2.0f * PI - RotationAngle);
+			const float MaxRotationRadians = FMath::DegreesToRadians(FMath::Max(0.0f,
+				CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread()));
+			const bool bWithinBounds =
+				(GetPhysCOM() - OriginalCOM).Size() <= MaxGap &&
+				RotationAngle <= MaxRotationRadians;
+			if (!bWithinBounds)
+			{
+				SetPhysCOMLocation(OriginalCOM);
+				SetPhysRotation(OriginalRotation);
+				UpdateSubBodiesKinematics();
+			}
+
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f"),
+					NumFrame(), EstablishedMisses.Num(), bWithinBounds ? 1 : 0,
+					(GetPhysCOM() - OriginalCOM).Size(),
+					FMath::RadiansToDegrees(RotationAngle));
+				for (const int32 Index : EstablishedMisses)
+				{
+					const FGroundProbe& Probe = Probes[Index];
+					const FVector N = Probe.PreviousHit.ImpactNormal.GetSafeNormal();
+					FVector SweepStart = FVector::ZeroVector;
+					FVector SweepEnd = FVector::ZeroVector;
+					Probe.Wheel->GetSuspensionSweepSegment(delta, SweepStart, SweepEnd);
+					const float Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+					const float Gap = FVector::DotProduct(
+						SweepEnd - Probe.PreviousHit.ImpactPoint, N) - Radius;
+					SHitResult VerificationHit;
+					const bool bVerificationHit =
+						Probe.Wheel->ProbeSuspensionOnGround(VerificationHit, delta);
+					UE_LOG(LogTemp, Log,
+						TEXT("[WheelSupportProjectionWheel] Frame=%d Wheel=%d Gap=%.4f Resweep=%d"),
+						NumFrame(), Index, Gap, bVerificationHit ? 1 : 0);
+				}
+			}
+#endif
+		}
+
+		if (EstablishedSupports.Num() > 0)
+		{
+			BeginDeferredWheelGroundStateUpdate();
+			bDeferredWheelGroundState = true;
+		}
+	}
+
 	for (auto& Wheel : GetWheelSubBodies())
 	{
 		if (Wheel)
 		{
 			Wheel->SweepSuspension(delta);
 		}
+	}
+	if (bTransactionalProjection && bDeferredWheelGroundState)
+	{
+		for (const TPair<USWheelSubBody*, SHitResult>& Support : EstablishedSupports)
+		{
+			USWheelSubBody* Wheel = Support.Key;
+			if (!Wheel || Wheel->IsOnGround())
+			{
+				continue;
+			}
+			const FVector N = Support.Value.ImpactNormal.GetSafeNormal();
+			FVector SweepStart = FVector::ZeroVector;
+			FVector SweepEnd = FVector::ZeroVector;
+			Wheel->GetSuspensionSweepSegment(delta, SweepStart, SweepEnd);
+			const float Radius = Wheel->GetCollisionShape().GetSphereRadius();
+			const float SignedCenterDistance = FVector::DotProduct(
+				SweepEnd - Support.Value.ImpactPoint, N);
+			const float ReachGap = SignedCenterDistance - Radius;
+			if (ReachGap <= 0.01f)
+			{
+				SHitResult RetainedHit = Support.Value;
+				RetainedHit.Location = SweepEnd - ReachGap * N;
+				RetainedHit.ImpactPoint = RetainedHit.Location - Radius * N;
+				RetainedHit.PenetrationDepth = FMath::Max(0.0f, -ReachGap);
+				Wheel->SetHit(RetainedHit);
+				Wheel->SetOnGround(true);
+				NotifyWheelOnGroundStateChanged();
+			}
+		}
+		EndDeferredWheelGroundStateUpdate();
 	}
 	ProjectWheelSupportNonPenetration();
 }

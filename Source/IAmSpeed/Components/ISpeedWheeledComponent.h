@@ -35,6 +35,7 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 
 	// overload this function to update the on-ground states of the wheel sub-bodies
 	virtual void UpdateWheelOnGroundStates() = 0;
+	void NotifyWheelOnGroundStateChanged();
 
 	// overload this function to return a value between -1 and 1 representing the throttle input for the current frame
 	virtual float GetPhysThrottleInput() const = 0;
@@ -73,6 +74,8 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 
 	virtual ~ISpeedWheeledComponent() = default;
 protected:
+	void BeginDeferredWheelGroundStateUpdate();
+	void EndDeferredWheelGroundStateUpdate();
 	virtual TArray<SWheelGroundContact>& GetPendingWheelContacts() = 0;
 	// Negative means that the diagnostic CVar is disabled and the vehicle preset
 	// remains authoritative.
@@ -83,4 +86,5 @@ protected:
 	static FVector QuantizeUnitNormal(const FVector& n, float q = 1e-3f);
 	// overload this function for the component to perform any necessary updates after the physics state has been updated
 	void PostPhysicsUpdatePrv(const float& delta) override;
+	bool bDeferWheelGroundStateUpdate = false;
 };

@@ -70,6 +70,8 @@ public:
     virtual void UpdateSuspension(const float& delta);
     // sweep for suspension
     virtual void SweepSuspension(const float& delta);
+	bool ProbeSuspensionOnGround(SHitResult& OutHit, float Delta) const;
+	void GetSuspensionSweepSegment(float Delta, FVector& OutStart, FVector& OutEnd) const;
 	virtual bool SweepSuspensionAlongNormal(
 		const FVector& Normal, float SearchDistance, float Delta, SHitResult& OutHit) const;
 
