@@ -546,10 +546,7 @@ bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 
 bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 {
-	if (CVarIAmSpeedCanonicalWheelSupportPose.GetValueOnAnyThread() == 0 ||
-		FMath::Abs(GetPhysThrottleInput()) > KINDA_SMALL_NUMBER ||
-		FMath::Abs(GetPhysBrakeInput()) > KINDA_SMALL_NUMBER ||
-		FMath::Abs(GetPhysSteeringInput()) > KINDA_SMALL_NUMBER)
+	if (CVarIAmSpeedCanonicalWheelSupportPose.GetValueOnAnyThread() == 0)
 	{
 		return false;
 	}
@@ -562,9 +559,11 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 
 	FVector PlaneNormal = FVector::ZeroVector;
 	float PlaneOffsetSum = 0.0f;
+	const bool bFirstMovableFrame = CanBypassCanonicalSupportContactWarmup();
 	for (const USWheelSubBody* Wheel : Wheels)
 	{
-		if (!Wheel || !Wheel->IsOnGround() || Wheel->GetConsecutiveGroundFrames() < 5)
+		if (!Wheel || !Wheel->IsOnGround() ||
+			(!bFirstMovableFrame && Wheel->GetConsecutiveGroundFrames() < 5))
 		{
 			return false;
 		}
@@ -595,9 +594,15 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 	}
 
 	const float NormalSpeed = FVector::DotProduct(GetPhysCOMVelocity(), PlaneNormal);
+	const FVector TangentialAngularVelocity = GetPhysAngularVelocity()
+		- FVector::DotProduct(GetPhysAngularVelocity(), PlaneNormal) * PlaneNormal;
+	const bool bPreserveNormalRotation = CanPreserveCanonicalSupportNormalRotation();
+	const float SupportAngularSpeed = bPreserveNormalRotation
+		? TangentialAngularVelocity.Size()
+		: GetPhysAngularVelocity().Size();
 	if (FMath::Abs(NormalSpeed) > FMath::Max(0.0f,
 		CVarIAmSpeedCanonicalWheelSupportMaxNormalSpeed.GetValueOnAnyThread()) ||
-		GetPhysAngularVelocity().Size() > FMath::Max(0.0f,
+		SupportAngularSpeed > FMath::Max(0.0f,
 			CVarIAmSpeedCanonicalWheelSupportMaxAngularSpeed.GetValueOnAnyThread()))
 	{
 		return false;
@@ -702,7 +707,12 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 	SetPhysRotation(TargetRotation);
 	SetPhysLocation(TargetOrigin);
 	SetPhysCOMVelocity(GetPhysCOMVelocity() - NormalSpeed * PlaneNormal);
-	SetPhysAngularVelocity(FVector::ZeroVector);
+	// The canonical support pose owns only pitch/roll. Preserve rotation around
+	// the support normal so throttle steering and powerslide can still build the
+	// intended yaw response without changing ride height or chassis attitude.
+	SetPhysAngularVelocity(bPreserveNormalRotation
+		? FVector::DotProduct(GetPhysAngularVelocity(), PlaneNormal) * PlaneNormal
+		: FVector::ZeroVector);
 	for (const TObjectPtr<USWheelSubBody>& WheelPtr : Wheels)
 	{
 		USWheelSubBody* Wheel = WheelPtr.Get();
@@ -825,8 +835,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			if (!Probe.bWasGrounded || Probe.bHasProbeHit || !PreviousSurface ||
 				PreviousSurface->Mobility != EComponentMobility::Static ||
 				PreviousNormal.IsNearlyZero() || PreviousNormal.Z < MinGravityAlignment ||
-				!Wheel->IsContactVelocityLocked() ||
-				Wheel->IsJumping() || Wheel->HasJumpUnilateralSupport())
+				Wheel->HasJumpUnilateralSupport())
 			{
 				continue;
 			}

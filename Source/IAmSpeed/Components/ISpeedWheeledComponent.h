@@ -56,6 +56,8 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 	virtual void ResolveGroupedWheelGroundContacts(const float& delta);
 	virtual bool ProjectWheelSupportNonPenetration();
 	virtual bool TryProjectCanonicalWheelSupportPose();
+	virtual bool CanBypassCanonicalSupportContactWarmup() const { return false; }
+	virtual bool CanPreserveCanonicalSupportNormalRotation() const { return false; }
 
 	// =========== Wheel functions ===========
 	// overload this function to return every wheel sub-bodies owned by this component (e.g. for a car body, this would be the 4 wheel sub-bodies)

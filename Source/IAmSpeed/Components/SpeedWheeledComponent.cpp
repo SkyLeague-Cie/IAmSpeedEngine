@@ -955,6 +955,25 @@ int32 USpeedWheeledComponent::GetSinceCanMoveFrame() const
 	return SinceCanMoveFrame;
 }
 
+bool USpeedWheeledComponent::CanBypassCanonicalSupportContactWarmup() const
+{
+	// Bridge only the startup interval needed for the ordinary five-contact
+	// confirmation to take over. The first movable frame must already have
+	// proven a stationary four-wheel pose; airborne and impact starts retain the
+	// full warm-up requirement even if they contact during this interval.
+	return bCanonicalSupportStartupPoseConfirmed
+		&& CanMove() && NbFramesSinceCanMove() < 5;
+}
+
+bool USpeedWheeledComponent::CanPreserveCanonicalSupportNormalRotation() const
+{
+	// Normal-axis rotation is compatible with a support pose only when this
+	// support was already proven at startup. An impact replay may accumulate
+	// contact frames while frozen during countdown; its incoming yaw must not
+	// make it eligible for an immediate canonical projection.
+	return bCanonicalSupportStartupPoseConfirmed;
+}
+
 unsigned int USpeedWheeledComponent::NbFramesSinceCanMove() const
 {
 	return NumFrame() - GetSinceCanMoveFrame();
@@ -1006,6 +1025,40 @@ void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
 	UpdateInputs();
 	TagStateHistoryProxyRole();
 	RecoverWheelState();
+	if (CanMove() && !IsOnTheGround())
+	{
+		bCanonicalSupportStartupPoseConfirmed = false;
+	}
+	if (CanMove() && int32(NumFrame()) == SinceCanMoveFrame
+		&& bCanonicalSupportStartupInitializationRequested)
+	{
+		bCanonicalSupportStartupInitializationRequested = false;
+		bCanonicalSupportStartupPoseConfirmed = false;
+		// Only an already stationary support is a startup point-fix candidate.
+		// Callers opt in only when they authored an exact support pose. Full speed
+		// checks still reject stale requests applied to a moving body.
+		if (GetPhysCOMVelocity().Size() <= 0.01f
+			&& GetPhysAngularVelocity().Size() <= 0.01f)
+		{
+			// RecoverWheelState runs after the countdown transition. Initialize the
+			// support and its transient length here, after recovery but before gravity
+			// and suspension consume the first movable frame.
+			UpdateSubBodiesKinematics();
+			for (auto& Wheel : WheelSubBodies)
+			{
+				if (Wheel)
+				{
+					Wheel->SweepSuspension(0.0f);
+				}
+			}
+			bSimTimelineWasGrounded = IsOnTheGround();
+			bCanonicalSupportStartupPoseConfirmed = bSimTimelineWasGrounded;
+			if (bCanonicalSupportStartupPoseConfirmed)
+			{
+				ResetWheelTransientStateForCurrentPose(true);
+			}
+		}
+	}
 	if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 1 == 0)
 	{
 		const FVector Forward = GetPhysForwardVector();
@@ -2399,7 +2452,8 @@ void USpeedWheeledComponent::RegisterWheelState()
 	}
 }
 
-void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose()
+void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose(
+	const bool bUseGroundContactGeometry)
 {
 	WheeledPhysicsState.AllowedSideVelocity = FVector::ZeroVector;
 	WheeledPhysicsState.AllowedAngularVelocity = FVector::ZeroVector;
@@ -2407,7 +2461,14 @@ void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose()
 
 	for (auto& W : WheelSubBodies)
 	{
-		const float CurrentDisplacement = W->SpringDisplacement();
+		// A support sweep can be published after the suspension simulator last ran
+		// in its airborne state. At a countdown release or authoritative reset,
+		// initialize the transient from the geometry of that established contact;
+		// carrying the stale air length into the first movable frame creates a
+		// fictitious compression delta and damping impulse.
+		const float CurrentDisplacement = bUseGroundContactGeometry && W->IsOnGround()
+			? W->ContactSpringDisplacement()
+			: W->SpringDisplacement();
 		W->SetLastDisplacement(CurrentDisplacement);
 		W->SetAngularVelocity(0.0f);
 		WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()] = CurrentDisplacement;
@@ -3033,7 +3094,10 @@ void USpeedWheeledComponent::HandleCountdownTimer()
 			bSimTimelineWasCanMove = true;
 			bSimTimelineHasGroundState = true;
 			bSimTimelineWasGrounded = IsOnTheGround();
-			ResetWheelTransientStateForCurrentPose();
+			// Preserve the historical air-side spring reset for every countdown
+			// release. A proven stationary support may replace it with contact
+			// geometry in UpdateFrameState before forces are evaluated.
+			ResetWheelTransientStateForCurrentPose(false);
 			UnFreezeMovement();
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
 				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());

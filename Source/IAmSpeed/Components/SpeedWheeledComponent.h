@@ -166,10 +166,14 @@ public:
 	virtual void RecoverWheelState();
 	// register wheel state for network replication
 	virtual void RegisterWheelState();
-	void ResetWheelTransientStateForCurrentPose();
+	void ResetWheelTransientStateForCurrentPose(bool bUseGroundContactGeometry = false);
 	float GetSuspensionOffset(int WheelIndex) override;
 
 	bool CanMove() const;
+	void RequestCanonicalSupportStartupInitialization()
+	{
+		bCanonicalSupportStartupInitializationRequested = true;
+	}
 	bool CountdownHasStarted() const;
 	void StartConfrontationInSec(const float& TimeSec);
 	void StartConfrontationLocal(const float& TimeSec);
@@ -230,6 +234,8 @@ protected:
 	void SetEngineFPS(const unsigned int& FPS);
 	float GetEngineFPS() const;
 	int32 GetSinceCanMoveFrame() const;
+	bool CanBypassCanonicalSupportContactWarmup() const override;
+	bool CanPreserveCanonicalSupportNormalRotation() const override;
 	unsigned int NbFramesSinceCanMove() const;
 	// Get the current frame number for this component (e.g. to be used for network replication)
 	unsigned int GetCurrentFrame() const;
@@ -675,6 +681,8 @@ private:
 	uint8 NetCorr_StableNFrames = 0;
 
 	int32 SinceCanMoveFrame = INDEX_NONE;
+	bool bCanonicalSupportStartupInitializationRequested = false;
+	bool bCanonicalSupportStartupPoseConfirmed = false;
 	bool bSimTimelineWasCanMove = false;
 	bool bSimTimelineWasGrounded = false;
 	bool bSimTimelineHasGroundState = false;

@@ -53,22 +53,22 @@ static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionClampPositiveForce(
 	TEXT("When non-zero, suspension force is clamped to zero instead of pulling the vehicle toward the surface."),
 	ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionJumpSweepRetractionSpeed(
-	TEXT("p.SkyLeague.Suspension.JumpSweepRetractionSpeed"),
-	1.0f,
-	TEXT("Interpolation speed used to extend the sweep of a jumping wheel toward full air length."),
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionMaxAttractiveForce(
+	TEXT("p.SkyLeague.Suspension.MaxAttractiveForce"),
+	250000.0f,
+	TEXT("Maximum suspension force magnitude pulling the vehicle toward support. Zero selects the unrestricted signed model."),
 	ECVF_Default);
 
-static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionJumpStateAffectsAirLength(
-	TEXT("p.SkyLeague.Suspension.JumpStateAffectsAirLength"),
-	1,
-	TEXT("Diagnostic control. When zero, SetIsJumping remains logical state but no longer changes ComputeNextAirLength."),
+static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionMaxAttractiveForceMinNormalZ(
+	TEXT("p.SkyLeague.Suspension.MaxAttractiveForceMinNormalZ"),
+	-1.0f,
+	TEXT("Minimum world-Z support-normal component using MaxAttractiveForce. Set -1 to include every surface."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarSkyLeagueSuspensionJumpStateClampsNegativeForce(
 	TEXT("p.SkyLeague.Suspension.JumpStateClampsNegativeForce"),
-	1,
-	TEXT("Diagnostic control. When zero, jumping/constraint-release state no longer clamps signed suspension force."),
+	0,
+	TEXT("When non-zero, an explicit unilateral jump-support release cannot pull the vehicle back toward the surface."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionRestingForceScale(
@@ -196,8 +196,12 @@ namespace
     {
         const bool bClampNegativeDisplacement = bConfiguredClampNegativeDisplacement ||
             CVarSkyLeagueSuspensionClampNegativeDisplacement.GetValueOnAnyThread() != 0;
-        const float ForceLastDisplacement = bClampNegativeDisplacement ? FMath::Max(0.0f, LastDisplacement) : LastDisplacement;
-        const float ForceCurrentDisplacement = bClampNegativeDisplacement ? FMath::Max(0.0f, CurrentDisplacement) : CurrentDisplacement;
+        const float ForceLastDisplacement = bClampNegativeDisplacement
+            ? FMath::Max(0.0f, LastDisplacement)
+            : LastDisplacement;
+        const float ForceCurrentDisplacement = bClampNegativeDisplacement
+            ? FMath::Max(0.0f, CurrentDisplacement)
+            : CurrentDisplacement;
         const bool bPreRestCompression = bClampNegativeDisplacement &&
             LastDisplacement < 0.0f &&
             CurrentDisplacement < 0.0f &&
@@ -814,11 +818,24 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         // but it must no longer pull the chassis back toward that support.
         const bool bClampJumpForce =
             CVarSkyLeagueSuspensionJumpStateClampsNegativeForce.GetValueOnAnyThread() != 0 &&
-            (IsJumping() || HasJumpUnilateralSupport());
+            HasJumpUnilateralSupport();
         const bool bClampPositive = bClampJumpForce || ClampsSuspensionForceToPositive() ||
             CVarSkyLeagueSuspensionClampPositiveForce.GetValueOnAnyThread() != 0;
-        SuspensionForce = FMath::Clamp(SuspensionForce,
-            bClampPositive ? 0.0f : -SuspensionMaxValue, SuspensionMaxValue);
+        const float MaxAttractiveForce = FMath::Max(
+            0.0f, CVarSkyLeagueSuspensionMaxAttractiveForce.GetValueOnAnyThread());
+        const float MaxAttractionMinNormalZ = FMath::Clamp(
+            CVarSkyLeagueSuspensionMaxAttractiveForceMinNormalZ.GetValueOnAnyThread(),
+            -1.0f, 1.0f);
+        const bool bCappedAttractionSupport = FVector::DotProduct(
+            CurrentHit.ImpactNormal.GetSafeNormal(), FVector::UpVector)
+            >= MaxAttractionMinNormalZ;
+        const float MinSuspensionForce = bClampPositive
+            ? 0.0f
+            : (bCappedAttractionSupport && MaxAttractiveForce > 0.0f
+                ? -FMath::Min(MaxAttractiveForce, SuspensionMaxValue)
+                : -SuspensionMaxValue);
+        SuspensionForce = FMath::Clamp(
+            SuspensionForce, MinSuspensionForce, SuspensionMaxValue);
 		// Special Actor case: if we do not hit the ground but an other actor, we keep suspension force only for positive values
         // to avoid wheel to stick to it too much and create unrealistic behavior.
         if (CurrentHit.Component.IsValid() &&
@@ -1024,19 +1041,7 @@ float USWheelSubBody::PredictNextDisplacement(const float& delta) const
 
 float USWheelSubBody::ComputeNextAirLength(const float& DeltaTime) const
 {
-    auto TargetPos = MaxLength() + SuspensionMaxDrop() + Radius();
-    auto CurrentPos = TargetPos - SpringDisplacement() - SuspensionMaxDrop();
-    if (!IsJumping() ||
-        CVarSkyLeagueSuspensionJumpStateAffectsAirLength.GetValueOnAnyThread() == 0)
-    {
-        return TargetPos;
-    }
-    else
-    {
-        const float RetractionSpeed = FMath::Max(
-            0.0f, CVarSkyLeagueSuspensionJumpSweepRetractionSpeed.GetValueOnAnyThread());
-        return FMath::FInterpTo(CurrentPos, TargetPos, DeltaTime, RetractionSpeed);
-    }
+    return MaxLength() + SuspensionMaxDrop() + Radius();
 }
 
 
