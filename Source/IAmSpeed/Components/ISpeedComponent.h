@@ -112,10 +112,14 @@ public:
 	void AddPhysVelocity(const FVector& DeltaVelocity);
 	void AddPhysAngularVelocity(const FVector& DeltaAngularVelocity);
 	void AddPhysImpulseAtPoint(const FVector& Impulse, const FVector& WorldPoint, const USolidSubBody* SubBody = nullptr);
+	void AddPhysImpulseBatchAtPoints(const TArray<FVector>& Impulses,
+		const TArray<FVector>& WorldPoints, const USolidSubBody* SubBody = nullptr);
 	void AddPhysAcceleration(const FVector& DeltaAcceleration);
 	void AddPhysAngularAcceleration(const FVector& DeltaAngularAcceleration);
 	void AddPhysAngularAccelerationLocal(const FVector& LocalAngularAccel);
 	void AddPhysForceAtPoint(const FVector& Force, const FVector& WorldPoint, const USolidSubBody* SubBody = nullptr);
+	void AddPhysForceBatchAtPoints(const TArray<FVector>& Forces,
+		const TArray<FVector>& WorldPoints, const USolidSubBody* SubBody = nullptr);
 	// overload this function to apply an impulse to the parent component at the given world point (e.g. for hitboxes to apply impulse to car body)
 	virtual void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint, const USolidSubBody* SubBody = nullptr);
 	// ================================================================

@@ -1,4 +1,5 @@
 #include "IBoxSweeper.h"
+#include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
