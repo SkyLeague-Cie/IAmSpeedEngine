@@ -533,6 +533,56 @@ void UBoxSubBody::AcceptHit()
     }
 }
 
+bool UBoxSubBody::GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const
+{
+    OutHits.Reset();
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+
+    FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(IAmSpeedBoxPosePenetration), false);
+    QueryParams.bFindInitialOverlaps = true;
+    if (const AActor* Owner = GetOwner())
+    {
+        QueryParams.AddIgnoredActor(Owner);
+    }
+    FCollisionObjectQueryParams ObjectQuery;
+    ObjectQuery.AddObjectTypesToQuery(ECC_WorldStatic);
+    const Speed::FKinematicState& State = GetKinematicState();
+    World->SweepMultiByObjectType(
+        OutHits,
+        State.Location,
+        State.Location,
+        State.Rotation,
+        ObjectQuery,
+        GetCollisionShape(),
+        QueryParams);
+
+    OutHits.RemoveAll([](const FHitResult& Hit)
+    {
+        return !Hit.bStartPenetrating || Hit.PenetrationDepth <= 0.0f;
+    });
+    OutHits.Sort([](const FHitResult& A, const FHitResult& B)
+    {
+        const UPrimitiveComponent* CompA = A.Component.Get();
+        const UPrimitiveComponent* CompB = B.Component.Get();
+        const uint32 IdA = CompA ? static_cast<uint32>(CompA->GetUniqueID()) : 0u;
+        const uint32 IdB = CompB ? static_cast<uint32>(CompB->GetUniqueID()) : 0u;
+        if (IdA != IdB)
+        {
+            return IdA < IdB;
+        }
+        if (A.FaceIndex != B.FaceIndex)
+        {
+            return A.FaceIndex < B.FaceIndex;
+        }
+        return A.PenetrationDepth > B.PenetrationDepth;
+    });
+    return !OutHits.IsEmpty();
+}
+
 //======================================================
 // =============== Sweep Methods =======================
 // =====================================================

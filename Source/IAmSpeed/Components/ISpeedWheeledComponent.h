@@ -8,6 +8,9 @@ class USWheelSubBody;
 struct SWheelGroundContact
 {
 	USWheelSubBody* Wheel = nullptr;
+	TWeakObjectPtr<UPrimitiveComponent> SurfaceComponent;
+	FVector SurfacePoint = FVector::ZeroVector;
+	int32 SurfaceFaceIndex = INDEX_NONE;
 
 	FVector WorldPos = FVector::ZeroVector;
 	FVector Normal = FVector::ZeroVector;
@@ -55,6 +58,7 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 		float& OutForce) const;
 	virtual void ResolveGroupedWheelGroundContacts(const float& delta);
 	virtual bool ProjectWheelSupportNonPenetration();
+	virtual bool ProjectCoupledSubBodyPose(float Delta);
 	virtual bool TryProjectCanonicalWheelSupportPose();
 	virtual bool CanBypassCanonicalSupportContactWarmup() const { return false; }
 	virtual bool CanPreserveCanonicalSupportNormalRotation() const { return false; }

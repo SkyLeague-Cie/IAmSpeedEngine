@@ -1,4 +1,5 @@
 #include "ISpeedWheeledComponent.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "HAL/IConsoleManager.h"
 
@@ -132,6 +133,48 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionDebug(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionDebug"),
 	0,
 	TEXT("Logs established-support patch admission and pose projection when non-zero."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledSubBodyPoseSolver(
+	TEXT("p.IAmSpeed.CoupledPose.Enabled"),
+	1,
+	TEXT("Experimental lexicographic component-pose solve: principal hitbox feasibility first, then current-frame wheel-patch retention."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseHitboxSlopCm(
+	TEXT("p.IAmSpeed.CoupledPose.HitboxSlopCm"),
+	0.05f,
+	TEXT("Accepted principal-hitbox overlap during coupled component-pose projection."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPosePasses(
+	TEXT("p.IAmSpeed.CoupledPose.Passes"),
+	24,
+	TEXT("Maximum deterministic active-set projection passes per integrated segment."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseRotationLengthCm(
+	TEXT("p.IAmSpeed.CoupledPose.RotationLengthCm"),
+	50.0f,
+	TEXT("Characteristic length balancing translation and rotation in coupled pose constraints."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseWheelGapCm(
+	TEXT("p.IAmSpeed.CoupledPose.WheelGapCm"),
+	0.05f,
+	TEXT("Maximum retained wheel-patch separation after hitbox-feasible projection."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseDebug(
+	TEXT("p.IAmSpeed.CoupledPose.Debug"),
+	0,
+	TEXT("Logs coupled hitbox/wheel pose transactions when non-zero."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseVelocityCorrection(
+	TEXT("p.IAmSpeed.CoupledPose.VelocityCorrection"),
+	0,
+	TEXT("When non-zero, removes inward principal-hitbox point velocity after an accepted pose projection. Kept separate for energy A/B validation."),
 	ECVF_Default);
 
 float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstantOverride()
@@ -1069,6 +1112,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 		EndDeferredWheelGroundStateUpdate();
 	}
 	ProjectWheelSupportNonPenetration();
+	ProjectCoupledSubBodyPose(delta);
 }
 
 FVector ISpeedWheeledComponent::QuantizeUnitNormal(const FVector& n, float q)
@@ -1090,4 +1134,372 @@ void ISpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 	ResolveGroupedWheelGroundContacts(delta);
 	ProjectWheelSupportNonPenetration();
 	TryProjectCanonicalWheelSupportPose();
+}
+
+bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
+{
+	if (CVarIAmSpeedCoupledSubBodyPoseSolver.GetValueOnAnyThread() == 0)
+	{
+		return false;
+	}
+
+	UBoxSubBody* PrincipalHitbox = nullptr;
+	for (USSubBody* SubBody : GetSubBodies())
+	{
+		UBoxSubBody* Box = Cast<UBoxSubBody>(SubBody);
+		if (Box && Box->GetSubBodyType() == USSubBody::ESubBodyType::Hitbox)
+		{
+			PrincipalHitbox = Box;
+			break;
+		}
+	}
+	if (!PrincipalHitbox)
+	{
+		return false;
+	}
+
+	const FVector TransactionCOM = GetPhysCOM();
+	const FQuat TransactionRotation = GetPhysRotation();
+	const float Slop = FMath::Max(0.0f,
+		CVarIAmSpeedCoupledPoseHitboxSlopCm.GetValueOnAnyThread());
+	const float ProjectionTargetSlop = FMath::Max(0.0f, Slop - 0.01f);
+	const float RotationLength = FMath::Max(1.0f,
+		CVarIAmSpeedCoupledPoseRotationLengthCm.GetValueOnAnyThread());
+	const float RotationLengthSquared = RotationLength * RotationLength;
+	const int32 MaxPasses = FMath::Clamp(
+		CVarIAmSpeedCoupledPosePasses.GetValueOnAnyThread(), 1, 64);
+
+	struct FHitboxPlaneConstraint
+	{
+		TWeakObjectPtr<UPrimitiveComponent> Component;
+		int32 FaceIndex = INDEX_NONE;
+		FVector Point = FVector::ZeroVector;
+		FVector Normal = FVector::ZeroVector;
+		float ObservedDepth = 0.0f;
+	};
+	TArray<FHitboxPlaneConstraint, TInlineAllocator<8>> HitboxConstraints;
+	TArray<FHitResult> InitialPenetrationHits;
+	PrincipalHitbox->GatherStaticPenetrationHits(InitialPenetrationHits);
+	float InitialMaximumDepth = 0.0f;
+	for (const FHitResult& Hit : InitialPenetrationHits)
+	{
+		InitialMaximumDepth = FMath::Max(InitialMaximumDepth, Hit.PenetrationDepth);
+	}
+
+	auto ApplyConstraint = [this, RotationLengthSquared](
+		const FVector& Direction, const FVector& WorldPoint, const float Violation)
+	{
+		if (Violation <= 0.001f)
+		{
+			return;
+		}
+		const FVector N = Direction.GetSafeNormal();
+		if (N.IsNearlyZero())
+		{
+			return;
+		}
+		const FVector AngularJacobian = FVector::CrossProduct(WorldPoint - GetPhysCOM(), N);
+		const float Denominator = 1.0f
+			+ AngularJacobian.SizeSquared() / RotationLengthSquared;
+		const float Lambda = Violation / FMath::Max(Denominator, 1.0f);
+		SetPhysCOMLocation(GetPhysCOM() + Lambda * N);
+		const FVector DeltaAngular =
+			(Lambda / RotationLengthSquared) * AngularJacobian;
+		const float DeltaAngle = DeltaAngular.Size();
+		if (DeltaAngle > SMALL_NUMBER)
+		{
+			const FQuat WorldDelta(DeltaAngular / DeltaAngle, DeltaAngle);
+			SetPhysRotation((WorldDelta * GetPhysRotation()).GetNormalized());
+		}
+		UpdateSubBodiesKinematics();
+	};
+
+	auto AddHitboxConstraints = [&HitboxConstraints](const TArray<FHitResult>& Hits)
+	{
+		for (const FHitResult& Hit : Hits)
+		{
+			FVector N = Hit.Normal.GetSafeNormal();
+			if (N.IsNearlyZero())
+			{
+				N = Hit.ImpactNormal.GetSafeNormal();
+			}
+			if (N.IsNearlyZero())
+			{
+				continue;
+			}
+			const int32 ExistingIndex = HitboxConstraints.IndexOfByPredicate(
+				[&Hit, &N](const FHitboxPlaneConstraint& Constraint)
+				{
+					return Constraint.Component == Hit.Component &&
+						Constraint.FaceIndex == Hit.FaceIndex &&
+						FVector::DotProduct(Constraint.Normal, N) >= 0.999f;
+				});
+			FHitboxPlaneConstraint Constraint;
+			Constraint.Component = Hit.Component;
+			Constraint.FaceIndex = Hit.FaceIndex;
+			Constraint.Point = Hit.ImpactPoint;
+			Constraint.Normal = N;
+			Constraint.ObservedDepth = Hit.PenetrationDepth;
+			if (ExistingIndex == INDEX_NONE)
+			{
+				HitboxConstraints.Add(Constraint);
+			}
+			else
+			{
+				HitboxConstraints[ExistingIndex] = Constraint;
+			}
+		}
+	};
+
+	auto SolveHitboxFeasibility = [&]()
+	{
+		TArray<FHitResult> Hits;
+		for (int32 Pass = 0; Pass < MaxPasses; ++Pass)
+		{
+			PrincipalHitbox->GatherStaticPenetrationHits(Hits);
+			float MaximumDepth = 0.0f;
+			for (const FHitResult& Hit : Hits)
+			{
+				MaximumDepth = FMath::Max(MaximumDepth, Hit.PenetrationDepth);
+			}
+			if (MaximumDepth <= Slop)
+			{
+				return true;
+			}
+			HitboxConstraints.Reset();
+			AddHitboxConstraints(Hits);
+			if (HitboxConstraints.IsEmpty())
+			{
+				break;
+			}
+
+			for (const FHitboxPlaneConstraint& Constraint : HitboxConstraints)
+			{
+				ApplyConstraint(Constraint.Normal, GetPhysCOM(),
+					Constraint.ObservedDepth - ProjectionTargetSlop);
+			}
+		}
+
+		TArray<FHitResult> FinalHits;
+		PrincipalHitbox->GatherStaticPenetrationHits(FinalHits);
+		for (const FHitResult& Hit : FinalHits)
+		{
+			if (Hit.PenetrationDepth > Slop)
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+
+	auto ClampHitboxInwardVelocity = [&]()
+	{
+		if (CVarIAmSpeedCoupledPoseVelocityCorrection.GetValueOnAnyThread() == 0)
+		{
+			return;
+		}
+		const float Mass = FMath::Max(GetPhysMass(), 1.0f);
+		const FMatrix InvInertia = ComputeWorldInvInertiaTensor();
+		for (const FHitboxPlaneConstraint& Constraint : HitboxConstraints)
+		{
+			const FVector N = Constraint.Normal.GetSafeNormal();
+			if (N.IsNearlyZero())
+			{
+				continue;
+			}
+			const Speed::FKinematicState& State = PrincipalHitbox->GetKinematicState();
+			const FVector ContactPoint = UBoxSubBody::ComputeBoxSupportPointWS(
+				State.Location, State.Rotation, PrincipalHitbox->GetBoxExtent(), -N);
+			const FVector R = ContactPoint - GetPhysCOM();
+			const float InwardSpeed = FVector::DotProduct(
+				GetPhysVelocityAtPoint(ContactPoint), N);
+			if (InwardSpeed >= -0.001f)
+			{
+				continue;
+			}
+			const FVector RxN = FVector::CrossProduct(R, N);
+			const FVector AngularTerm = FVector::CrossProduct(
+				InvInertia.TransformVector(RxN), R);
+			const float EffectiveInvMass = 1.0f / Mass
+				+ FVector::DotProduct(N, AngularTerm);
+			if (EffectiveInvMass > SMALL_NUMBER)
+			{
+				AddPhysImpulseAtPoint(
+					(-InwardSpeed / EffectiveInvMass) * N, ContactPoint, PrincipalHitbox);
+			}
+		}
+	};
+
+	if (!SolveHitboxFeasibility())
+	{
+#if !(UE_BUILD_SHIPPING)
+		if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0 &&
+			InitialMaximumDepth > Slop)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[CoupledPose][HitboxRejected] Frame=%d InitialDepth=%.3f InitialHits=%d Constraints=%d Translation=%.3f RotationDeg=%.3f"),
+				NumFrame(), InitialMaximumDepth, InitialPenetrationHits.Num(),
+				HitboxConstraints.Num(), (GetPhysCOM() - TransactionCOM).Size(),
+				FMath::RadiansToDegrees(GetPhysRotation().AngularDistance(TransactionRotation)));
+		}
+#endif
+		SetPhysCOMLocation(TransactionCOM);
+		SetPhysRotation(TransactionRotation);
+		UpdateSubBodiesKinematics();
+		return false;
+	}
+	ClampHitboxInwardVelocity();
+
+	const FVector HitboxFeasibleCOM = GetPhysCOM();
+	const FQuat HitboxFeasibleRotation = GetPhysRotation();
+	const float MaxWheelGap = FMath::Max(0.0f,
+		CVarIAmSpeedCoupledPoseWheelGapCm.GetValueOnAnyThread());
+	struct FWheelPatchConstraint
+	{
+		USWheelSubBody* Wheel = nullptr;
+		TWeakObjectPtr<UPrimitiveComponent> SurfaceComponent;
+		FVector SurfacePoint = FVector::ZeroVector;
+		FVector Normal = FVector::ZeroVector;
+		int32 SurfaceFaceIndex = INDEX_NONE;
+	};
+	TArray<FWheelPatchConstraint, TInlineAllocator<4>> WheelConstraints;
+	for (USWheelSubBody* Wheel : GetWheelSubBodies())
+	{
+		if (!Wheel || !Wheel->IsOnGround())
+		{
+			continue;
+		}
+		const SHitResult& Hit = Wheel->GetHit();
+		if (!Hit.Component.IsValid() ||
+			Hit.Component->GetMobility() != EComponentMobility::Static ||
+			Hit.ImpactNormal.IsNearlyZero())
+		{
+			continue;
+		}
+		FWheelPatchConstraint& Constraint = WheelConstraints.AddDefaulted_GetRef();
+		Constraint.Wheel = Wheel;
+		Constraint.SurfaceComponent = Hit.Component;
+		Constraint.SurfacePoint = Hit.ImpactPoint;
+		Constraint.Normal = Hit.ImpactNormal.GetSafeNormal();
+		Constraint.SurfaceFaceIndex = Hit.FaceIndex;
+	}
+	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
+	{
+		if (!Contact.Wheel || !Contact.SurfaceComponent.IsValid() ||
+			Contact.SurfaceComponent->GetMobility() != EComponentMobility::Static ||
+			Contact.Normal.IsNearlyZero())
+		{
+			continue;
+		}
+		const bool bAlreadyPresent = WheelConstraints.ContainsByPredicate(
+			[&Contact](const FWheelPatchConstraint& Existing)
+			{
+				return Existing.Wheel == Contact.Wheel;
+			});
+		if (!bAlreadyPresent)
+		{
+			FWheelPatchConstraint& Constraint = WheelConstraints.AddDefaulted_GetRef();
+			Constraint.Wheel = Contact.Wheel;
+			Constraint.SurfaceComponent = Contact.SurfaceComponent;
+			Constraint.SurfacePoint = Contact.SurfacePoint;
+			Constraint.Normal = Contact.Normal.GetSafeNormal();
+			Constraint.SurfaceFaceIndex = Contact.SurfaceFaceIndex;
+		}
+	}
+	WheelConstraints.Sort([](const FWheelPatchConstraint& A, const FWheelPatchConstraint& B)
+	{
+		return A.Wheel && B.Wheel ? A.Wheel->Idx() < B.Wheel->Idx() : A.Wheel != nullptr;
+	});
+
+	int32 RetainedWheels = 0;
+	for (const FWheelPatchConstraint& Contact : WheelConstraints)
+	{
+		USWheelSubBody* Wheel = Contact.Wheel;
+		if (!Wheel)
+		{
+			continue;
+		}
+		const FVector BeforeWheelCOM = GetPhysCOM();
+		const FQuat BeforeWheelRotation = GetPhysRotation();
+		const FVector N = Contact.Normal.GetSafeNormal();
+		SHitResult LocalPatchHit;
+		const bool bHasLocalPatch = Wheel->SweepSuspensionAlongNormal(
+			N, FMath::Max(5.0f, Wheel->SuspensionMaxDrop()), Delta, LocalPatchHit);
+		const bool bSamePatch = bHasLocalPatch &&
+			LocalPatchHit.Component == Contact.SurfaceComponent &&
+			FVector::DotProduct(LocalPatchHit.ImpactNormal.GetSafeNormal(), N) >= 0.995f &&
+			(Contact.SurfaceFaceIndex == INDEX_NONE || LocalPatchHit.FaceIndex == INDEX_NONE ||
+				LocalPatchHit.FaceIndex == Contact.SurfaceFaceIndex);
+		if (!bSamePatch)
+		{
+			continue;
+		}
+
+		FVector SweepStart = FVector::ZeroVector;
+		FVector SweepEnd = FVector::ZeroVector;
+		Wheel->GetSuspensionSweepSegment(Delta, SweepStart, SweepEnd);
+		const float Gap = FVector::DotProduct(
+			SweepEnd - LocalPatchHit.ImpactPoint, N) - Wheel->Radius();
+		if (Gap > MaxWheelGap)
+		{
+			ApplyConstraint(-N, SweepEnd, Gap - MaxWheelGap);
+		}
+
+		if (!SolveHitboxFeasibility())
+		{
+			SetPhysCOMLocation(BeforeWheelCOM);
+			SetPhysRotation(BeforeWheelRotation);
+			UpdateSubBodiesKinematics();
+			continue;
+		}
+
+		Wheel->GetSuspensionSweepSegment(Delta, SweepStart, SweepEnd);
+		const float FinalGap = FVector::DotProduct(
+			SweepEnd - LocalPatchHit.ImpactPoint, N) - Wheel->Radius();
+		if (FinalGap > MaxWheelGap + 0.01f)
+		{
+			SetPhysCOMLocation(BeforeWheelCOM);
+			SetPhysRotation(BeforeWheelRotation);
+			UpdateSubBodiesKinematics();
+			continue;
+		}
+		++RetainedWheels;
+	}
+	ClampHitboxInwardVelocity();
+
+#if !(UE_BUILD_SHIPPING)
+	if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0 &&
+		(!GetPhysCOM().Equals(TransactionCOM, 0.001f) ||
+			GetPhysRotation().AngularDistance(TransactionRotation) > 1.0e-5f))
+	{
+		UE_LOG(LogTemp, Log,
+			TEXT("[CoupledPose] Frame=%d HitboxTranslation=%.3f TotalTranslation=%.3f RotationDeg=%.3f HitboxConstraints=%d WheelConstraints=%d RetainedWheels=%d"),
+			NumFrame(), (HitboxFeasibleCOM - TransactionCOM).Size(),
+			(GetPhysCOM() - TransactionCOM).Size(),
+			FMath::RadiansToDegrees(GetPhysRotation().AngularDistance(TransactionRotation)),
+			HitboxConstraints.Num(), WheelConstraints.Num(), RetainedWheels);
+	}
+#endif
+	const bool bPoseChanged = !GetPhysCOM().Equals(TransactionCOM, 0.001f) ||
+		GetPhysRotation().AngularDistance(TransactionRotation) > 1.0e-5f;
+	if (bPoseChanged)
+	{
+		BeginDeferredWheelGroundStateUpdate();
+		for (USWheelSubBody* Wheel : GetWheelSubBodies())
+		{
+			if (!Wheel)
+			{
+				continue;
+			}
+			SHitResult FinalHit;
+			const bool bOnGround = Wheel->ProbeSuspensionOnGround(FinalHit, Delta);
+			if (bOnGround)
+			{
+				Wheel->SetHit(FinalHit);
+			}
+			Wheel->SetOnGround(bOnGround);
+		}
+		EndDeferredWheelGroundStateUpdate();
+	}
+	return bPoseChanged;
 }

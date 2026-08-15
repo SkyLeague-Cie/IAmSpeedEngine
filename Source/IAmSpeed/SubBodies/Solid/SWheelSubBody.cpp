@@ -1019,6 +1019,9 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
         //    Idx(), WheelComponent->NumFrame());
         WheelComponent->RegisterWheelGroundContact({
             this,
+            CurrentHit.Component,
+            CurrentHit.ImpactPoint,
+            CurrentHit.FaceIndex,
             ContactPoint,
             N,
             r,
