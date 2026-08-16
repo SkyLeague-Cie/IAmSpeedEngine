@@ -156,7 +156,19 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPosePasses(
 static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseRotationLengthCm(
 	TEXT("p.IAmSpeed.CoupledPose.RotationLengthCm"),
 	50.0f,
-	TEXT("Characteristic length balancing translation and rotation in coupled pose constraints."),
+	TEXT("Generic pose-projection characteristic length for hitbox, wall, and gutter contacts."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseFloorPivotRotationLengthCm(
+	TEXT("p.IAmSpeed.CoupledPose.FloorPivotRotationLengthCm"),
+	100.0f,
+	TEXT("Pose-projection characteristic length for a gravity-aligned floor pivot or lateral wheel axle."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseWheelManifoldRotationLengthCm(
+	TEXT("p.IAmSpeed.CoupledPose.WheelManifoldRotationLengthCm"),
+	60.0f,
+	TEXT("Pose-projection characteristic length while preserving a wheel manifold other than a lateral axle."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseWheelGapCm(
@@ -1163,9 +1175,75 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 	const float Slop = FMath::Max(0.0f,
 		CVarIAmSpeedCoupledPoseHitboxSlopCm.GetValueOnAnyThread());
 	const float ProjectionTargetSlop = FMath::Max(0.0f, Slop - 0.01f);
-	const float RotationLength = FMath::Max(1.0f,
+	TArray<USWheelSubBody*, TInlineAllocator<4>> WheelPatchCandidates;
+	bool bWheelPatchesOnGravityAlignedSurface = true;
+	bool bWheelPatchesFaceChassisSupportSide = true;
+	const FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
+	for (USWheelSubBody* Wheel : GetWheelSubBodies())
+	{
+		if (Wheel && Wheel->IsOnGround())
+		{
+			WheelPatchCandidates.AddUnique(Wheel);
+			const FVector PatchNormal = Wheel->GetHit().ImpactNormal.GetSafeNormal();
+			bWheelPatchesOnGravityAlignedSurface =
+				bWheelPatchesOnGravityAlignedSurface
+				&& !PatchNormal.IsNearlyZero()
+				&& FMath::Abs(PatchNormal.Z) >= 0.90f;
+			bWheelPatchesFaceChassisSupportSide =
+				bWheelPatchesFaceChassisSupportSide
+				&& FVector::DotProduct(ChassisUp, PatchNormal) >= 0.0f;
+		}
+	}
+	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
+	{
+		if (Contact.Wheel && Contact.SurfaceComponent.IsValid()
+			&& Contact.SurfaceComponent->GetMobility() == EComponentMobility::Static
+			&& !Contact.Normal.IsNearlyZero())
+		{
+			WheelPatchCandidates.AddUnique(Contact.Wheel);
+			const FVector PatchNormal = Contact.Normal.GetSafeNormal();
+			bWheelPatchesOnGravityAlignedSurface =
+				bWheelPatchesOnGravityAlignedSurface
+				&& FMath::Abs(PatchNormal.Z) >= 0.90f;
+			bWheelPatchesFaceChassisSupportSide =
+				bWheelPatchesFaceChassisSupportSide
+				&& FVector::DotProduct(ChassisUp, PatchNormal) >= 0.0f;
+		}
+	}
+	const bool bHasWheelPatchCandidate = !WheelPatchCandidates.IsEmpty();
+	const FVector LocalAngularVelocity =
+		GetPhysRotation().UnrotateVector(GetPhysAngularVelocity());
+	const bool bPitchDominatedFreeHitboxContact = !bHasWheelPatchCandidate
+		&& FMath::Abs(LocalAngularVelocity.Y) > FMath::Abs(LocalAngularVelocity.X);
+	bool bWheelPatchesFormLateralAxle = false;
+	if (WheelPatchCandidates.Num() == 2)
+	{
+		FVector SweepStartA = FVector::ZeroVector;
+		FVector SweepEndA = FVector::ZeroVector;
+		FVector SweepStartB = FVector::ZeroVector;
+		FVector SweepEndB = FVector::ZeroVector;
+		WheelPatchCandidates[0]->GetSuspensionSweepSegment(Delta, SweepStartA, SweepEndA);
+		WheelPatchCandidates[1]->GetSuspensionSweepSegment(Delta, SweepStartB, SweepEndB);
+		const FVector LocalPatchSpan = GetPhysRotation().UnrotateVector(
+			SweepStartB - SweepStartA);
+		bWheelPatchesFormLateralAxle =
+			FMath::Abs(LocalPatchSpan.Y) > FMath::Abs(LocalPatchSpan.X);
+	}
+	const bool bUseWheelManifoldRotationLength =
+		bHasWheelPatchCandidate && bWheelPatchesOnGravityAlignedSurface
+		&& bWheelPatchesFaceChassisSupportSide
+		&& !bWheelPatchesFormLateralAxle;
+	const float DefaultRotationLength = FMath::Max(1.0f,
 		CVarIAmSpeedCoupledPoseRotationLengthCm.GetValueOnAnyThread());
-	const float RotationLengthSquared = RotationLength * RotationLength;
+	const float FloorPivotRotationLength = FMath::Max(1.0f,
+		CVarIAmSpeedCoupledPoseFloorPivotRotationLengthCm.GetValueOnAnyThread());
+	const float WheelManifoldRotationLength = FMath::Max(1.0f,
+		CVarIAmSpeedCoupledPoseWheelManifoldRotationLengthCm.GetValueOnAnyThread());
+	const float WheelConstraintRotationLength =
+		bWheelPatchesOnGravityAlignedSurface && bWheelPatchesFaceChassisSupportSide
+			? (bUseWheelManifoldRotationLength
+				? WheelManifoldRotationLength : FloorPivotRotationLength)
+			: DefaultRotationLength;
 	const int32 MaxPasses = FMath::Clamp(
 		CVarIAmSpeedCoupledPosePasses.GetValueOnAnyThread(), 1, 64);
 
@@ -1186,8 +1264,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 		InitialMaximumDepth = FMath::Max(InitialMaximumDepth, Hit.PenetrationDepth);
 	}
 
-	auto ApplyConstraint = [this, RotationLengthSquared](
-		const FVector& Direction, const FVector& WorldPoint, const float Violation)
+	auto ApplyConstraint = [this](const FVector& Direction, const FVector& WorldPoint,
+		const float Violation, const float RotationLength)
 	{
 		if (Violation <= 0.001f)
 		{
@@ -1199,12 +1277,13 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 			return;
 		}
 		const FVector AngularJacobian = FVector::CrossProduct(WorldPoint - GetPhysCOM(), N);
+		const float RotationLengthSquared = RotationLength * RotationLength;
+		const FVector AngularMobility = AngularJacobian / RotationLengthSquared;
 		const float Denominator = 1.0f
-			+ AngularJacobian.SizeSquared() / RotationLengthSquared;
+			+ FVector::DotProduct(AngularJacobian, AngularMobility);
 		const float Lambda = Violation / FMath::Max(Denominator, 1.0f);
 		SetPhysCOMLocation(GetPhysCOM() + Lambda * N);
-		const FVector DeltaAngular =
-			(Lambda / RotationLengthSquared) * AngularJacobian;
+		const FVector DeltaAngular = Lambda * AngularMobility;
 		const float DeltaAngle = DeltaAngular.Size();
 		if (DeltaAngle > SMALL_NUMBER)
 		{
@@ -1250,7 +1329,6 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 			}
 		}
 	};
-
 	auto SolveHitboxFeasibility = [&]()
 	{
 		TArray<FHitResult> Hits;
@@ -1275,8 +1353,28 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 
 			for (const FHitboxPlaneConstraint& Constraint : HitboxConstraints)
 			{
-				ApplyConstraint(Constraint.Normal, GetPhysCOM(),
-					Constraint.ObservedDepth - ProjectionTargetSlop);
+				// A supported rigid hitbox constraint acts at its stable impact point.
+				// After a pitch-dominated floor launch, keep that angular Jacobian when
+				// the wheel patch has just separated so the actor can rotate back onto
+				// its axle. Curved gutter and wall contacts retain the conservative COM
+				// projection; treating those free hitbox contacts as a floor pivot
+				// changes their measured surface-traversal energy.
+				const bool bUseFreeFloorContactPoint =
+					bPitchDominatedFreeHitboxContact
+					&& FMath::Abs(Constraint.Normal.Z) >= 0.90f
+					&& FVector::DotProduct(ChassisUp, Constraint.Normal) >= 0.0f;
+				const bool bUseSupportedFloorContactPoint =
+					bHasWheelPatchCandidate && bWheelPatchesOnGravityAlignedSurface
+					&& bWheelPatchesFaceChassisSupportSide;
+				const float HitboxRotationLength =
+					bUseFreeFloorContactPoint ? FloorPivotRotationLength
+					: (bUseSupportedFloorContactPoint
+						? WheelConstraintRotationLength : DefaultRotationLength);
+				ApplyConstraint(Constraint.Normal,
+					bUseSupportedFloorContactPoint || bUseFreeFloorContactPoint
+						? Constraint.Point : GetPhysCOM(),
+					Constraint.ObservedDepth - ProjectionTargetSlop,
+					HitboxRotationLength);
 			}
 		}
 
@@ -1442,7 +1540,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 			SweepEnd - LocalPatchHit.ImpactPoint, N) - Wheel->Radius();
 		if (Gap > MaxWheelGap)
 		{
-			ApplyConstraint(-N, SweepEnd, Gap - MaxWheelGap);
+			ApplyConstraint(-N, SweepEnd, Gap - MaxWheelGap,
+				WheelConstraintRotationLength);
 		}
 
 		if (!SolveHitboxFeasibility())
