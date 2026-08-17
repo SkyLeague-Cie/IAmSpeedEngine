@@ -520,7 +520,6 @@ void UBoxSubBody::AcceptHit()
     {
         IgnoredComponents.AddUnique(Comp);
     }
-    IgnoredComponents.AddUnique(Comp);
 
     if (CurrentHit.SubBody.IsValid())
     {
@@ -1416,6 +1415,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 
 	// Handle micro-oscillations
 	Sphere.HandleMicroOscillation();
+	Sphere.ProjectOutOfBox(*this);
 	if (Sphere.ShouldMaintainSphereBoxContact(
 		RelativeNormalSpeedForSphere,
 		CurrentHit.ImpactNormal,
@@ -1532,15 +1532,13 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         FMath::Max(
             FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisY(), N)),
             FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisZ(), N))));
-    const bool bFaceOnVerticalWallContact =
-        !Hit.bStartPenetrating &&
-        FMath::Abs(FVector::DotProduct(N, FVector::UpVector)) < 0.10f &&
-        FaceAlignment >= 0.98f;
+    const bool bFaceOnPlaneContact = FaceAlignment >= 0.98f;
 
-    // A face-on box/plane impact is a contact manifold, even if the sweep
-    // reports only one corner. Resolve it through the face center so a
-    // sampling artifact cannot turn most of the rebound into angular motion.
-    const FVector SolveP = bFaceOnVerticalWallContact
+    // A face-on box/plane impact is a contact manifold in every orientation,
+    // including a recontact inside numerical slop. Resolve it through the face
+    // center so a sampled corner cannot turn most of a wall or ceiling rebound
+    // into angular motion.
+    const FVector SolveP = bFaceOnPlaneContact
         ? COM + N * FVector::DotProduct(P - COM, N)
         : P;
     const FVector Vp = GetVelocityAtPoint(SolveP);
@@ -1672,9 +1670,11 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     // Normal impulse to cancel vN (or bounce if enabled)
     float jn = -(1.f + Rest) * vN / denomN;
-    const bool bHardImpact =
-        (!Hit.bStartPenetrating || bHardVerticalWallImpact) &&
-        vN < -300.f;
+    const bool bCanResolveFullPlaneImpact =
+        !Hit.bStartPenetrating ||
+        bHardVerticalWallImpact ||
+        bFaceOnPlaneContact;
+    const bool bHardImpact = bCanResolveFullPlaneImpact && bImpact;
 
     const float MaxWallDeltaVCmS =
         bUseSoftWallResponse ? 50.f :
@@ -3599,6 +3599,17 @@ FVector UBoxSubBody::GetCOM() const
 FVector UBoxSubBody::GetBoxExtent() const
 {
 	return BoxExtent;
+}
+
+float UBoxSubBody::GetSphereSeparation(
+	const FVector& SphereCenter, const float SphereRadius) const
+{
+	const Speed::SBox BoxShape = MakeBox();
+	return BoxShape.SphereOBBSeparation(
+		BoxShape.Rot,
+		BoxShape.AbsoluteCenter(),
+		SphereCenter,
+		SphereRadius);
 }
 
 void UBoxSubBody::SetBoxExtent(const FVector& InBoxExtent)

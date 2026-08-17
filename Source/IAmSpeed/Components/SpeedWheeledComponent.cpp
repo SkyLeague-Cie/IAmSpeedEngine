@@ -1000,8 +1000,12 @@ void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& Si
 	UpdateFrameState(SimTime);
 	// A test's initial state must be visible from the first movable frame, before any gameplay force can modify it.
 	ApplyTestVelocity();
+	UpdateSupportForceSleepState();
 	// Handle forces that should be applied before the gameplay tick (e.g. gravity, damping, rest force)
-	HandleGravity();
+	if (!DisableGravityThisFrame())
+	{
+		HandleGravity();
+	}
 	PreGameplayTick(DeltaTime, SimTime);
 
 	// Handle gameplay forces (e.g. from player input or AI)

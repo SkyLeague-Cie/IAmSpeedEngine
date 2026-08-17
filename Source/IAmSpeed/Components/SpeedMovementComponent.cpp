@@ -309,9 +309,13 @@ void USpeedMovementComponent::PhysicsTick(const float& DeltaTime, const float& S
 	UpdateNumFrame(SimTime);
 	HandleCountdownTimer();
 	TagStateHistoryProxyRole();
+	UpdateSupportForceSleepState();
 
 	// Handle forces that should be applied before the gameplay tick (e.g. gravity, damping, rest force)
-	HandleGravity();
+	if (!DisableGravityThisFrame())
+	{
+		HandleGravity();
+	}
 	PreGameplayTick(DeltaTime, SimTime);
 	HandleRestForce(); // Handle rest force before gameplay tick so that the component can be at rest at the beginning of the tick if it should be
 

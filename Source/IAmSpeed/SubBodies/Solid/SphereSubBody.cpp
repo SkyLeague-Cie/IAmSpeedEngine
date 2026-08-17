@@ -15,6 +15,13 @@ DEFINE_LOG_CATEGORY(SphereSubBodyLog);
 
 namespace
 {
+	TAutoConsoleVariable<int32> CVarIAmSpeedSphereWorldProjection(
+		TEXT("p.IAmSpeed.Collision.SphereWorldProjection"), 1,
+		TEXT("Enforces positional sphere/world-static non-penetration."));
+	TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxProjection(
+		TEXT("p.IAmSpeed.Collision.SphereBoxProjection"), 1,
+		TEXT("Enforces positional sphere/box non-penetration."));
+
     bool IAmSpeedSphereBoxImpulseDebugEnabled()
     {
         const IConsoleVariable* DebugCVar =
@@ -71,6 +78,40 @@ void USphereSubBody::ResetForFrame(const float& Delta)
 	WheelHit = SHitResult();
 }
 
+bool USphereSubBody::IsSphereBoxProjectionEnabled()
+{
+	return CVarIAmSpeedSphereBoxProjection.GetValueOnGameThread() != 0;
+}
+
+bool USphereSubBody::IsWorldStaticProjectionEnabled()
+{
+	return CVarIAmSpeedSphereWorldProjection.GetValueOnGameThread() != 0;
+}
+
+void USphereSubBody::PostPhysicsUpdate()
+{
+    if (ProjectOutOfWorldStatic() && ParentComponent)
+    {
+        ParentComponent->UpdateSubBodiesKinematics();
+    }
+}
+
+void USphereSubBody::AcceptHit()
+{
+    Super::AcceptHit();
+
+    // A stadium is commonly one component containing several adjacent faces.
+    // Ignoring that whole component after the first hit lets a sphere enter a
+    // second face (notably in gutters) during the remaining part of the frame.
+    // Static separation below makes the same face safe to query again.
+    if (CurrentHit.Component.IsValid() &&
+        CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic &&
+		IsWorldStaticProjectionEnabled())
+    {
+        IgnoredComponents.Remove(CurrentHit.Component.Get());
+    }
+}
+
 //======================================================
 // Sweep Methods
 //======================================================
@@ -93,6 +134,19 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 	SHitResult SphereHitresult;
 	SHitResult WheelHitresult;
     bool bHitGround = SweepVsGround(GetWorld(), GroundHitresult, RemainingDelta, TOI_ground);
+	if (WorldStaticPenetrationDiagnostics.bEnabled && bHitGround &&
+		GroundHitresult.bStartPenetrating && GroundHitresult.PenetrationDepth > 0.0f)
+	{
+		++WorldStaticPenetrationDiagnostics.SweepInitialOverlapSamples;
+		if (GroundHitresult.PenetrationDepth >
+			WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapCm)
+		{
+			WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapCm =
+				GroundHitresult.PenetrationDepth;
+			WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapFrame =
+				ParentComponent ? int32(ParentComponent->NumFrame()) : INDEX_NONE;
+		}
+	}
     bool bHitBox = SweepVsBoxes(GetWorld(), BoxHitresult, RemainingDelta, TOI_Box);
     bool bHitSphere = SweepVsSpheres(GetWorld(), SphereHitresult, RemainingDelta, TOI_Sphere);
 	bool bHitWheel = SweepVsWheels(GetWorld(), WheelHitresult, RemainingDelta, TOI_Wheel);
@@ -223,6 +277,22 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
     // 3) MICRO-OSCILLATION PREVENTION (VERY IMPORTANT)
     // ------------------------------------------------------------------
     HandleMicroOscillation();
+
+	// A supporting TOI can occur at the very beginning of a frame, after
+	// gravity has already been accumulated by the parent component. The world
+	// contact is then ignored for the rest of that frame, so leaving the inward
+	// normal acceleration active would integrate the sphere through the
+	// surface before the next frame can apply its rest force. Cancel only the
+	// constrained normal acceleration when the resolved contact is not a
+	// separating bounce; tangential acceleration and genuine rebounds remain.
+	const float PostNormalSpeed = FVector::DotProduct(
+		ParentComponent->GetPhysVelocityAtPoint(P), N);
+	const float NormalAcceleration = FVector::DotProduct(
+		ParentComponent->GetPhysAcceleration(), N);
+	if (PostNormalSpeed <= GetImpactThreshold() && NormalAcceleration < 0.0f)
+	{
+		ParentComponent->AddPhysAcceleration(-NormalAcceleration * N);
+	}
 }
 
 void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, const float& SimTime)
@@ -468,9 +538,10 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
     }
 
     // ------------------------------------------------------------------
-    // 3) MICRO-OSCILLATION PREVENTION (VERY IMPORTANT)
+	// 3) MICRO-OSCILLATION PREVENTION (VERY IMPORTANT)
 	// ------------------------------------------------------------------
 	HandleMicroOscillation();
+	ProjectOutOfBox(OtherBox);
 	if (ShouldMaintainSphereBoxContact(
 		PreRelativeNormalSpeed,
 		CurrentHit.ImpactNormal,
@@ -635,9 +706,220 @@ void USphereSubBody::HandleMicroOscillation()
         ParentComponent->AddPhysVelocity(-VelN);
     }
 
-    // Small position correction
-    FVector correctPos = CurrentHit.ImpactPoint + CurrentHit.ImpactNormal * GetRadius();
+    // For Unreal world sweeps, Location is the collision-shape center at the
+    // TOI. Rebuilding it from ImpactPoint is not equivalent on complex
+    // collision meshes and can move the sphere back inside the surface.
+    const bool bWorldStaticHit =
+        CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic;
+    const FVector correctPos = bWorldStaticHit
+        ? CurrentHit.Location
+        : CurrentHit.ImpactPoint + CurrentHit.ImpactNormal * GetRadius();
     ParentComponent->SetPhysLocation(correctPos);
+    if (bWorldStaticHit)
+    {
+        ProjectOutOfWorldStatic();
+    }
+}
+
+bool USphereSubBody::ProjectOutOfBox(UBoxSubBody& OtherBox)
+{
+    if (!IsSphereBoxProjectionEnabled() || !ParentComponent || !IsMainSubBody())
+    {
+        return false;
+    }
+
+    // The world solver may call this after both parents have advanced beyond
+    // the cached TOI sub-body states. Refresh the box before measuring; using
+    // its stale TOI pose manufactures an overlap that does not exist now.
+    if (ISpeedComponent* BoxParent = OtherBox.GetParentComponent())
+    {
+        BoxParent->UpdateSubBodiesKinematics();
+    }
+    const Speed::SBox BoxShape = OtherBox.MakeBox();
+    const FVector SphereCenter = ParentComponent->GetPhysLocation();
+    FVector ClosestPoint = FVector::ZeroVector;
+    const float Separation = BoxShape.SphereOBBSeparation(
+        BoxShape.Rot,
+        BoxShape.AbsoluteCenter(),
+        SphereCenter,
+        GetRadius(),
+        &ClosestPoint);
+    // Project every negative signed separation. The blocker still carries a
+    // measured numerical allowance, but production should minimize the state
+    // before that allowance is evaluated.
+    constexpr float ProjectionSlopCm = 0.0f;
+    if (Separation >= -ProjectionSlopCm)
+    {
+        return false;
+    }
+
+    const FVector LocalCenter = BoxShape.Rot.UnrotateVector(
+        SphereCenter - BoxShape.AbsoluteCenter());
+    const FVector Extent = BoxShape.Extent();
+    const bool bCenterInside =
+        FMath::Abs(LocalCenter.X) <= Extent.X &&
+        FMath::Abs(LocalCenter.Y) <= Extent.Y &&
+        FMath::Abs(LocalCenter.Z) <= Extent.Z;
+    FVector ProjectionNormal = bCenterInside
+        ? (ClosestPoint - SphereCenter).GetSafeNormal()
+        : (SphereCenter - ClosestPoint).GetSafeNormal();
+    if (ProjectionNormal.IsNearlyZero())
+    {
+        ProjectionNormal = CurrentHit.ImpactNormal.GetSafeNormal();
+    }
+    if (ProjectionNormal.IsNearlyZero())
+    {
+        return false;
+    }
+
+    ParentComponent->SetPhysLocation(
+        SphereCenter + ProjectionNormal *
+            (-Separation + 5.0f * CollisionMargin()));
+    ParentComponent->UpdateSubBodiesKinematics();
+    return true;
+}
+
+bool USphereSubBody::ProjectOutOfWorldStatic()
+{
+    if (!IsWorldStaticProjectionEnabled() || !ParentComponent ||
+		!IsMainSubBody() || !GetWorld())
+    {
+        return false;
+    }
+
+    constexpr int32 MaxProjectionPasses = 8;
+    constexpr float DepthTieToleranceCm = 1.0e-6f;
+    FVector Center = ParentComponent->GetPhysLocation();
+    FVector CorrectedVelocity = ParentComponent->GetPhysCOMVelocity();
+    bool bMoved = false;
+
+    FCollisionQueryParams QueryParams(
+        SCENE_QUERY_STAT(IAmSpeedSphereWorldStaticProjection), false);
+    QueryParams.bFindInitialOverlaps = true;
+    if (const AActor* Owner = GetOwner())
+    {
+        QueryParams.AddIgnoredActor(Owner);
+    }
+    FCollisionObjectQueryParams ObjectQuery;
+    ObjectQuery.AddObjectTypesToQuery(ECC_WorldStatic);
+
+    for (int32 Pass = 0; Pass < MaxProjectionPasses; ++Pass)
+    {
+        TArray<FHitResult> Hits;
+        GetWorld()->SweepMultiByObjectType(
+            Hits,
+            Center,
+            Center,
+            FQuat::Identity,
+            ObjectQuery,
+            FCollisionShape::MakeSphere(GetRadius()),
+            QueryParams);
+
+        const FHitResult* DeepestHit = nullptr;
+        for (const FHitResult& Hit : Hits)
+        {
+            if (!Hit.bStartPenetrating || Hit.PenetrationDepth <= 0.0f)
+            {
+                continue;
+            }
+
+            const bool bIsDeeper = !DeepestHit ||
+                Hit.PenetrationDepth >
+                    DeepestHit->PenetrationDepth + DepthTieToleranceCm;
+            const bool bDepthTie = DeepestHit && FMath::IsNearlyEqual(
+                Hit.PenetrationDepth,
+                DeepestHit->PenetrationDepth,
+                DepthTieToleranceCm);
+            const uint32 HitId = Hit.Component.IsValid()
+                ? Hit.Component->GetUniqueID() : 0u;
+            const uint32 DeepestId = DeepestHit && DeepestHit->Component.IsValid()
+                ? DeepestHit->Component->GetUniqueID() : 0u;
+            if (bIsDeeper || (bDepthTie && HitId < DeepestId))
+            {
+                DeepestHit = &Hit;
+            }
+        }
+
+        constexpr float ProjectionSlopCm = 0.0f;
+        if (!DeepestHit || DeepestHit->PenetrationDepth <= ProjectionSlopCm)
+        {
+            break;
+        }
+
+		if (WorldStaticPenetrationDiagnostics.bEnabled)
+		{
+			++WorldStaticPenetrationDiagnostics.ProjectionInputSamples;
+			if (DeepestHit->PenetrationDepth >
+				WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm)
+			{
+				WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm =
+					DeepestHit->PenetrationDepth;
+				WorldStaticPenetrationDiagnostics.MaximumProjectionInputFrame =
+					ParentComponent ? int32(ParentComponent->NumFrame()) : INDEX_NONE;
+			}
+		}
+
+        FVector ProjectionNormal = DeepestHit->Normal.GetSafeNormal();
+        if (ProjectionNormal.IsNearlyZero())
+        {
+            ProjectionNormal = DeepestHit->ImpactNormal.GetSafeNormal();
+        }
+        if (ProjectionNormal.IsNearlyZero())
+        {
+            break;
+        }
+
+        Center += ProjectionNormal *
+            (DeepestHit->PenetrationDepth + CollisionMargin());
+        const float InwardSpeed = FVector::DotProduct(
+            CorrectedVelocity, ProjectionNormal);
+        if (InwardSpeed < 0.0f)
+        {
+            CorrectedVelocity -= InwardSpeed * ProjectionNormal;
+        }
+        bMoved = true;
+    }
+
+    if (bMoved)
+    {
+        ParentComponent->SetPhysLocation(Center);
+        ParentComponent->SetPhysCOMVelocity(CorrectedVelocity);
+    }
+
+	if (WorldStaticPenetrationDiagnostics.bEnabled)
+	{
+		TArray<FHitResult> ResidualHits;
+		GetWorld()->SweepMultiByObjectType(
+			ResidualHits, Center, Center, FQuat::Identity, ObjectQuery,
+			FCollisionShape::MakeSphere(GetRadius()), QueryParams);
+		float MaximumResidualDepth = 0.0f;
+		for (const FHitResult& ResidualHit : ResidualHits)
+		{
+			if (ResidualHit.bStartPenetrating)
+			{
+				MaximumResidualDepth = FMath::Max(
+					MaximumResidualDepth, ResidualHit.PenetrationDepth);
+			}
+		}
+		++WorldStaticPenetrationDiagnostics.ProjectionResidualSamples;
+		if (MaximumResidualDepth >
+			WorldStaticPenetrationDiagnostics.MaximumProjectionResidualDepthCm)
+		{
+			WorldStaticPenetrationDiagnostics.MaximumProjectionResidualDepthCm =
+				MaximumResidualDepth;
+			WorldStaticPenetrationDiagnostics.MaximumProjectionResidualFrame =
+				ParentComponent ? int32(ParentComponent->NumFrame()) : INDEX_NONE;
+		}
+	}
+    return bMoved;
+}
+
+void USphereSubBody::BeginWorldStaticPenetrationDiagnostics()
+{
+	WorldStaticPenetrationDiagnostics = FSphereWorldStaticPenetrationDiagnostics();
+	WorldStaticPenetrationDiagnostics.bEnabled = true;
+	WorldStaticPenetrationDiagnostics.StartFrame =
+		ParentComponent ? int32(ParentComponent->NumFrame()) : INDEX_NONE;
 }
 
 

@@ -239,6 +239,12 @@ bool ISpeedWheeledComponent::TryComputeWheelSuspensionForceOverride(
 	return false;
 }
 
+float ISpeedWheeledComponent::GetCanonicalWheelSupportCompression(
+	const USWheelSubBody& Wheel) const
+{
+	return Wheel.StaticSpringCompression();
+}
+
 void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delta)
 {
 	TArray<SWheelGroundContact>& PendingWheelGroundContacts = GetPendingWheelContacts();
@@ -678,7 +684,7 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 	PlaneMatrix.SetAxes(&Forward, &Right, &PlaneNormal);
 	const FQuat PlaneRotation(PlaneMatrix);
 
-	auto EvaluatePose = [&Wheels, &PlaneNormal, PlaneOffset, &Forward, &Right, &PlaneRotation](
+	auto EvaluatePose = [this, &Wheels, &PlaneNormal, PlaneOffset, &Forward, &Right, &PlaneRotation](
 		const double Pitch, const double Roll, TArray<double>& RequiredOriginOffsets)
 	{
 		const FQuat Rotation =
@@ -688,7 +694,7 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 		for (const USWheelSubBody* Wheel : Wheels)
 		{
 			const FVector StaticWheelLocal = Wheel->GetLocalOffset() +
-				Wheel->StaticSpringCompression() * FVector::UpVector;
+				GetCanonicalWheelSupportCompression(*Wheel) * FVector::UpVector;
 			RequiredOriginOffsets.Add(static_cast<double>(PlaneOffset + Wheel->Radius() -
 				FVector::DotProduct(Rotation.RotateVector(StaticWheelLocal), PlaneNormal)));
 		}
@@ -771,7 +777,7 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 	for (const TObjectPtr<USWheelSubBody>& WheelPtr : Wheels)
 	{
 		USWheelSubBody* Wheel = WheelPtr.Get();
-		Wheel->SetLastDisplacement(Wheel->StaticSpringCompression());
+		Wheel->SetLastDisplacement(GetCanonicalWheelSupportCompression(*Wheel));
 	}
 	UpdateSubBodiesKinematics();
 	return true;

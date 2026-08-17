@@ -102,6 +102,7 @@ private:
 		uint64 PairKeyFilter = 0,
 		bool bFilterByPairKey = false,
 		bool bSolveFirstSeenFrame = false);
+	void ProjectDynamicContactPairs();
 
     FCriticalSection PendingCS;
     TArray<FPendingOp> PendingOps;

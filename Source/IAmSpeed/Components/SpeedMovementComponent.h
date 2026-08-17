@@ -134,6 +134,10 @@ protected:
 	int32 GetSinceCanMoveFrame() const;
 	unsigned int NbFramesSinceCanMove() const;
 	void SetSubBodies(const TArray<USSubBody*>& NewSubBodies);
+	// Let derived movers preserve an already-proven support equilibrium without
+	// integrating equal and opposite normal forces during the frame.
+	virtual void UpdateSupportForceSleepState() {}
+	virtual bool DisableGravityThisFrame() const { return false; }
 
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay
 	virtual void PreGameplayTick(const float& DeltaTime, const float& SimTime);

@@ -785,6 +785,77 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 	}
 }
 
+void USpeedWorldSubsystem::ProjectDynamicContactPairs()
+{
+	if (!USphereSubBody::IsSphereBoxProjectionEnabled())
+	{
+		return;
+	}
+
+	const auto ProjectPairs = [](TArray<FDynamicContactPair>& Pairs)
+	{
+		for (FDynamicContactPair& Pair : Pairs)
+		{
+			USolidSubBody* BodyA = Pair.BodyA.Get();
+			USolidSubBody* BodyB = Pair.BodyB.Get();
+			if (!BodyA || !BodyB)
+			{
+				continue;
+			}
+
+			USphereSubBody* Sphere = Cast<USphereSubBody>(BodyA);
+			UBoxSubBody* Box = Cast<UBoxSubBody>(BodyB);
+			if (!Sphere || !Box)
+			{
+				Sphere = Cast<USphereSubBody>(BodyB);
+				Box = Cast<UBoxSubBody>(BodyA);
+			}
+			if (Sphere && Box)
+			{
+				Sphere->ProjectOutOfBox(*Box);
+			}
+		}
+	};
+
+	ProjectPairs(DynamicContactPairs);
+	ProjectPairs(PendingRollingContactPairs);
+
+	// New encounters and teleports do not necessarily own a persistent
+	// manifold yet. Measure every independent sphere/box pair from refreshed
+	// parent states so the next frame cannot inherit an overlap.
+	TArray<USphereSubBody*> Spheres;
+	TArray<UBoxSubBody*> Boxes;
+	for (ISpeedComponent* Component : ComponentsSorted)
+	{
+		if (!Component)
+		{
+			continue;
+		}
+		for (USSubBody* SubBody : Component->GetSubBodies())
+		{
+			if (USphereSubBody* Sphere = Cast<USphereSubBody>(SubBody))
+			{
+				Spheres.Add(Sphere);
+			}
+			else if (UBoxSubBody* Box = Cast<UBoxSubBody>(SubBody))
+			{
+				Boxes.Add(Box);
+			}
+		}
+	}
+	for (USphereSubBody* Sphere : Spheres)
+	{
+		for (UBoxSubBody* Box : Boxes)
+		{
+			if (Sphere && Box &&
+				Sphere->GetParentComponent() != Box->GetParentComponent())
+			{
+				Sphere->ProjectOutOfBox(*Box);
+			}
+		}
+	}
+}
+
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
 	CurrentStepFrame = Frame;
@@ -921,7 +992,6 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         {
             ResolvedPairs.Add(Best.PairKey);
         }
-
 		USolidSubBody* RollingBodyA = Cast<USolidSubBody>(Resolver);
 		USolidSubBody* RollingBodyB = Cast<USolidSubBody>(Resolver->GetHit().SubBody.Get());
 
@@ -942,6 +1012,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         }
         */
     }
+
+    // Make persistent finite-mass contacts geometrically feasible before any
+    // PostPhysics observer samples them.
+	ProjectDynamicContactPairs();
 
     // ------------------------------------------------------------
     // 5) Final post update
@@ -969,4 +1043,5 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	}
 
 	SolveDynamicContactPairs(Dt);
+	ProjectDynamicContactPairs();
 }

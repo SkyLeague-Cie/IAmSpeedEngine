@@ -56,6 +56,11 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 		float CurrentDisplacement,
 		float NormalVelocity,
 		float& OutForce) const;
+	// Returns the spring compression represented by the canonical support pose.
+	// Vehicle presets may add persistent supported loads without changing the
+	// generic suspension law or the contact geometry.
+	virtual float GetCanonicalWheelSupportCompression(
+		const USWheelSubBody& Wheel) const;
 	virtual void ResolveGroupedWheelGroundContacts(const float& delta);
 	virtual bool ProjectWheelSupportNonPenetration();
 	virtual bool ProjectCoupledSubBodyPose(float Delta);

@@ -244,6 +244,10 @@ protected:
 
 	// Update Inputs
 	virtual void UpdateInputs();
+	// Vehicle presets may deterministically put an unchanged support manifold to
+	// sleep before frame forces are accumulated.
+	virtual void UpdateSupportForceSleepState() {}
+	virtual bool DisableGravityThisFrame() const { return false; }
 
 public:
 	// Queues a complete continuous input snapshot for deterministic consumers such as netcode and test scenarios.
