@@ -7,7 +7,7 @@
 #include "SpeedGameMode.generated.h"
 
 
-class ASpeedSimActor;
+class ASpeedSimulation;
 
 /**
  * 
@@ -23,9 +23,9 @@ public:
 
 protected:
 	UPROPERTY(EditDefaultsOnly)
-	TSubclassOf<class ASpeedSimActor> SpeedSimActorClass;
+	TSubclassOf<class ASpeedSimulation> SpeedSimActorClass;
 
 private:
 	UPROPERTY()
-	TObjectPtr<ASpeedSimActor> SpeedSimActor;
+	TObjectPtr<ASpeedSimulation> SpeedSimActor;
 };

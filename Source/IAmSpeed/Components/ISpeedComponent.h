@@ -8,6 +8,7 @@
 class USSubBody;
 class USolidSubBody;
 struct SubBodyConfig;
+struct FCanonicalFrameContext;
 
 struct SComponentTOI
 {
@@ -27,6 +28,15 @@ struct SComponentTOI
 class IAMSPEED_API ISpeedComponent
 {
 public:
+	// Runs component-owned preparation/gameplay for one integer-addressed frame.
+	// This virtual dispatch also covers derived components declared by game modules.
+	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;
+	// Optional simulation-owned run control. A test/controller seals its complete
+	// frame-addressed scenario before FastSimulation starts and marks completion
+	// from the canonical lane after publishing the terminal result.
+	virtual bool IsCanonicalRunController() const { return false; }
+	virtual bool IsCanonicalRunReady() const { return false; }
+	virtual bool IsCanonicalRunComplete() const { return false; }
 	// overload this function to return the number of frames that have passed since the start of simulation
 	virtual unsigned int NumFrame() const = 0;
 	// overload this function to return the mass of the component (e.g. for a car body, this would be the mass of the car body without the wheels)

@@ -2,11 +2,11 @@
 
 
 #include "SpeedGameMode.h"
-#include "SpeedSimActor.h"
+#include "SpeedSimulation.h"
 
 ASpeedGameMode::ASpeedGameMode()
 {
-    SpeedSimActorClass = ASpeedSimActor::StaticClass();
+    SpeedSimActorClass = ASpeedSimulation::StaticClass();
 }
 
 void ASpeedGameMode::BeginPlay()
@@ -23,5 +23,5 @@ void ASpeedGameMode::BeginPlay()
     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
     Params.bNoFail = true;
 
-    SpeedSimActor = World->SpawnActor<ASpeedSimActor>(SpeedSimActorClass, FTransform::Identity, Params);
+    SpeedSimActor = World->SpawnActor<ASpeedSimulation>(SpeedSimActorClass, FTransform::Identity, Params);
 }

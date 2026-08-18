@@ -107,6 +107,7 @@ public:
 	void SetCannotMoveMulti();
 
 	unsigned int GetEngineFPS() const;
+	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) override;
 
 	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
 	bool IsFrozen() const override;
@@ -119,6 +120,7 @@ private:
 
 	void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) override final;
 	void PhysicsTick(const float& DeltaTime, const float& SimTime);
+	void PreparePhysicsFrame(const float& DeltaTime, const float& SimTime);
 
 	void UpdateNumFrame(const float& SimTime);
 

@@ -201,13 +201,15 @@ public:
 
 	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
 	bool IsFrozen() const override;
+	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) override;
 	// Set whether the movement is currently frozen (e.g. due to the game being paused)
 	void SetIsFrozen(bool bFrozen) override;
 private:
 	void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) override final;
 	void PhysicsTick(const float& DeltaTime, const float& SimTime);
+	void PreparePhysicsFrame(const float& DeltaTime, const float& SimTime);
 
-	void UpdateFrameState(const float& SimTime);
+	void UpdateFrameState();
 	void UpdateNumFrame(const float& SimTime);
 	bool GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
 	bool GetWheeledState(const int32& LocalFrame, FWheeledPhysicsState& OutState) const;

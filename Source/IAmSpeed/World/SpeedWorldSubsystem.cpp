@@ -4,6 +4,7 @@
 
 #include "SpeedWorldSubsystem.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/World/CanonicalFrameContext.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
@@ -854,6 +855,54 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 			}
 		}
 	}
+}
+
+void USpeedWorldSubsystem::PrepareCanonicalFrame(
+	const FCanonicalFrameContext& Context)
+{
+	ApplyPendingOps();
+	RebuildSortedIfNeeded();
+
+	for (ISpeedComponent* Component : ComponentsSorted)
+	{
+		if (Component)
+		{
+			Component->PrepareCanonicalFrame(Context);
+		}
+	}
+}
+
+ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
+{
+	ApplyPendingOps();
+	RebuildSortedIfNeeded();
+
+	bool bFoundController = false;
+	bool bAllReady = true;
+	bool bAllComplete = true;
+	for (const ISpeedComponent* Component : ComponentsSorted)
+	{
+		if (!Component || !Component->IsCanonicalRunController())
+		{
+			continue;
+		}
+
+		bFoundController = true;
+		bAllReady &= Component->IsCanonicalRunReady();
+		bAllComplete &= Component->IsCanonicalRunComplete();
+	}
+
+	if (!bFoundController)
+	{
+		return ECanonicalRunControlState::Uncontrolled;
+	}
+	if (!bAllReady)
+	{
+		return ECanonicalRunControlState::WaitingForScenario;
+	}
+	return bAllComplete
+		? ECanonicalRunControlState::Complete
+		: ECanonicalRunControlState::Ready;
 }
 
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)

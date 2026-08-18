@@ -9,12 +9,21 @@
 
 class ISpeedComponent;
 class USolidSubBody;
+struct FCanonicalFrameContext;
 
 enum class ERollingManifoldContactState : uint8
 {
 	Absent,
 	IdentityOnly,
 	ActiveContact,
+};
+
+enum class ECanonicalRunControlState : uint8
+{
+	Uncontrolled,
+	WaitingForScenario,
+	Ready,
+	Complete,
 };
 
 struct FPendingOp
@@ -81,6 +90,8 @@ public:
 	ERollingManifoldContactState GetRollingManifoldContactState(
 		const USolidSubBody& Body) const;
 
+	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context);
+	ECanonicalRunControlState GetCanonicalRunControlState();
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
     TArray<ISpeedComponent*> Components;
