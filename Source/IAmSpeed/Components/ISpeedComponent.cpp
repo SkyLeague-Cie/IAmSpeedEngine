@@ -426,6 +426,36 @@ void ISpeedComponent::AddPhysImpulseAtPoint(const FVector& Impulse, const FVecto
 	SetPhysCOMVelocity(NewCOMVelocity);
 }
 
+void ISpeedComponent::AddPhysImpulseBatchAtPoints(
+	const TArray<FVector>& Impulses, const TArray<FVector>& WorldPoints,
+	const USolidSubBody* SubBody)
+{
+	if (Impulses.Num() == 0 || Impulses.Num() != WorldPoints.Num())
+	{
+		return;
+	}
+
+	const float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f;
+	const FVector COM = GetPhysCOM();
+	const FMatrix WorldInvInertiaTensor = SubBody
+		? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
+	FVector DeltaV = FVector::ZeroVector;
+	FVector DeltaW = FVector::ZeroVector;
+	for (int32 Index = 0; Index < Impulses.Num(); ++Index)
+	{
+		DeltaV += Impulses[Index] / PhysMass;
+		DeltaW += WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(
+			WorldPoints[Index] - COM, Impulses[Index]));
+	}
+
+	// The complete point-impulse set is one physical transaction. Projecting
+	// each wheel separately makes the result depend on wheel iteration order.
+	ProjectPointDeltaAgainstConstraints(DeltaV, DeltaW);
+	SetPhysAngularVelocityRaw((GetPhysAngularVelocity() + DeltaW)
+		.GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
+	SetPhysCOMVelocity(GetPhysCOMVelocity() + DeltaV);
+}
+
 void ISpeedComponent::AddPhysForceAtPoint(const FVector& Force, const FVector& WorldPoint, const USolidSubBody* SubBody)
 {
     // F = m * a => a = F / m
@@ -439,7 +469,34 @@ void ISpeedComponent::AddPhysForceAtPoint(const FVector& Force, const FVector& W
 
 	ProjectPointDeltaAgainstConstraints(DeltaA, DeltaAlpha);
     SetPhysAcceleration(GetPhysAcceleration() + DeltaA);
-    SetPhysAngularAcceleration(GetPhysAngularAcceleration() + DeltaAlpha);
+	SetPhysAngularAcceleration(GetPhysAngularAcceleration() + DeltaAlpha);
+}
+
+void ISpeedComponent::AddPhysForceBatchAtPoints(
+	const TArray<FVector>& Forces, const TArray<FVector>& WorldPoints,
+	const USolidSubBody* SubBody)
+{
+	if (Forces.Num() == 0 || Forces.Num() != WorldPoints.Num())
+	{
+		return;
+	}
+
+	const float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f;
+	const FVector COM = GetPhysCOM();
+	const FMatrix WorldInvInertiaTensor = SubBody
+		? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
+	FVector DeltaA = FVector::ZeroVector;
+	FVector DeltaAlpha = FVector::ZeroVector;
+	for (int32 Index = 0; Index < Forces.Num(); ++Index)
+	{
+		DeltaA += Forces[Index] / PhysMass;
+		DeltaAlpha += WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(
+			WorldPoints[Index] - COM, Forces[Index]));
+	}
+
+	ProjectPointDeltaAgainstConstraints(DeltaA, DeltaAlpha);
+	SetPhysAcceleration(GetPhysAcceleration() + DeltaA);
+	SetPhysAngularAcceleration(GetPhysAngularAcceleration() + DeltaAlpha);
 }
 
 void ISpeedComponent::SetPhysCOMVelocityRaw(const FVector& NewVelocity)

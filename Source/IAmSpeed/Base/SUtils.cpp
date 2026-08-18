@@ -192,11 +192,16 @@ SHitResult SSphere::IntersectNextFrame(const SSphere& Other, const float& deltaT
 
 		const FVector ImpactPoint = pA0 - N * Radius;
 
-		return SHitResult(true,
+		SHitResult Hit(true,
 			ImpactPoint,
 			N,
 			0.f
 		);
+		Hit.bStartPenetrating = f0 < 0.f;
+		Hit.PenetrationDepth = FMath::Max(0.f, -f0);
+		Hit.ContactPointThis = pA0 - N * Radius;
+		Hit.ContactPointOther = pB0 + N * Other.Radius;
+		return Hit;
 	}
 
 	// ------------- EARLY OUT -------------
@@ -252,6 +257,7 @@ SHitResult SSphere::IntersectNextFrame(const SBox& Box, const float& deltaTime, 
 	{
 		// Flip normal to point into the sphere (self)
 		HitResult.ImpactNormal *= -1.0f;
+		Swap(HitResult.ContactPointThis, HitResult.ContactPointOther);
 	}
 	return HitResult;
 }
@@ -679,7 +685,13 @@ SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& d
 
 	if (PrevSep <= 0.f)
 	{
-		return SHitResult(true, PrevContactPoint, PrevNormal, 0.f);
+		SHitResult Hit(true, PrevContactPoint, PrevNormal, 0.f);
+		Hit.Location = Xs0;
+		Hit.bStartPenetrating = PrevSep < 0.f;
+		Hit.PenetrationDepth = FMath::Max(0.f, -PrevSep);
+		Hit.ContactPointThis = PrevContactPoint;
+		Hit.ContactPointOther = Xs0 + PrevNormal * Rs;
+		return Hit;
 	}
 
 	for (int32 i = 1; i <= static_cast<int32>(NbSubsteps); ++i)
@@ -733,7 +745,14 @@ SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& d
 				BestNormal = FinalNormal;
 			}
 
-			return SHitResult(true, BestContactPoint, BestNormal, HighT);
+			const float FinalSeparation = EvalSeparation(
+				HighT, FinalContactPoint, FinalNormal);
+			SHitResult Hit(true, BestContactPoint, BestNormal, HighT);
+			Hit.Location = SphereC(HighT);
+			Hit.PenetrationDepth = FMath::Max(0.f, -FinalSeparation);
+			Hit.ContactPointThis = FinalContactPoint;
+			Hit.ContactPointOther = Hit.Location + FinalNormal * Rs;
+			return Hit;
 		}
 
 		PrevT = T;
@@ -1223,16 +1242,57 @@ void Speed::SBox::ClosestPointOnOBB(const FQuat& Q, const FVector& X, const FVec
 
 float Speed::SBox::SphereOBBSeparation(const FQuat& Q, const FVector& X, const FVector& CS, float R, FVector* OutContactPointWorld) const
 {
-	FVector Closest = FVector::ZeroVector;
-	float DistSq = 0.f;
-	ClosestPointOnOBB(Q, X, CS, Closest, DistSq);
-	const float Dist = FMath::Sqrt(DistSq);
+	const FVector SphereLocal = Q.UnrotateVector(CS - X);
+	FVector ClosestLocal(
+		FMath::Clamp(SphereLocal.X, Min.X, Max.X),
+		FMath::Clamp(SphereLocal.Y, Min.Y, Max.Y),
+		FMath::Clamp(SphereLocal.Z, Min.Z, Max.Z));
+	const bool bCenterInside =
+		SphereLocal.X >= Min.X && SphereLocal.X <= Max.X &&
+		SphereLocal.Y >= Min.Y && SphereLocal.Y <= Max.Y &&
+		SphereLocal.Z >= Min.Z && SphereLocal.Z <= Max.Z;
+
+	float SignedPointDistance = 0.f;
+	if (bCenterInside)
+	{
+		// A clamped closest point equals the query point inside an OBB, which
+		// loses both the exit normal and the true overlap depth. Select the
+		// nearest face explicitly so the signed distance remains meaningful.
+		const float FaceDistances[6] = {
+			SphereLocal.X - Min.X, Max.X - SphereLocal.X,
+			SphereLocal.Y - Min.Y, Max.Y - SphereLocal.Y,
+			SphereLocal.Z - Min.Z, Max.Z - SphereLocal.Z };
+		int32 NearestFace = 0;
+		for (int32 Face = 1; Face < UE_ARRAY_COUNT(FaceDistances); ++Face)
+		{
+			if (FaceDistances[Face] < FaceDistances[NearestFace])
+			{
+				NearestFace = Face;
+			}
+		}
+		switch (NearestFace)
+		{
+		case 0: ClosestLocal.X = Min.X; break;
+		case 1: ClosestLocal.X = Max.X; break;
+		case 2: ClosestLocal.Y = Min.Y; break;
+		case 3: ClosestLocal.Y = Max.Y; break;
+		case 4: ClosestLocal.Z = Min.Z; break;
+		default: ClosestLocal.Z = Max.Z; break;
+		}
+		SignedPointDistance = -FaceDistances[NearestFace];
+	}
+	else
+	{
+		SignedPointDistance = FVector::Distance(SphereLocal, ClosestLocal);
+	}
+
+	const FVector Closest = Q.RotateVector(ClosestLocal) + X;
 	if (OutContactPointWorld)
 	{
 		*OutContactPointWorld = Closest;
 	}
 
-	return Dist - R;
+	return SignedPointDistance - R;
 }
 
 float Speed::SBox::ProjectedRadiusOnNormal(const SBox& Box, const FVector& N)

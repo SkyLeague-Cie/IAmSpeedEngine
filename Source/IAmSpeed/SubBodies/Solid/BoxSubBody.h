@@ -60,6 +60,8 @@ public:
     void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint) override;
     FVector GetCOM() const;
 	FVector GetBoxExtent() const;
+	float GetSphereSeparation(const FVector& SphereCenter, float SphereRadius) const;
+	bool GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const;
 	void SetBoxExtent(const FVector& InBoxExtent);
     FMatrix ComputeChassisLocalInvInertiaTensor() const;
     FMatrix ComputeWorldInvInertiaTensor() const override;

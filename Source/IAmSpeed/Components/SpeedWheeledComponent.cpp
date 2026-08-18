@@ -1,6 +1,8 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/World/CanonicalFrameContext.h"
+#include "IAmSpeed/World/CanonicalFrameDriver.h"
 #include "ChaosVehicleManager.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/SubBodies/Configs/WheelSubBodyConfig.h"
@@ -884,6 +886,10 @@ void USpeedWheeledComponent::ApplyTestVelocity()
 
 void USpeedWheeledComponent::AsyncPhysicsTickComponent(float DeltaTime, float SimTime)
 {
+	if (Speed::CanonicalFrameDriver::IsEnabled())
+	{
+		return;
+	}
 	PhysicsTick(DeltaTime, SimTime);
 }
 
@@ -997,11 +1003,33 @@ unsigned int USpeedWheeledComponent::GetCurrentFrame() const
 void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& SimTime)
 {
 	// Update NumFrame at the beginning of the tick so that it can be used in the rest of the tick functions
-	UpdateFrameState(SimTime);
+	UpdateNumFrame(SimTime);
+	PreparePhysicsFrame(DeltaTime, SimTime);
+}
+
+void USpeedWheeledComponent::PrepareCanonicalFrame(
+	const FCanonicalFrameContext& Context)
+{
+	checkf(Context.NumFrame < TNumericLimits<uint32>::Max(),
+		TEXT("Canonical frame exceeds the legacy local-frame range."));
+	// Network Physics local frames remain one-based during migration; the
+	// canonical simulation frame is zero-based and authoritative.
+	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
+	PreparePhysicsFrame(Context.PhysicalDeltaTime, Context.SimTime);
+}
+
+void USpeedWheeledComponent::PreparePhysicsFrame(
+	const float& DeltaTime, const float& SimTime)
+{
+	UpdateFrameState();
 	// A test's initial state must be visible from the first movable frame, before any gameplay force can modify it.
 	ApplyTestVelocity();
+	UpdateSupportForceSleepState();
 	// Handle forces that should be applied before the gameplay tick (e.g. gravity, damping, rest force)
-	HandleGravity();
+	if (!DisableGravityThisFrame())
+	{
+		HandleGravity();
+	}
 	PreGameplayTick(DeltaTime, SimTime);
 
 	// Handle gameplay forces (e.g. from player input or AI)
@@ -1018,9 +1046,8 @@ void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& Si
 	PostGameplayTick(DeltaTime, SimTime);
 }
 
-void USpeedWheeledComponent::UpdateFrameState(const float& SimTime)
+void USpeedWheeledComponent::UpdateFrameState()
 {
-	UpdateNumFrame(SimTime);
 	HandleCountdownTimer();
 	UpdateInputs();
 	TagStateHistoryProxyRole();

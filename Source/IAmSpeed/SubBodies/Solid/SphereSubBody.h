@@ -11,6 +11,21 @@
 
 class UBoxSubBody;
 
+struct FSphereWorldStaticPenetrationDiagnostics
+{
+	bool bEnabled = false;
+	int32 StartFrame = INDEX_NONE;
+	int32 SweepInitialOverlapSamples = 0;
+	int32 ProjectionInputSamples = 0;
+	int32 ProjectionResidualSamples = 0;
+	float MaximumSweepInitialOverlapCm = 0.0f;
+	float MaximumProjectionInputDepthCm = 0.0f;
+	float MaximumProjectionResidualDepthCm = 0.0f;
+	int32 MaximumSweepInitialOverlapFrame = INDEX_NONE;
+	int32 MaximumProjectionInputFrame = INDEX_NONE;
+	int32 MaximumProjectionResidualFrame = INDEX_NONE;
+};
+
 DECLARE_LOG_CATEGORY_EXTERN(SphereSubBodyLog, Log, All);
 
 /**
@@ -24,6 +39,8 @@ class IAMSPEED_API USphereSubBody : public USolidSubBody, public ISphereSweeper,
 public:
 	virtual void Initialize(ISpeedComponent* InParentComponent) override;
 	void ResetForFrame(const float& Delta) override;
+	void PostPhysicsUpdate() override;
+	void AcceptHit() override;
 
     // Called by the solver each substep
     virtual bool SweepTOI(const float& RemainingDelta, float& OutTOI) override;
@@ -36,6 +53,15 @@ public:
     FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
     void UpdateBodySetup();
 	void HandleMicroOscillation();
+	bool ProjectOutOfBox(UBoxSubBody& OtherBox);
+	bool ProjectOutOfWorldStatic();
+	void BeginWorldStaticPenetrationDiagnostics();
+	const FSphereWorldStaticPenetrationDiagnostics& GetWorldStaticPenetrationDiagnostics() const
+	{
+		return WorldStaticPenetrationDiagnostics;
+	}
+	static bool IsSphereBoxProjectionEnabled();
+	static bool IsWorldStaticProjectionEnabled();
     float GetRadius() const { return Radius; }
 	void SetRadiusForConfiguration(float NewRadius)
 	{
@@ -133,4 +159,5 @@ protected:
 	float SphereBoxTangentialArmMinSphereAngularSpeed = -1.0f;
 	float SphereBoxTangentialArmMaxSphereAngularSpeed = -1.0f;
 	float SphereBoxTangentialArmMinBoxSpeed = -1.0f;
+	FSphereWorldStaticPenetrationDiagnostics WorldStaticPenetrationDiagnostics;
 };

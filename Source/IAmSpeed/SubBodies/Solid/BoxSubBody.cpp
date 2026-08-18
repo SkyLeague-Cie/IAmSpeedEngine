@@ -520,7 +520,6 @@ void UBoxSubBody::AcceptHit()
     {
         IgnoredComponents.AddUnique(Comp);
     }
-    IgnoredComponents.AddUnique(Comp);
 
     if (CurrentHit.SubBody.IsValid())
     {
@@ -531,6 +530,56 @@ void UBoxSubBody::AcceptHit()
             OtherSubBody->AcceptHit();
         }
     }
+}
+
+bool UBoxSubBody::GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const
+{
+    OutHits.Reset();
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+
+    FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(IAmSpeedBoxPosePenetration), false);
+    QueryParams.bFindInitialOverlaps = true;
+    if (const AActor* Owner = GetOwner())
+    {
+        QueryParams.AddIgnoredActor(Owner);
+    }
+    FCollisionObjectQueryParams ObjectQuery;
+    ObjectQuery.AddObjectTypesToQuery(ECC_WorldStatic);
+    const Speed::FKinematicState& State = GetKinematicState();
+    World->SweepMultiByObjectType(
+        OutHits,
+        State.Location,
+        State.Location,
+        State.Rotation,
+        ObjectQuery,
+        GetCollisionShape(),
+        QueryParams);
+
+    OutHits.RemoveAll([](const FHitResult& Hit)
+    {
+        return !Hit.bStartPenetrating || Hit.PenetrationDepth <= 0.0f;
+    });
+    OutHits.Sort([](const FHitResult& A, const FHitResult& B)
+    {
+        const UPrimitiveComponent* CompA = A.Component.Get();
+        const UPrimitiveComponent* CompB = B.Component.Get();
+        const uint32 IdA = CompA ? static_cast<uint32>(CompA->GetUniqueID()) : 0u;
+        const uint32 IdB = CompB ? static_cast<uint32>(CompB->GetUniqueID()) : 0u;
+        if (IdA != IdB)
+        {
+            return IdA < IdB;
+        }
+        if (A.FaceIndex != B.FaceIndex)
+        {
+            return A.FaceIndex < B.FaceIndex;
+        }
+        return A.PenetrationDepth > B.PenetrationDepth;
+    });
+    return !OutHits.IsEmpty();
 }
 
 //======================================================
@@ -1366,6 +1415,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 
 	// Handle micro-oscillations
 	Sphere.HandleMicroOscillation();
+	Sphere.ProjectOutOfBox(*this);
 	if (Sphere.ShouldMaintainSphereBoxContact(
 		RelativeNormalSpeedForSphere,
 		CurrentHit.ImpactNormal,
@@ -1482,15 +1532,13 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         FMath::Max(
             FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisY(), N)),
             FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisZ(), N))));
-    const bool bFaceOnVerticalWallContact =
-        !Hit.bStartPenetrating &&
-        FMath::Abs(FVector::DotProduct(N, FVector::UpVector)) < 0.10f &&
-        FaceAlignment >= 0.98f;
+    const bool bFaceOnPlaneContact = FaceAlignment >= 0.98f;
 
-    // A face-on box/plane impact is a contact manifold, even if the sweep
-    // reports only one corner. Resolve it through the face center so a
-    // sampling artifact cannot turn most of the rebound into angular motion.
-    const FVector SolveP = bFaceOnVerticalWallContact
+    // A face-on box/plane impact is a contact manifold in every orientation,
+    // including a recontact inside numerical slop. Resolve it through the face
+    // center so a sampled corner cannot turn most of a wall or ceiling rebound
+    // into angular motion.
+    const FVector SolveP = bFaceOnPlaneContact
         ? COM + N * FVector::DotProduct(P - COM, N)
         : P;
     const FVector Vp = GetVelocityAtPoint(SolveP);
@@ -1622,9 +1670,11 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     // Normal impulse to cancel vN (or bounce if enabled)
     float jn = -(1.f + Rest) * vN / denomN;
-    const bool bHardImpact =
-        (!Hit.bStartPenetrating || bHardVerticalWallImpact) &&
-        vN < -300.f;
+    const bool bCanResolveFullPlaneImpact =
+        !Hit.bStartPenetrating ||
+        bHardVerticalWallImpact ||
+        bFaceOnPlaneContact;
+    const bool bHardImpact = bCanResolveFullPlaneImpact && bImpact;
 
     const float MaxWallDeltaVCmS =
         bUseSoftWallResponse ? 50.f :
@@ -3549,6 +3599,17 @@ FVector UBoxSubBody::GetCOM() const
 FVector UBoxSubBody::GetBoxExtent() const
 {
 	return BoxExtent;
+}
+
+float UBoxSubBody::GetSphereSeparation(
+	const FVector& SphereCenter, const float SphereRadius) const
+{
+	const Speed::SBox BoxShape = MakeBox();
+	return BoxShape.SphereOBBSeparation(
+		BoxShape.Rot,
+		BoxShape.AbsoluteCenter(),
+		SphereCenter,
+		SphereRadius);
 }
 
 void UBoxSubBody::SetBoxExtent(const FVector& InBoxExtent)

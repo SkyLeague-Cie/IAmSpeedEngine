@@ -2,6 +2,8 @@
 
 
 #include "SpeedMovementComponent.h"
+#include "IAmSpeed/World/CanonicalFrameContext.h"
+#include "IAmSpeed/World/CanonicalFrameDriver.h"
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -280,6 +282,10 @@ void USpeedMovementComponent::ApplyTestVelocity()
 
 void USpeedMovementComponent::AsyncPhysicsTickComponent(float DeltaTime, float SimTime)
 {
+	if (Speed::CanonicalFrameDriver::IsEnabled())
+	{
+		return;
+	}
 	PhysicsTick(DeltaTime, SimTime);
 }
 
@@ -307,11 +313,32 @@ void USpeedMovementComponent::PhysicsTick(const float& DeltaTime, const float& S
 {
 	// Update NumFrame at the beginning of the tick so that it can be used in the rest of the tick functions
 	UpdateNumFrame(SimTime);
+	PreparePhysicsFrame(DeltaTime, SimTime);
+}
+
+void USpeedMovementComponent::PrepareCanonicalFrame(
+	const FCanonicalFrameContext& Context)
+{
+	checkf(Context.NumFrame < TNumericLimits<uint32>::Max(),
+		TEXT("Canonical frame exceeds the legacy local-frame range."));
+	// Network Physics local frames remain one-based during migration; the
+	// canonical simulation frame is zero-based and authoritative.
+	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
+	PreparePhysicsFrame(Context.PhysicalDeltaTime, Context.SimTime);
+}
+
+void USpeedMovementComponent::PreparePhysicsFrame(
+	const float& DeltaTime, const float& SimTime)
+{
 	HandleCountdownTimer();
 	TagStateHistoryProxyRole();
+	UpdateSupportForceSleepState();
 
 	// Handle forces that should be applied before the gameplay tick (e.g. gravity, damping, rest force)
-	HandleGravity();
+	if (!DisableGravityThisFrame())
+	{
+		HandleGravity();
+	}
 	PreGameplayTick(DeltaTime, SimTime);
 	HandleRestForce(); // Handle rest force before gameplay tick so that the component can be at rest at the beginning of the tick if it should be
 

@@ -4,6 +4,7 @@
 
 #include "SpeedWorldSubsystem.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/World/CanonicalFrameContext.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
@@ -785,6 +786,125 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 	}
 }
 
+void USpeedWorldSubsystem::ProjectDynamicContactPairs()
+{
+	if (!USphereSubBody::IsSphereBoxProjectionEnabled())
+	{
+		return;
+	}
+
+	const auto ProjectPairs = [](TArray<FDynamicContactPair>& Pairs)
+	{
+		for (FDynamicContactPair& Pair : Pairs)
+		{
+			USolidSubBody* BodyA = Pair.BodyA.Get();
+			USolidSubBody* BodyB = Pair.BodyB.Get();
+			if (!BodyA || !BodyB)
+			{
+				continue;
+			}
+
+			USphereSubBody* Sphere = Cast<USphereSubBody>(BodyA);
+			UBoxSubBody* Box = Cast<UBoxSubBody>(BodyB);
+			if (!Sphere || !Box)
+			{
+				Sphere = Cast<USphereSubBody>(BodyB);
+				Box = Cast<UBoxSubBody>(BodyA);
+			}
+			if (Sphere && Box)
+			{
+				Sphere->ProjectOutOfBox(*Box);
+			}
+		}
+	};
+
+	ProjectPairs(DynamicContactPairs);
+	ProjectPairs(PendingRollingContactPairs);
+
+	// New encounters and teleports do not necessarily own a persistent
+	// manifold yet. Measure every independent sphere/box pair from refreshed
+	// parent states so the next frame cannot inherit an overlap.
+	TArray<USphereSubBody*> Spheres;
+	TArray<UBoxSubBody*> Boxes;
+	for (ISpeedComponent* Component : ComponentsSorted)
+	{
+		if (!Component)
+		{
+			continue;
+		}
+		for (USSubBody* SubBody : Component->GetSubBodies())
+		{
+			if (USphereSubBody* Sphere = Cast<USphereSubBody>(SubBody))
+			{
+				Spheres.Add(Sphere);
+			}
+			else if (UBoxSubBody* Box = Cast<UBoxSubBody>(SubBody))
+			{
+				Boxes.Add(Box);
+			}
+		}
+	}
+	for (USphereSubBody* Sphere : Spheres)
+	{
+		for (UBoxSubBody* Box : Boxes)
+		{
+			if (Sphere && Box &&
+				Sphere->GetParentComponent() != Box->GetParentComponent())
+			{
+				Sphere->ProjectOutOfBox(*Box);
+			}
+		}
+	}
+}
+
+void USpeedWorldSubsystem::PrepareCanonicalFrame(
+	const FCanonicalFrameContext& Context)
+{
+	ApplyPendingOps();
+	RebuildSortedIfNeeded();
+
+	for (ISpeedComponent* Component : ComponentsSorted)
+	{
+		if (Component)
+		{
+			Component->PrepareCanonicalFrame(Context);
+		}
+	}
+}
+
+ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
+{
+	ApplyPendingOps();
+	RebuildSortedIfNeeded();
+
+	bool bFoundController = false;
+	bool bAllReady = true;
+	bool bAllComplete = true;
+	for (const ISpeedComponent* Component : ComponentsSorted)
+	{
+		if (!Component || !Component->IsCanonicalRunController())
+		{
+			continue;
+		}
+
+		bFoundController = true;
+		bAllReady &= Component->IsCanonicalRunReady();
+		bAllComplete &= Component->IsCanonicalRunComplete();
+	}
+
+	if (!bFoundController)
+	{
+		return ECanonicalRunControlState::Uncontrolled;
+	}
+	if (!bAllReady)
+	{
+		return ECanonicalRunControlState::WaitingForScenario;
+	}
+	return bAllComplete
+		? ECanonicalRunControlState::Complete
+		: ECanonicalRunControlState::Ready;
+}
+
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
 	CurrentStepFrame = Frame;
@@ -921,7 +1041,6 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         {
             ResolvedPairs.Add(Best.PairKey);
         }
-
 		USolidSubBody* RollingBodyA = Cast<USolidSubBody>(Resolver);
 		USolidSubBody* RollingBodyB = Cast<USolidSubBody>(Resolver->GetHit().SubBody.Get());
 
@@ -942,6 +1061,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         }
         */
     }
+
+    // Make persistent finite-mass contacts geometrically feasible before any
+    // PostPhysics observer samples them.
+	ProjectDynamicContactPairs();
 
     // ------------------------------------------------------------
     // 5) Final post update
@@ -969,4 +1092,5 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	}
 
 	SolveDynamicContactPairs(Dt);
+	ProjectDynamicContactPairs();
 }
