@@ -2,6 +2,7 @@
 
 
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "Configs/WheelSubBodyConfig.h"
@@ -456,7 +457,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 
     FHitResult UnrealHit;
     const FVector CurrentPos = WorldPos();
-    if (!World->SweepSingleByChannel(
+    const bool bHit = World->SweepSingleByChannel(
         UnrealHit,
         CurrentPos + SearchDistance * SweepNormal,
         CurrentPos - SearchDistance * SweepNormal,
@@ -464,7 +465,14 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
         GetCollisionChannel(),
         GetCollisionShape(),
         Params,
-        GetResponseParams()))
+        GetResponseParams());
+	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
+		Speed::Analytic::EStaticQuerySite::WheelEstablishedSupportProbe,
+		CurrentPos + SearchDistance * SweepNormal,
+		CurrentPos - SearchDistance * SweepNormal,
+		Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), bHit, UnrealHit);
+	if (!bHit)
     {
         return false;
     }
@@ -509,7 +517,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
     }
 
     FHitResult UnrealHit;
-    if (!World->SweepSingleByChannel(
+    const bool bHit = World->SweepSingleByChannel(
         UnrealHit,
         Start,
         End,
@@ -517,7 +525,12 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
         GetCollisionChannel(),
         GetCollisionShape(),
         Params,
-        GetResponseParams()))
+        GetResponseParams());
+	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
+		Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe,
+		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), bHit, UnrealHit);
+	if (!bHit)
     {
         return false;
     }

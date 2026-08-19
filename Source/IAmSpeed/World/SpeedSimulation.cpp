@@ -4,6 +4,7 @@
 #include "SpeedSimulation.h"
 #include "CanonicalFrameContext.h"
 #include "CanonicalFrameDriver.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "Net/UnrealNetwork.h"
 #include "SpeedWorldSubsystem.h"
@@ -178,9 +179,12 @@ void ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		}
 	}
 
+	Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
+		Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData());
 	SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
 	SpeedWorldSubsystem->Step(
 		Context.PhysicalDeltaTime,
 		Context.SimTime,
 		static_cast<unsigned int>(Context.NumFrame));
+	Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
 }

@@ -7,6 +7,7 @@
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
 USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
@@ -208,6 +209,10 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
         Params,
         GetResponseParams()
     );
+	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
+		Speed::Analytic::EStaticQuerySite::SubBodySweep,
+		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), bHit, Hit);
 
 	OutHit = SHitResult();
 	OutHit.bHit = bHit;

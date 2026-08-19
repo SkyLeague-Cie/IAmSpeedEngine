@@ -2,6 +2,7 @@
 
 
 #include "SphereSubBody.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "BoxSubBody.h"
 #include "SWheelSubBody.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -814,6 +815,11 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
             ObjectQuery,
             FCollisionShape::MakeSphere(GetRadius()),
             QueryParams);
+		Speed::Analytic::FStaticWorldQueryAudit::RecordMulti(
+			Speed::Analytic::EStaticQuerySite::SpherePenetrationProjection,
+			Center, Center, FQuat::Identity,
+			FCollisionShape::MakeSphere(GetRadius()),
+			1ull << static_cast<uint8>(ECC_WorldStatic), Hits);
 
         const FHitResult* DeepestHit = nullptr;
         for (const FHitResult& Hit : Hits)
@@ -892,6 +898,11 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
 		GetWorld()->SweepMultiByObjectType(
 			ResidualHits, Center, Center, FQuat::Identity, ObjectQuery,
 			FCollisionShape::MakeSphere(GetRadius()), QueryParams);
+		Speed::Analytic::FStaticWorldQueryAudit::RecordMulti(
+			Speed::Analytic::EStaticQuerySite::SpherePenetrationResidual,
+			Center, Center, FQuat::Identity,
+			FCollisionShape::MakeSphere(GetRadius()),
+			1ull << static_cast<uint8>(ECC_WorldStatic), ResidualHits);
 		float MaximumResidualDepth = 0.0f;
 		for (const FHitResult& ResidualHit : ResidualHits)
 		{

@@ -2,6 +2,7 @@
 
 
 #include "BoxSubBody.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -558,6 +559,10 @@ bool UBoxSubBody::GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const
         ObjectQuery,
         GetCollisionShape(),
         QueryParams);
+	Speed::Analytic::FStaticWorldQueryAudit::RecordMulti(
+		Speed::Analytic::EStaticQuerySite::BoxPenetrationProjection,
+		State.Location, State.Location, State.Rotation,
+		GetCollisionShape(), 1ull << static_cast<uint8>(ECC_WorldStatic), OutHits);
 
     OutHits.RemoveAll([](const FHitResult& Hit)
     {

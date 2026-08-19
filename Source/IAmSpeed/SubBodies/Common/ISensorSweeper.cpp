@@ -1,4 +1,5 @@
 #include "ISensorSweeper.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
 bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVector& End, SHitResult& OutHit, const float& delta)
 {
@@ -17,6 +18,10 @@ bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FV
         Params,
         GetResponseParams()
     );
+	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
+		Speed::Analytic::EStaticQuerySite::SensorSweep,
+		Start, End, KS.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), bHit, Hit);
 
     OutHit = SHitResult();
     OutHit.bHit = bHit;

@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "IAmSpeed/SubBodies/SSubBody.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "SpeedWorldSubsystem.generated.h"
 
 class ISpeedComponent;
@@ -69,6 +70,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
 public:
+	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 	static bool AreUnilateralRollingPairsEnabled();
 	static bool ShouldAcquireUnilateralRollingPair(float RelativeNormalSpeed);
     void RegisterSpeedComponent(ISpeedComponent* Comp);
@@ -92,6 +94,10 @@ public:
 
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context);
 	ECanonicalRunControlState GetCanonicalRunControlState();
+	const Speed::Analytic::FAnalyticWorldData* GetAnalyticWorldData() const
+	{
+		return AnalyticWorldData.Get();
+	}
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
     TArray<ISpeedComponent*> Components;
@@ -100,6 +106,9 @@ private:
 	unsigned int CurrentStepFrame = 0;
 	mutable bool bLoggedRollingOwnershipState = false;
 	bool bLoggedRollingSolveState = false;
+	TUniquePtr<Speed::Analytic::FAnalyticWorldData> AnalyticWorldData;
+	uint8 AnalyticWorldBuildAttempt = 0;
+	void BuildAnalyticWorldFromLoadedSources();
 
 	// Sorted array of components based on their UObject ID
     TArray<ISpeedComponent*> ComponentsSorted;

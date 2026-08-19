@@ -3,15 +3,26 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/World/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Analytic/AnalyticLandscapeAdapter.h"
+#include "IAmSpeed/World/Analytic/SpeedAnalyticCollisionAsset.h"
+#include "IAmSpeed/World/Analytic/SpeedAnalyticSourceComponent.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "LandscapeProxy.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "TimerManager.h"
 #include "Algo/Sort.h"
 #include "HAL/IConsoleManager.h"
+#include "Misc/PackageName.h"
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedPersistentDynamicPairs(
 	TEXT("p.IAmSpeed.Collision.PersistentDynamicPairs"),
@@ -37,6 +48,219 @@ static TAutoConsoleVariable<float> CVarIAmSpeedRollingPenetrationSlop(
 	TEXT("p.IAmSpeed.Collision.RollingPenetrationSlopCm"),
 	0.02f,
 	TEXT("Penetration ignored by rolling-manifold velocity stabilization."));
+
+static TAutoConsoleVariable<float> CVarIAmSpeedAnalyticLandscapeFlatnessTolerance(
+	TEXT("p.IAmSpeed.AnalyticWorld.Landscape.FlatnessToleranceCm"),
+	0.001f,
+	TEXT("Maximum full-source height residual accepted by the shadow-only flat Landscape adapter."));
+
+void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+	Super::OnWorldBeginPlay(InWorld);
+	AnalyticWorldData.Reset();
+	AnalyticWorldBuildAttempt = 0;
+	if (!Speed::Analytic::FStaticWorldQueryAudit::ShouldBuildAnalyticWorld())
+	{
+		return;
+	}
+	BuildAnalyticWorldFromLoadedSources();
+}
+
+void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	++AnalyticWorldBuildAttempt;
+
+	TArray<ALandscapeProxy*> Landscapes;
+	for (TActorIterator<ALandscapeProxy> It(World); It; ++It)
+	{
+		Landscapes.Add(*It);
+	}
+	Landscapes.Sort([](const ALandscapeProxy& A, const ALandscapeProxy& B)
+	{
+		return A.GetPathName() < B.GetPathName();
+	});
+
+	TUniquePtr<Speed::Analytic::FAnalyticWorldData> Imported =
+		MakeUnique<Speed::Analytic::FAnalyticWorldData>();
+	uint64 CombinedSourceHash = 0;
+	bool bSourceReadinessPending = false;
+
+	TArray<AActor*> AnalyticMeshSourceActors;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (It->FindComponentByClass<USpeedAnalyticSourceComponent>())
+		{
+			AnalyticMeshSourceActors.Add(*It);
+		}
+	}
+	AnalyticMeshSourceActors.Sort([](const AActor& A, const AActor& B)
+	{
+		return A.GetPathName() < B.GetPathName();
+	});
+	uint64 MeshSourceInventoryHash = 0;
+	int32 MeshSourceComponentCount = 0;
+	for (const AActor* SourceActor : AnalyticMeshSourceActors)
+	{
+		TArray<UStaticMeshComponent*> MeshComponents;
+		if (const ASpeedStaticActor* SpeedStaticActor =
+			Cast<ASpeedStaticActor>(SourceActor))
+		{
+			SpeedStaticActor->GatherAnalyticStaticMeshes(MeshComponents);
+		}
+		else if (const USpeedAnalyticSourceComponent* SourceComponent =
+			SourceActor->FindComponentByClass<USpeedAnalyticSourceComponent>())
+		{
+			SourceComponent->GatherOwnedStaticMeshes(MeshComponents);
+		}
+		for (const UStaticMeshComponent* MeshComponent : MeshComponents)
+		{
+			const UStaticMesh* Mesh = MeshComponent
+				? MeshComponent->GetStaticMesh() : nullptr;
+			if (!MeshComponent || !Mesh)
+			{
+				continue;
+			}
+			++MeshSourceComponentCount;
+			const FString StableIdentity = FString::Printf(
+				TEXT("%s|%s|%s|%s"), *SourceActor->GetPathName(),
+				*MeshComponent->GetPathName(), *Mesh->GetPathName(),
+				*MeshComponent->GetComponentTransform().ToString());
+			MeshSourceInventoryHash = Speed::Analytic::CombineStableIds(
+				MeshSourceInventoryHash,
+				Speed::Analytic::StableStringId(StableIdentity));
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticMeshSource] Owner=%s Component=%s Mesh=%s"),
+				*SourceActor->GetPathName(), *MeshComponent->GetName(),
+				*Mesh->GetPathName());
+		}
+	}
+
+	bool bMeshBakeLoaded = false;
+	const FString WorldName = FPackageName::GetShortName(World->GetOutermost());
+	const FString BakedPackagePath = FString::Printf(
+		TEXT("/Game/Generated/Analytic/%s_AnalyticWorld"), *WorldName);
+	const FString BakedObjectPath = FString::Printf(
+		TEXT("%s.%s_AnalyticWorld"), *BakedPackagePath, *WorldName);
+	if (const USpeedAnalyticCollisionAsset* BakedAsset =
+		LoadObject<USpeedAnalyticCollisionAsset>(nullptr, *BakedObjectPath))
+	{
+		uint64 BakedInventoryHash = 0;
+		for (const FSpeedAnalyticMeshSourceRecord& Source : BakedAsset->MeshSources)
+		{
+			const FString StableIdentity = FString::Printf(
+				TEXT("%s|%s|%s|%s"), *Source.ActorPath, *Source.ComponentPath,
+				*Source.MeshPath, *Source.WorldTransform.ToString());
+			BakedInventoryHash = Speed::Analytic::CombineStableIds(
+				BakedInventoryHash,
+				Speed::Analytic::StableStringId(StableIdentity));
+		}
+		FString BakedReason;
+		const TSharedPtr<const Speed::Analytic::FAnalyticWorldData> BakedRuntime =
+			BakedAsset->BuildRuntimeData(&BakedReason);
+		if (BakedRuntime && BakedInventoryHash == MeshSourceInventoryHash &&
+			BakedAsset->MeshSources.Num() == MeshSourceComponentCount)
+		{
+			Imported->Triangles = BakedRuntime->Triangles;
+			CombinedSourceHash = Speed::Analytic::CombineStableIds(
+				CombinedSourceHash, BakedRuntime->SourceHash);
+			bMeshBakeLoaded = true;
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[AnalyticMeshBake] Asset=%s Result=Rejected LiveHash=%016llX BakedHash=%016llX Detail=%s"),
+				*BakedObjectPath, MeshSourceInventoryHash, BakedInventoryHash,
+				BakedRuntime ? TEXT("Source inventory mismatch.") : *BakedReason);
+		}
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[AnalyticMeshSourceInventory] Actors=%d Components=%d Hash=%016llX Baked=%d Triangles=%d"),
+		AnalyticMeshSourceActors.Num(), MeshSourceComponentCount,
+		MeshSourceInventoryHash, bMeshBakeLoaded ? 1 : 0, Imported->Triangles.Num());
+
+	for (const ALandscapeProxy* Landscape : Landscapes)
+	{
+		if (!Landscape)
+		{
+			continue;
+		}
+		const Speed::Analytic::FFlatLandscapeAdapterOutput Output =
+			Speed::Analytic::BuildFlatLandscapePlane(
+				*Landscape,
+				CVarIAmSpeedAnalyticLandscapeFlatnessTolerance.GetValueOnGameThread());
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticLandscapeAdapter] Source=%s Result=%u ResidualCm=%.9g Detail=%s"),
+			*Landscape->GetPathName(), static_cast<uint8>(Output.Result),
+			Output.MaximumHeightResidual, *Output.Diagnostic);
+		if (Output.Result ==
+			Speed::Analytic::EFlatLandscapeAdapterResult::SuccessShadowOnly)
+		{
+			Imported->Planes.Add(Output.Plane);
+			CombinedSourceHash = Speed::Analytic::CombineStableIds(
+				CombinedSourceHash, Output.Plane.SurfaceId);
+		}
+		else if (Output.Result ==
+			Speed::Analytic::EFlatLandscapeAdapterResult::NoSourceData)
+		{
+			bSourceReadinessPending = true;
+		}
+	}
+	constexpr uint8 MaximumBuildAttempts = 8;
+	if (bSourceReadinessPending && AnalyticWorldBuildAttempt < MaximumBuildAttempts)
+	{
+		World->GetTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateUObject(
+				this, &USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources));
+		return;
+	}
+	Imported->SourceHash = CombinedSourceHash;
+	FString ValidationReason;
+	if (!Imported->FinalizeAndValidate(&ValidationReason))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[AnalyticWorldBuild] Rejected Detail=%s"), *ValidationReason);
+		return;
+	}
+	int32 BoundaryEdgeCount = 0;
+	int32 NonManifoldEdgeCount = 0;
+	int32 SmoothEdgeCount = 0;
+	int32 CreaseEdgeCount = 0;
+	int32 PlanarCandidateCount = 0;
+	int32 ValidShapeSampleCount = 0;
+	for (const Speed::Analytic::FTriangleMeshEdge& Edge : Imported->MeshEdges)
+	{
+		BoundaryEdgeCount += Edge.IsBoundary() ? 1 : 0;
+		NonManifoldEdgeCount += Edge.IsNonManifold() ? 1 : 0;
+		SmoothEdgeCount += Edge.Continuity ==
+			Speed::Analytic::EEdgeContinuity::Smooth ? 1 : 0;
+		CreaseEdgeCount += Edge.Continuity ==
+			Speed::Analytic::EEdgeContinuity::Crease ? 1 : 0;
+	}
+	for (const Speed::Analytic::FSurfacePatch& Patch : Imported->SurfacePatches)
+	{
+		PlanarCandidateCount += Patch.Kind ==
+			Speed::Analytic::ESurfacePatchKind::PlanarCandidate ? 1 : 0;
+	}
+	for (const Speed::Analytic::FVertexShapeSample& Sample : Imported->VertexShapeSamples)
+	{
+		ValidShapeSampleCount += Sample.bValid ? 1 : 0;
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[AnalyticWorldBuild] Attempt=%u Planes=%d Triangles=%d Vertices=%d Edges=%d BoundaryEdges=%d NonManifoldEdges=%d SmoothEdges=%d CreaseEdges=%d SmoothRegions=%d Patches=%d PlanarCandidates=%d ShapeValid=%d BvhNodes=%d Hash=%016llX AuthorityEligible=%d PendingSource=%d"),
+		AnalyticWorldBuildAttempt, Imported->Planes.Num(), Imported->Triangles.Num(),
+		Imported->MeshVertices.Num(), Imported->MeshEdges.Num(), BoundaryEdgeCount,
+		NonManifoldEdgeCount, SmoothEdgeCount, CreaseEdgeCount,
+		Imported->SmoothSurfaceRegions.Num(), Imported->SurfacePatches.Num(), PlanarCandidateCount,
+		ValidShapeSampleCount, Imported->TriangleBvh.Num(), Imported->StableHash(),
+		Imported->IsAuthorityEligible() ? 1 : 0,
+		bSourceReadinessPending ? 1 : 0);
+	AnalyticWorldData = MoveTemp(Imported);
+}
 
 static TAutoConsoleVariable<float> CVarIAmSpeedRollingBaumgarte(
 	TEXT("p.IAmSpeed.Collision.RollingBaumgarte"),

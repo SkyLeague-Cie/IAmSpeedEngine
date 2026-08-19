@@ -1,4 +1,5 @@
 #include "RayWheelSubBody.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
@@ -60,8 +61,13 @@ bool URayWheelSubBody::SweepSuspensionOnGround(
 	}
 
 	FHitResult UnrealHit;
-	if (!World->LineTraceSingleByChannel(UnrealHit, Start, End,
-		GetCollisionChannel(), Params, GetResponseParams()))
+	const bool bHit = World->LineTraceSingleByChannel(UnrealHit, Start, End,
+		GetCollisionChannel(), Params, GetResponseParams());
+	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
+		Speed::Analytic::EStaticQuerySite::RayWheelSuspensionProbe,
+		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
+		static_cast<uint8>(GetCollisionChannel()), bHit, UnrealHit);
+	if (!bHit)
 	{
 		SetOnGround(false);
 		if (WheelComponent)
@@ -199,10 +205,15 @@ bool URayWheelSubBody::SweepSuspensionAlongNormal(
 	}
 	const FVector CurrentRayPoint = WorldPos() - Radius() * SuspensionUp;
 	FHitResult UnrealHit;
-	if (!World->LineTraceSingleByChannel(UnrealHit,
-		CurrentRayPoint + SearchDistance * SearchNormal,
-		CurrentRayPoint - SearchDistance * SearchNormal,
-		GetCollisionChannel(), Params, GetResponseParams()))
+	const FVector Start = CurrentRayPoint + SearchDistance * SearchNormal;
+	const FVector End = CurrentRayPoint - SearchDistance * SearchNormal;
+	const bool bHit = World->LineTraceSingleByChannel(UnrealHit,
+		Start, End, GetCollisionChannel(), Params, GetResponseParams());
+	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
+		Speed::Analytic::EStaticQuerySite::RayWheelEstablishedSupportProbe,
+		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
+		static_cast<uint8>(GetCollisionChannel()), bHit, UnrealHit);
+	if (!bHit)
 	{
 		return false;
 	}
