@@ -2,10 +2,11 @@ name: IAmSpeed Physical Contracts
 
 on:
   pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
-      - release/**
   workflow_dispatch:
 
 permissions:
