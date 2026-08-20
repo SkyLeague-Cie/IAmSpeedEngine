@@ -461,6 +461,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 	const FVector End = CurrentPos - SearchDistance * SweepNormal;
 	bool bHit = false;
 	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		World,
 		Start, End, Kinematics.Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
 	{
@@ -521,6 +522,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
     FHitResult UnrealHit;
 	bool bHit = false;
 	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		World,
 		Start, End, Kinematics.Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
 	{

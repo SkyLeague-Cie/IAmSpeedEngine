@@ -19,7 +19,7 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 		}
 		return false;
 	};
-	if (BakeSchemaVersion != 4)
+	if (BakeSchemaVersion != 6)
 	{
 		return Fail(FString::Printf(
 			TEXT("Unsupported analytic bake schema %u."), BakeSchemaVersion));
@@ -56,7 +56,7 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 	}
 	if (!Triangles.IsEmpty())
 	{
-		return Fail(TEXT("Schema-4 asset still contains expanded schema-2 triangles."));
+		return Fail(TEXT("Schema-6 asset still contains expanded schema-2 triangles."));
 	}
 	if (ExpectedTriangleCount != IndexedTriangles.Num())
 	{
@@ -112,6 +112,11 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 		Plane.AxisU = FVector3d(Record.AxisU);
 		Plane.AxisV = FVector3d(Record.AxisV);
 		Plane.HalfExtents = FVector2d(Record.HalfExtents);
+		Plane.DomainVertices.Reserve(Record.DomainVertices.Num());
+		for (const FVector2D& Vertex : Record.DomainVertices)
+		{
+			Plane.DomainVertices.Add(FVector2d(Vertex));
+		}
 		Plane.bQueryCollisionEnabled = Record.bQueryCollisionEnabled;
 		Plane.bRequiresCompactOptIn = Record.bRequiresCompactOptIn;
 		Plane.bAuthorityEligible = Record.bAuthorityEligible;
@@ -267,6 +272,11 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 		Plane.AxisU = FVector3d(Record.AxisU);
 		Plane.AxisV = FVector3d(Record.AxisV);
 		Plane.HalfExtents = FVector2d(Record.HalfExtents);
+		Plane.DomainVertices.Reserve(Record.DomainVertices.Num());
+		for (const FVector2D& Vertex : Record.DomainVertices)
+		{
+			Plane.DomainVertices.Add(FVector2d(Vertex));
+		}
 		Plane.bQueryCollisionEnabled = Record.bQueryCollisionEnabled;
 		Plane.bRequiresCompactOptIn = Record.bRequiresCompactOptIn;
 		Plane.bAuthorityEligible = Record.bAuthorityEligible;

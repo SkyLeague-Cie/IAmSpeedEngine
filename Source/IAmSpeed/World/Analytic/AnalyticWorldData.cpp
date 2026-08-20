@@ -33,6 +33,100 @@ namespace
 			FMath::IsFinite(Value.Z);
 	}
 
+	double BezierChordErrorCm(const FVector3d ControlPoints[8])
+	{
+		const FVector3d Chord = ControlPoints[7] - ControlPoints[0];
+		double MaximumErrorSquared = 0.0;
+		for (int32 Index = 1; Index < 7; ++Index)
+		{
+			// Represent the chord as a degree-seven Bezier with uniformly spaced
+			// control points. The convex-hull property applied to the difference
+			// curve bounds the pointwise deviation in both directions.
+			const double Alpha = static_cast<double>(Index) / 7.0;
+			const FVector3d Closest = ControlPoints[0] + Alpha * Chord;
+			MaximumErrorSquared = FMath::Max(MaximumErrorSquared,
+				(ControlPoints[Index] - Closest).SquaredLength());
+		}
+		return FMath::Sqrt(MaximumErrorSquared);
+	}
+
+	void SplitBezierHalf(
+		const FVector3d ControlPoints[8], FVector3d Left[8], FVector3d Right[8])
+	{
+		FVector3d Work[8];
+		for (int32 Index = 0; Index < 8; ++Index) Work[Index] = ControlPoints[Index];
+		Left[0] = Work[0];
+		Right[7] = Work[7];
+		for (int32 Level = 1; Level < 8; ++Level)
+		{
+			for (int32 Index = 0; Index < 8 - Level; ++Index)
+			{
+				Work[Index] = 0.5 * (Work[Index] + Work[Index + 1]);
+			}
+			Left[Level] = Work[0];
+			Right[7 - Level] = Work[7 - Level];
+		}
+	}
+
+	bool AppendCertifiedBezierChords(
+		const FVector3d ControlPoints[8], const double T0, const double T1,
+		const double ToleranceCm, const int32 Depth,
+		TArray<FVector3d>& Points, TArray<double>& Parameters,
+		double& MaximumAcceptedErrorCm)
+	{
+		const double ErrorCm = BezierChordErrorCm(ControlPoints);
+		if (ErrorCm <= ToleranceCm)
+		{
+			Points.Add(ControlPoints[7]);
+			Parameters.Add(T1);
+			MaximumAcceptedErrorCm = FMath::Max(
+				MaximumAcceptedErrorCm, ErrorCm);
+			return true;
+		}
+		constexpr int32 MaximumSubdivisionDepth = 24;
+		if (Depth >= MaximumSubdivisionDepth) return false;
+		FVector3d Left[8];
+		FVector3d Right[8];
+		SplitBezierHalf(ControlPoints, Left, Right);
+		const double MiddleT = 0.5 * (T0 + T1);
+		return AppendCertifiedBezierChords(Left, T0, MiddleT, ToleranceCm,
+			Depth + 1, Points, Parameters, MaximumAcceptedErrorCm) &&
+			AppendCertifiedBezierChords(Right, MiddleT, T1, ToleranceCm,
+				Depth + 1, Points, Parameters, MaximumAcceptedErrorCm);
+	}
+
+	double Cross2D(const FVector2d& A, const FVector2d& B)
+	{
+		return A.X * B.Y - A.Y * B.X;
+	}
+
+	bool PointOnSegment2D(
+		const FVector2d& Point, const FVector2d& A, const FVector2d& B)
+	{
+		constexpr double Tolerance = 1.0e-12;
+		return FMath::Abs(Cross2D(B - A, Point - A)) <= Tolerance &&
+			Point.X >= FMath::Min(A.X, B.X) - Tolerance &&
+			Point.X <= FMath::Max(A.X, B.X) + Tolerance &&
+			Point.Y >= FMath::Min(A.Y, B.Y) - Tolerance &&
+			Point.Y <= FMath::Max(A.Y, B.Y) + Tolerance;
+	}
+
+	bool SegmentsIntersect2D(
+		const FVector2d& A, const FVector2d& B,
+		const FVector2d& C, const FVector2d& D)
+	{
+		const double AbC = Cross2D(B - A, C - A);
+		const double AbD = Cross2D(B - A, D - A);
+		const double CdA = Cross2D(D - C, A - C);
+		const double CdB = Cross2D(D - C, B - C);
+		if ((AbC > 0.0) != (AbD > 0.0) && (CdA > 0.0) != (CdB > 0.0))
+		{
+			return true;
+		}
+		return PointOnSegment2D(C, A, B) || PointOnSegment2D(D, A, B) ||
+			PointOnSegment2D(A, C, D) || PointOnSegment2D(B, C, D);
+	}
+
 	double TriangleCentroidAxis(const FTriangleSurface& Triangle, const int32 Axis)
 	{
 		return (Triangle.Vertices[0][Axis] + Triangle.Vertices[1][Axis] +
@@ -433,10 +527,72 @@ bool FBoundedPlane::ContainsProjectedPoint(
 	const FVector3d& Point, const double Tolerance) const
 {
 	const FVector3d Relative = Point - Origin;
-	return FMath::Abs(FVector3d::DotProduct(Relative, AxisU)) <=
-		HalfExtents.X + Tolerance &&
-		FMath::Abs(FVector3d::DotProduct(Relative, AxisV)) <=
-		HalfExtents.Y + Tolerance;
+	const FVector2d LocalPoint(
+		FVector3d::DotProduct(Relative, AxisU),
+		FVector3d::DotProduct(Relative, AxisV));
+	if (DomainVertices.IsEmpty())
+	{
+		return FMath::Abs(LocalPoint.X) <= HalfExtents.X + Tolerance &&
+			FMath::Abs(LocalPoint.Y) <= HalfExtents.Y + Tolerance;
+	}
+
+	bool bInside = false;
+	for (int32 Index = 0; Index < DomainVertices.Num(); ++Index)
+	{
+		const FVector2d& A = DomainVertices[Index];
+		const FVector2d& B = DomainVertices[(Index + 1) % DomainVertices.Num()];
+		const FVector2d Edge = B - A;
+		const double EdgeLengthSquared = Edge.SquaredLength();
+		if (EdgeLengthSquared > UE_DOUBLE_SMALL_NUMBER)
+		{
+			const double EdgeT = FMath::Clamp(
+				FVector2d::DotProduct(LocalPoint - A, Edge) / EdgeLengthSquared,
+				0.0, 1.0);
+			if ((LocalPoint - (A + EdgeT * Edge)).SquaredLength() <=
+				FMath::Square(FMath::Max(0.0, Tolerance)))
+			{
+				return true;
+			}
+		}
+		const bool bCrosses = (A.Y > LocalPoint.Y) != (B.Y > LocalPoint.Y);
+		if (bCrosses)
+		{
+			const double CrossingX = A.X +
+				(LocalPoint.Y - A.Y) * (B.X - A.X) / (B.Y - A.Y);
+			if (LocalPoint.X < CrossingX) bInside = !bInside;
+		}
+	}
+	return bInside;
+}
+
+double FBoundedPlane::DistanceToDomainBoundary(const FVector3d& Point) const
+{
+	const FVector3d Relative = Point - Origin;
+	const FVector2d LocalPoint(
+		FVector3d::DotProduct(Relative, AxisU),
+		FVector3d::DotProduct(Relative, AxisV));
+	if (DomainVertices.IsEmpty())
+	{
+		return FMath::Min(
+			HalfExtents.X - FMath::Abs(LocalPoint.X),
+			HalfExtents.Y - FMath::Abs(LocalPoint.Y));
+	}
+	double MinimumDistanceSquared = TNumericLimits<double>::Max();
+	for (int32 Index = 0; Index < DomainVertices.Num(); ++Index)
+	{
+		const FVector2d& A = DomainVertices[Index];
+		const FVector2d& B = DomainVertices[(Index + 1) % DomainVertices.Num()];
+		const FVector2d Edge = B - A;
+		const double EdgeLengthSquared = Edge.SquaredLength();
+		if (EdgeLengthSquared <= UE_DOUBLE_SMALL_NUMBER) continue;
+		const double EdgeT = FMath::Clamp(
+			FVector2d::DotProduct(LocalPoint - A, Edge) / EdgeLengthSquared,
+			0.0, 1.0);
+		MinimumDistanceSquared = FMath::Min(MinimumDistanceSquared,
+			(LocalPoint - (A + EdgeT * Edge)).SquaredLength());
+	}
+	return MinimumDistanceSquared < TNumericLimits<double>::Max()
+		? FMath::Sqrt(MinimumDistanceSquared) : 0.0;
 }
 
 bool FBoundedPlane::IsValid(FString* OutReason) const
@@ -463,6 +619,49 @@ bool FBoundedPlane::IsValid(FString* OutReason) const
 		HalfExtents.X <= 0.0 || HalfExtents.Y <= 0.0)
 	{
 		return Fail(TEXT("Plane half extents must be finite and positive."));
+	}
+	if (!DomainVertices.IsEmpty())
+	{
+		if (DomainVertices.Num() < 3)
+		{
+			return Fail(TEXT("Plane polygon domain must contain at least three vertices."));
+		}
+		double TwiceArea = 0.0;
+		for (int32 Index = 0; Index < DomainVertices.Num(); ++Index)
+		{
+			const FVector2d& A = DomainVertices[Index];
+			const FVector2d& B = DomainVertices[(Index + 1) % DomainVertices.Num()];
+			if (!FMath::IsFinite(A.X) || !FMath::IsFinite(A.Y) ||
+				FMath::Abs(A.X) > HalfExtents.X + 1.0e-9 ||
+				FMath::Abs(A.Y) > HalfExtents.Y + 1.0e-9)
+			{
+				return Fail(TEXT("Plane polygon vertex is invalid or outside half extents."));
+			}
+			if ((B - A).SquaredLength() <= UE_DOUBLE_SMALL_NUMBER)
+			{
+				return Fail(TEXT("Plane polygon has a zero-length edge."));
+			}
+			TwiceArea += A.X * B.Y - A.Y * B.X;
+		}
+		if (FMath::Abs(TwiceArea) <= UE_DOUBLE_SMALL_NUMBER)
+		{
+			return Fail(TEXT("Plane polygon has zero signed area."));
+		}
+		for (int32 EdgeA = 0; EdgeA < DomainVertices.Num(); ++EdgeA)
+		{
+			const int32 NextA = (EdgeA + 1) % DomainVertices.Num();
+			for (int32 EdgeB = EdgeA + 1; EdgeB < DomainVertices.Num(); ++EdgeB)
+			{
+				const int32 NextB = (EdgeB + 1) % DomainVertices.Num();
+				if (EdgeA == EdgeB || EdgeA == NextB || NextA == EdgeB) continue;
+				if (SegmentsIntersect2D(
+					DomainVertices[EdgeA], DomainVertices[NextA],
+					DomainVertices[EdgeB], DomainVertices[NextB]))
+				{
+					return Fail(TEXT("Plane polygon domain self-intersects."));
+				}
+			}
+		}
 	}
 	if ((bRequiresCompactOptIn || bAuthorityEligible) &&
 		(SourceId == 0 || PrimitiveId == 0 || !bQueryCollisionEnabled))
@@ -536,6 +735,66 @@ FVector3d FExtrudedQuinticPatch::EvaluateSectionDerivative(const double T) const
 	Result += CorrectionDerivativeA * InteriorCorrectionControlPoints[0] +
 		CorrectionDerivativeB * InteriorCorrectionControlPoints[1];
 	return Result;
+}
+
+bool FExtrudedQuinticPatch::BuildQueryApproximation(
+	const double ChordToleranceCm)
+{
+	SectionPolyline.Reset();
+	SectionParameters.Reset();
+	MaximumChordErrorCm = TNumericLimits<double>::Max();
+	if (!FMath::IsFinite(ChordToleranceCm) || ChordToleranceCm <= 0.0)
+	{
+		return false;
+	}
+
+	// Elevate the quintic base twice to degree seven, then add the two native
+	// degree-seven Bernstein corrections. This produces the exact control
+	// polygon of EvaluateSection rather than a sampled surrogate.
+	FVector3d DegreeSix[7];
+	DegreeSix[0] = SectionControlPoints[0];
+	DegreeSix[6] = SectionControlPoints[5];
+	for (int32 Index = 1; Index < 6; ++Index)
+	{
+		const double Alpha = static_cast<double>(Index) / 6.0;
+		DegreeSix[Index] = Alpha * SectionControlPoints[Index - 1] +
+			(1.0 - Alpha) * SectionControlPoints[Index];
+	}
+	FVector3d DegreeSeven[8];
+	DegreeSeven[0] = DegreeSix[0];
+	DegreeSeven[7] = DegreeSix[6];
+	for (int32 Index = 1; Index < 7; ++Index)
+	{
+		const double Alpha = static_cast<double>(Index) / 7.0;
+		DegreeSeven[Index] = Alpha * DegreeSix[Index - 1] +
+			(1.0 - Alpha) * DegreeSix[Index];
+	}
+	DegreeSeven[3] += InteriorCorrectionControlPoints[0];
+	DegreeSeven[4] += InteriorCorrectionControlPoints[1];
+
+	SectionPolyline.Add(DegreeSeven[0]);
+	SectionParameters.Add(0.0);
+	double AcceptedErrorCm = 0.0;
+	if (!AppendCertifiedBezierChords(DegreeSeven, 0.0, 1.0,
+		ChordToleranceCm, 0, SectionPolyline, SectionParameters,
+		AcceptedErrorCm))
+	{
+		SectionPolyline.Reset();
+		SectionParameters.Reset();
+		return false;
+	}
+	MaximumChordErrorCm = AcceptedErrorCm;
+
+	// A Bezier curve lies in its control hull. These endpoint-extruded control
+	// points therefore give an exact conservative AABB for the ruled patch.
+	Bounds = FBox3d(EForceInit::ForceInit);
+	for (const FVector3d& ControlPoint : DegreeSeven)
+	{
+		Bounds += ControlPoint + MinimumExtrusionCoordinate * ExtrusionAxis;
+		Bounds += ControlPoint + MaximumExtrusionCoordinate * ExtrusionAxis;
+	}
+	return SectionPolyline.Num() >= 2 &&
+		SectionPolyline.Num() == SectionParameters.Num() && Bounds.IsValid;
 }
 
 bool FExtrudedQuinticPatch::IsValid(FString* OutReason) const
@@ -662,7 +921,15 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 		}
 		FBoundedPlane& Plane = Planes[Index];
 		Plane.Bounds = FBox3d(EForceInit::ForceInit);
-		for (const double SignU : { -1.0, 1.0 })
+		if (!Plane.DomainVertices.IsEmpty())
+		{
+			for (const FVector2d& Vertex : Plane.DomainVertices)
+			{
+				Plane.Bounds += Plane.Origin +
+					Vertex.X * Plane.AxisU + Vertex.Y * Plane.AxisV;
+			}
+		}
+		else for (const double SignU : { -1.0, 1.0 })
 		{
 			for (const double SignV : { -1.0, 1.0 })
 			{
@@ -700,8 +967,21 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 			if (OutReason) *OutReason = TEXT("Duplicate compact patch primitive identifier.");
 			return false;
 		}
-		PreviousPrimitive = ExtrudedQuinticPatches[Index].PrimitiveId;
-		CompactBounds += ExtrudedQuinticPatches[Index].Bounds;
+		FExtrudedQuinticPatch& Patch = ExtrudedQuinticPatches[Index];
+		if (!Patch.BuildQueryApproximation())
+		{
+			if (OutReason) *OutReason = TEXT(
+				"Could not build a certified extruded-quintic query approximation.");
+			return false;
+		}
+		if (Patch.bAuthorityEligible && !Patch.bCanonicalC2ByConstruction)
+		{
+			if (OutReason) *OutReason = TEXT(
+				"Extruded-quintic authority requires a canonical C2 certificate.");
+			return false;
+		}
+		PreviousPrimitive = Patch.PrimitiveId;
+		CompactBounds += Patch.Bounds;
 	}
 	CompactPrimitiveIndices.Reset();
 	for (int32 PlaneIndex = 0; PlaneIndex < Planes.Num(); ++PlaneIndex)
@@ -805,6 +1085,7 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 	{
 		return Plane.bRequiresCompactOptIn;
 	});
+	TArray<FBoundedPlane> AdditionalPlanarDomainComponents;
 	TArray<int32> SymmetrizedConstraintIndexByPlanarGroup;
 	SymmetrizedConstraintIndexByPlanarGroup.Init(INDEX_NONE,
 		PlanarSurfaceGroups.Num());
@@ -834,9 +1115,34 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			SymmetrizedC2PlaneConstraints.IsValidIndex(SymmetrizedConstraintIndex)
 				? &SymmetrizedC2PlaneConstraints[SymmetrizedConstraintIndex]
 				: nullptr;
-		const bool bUseSymmetrizedConstraint = SymmetrizedConstraint &&
+		const bool bSymmetrizedConstraintAvailable = SymmetrizedConstraint &&
 			SymmetrizedConstraint->bSourceFitPlausible &&
 			SymmetrizedConstraint->bExactMirrorPlacement;
+		constexpr double MaximumAuthorityPlaneResidualCm = 0.01;
+		bool bUseSymmetrizedConstraint = bSymmetrizedConstraintAvailable;
+		if (bUseSymmetrizedConstraint)
+		{
+			const FVector3d SymmetrizedNormal =
+				SymmetrizedConstraint->Normal.GetSafeNormal();
+			const FVector3d RawNormal = Group.Normal.GetSafeNormal();
+			const FVector3d NormalDelta = SymmetrizedNormal - RawNormal;
+			const double OffsetDelta =
+				SymmetrizedConstraint->PlaneOffset - Group.PlaneOffset;
+			double MaximumConstraintDeltaCm = 0.0;
+			for (int32 Corner = 0; Corner < 8; ++Corner)
+			{
+				const FVector3d Point(
+					(Corner & 1) != 0 ? Group.Bounds.Max.X : Group.Bounds.Min.X,
+					(Corner & 2) != 0 ? Group.Bounds.Max.Y : Group.Bounds.Min.Y,
+					(Corner & 4) != 0 ? Group.Bounds.Max.Z : Group.Bounds.Min.Z);
+				MaximumConstraintDeltaCm = FMath::Max(
+					MaximumConstraintDeltaCm,
+					FMath::Abs(FVector3d::DotProduct(Point, NormalDelta) -
+						OffsetDelta));
+			}
+			bUseSymmetrizedConstraint = Group.MaximumPlaneResidual +
+				MaximumConstraintDeltaCm <= MaximumAuthorityPlaneResidualCm;
+		}
 		if (Group.PatchCount <= 0 || !PlanarGroupPatchIndices.IsValidIndex(
 				Group.FirstPatchIndex))
 		{
@@ -879,18 +1185,53 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		double MaximumU = -TNumericLimits<double>::Max();
 		double MinimumV = TNumericLimits<double>::Max();
 		double MaximumV = -TNumericLimits<double>::Max();
-		for (int32 Corner = 0; Corner < 8; ++Corner)
+		double MaximumPlaneResidualCm = 0.0;
+		bool bUniformCollisionPolicy = true;
+		const int32 AdditionalComponentStart =
+			AdditionalPlanarDomainComponents.Num();
+		TArray<int32, TInlineAllocator<64>> GroupTriangleIndices;
+		TSet<int32> GroupVertexSet;
+		for (int32 PatchOffset = 0; PatchOffset < Group.PatchCount; ++PatchOffset)
 		{
-			const FVector3d Point(
-				(Corner & 1) ? Group.Bounds.Max.X : Group.Bounds.Min.X,
-				(Corner & 2) ? Group.Bounds.Max.Y : Group.Bounds.Min.Y,
-				(Corner & 4) ? Group.Bounds.Max.Z : Group.Bounds.Min.Z);
-			const double U = FVector3d::DotProduct(Point, AxisU);
-			const double V = FVector3d::DotProduct(Point, AxisV);
-			MinimumU = FMath::Min(MinimumU, U);
-			MaximumU = FMath::Max(MaximumU, U);
-			MinimumV = FMath::Min(MinimumV, V);
-			MaximumV = FMath::Max(MaximumV, V);
+			const int32 MemberPatchIndex = PlanarGroupPatchIndices[
+				Group.FirstPatchIndex + PatchOffset];
+			const FSurfacePatch& MemberPatch = SurfacePatches[MemberPatchIndex];
+			for (int32 TriangleOffset = 0;
+				TriangleOffset < MemberPatch.TriangleCount; ++TriangleOffset)
+			{
+				const int32 MemberTriangleIndex = PatchTriangleIndices[
+					MemberPatch.FirstTriangleIndex + TriangleOffset];
+				const FTriangleSurface& MemberTriangle = Triangles[MemberTriangleIndex];
+				bUniformCollisionPolicy &=
+					MemberTriangle.SourceId == SourceTriangle.SourceId &&
+					MemberTriangle.MaterialId == SourceTriangle.MaterialId &&
+					MemberTriangle.ObjectType == SourceTriangle.ObjectType &&
+					MemberTriangle.BlockingChannels == SourceTriangle.BlockingChannels &&
+					MemberTriangle.bQueryCollisionEnabled ==
+						SourceTriangle.bQueryCollisionEnabled;
+				GroupTriangleIndices.Add(MemberTriangleIndex);
+				if (TriangleVertexIndices.IsValidIndex(MemberTriangleIndex))
+				{
+					const FIntVector& VertexIndices =
+						TriangleVertexIndices[MemberTriangleIndex];
+					GroupVertexSet.Add(VertexIndices.X);
+					GroupVertexSet.Add(VertexIndices.Y);
+					GroupVertexSet.Add(VertexIndices.Z);
+				}
+				for (const FVector3d& Point : MemberTriangle.Vertices)
+				{
+					MaximumPlaneResidualCm = FMath::Max(
+						MaximumPlaneResidualCm,
+						FMath::Abs(FVector3d::DotProduct(Point, Normal) -
+							PlaneOffset));
+					const double U = FVector3d::DotProduct(Point, AxisU);
+					const double V = FVector3d::DotProduct(Point, AxisV);
+					MinimumU = FMath::Min(MinimumU, U);
+					MaximumU = FMath::Max(MaximumU, U);
+					MinimumV = FMath::Min(MinimumV, V);
+					MaximumV = FMath::Max(MaximumV, V);
+				}
+			}
 		}
 		FBoundedPlane& Plane = Planes.AddDefaulted_GetRef();
 		Plane.SourceId = SourceTriangle.SourceId;
@@ -912,7 +1253,376 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		Plane.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
 		Plane.bRequiresCompactOptIn = true;
 		Plane.bAuthorityEligible = false;
+		const double RectangularDomainArea =
+			(MaximumU - MinimumU) * (MaximumV - MinimumV);
+		const double DomainFillRatio = RectangularDomainArea > 0.0
+			? Group.Area / RectangularDomainArea : 0.0;
+		constexpr double BoundaryToleranceCm = 0.05;
+		TArray<int32, TInlineAllocator<128>> GroupVertexIndices;
+		GroupVertexIndices.Reserve(GroupVertexSet.Num());
+		for (const int32 VertexIndex : GroupVertexSet)
+		{
+			GroupVertexIndices.Add(VertexIndex);
+		}
+		GroupVertexIndices.Sort();
+		TMap<FIntPoint, int32> SubdividedEdgeUseCounts;
+		for (const int32 MemberTriangleIndex : GroupTriangleIndices)
+		{
+			if (!TriangleVertexIndices.IsValidIndex(MemberTriangleIndex)) continue;
+			const FIntVector& TriangleVertices =
+				TriangleVertexIndices[MemberTriangleIndex];
+			const int32 VertexIndices[3] = {
+				TriangleVertices.X, TriangleVertices.Y, TriangleVertices.Z };
+			for (int32 EdgeIndex = 0; EdgeIndex < 3; ++EdgeIndex)
+			{
+				const int32 VertexA = VertexIndices[EdgeIndex];
+				const int32 VertexB = VertexIndices[(EdgeIndex + 1) % 3];
+				if (!MeshVertices.IsValidIndex(VertexA) ||
+					!MeshVertices.IsValidIndex(VertexB)) continue;
+				const FVector3d PointA = MeshVertices[VertexA];
+				const FVector3d Edge = MeshVertices[VertexB] - PointA;
+				const double EdgeLengthSquared = Edge.SquaredLength();
+				if (EdgeLengthSquared <= UE_DOUBLE_SMALL_NUMBER) continue;
+				struct FSplitVertex
+				{
+					double Parameter = 0.0;
+					int32 VertexIndex = INDEX_NONE;
+				};
+				TArray<FSplitVertex, TInlineAllocator<16>> SplitVertices;
+				for (const int32 CandidateVertex : GroupVertexIndices)
+				{
+					const FVector3d Candidate = MeshVertices[CandidateVertex];
+					const double Parameter = FVector3d::DotProduct(
+						Candidate - PointA, Edge) / EdgeLengthSquared;
+					if (Parameter < 0.0 || Parameter > 1.0) continue;
+					const FVector3d Closest = PointA + Parameter * Edge;
+					if ((Candidate - Closest).SquaredLength() <=
+						FMath::Square(BoundaryToleranceCm))
+					{
+						SplitVertices.Add({ Parameter, CandidateVertex });
+					}
+				}
+				SplitVertices.Sort([](const FSplitVertex& A, const FSplitVertex& B)
+				{
+					if (A.Parameter != B.Parameter) return A.Parameter < B.Parameter;
+					return A.VertexIndex < B.VertexIndex;
+				});
+				for (int32 SplitIndex = 1;
+					SplitIndex < SplitVertices.Num(); ++SplitIndex)
+				{
+					const int32 SplitA = SplitVertices[SplitIndex - 1].VertexIndex;
+					const int32 SplitB = SplitVertices[SplitIndex].VertexIndex;
+					if (SplitA == SplitB) continue;
+					const FIntPoint Segment(
+						FMath::Min(SplitA, SplitB), FMath::Max(SplitA, SplitB));
+					++SubdividedEdgeUseCounts.FindOrAdd(Segment);
+				}
+			}
+		}
+		int32 BoundaryEdgeCount = 0;
+		uint8 BoundarySideMask = 0;
+		bool bBoundaryUsesOnlyRectangleSides = true;
+		bool bBoundaryManifold = true;
+		TMap<int32, int32> BoundaryVertexDegrees;
+		TMultiMap<int32, int32> BoundaryAdjacency;
+		for (const TPair<FIntPoint, int32>& EdgeUse : SubdividedEdgeUseCounts)
+		{
+			if (EdgeUse.Value == 2) continue;
+			if (EdgeUse.Value != 1)
+			{
+				bBoundaryManifold = false;
+				continue;
+			}
+			++BoundaryEdgeCount;
+			const int32 VertexA = EdgeUse.Key.X;
+			const int32 VertexB = EdgeUse.Key.Y;
+			if (!MeshVertices.IsValidIndex(VertexA) ||
+				!MeshVertices.IsValidIndex(VertexB))
+			{
+				bBoundaryManifold = false;
+				continue;
+			}
+			++BoundaryVertexDegrees.FindOrAdd(VertexA);
+			++BoundaryVertexDegrees.FindOrAdd(VertexB);
+			BoundaryAdjacency.Add(VertexA, VertexB);
+			BoundaryAdjacency.Add(VertexB, VertexA);
+			const FVector3d& PointA = MeshVertices[VertexA];
+			const FVector3d& PointB = MeshVertices[VertexB];
+			const double Ua = FVector3d::DotProduct(PointA, AxisU);
+			const double Ub = FVector3d::DotProduct(PointB, AxisU);
+			const double Va = FVector3d::DotProduct(PointA, AxisV);
+			const double Vb = FVector3d::DotProduct(PointB, AxisV);
+			uint8 EdgeSide = 0;
+			if (FMath::Abs(Ua - MinimumU) <= BoundaryToleranceCm &&
+				FMath::Abs(Ub - MinimumU) <= BoundaryToleranceCm) EdgeSide |= 1;
+			if (FMath::Abs(Ua - MaximumU) <= BoundaryToleranceCm &&
+				FMath::Abs(Ub - MaximumU) <= BoundaryToleranceCm) EdgeSide |= 2;
+			if (FMath::Abs(Va - MinimumV) <= BoundaryToleranceCm &&
+				FMath::Abs(Vb - MinimumV) <= BoundaryToleranceCm) EdgeSide |= 4;
+			if (FMath::Abs(Va - MaximumV) <= BoundaryToleranceCm &&
+				FMath::Abs(Vb - MaximumV) <= BoundaryToleranceCm) EdgeSide |= 8;
+			bBoundaryUsesOnlyRectangleSides &= EdgeSide != 0;
+			BoundarySideMask |= EdgeSide;
+		}
+		int32 BoundaryDegreeOneCount = 0;
+		int32 BoundaryDegreeTwoCount = 0;
+		int32 BoundaryOtherDegreeCount = 0;
+		for (const TPair<int32, int32>& VertexDegree : BoundaryVertexDegrees)
+		{
+			bBoundaryManifold &= VertexDegree.Value == 2;
+			BoundaryDegreeOneCount += VertexDegree.Value == 1 ? 1 : 0;
+			BoundaryDegreeTwoCount += VertexDegree.Value == 2 ? 1 : 0;
+			BoundaryOtherDegreeCount += VertexDegree.Value > 2 ? 1 : 0;
+		}
+		TSet<int32> VisitedBoundaryVertices;
+		if (!BoundaryVertexDegrees.IsEmpty())
+		{
+			TArray<int32, TInlineAllocator<32>> Stack;
+			Stack.Add(BoundaryVertexDegrees.CreateConstIterator()->Key);
+			while (!Stack.IsEmpty())
+			{
+				const int32 VertexIndex = Stack.Pop(EAllowShrinking::No);
+				if (VisitedBoundaryVertices.Contains(VertexIndex)) continue;
+				VisitedBoundaryVertices.Add(VertexIndex);
+				TArray<int32, TInlineAllocator<4>> AdjacentVertices;
+				BoundaryAdjacency.MultiFind(VertexIndex, AdjacentVertices);
+				Stack.Append(AdjacentVertices);
+			}
+		}
+		const bool bSingleBoundaryLoop = BoundaryEdgeCount > 0 &&
+			VisitedBoundaryVertices.Num() == BoundaryVertexDegrees.Num();
+		if (bBoundaryManifold && bSingleBoundaryLoop)
+		{
+			int32 StartVertex = MAX_int32;
+			for (const TPair<int32, int32>& VertexDegree : BoundaryVertexDegrees)
+			{
+				StartVertex = FMath::Min(StartVertex, VertexDegree.Key);
+			}
+			int32 PreviousVertex = INDEX_NONE;
+			int32 CurrentVertex = StartVertex;
+			for (int32 VertexOffset = 0;
+				VertexOffset < BoundaryVertexDegrees.Num(); ++VertexOffset)
+			{
+				const FVector3d Relative = MeshVertices[CurrentVertex] - Plane.Origin;
+				Plane.DomainVertices.Add(FVector2d(
+					FVector3d::DotProduct(Relative, AxisU),
+					FVector3d::DotProduct(Relative, AxisV)));
+				TArray<int32, TInlineAllocator<4>> AdjacentVertices;
+				BoundaryAdjacency.MultiFind(CurrentVertex, AdjacentVertices);
+				AdjacentVertices.Sort();
+				if (AdjacentVertices.Num() != 2)
+				{
+					Plane.DomainVertices.Reset();
+					break;
+				}
+				const int32 NextVertex = AdjacentVertices[0] == PreviousVertex
+					? AdjacentVertices[1] : AdjacentVertices[0];
+				PreviousVertex = CurrentVertex;
+				CurrentVertex = NextVertex;
+			}
+			if (CurrentVertex != StartVertex ||
+				Plane.DomainVertices.Num() != BoundaryVertexDegrees.Num())
+			{
+				Plane.DomainVertices.Reset();
+			}
+		}
+		int32 PolygonDomainComponentCount = Plane.DomainVertices.IsEmpty() ? 0 : 1;
+		if (Plane.DomainVertices.IsEmpty() && BoundaryDegreeOneCount == 0 &&
+			BoundaryOtherDegreeCount == 1)
+		{
+			int32 JunctionVertex = INDEX_NONE;
+			for (const TPair<int32, int32>& VertexDegree : BoundaryVertexDegrees)
+			{
+				if (VertexDegree.Value > 2)
+				{
+					JunctionVertex = VertexDegree.Key;
+					break;
+				}
+			}
+			TArray<int32, TInlineAllocator<8>> JunctionNeighbors;
+			BoundaryAdjacency.MultiFind(JunctionVertex, JunctionNeighbors);
+			JunctionNeighbors.Sort();
+			TSet<int32> VisitedWithoutJunction;
+			TArray<TArray<int32>> ComponentLoops;
+			for (const TPair<int32, int32>& VertexDegree : BoundaryVertexDegrees)
+			{
+				const int32 SeedVertex = VertexDegree.Key;
+				if (SeedVertex == JunctionVertex ||
+					VisitedWithoutJunction.Contains(SeedVertex)) continue;
+				TSet<int32> ComponentVertices;
+				TArray<int32, TInlineAllocator<32>> Stack;
+				Stack.Add(SeedVertex);
+				while (!Stack.IsEmpty())
+				{
+					const int32 VertexIndex = Stack.Pop(EAllowShrinking::No);
+					if (VertexIndex == JunctionVertex ||
+						ComponentVertices.Contains(VertexIndex)) continue;
+					ComponentVertices.Add(VertexIndex);
+					VisitedWithoutJunction.Add(VertexIndex);
+					TArray<int32, TInlineAllocator<4>> AdjacentVertices;
+					BoundaryAdjacency.MultiFind(VertexIndex, AdjacentVertices);
+					Stack.Append(AdjacentVertices);
+				}
+				TArray<int32, TInlineAllocator<4>> ComponentJunctionNeighbors;
+				for (const int32 Neighbor : JunctionNeighbors)
+				{
+					if (ComponentVertices.Contains(Neighbor))
+					{
+						ComponentJunctionNeighbors.Add(Neighbor);
+					}
+				}
+				if (ComponentJunctionNeighbors.Num() != 2)
+				{
+					ComponentLoops.Reset();
+					break;
+				}
+				ComponentJunctionNeighbors.Sort();
+				TArray<int32> Loop;
+				Loop.Add(JunctionVertex);
+				int32 PreviousVertex = JunctionVertex;
+				int32 CurrentVertex = ComponentJunctionNeighbors[0];
+				while (CurrentVertex != JunctionVertex &&
+					Loop.Num() <= ComponentVertices.Num())
+				{
+					Loop.Add(CurrentVertex);
+					TArray<int32, TInlineAllocator<4>> AdjacentVertices;
+					BoundaryAdjacency.MultiFind(CurrentVertex, AdjacentVertices);
+					AdjacentVertices.Sort();
+					int32 NextVertex = INDEX_NONE;
+					for (const int32 CandidateVertex : AdjacentVertices)
+					{
+						if (CandidateVertex != PreviousVertex &&
+							(CandidateVertex == JunctionVertex ||
+								ComponentVertices.Contains(CandidateVertex)))
+						{
+							NextVertex = CandidateVertex;
+							break;
+						}
+					}
+					PreviousVertex = CurrentVertex;
+					CurrentVertex = NextVertex;
+				}
+				if (CurrentVertex != JunctionVertex ||
+					Loop.Num() != ComponentVertices.Num() + 1)
+				{
+					ComponentLoops.Reset();
+					break;
+				}
+				ComponentLoops.Add(MoveTemp(Loop));
+			}
+			ComponentLoops.Sort([](const TArray<int32>& A, const TArray<int32>& B)
+			{
+				const int32 MinimumA = A.IsEmpty()
+					? MAX_int32 : *Algo::MinElement(A);
+				const int32 MinimumB = B.IsEmpty()
+					? MAX_int32 : *Algo::MinElement(B);
+				return MinimumA < MinimumB;
+			});
+			for (int32 ComponentIndex = 0;
+				ComponentIndex < ComponentLoops.Num(); ++ComponentIndex)
+			{
+				FBoundedPlane ComponentPlane = Plane;
+				ComponentPlane.DomainVertices.Reset();
+				for (const int32 VertexIndex : ComponentLoops[ComponentIndex])
+				{
+					const FVector3d Relative =
+						MeshVertices[VertexIndex] - ComponentPlane.Origin;
+					ComponentPlane.DomainVertices.Add(FVector2d(
+						FVector3d::DotProduct(Relative, AxisU),
+						FVector3d::DotProduct(Relative, AxisV)));
+				}
+				if (ComponentIndex == 0)
+				{
+					Plane.DomainVertices = MoveTemp(ComponentPlane.DomainVertices);
+				}
+				else
+				{
+					ComponentPlane.PrimitiveId = CombineStableIds(
+						Plane.PrimitiveId, CombineStableIds(
+							StableStringId(TEXT("PlanarDomainComponent")),
+							static_cast<uint64>(ComponentIndex)));
+					AdditionalPlanarDomainComponents.Add(MoveTemp(ComponentPlane));
+				}
+			}
+			PolygonDomainComponentCount = ComponentLoops.Num();
+		}
+		const bool bRectangleBoundaryCandidate = bBoundaryManifold &&
+			bSingleBoundaryLoop && bBoundaryUsesOnlyRectangleSides &&
+			BoundarySideMask == 0x0f;
+		const bool bPlanarDomainQualified = !Plane.DomainVertices.IsEmpty();
+		auto PolygonArea = [](const TArray<FVector2d>& Vertices)
+		{
+			double TwiceArea = 0.0;
+			for (int32 VertexIndex = 0; VertexIndex < Vertices.Num(); ++VertexIndex)
+			{
+				const FVector2d& A = Vertices[VertexIndex];
+				const FVector2d& B = Vertices[(VertexIndex + 1) % Vertices.Num()];
+				TwiceArea += A.X * B.Y - A.Y * B.X;
+			}
+			return 0.5 * FMath::Abs(TwiceArea);
+		};
+		double PolygonDomainArea = PolygonArea(Plane.DomainVertices);
+		for (int32 ComponentIndex = AdditionalComponentStart;
+			ComponentIndex < AdditionalPlanarDomainComponents.Num(); ++ComponentIndex)
+		{
+			PolygonDomainArea += PolygonArea(
+				AdditionalPlanarDomainComponents[ComponentIndex].DomainVertices);
+		}
+		const double DomainAreaResidualCm2 =
+			FMath::Abs(PolygonDomainArea - Group.Area);
+		const double MaximumAuthorityAreaResidualCm2 =
+			FMath::Max(0.01, Group.Area * 1.0e-8);
+		const bool bFaceInteriorAuthorityCertified =
+			bPlanarDomainQualified && bUniformCollisionPolicy &&
+			MaximumPlaneResidualCm <= MaximumAuthorityPlaneResidualCm &&
+			DomainAreaResidualCm2 <= MaximumAuthorityAreaResidualCm2;
+		Plane.bAuthorityEligible = bFaceInteriorAuthorityCertified;
+		for (int32 ComponentIndex = AdditionalComponentStart;
+			ComponentIndex < AdditionalPlanarDomainComponents.Num(); ++ComponentIndex)
+		{
+			AdditionalPlanarDomainComponents[ComponentIndex].bAuthorityEligible =
+				bFaceInteriorAuthorityCertified;
+		}
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticPlaneDomain] Primitive=%016llX Group=%016llX Triangles=%d SourceAreaCm2=%.9g PolygonAreaCm2=%.9g AreaResidualCm2=%.9g PlaneResidualCm=%.9g RawPlaneResidualCm=%.9g Symmetrized=%d Normal=%s PlaneOffset=%.17g UniformPolicy=%d FaceInteriorAuthority=%d RectangularAreaCm2=%.9g FillRatio=%.9g BoundaryEdges=%d BoundarySides=%u BoundaryManifold=%d BoundaryDegrees=%d/%d/%d SingleLoop=%d PolygonVertices=%d PolygonComponents=%d RectangleBoundary=%d Qualified=%d"),
+			Plane.PrimitiveId, Group.GroupId, Group.TriangleCount,
+			Group.Area, PolygonDomainArea,
+			DomainAreaResidualCm2, MaximumPlaneResidualCm,
+			Group.MaximumPlaneResidual,
+			bUseSymmetrizedConstraint ? 1 : 0,
+			*Normal.ToString(), PlaneOffset,
+			bUniformCollisionPolicy ? 1 : 0,
+			bFaceInteriorAuthorityCertified ? 1 : 0,
+			RectangularDomainArea, DomainFillRatio,
+			BoundaryEdgeCount, static_cast<uint32>(BoundarySideMask),
+			bBoundaryManifold ? 1 : 0, BoundaryDegreeOneCount,
+			BoundaryDegreeTwoCount, BoundaryOtherDegreeCount,
+			bSingleBoundaryLoop ? 1 : 0,
+			Plane.DomainVertices.Num(),
+			PolygonDomainComponentCount,
+			bRectangleBoundaryCandidate ? 1 : 0,
+			bPlanarDomainQualified ? 1 : 0);
+		if (!bBoundaryManifold)
+		{
+			for (const TPair<int32, int32>& VertexDegree : BoundaryVertexDegrees)
+			{
+				if (VertexDegree.Value == 2 ||
+					!MeshVertices.IsValidIndex(VertexDegree.Key)) continue;
+				UE_LOG(LogTemp, Display,
+					TEXT("[AnalyticPlaneBoundaryJunction] Primitive=%016llX Vertex=%d Degree=%d Position=%s"),
+					Plane.PrimitiveId, VertexDegree.Key, VertexDegree.Value,
+					*MeshVertices[VertexDegree.Key].ToString());
+			}
+		}
+		if (!bPlanarDomainQualified)
+		{
+			// A synthesized mesh plane without a certified boundary would fall back
+			// to its enclosing rectangle and could claim empty space. Omit it from
+			// compact queries until its source membership forms a valid polygon.
+			Planes.Pop(EAllowShrinking::No);
+		}
 	}
+	Planes.Append(MoveTemp(AdditionalPlanarDomainComponents));
 	TSet<int32> AddedFitIndices;
 	for (const FC2TransitionCoverageEntry& Coverage : C2TransitionCoverage)
 	{
@@ -1339,7 +2049,17 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		Patch.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
 		Patch.bCanonicalC2ByConstruction = bUsesCanonicalFamily;
 		Patch.bCanonicalSymmetryByConstruction = bUsesCanonicalFamily;
-		Patch.bAuthorityEligible = false;
+		// Authority is granted only to the canonical physical family after its
+		// deterministic query representation has met the public chord-error
+		// contract. Source-mesh residuals remain a separate visual-fidelity
+		// certificate: the authored mesh is not the physical oracle.
+		const bool bQueryApproximationCertified =
+			Patch.BuildQueryApproximation() &&
+			Patch.MaximumChordErrorCm <= ExtrudedQuinticChordToleranceCm;
+		Patch.bAuthorityEligible = Patch.bQueryCollisionEnabled &&
+			Patch.bCanonicalC2ByConstruction &&
+			Patch.bCanonicalSymmetryByConstruction &&
+			bQueryApproximationCertified;
 		AddedFitIndices.Add(Coverage.TransitionFitIndex);
 	}
 	Algo::Sort(ExtrudedQuinticPatches,
@@ -10202,6 +10922,17 @@ uint64 FAnalyticWorldData::StableHash() const
 		HashValue(Hash, Plane.AxisV.Z);
 		HashValue(Hash, Plane.HalfExtents.X);
 		HashValue(Hash, Plane.HalfExtents.Y);
+		if (!Plane.DomainVertices.IsEmpty())
+		{
+			HashValue(Hash, StableStringId(TEXT("PlanarPolygonDomain")));
+			const int32 DomainVertexCount = Plane.DomainVertices.Num();
+			HashValue(Hash, DomainVertexCount);
+			for (const FVector2d& Vertex : Plane.DomainVertices)
+			{
+				HashValue(Hash, Vertex.X);
+				HashValue(Hash, Vertex.Y);
+			}
+		}
 		HashValue(Hash, Plane.bQueryCollisionEnabled);
 		HashValue(Hash, Plane.bRequiresCompactOptIn);
 		HashValue(Hash, Plane.bAuthorityEligible);

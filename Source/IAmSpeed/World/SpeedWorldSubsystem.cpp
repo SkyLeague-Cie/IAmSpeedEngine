@@ -57,6 +57,7 @@ static TAutoConsoleVariable<float> CVarIAmSpeedAnalyticLandscapeFlatnessToleranc
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
+	StaticCollisionWorld.Reset();
 	AnalyticWorldData.Reset();
 	AnalyticSourceComponents.Reset();
 	AnalyticWorldBuildAttempt = 0;
@@ -164,6 +165,18 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 	if (const USpeedAnalyticCollisionAsset* BakedAsset =
 		LoadObject<USpeedAnalyticCollisionAsset>(nullptr, *BakedObjectPath))
 	{
+		int32 SerializedPlaneAuthorityCount = 0;
+		for (const FSpeedAnalyticBoundedPlaneRecord& Plane :
+			BakedAsset->BoundedPlanes)
+		{
+			SerializedPlaneAuthorityCount += Plane.bAuthorityEligible ? 1 : 0;
+		}
+		int32 SerializedQuinticAuthorityCount = 0;
+		for (const FSpeedAnalyticExtrudedQuinticPatchRecord& Patch :
+			BakedAsset->ExtrudedQuinticPatches)
+		{
+			SerializedQuinticAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
+		}
 		uint64 BakedInventoryHash = 0;
 		for (const FSpeedAnalyticMeshSourceRecord& Source : BakedAsset->MeshSources)
 		{
@@ -177,6 +190,31 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		FString BakedReason;
 		const TSharedPtr<const Speed::Analytic::FAnalyticWorldData> BakedRuntime =
 			BakedAsset->BuildRuntimeData(&BakedReason);
+		int32 RuntimePlaneAuthorityCount = 0;
+		int32 RuntimeQuinticAuthorityCount = 0;
+		if (BakedRuntime)
+		{
+			for (const Speed::Analytic::FBoundedPlane& Plane : BakedRuntime->Planes)
+			{
+				RuntimePlaneAuthorityCount += Plane.bAuthorityEligible ? 1 : 0;
+			}
+			for (const Speed::Analytic::FExtrudedQuinticPatch& Patch :
+				BakedRuntime->ExtrudedQuinticPatches)
+			{
+				RuntimeQuinticAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
+			}
+		}
+		const int32 RuntimePlaneCount = BakedRuntime ? BakedRuntime->Planes.Num() : 0;
+		const int32 RuntimeQuinticCount = BakedRuntime ?
+			BakedRuntime->ExtrudedQuinticPatches.Num() : 0;
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticMeshBakeAuthority] BakeSchema=%u SerializedPlanes=%d/%d SerializedQuintics=%d/%d RuntimePlanes=%d/%d RuntimeQuintics=%d/%d"),
+			BakedAsset->BakeSchemaVersion,
+			SerializedPlaneAuthorityCount, BakedAsset->BoundedPlanes.Num(),
+			SerializedQuinticAuthorityCount,
+			BakedAsset->ExtrudedQuinticPatches.Num(),
+			RuntimePlaneAuthorityCount, RuntimePlaneCount,
+			RuntimeQuinticAuthorityCount, RuntimeQuinticCount);
 		if (BakedRuntime && BakedInventoryHash == MeshSourceInventoryHash &&
 			BakedAsset->MeshSources.Num() == MeshSourceComponentCount)
 		{
@@ -302,6 +340,8 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		Imported->IsAuthorityEligible() ? 1 : 0,
 		bSourceReadinessPending ? 1 : 0);
 	AnalyticWorldData = MoveTemp(Imported);
+	StaticCollisionWorld = MakeUnique<Speed::FAnalyticStaticCollisionWorld>(
+		*AnalyticWorldData);
 }
 
 static TAutoConsoleVariable<float> CVarIAmSpeedRollingBaumgarte(

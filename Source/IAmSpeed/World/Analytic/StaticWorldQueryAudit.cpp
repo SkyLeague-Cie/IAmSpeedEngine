@@ -30,8 +30,11 @@ namespace
 	TAutoConsoleVariable<int32> CVarCompactAuthorityEnabled(
 		TEXT("p.IAmSpeed.AnalyticWorld.CompactAuthority"), 0,
 		TEXT("Experimental: replaces audited Unreal static queries with compact patches."));
+	TAutoConsoleVariable<int32> CVarAuthorityChaosShadowEnabled(
+		TEXT("p.IAmSpeed.AnalyticWorld.AuthorityChaosShadow"), 0,
+		TEXT("Diagnostic only: replays the first authoritative analytical Box hit through UWorld/Chaos without changing its result."));
 	TAutoConsoleVariable<int32> CVarStaticCollisionBackend(
-		TEXT("p.IAmSpeed.StaticCollision.Backend"), 0,
+		TEXT("p.IAmSpeed.StaticCollision.Backend"), 2,
 		TEXT("Static collision backend: 0=UnrealLegacy, 1=AnalyticHybrid, 2=SurfaceAnalytic. SurfaceAnalytic never falls back to UWorld."));
 	TAutoConsoleVariable<float> CVarPointToleranceCm(
 		TEXT("p.IAmSpeed.AnalyticWorld.Shadow.PointToleranceCm"), 0.1f,
@@ -42,6 +45,9 @@ namespace
 	TAutoConsoleVariable<float> CVarTimeTolerance(
 		TEXT("p.IAmSpeed.AnalyticWorld.Shadow.TimeTolerance"), 1.0e-6f,
 		TEXT("Maximum normalized sweep-time difference reported equal in analytical shadow mode."));
+	TAutoConsoleVariable<float> CVarPenetrationToleranceCm(
+		TEXT("p.IAmSpeed.AnalyticWorld.Shadow.PenetrationToleranceCm"), 0.1f,
+		TEXT("Maximum penetration-depth difference reported equal in analytical shadow mode."));
 
 	constexpr uint64 AuditFnvOffset = 14695981039346656037ull;
 	constexpr uint64 AuditFnvPrime = 1099511628211ull;
@@ -58,6 +64,7 @@ namespace
 	{
 		bool bActive = false;
 		bool bFirstDivergenceReported = false;
+		bool bFirstHitDivergenceReported = false;
 		uint64 Frame = 0;
 		uint32 QueryCount = 0;
 		uint32 LegacySweepCount = 0;
@@ -72,7 +79,7 @@ namespace
 		TArray<FPreviousTransition> PreviousTransitions;
 		uint32 MatchCount = 0;
 		uint32 MismatchCount = 0;
-		uint32 FieldMismatches[7] = {};
+		uint32 FieldMismatches[9] = {};
 	};
 
 	thread_local FFrameState State;
@@ -196,7 +203,9 @@ namespace
 		return Query;
 	}
 
-	FHitResult ToUnrealHit(const FWorldQuery& Query, const FWorldHit& Analytic)
+	FHitResult ToUnrealHit(
+		const FWorldQuery& Query, const FWorldHit& Analytic,
+		const USpeedWorldSubsystem* RuntimeBridge)
 	{
 		FHitResult Result;
 		if (!Analytic.bHit) return Result;
@@ -214,9 +223,9 @@ namespace
 		Result.TraceEnd = FVector(Query.End);
 		Result.FaceIndex = static_cast<int32>(
 			Analytic.PrimitiveId & 0x7fffffffull);
-		if (State.RuntimeBridge && Analytic.SourceId != 0)
+		if (RuntimeBridge && Analytic.SourceId != 0)
 		{
-			Result.Component = State.RuntimeBridge->FindAnalyticSourceComponent(
+			Result.Component = RuntimeBridge->FindAnalyticSourceComponent(
 				Analytic.SourceId);
 		}
 		return Result;
@@ -238,7 +247,7 @@ namespace
 		const UPrimitiveComponent* LegacyComponent = Legacy.Component.Get();
 		const AActor* LegacyOwner = LegacyComponent ? LegacyComponent->GetOwner() : nullptr;
 		UE_LOG(LogTemp, Display,
-			TEXT("[AnalyticShadowFirstDivergenceDetail] Frame=%llu Query=%u Site=%s Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g TraceChannel=%u ObjectTypes=%016llX BlockingObjectTypes=%016llX LegacyHit=%d LegacyTime=%.9g LegacyLocation=%s LegacyPoint=%s LegacyNormal=%s LegacyOwner=%s LegacyComponent=%s LegacyFace=%d AnalyticHit=%d AnalyticTime=%.17g AnalyticLocation=%s AnalyticPoint=%s AnalyticNormal=%s AnalyticSource=%016llX AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX"),
+			TEXT("[AnalyticShadowFirstDivergenceDetail] Frame=%llu Query=%u Site=%s Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g TraceChannel=%u ObjectTypes=%016llX BlockingObjectTypes=%016llX LegacyHit=%d LegacyTime=%.9g LegacyLocation=%s LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g LegacyOwner=%s LegacyComponent=%s LegacyFace=%d AnalyticHit=%d AnalyticTime=%.17g AnalyticLocation=%s AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSource=%016llX AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX"),
 			State.Frame, QueryOrdinal, SiteName(Site), static_cast<uint8>(Query.Shape),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
 			*FQuat(Query.Rotation).ToString(), *FVector(Query.HalfExtent).ToString(),
@@ -248,11 +257,42 @@ namespace
 			bLegacyHit ? *Legacy.Location.ToString() : TEXT("None"),
 			bLegacyHit ? *Legacy.ImpactPoint.ToString() : TEXT("None"),
 			bLegacyHit ? *Legacy.ImpactNormal.ToString() : TEXT("None"),
+			bLegacyHit && Legacy.bStartPenetrating ? 1 : 0,
+			bLegacyHit ? Legacy.PenetrationDepth : 0.0f,
 			LegacyOwner ? *LegacyOwner->GetPathName() : TEXT("None"),
 			LegacyComponent ? *LegacyComponent->GetPathName() : TEXT("None"),
 			bLegacyHit ? Legacy.FaceIndex : INDEX_NONE, Analytic.bHit ? 1 : 0,
 			Analytic.Time, *FVector(Analytic.Location).ToString(),
 			*FVector(Analytic.Point).ToString(), *FVector(Analytic.Normal).ToString(),
+			Analytic.bStartPenetrating ? 1 : 0, Analytic.PenetrationDepth,
+			Analytic.SourceId, Analytic.SurfaceId, Analytic.FeatureId,
+			Analytic.PrimitiveId);
+	}
+
+	void ReportHitDivergence(
+		const EStaticQuerySite Site, const uint32 QueryOrdinal,
+		const FWorldQuery& Query, const bool bLegacyHit,
+		const FHitResult& Legacy, const FWorldHit& Analytic)
+	{
+		if (State.bFirstHitDivergenceReported) return;
+		State.bFirstHitDivergenceReported = true;
+		const UPrimitiveComponent* LegacyComponent = Legacy.Component.Get();
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticShadowFirstHitDivergence] Frame=%llu Query=%u Site=%s Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g LegacyComponent=%s LegacyFace=%d AnalyticHit=%d AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSource=%016llX AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX"),
+			State.Frame, QueryOrdinal, SiteName(Site),
+			static_cast<uint8>(Query.Shape), *FVector(Query.Start).ToString(),
+			*FVector(Query.End).ToString(), *FQuat(Query.Rotation).ToString(),
+			*FVector(Query.HalfExtent).ToString(), Query.Radius,
+			bLegacyHit ? 1 : 0, bLegacyHit ? Legacy.Time : 1.0f,
+			bLegacyHit ? *Legacy.ImpactPoint.ToString() : TEXT("None"),
+			bLegacyHit ? *Legacy.ImpactNormal.ToString() : TEXT("None"),
+			bLegacyHit && Legacy.bStartPenetrating ? 1 : 0,
+			bLegacyHit ? Legacy.PenetrationDepth : 0.0f,
+			LegacyComponent ? *LegacyComponent->GetPathName() : TEXT("None"),
+			bLegacyHit ? Legacy.FaceIndex : INDEX_NONE,
+			Analytic.bHit ? 1 : 0, Analytic.Time,
+			*FVector(Analytic.Point).ToString(), *FVector(Analytic.Normal).ToString(),
+			Analytic.bStartPenetrating ? 1 : 0, Analytic.PenetrationDepth,
 			Analytic.SourceId, Analytic.SurfaceId, Analytic.FeatureId,
 			Analytic.PrimitiveId);
 	}
@@ -291,11 +331,18 @@ namespace
 		AuditHashValue(Hash, Hit.Point.X);
 		AuditHashValue(Hash, Hit.Point.Y);
 		AuditHashValue(Hash, Hit.Point.Z);
+		AuditHashValue(Hash, Hit.QueryPoint.X);
+		AuditHashValue(Hash, Hit.QueryPoint.Y);
+		AuditHashValue(Hash, Hit.QueryPoint.Z);
 		AuditHashValue(Hash, Hit.Normal.X);
 		AuditHashValue(Hash, Hit.Normal.Y);
 		AuditHashValue(Hash, Hit.Normal.Z);
 		AuditHashValue(Hash, Hit.bStartPenetrating);
 		AuditHashValue(Hash, Hit.PenetrationDepth);
+		AuditHashValue(Hash, Hit.QueryFeatureKind);
+		AuditHashValue(Hash, Hit.SurfaceFeatureKind);
+		AuditHashValue(Hash, Hit.QueryFeatureIndex);
+		AuditHashValue(Hash, Hit.SurfaceFeatureIndex);
 		AuditHashValue(Hash, Hit.SurfaceId);
 		AuditHashValue(Hash, Hit.FeatureId);
 	}
@@ -327,6 +374,8 @@ namespace
 		int32 DivergenceIndex = INDEX_NONE;
 		if (bLegacyHit != Analytic.bHit)
 		{
+			ReportHitDivergence(
+				Site, QueryOrdinal, Query, bLegacyHit, Legacy, Analytic);
 			DivergenceField = TEXT("Hit");
 			DivergenceIndex = 0;
 		}
@@ -364,6 +413,20 @@ namespace
 		{
 			DivergenceField = TEXT("Feature");
 			DivergenceIndex = 5;
+		}
+		else if (bLegacyHit && Legacy.bStartPenetrating !=
+			Analytic.bStartPenetrating)
+		{
+			DivergenceField = TEXT("StartPenetrating");
+			DivergenceIndex = 7;
+		}
+		else if (bLegacyHit && FMath::Abs(
+			static_cast<double>(Legacy.PenetrationDepth) -
+				Analytic.PenetrationDepth) >
+			CVarPenetrationToleranceCm.GetValueOnAnyThread())
+		{
+			DivergenceField = TEXT("PenetrationDepth");
+			DivergenceIndex = 8;
 		}
 		else if (bLegacyTransition != bAnalyticTransition)
 		{
@@ -425,17 +488,44 @@ namespace
 		Compare(Site, QueryOrdinal, Query, bHit, UnrealHit, AnalyticHit);
 		if (CVarCompactShadowDetailEnabled.GetValueOnAnyThread() != 0 &&
 			CVarCompactShadowEnabled.GetValueOnAnyThread() != 0 &&
+			Query.Shape == EQueryShape::Box)
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticCompactShadowBoxQuery] Frame=%llu Query=%u Site=%s Start=%s End=%s Rotation=%s HalfExtent=%s LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g AnalyticHit=%d AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
+				State.Frame, QueryOrdinal, SiteName(Site),
+				*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
+				*FQuat(Query.Rotation).ToString(),
+				*FVector(Query.HalfExtent).ToString(), bHit ? 1 : 0,
+				bHit ? UnrealHit.Time : 1.0f,
+				bHit ? *UnrealHit.ImpactPoint.ToString() : TEXT("None"),
+				bHit ? *UnrealHit.ImpactNormal.ToString() : TEXT("None"),
+				bHit && UnrealHit.bStartPenetrating ? 1 : 0,
+				bHit ? UnrealHit.PenetrationDepth : 0.0f,
+				AnalyticHit.bHit ? 1 : 0, AnalyticHit.Time,
+				*FVector(AnalyticHit.Point).ToString(),
+				*FVector(AnalyticHit.Normal).ToString(),
+				AnalyticHit.bStartPenetrating ? 1 : 0,
+				AnalyticHit.PenetrationDepth, AnalyticHit.SourceId,
+				AnalyticHit.SurfaceId, AnalyticHit.FeatureId,
+				AnalyticHit.PrimitiveId, AnalyticHit.CanonicalGroupId);
+		}
+		if (CVarCompactShadowDetailEnabled.GetValueOnAnyThread() != 0 &&
+			CVarCompactShadowEnabled.GetValueOnAnyThread() != 0 &&
 			AnalyticHit.bHit && AnalyticHit.PrimitiveId != 0)
 		{
 			UE_LOG(LogTemp, Display,
-				TEXT("[AnalyticCompactShadowHit] Frame=%llu Query=%u Site=%s Shape=%u LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
+				TEXT("[AnalyticCompactShadowHit] Frame=%llu Query=%u Site=%s Shape=%u LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
 				State.Frame, QueryOrdinal, SiteName(Site),
 				static_cast<uint8>(Query.Shape), bHit ? 1 : 0,
 				bHit ? UnrealHit.Time : 1.0f,
 				bHit ? *UnrealHit.ImpactPoint.ToString() : TEXT("None"),
 				bHit ? *UnrealHit.ImpactNormal.ToString() : TEXT("None"),
+				bHit && UnrealHit.bStartPenetrating ? 1 : 0,
+				bHit ? UnrealHit.PenetrationDepth : 0.0f,
 				AnalyticHit.Time, *FVector(AnalyticHit.Point).ToString(),
-				*FVector(AnalyticHit.Normal).ToString(), AnalyticHit.SurfaceId,
+				*FVector(AnalyticHit.Normal).ToString(),
+				AnalyticHit.bStartPenetrating ? 1 : 0,
+				AnalyticHit.PenetrationDepth, AnalyticHit.SurfaceId,
 				AnalyticHit.FeatureId, AnalyticHit.PrimitiveId,
 				AnalyticHit.CanonicalGroupId);
 		}
@@ -457,12 +547,24 @@ bool FStaticWorldQueryAudit::IsCompactAuthorityEnabled()
 	return SelectedBackend() != Speed::EStaticCollisionBackend::UnrealLegacy;
 }
 
+bool FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
+{
+	return SelectedBackend() == Speed::EStaticCollisionBackend::SurfaceAnalytic;
+}
+
+bool FStaticWorldQueryAudit::IsAuthorityChaosShadowEnabled()
+{
+	return CVarAuthorityChaosShadowEnabled.GetValueOnAnyThread() != 0;
+}
+
 bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+	UWorld* World,
 	const FVector& Start, const FVector& End, const FQuat& Rotation,
 	const FCollisionShape& Shape, const uint8 TraceChannel,
 	const FCollisionResponseParams& ResponseParams,
-	FHitResult& OutHit, bool& bOutHit)
+	FHitResult& OutHit, bool& bOutHit, FWorldHit* OutAnalyticHit)
 {
+	if (OutAnalyticHit) *OutAnalyticHit = FWorldHit();
 	if (!IsCompactAuthorityEnabled())
 	{
 		return false;
@@ -470,7 +572,11 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	++State.AuthorityAttemptCount;
 	const bool bStrict =
 		SelectedBackend() == Speed::EStaticCollisionBackend::SurfaceAnalytic;
-	if (!State.bActive || !State.World)
+	const USpeedWorldSubsystem* RuntimeBridge = World
+		? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+	const Speed::IStaticCollisionWorld* StaticWorld = RuntimeBridge
+		? RuntimeBridge->GetStaticCollisionWorld() : nullptr;
+	if (!StaticWorld)
 	{
 		if (!bStrict)
 		{
@@ -487,20 +593,21 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	Query.bAuthorityOnly = true;
 	Query.bIncludeCompactPatches = true;
 	Query.bIncludeTriangles = false;
-	const Speed::FAnalyticStaticCollisionWorld StaticWorld(*State.World);
-	if (!bStrict && !StaticWorld.HasHybridWinningHit(Query))
+	if (!bStrict && !StaticWorld->HasAuthorityCoverage(Query))
 	{
 		++State.AuthorityFallbackCount;
 		return false;
 	}
 	++State.AuthorityCoveredCount;
-	const FWorldHit Analytic = StaticWorld.SweepSingle(Query);
-	OutHit = ToUnrealHit(Query, Analytic);
+	const FWorldHit Analytic = StaticWorld->SweepSingle(Query);
+	if (OutAnalyticHit) *OutAnalyticHit = Analytic;
+	OutHit = ToUnrealHit(Query, Analytic, RuntimeBridge);
 	bOutHit = Analytic.bHit;
 	return true;
 }
 
 bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+	UWorld* World,
 	const FVector& Start, const FVector& End, const FQuat& Rotation,
 	const FCollisionShape& Shape, const uint64 ObjectTypes,
 	TArray<FHitResult>& OutHits)
@@ -512,7 +619,11 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	++State.AuthorityAttemptCount;
 	const bool bStrict =
 		SelectedBackend() == Speed::EStaticCollisionBackend::SurfaceAnalytic;
-	if (!State.bActive || !State.World)
+	const USpeedWorldSubsystem* RuntimeBridge = World
+		? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+	const Speed::IStaticCollisionWorld* StaticWorld = RuntimeBridge
+		? RuntimeBridge->GetStaticCollisionWorld() : nullptr;
+	if (!StaticWorld)
 	{
 		if (!bStrict)
 		{
@@ -528,18 +639,17 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	Query.bAuthorityOnly = true;
 	Query.bIncludeCompactPatches = true;
 	Query.bIncludeTriangles = false;
-	const Speed::FAnalyticStaticCollisionWorld StaticWorld(*State.World);
-	if (!bStrict && !StaticWorld.HasHybridWinningHit(Query))
+	if (!bStrict && !StaticWorld->HasAuthorityCoverage(Query))
 	{
 		++State.AuthorityFallbackCount;
 		return false;
 	}
 	++State.AuthorityCoveredCount;
-	const FWorldHit Analytic = StaticWorld.SweepSingle(Query);
+	const FWorldHit Analytic = StaticWorld->SweepSingle(Query);
 	OutHits.Reset();
 	if (Analytic.bHit)
 	{
-		OutHits.Add(ToUnrealHit(Query, Analytic));
+		OutHits.Add(ToUnrealHit(Query, Analytic, RuntimeBridge));
 	}
 	return true;
 }
@@ -580,7 +690,7 @@ void FStaticWorldQueryAudit::EndFrame()
 		return;
 	}
 	UE_LOG(LogTemp, Display,
-		TEXT("[StaticWorldQueryFrame] Frame=%llu Queries=%u LegacySweeps=%u AuthorityAttempts=%u AuthorityCovered=%u AuthorityFallback=%u StrictMissingWorld=%u Backend=%u LegacyHash=%016llX ShadowHash=%016llX Shadow=%d MeshShadow=%d Matches=%u Mismatches=%u Fields=%u/%u/%u/%u/%u/%u/%u"),
+		TEXT("[StaticWorldQueryFrame] Frame=%llu Queries=%u LegacySweeps=%u AuthorityAttempts=%u AuthorityCovered=%u AuthorityFallback=%u StrictMissingWorld=%u Backend=%u LegacyHash=%016llX ShadowHash=%016llX Shadow=%d MeshShadow=%d Matches=%u Mismatches=%u Fields=%u/%u/%u/%u/%u/%u/%u/%u/%u"),
 		State.Frame, State.QueryCount, State.LegacySweepCount,
 		State.AuthorityAttemptCount,
 		State.AuthorityCoveredCount, State.AuthorityFallbackCount,
@@ -592,7 +702,8 @@ void FStaticWorldQueryAudit::EndFrame()
 		State.FieldMismatches[0], State.FieldMismatches[1],
 		State.FieldMismatches[2], State.FieldMismatches[3],
 		State.FieldMismatches[4], State.FieldMismatches[5],
-		State.FieldMismatches[6]);
+		State.FieldMismatches[6], State.FieldMismatches[7],
+		State.FieldMismatches[8]);
 	State.bActive = false;
 	State.World = nullptr;
 	State.RuntimeBridge = nullptr;

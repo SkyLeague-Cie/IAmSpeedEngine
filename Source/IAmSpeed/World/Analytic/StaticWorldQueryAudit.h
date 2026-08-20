@@ -10,6 +10,7 @@ struct FHitResult;
 namespace Speed::Analytic
 {
 struct FAnalyticWorldData;
+struct FWorldHit;
 
 enum class EStaticQuerySite : uint8
 {
@@ -31,14 +32,19 @@ public:
 	static bool IsEnabled();
 	static bool IsShadowEnabled();
 	static bool IsCompactAuthorityEnabled();
+	static bool IsSurfaceAnalyticBackend();
+	static bool IsAuthorityChaosShadowEnabled();
 	static bool ShouldBuildAnalyticWorld();
 
 	static bool TryCompactAuthoritySingle(
+		UWorld* World,
 		const FVector& Start, const FVector& End, const FQuat& Rotation,
 		const FCollisionShape& Shape, uint8 TraceChannel,
 		const FCollisionResponseParams& ResponseParams,
-		FHitResult& OutHit, bool& bOutHit);
+		FHitResult& OutHit, bool& bOutHit,
+		FWorldHit* OutAnalyticHit = nullptr);
 	static bool TryCompactAuthorityMulti(
+		UWorld* World,
 		const FVector& Start, const FVector& End, const FQuat& Rotation,
 		const FCollisionShape& Shape, uint64 ObjectTypes,
 		TArray<FHitResult>& OutHits);

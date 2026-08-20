@@ -2209,7 +2209,7 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 		Asset = NewObject<USpeedAnalyticCollisionAsset>(OutputPackage, *AssetName,
 			RF_Public | RF_Standalone);
 	}
-	Asset->BakeSchemaVersion = 4;
+	Asset->BakeSchemaVersion = 6;
 	Asset->SchemaVersion = Speed::Analytic::AnalyticWorldSchemaVersion;
 	Asset->SourceHash = SourceHash;
 	Asset->MeshSources = MoveTemp(Records);
@@ -2252,6 +2252,11 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 		Record.AxisU = FVector(SourcePlane.AxisU);
 		Record.AxisV = FVector(SourcePlane.AxisV);
 		Record.HalfExtents = FVector2D(SourcePlane.HalfExtents);
+		Record.DomainVertices.Reserve(SourcePlane.DomainVertices.Num());
+		for (const FVector2d& Vertex : SourcePlane.DomainVertices)
+		{
+			Record.DomainVertices.Add(FVector2D(Vertex));
+		}
 		Record.bQueryCollisionEnabled = SourcePlane.bQueryCollisionEnabled;
 		Record.bRequiresCompactOptIn = SourcePlane.bRequiresCompactOptIn;
 		Record.bAuthorityEligible = SourcePlane.bAuthorityEligible;
@@ -2272,6 +2277,11 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 		Record.AxisU = FVector(SourcePlane.AxisU);
 		Record.AxisV = FVector(SourcePlane.AxisV);
 		Record.HalfExtents = FVector2D(SourcePlane.HalfExtents);
+		Record.DomainVertices.Reserve(SourcePlane.DomainVertices.Num());
+		for (const FVector2d& Vertex : SourcePlane.DomainVertices)
+		{
+			Record.DomainVertices.Add(FVector2D(Vertex));
+		}
 		Record.bQueryCollisionEnabled = SourcePlane.bQueryCollisionEnabled;
 		Record.bRequiresCompactOptIn = false;
 		Record.bAuthorityEligible = SourcePlane.bAuthorityEligible;

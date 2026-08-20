@@ -7,6 +7,7 @@
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
 USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
@@ -200,9 +201,14 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
     FCollisionQueryParams Params = BuildTraceParams();
 	FHitResult Hit;
 	bool bHit = false;
-	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+	Speed::Analytic::FWorldHit AnalyticHit;
+	const bool bUsedAnalyticAuthority =
+		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		World,
 		Start, End, Kinematics.Rotation, GetCollisionShape(),
-		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit))
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit,
+		&AnalyticHit);
+	if (!bUsedAnalyticAuthority)
 	{
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(Hit, Start, End,
@@ -219,7 +225,9 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
 	OutHit.bBlockingHit = bHit;
     if (bHit)
     {
-		OutHit = SHitResult::FromUnrealHit(Hit, delta);
+		OutHit = bUsedAnalyticAuthority
+			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component.Get())
+			: SHitResult::FromUnrealHit(Hit, delta);
     }
 	return bHit;
 }

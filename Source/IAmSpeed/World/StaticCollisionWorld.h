@@ -18,6 +18,8 @@ public:
 	virtual ~IStaticCollisionWorld() = default;
 	virtual Analytic::FWorldHit SweepSingle(
 		const Analytic::FWorldQuery& Query) const = 0;
+	virtual bool HasAuthorityCoverage(
+		const Analytic::FWorldQuery& Query) const = 0;
 	virtual EStaticCollisionBackend GetBackend() const = 0;
 };
 
@@ -37,14 +39,15 @@ public:
 		return QueryService.Sweep(Query);
 	}
 
+	bool HasAuthorityCoverage(
+		const Analytic::FWorldQuery& Query) const override
+	{
+		return QueryService.HasAuthorityCoverage(Query);
+	}
+
 	EStaticCollisionBackend GetBackend() const override
 	{
 		return EStaticCollisionBackend::SurfaceAnalytic;
-	}
-
-	bool HasHybridWinningHit(const Analytic::FWorldQuery& Query) const
-	{
-		return QueryService.HasAuthorityCoverage(Query);
 	}
 
 private:

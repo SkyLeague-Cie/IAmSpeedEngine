@@ -6,6 +6,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "IAmSpeed/SubBodies/SSubBody.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+#include "IAmSpeed/World/StaticCollisionWorld.h"
 #include "SpeedWorldSubsystem.generated.h"
 
 class ISpeedComponent;
@@ -98,6 +99,10 @@ public:
 	{
 		return AnalyticWorldData.Get();
 	}
+	const Speed::IStaticCollisionWorld* GetStaticCollisionWorld() const
+	{
+		return StaticCollisionWorld.Get();
+	}
 	TWeakObjectPtr<UPrimitiveComponent> FindAnalyticSourceComponent(
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
@@ -109,6 +114,9 @@ private:
 	mutable bool bLoggedRollingOwnershipState = false;
 	bool bLoggedRollingSolveState = false;
 	TUniquePtr<Speed::Analytic::FAnalyticWorldData> AnalyticWorldData;
+	// Authoritative immutable collision service. Its lifetime is owned by the
+	// physical world, independently from per-frame audit/shadow instrumentation.
+	TUniquePtr<Speed::IStaticCollisionWorld> StaticCollisionWorld;
 	// Runtime-only Unreal bridge. The analytical payload retains stable ids;
 	// legacy consumers receive their source component without coupling the
 	// generic query backend to UObjects.

@@ -15,6 +15,14 @@ error bounds. Equal candidates use stable public identifiers, never pointer or
 task order. Owners include analytical query services, legacy adapters, solid
 sweepers, and shape sub-bodies.
 
+For translational oriented-box sweeps against an exact finite planar domain,
+continuous SAT covers face, edge and vertex axes. The native result carries a
+witness on each shape and their local feature dimensions. Initial overlap uses
+the minimum translation axis and depth. An explicit `0.05 cm` contact shell
+releases shallow stationary, tangent or separating overlaps; closing motion at
+the same depth remains a time-zero blocking contact. This is an engine-chosen
+contact/release law, not a tolerance for copying a particular mesh backend.
+
 ## `IAMSPEED.PHYS.NORMAL_RESPONSE.V1` — NormalResponse
 
 - `CompositionLevel`: Atomic

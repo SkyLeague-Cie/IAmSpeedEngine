@@ -808,6 +808,7 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
     {
         TArray<FHitResult> Hits;
 		if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+			GetWorld(),
 			Center, Center, FQuat::Identity,
 			FCollisionShape::MakeSphere(GetRadius()),
 			1ull << static_cast<uint8>(ECC_WorldStatic), Hits))
@@ -898,6 +899,7 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
 	{
 		TArray<FHitResult> ResidualHits;
 		if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+			GetWorld(),
 			Center, Center, FQuat::Identity,
 			FCollisionShape::MakeSphere(GetRadius()),
 			1ull << static_cast<uint8>(ECC_WorldStatic), ResidualHits))

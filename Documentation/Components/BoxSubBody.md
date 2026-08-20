@@ -11,3 +11,8 @@ tests should cover ray/sphere/box contact against exact primitives, oriented
 symmetries, initial penetration, edges/vertices, filtering, release, and stable
 tie-breaking. Unreal `FHitResult` is an integration-adapter representation,
 not the intended authoritative backend result.
+
+The analytical static-world path returns both witnesses, the minimum-
+translation normal/depth for an overlap, local face/edge/vertex dimensions and
+stable source/surface/feature/primitive identity. `SHitResult` preserves these
+fields directly; it does not reconstruct them from an Unreal `FHitResult`.

@@ -1,11 +1,13 @@
 #pragma once
 #include "CoreMinimal.h"
+#include "IAmSpeed/Base/ContactFeature.h"
 
 class UWorld;
 class USSubBody;
 
 namespace Speed
 {
+	namespace Analytic { struct FWorldHit; }
 
 	struct SHitResult
 	{
@@ -28,9 +30,24 @@ namespace Speed
 
 		bool bStartPenetrating = false; // true if the two shapes are already penetrating at the start of the movement, false otherwise. Only relevant if bHit is true and bBlocking is false (overlapping hit).
 		float PenetrationDepth = 0.0; // depth of penetration at the impact point, only relevant if bHit is true and bBlocking is false (overlapping hit)
+		float GeometricErrorBoundCm = 0.0f; // certified positional error of the provider; zero for exact primitives
 		FVector ContactPointThis = FVector::ZeroVector; // contact point on THIS object (box or sphere) at the impact point, only relevant if bHit is true and bBlocking is false (overlapping hit)
 		FVector ContactPointOther = FVector::ZeroVector; // contact point on the OTHER object (box or sphere) at the impact point, only relevant if bHit is true and bBlocking is false (overlapping hit)
+		EContactFeatureKind ContactFeatureThis = EContactFeatureKind::Unknown;
+		EContactFeatureKind ContactFeatureOther = EContactFeatureKind::Unknown;
+		int8 ContactFeatureIndexThis = INDEX_NONE;
+		int8 ContactFeatureIndexOther = INDEX_NONE;
+		uint64 SourceId = 0;
+		uint64 SurfaceId = 0;
+		uint64 FeatureId = 0;
+		uint64 PrimitiveId = 0;
+		uint32 MaterialId = 0;
 		uint32 FrameTag = 0; // Tag to identify the frame in which this hit result was generated, useful for avoiding processing the same hit multiple times in the same frame. Only relevant if bHit is true.
+
+		static SHitResult FromAnalyticHit(
+			const Analytic::FWorldHit& AnalyticHit, float Delta,
+			UPrimitiveComponent* InComponent = nullptr,
+			uint32 InFrameTag = 0);
 
 		static SHitResult FromUnrealHit(const FHitResult& UnrealHit, const float& Delta, const uint32& InFrameTag = 0)
 		{
@@ -39,6 +56,8 @@ namespace Speed
 			ret.bStartPenetrating = UnrealHit.bStartPenetrating;
 			ret.PenetrationDepth = UnrealHit.PenetrationDepth;
 			ret.FaceIndex = UnrealHit.FaceIndex;
+			ret.ContactPointThis = UnrealHit.ImpactPoint;
+			ret.ContactPointOther = UnrealHit.ImpactPoint;
 			ret.FrameTag = InFrameTag;
 			return ret;
 		}

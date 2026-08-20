@@ -175,6 +175,9 @@ struct IAMSPEED_API FSpeedAnalyticBoundedPlaneRecord
 	FVector2D HalfExtents = FVector2D::ZeroVector;
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
+	TArray<FVector2D> DomainVertices;
+
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
 	bool bQueryCollisionEnabled = true;
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
@@ -226,10 +229,10 @@ class IAMSPEED_API USpeedAnalyticCollisionAsset : public UDataAsset
 
 public:
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
-	uint32 BakeSchemaVersion = 4;
+	uint32 BakeSchemaVersion = 6;
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
-	uint32 SchemaVersion = 4;
+	uint32 SchemaVersion = 5;
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
 	uint64 SourceHash = 0;

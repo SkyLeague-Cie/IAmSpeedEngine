@@ -1,4 +1,5 @@
 #include "ISensorSweeper.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
 bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVector& End, SHitResult& OutHit, const float& delta)
@@ -7,11 +8,16 @@ bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FV
 
     const Speed::FKinematicState& KS = GetKinematicState();
     FCollisionQueryParams Params = BuildTraceParams();
-    FHitResult Hit;
+	FHitResult Hit;
 	bool bHit = false;
-	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+	Speed::Analytic::FWorldHit AnalyticHit;
+	const bool bUsedAnalyticAuthority =
+		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		World,
 		Start, End, KS.Rotation, GetCollisionShape(),
-		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit))
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit,
+		&AnalyticHit);
+	if (!bUsedAnalyticAuthority)
 	{
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(
@@ -28,7 +34,10 @@ bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FV
     OutHit.bBlockingHit = false;
     if (bHit)
     {
-        OutHit = SHitResult::FromUnrealHit(Hit, delta);
+		OutHit = bUsedAnalyticAuthority
+			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component.Get())
+			: SHitResult::FromUnrealHit(Hit, delta);
+		OutHit.bBlockingHit = false;
     }
     return bHit;
 }

@@ -63,6 +63,7 @@ bool URayWheelSubBody::SweepSuspensionOnGround(
 	FHitResult UnrealHit;
 	bool bHit = false;
 	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		World,
 		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
 	{
@@ -216,6 +217,7 @@ bool URayWheelSubBody::SweepSuspensionAlongNormal(
 	const FVector End = CurrentRayPoint - SearchDistance * SearchNormal;
 	bool bHit = false;
 	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		World,
 		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
 	{

@@ -5,7 +5,8 @@
 namespace Speed::Analytic
 {
 
-constexpr uint32 AnalyticWorldSchemaVersion = 4u;
+constexpr uint32 AnalyticWorldSchemaVersion = 5u;
+constexpr double ExtrudedQuinticChordToleranceCm = 0.001;
 
 enum class ESurfaceFamily : uint8
 {
@@ -1074,6 +1075,9 @@ struct IAMSPEED_API FBoundedPlane
 	FVector3d AxisU = FVector3d::ForwardVector;
 	FVector3d AxisV = FVector3d::RightVector;
 	FVector2d HalfExtents = FVector2d::ZeroVector;
+	// Optional simple polygon in the plane's local (U,V) coordinates. Empty
+	// retains the legacy rectangular domain described by HalfExtents.
+	TArray<FVector2d> DomainVertices;
 	// Derived by FinalizeAndValidate; never serialized or hashed.
 	FBox3d Bounds = FBox3d(EForceInit::ForceInit);
 	bool bQueryCollisionEnabled = true;
@@ -1083,6 +1087,7 @@ struct IAMSPEED_API FBoundedPlane
 	double SignedDistance(const FVector3d& Point) const;
 	FVector3d ClosestPoint(const FVector3d& Point) const;
 	bool ContainsProjectedPoint(const FVector3d& Point, double Tolerance = 0.0) const;
+	double DistanceToDomainBoundary(const FVector3d& Point) const;
 	bool IsValid(FString* OutReason = nullptr) const;
 };
 
@@ -1119,9 +1124,17 @@ struct IAMSPEED_API FExtrudedQuinticPatch
 	bool bCanonicalC2ByConstruction = false;
 	bool bCanonicalSymmetryByConstruction = false;
 	bool bAuthorityEligible = false;
+	// Deterministic query representation derived from the degree-7 control
+	// polygon. It is neither serialized nor hashed. MaximumChordErrorCm is a
+	// certified Hausdorff upper bound from each Bezier subcurve to its chord.
+	TArray<FVector3d> SectionPolyline;
+	TArray<double> SectionParameters;
+	double MaximumChordErrorCm = TNumericLimits<double>::Max();
 
 	FVector3d EvaluateSection(double T) const;
 	FVector3d EvaluateSectionDerivative(double T) const;
+	bool BuildQueryApproximation(
+		double ChordToleranceCm = ExtrudedQuinticChordToleranceCm);
 	bool IsValid(FString* OutReason = nullptr) const;
 };
 

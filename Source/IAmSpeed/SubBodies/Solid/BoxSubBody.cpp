@@ -552,6 +552,7 @@ bool UBoxSubBody::GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const
     ObjectQuery.AddObjectTypesToQuery(ECC_WorldStatic);
     const Speed::FKinematicState& State = GetKinematicState();
 	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+		World,
 		State.Location, State.Location, State.Rotation, GetCollisionShape(),
 		1ull << static_cast<uint8>(ECC_WorldStatic), OutHits))
 	{
