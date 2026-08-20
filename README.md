@@ -66,7 +66,7 @@ independent blocking `Foundation` attribute. See the
 3. Regenerate project files when needed and build the host project.
 
 The current repository is a plugin, not a standalone Unreal project. A minimal
-repository-owned CI HostProject is planned so contracts can run independently
+repository-owned CI HostProject runs the initial contracts independently
 of demo or product projects.
 
 ## Contributing

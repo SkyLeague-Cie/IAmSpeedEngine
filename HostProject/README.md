@@ -8,8 +8,9 @@ host checkout from being discovered or enabled. It uses no product-specific
 module, content, coefficient, fixture, or vocabulary and removes the link when
 the run ends.
 
-The initial gate builds the Editor target and runs
-`IAmSpeed.AnalyticWorld`. The next harness slice adds a repository-owned
+The repository workflow `.github/workflows/physical-contracts.yml` builds the
+Editor target and runs `IAmSpeed.AnalyticWorld` through `Scripts/RunContracts.ps1`.
+The next harness slice adds a repository-owned
 persistent test world per worker and executes sealed FastSimulation cases at a
 fixed `PhysicalDeltaTime = 1/300 s`. Workers remain single-lane; no per-case
 physics tasks are permitted in this release.

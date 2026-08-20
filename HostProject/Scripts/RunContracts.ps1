@@ -43,6 +43,9 @@ try {
 }
 finally {
     if (Test-Path -LiteralPath $PluginLink) {
-        Remove-Item -LiteralPath $PluginLink -Force
+        # Windows PowerShell 5.1 can throw a NullReferenceException when
+        # Remove-Item targets a directory junction. Directory.Delete removes
+        # the reparse point itself and never traverses into the plugin root.
+        [IO.Directory]::Delete($PluginLink)
     }
 }
