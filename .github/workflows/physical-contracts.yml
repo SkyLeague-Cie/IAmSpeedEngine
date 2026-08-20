@@ -17,6 +17,8 @@ concurrency:
 
 jobs:
   host-project:
+    # Never dispatch untrusted fork pull requests to the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 30
 
