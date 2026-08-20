@@ -58,12 +58,24 @@ void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
 	AnalyticWorldData.Reset();
+	AnalyticSourceComponents.Reset();
 	AnalyticWorldBuildAttempt = 0;
 	if (!Speed::Analytic::FStaticWorldQueryAudit::ShouldBuildAnalyticWorld())
 	{
 		return;
 	}
 	BuildAnalyticWorldFromLoadedSources();
+}
+
+TWeakObjectPtr<UPrimitiveComponent> USpeedWorldSubsystem::FindAnalyticSourceComponent(
+	const uint64 SourceId) const
+{
+	if (const TWeakObjectPtr<UPrimitiveComponent>* Component =
+		AnalyticSourceComponents.Find(SourceId))
+	{
+		return *Component;
+	}
+	return nullptr;
 }
 
 void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
@@ -126,6 +138,9 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 				continue;
 			}
 			++MeshSourceComponentCount;
+			AnalyticSourceComponents.Add(
+				Speed::Analytic::StableStringId(MeshComponent->GetPathName()),
+				const_cast<UStaticMeshComponent*>(MeshComponent));
 			const FString StableIdentity = FString::Printf(
 				TEXT("%s|%s|%s|%s"), *SourceActor->GetPathName(),
 				*MeshComponent->GetPathName(), *Mesh->GetPathName(),
@@ -166,6 +181,9 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			BakedAsset->MeshSources.Num() == MeshSourceComponentCount)
 		{
 			Imported->Triangles = BakedRuntime->Triangles;
+			Imported->Planes = BakedRuntime->Planes;
+			Imported->ExtrudedQuinticPatches =
+				BakedRuntime->ExtrudedQuinticPatches;
 			CombinedSourceHash = Speed::Analytic::CombineStableIds(
 				CombinedSourceHash, BakedRuntime->SourceHash);
 			bMeshBakeLoaded = true;
@@ -189,6 +207,27 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		{
 			continue;
 		}
+		if (!Landscape->CollisionComponents.IsEmpty() &&
+			Landscape->CollisionComponents[0])
+		{
+			AnalyticSourceComponents.Add(
+				Speed::Analytic::StableStringId(Landscape->GetPathName()),
+				Landscape->CollisionComponents[0]);
+		}
+		const uint64 LandscapeSourceId =
+			Speed::Analytic::StableStringId(Landscape->GetPathName());
+		if (Imported->Planes.ContainsByPredicate(
+			[LandscapeSourceId](const Speed::Analytic::FBoundedPlane& Plane)
+			{
+				return Plane.SourceId == LandscapeSourceId &&
+					!Plane.bRequiresCompactOptIn;
+			}))
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticLandscapeAdapter] Source=%s Result=BakedAuthority Detail=Immutable baked Landscape certificate loaded."),
+				*Landscape->GetPathName());
+			continue;
+		}
 		const Speed::Analytic::FFlatLandscapeAdapterOutput Output =
 			Speed::Analytic::BuildFlatLandscapePlane(
 				*Landscape,
@@ -198,7 +237,9 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			*Landscape->GetPathName(), static_cast<uint8>(Output.Result),
 			Output.MaximumHeightResidual, *Output.Diagnostic);
 		if (Output.Result ==
-			Speed::Analytic::EFlatLandscapeAdapterResult::SuccessShadowOnly)
+			Speed::Analytic::EFlatLandscapeAdapterResult::SuccessShadowOnly ||
+			Output.Result == Speed::Analytic::EFlatLandscapeAdapterResult::
+				SuccessAuthorityEligible)
 		{
 			Imported->Planes.Add(Output.Plane);
 			CombinedSourceHash = Speed::Analytic::CombineStableIds(
@@ -251,8 +292,9 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		ValidShapeSampleCount += Sample.bValid ? 1 : 0;
 	}
 	UE_LOG(LogTemp, Display,
-		TEXT("[AnalyticWorldBuild] Attempt=%u Planes=%d Triangles=%d Vertices=%d Edges=%d BoundaryEdges=%d NonManifoldEdges=%d SmoothEdges=%d CreaseEdges=%d SmoothRegions=%d Patches=%d PlanarCandidates=%d ShapeValid=%d BvhNodes=%d Hash=%016llX AuthorityEligible=%d PendingSource=%d"),
-		AnalyticWorldBuildAttempt, Imported->Planes.Num(), Imported->Triangles.Num(),
+		TEXT("[AnalyticWorldBuild] Attempt=%u Planes=%d ExtrudedQuintics=%d Triangles=%d Vertices=%d Edges=%d BoundaryEdges=%d NonManifoldEdges=%d SmoothEdges=%d CreaseEdges=%d SmoothRegions=%d Patches=%d PlanarCandidates=%d ShapeValid=%d BvhNodes=%d Hash=%016llX AuthorityEligible=%d PendingSource=%d"),
+		AnalyticWorldBuildAttempt, Imported->Planes.Num(),
+		Imported->ExtrudedQuinticPatches.Num(), Imported->Triangles.Num(),
 		Imported->MeshVertices.Num(), Imported->MeshEdges.Num(), BoundaryEdgeCount,
 		NonManifoldEdgeCount, SmoothEdgeCount, CreaseEdgeCount,
 		Imported->SmoothSurfaceRegions.Num(), Imported->SurfacePatches.Num(), PlanarCandidateCount,

@@ -551,14 +551,14 @@ bool UBoxSubBody::GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const
     FCollisionObjectQueryParams ObjectQuery;
     ObjectQuery.AddObjectTypesToQuery(ECC_WorldStatic);
     const Speed::FKinematicState& State = GetKinematicState();
-    World->SweepMultiByObjectType(
-        OutHits,
-        State.Location,
-        State.Location,
-        State.Rotation,
-        ObjectQuery,
-        GetCollisionShape(),
-        QueryParams);
+	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+		State.Location, State.Location, State.Rotation, GetCollisionShape(),
+		1ull << static_cast<uint8>(ECC_WorldStatic), OutHits))
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+		World->SweepMultiByObjectType(OutHits, State.Location, State.Location,
+			State.Rotation, ObjectQuery, GetCollisionShape(), QueryParams);
+	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordMulti(
 		Speed::Analytic::EStaticQuerySite::BoxPenetrationProjection,
 		State.Location, State.Location, State.Rotation,

@@ -2,6 +2,7 @@
 
 
 #include "SpeedMovementComponent.h"
+#include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/CanonicalFrameContext.h"
 #include "IAmSpeed/World/CanonicalFrameDriver.h"
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"

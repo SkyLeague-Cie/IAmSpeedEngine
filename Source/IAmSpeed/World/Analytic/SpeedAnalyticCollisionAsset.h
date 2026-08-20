@@ -139,13 +139,25 @@ struct IAMSPEED_API FSpeedAnalyticBoundedPlaneRecord
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
+	uint64 SourceId = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
 	uint64 SurfaceId = 0;
 
 	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
 	uint64 FeatureId = 0;
 
 	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
+	uint64 PrimitiveId = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
 	int32 MaterialId = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
+	int32 ObjectType = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
+	uint64 BlockingChannels = 0;
 
 	UPROPERTY(EditAnywhere, Category = "Analytic Collision")
 	FVector Origin = FVector::ZeroVector;
@@ -163,7 +175,43 @@ struct IAMSPEED_API FSpeedAnalyticBoundedPlaneRecord
 	FVector2D HalfExtents = FVector2D::ZeroVector;
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
+	bool bQueryCollisionEnabled = true;
+
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
+	bool bRequiresCompactOptIn = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
 	bool bAuthorityEligible = false;
+};
+
+USTRUCT()
+struct IAMSPEED_API FSpeedAnalyticExtrudedQuinticPatchRecord
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint64 SourceId = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint64 SurfaceId = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint64 FeatureId = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint64 PrimitiveId = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint64 CanonicalGroupId = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint8 CanonicalSymmetryAxisMask = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint32 MaterialId = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint32 ObjectType = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint64 BlockingChannels = 0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") TArray<FVector> SectionControlPoints;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") TArray<FVector> InteriorCorrectionControlPoints;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double BaseRootMeanSquareResidualCm = 0.0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double BaseMaximumResidualCm = 0.0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double CorrectedRootMeanSquareResidualCm = 0.0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double CorrectedMaximumResidualCm = 0.0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") FVector ExtrusionAxis = FVector::ForwardVector;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double MinimumExtrusionCoordinate = 0.0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double MaximumExtrusionCoordinate = 0.0;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") FBox Bounds = FBox(EForceInit::ForceInit);
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") bool bQueryCollisionEnabled = false;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") bool bCanonicalC2ByConstruction = false;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") bool bCanonicalSymmetryByConstruction = false;
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") bool bAuthorityEligible = false;
 };
 
 /**
@@ -178,10 +226,10 @@ class IAMSPEED_API USpeedAnalyticCollisionAsset : public UDataAsset
 
 public:
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
-	uint32 BakeSchemaVersion = 3;
+	uint32 BakeSchemaVersion = 4;
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
-	uint32 SchemaVersion = 3;
+	uint32 SchemaVersion = 4;
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
 	uint64 SourceHash = 0;
@@ -203,6 +251,9 @@ public:
 
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
 	TArray<FSpeedAnalyticBoundedPlaneRecord> BoundedPlanes;
+
+	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision")
+	TArray<FSpeedAnalyticExtrudedQuinticPatchRecord> ExtrudedQuinticPatches;
 
 	TSharedPtr<const Speed::Analytic::FAnalyticWorldData> BuildRuntimeData(
 		FString* OutReason = nullptr,

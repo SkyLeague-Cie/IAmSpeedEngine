@@ -180,7 +180,8 @@ void ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 	}
 
 	Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
-		Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData());
+		Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
+		SpeedWorldSubsystem);
 	SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
 	SpeedWorldSubsystem->Step(
 		Context.PhysicalDeltaTime,

@@ -6,15 +6,18 @@
 #include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+#include "IAmSpeed/World/Analytic/AnalyticLandscapeAdapter.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticCollisionAsset.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticSourceComponent.h"
 #include "MeshDescription.h"
 #include "Misc/PackageName.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "LandscapeProxy.h"
 #include "StaticMeshAttributes.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
@@ -2132,6 +2135,34 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 	{
 		return A.PrimitiveId < B.PrimitiveId;
 	});
+	TArray<Speed::Analytic::FBoundedPlane> LandscapePlanes;
+	TArray<ALandscapeProxy*> Landscapes;
+	for (TActorIterator<ALandscapeProxy> It(World); It; ++It)
+	{
+		Landscapes.Add(*It);
+	}
+	Landscapes.Sort([](const ALandscapeProxy& A, const ALandscapeProxy& B)
+	{
+		return A.GetPathName() < B.GetPathName();
+	});
+	for (const ALandscapeProxy* Landscape : Landscapes)
+	{
+		const Speed::Analytic::FFlatLandscapeAdapterOutput Output =
+			Speed::Analytic::BuildFlatLandscapePlane(*Landscape, 0.001);
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticBakeLandscape] Source=%s Result=%u ResidualCm=%.9g Detail=%s"),
+			*Landscape->GetPathName(), static_cast<uint8>(Output.Result),
+			Output.MaximumHeightResidual, *Output.Diagnostic);
+		if (Output.Result != Speed::Analytic::EFlatLandscapeAdapterResult::
+			SuccessAuthorityEligible)
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("Landscape %s cannot be certified for analytical authority."),
+				*Landscape->GetPathName());
+			return 4;
+		}
+		LandscapePlanes.Add(Output.Plane);
+	}
 	TArray<FVector> VertexPositions;
 	TArray<FVector> VertexNormals;
 	TArray<FSpeedAnalyticIndexedTriangleRecord> IndexedTriangleRecords;
@@ -2154,6 +2185,15 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 		SourceHash = Speed::Analytic::CombineStableIds(
 			SourceHash, Record.CollisionPolicyHash);
 	}
+	for (const Speed::Analytic::FBoundedPlane& Plane : LandscapePlanes)
+	{
+		SourceHash = Speed::Analytic::CombineStableIds(SourceHash, Plane.SourceId);
+		SourceHash = Speed::Analytic::CombineStableIds(SourceHash, Plane.PrimitiveId);
+		SourceHash = Speed::Analytic::CombineStableIds(SourceHash, Plane.MaterialId);
+		SourceHash = Speed::Analytic::CombineStableIds(SourceHash, Plane.ObjectType);
+		SourceHash = Speed::Analytic::CombineStableIds(
+			SourceHash, Plane.BlockingChannels);
+	}
 
 	UPackage* OutputPackage = LoadPackage(nullptr, *OutputPackageName, LOAD_None);
 	if (!OutputPackage)
@@ -2169,7 +2209,7 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 		Asset = NewObject<USpeedAnalyticCollisionAsset>(OutputPackage, *AssetName,
 			RF_Public | RF_Standalone);
 	}
-	Asset->BakeSchemaVersion = 3;
+	Asset->BakeSchemaVersion = 4;
 	Asset->SchemaVersion = Speed::Analytic::AnalyticWorldSchemaVersion;
 	Asset->SourceHash = SourceHash;
 	Asset->MeshSources = MoveTemp(Records);
@@ -2178,10 +2218,124 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 	Asset->VertexNormals = MoveTemp(VertexNormals);
 	Asset->IndexedTriangles = MoveTemp(IndexedTriangleRecords);
 	Asset->BoundedPlanes.Reset();
+	Asset->ExtrudedQuinticPatches.Reset();
 	FString ValidationReason;
 	if (!Asset->ValidateGeneratedData(&ValidationReason))
 	{
 		UE_LOG(LogTemp, Error, TEXT("Generated asset is invalid: %s"),
+			*ValidationReason);
+		return 6;
+	}
+	const TSharedPtr<const Speed::Analytic::FAnalyticWorldData> RecognitionRuntime =
+		Asset->BuildRuntimeData(&ValidationReason, true);
+	if (!RecognitionRuntime)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Could not synthesize compact patches: %s"),
+			*ValidationReason);
+		return 6;
+	}
+	for (const Speed::Analytic::FBoundedPlane& SourcePlane :
+		RecognitionRuntime->Planes)
+	{
+		if (!SourcePlane.bRequiresCompactOptIn) continue;
+		FSpeedAnalyticBoundedPlaneRecord& Record =
+			Asset->BoundedPlanes.AddDefaulted_GetRef();
+		Record.SourceId = SourcePlane.SourceId;
+		Record.SurfaceId = SourcePlane.SurfaceId;
+		Record.FeatureId = SourcePlane.FeatureId;
+		Record.PrimitiveId = SourcePlane.PrimitiveId;
+		Record.MaterialId = static_cast<int32>(SourcePlane.MaterialId);
+		Record.ObjectType = static_cast<int32>(SourcePlane.ObjectType);
+		Record.BlockingChannels = SourcePlane.BlockingChannels;
+		Record.Origin = FVector(SourcePlane.Origin);
+		Record.Normal = FVector(SourcePlane.Normal);
+		Record.AxisU = FVector(SourcePlane.AxisU);
+		Record.AxisV = FVector(SourcePlane.AxisV);
+		Record.HalfExtents = FVector2D(SourcePlane.HalfExtents);
+		Record.bQueryCollisionEnabled = SourcePlane.bQueryCollisionEnabled;
+		Record.bRequiresCompactOptIn = SourcePlane.bRequiresCompactOptIn;
+		Record.bAuthorityEligible = SourcePlane.bAuthorityEligible;
+	}
+	for (const Speed::Analytic::FBoundedPlane& SourcePlane : LandscapePlanes)
+	{
+		FSpeedAnalyticBoundedPlaneRecord& Record =
+			Asset->BoundedPlanes.AddDefaulted_GetRef();
+		Record.SourceId = SourcePlane.SourceId;
+		Record.SurfaceId = SourcePlane.SurfaceId;
+		Record.FeatureId = SourcePlane.FeatureId;
+		Record.PrimitiveId = SourcePlane.PrimitiveId;
+		Record.MaterialId = static_cast<int32>(SourcePlane.MaterialId);
+		Record.ObjectType = static_cast<int32>(SourcePlane.ObjectType);
+		Record.BlockingChannels = SourcePlane.BlockingChannels;
+		Record.Origin = FVector(SourcePlane.Origin);
+		Record.Normal = FVector(SourcePlane.Normal);
+		Record.AxisU = FVector(SourcePlane.AxisU);
+		Record.AxisV = FVector(SourcePlane.AxisV);
+		Record.HalfExtents = FVector2D(SourcePlane.HalfExtents);
+		Record.bQueryCollisionEnabled = SourcePlane.bQueryCollisionEnabled;
+		Record.bRequiresCompactOptIn = false;
+		Record.bAuthorityEligible = SourcePlane.bAuthorityEligible;
+	}
+	Asset->ExtrudedQuinticPatches.Reserve(
+		RecognitionRuntime->ExtrudedQuinticPatches.Num());
+	for (const Speed::Analytic::FExtrudedQuinticPatch& SourcePatch :
+		RecognitionRuntime->ExtrudedQuinticPatches)
+	{
+		FSpeedAnalyticExtrudedQuinticPatchRecord& Record =
+			Asset->ExtrudedQuinticPatches.AddDefaulted_GetRef();
+		Record.SourceId = SourcePatch.SourceId;
+		Record.SurfaceId = SourcePatch.SurfaceId;
+		Record.FeatureId = SourcePatch.FeatureId;
+		Record.PrimitiveId = SourcePatch.PrimitiveId;
+		Record.CanonicalGroupId = SourcePatch.CanonicalGroupId;
+		Record.CanonicalSymmetryAxisMask = SourcePatch.CanonicalSymmetryAxisMask;
+		Record.MaterialId = SourcePatch.MaterialId;
+		Record.ObjectType = SourcePatch.ObjectType;
+		Record.BlockingChannels = SourcePatch.BlockingChannels;
+		Record.SectionControlPoints.SetNumUninitialized(6);
+		for (int32 ControlIndex = 0; ControlIndex < 6; ++ControlIndex)
+		{
+			Record.SectionControlPoints[ControlIndex] =
+				FVector(SourcePatch.SectionControlPoints[ControlIndex]);
+		}
+		Record.InteriorCorrectionControlPoints.SetNumUninitialized(2);
+		for (int32 CorrectionIndex = 0; CorrectionIndex < 2; ++CorrectionIndex)
+		{
+			Record.InteriorCorrectionControlPoints[CorrectionIndex] =
+				FVector(SourcePatch.InteriorCorrectionControlPoints[CorrectionIndex]);
+		}
+		Record.BaseRootMeanSquareResidualCm =
+			SourcePatch.BaseRootMeanSquareResidualCm;
+		Record.BaseMaximumResidualCm = SourcePatch.BaseMaximumResidualCm;
+		Record.CorrectedRootMeanSquareResidualCm =
+			SourcePatch.CorrectedRootMeanSquareResidualCm;
+		Record.CorrectedMaximumResidualCm =
+			SourcePatch.CorrectedMaximumResidualCm;
+		Record.ExtrusionAxis = FVector(SourcePatch.ExtrusionAxis);
+		Record.MinimumExtrusionCoordinate =
+			SourcePatch.MinimumExtrusionCoordinate;
+		Record.MaximumExtrusionCoordinate =
+			SourcePatch.MaximumExtrusionCoordinate;
+		Record.Bounds = FBox(SourcePatch.Bounds);
+		Record.bQueryCollisionEnabled = SourcePatch.bQueryCollisionEnabled;
+		Record.bCanonicalC2ByConstruction =
+			SourcePatch.bCanonicalC2ByConstruction;
+		Record.bCanonicalSymmetryByConstruction =
+			SourcePatch.bCanonicalSymmetryByConstruction;
+		Record.bAuthorityEligible = SourcePatch.bAuthorityEligible;
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticCompactPatch] Primitive=%016llX Surface=%016llX Feature=%016llX BaseRmsCm=%.9g BaseMaxCm=%.9g CorrectedRmsCm=%.9g CorrectedMaxCm=%.9g CorrectionA=%s CorrectionB=%s"),
+			SourcePatch.PrimitiveId, SourcePatch.SurfaceId, SourcePatch.FeatureId,
+			SourcePatch.BaseRootMeanSquareResidualCm,
+			SourcePatch.BaseMaximumResidualCm,
+			SourcePatch.CorrectedRootMeanSquareResidualCm,
+			SourcePatch.CorrectedMaximumResidualCm,
+			*FVector(SourcePatch.InteriorCorrectionControlPoints[0]).ToString(),
+			*FVector(SourcePatch.InteriorCorrectionControlPoints[1]).ToString());
+	}
+	if (!Asset->ValidateGeneratedData(&ValidationReason))
+	{
+		UE_LOG(LogTemp, Error, TEXT("Generated compact asset is invalid: %s"),
 			*ValidationReason);
 		return 6;
 	}
@@ -2212,11 +2366,22 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 			Record.BlockingChannels, Record.OverlapChannels,
 			Record.CollisionTraceFlag);
 	}
+	int32 AuthorityEligibleCount = 0;
+	for (const FSpeedAnalyticBoundedPlaneRecord& Plane : Asset->BoundedPlanes)
+	{
+		AuthorityEligibleCount += Plane.bAuthorityEligible ? 1 : 0;
+	}
+	for (const FSpeedAnalyticExtrudedQuinticPatchRecord& Patch :
+		Asset->ExtrudedQuinticPatches)
+	{
+		AuthorityEligibleCount += Patch.bAuthorityEligible ? 1 : 0;
+	}
 	UE_LOG(LogTemp, Display,
-		TEXT("[AnalyticBake] Asset=%s Sources=%d SourceHash=%016llX RuntimeTriangles=%d Positions=%d Normals=%d RuntimePlanes=%d AuthorityEligible=0"),
+		TEXT("[AnalyticBake] Asset=%s Sources=%d SourceHash=%016llX RuntimeTriangles=%d Positions=%d Normals=%d RuntimePlanes=%d RuntimeExtrudedQuintics=%d AuthorityEligible=%d"),
 		*OutputPackageName, Asset->MeshSources.Num(), Asset->SourceHash,
 		Asset->IndexedTriangles.Num(), Asset->VertexPositions.Num(),
 		Asset->VertexNormals.Num(),
-		Asset->BoundedPlanes.Num());
+		Asset->BoundedPlanes.Num(), Asset->ExtrudedQuinticPatches.Num(),
+		AuthorityEligibleCount);
 	return 0;
 }

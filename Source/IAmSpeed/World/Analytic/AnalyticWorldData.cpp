@@ -104,7 +104,7 @@ namespace
 		return Result;
 	}
 
-	double SquaredDistanceToQuinticTransition(
+	double ClosestQuinticTransitionParameter(
 		const FVector2d& Point, const FVector2d& Center,
 		const double RadiusU, const double RadiusV, const double SignU,
 		const double SignV, const double FlatteningFraction)
@@ -145,8 +145,23 @@ namespace
 				Lower = Left;
 			}
 		}
-		return FMath::Min(BestSquaredDistance,
-			EvaluateSquaredDistance(0.5 * (Lower + Upper)));
+		const double Refined = 0.5 * (Lower + Upper);
+		return EvaluateSquaredDistance(Refined) < BestSquaredDistance
+			? Refined
+			: static_cast<double>(BestSample) / static_cast<double>(SampleCount);
+	}
+
+	double SquaredDistanceToQuinticTransition(
+		const FVector2d& Point, const FVector2d& Center,
+		const double RadiusU, const double RadiusV, const double SignU,
+		const double SignV, const double FlatteningFraction)
+	{
+		const double T = ClosestQuinticTransitionParameter(
+			Point, Center, RadiusU, RadiusV, SignU, SignV,
+			FlatteningFraction);
+		return FVector2d::DistSquared(Point,
+			EvaluateQuinticTransitionPosition(Center, RadiusU, RadiusV,
+				SignU, SignV, FlatteningFraction, T));
 	}
 
 	double SquaredDistanceToQuinticTransitionInDualBasis(
@@ -449,6 +464,11 @@ bool FBoundedPlane::IsValid(FString* OutReason) const
 	{
 		return Fail(TEXT("Plane half extents must be finite and positive."));
 	}
+	if ((bRequiresCompactOptIn || bAuthorityEligible) &&
+		(SourceId == 0 || PrimitiveId == 0 || !bQueryCollisionEnabled))
+	{
+		return Fail(TEXT("Authoritative bounded plane provenance is incomplete."));
+	}
 	constexpr double UnitTolerance = 1.0e-9;
 	constexpr double OrthogonalTolerance = 1.0e-9;
 	if (!FMath::IsNearlyEqual(Normal.SquaredLength(), 1.0, UnitTolerance) ||
@@ -462,6 +482,124 @@ bool FBoundedPlane::IsValid(FString* OutReason) const
 		FMath::Abs(FVector3d::DotProduct(AxisU, AxisV)) > OrthogonalTolerance)
 	{
 		return Fail(TEXT("Plane basis vectors must be orthogonal."));
+	}
+	return true;
+}
+
+FVector3d FExtrudedQuinticPatch::EvaluateSection(const double T) const
+{
+	const double ClampedT = FMath::Clamp(T, 0.0, 1.0);
+	const double OneMinusT = 1.0 - ClampedT;
+	const double Basis[6] = {
+		FMath::Pow(OneMinusT, 5.0),
+		5.0 * ClampedT * FMath::Pow(OneMinusT, 4.0),
+		10.0 * FMath::Square(ClampedT) * FMath::Pow(OneMinusT, 3.0),
+		10.0 * FMath::Pow(ClampedT, 3.0) * FMath::Square(OneMinusT),
+		5.0 * FMath::Pow(ClampedT, 4.0) * OneMinusT,
+		FMath::Pow(ClampedT, 5.0) };
+	FVector3d Result = FVector3d::ZeroVector;
+	for (int32 Index = 0; Index < 6; ++Index)
+	{
+		Result += Basis[Index] * SectionControlPoints[Index];
+	}
+	const double CorrectionBasisA = 35.0 * FMath::Pow(ClampedT, 3.0) *
+		FMath::Pow(OneMinusT, 4.0);
+	const double CorrectionBasisB = 35.0 * FMath::Pow(ClampedT, 4.0) *
+		FMath::Pow(OneMinusT, 3.0);
+	Result += CorrectionBasisA * InteriorCorrectionControlPoints[0] +
+		CorrectionBasisB * InteriorCorrectionControlPoints[1];
+	return Result;
+}
+
+FVector3d FExtrudedQuinticPatch::EvaluateSectionDerivative(const double T) const
+{
+	const double ClampedT = FMath::Clamp(T, 0.0, 1.0);
+	const double OneMinusT = 1.0 - ClampedT;
+	const double Basis[5] = {
+		FMath::Pow(OneMinusT, 4.0),
+		4.0 * ClampedT * FMath::Pow(OneMinusT, 3.0),
+		6.0 * FMath::Square(ClampedT) * FMath::Square(OneMinusT),
+		4.0 * FMath::Pow(ClampedT, 3.0) * OneMinusT,
+		FMath::Pow(ClampedT, 4.0) };
+	FVector3d Result = FVector3d::ZeroVector;
+	for (int32 Index = 0; Index < 5; ++Index)
+	{
+		Result += 5.0 * Basis[Index] *
+			(SectionControlPoints[Index + 1] - SectionControlPoints[Index]);
+	}
+	const double CorrectionDerivativeA =
+		105.0 * FMath::Square(ClampedT) * FMath::Pow(OneMinusT, 4.0) -
+		140.0 * FMath::Pow(ClampedT, 3.0) * FMath::Pow(OneMinusT, 3.0);
+	const double CorrectionDerivativeB =
+		140.0 * FMath::Pow(ClampedT, 3.0) * FMath::Pow(OneMinusT, 3.0) -
+		105.0 * FMath::Pow(ClampedT, 4.0) * FMath::Square(OneMinusT);
+	Result += CorrectionDerivativeA * InteriorCorrectionControlPoints[0] +
+		CorrectionDerivativeB * InteriorCorrectionControlPoints[1];
+	return Result;
+}
+
+bool FExtrudedQuinticPatch::IsValid(FString* OutReason) const
+{
+	auto Fail = [OutReason](const TCHAR* Reason)
+	{
+		if (OutReason) *OutReason = Reason;
+		return false;
+	};
+	if (SourceId == 0 || SurfaceId == 0 || FeatureId == 0 || PrimitiveId == 0)
+	{
+		return Fail(TEXT("Extruded patch identifiers must be non-zero."));
+	}
+	if ((CanonicalGroupId == 0) !=
+		(!bCanonicalC2ByConstruction && !bCanonicalSymmetryByConstruction) ||
+		(bCanonicalSymmetryByConstruction && !bCanonicalC2ByConstruction))
+	{
+		return Fail(TEXT("Extruded patch canonical certificate is inconsistent."));
+	}
+	for (const FVector3d& Point : SectionControlPoints)
+	{
+		if (!IsFiniteVector(Point))
+		{
+			return Fail(TEXT("Extruded patch control points must be finite."));
+		}
+	}
+	for (const FVector3d& Correction : InteriorCorrectionControlPoints)
+	{
+		if (!IsFiniteVector(Correction))
+		{
+			return Fail(TEXT("Extruded patch corrections must be finite."));
+		}
+	}
+	if (!FMath::IsFinite(BaseRootMeanSquareResidualCm) ||
+		!FMath::IsFinite(BaseMaximumResidualCm) ||
+		!FMath::IsFinite(CorrectedRootMeanSquareResidualCm) ||
+		!FMath::IsFinite(CorrectedMaximumResidualCm) ||
+		BaseRootMeanSquareResidualCm < 0.0 || BaseMaximumResidualCm < 0.0 ||
+		CorrectedRootMeanSquareResidualCm < 0.0 ||
+		CorrectedMaximumResidualCm < 0.0 ||
+		CorrectedRootMeanSquareResidualCm >
+			BaseRootMeanSquareResidualCm + 1.0e-9 ||
+		CorrectedMaximumResidualCm > BaseMaximumResidualCm + 1.0e-9)
+	{
+		return Fail(TEXT("Extruded patch residual certificate is invalid."));
+	}
+	if (!IsFiniteVector(ExtrusionAxis) || !FMath::IsNearlyEqual(
+		ExtrusionAxis.SquaredLength(), 1.0, 1.0e-9))
+	{
+		return Fail(TEXT("Extruded patch axis must be finite and normalized."));
+	}
+	if (!FMath::IsFinite(MinimumExtrusionCoordinate) ||
+		!FMath::IsFinite(MaximumExtrusionCoordinate) ||
+		MaximumExtrusionCoordinate <= MinimumExtrusionCoordinate || !Bounds.IsValid)
+	{
+		return Fail(TEXT("Extruded patch domain must be finite and non-empty."));
+	}
+	for (int32 Sample = 0; Sample <= 16; ++Sample)
+	{
+		if (EvaluateSectionDerivative(static_cast<double>(Sample) / 16.0)
+			.SquaredLength() <= 1.0e-12)
+		{
+			return Fail(TEXT("Extruded patch section must be regular."));
+		}
 	}
 	return true;
 }
@@ -481,9 +619,9 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 
 	Algo::Sort(Planes, [](const FBoundedPlane& A, const FBoundedPlane& B)
 	{
-		return A.SurfaceId != B.SurfaceId
-			? A.SurfaceId < B.SurfaceId
-			: A.FeatureId < B.FeatureId;
+		if (A.SurfaceId != B.SurfaceId) return A.SurfaceId < B.SurfaceId;
+		if (A.FeatureId != B.FeatureId) return A.FeatureId < B.FeatureId;
+		return A.PrimitiveId < B.PrimitiveId;
 	});
 	Algo::Sort(Triangles, [](const FTriangleSurface& A, const FTriangleSurface& B)
 	{
@@ -491,9 +629,15 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 		if (A.FeatureId != B.FeatureId) return A.FeatureId < B.FeatureId;
 		return A.PrimitiveId < B.PrimitiveId;
 	});
+	Algo::Sort(ExtrudedQuinticPatches,
+		[](const FExtrudedQuinticPatch& A, const FExtrudedQuinticPatch& B)
+		{
+			return A.PrimitiveId < B.PrimitiveId;
+		});
 
 	uint64 PreviousSurface = 0;
 	uint64 PreviousFeature = 0;
+	uint64 PreviousPlanePrimitive = 0;
 	for (int32 Index = 0; Index < Planes.Num(); ++Index)
 	{
 		FString PlaneReason;
@@ -507,18 +651,78 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 			return false;
 		}
 		if (Index > 0 && Planes[Index].SurfaceId == PreviousSurface &&
-			Planes[Index].FeatureId == PreviousFeature)
+			Planes[Index].FeatureId == PreviousFeature &&
+			Planes[Index].PrimitiveId == PreviousPlanePrimitive)
 		{
 			if (OutReason)
 			{
-				*OutReason = TEXT("Duplicate analytic surface/feature identifier.");
+				*OutReason = TEXT("Duplicate analytic plane surface/feature/primitive identifier.");
 			}
 			return false;
 		}
-		PreviousSurface = Planes[Index].SurfaceId;
-		PreviousFeature = Planes[Index].FeatureId;
+		FBoundedPlane& Plane = Planes[Index];
+		Plane.Bounds = FBox3d(EForceInit::ForceInit);
+		for (const double SignU : { -1.0, 1.0 })
+		{
+			for (const double SignV : { -1.0, 1.0 })
+			{
+				Plane.Bounds += Plane.Origin +
+					SignU * Plane.HalfExtents.X * Plane.AxisU +
+					SignV * Plane.HalfExtents.Y * Plane.AxisV;
+			}
+		}
+		PreviousSurface = Plane.SurfaceId;
+		PreviousFeature = Plane.FeatureId;
+		PreviousPlanePrimitive = Plane.PrimitiveId;
+	}
+	CompactBounds = FBox3d(EForceInit::ForceInit);
+	for (const FBoundedPlane& Plane : Planes)
+	{
+		if (!Plane.bRequiresCompactOptIn) continue;
+		CompactBounds += Plane.Bounds;
 	}
 	uint64 PreviousPrimitive = 0;
+	for (int32 Index = 0; Index < ExtrudedQuinticPatches.Num(); ++Index)
+	{
+		FString PatchReason;
+		if (!ExtrudedQuinticPatches[Index].IsValid(&PatchReason))
+		{
+			if (OutReason)
+			{
+				*OutReason = FString::Printf(
+					TEXT("Invalid extruded quintic patch %d: %s"), Index, *PatchReason);
+			}
+			return false;
+		}
+		if (Index > 0 && ExtrudedQuinticPatches[Index].PrimitiveId ==
+			PreviousPrimitive)
+		{
+			if (OutReason) *OutReason = TEXT("Duplicate compact patch primitive identifier.");
+			return false;
+		}
+		PreviousPrimitive = ExtrudedQuinticPatches[Index].PrimitiveId;
+		CompactBounds += ExtrudedQuinticPatches[Index].Bounds;
+	}
+	CompactPrimitiveIndices.Reset();
+	for (int32 PlaneIndex = 0; PlaneIndex < Planes.Num(); ++PlaneIndex)
+	{
+		if (Planes[PlaneIndex].bRequiresCompactOptIn)
+		{
+			CompactPrimitiveIndices.Add(PlaneIndex);
+		}
+	}
+	for (int32 PatchIndex = 0;
+		PatchIndex < ExtrudedQuinticPatches.Num(); ++PatchIndex)
+	{
+		CompactPrimitiveIndices.Add(Planes.Num() + PatchIndex);
+	}
+	CompactBvh.Reset();
+	if (!CompactPrimitiveIndices.IsEmpty())
+	{
+		CompactBvh.Reserve(2 * CompactPrimitiveIndices.Num());
+		BuildCompactBvhNode(0, CompactPrimitiveIndices.Num());
+	}
+	PreviousPrimitive = 0;
 	for (int32 Index = 0; Index < Triangles.Num(); ++Index)
 	{
 		FString TriangleReason;
@@ -591,6 +795,558 @@ void FAnalyticWorldData::BuildRecognitionDiagnostics()
 	BuildOpenRimTransverseSections();
 	BuildOpenRimTransitionFamilyFits();
 	BuildOpenRimSupportTransitionIntents();
+	BuildCompactRuntimePatches();
+}
+
+void FAnalyticWorldData::BuildCompactRuntimePatches()
+{
+	ExtrudedQuinticPatches.Reset();
+	Planes.RemoveAll([](const FBoundedPlane& Plane)
+	{
+		return Plane.bRequiresCompactOptIn;
+	});
+	TArray<int32> SymmetrizedConstraintIndexByPlanarGroup;
+	SymmetrizedConstraintIndexByPlanarGroup.Init(INDEX_NONE,
+		PlanarSurfaceGroups.Num());
+	for (int32 ConstraintIndex = 0;
+		ConstraintIndex < SymmetrizedC2PlaneConstraints.Num(); ++ConstraintIndex)
+	{
+		const FSymmetrizedC2PlaneConstraint& Constraint =
+			SymmetrizedC2PlaneConstraints[ConstraintIndex];
+		if (SymmetrizedConstraintIndexByPlanarGroup.IsValidIndex(
+				Constraint.PlanarGroupIndex))
+		{
+			SymmetrizedConstraintIndexByPlanarGroup[
+				Constraint.PlanarGroupIndex] = ConstraintIndex;
+		}
+	}
+	for (int32 PlanarGroupIndex = 0;
+		PlanarGroupIndex < PlanarSurfaceGroups.Num(); ++PlanarGroupIndex)
+	{
+		const FPlanarSurfaceGroup& Group = PlanarSurfaceGroups[PlanarGroupIndex];
+		if (!Group.bArchitecturalConstraint)
+		{
+			continue;
+		}
+		const int32 SymmetrizedConstraintIndex =
+			SymmetrizedConstraintIndexByPlanarGroup[PlanarGroupIndex];
+		const FSymmetrizedC2PlaneConstraint* SymmetrizedConstraint =
+			SymmetrizedC2PlaneConstraints.IsValidIndex(SymmetrizedConstraintIndex)
+				? &SymmetrizedC2PlaneConstraints[SymmetrizedConstraintIndex]
+				: nullptr;
+		const bool bUseSymmetrizedConstraint = SymmetrizedConstraint &&
+			SymmetrizedConstraint->bSourceFitPlausible &&
+			SymmetrizedConstraint->bExactMirrorPlacement;
+		if (Group.PatchCount <= 0 || !PlanarGroupPatchIndices.IsValidIndex(
+				Group.FirstPatchIndex))
+		{
+			continue;
+		}
+		const int32 PatchIndex = PlanarGroupPatchIndices[Group.FirstPatchIndex];
+		if (!SurfacePatches.IsValidIndex(PatchIndex) ||
+			SurfacePatches[PatchIndex].TriangleCount <= 0 ||
+			!PatchTriangleIndices.IsValidIndex(
+				SurfacePatches[PatchIndex].FirstTriangleIndex))
+		{
+			continue;
+		}
+		const int32 TriangleIndex = PatchTriangleIndices[
+			SurfacePatches[PatchIndex].FirstTriangleIndex];
+		if (!Triangles.IsValidIndex(TriangleIndex)) continue;
+		const FTriangleSurface& SourceTriangle = Triangles[TriangleIndex];
+		FVector3d Normal = (bUseSymmetrizedConstraint
+			? SymmetrizedConstraint->Normal : Group.Normal).GetSafeNormal();
+		const double PlaneOffset = bUseSymmetrizedConstraint
+			? SymmetrizedConstraint->PlaneOffset : Group.PlaneOffset;
+		FVector3d CandidateAxes[3] = {
+			FVector3d::ForwardVector, FVector3d::RightVector,
+			FVector3d::UpVector };
+		FVector3d AxisU = FVector3d::ZeroVector;
+		double BestAxisLengthSquared = -1.0;
+		for (const FVector3d& CandidateAxis : CandidateAxes)
+		{
+			const FVector3d Projected = CandidateAxis -
+				FVector3d::DotProduct(CandidateAxis, Normal) * Normal;
+			if (Projected.SquaredLength() > BestAxisLengthSquared)
+			{
+				BestAxisLengthSquared = Projected.SquaredLength();
+				AxisU = Projected.GetSafeNormal();
+			}
+		}
+		const FVector3d AxisV =
+			FVector3d::CrossProduct(Normal, AxisU).GetSafeNormal();
+		double MinimumU = TNumericLimits<double>::Max();
+		double MaximumU = -TNumericLimits<double>::Max();
+		double MinimumV = TNumericLimits<double>::Max();
+		double MaximumV = -TNumericLimits<double>::Max();
+		for (int32 Corner = 0; Corner < 8; ++Corner)
+		{
+			const FVector3d Point(
+				(Corner & 1) ? Group.Bounds.Max.X : Group.Bounds.Min.X,
+				(Corner & 2) ? Group.Bounds.Max.Y : Group.Bounds.Min.Y,
+				(Corner & 4) ? Group.Bounds.Max.Z : Group.Bounds.Min.Z);
+			const double U = FVector3d::DotProduct(Point, AxisU);
+			const double V = FVector3d::DotProduct(Point, AxisV);
+			MinimumU = FMath::Min(MinimumU, U);
+			MaximumU = FMath::Max(MaximumU, U);
+			MinimumV = FMath::Min(MinimumV, V);
+			MaximumV = FMath::Max(MaximumV, V);
+		}
+		FBoundedPlane& Plane = Planes.AddDefaulted_GetRef();
+		Plane.SourceId = SourceTriangle.SourceId;
+		Plane.SurfaceId = SourceTriangle.SurfaceId;
+		Plane.FeatureId = SourceTriangle.FeatureId;
+		Plane.PrimitiveId = CombineStableIds(Group.GroupId,
+			StableStringId(TEXT("BoundedPlane")));
+		Plane.MaterialId = SourceTriangle.MaterialId;
+		Plane.ObjectType = SourceTriangle.ObjectType;
+		Plane.BlockingChannels = SourceTriangle.BlockingChannels;
+		Plane.Normal = Normal;
+		Plane.AxisU = AxisU;
+		Plane.AxisV = AxisV;
+		Plane.Origin = PlaneOffset * Normal +
+			0.5 * (MinimumU + MaximumU) * AxisU +
+			0.5 * (MinimumV + MaximumV) * AxisV;
+		Plane.HalfExtents = FVector2d(
+			0.5 * (MaximumU - MinimumU), 0.5 * (MaximumV - MinimumV));
+		Plane.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
+		Plane.bRequiresCompactOptIn = true;
+		Plane.bAuthorityEligible = false;
+	}
+	TSet<int32> AddedFitIndices;
+	for (const FC2TransitionCoverageEntry& Coverage : C2TransitionCoverage)
+	{
+		if (Coverage.SurfaceLayer != EC2TransitionSurfaceLayer::PlayableInner ||
+			!C2TransitionSectionFits.IsValidIndex(Coverage.TransitionFitIndex) ||
+			AddedFitIndices.Contains(Coverage.TransitionFitIndex))
+		{
+			continue;
+		}
+		const FC2TransitionSectionFit& Fit =
+			C2TransitionSectionFits[Coverage.TransitionFitIndex];
+		if (!Fit.bBoundaryEvidenceUsable ||
+			!ExtrusionSurfaceRegions.IsValidIndex(Fit.ExtrusionRegionIndex))
+		{
+			continue;
+		}
+		const FExtrusionSurfaceRegion& Region =
+			ExtrusionSurfaceRegions[Fit.ExtrusionRegionIndex];
+		if (Region.TriangleCount <= 0 ||
+			!ExtrusionRegionTriangleIndices.IsValidIndex(Region.FirstTriangleIndex))
+		{
+			continue;
+		}
+		const int32 SourceTriangleIndex =
+			ExtrusionRegionTriangleIndices[Region.FirstTriangleIndex];
+		if (!Triangles.IsValidIndex(SourceTriangleIndex)) continue;
+		const FTriangleSurface& SourceTriangle = Triangles[SourceTriangleIndex];
+
+		FVector2d CanonicalCenter = Fit.CenterCoordinates;
+		double CanonicalRadiusU = Fit.RadiusU;
+		double CanonicalRadiusV = Fit.RadiusV;
+		double CanonicalFlattening = Fit.FlatteningFraction;
+		FVector3d CanonicalBasisU = Region.SectionAxisU;
+		FVector3d CanonicalBasisV = Region.SectionAxisV;
+		FVector3d CanonicalNetworkControlPoints[6] = {};
+		bool bHasCanonicalNetworkControls = false;
+		bool bUsesCanonicalFamily = false;
+		uint64 CanonicalGroupId = 0;
+		uint8 CanonicalSymmetryAxisMask = 0;
+		for (int32 CandidateIndex = 0;
+			!bUsesCanonicalFamily &&
+			CandidateIndex < PlayableC2TriangleSupportCandidates.Num();
+			++CandidateIndex)
+		{
+			const FPlayableC2TriangleSupportCandidate& Candidate =
+				PlayableC2TriangleSupportCandidates[CandidateIndex];
+			if (!Candidate.bNetworkExactC0G1C2ByConstruction ||
+				!Candidate.bNetworkSourceFitPlausible)
+			{
+				continue;
+			}
+			const FPlayableC2OrbitCandidate* Orbit =
+				PlayableC2OrbitCandidates.FindByPredicate(
+					[&](const FPlayableC2OrbitCandidate& Value)
+					{
+						return Value.OrbitId == Candidate.OrbitId;
+					});
+			if (!Orbit) continue;
+			uint8 TransformMask = 0;
+			bool bMemberFound = false;
+			for (int32 MemberOffset = 0;
+				MemberOffset < Orbit->MemberCount; ++MemberOffset)
+			{
+				const FPlayableC2OrbitMember& Member = PlayableC2OrbitMembers[
+					Orbit->FirstMemberIndex + MemberOffset];
+				if (Member.ExtrusionRegionIndex == Coverage.ExtrusionRegionIndex)
+				{
+					TransformMask = Member.TransformMaskFromSeed;
+					bMemberFound = true;
+					break;
+				}
+			}
+			if (!bMemberFound) continue;
+			const FPlayableC2PlaneBinding* Bindings[2] = { nullptr, nullptr };
+			for (const FPlayableC2PlaneBinding& Binding : PlayableC2PlaneBindings)
+			{
+				if (Binding.TriangleSupportCandidateIndex != CandidateIndex ||
+					!Binding.bNetworkCompatible)
+				{
+					continue;
+				}
+				Bindings[Binding.Endpoint == EQuarterEllipseEndpoint::U ? 0 : 1] =
+					&Binding;
+			}
+			if (!Bindings[0] || !Bindings[1] ||
+				!PlayableC2NetworkPlaneConstraints.IsValidIndex(
+					Bindings[0]->NetworkPlaneConstraintIndex) ||
+				!PlayableC2NetworkPlaneConstraints.IsValidIndex(
+					Bindings[1]->NetworkPlaneConstraintIndex))
+			{
+				continue;
+			}
+			auto ReflectNormal = [TransformMask](FVector3d Value)
+			{
+				if ((TransformMask & 1u) != 0) Value.X *= -1.0;
+				if ((TransformMask & 2u) != 0) Value.Y *= -1.0;
+				return Value;
+			};
+			FVector3d SeedNormalU =
+				PlayableC2NetworkPlaneConstraints[
+					Bindings[0]->NetworkPlaneConstraintIndex].Normal;
+			double SeedOffsetU = PlayableC2NetworkPlaneConstraints[
+				Bindings[0]->NetworkPlaneConstraintIndex].PlaneOffset;
+			FVector3d SeedNormalV =
+				PlayableC2NetworkPlaneConstraints[
+					Bindings[1]->NetworkPlaneConstraintIndex].Normal;
+			double SeedOffsetV = PlayableC2NetworkPlaneConstraints[
+				Bindings[1]->NetworkPlaneConstraintIndex].PlaneOffset;
+			if (!C2TransitionCoverage.IsValidIndex(Candidate.SeedCoverageIndex))
+			{
+				continue;
+			}
+			const FC2TransitionCoverageEntry& SeedCoverage =
+				C2TransitionCoverage[Candidate.SeedCoverageIndex];
+			if (!C2TransitionSectionFits.IsValidIndex(
+					SeedCoverage.TransitionFitIndex) ||
+				!ExtrusionSurfaceRegions.IsValidIndex(
+					SeedCoverage.ExtrusionRegionIndex))
+			{
+				continue;
+			}
+			const FC2TransitionSectionFit& SeedFit =
+				C2TransitionSectionFits[SeedCoverage.TransitionFitIndex];
+			const FExtrusionSurfaceRegion& SeedRegion =
+				ExtrusionSurfaceRegions[SeedCoverage.ExtrusionRegionIndex];
+			if (FVector3d::DotProduct(SeedNormalU, SeedRegion.SectionAxisU) < 0.0)
+			{
+				SeedNormalU *= -1.0;
+				SeedOffsetU *= -1.0;
+			}
+			if (FVector3d::DotProduct(SeedNormalV, SeedRegion.SectionAxisV) < 0.0)
+			{
+				SeedNormalV *= -1.0;
+				SeedOffsetV *= -1.0;
+			}
+			const double Dot = FVector3d::DotProduct(SeedNormalU, SeedNormalV);
+			const double Denominator = 1.0 - Dot * Dot;
+			if (Denominator <= 1.0e-8) continue;
+			const FVector3d SeedBasisU =
+				(SeedNormalU - Dot * SeedNormalV) / Denominator;
+			const FVector3d SeedBasisV =
+				(SeedNormalV - Dot * SeedNormalU) / Denominator;
+			const FVector2d SeedCenter(
+				SeedOffsetU - SeedFit.SignU * Candidate.NetworkSharedRadiusU,
+				SeedOffsetV - SeedFit.SignV * Candidate.NetworkSharedRadiusV);
+			FVector2d SeedControlPoints[6];
+			BuildQuinticTransitionControlPoints(SeedCenter,
+				Candidate.NetworkSharedRadiusU, Candidate.NetworkSharedRadiusV,
+				SeedFit.SignU, SeedFit.SignV,
+				Candidate.NetworkSharedFlatteningFraction, SeedControlPoints);
+			for (int32 ControlIndex = 0; ControlIndex < 6; ++ControlIndex)
+			{
+				CanonicalNetworkControlPoints[ControlIndex] = ReflectNormal(
+					SeedControlPoints[ControlIndex].X * SeedBasisU +
+					SeedControlPoints[ControlIndex].Y * SeedBasisV);
+			}
+			bHasCanonicalNetworkControls = true;
+			bUsesCanonicalFamily = true;
+			CanonicalGroupId = Candidate.OrbitId;
+			CanonicalSymmetryAxisMask = Orbit->SymmetryAxisMask;
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticCompactCanonicalSource] Region=%016llX Source=Network Orbit=%016llX Mask=%u"),
+				Region.RegionId, Candidate.OrbitId,
+				static_cast<uint32>(TransformMask));
+		}
+		if (!bUsesCanonicalFamily &&
+			CoupledC2TransitionFamilies.IsValidIndex(Coverage.FamilyIndex))
+		{
+			const FCoupledC2TransitionFamilySolution& Family =
+				CoupledC2TransitionFamilies[Coverage.FamilyIndex];
+			if (Family.bExactC0G1C2ByConstruction && Family.bSourceFitPlausible &&
+				QuarterEllipseBoundaryMatches.IsValidIndex(Fit.BoundaryMatchUIndex) &&
+				QuarterEllipseBoundaryMatches.IsValidIndex(Fit.BoundaryMatchVIndex))
+			{
+				const int32 PlaneUIndex = QuarterEllipseBoundaryMatches[
+					Fit.BoundaryMatchUIndex].PlanarGroupIndex;
+				const int32 PlaneVIndex = QuarterEllipseBoundaryMatches[
+					Fit.BoundaryMatchVIndex].PlanarGroupIndex;
+				const int32 ConstraintUIndex =
+					SymmetrizedConstraintIndexByPlanarGroup.IsValidIndex(PlaneUIndex)
+						? SymmetrizedConstraintIndexByPlanarGroup[PlaneUIndex] : INDEX_NONE;
+				const int32 ConstraintVIndex =
+					SymmetrizedConstraintIndexByPlanarGroup.IsValidIndex(PlaneVIndex)
+						? SymmetrizedConstraintIndexByPlanarGroup[PlaneVIndex] : INDEX_NONE;
+				if (SymmetrizedC2PlaneConstraints.IsValidIndex(ConstraintUIndex) &&
+					SymmetrizedC2PlaneConstraints.IsValidIndex(ConstraintVIndex))
+				{
+					FVector3d NormalU =
+						SymmetrizedC2PlaneConstraints[ConstraintUIndex].Normal;
+					double OffsetU =
+						SymmetrizedC2PlaneConstraints[ConstraintUIndex].PlaneOffset;
+					FVector3d NormalV =
+						SymmetrizedC2PlaneConstraints[ConstraintVIndex].Normal;
+					double OffsetV =
+						SymmetrizedC2PlaneConstraints[ConstraintVIndex].PlaneOffset;
+					if (FVector3d::DotProduct(NormalU, Region.SectionAxisU) < 0.0)
+					{
+						NormalU *= -1.0;
+						OffsetU *= -1.0;
+					}
+					if (FVector3d::DotProduct(NormalV, Region.SectionAxisV) < 0.0)
+					{
+						NormalV *= -1.0;
+						OffsetV *= -1.0;
+					}
+					const double Dot = FVector3d::DotProduct(NormalU, NormalV);
+					const double Denominator = 1.0 - Dot * Dot;
+					if (Denominator > 1.0e-8)
+					{
+						CanonicalBasisU = (NormalU - Dot * NormalV) / Denominator;
+						CanonicalBasisV = (NormalV - Dot * NormalU) / Denominator;
+						CanonicalRadiusU = Family.SharedRadiusU;
+						CanonicalRadiusV = Family.SharedRadiusV;
+						CanonicalFlattening = Family.SharedFlatteningFraction;
+						CanonicalCenter = FVector2d(
+							OffsetU - Fit.SignU * CanonicalRadiusU,
+							OffsetV - Fit.SignV * CanonicalRadiusV);
+						bUsesCanonicalFamily = true;
+						CanonicalGroupId = Family.FamilyId;
+						CanonicalSymmetryAxisMask = Family.SymmetryAxisMask;
+						UE_LOG(LogTemp, Display,
+							TEXT("[AnalyticCompactCanonicalSource] Region=%016llX Source=Family Family=%016llX"),
+							Region.RegionId, Family.FamilyId);
+					}
+				}
+			}
+		}
+		FVector2d SectionControlPoints[6];
+		BuildQuinticTransitionControlPoints(CanonicalCenter, CanonicalRadiusU,
+			CanonicalRadiusV, Fit.SignU, Fit.SignV, CanonicalFlattening,
+			SectionControlPoints);
+		FExtrudedQuinticPatch& Patch =
+			ExtrudedQuinticPatches.AddDefaulted_GetRef();
+		Patch.SourceId = SourceTriangle.SourceId;
+		Patch.SurfaceId = SourceTriangle.SurfaceId;
+		Patch.FeatureId = SourceTriangle.FeatureId;
+		Patch.PrimitiveId = CombineStableIds(Region.RegionId,
+			StableStringId(TEXT("ExtrudedQuintic")));
+		Patch.CanonicalGroupId = CanonicalGroupId;
+		Patch.CanonicalSymmetryAxisMask = CanonicalSymmetryAxisMask;
+		Patch.MaterialId = SourceTriangle.MaterialId;
+		Patch.ObjectType = SourceTriangle.ObjectType;
+		Patch.BlockingChannels = SourceTriangle.BlockingChannels;
+		Patch.ExtrusionAxis = Region.Axis.GetSafeNormal();
+		Patch.MinimumExtrusionCoordinate = TNumericLimits<double>::Max();
+		Patch.MaximumExtrusionCoordinate = -TNumericLimits<double>::Max();
+		for (int32 Corner = 0; Corner < 8; ++Corner)
+		{
+			const FVector3d Point(
+				(Corner & 1) ? Region.Bounds.Max.X : Region.Bounds.Min.X,
+				(Corner & 2) ? Region.Bounds.Max.Y : Region.Bounds.Min.Y,
+				(Corner & 4) ? Region.Bounds.Max.Z : Region.Bounds.Min.Z);
+			const double Coordinate = FVector3d::DotProduct(Point, Patch.ExtrusionAxis);
+			Patch.MinimumExtrusionCoordinate = FMath::Min(
+				Patch.MinimumExtrusionCoordinate, Coordinate);
+			Patch.MaximumExtrusionCoordinate = FMath::Max(
+				Patch.MaximumExtrusionCoordinate, Coordinate);
+		}
+		for (int32 ControlIndex = 0; ControlIndex < 6; ++ControlIndex)
+		{
+			Patch.SectionControlPoints[ControlIndex] = bHasCanonicalNetworkControls
+				? CanonicalNetworkControlPoints[ControlIndex]
+				: SectionControlPoints[ControlIndex].X * CanonicalBasisU +
+					SectionControlPoints[ControlIndex].Y * CanonicalBasisV;
+		}
+		FVector3d RightHandSides[2] = {
+			FVector3d::ZeroVector, FVector3d::ZeroVector };
+		double NormalMatrix00 = 0.0;
+		double NormalMatrix01 = 0.0;
+		double NormalMatrix11 = 0.0;
+		TSet<int32> UniqueVertexSet;
+		for (int32 MemberIndex = Region.FirstTriangleIndex;
+			MemberIndex < Region.FirstTriangleIndex + Region.TriangleCount;
+			++MemberIndex)
+		{
+			const int32 TriangleIndex =
+				ExtrusionRegionTriangleIndices[MemberIndex];
+			for (int32 Corner = 0; Corner < 3; ++Corner)
+			{
+				UniqueVertexSet.Add(TriangleVertexIndices[TriangleIndex][Corner]);
+			}
+		}
+		TArray<int32> UniqueVertices = UniqueVertexSet.Array();
+		Algo::Sort(UniqueVertices);
+		for (const int32 VertexIndex : UniqueVertices)
+		{
+			const FVector3d& Position = MeshVertices[VertexIndex];
+			const FVector2d CanonicalSectionPoint(
+				FVector3d::DotProduct(Position, CanonicalBasisU),
+				FVector3d::DotProduct(Position, CanonicalBasisV));
+			const double T = ClosestQuinticTransitionParameter(
+				CanonicalSectionPoint, CanonicalCenter, CanonicalRadiusU,
+				CanonicalRadiusV, Fit.SignU, Fit.SignV, CanonicalFlattening);
+			const double OneMinusT = 1.0 - T;
+			const double BasisA = 35.0 * FMath::Pow(T, 3.0) *
+				FMath::Pow(OneMinusT, 4.0);
+			const double BasisB = 35.0 * FMath::Pow(T, 4.0) *
+				FMath::Pow(OneMinusT, 3.0);
+			const FVector2d BasePoint = EvaluateQuinticTransitionPosition(
+				CanonicalCenter, CanonicalRadiusU, CanonicalRadiusV, Fit.SignU,
+				Fit.SignV, CanonicalFlattening, T);
+			const FVector3d Residual =
+				(CanonicalSectionPoint.X - BasePoint.X) * CanonicalBasisU +
+				(CanonicalSectionPoint.Y - BasePoint.Y) * CanonicalBasisV;
+			NormalMatrix00 += BasisA * BasisA;
+			NormalMatrix01 += BasisA * BasisB;
+			NormalMatrix11 += BasisB * BasisB;
+			RightHandSides[0] += BasisA * Residual;
+			RightHandSides[1] += BasisB * Residual;
+		}
+		const double Regularization = 1.0e-8 *
+			FMath::Max(1.0, NormalMatrix00 + NormalMatrix11);
+		NormalMatrix00 += Regularization;
+		NormalMatrix11 += Regularization;
+		const double Determinant =
+			NormalMatrix00 * NormalMatrix11 - NormalMatrix01 * NormalMatrix01;
+		if (!bUsesCanonicalFamily && Determinant > 1.0e-12)
+		{
+			Patch.InteriorCorrectionControlPoints[0] =
+				(NormalMatrix11 * RightHandSides[0] -
+					NormalMatrix01 * RightHandSides[1]) / Determinant;
+			Patch.InteriorCorrectionControlPoints[1] =
+				(NormalMatrix00 * RightHandSides[1] -
+					NormalMatrix01 * RightHandSides[0]) / Determinant;
+		}
+		auto MeasureCorrectedResidual = [&]()
+		{
+			double SumSquared = 0.0;
+			double Maximum = 0.0;
+			for (const int32 VertexIndex : UniqueVertices)
+			{
+				const FVector3d& Position = MeshVertices[VertexIndex];
+				const FVector3d SectionPoint = Position -
+					FVector3d::DotProduct(Position, Patch.ExtrusionAxis) *
+					Patch.ExtrusionAxis;
+				auto SquaredDistanceAt = [&](const double T)
+				{
+					return FVector3d::DistSquared(
+						SectionPoint, Patch.EvaluateSection(T));
+				};
+				constexpr int32 SampleCount = 64;
+				int32 BestSample = 0;
+				double BestSquared = SquaredDistanceAt(0.0);
+				for (int32 Sample = 1; Sample <= SampleCount; ++Sample)
+				{
+					const double Squared = SquaredDistanceAt(
+						static_cast<double>(Sample) / SampleCount);
+					if (Squared < BestSquared)
+					{
+						BestSquared = Squared;
+						BestSample = Sample;
+					}
+				}
+				double Lower = static_cast<double>(FMath::Max(0, BestSample - 1)) /
+					SampleCount;
+				double Upper = static_cast<double>(
+					FMath::Min(SampleCount, BestSample + 1)) / SampleCount;
+				for (int32 Iteration = 0; Iteration < 24; ++Iteration)
+				{
+					const double Left = (2.0 * Lower + Upper) / 3.0;
+					const double Right = (Lower + 2.0 * Upper) / 3.0;
+					if (SquaredDistanceAt(Left) <= SquaredDistanceAt(Right))
+					{
+						Upper = Right;
+					}
+					else
+					{
+						Lower = Left;
+					}
+				}
+				const double Squared = FMath::Min(BestSquared,
+					SquaredDistanceAt(0.5 * (Lower + Upper)));
+				SumSquared += Squared;
+				Maximum = FMath::Max(Maximum, FMath::Sqrt(Squared));
+			}
+			return FVector2d(
+				UniqueVertices.IsEmpty() ? 0.0 : FMath::Sqrt(
+					SumSquared / static_cast<double>(UniqueVertices.Num())),
+				Maximum);
+		};
+		const FVector3d UnscaledCorrections[2] = {
+			Patch.InteriorCorrectionControlPoints[0],
+			Patch.InteriorCorrectionControlPoints[1] };
+		Patch.InteriorCorrectionControlPoints[0] = FVector3d::ZeroVector;
+		Patch.InteriorCorrectionControlPoints[1] = FVector3d::ZeroVector;
+		const FVector2d BaseResidual = MeasureCorrectedResidual();
+		Patch.BaseRootMeanSquareResidualCm = BaseResidual.X;
+		Patch.BaseMaximumResidualCm = BaseResidual.Y;
+		FVector3d AcceptedCorrections[2] = {
+			FVector3d::ZeroVector, FVector3d::ZeroVector };
+		FVector2d CorrectedResidual = BaseResidual;
+		for (int32 ScaleStep = 0; ScaleStep < 9; ++ScaleStep)
+		{
+			const double Scale = FMath::Pow(0.5, ScaleStep);
+			Patch.InteriorCorrectionControlPoints[0] =
+				Scale * UnscaledCorrections[0];
+			Patch.InteriorCorrectionControlPoints[1] =
+				Scale * UnscaledCorrections[1];
+			const FVector2d CandidateResidual = MeasureCorrectedResidual();
+			if (CandidateResidual.X < CorrectedResidual.X - 1.0e-9 &&
+				CandidateResidual.Y <= Patch.BaseMaximumResidualCm + 1.0e-9)
+			{
+				CorrectedResidual = CandidateResidual;
+				AcceptedCorrections[0] =
+					Patch.InteriorCorrectionControlPoints[0];
+				AcceptedCorrections[1] =
+					Patch.InteriorCorrectionControlPoints[1];
+			}
+		}
+		Patch.InteriorCorrectionControlPoints[0] = AcceptedCorrections[0];
+		Patch.InteriorCorrectionControlPoints[1] = AcceptedCorrections[1];
+		Patch.CorrectedRootMeanSquareResidualCm = CorrectedResidual.X;
+		Patch.CorrectedMaximumResidualCm = CorrectedResidual.Y;
+		Patch.Bounds = FBox3d(EForceInit::ForceInit);
+		for (int32 Sample = 0; Sample <= 32; ++Sample)
+		{
+			const FVector3d Section = Patch.EvaluateSection(
+				static_cast<double>(Sample) / 32.0);
+			Patch.Bounds += Section + Patch.MinimumExtrusionCoordinate *
+				Patch.ExtrusionAxis;
+			Patch.Bounds += Section + Patch.MaximumExtrusionCoordinate *
+				Patch.ExtrusionAxis;
+		}
+		Patch.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
+		Patch.bCanonicalC2ByConstruction = bUsesCanonicalFamily;
+		Patch.bCanonicalSymmetryByConstruction = bUsesCanonicalFamily;
+		Patch.bAuthorityEligible = false;
+		AddedFitIndices.Add(Coverage.TransitionFitIndex);
+	}
+	Algo::Sort(ExtrudedQuinticPatches,
+		[](const FExtrudedQuinticPatch& A, const FExtrudedQuinticPatch& B)
+		{
+			return A.PrimitiveId < B.PrimitiveId;
+		});
 }
 
 void FAnalyticWorldData::BuildVertexShapeSamples()
@@ -9363,6 +10119,59 @@ int32 FAnalyticWorldData::BuildTriangleBvhNode(
 	return NodeIndex;
 }
 
+int32 FAnalyticWorldData::BuildCompactBvhNode(
+	const int32 FirstIndex, const int32 IndexCount)
+{
+	auto PrimitiveBounds = [this](const int32 EncodedIndex) -> const FBox3d&
+	{
+		return EncodedIndex < Planes.Num()
+			? Planes[EncodedIndex].Bounds
+			: ExtrudedQuinticPatches[EncodedIndex - Planes.Num()].Bounds;
+	};
+	auto PrimitiveId = [this](const int32 EncodedIndex)
+	{
+		return EncodedIndex < Planes.Num()
+			? Planes[EncodedIndex].PrimitiveId
+			: ExtrudedQuinticPatches[EncodedIndex - Planes.Num()].PrimitiveId;
+	};
+	const int32 NodeIndex = CompactBvh.AddDefaulted();
+	FBox3d Bounds(EForceInit::ForceInit);
+	FBox3d CentroidBounds(EForceInit::ForceInit);
+	for (int32 Offset = 0; Offset < IndexCount; ++Offset)
+	{
+		const FBox3d& PrimitiveBox = PrimitiveBounds(
+			CompactPrimitiveIndices[FirstIndex + Offset]);
+		Bounds += PrimitiveBox;
+		CentroidBounds += PrimitiveBox.GetCenter();
+	}
+	CompactBvh[NodeIndex].Bounds = Bounds;
+	constexpr int32 LeafPrimitiveCount = 4;
+	if (IndexCount <= LeafPrimitiveCount)
+	{
+		CompactBvh[NodeIndex].FirstIndex = FirstIndex;
+		CompactBvh[NodeIndex].IndexCount = IndexCount;
+		return NodeIndex;
+	}
+	const FVector3d Extent = CentroidBounds.GetExtent();
+	int32 Axis = 0;
+	if (Extent.Y > Extent.X) Axis = 1;
+	if (Extent.Z > Extent[Axis]) Axis = 2;
+	TArrayView<int32> Range(
+		CompactPrimitiveIndices.GetData() + FirstIndex, IndexCount);
+	Algo::Sort(Range, [PrimitiveBounds, PrimitiveId, Axis](
+		const int32 A, const int32 B)
+	{
+		const double CenterA = PrimitiveBounds(A).GetCenter()[Axis];
+		const double CenterB = PrimitiveBounds(B).GetCenter()[Axis];
+		return CenterA != CenterB ? CenterA < CenterB : PrimitiveId(A) < PrimitiveId(B);
+	});
+	const int32 LeftCount = IndexCount / 2;
+	CompactBvh[NodeIndex].LeftChild = BuildCompactBvhNode(FirstIndex, LeftCount);
+	CompactBvh[NodeIndex].RightChild = BuildCompactBvhNode(
+		FirstIndex + LeftCount, IndexCount - LeftCount);
+	return NodeIndex;
+}
+
 uint64 FAnalyticWorldData::StableHash() const
 {
 	uint64 Hash = FnvOffset;
@@ -9372,9 +10181,13 @@ uint64 FAnalyticWorldData::StableHash() const
 	HashValue(Hash, PlaneCount);
 	for (const FBoundedPlane& Plane : Planes)
 	{
+		HashValue(Hash, Plane.SourceId);
 		HashValue(Hash, Plane.SurfaceId);
 		HashValue(Hash, Plane.FeatureId);
+		HashValue(Hash, Plane.PrimitiveId);
 		HashValue(Hash, Plane.MaterialId);
+		HashValue(Hash, Plane.ObjectType);
+		HashValue(Hash, Plane.BlockingChannels);
 		HashValue(Hash, Plane.Origin.X);
 		HashValue(Hash, Plane.Origin.Y);
 		HashValue(Hash, Plane.Origin.Z);
@@ -9389,7 +10202,48 @@ uint64 FAnalyticWorldData::StableHash() const
 		HashValue(Hash, Plane.AxisV.Z);
 		HashValue(Hash, Plane.HalfExtents.X);
 		HashValue(Hash, Plane.HalfExtents.Y);
+		HashValue(Hash, Plane.bQueryCollisionEnabled);
+		HashValue(Hash, Plane.bRequiresCompactOptIn);
 		HashValue(Hash, Plane.bAuthorityEligible);
+	}
+	const int32 ExtrudedPatchCount = ExtrudedQuinticPatches.Num();
+	HashValue(Hash, ExtrudedPatchCount);
+	for (const FExtrudedQuinticPatch& Patch : ExtrudedQuinticPatches)
+	{
+		HashValue(Hash, Patch.SourceId);
+		HashValue(Hash, Patch.SurfaceId);
+		HashValue(Hash, Patch.FeatureId);
+		HashValue(Hash, Patch.PrimitiveId);
+		HashValue(Hash, Patch.CanonicalGroupId);
+		HashValue(Hash, Patch.CanonicalSymmetryAxisMask);
+		HashValue(Hash, Patch.MaterialId);
+		HashValue(Hash, Patch.ObjectType);
+		HashValue(Hash, Patch.BlockingChannels);
+		for (const FVector3d& ControlPoint : Patch.SectionControlPoints)
+		{
+			HashValue(Hash, ControlPoint.X);
+			HashValue(Hash, ControlPoint.Y);
+			HashValue(Hash, ControlPoint.Z);
+		}
+		for (const FVector3d& Correction : Patch.InteriorCorrectionControlPoints)
+		{
+			HashValue(Hash, Correction.X);
+			HashValue(Hash, Correction.Y);
+			HashValue(Hash, Correction.Z);
+		}
+		HashValue(Hash, Patch.BaseRootMeanSquareResidualCm);
+		HashValue(Hash, Patch.BaseMaximumResidualCm);
+		HashValue(Hash, Patch.CorrectedRootMeanSquareResidualCm);
+		HashValue(Hash, Patch.CorrectedMaximumResidualCm);
+		HashValue(Hash, Patch.ExtrusionAxis.X);
+		HashValue(Hash, Patch.ExtrusionAxis.Y);
+		HashValue(Hash, Patch.ExtrusionAxis.Z);
+		HashValue(Hash, Patch.MinimumExtrusionCoordinate);
+		HashValue(Hash, Patch.MaximumExtrusionCoordinate);
+		HashValue(Hash, Patch.bQueryCollisionEnabled);
+		HashValue(Hash, Patch.bCanonicalC2ByConstruction);
+		HashValue(Hash, Patch.bCanonicalSymmetryByConstruction);
+		HashValue(Hash, Patch.bAuthorityEligible);
 	}
 	const int32 TriangleCount = Triangles.Num();
 	HashValue(Hash, TriangleCount);
@@ -10333,9 +11187,15 @@ uint64 FAnalyticWorldData::RecognitionDiagnosticsHash() const
 
 bool FAnalyticWorldData::IsAuthorityEligible() const
 {
-	return (!Planes.IsEmpty() || !Triangles.IsEmpty()) &&
+	return (!Planes.IsEmpty() || !ExtrudedQuinticPatches.IsEmpty() ||
+		!Triangles.IsEmpty()) &&
 		Algo::AllOf(Planes,
 			[](const FBoundedPlane& Plane) { return Plane.bAuthorityEligible; }) &&
+		Algo::AllOf(ExtrudedQuinticPatches,
+			[](const FExtrudedQuinticPatch& Patch)
+			{
+				return Patch.bAuthorityEligible;
+			}) &&
 		Algo::AllOf(Triangles,
 			[](const FTriangleSurface& Triangle)
 			{

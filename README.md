@@ -1,134 +1,83 @@
 <div align="center">
 
-<img src="Docs/iam-speed-logo.png" alt="IAmSpeed logo" width="720" height="720" />
+<img src="Docs/iam-speed-logo.png" alt="IAmSpeed logo" width="480" />
 
-# ⚡ IAmSpeedEngine ⚡
+# IAmSpeedEngine
 
-**A physics-first gameplay framework for Unreal Engine 5**  
-Built for fast-paced arcade experiences: sky cars, balls, and high-speed collisions.
+Deterministic-oriented gameplay physics for Unreal Engine 5.
 
 ![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.x-313131?logo=unrealengine&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-![Plugin](https://img.shields.io/badge/UE%20Plugin-IAmSpeed-blue)
 
 </div>
 
----
-**IAmSpeedEngine** is a custom gameplay & physics framework built on top of **Unreal Engine 5**, designed for fast-paced arcade games driven by physics. It currently powers **Sky League**—a game about sky cars, soccer matches, races, and other competitive/co‑op modes. citeturn0search0turn1view0
+IAmSpeed is an early Unreal Engine plugin for physics-driven games that need
+explicit simulation state, continuous collision handling, reusable solid and
+sensor sub-bodies, and deterministic testability.
 
-Rather than trying to replace Unreal Engine, IAmSpeedEngine acts as a focused *engine layer* for developers who want more control over:
+## Current capabilities
 
-- high-speed physical interactions and collision robustness,
-- deterministic-friendly gameplay logic,
-- reusable physics-oriented gameplay primitives,
-- networking patterns adapted to competitive physics gameplay.
+- box, sphere, wheel, ray-wheel, and sensor sub-bodies;
+- continuous collision candidate selection and bounded iterative resolution;
+- movement and wheeled-component foundations;
+- persistent contact and rolling-pair state;
+- a canonical fixed-step frame path shared by real-time and fast test drivers;
+- immutable analytical static-world data with deterministic ray, sphere, and
+  oriented-box queries against bounded planes, triangle faces, and experimental
+  compact patches;
+- editor bake/validation tooling for generated analytical collision assets;
+- Unreal network-physics integration points retained during the migration to
+  engine-owned snapshots and command queues.
 
-> **Goal:** a solid foundation for arcade experiences where **precision**, **responsiveness**, and **performance** matter.
+## Important limits
 
----
+The project is under active development. The analytical static-world backend is
+not yet a complete replacement for Unreal/Chaos: exact curved queries,
+edge/vertex Minkowski features, complete provider coverage, and strict
+zero-`UWorld` authority validation are still in progress. Compact analytical
+patches remain experimental and authority-ineligible unless explicitly
+certified. The current canonical simulation is single-lane; task-parallel
+physics is not part of this release.
 
-## Why IAmSpeedEngine?
+Do not infer rollback readiness, cross-platform bit identity, or complete rigid-
+body coverage from the available foundations. Public contracts and their test
+status are documented under [`Documentation/`](Documentation/).
 
-Arcade physics games often need more than generic movement and default collision settings. They typically require:
+## PhysicalLaw contracts
 
-- **Precise collision handling at high speed** (missed collisions are a fun killer),
-- **Stable simulation** for dynamic bodies,
-- **Reusable gameplay primitives** (cars, balls, sensors),
-- **Vehicle-oriented architecture** for responsive driving,
-- **Netcode foundations** that match fast, competitive physics gameplay.
-
----
-
-## Main features
-
-### Continuous Collision Detection (CCD) first
-The framework is designed around a CCD‑oriented workflow to reduce missed collisions and improve robustness for fast-moving gameplay objects.
-
-### Physics-oriented gameplay primitives
-Reusable core sub‑bodies intended as building blocks for vehicles, balls, sensors, and other dynamic elements:
-
-- Boxes  
-- Spheres  
-- Wheels  
-
-### World-level collision orchestration
-A dedicated **World Subsystem** orchestrates collision queries and the interaction flow between registered physical components.
-
-### Vehicle-ready architecture
-Basic components for arcade vehicles, including wheel-based setups and higher-level movement structures tailored to responsive driving gameplay.
-
-### Built-in netcode foundations
-Networking support intended for multiplayer physics gameplay, with systems designed to better fit fast arcade interactions than a purely generic setup.
-
----
+IAmSpeed assigns stable identifiers such as
+`IAMSPEED.PHYS.CONTACT_DETECTION.V1` to the physical laws selected by the
+engine. Laws use `Atomic`, `Molecular`, or `System` composition levels and an
+independent blocking `Foundation` attribute. See the
+[`PhysicalLaw catalogue`](Documentation/PhysicalLaws/README.md).
 
 ## Repository layout
 
-This repository exposes the Unreal plugin structure:
+- `IAmSpeed.uplugin` — plugin descriptor;
+- `Source/IAmSpeed/` — runtime module;
+- `Source/IAmSpeedEditor/` — editor bake and validation tooling;
+- `Documentation/` — public contracts, owners, test identifiers, and limits;
+- `LICENSE` — MIT license.
 
-- `IAmSpeed.uplugin`
-- `Source/IAmSpeed/`
-- `LICENSE` (MIT)
+## Installation
 
-citeturn1view0
+1. Place this repository under `YourProject/Plugins/IAmSpeed`.
+2. Enable the plugin for the required targets.
+3. Regenerate project files when needed and build the host project.
 
----
-
-## Getting started
-
-### Prerequisites
-- Unreal Engine 5 (project configured for C++ development)
-
-### Install (as a project plugin)
-1. Clone or download this repository.
-2. Copy the folder into your UE project at:  
-   `YourProject/Plugins/IAmSpeedEngine/`
-3. Regenerate project files (if needed), then build your project.
-
-> If you are using a dedicated server or multiple target platforms, ensure the plugin is enabled for all relevant targets in your project settings.
-
----
-
-## Designed for Sky League
-
-IAmSpeedEngine is the technology layer behind **Sky League**, an upcoming game listed on Steam with a planned release window of **Q4 2027**. citeturn0search0turn0search2
-
-Sky League is a natural showcase for what IAmSpeedEngine is built for:
-
-- vehicle-based competitive gameplay,
-- precise ball and car interactions,
-- high-speed collisions,
-- responsive online physics gameplay.
-
----
-
-## Philosophy
-
-IAmSpeedEngine follows a simple philosophy:
-
-- stay inside **Unreal Engine 5**, instead of replacing it,
-- minimize unnecessary abstraction,
-- focus on arcade gameplay needs first,
-- favor precision and responsiveness,
-- provide a reusable framework for physics-heavy arcade games.
-
----
-
-## Status
-
-This is an early public repository exposing the plugin structure and core module(s). Expect iteration and change as the project evolves.
-
----
+The current repository is a plugin, not a standalone Unreal project. A minimal
+repository-owned CI HostProject is planned so contracts can run independently
+of demo or product projects.
 
 ## Contributing
 
-Contributions, feedback, and experimentation around arcade physics, vehicle gameplay, CCD workflows, and multiplayer-oriented simulation are welcome.
-
-- Open an issue with a clear reproduction (or minimal project) if possible
-- Propose changes via pull request
-
----
+Please include a minimal reproduction, the affected PhysicalLaw identifier,
+the backend and platform, fixed physical delta, semantic failure, and any
+justified tolerance. A backend difference should be classified by hit, TOI,
+point, normal, feature, transition, determinism, or cost; cross-backend bit
+identity is required only where the represented surface and algorithm make it
+a valid contract.
 
 ## License
 
-**MIT License**. See `LICENSE`.
+MIT. See [`LICENSE`](LICENSE).

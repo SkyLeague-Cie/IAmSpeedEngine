@@ -98,6 +98,8 @@ public:
 	{
 		return AnalyticWorldData.Get();
 	}
+	TWeakObjectPtr<UPrimitiveComponent> FindAnalyticSourceComponent(
+		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
     TArray<ISpeedComponent*> Components;
@@ -107,6 +109,10 @@ private:
 	mutable bool bLoggedRollingOwnershipState = false;
 	bool bLoggedRollingSolveState = false;
 	TUniquePtr<Speed::Analytic::FAnalyticWorldData> AnalyticWorldData;
+	// Runtime-only Unreal bridge. The analytical payload retains stable ids;
+	// legacy consumers receive their source component without coupling the
+	// generic query backend to UObjects.
+	TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>> AnalyticSourceComponents;
 	uint8 AnalyticWorldBuildAttempt = 0;
 	void BuildAnalyticWorldFromLoadedSources();
 

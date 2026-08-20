@@ -4,6 +4,7 @@
 #include "LandscapeComponent.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
 #include "LandscapeProxy.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 namespace Speed::Analytic
 {
@@ -169,6 +170,24 @@ FFlatLandscapeAdapterOutput BuildFlatLandscapePlane(
 			"Flat Landscape contains collision holes; the bounded-plane milestone refuses it.");
 		return Output;
 	}
+	if (!Source.bHoleCoverageValidated)
+	{
+		Output.Result = EFlatLandscapeAdapterResult::UnsupportedHoles;
+		Output.Diagnostic = TEXT("Landscape collision-hole metadata is unavailable.");
+		return Output;
+	}
+	if (!Source.bMaterialCoverageValidated)
+	{
+		Output.Result = EFlatLandscapeAdapterResult::UnsupportedMaterialCoverage;
+		Output.Diagnostic = TEXT("Landscape physical-material coverage is not uniform or validated.");
+		return Output;
+	}
+	if (!Source.bCollisionPolicyValidated || !Source.bQueryCollisionEnabled)
+	{
+		Output.Result = EFlatLandscapeAdapterResult::UnsupportedCollisionPolicy;
+		Output.Diagnostic = TEXT("Landscape collision policy is unavailable or query collision is disabled.");
+		return Output;
+	}
 
 	const double ReferenceHeight = Source.WorldHeights[0];
 	if (!FMath::IsFinite(ReferenceHeight))
@@ -198,8 +217,11 @@ FFlatLandscapeAdapterOutput BuildFlatLandscapePlane(
 	}
 
 	Output.Plane.SurfaceId = Source.SourceId;
+	Output.Plane.SourceId = Source.SourceId;
 	Output.Plane.FeatureId = CombineStableIds(
 		Source.SourceId, static_cast<uint64>(EFeatureKind::Interior) + 1ull);
+	Output.Plane.PrimitiveId = CombineStableIds(
+		Source.SourceId, StableStringId(TEXT("FlatLandscapePlane.V1")));
 	Output.Plane.Origin = FVector3d(
 		0.5 * (Source.WorldBounds.Min.X + Source.WorldBounds.Max.X),
 		0.5 * (Source.WorldBounds.Min.Y + Source.WorldBounds.Max.Y),
@@ -210,12 +232,14 @@ FFlatLandscapeAdapterOutput BuildFlatLandscapePlane(
 	Output.Plane.HalfExtents = FVector2d(
 		0.5 * (Source.WorldBounds.Max.X - Source.WorldBounds.Min.X),
 		0.5 * (Source.WorldBounds.Max.Y - Source.WorldBounds.Min.Y));
-	// Material ownership is not yet imported. Even when hole flags were fully
-	// validated, this first adapter is safe only for shadow comparison.
-	Output.Plane.bAuthorityEligible = false;
-	Output.Result = EFlatLandscapeAdapterResult::SuccessShadowOnly;
+	Output.Plane.MaterialId = Source.MaterialId;
+	Output.Plane.ObjectType = Source.ObjectType;
+	Output.Plane.BlockingChannels = Source.BlockingChannels;
+	Output.Plane.bQueryCollisionEnabled = Source.bQueryCollisionEnabled;
+	Output.Plane.bAuthorityEligible = true;
+	Output.Result = EFlatLandscapeAdapterResult::SuccessAuthorityEligible;
 	Output.Diagnostic = TEXT(
-		"Flat Landscape imported for shadow mode; holes/material ownership remain unvalidated.");
+		"Flat Landscape has complete bounds, hole, material and collision-policy coverage.");
 	return Output;
 }
 
@@ -236,6 +260,116 @@ FFlatLandscapeAdapterOutput BuildFlatLandscapePlane(
 
 	FFlatLandscapeSource Source;
 	Source.SourceId = StableStringId(Landscape.GetPathName());
+	// In editor/bake builds, absence of a visibility-layer allocation is a
+	// durable no-hole certificate. Any allocation is rejected conservatively;
+	// authority never assumes that its weights happen to be fully visible.
+#if WITH_EDITOR
+	Source.bHoleCoverageValidated = true;
+	for (const ULandscapeComponent* Component : Landscape.LandscapeComponents)
+	{
+		if (!Component) continue;
+		for (const FWeightmapLayerAllocationInfo& Allocation :
+			Component->GetWeightmapLayerAllocations())
+		{
+			if (Allocation.LayerInfo == ALandscapeProxy::VisibilityLayer)
+			{
+				Source.bContainsHoles = true;
+			}
+		}
+	}
+#endif
+	TSet<uint64> MaterialIds;
+	bool bHaveCollisionPolicy = false;
+	for (const ULandscapeHeightfieldCollisionComponent* Component :
+		Landscape.CollisionComponents)
+	{
+		if (!Component) continue;
+		Source.bHoleCoverageValidated = true;
+		uint64 BlockingChannels = 0;
+		for (int32 Channel = 0; Channel < static_cast<int32>(ECC_MAX) && Channel < 64;
+			++Channel)
+		{
+			if (Component->GetCollisionResponseToChannel(
+				static_cast<ECollisionChannel>(Channel)) == ECR_Block)
+			{
+				BlockingChannels |= 1ull << Channel;
+			}
+		}
+		const uint32 ObjectType = static_cast<uint32>(
+			Component->GetCollisionObjectType());
+		const bool bQueryEnabled = Component->IsQueryCollisionEnabled();
+		if (!bHaveCollisionPolicy)
+		{
+			Source.ObjectType = ObjectType;
+			Source.BlockingChannels = BlockingChannels;
+			Source.bQueryCollisionEnabled = bQueryEnabled;
+			bHaveCollisionPolicy = true;
+		}
+		else if (Source.ObjectType != ObjectType ||
+			Source.BlockingChannels != BlockingChannels ||
+			Source.bQueryCollisionEnabled != bQueryEnabled)
+		{
+			bHaveCollisionPolicy = false;
+			break;
+		}
+		for (const uint8 QuadFlags : Component->CollisionQuadFlags)
+		{
+			if ((QuadFlags & ULandscapeHeightfieldCollisionComponent::QF_NoCollision) != 0)
+			{
+				Source.bContainsHoles = true;
+				continue;
+			}
+			const int32 MaterialIndex = QuadFlags &
+				ULandscapeHeightfieldCollisionComponent::QF_PhysicalMaterialMask;
+			const UPhysicalMaterial* Material = nullptr;
+			if (Component->CookedPhysicalMaterials.IsValidIndex(MaterialIndex))
+			{
+				Material = Component->CookedPhysicalMaterials[MaterialIndex].Get();
+			}
+#if WITH_EDITORONLY_DATA
+			else if (Component->PhysicalMaterialRenderObjects.IsValidIndex(
+				MaterialIndex))
+			{
+				Material = Component->PhysicalMaterialRenderObjects[MaterialIndex].Get();
+			}
+#endif
+			if (!Material)
+			{
+				Material = Landscape.DefaultPhysMaterial.Get();
+			}
+			MaterialIds.Add(StableStringId(
+				Material ? Material->GetPathName() : TEXT("<default-physical-material>")));
+		}
+		if (Component->CollisionQuadFlags.IsEmpty())
+		{
+			for (const TObjectPtr<UPhysicalMaterial>& Material :
+				Component->CookedPhysicalMaterials)
+			{
+				MaterialIds.Add(StableStringId(Material
+					? Material->GetPathName() : TEXT("<default-physical-material>")));
+			}
+#if WITH_EDITORONLY_DATA
+			for (const TObjectPtr<UPhysicalMaterial>& Material :
+				Component->PhysicalMaterialRenderObjects)
+			{
+				MaterialIds.Add(StableStringId(Material
+					? Material->GetPathName() : TEXT("<default-physical-material>")));
+			}
+#endif
+			if (MaterialIds.IsEmpty())
+			{
+				const UPhysicalMaterial* Material = Landscape.DefaultPhysMaterial.Get();
+				MaterialIds.Add(StableStringId(Material
+					? Material->GetPathName() : TEXT("<default-physical-material>")));
+			}
+		}
+	}
+	Source.bCollisionPolicyValidated = bHaveCollisionPolicy;
+	Source.bMaterialCoverageValidated = MaterialIds.Num() == 1;
+	if (Source.bMaterialCoverageValidated)
+	{
+		Source.MaterialId = static_cast<uint32>(*MaterialIds.CreateConstIterator());
+	}
 	bool bReadRenderHeightmap = false;
 	for (ULandscapeComponent* Component : Landscape.LandscapeComponents)
 	{

@@ -19,7 +19,7 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 		}
 		return false;
 	};
-	if (BakeSchemaVersion != 3)
+	if (BakeSchemaVersion != 4)
 	{
 		return Fail(FString::Printf(
 			TEXT("Unsupported analytic bake schema %u."), BakeSchemaVersion));
@@ -56,7 +56,7 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 	}
 	if (!Triangles.IsEmpty())
 	{
-		return Fail(TEXT("Schema-3 asset still contains expanded schema-2 triangles."));
+		return Fail(TEXT("Schema-4 asset still contains expanded schema-2 triangles."));
 	}
 	if (ExpectedTriangleCount != IndexedTriangles.Num())
 	{
@@ -94,6 +94,103 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 			return Fail(TEXT("Triangle records are not uniquely sorted."));
 		}
 		PreviousPrimitiveId = Triangle.PrimitiveId;
+	}
+	TSet<uint64> PlanePrimitiveIds;
+	for (int32 Index = 0; Index < BoundedPlanes.Num(); ++Index)
+	{
+		const FSpeedAnalyticBoundedPlaneRecord& Record = BoundedPlanes[Index];
+		Speed::Analytic::FBoundedPlane Plane;
+		Plane.SourceId = Record.SourceId;
+		Plane.SurfaceId = Record.SurfaceId;
+		Plane.FeatureId = Record.FeatureId;
+		Plane.PrimitiveId = Record.PrimitiveId;
+		Plane.MaterialId = static_cast<uint32>(FMath::Max(0, Record.MaterialId));
+		Plane.ObjectType = static_cast<uint32>(FMath::Max(0, Record.ObjectType));
+		Plane.BlockingChannels = Record.BlockingChannels;
+		Plane.Origin = FVector3d(Record.Origin);
+		Plane.Normal = FVector3d(Record.Normal);
+		Plane.AxisU = FVector3d(Record.AxisU);
+		Plane.AxisV = FVector3d(Record.AxisV);
+		Plane.HalfExtents = FVector2d(Record.HalfExtents);
+		Plane.bQueryCollisionEnabled = Record.bQueryCollisionEnabled;
+		Plane.bRequiresCompactOptIn = Record.bRequiresCompactOptIn;
+		Plane.bAuthorityEligible = Record.bAuthorityEligible;
+		FString PlaneReason;
+		if (!Plane.IsValid(&PlaneReason))
+		{
+			return Fail(FString::Printf(
+				TEXT("Bounded plane record %d is invalid: %s"), Index, *PlaneReason));
+		}
+		if (PlanePrimitiveIds.Contains(Record.PrimitiveId))
+		{
+			return Fail(FString::Printf(
+				TEXT("Bounded plane record %d duplicates primitive %016llX."),
+				Index, Record.PrimitiveId));
+		}
+		PlanePrimitiveIds.Add(Record.PrimitiveId);
+	}
+	PreviousPrimitiveId = 0;
+	for (int32 Index = 0; Index < ExtrudedQuinticPatches.Num(); ++Index)
+	{
+		const FSpeedAnalyticExtrudedQuinticPatchRecord& Patch =
+			ExtrudedQuinticPatches[Index];
+		if (!SourceIds.Contains(Patch.SourceId) || Patch.SurfaceId == 0 ||
+			Patch.FeatureId == 0 || Patch.PrimitiveId == 0 ||
+			Patch.SectionControlPoints.Num() != 6 ||
+			Patch.InteriorCorrectionControlPoints.Num() != 2 ||
+			!Patch.Bounds.IsValid ||
+			!FMath::IsNearlyEqual(Patch.ExtrusionAxis.SquaredLength(), 1.0, 1.0e-6) ||
+			!FMath::IsFinite(Patch.MinimumExtrusionCoordinate) ||
+			!FMath::IsFinite(Patch.MaximumExtrusionCoordinate) ||
+			!FMath::IsFinite(Patch.BaseRootMeanSquareResidualCm) ||
+			!FMath::IsFinite(Patch.BaseMaximumResidualCm) ||
+			!FMath::IsFinite(Patch.CorrectedRootMeanSquareResidualCm) ||
+			!FMath::IsFinite(Patch.CorrectedMaximumResidualCm) ||
+			Patch.BaseRootMeanSquareResidualCm < 0.0 ||
+			Patch.BaseMaximumResidualCm < 0.0 ||
+			Patch.CorrectedRootMeanSquareResidualCm < 0.0 ||
+			Patch.CorrectedMaximumResidualCm < 0.0 ||
+			Patch.CorrectedRootMeanSquareResidualCm >
+				Patch.BaseRootMeanSquareResidualCm + 1.0e-9 ||
+			Patch.CorrectedMaximumResidualCm >
+				Patch.BaseMaximumResidualCm + 1.0e-9 ||
+			(Patch.CanonicalGroupId == 0) !=
+				(!Patch.bCanonicalC2ByConstruction &&
+					!Patch.bCanonicalSymmetryByConstruction) ||
+			(Patch.bCanonicalSymmetryByConstruction &&
+				!Patch.bCanonicalC2ByConstruction) ||
+			Patch.MaximumExtrusionCoordinate <= Patch.MinimumExtrusionCoordinate)
+		{
+			return Fail(FString::Printf(
+				TEXT("Extruded quintic patch record %d is incomplete."), Index));
+		}
+		for (const FVector& ControlPoint : Patch.SectionControlPoints)
+		{
+			if (!FMath::IsFinite(ControlPoint.X) ||
+				!FMath::IsFinite(ControlPoint.Y) ||
+				!FMath::IsFinite(ControlPoint.Z))
+			{
+				return Fail(FString::Printf(
+					TEXT("Extruded quintic patch record %d has a non-finite control point."),
+					Index));
+			}
+		}
+		for (const FVector& Correction : Patch.InteriorCorrectionControlPoints)
+		{
+			if (!FMath::IsFinite(Correction.X) ||
+				!FMath::IsFinite(Correction.Y) ||
+				!FMath::IsFinite(Correction.Z))
+			{
+				return Fail(FString::Printf(
+					TEXT("Extruded quintic patch record %d has a non-finite correction."),
+					Index));
+			}
+		}
+		if (Index > 0 && Patch.PrimitiveId <= PreviousPrimitiveId)
+		{
+			return Fail(TEXT("Extruded quintic patches are not uniquely sorted."));
+		}
+		PreviousPrimitiveId = Patch.PrimitiveId;
 	}
 	return true;
 }
@@ -158,15 +255,61 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 	for (const FSpeedAnalyticBoundedPlaneRecord& Record : BoundedPlanes)
 	{
 		FBoundedPlane& Plane = Runtime->Planes.AddDefaulted_GetRef();
+		Plane.SourceId = Record.SourceId;
 		Plane.SurfaceId = Record.SurfaceId;
 		Plane.FeatureId = Record.FeatureId;
+		Plane.PrimitiveId = Record.PrimitiveId;
 		Plane.MaterialId = static_cast<uint32>(FMath::Max(0, Record.MaterialId));
+		Plane.ObjectType = static_cast<uint32>(FMath::Max(0, Record.ObjectType));
+		Plane.BlockingChannels = Record.BlockingChannels;
 		Plane.Origin = FVector3d(Record.Origin);
 		Plane.Normal = FVector3d(Record.Normal);
 		Plane.AxisU = FVector3d(Record.AxisU);
 		Plane.AxisV = FVector3d(Record.AxisV);
 		Plane.HalfExtents = FVector2d(Record.HalfExtents);
+		Plane.bQueryCollisionEnabled = Record.bQueryCollisionEnabled;
+		Plane.bRequiresCompactOptIn = Record.bRequiresCompactOptIn;
 		Plane.bAuthorityEligible = Record.bAuthorityEligible;
+	}
+	Runtime->ExtrudedQuinticPatches.Reserve(ExtrudedQuinticPatches.Num());
+	for (const FSpeedAnalyticExtrudedQuinticPatchRecord& Record :
+		ExtrudedQuinticPatches)
+	{
+		FExtrudedQuinticPatch& Patch =
+			Runtime->ExtrudedQuinticPatches.AddDefaulted_GetRef();
+		Patch.SourceId = Record.SourceId;
+		Patch.SurfaceId = Record.SurfaceId;
+		Patch.FeatureId = Record.FeatureId;
+		Patch.PrimitiveId = Record.PrimitiveId;
+		Patch.CanonicalGroupId = Record.CanonicalGroupId;
+		Patch.CanonicalSymmetryAxisMask = Record.CanonicalSymmetryAxisMask;
+		Patch.MaterialId = Record.MaterialId;
+		Patch.ObjectType = Record.ObjectType;
+		Patch.BlockingChannels = Record.BlockingChannels;
+		for (int32 ControlIndex = 0; ControlIndex < 6; ++ControlIndex)
+		{
+			Patch.SectionControlPoints[ControlIndex] =
+				FVector3d(Record.SectionControlPoints[ControlIndex]);
+		}
+		for (int32 CorrectionIndex = 0; CorrectionIndex < 2; ++CorrectionIndex)
+		{
+			Patch.InteriorCorrectionControlPoints[CorrectionIndex] =
+				FVector3d(Record.InteriorCorrectionControlPoints[CorrectionIndex]);
+		}
+		Patch.BaseRootMeanSquareResidualCm = Record.BaseRootMeanSquareResidualCm;
+		Patch.BaseMaximumResidualCm = Record.BaseMaximumResidualCm;
+		Patch.CorrectedRootMeanSquareResidualCm =
+			Record.CorrectedRootMeanSquareResidualCm;
+		Patch.CorrectedMaximumResidualCm = Record.CorrectedMaximumResidualCm;
+		Patch.ExtrusionAxis = FVector3d(Record.ExtrusionAxis);
+		Patch.MinimumExtrusionCoordinate = Record.MinimumExtrusionCoordinate;
+		Patch.MaximumExtrusionCoordinate = Record.MaximumExtrusionCoordinate;
+		Patch.Bounds = FBox3d(Record.Bounds);
+		Patch.bQueryCollisionEnabled = Record.bQueryCollisionEnabled;
+		Patch.bCanonicalC2ByConstruction = Record.bCanonicalC2ByConstruction;
+		Patch.bCanonicalSymmetryByConstruction =
+			Record.bCanonicalSymmetryByConstruction;
+		Patch.bAuthorityEligible = Record.bAuthorityEligible;
 	}
 	if (!Runtime->FinalizeAndValidate(OutReason))
 	{

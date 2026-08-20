@@ -457,21 +457,23 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 
     FHitResult UnrealHit;
     const FVector CurrentPos = WorldPos();
-    const bool bHit = World->SweepSingleByChannel(
-        UnrealHit,
-        CurrentPos + SearchDistance * SweepNormal,
-        CurrentPos - SearchDistance * SweepNormal,
-        Kinematics.Rotation,
-        GetCollisionChannel(),
-        GetCollisionShape(),
-        Params,
-        GetResponseParams());
+	const FVector Start = CurrentPos + SearchDistance * SweepNormal;
+	const FVector End = CurrentPos - SearchDistance * SweepNormal;
+	bool bHit = false;
+	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+		bHit = World->SweepSingleByChannel(UnrealHit, Start, End,
+			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			Params, GetResponseParams());
+	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::WheelEstablishedSupportProbe,
-		CurrentPos + SearchDistance * SweepNormal,
-		CurrentPos - SearchDistance * SweepNormal,
+		Start, End,
 		Kinematics.Rotation, GetCollisionShape(),
-		static_cast<uint8>(GetCollisionChannel()), bHit, UnrealHit);
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
     {
         return false;
@@ -517,19 +519,20 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
     }
 
     FHitResult UnrealHit;
-    const bool bHit = World->SweepSingleByChannel(
-        UnrealHit,
-        Start,
-        End,
-        Kinematics.Rotation,
-        GetCollisionChannel(),
-        GetCollisionShape(),
-        Params,
-        GetResponseParams());
+	bool bHit = false;
+	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+		bHit = World->SweepSingleByChannel(UnrealHit, Start, End,
+			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			Params, GetResponseParams());
+	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe,
 		Start, End, Kinematics.Rotation, GetCollisionShape(),
-		static_cast<uint8>(GetCollisionChannel()), bHit, UnrealHit);
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
     {
         return false;

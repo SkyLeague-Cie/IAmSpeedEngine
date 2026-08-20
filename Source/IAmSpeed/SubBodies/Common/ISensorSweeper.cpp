@@ -8,20 +8,20 @@ bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FV
     const Speed::FKinematicState& KS = GetKinematicState();
     FCollisionQueryParams Params = BuildTraceParams();
     FHitResult Hit;
-    bool bHit = World->SweepSingleByChannel(
-        Hit,
-        Start,
-        End,
-        KS.Rotation,
-        GetCollisionChannel(),
-        GetCollisionShape(),
-        Params,
-        GetResponseParams()
-    );
+	bool bHit = false;
+	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		Start, End, KS.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit))
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+		bHit = World->SweepSingleByChannel(
+			Hit, Start, End, KS.Rotation, GetCollisionChannel(),
+			GetCollisionShape(), Params, GetResponseParams());
+	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::SensorSweep,
 		Start, End, KS.Rotation, GetCollisionShape(),
-		static_cast<uint8>(GetCollisionChannel()), bHit, Hit);
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, Hit);
 
     OutHit = SHitResult();
     OutHit.bHit = bHit;

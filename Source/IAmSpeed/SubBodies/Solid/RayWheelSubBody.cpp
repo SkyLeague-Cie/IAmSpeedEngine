@@ -61,12 +61,19 @@ bool URayWheelSubBody::SweepSuspensionOnGround(
 	}
 
 	FHitResult UnrealHit;
-	const bool bHit = World->LineTraceSingleByChannel(UnrealHit, Start, End,
-		GetCollisionChannel(), Params, GetResponseParams());
+	bool bHit = false;
+	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+		bHit = World->LineTraceSingleByChannel(UnrealHit, Start, End,
+			GetCollisionChannel(), Params, GetResponseParams());
+	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::RayWheelSuspensionProbe,
 		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
-		static_cast<uint8>(GetCollisionChannel()), bHit, UnrealHit);
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
 	{
 		SetOnGround(false);
@@ -207,12 +214,19 @@ bool URayWheelSubBody::SweepSuspensionAlongNormal(
 	FHitResult UnrealHit;
 	const FVector Start = CurrentRayPoint + SearchDistance * SearchNormal;
 	const FVector End = CurrentRayPoint - SearchDistance * SearchNormal;
-	const bool bHit = World->LineTraceSingleByChannel(UnrealHit,
-		Start, End, GetCollisionChannel(), Params, GetResponseParams());
+	bool bHit = false;
+	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+		bHit = World->LineTraceSingleByChannel(UnrealHit, Start, End,
+			GetCollisionChannel(), Params, GetResponseParams());
+	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::RayWheelEstablishedSupportProbe,
 		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
-		static_cast<uint8>(GetCollisionChannel()), bHit, UnrealHit);
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
 	{
 		return false;

@@ -5,12 +5,13 @@
 namespace Speed::Analytic
 {
 
-constexpr uint32 AnalyticWorldSchemaVersion = 3u;
+constexpr uint32 AnalyticWorldSchemaVersion = 4u;
 
 enum class ESurfaceFamily : uint8
 {
 	BoundedPlane = 0,
 	TriangleMesh = 1,
+	ExtrudedQuintic = 2,
 };
 
 struct IAMSPEED_API FTriangleSurface
@@ -1061,14 +1062,22 @@ enum class EFeatureKind : uint8
 
 struct IAMSPEED_API FBoundedPlane
 {
+	uint64 SourceId = 0;
 	uint64 SurfaceId = 0;
 	uint64 FeatureId = 0;
+	uint64 PrimitiveId = 0;
 	uint32 MaterialId = 0;
+	uint32 ObjectType = 0;
+	uint64 BlockingChannels = 0;
 	FVector3d Origin = FVector3d::ZeroVector;
 	FVector3d Normal = FVector3d::UpVector;
 	FVector3d AxisU = FVector3d::ForwardVector;
 	FVector3d AxisV = FVector3d::RightVector;
 	FVector2d HalfExtents = FVector2d::ZeroVector;
+	// Derived by FinalizeAndValidate; never serialized or hashed.
+	FBox3d Bounds = FBox3d(EForceInit::ForceInit);
+	bool bQueryCollisionEnabled = true;
+	bool bRequiresCompactOptIn = false;
 	bool bAuthorityEligible = false;
 
 	double SignedDistance(const FVector3d& Point) const;
@@ -1077,14 +1086,56 @@ struct IAMSPEED_API FBoundedPlane
 	bool IsValid(FString* OutReason = nullptr) const;
 };
 
+// Compact tensor-product patch: a quintic section curve swept linearly along
+// one normalized axis. Six world-space control points define the section at
+// ExtrusionCoordinate=0; the two scalar limits close the finite surface.
+// Runtime queries tessellate only the one-dimensional section, never the
+// source mesh, and retain stable face/edge/vertex feature identifiers.
+struct IAMSPEED_API FExtrudedQuinticPatch
+{
+	uint64 SourceId = 0;
+	uint64 SurfaceId = 0;
+	uint64 FeatureId = 0;
+	uint64 PrimitiveId = 0;
+	uint64 CanonicalGroupId = 0;
+	uint8 CanonicalSymmetryAxisMask = 0;
+	uint32 MaterialId = 0;
+	uint32 ObjectType = 0;
+	uint64 BlockingChannels = 0;
+	FVector3d SectionControlPoints[6] = {};
+	// Degree-7 Bernstein B3/B4 interior correction. Both basis functions and
+	// their first two derivatives vanish at t=0/1, so the quintic base retains
+	// its exact endpoint position, tangent and second derivative.
+	FVector3d InteriorCorrectionControlPoints[2] = {};
+	double BaseRootMeanSquareResidualCm = 0.0;
+	double BaseMaximumResidualCm = 0.0;
+	double CorrectedRootMeanSquareResidualCm = 0.0;
+	double CorrectedMaximumResidualCm = 0.0;
+	FVector3d ExtrusionAxis = FVector3d::ForwardVector;
+	double MinimumExtrusionCoordinate = 0.0;
+	double MaximumExtrusionCoordinate = 0.0;
+	FBox3d Bounds = FBox3d(EForceInit::ForceInit);
+	bool bQueryCollisionEnabled = false;
+	bool bCanonicalC2ByConstruction = false;
+	bool bCanonicalSymmetryByConstruction = false;
+	bool bAuthorityEligible = false;
+
+	FVector3d EvaluateSection(double T) const;
+	FVector3d EvaluateSectionDerivative(double T) const;
+	bool IsValid(FString* OutReason = nullptr) const;
+};
+
 struct IAMSPEED_API FAnalyticWorldData
 {
 	uint32 SchemaVersion = AnalyticWorldSchemaVersion;
 	uint64 SourceHash = 0;
 	TArray<FBoundedPlane> Planes;
+	TArray<FExtrudedQuinticPatch> ExtrudedQuinticPatches;
+	// Derived once by FinalizeAndValidate; never serialized or hashed.
+	FBox3d CompactBounds = FBox3d(EForceInit::ForceInit);
 	TArray<FTriangleSurface> Triangles;
 	// Deterministic topology derived from the sorted face payload. Faces remain
-	// expanded for the schema-3 compatibility milestone; the generated asset is
+	// expanded for the schema-4 compatibility milestone; the generated asset is
 	// already indexed and can later feed queries without this expansion.
 	TArray<FVector3d> MeshVertices;
 	TArray<FIntVector> TriangleVertexIndices;
@@ -1158,9 +1209,14 @@ struct IAMSPEED_API FAnalyticWorldData
 		OpenRimSupportTransitionIntents;
 	TArray<int32> TriangleIndices;
 	TArray<FTriangleBvhNode> TriangleBvh;
+	// Derived compact broadphase. Indices below Planes.Num() address planes;
+	// subsequent indices address ExtrudedQuinticPatches.
+	TArray<int32> CompactPrimitiveIndices;
+	TArray<FTriangleBvhNode> CompactBvh;
 
 	bool FinalizeAndValidate(FString* OutReason = nullptr);
 	void BuildRecognitionDiagnostics();
+	void BuildCompactRuntimePatches();
 	uint64 StableHash() const;
 	uint64 RecognitionDiagnosticsHash() const;
 	bool IsAuthorityEligible() const;
@@ -1202,6 +1258,7 @@ private:
 	void BuildSmoothSurfaceRegions();
 	void BuildSurfacePatches();
 	int32 BuildTriangleBvhNode(int32 FirstIndex, int32 IndexCount);
+	int32 BuildCompactBvhNode(int32 FirstIndex, int32 IndexCount);
 };
 
 IAMSPEED_API uint64 StableStringId(const FString& Value);

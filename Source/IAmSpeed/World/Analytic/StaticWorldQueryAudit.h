@@ -4,6 +4,7 @@
 #include "CollisionShape.h"
 
 class UWorld;
+class USpeedWorldSubsystem;
 struct FHitResult;
 
 namespace Speed::Analytic
@@ -29,10 +30,23 @@ class IAMSPEED_API FStaticWorldQueryAudit
 public:
 	static bool IsEnabled();
 	static bool IsShadowEnabled();
+	static bool IsCompactAuthorityEnabled();
 	static bool ShouldBuildAnalyticWorld();
 
-	static void BeginFrame(uint64 Frame, const FAnalyticWorldData* WorldData);
+	static bool TryCompactAuthoritySingle(
+		const FVector& Start, const FVector& End, const FQuat& Rotation,
+		const FCollisionShape& Shape, uint8 TraceChannel,
+		const FCollisionResponseParams& ResponseParams,
+		FHitResult& OutHit, bool& bOutHit);
+	static bool TryCompactAuthorityMulti(
+		const FVector& Start, const FVector& End, const FQuat& Rotation,
+		const FCollisionShape& Shape, uint64 ObjectTypes,
+		TArray<FHitResult>& OutHits);
+
+	static void BeginFrame(uint64 Frame, const FAnalyticWorldData* WorldData,
+		const USpeedWorldSubsystem* RuntimeBridge);
 	static void EndFrame();
+	static void RecordLegacySweep();
 
 	static void RecordSingle(
 		EStaticQuerySite Site,
@@ -41,6 +55,7 @@ public:
 		const FQuat& Rotation,
 		const FCollisionShape& Shape,
 		uint8 TraceChannel,
+		const FCollisionResponseParams& ResponseParams,
 		bool bHit,
 		const FHitResult& UnrealHit);
 

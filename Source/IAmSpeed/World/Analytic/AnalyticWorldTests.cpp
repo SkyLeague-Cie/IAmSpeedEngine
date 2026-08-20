@@ -1,5 +1,6 @@
 #include "AnalyticLandscapeAdapter.h"
 #include "AnalyticWorldQuery.h"
+#include "IAmSpeed/World/StaticCollisionWorld.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -21,16 +22,26 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 	Plane.Origin = FVector3d::ZeroVector;
 	Plane.HalfExtents = FVector2d(100.0, 50.0);
 	World.Planes.Add(Plane);
+	FBoundedPlane AdjacentPlane = Plane;
+	AdjacentPlane.PrimitiveId = 1;
+	AdjacentPlane.Origin.X = 400.0;
+	World.Planes.Add(AdjacentPlane);
 	FString ValidationReason;
-	TestTrue(TEXT("Bounded plane world validates"),
+	TestTrue(TEXT("Planes may share a semantic feature when primitives differ"),
 		World.FinalizeAndValidate(&ValidationReason));
-	TestEqual(TEXT("Bounded plane count"), World.Planes.Num(), 1);
+	TestEqual(TEXT("Bounded plane count"), World.Planes.Num(), 2);
 
 	FWorldQuery SphereQuery;
 	SphereQuery.Shape = EQueryShape::Sphere;
 	SphereQuery.Start = FVector3d(0.0, 0.0, 20.0);
 	SphereQuery.End = FVector3d(0.0, 0.0, -20.0);
 	SphereQuery.Radius = 5.0;
+	TestFalse(TEXT("Draft plane is not authority coverage"),
+		FWorldQueryService(World).HasAuthorityCoverage(SphereQuery));
+	FWorldQuery AuthorityOnlyQuery = SphereQuery;
+	AuthorityOnlyQuery.bAuthorityOnly = true;
+	TestFalse(TEXT("Authority query excludes draft plane"),
+		FWorldQueryService(World).Sweep(AuthorityOnlyQuery).bHit);
 	const FWorldHit SphereHit = FWorldQueryService(World).Sweep(SphereQuery);
 	TestTrue(TEXT("Sphere sweep hits plane"), SphereHit.bHit);
 	TestTrue(TEXT("Sphere sweep normalized time"),
@@ -39,6 +50,15 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 		SphereHit.Location.Equals(FVector3d(0.0, 0.0, 5.0), 1.0e-12));
 	TestTrue(TEXT("Sphere sweep contact point"),
 		SphereHit.Point.Equals(FVector3d::ZeroVector, 1.0e-12));
+	FWorldQuery BackFaceQuery = SphereQuery;
+	BackFaceQuery.Start.Z = -20.0;
+	BackFaceQuery.End.Z = 20.0;
+	const FWorldHit BackFaceHit = FWorldQueryService(World).Sweep(BackFaceQuery);
+	TestTrue(TEXT("Bounded planes collide from the back face"), BackFaceHit.bHit);
+	TestTrue(TEXT("Back-face normal points toward the query"),
+		BackFaceHit.Normal.Equals(-FVector3d::UpVector, 1.0e-12));
+	TestTrue(TEXT("Back-face sweep does not treat the entire back half-space as penetration"),
+		!BackFaceHit.bStartPenetrating);
 
 	FWorldQuery BoxQuery;
 	BoxQuery.Shape = EQueryShape::Box;
@@ -55,7 +75,155 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 	OutsideQuery.End.X = 200.0;
 	TestFalse(TEXT("Bounded domain rejects outside contact"),
 		FWorldQueryService(World).Sweep(OutsideQuery).bHit);
+	OutsideQuery.Start.X = 1000.0;
+	OutsideQuery.End.X = 1000.0;
+	TestFalse(TEXT("Far queries are outside compact coverage"),
+		FWorldQueryService(World).HasAuthorityCoverage(OutsideQuery));
 
+	World.Planes[0].bAuthorityEligible = true;
+	const Speed::FAnalyticStaticCollisionWorld StaticWorld(World);
+	TestEqual(TEXT("Native static world reports the analytical backend"),
+		StaticWorld.GetBackend(), Speed::EStaticCollisionBackend::SurfaceAnalytic);
+	TestTrue(TEXT("Native static-world sweep returns an IAmSpeed hit"),
+		StaticWorld.SweepSingle(AuthorityOnlyQuery).bHit);
+	TestTrue(TEXT("Certified plane hit is hybrid authority coverage"),
+		StaticWorld.HasHybridWinningHit(SphereQuery));
+	FWorldQuery DomainNearMiss = SphereQuery;
+	DomainNearMiss.Start.X = 104.0;
+	DomainNearMiss.End.X = 104.0;
+	TestFalse(TEXT("Intersecting provider bounds without a hit are not hybrid coverage"),
+		StaticWorld.HasHybridWinningHit(DomainNearMiss));
+
+	FAnalyticWorldData ProviderWorld;
+	FBoundedPlane CertifiedPlane = Plane;
+	CertifiedPlane.SourceId = 100;
+	CertifiedPlane.SurfaceId = 100;
+	CertifiedPlane.PrimitiveId = 100;
+	CertifiedPlane.bAuthorityEligible = true;
+	ProviderWorld.Planes.Add(CertifiedPlane);
+	FBoundedPlane NearerDraftPlane = CertifiedPlane;
+	NearerDraftPlane.SourceId = 200;
+	NearerDraftPlane.SurfaceId = 200;
+	NearerDraftPlane.PrimitiveId = 200;
+	NearerDraftPlane.Origin.Z = 10.0;
+	NearerDraftPlane.bAuthorityEligible = false;
+	ProviderWorld.Planes.Add(NearerDraftPlane);
+	TestTrue(TEXT("Provider-selection world validates"),
+		ProviderWorld.FinalizeAndValidate(&ValidationReason));
+	TestFalse(TEXT("Nearer draft provider blocks hybrid authority selection"),
+		Speed::FAnalyticStaticCollisionWorld(ProviderWorld).
+			HasHybridWinningHit(SphereQuery));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FIAmSpeedAnalyticExtrudedQuinticTest,
+	"IAmSpeed.AnalyticWorld.ExtrudedQuintic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedAnalyticExtrudedQuinticTest::RunTest(const FString& Parameters)
+{
+	using namespace Speed::Analytic;
+
+	FAnalyticWorldData World;
+	FExtrudedQuinticPatch Patch;
+	Patch.SourceId = 30;
+	Patch.SurfaceId = 31;
+	Patch.FeatureId = 32;
+	Patch.PrimitiveId = 33;
+	Patch.ObjectType = 2;
+	Patch.BlockingChannels = 1ull << 3;
+	for (int32 Index = 0; Index < 6; ++Index)
+	{
+		Patch.SectionControlPoints[Index] =
+			FVector3d(-50.0 + 20.0 * Index, 0.0, 0.0);
+	}
+	Patch.ExtrusionAxis = FVector3d::RightVector;
+	Patch.MinimumExtrusionCoordinate = -25.0;
+	Patch.MaximumExtrusionCoordinate = 25.0;
+	Patch.Bounds = FBox3d(
+		FVector3d(-50.0, -25.0, 0.0),
+		FVector3d(50.0, 25.0, 0.0));
+	Patch.bQueryCollisionEnabled = true;
+	World.ExtrudedQuinticPatches.Add(Patch);
+	FString ValidationReason;
+	TestTrue(TEXT("Extruded quintic world validates"),
+		World.FinalizeAndValidate(&ValidationReason));
+	TestTrue(TEXT("Quintic midpoint is exact"),
+		Patch.EvaluateSection(0.5).Equals(FVector3d::ZeroVector, 1.0e-12));
+	TestTrue(TEXT("Quintic derivative is regular"),
+		Patch.EvaluateSectionDerivative(0.5).Equals(
+			FVector3d(100.0, 0.0, 0.0), 1.0e-12));
+	FExtrudedQuinticPatch CorrectedPatch = Patch;
+	CorrectedPatch.InteriorCorrectionControlPoints[0] =
+		FVector3d(0.0, 0.0, 10.0);
+	CorrectedPatch.InteriorCorrectionControlPoints[1] =
+		FVector3d(0.0, 0.0, -5.0);
+	TestTrue(TEXT("Interior correction preserves start position"),
+		CorrectedPatch.EvaluateSection(0.0).Equals(
+			Patch.EvaluateSection(0.0), 1.0e-12));
+	TestTrue(TEXT("Interior correction preserves end position"),
+		CorrectedPatch.EvaluateSection(1.0).Equals(
+			Patch.EvaluateSection(1.0), 1.0e-12));
+	TestTrue(TEXT("Interior correction preserves start derivative"),
+		CorrectedPatch.EvaluateSectionDerivative(0.0).Equals(
+			Patch.EvaluateSectionDerivative(0.0), 1.0e-12));
+	TestTrue(TEXT("Interior correction preserves end derivative"),
+		CorrectedPatch.EvaluateSectionDerivative(1.0).Equals(
+			Patch.EvaluateSectionDerivative(1.0), 1.0e-12));
+	TestTrue(TEXT("Interior correction changes only the interior"),
+		!CorrectedPatch.EvaluateSection(0.5).Equals(
+			Patch.EvaluateSection(0.5), 1.0e-12));
+
+	FWorldQuery Query;
+	Query.Shape = EQueryShape::Sphere;
+	Query.Start = FVector3d(0.0, 0.0, 20.0);
+	Query.End = FVector3d(0.0, 0.0, -20.0);
+	Query.Radius = 5.0;
+	Query.bApplyCollisionFilter = true;
+	Query.TraceChannel = 3;
+	TestFalse(TEXT("Compact patches remain opt-in"),
+		FWorldQueryService(World).Sweep(Query).bHit);
+	Query.bIncludeCompactPatches = true;
+	const FWorldHit Hit = FWorldQueryService(World).Sweep(Query);
+	TestTrue(TEXT("Sphere hits extruded quintic face"), Hit.bHit);
+	TestTrue(TEXT("Extruded quintic face TOI"),
+		FMath::IsNearlyEqual(Hit.Time, 0.375, 1.0e-12));
+	TestEqual(TEXT("Extruded patch surface id"), Hit.SurfaceId, uint64(31));
+	TestEqual(TEXT("Extruded patch feature id"), Hit.FeatureId, uint64(32));
+	TestTrue(TEXT("Extruded patch segment id is stable"), Hit.PrimitiveId != 0);
+	FWorldQuery RayQuery = Query;
+	RayQuery.Shape = EQueryShape::Ray;
+	RayQuery.Radius = 0.0;
+	const FWorldHit RayHit = FWorldQueryService(World).Sweep(RayQuery);
+	TestTrue(TEXT("Ray hits extruded quintic face"), RayHit.bHit);
+	TestTrue(TEXT("Extruded quintic ray TOI"),
+		FMath::IsNearlyEqual(RayHit.Time, 0.5, 1.0e-12));
+	FWorldQuery BoxQuery = Query;
+	BoxQuery.Shape = EQueryShape::Box;
+	BoxQuery.Radius = 0.0;
+	BoxQuery.HalfExtent = FVector3d(2.0, 3.0, 4.0);
+	const FWorldHit BoxHit = FWorldQueryService(World).Sweep(BoxQuery);
+	TestTrue(TEXT("Box hits extruded quintic face"), BoxHit.bHit);
+	TestTrue(TEXT("Extruded quintic box TOI"),
+		FMath::IsNearlyEqual(BoxHit.Time, 0.4, 1.0e-12));
+
+	Query.TraceChannel = 4;
+	TestFalse(TEXT("Collision channel rejects compact patch"),
+		FWorldQueryService(World).Sweep(Query).bHit);
+	Query.bObjectQuery = true;
+	Query.ObjectTypes = 1ull << 2;
+	TestTrue(TEXT("Object query accepts compact patch"),
+		FWorldQueryService(World).Sweep(Query).bHit);
+	Query.bObjectQuery = false;
+	Query.TraceChannel = 3;
+	Query.BlockingObjectTypes = 0;
+	TestFalse(TEXT("Query-side response rejects compact patch object type"),
+		FWorldQueryService(World).Sweep(Query).bHit);
+	Query.BlockingObjectTypes = 1ull << 2;
+	TestTrue(TEXT("Mutual response accepts compact patch"),
+		FWorldQueryService(World).Sweep(Query).bHit);
 	return true;
 }
 
@@ -357,13 +525,23 @@ bool FIAmSpeedFlatLandscapeAdapterTest::RunTest(const FString& Parameters)
 		FVector3d(100.0, 200.0, 50.0));
 	Source.WorldHeights = { 50.0, 50.0, 50.0, 50.0 };
 	Source.bHoleCoverageValidated = true;
+	Source.bMaterialCoverageValidated = true;
+	Source.bCollisionPolicyValidated = true;
+	Source.MaterialId = 7;
+	Source.ObjectType = 2;
+	Source.BlockingChannels = 1ull << 3;
+	Source.bQueryCollisionEnabled = true;
 	const FFlatLandscapeAdapterOutput Flat = BuildFlatLandscapePlane(Source, 1.0e-6);
-	TestEqual(TEXT("Flat source is imported for shadow mode"), Flat.Result,
-		EFlatLandscapeAdapterResult::SuccessShadowOnly);
+	TestEqual(TEXT("Fully classified flat source is authority eligible"), Flat.Result,
+		EFlatLandscapeAdapterResult::SuccessAuthorityEligible);
 	TestTrue(TEXT("Flat source keeps exact height"),
 		FMath::IsNearlyEqual(Flat.Plane.Origin.Z, 50.0, 1.0e-12));
-	TestFalse(TEXT("Unvalidated holes prevent authority"),
+	TestTrue(TEXT("Validated flat Landscape permits authority"),
 		Flat.Plane.bAuthorityEligible);
+	TestEqual(TEXT("Flat Landscape retains material"), Flat.Plane.MaterialId,
+		uint32(7));
+	TestEqual(TEXT("Flat Landscape retains object type"), Flat.Plane.ObjectType,
+		uint32(2));
 
 	Source.WorldHeights[3] = 50.01;
 	const FFlatLandscapeAdapterOutput Curved = BuildFlatLandscapePlane(Source, 0.001);

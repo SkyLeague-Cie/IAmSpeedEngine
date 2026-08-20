@@ -807,14 +807,16 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
     for (int32 Pass = 0; Pass < MaxProjectionPasses; ++Pass)
     {
         TArray<FHitResult> Hits;
-        GetWorld()->SweepMultiByObjectType(
-            Hits,
-            Center,
-            Center,
-            FQuat::Identity,
-            ObjectQuery,
-            FCollisionShape::MakeSphere(GetRadius()),
-            QueryParams);
+		if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+			Center, Center, FQuat::Identity,
+			FCollisionShape::MakeSphere(GetRadius()),
+			1ull << static_cast<uint8>(ECC_WorldStatic), Hits))
+		{
+			Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+			GetWorld()->SweepMultiByObjectType(Hits, Center, Center,
+				FQuat::Identity, ObjectQuery,
+				FCollisionShape::MakeSphere(GetRadius()), QueryParams);
+		}
 		Speed::Analytic::FStaticWorldQueryAudit::RecordMulti(
 			Speed::Analytic::EStaticQuerySite::SpherePenetrationProjection,
 			Center, Center, FQuat::Identity,
@@ -895,9 +897,16 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
 	if (WorldStaticPenetrationDiagnostics.bEnabled)
 	{
 		TArray<FHitResult> ResidualHits;
-		GetWorld()->SweepMultiByObjectType(
-			ResidualHits, Center, Center, FQuat::Identity, ObjectQuery,
-			FCollisionShape::MakeSphere(GetRadius()), QueryParams);
+		if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+			Center, Center, FQuat::Identity,
+			FCollisionShape::MakeSphere(GetRadius()),
+			1ull << static_cast<uint8>(ECC_WorldStatic), ResidualHits))
+		{
+			Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+			GetWorld()->SweepMultiByObjectType(ResidualHits, Center, Center,
+				FQuat::Identity, ObjectQuery,
+				FCollisionShape::MakeSphere(GetRadius()), QueryParams);
+		}
 		Speed::Analytic::FStaticWorldQueryAudit::RecordMulti(
 			Speed::Analytic::EStaticQuerySite::SpherePenetrationResidual,
 			Center, Center, FQuat::Identity,

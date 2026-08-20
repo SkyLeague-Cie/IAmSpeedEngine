@@ -11,7 +11,6 @@
 
 DECLARE_LOG_CATEGORY_EXTERN(WheelNetcodeLog, Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(SpeedInputLog, Log, All);
-DECLARE_LOG_CATEGORY_EXTERN(SpeedPhysicsLog, Log, All);
 
 class UBoxSubBody;
 class USpeedWheeledComponent;

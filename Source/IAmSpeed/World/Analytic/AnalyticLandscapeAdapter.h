@@ -10,12 +10,15 @@ namespace Speed::Analytic
 enum class EFlatLandscapeAdapterResult : uint8
 {
 	SuccessShadowOnly = 0,
+	SuccessAuthorityEligible,
 	NoSourceData,
 	NonFiniteHeight,
 	NonFlat,
 	InvalidBounds,
 	UnsupportedTransform,
 	UnsupportedHoles,
+	UnsupportedMaterialCoverage,
+	UnsupportedCollisionPolicy,
 };
 
 struct IAMSPEED_API FFlatLandscapeSource
@@ -25,6 +28,12 @@ struct IAMSPEED_API FFlatLandscapeSource
 	TArray<double> WorldHeights;
 	bool bHoleCoverageValidated = false;
 	bool bContainsHoles = false;
+	bool bMaterialCoverageValidated = false;
+	bool bCollisionPolicyValidated = false;
+	uint32 MaterialId = 0;
+	uint32 ObjectType = 0;
+	uint64 BlockingChannels = 0;
+	bool bQueryCollisionEnabled = false;
 };
 
 struct IAMSPEED_API FFlatLandscapeAdapterOutput

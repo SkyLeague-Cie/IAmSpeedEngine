@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/CanonicalFrameContext.h"
 #include "IAmSpeed/World/CanonicalFrameDriver.h"
 #include "ChaosVehicleManager.h"
@@ -17,7 +18,6 @@
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
-DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedDebugKinematics(
 	TEXT("p.IAmSpeed.DebugKinematics"),
