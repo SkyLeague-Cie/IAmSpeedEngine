@@ -31,6 +31,7 @@ namespace Speed
 		bool bStartPenetrating = false; // true if the two shapes are already penetrating at the start of the movement, false otherwise. Only relevant if bHit is true and bBlocking is false (overlapping hit).
 		float PenetrationDepth = 0.0; // depth of penetration at the impact point, only relevant if bHit is true and bBlocking is false (overlapping hit)
 		float GeometricErrorBoundCm = 0.0f; // certified positional error of the provider; zero for exact primitives
+		bool bSurfaceNormalMayVary = false; // reacquire contact instead of persisting a stale tangent plane across frames
 		FVector ContactPointThis = FVector::ZeroVector; // contact point on THIS object (box or sphere) at the impact point, only relevant if bHit is true and bBlocking is false (overlapping hit)
 		FVector ContactPointOther = FVector::ZeroVector; // contact point on the OTHER object (box or sphere) at the impact point, only relevant if bHit is true and bBlocking is false (overlapping hit)
 		EContactFeatureKind ContactFeatureThis = EContactFeatureKind::Unknown;
@@ -41,6 +42,7 @@ namespace Speed
 		uint64 SurfaceId = 0;
 		uint64 FeatureId = 0;
 		uint64 PrimitiveId = 0;
+		uint64 CanonicalGroupId = 0;
 		uint32 MaterialId = 0;
 		uint32 FrameTag = 0; // Tag to identify the frame in which this hit result was generated, useful for avoiding processing the same hit multiple times in the same frame. Only relevant if bHit is true.
 

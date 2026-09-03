@@ -11,6 +11,9 @@ struct SWheelGroundContact
 	TWeakObjectPtr<UPrimitiveComponent> SurfaceComponent;
 	FVector SurfacePoint = FVector::ZeroVector;
 	int32 SurfaceFaceIndex = INDEX_NONE;
+	uint64 SurfaceSourceId = 0;
+	uint64 SurfaceId = 0;
+	uint64 SurfaceFeatureId = 0;
 
 	FVector WorldPos = FVector::ZeroVector;
 	FVector Normal = FVector::ZeroVector;
@@ -48,6 +51,8 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 	virtual float GetPhysSteeringInput() const = 0;
 
 	virtual void RegisterWheelGroundContact(const SWheelGroundContact& Contact) = 0;
+	bool HasCompatibleEstablishedStaticSupport(
+		const SHitResult& SurfaceHit) const override;
 	// Vehicle presets may replace the per-wheel suspension law while retaining
 	// IAmSpeed's geometry, ordering, force application, and contact solver.
 	virtual bool TryComputeWheelSuspensionForceOverride(
@@ -63,7 +68,7 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 		const USWheelSubBody& Wheel) const;
 	virtual void ResolveGroupedWheelGroundContacts(const float& delta);
 	virtual bool ProjectWheelSupportNonPenetration();
-	virtual bool ProjectCoupledSubBodyPose(float Delta);
+	virtual bool ProjectCoupledSubBodyPose(float Delta, bool bStrictHitboxGate = false);
 	virtual bool TryProjectCanonicalWheelSupportPose();
 	virtual bool CanBypassCanonicalSupportContactWarmup() const { return false; }
 	virtual bool CanPreserveCanonicalSupportNormalRotation() const { return false; }
@@ -98,4 +103,7 @@ protected:
 	// overload this function for the component to perform any necessary updates after the physics state has been updated
 	void PostPhysicsUpdatePrv(const float& delta) override;
 	bool bDeferWheelGroundStateUpdate = false;
+	FVector LastCertifiedCoupledPoseCOM = FVector::ZeroVector;
+	FQuat LastCertifiedCoupledPoseRotation = FQuat::Identity;
+	int32 LastCertifiedCoupledPoseFrame = INDEX_NONE;
 };

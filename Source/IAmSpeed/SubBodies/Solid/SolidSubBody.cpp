@@ -22,66 +22,6 @@ static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxManifoldFrictionOverride
     -1.0f,
     TEXT("Forces friction only for persistent sphere/box manifolds when >= 0. Negative values use subbody manifold overrides or ordinary sphere/box friction."));
 
-static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxRestitutionMode(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionMode"),
-    0,
-    TEXT("Sphere/box restitution mode when SphereBoxRestitutionOverride < 0. 0=Global, 1=AtContact, 2=Custom."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileCenter(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.Center"),
-    0.50f,
-    TEXT("Sphere/box restitution used near the box local XY center when AtContact mode is enabled."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileEdge(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.Edge"),
-    0.50f,
-    TEXT("Sphere/box restitution used near the box local XY front/back/side edges when AtContact mode is enabled."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileStartDistanceNorm(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.StartDistanceNorm"),
-    0.0f,
-    TEXT("Normalized local XY elliptical distance where the sphere/box restitution profile starts blending from center to edge."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileEndDistanceNorm(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.EndDistanceNorm"),
-    1.0f,
-    TEXT("Normalized local XY elliptical distance where the sphere/box restitution profile reaches the edge value."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileBlendPower(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.BlendPower"),
-    1.0f,
-    TEXT("Exponent applied to the normalized sphere/box restitution profile blend. < 1 reaches edge restitution earlier; > 1 later."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileReferenceLocalX(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.ReferenceLocalX"),
-    0.0f,
-    TEXT("Local X reference point, in cm, used as the center of the AtContact sphere/box restitution profile."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileReferenceLocalY(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.ReferenceLocalY"),
-    0.0f,
-    TEXT("Local Y reference point, in cm, used as the center of the AtContact sphere/box restitution profile."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileReferenceLocalZ(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.ReferenceLocalZ"),
-    0.0f,
-    TEXT("Local Z reference point, in cm, used as the center of the AtContact sphere/box restitution profile."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileXWeight(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.XWeight"),
-    1.0f,
-    TEXT("Weight of normalized local X distance in the AtContact sphere/box restitution profile."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileYWeight(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.YWeight"),
-    1.0f,
-    TEXT("Weight of normalized local Y distance in the AtContact sphere/box restitution profile."));
-
-static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxRestitutionProfileZWeight(
-    TEXT("p.IAmSpeed.Collision.SphereBoxRestitutionProfile.ZWeight"),
-    0.0f,
-    TEXT("Weight of normalized local Z distance in the AtContact sphere/box restitution profile. 0 keeps the legacy local XY profile."));
-
 namespace
 {
     float ResolveSphereBoxGlobalRestitution(
@@ -102,62 +42,6 @@ namespace
         }
 
         return FMath::Clamp(FallbackRestitution, 0.f, 1.f);
-    }
-
-    ERestitutionResolveMode GetSphereBoxRestitutionMode()
-    {
-        const int32 RawMode = CVarIAmSpeedSphereBoxRestitutionMode.GetValueOnAnyThread();
-        switch (RawMode)
-        {
-        case 1:
-            return ERestitutionResolveMode::AtContact;
-        case 2:
-            return ERestitutionResolveMode::Custom;
-        case 0:
-        default:
-            return ERestitutionResolveMode::Global;
-        }
-    }
-
-    float ResolveSphereBoxAtContactRestitution(const FRestitutionResolveContext& Context)
-    {
-        const float CenterRestitution = FMath::Clamp(
-            CVarIAmSpeedSphereBoxRestitutionProfileCenter.GetValueOnAnyThread(), 0.f, 1.f);
-        const float EdgeRestitution = FMath::Clamp(
-            CVarIAmSpeedSphereBoxRestitutionProfileEdge.GetValueOnAnyThread(), 0.f, 1.f);
-        const float StartDistanceNorm = FMath::Clamp(
-            CVarIAmSpeedSphereBoxRestitutionProfileStartDistanceNorm.GetValueOnAnyThread(), 0.f, 1.f);
-        const float EndDistanceNorm = FMath::Clamp(
-            CVarIAmSpeedSphereBoxRestitutionProfileEndDistanceNorm.GetValueOnAnyThread(), StartDistanceNorm + KINDA_SMALL_NUMBER, 1.f);
-        const float BlendPower = FMath::Max(
-            KINDA_SMALL_NUMBER, CVarIAmSpeedSphereBoxRestitutionProfileBlendPower.GetValueOnAnyThread());
-        const FVector ReferenceLocalPoint(
-            CVarIAmSpeedSphereBoxRestitutionProfileReferenceLocalX.GetValueOnAnyThread(),
-            CVarIAmSpeedSphereBoxRestitutionProfileReferenceLocalY.GetValueOnAnyThread(),
-            CVarIAmSpeedSphereBoxRestitutionProfileReferenceLocalZ.GetValueOnAnyThread());
-        const float XWeight = FMath::Max(0.f, CVarIAmSpeedSphereBoxRestitutionProfileXWeight.GetValueOnAnyThread());
-        const float YWeight = FMath::Max(0.f, CVarIAmSpeedSphereBoxRestitutionProfileYWeight.GetValueOnAnyThread());
-        const float ZWeight = FMath::Max(0.f, CVarIAmSpeedSphereBoxRestitutionProfileZWeight.GetValueOnAnyThread());
-
-        const float XNorm = Context.BoxExtent.X > KINDA_SMALL_NUMBER
-            ? (Context.BoxLocalContactPoint.X - ReferenceLocalPoint.X) / Context.BoxExtent.X
-            : 0.f;
-        const float YNorm = Context.BoxExtent.Y > KINDA_SMALL_NUMBER
-            ? (Context.BoxLocalContactPoint.Y - ReferenceLocalPoint.Y) / Context.BoxExtent.Y
-            : 0.f;
-        const float ZNorm = Context.BoxExtent.Z > KINDA_SMALL_NUMBER
-            ? (Context.BoxLocalContactPoint.Z - ReferenceLocalPoint.Z) / Context.BoxExtent.Z
-            : 0.f;
-        const float DistanceNorm = FMath::Clamp(FMath::Sqrt(
-            XWeight * XWeight * XNorm * XNorm +
-            YWeight * YWeight * YNorm * YNorm +
-            ZWeight * ZWeight * ZNorm * ZNorm), 0.f, 1.f);
-        const float RawBlend = FMath::Clamp(
-            (DistanceNorm - StartDistanceNorm) / (EndDistanceNorm - StartDistanceNorm),
-            0.f, 1.f);
-        const float ShapedBlend = FMath::Pow(RawBlend, BlendPower);
-        const float Blend = FMath::SmoothStep(0.f, 1.f, ShapedBlend);
-        return FMath::Lerp(CenterRestitution, EdgeRestitution, Blend);
     }
 }
 
@@ -426,40 +310,6 @@ float USolidSubBody::ResolveSphereBoxRestitution(const USolidSubBody& Sphere, co
     }
 
     return ResolveSphereBoxGlobalRestitution(Sphere, Box, FallbackRestitution);
-}
-
-float USolidSubBody::ResolveSphereBoxRestitutionAtContact(
-    const USolidSubBody& Sphere,
-    const USolidSubBody& Box,
-    float FallbackRestitution,
-    const FVector& BoxLocalContactPoint,
-    const FVector& BoxLocalContactNormal,
-    const FVector& BoxExtent,
-    const FVector& ContactPointWS)
-{
-    const float ForcedOverride = CVarIAmSpeedSphereBoxRestitutionOverride.GetValueOnAnyThread();
-    if (ForcedOverride >= 0.f)
-    {
-        return FMath::Clamp(ForcedOverride, 0.f, 1.f);
-    }
-
-    const float GlobalRestitution = ResolveSphereBoxGlobalRestitution(Sphere, Box, FallbackRestitution);
-    FRestitutionResolveContext Context;
-    Context.ContactPointWS = ContactPointWS;
-    Context.BoxLocalContactPoint = BoxLocalContactPoint;
-    Context.BoxLocalContactNormal = BoxLocalContactNormal;
-    Context.BoxExtent = BoxExtent;
-
-    switch (GetSphereBoxRestitutionMode())
-    {
-    case ERestitutionResolveMode::AtContact:
-        return ResolveSphereBoxAtContactRestitution(Context);
-    case ERestitutionResolveMode::Custom:
-        return FMath::Clamp(Box.ResolveRestitutionCustom(Sphere, Context, GlobalRestitution), 0.f, 1.f);
-    case ERestitutionResolveMode::Global:
-    default:
-        return GlobalRestitution;
-    }
 }
 
 FVector USolidSubBody::GetVelocityAtPoint(const FVector& Point) const

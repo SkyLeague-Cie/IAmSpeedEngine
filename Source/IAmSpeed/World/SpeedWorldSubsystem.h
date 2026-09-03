@@ -28,6 +28,30 @@ enum class ECanonicalRunControlState : uint8
 	Complete,
 };
 
+struct FSpeedStepDiagnostics
+{
+	uint64 Serial = 0;
+	unsigned int Frame = 0;
+	int32 IterationCount = 0;
+	int32 ComponentSweepCount = 0;
+	int32 ResolvedEventCount = 0;
+	uint32 StaticQueryCount = 0;
+	uint32 LegacySweepCount = 0;
+	uint32 AuthorityAttemptCount = 0;
+	double StaticAuthorityMilliseconds = 0.0;
+	double MaximumStaticAuthorityMilliseconds = 0.0;
+	int32 MaximumIterationCount = 0;
+	double PhysicalDeltaTimeMilliseconds = 0.0;
+	double TotalMilliseconds = 0.0;
+	double ResetMilliseconds = 0.0;
+	double SweepMilliseconds = 0.0;
+	double IntegrateMilliseconds = 0.0;
+	double ResolveMilliseconds = 0.0;
+	double ProjectionMilliseconds = 0.0;
+	double PostMilliseconds = 0.0;
+	bool bIterationLimitReached = false;
+};
+
 struct FPendingOp
 {
     bool bAdd = false;
@@ -103,6 +127,10 @@ public:
 	{
 		return StaticCollisionWorld.Get();
 	}
+	const FSpeedStepDiagnostics& GetLastStepDiagnostics() const
+	{
+		return LastStepDiagnostics;
+	}
 	TWeakObjectPtr<UPrimitiveComponent> FindAnalyticSourceComponent(
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
@@ -111,9 +139,14 @@ private:
 	TArray<FDynamicContactPair> DynamicContactPairs;
 	TArray<FDynamicContactPair> PendingRollingContactPairs;
 	unsigned int CurrentStepFrame = 0;
+	uint64 StepSerial = 0;
+	FSpeedStepDiagnostics LastStepDiagnostics;
 	mutable bool bLoggedRollingOwnershipState = false;
 	bool bLoggedRollingSolveState = false;
-	TUniquePtr<Speed::Analytic::FAnalyticWorldData> AnalyticWorldData;
+	// Runtime data is immutable after validation. Baked assets already return a
+	// finalized shared payload, so retaining it avoids a deep copy and a second
+	// rebuild of every compact-provider acceleration structure at world start.
+	TSharedPtr<const Speed::Analytic::FAnalyticWorldData> AnalyticWorldData;
 	// Authoritative immutable collision service. Its lifetime is owned by the
 	// physical world, independently from per-frame audit/shadow instrumentation.
 	TUniquePtr<Speed::IStaticCollisionWorld> StaticCollisionWorld;

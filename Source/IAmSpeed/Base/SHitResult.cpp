@@ -23,6 +23,7 @@ SHitResult SHitResult::FromAnalyticHit(
 	Result.PenetrationDepth = static_cast<float>(Hit.PenetrationDepth);
 	Result.GeometricErrorBoundCm =
 		static_cast<float>(Hit.GeometricErrorBoundCm);
+	Result.bSurfaceNormalMayVary = Hit.bSurfaceNormalMayVary;
 	Result.ContactPointThis = FVector(Hit.QueryPoint);
 	Result.ContactPointOther = FVector(Hit.Point);
 	Result.ContactFeatureThis = Hit.QueryFeatureKind;
@@ -33,6 +34,7 @@ SHitResult SHitResult::FromAnalyticHit(
 	Result.SurfaceId = Hit.SurfaceId;
 	Result.FeatureId = Hit.FeatureId;
 	Result.PrimitiveId = Hit.PrimitiveId;
+	Result.CanonicalGroupId = Hit.CanonicalGroupId;
 	Result.MaterialId = Hit.MaterialId;
 	Result.FrameTag = InFrameTag;
 	return Result;

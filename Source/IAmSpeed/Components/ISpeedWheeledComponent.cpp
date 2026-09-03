@@ -1,6 +1,7 @@
 #include "ISpeedWheeledComponent.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "HAL/IConsoleManager.h"
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactNormalVelTimeConstant(
@@ -67,6 +68,12 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactDebug(
 	TEXT("p.IAmSpeed.WheelContact.Debug"),
 	0,
 	TEXT("Logs grouped wheel contact solver impulses when non-zero."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactRequireFinalSupport(
+	TEXT("p.IAmSpeed.WheelContact.RequireFinalSupport"),
+	0,
+	TEXT("When non-zero, delayed wheel contacts participate in coupled-pose and impulse solves only while the wheel remains supported in the final integrated pose."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelContactSolverMode(
@@ -144,7 +151,7 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledSubBodyPoseSolver(
 static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseHitboxSlopCm(
 	TEXT("p.IAmSpeed.CoupledPose.HitboxSlopCm"),
 	0.05f,
-	TEXT("Accepted principal-hitbox overlap during coupled component-pose projection."),
+	TEXT("Accepted principal-hitbox overlap during coupled component-pose projection. Strict analytical authority always enforces zero."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPosePasses(
@@ -187,6 +194,12 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseVelocityCorrection(
 	TEXT("p.IAmSpeed.CoupledPose.VelocityCorrection"),
 	0,
 	TEXT("When non-zero, removes inward principal-hitbox point velocity after an accepted pose projection. Kept separate for energy A/B validation."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseSupportedSurfaceContactPoint(
+	TEXT("p.IAmSpeed.CoupledPose.SupportedSurfaceContactPoint"),
+	0,
+	TEXT("When non-zero, principal-hitbox feasibility on an established subordinate support manifold applies at the contact point in every orientation, allowing the coupled pose to rotate instead of translating only."),
 	ECVF_Default);
 
 float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstantOverride()
@@ -254,21 +267,23 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 	// A response faster than one simulation step is not representable by this
 	// first-order solver. Keep tuning in seconds while bounding its discrete form.
-	const float NormalVelTimeConstant = FMath::Max(GetWheelContactNormalVelocityTimeConstant(), dt);
+	const float NormalVelTimeConstant = FMath::Max(
+		GetWheelContactNormalVelocityTimeConstant(), dt);
 	const float gamma = 1.f - FMath::Exp(-dt / NormalVelTimeConstant);
 	const float LockedSeparatingNormalVelTimeConstant = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant.GetValueOnAnyThread(), 1e-6f);
 	const float LockedSeparatingGamma = 1.f - FMath::Exp(-dt / LockedSeparatingNormalVelTimeConstant);
 	const float LockedSeparatingMaxNormalVelocity = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity.GetValueOnAnyThread(), 0.0f);
 	const float MaxInwardNormalVelocityToSolve = FMath::Max(
 		GetWheelContactMaxInwardNormalVelocityToSolve(), 0.0f);
-	const bool bLockedSeparatingDampingEnabled = CVarIAmSpeedWheelContactLockedSeparatingDamping.GetValueOnAnyThread() != 0;
+	const bool bLockedSeparatingDampingEnabled =
+		CVarIAmSpeedWheelContactLockedSeparatingDamping.GetValueOnAnyThread() != 0;
 	// --- Deadzones ---
 	const float VNDeadzone = FMath::Max(GetWheelContactNormalVelocityDeadzone(), 0.0f);
 	const float JDeadzone = FMath::Max(CVarIAmSpeedWheelContactImpulseDeadzone.GetValueOnAnyThread(), 0.0f);
 	// (smaller are those, more network stability)
 
-	// softening (CFM-ish)
-	const float Softness = FMath::Max(CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread(), 0.0f);
+	const float Softness = FMath::Max(
+		CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread(), 0.0f);
 
 	// Legacy solves every wheel from the same snapshot. The diagnostic coupled
 	// modes update the virtual rigid state after each impulse so later contacts
@@ -283,6 +298,44 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 	ContactOrder.Reserve(PendingWheelGroundContacts.Num());
 	for (int32 ContactIndex = 0; ContactIndex < PendingWheelGroundContacts.Num(); ++ContactIndex)
 	{
+		const SWheelGroundContact& Contact =
+			PendingWheelGroundContacts[ContactIndex];
+		const FVector ContactNormal = Contact.Normal.GetSafeNormal();
+		// A delayed analytic contact on the transverse upper cage curve can
+		// outlive the wheel support that produced it. Applying its compression-
+		// crossing impulse after the transactional pose has already detached the
+		// wheel creates a response bifurcation. Keep the rejection bounded to
+		// the transverse upper-curve regime; lower gutters and legacy contacts
+		// retain their existing delayed-contact behaviour.
+		const bool bDetachedAnalyticUpperCurveContact =
+			Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
+			Contact.SpringDisplacement <= -6.0f &&
+			FMath::Abs(ContactNormal.X) <= 0.10f &&
+			FMath::Abs(ContactNormal.Y) >= 0.40f &&
+			ContactNormal.Z <= -0.20f;
+		const bool bRequireFinalSupport =
+			CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() != 0 ||
+			bDetachedAnalyticUpperCurveContact;
+		if (bRequireFinalSupport &&
+			(!Contact.Wheel || !Contact.Wheel->IsOnGround()))
+		{
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[WheelContactSolver] Mode=FinalSupportRejected Frame=%d Wheel=%d SpringDisp=%.3f SurfaceSource=%llu Surface=%llu Feature=%llu Pos=%s Normal=%s"),
+					NumFrame(),
+					Contact.Wheel ? Contact.Wheel->Idx() : INDEX_NONE,
+					Contact.SpringDisplacement,
+					Contact.SurfaceSourceId,
+					Contact.SurfaceId,
+					Contact.SurfaceFeatureId,
+					*Contact.WorldPos.ToString(),
+					*Contact.Normal.ToString());
+			}
+#endif
+			continue;
+		}
 		ContactOrder.Add(ContactIndex);
 	}
 	ContactOrder.Sort([&PendingWheelGroundContacts](const int32 A, const int32 B)
@@ -821,6 +874,46 @@ bool ISpeedWheeledComponent::OneWheelOnGround() const
 	return false;
 }
 
+bool ISpeedWheeledComponent::HasCompatibleEstablishedStaticSupport(
+	const SHitResult& SurfaceHit) const
+{
+	UPrimitiveComponent* SurfaceComponent = SurfaceHit.Component.Get();
+	if (!SurfaceComponent ||
+		SurfaceComponent->Mobility != EComponentMobility::Static)
+	{
+		return false;
+	}
+
+	const bool bHasAnalyticIdentity = SurfaceHit.SourceId != 0 &&
+		SurfaceHit.SurfaceId != 0 && SurfaceHit.FeatureId != 0;
+	int32 CompatibleSupports = 0;
+	for (const TObjectPtr<USWheelSubBody>& WheelPtr : GetWheelSubBodies())
+	{
+		const USWheelSubBody* Wheel = WheelPtr.Get();
+		if (!Wheel || !Wheel->IsOnGround())
+		{
+			continue;
+		}
+		const SHitResult& WheelHit = Wheel->GetHit();
+		if (WheelHit.Component.Get() != SurfaceComponent ||
+			WheelHit.ImpactNormal.IsNearlyZero())
+		{
+			continue;
+		}
+		const bool bCompatibleIdentity = bHasAnalyticIdentity
+			? WheelHit.SourceId == SurfaceHit.SourceId &&
+				WheelHit.SurfaceId == SurfaceHit.SurfaceId &&
+				WheelHit.FeatureId == SurfaceHit.FeatureId
+			: (SurfaceHit.FaceIndex == INDEX_NONE ||
+				WheelHit.FaceIndex == INDEX_NONE ||
+				WheelHit.FaceIndex == SurfaceHit.FaceIndex);
+		CompatibleSupports += bCompatibleIdentity ? 1 : 0;
+	}
+	// One point is not a support manifold and must not soften an ordinary
+	// aerial chassis impact.  An axle or broader set is sufficient.
+	return CompatibleSupports >= 2;
+}
+
 bool ISpeedWheeledComponent::NoWheelOnGround() const
 {
 	return !OneWheelOnGround();
@@ -880,6 +973,13 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			USWheelSubBody* Wheel = Probe.Wheel;
 			UPrimitiveComponent* PreviousSurface = Probe.PreviousHit.Component.Get();
 			const FVector PreviousNormal = Probe.PreviousHit.ImpactNormal.GetSafeNormal();
+			const bool bNativeVariableNormalSupport =
+				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
+				Probe.PreviousHit.bSurfaceNormalMayVary &&
+				Probe.PreviousHit.SourceId != 0 &&
+				Probe.PreviousHit.SurfaceId != 0 &&
+				Probe.PreviousHit.CanonicalGroupId != 0 &&
+				PreviousNormal.Z <= -0.995f;
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0 &&
 				Probe.bWasGrounded && !Probe.bHasProbeHit)
@@ -895,7 +995,9 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 #endif
 			if (!Probe.bWasGrounded || Probe.bHasProbeHit || !PreviousSurface ||
 				PreviousSurface->Mobility != EComponentMobility::Static ||
-				PreviousNormal.IsNearlyZero() || PreviousNormal.Z < MinGravityAlignment ||
+				PreviousNormal.IsNearlyZero() ||
+				(PreviousNormal.Z < MinGravityAlignment &&
+					!bNativeVariableNormalSupport) ||
 				Wheel->HasJumpUnilateralSupport())
 			{
 				continue;
@@ -1152,9 +1254,16 @@ void ISpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 	ResolveGroupedWheelGroundContacts(delta);
 	ProjectWheelSupportNonPenetration();
 	TryProjectCanonicalWheelSupportPose();
+	// Wheel and canonical-support corrections are allowed to move the rigid
+	// pose after integration. Reassert the coupled feasibility hierarchy with
+	// an exact analytical hitbox gate last, so PostPhysics observers cannot
+	// sample a residual overlap without changing substep response tolerances.
+	ProjectEstablishedStaticContacts(delta);
+	ProjectCoupledSubBodyPose(delta, true);
 }
 
-bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
+bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
+	const float Delta, const bool bStrictHitboxGate)
 {
 	if (CVarIAmSpeedCoupledSubBodyPoseSolver.GetValueOnAnyThread() == 0)
 	{
@@ -1178,8 +1287,13 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 
 	const FVector TransactionCOM = GetPhysCOM();
 	const FQuat TransactionRotation = GetPhysRotation();
-	const float Slop = FMath::Max(0.0f,
+	const float ConfiguredSlop = FMath::Max(0.0f,
 		CVarIAmSpeedCoupledPoseHitboxSlopCm.GetValueOnAnyThread());
+	const float Slop =
+		bStrictHitboxGate &&
+		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
+			? 0.0f
+			: ConfiguredSlop;
 	const float ProjectionTargetSlop = FMath::Max(0.0f, Slop - 0.01f);
 	TArray<USWheelSubBody*, TInlineAllocator<4>> WheelPatchCandidates;
 	bool bWheelPatchesOnGravityAlignedSurface = true;
@@ -1202,7 +1316,10 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 	}
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
-		if (Contact.Wheel && Contact.SurfaceComponent.IsValid()
+		if (Contact.Wheel &&
+			(CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() == 0 ||
+				Contact.Wheel->IsOnGround()) &&
+			Contact.SurfaceComponent.IsValid()
 			&& Contact.SurfaceComponent->GetMobility() == EComponentMobility::Static
 			&& !Contact.Normal.IsNearlyZero())
 		{
@@ -1217,6 +1334,15 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 		}
 	}
 	const bool bHasWheelPatchCandidate = !WheelPatchCandidates.IsEmpty();
+	FVector WheelManifoldNormal = FVector::ZeroVector;
+	for (const USWheelSubBody* Wheel : WheelPatchCandidates)
+	{
+		if (Wheel)
+		{
+			WheelManifoldNormal += Wheel->GetHit().ImpactNormal.GetSafeNormal();
+		}
+	}
+	WheelManifoldNormal.Normalize();
 	const FVector LocalAngularVelocity =
 		GetPhysRotation().UnrotateVector(GetPhysAngularVelocity());
 	const bool bPitchDominatedFreeHitboxContact = !bHasWheelPatchCandidate
@@ -1268,6 +1394,79 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 	for (const FHitResult& Hit : InitialPenetrationHits)
 	{
 		InitialMaximumDepth = FMath::Max(InitialMaximumDepth, Hit.PenetrationDepth);
+	}
+	if (InitialMaximumDepth <= 0.0f &&
+		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend())
+	{
+		LastCertifiedCoupledPoseCOM = TransactionCOM;
+		LastCertifiedCoupledPoseRotation = TransactionRotation;
+		LastCertifiedCoupledPoseFrame = static_cast<int32>(NumFrame());
+	}
+	auto TryRestoreRecentCertifiedPose = [&]()
+	{
+		const int32 CertifiedPoseAge = static_cast<int32>(NumFrame()) -
+			LastCertifiedCoupledPoseFrame;
+		if (!Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() ||
+			LastCertifiedCoupledPoseFrame == INDEX_NONE || CertifiedPoseAge < 0 ||
+			CertifiedPoseAge > 1)
+		{
+			return false;
+		}
+
+		SetPhysCOMLocation(LastCertifiedCoupledPoseCOM);
+		SetPhysRotation(LastCertifiedCoupledPoseRotation);
+		UpdateSubBodiesKinematics();
+		TArray<FHitResult> CertifiedPoseHits;
+		PrincipalHitbox->GatherStaticPenetrationHits(CertifiedPoseHits);
+		if (!CertifiedPoseHits.IsEmpty())
+		{
+			SetPhysCOMLocation(TransactionCOM);
+			SetPhysRotation(TransactionRotation);
+			UpdateSubBodiesKinematics();
+			return false;
+		}
+		LastCertifiedCoupledPoseCOM = GetPhysCOM();
+		LastCertifiedCoupledPoseRotation = GetPhysRotation();
+		LastCertifiedCoupledPoseFrame = static_cast<int32>(NumFrame());
+
+		BeginDeferredWheelGroundStateUpdate();
+		for (USWheelSubBody* Wheel : GetWheelSubBodies())
+		{
+			if (!Wheel)
+			{
+				continue;
+			}
+			SHitResult FinalHit;
+			const bool bOnGround = Wheel->ProbeSuspensionOnGround(FinalHit, Delta);
+			if (bOnGround)
+			{
+				Wheel->SetHit(FinalHit);
+			}
+			Wheel->SetOnGround(bOnGround);
+		}
+		EndDeferredWheelGroundStateUpdate();
+		return true;
+	};
+	// A pose projection can observe a residual after the dynamics response has
+	// already crossed a curved analytical seam. Prefer the
+	// immediately preceding exactly-free pose, and revalidate it analytically,
+	// before entering the iterative solver, but only when the reported depth fits
+	// inside the actual one-frame rigid-pose sweep. Re-certifying that restored
+	// pose for the current frame keeps consecutive fixed-step boundary checks
+	// bounded without ever accepting penetration or consuming the solver ceiling.
+	const float CertifiedPoseSweepCm = LastCertifiedCoupledPoseFrame != INDEX_NONE
+		? (TransactionCOM - LastCertifiedCoupledPoseCOM).Size() +
+			TransactionRotation.AngularDistance(LastCertifiedCoupledPoseRotation) *
+			PrincipalHitbox->GetBoxExtent().Size()
+		: 0.0f;
+	const bool bBoundedOneFrameRollback = CertifiedPoseSweepCm <= 15.0f &&
+		InitialMaximumDepth <= 15.0f;
+	if (bStrictHitboxGate && InitialMaximumDepth <= 0.0f)
+	{
+		// No analytical overlap exists at this boundary. Keep the strict pass a
+		// true no-op so support retention and response metrics remain those of the
+		// preceding dynamics solve.
+		return false;
 	}
 
 	auto ApplyConstraint = [this](const FVector& Direction, const FVector& WorldPoint,
@@ -1335,10 +1534,10 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 			}
 		}
 	};
-	auto SolveHitboxFeasibility = [&]()
+	auto SolveHitboxFeasibility = [&](const int32 PassLimit)
 	{
 		TArray<FHitResult> Hits;
-		for (int32 Pass = 0; Pass < MaxPasses; ++Pass)
+		for (int32 Pass = 0; Pass < PassLimit; ++Pass)
 		{
 			PrincipalHitbox->GatherStaticPenetrationHits(Hits);
 			float MaximumDepth = 0.0f;
@@ -1365,13 +1564,21 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 				// its axle. Curved gutter and wall contacts retain the conservative COM
 				// projection; treating those free hitbox contacts as a floor pivot
 				// changes their measured surface-traversal energy.
-				const bool bUseFreeFloorContactPoint =
+				const bool bUseFreeFloorContactPoint = !bStrictHitboxGate &&
 					bPitchDominatedFreeHitboxContact
 					&& FMath::Abs(Constraint.Normal.Z) >= 0.90f
 					&& FVector::DotProduct(ChassisUp, Constraint.Normal) >= 0.0f;
-				const bool bUseSupportedFloorContactPoint =
-					bHasWheelPatchCandidate && bWheelPatchesOnGravityAlignedSurface
-					&& bWheelPatchesFaceChassisSupportSide;
+				const bool bUseSupportedFloorContactPoint = !bStrictHitboxGate &&
+					bHasWheelPatchCandidate && bWheelPatchesFaceChassisSupportSide &&
+					(bWheelPatchesOnGravityAlignedSurface ||
+						(!WheelManifoldNormal.IsNearlyZero() &&
+							bWheelPatchesFormLateralAxle &&
+							FMath::Abs(Constraint.Normal.X) <= 0.10f &&
+							FMath::Abs(Constraint.Normal.Z) >= 0.90f &&
+							FMath::Abs(FVector::DotProduct(WheelManifoldNormal,
+								Constraint.Normal)) <= 0.25f) ||
+						CVarIAmSpeedCoupledPoseSupportedSurfaceContactPoint
+							.GetValueOnAnyThread() != 0);
 				const float HitboxRotationLength =
 					bUseFreeFloorContactPoint ? FloorPivotRotationLength
 					: (bUseSupportedFloorContactPoint
@@ -1379,7 +1586,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 				ApplyConstraint(Constraint.Normal,
 					bUseSupportedFloorContactPoint || bUseFreeFloorContactPoint
 						? Constraint.Point : GetPhysCOM(),
-					Constraint.ObservedDepth - ProjectionTargetSlop,
+					Constraint.ObservedDepth - ProjectionTargetSlop +
+						(bStrictHitboxGate ? 0.01f : 0.0f),
 					HitboxRotationLength);
 			}
 		}
@@ -1434,7 +1642,30 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 		}
 	};
 
-	if (!SolveHitboxFeasibility())
+	bool bHitboxFeasible = false;
+	if (InitialMaximumDepth > Slop && bBoundedOneFrameRollback)
+	{
+		// Give the local supported manifold a small opportunity to preserve its
+		// rotational response. If it cannot produce an exact analytical pose in
+		// four projections, restore the transaction and use the certified CCD
+		// rollback without walking the configured solver ceiling.
+		bHitboxFeasible = SolveHitboxFeasibility(FMath::Min(MaxPasses, 4));
+		if (!bHitboxFeasible)
+		{
+			SetPhysCOMLocation(TransactionCOM);
+			SetPhysRotation(TransactionRotation);
+			UpdateSubBodiesKinematics();
+			if (TryRestoreRecentCertifiedPose())
+			{
+				return true;
+			}
+		}
+	}
+	else
+	{
+		bHitboxFeasible = SolveHitboxFeasibility(MaxPasses);
+	}
+	if (!bHitboxFeasible)
 	{
 #if !(UE_BUILD_SHIPPING)
 		if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0 &&
@@ -1453,6 +1684,35 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 		return false;
 	}
 	ClampHitboxInwardVelocity();
+	if (bStrictHitboxGate && InitialMaximumDepth > Slop)
+	{
+		// The strict pass is a final analytical penetration certificate. Do not
+		// let wheel retention reject and roll back an already-feasible OBB pose;
+		// wheel support is solved in the preceding post-physics phases and will
+		// be reprobed after this bounded positional correction.
+		const bool bPoseChanged = !GetPhysCOM().Equals(TransactionCOM, 0.001f) ||
+			GetPhysRotation().AngularDistance(TransactionRotation) > 1.0e-5f;
+		if (bPoseChanged)
+		{
+			BeginDeferredWheelGroundStateUpdate();
+			for (USWheelSubBody* Wheel : GetWheelSubBodies())
+			{
+				if (!Wheel)
+				{
+					continue;
+				}
+				SHitResult FinalHit;
+				const bool bOnGround = Wheel->ProbeSuspensionOnGround(FinalHit, Delta);
+				if (bOnGround)
+				{
+					Wheel->SetHit(FinalHit);
+				}
+				Wheel->SetOnGround(bOnGround);
+			}
+			EndDeferredWheelGroundStateUpdate();
+		}
+		return bPoseChanged;
+	}
 
 	const FVector HitboxFeasibleCOM = GetPhysCOM();
 	const FQuat HitboxFeasibleRotation = GetPhysRotation();
@@ -1465,6 +1725,9 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 		FVector SurfacePoint = FVector::ZeroVector;
 		FVector Normal = FVector::ZeroVector;
 		int32 SurfaceFaceIndex = INDEX_NONE;
+		uint64 SurfaceSourceId = 0;
+		uint64 SurfaceId = 0;
+		uint64 SurfaceFeatureId = 0;
 	};
 	TArray<FWheelPatchConstraint, TInlineAllocator<4>> WheelConstraints;
 	for (USWheelSubBody* Wheel : GetWheelSubBodies())
@@ -1486,10 +1749,15 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 		Constraint.SurfacePoint = Hit.ImpactPoint;
 		Constraint.Normal = Hit.ImpactNormal.GetSafeNormal();
 		Constraint.SurfaceFaceIndex = Hit.FaceIndex;
+		Constraint.SurfaceSourceId = Hit.SourceId;
+		Constraint.SurfaceId = Hit.SurfaceId;
+		Constraint.SurfaceFeatureId = Hit.FeatureId;
 	}
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
 		if (!Contact.Wheel || !Contact.SurfaceComponent.IsValid() ||
+			(CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() != 0 &&
+				!Contact.Wheel->IsOnGround()) ||
 			Contact.SurfaceComponent->GetMobility() != EComponentMobility::Static ||
 			Contact.Normal.IsNearlyZero())
 		{
@@ -1508,6 +1776,9 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 			Constraint.SurfacePoint = Contact.SurfacePoint;
 			Constraint.Normal = Contact.Normal.GetSafeNormal();
 			Constraint.SurfaceFaceIndex = Contact.SurfaceFaceIndex;
+			Constraint.SurfaceSourceId = Contact.SurfaceSourceId;
+			Constraint.SurfaceId = Contact.SurfaceId;
+			Constraint.SurfaceFeatureId = Contact.SurfaceFeatureId;
 		}
 	}
 	WheelConstraints.Sort([](const FWheelPatchConstraint& A, const FWheelPatchConstraint& B)
@@ -1529,11 +1800,31 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 		SHitResult LocalPatchHit;
 		const bool bHasLocalPatch = Wheel->SweepSuspensionAlongNormal(
 			N, FMath::Max(5.0f, Wheel->SuspensionMaxDrop()), Delta, LocalPatchHit);
+		const bool bSameAnalyticSurface =
+			Contact.SurfaceSourceId != 0 && Contact.SurfaceId != 0 &&
+			Contact.SurfaceFeatureId != 0 &&
+			LocalPatchHit.SourceId == Contact.SurfaceSourceId &&
+			LocalPatchHit.SurfaceId == Contact.SurfaceId &&
+			LocalPatchHit.FeatureId == Contact.SurfaceFeatureId;
+		const bool bSameLocalFace =
+			Contact.SurfaceFaceIndex == INDEX_NONE ||
+			LocalPatchHit.FaceIndex == INDEX_NONE ||
+			LocalPatchHit.FaceIndex == Contact.SurfaceFaceIndex;
+		// A vertical authored wall or a ceiling-facing terminal bend is one support
+		// surface even when its compact representation advances to an adjacent face.
+		// Intermediate gutters and floor-facing ramps retain the stricter local-face
+		// test so the coupled pose cannot bridge an internal bend or stale plane.
+		const bool bUseBoundedAnalyticIdentity =
+			Contact.SurfaceSourceId != 0 && Contact.SurfaceId != 0 &&
+			Contact.SurfaceFeatureId != 0 &&
+			(FMath::Abs(N.Z) <= 0.10f || N.Z <= -0.50f);
+		const bool bSameSurfaceIdentity = bUseBoundedAnalyticIdentity
+			? bSameAnalyticSurface
+			: bSameLocalFace;
 		const bool bSamePatch = bHasLocalPatch &&
 			LocalPatchHit.Component == Contact.SurfaceComponent &&
 			FVector::DotProduct(LocalPatchHit.ImpactNormal.GetSafeNormal(), N) >= 0.995f &&
-			(Contact.SurfaceFaceIndex == INDEX_NONE || LocalPatchHit.FaceIndex == INDEX_NONE ||
-				LocalPatchHit.FaceIndex == Contact.SurfaceFaceIndex);
+			bSameSurfaceIdentity;
 		if (!bSamePatch)
 		{
 			continue;
@@ -1550,7 +1841,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(const float Delta)
 				WheelConstraintRotationLength);
 		}
 
-		if (!SolveHitboxFeasibility())
+		if (!SolveHitboxFeasibility(MaxPasses))
 		{
 			SetPhysCOMLocation(BeforeWheelCOM);
 			SetPhysRotation(BeforeWheelRotation);

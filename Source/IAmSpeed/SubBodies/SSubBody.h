@@ -47,6 +47,12 @@ public:
 
     // --- Called once per physics frame ---
     virtual void ResetForFrame(const float& Delta);
+	// Enforce an already-established static contact after unconstrained pose
+	// prediction. Returns true when owner kinematics changed.
+	virtual bool ProjectEstablishedStaticContact(const float& Delta) { return false; }
+	// True when the owner must transport this contact through a varying
+	// analytical normal during kinematic integration.
+	virtual bool RequiresEstablishedStaticContactTransport() const { return false; }
 	virtual void PostPhysicsUpdate() {};
 
     // --- Set/Get kinematics ---

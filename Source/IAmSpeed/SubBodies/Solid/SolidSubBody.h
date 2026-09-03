@@ -15,22 +15,6 @@ enum class EMixMode : uint8
 	E_Max UMETA(DisplayName = "Max"),
 };
 
-UENUM()
-enum class ERestitutionResolveMode : uint8
-{
-	Global UMETA(DisplayName = "Global"),
-	AtContact UMETA(DisplayName = "At Contact"),
-	Custom UMETA(DisplayName = "Custom"),
-};
-
-struct FRestitutionResolveContext
-{
-	FVector ContactPointWS = FVector::ZeroVector;
-	FVector BoxLocalContactPoint = FVector::ZeroVector;
-	FVector BoxLocalContactNormal = FVector::ZeroVector;
-	FVector BoxExtent = FVector::ZeroVector;
-};
-
 struct FFakePhysicsImpactContext
 {
 	SKinematic SelfParentKinematics;
@@ -154,10 +138,6 @@ public:
 		const SHitResult& Hit,
 		const float& DeltaTime,
 		const FFakePhysicsImpactContext* ImpactContext = nullptr) {};
-	virtual float ResolveRestitutionCustom(
-		const USolidSubBody& OtherSubBody,
-		const FRestitutionResolveContext& Context,
-		float GlobalRestitution) const { return GlobalRestitution; }
 	virtual FVector GetVelocityAtPoint(const FVector& Point) const;
 
 	static float MixRestitution(float eA, float eB, EMixMode Mode);
@@ -171,14 +151,6 @@ public:
 		const USolidSubBody& Box,
 		float FallbackFriction);
 	static float ResolveSphereBoxRestitution(const USolidSubBody& Sphere, const USolidSubBody& Box, float FallbackRestitution);
-	static float ResolveSphereBoxRestitutionAtContact(
-		const USolidSubBody& Sphere,
-		const USolidSubBody& Box,
-		float FallbackRestitution,
-		const FVector& BoxLocalContactPoint,
-		const FVector& BoxLocalContactNormal,
-		const FVector& BoxExtent,
-		const FVector& ContactPointWS);
 	static void SolveOverlap(ISpeedComponent& ThisComp, float MassA, const FMatrix& InvIA, const SKinematic& KA,
 		ISpeedComponent* OtherComp, float MassB, const FMatrix& InvIB, const SKinematic& KB,
 		const FVector& P, const FVector& N_OtherToThis,

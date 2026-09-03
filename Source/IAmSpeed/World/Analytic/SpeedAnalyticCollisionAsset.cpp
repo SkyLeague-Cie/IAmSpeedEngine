@@ -1,6 +1,7 @@
 #include "SpeedAnalyticCollisionAsset.h"
 
 #include "AnalyticWorldData.h"
+#include "HAL/PlatformTime.h"
 
 #if WITH_EDITOR
 #include "Misc/DataValidation.h"
@@ -9,7 +10,8 @@
 DEFINE_LOG_CATEGORY_STATIC(LogSpeedAnalyticCollisionAsset, Log, All);
 #endif
 
-bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) const
+bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
+	FString* OutReason, const bool bAuthorityProvidersOnly) const
 {
 	auto Fail = [OutReason](const FString& Reason)
 	{
@@ -19,7 +21,7 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 		}
 		return false;
 	};
-	if (BakeSchemaVersion != 6)
+	if (BakeSchemaVersion != 9)
 	{
 		return Fail(FString::Printf(
 			TEXT("Unsupported analytic bake schema %u."), BakeSchemaVersion));
@@ -70,7 +72,8 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 		return Fail(TEXT("Indexed triangle payload has an empty vertex or normal pool."));
 	}
 	uint64 PreviousPrimitiveId = 0;
-	for (int32 Index = 0; Index < IndexedTriangles.Num(); ++Index)
+	for (int32 Index = 0;
+		!bAuthorityProvidersOnly && Index < IndexedTriangles.Num(); ++Index)
 	{
 		const FSpeedAnalyticIndexedTriangleRecord& Triangle = IndexedTriangles[Index];
 		if (!SourceIds.Contains(Triangle.SourceId) || Triangle.SurfaceId == 0 ||
@@ -99,6 +102,10 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 	for (int32 Index = 0; Index < BoundedPlanes.Num(); ++Index)
 	{
 		const FSpeedAnalyticBoundedPlaneRecord& Record = BoundedPlanes[Index];
+		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
+		{
+			continue;
+		}
 		Speed::Analytic::FBoundedPlane Plane;
 		Plane.SourceId = Record.SourceId;
 		Plane.SurfaceId = Record.SurfaceId;
@@ -139,6 +146,10 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 	{
 		const FSpeedAnalyticExtrudedQuinticPatchRecord& Patch =
 			ExtrudedQuinticPatches[Index];
+		if (bAuthorityProvidersOnly && !Patch.bAuthorityEligible)
+		{
+			continue;
+		}
 		if (!SourceIds.Contains(Patch.SourceId) || Patch.SurfaceId == 0 ||
 			Patch.FeatureId == 0 || Patch.PrimitiveId == 0 ||
 			Patch.SectionControlPoints.Num() != 6 ||
@@ -151,10 +162,12 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 			!FMath::IsFinite(Patch.BaseMaximumResidualCm) ||
 			!FMath::IsFinite(Patch.CorrectedRootMeanSquareResidualCm) ||
 			!FMath::IsFinite(Patch.CorrectedMaximumResidualCm) ||
+			!FMath::IsFinite(Patch.AdditionalResidualAgreementAllowanceCm) ||
 			Patch.BaseRootMeanSquareResidualCm < 0.0 ||
 			Patch.BaseMaximumResidualCm < 0.0 ||
 			Patch.CorrectedRootMeanSquareResidualCm < 0.0 ||
 			Patch.CorrectedMaximumResidualCm < 0.0 ||
+			Patch.AdditionalResidualAgreementAllowanceCm < 0.0 ||
 			Patch.CorrectedRootMeanSquareResidualCm >
 				Patch.BaseRootMeanSquareResidualCm + 1.0e-9 ||
 			Patch.CorrectedMaximumResidualCm >
@@ -197,15 +210,125 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(FString* OutReason) con
 		}
 		PreviousPrimitiveId = Patch.PrimitiveId;
 	}
+	PreviousPrimitiveId = 0;
+	for (int32 Index = 0; Index < TensorBezierPatches.Num(); ++Index)
+	{
+		const FSpeedAnalyticTensorBezierPatchRecord& Record =
+			TensorBezierPatches[Index];
+		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
+		{
+			continue;
+		}
+		if (!SourceIds.Contains(Record.SourceId))
+		{
+			return Fail(FString::Printf(
+				TEXT("Tensor Bezier patch record %d references an unknown source."),
+				Index));
+		}
+		if (Record.SurfaceId == 0 || Record.FeatureId == 0 ||
+			Record.PrimitiveId == 0 || Record.CanonicalGroupId == 0 ||
+			(Record.bAuthorityEligible && !Record.bQueryCollisionEnabled))
+		{
+			return Fail(FString::Printf(
+				TEXT("Tensor Bezier patch record %d is incomplete."), Index));
+		}
+		Speed::Analytic::FTensorBezierSurface Surface;
+		Surface.DegreeU = Record.DegreeU;
+		Surface.DegreeV = Record.DegreeV;
+		Surface.ControlPoints.Reserve(Record.ControlPoints.Num());
+		for (const FVector& ControlPoint : Record.ControlPoints)
+		{
+			Surface.ControlPoints.Add(FVector3d(ControlPoint));
+		}
+		FString SurfaceReason;
+		if (!Surface.IsValid(&SurfaceReason))
+		{
+			return Fail(FString::Printf(
+				TEXT("Tensor Bezier patch record %d is invalid: %s"),
+				Index, *SurfaceReason));
+		}
+		if (Index > 0 && Record.PrimitiveId <= PreviousPrimitiveId)
+		{
+			return Fail(TEXT("Tensor Bezier patches are not uniquely sorted."));
+		}
+		PreviousPrimitiveId = Record.PrimitiveId;
+	}
+	PreviousPrimitiveId = 0;
+	for (int32 Index = 0; Index < PiecewiseTensorBezierPatches.Num(); ++Index)
+	{
+		const FSpeedAnalyticPiecewiseTensorBezierPatchRecord& Record =
+			PiecewiseTensorBezierPatches[Index];
+		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
+		{
+			continue;
+		}
+		if (!SourceIds.Contains(Record.SourceId))
+		{
+			return Fail(FString::Printf(
+				TEXT("Piecewise tensor Bezier patch record %d references an unknown source."),
+				Index));
+		}
+		if (Record.SurfaceId == 0 || Record.PrimitiveId == 0 || Record.Cells.IsEmpty() ||
+			(Record.bAuthorityEligible && (!Record.bQueryCollisionEnabled ||
+				!Record.bSourceResidualCertified)))
+		{
+			return Fail(FString::Printf(
+				TEXT("Piecewise tensor Bezier patch record %d is incomplete."), Index));
+		}
+		uint64 PreviousCellPrimitiveId = 0;
+		for (int32 CellIndex = 0; CellIndex < Record.Cells.Num(); ++CellIndex)
+		{
+			const FSpeedAnalyticPiecewiseTensorBezierCellRecord& CellRecord =
+				Record.Cells[CellIndex];
+			Speed::Analytic::FTensorBezierSurface Surface;
+			Surface.DegreeU = CellRecord.DegreeU;
+			Surface.DegreeV = CellRecord.DegreeV;
+			Surface.ControlPoints.Reserve(CellRecord.ControlPoints.Num());
+			for (const FVector& ControlPoint : CellRecord.ControlPoints)
+			{
+				Surface.ControlPoints.Add(FVector3d(ControlPoint));
+			}
+			FString SurfaceReason;
+			if (CellRecord.FeatureId == 0 || CellRecord.PrimitiveId == 0 ||
+				!FMath::IsFinite(CellRecord.MinimumU) ||
+				!FMath::IsFinite(CellRecord.MaximumU) ||
+				!FMath::IsFinite(CellRecord.MinimumV) ||
+				!FMath::IsFinite(CellRecord.MaximumV) ||
+				!FMath::IsFinite(CellRecord.LongitudinalParameterScale) ||
+				CellRecord.MaximumU <= CellRecord.MinimumU ||
+				CellRecord.MaximumV <= CellRecord.MinimumV ||
+				CellRecord.LongitudinalParameterScale <= 0.0 ||
+				!Surface.IsValid(&SurfaceReason))
+			{
+				return Fail(FString::Printf(
+					TEXT("Piecewise tensor Bezier patch record %d cell %d is invalid: %s"),
+					Index, CellIndex, *SurfaceReason));
+			}
+			if (CellIndex > 0 && CellRecord.PrimitiveId <= PreviousCellPrimitiveId)
+			{
+				return Fail(FString::Printf(
+					TEXT("Piecewise tensor Bezier patch record %d cells are not uniquely sorted."),
+					Index));
+			}
+			PreviousCellPrimitiveId = CellRecord.PrimitiveId;
+		}
+		if (Index > 0 && Record.PrimitiveId <= PreviousPrimitiveId)
+		{
+			return Fail(TEXT("Piecewise tensor Bezier patches are not uniquely sorted."));
+		}
+		PreviousPrimitiveId = Record.PrimitiveId;
+	}
 	return true;
 }
 
 TSharedPtr<const Speed::Analytic::FAnalyticWorldData>
 USpeedAnalyticCollisionAsset::BuildRuntimeData(
-	FString* OutReason, const bool bBuildRecognitionDiagnostics) const
+	FString* OutReason, const bool bBuildRecognitionDiagnostics,
+	const bool bAuthorityProvidersOnly) const
 {
 	using namespace Speed::Analytic;
-	if (!ValidateGeneratedData(OutReason))
+	const double BuildStartSeconds = FPlatformTime::Seconds();
+	if (!ValidateGeneratedData(OutReason, bAuthorityProvidersOnly))
 	{
 		return nullptr;
 	}
@@ -217,9 +340,16 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 	{
 		SourcesById.Add(Source.SourceId, &Source);
 	}
-	Runtime->Triangles.Reserve(IndexedTriangles.Num());
+	if (!bAuthorityProvidersOnly)
+	{
+		Runtime->Triangles.Reserve(IndexedTriangles.Num());
+	}
 	for (const FSpeedAnalyticIndexedTriangleRecord& Record : IndexedTriangles)
 	{
+		if (bAuthorityProvidersOnly)
+		{
+			continue;
+		}
 		const FSpeedAnalyticMeshSourceRecord* const* SourcePtr =
 			SourcesById.Find(Record.SourceId);
 		if (!SourcePtr || !*SourcePtr)
@@ -254,11 +384,15 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 		Triangle.Bounds += Triangle.Vertices[1];
 		Triangle.Bounds += Triangle.Vertices[2];
 		Triangle.bQueryCollisionEnabled = Source.bQueryCollisionEnabled;
-		Triangle.bAuthorityEligible = false;
+		Triangle.bAuthorityEligible = Record.bResidualAuthorityEligible;
 	}
 	Runtime->Planes.Reserve(BoundedPlanes.Num());
 	for (const FSpeedAnalyticBoundedPlaneRecord& Record : BoundedPlanes)
 	{
+		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
+		{
+			continue;
+		}
 		FBoundedPlane& Plane = Runtime->Planes.AddDefaulted_GetRef();
 		Plane.SourceId = Record.SourceId;
 		Plane.SurfaceId = Record.SurfaceId;
@@ -285,6 +419,10 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 	for (const FSpeedAnalyticExtrudedQuinticPatchRecord& Record :
 		ExtrudedQuinticPatches)
 	{
+		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
+		{
+			continue;
+		}
 		FExtrudedQuinticPatch& Patch =
 			Runtime->ExtrudedQuinticPatches.AddDefaulted_GetRef();
 		Patch.SourceId = Record.SourceId;
@@ -311,6 +449,8 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 		Patch.CorrectedRootMeanSquareResidualCm =
 			Record.CorrectedRootMeanSquareResidualCm;
 		Patch.CorrectedMaximumResidualCm = Record.CorrectedMaximumResidualCm;
+		Patch.AdditionalResidualAgreementAllowanceCm =
+			Record.AdditionalResidualAgreementAllowanceCm;
 		Patch.ExtrusionAxis = FVector3d(Record.ExtrusionAxis);
 		Patch.MinimumExtrusionCoordinate = Record.MinimumExtrusionCoordinate;
 		Patch.MaximumExtrusionCoordinate = Record.MaximumExtrusionCoordinate;
@@ -321,7 +461,80 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 			Record.bCanonicalSymmetryByConstruction;
 		Patch.bAuthorityEligible = Record.bAuthorityEligible;
 	}
-	if (!Runtime->FinalizeAndValidate(OutReason))
+	Runtime->TensorBezierPatches.Reserve(TensorBezierPatches.Num());
+	for (const FSpeedAnalyticTensorBezierPatchRecord& Record : TensorBezierPatches)
+	{
+		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
+		{
+			continue;
+		}
+		FTensorBezierPatch& Patch =
+			Runtime->TensorBezierPatches.AddDefaulted_GetRef();
+		Patch.SourceId = Record.SourceId;
+		Patch.SurfaceId = Record.SurfaceId;
+		Patch.FeatureId = Record.FeatureId;
+		Patch.PrimitiveId = Record.PrimitiveId;
+		Patch.CanonicalGroupId = Record.CanonicalGroupId;
+		Patch.MaterialId = Record.MaterialId;
+		Patch.ObjectType = Record.ObjectType;
+		Patch.BlockingChannels = Record.BlockingChannels;
+		Patch.Surface.DegreeU = Record.DegreeU;
+		Patch.Surface.DegreeV = Record.DegreeV;
+		Patch.Surface.ControlPoints.Reserve(Record.ControlPoints.Num());
+		for (const FVector& ControlPoint : Record.ControlPoints)
+		{
+			Patch.Surface.ControlPoints.Add(FVector3d(ControlPoint));
+		}
+		Patch.bQueryCollisionEnabled = Record.bQueryCollisionEnabled;
+		Patch.bAuthorityEligible = Record.bAuthorityEligible;
+	}
+	Runtime->PiecewiseTensorBezierPatches.Reserve(PiecewiseTensorBezierPatches.Num());
+	for (const FSpeedAnalyticPiecewiseTensorBezierPatchRecord& Record :
+		PiecewiseTensorBezierPatches)
+	{
+		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
+		{
+			continue;
+		}
+		FPiecewiseTensorBezierPatch& Patch =
+			Runtime->PiecewiseTensorBezierPatches.AddDefaulted_GetRef();
+		Patch.SourceId = Record.SourceId;
+		Patch.SurfaceId = Record.SurfaceId;
+		Patch.PrimitiveId = Record.PrimitiveId;
+		Patch.CanonicalGroupId = Record.CanonicalGroupId;
+		Patch.MaterialId = Record.MaterialId;
+		Patch.ObjectType = Record.ObjectType;
+		Patch.BlockingChannels = Record.BlockingChannels;
+		Patch.bQueryCollisionEnabled = Record.bQueryCollisionEnabled;
+		Patch.bSourceResidualCertified = Record.bSourceResidualCertified;
+		Patch.bAuthorityEligible = Record.bAuthorityEligible;
+		Patch.Cells.Reserve(Record.Cells.Num());
+		for (const FSpeedAnalyticPiecewiseTensorBezierCellRecord& CellRecord :
+			Record.Cells)
+		{
+			FPiecewiseTensorBezierCell& Cell = Patch.Cells.AddDefaulted_GetRef();
+			Cell.FeatureId = CellRecord.FeatureId;
+			Cell.PrimitiveId = CellRecord.PrimitiveId;
+			Cell.MinimumU = CellRecord.MinimumU;
+			Cell.MaximumU = CellRecord.MaximumU;
+			Cell.MinimumV = CellRecord.MinimumV;
+			Cell.MaximumV = CellRecord.MaximumV;
+			Cell.LongitudinalParameterScale = CellRecord.LongitudinalParameterScale;
+			Cell.bTerminalClosure = CellRecord.bTerminalClosure;
+			Cell.Surface.DegreeU = CellRecord.DegreeU;
+			Cell.Surface.DegreeV = CellRecord.DegreeV;
+			Cell.Surface.ControlPoints.Reserve(CellRecord.ControlPoints.Num());
+			for (const FVector& ControlPoint : CellRecord.ControlPoints)
+			{
+				Cell.Surface.ControlPoints.Add(FVector3d(ControlPoint));
+			}
+		}
+	}
+	const double TensorQueryApproximationToleranceCm = bAuthorityProvidersOnly
+		? AuthorityTensorBezierQueryApproximationToleranceCm
+		: Speed::Analytic::TensorBezierQueryApproximationToleranceCm;
+	if (!Runtime->FinalizeAndValidate(
+		OutReason, TensorQueryApproximationToleranceCm))
 	{
 		return nullptr;
 	}
@@ -329,6 +542,13 @@ USpeedAnalyticCollisionAsset::BuildRuntimeData(
 	{
 		Runtime->BuildRecognitionDiagnostics();
 	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[AnalyticRuntimeBuildTiming] AuthorityOnly=%d Seconds=%.6f Planes=%d Quintics=%d Tensors=%d Piecewise=%d Triangles=%d"),
+		bAuthorityProvidersOnly ? 1 : 0,
+		FPlatformTime::Seconds() - BuildStartSeconds,
+		Runtime->Planes.Num(), Runtime->ExtrudedQuinticPatches.Num(),
+		Runtime->TensorBezierPatches.Num(),
+		Runtime->PiecewiseTensorBezierPatches.Num(), Runtime->Triangles.Num());
 	return Runtime;
 }
 

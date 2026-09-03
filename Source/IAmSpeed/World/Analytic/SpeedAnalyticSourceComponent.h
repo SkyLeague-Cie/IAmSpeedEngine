@@ -5,6 +5,7 @@
 #include "SpeedAnalyticSourceComponent.generated.h"
 
 class UStaticMeshComponent;
+class USpeedAnalyticCollisionAsset;
 
 /**
  * Unreal-side authoring source. It discovers eligible static meshes owned by
@@ -23,4 +24,12 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Analytic Collision")
 	bool bIncludeOwnedStaticMeshes = true;
+
+	/**
+	 * Optional immutable provider set authored in the world transform recorded
+	 * by its mesh-source manifest. Every live owned mesh must match that
+	 * manifest before the runtime is allowed to consume the asset.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Analytic Collision")
+	TSoftObjectPtr<USpeedAnalyticCollisionAsset> AnalyticCollisionAsset;
 };

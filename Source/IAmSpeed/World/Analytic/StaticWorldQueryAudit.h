@@ -12,6 +12,21 @@ namespace Speed::Analytic
 struct FAnalyticWorldData;
 struct FWorldHit;
 
+struct FStaticWorldQueryCounters
+{
+	uint32 QueryCount = 0;
+	uint32 LegacySweepCount = 0;
+	uint32 AuthorityAttemptCount = 0;
+	uint32 AuthorityCoveredCount = 0;
+	uint32 AuthorityFallbackCount = 0;
+	uint32 StrictMissingWorldCount = 0;
+	// Wall-clock time consumed by the generic analytical authority path.  This
+	// includes a Hybrid coverage comparison when one is required, so a fast
+	// simulation report can distinguish solver work from static-world queries.
+	double AuthorityMilliseconds = 0.0;
+	double MaximumAuthorityMilliseconds = 0.0;
+};
+
 enum class EStaticQuerySite : uint8
 {
 	SolidSweep = 0,
@@ -24,6 +39,7 @@ enum class EStaticQuerySite : uint8
 	BoxPenetrationProjection,
 	SpherePenetrationProjection,
 	SpherePenetrationResidual,
+	BoxPersistentSupportProbe,
 };
 
 class IAMSPEED_API FStaticWorldQueryAudit
@@ -42,15 +58,23 @@ public:
 		const FCollisionShape& Shape, uint8 TraceChannel,
 		const FCollisionResponseParams& ResponseParams,
 		FHitResult& OutHit, bool& bOutHit,
-		FWorldHit* OutAnalyticHit = nullptr);
+		FWorldHit* OutAnalyticHit = nullptr,
+		uint64 RequiredSourceId = 0,
+		uint64 RequiredSurfaceId = 0,
+		uint64 RequiredCanonicalGroupId = 0,
+		const FVector& ReferenceNormal = FVector::ZeroVector,
+		float MinimumReferenceNormalDot = -1.0f,
+		bool bAllowEstablishedFaceContactAtBoundary = false);
 	static bool TryCompactAuthorityMulti(
 		UWorld* World,
 		const FVector& Start, const FVector& End, const FQuat& Rotation,
 		const FCollisionShape& Shape, uint64 ObjectTypes,
-		TArray<FHitResult>& OutHits);
+		TArray<FHitResult>& OutHits,
+		FWorldHit* OutAnalyticHit = nullptr);
 
 	static void BeginFrame(uint64 Frame, const FAnalyticWorldData* WorldData,
 		const USpeedWorldSubsystem* RuntimeBridge);
+	static FStaticWorldQueryCounters GetCurrentFrameCounters();
 	static void EndFrame();
 	static void RecordLegacySweep();
 
@@ -63,7 +87,10 @@ public:
 		uint8 TraceChannel,
 		const FCollisionResponseParams& ResponseParams,
 		bool bHit,
-		const FHitResult& UnrealHit);
+		const FHitResult& UnrealHit,
+		uint64 RequiredSourceId = 0,
+		uint64 RequiredSurfaceId = 0,
+		uint64 RequiredCanonicalGroupId = 0);
 
 	static void RecordMulti(
 		EStaticQuerySite Site,

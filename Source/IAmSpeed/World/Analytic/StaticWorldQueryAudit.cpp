@@ -33,6 +33,21 @@ namespace
 	TAutoConsoleVariable<int32> CVarAuthorityChaosShadowEnabled(
 		TEXT("p.IAmSpeed.AnalyticWorld.AuthorityChaosShadow"), 0,
 		TEXT("Diagnostic only: replays the first authoritative analytical Box hit through UWorld/Chaos without changing its result."));
+	TAutoConsoleVariable<int32> CVarResidualSelectionAuditEnabled(
+		TEXT("p.IAmSpeed.AnalyticWorld.ResidualSelectionAudit"), 0,
+		TEXT("Diagnostic only: logs the first strict residual-triangle selection in each physical frame."));
+	TAutoConsoleVariable<int32> CVarStrictQueryDetailEnabled(
+		TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail"), 0,
+		TEXT("Strict analytical query diagnostics.\n")
+		TEXT("0: disabled (default)\n")
+		TEXT("1: compact provider-set transitions plus the first miss in a frame\n")
+		TEXT("2: every strict query; use only for very short captures"));
+	TAutoConsoleVariable<int32> CVarStrictQueryDetailFrameStart(
+		TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail.FrameStart"), -1,
+		TEXT("Optional inclusive canonical-frame lower bound for StrictQueryDetail logs; negative disables the bound."));
+	TAutoConsoleVariable<int32> CVarStrictQueryDetailFrameEnd(
+		TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail.FrameEnd"), -1,
+		TEXT("Optional inclusive canonical-frame upper bound for StrictQueryDetail logs; negative disables the bound."));
 	TAutoConsoleVariable<int32> CVarStaticCollisionBackend(
 		TEXT("p.IAmSpeed.StaticCollision.Backend"), 2,
 		TEXT("Static collision backend: 0=UnrealLegacy, 1=AnalyticHybrid, 2=SurfaceAnalytic. SurfaceAnalytic never falls back to UWorld."));
@@ -72,11 +87,23 @@ namespace
 		uint32 AuthorityCoveredCount = 0;
 		uint32 AuthorityFallbackCount = 0;
 		uint32 StrictMissingWorldCount = 0;
+		uint32 ResidualSelectionDetailCount = 0;
+		uint32 StrictHitCount = 0;
+		uint32 StrictMissCount = 0;
+		uint32 PreviousStrictMissCount = 0;
+		uint32 StrictFirstMissAuthorityAttempt = 0;
+		bool bStrictFirstMissCaptured = false;
+		bool bHasPreviousStrictProviderHash = false;
+		double AuthorityMilliseconds = 0.0;
+		double MaximumAuthorityMilliseconds = 0.0;
 		uint64 LegacyHash = AuditFnvOffset;
 		uint64 AnalyticHash = AuditFnvOffset;
+		uint64 PreviousStrictProviderHash = 0;
+		FWorldQuery StrictFirstMissQuery;
 		const FAnalyticWorldData* World = nullptr;
 		const USpeedWorldSubsystem* RuntimeBridge = nullptr;
 		TArray<FPreviousTransition> PreviousTransitions;
+		TArray<uint64, TInlineAllocator<16>> StrictProviderIds;
 		uint32 MatchCount = 0;
 		uint32 MismatchCount = 0;
 		uint32 FieldMismatches[9] = {};
@@ -133,6 +160,7 @@ namespace
 		case EStaticQuerySite::BoxPenetrationProjection: return TEXT("BoxPenetrationProjection");
 		case EStaticQuerySite::SpherePenetrationProjection: return TEXT("SpherePenetrationProjection");
 		case EStaticQuerySite::SpherePenetrationResidual: return TEXT("SpherePenetrationResidual");
+		case EStaticQuerySite::BoxPersistentSupportProbe: return TEXT("BoxPersistentSupportProbe");
 		default: return TEXT("Unknown");
 		}
 	}
@@ -229,6 +257,175 @@ namespace
 				Analytic.SourceId);
 		}
 		return Result;
+	}
+
+	void AuditResidualSelection(
+		const FWorldQuery& Query,
+		const FWorldHit& AuthorityHit,
+		const Speed::IStaticCollisionWorld& StaticWorld)
+	{
+		if (CVarResidualSelectionAuditEnabled.GetValueOnAnyThread() == 0 ||
+			State.ResidualSelectionDetailCount != 0 || !AuthorityHit.bHit ||
+			!Query.bIncludeTriangles)
+		{
+			return;
+		}
+
+		FWorldQuery PolishedQuery = Query;
+		PolishedQuery.bIncludeTriangles = false;
+		const FWorldHit PolishedHit = StaticWorld.SweepSingle(PolishedQuery);
+		const bool bSameProvider = PolishedHit.bHit &&
+			PolishedHit.SourceId == AuthorityHit.SourceId &&
+			PolishedHit.SurfaceId == AuthorityHit.SurfaceId &&
+			PolishedHit.PrimitiveId == AuthorityHit.PrimitiveId;
+		if (bSameProvider)
+		{
+			return;
+		}
+		FWorldQuery NormalRayQuery = PolishedQuery;
+		NormalRayQuery.Shape = EQueryShape::Ray;
+		NormalRayQuery.Radius = 0.0;
+		NormalRayQuery.HalfExtent = FVector3d::ZeroVector;
+		NormalRayQuery.Rotation = FQuat4d::Identity;
+		NormalRayQuery.Start = AuthorityHit.Point + 100.0 * AuthorityHit.Normal;
+		NormalRayQuery.End = AuthorityHit.Point - 100.0 * AuthorityHit.Normal;
+		const FWorldHit NormalRayHit = StaticWorld.SweepSingle(NormalRayQuery);
+		if (State.World)
+		{
+			FBox3d QueryBounds(EForceInit::ForceInit);
+			QueryBounds += Query.Start;
+			QueryBounds += Query.End;
+			if (Query.Shape == EQueryShape::Sphere)
+			{
+				QueryBounds = QueryBounds.ExpandBy(Query.Radius);
+			}
+			else if (Query.Shape == EQueryShape::Box)
+			{
+				QueryBounds = QueryBounds.ExpandBy(Query.HalfExtent.Length());
+			}
+			static thread_local TSet<uint64> LoggedCandidateSurfaces;
+			for (const FPiecewiseTensorBezierPatch& Patch :
+				State.World->PiecewiseTensorBezierPatches)
+			{
+				if (!Patch.Bounds.Intersect(QueryBounds) ||
+					LoggedCandidateSurfaces.Contains(Patch.SurfaceId))
+				{
+					continue;
+				}
+				LoggedCandidateSurfaces.Add(Patch.SurfaceId);
+				const bool bCanBlock = Query.bObjectQuery
+					? Patch.ObjectType < 64 &&
+						(Query.ObjectTypes & (1ull << Patch.ObjectType)) != 0
+					: Query.TraceChannel < 64 &&
+						(Patch.BlockingChannels & (1ull << Query.TraceChannel)) != 0 &&
+						Patch.ObjectType < 64 &&
+						(Query.BlockingObjectTypes & (1ull << Patch.ObjectType)) != 0;
+				UE_LOG(LogTemp, Display,
+					TEXT("[AnalyticResidualCandidate] Frame=%llu Surface=%016llX Primitive=%016llX Group=%016llX BoundsMin=%s BoundsMax=%s Cells=%d ObjectType=%u BlockingChannels=%016llX QueryTraceChannel=%u QueryBlockingObjectTypes=%016llX QueryEnabled=%d Authority=%d CanBlock=%d"),
+					State.Frame, Patch.SurfaceId, Patch.PrimitiveId,
+					Patch.CanonicalGroupId, *FVector(Patch.Bounds.Min).ToString(),
+					*FVector(Patch.Bounds.Max).ToString(), Patch.Cells.Num(),
+					Patch.ObjectType, Patch.BlockingChannels, Query.TraceChannel,
+					Query.BlockingObjectTypes, Patch.bQueryCollisionEnabled ? 1 : 0,
+					Patch.bAuthorityEligible ? 1 : 0, bCanBlock ? 1 : 0);
+			}
+		}
+
+		++State.ResidualSelectionDetailCount;
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticResidualSelection] Frame=%llu Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX ResidualTime=%.17g ResidualPoint=%s ResidualNormal=%s ResidualSource=%016llX ResidualSurface=%016llX ResidualFeature=%016llX ResidualPrimitive=%016llX PolishedHit=%d PolishedTime=%.17g PolishedPoint=%s PolishedNormal=%s PolishedSource=%016llX PolishedSurface=%016llX PolishedFeature=%016llX PolishedPrimitive=%016llX NormalRayHit=%d NormalRayTime=%.17g NormalRayPoint=%s NormalRayNormal=%s NormalRaySource=%016llX NormalRaySurface=%016llX NormalRayFeature=%016llX NormalRayPrimitive=%016llX"),
+			State.Frame, static_cast<uint8>(Query.Shape),
+			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
+			*FQuat(Query.Rotation).ToString(), *FVector(Query.HalfExtent).ToString(),
+			Query.Radius, Query.RequiredSourceId, Query.RequiredSurfaceId,
+			Query.RequiredCanonicalGroupId, AuthorityHit.Time,
+			*FVector(AuthorityHit.Point).ToString(),
+			*FVector(AuthorityHit.Normal).ToString(), AuthorityHit.SourceId,
+			AuthorityHit.SurfaceId, AuthorityHit.FeatureId,
+			AuthorityHit.PrimitiveId, PolishedHit.bHit ? 1 : 0,
+			PolishedHit.Time, *FVector(PolishedHit.Point).ToString(),
+			*FVector(PolishedHit.Normal).ToString(), PolishedHit.SourceId,
+			PolishedHit.SurfaceId, PolishedHit.FeatureId,
+			PolishedHit.PrimitiveId, NormalRayHit.bHit ? 1 : 0,
+			NormalRayHit.Time, *FVector(NormalRayHit.Point).ToString(),
+			*FVector(NormalRayHit.Normal).ToString(), NormalRayHit.SourceId,
+			NormalRayHit.SurfaceId, NormalRayHit.FeatureId,
+			NormalRayHit.PrimitiveId);
+	}
+
+	void LogStrictQueryDetail(
+		const FWorldQuery& Query,
+		const FWorldHit& Hit,
+		const uint32 AuthorityAttempt,
+		const Speed::IStaticCollisionWorld& StaticWorld)
+	{
+		const int32 DetailMode =
+			CVarStrictQueryDetailEnabled.GetValueOnAnyThread();
+		if (DetailMode <= 0)
+		{
+			return;
+		}
+		const int32 DetailFrameStart =
+			CVarStrictQueryDetailFrameStart.GetValueOnAnyThread();
+		const int32 DetailFrameEnd =
+			CVarStrictQueryDetailFrameEnd.GetValueOnAnyThread();
+		if ((DetailFrameStart >= 0 &&
+				State.Frame < static_cast<uint64>(DetailFrameStart)) ||
+			(DetailFrameEnd >= 0 &&
+				State.Frame > static_cast<uint64>(DetailFrameEnd)))
+		{
+			return;
+		}
+		if (Hit.bHit)
+		{
+			++State.StrictHitCount;
+			if (Hit.PrimitiveId != 0)
+			{
+				State.StrictProviderIds.AddUnique(Hit.PrimitiveId);
+			}
+		}
+		else
+		{
+			++State.StrictMissCount;
+		}
+		if (DetailMode == 1)
+		{
+			if (Hit.bHit || State.bStrictFirstMissCaptured)
+			{
+				return;
+			}
+			State.bStrictFirstMissCaptured = true;
+			State.StrictFirstMissAuthorityAttempt = AuthorityAttempt;
+			State.StrictFirstMissQuery = Query;
+			return;
+		}
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticStrictQuery] Frame=%llu Attempt=%u Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX Hit=%d StartPenetrating=%d PenetrationDepth=%.17g ErrorCm=%.17g Time=%.17g Point=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
+			State.Frame, AuthorityAttempt, static_cast<uint8>(Query.Shape),
+			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
+			*FQuat(Query.Rotation).ToString(), *FVector(Query.HalfExtent).ToString(),
+			Query.Radius, Query.RequiredSourceId, Query.RequiredSurfaceId,
+			Query.RequiredCanonicalGroupId, Hit.bHit ? 1 : 0,
+			Hit.bStartPenetrating ? 1 : 0, Hit.PenetrationDepth,
+			Hit.GeometricErrorBoundCm, Hit.Time,
+			*FVector(Hit.Point).ToString(), *FVector(Hit.Normal).ToString(),
+			Hit.SourceId, Hit.SurfaceId, Hit.FeatureId, Hit.PrimitiveId,
+			Hit.CanonicalGroupId);
+		if (!Hit.bHit)
+		{
+			FWorldQuery ResidualQuery = Query;
+			ResidualQuery.bIncludeTriangles = true;
+			const FWorldHit ResidualHit = StaticWorld.SweepSingle(ResidualQuery);
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticStrictResidual] Frame=%llu Attempt=%u Hit=%d StartPenetrating=%d PenetrationDepth=%.17g Time=%.17g Point=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
+				State.Frame, AuthorityAttempt, ResidualHit.bHit ? 1 : 0,
+				ResidualHit.bStartPenetrating ? 1 : 0,
+				ResidualHit.PenetrationDepth, ResidualHit.Time,
+				*FVector(ResidualHit.Point).ToString(),
+				*FVector(ResidualHit.Normal).ToString(), ResidualHit.SourceId,
+				ResidualHit.SurfaceId, ResidualHit.FeatureId,
+				ResidualHit.PrimitiveId, ResidualHit.CanonicalGroupId);
+		}
 	}
 
 	void ReportDivergence(
@@ -339,6 +536,7 @@ namespace
 		AuditHashValue(Hash, Hit.Normal.Z);
 		AuditHashValue(Hash, Hit.bStartPenetrating);
 		AuditHashValue(Hash, Hit.PenetrationDepth);
+		AuditHashValue(Hash, Hit.bSurfaceNormalMayVary);
 		AuditHashValue(Hash, Hit.QueryFeatureKind);
 		AuditHashValue(Hash, Hit.SurfaceFeatureKind);
 		AuditHashValue(Hash, Hit.QueryFeatureIndex);
@@ -457,7 +655,10 @@ namespace
 		const bool bObjectQuery,
 		const FCollisionResponseParams* ResponseParams,
 		const bool bHit,
-		const FHitResult& UnrealHit)
+		const FHitResult& UnrealHit,
+		const uint64 RequiredSourceId = 0,
+		const uint64 RequiredSurfaceId = 0,
+		const uint64 RequiredCanonicalGroupId = 0)
 	{
 		if (!State.bActive)
 		{
@@ -479,9 +680,12 @@ namespace
 		{
 			return;
 		}
-		const FWorldQuery Query = MakeQuery(
+		FWorldQuery Query = MakeQuery(
 			Start, End, Rotation, Shape, TraceChannel, ObjectTypes, bObjectQuery,
 			ResponseParams);
+		Query.RequiredSourceId = RequiredSourceId;
+		Query.RequiredSurfaceId = RequiredSurfaceId;
+		Query.RequiredCanonicalGroupId = RequiredCanonicalGroupId;
 		const FWorldHit AnalyticHit = FWorldQueryService(*State.World).Sweep(Query);
 		AuditHashValue(State.AnalyticHash, Site);
 		HashAnalyticHit(State.AnalyticHash, AnalyticHit);
@@ -562,8 +766,22 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	const FVector& Start, const FVector& End, const FQuat& Rotation,
 	const FCollisionShape& Shape, const uint8 TraceChannel,
 	const FCollisionResponseParams& ResponseParams,
-	FHitResult& OutHit, bool& bOutHit, FWorldHit* OutAnalyticHit)
+	FHitResult& OutHit, bool& bOutHit, FWorldHit* OutAnalyticHit,
+	const uint64 RequiredSourceId, const uint64 RequiredSurfaceId,
+	const uint64 RequiredCanonicalGroupId,
+	const FVector& ReferenceNormal,
+	const float MinimumReferenceNormalDot,
+	const bool bAllowEstablishedFaceContactAtBoundary)
 {
+	const double AuthorityStartSeconds = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT
+	{
+		const double ElapsedMilliseconds =
+			(FPlatformTime::Seconds() - AuthorityStartSeconds) * 1000.0;
+		State.AuthorityMilliseconds += ElapsedMilliseconds;
+		State.MaximumAuthorityMilliseconds = FMath::Max(
+			State.MaximumAuthorityMilliseconds, ElapsedMilliseconds);
+	};
 	if (OutAnalyticHit) *OutAnalyticHit = FWorldHit();
 	if (!IsCompactAuthorityEnabled())
 	{
@@ -590,16 +808,39 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	}
 	FWorldQuery Query = MakeQuery(
 		Start, End, Rotation, Shape, TraceChannel, 0, false, &ResponseParams);
+	Query.RequiredSourceId = RequiredSourceId;
+	Query.RequiredSurfaceId = RequiredSurfaceId;
+	Query.RequiredCanonicalGroupId = RequiredCanonicalGroupId;
+	Query.ReferenceNormal = FVector3d(ReferenceNormal);
+	Query.MinimumReferenceNormalDot = MinimumReferenceNormalDot;
+	Query.bAllowEstablishedFaceContactAtBoundary =
+		bAllowEstablishedFaceContactAtBoundary;
 	Query.bAuthorityOnly = true;
 	Query.bIncludeCompactPatches = true;
-	Query.bIncludeTriangles = false;
-	if (!bStrict && !StaticWorld->HasAuthorityCoverage(Query))
+	// Hybrid retains the certified indexed-face safety net.  Strict authority
+	// consumes polished providers only and therefore cannot silently select the
+	// residual representation.
+	Query.bIncludeTriangles = !bStrict;
+	FWorldHit Analytic;
+	if (!bStrict)
 	{
-		++State.AuthorityFallbackCount;
-		return false;
+		if (!StaticWorld->TrySweepAuthority(Query, Analytic))
+		{
+			++State.AuthorityFallbackCount;
+			return false;
+		}
+	}
+	else
+	{
+		Analytic = StaticWorld->SweepSingle(Query);
+		LogStrictQueryDetail(Query, Analytic, State.AuthorityAttemptCount,
+			*StaticWorld);
+	}
+	if (bStrict)
+	{
+		AuditResidualSelection(Query, Analytic, *StaticWorld);
 	}
 	++State.AuthorityCoveredCount;
-	const FWorldHit Analytic = StaticWorld->SweepSingle(Query);
 	if (OutAnalyticHit) *OutAnalyticHit = Analytic;
 	OutHit = ToUnrealHit(Query, Analytic, RuntimeBridge);
 	bOutHit = Analytic.bHit;
@@ -610,8 +851,22 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	UWorld* World,
 	const FVector& Start, const FVector& End, const FQuat& Rotation,
 	const FCollisionShape& Shape, const uint64 ObjectTypes,
-	TArray<FHitResult>& OutHits)
+	TArray<FHitResult>& OutHits,
+	FWorldHit* OutAnalyticHit)
 {
+	if (OutAnalyticHit)
+	{
+		*OutAnalyticHit = FWorldHit();
+	}
+	const double AuthorityStartSeconds = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT
+	{
+		const double ElapsedMilliseconds =
+			(FPlatformTime::Seconds() - AuthorityStartSeconds) * 1000.0;
+		State.AuthorityMilliseconds += ElapsedMilliseconds;
+		State.MaximumAuthorityMilliseconds = FMath::Max(
+			State.MaximumAuthorityMilliseconds, ElapsedMilliseconds);
+	};
 	if (!IsCompactAuthorityEnabled())
 	{
 		return false;
@@ -638,14 +893,31 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 		Start, End, Rotation, Shape, 0, ObjectTypes, true);
 	Query.bAuthorityOnly = true;
 	Query.bIncludeCompactPatches = true;
-	Query.bIncludeTriangles = false;
-	if (!bStrict && !StaticWorld->HasAuthorityCoverage(Query))
+	Query.bIncludeTriangles = !bStrict;
+	FWorldHit Analytic;
+	if (!bStrict)
 	{
-		++State.AuthorityFallbackCount;
-		return false;
+		if (!StaticWorld->TrySweepAuthority(Query, Analytic))
+		{
+			++State.AuthorityFallbackCount;
+			return false;
+		}
+	}
+	else
+	{
+		Analytic = StaticWorld->SweepSingle(Query);
+		LogStrictQueryDetail(Query, Analytic, State.AuthorityAttemptCount,
+			*StaticWorld);
+	}
+	if (bStrict)
+	{
+		AuditResidualSelection(Query, Analytic, *StaticWorld);
+	}
+	if (OutAnalyticHit)
+	{
+		*OutAnalyticHit = Analytic;
 	}
 	++State.AuthorityCoveredCount;
-	const FWorldHit Analytic = StaticWorld->SweepSingle(Query);
 	OutHits.Reset();
 	if (Analytic.bHit)
 	{
@@ -674,6 +946,15 @@ void FStaticWorldQueryAudit::BeginFrame(
 	State.AuthorityCoveredCount = 0;
 	State.AuthorityFallbackCount = 0;
 	State.StrictMissingWorldCount = 0;
+	State.ResidualSelectionDetailCount = 0;
+	State.StrictHitCount = 0;
+	State.StrictMissCount = 0;
+	State.StrictFirstMissAuthorityAttempt = 0;
+	State.bStrictFirstMissCaptured = false;
+	State.StrictFirstMissQuery = FWorldQuery();
+	State.StrictProviderIds.Reset();
+	State.AuthorityMilliseconds = 0.0;
+	State.MaximumAuthorityMilliseconds = 0.0;
 	State.LegacyHash = AuditFnvOffset;
 	State.AnalyticHash = AuditFnvOffset;
 	State.World = WorldData;
@@ -689,24 +970,90 @@ void FStaticWorldQueryAudit::EndFrame()
 	{
 		return;
 	}
-	UE_LOG(LogTemp, Display,
-		TEXT("[StaticWorldQueryFrame] Frame=%llu Queries=%u LegacySweeps=%u AuthorityAttempts=%u AuthorityCovered=%u AuthorityFallback=%u StrictMissingWorld=%u Backend=%u LegacyHash=%016llX ShadowHash=%016llX Shadow=%d MeshShadow=%d Matches=%u Mismatches=%u Fields=%u/%u/%u/%u/%u/%u/%u/%u/%u"),
-		State.Frame, State.QueryCount, State.LegacySweepCount,
-		State.AuthorityAttemptCount,
-		State.AuthorityCoveredCount, State.AuthorityFallbackCount,
-		State.StrictMissingWorldCount, static_cast<uint8>(SelectedBackend()),
-		State.LegacyHash, State.AnalyticHash,
-		IsShadowEnabled() ? 1 : 0,
-		CVarMeshShadowEnabled.GetValueOnAnyThread() != 0 ? 1 : 0,
-		State.MatchCount, State.MismatchCount,
-		State.FieldMismatches[0], State.FieldMismatches[1],
-		State.FieldMismatches[2], State.FieldMismatches[3],
-		State.FieldMismatches[4], State.FieldMismatches[5],
-		State.FieldMismatches[6], State.FieldMismatches[7],
-		State.FieldMismatches[8]);
+	if (IsEnabled())
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[StaticWorldQueryFrame] Frame=%llu Queries=%u LegacySweeps=%u AuthorityAttempts=%u AuthorityCovered=%u AuthorityFallback=%u StrictMissingWorld=%u Backend=%u LegacyHash=%016llX ShadowHash=%016llX Shadow=%d MeshShadow=%d Matches=%u Mismatches=%u Fields=%u/%u/%u/%u/%u/%u/%u/%u/%u"),
+			State.Frame, State.QueryCount, State.LegacySweepCount,
+			State.AuthorityAttemptCount,
+			State.AuthorityCoveredCount, State.AuthorityFallbackCount,
+			State.StrictMissingWorldCount, static_cast<uint8>(SelectedBackend()),
+			State.LegacyHash, State.AnalyticHash,
+			IsShadowEnabled() ? 1 : 0,
+			CVarMeshShadowEnabled.GetValueOnAnyThread() != 0 ? 1 : 0,
+			State.MatchCount, State.MismatchCount,
+			State.FieldMismatches[0], State.FieldMismatches[1],
+			State.FieldMismatches[2], State.FieldMismatches[3],
+			State.FieldMismatches[4], State.FieldMismatches[5],
+			State.FieldMismatches[6], State.FieldMismatches[7],
+			State.FieldMismatches[8]);
+	}
+	if (CVarStrictQueryDetailEnabled.GetValueOnAnyThread() == 1 &&
+		State.AuthorityAttemptCount > 0)
+	{
+		State.StrictProviderIds.Sort();
+		uint64 ProviderHash = AuditFnvOffset;
+		FString ProviderList;
+		for (const uint64 PrimitiveId : State.StrictProviderIds)
+		{
+			AuditHashValue(ProviderHash, PrimitiveId);
+			if (!ProviderList.IsEmpty())
+			{
+				ProviderList += TEXT(",");
+			}
+			ProviderList += FString::Printf(TEXT("%016llX"), PrimitiveId);
+		}
+		const bool bProviderSetChanged =
+			!State.bHasPreviousStrictProviderHash ||
+			ProviderHash != State.PreviousStrictProviderHash;
+		const bool bMissCountChanged =
+			!State.bHasPreviousStrictProviderHash ||
+			State.StrictMissCount != State.PreviousStrictMissCount;
+		if (bProviderSetChanged || bMissCountChanged)
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticStrictQueryFrame] Frame=%llu Attempts=%u Hits=%u Misses=%u ProviderCount=%d ProviderHash=%016llX Providers=%s ProviderChanged=%d MissCountChanged=%d"),
+				State.Frame, State.AuthorityAttemptCount, State.StrictHitCount,
+				State.StrictMissCount, State.StrictProviderIds.Num(), ProviderHash,
+				*ProviderList, bProviderSetChanged ? 1 : 0,
+				bMissCountChanged ? 1 : 0);
+			if (State.StrictMissCount > 0 &&
+				State.bStrictFirstMissCaptured)
+			{
+				const FWorldQuery& Query = State.StrictFirstMissQuery;
+				UE_LOG(LogTemp, Display,
+					TEXT("[AnalyticStrictMiss] Frame=%llu Attempt=%u Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX"),
+					State.Frame, State.StrictFirstMissAuthorityAttempt,
+					static_cast<uint8>(Query.Shape),
+					*FVector(Query.Start).ToString(),
+					*FVector(Query.End).ToString(),
+					*FQuat(Query.Rotation).ToString(),
+					*FVector(Query.HalfExtent).ToString(), Query.Radius,
+					Query.RequiredSourceId, Query.RequiredSurfaceId,
+					Query.RequiredCanonicalGroupId);
+			}
+		}
+		State.PreviousStrictProviderHash = ProviderHash;
+		State.PreviousStrictMissCount = State.StrictMissCount;
+		State.bHasPreviousStrictProviderHash = true;
+	}
 	State.bActive = false;
 	State.World = nullptr;
 	State.RuntimeBridge = nullptr;
+}
+
+FStaticWorldQueryCounters FStaticWorldQueryAudit::GetCurrentFrameCounters()
+{
+	FStaticWorldQueryCounters Counters;
+	Counters.QueryCount = State.QueryCount;
+	Counters.LegacySweepCount = State.LegacySweepCount;
+	Counters.AuthorityAttemptCount = State.AuthorityAttemptCount;
+	Counters.AuthorityCoveredCount = State.AuthorityCoveredCount;
+	Counters.AuthorityFallbackCount = State.AuthorityFallbackCount;
+	Counters.StrictMissingWorldCount = State.StrictMissingWorldCount;
+	Counters.AuthorityMilliseconds = State.AuthorityMilliseconds;
+	Counters.MaximumAuthorityMilliseconds = State.MaximumAuthorityMilliseconds;
+	return Counters;
 }
 
 void FStaticWorldQueryAudit::RecordLegacySweep()
@@ -726,11 +1073,15 @@ void FStaticWorldQueryAudit::RecordSingle(
 	const uint8 TraceChannel,
 	const FCollisionResponseParams& ResponseParams,
 	const bool bHit,
-	const FHitResult& UnrealHit)
+	const FHitResult& UnrealHit,
+	const uint64 RequiredSourceId,
+	const uint64 RequiredSurfaceId,
+	const uint64 RequiredCanonicalGroupId)
 {
 	Record(Site, Start, End, Rotation, Shape, TraceChannel, 0, false,
 		&ResponseParams,
-		bHit, UnrealHit);
+		bHit, UnrealHit, RequiredSourceId, RequiredSurfaceId,
+		RequiredCanonicalGroupId);
 }
 
 void FStaticWorldQueryAudit::RecordMulti(

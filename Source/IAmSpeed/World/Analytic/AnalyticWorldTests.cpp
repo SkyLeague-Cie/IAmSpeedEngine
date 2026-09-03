@@ -74,6 +74,8 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 		BoxHit.QueryPoint.Equals(BoxHit.Point, 2.0e-6));
 	TestEqual(TEXT("Box face contact classifies the surface witness"),
 		BoxHit.SurfaceFeatureKind, EContactFeatureKind::Face);
+	TestFalse(TEXT("Plane contact has a constant surface normal"),
+		BoxHit.bSurfaceNormalMayVary);
 
 	FWorldQuery BoxEdgeQuery = BoxQuery;
 	BoxEdgeQuery.Start = FVector3d(110.0, 0.0, 0.0);
@@ -181,7 +183,7 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 		SelfIntersectingPlane.IsValid(&ValidationReason));
 	OutsideQuery.Start.X = 1000.0;
 	OutsideQuery.End.X = 1000.0;
-	TestFalse(TEXT("Far queries are outside compact coverage"),
+	TestTrue(TEXT("A broad-phase miss cannot reach the only analytical source"),
 		FWorldQueryService(World).HasAuthorityCoverage(OutsideQuery));
 
 	World.Planes[0].bAuthorityEligible = true;
@@ -192,14 +194,81 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 		StaticWorld.SweepSingle(AuthorityOnlyQuery).bHit);
 	TestTrue(TEXT("Certified plane hit is hybrid authority coverage"),
 		StaticWorld.HasAuthorityCoverage(SphereQuery));
+	FWorldHit ReusedAuthorityHit;
+	TestTrue(TEXT("Hybrid coverage returns its already-evaluated authority hit"),
+		StaticWorld.TrySweepAuthority(SphereQuery, ReusedAuthorityHit));
+	const FWorldHit DirectAuthorityHit = StaticWorld.SweepSingle(AuthorityOnlyQuery);
+	TestEqual(TEXT("Reused authority primitive matches direct authority"),
+		ReusedAuthorityHit.PrimitiveId, DirectAuthorityHit.PrimitiveId);
+	TestEqual(TEXT("Reused authority TOI matches direct authority"),
+		ReusedAuthorityHit.Time, DirectAuthorityHit.Time);
 	FWorldQuery EdgeOverlap = SphereQuery;
 	EdgeOverlap.Start.X = 98.0;
 	EdgeOverlap.End.X = 98.0;
 	TestTrue(TEXT("Draft face query still reports an interior contact near an edge"),
 		FWorldQueryService(World).Sweep(EdgeOverlap).bHit);
 	EdgeOverlap.bAuthorityOnly = true;
-	TestFalse(TEXT("Authority declines a sphere whose footprint crosses a plane edge"),
+	TestFalse(TEXT("Authority excludes a sphere whose footprint crosses a plane edge"),
 		FWorldQueryService(World).Sweep(EdgeOverlap).bHit);
+	FAnalyticWorldData CoplanarUnionWorld;
+	FBoundedPlane UnionLeft;
+	UnionLeft.SourceId = 40;
+	UnionLeft.SurfaceId = 41;
+	UnionLeft.FeatureId = 42;
+	UnionLeft.PrimitiveId = 43;
+	UnionLeft.HalfExtents = FVector2d(10.0);
+	UnionLeft.DomainVertices = {
+		FVector2d(-10.0, -10.0), FVector2d(0.0, -10.0),
+		FVector2d(0.0, 10.0), FVector2d(-10.0, 10.0) };
+	UnionLeft.bAuthorityEligible = true;
+	CoplanarUnionWorld.Planes.Add(UnionLeft);
+	FBoundedPlane UnionRight = UnionLeft;
+	UnionRight.PrimitiveId = 44;
+	UnionRight.DomainVertices = {
+		FVector2d(0.0, -10.0), FVector2d(10.0, -10.0),
+		FVector2d(10.0, 10.0), FVector2d(0.0, 10.0) };
+	CoplanarUnionWorld.Planes.Add(UnionRight);
+	TestTrue(TEXT("Coplanar semantic union validates"),
+		CoplanarUnionWorld.FinalizeAndValidate(&ValidationReason));
+	FWorldQuery UnionSeamQuery = SphereQuery;
+	UnionSeamQuery.bAuthorityOnly = true;
+	TestTrue(TEXT("Authority footprint crosses an internal coplanar semantic seam"),
+		FWorldQueryService(CoplanarUnionWorld).Sweep(UnionSeamQuery).bHit);
+	FWorldQuery UnionOuterEdgeQuery = UnionSeamQuery;
+	UnionOuterEdgeQuery.Start.X = -8.0;
+	UnionOuterEdgeQuery.End.X = -8.0;
+	TestFalse(TEXT("Coplanar union preserves its external footprint boundary"),
+		FWorldQueryService(CoplanarUnionWorld).Sweep(UnionOuterEdgeQuery).bHit);
+	FAnalyticWorldData QuantizedSeamWorld;
+	QuantizedSeamWorld.Planes.Add(UnionLeft);
+	FBoundedPlane QuantizedRight = UnionRight;
+	QuantizedRight.HalfExtents.X = 10.5;
+	QuantizedRight.DomainVertices = {
+		FVector2d(0.5, -10.0), FVector2d(10.5, -10.0),
+		FVector2d(10.5, 10.0), FVector2d(0.5, 10.0) };
+	QuantizedSeamWorld.Planes.Add(QuantizedRight);
+	TestTrue(TEXT("Sub-centimeter coplanar seam world validates"),
+		QuantizedSeamWorld.FinalizeAndValidate(&ValidationReason));
+	TestTrue(TEXT("Authority closes a sub-centimeter semantic seam"),
+		FWorldQueryService(QuantizedSeamWorld).Sweep(UnionSeamQuery).bHit);
+	FAnalyticWorldData WideGapWorld;
+	WideGapWorld.Planes.Add(UnionLeft);
+	FBoundedPlane WideGapRight = UnionRight;
+	WideGapRight.HalfExtents.X = 12.0;
+	WideGapRight.DomainVertices = {
+		FVector2d(2.0, -10.0), FVector2d(12.0, -10.0),
+		FVector2d(12.0, 10.0), FVector2d(2.0, 10.0) };
+	WideGapWorld.Planes.Add(WideGapRight);
+	TestTrue(TEXT("Wide coplanar gap world validates"),
+		WideGapWorld.FinalizeAndValidate(&ValidationReason));
+	TestFalse(TEXT("Authority preserves a gap wider than seam tolerance"),
+		FWorldQueryService(WideGapWorld).Sweep(UnionSeamQuery).bHit);
+	FAnalyticWorldData DistinctFeatureWorld = CoplanarUnionWorld;
+	DistinctFeatureWorld.Planes[1].FeatureId = 45;
+	TestTrue(TEXT("Distinct-feature plane pair validates"),
+		DistinctFeatureWorld.FinalizeAndValidate(&ValidationReason));
+	TestFalse(TEXT("Authority does not merge a seam between distinct features"),
+		FWorldQueryService(DistinctFeatureWorld).Sweep(UnionSeamQuery).bHit);
 	FAnalyticWorldData CompactBoxWorld;
 	FBoundedPlane CompactBoxPlane = Plane;
 	CompactBoxPlane.SourceId = 30;
@@ -249,8 +318,57 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 	ProviderWorld.Planes.Add(NearerDraftPlane);
 	TestTrue(TEXT("Provider-selection world validates"),
 		ProviderWorld.FinalizeAndValidate(&ValidationReason));
+	const FWorldHit UnrestrictedProviderHit =
+		FWorldQueryService(ProviderWorld).Sweep(SphereQuery);
+	TestEqual(TEXT("Unrestricted query selects the nearer provider"),
+		UnrestrictedProviderHit.SurfaceId, NearerDraftPlane.SurfaceId);
+	FWorldQuery RequiredProviderQuery = SphereQuery;
+	RequiredProviderQuery.RequiredSourceId = CertifiedPlane.SourceId;
+	RequiredProviderQuery.RequiredSurfaceId = CertifiedPlane.SurfaceId;
+	const FWorldHit RequiredProviderHit =
+		FWorldQueryService(ProviderWorld).Sweep(RequiredProviderQuery);
+	TestEqual(TEXT("Stable provider restriction reacquires the requested surface"),
+		RequiredProviderHit.SurfaceId, CertifiedPlane.SurfaceId);
+	TestTrue(TEXT("Stable provider restriction cannot be replaced by a nearer surface"),
+		RequiredProviderHit.Time > UnrestrictedProviderHit.Time);
+	RequiredProviderQuery.RequiredSurfaceId = 999;
+	TestFalse(TEXT("Unknown stable provider restriction reports no contact"),
+		FWorldQueryService(ProviderWorld).Sweep(RequiredProviderQuery).bHit);
 	TestFalse(TEXT("Nearer draft provider blocks hybrid authority selection"),
 		Speed::FAnalyticStaticCollisionWorld(ProviderWorld).
+			HasAuthorityCoverage(SphereQuery));
+	FAnalyticWorldData FartherDraftWorld;
+	FartherDraftWorld.Planes.Add(CertifiedPlane);
+	FBoundedPlane FartherDraftPlane = NearerDraftPlane;
+	FartherDraftPlane.Origin.Z = -10.0;
+	FartherDraftWorld.Planes.Add(FartherDraftPlane);
+	TestTrue(TEXT("Farther draft provider does not block an earlier authority hit"),
+		FartherDraftWorld.FinalizeAndValidate(&ValidationReason));
+	TestTrue(TEXT("Hybrid compares only the nearer draft competition"),
+		Speed::FAnalyticStaticCollisionWorld(FartherDraftWorld).
+			HasAuthorityCoverage(SphereQuery));
+	FAnalyticWorldData LaterTieDraftWorld;
+	LaterTieDraftWorld.Planes.Add(CertifiedPlane);
+	FBoundedPlane LaterTieDraftPlane = NearerDraftPlane;
+	LaterTieDraftPlane.Origin.Z = 0.0;
+	LaterTieDraftWorld.Planes.Add(LaterTieDraftPlane);
+	TestTrue(TEXT("Provider tie world validates"),
+		LaterTieDraftWorld.FinalizeAndValidate(&ValidationReason));
+	TestTrue(TEXT("Stable ordering retains authority ahead of a later draft tie"),
+		Speed::FAnalyticStaticCollisionWorld(LaterTieDraftWorld).
+			HasAuthorityCoverage(SphereQuery));
+	FAnalyticWorldData EarlierTieDraftWorld;
+	EarlierTieDraftWorld.Planes.Add(CertifiedPlane);
+	FBoundedPlane EarlierTieDraftPlane = LaterTieDraftPlane;
+	EarlierTieDraftPlane.SourceId = 50;
+	EarlierTieDraftPlane.SurfaceId = 50;
+	EarlierTieDraftPlane.FeatureId = 50;
+	EarlierTieDraftPlane.PrimitiveId = 50;
+	EarlierTieDraftWorld.Planes.Add(EarlierTieDraftPlane);
+	TestTrue(TEXT("Earlier provider tie world validates"),
+		EarlierTieDraftWorld.FinalizeAndValidate(&ValidationReason));
+	TestFalse(TEXT("Stable ordering lets an earlier draft tie block authority"),
+		Speed::FAnalyticStaticCollisionWorld(EarlierTieDraftWorld).
 			HasAuthorityCoverage(SphereQuery));
 	FAnalyticWorldData SameSourceProviderWorld;
 	SameSourceProviderWorld.Planes.Add(CertifiedPlane);
@@ -264,6 +382,34 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Nearer draft primitive on the same source and surface blocks hybrid authority"),
 		Speed::FAnalyticStaticCollisionWorld(SameSourceProviderWorld).
 			HasAuthorityCoverage(SphereQuery));
+
+	FBoundedPlane IncrementalPlane = Plane;
+	IncrementalPlane.SourceId = 300;
+	IncrementalPlane.SurfaceId = 300;
+	IncrementalPlane.FeatureId = 300;
+	IncrementalPlane.PrimitiveId = 300;
+	IncrementalPlane.Origin.Z = 10.0;
+	IncrementalPlane.bAuthorityEligible = true;
+	TArray<FBoundedPlane> IncrementalPlanes;
+	IncrementalPlanes.Add(IncrementalPlane);
+	TestTrue(TEXT("A finalized world accepts a non-compact plane incrementally"),
+		World.AppendFinalizedNonCompactPlanes(
+			MoveTemp(IncrementalPlanes), &ValidationReason));
+	TestEqual(TEXT("Incremental extension preserves and adds plane providers"),
+		World.Planes.Num(), 3);
+	const FWorldHit IncrementalHit = FWorldQueryService(World).Sweep(SphereQuery);
+	TestEqual(TEXT("Incremental plane participates in queries without full rebuild"),
+		IncrementalHit.SurfaceId, IncrementalPlane.SurfaceId);
+	FBoundedPlane InvalidIncrementalPlane = IncrementalPlane;
+	InvalidIncrementalPlane.PrimitiveId = 301;
+	InvalidIncrementalPlane.bRequiresCompactOptIn = true;
+	TArray<FBoundedPlane> InvalidIncrementalPlanes;
+	InvalidIncrementalPlanes.Add(InvalidIncrementalPlane);
+	TestFalse(TEXT("Incremental extension rejects compact providers"),
+		World.AppendFinalizedNonCompactPlanes(
+			MoveTemp(InvalidIncrementalPlanes), &ValidationReason));
+	TestEqual(TEXT("Rejected incremental extension is transactional"),
+		World.Planes.Num(), 3);
 
 	return true;
 }
@@ -376,6 +522,10 @@ bool FIAmSpeedAnalyticExtrudedQuinticTest::RunTest(const FString& Parameters)
 		FMath::IsNearlyEqual(
 			NativeQuinticHit.GeometricErrorBoundCm,
 			static_cast<float>(Hit.GeometricErrorBoundCm), 1.0e-9f));
+	TestTrue(TEXT("Quintic contact identifies its varying surface normal"),
+		Hit.bSurfaceNormalMayVary);
+	TestTrue(TEXT("Native hit preserves varying-normal classification"),
+		NativeQuinticHit.bSurfaceNormalMayVary);
 	TestTrue(TEXT("Extruded quintic face TOI"),
 		FMath::IsNearlyEqual(Hit.Time, 0.375, 1.0e-12));
 	TestEqual(TEXT("Extruded patch surface id"), Hit.SurfaceId, uint64(31));
@@ -396,6 +546,17 @@ bool FIAmSpeedAnalyticExtrudedQuinticTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Box hits extruded quintic face"), BoxHit.bHit);
 	TestTrue(TEXT("Extruded quintic box TOI"),
 		FMath::IsNearlyEqual(BoxHit.Time, 0.4, 1.0e-12));
+	World.ExtrudedQuinticPatches[0].bAuthorityEligible = true;
+	FWorldQuery FiniteDomainBoxQuery = BoxQuery;
+	FiniteDomainBoxQuery.Start.Y = FiniteDomainBoxQuery.End.Y = 24.0;
+	TestFalse(TEXT("Certified provider cannot expose an extruded endpoint as a wall"),
+		FWorldQueryService(World).Sweep(FiniteDomainBoxQuery).bHit);
+	FiniteDomainBoxQuery.bAuthorityOnly = true;
+	TestFalse(TEXT("Authority-only OBB also rejects an extruded endpoint"),
+		FWorldQueryService(World).Sweep(FiniteDomainBoxQuery).bHit);
+	FiniteDomainBoxQuery.Start.Y = FiniteDomainBoxQuery.End.Y = 0.0;
+	TestTrue(TEXT("Certified OBB retains contact inside the extruded domain"),
+		FWorldQueryService(World).Sweep(FiniteDomainBoxQuery).bHit);
 
 	// A curved patch is represented by certified finite chords. Exercise an
 	// internal chord join explicitly: it is an approximation detail, not an
@@ -465,6 +626,30 @@ bool FIAmSpeedAnalyticExtrudedQuinticTest::RunTest(const FString& Parameters)
 	const FWorldHit JoinHit = FWorldQueryService(CurvedWorld).Sweep(JoinBoxQuery);
 	TestTrue(TEXT("Certified curved patch covers an internal adaptive join"),
 		JoinHit.bHit);
+	FWorldQuery RequiredCurvedPatchQuery = JoinBoxQuery;
+	RequiredCurvedPatchQuery.RequiredSourceId = CurvedPatch.SourceId;
+	RequiredCurvedPatchQuery.RequiredSurfaceId = CurvedPatch.SurfaceId;
+	RequiredCurvedPatchQuery.RequiredCanonicalGroupId =
+		CurvedPatch.CanonicalGroupId;
+	const FWorldHit RequiredCurvedPatchHit =
+		FWorldQueryService(CurvedWorld).Sweep(RequiredCurvedPatchQuery);
+	TestTrue(TEXT("Stable provider restriction reacquires a curved patch"),
+		RequiredCurvedPatchHit.bHit);
+	TestEqual(TEXT("Curved support probe preserves the requested source"),
+		RequiredCurvedPatchHit.SourceId, CurvedPatch.SourceId);
+	TestEqual(TEXT("Curved support probe preserves the requested surface"),
+		RequiredCurvedPatchHit.SurfaceId, CurvedPatch.SurfaceId);
+	RequiredCurvedPatchQuery.ReferenceNormal = JoinNormal;
+	RequiredCurvedPatchQuery.MinimumReferenceNormalDot = 0.9;
+	TestTrue(TEXT("Established contact accepts a continuous provider normal"),
+		FWorldQueryService(CurvedWorld).Sweep(RequiredCurvedPatchQuery).bHit);
+	RequiredCurvedPatchQuery.ReferenceNormal = -JoinNormal;
+	TestFalse(TEXT("Established contact rejects a discontinuous provider normal"),
+		FWorldQueryService(CurvedWorld).Sweep(RequiredCurvedPatchQuery).bHit);
+	RequiredCurvedPatchQuery.ReferenceNormal = JoinNormal;
+	RequiredCurvedPatchQuery.RequiredCanonicalGroupId = 999;
+	TestFalse(TEXT("Unknown canonical patch group reports no contact"),
+		FWorldQueryService(CurvedWorld).Sweep(RequiredCurvedPatchQuery).bHit);
 	TestTrue(TEXT("Internal join reports a stable outward normal"),
 		FVector3d::DotProduct(JoinHit.Normal, JoinNormal) > 0.99);
 	FWorldQuery JoinSphereQuery = JoinBoxQuery;
@@ -540,6 +725,75 @@ bool FIAmSpeedAnalyticExtrudedQuinticTest::RunTest(const FString& Parameters)
 				OverlapHit.Point - OverlapHit.QueryPoint, OverlapHit.Normal),
 			OverlapHit.PenetrationDepth, 1.0e-6));
 
+	OverlapQuery.RequiredSourceId = CurvedPatch.SourceId;
+	OverlapQuery.RequiredSurfaceId = CurvedPatch.SurfaceId;
+	OverlapQuery.RequiredCanonicalGroupId = CurvedPatch.CanonicalGroupId;
+	const Speed::FAnalyticStaticCollisionWorld CurvedStaticWorld(CurvedWorld);
+	const Speed::FEstablishedStaticContactProjection Projection =
+		Speed::ProjectEstablishedStaticContact(
+			CurvedStaticWorld, OverlapQuery, 4, 1.0e-6);
+	TestTrue(TEXT("Established curved OBB contact is retained"),
+		Projection.bContact);
+	TestTrue(TEXT("Established curved OBB pose projection converges"),
+		Projection.bConverged);
+	TestTrue(TEXT("Established curved OBB projection has bounded cost"),
+		Projection.CorrectionIterations <= 4);
+	TestTrue(TEXT("Established curved OBB projection removes penetration"),
+		Projection.ResidualPenetrationDepth <= 1.0e-6);
+	TestTrue(TEXT("Established curved OBB projection moves outward"),
+		FVector3d::DotProduct(
+			Projection.Location - OverlapQuery.Start, JoinNormal) > 0.0);
+	FWorldQuery ReprojectedQuery = OverlapQuery;
+	ReprojectedQuery.Start = Projection.Location;
+	ReprojectedQuery.End = Projection.Location;
+	const Speed::FEstablishedStaticContactProjection Reprojection =
+		Speed::ProjectEstablishedStaticContact(
+			CurvedStaticWorld, ReprojectedQuery, 4, 1.0e-6);
+	TestTrue(TEXT("Feasible curved OBB pose remains feasible"),
+		Reprojection.ResidualPenetrationDepth <= 1.0e-6);
+	TestEqual(TEXT("Feasible curved OBB pose needs no further correction"),
+		Reprojection.CorrectionIterations, uint32(0));
+	FWorldQuery UnknownProjectionQuery = OverlapQuery;
+	UnknownProjectionQuery.RequiredCanonicalGroupId = 999;
+	const Speed::FEstablishedStaticContactProjection UnknownProjection =
+		Speed::ProjectEstablishedStaticContact(
+			CurvedStaticWorld, UnknownProjectionQuery, 4, 1.0e-6);
+	TestFalse(TEXT("Projection cannot switch to an unknown provider"),
+		UnknownProjection.bContact);
+
+	const FVector TransportFrom = FVector::UpVector;
+	const FVector TransportTo = FVector(0.0f, 1.0f, 1.0f).GetSafeNormal();
+	const FVector TangentialVelocity(0.0f, 100.0f, 0.0f);
+	const FVector TransportedVelocity =
+		Speed::TransportEstablishedContactVelocity(
+			TangentialVelocity, FVector::ZeroVector,
+			TransportFrom, TransportTo);
+	TestTrue(TEXT("Curved contact transport preserves tangential speed"),
+		FMath::IsNearlyEqual(
+			TransportedVelocity.Size(), TangentialVelocity.Size(), 1.0e-4f));
+	TestTrue(TEXT("Curved contact transport remains tangent"),
+		FMath::Abs(FVector::DotProduct(
+			TransportedVelocity, TransportTo)) <= 1.0e-4f);
+	const FVector ReverseTransport =
+		Speed::TransportEstablishedContactVelocity(
+			TransportedVelocity, FVector::ZeroVector,
+			TransportTo, TransportFrom);
+	TestTrue(TEXT("Curved contact transport is symmetric"),
+		ReverseTransport.Equals(TangentialVelocity, 1.0e-3f));
+	const FVector RotationalClosingVelocity = -10.0f * TransportTo;
+	const FVector CorrectedTransport =
+		Speed::TransportEstablishedContactVelocity(
+			TangentialVelocity, RotationalClosingVelocity,
+			TransportFrom, TransportTo);
+	TestTrue(TEXT("Curved contact transport removes residual closing speed"),
+		FVector::DotProduct(
+			CorrectedTransport + RotationalClosingVelocity,
+			TransportTo) >= -1.0e-4f);
+	TestTrue(TEXT("Curved contact transport is deterministic"),
+		CorrectedTransport == Speed::TransportEstablishedContactVelocity(
+			TangentialVelocity, RotationalClosingVelocity,
+			TransportFrom, TransportTo));
+
 	FWorldQuery ReleaseQuery = JoinBoxQuery;
 	ReleaseQuery.Start = JoinPoint + (JoinSupport - 0.02) * JoinNormal;
 	ReleaseQuery.End = ReleaseQuery.Start + JoinNormal;
@@ -547,6 +801,75 @@ bool FIAmSpeedAnalyticExtrudedQuinticTest::RunTest(const FString& Parameters)
 		FWorldQueryService(CurvedWorld).Sweep(ReleaseQuery).bHit);
 	TestTrue(TEXT("Authority coverage accepts the certified internal join"),
 		FWorldQueryService(CurvedWorld).HasAuthorityCoverage(JoinBoxQuery));
+
+	// A deliberately displaced physical provider may carry a local certificate
+	// without weakening the public ten-centimetre agreement rule for every
+	// other provider. Keep the residual source face earlier along the ray so the
+	// selected primitive proves that arbitration consumed the local allowance.
+	auto BuildAgreementWorld = [&](const double AdditionalAllowanceCm)
+	{
+		FAnalyticWorldData AgreementWorld;
+		FExtrudedQuinticPatch AgreementPatch = Patch;
+		AgreementPatch.SourceId = 90;
+		AgreementPatch.SurfaceId = 91;
+		AgreementPatch.FeatureId = 92;
+		AgreementPatch.PrimitiveId = 93;
+		AgreementPatch.CanonicalGroupId = 97;
+		AgreementPatch.CanonicalSymmetryAxisMask = 1;
+		AgreementPatch.bCanonicalC2ByConstruction = true;
+		AgreementPatch.bCanonicalSymmetryByConstruction = true;
+		AgreementPatch.bAuthorityEligible = true;
+		AgreementPatch.AdditionalResidualAgreementAllowanceCm =
+			AdditionalAllowanceCm;
+		AgreementWorld.ExtrudedQuinticPatches.Add(AgreementPatch);
+		FTriangleSurface ResidualFace;
+		ResidualFace.SourceId = 90;
+		ResidualFace.SurfaceId = 94;
+		ResidualFace.FeatureId = 95;
+		ResidualFace.PrimitiveId = 96;
+		ResidualFace.Vertices[0] = FVector3d(-100.0, -100.0, 15.0);
+		ResidualFace.Vertices[1] = FVector3d(100.0, -100.0, 15.0);
+		ResidualFace.Vertices[2] = FVector3d(0.0, 100.0, 15.0);
+		ResidualFace.FaceNormal = FVector3d::UpVector;
+		for (FVector3d& Normal : ResidualFace.VertexNormals)
+			Normal = FVector3d::UpVector;
+		ResidualFace.Bounds = FBox3d(EForceInit::ForceInit);
+		for (const FVector3d& Vertex : ResidualFace.Vertices)
+			ResidualFace.Bounds += Vertex;
+		ResidualFace.bQueryCollisionEnabled = true;
+		ResidualFace.bAuthorityEligible = true;
+		AgreementWorld.Triangles.Add(ResidualFace);
+		return AgreementWorld;
+	};
+	FAnalyticWorldData DefaultAgreementWorld = BuildAgreementWorld(0.0);
+	const bool bDefaultAgreementValid =
+		DefaultAgreementWorld.FinalizeAndValidate(&ValidationReason);
+	TestTrue(TEXT("Default residual-agreement fixture validates"),
+		bDefaultAgreementValid);
+	if (!bDefaultAgreementValid) AddInfo(ValidationReason);
+	FWorldQuery AgreementQuery;
+	AgreementQuery.Start = FVector3d(0.0, 0.0, 30.0);
+	AgreementQuery.End = FVector3d(0.0, 0.0, -30.0);
+	AgreementQuery.bAuthorityOnly = true;
+	AgreementQuery.bIncludeCompactPatches = true;
+	AgreementQuery.bIncludeTriangles = true;
+	const FWorldHit DefaultAgreementHit =
+		FWorldQueryService(DefaultAgreementWorld).Sweep(AgreementQuery);
+	TestEqual(TEXT("Default agreement keeps a residual face fifteen centimetres away"),
+		DefaultAgreementHit.PrimitiveId, uint64(96));
+	FAnalyticWorldData CertifiedAgreementWorld = BuildAgreementWorld(6.0);
+	const bool bCertifiedAgreementValid =
+		CertifiedAgreementWorld.FinalizeAndValidate(&ValidationReason);
+	TestTrue(TEXT("Provider-local agreement fixture validates"),
+		bCertifiedAgreementValid);
+	if (!bCertifiedAgreementValid) AddInfo(ValidationReason);
+	const FWorldHit CertifiedAgreementHit =
+		FWorldQueryService(CertifiedAgreementWorld).Sweep(AgreementQuery);
+	TestEqual(TEXT("Provider-local allowance selects only the certified physical surface"),
+		CertifiedAgreementHit.SurfaceId, uint64(91));
+	TestTrue(TEXT("Selected hit carries the provider-local agreement allowance"),
+		FMath::IsNearlyEqual(
+			CertifiedAgreementHit.AdditionalResidualAgreementAllowanceCm, 6.0));
 
 	Query.TraceChannel = 4;
 	TestFalse(TEXT("Collision channel rejects compact patch"),
@@ -563,6 +886,370 @@ bool FIAmSpeedAnalyticExtrudedQuinticTest::RunTest(const FString& Parameters)
 	Query.BlockingObjectTypes = 1ull << 2;
 	TestTrue(TEXT("Mutual response accepts compact patch"),
 		FWorldQueryService(World).Sweep(Query).bHit);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FIAmSpeedTensorBezierSurfaceTest,
+	"IAmSpeed.AnalyticWorld.TensorBezierSurface",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedTensorBezierSurfaceTest::RunTest(const FString& Parameters)
+{
+	using namespace Speed::Analytic;
+	AddInfo(TEXT(
+		"Contract=IAMSPEED.PHYS.CONTACT_DETECTION.V1.TENSOR_APPROXIMATION"));
+
+	FTensorBezierSurface Plane;
+	Plane.DegreeU = 1;
+	Plane.DegreeV = 1;
+	Plane.ControlPoints = {
+		FVector3d(0.0, 0.0, 0.0), FVector3d(0.0, 20.0, 0.0),
+		FVector3d(10.0, 0.0, 0.0), FVector3d(10.0, 20.0, 0.0) };
+	FString Reason;
+	TestTrue(TEXT("Regular bilinear tensor surface validates"),
+		Plane.IsValid(&Reason));
+	TestTrue(TEXT("Tensor surface midpoint is exact"),
+		Plane.Evaluate(0.5, 0.5).Equals(FVector3d(5.0, 10.0, 0.0), 1.0e-12));
+	TestTrue(TEXT("Tensor U derivative is exact"),
+		Plane.EvaluateDerivativeU(0.37, 0.61).Equals(
+			FVector3d(10.0, 0.0, 0.0), 1.0e-12));
+	TestTrue(TEXT("Tensor V derivative is exact"),
+		Plane.EvaluateDerivativeV(0.37, 0.61).Equals(
+			FVector3d(0.0, 20.0, 0.0), 1.0e-12));
+	TestTrue(TEXT("Tensor normal follows control-net orientation"),
+		Plane.EvaluateNormal(0.5, 0.5).Equals(FVector3d::UpVector, 1.0e-12));
+
+	FTensorBezierSurface Curved;
+	Curved.DegreeU = 2;
+	Curved.DegreeV = 2;
+	for (int32 UIndex = 0; UIndex <= 2; ++UIndex)
+	{
+		for (int32 VIndex = 0; VIndex <= 2; ++VIndex)
+		{
+			Curved.ControlPoints.Add(FVector3d(
+				10.0 * UIndex, 10.0 * VIndex,
+				UIndex == 1 && VIndex == 1 ? 8.0 : 0.0));
+		}
+	}
+	TestTrue(TEXT("Regular curved tensor surface validates"),
+		Curved.IsValid(&Reason));
+	TestTrue(TEXT("Interior tensor control changes the surface interior"),
+		Curved.Evaluate(0.5, 0.5).Z > 0.0);
+	TestTrue(TEXT("Curved tensor normal remains normalized"),
+		FMath::IsNearlyEqual(
+			Curved.EvaluateNormal(0.31, 0.67).SquaredLength(), 1.0, 1.0e-12));
+	TestTrue(TEXT("Tensor evaluation is exactly deterministic"),
+		Curved.Evaluate(0.3125, 0.6875) ==
+			Curved.Evaluate(0.3125, 0.6875));
+	TArray<FTensorBezierApproximationCell> Cells;
+	double CertifiedMaximumErrorCm = 0.0;
+	TestTrue(TEXT("Curved tensor builds a certified bilinear approximation"),
+		Curved.BuildBilinearApproximation(
+			0.05, Cells, &CertifiedMaximumErrorCm));
+	TestTrue(TEXT("Curved tensor subdivides beyond one bilinear cell"),
+		Cells.Num() > 1);
+	TestTrue(TEXT("Every accepted tensor cell respects the requested bound"),
+		CertifiedMaximumErrorCm <= 0.05);
+	double MeasuredMaximumErrorCm = 0.0;
+	for (const FTensorBezierApproximationCell& Cell : Cells)
+	{
+		for (int32 UIndex = 0; UIndex <= 4; ++UIndex)
+		{
+			const double LocalU = static_cast<double>(UIndex) / 4.0;
+			const double U = FMath::Lerp(Cell.MinimumU, Cell.MaximumU, LocalU);
+			for (int32 VIndex = 0; VIndex <= 4; ++VIndex)
+			{
+				const double LocalV = static_cast<double>(VIndex) / 4.0;
+				const double V = FMath::Lerp(
+					Cell.MinimumV, Cell.MaximumV, LocalV);
+				const FVector3d Bilinear = FMath::Lerp(
+					FMath::Lerp(Cell.Corners[0], Cell.Corners[1], LocalV),
+					FMath::Lerp(Cell.Corners[2], Cell.Corners[3], LocalV),
+					LocalU);
+				MeasuredMaximumErrorCm = FMath::Max(MeasuredMaximumErrorCm,
+					FVector3d::Distance(Curved.Evaluate(U, V), Bilinear));
+			}
+		}
+	}
+	TestTrue(TEXT("Measured tensor deviation stays below the certified bound"),
+		MeasuredMaximumErrorCm <= CertifiedMaximumErrorCm + 1.0e-9);
+
+	FTensorBezierPatch Patch;
+	Patch.SourceId = 70;
+	Patch.SurfaceId = 71;
+	Patch.FeatureId = 72;
+	Patch.PrimitiveId = 73;
+	Patch.CanonicalGroupId = 74;
+	Patch.MaterialId = 75;
+	Patch.ObjectType = 2;
+	Patch.BlockingChannels = 1ull << 3;
+	Patch.Surface = Curved;
+	Patch.bQueryCollisionEnabled = true;
+	FAnalyticWorldData World;
+	World.TensorBezierPatches.Add(Patch);
+	TestTrue(TEXT("Draft tensor-patch world validates"),
+		World.FinalizeAndValidate(&Reason));
+	TestTrue(TEXT("Tensor provider builds certified finite cells"),
+		World.TensorBezierPatches[0].bApproximationCertified &&
+			World.TensorBezierPatches[0].MaximumApproximationErrorCm <= 0.01);
+	TestTrue(TEXT("Tensor provider builds a deterministic cell BVH"),
+		!World.TensorBezierPatches[0].ApproximationCellBvhNodes.IsEmpty() &&
+		World.TensorBezierPatches[0].ApproximationCellBvhIndices.Num() ==
+			World.TensorBezierPatches[0].ApproximationCells.Num());
+	FWorldQuery RayQuery;
+	RayQuery.Shape = EQueryShape::Ray;
+	RayQuery.Start = FVector3d(10.0, 10.0, 20.0);
+	RayQuery.End = FVector3d(10.0, 10.0, -20.0);
+	RayQuery.bIncludeCompactPatches = true;
+	RayQuery.bApplyCollisionFilter = true;
+	RayQuery.TraceChannel = 3;
+	const FWorldHit DraftRayHit = FWorldQueryService(World).Sweep(RayQuery);
+	TestTrue(TEXT("Ray hits a draft tensor provider"), DraftRayHit.bHit);
+	TestEqual(TEXT("Tensor hit preserves source identity"),
+		DraftRayHit.SourceId, Patch.SourceId);
+	TestEqual(TEXT("Tensor hit preserves surface identity"),
+		DraftRayHit.SurfaceId, Patch.SurfaceId);
+	TestEqual(TEXT("Tensor hit preserves canonical group"),
+		DraftRayHit.CanonicalGroupId, Patch.CanonicalGroupId);
+	TestTrue(TEXT("Tensor hit exposes its certified geometric error"),
+		DraftRayHit.GeometricErrorBoundCm <= 0.01);
+	TestTrue(TEXT("Tensor hit reports its varying smooth normal"),
+		DraftRayHit.bSurfaceNormalMayVary && DraftRayHit.Normal.Z > 0.999);
+	FWorldQuery AuthorityRayQuery = RayQuery;
+	AuthorityRayQuery.bAuthorityOnly = true;
+	TestFalse(TEXT("Draft tensor provider is excluded from authority"),
+		FWorldQueryService(World).Sweep(AuthorityRayQuery).bHit);
+	World.TensorBezierPatches[0].bAuthorityEligible = true;
+	AuthorityRayQuery.RequiredCanonicalGroupId = Patch.CanonicalGroupId;
+	const FWorldHit AuthorityRayHit =
+		FWorldQueryService(World).Sweep(AuthorityRayQuery);
+	TestTrue(TEXT("Certified tensor provider may answer an authority ray"),
+		AuthorityRayHit.bHit);
+	FWorldQuery WrongCanonicalGroupQuery = AuthorityRayQuery;
+	WrongCanonicalGroupQuery.RequiredCanonicalGroupId = Patch.CanonicalGroupId + 1;
+	TestFalse(TEXT("Tensor provider rejects a different canonical family"),
+		FWorldQueryService(World).Sweep(WrongCanonicalGroupQuery).bHit);
+	FWorldQuery SphereQuery = AuthorityRayQuery;
+	SphereQuery.Shape = EQueryShape::Sphere;
+	SphereQuery.Radius = 1.0;
+	const FWorldHit SphereHit = FWorldQueryService(World).Sweep(SphereQuery);
+	TestTrue(TEXT("Sphere sweep hits a certified tensor provider"),
+		SphereHit.bHit);
+	TestEqual(TEXT("Sphere selects the convex tensor tessellation vertex"),
+		SphereHit.SurfaceFeatureKind, EContactFeatureKind::Vertex);
+	const FWorldHit RepeatedSphereHit =
+		FWorldQueryService(World).Sweep(SphereQuery);
+	TestTrue(TEXT("Tensor sphere sweep is exactly deterministic"),
+		RepeatedSphereHit.bHit == SphereHit.bHit &&
+		RepeatedSphereHit.Time == SphereHit.Time &&
+		RepeatedSphereHit.Point == SphereHit.Point &&
+		RepeatedSphereHit.Normal == SphereHit.Normal &&
+		RepeatedSphereHit.PrimitiveId == SphereHit.PrimitiveId);
+	FWorldQuery SphereOverlapQuery = SphereQuery;
+	SphereOverlapQuery.Start = FVector3d(10.0, 10.0, 2.5);
+	SphereOverlapQuery.End = SphereOverlapQuery.Start;
+	const FWorldHit SphereOverlapHit =
+		FWorldQueryService(World).Sweep(SphereOverlapQuery);
+	AddInfo(FString::Printf(TEXT(
+		"TensorOverlap Hit=%d StartPenetrating=%d Depth=%.17g Bound=%.17g Feature=%u"),
+		SphereOverlapHit.bHit ? 1 : 0,
+		SphereOverlapHit.bStartPenetrating ? 1 : 0,
+		SphereOverlapHit.PenetrationDepth,
+		SphereOverlapHit.GeometricErrorBoundCm,
+		static_cast<uint8>(SphereOverlapHit.SurfaceFeatureKind)));
+	TestTrue(TEXT("Tensor sphere reports an initial overlap"),
+		SphereOverlapHit.bHit && SphereOverlapHit.bStartPenetrating);
+	TestTrue(TEXT("Tensor sphere penetration respects its geometric certificate"),
+		FMath::Abs(SphereOverlapHit.PenetrationDepth - 0.5) <=
+			SphereOverlapHit.GeometricErrorBoundCm + 1.0e-8);
+	FWorldQuery SphereReleaseQuery = SphereOverlapQuery;
+	SphereReleaseQuery.Start.Z = 2.975;
+	SphereReleaseQuery.End = SphereReleaseQuery.Start + FVector3d(0.0, 0.0, 1.0);
+	TestFalse(TEXT("Tensor sphere releases a shallow separating overlap"),
+		FWorldQueryService(World).Sweep(SphereReleaseQuery).bHit);
+	SphereReleaseQuery.End = SphereReleaseQuery.Start - FVector3d(0.0, 0.0, 1.0);
+	const FWorldHit SphereClosingShellHit =
+		FWorldQueryService(World).Sweep(SphereReleaseQuery);
+	TestTrue(TEXT("Tensor sphere preserves a shallow closing contact"),
+		SphereClosingShellHit.bHit && !SphereClosingShellHit.bStartPenetrating &&
+		SphereClosingShellHit.Time == 0.0);
+	FWorldQuery BoxQuery = AuthorityRayQuery;
+	BoxQuery.Shape = EQueryShape::Box;
+	BoxQuery.HalfExtent = FVector3d(1.0, 1.5, 2.0);
+	BoxQuery.Rotation = FQuat4d(FVector3d::UpVector,
+		FMath::DegreesToRadians(17.0));
+	TestTrue(TEXT("Oriented box sweep hits a certified tensor provider"),
+		FWorldQueryService(World).Sweep(BoxQuery).bHit);
+
+	FTensorBezierSurface Invalid = Plane;
+	Invalid.ControlPoints.Pop();
+	TestFalse(TEXT("Incomplete tensor control net is rejected"),
+		Invalid.IsValid(&Reason));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FIAmSpeedPiecewiseTensorBezierProviderTest,
+	"IAmSpeed.AnalyticWorld.PiecewiseTensorBezierProvider",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedPiecewiseTensorBezierProviderTest::RunTest(
+	const FString& Parameters)
+{
+	using namespace Speed::Analytic;
+	AddInfo(TEXT(
+		"Contract=IAMSPEED.PHYS.CONTACT_DETECTION.V1.PIECEWISE_TENSOR_C2"));
+
+	FPiecewiseTensorBezierPatch Patch;
+	Patch.SourceId = 810;
+	Patch.SurfaceId = 811;
+	Patch.PrimitiveId = 812;
+	Patch.CanonicalGroupId = 813;
+	Patch.MaterialId = 814;
+	Patch.ObjectType = 2;
+	Patch.BlockingChannels = 1ull << 3;
+	Patch.bQueryCollisionEnabled = true;
+	Patch.bSourceResidualCertified = true;
+	Patch.bAuthorityEligible = true;
+	for (int32 CellIndex = 0; CellIndex < 2; ++CellIndex)
+	{
+		FPiecewiseTensorBezierCell& Cell = Patch.Cells.AddDefaulted_GetRef();
+		Cell.FeatureId = 820 + CellIndex;
+		Cell.PrimitiveId = 830 + CellIndex;
+		Cell.MinimumU = 0.5 * CellIndex;
+		Cell.MaximumU = 0.5 * (CellIndex + 1);
+		Cell.Surface.DegreeU = 3;
+		Cell.Surface.DegreeV = 3;
+		for (int32 U = 0; U <= 3; ++U)
+		{
+			for (int32 V = 0; V <= 3; ++V)
+			{
+				Cell.Surface.ControlPoints.Add(FVector3d(
+					10.0 * CellIndex + 10.0 * U / 3.0,
+					20.0 * V / 3.0, 0.0));
+			}
+		}
+	}
+	FAnalyticWorldData World;
+	World.PiecewiseTensorBezierPatches.Add(Patch);
+	FTensorBezierPatch OutOfDomainPatch;
+	OutOfDomainPatch.SourceId = 810;
+	OutOfDomainPatch.SurfaceId = 840;
+	OutOfDomainPatch.FeatureId = 841;
+	OutOfDomainPatch.PrimitiveId = 842;
+	OutOfDomainPatch.CanonicalGroupId = 843;
+	OutOfDomainPatch.MaterialId = 814;
+	OutOfDomainPatch.ObjectType = 2;
+	OutOfDomainPatch.BlockingChannels = 1ull << 3;
+	OutOfDomainPatch.Surface.DegreeU = 1;
+	OutOfDomainPatch.Surface.DegreeV = 1;
+	OutOfDomainPatch.Surface.ControlPoints = {
+		FVector3d(-100.0, -100.0, 15.0), FVector3d(-100.0, 100.0, 15.0),
+		FVector3d(100.0, -100.0, 15.0), FVector3d(100.0, 100.0, 15.0) };
+	OutOfDomainPatch.bQueryCollisionEnabled = true;
+	OutOfDomainPatch.bAuthorityEligible = true;
+	World.TensorBezierPatches.Add(OutOfDomainPatch);
+	FTriangleSurface ResidualTriangle;
+	ResidualTriangle.SourceId = 810;
+	ResidualTriangle.SurfaceId = 850;
+	ResidualTriangle.FeatureId = 851;
+	ResidualTriangle.PrimitiveId = 852;
+	ResidualTriangle.MaterialId = 814;
+	ResidualTriangle.ObjectType = 2;
+	ResidualTriangle.BlockingChannels = 1ull << 3;
+	ResidualTriangle.Vertices[0] = FVector3d(-100.0, -100.0, 0.0);
+	ResidualTriangle.Vertices[1] = FVector3d(100.0, -100.0, 0.0);
+	ResidualTriangle.Vertices[2] = FVector3d(0.0, 100.0, 0.0);
+	ResidualTriangle.VertexNormals[0] = FVector3d::UpVector;
+	ResidualTriangle.VertexNormals[1] = FVector3d::UpVector;
+	ResidualTriangle.VertexNormals[2] = FVector3d::UpVector;
+	ResidualTriangle.FaceNormal = FVector3d::UpVector;
+	ResidualTriangle.Bounds = FBox3d(EForceInit::ForceInit);
+	for (const FVector3d& Vertex : ResidualTriangle.Vertices)
+	{
+		ResidualTriangle.Bounds += Vertex;
+	}
+	ResidualTriangle.bQueryCollisionEnabled = true;
+	ResidualTriangle.bAuthorityEligible = true;
+	World.Triangles.Add(ResidualTriangle);
+	FString Reason;
+	if (!TestTrue(TEXT("Certified piecewise tensor world validates"),
+		World.FinalizeAndValidate(&Reason)))
+	{
+		AddError(Reason);
+		return false;
+	}
+	const FPiecewiseTensorBezierPatch& Certified =
+		World.PiecewiseTensorBezierPatches[0];
+	TestEqual(TEXT("Both directed seam adjacencies are recorded"),
+		Certified.Adjacencies.Num(), 2);
+	bool bAllAdjacenciesCertifiedC2 = true;
+	for (const FPiecewiseTensorBezierAdjacency& Link : Certified.Adjacencies)
+	{
+		bAllAdjacenciesCertifiedC2 &= Link.bC2ByConstruction;
+	}
+	TestTrue(TEXT("Every recorded seam has a numerical C2 certificate"),
+		bAllAdjacenciesCertifiedC2);
+
+	FWorldQuery Query;
+	Query.Start = FVector3d(10.0, 10.0, 20.0);
+	Query.End = FVector3d(10.0, 10.0, -20.0);
+	Query.bIncludeCompactPatches = true;
+	Query.bAuthorityOnly = true;
+	Query.RequiredSurfaceId = Patch.SurfaceId;
+	const FWorldHit RayHit = FWorldQueryService(World).Sweep(Query);
+	TestTrue(TEXT("Authority ray hits the piecewise provider at its C2 seam"),
+		RayHit.bHit && RayHit.SurfaceId == Patch.SurfaceId);
+	const FWorldHit RepeatedRayHit = FWorldQueryService(World).Sweep(Query);
+	TestTrue(TEXT("Piecewise seam selection is exactly deterministic"),
+		RepeatedRayHit.bHit == RayHit.bHit &&
+		RepeatedRayHit.Time == RayHit.Time &&
+		RepeatedRayHit.Point == RayHit.Point &&
+		RepeatedRayHit.Normal == RayHit.Normal &&
+		RepeatedRayHit.PrimitiveId == RayHit.PrimitiveId);
+
+	FWorldQuery SphereQuery = Query;
+	SphereQuery.Shape = EQueryShape::Sphere;
+	SphereQuery.Radius = 1.0;
+	TestTrue(TEXT("Sphere sweep hits the piecewise provider"),
+		FWorldQueryService(World).Sweep(SphereQuery).bHit);
+	FWorldQuery SphereOverlap = SphereQuery;
+	SphereOverlap.Start = FVector3d(10.0, 10.0, 0.5);
+	SphereOverlap.End = SphereOverlap.Start;
+	const FWorldHit OverlapHit = FWorldQueryService(World).Sweep(SphereOverlap);
+	TestTrue(TEXT("Piecewise sphere reports initial penetration"),
+		OverlapHit.bHit && OverlapHit.bStartPenetrating &&
+		FMath::Abs(OverlapHit.PenetrationDepth - 0.5) <=
+			OverlapHit.GeometricErrorBoundCm + 1.0e-8);
+	FWorldQuery SphereRelease = SphereOverlap;
+	SphereRelease.Start.Z = 0.975;
+	SphereRelease.End = SphereRelease.Start + FVector3d(0.0, 0.0, 1.0);
+	TestFalse(TEXT("Piecewise sphere releases a shallow separating overlap"),
+		FWorldQueryService(World).Sweep(SphereRelease).bHit);
+	SphereRelease.End = SphereRelease.Start - FVector3d(0.0, 0.0, 1.0);
+	const FWorldHit ClosingHit = FWorldQueryService(World).Sweep(SphereRelease);
+	TestTrue(TEXT("Piecewise sphere preserves a shallow closing contact"),
+		ClosingHit.bHit && !ClosingHit.bStartPenetrating &&
+		ClosingHit.Time == 0.0);
+
+	FWorldQuery BoxQuery = Query;
+	BoxQuery.Shape = EQueryShape::Box;
+	BoxQuery.HalfExtent = FVector3d(1.0, 1.5, 2.0);
+	BoxQuery.Rotation = FQuat4d(FVector3d::UpVector,
+		FMath::DegreesToRadians(17.0));
+	TestTrue(TEXT("Oriented box sweep hits the piecewise provider"),
+		FWorldQueryService(World).Sweep(BoxQuery).bHit);
+	FWorldQuery ArbitrationQuery = Query;
+	ArbitrationQuery.RequiredSurfaceId = 0;
+	ArbitrationQuery.bIncludeTriangles = true;
+	const FWorldHit ArbitrationHit = FWorldQueryService(World).Sweep(ArbitrationQuery);
+	AddInfo(FString::Printf(TEXT(
+		"AgreementArbitration Surface=%llu Primitive=%llu Time=%.17g Point=%s"),
+		ArbitrationHit.SurfaceId, ArbitrationHit.PrimitiveId, ArbitrationHit.Time,
+		*ArbitrationHit.Point.ToString()));
+	TestTrue(TEXT("Authority selects an agreeing polished provider behind an earlier out-of-domain provider"),
+		ArbitrationHit.bHit && ArbitrationHit.SurfaceId == Patch.SurfaceId);
 	return true;
 }
 
@@ -822,6 +1509,17 @@ bool FIAmSpeedAnalyticTriangleFaceTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Sphere hits triangle face"), Hit.bHit);
 	TestTrue(TEXT("Triangle face TOI"), FMath::IsNearlyEqual(Hit.Time, 0.375, 1.0e-12));
 	TestEqual(TEXT("Triangle primitive tie-break id"), Hit.PrimitiveId, uint64(22));
+	FWorldQuery BoxQuery = Query;
+	BoxQuery.Shape = EQueryShape::Box;
+	BoxQuery.Radius = 0.0;
+	BoxQuery.HalfExtent = FVector3d(5.0, 5.0, 5.0);
+	const FWorldHit BoxHit = FWorldQueryService(World).Sweep(BoxQuery);
+	TestTrue(TEXT("Box hits residual triangle face"), BoxHit.bHit);
+	TestTrue(TEXT("Residual triangle box TOI is exact"),
+		FMath::IsNearlyEqual(BoxHit.Time, 0.375, 1.0e-12));
+	TestTrue(TEXT("Residual triangle box exposes native witnesses"),
+		BoxHit.QueryFeatureKind != EContactFeatureKind::Unknown &&
+		BoxHit.SurfaceFeatureKind != EContactFeatureKind::Unknown);
 
 	Query.Start = FVector3d(0.0, 0.0, -20.0);
 	Query.End = FVector3d(0.0, 0.0, 20.0);
@@ -845,6 +1543,179 @@ bool FIAmSpeedAnalyticTriangleFaceTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Object query filter rejects triangle"),
 		FWorldQueryService(World).Sweep(Query).bHit);
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FIAmSpeedAnalyticProviderSolidSubBodyMatrixTest,
+	"IAmSpeed.AnalyticWorld.ProviderSolidSubBodyMatrix",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedAnalyticProviderSolidSubBodyMatrixTest::RunTest(
+	const FString& Parameters)
+{
+	using namespace Speed::Analytic;
+	struct FProviderFixture
+	{
+		const TCHAR* Name;
+		uint64 SurfaceId;
+		FAnalyticWorldData World;
+	};
+	TArray<FProviderFixture> Fixtures;
+	{
+		FProviderFixture& Fixture = Fixtures.AddDefaulted_GetRef();
+		Fixture.Name = TEXT("BoundedPlane");
+		Fixture.SurfaceId = 1001;
+		FBoundedPlane& Plane = Fixture.World.Planes.AddDefaulted_GetRef();
+		Plane.SourceId = 1000;
+		Plane.SurfaceId = Fixture.SurfaceId;
+		Plane.FeatureId = 1002;
+		Plane.PrimitiveId = 1003;
+		Plane.Origin = FVector3d::ZeroVector;
+		Plane.HalfExtents = FVector2d(400.0);
+		Plane.bQueryCollisionEnabled = true;
+		Plane.bAuthorityEligible = true;
+	}
+	{
+		FProviderFixture& Fixture = Fixtures.AddDefaulted_GetRef();
+		Fixture.Name = TEXT("ExtrudedQuintic");
+		Fixture.SurfaceId = 1101;
+		FExtrudedQuinticPatch& Patch =
+			Fixture.World.ExtrudedQuinticPatches.AddDefaulted_GetRef();
+		Patch.SourceId = 1100;
+		Patch.SurfaceId = Fixture.SurfaceId;
+		Patch.FeatureId = 1102;
+		Patch.PrimitiveId = 1103;
+		Patch.CanonicalGroupId = 1104;
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			Patch.SectionControlPoints[Index] = FVector3d(
+				FMath::Lerp(-200.0, 200.0, static_cast<double>(Index) / 5.0),
+				0.0, 0.0);
+		}
+		Patch.ExtrusionAxis = FVector3d::RightVector;
+		Patch.MinimumExtrusionCoordinate = -200.0;
+		Patch.MaximumExtrusionCoordinate = 200.0;
+		Patch.bQueryCollisionEnabled = true;
+		Patch.bCanonicalC2ByConstruction = true;
+		Patch.bCanonicalSymmetryByConstruction = true;
+		Patch.BuildQueryApproximation();
+		Patch.bAuthorityEligible = true;
+	}
+	{
+		FProviderFixture& Fixture = Fixtures.AddDefaulted_GetRef();
+		Fixture.Name = TEXT("TensorBezier");
+		Fixture.SurfaceId = 1201;
+		FTensorBezierPatch& Patch =
+			Fixture.World.TensorBezierPatches.AddDefaulted_GetRef();
+		Patch.SourceId = 1200;
+		Patch.SurfaceId = Fixture.SurfaceId;
+		Patch.FeatureId = 1202;
+		Patch.PrimitiveId = 1203;
+		Patch.CanonicalGroupId = 1204;
+		Patch.Surface.DegreeU = Patch.Surface.DegreeV = 1;
+		Patch.Surface.ControlPoints = {
+			FVector3d(-200.0, -200.0, 0.0),
+			FVector3d(-200.0, 200.0, 0.0),
+			FVector3d(200.0, -200.0, 0.0),
+			FVector3d(200.0, 200.0, 0.0) };
+		Patch.bQueryCollisionEnabled = true;
+		Patch.bAuthorityEligible = true;
+	}
+	{
+		FProviderFixture& Fixture = Fixtures.AddDefaulted_GetRef();
+		Fixture.Name = TEXT("PiecewiseTensorBezier");
+		Fixture.SurfaceId = 1301;
+		FPiecewiseTensorBezierPatch& Patch =
+			Fixture.World.PiecewiseTensorBezierPatches.AddDefaulted_GetRef();
+		Patch.SourceId = 1300;
+		Patch.SurfaceId = Fixture.SurfaceId;
+		Patch.PrimitiveId = 1302;
+		Patch.CanonicalGroupId = 1303;
+		Patch.bQueryCollisionEnabled = true;
+		Patch.bSourceResidualCertified = true;
+		Patch.bAuthorityEligible = true;
+		FPiecewiseTensorBezierCell& Cell = Patch.Cells.AddDefaulted_GetRef();
+		Cell.FeatureId = 1304;
+		Cell.PrimitiveId = 1305;
+		Cell.MinimumU = Cell.MinimumV = 0.0;
+		Cell.MaximumU = Cell.MaximumV = 1.0;
+		Cell.Surface.DegreeU = Cell.Surface.DegreeV = 1;
+		Cell.Surface.ControlPoints = {
+			FVector3d(-200.0, -200.0, 0.0),
+			FVector3d(-200.0, 200.0, 0.0),
+			FVector3d(200.0, -200.0, 0.0),
+			FVector3d(200.0, 200.0, 0.0) };
+	}
+
+	struct FProxyShape
+	{
+		const TCHAR* Name;
+		EQueryShape Shape;
+		double Radius;
+		FVector3d HalfExtent;
+		double VerticalSupport;
+	};
+	const FProxyShape Shapes[] = {
+		{ TEXT("SmallSphere"), EQueryShape::Sphere, 10.0,
+			FVector3d::ZeroVector, 10.0 },
+		{ TEXT("LargeSphere"), EQueryShape::Sphere, 109.5,
+			FVector3d::ZeroVector, 109.5 },
+		{ TEXT("OrientedBox"), EQueryShape::Box, 0.0,
+			FVector3d(20.0, 15.0, 10.0), 10.0 }
+	};
+	for (FProviderFixture& Fixture : Fixtures)
+	{
+		FString Reason;
+		if (!TestTrue(*FString::Printf(TEXT("%s fixture validates"), Fixture.Name),
+			Fixture.World.FinalizeAndValidate(&Reason)))
+		{
+			AddError(Reason);
+			continue;
+		}
+		for (const FProxyShape& Shape : Shapes)
+		{
+			auto MakeQuery = [&]()
+			{
+				FWorldQuery Query;
+				Query.Shape = Shape.Shape;
+				Query.Radius = Shape.Radius;
+				Query.HalfExtent = Shape.HalfExtent;
+				Query.Rotation = FQuat4d(FVector3d::UpVector,
+					FMath::DegreesToRadians(17.0));
+				Query.RequiredSurfaceId = Fixture.SurfaceId;
+				Query.bIncludeCompactPatches = true;
+				Query.bAuthorityOnly = true;
+				return Query;
+			};
+			const FString Context = FString::Printf(TEXT("%s x %s"),
+				Fixture.Name, Shape.Name);
+			FWorldQuery Sweep = MakeQuery();
+			Sweep.Start = FVector3d(0.0, 0.0, 200.0);
+			Sweep.End = FVector3d(0.0, 0.0, -200.0);
+			const FWorldHit SweepHit =
+				FWorldQueryService(Fixture.World).Sweep(Sweep);
+			TestTrue(*(Context + TEXT(" sweep")), SweepHit.bHit &&
+				!SweepHit.bStartPenetrating && SweepHit.Normal.Z > 0.99);
+
+			FWorldQuery Overlap = MakeQuery();
+			Overlap.Start = FVector3d(0.0, 0.0,
+				Shape.VerticalSupport - 1.0);
+			Overlap.End = Overlap.Start;
+			const FWorldHit OverlapHit =
+				FWorldQueryService(Fixture.World).Sweep(Overlap);
+			TestTrue(*(Context + TEXT(" overlap")), OverlapHit.bHit &&
+				OverlapHit.bStartPenetrating &&
+				OverlapHit.PenetrationDepth > 0.0);
+
+			FWorldQuery Release = MakeQuery();
+			Release.Start = FVector3d(0.0, 0.0,
+				Shape.VerticalSupport + 0.1);
+			Release.End = Release.Start + FVector3d(0.0, 0.0, 5.0);
+			TestFalse(*(Context + TEXT(" release")),
+				FWorldQueryService(Fixture.World).Sweep(Release).bHit);
+		}
+	}
 	return true;
 }
 

@@ -1375,6 +1375,23 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 				Region.EllipseRadiusV, Region.EllipseRootMeanSquareResidualCm,
 				Region.EllipseMaximumResidualCm);
 		}
+		for (int32 Rank = 32; Rank < ExtrusionRegionOrder.Num(); ++Rank)
+		{
+			const Speed::Analytic::FExtrusionSurfaceRegion& Region =
+				Runtime->ExtrusionSurfaceRegions[ExtrusionRegionOrder[Rank]];
+			if (FMath::Abs(Region.Axis.Z) < 0.9) continue;
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticVerticalExtrusionRegion] Rank=%d Id=%016llX Triangles=%d Area=%.9g Axis=%s MinAspect=%.9g AxisDeviationDeg=%.9g BoundsMin=%s BoundsMax=%s QuarterEllipse=%d Plausible=%d SectionU=%s SectionV=%s CenterUV=%s RadiusU=%.9g RadiusV=%.9g EllipseRmsCm=%.9g EllipseMaxCm=%.9g"),
+				Rank, Region.RegionId, Region.TriangleCount, Region.Area,
+				*Region.Axis.ToString(), Region.MinimumAspectRatio,
+				Region.MaximumAxisDeviationDegrees, *Region.Bounds.Min.ToString(),
+				*Region.Bounds.Max.ToString(), Region.bQuarterEllipseFitValid ? 1 : 0,
+				Region.bQuarterEllipsePlausible ? 1 : 0,
+				*Region.SectionAxisU.ToString(), *Region.SectionAxisV.ToString(),
+				*Region.EllipseCenterCoordinates.ToString(), Region.EllipseRadiusU,
+				Region.EllipseRadiusV, Region.EllipseRootMeanSquareResidualCm,
+				Region.EllipseMaximumResidualCm);
+		}
 		for (const Speed::Analytic::EPlanarSymmetryAxis Axis : {
 			Speed::Analytic::EPlanarSymmetryAxis::X,
 			Speed::Analytic::EPlanarSymmetryAxis::Y })
@@ -2209,7 +2226,7 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 		Asset = NewObject<USpeedAnalyticCollisionAsset>(OutputPackage, *AssetName,
 			RF_Public | RF_Standalone);
 	}
-	Asset->BakeSchemaVersion = 6;
+	Asset->BakeSchemaVersion = 9;
 	Asset->SchemaVersion = Speed::Analytic::AnalyticWorldSchemaVersion;
 	Asset->SourceHash = SourceHash;
 	Asset->MeshSources = MoveTemp(Records);
@@ -2219,6 +2236,8 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 	Asset->IndexedTriangles = MoveTemp(IndexedTriangleRecords);
 	Asset->BoundedPlanes.Reset();
 	Asset->ExtrudedQuinticPatches.Reset();
+	Asset->TensorBezierPatches.Reset();
+	Asset->PiecewiseTensorBezierPatches.Reset();
 	FString ValidationReason;
 	if (!Asset->ValidateGeneratedData(&ValidationReason))
 	{
@@ -2233,6 +2252,37 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 		UE_LOG(LogTemp, Error, TEXT("Could not synthesize compact patches: %s"),
 			*ValidationReason);
 		return 6;
+	}
+	TMap<uint64, bool> bClosedManifoldSource;
+	for (const FSpeedAnalyticMeshSourceRecord& Source : Asset->MeshSources)
+	{
+		bClosedManifoldSource.Add(Source.SourceId, Source.bQueryCollisionEnabled);
+	}
+	for (const Speed::Analytic::FTriangleMeshEdge& Edge :
+		RecognitionRuntime->MeshEdges)
+	{
+		TSet<uint64> IncidentSourceIds;
+		for (int32 IncidentOffset = 0;
+			IncidentOffset < Edge.IncidentTriangleCount; ++IncidentOffset)
+		{
+			const int32 TriangleIndex = RecognitionRuntime->EdgeIncidentTriangleIndices[
+				Edge.FirstIncidentTriangle + IncidentOffset];
+			IncidentSourceIds.Add(
+				RecognitionRuntime->Triangles[TriangleIndex].SourceId);
+		}
+		for (const uint64 SourceId : IncidentSourceIds)
+		{
+			if (!Edge.IsManifold() || IncidentSourceIds.Num() != 1)
+			{
+				bClosedManifoldSource.FindOrAdd(SourceId) = false;
+			}
+		}
+	}
+	for (FSpeedAnalyticIndexedTriangleRecord& Triangle :
+		Asset->IndexedTriangles)
+	{
+		Triangle.bResidualAuthorityEligible =
+			bClosedManifoldSource.FindRef(Triangle.SourceId);
 	}
 	for (const Speed::Analytic::FBoundedPlane& SourcePlane :
 		RecognitionRuntime->Planes)
@@ -2321,6 +2371,8 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 			SourcePatch.CorrectedRootMeanSquareResidualCm;
 		Record.CorrectedMaximumResidualCm =
 			SourcePatch.CorrectedMaximumResidualCm;
+		Record.AdditionalResidualAgreementAllowanceCm =
+			SourcePatch.AdditionalResidualAgreementAllowanceCm;
 		Record.ExtrusionAxis = FVector(SourcePatch.ExtrusionAxis);
 		Record.MinimumExtrusionCoordinate =
 			SourcePatch.MinimumExtrusionCoordinate;
@@ -2334,14 +2386,269 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 			SourcePatch.bCanonicalSymmetryByConstruction;
 		Record.bAuthorityEligible = SourcePatch.bAuthorityEligible;
 		UE_LOG(LogTemp, Display,
-			TEXT("[AnalyticCompactPatch] Primitive=%016llX Surface=%016llX Feature=%016llX BaseRmsCm=%.9g BaseMaxCm=%.9g CorrectedRmsCm=%.9g CorrectedMaxCm=%.9g CorrectionA=%s CorrectionB=%s"),
+			TEXT("[AnalyticCompactPatch] Primitive=%016llX Surface=%016llX Feature=%016llX BoundsMin=%s BoundsMax=%s BaseRmsCm=%.9g BaseMaxCm=%.9g CorrectedRmsCm=%.9g CorrectedMaxCm=%.9g CorrectionA=%s CorrectionB=%s"),
 			SourcePatch.PrimitiveId, SourcePatch.SurfaceId, SourcePatch.FeatureId,
+			*FVector(SourcePatch.Bounds.Min).ToString(),
+			*FVector(SourcePatch.Bounds.Max).ToString(),
 			SourcePatch.BaseRootMeanSquareResidualCm,
 			SourcePatch.BaseMaximumResidualCm,
 			SourcePatch.CorrectedRootMeanSquareResidualCm,
 			SourcePatch.CorrectedMaximumResidualCm,
 			*FVector(SourcePatch.InteriorCorrectionControlPoints[0]).ToString(),
 			*FVector(SourcePatch.InteriorCorrectionControlPoints[1]).ToString());
+	}
+	Asset->TensorBezierPatches.Reserve(
+		RecognitionRuntime->TensorBezierPatches.Num());
+	for (const Speed::Analytic::FTensorBezierPatch& SourcePatch :
+		RecognitionRuntime->TensorBezierPatches)
+	{
+		FSpeedAnalyticTensorBezierPatchRecord& Record =
+			Asset->TensorBezierPatches.AddDefaulted_GetRef();
+		Record.SourceId = SourcePatch.SourceId;
+		Record.SurfaceId = SourcePatch.SurfaceId;
+		Record.FeatureId = SourcePatch.FeatureId;
+		Record.PrimitiveId = SourcePatch.PrimitiveId;
+		Record.CanonicalGroupId = SourcePatch.CanonicalGroupId;
+		Record.MaterialId = SourcePatch.MaterialId;
+		Record.ObjectType = SourcePatch.ObjectType;
+		Record.BlockingChannels = SourcePatch.BlockingChannels;
+		Record.DegreeU = SourcePatch.Surface.DegreeU;
+		Record.DegreeV = SourcePatch.Surface.DegreeV;
+		Record.ControlPoints.Reserve(SourcePatch.Surface.ControlPoints.Num());
+		for (const FVector3d& ControlPoint : SourcePatch.Surface.ControlPoints)
+		{
+			Record.ControlPoints.Add(FVector(ControlPoint));
+		}
+		Record.bQueryCollisionEnabled = SourcePatch.bQueryCollisionEnabled;
+		Record.bAuthorityEligible = SourcePatch.bAuthorityEligible;
+	}
+	Asset->PiecewiseTensorBezierPatches.Reserve(
+		RecognitionRuntime->PiecewiseTensorBezierPatches.Num());
+	for (const Speed::Analytic::FPiecewiseTensorBezierPatch& SourcePatch :
+		RecognitionRuntime->PiecewiseTensorBezierPatches)
+	{
+		FSpeedAnalyticPiecewiseTensorBezierPatchRecord& Record =
+			Asset->PiecewiseTensorBezierPatches.AddDefaulted_GetRef();
+		Record.SourceId = SourcePatch.SourceId;
+		Record.SurfaceId = SourcePatch.SurfaceId;
+		Record.PrimitiveId = SourcePatch.PrimitiveId;
+		Record.CanonicalGroupId = SourcePatch.CanonicalGroupId;
+		Record.MaterialId = SourcePatch.MaterialId;
+		Record.ObjectType = SourcePatch.ObjectType;
+		Record.BlockingChannels = SourcePatch.BlockingChannels;
+		Record.bQueryCollisionEnabled = SourcePatch.bQueryCollisionEnabled;
+		Record.bSourceResidualCertified = SourcePatch.bSourceResidualCertified;
+		Record.bAuthorityEligible = SourcePatch.bAuthorityEligible;
+		Record.Cells.Reserve(SourcePatch.Cells.Num());
+		for (const Speed::Analytic::FPiecewiseTensorBezierCell& SourceCell :
+			SourcePatch.Cells)
+		{
+			FSpeedAnalyticPiecewiseTensorBezierCellRecord& CellRecord =
+				Record.Cells.AddDefaulted_GetRef();
+			CellRecord.FeatureId = SourceCell.FeatureId;
+			CellRecord.PrimitiveId = SourceCell.PrimitiveId;
+			CellRecord.MinimumU = SourceCell.MinimumU;
+			CellRecord.MaximumU = SourceCell.MaximumU;
+			CellRecord.MinimumV = SourceCell.MinimumV;
+			CellRecord.MaximumV = SourceCell.MaximumV;
+			CellRecord.LongitudinalParameterScale =
+				SourceCell.LongitudinalParameterScale;
+			CellRecord.bTerminalClosure = SourceCell.bTerminalClosure;
+			CellRecord.DegreeU = SourceCell.Surface.DegreeU;
+			CellRecord.DegreeV = SourceCell.Surface.DegreeV;
+			CellRecord.ControlPoints.Reserve(SourceCell.Surface.ControlPoints.Num());
+			for (const FVector3d& ControlPoint : SourceCell.Surface.ControlPoints)
+			{
+				CellRecord.ControlPoints.Add(FVector(ControlPoint));
+			}
+		}
+	}
+	const FString CompactTemplatePackageName =
+		Named.FindRef(TEXT("CompactTemplate"));
+	if (!CompactTemplatePackageName.IsEmpty())
+	{
+		const FString TemplateAssetName =
+			FPackageName::GetLongPackageAssetName(CompactTemplatePackageName);
+		const FString TemplateObjectPath = CompactTemplatePackageName +
+			TEXT(".") + TemplateAssetName;
+		const USpeedAnalyticCollisionAsset* TemplateAsset =
+			LoadObject<USpeedAnalyticCollisionAsset>(nullptr, *TemplateObjectPath);
+		FString TemplateReason;
+		const TSharedPtr<const Speed::Analytic::FAnalyticWorldData>
+			TemplateRuntime = TemplateAsset ?
+			TemplateAsset->BuildRuntimeData(&TemplateReason, false) : nullptr;
+		if (!TemplateRuntime)
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("Compact template %s has no valid analytical data: %s"),
+				*TemplateObjectPath,
+				TemplateAsset ? *TemplateReason : TEXT("Asset not found."));
+			return 6;
+		}
+		TMap<uint64, const FSpeedAnalyticMeshSourceRecord*> TemplateSourcesById;
+		for (const FSpeedAnalyticMeshSourceRecord& Source :
+			TemplateAsset->MeshSources)
+		{
+			TemplateSourcesById.Add(Source.SourceId, &Source);
+		}
+		auto FindTargetSource = [&Asset, &TemplateSourcesById](const uint64 SourceId)
+			-> TPair<const FSpeedAnalyticMeshSourceRecord*,
+				const FSpeedAnalyticMeshSourceRecord*>
+		{
+			const FSpeedAnalyticMeshSourceRecord* const* TemplateSourcePtr =
+				TemplateSourcesById.Find(SourceId);
+			if (!TemplateSourcePtr || !*TemplateSourcePtr)
+			{
+				return { nullptr, nullptr };
+			}
+			const FSpeedAnalyticMeshSourceRecord& TemplateSource = **TemplateSourcePtr;
+			for (const FSpeedAnalyticMeshSourceRecord& CandidateSource :
+				Asset->MeshSources)
+			{
+				if (CandidateSource.MeshPath == TemplateSource.MeshPath &&
+					CandidateSource.LodIndex == TemplateSource.LodIndex &&
+					CandidateSource.TriangleHash == TemplateSource.TriangleHash)
+				{
+					return { &TemplateSource, &CandidateSource };
+				}
+			}
+			return { nullptr, nullptr };
+		};
+		if (Asset->TensorBezierPatches.IsEmpty())
+		{
+			for (const Speed::Analytic::FTensorBezierPatch& SourcePatch :
+				TemplateRuntime->TensorBezierPatches)
+			{
+				const auto [TemplateSource, TargetSource] =
+					FindTargetSource(SourcePatch.SourceId);
+				if (!TemplateSource || !TargetSource) continue;
+				FSpeedAnalyticTensorBezierPatchRecord& Record =
+					Asset->TensorBezierPatches.AddDefaulted_GetRef();
+				Record.SourceId = TargetSource->SourceId;
+				Record.SurfaceId = Speed::Analytic::CombineStableIds(
+					TargetSource->SourceId, SourcePatch.SurfaceId);
+				Record.FeatureId = Speed::Analytic::CombineStableIds(
+					Record.SurfaceId, SourcePatch.FeatureId);
+				Record.PrimitiveId = Speed::Analytic::CombineStableIds(
+					Record.FeatureId, SourcePatch.PrimitiveId);
+				Record.CanonicalGroupId = Speed::Analytic::CombineStableIds(
+					TargetSource->SourceId, SourcePatch.CanonicalGroupId);
+				Record.MaterialId = TargetSource->MaterialIds.Contains(
+					SourcePatch.MaterialId) ? SourcePatch.MaterialId :
+					TargetSource->MaterialIds.IsEmpty() ? 0u :
+						static_cast<uint32>(TargetSource->MaterialIds[0]);
+				Record.ObjectType = TargetSource->ObjectType;
+				Record.BlockingChannels = TargetSource->BlockingChannels;
+				Record.DegreeU = SourcePatch.Surface.DegreeU;
+				Record.DegreeV = SourcePatch.Surface.DegreeV;
+				Record.ControlPoints.Reserve(
+					SourcePatch.Surface.ControlPoints.Num());
+				for (const FVector3d& TemplateWorldPoint :
+					SourcePatch.Surface.ControlPoints)
+				{
+					const FVector TemplateLocalPoint =
+						TemplateSource->WorldTransform.InverseTransformPosition(
+							FVector(TemplateWorldPoint));
+					Record.ControlPoints.Add(
+						TargetSource->WorldTransform.TransformPosition(
+							TemplateLocalPoint));
+				}
+				Record.bQueryCollisionEnabled =
+					TargetSource->bQueryCollisionEnabled;
+				Record.bAuthorityEligible = false;
+			}
+			Algo::Sort(Asset->TensorBezierPatches,
+				[](const FSpeedAnalyticTensorBezierPatchRecord& A,
+					const FSpeedAnalyticTensorBezierPatchRecord& B)
+				{
+					return A.PrimitiveId < B.PrimitiveId;
+				});
+			if (Asset->TensorBezierPatches.IsEmpty())
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("Compact template %s has no mesh-compatible tensor patches."),
+					*TemplateObjectPath);
+				return 6;
+			}
+		}
+		if (Asset->PiecewiseTensorBezierPatches.Num() <
+			TemplateRuntime->PiecewiseTensorBezierPatches.Num())
+		{
+			Asset->PiecewiseTensorBezierPatches.Reset();
+			for (const Speed::Analytic::FPiecewiseTensorBezierPatch& SourcePatch :
+				TemplateRuntime->PiecewiseTensorBezierPatches)
+			{
+				const auto [TemplateSource, TargetSource] =
+					FindTargetSource(SourcePatch.SourceId);
+				if (!TemplateSource || !TargetSource) continue;
+				FSpeedAnalyticPiecewiseTensorBezierPatchRecord& Record =
+					Asset->PiecewiseTensorBezierPatches.AddDefaulted_GetRef();
+				Record.SourceId = TargetSource->SourceId;
+				Record.SurfaceId = Speed::Analytic::CombineStableIds(
+					TargetSource->SourceId, SourcePatch.SurfaceId);
+				Record.PrimitiveId = Speed::Analytic::CombineStableIds(
+					Record.SurfaceId, SourcePatch.PrimitiveId);
+				Record.CanonicalGroupId = Speed::Analytic::CombineStableIds(
+					TargetSource->SourceId, SourcePatch.CanonicalGroupId);
+				Record.MaterialId = TargetSource->MaterialIds.Contains(
+					SourcePatch.MaterialId) ? SourcePatch.MaterialId :
+					TargetSource->MaterialIds.IsEmpty() ? 0u :
+						static_cast<uint32>(TargetSource->MaterialIds[0]);
+				Record.ObjectType = TargetSource->ObjectType;
+				Record.BlockingChannels = TargetSource->BlockingChannels;
+				Record.bQueryCollisionEnabled =
+					TargetSource->bQueryCollisionEnabled;
+				Record.bSourceResidualCertified =
+					SourcePatch.bSourceResidualCertified;
+				Record.bAuthorityEligible =
+					SourcePatch.bAuthorityEligible &&
+					TargetSource->bQueryCollisionEnabled;
+				Record.Cells.Reserve(SourcePatch.Cells.Num());
+				for (const Speed::Analytic::FPiecewiseTensorBezierCell& SourceCell :
+					SourcePatch.Cells)
+				{
+					FSpeedAnalyticPiecewiseTensorBezierCellRecord& CellRecord =
+						Record.Cells.AddDefaulted_GetRef();
+					CellRecord.FeatureId = Speed::Analytic::CombineStableIds(
+						Record.SurfaceId, SourceCell.FeatureId);
+					CellRecord.PrimitiveId = Speed::Analytic::CombineStableIds(
+						CellRecord.FeatureId, SourceCell.PrimitiveId);
+					CellRecord.MinimumU = SourceCell.MinimumU;
+					CellRecord.MaximumU = SourceCell.MaximumU;
+					CellRecord.MinimumV = SourceCell.MinimumV;
+					CellRecord.MaximumV = SourceCell.MaximumV;
+					CellRecord.LongitudinalParameterScale =
+						SourceCell.LongitudinalParameterScale;
+					CellRecord.bTerminalClosure = SourceCell.bTerminalClosure;
+					CellRecord.DegreeU = SourceCell.Surface.DegreeU;
+					CellRecord.DegreeV = SourceCell.Surface.DegreeV;
+					CellRecord.ControlPoints.Reserve(
+						SourceCell.Surface.ControlPoints.Num());
+					for (const FVector3d& TemplateWorldPoint :
+						SourceCell.Surface.ControlPoints)
+					{
+						const FVector TemplateLocalPoint =
+							TemplateSource->WorldTransform.InverseTransformPosition(
+								FVector(TemplateWorldPoint));
+						CellRecord.ControlPoints.Add(
+							TargetSource->WorldTransform.TransformPosition(
+								TemplateLocalPoint));
+					}
+				}
+				Algo::Sort(Record.Cells,
+					[](const FSpeedAnalyticPiecewiseTensorBezierCellRecord& A,
+						const FSpeedAnalyticPiecewiseTensorBezierCellRecord& B)
+					{
+						return A.PrimitiveId < B.PrimitiveId;
+					});
+			}
+			Algo::Sort(Asset->PiecewiseTensorBezierPatches,
+				[](const FSpeedAnalyticPiecewiseTensorBezierPatchRecord& A,
+					const FSpeedAnalyticPiecewiseTensorBezierPatchRecord& B)
+				{
+					return A.PrimitiveId < B.PrimitiveId;
+				});
+		}
 	}
 	if (!Asset->ValidateGeneratedData(&ValidationReason))
 	{
@@ -2386,12 +2693,24 @@ int32 USpeedAnalyticBakeCommandlet::Main(const FString& Params)
 	{
 		AuthorityEligibleCount += Patch.bAuthorityEligible ? 1 : 0;
 	}
+	for (const FSpeedAnalyticTensorBezierPatchRecord& Patch :
+		Asset->TensorBezierPatches)
+	{
+		AuthorityEligibleCount += Patch.bAuthorityEligible ? 1 : 0;
+	}
+	for (const FSpeedAnalyticPiecewiseTensorBezierPatchRecord& Patch :
+		Asset->PiecewiseTensorBezierPatches)
+	{
+		AuthorityEligibleCount += Patch.bAuthorityEligible ? 1 : 0;
+	}
 	UE_LOG(LogTemp, Display,
-		TEXT("[AnalyticBake] Asset=%s Sources=%d SourceHash=%016llX RuntimeTriangles=%d Positions=%d Normals=%d RuntimePlanes=%d RuntimeExtrudedQuintics=%d AuthorityEligible=%d"),
+		TEXT("[AnalyticBake] Asset=%s Sources=%d SourceHash=%016llX RuntimeTriangles=%d Positions=%d Normals=%d RuntimePlanes=%d RuntimeExtrudedQuintics=%d RuntimeTensorBezier=%d RuntimePiecewiseTensorBezier=%d AuthorityEligible=%d"),
 		*OutputPackageName, Asset->MeshSources.Num(), Asset->SourceHash,
 		Asset->IndexedTriangles.Num(), Asset->VertexPositions.Num(),
 		Asset->VertexNormals.Num(),
 		Asset->BoundedPlanes.Num(), Asset->ExtrudedQuinticPatches.Num(),
+		Asset->TensorBezierPatches.Num(),
+		Asset->PiecewiseTensorBezierPatches.Num(),
 		AuthorityEligibleCount);
 	return 0;
 }

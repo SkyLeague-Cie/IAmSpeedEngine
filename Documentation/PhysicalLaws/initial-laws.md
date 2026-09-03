@@ -60,6 +60,16 @@ and inclined surfaces use the same law expressed in the contact frame. Owners
 include solid sub-bodies, movement components, persistent pairs, and the world
 solver.
 
+On a smooth varying-normal provider, sustained contact is transported during
+the canonical interval rather than integrated as one straight chord followed
+by endpoint depenetration. Bounded deterministic stages reacquire the provider
+normal and witness. Linear velocity is parallel-transported between successive
+tangent spaces; only residual closing point speed is removed. This preserves
+tangential speed without applying a fresh witness-dependent angular impulse at
+every stage. Contracts cover tangential-speed preservation, final tangence,
+reverse symmetry, non-closing velocity, determinism, bounded stage/query cost,
+and residual penetration.
+
 ## `IAMSPEED.PHYS.RESTING_EQUILIBRIUM.V1` — RestingEquilibrium
 
 - `CompositionLevel`: Molecular
@@ -97,6 +107,12 @@ normal motion, admissible separation, and topology policy. A smooth geometric
 join may still be an intentional release boundary. Owners include wheel and
 ray-wheel sub-bodies, wheeled components, movement components, and the static
 collision world.
+
+An established varying-normal support is owned by its immutable provider and
+canonical group. It must not be rediscovered and impulsed repeatedly within
+one frame, nor solved a second time against a cached tangent plane. Provider
+projection is translation-feasible at every published frame; release remains
+unilateral and occurs on provider loss or admissible separating motion.
 
 ## `IAMSPEED.PHYS.MULTI_CONTACT_EQUILIBRIUM.V1` — MultiContactEquilibrium
 

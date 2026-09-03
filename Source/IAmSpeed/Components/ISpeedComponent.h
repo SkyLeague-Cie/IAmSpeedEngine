@@ -62,6 +62,11 @@ public:
 
 	// ==================== SubBody-specific info retrieval functions ====================
 	virtual SubBodyConfig GetSubBodyConfig(const USSubBody& SubBody) const = 0;
+	// A fresh principal-body contact can belong to a static surface on which a
+	// subordinate support manifold is already established.  Components without
+	// subordinate supports keep the ordinary free-impact response.
+	virtual bool HasCompatibleEstablishedStaticSupport(
+		const SHitResult& SurfaceHit) const { return false; }
 	//===================================================================================
 
 	// overload this function to return the appropriate kinematic state for SubBody (e.g. wheel kinematics or hitbox kinematics from car body)
@@ -136,6 +141,10 @@ public:
 
 	// This is used to advance the state to the time of impact after a hit is detected
 	void IntegrateKinematics(const float& SubDelta);
+	// Make already-established static contacts feasible without advancing time.
+	// This is also run at the canonical frame boundary so a contact acquired at
+	// the final TOI cannot expose a penetrating pose to observers.
+	bool ProjectEstablishedStaticContacts(const float& Delta);
 	void UpdateSubBodiesKinematics();
 
 	// Called once per physics frame to reset any cached info in the component or its sub-bodies (e.g. hit info)

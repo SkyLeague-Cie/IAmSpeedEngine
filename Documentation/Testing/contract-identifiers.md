@@ -15,6 +15,7 @@ reserved cases are:
 | `IAMSPEED.PHYS.CONTACT_DETECTION.V1.SYMMETRY` | Reflected/rotated equivalents |
 | `IAMSPEED.PHYS.CONTACT_DETECTION.V1.DETERMINISM` | Repeated stable result and ordering |
 | `IAMSPEED.PHYS.CONTACT_DETECTION.V1.SERIALIZATION` | Asset/runtime reconstruction |
+| `IAMSPEED.PHYS.CONTACT_DETECTION.V1.TENSOR_APPROXIMATION` | Exact tensor evaluation and certified finite-cell approximation |
 | `IAMSPEED.PHYS.NORMAL_RESPONSE.V1.FALL_CONTACT` | Free fall, first contact, non-closing response |
 | `IAMSPEED.PHYS.NORMAL_RESPONSE.V1.RESTITUTION` | Configured bounce response |
 | `IAMSPEED.PHYS.FRICTION.V1.HORIZONTAL` | Horizontal slip decay/work sign |

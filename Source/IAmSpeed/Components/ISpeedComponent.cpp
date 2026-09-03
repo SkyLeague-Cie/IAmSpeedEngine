@@ -1,5 +1,6 @@
 #include "ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 
 namespace
 {
@@ -31,19 +32,62 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
     if (SubDelta <= 0.f)
 		return;
 
-	// Advance component kinematics only
-	IntegrateKinematicsPrv(SubDelta);
+	bool bRequiresContactTransport = false;
+	for (const USSubBody* SubBody : GetSubBodies())
+	{
+		if (SubBody && SubBody->RequiresEstablishedStaticContactTransport())
+		{
+			bRequiresContactTransport = true;
+			break;
+		}
+	}
 
-	// Enforce the linear limit directly on the canonical COM state.
-	SetPhysCOMVelocity(GetPhysCOMVelocity());
-	SetPhysAngularVelocity(GetPhysAngularVelocity());
+	// A curved established contact cannot be integrated as one straight chord
+	// followed by a depenetration at its end: that freezes one tangent normal
+	// over the whole interval. Transport it through a bounded deterministic set
+	// of stages instead. Each stage samples the analytical provider again, so
+	// pose feasibility and the unilateral velocity reaction follow the changing
+	// surface normal during this very SubDelta.
+	constexpr float ContactTransportStepSeconds = 1.0f / 1200.0f;
+	constexpr int32 MaximumContactTransportSteps = 4;
+	const int32 TransportSteps = bRequiresContactTransport
+		? FMath::Clamp(
+			FMath::CeilToInt(SubDelta / ContactTransportStepSeconds),
+			1, MaximumContactTransportSteps)
+		: 1;
+	const float TransportDelta = SubDelta / static_cast<float>(TransportSteps);
+	for (int32 Step = 0; Step < TransportSteps; ++Step)
+	{
+		IntegrateKinematicsPrv(TransportDelta);
 
-	// update sub-body kinematics to the time of impact
-	UpdateSubBodiesKinematics();
+		// Enforce limits directly on the canonical COM state.
+		SetPhysCOMVelocity(GetPhysCOMVelocity());
+		SetPhysAngularVelocity(GetPhysAngularVelocity());
+
+		UpdateSubBodiesKinematics();
+		ProjectEstablishedStaticContacts(TransportDelta);
+	}
 
 	// update physics state after integrating kinematics to the time of impact (e.g update suspension traces for wheels, update hit info for hitboxes, etc.)
 	PostIntegrateKinematics(SubDelta);
     // UE_LOG(LogTemp, Log, TEXT("[IntegrateKinematics] NumFrame = %d, SubDelta = %f. Kinematics = %s"), NumFrame(), SubDelta, *GetKinematicState().ToString());
+}
+
+bool ISpeedComponent::ProjectEstablishedStaticContacts(const float& Delta)
+{
+	bool bProjected = false;
+	for (USSubBody* SubBody : GetSubBodies())
+	{
+		if (SubBody && SubBody->ProjectEstablishedStaticContact(Delta))
+		{
+			bProjected = true;
+		}
+	}
+	if (bProjected)
+	{
+		UpdateSubBodiesKinematics();
+	}
+	return bProjected;
 }
 
 void ISpeedComponent::UpdateSubBodiesKinematics()
@@ -140,7 +184,18 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, co
         Best.TOI = TOI;
         Best.Resolver = Resolver;
         Best.Hit = HR;
-        Best.PairKey = USSubBody::MakePairKey(Resolver ? Resolver : Sweeper, HR.Component.Get());
+        Best.PairKey = USSubBody::MakePairKey(
+            Resolver ? Resolver : Sweeper, HR.Component.Get());
+        // One static component may own several adjacent analytical providers.
+        // Suppress repeated event resolution only within the same immutable
+        // provider; a genuine seam transition must remain independently visible.
+        const uint64 ProviderId = HR.CanonicalGroupId != 0
+            ? HR.CanonicalGroupId : HR.SurfaceId;
+        if (ProviderId != 0)
+        {
+            Best.PairKey = Speed::Analytic::CombineStableIds(
+                Best.PairKey, ProviderId);
+        }
     }
 
     return Best;

@@ -22,6 +22,7 @@
 #include "TimerManager.h"
 #include "Algo/Sort.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/PackageName.h"
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedPersistentDynamicPairs(
@@ -53,6 +54,14 @@ static TAutoConsoleVariable<float> CVarIAmSpeedAnalyticLandscapeFlatnessToleranc
 	TEXT("p.IAmSpeed.AnalyticWorld.Landscape.FlatnessToleranceCm"),
 	0.001f,
 	TEXT("Maximum full-source height residual accepted by the shadow-only flat Landscape adapter."));
+
+namespace
+{
+	FString AuthoredObjectPath(const UObject& Object)
+	{
+		return UWorld::RemovePIEPrefix(Object.GetPathName());
+	}
+}
 
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
@@ -98,10 +107,14 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		return A.GetPathName() < B.GetPathName();
 	});
 
-	TUniquePtr<Speed::Analytic::FAnalyticWorldData> Imported =
-		MakeUnique<Speed::Analytic::FAnalyticWorldData>();
+	TSharedPtr<Speed::Analytic::FAnalyticWorldData> Imported =
+		MakeShared<Speed::Analytic::FAnalyticWorldData>();
+	TSharedPtr<const Speed::Analytic::FAnalyticWorldData> BakedRuntimeWorld;
+	bool bRuntimeWorldMutated = false;
+	bool bRuntimeWorldIncrementallyFinalized = false;
 	uint64 CombinedSourceHash = 0;
 	bool bSourceReadinessPending = false;
+	TArray<Speed::Analytic::FBoundedPlane> AdditionalLandscapePlanes;
 
 	TArray<AActor*> AnalyticMeshSourceActors;
 	for (TActorIterator<AActor> It(World); It; ++It)
@@ -117,18 +130,45 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 	});
 	uint64 MeshSourceInventoryHash = 0;
 	int32 MeshSourceComponentCount = 0;
+	TArray<UStaticMeshComponent*> AnalyticMeshComponents;
+	const USpeedAnalyticCollisionAsset* ExplicitBakedAsset = nullptr;
+	FString ExplicitBakedAssetPath;
 	for (const AActor* SourceActor : AnalyticMeshSourceActors)
 	{
 		TArray<UStaticMeshComponent*> MeshComponents;
+		const USpeedAnalyticSourceComponent* SourceComponent =
+			SourceActor->FindComponentByClass<USpeedAnalyticSourceComponent>();
 		if (const ASpeedStaticActor* SpeedStaticActor =
 			Cast<ASpeedStaticActor>(SourceActor))
 		{
 			SpeedStaticActor->GatherAnalyticStaticMeshes(MeshComponents);
 		}
-		else if (const USpeedAnalyticSourceComponent* SourceComponent =
-			SourceActor->FindComponentByClass<USpeedAnalyticSourceComponent>())
+		else if (SourceComponent)
 		{
 			SourceComponent->GatherOwnedStaticMeshes(MeshComponents);
+		}
+		if (SourceComponent && !SourceComponent->AnalyticCollisionAsset.IsNull())
+		{
+			const FString AssetPath =
+				SourceComponent->AnalyticCollisionAsset.ToSoftObjectPath().ToString();
+			const USpeedAnalyticCollisionAsset* CandidateAsset =
+				SourceComponent->AnalyticCollisionAsset.LoadSynchronous();
+			if (!CandidateAsset)
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[AnalyticExplicitBake] Asset=%s Result=Missing Owner=%s"),
+					*AssetPath, *SourceActor->GetPathName());
+				return;
+			}
+			if (ExplicitBakedAsset && ExplicitBakedAsset != CandidateAsset)
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[AnalyticExplicitBake] Result=ConflictingAssets First=%s Second=%s"),
+					*ExplicitBakedAssetPath, *AssetPath);
+				return;
+			}
+			ExplicitBakedAsset = CandidateAsset;
+			ExplicitBakedAssetPath = AssetPath;
 		}
 		for (const UStaticMeshComponent* MeshComponent : MeshComponents)
 		{
@@ -139,12 +179,16 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 				continue;
 			}
 			++MeshSourceComponentCount;
+			AnalyticMeshComponents.Add(
+				const_cast<UStaticMeshComponent*>(MeshComponent));
+			const FString ActorPath = AuthoredObjectPath(*SourceActor);
+			const FString ComponentPath = AuthoredObjectPath(*MeshComponent);
 			AnalyticSourceComponents.Add(
-				Speed::Analytic::StableStringId(MeshComponent->GetPathName()),
+				Speed::Analytic::StableStringId(ComponentPath),
 				const_cast<UStaticMeshComponent*>(MeshComponent));
 			const FString StableIdentity = FString::Printf(
-				TEXT("%s|%s|%s|%s"), *SourceActor->GetPathName(),
-				*MeshComponent->GetPathName(), *Mesh->GetPathName(),
+				TEXT("%s|%s|%s|%s"), *ActorPath,
+				*ComponentPath, *Mesh->GetPathName(),
 				*MeshComponent->GetComponentTransform().ToString());
 			MeshSourceInventoryHash = Speed::Analytic::CombineStableIds(
 				MeshSourceInventoryHash,
@@ -157,13 +201,23 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 	}
 
 	bool bMeshBakeLoaded = false;
-	const FString WorldName = FPackageName::GetShortName(World->GetOutermost());
+	// PIE duplicates a world under UEDPIE_<instance>_<map>. Generated collision
+	// certificates belong to the authored map and must keep the same stable ids
+	// in editor play, standalone and packaged execution.
+	const FString WorldName = UWorld::RemovePIEPrefix(
+		FPackageName::GetShortName(World->GetOutermost()));
 	const FString BakedPackagePath = FString::Printf(
 		TEXT("/Game/Generated/Analytic/%s_AnalyticWorld"), *WorldName);
 	const FString BakedObjectPath = FString::Printf(
 		TEXT("%s.%s_AnalyticWorld"), *BakedPackagePath, *WorldName);
-	if (const USpeedAnalyticCollisionAsset* BakedAsset =
-		LoadObject<USpeedAnalyticCollisionAsset>(nullptr, *BakedObjectPath))
+	const bool bUsesExplicitBake = ExplicitBakedAsset != nullptr;
+	const USpeedAnalyticCollisionAsset* BakedAsset = ExplicitBakedAsset;
+	if (!BakedAsset)
+	{
+		BakedAsset = LoadObject<USpeedAnalyticCollisionAsset>(
+			nullptr, *BakedObjectPath);
+	}
+	if (BakedAsset)
 	{
 		int32 SerializedPlaneAuthorityCount = 0;
 		for (const FSpeedAnalyticBoundedPlaneRecord& Plane :
@@ -177,6 +231,18 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		{
 			SerializedQuinticAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
 		}
+		int32 SerializedTensorAuthorityCount = 0;
+		for (const FSpeedAnalyticTensorBezierPatchRecord& Patch :
+			BakedAsset->TensorBezierPatches)
+		{
+			SerializedTensorAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
+		}
+		int32 SerializedPiecewiseAuthorityCount = 0;
+		for (const FSpeedAnalyticPiecewiseTensorBezierPatchRecord& Patch :
+			BakedAsset->PiecewiseTensorBezierPatches)
+		{
+			SerializedPiecewiseAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
+		}
 		uint64 BakedInventoryHash = 0;
 		for (const FSpeedAnalyticMeshSourceRecord& Source : BakedAsset->MeshSources)
 		{
@@ -188,10 +254,25 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 				Speed::Analytic::StableStringId(StableIdentity));
 		}
 		FString BakedReason;
+		const bool bAuthorityProvidersOnly =
+			Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend();
+		const double RuntimeBuildStartSeconds = FPlatformTime::Seconds();
 		const TSharedPtr<const Speed::Analytic::FAnalyticWorldData> BakedRuntime =
-			BakedAsset->BuildRuntimeData(&BakedReason);
+			BakedAsset->BuildRuntimeData(&BakedReason, false,
+				bAuthorityProvidersOnly);
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticRuntimeLoadTiming] AuthorityOnly=%d Seconds=%.6f Success=%d"),
+			bAuthorityProvidersOnly ? 1 : 0,
+			FPlatformTime::Seconds() - RuntimeBuildStartSeconds,
+			BakedRuntime ? 1 : 0);
 		int32 RuntimePlaneAuthorityCount = 0;
 		int32 RuntimeQuinticAuthorityCount = 0;
+		int32 RuntimeTensorAuthorityCount = 0;
+		int32 RuntimePiecewiseAuthorityCount = 0;
+		int64 RuntimeTensorApproximationCellCount = 0;
+		int64 RuntimePiecewiseCellCount = 0;
+		int64 RuntimePiecewiseApproximationCellCount = 0;
+		int64 RuntimePiecewiseApproximationBvhNodeCount = 0;
 		if (BakedRuntime)
 		{
 			for (const Speed::Analytic::FBoundedPlane& Plane : BakedRuntime->Planes)
@@ -203,41 +284,120 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			{
 				RuntimeQuinticAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
 			}
+			for (const Speed::Analytic::FTensorBezierPatch& Patch :
+				BakedRuntime->TensorBezierPatches)
+			{
+				RuntimeTensorAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
+				RuntimeTensorApproximationCellCount += Patch.ApproximationCells.Num();
+			}
+			for (const Speed::Analytic::FPiecewiseTensorBezierPatch& Patch :
+				BakedRuntime->PiecewiseTensorBezierPatches)
+			{
+				RuntimePiecewiseAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
+				RuntimePiecewiseCellCount += Patch.Cells.Num();
+				for (const Speed::Analytic::FPiecewiseTensorBezierCell& Cell :
+					Patch.Cells)
+				{
+					RuntimePiecewiseApproximationCellCount +=
+						Cell.ApproximationCells.Num();
+					RuntimePiecewiseApproximationBvhNodeCount +=
+						Cell.ApproximationCellBvhNodes.Num();
+				}
+			}
 		}
 		const int32 RuntimePlaneCount = BakedRuntime ? BakedRuntime->Planes.Num() : 0;
 		const int32 RuntimeQuinticCount = BakedRuntime ?
 			BakedRuntime->ExtrudedQuinticPatches.Num() : 0;
+		const int32 RuntimeTensorCount = BakedRuntime ?
+			BakedRuntime->TensorBezierPatches.Num() : 0;
+		const int32 RuntimePiecewiseCount = BakedRuntime ?
+			BakedRuntime->PiecewiseTensorBezierPatches.Num() : 0;
 		UE_LOG(LogTemp, Display,
-			TEXT("[AnalyticMeshBakeAuthority] BakeSchema=%u SerializedPlanes=%d/%d SerializedQuintics=%d/%d RuntimePlanes=%d/%d RuntimeQuintics=%d/%d"),
+			TEXT("[AnalyticMeshBakeAuthority] BakeSchema=%u SerializedPlanes=%d/%d SerializedQuintics=%d/%d SerializedTensors=%d/%d SerializedPiecewise=%d/%d RuntimePlanes=%d/%d RuntimeQuintics=%d/%d RuntimeTensors=%d/%d RuntimePiecewise=%d/%d"),
 			BakedAsset->BakeSchemaVersion,
 			SerializedPlaneAuthorityCount, BakedAsset->BoundedPlanes.Num(),
 			SerializedQuinticAuthorityCount,
 			BakedAsset->ExtrudedQuinticPatches.Num(),
+			SerializedTensorAuthorityCount, BakedAsset->TensorBezierPatches.Num(),
+			SerializedPiecewiseAuthorityCount,
+			BakedAsset->PiecewiseTensorBezierPatches.Num(),
 			RuntimePlaneAuthorityCount, RuntimePlaneCount,
-			RuntimeQuinticAuthorityCount, RuntimeQuinticCount);
-		if (BakedRuntime && BakedInventoryHash == MeshSourceInventoryHash &&
-			BakedAsset->MeshSources.Num() == MeshSourceComponentCount)
+			RuntimeQuinticAuthorityCount, RuntimeQuinticCount,
+			RuntimeTensorAuthorityCount, RuntimeTensorCount,
+			RuntimePiecewiseAuthorityCount, RuntimePiecewiseCount);
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticMeshBakeAcceleration] TensorApproximationCells=%lld PiecewiseCells=%lld PiecewiseApproximationCells=%lld PiecewiseApproximationBvhNodes=%lld"),
+			RuntimeTensorApproximationCellCount, RuntimePiecewiseCellCount,
+			RuntimePiecewiseApproximationCellCount,
+			RuntimePiecewiseApproximationBvhNodeCount);
+		bool bInventoryMatches =
+			BakedInventoryHash == MeshSourceInventoryHash &&
+			BakedAsset->MeshSources.Num() == MeshSourceComponentCount;
+		if (bUsesExplicitBake)
 		{
-			Imported->Triangles = BakedRuntime->Triangles;
-			Imported->Planes = BakedRuntime->Planes;
-			Imported->ExtrudedQuinticPatches =
-				BakedRuntime->ExtrudedQuinticPatches;
+			bInventoryMatches =
+				BakedAsset->MeshSources.Num() == MeshSourceComponentCount;
+			TSet<const UStaticMeshComponent*> ClaimedComponents;
+			for (const FSpeedAnalyticMeshSourceRecord& Source :
+				BakedAsset->MeshSources)
+			{
+				const UStaticMeshComponent* MatchedComponent = nullptr;
+				for (const UStaticMeshComponent* Candidate : AnalyticMeshComponents)
+				{
+					if (!Candidate || ClaimedComponents.Contains(Candidate) ||
+						!Candidate->GetStaticMesh() ||
+						Candidate->GetStaticMesh()->GetPathName() != Source.MeshPath ||
+						!Candidate->GetComponentTransform().Equals(
+							Source.WorldTransform, 0.01f))
+					{
+						continue;
+					}
+					MatchedComponent = Candidate;
+					break;
+				}
+				if (!MatchedComponent)
+				{
+					bInventoryMatches = false;
+					break;
+				}
+				ClaimedComponents.Add(MatchedComponent);
+				AnalyticSourceComponents.Add(
+					Source.SourceId,
+					const_cast<UStaticMeshComponent*>(MatchedComponent));
+			}
+		}
+		if (BakedRuntime && bInventoryMatches)
+		{
+			BakedRuntimeWorld = BakedRuntime;
 			CombinedSourceHash = Speed::Analytic::CombineStableIds(
 				CombinedSourceHash, BakedRuntime->SourceHash);
 			bMeshBakeLoaded = true;
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticExplicitBake] Asset=%s Result=%s"),
+				bUsesExplicitBake ? *ExplicitBakedAssetPath : *BakedObjectPath,
+				bUsesExplicitBake ? TEXT("Accepted") : TEXT("MapFallbackAccepted"));
 		}
 		else
 		{
 			UE_LOG(LogTemp, Warning,
 				TEXT("[AnalyticMeshBake] Asset=%s Result=Rejected LiveHash=%016llX BakedHash=%016llX Detail=%s"),
-				*BakedObjectPath, MeshSourceInventoryHash, BakedInventoryHash,
+				bUsesExplicitBake ? *ExplicitBakedAssetPath : *BakedObjectPath,
+				MeshSourceInventoryHash, BakedInventoryHash,
 				BakedRuntime ? TEXT("Source inventory mismatch.") : *BakedReason);
 		}
 	}
 	UE_LOG(LogTemp, Display,
 		TEXT("[AnalyticMeshSourceInventory] Actors=%d Components=%d Hash=%016llX Baked=%d Triangles=%d"),
 		AnalyticMeshSourceActors.Num(), MeshSourceComponentCount,
-		MeshSourceInventoryHash, bMeshBakeLoaded ? 1 : 0, Imported->Triangles.Num());
+		MeshSourceInventoryHash, bMeshBakeLoaded ? 1 : 0,
+		BakedRuntimeWorld ? BakedRuntimeWorld->Triangles.Num() : Imported->Triangles.Num());
+	if (MeshSourceComponentCount > 0 && !bMeshBakeLoaded)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[AnalyticAuthorityCoverageMissing] World=%s Components=%d Hash=%016llX Detail=The strict analytical world will remain unavailable until the authored source inventory has a matching immutable bake."),
+			*WorldName, MeshSourceComponentCount, MeshSourceInventoryHash);
+		return;
+	}
 
 	for (const ALandscapeProxy* Landscape : Landscapes)
 	{
@@ -248,13 +408,18 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		if (!Landscape->CollisionComponents.IsEmpty() &&
 			Landscape->CollisionComponents[0])
 		{
+			const FString LandscapePath = AuthoredObjectPath(*Landscape);
 			AnalyticSourceComponents.Add(
-				Speed::Analytic::StableStringId(Landscape->GetPathName()),
+				Speed::Analytic::StableStringId(LandscapePath),
 				Landscape->CollisionComponents[0]);
 		}
+		const FString LandscapePath = AuthoredObjectPath(*Landscape);
 		const uint64 LandscapeSourceId =
-			Speed::Analytic::StableStringId(Landscape->GetPathName());
-		if (Imported->Planes.ContainsByPredicate(
+			Speed::Analytic::StableStringId(LandscapePath);
+		const Speed::Analytic::FAnalyticWorldData& CandidateWorld =
+			BakedRuntimeWorld && !bRuntimeWorldMutated
+				? *BakedRuntimeWorld : *Imported;
+		if (CandidateWorld.Planes.ContainsByPredicate(
 			[LandscapeSourceId](const Speed::Analytic::FBoundedPlane& Plane)
 			{
 				return Plane.SourceId == LandscapeSourceId &&
@@ -279,7 +444,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			Output.Result == Speed::Analytic::EFlatLandscapeAdapterResult::
 				SuccessAuthorityEligible)
 		{
-			Imported->Planes.Add(Output.Plane);
+			AdditionalLandscapePlanes.Add(Output.Plane);
 			CombinedSourceHash = Speed::Analytic::CombineStableIds(
 				CombinedSourceHash, Output.Plane.SurfaceId);
 		}
@@ -297,21 +462,59 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 				this, &USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources));
 		return;
 	}
-	Imported->SourceHash = CombinedSourceHash;
-	FString ValidationReason;
-	if (!Imported->FinalizeAndValidate(&ValidationReason))
+	if (!AdditionalLandscapePlanes.IsEmpty())
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[AnalyticWorldBuild] Rejected Detail=%s"), *ValidationReason);
-		return;
+		if (BakedRuntimeWorld)
+		{
+			Imported = MakeShared<Speed::Analytic::FAnalyticWorldData>(
+				*BakedRuntimeWorld);
+			Imported->SourceHash = CombinedSourceHash;
+			FString ExtensionReason;
+			if (!Imported->AppendFinalizedNonCompactPlanes(
+				MoveTemp(AdditionalLandscapePlanes), &ExtensionReason))
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("[AnalyticWorldBuild] IncrementalPlaneExtensionRejected Detail=%s"),
+					*ExtensionReason);
+				return;
+			}
+			bRuntimeWorldMutated = true;
+			bRuntimeWorldIncrementallyFinalized = true;
+		}
+		else
+		{
+			Imported->Planes.Append(MoveTemp(AdditionalLandscapePlanes));
+		}
 	}
+	TSharedPtr<const Speed::Analytic::FAnalyticWorldData> FinalizedWorld;
+	if (BakedRuntimeWorld && !bRuntimeWorldMutated)
+	{
+		FinalizedWorld = BakedRuntimeWorld;
+	}
+	else if (bRuntimeWorldIncrementallyFinalized)
+	{
+		FinalizedWorld = Imported;
+	}
+	else
+	{
+		Imported->SourceHash = CombinedSourceHash;
+		FString ValidationReason;
+		if (!Imported->FinalizeAndValidate(&ValidationReason))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[AnalyticWorldBuild] Rejected Detail=%s"), *ValidationReason);
+			return;
+		}
+		FinalizedWorld = Imported;
+	}
+	const Speed::Analytic::FAnalyticWorldData& Finalized = *FinalizedWorld;
 	int32 BoundaryEdgeCount = 0;
 	int32 NonManifoldEdgeCount = 0;
 	int32 SmoothEdgeCount = 0;
 	int32 CreaseEdgeCount = 0;
 	int32 PlanarCandidateCount = 0;
 	int32 ValidShapeSampleCount = 0;
-	for (const Speed::Analytic::FTriangleMeshEdge& Edge : Imported->MeshEdges)
+	for (const Speed::Analytic::FTriangleMeshEdge& Edge : Finalized.MeshEdges)
 	{
 		BoundaryEdgeCount += Edge.IsBoundary() ? 1 : 0;
 		NonManifoldEdgeCount += Edge.IsNonManifold() ? 1 : 0;
@@ -320,26 +523,26 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		CreaseEdgeCount += Edge.Continuity ==
 			Speed::Analytic::EEdgeContinuity::Crease ? 1 : 0;
 	}
-	for (const Speed::Analytic::FSurfacePatch& Patch : Imported->SurfacePatches)
+	for (const Speed::Analytic::FSurfacePatch& Patch : Finalized.SurfacePatches)
 	{
 		PlanarCandidateCount += Patch.Kind ==
 			Speed::Analytic::ESurfacePatchKind::PlanarCandidate ? 1 : 0;
 	}
-	for (const Speed::Analytic::FVertexShapeSample& Sample : Imported->VertexShapeSamples)
+	for (const Speed::Analytic::FVertexShapeSample& Sample : Finalized.VertexShapeSamples)
 	{
 		ValidShapeSampleCount += Sample.bValid ? 1 : 0;
 	}
 	UE_LOG(LogTemp, Display,
 		TEXT("[AnalyticWorldBuild] Attempt=%u Planes=%d ExtrudedQuintics=%d Triangles=%d Vertices=%d Edges=%d BoundaryEdges=%d NonManifoldEdges=%d SmoothEdges=%d CreaseEdges=%d SmoothRegions=%d Patches=%d PlanarCandidates=%d ShapeValid=%d BvhNodes=%d Hash=%016llX AuthorityEligible=%d PendingSource=%d"),
-		AnalyticWorldBuildAttempt, Imported->Planes.Num(),
-		Imported->ExtrudedQuinticPatches.Num(), Imported->Triangles.Num(),
-		Imported->MeshVertices.Num(), Imported->MeshEdges.Num(), BoundaryEdgeCount,
+		AnalyticWorldBuildAttempt, Finalized.Planes.Num(),
+		Finalized.ExtrudedQuinticPatches.Num(), Finalized.Triangles.Num(),
+		Finalized.MeshVertices.Num(), Finalized.MeshEdges.Num(), BoundaryEdgeCount,
 		NonManifoldEdgeCount, SmoothEdgeCount, CreaseEdgeCount,
-		Imported->SmoothSurfaceRegions.Num(), Imported->SurfacePatches.Num(), PlanarCandidateCount,
-		ValidShapeSampleCount, Imported->TriangleBvh.Num(), Imported->StableHash(),
-		Imported->IsAuthorityEligible() ? 1 : 0,
+		Finalized.SmoothSurfaceRegions.Num(), Finalized.SurfacePatches.Num(), PlanarCandidateCount,
+		ValidShapeSampleCount, Finalized.TriangleBvh.Num(), Finalized.StableHash(),
+		Finalized.IsAuthorityEligible() ? 1 : 0,
 		bSourceReadinessPending ? 1 : 0);
-	AnalyticWorldData = MoveTemp(Imported);
+	AnalyticWorldData = MoveTemp(FinalizedWorld);
 	StaticCollisionWorld = MakeUnique<Speed::FAnalyticStaticCollisionWorld>(
 		*AnalyticWorldData);
 }
@@ -1213,16 +1416,29 @@ ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
+	const double StepStartSeconds = FPlatformTime::Seconds();
+	LastStepDiagnostics = FSpeedStepDiagnostics();
+	LastStepDiagnostics.Serial = ++StepSerial;
+	LastStepDiagnostics.Frame = Frame;
+	LastStepDiagnostics.PhysicalDeltaTimeMilliseconds =
+		static_cast<double>(Dt) * 1000.0;
+	constexpr int32 MaxIter = 24;
+	LastStepDiagnostics.MaximumIterationCount = MaxIter;
 	CurrentStepFrame = Frame;
     ApplyPendingOps();
     RebuildSortedIfNeeded();
 
     if (Dt <= 0.f || ComponentsSorted.Num() == 0)
+	{
+		LastStepDiagnostics.TotalMilliseconds =
+			(FPlatformTime::Seconds() - StepStartSeconds) * 1000.0;
         return;
+	}
 
     // ------------------------------------------------------------
     // 1) Reset frame
     // ------------------------------------------------------------
+	const double ResetStartSeconds = FPlatformTime::Seconds();
 	for (ISpeedComponent* Comp : ComponentsSorted)
     {
         if (!Comp) continue;
@@ -1231,131 +1447,165 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         Comp->ResetForFrame(Dt);
     }
 
+	LastStepDiagnostics.ResetMilliseconds =
+		(FPlatformTime::Seconds() - ResetStartSeconds) * 1000.0;
+
     // Anti double-resolve (pair) on the frame
     TSet<uint64> ResolvedPairs;
     ResolvedPairs.Reserve(128);
 
     float TimePassed = 0.f;
-
-    // Very important: if you leave 0, you risk an infinite loop on TOI==0
-	// -> No it should not, SubBody ignores component once it hit it during the frame, so it should just continue to the next hit.
-    // const float MinStep = 1e-6f;
-    const float MinStep = 0.0f;
-    const int32 MaxIter = 24;
     float LastSubDelta = Dt;
+	const float CompletionTolerance = FMath::Max(1.0e-8f, Dt * 1.0e-6f);
+	const auto IntegrateAll = [&](const float SubDelta)
+	{
+		LastSubDelta = SubDelta;
+		const double IntegrateStartSeconds = FPlatformTime::Seconds();
+		for (ISpeedComponent* Comp : ComponentsSorted)
+		{
+			if (Comp)
+			{
+				Comp->IntegrateKinematics(SubDelta);
+			}
+		}
+		LastStepDiagnostics.IntegrateMilliseconds +=
+			(FPlatformTime::Seconds() - IntegrateStartSeconds) * 1000.0;
+		TimePassed += SubDelta;
+	};
 
     int32 Iter = 0;
-    while (TimePassed < Dt && Iter++ < MaxIter)
+	while (TimePassed < Dt)
     {
         const float Remaining = Dt - TimePassed;
-        if (Remaining <= MinStep)
-            break;
+		if (Remaining <= CompletionTolerance)
+		{
+			IntegrateAll(Remaining);
+			break;
+		}
+		if (Iter >= MaxIter)
+		{
+			LastStepDiagnostics.bIterationLimitReached = true;
+			IntegrateAll(Remaining);
+			break;
+		}
+		++Iter;
+		LastStepDiagnostics.IterationCount = Iter;
 
         // ------------------------------------------------------------
-        // 2) Find global earliest TOI
+		// 2) Find every independent hit at the global earliest TOI. The
+		// iteration budget bounds temporal substeps, not the number of objects
+		// that happen to collide at the same instant.
         // ------------------------------------------------------------
-        SComponentTOI Best;
-        Best.bHit = false;
-        Best.TOI = Remaining;
+		constexpr float SimultaneousTOITolerance = 1.0e-9f;
+		TArray<SComponentTOI, TInlineAllocator<16>> EarliestHits;
+		float EarliestTOI = Remaining;
 
+        const double SweepStartSeconds = FPlatformTime::Seconds();
         for (ISpeedComponent* Comp : ComponentsSorted)
         {
             if (!Comp) continue;
+			++LastStepDiagnostics.ComponentSweepCount;
 
             const SComponentTOI Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta);
 
             // TOI sanity
             if (!Ctoi.bHit)
                 continue;
+			// Once an analytical provider has produced its event impulse during
+			// this canonical frame, it is an established unilateral constraint.
+			// Rediscovering the same time-zero event would only consume the bounded
+			// CCD iteration budget; IntegrateKinematics now owns its continuation.
+			if (Ctoi.Hit.SurfaceId != 0 &&
+				ResolvedPairs.Contains(Ctoi.PairKey))
+			{
+				continue;
+			}
 
             const float T = FMath::Clamp(Ctoi.TOI, 0.f, Remaining);
-
-            // Deterministic tie-break if equal
-            // (super important: two hits can have very close TOI)
-            if (T < Best.TOI - 1e-9f)
+			if (EarliestHits.IsEmpty() ||
+				T < EarliestTOI - SimultaneousTOITolerance)
             {
-                Best = Ctoi;
-                Best.TOI = T;
+				EarliestTOI = T;
+				EarliestHits.Reset();
+				SComponentTOI& Earliest = EarliestHits.Add_GetRef(Ctoi);
+				Earliest.TOI = T;
             }
-            else if (FMath::IsNearlyEqual(T, Best.TOI, 1e-9f))
+			else if (FMath::IsNearlyEqual(
+				T, EarliestTOI, SimultaneousTOITolerance))
             {
-                // tie-break : PairKey then resolver unique id
-                if (Ctoi.PairKey < Best.PairKey)
-                {
-                    Best = Ctoi;
-                    Best.TOI = T;
-                }
-                else if (Ctoi.PairKey == Best.PairKey)
-                {
-                    USSubBody* R1 = Ctoi.Resolver.Get();
-                    USSubBody* R2 = Best.Resolver.Get();
-                    const uint32 Id1 = R1 ? (uint32)R1->GetUniqueID() : 0u;
-                    const uint32 Id2 = R2 ? (uint32)R2->GetUniqueID() : 0u;
-                    if (Id1 < Id2)
-                    {
-                        Best = Ctoi;
-                        Best.TOI = T;
-                    }
-                }
+				SComponentTOI& Earliest = EarliestHits.Add_GetRef(Ctoi);
+				Earliest.TOI = T;
             }
         }
+		LastStepDiagnostics.SweepMilliseconds +=
+			(FPlatformTime::Seconds() - SweepStartSeconds) * 1000.0;
+		EarliestHits.Sort([](const SComponentTOI& A, const SComponentTOI& B)
+		{
+			if (A.PairKey != B.PairKey)
+			{
+				return A.PairKey < B.PairKey;
+			}
+			const USSubBody* ResolverA = A.Resolver.Get();
+			const USSubBody* ResolverB = B.Resolver.Get();
+			const uint32 ResolverIdA = ResolverA ? ResolverA->GetUniqueID() : 0u;
+			const uint32 ResolverIdB = ResolverB ? ResolverB->GetUniqueID() : 0u;
+			return ResolverIdA < ResolverIdB;
+		});
 
         // ------------------------------------------------------------
-        // 3) Integrate everyone up to TOI (or full remaining if no hit or Iter >= MaxIter)
+		// 3) Integrate everyone once to the shared TOI, or through the full
+		// remaining interval when there is no hit.
         // ------------------------------------------------------------
-        const bool bWillResolve = Best.bHit && Best.Resolver.IsValid() && Iter < MaxIter;
-
-        float SubDelta = bWillResolve ? Best.TOI : Remaining;
-
-        // clamp to avoid zero-step loop
-        if (SubDelta < MinStep)
-        {
-            // If TOI ~ 0, advance a little, or force resolution without integrating (but this can explode)
-            SubDelta = MinStep;
-        }
-        SubDelta = FMath::Clamp(SubDelta, 0.f, Remaining);
-		LastSubDelta = SubDelta;
-
-        // Advance all components to that time
-        for (ISpeedComponent* Comp : ComponentsSorted)
-        {
-            if (!Comp) continue;
-            Comp->IntegrateKinematics(SubDelta);
-        }
-        TimePassed += SubDelta;
+		const bool bWillResolve = !EarliestHits.IsEmpty();
+		const float SubDelta = FMath::Clamp(
+			bWillResolve ? EarliestTOI : Remaining, 0.0f, Remaining);
+		IntegrateAll(SubDelta);
 
         // No hit => End
         if (!bWillResolve)
             break;
 
         // ------------------------------------------------------------
-        // 4) Resolve hit (single per pair)
+		// 4) Resolve the simultaneous batch once per pair. All candidates were
+		// measured from the same pre-resolution state, so independent objects do
+		// not consume additional temporal iterations.
         // ------------------------------------------------------------
-        USSubBody* Resolver = Best.Resolver.Get();
-        if (!Resolver)
-            continue;
-
-        // Anti-double resolve : if this pair has already been resolved in the frame, skip
-        // and continue the loop (re-sweep on updated Remaining).
-        if (ResolvedPairs.Contains(Best.PairKey))
-            continue;
-
-        // Handoff the chosen hit to the resolver (very important)
-        // Resolver->SetFutureHit(Best.Hit);
-        Resolver->AcceptHit();
-        if (Resolver->ComponentHasBeenIgnored(*Resolver->GetHit().Component.Get()))
-        {
-            ResolvedPairs.Add(Best.PairKey);
-        }
-		USolidSubBody* RollingBodyA = Cast<USolidSubBody>(Resolver);
-		USolidSubBody* RollingBodyB = Cast<USolidSubBody>(Resolver->GetHit().SubBody.Get());
-
-		// Resolve at current substep time.
-		Resolver->ResolveCurrentHit(SubDelta, SimTime);
-		if (RollingBodyA && RollingBodyB)
+		for (const SComponentTOI& Hit : EarliestHits)
 		{
-			ActivatePendingRollingContactPairAtTOI(
-				*RollingBodyA, *RollingBodyB, Dt - TimePassed);
+			USSubBody* Resolver = Hit.Resolver.Get();
+			if (!Resolver || ResolvedPairs.Contains(Hit.PairKey))
+			{
+				continue;
+			}
+
+			Resolver->SetFutureHit(Hit.Hit);
+			Resolver->AcceptHit();
+			if (UPrimitiveComponent* HitComponent =
+				Resolver->GetHit().Component.Get())
+			{
+				if (Resolver->ComponentHasBeenIgnored(*HitComponent))
+				{
+					ResolvedPairs.Add(Hit.PairKey);
+				}
+			}
+			USolidSubBody* RollingBodyA = Cast<USolidSubBody>(Resolver);
+			USolidSubBody* RollingBodyB =
+				Cast<USolidSubBody>(Resolver->GetHit().SubBody.Get());
+
+			const double ResolveStartSeconds = FPlatformTime::Seconds();
+			Resolver->ResolveCurrentHit(SubDelta, SimTime);
+			LastStepDiagnostics.ResolveMilliseconds +=
+				(FPlatformTime::Seconds() - ResolveStartSeconds) * 1000.0;
+			++LastStepDiagnostics.ResolvedEventCount;
+			if (Hit.Hit.SurfaceId != 0)
+			{
+				ResolvedPairs.Add(Hit.PairKey);
+			}
+			if (RollingBodyA && RollingBodyB)
+			{
+				ActivatePendingRollingContactPairAtTOI(
+					*RollingBodyA, *RollingBodyB, Dt - TimePassed);
+			}
 		}
 
         // Optional: post update at each substep (useful if certain gameplay sensors need to react "immediately")
@@ -1368,13 +1618,29 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         */
     }
 
+	// A contact acquired at the last TOI has no remaining integration substep.
+	// Project once at the frame boundary so PostPhysics observers never receive
+	// an infeasible analytical pose. Moving the body here also avoids changing
+	// the within-frame CCD trajectory from inside an impact callback.
+	const double ProjectionStartSeconds = FPlatformTime::Seconds();
+	for (ISpeedComponent* Comp : ComponentsSorted)
+	{
+		if (Comp)
+		{
+			Comp->ProjectEstablishedStaticContacts(Dt);
+		}
+	}
+
     // Make persistent finite-mass contacts geometrically feasible before any
     // PostPhysics observer samples them.
 	ProjectDynamicContactPairs();
+	LastStepDiagnostics.ProjectionMilliseconds =
+		(FPlatformTime::Seconds() - ProjectionStartSeconds) * 1000.0;
 
     // ------------------------------------------------------------
     // 5) Final post update
     // ------------------------------------------------------------
+	const double PostStartSeconds = FPlatformTime::Seconds();
     for (ISpeedComponent* Comp : ComponentsSorted)
     {
         if (!Comp) continue;
@@ -1399,4 +1665,30 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 
 	SolveDynamicContactPairs(Dt);
 	ProjectDynamicContactPairs();
+	LastStepDiagnostics.PostMilliseconds =
+		(FPlatformTime::Seconds() - PostStartSeconds) * 1000.0;
+	LastStepDiagnostics.TotalMilliseconds =
+		(FPlatformTime::Seconds() - StepStartSeconds) * 1000.0;
+	const Speed::Analytic::FStaticWorldQueryCounters QueryCounters =
+		Speed::Analytic::FStaticWorldQueryAudit::GetCurrentFrameCounters();
+	LastStepDiagnostics.StaticQueryCount = QueryCounters.QueryCount;
+	LastStepDiagnostics.LegacySweepCount = QueryCounters.LegacySweepCount;
+	LastStepDiagnostics.AuthorityAttemptCount = QueryCounters.AuthorityAttemptCount;
+	LastStepDiagnostics.StaticAuthorityMilliseconds =
+		QueryCounters.AuthorityMilliseconds;
+	LastStepDiagnostics.MaximumStaticAuthorityMilliseconds =
+		QueryCounters.MaximumAuthorityMilliseconds;
+
+	if (LastStepDiagnostics.bIterationLimitReached)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[SpeedSolverIterationLimit] Frame=%u Iterations=%d MaxIterations=%d ComponentSweeps=%d StaticQueries=%u AuthorityAttempts=%u ResolvedEvents=%d TimePassed=%.9g Dt=%.9g StepMs=%.6f"),
+			Frame, LastStepDiagnostics.IterationCount,
+			LastStepDiagnostics.MaximumIterationCount,
+			LastStepDiagnostics.ComponentSweepCount,
+			LastStepDiagnostics.StaticQueryCount,
+			LastStepDiagnostics.AuthorityAttemptCount,
+			LastStepDiagnostics.ResolvedEventCount,
+			TimePassed, Dt, LastStepDiagnostics.TotalMilliseconds);
+	}
 }

@@ -5,8 +5,13 @@
 namespace Speed::Analytic
 {
 
-constexpr uint32 AnalyticWorldSchemaVersion = 5u;
+constexpr uint32 AnalyticWorldSchemaVersion = 6u;
 constexpr double ExtrudedQuinticChordToleranceCm = 0.001;
+constexpr double TensorBezierQueryApproximationToleranceCm = 0.01;
+// Authority-pruned runtime worlds do not retain residual triangle providers.
+// A sub-millimetre certified tensor envelope is sufficient for their contact
+// queries and avoids rebuilding millions of transient facets at map load.
+constexpr double AuthorityTensorBezierQueryApproximationToleranceCm = 0.05;
 
 enum class ESurfaceFamily : uint8
 {
@@ -769,6 +774,9 @@ struct IAMSPEED_API FOpenRimTransverseSection
 	uint64 SectionId = 0;
 	int32 OpenRimCandidateIndex = INDEX_NONE;
 	int32 RimEdgeIndex = INDEX_NONE;
+	int32 InterpolationRimEdgeA = INDEX_NONE;
+	int32 InterpolationRimEdgeB = INDEX_NONE;
+	double InterpolationAlpha = 0.0;
 	EOpenRimFeature Feature = EOpenRimFeature::UpperTransition;
 	double SliceCoordinateCm = 0.0;
 	FVector3d SliceOrigin = FVector3d::ZeroVector;
@@ -780,6 +788,33 @@ struct IAMSPEED_API FOpenRimTransverseSection
 	int32 PointCount = 0;
 	int32 FirstTransitionPointIndex = 0;
 	int32 TransitionPointCount = 0;
+	// Ordered source-topology lane beginning at the first longitudinal run and
+	// continuing toward the finite interior.  It is recognition evidence only;
+	// no runtime query consumes these mesh samples directly.
+	int32 FirstLongitudinalContinuationPointIndex = 0;
+	int32 LongitudinalContinuationPointCount = 0;
+	int32 FirstLongitudinalSampleIndex = 0;
+	// Natural-cubic Bezier pieces through the topology-ordered tube witnesses.
+	// This remains recognition data until a compact surface has independently
+	// passed its spatial and support/release certificates.
+	int32 FirstLongitudinalSplineSegmentIndex = INDEX_NONE;
+	int32 LongitudinalSplineSegmentCount = 0;
+	// The initially near-longitudinal portion of the ordered continuation. It
+	// ends at the first sustained tangent departure and is the only part that
+	// may constrain a tube fit; the remaining ordered points belong to the
+	// rear turn/cap fit.
+	int32 LongitudinalTubePointCount = 0;
+	int32 FirstLongitudinalRearTurnPointOffset = INDEX_NONE;
+	double LongitudinalContinuationArcLengthCm = 0.0;
+	double LongitudinalTubeArcLengthCm = 0.0;
+	double LongitudinalTubeTerminalDepthCm = 0.0;
+	double LongitudinalTubeTerminalOpeningOffsetCm = 0.0;
+	double LongitudinalTubeMaximumDepartureDegrees = 0.0;
+	double LongitudinalSplineRootMeanSquareResidualCm = 0.0;
+	double LongitudinalSplineMaximumResidualCm = 0.0;
+	double LongitudinalContinuationMaximumTurnDegrees = 0.0;
+	double LongitudinalContinuationTerminalDepthCm = 0.0;
+	double LongitudinalContinuationTerminalOpeningOffsetCm = 0.0;
 	int32 TransitionSegmentCount = 0;
 	int32 SegmentCount = 0;
 	double ArcLengthCm = 0.0;
@@ -796,6 +831,7 @@ struct IAMSPEED_API FOpenRimTransverseSection
 	bool bSourceBoundaryPlaneG1Plausible = false;
 	bool bLongitudinalRunPlausible = false;
 	bool bTopologyCanonicalRimParameterValid = false;
+	bool bLongitudinalSplineC2 = false;
 	double IndividualC2BoundaryPlaneTangentMagnitudeCm = 0.0;
 	double IndividualC2LongitudinalTangentMagnitudeCm = 0.0;
 	double IndividualC2RootMeanSquareResidualCm = 0.0;
@@ -911,6 +947,55 @@ struct IAMSPEED_API FOpenRimCanonicalSurfaceSample
 	FVector3d CanonicalPositionCm = FVector3d::ZeroVector;
 };
 
+// One topology-ordered sample of the finite continuation beyond an opening
+// rim. The canonical frame is (depth, abs(transverse), height); the source
+// section and arc coordinate preserve correspondence for later tube/cap fits.
+struct IAMSPEED_API FOpenRimLongitudinalSample
+{
+	int32 OpenRimTransverseSectionIndex = INDEX_NONE;
+	int32 ContinuationPointOffset = 0;
+	double NormalizedArcLength = 0.0;
+	FVector3d CanonicalPositionCm = FVector3d::ZeroVector;
+};
+
+// One parameter-bounded cubic Bezier interval of a topology-ordered tube
+// witness spline. Coordinates use the section-local normalized tube arc.
+struct IAMSPEED_API FOpenRimLongitudinalSplineSegment
+{
+	int32 OpenRimTransverseSectionIndex = INDEX_NONE;
+	double MinimumTubeParameter = 0.0;
+	double MaximumTubeParameter = 1.0;
+	FVector3d ControlPoints[4] = {};
+};
+
+// One recognition-only interval of the ordered terminal closure beyond the
+// near-longitudinal prefix. Degree is three for the natural-cubic interior and
+// five for the first interval that carries the prefix C2 boundary data.
+struct IAMSPEED_API FOpenRimTerminalClosureRailSegment
+{
+	int32 OpenRimTransverseSectionIndex = INDEX_NONE;
+	double MinimumClosureParameter = 0.0;
+	double MaximumClosureParameter = 1.0;
+	int32 Degree = 3;
+	FVector3d ControlPoints[6] = {};
+};
+
+struct IAMSPEED_API FOpenRimTerminalClosureRailFit
+{
+	int32 OpenRimTransverseSectionIndex = INDEX_NONE;
+	int32 FirstSegmentIndex = INDEX_NONE;
+	int32 SegmentCount = 0;
+	int32 SourceSampleCount = 0;
+	double ClosureToPrefixParameterScale = 1.0;
+	double MaximumSourceResidualCm = TNumericLimits<double>::Max();
+	double MaximumPolylineResidualCm = TNumericLimits<double>::Max();
+	double PositionJoinResidualCm = TNumericLimits<double>::Max();
+	double FirstDerivativeJoinResidualCm = TNumericLimits<double>::Max();
+	double SecondDerivativeJoinResidualCm = TNumericLimits<double>::Max();
+	bool bC2PrefixJoinByConstruction = false;
+	bool bRegularFinite = false;
+};
+
 // Auditable section-level map from the two independent rim witnesses to the
 // jointly optimized surface coordinate. Lane rank is topology ordered.
 struct IAMSPEED_API FOpenRimCanonicalSectionCorrespondence
@@ -937,6 +1022,10 @@ struct IAMSPEED_API FOpenRimCanonicalSurfaceFit
 	double VerticalSegmentParameterWidth = 0.0;
 	double TransitionParameterWidth = 0.0;
 	double HorizontalSpanParameterWidth = 0.0;
+	// Three degree-five canonical boundary segments in traversal order. The
+	// first is vertical, the second is the smooth transition and the third is
+	// horizontal. Linear segments are degree-elevated exactly.
+	FVector2d CanonicalRimSegmentControlPoints[18] = {};
 	double StartTangentYCoefficients[6] = {};
 	double StartTangentZCoefficients[6] = {};
 	double EndDepthCoefficients[6] = {};
@@ -982,6 +1071,39 @@ struct IAMSPEED_API FOpenRimCanonicalSurfaceFit
 	bool bCorrespondenceWithinQuantizedWitnessBounds = false;
 	bool bCorrespondenceStrictlyInterior = false;
 	bool bRegularPositiveParameterization = false;
+
+	FVector3d EvaluateCanonicalSurface(double S, double T) const;
+};
+
+// Symmetry-balanced target curve at the end of the topology-certified tube
+// prefix. It deliberately excludes the rear turn/cap witnesses. A later
+// tensor provider may join this curve to FOpenRimCanonicalSurfaceFit only
+// after its residual and C2 certificates are accepted.
+struct IAMSPEED_API FOpenRimTubeTerminalSplineSegment
+{
+	double MinimumCanonicalRimParameter = 0.0;
+	double MaximumCanonicalRimParameter = 0.0;
+	FVector3d ControlPoints[4] = {};
+};
+
+struct IAMSPEED_API FOpenRimCanonicalTubeFit
+{
+	uint64 FitId = 0;
+	int8 OpeningSide = 0;
+	int8 TransverseSide = 0;
+	int32 SampleCount = 0;
+	double TerminalDepthCoefficients[6] = {};
+	double TerminalYCoefficients[6] = {};
+	double TerminalZCoefficients[6] = {};
+	double RootMeanSquareResidualCm = 0.0;
+	double MaximumResidualCm = 0.0;
+	int32 MaximumResidualSectionIndex = INDEX_NONE;
+	TArray<FOpenRimTubeTerminalSplineSegment> TerminalSplineSegments;
+	bool bExactXYMirrorPlacement = false;
+	bool bRegularFiniteTube = false;
+	bool bTerminalCurveC2 = false;
+
+	FVector3d EvaluateTerminal(double S) const;
 };
 
 // One exact-X/Y loft hypothesis over the complete half-rim. Each cross-section
@@ -1116,6 +1238,11 @@ struct IAMSPEED_API FExtrudedQuinticPatch
 	double BaseMaximumResidualCm = 0.0;
 	double CorrectedRootMeanSquareResidualCm = 0.0;
 	double CorrectedMaximumResidualCm = 0.0;
+	// Additional source-agreement allowance carried only by a provider whose
+	// physical surface was deliberately displaced from its recognition source.
+	// Hybrid arbitration adds this certified local allowance to the unchanged
+	// public residual classification tolerance; ordinary providers keep zero.
+	double AdditionalResidualAgreementAllowanceCm = 0.0;
 	FVector3d ExtrusionAxis = FVector3d::ForwardVector;
 	double MinimumExtrusionCoordinate = 0.0;
 	double MaximumExtrusionCoordinate = 0.0;
@@ -1129,6 +1256,8 @@ struct IAMSPEED_API FExtrudedQuinticPatch
 	// certified Hausdorff upper bound from each Bezier subcurve to its chord.
 	TArray<FVector3d> SectionPolyline;
 	TArray<double> SectionParameters;
+	TArray<FTriangleBvhNode> SectionSegmentBvhNodes;
+	TArray<int32> SectionSegmentBvhIndices;
 	double MaximumChordErrorCm = TNumericLimits<double>::Max();
 
 	FVector3d EvaluateSection(double T) const;
@@ -1138,12 +1267,214 @@ struct IAMSPEED_API FExtrudedQuinticPatch
 	bool IsValid(FString* OutReason = nullptr) const;
 };
 
+// Generic finite tensor-product Bezier surface. Control points are stored in
+// U-major order: ControlPoints[U * (DegreeV + 1) + V]. This mathematical
+// primitive carries no collision authority by itself; a runtime provider must
+// additionally certify its finite query approximation and feature domains.
+struct IAMSPEED_API FTensorBezierApproximationCell
+{
+	double MinimumU = 0.0;
+	double MaximumU = 1.0;
+	double MinimumV = 0.0;
+	double MaximumV = 1.0;
+	// U0V0, U0V1, U1V0, U1V1.
+	FVector3d Corners[4] = {};
+	double MaximumErrorCm = TNumericLimits<double>::Max();
+};
+
+struct IAMSPEED_API FTensorBezierSurface
+{
+	int32 DegreeU = 0;
+	int32 DegreeV = 0;
+	TArray<FVector3d, TInlineAllocator<16>> ControlPoints;
+
+	FVector3d Evaluate(double U, double V) const;
+	FVector3d EvaluateDerivativeU(double U, double V) const;
+	FVector3d EvaluateDerivativeV(double U, double V) const;
+	FVector3d EvaluateNormal(double U, double V) const;
+	bool BuildBilinearApproximation(
+		double ToleranceCm,
+		TArray<FTensorBezierApproximationCell>& OutCells,
+		double* OutMaximumErrorCm = nullptr) const;
+	bool IsValid(FString* OutReason = nullptr) const;
+};
+
+// Recognition bridge from one piece of the canonical fit to the generic
+// tensor surface. Runtime authority must consume the generic surface rather
+// than this recognition provenance record.
+struct IAMSPEED_API FOpenRimCanonicalTensorSurface
+{
+	uint64 SourceFitId = 0;
+	int32 SegmentIndex = INDEX_NONE;
+	double MinimumCanonicalRimParameter = 0.0;
+	double MaximumCanonicalRimParameter = 0.0;
+	FTensorBezierSurface Surface;
+	double MaximumConversionErrorCm = TNumericLimits<double>::Max();
+};
+
+// Shadow-only tube strip between the canonical lip terminal and one physical
+// lane-local terminal spline interval. Runtime materialization is intentionally
+// deferred until mesh residual, end-cap ownership and both C2 boundaries have
+// been certified.
+struct IAMSPEED_API FOpenRimCanonicalTubeTensorSurface
+{
+	uint64 SourceFitId = 0;
+	int8 OpeningSide = 0;
+	int8 TransverseSide = 0;
+	int32 SegmentIndex = INDEX_NONE;
+	double MinimumCanonicalRimParameter = 0.0;
+	double MaximumCanonicalRimParameter = 0.0;
+	// Explicit longitudinal subdomain. A tensor is selected only inside both
+	// canonical coordinates; this keeps measured tube stations one-to-one.
+	double MinimumTubeParameter = 0.0;
+	double MaximumTubeParameter = 1.0;
+	// Maps this local longitudinal parameter to the adjacent prefix parameter.
+	// One is the prefix itself; terminal-closure cells share one positive scale
+	// per physical lane so derivative ownership remains explicit.
+	double LongitudinalParameterScale = 1.0;
+	FTensorBezierSurface Surface;
+	double MaximumConversionErrorCm = TNumericLimits<double>::Max();
+	bool bLipBoundaryC2ByConstruction = false;
+	// Compact tensor-product spline cell built from a lane-wide adaptive set of
+	// shared longitudinal knots. Every cell is an exact bicubic conversion of
+	// the same C2 surface, so adjacent cells share position and first/second
+	// derivatives rather than merely agreeing at sampled boundary points.
+	bool bAdaptiveCompactC2 = false;
+	// Separate adaptive family beyond the near-longitudinal prefix. Its V=0
+	// boundary consumes the prefix derivatives under one lane-wide parameter
+	// scale; it is never implied by bAdaptiveCompactC2.
+	bool bAdaptiveTerminalClosureC2 = false;
+	// Recognition certificate against every topology-preserving source witness
+	// in the physical lane. This is intentionally separate from the polynomial
+	// conversion error, which only proves that the bicubic payload reproduces
+	// the fitted C2 surface.
+	bool bSourceResidualCertified = false;
+	double SourceMaximumResidualCm = TNumericLimits<double>::Max();
+	// Recognition-only oracle cell built directly from adjacent source witnesses.
+	// It must never be materialized as a runtime provider.
+	bool bMeasuredWitnessOnly = false;
+};
+
+// One compact, single-patch shadow candidate sampled from the independent C2
+// longitudinal rails. It is intentionally distinct from tube tensor cells so
+// an experimental residual can never accidentally enter runtime materialization.
+struct IAMSPEED_API FOpenRimCanonicalTubeLoftFit
+{
+	uint64 FitId = 0;
+	int8 OpeningSide = 0;
+	int8 TransverseSide = 0;
+	int32 TileIndex = INDEX_NONE;
+	double MinimumCanonicalRimParameter = 0.0;
+	double MaximumCanonicalRimParameter = 1.0;
+	double MinimumTubeParameter = 0.0;
+	double MaximumTubeParameter = 1.0;
+	int32 SampleCount = 0;
+	FTensorBezierSurface Surface;
+	double InterpolationMaximumErrorCm = TNumericLimits<double>::Max();
+	double RootMeanSquareResidualCm = 0.0;
+	double MaximumResidualCm = 0.0;
+	int32 MaximumResidualSectionIndex = INDEX_NONE;
+	bool bLongitudinalC2Input = false;
+	bool bTransverseC2Input = false;
+	bool bLowDegreeCandidate = false;
+};
+
+struct IAMSPEED_API FTensorBezierPatch
+{
+	uint64 SourceId = 0;
+	uint64 SurfaceId = 0;
+	uint64 FeatureId = 0;
+	uint64 PrimitiveId = 0;
+	uint64 CanonicalGroupId = 0;
+	uint32 MaterialId = 0;
+	uint32 ObjectType = 0;
+	uint64 BlockingChannels = 0;
+	FTensorBezierSurface Surface;
+	FBox3d Bounds = FBox3d(EForceInit::ForceInit);
+	TArray<FTensorBezierApproximationCell> ApproximationCells;
+	// Deterministic query-only hierarchy over the certified cells. Neither the
+	// nodes nor their permutation are serialized or included in stable hashes.
+	TArray<FTriangleBvhNode> ApproximationCellBvhNodes;
+	TArray<int32> ApproximationCellBvhIndices;
+	double MaximumApproximationErrorCm = TNumericLimits<double>::Max();
+	bool bQueryCollisionEnabled = false;
+	bool bApproximationCertified = false;
+	bool bAuthorityEligible = false;
+
+	bool BuildQueryApproximation(
+		double ToleranceCm = TensorBezierQueryApproximationToleranceCm);
+	bool IsValid(FString* OutReason = nullptr) const;
+};
+
+// A compact family of independently parameterized tensor patches.  This keeps
+// a piecewise spline as one query provider instead of turning its cells into a
+// large collection of unrelated broad-phase primitives.
+struct IAMSPEED_API FPiecewiseTensorBezierCell
+{
+	// 0/1 are the U min/max edges and 2/3 the V min/max edges.  The values
+	// identify authored boundaries, not tessellation edges.
+	uint64 BoundaryFeatureIds[4] = {};
+	uint64 FeatureId = 0;
+	uint64 PrimitiveId = 0;
+	double MinimumU = 0.0;
+	double MaximumU = 1.0;
+	double MinimumV = 0.0;
+	double MaximumV = 1.0;
+	double LongitudinalParameterScale = 1.0;
+	bool bTerminalClosure = false;
+	FTensorBezierSurface Surface;
+	FBox3d Bounds = FBox3d(EForceInit::ForceInit);
+	TArray<FTensorBezierApproximationCell> ApproximationCells;
+	TArray<FTriangleBvhNode> ApproximationCellBvhNodes;
+	TArray<int32> ApproximationCellBvhIndices;
+	double MaximumApproximationErrorCm = TNumericLimits<double>::Max();
+};
+
+struct IAMSPEED_API FPiecewiseTensorBezierAdjacency
+{
+	uint64 BoundaryFeatureId = 0;
+	uint64 AdjacentBoundaryFeatureId = 0;
+	uint64 CellPrimitiveId = 0;
+	uint64 AdjacentCellPrimitiveId = 0;
+	uint8 BoundaryIndex = 0;
+	uint8 AdjacentBoundaryIndex = 0;
+	bool bC2ByConstruction = false;
+};
+
+struct IAMSPEED_API FPiecewiseTensorBezierPatch
+{
+	uint64 SourceId = 0;
+	uint64 SurfaceId = 0;
+	uint64 PrimitiveId = 0;
+	uint64 CanonicalGroupId = 0;
+	uint32 MaterialId = 0;
+	uint32 ObjectType = 0;
+	uint64 BlockingChannels = 0;
+	TArray<FPiecewiseTensorBezierCell> Cells;
+	TArray<FPiecewiseTensorBezierAdjacency> Adjacencies;
+	FBox3d Bounds = FBox3d(EForceInit::ForceInit);
+	// A deterministic, provider-level broad phase over the stable cells.
+	TArray<FTriangleBvhNode> CellBvhNodes;
+	TArray<int32> CellBvhIndices;
+	double MaximumApproximationErrorCm = TNumericLimits<double>::Max();
+	bool bQueryCollisionEnabled = false;
+	bool bApproximationCertified = false;
+	bool bSourceResidualCertified = false;
+	bool bAuthorityEligible = false;
+
+	bool BuildQueryApproximation(
+		double ToleranceCm = TensorBezierQueryApproximationToleranceCm);
+	bool IsValid(FString* OutReason = nullptr) const;
+};
+
 struct IAMSPEED_API FAnalyticWorldData
 {
 	uint32 SchemaVersion = AnalyticWorldSchemaVersion;
 	uint64 SourceHash = 0;
 	TArray<FBoundedPlane> Planes;
 	TArray<FExtrudedQuinticPatch> ExtrudedQuinticPatches;
+	TArray<FTensorBezierPatch> TensorBezierPatches;
+	TArray<FPiecewiseTensorBezierPatch> PiecewiseTensorBezierPatches;
 	// Derived once by FinalizeAndValidate; never serialized or hashed.
 	FBox3d CompactBounds = FBox3d(EForceInit::ForceInit);
 	TArray<FTriangleSurface> Triangles;
@@ -1209,6 +1540,12 @@ struct IAMSPEED_API FAnalyticWorldData
 	TArray<FOpenRimTransverseSection> OpenRimTransverseSections;
 	TArray<FVector2d> OpenRimTransverseSectionPoints;
 	TArray<FVector2d> OpenRimTransitionSectionPoints;
+	TArray<FVector2d> OpenRimLongitudinalContinuationPoints;
+	TArray<FOpenRimLongitudinalSample> OpenRimLongitudinalSamples;
+	TArray<FOpenRimLongitudinalSplineSegment> OpenRimLongitudinalSplineSegments;
+	TArray<FOpenRimTerminalClosureRailSegment>
+		OpenRimTerminalClosureRailSegments;
+	TArray<FOpenRimTerminalClosureRailFit> OpenRimTerminalClosureRailFits;
 	TArray<FOpenRimTransitionFamilyFit> OpenRimTransitionFamilyFits;
 	TArray<FOpenRimTransitionMemberFit> OpenRimTransitionMemberFits;
 	TArray<FOpenRimC2LoftStation> OpenRimC2LoftStations;
@@ -1218,6 +1555,11 @@ struct IAMSPEED_API FAnalyticWorldData
 	TArray<FOpenRimCanonicalSectionCorrespondence>
 		OpenRimCanonicalSectionCorrespondences;
 	TArray<FOpenRimCanonicalSurfaceFit> OpenRimCanonicalSurfaceFits;
+	TArray<FOpenRimCanonicalTubeFit> OpenRimCanonicalTubeFits;
+	TArray<FOpenRimCanonicalTensorSurface> OpenRimCanonicalTensorSurfaces;
+	TArray<FOpenRimCanonicalTubeTensorSurface>
+		OpenRimCanonicalTubeTensorSurfaces;
+	TArray<FOpenRimCanonicalTubeLoftFit> OpenRimCanonicalTubeLoftFits;
 	TArray<FOpenRimSupportTransitionIntent>
 		OpenRimSupportTransitionIntents;
 	TArray<int32> TriangleIndices;
@@ -1227,7 +1569,13 @@ struct IAMSPEED_API FAnalyticWorldData
 	TArray<int32> CompactPrimitiveIndices;
 	TArray<FTriangleBvhNode> CompactBvh;
 
-	bool FinalizeAndValidate(FString* OutReason = nullptr);
+	bool FinalizeAndValidate(
+		FString* OutReason = nullptr,
+		double TensorQueryApproximationToleranceCm =
+			Speed::Analytic::TensorBezierQueryApproximationToleranceCm);
+	bool AppendFinalizedNonCompactPlanes(
+		TArray<FBoundedPlane> AdditionalPlanes,
+		FString* OutReason = nullptr);
 	void BuildRecognitionDiagnostics();
 	void BuildCompactRuntimePatches();
 	uint64 StableHash() const;

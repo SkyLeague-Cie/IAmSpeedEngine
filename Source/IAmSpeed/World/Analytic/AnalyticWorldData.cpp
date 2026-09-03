@@ -1,8 +1,10 @@
 #include "AnalyticWorldData.h"
+#include "AnalyticWorldQuery.h"
 
 #include "Algo/AllOf.h"
 #include "Algo/AnyOf.h"
 #include "Algo/Sort.h"
+#include "Async/ParallelFor.h"
 
 namespace Speed::Analytic
 {
@@ -31,6 +33,445 @@ namespace
 	{
 		return FMath::IsFinite(Value.X) && FMath::IsFinite(Value.Y) &&
 			FMath::IsFinite(Value.Z);
+	}
+
+	struct FCubicBezierSegment
+	{
+		FVector3d ControlPoints[4] = {};
+	};
+
+	struct FQuinticBezierSegment
+	{
+		FVector3d ControlPoints[6] = {};
+	};
+
+	bool BuildNaturalCubicBezierSegments(const TArray<double>& Knots,
+		const TArray<FVector3d>& Values, TArray<FCubicBezierSegment>& OutSegments)
+	{
+		OutSegments.Reset();
+		const int32 Count = Knots.Num();
+		if (Count < 2 || Values.Num() != Count) return false;
+		TArray<FVector3d> SecondDerivatives;
+		SecondDerivatives.SetNumZeroed(Count);
+		for (int32 Index = 1; Index < Count; ++Index)
+			if (!(Knots[Index] > Knots[Index - 1])) return false;
+		for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+		{
+			TArray<double> Lower, Diagonal, Upper, Right;
+			Lower.SetNumZeroed(Count);
+			Diagonal.SetNumZeroed(Count);
+			Upper.SetNumZeroed(Count);
+			Right.SetNumZeroed(Count);
+			Diagonal[0] = Diagonal[Count - 1] = 1.0;
+			for (int32 Index = 1; Index + 1 < Count; ++Index)
+			{
+				const double PreviousH = Knots[Index] - Knots[Index - 1];
+				const double NextH = Knots[Index + 1] - Knots[Index];
+				Lower[Index] = PreviousH;
+				Diagonal[Index] = 2.0 * (PreviousH + NextH);
+				Upper[Index] = NextH;
+				Right[Index] = 6.0 * ((Values[Index + 1][Coordinate] -
+					Values[Index][Coordinate]) / NextH -
+					(Values[Index][Coordinate] - Values[Index - 1][Coordinate]) /
+					PreviousH);
+			}
+			for (int32 Index = 1; Index < Count; ++Index)
+			{
+				const double Factor = Lower[Index] / Diagonal[Index - 1];
+				Diagonal[Index] -= Factor * Upper[Index - 1];
+				Right[Index] -= Factor * Right[Index - 1];
+			}
+			SecondDerivatives[Count - 1][Coordinate] =
+				Right[Count - 1] / Diagonal[Count - 1];
+			for (int32 Index = Count - 2; Index >= 0; --Index)
+				SecondDerivatives[Index][Coordinate] = (Right[Index] - Upper[Index] *
+					SecondDerivatives[Index + 1][Coordinate]) / Diagonal[Index];
+		}
+		OutSegments.SetNum(Count - 1);
+		for (int32 Index = 0; Index + 1 < Count; ++Index)
+		{
+			const double H = Knots[Index + 1] - Knots[Index];
+			const FVector3d Delta = (Values[Index + 1] - Values[Index]) / H;
+			const FVector3d StartDerivative = Delta - H *
+				(2.0 * SecondDerivatives[Index] + SecondDerivatives[Index + 1]) / 6.0;
+			const FVector3d EndDerivative = Delta + H *
+				(SecondDerivatives[Index] + 2.0 * SecondDerivatives[Index + 1]) / 6.0;
+			FCubicBezierSegment& Segment = OutSegments[Index];
+			Segment.ControlPoints[0] = Values[Index];
+			Segment.ControlPoints[1] = Values[Index] + H * StartDerivative / 3.0;
+			Segment.ControlPoints[2] = Values[Index + 1] - H * EndDerivative / 3.0;
+			Segment.ControlPoints[3] = Values[Index + 1];
+		}
+		return true;
+	}
+
+	// Builds a C2 cubic chain from a locally frozen prefix into an arbitrary
+	// continuation.  The natural spline used by the general source fitter is
+	// global: its upper boundary condition can change derivatives many cells
+	// below the first varying value.  That is unacceptable for the lower cage
+	// approach, which must remain an exact longitudinal extrusion.  We therefore
+	// solve the frozen prefix independently, then propagate the endpoint
+	// derivative/curvature forward through the continuation.  The recurrence is
+	// the standard cubic-spline C2 relation and introduces no global coupling.
+	bool BuildForwardC2BezierSegments(const TArray<double>& Knots,
+		const TArray<FVector3d>& Values, const int32 FrozenThroughIndex,
+		TArray<FCubicBezierSegment>& OutSegments)
+	{
+		OutSegments.Reset();
+		const int32 Count = Knots.Num();
+		if (Count < 2 || Values.Num() != Count || FrozenThroughIndex < 1 ||
+			FrozenThroughIndex >= Count) return false;
+		for (int32 Index = 1; Index < Count; ++Index)
+			if (!(Knots[Index] > Knots[Index - 1])) return false;
+
+		TArray<double> PrefixKnots;
+		TArray<FVector3d> PrefixValues;
+		PrefixKnots.Reserve(FrozenThroughIndex + 1);
+		PrefixValues.Reserve(FrozenThroughIndex + 1);
+		for (int32 Index = 0; Index <= FrozenThroughIndex; ++Index)
+		{
+			PrefixKnots.Add(Knots[Index]);
+			PrefixValues.Add(Values[Index]);
+		}
+		TArray<FCubicBezierSegment> PrefixSegments;
+		if (!BuildNaturalCubicBezierSegments(PrefixKnots, PrefixValues,
+			PrefixSegments) || PrefixSegments.Num() != FrozenThroughIndex)
+			return false;
+		OutSegments = PrefixSegments;
+
+		const double PrefixH = Knots[FrozenThroughIndex] -
+			Knots[FrozenThroughIndex - 1];
+		FVector3d StartDerivative =
+			(PrefixSegments.Last().ControlPoints[3] -
+				PrefixSegments.Last().ControlPoints[2]) * (3.0 / PrefixH);
+		FVector3d StartSecondDerivative =
+			(PrefixSegments.Last().ControlPoints[3] -
+				2.0 * PrefixSegments.Last().ControlPoints[2] +
+				PrefixSegments.Last().ControlPoints[1]) * (6.0 /
+					FMath::Square(PrefixH));
+
+		for (int32 Index = FrozenThroughIndex; Index + 1 < Count; ++Index)
+		{
+			const double H = Knots[Index + 1] - Knots[Index];
+			const FVector3d Delta = (Values[Index + 1] - Values[Index]) / H;
+			// Given the start derivative and second derivative, this is the
+			// unique endpoint curvature for a cubic reaching the next value.
+			const FVector3d EndSecondDerivative =
+				(6.0 * (Delta - StartDerivative) / H) -
+				2.0 * StartSecondDerivative;
+			const FVector3d EndDerivative = Delta + H *
+				(StartSecondDerivative + 2.0 * EndSecondDerivative) / 6.0;
+			FCubicBezierSegment& Segment = OutSegments.AddDefaulted_GetRef();
+			Segment.ControlPoints[0] = Values[Index];
+			Segment.ControlPoints[1] = Values[Index] + H *
+				StartDerivative / 3.0;
+			Segment.ControlPoints[2] = Values[Index + 1] - H *
+				EndDerivative / 3.0;
+			Segment.ControlPoints[3] = Values[Index + 1];
+			StartDerivative = EndDerivative;
+			StartSecondDerivative = EndSecondDerivative;
+		}
+		return OutSegments.Num() == Count - 1;
+	}
+
+	// Local C2 interpolation for a vertical profile.  Every knot shares the
+	// same first derivative and zero second derivative with its neighbours, so
+	// the resulting quintic cells are C2 without a global boundary-condition
+	// solve.  A frozen prefix gets derivatives computed only from that prefix;
+	// hence upper source variation cannot tilt the lower extrusion.  X/Z remain
+	// affine in each interval (preserving a regular vertical parameter), while
+	// the transverse coordinate follows the local Hermite quintic.
+	bool BuildLocalC2QuinticSegments(const TArray<double>& Knots,
+		const TArray<FVector3d>& Values, const int32 FrozenThroughIndex,
+		const int32 TransverseAxis, const int32 VerticalAxis,
+		TArray<FQuinticBezierSegment>& OutSegments)
+	{
+		OutSegments.Reset();
+		const int32 Count = Knots.Num();
+		if (Count < 2 || Values.Num() != Count || FrozenThroughIndex < 1 ||
+			FrozenThroughIndex >= Count || TransverseAxis < 0 ||
+			TransverseAxis > 2 || VerticalAxis < 0 || VerticalAxis > 2 ||
+			TransverseAxis == VerticalAxis) return false;
+		for (int32 Index = 1; Index < Count; ++Index)
+			if (!(Knots[Index] > Knots[Index - 1])) return false;
+
+		TArray<FVector3d> Derivatives;
+		Derivatives.SetNumZeroed(Count);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			int32 Left = Index - 1;
+			int32 Right = Index + 1;
+			if (Index == 0)
+			{
+				Left = 0;
+				Right = 1;
+			}
+			if (Index == Count - 1)
+			{
+				Left = Count - 2;
+				Right = Count - 1;
+			}
+			// At the frozen/active seam use only the frozen-side slope.  In
+			// particular, a constant lower transverse profile has exactly zero
+			// transverse derivative at the seam.
+			if (Index == FrozenThroughIndex)
+			{
+				Left = FMath::Max(0, Index - 1);
+				Right = Index;
+			}
+			const double H = Knots[Right] - Knots[Left];
+			if (!(H > 0.0)) return false;
+			Derivatives[Index] = (Values[Right] - Values[Left]) / H;
+		}
+		for (int32 Index = 0; Index < FrozenThroughIndex; ++Index)
+		{
+			const double H = Knots[Index + 1] - Knots[Index];
+			Derivatives[Index][TransverseAxis] =
+				(Index + 1 <= FrozenThroughIndex) ?
+					(Values[Index + 1][TransverseAxis] -
+						Values[Index][TransverseAxis]) / H : 0.0;
+		}
+		Derivatives[FrozenThroughIndex][TransverseAxis] = 0.0;
+		OutSegments.Reserve(Count - 1);
+		for (int32 Index = 0; Index + 1 < Count; ++Index)
+		{
+			const double H = Knots[Index + 1] - Knots[Index];
+			const FVector3d& Start = Values[Index];
+			const FVector3d& End = Values[Index + 1];
+			const FVector3d& StartDerivative = Derivatives[Index];
+			const FVector3d& EndDerivative = Derivatives[Index + 1];
+			FQuinticBezierSegment& Segment = OutSegments.AddDefaulted_GetRef();
+			Segment.ControlPoints[0] = Start;
+			Segment.ControlPoints[5] = End;
+			// The affine coordinates are degree-elevated line segments.
+			for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+			{
+				if (Coordinate == TransverseAxis) continue;
+				const double Delta = End[Coordinate] - Start[Coordinate];
+				for (int32 Control = 1; Control < 5; ++Control)
+					Segment.ControlPoints[Control][Coordinate] =
+						Start[Coordinate] + Delta * (static_cast<double>(Control) / 5.0);
+			}
+			// Quintic endpoint Hermite controls for zero second derivative.
+			Segment.ControlPoints[1][TransverseAxis] =
+				Start[TransverseAxis] + H * StartDerivative[TransverseAxis] / 5.0;
+			Segment.ControlPoints[2][TransverseAxis] =
+				Start[TransverseAxis] + 2.0 * H *
+					StartDerivative[TransverseAxis] / 5.0;
+			Segment.ControlPoints[4][TransverseAxis] =
+				End[TransverseAxis] - H * EndDerivative[TransverseAxis] / 5.0;
+			Segment.ControlPoints[3][TransverseAxis] =
+				End[TransverseAxis] - 2.0 * H *
+					EndDerivative[TransverseAxis] / 5.0;
+		}
+		return OutSegments.Num() == Count - 1;
+	}
+
+	void Bernstein5Basis(const double Parameter, double OutBasis[6])
+	{
+		const double U = FMath::Clamp(Parameter, 0.0, 1.0);
+		const double V = 1.0 - U;
+		OutBasis[0] = V * V * V * V * V;
+		OutBasis[1] = 5.0 * U * V * V * V * V;
+		OutBasis[2] = 10.0 * U * U * V * V * V;
+		OutBasis[3] = 10.0 * U * U * U * V * V;
+		OutBasis[4] = 5.0 * U * U * U * U * V;
+		OutBasis[5] = U * U * U * U * U;
+	}
+
+	double EvaluateBernstein5Field(
+		const double Coefficients[6], const double Parameter)
+	{
+		double Basis[6];
+		Bernstein5Basis(Parameter, Basis);
+		double Result = 0.0;
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			Result += Basis[Index] * Coefficients[Index];
+		}
+		return Result;
+	}
+
+	FVector2d EvaluateBernstein5Curve(
+		const FVector2d ControlPoints[6], const double Parameter)
+	{
+		double Basis[6];
+		Bernstein5Basis(Parameter, Basis);
+		FVector2d Result = FVector2d::ZeroVector;
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			Result += Basis[Index] * ControlPoints[Index];
+		}
+		return Result;
+	}
+
+	void CanonicalTransitionBasis(const double S,
+		const double Start, const double Width, double OutBasis[4])
+	{
+		for (int32 Index = 0; Index < 4; ++Index) OutBasis[Index] = 0.0;
+		if (Width <= 0.0 || S <= Start || S >= Start + Width) return;
+		const double Q = (S - Start) / Width;
+		const double U = 1.0 - Q;
+		const double Envelope = 1024.0 * FMath::Pow(Q, 5.0) *
+			FMath::Pow(U, 5.0);
+		OutBasis[0] = Envelope * U * U * U;
+		OutBasis[1] = Envelope * 3.0 * U * U * Q;
+		OutBasis[2] = Envelope * 3.0 * U * Q * Q;
+		OutBasis[3] = Envelope * Q * Q * Q;
+	}
+
+	double EvaluateCanonicalTransitionField(const double Coefficients[4],
+		const double S, const double Start, const double Width)
+	{
+		double Basis[4];
+		CanonicalTransitionBasis(S, Start, Width, Basis);
+		double Result = 0.0;
+		for (int32 Index = 0; Index < 4; ++Index)
+		{
+			Result += Basis[Index] * Coefficients[Index];
+		}
+		return Result;
+	}
+
+	double BinomialCoefficient(const int32 N, const int32 K)
+	{
+		const int32 ReducedK = FMath::Min(K, N - K);
+		double Result = 1.0;
+		for (int32 Index = 1; Index <= ReducedK; ++Index)
+		{
+			Result *= static_cast<double>(N - ReducedK + Index) / Index;
+		}
+		return Result;
+	}
+
+	double BernsteinBasisValue(
+		const int32 Degree, const int32 Index, const double Parameter)
+	{
+		const double T = FMath::Clamp(Parameter, 0.0, 1.0);
+		return BinomialCoefficient(Degree, Index) * FMath::Pow(T, Index) *
+			FMath::Pow(1.0 - T, Degree - Index);
+	}
+
+	bool BuildBernsteinCollocationInverse(
+		const int32 Degree, TArray<double>& OutInverse)
+	{
+		const int32 Count = Degree + 1;
+		TArray<double> Augmented;
+		Augmented.Init(0.0, Count * 2 * Count);
+		auto At = [&](const int32 Row, const int32 Column) -> double&
+		{
+			return Augmented[Row * 2 * Count + Column];
+		};
+		for (int32 Row = 0; Row < Count; ++Row)
+		{
+			const double Parameter = static_cast<double>(Row) / Degree;
+			for (int32 Column = 0; Column < Count; ++Column)
+			{
+				At(Row, Column) = BernsteinBasisValue(Degree, Column, Parameter);
+			}
+			At(Row, Count + Row) = 1.0;
+		}
+		for (int32 Diagonal = 0; Diagonal < Count; ++Diagonal)
+		{
+			int32 Pivot = Diagonal;
+			for (int32 Row = Diagonal + 1; Row < Count; ++Row)
+			{
+				if (FMath::Abs(At(Row, Diagonal)) >
+					FMath::Abs(At(Pivot, Diagonal))) Pivot = Row;
+			}
+			if (FMath::Abs(At(Pivot, Diagonal)) <= 1.0e-14) return false;
+			if (Pivot != Diagonal)
+			{
+				for (int32 Column = 0; Column < 2 * Count; ++Column)
+				{
+					Swap(At(Pivot, Column), At(Diagonal, Column));
+				}
+			}
+			const double InversePivot = 1.0 / At(Diagonal, Diagonal);
+			for (int32 Column = 0; Column < 2 * Count; ++Column)
+			{
+				At(Diagonal, Column) *= InversePivot;
+			}
+			for (int32 Row = 0; Row < Count; ++Row)
+			{
+				if (Row == Diagonal) continue;
+				const double Factor = At(Row, Diagonal);
+				for (int32 Column = 0; Column < 2 * Count; ++Column)
+				{
+					At(Row, Column) -= Factor * At(Diagonal, Column);
+				}
+			}
+		}
+		OutInverse.SetNumUninitialized(Count * Count);
+		for (int32 Row = 0; Row < Count; ++Row)
+		{
+			for (int32 Column = 0; Column < Count; ++Column)
+			{
+				OutInverse[Row * Count + Column] = At(Row, Count + Column);
+			}
+		}
+		return true;
+	}
+
+	bool BuildTensorSurfaceFromPolynomialEvaluator(
+		const int32 DegreeU, const int32 DegreeV,
+		TFunctionRef<FVector3d(double, double)> Evaluate,
+		FTensorBezierSurface& OutSurface, double& OutMaximumErrorCm,
+		const bool bRequireExactInterpolation = true)
+	{
+		TArray<double> InverseU;
+		TArray<double> InverseV;
+		if (!BuildBernsteinCollocationInverse(DegreeU, InverseU) ||
+			!BuildBernsteinCollocationInverse(DegreeV, InverseV))
+		{
+			return false;
+		}
+		const int32 UCount = DegreeU + 1;
+		const int32 VCount = DegreeV + 1;
+		TArray<FVector3d> Samples;
+		Samples.SetNumUninitialized(UCount * VCount);
+		for (int32 UIndex = 0; UIndex < UCount; ++UIndex)
+		{
+			for (int32 VIndex = 0; VIndex < VCount; ++VIndex)
+			{
+				Samples[UIndex * VCount + VIndex] = Evaluate(
+					static_cast<double>(UIndex) / DegreeU,
+					static_cast<double>(VIndex) / DegreeV);
+			}
+		}
+		OutSurface.DegreeU = DegreeU;
+		OutSurface.DegreeV = DegreeV;
+		OutSurface.ControlPoints.SetNumZeroed(UCount * VCount);
+		for (int32 UControl = 0; UControl < UCount; ++UControl)
+		{
+			for (int32 VControl = 0; VControl < VCount; ++VControl)
+			{
+				FVector3d& Control =
+					OutSurface.ControlPoints[UControl * VCount + VControl];
+				for (int32 USample = 0; USample < UCount; ++USample)
+				{
+					for (int32 VSample = 0; VSample < VCount; ++VSample)
+					{
+						Control += InverseU[UControl * UCount + USample] *
+							InverseV[VControl * VCount + VSample] *
+							Samples[USample * VCount + VSample];
+					}
+				}
+			}
+		}
+		OutMaximumErrorCm = 0.0;
+		for (int32 UIndex = 0; UIndex <= 32; ++UIndex)
+		{
+			const double U = static_cast<double>(UIndex) / 32.0;
+			for (int32 VIndex = 0; VIndex <= 32; ++VIndex)
+			{
+				const double V = static_cast<double>(VIndex) / 32.0;
+				OutMaximumErrorCm = FMath::Max(OutMaximumErrorCm,
+					FVector3d::Distance(Evaluate(U, V), OutSurface.Evaluate(U, V)));
+			}
+		}
+		return OutSurface.IsValid() && (!bRequireExactInterpolation ||
+			OutMaximumErrorCm <= 1.0e-6);
 	}
 
 	double BezierChordErrorCm(const FVector3d ControlPoints[8])
@@ -742,6 +1183,8 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 {
 	SectionPolyline.Reset();
 	SectionParameters.Reset();
+	SectionSegmentBvhNodes.Reset();
+	SectionSegmentBvhIndices.Reset();
 	MaximumChordErrorCm = TNumericLimits<double>::Max();
 	if (!FMath::IsFinite(ChordToleranceCm) || ChordToleranceCm <= 0.0)
 	{
@@ -793,8 +1236,74 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 		Bounds += ControlPoint + MinimumExtrusionCoordinate * ExtrusionAxis;
 		Bounds += ControlPoint + MaximumExtrusionCoordinate * ExtrusionAxis;
 	}
+	const int32 SegmentCount = FMath::Max(0, SectionPolyline.Num() - 1);
+	SectionSegmentBvhIndices.SetNumUninitialized(SegmentCount);
+	for (int32 Segment = 0; Segment < SegmentCount; ++Segment)
+	{
+		SectionSegmentBvhIndices[Segment] = Segment;
+	}
+	const auto SegmentBounds = [this](const int32 Segment)
+	{
+		FBox3d Result(EForceInit::ForceInit);
+		Result += SectionPolyline[Segment] +
+			MinimumExtrusionCoordinate * ExtrusionAxis;
+		Result += SectionPolyline[Segment] +
+			MaximumExtrusionCoordinate * ExtrusionAxis;
+		Result += SectionPolyline[Segment + 1] +
+			MinimumExtrusionCoordinate * ExtrusionAxis;
+		Result += SectionPolyline[Segment + 1] +
+			MaximumExtrusionCoordinate * ExtrusionAxis;
+		return Result;
+	};
+	TFunction<int32(int32, int32)> BuildNode =
+		[this, &SegmentBounds, &BuildNode](const int32 FirstIndex,
+			const int32 IndexCount)
+	{
+		const int32 NodeIndex = SectionSegmentBvhNodes.AddDefaulted();
+		FBox3d NodeBounds(EForceInit::ForceInit);
+		FBox3d CentroidBounds(EForceInit::ForceInit);
+		for (int32 Offset = 0; Offset < IndexCount; ++Offset)
+		{
+			const FBox3d BoundsForSegment = SegmentBounds(
+				SectionSegmentBvhIndices[FirstIndex + Offset]);
+			NodeBounds += BoundsForSegment;
+			CentroidBounds += BoundsForSegment.GetCenter();
+		}
+		SectionSegmentBvhNodes[NodeIndex].Bounds = NodeBounds;
+		constexpr int32 LeafSegmentCount = 8;
+		if (IndexCount <= LeafSegmentCount)
+		{
+			SectionSegmentBvhNodes[NodeIndex].FirstIndex = FirstIndex;
+			SectionSegmentBvhNodes[NodeIndex].IndexCount = IndexCount;
+			return NodeIndex;
+		}
+		const FVector3d Extent = CentroidBounds.GetExtent();
+		int32 Axis = 0;
+		if (Extent.Y > Extent.X) Axis = 1;
+		if (Extent.Z > Extent[Axis]) Axis = 2;
+		TArrayView<int32> Range(
+			SectionSegmentBvhIndices.GetData() + FirstIndex, IndexCount);
+		Algo::Sort(Range, [&SegmentBounds, Axis](const int32 A, const int32 B)
+		{
+			const double CenterA = SegmentBounds(A).GetCenter()[Axis];
+			const double CenterB = SegmentBounds(B).GetCenter()[Axis];
+			return CenterA != CenterB ? CenterA < CenterB : A < B;
+		});
+		const int32 LeftCount = IndexCount / 2;
+		SectionSegmentBvhNodes[NodeIndex].LeftChild =
+			BuildNode(FirstIndex, LeftCount);
+		SectionSegmentBvhNodes[NodeIndex].RightChild =
+			BuildNode(FirstIndex + LeftCount, IndexCount - LeftCount);
+		return NodeIndex;
+	};
+	if (SegmentCount > 0)
+	{
+		BuildNode(0, SegmentCount);
+	}
 	return SectionPolyline.Num() >= 2 &&
-		SectionPolyline.Num() == SectionParameters.Num() && Bounds.IsValid;
+		SectionPolyline.Num() == SectionParameters.Num() && Bounds.IsValid &&
+		!SectionSegmentBvhNodes.IsEmpty() &&
+		SectionSegmentBvhIndices.Num() == SegmentCount;
 }
 
 bool FExtrudedQuinticPatch::IsValid(FString* OutReason) const
@@ -832,9 +1341,11 @@ bool FExtrudedQuinticPatch::IsValid(FString* OutReason) const
 		!FMath::IsFinite(BaseMaximumResidualCm) ||
 		!FMath::IsFinite(CorrectedRootMeanSquareResidualCm) ||
 		!FMath::IsFinite(CorrectedMaximumResidualCm) ||
+		!FMath::IsFinite(AdditionalResidualAgreementAllowanceCm) ||
 		BaseRootMeanSquareResidualCm < 0.0 || BaseMaximumResidualCm < 0.0 ||
 		CorrectedRootMeanSquareResidualCm < 0.0 ||
 		CorrectedMaximumResidualCm < 0.0 ||
+		AdditionalResidualAgreementAllowanceCm < 0.0 ||
 		CorrectedRootMeanSquareResidualCm >
 			BaseRootMeanSquareResidualCm + 1.0e-9 ||
 		CorrectedMaximumResidualCm > BaseMaximumResidualCm + 1.0e-9)
@@ -863,8 +1374,943 @@ bool FExtrudedQuinticPatch::IsValid(FString* OutReason) const
 	return true;
 }
 
-bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
+FVector3d FOpenRimCanonicalSurfaceFit::EvaluateCanonicalSurface(
+	const double InS, const double InT) const
 {
+	const double S = FMath::Clamp(InS, 0.0, 1.0);
+	const double T = FMath::Clamp(InT, 0.0, 1.0);
+	const double TransitionStart = VerticalSegmentParameterWidth;
+	const double TransitionEnd = TransitionStart + TransitionParameterWidth;
+	int32 SegmentIndex = 0;
+	double LocalS = 0.0;
+	if (S <= TransitionStart)
+	{
+		LocalS = TransitionStart > 0.0 ? S / TransitionStart : 0.0;
+	}
+	else if (S < TransitionEnd)
+	{
+		SegmentIndex = 1;
+		LocalS = TransitionParameterWidth > 0.0
+			? (S - TransitionStart) / TransitionParameterWidth : 0.0;
+	}
+	else
+	{
+		SegmentIndex = 2;
+		LocalS = HorizontalSpanParameterWidth > 0.0
+			? (S - TransitionEnd) / HorizontalSpanParameterWidth : 0.0;
+	}
+	const FVector2d Rim = EvaluateBernstein5Curve(
+		CanonicalRimSegmentControlPoints + SegmentIndex * 6, LocalS);
+	double TBasis[6];
+	Bernstein5Basis(T, TBasis);
+	const double RimWeight = TBasis[0] + TBasis[1] + TBasis[2];
+	const double StartWeight = (TBasis[1] + 2.0 * TBasis[2]) / 5.0;
+	const double EndWeight = TBasis[3] + TBasis[4] + TBasis[5];
+	const double LongitudinalWeight =
+		-(2.0 * TBasis[3] + TBasis[4]) / 5.0;
+	const double TransitionEndDepth = EvaluateCanonicalTransitionField(
+		TransitionEndDepthCoefficients, S, TransitionStart,
+		TransitionParameterWidth);
+	const double TransitionStartY = EvaluateCanonicalTransitionField(
+		TransitionStartTangentYCoefficients, S, TransitionStart,
+		TransitionParameterWidth);
+	const double TransitionStartZ = EvaluateCanonicalTransitionField(
+		TransitionStartTangentZCoefficients, S, TransitionStart,
+		TransitionParameterWidth);
+	const double TransitionEndY = EvaluateCanonicalTransitionField(
+		TransitionEndYCoefficients, S, TransitionStart,
+		TransitionParameterWidth);
+	const double TransitionEndZ = EvaluateCanonicalTransitionField(
+		TransitionEndZCoefficients, S, TransitionStart,
+		TransitionParameterWidth);
+	return FVector3d(
+		EndWeight * (EvaluateBernstein5Field(EndDepthCoefficients, S) +
+			TransitionEndDepth) + LongitudinalWeight *
+			EvaluateBernstein5Field(EndLongitudinalTangentCoefficients, S),
+		RimWeight * Rim.X + StartWeight *
+			(EvaluateBernstein5Field(StartTangentYCoefficients, S) +
+				TransitionStartY) + EndWeight *
+			(EvaluateBernstein5Field(EndYCoefficients, S) + TransitionEndY),
+		RimWeight * Rim.Y + StartWeight *
+			(EvaluateBernstein5Field(StartTangentZCoefficients, S) +
+				TransitionStartZ) + EndWeight *
+			(EvaluateBernstein5Field(EndZCoefficients, S) + TransitionEndZ));
+}
+
+FVector3d FOpenRimCanonicalTubeFit::EvaluateTerminal(const double InS) const
+{
+	const double S = FMath::Clamp(InS, 0.0, 1.0);
+	if (!TerminalSplineSegments.IsEmpty())
+	{
+		int32 SegmentIndex = TerminalSplineSegments.Num() - 1;
+		for (int32 Index = 0; Index < TerminalSplineSegments.Num(); ++Index)
+		{
+			if (S <= TerminalSplineSegments[Index].MaximumCanonicalRimParameter)
+			{
+				SegmentIndex = Index;
+				break;
+			}
+		}
+		const FOpenRimTubeTerminalSplineSegment& Segment =
+			TerminalSplineSegments[SegmentIndex];
+		const double Denominator = Segment.MaximumCanonicalRimParameter -
+			Segment.MinimumCanonicalRimParameter;
+		const double T = Denominator > UE_DOUBLE_SMALL_NUMBER ? FMath::Clamp(
+			(S - Segment.MinimumCanonicalRimParameter) / Denominator, 0.0, 1.0) : 0.0;
+		const FVector3d A = FMath::Lerp(Segment.ControlPoints[0],
+			Segment.ControlPoints[1], T);
+		const FVector3d B = FMath::Lerp(Segment.ControlPoints[1],
+			Segment.ControlPoints[2], T);
+		const FVector3d C = FMath::Lerp(Segment.ControlPoints[2],
+			Segment.ControlPoints[3], T);
+		return FMath::Lerp(FMath::Lerp(A, B, T), FMath::Lerp(B, C, T), T);
+	}
+	return FVector3d(
+		EvaluateBernstein5Field(TerminalDepthCoefficients, S),
+		EvaluateBernstein5Field(TerminalYCoefficients, S),
+		EvaluateBernstein5Field(TerminalZCoefficients, S));
+}
+
+namespace
+{
+	FVector3d EvaluateBezierControlPolygon(
+		const TArrayView<const FVector3d> ControlPoints, const double Parameter)
+	{
+		if (ControlPoints.IsEmpty()) return FVector3d::ZeroVector;
+		TArray<FVector3d, TInlineAllocator<16>> Work;
+		Work.Append(ControlPoints.GetData(), ControlPoints.Num());
+		const double T = FMath::Clamp(Parameter, 0.0, 1.0);
+		for (int32 Remaining = Work.Num() - 1; Remaining > 0; --Remaining)
+		{
+			for (int32 Index = 0; Index < Remaining; ++Index)
+			{
+				Work[Index] = FMath::Lerp(Work[Index], Work[Index + 1], T);
+			}
+		}
+		return Work[0];
+	}
+
+	double TensorBilinearErrorBoundCm(const FTensorBezierSurface& Surface)
+	{
+		const int32 VCount = Surface.DegreeV + 1;
+		const FVector3d& U0V0 = Surface.ControlPoints[0];
+		const FVector3d& U0V1 = Surface.ControlPoints[Surface.DegreeV];
+		const FVector3d& U1V0 = Surface.ControlPoints[Surface.DegreeU * VCount];
+		const FVector3d& U1V1 = Surface.ControlPoints.Last();
+		double MaximumSquaredError = 0.0;
+		for (int32 UIndex = 0; UIndex <= Surface.DegreeU; ++UIndex)
+		{
+			const double U = static_cast<double>(UIndex) / Surface.DegreeU;
+			for (int32 VIndex = 0; VIndex <= Surface.DegreeV; ++VIndex)
+			{
+				const double V = static_cast<double>(VIndex) / Surface.DegreeV;
+				const FVector3d Bilinear = FMath::Lerp(
+					FMath::Lerp(U0V0, U0V1, V),
+					FMath::Lerp(U1V0, U1V1, V), U);
+				MaximumSquaredError = FMath::Max(MaximumSquaredError,
+					(Surface.ControlPoints[UIndex * VCount + VIndex] - Bilinear)
+						.SquaredLength());
+			}
+		}
+		// The difference between the tensor surface and the degree-elevated
+		// bilinear corner patch is itself a Bezier surface. Its complete image is
+		// inside the convex hull of these difference control points.
+		return FMath::Sqrt(MaximumSquaredError);
+	}
+
+	void SplitBezierControlPolygonHalf(
+		const TArrayView<const FVector3d> ControlPoints,
+		TArray<FVector3d, TInlineAllocator<16>>& Left,
+		TArray<FVector3d, TInlineAllocator<16>>& Right)
+	{
+		const int32 Count = ControlPoints.Num();
+		Left.SetNumUninitialized(Count);
+		Right.SetNumUninitialized(Count);
+		TArray<FVector3d, TInlineAllocator<16>> Work;
+		Work.Append(ControlPoints.GetData(), Count);
+		Left[0] = Work[0];
+		Right[Count - 1] = Work[Count - 1];
+		for (int32 Level = 1; Level < Count; ++Level)
+		{
+			for (int32 Index = 0; Index < Count - Level; ++Index)
+			{
+				Work[Index] = 0.5 * (Work[Index] + Work[Index + 1]);
+			}
+			Left[Level] = Work[0];
+			Right[Count - 1 - Level] = Work[Count - 1 - Level];
+		}
+	}
+
+	void SplitTensorSurfaceU(const FTensorBezierSurface& Source,
+		FTensorBezierSurface& Left, FTensorBezierSurface& Right)
+	{
+		Left.DegreeU = Right.DegreeU = Source.DegreeU;
+		Left.DegreeV = Right.DegreeV = Source.DegreeV;
+		const int32 UCount = Source.DegreeU + 1;
+		const int32 VCount = Source.DegreeV + 1;
+		Left.ControlPoints.SetNumUninitialized(UCount * VCount);
+		Right.ControlPoints.SetNumUninitialized(UCount * VCount);
+		TArray<FVector3d, TInlineAllocator<16>> Polygon;
+		TArray<FVector3d, TInlineAllocator<16>> SplitLeft;
+		TArray<FVector3d, TInlineAllocator<16>> SplitRight;
+		Polygon.SetNumUninitialized(UCount);
+		for (int32 VIndex = 0; VIndex < VCount; ++VIndex)
+		{
+			for (int32 UIndex = 0; UIndex < UCount; ++UIndex)
+			{
+				Polygon[UIndex] = Source.ControlPoints[UIndex * VCount + VIndex];
+			}
+			SplitBezierControlPolygonHalf(Polygon, SplitLeft, SplitRight);
+			for (int32 UIndex = 0; UIndex < UCount; ++UIndex)
+			{
+				Left.ControlPoints[UIndex * VCount + VIndex] = SplitLeft[UIndex];
+				Right.ControlPoints[UIndex * VCount + VIndex] = SplitRight[UIndex];
+			}
+		}
+	}
+
+	void SplitTensorSurfaceV(const FTensorBezierSurface& Source,
+		FTensorBezierSurface& Lower, FTensorBezierSurface& Upper)
+	{
+		Lower.DegreeU = Upper.DegreeU = Source.DegreeU;
+		Lower.DegreeV = Upper.DegreeV = Source.DegreeV;
+		const int32 UCount = Source.DegreeU + 1;
+		const int32 VCount = Source.DegreeV + 1;
+		Lower.ControlPoints.SetNumUninitialized(UCount * VCount);
+		Upper.ControlPoints.SetNumUninitialized(UCount * VCount);
+		TArray<FVector3d, TInlineAllocator<16>> SplitLower;
+		TArray<FVector3d, TInlineAllocator<16>> SplitUpper;
+		for (int32 UIndex = 0; UIndex < UCount; ++UIndex)
+		{
+			const TArrayView<const FVector3d> Polygon = MakeArrayView(
+				Source.ControlPoints.GetData() + UIndex * VCount, VCount);
+			SplitBezierControlPolygonHalf(Polygon, SplitLower, SplitUpper);
+			for (int32 VIndex = 0; VIndex < VCount; ++VIndex)
+			{
+				Lower.ControlPoints[UIndex * VCount + VIndex] = SplitLower[VIndex];
+				Upper.ControlPoints[UIndex * VCount + VIndex] = SplitUpper[VIndex];
+			}
+		}
+	}
+
+	bool AppendCertifiedTensorCells(const FTensorBezierSurface& Surface,
+		const double MinimumU, const double MaximumU,
+		const double MinimumV, const double MaximumV,
+		const double ToleranceCm, const int32 DepthU, const int32 DepthV,
+		TArray<FTensorBezierApproximationCell>& Cells,
+		double& MaximumAcceptedErrorCm)
+	{
+		const double ErrorCm = TensorBilinearErrorBoundCm(Surface);
+		if (ErrorCm <= ToleranceCm)
+		{
+			FTensorBezierApproximationCell& Cell = Cells.AddDefaulted_GetRef();
+			Cell.MinimumU = MinimumU;
+			Cell.MaximumU = MaximumU;
+			Cell.MinimumV = MinimumV;
+			Cell.MaximumV = MaximumV;
+			const int32 VCount = Surface.DegreeV + 1;
+			Cell.Corners[0] = Surface.ControlPoints[0];
+			Cell.Corners[1] = Surface.ControlPoints[Surface.DegreeV];
+			Cell.Corners[2] = Surface.ControlPoints[Surface.DegreeU * VCount];
+			Cell.Corners[3] = Surface.ControlPoints.Last();
+			Cell.MaximumErrorCm = ErrorCm;
+			MaximumAcceptedErrorCm = FMath::Max(MaximumAcceptedErrorCm, ErrorCm);
+			return true;
+		}
+		constexpr int32 MaximumSubdivisionDepthPerAxis = 12;
+		const bool bCanSplitU = DepthU < MaximumSubdivisionDepthPerAxis;
+		const bool bCanSplitV = DepthV < MaximumSubdivisionDepthPerAxis;
+		if (!bCanSplitU && !bCanSplitV) return false;
+		FTensorBezierSurface Left;
+		FTensorBezierSurface Right;
+		FTensorBezierSurface Lower;
+		FTensorBezierSurface Upper;
+		double SplitUErrorCm = TNumericLimits<double>::Max();
+		double SplitVErrorCm = TNumericLimits<double>::Max();
+		if (bCanSplitU)
+		{
+			SplitTensorSurfaceU(Surface, Left, Right);
+			SplitUErrorCm = FMath::Max(TensorBilinearErrorBoundCm(Left),
+				TensorBilinearErrorBoundCm(Right));
+		}
+		if (bCanSplitV)
+		{
+			SplitTensorSurfaceV(Surface, Lower, Upper);
+			SplitVErrorCm = FMath::Max(TensorBilinearErrorBoundCm(Lower),
+				TensorBilinearErrorBoundCm(Upper));
+		}
+		if (bCanSplitU && (!bCanSplitV || SplitUErrorCm <= SplitVErrorCm))
+		{
+			const double MiddleU = 0.5 * (MinimumU + MaximumU);
+			return AppendCertifiedTensorCells(Left,
+				MinimumU, MiddleU, MinimumV, MaximumV, ToleranceCm,
+				DepthU + 1, DepthV, Cells, MaximumAcceptedErrorCm) &&
+				AppendCertifiedTensorCells(Right,
+					MiddleU, MaximumU, MinimumV, MaximumV, ToleranceCm,
+					DepthU + 1, DepthV, Cells, MaximumAcceptedErrorCm);
+		}
+		const double MiddleV = 0.5 * (MinimumV + MaximumV);
+		return AppendCertifiedTensorCells(Lower,
+			MinimumU, MaximumU, MinimumV, MiddleV, ToleranceCm,
+			DepthU, DepthV + 1, Cells, MaximumAcceptedErrorCm) &&
+			AppendCertifiedTensorCells(Upper,
+				MinimumU, MaximumU, MiddleV, MaximumV, ToleranceCm,
+				DepthU, DepthV + 1, Cells, MaximumAcceptedErrorCm);
+	}
+}
+
+FVector3d FTensorBezierSurface::Evaluate(
+	const double U, const double V) const
+{
+	if (DegreeU < 0 || DegreeV < 0 ||
+		ControlPoints.Num() != (DegreeU + 1) * (DegreeV + 1))
+	{
+		return FVector3d::ZeroVector;
+	}
+	TArray<FVector3d, TInlineAllocator<16>> AlongU;
+	AlongU.Reserve(DegreeU + 1);
+	const int32 VCount = DegreeV + 1;
+	for (int32 UIndex = 0; UIndex <= DegreeU; ++UIndex)
+	{
+		AlongU.Add(EvaluateBezierControlPolygon(
+			MakeArrayView(ControlPoints.GetData() + UIndex * VCount, VCount), V));
+	}
+	return EvaluateBezierControlPolygon(AlongU, U);
+}
+
+FVector3d FTensorBezierSurface::EvaluateDerivativeU(
+	const double U, const double V) const
+{
+	if (DegreeU <= 0 || DegreeV < 0 ||
+		ControlPoints.Num() != (DegreeU + 1) * (DegreeV + 1))
+	{
+		return FVector3d::ZeroVector;
+	}
+	TArray<FVector3d, TInlineAllocator<16>> DerivativeControlPoints;
+	DerivativeControlPoints.Reserve(DegreeU);
+	const int32 VCount = DegreeV + 1;
+	for (int32 UIndex = 0; UIndex < DegreeU; ++UIndex)
+	{
+		TArray<FVector3d, TInlineAllocator<16>> AlongV;
+		AlongV.Reserve(VCount);
+		for (int32 VIndex = 0; VIndex < VCount; ++VIndex)
+		{
+			AlongV.Add(static_cast<double>(DegreeU) *
+				(ControlPoints[(UIndex + 1) * VCount + VIndex] -
+					ControlPoints[UIndex * VCount + VIndex]));
+		}
+		DerivativeControlPoints.Add(EvaluateBezierControlPolygon(AlongV, V));
+	}
+	return EvaluateBezierControlPolygon(DerivativeControlPoints, U);
+}
+
+FVector3d FTensorBezierSurface::EvaluateDerivativeV(
+	const double U, const double V) const
+{
+	if (DegreeV <= 0 || DegreeU < 0 ||
+		ControlPoints.Num() != (DegreeU + 1) * (DegreeV + 1))
+	{
+		return FVector3d::ZeroVector;
+	}
+	TArray<FVector3d, TInlineAllocator<16>> AlongU;
+	AlongU.Reserve(DegreeU + 1);
+	const int32 VCount = DegreeV + 1;
+	for (int32 UIndex = 0; UIndex <= DegreeU; ++UIndex)
+	{
+		TArray<FVector3d, TInlineAllocator<16>> DerivativeControlPoints;
+		DerivativeControlPoints.Reserve(DegreeV);
+		for (int32 VIndex = 0; VIndex < DegreeV; ++VIndex)
+		{
+			DerivativeControlPoints.Add(static_cast<double>(DegreeV) *
+				(ControlPoints[UIndex * VCount + VIndex + 1] -
+					ControlPoints[UIndex * VCount + VIndex]));
+		}
+		AlongU.Add(EvaluateBezierControlPolygon(DerivativeControlPoints, V));
+	}
+	return EvaluateBezierControlPolygon(AlongU, U);
+}
+
+FVector3d FTensorBezierSurface::EvaluateNormal(
+	const double U, const double V) const
+{
+	return FVector3d::CrossProduct(
+		EvaluateDerivativeU(U, V), EvaluateDerivativeV(U, V)).GetSafeNormal();
+}
+
+bool FTensorBezierSurface::BuildBilinearApproximation(
+	const double ToleranceCm,
+	TArray<FTensorBezierApproximationCell>& OutCells,
+	double* OutMaximumErrorCm) const
+{
+	OutCells.Reset();
+	if (OutMaximumErrorCm)
+	{
+		*OutMaximumErrorCm = TNumericLimits<double>::Max();
+	}
+	if (!FMath::IsFinite(ToleranceCm) || ToleranceCm <= 0.0 || !IsValid())
+	{
+		return false;
+	}
+	double MaximumAcceptedErrorCm = 0.0;
+	if (!AppendCertifiedTensorCells(*this, 0.0, 1.0, 0.0, 1.0,
+		ToleranceCm, 0, 0, OutCells, MaximumAcceptedErrorCm))
+	{
+		OutCells.Reset();
+		return false;
+	}
+	if (OutMaximumErrorCm) *OutMaximumErrorCm = MaximumAcceptedErrorCm;
+	return !OutCells.IsEmpty();
+}
+
+bool FTensorBezierSurface::IsValid(FString* OutReason) const
+{
+	auto Fail = [OutReason](const TCHAR* Reason)
+	{
+		if (OutReason) *OutReason = Reason;
+		return false;
+	};
+	constexpr int32 MaximumSupportedDegree = 15;
+	if (DegreeU < 1 || DegreeV < 1 || DegreeU > MaximumSupportedDegree ||
+		DegreeV > MaximumSupportedDegree)
+	{
+		return Fail(TEXT("Tensor Bezier degrees must be between one and fifteen."));
+	}
+	if (ControlPoints.Num() != (DegreeU + 1) * (DegreeV + 1))
+	{
+		return Fail(TEXT("Tensor Bezier control-net dimensions are inconsistent."));
+	}
+	for (const FVector3d& Point : ControlPoints)
+	{
+		if (!IsFiniteVector(Point))
+		{
+			return Fail(TEXT("Tensor Bezier control points must be finite."));
+		}
+	}
+	for (int32 UIndex = 0; UIndex <= 4; ++UIndex)
+	{
+		for (int32 VIndex = 0; VIndex <= 4; ++VIndex)
+		{
+			const double U = static_cast<double>(UIndex) / 4.0;
+			const double V = static_cast<double>(VIndex) / 4.0;
+			if (FVector3d::CrossProduct(EvaluateDerivativeU(U, V),
+				EvaluateDerivativeV(U, V)).SquaredLength() <= 1.0e-18)
+			{
+				return Fail(TEXT("Tensor Bezier surface must be regular."));
+			}
+		}
+	}
+	return true;
+}
+
+bool FTensorBezierPatch::BuildQueryApproximation(const double ToleranceCm)
+{
+	MaximumApproximationErrorCm = TNumericLimits<double>::Max();
+	ApproximationCellBvhNodes.Reset();
+	ApproximationCellBvhIndices.Reset();
+	if (!Surface.BuildBilinearApproximation(ToleranceCm, ApproximationCells,
+		&MaximumApproximationErrorCm))
+	{
+		Bounds = FBox3d(EForceInit::ForceInit);
+		bApproximationCertified = false;
+		return false;
+	}
+	Bounds = FBox3d(EForceInit::ForceInit);
+	for (const FTensorBezierApproximationCell& Cell : ApproximationCells)
+	{
+		for (const FVector3d& Corner : Cell.Corners) Bounds += Corner;
+	}
+	Bounds = Bounds.ExpandBy(MaximumApproximationErrorCm);
+	ApproximationCellBvhIndices.SetNumUninitialized(ApproximationCells.Num());
+	for (int32 Index = 0; Index < ApproximationCells.Num(); ++Index)
+	{
+		ApproximationCellBvhIndices[Index] = Index;
+	}
+	const auto CellBounds = [this](const int32 CellIndex)
+	{
+		const FTensorBezierApproximationCell& Cell =
+			ApproximationCells[CellIndex];
+		FBox3d Result(EForceInit::ForceInit);
+		for (const FVector3d& Corner : Cell.Corners) Result += Corner;
+		return Result.ExpandBy(Cell.MaximumErrorCm);
+	};
+	TFunction<int32(int32, int32)> BuildNode =
+		[this, &CellBounds, &BuildNode](const int32 FirstIndex,
+			const int32 IndexCount)
+	{
+		const int32 NodeIndex = ApproximationCellBvhNodes.AddDefaulted();
+		FBox3d NodeBounds(EForceInit::ForceInit);
+		FBox3d CentroidBounds(EForceInit::ForceInit);
+		for (int32 Offset = 0; Offset < IndexCount; ++Offset)
+		{
+			const FBox3d BoundsForCell = CellBounds(
+				ApproximationCellBvhIndices[FirstIndex + Offset]);
+			NodeBounds += BoundsForCell;
+			CentroidBounds += BoundsForCell.GetCenter();
+		}
+		ApproximationCellBvhNodes[NodeIndex].Bounds = NodeBounds;
+		constexpr int32 LeafCellCount = 8;
+		if (IndexCount <= LeafCellCount)
+		{
+			ApproximationCellBvhNodes[NodeIndex].FirstIndex = FirstIndex;
+			ApproximationCellBvhNodes[NodeIndex].IndexCount = IndexCount;
+			return NodeIndex;
+		}
+		const FVector3d Extent = CentroidBounds.GetExtent();
+		int32 Axis = 0;
+		if (Extent.Y > Extent.X) Axis = 1;
+		if (Extent.Z > Extent[Axis]) Axis = 2;
+		TArrayView<int32> Range(
+			ApproximationCellBvhIndices.GetData() + FirstIndex, IndexCount);
+		Algo::Sort(Range, [&CellBounds, Axis](const int32 A, const int32 B)
+		{
+			const double CenterA = CellBounds(A).GetCenter()[Axis];
+			const double CenterB = CellBounds(B).GetCenter()[Axis];
+			return CenterA != CenterB ? CenterA < CenterB : A < B;
+		});
+		const int32 LeftCount = IndexCount / 2;
+		ApproximationCellBvhNodes[NodeIndex].LeftChild =
+			BuildNode(FirstIndex, LeftCount);
+		ApproximationCellBvhNodes[NodeIndex].RightChild =
+			BuildNode(FirstIndex + LeftCount, IndexCount - LeftCount);
+		return NodeIndex;
+	};
+	if (!ApproximationCells.IsEmpty()) BuildNode(0, ApproximationCells.Num());
+	bApproximationCertified = true;
+	return Bounds.IsValid != 0;
+}
+
+bool FTensorBezierPatch::IsValid(FString* OutReason) const
+{
+	auto Fail = [OutReason](const TCHAR* Reason)
+	{
+		if (OutReason) *OutReason = Reason;
+		return false;
+	};
+	if (SourceId == 0 || SurfaceId == 0 || FeatureId == 0 ||
+		PrimitiveId == 0 || CanonicalGroupId == 0)
+	{
+		return Fail(TEXT("Tensor patch identifiers must be non-zero."));
+	}
+	FString SurfaceReason;
+	if (!Surface.IsValid(&SurfaceReason))
+	{
+		if (OutReason) *OutReason = SurfaceReason;
+		return false;
+	}
+	if (bAuthorityEligible &&
+		(!bQueryCollisionEnabled || !bApproximationCertified))
+	{
+		return Fail(TEXT("Tensor authority requires query and approximation certificates."));
+	}
+	if (bApproximationCertified &&
+		(ApproximationCells.IsEmpty() || !Bounds.IsValid ||
+			ApproximationCellBvhNodes.IsEmpty() ||
+			ApproximationCellBvhIndices.Num() != ApproximationCells.Num() ||
+			!FMath::IsFinite(MaximumApproximationErrorCm) ||
+			MaximumApproximationErrorCm < 0.0))
+	{
+		return Fail(TEXT("Tensor patch approximation certificate is incomplete."));
+	}
+	return true;
+}
+
+bool FPiecewiseTensorBezierPatch::BuildQueryApproximation(
+	const double ToleranceCm)
+{
+	Bounds = FBox3d(EForceInit::ForceInit);
+	CellBvhNodes.Reset();
+	CellBvhIndices.Reset();
+	Adjacencies.Reset();
+	MaximumApproximationErrorCm = 0.0;
+	TArray<uint8> CellBuildResults;
+	CellBuildResults.SetNumZeroed(Cells.Num());
+	ParallelFor(Cells.Num(), [this, ToleranceCm, &CellBuildResults](
+		const int32 CellIndex)
+	{
+		FPiecewiseTensorBezierCell& Cell = Cells[CellIndex];
+		FTensorBezierPatch Temporary;
+		Temporary.Surface = Cell.Surface;
+		if (!Temporary.BuildQueryApproximation(ToleranceCm))
+		{
+			return;
+		}
+		Cell.Bounds = Temporary.Bounds;
+		Cell.ApproximationCells = MoveTemp(Temporary.ApproximationCells);
+		Cell.ApproximationCellBvhNodes = MoveTemp(
+			Temporary.ApproximationCellBvhNodes);
+		Cell.ApproximationCellBvhIndices = MoveTemp(
+			Temporary.ApproximationCellBvhIndices);
+		Cell.MaximumApproximationErrorCm = Temporary.MaximumApproximationErrorCm;
+		CellBuildResults[CellIndex] = 1;
+	});
+	for (int32 CellIndex = 0; CellIndex < Cells.Num(); ++CellIndex)
+	{
+		if (CellBuildResults[CellIndex] == 0)
+		{
+			bApproximationCertified = false;
+			return false;
+		}
+		const FPiecewiseTensorBezierCell& Cell = Cells[CellIndex];
+		MaximumApproximationErrorCm = FMath::Max(MaximumApproximationErrorCm,
+			Cell.MaximumApproximationErrorCm);
+		Bounds += Cell.Bounds;
+	}
+	CellBvhIndices.SetNumUninitialized(Cells.Num());
+	for (int32 Index = 0; Index < Cells.Num(); ++Index) CellBvhIndices[Index] = Index;
+	TFunction<int32(int32, int32)> BuildNode =
+		[this, &BuildNode](const int32 FirstIndex, const int32 IndexCount)
+	{
+		const int32 NodeIndex = CellBvhNodes.AddDefaulted();
+		FBox3d NodeBounds(EForceInit::ForceInit);
+		FBox3d CentroidBounds(EForceInit::ForceInit);
+		for (int32 Offset = 0; Offset < IndexCount; ++Offset)
+		{
+			const FBox3d& CellBounds = Cells[CellBvhIndices[FirstIndex + Offset]].Bounds;
+			NodeBounds += CellBounds;
+			CentroidBounds += CellBounds.GetCenter();
+		}
+		CellBvhNodes[NodeIndex].Bounds = NodeBounds;
+		constexpr int32 LeafCellCount = 8;
+		if (IndexCount <= LeafCellCount)
+		{
+			CellBvhNodes[NodeIndex].FirstIndex = FirstIndex;
+			CellBvhNodes[NodeIndex].IndexCount = IndexCount;
+			return NodeIndex;
+		}
+		const FVector3d Extent = CentroidBounds.GetExtent();
+		int32 Axis = 0;
+		if (Extent.Y > Extent.X) Axis = 1;
+		if (Extent.Z > Extent[Axis]) Axis = 2;
+		TArrayView<int32> Range(CellBvhIndices.GetData() + FirstIndex, IndexCount);
+		Algo::Sort(Range, [this, Axis](const int32 A, const int32 B)
+		{
+			const double CenterA = Cells[A].Bounds.GetCenter()[Axis];
+			const double CenterB = Cells[B].Bounds.GetCenter()[Axis];
+			return CenterA != CenterB ? CenterA < CenterB : A < B;
+		});
+		const int32 LeftCount = IndexCount / 2;
+		CellBvhNodes[NodeIndex].LeftChild = BuildNode(FirstIndex, LeftCount);
+		CellBvhNodes[NodeIndex].RightChild = BuildNode(FirstIndex + LeftCount, IndexCount - LeftCount);
+		return NodeIndex;
+	};
+	if (!Cells.IsEmpty()) BuildNode(0, Cells.Num());
+	const auto IsCertifiedC2Join = [](const FPiecewiseTensorBezierCell& First,
+		const uint8 FirstBoundary, const FPiecewiseTensorBezierCell& Second,
+		const uint8 SecondBoundary)
+	{
+		const bool bAlongU = FirstBoundary < 2;
+		if (bAlongU != (SecondBoundary < 2)) return false;
+		const bool bFirstAtMaximum = FirstBoundary == (bAlongU ? 1 : 3);
+		const bool bSecondAtMinimum = SecondBoundary == (bAlongU ? 0 : 2);
+		const FPiecewiseTensorBezierCell& Before =
+			bFirstAtMaximum && bSecondAtMinimum ? First : Second;
+		const FPiecewiseTensorBezierCell& After =
+			bFirstAtMaximum && bSecondAtMinimum ? Second : First;
+		const uint8 BeforeBoundary =
+			bFirstAtMaximum && bSecondAtMinimum ? FirstBoundary : SecondBoundary;
+		const uint8 AfterBoundary =
+			bFirstAtMaximum && bSecondAtMinimum ? SecondBoundary : FirstBoundary;
+		if (BeforeBoundary != (bAlongU ? 1 : 3) ||
+			AfterBoundary != (bAlongU ? 0 : 2)) return false;
+		const int32 BeforeDegree = bAlongU ? Before.Surface.DegreeU :
+			Before.Surface.DegreeV;
+		const int32 AfterDegree = bAlongU ? After.Surface.DegreeU :
+			After.Surface.DegreeV;
+		const int32 BeforeOrthogonalDegree = bAlongU ? Before.Surface.DegreeV :
+			Before.Surface.DegreeU;
+		const int32 AfterOrthogonalDegree = bAlongU ? After.Surface.DegreeV :
+			After.Surface.DegreeU;
+		if (BeforeDegree < 2 || AfterDegree < 2 ||
+			BeforeOrthogonalDegree != AfterOrthogonalDegree) return false;
+		double BeforeSpan = bAlongU ? Before.MaximumU - Before.MinimumU :
+			Before.MaximumV - Before.MinimumV;
+		double AfterSpan = bAlongU ? After.MaximumU - After.MinimumU :
+			After.MaximumV - After.MinimumV;
+		if (!bAlongU && Before.bTerminalClosure != After.bTerminalClosure)
+		{
+			if (Before.bTerminalClosure)
+				BeforeSpan *= Before.LongitudinalParameterScale;
+			if (After.bTerminalClosure)
+				AfterSpan *= After.LongitudinalParameterScale;
+		}
+		if (!FMath::IsFinite(BeforeSpan) || !FMath::IsFinite(AfterSpan) ||
+			BeforeSpan <= 0.0 || AfterSpan <= 0.0) return false;
+		const auto Control = [bAlongU](const FPiecewiseTensorBezierCell& Cell,
+			const int32 Along, const int32 Orthogonal)
+		{
+			const int32 U = bAlongU ? Along : Orthogonal;
+			const int32 V = bAlongU ? Orthogonal : Along;
+			return Cell.Surface.ControlPoints[
+				U * (Cell.Surface.DegreeV + 1) + V];
+		};
+		constexpr double PositionToleranceCm = 1.0e-6;
+		constexpr double FirstDerivativeToleranceCm = 1.0e-5;
+		// Independently converted quintic/cubic cells can amplify double-precision
+		// collocation noise when the normalized interval is very short. This is a
+		// derivative-space tolerance (not a positional collision shell): position
+		// and first-derivative continuity remain gated independently above.
+		constexpr double SecondDerivativeToleranceCm = 2.0e-2;
+		for (int32 Orthogonal = 0;
+			Orthogonal <= BeforeOrthogonalDegree; ++Orthogonal)
+		{
+			const FVector3d BeforeEnd = Control(Before, BeforeDegree, Orthogonal);
+			const FVector3d BeforePrevious = Control(
+				Before, BeforeDegree - 1, Orthogonal);
+			const FVector3d BeforePrevious2 = Control(
+				Before, BeforeDegree - 2, Orthogonal);
+			const FVector3d AfterStart = Control(After, 0, Orthogonal);
+			const FVector3d AfterNext = Control(After, 1, Orthogonal);
+			const FVector3d AfterNext2 = Control(After, 2, Orthogonal);
+			if (FVector3d::Distance(BeforeEnd, AfterStart) >
+				PositionToleranceCm) return false;
+			if (FVector3d::Distance(
+				BeforeDegree * (BeforeEnd - BeforePrevious) / BeforeSpan,
+				AfterDegree * (AfterNext - AfterStart) / AfterSpan) >
+				FirstDerivativeToleranceCm) return false;
+			if (FVector3d::Distance(BeforeDegree * (BeforeDegree - 1.0) *
+				(BeforeEnd - 2.0 * BeforePrevious + BeforePrevious2) /
+				FMath::Square(BeforeSpan), AfterDegree * (AfterDegree - 1.0) *
+				(AfterNext2 - 2.0 * AfterNext + AfterStart) /
+				FMath::Square(AfterSpan)) > SecondDerivativeToleranceCm) return false;
+		}
+		return true;
+	};
+	const auto AddAdjacency = [this, &IsCertifiedC2Join](const int32 CellIndex,
+		const uint8 BoundaryIndex, const int32 AdjacentCellIndex,
+		const uint8 AdjacentBoundaryIndex)
+	{
+		const FPiecewiseTensorBezierCell& Cell = Cells[CellIndex];
+		const FPiecewiseTensorBezierCell& Adjacent = Cells[AdjacentCellIndex];
+		if (!IsCertifiedC2Join(
+			Cell, BoundaryIndex, Adjacent, AdjacentBoundaryIndex)) return;
+		FPiecewiseTensorBezierAdjacency& Link = Adjacencies.AddDefaulted_GetRef();
+		Link.BoundaryFeatureId = Cell.BoundaryFeatureIds[BoundaryIndex];
+		Link.AdjacentBoundaryFeatureId =
+			Adjacent.BoundaryFeatureIds[AdjacentBoundaryIndex];
+		Link.CellPrimitiveId = Cell.PrimitiveId;
+		Link.AdjacentCellPrimitiveId = Adjacent.PrimitiveId;
+		Link.BoundaryIndex = BoundaryIndex;
+		Link.AdjacentBoundaryIndex = AdjacentBoundaryIndex;
+		Link.bC2ByConstruction = true;
+	};
+	for (FPiecewiseTensorBezierCell& Cell : Cells)
+	{
+		for (uint8 BoundaryIndex = 0; BoundaryIndex < 4; ++BoundaryIndex)
+		{
+			Cell.BoundaryFeatureIds[BoundaryIndex] = CombineStableIds(
+				Cell.FeatureId, static_cast<uint64>(BoundaryIndex + 1));
+		}
+	}
+	constexpr double ParameterTolerance = 1.0e-10;
+	const auto QuantizeParameter = [ParameterTolerance](const double Value)
+	{
+		return FMath::RoundToInt64(Value / ParameterTolerance);
+	};
+	const auto BoundaryKey = [](const int64 Boundary, const int64 RangeMinimum,
+		const int64 RangeMaximum, const uint64 Salt)
+	{
+		uint64 Key = CombineStableIds(Salt, static_cast<uint64>(Boundary));
+		Key = CombineStableIds(Key, static_cast<uint64>(RangeMinimum));
+		return CombineStableIds(Key, static_cast<uint64>(RangeMaximum));
+	};
+	TMap<uint64, TArray<int32>> MinimumUBoundaries;
+	TMap<uint64, TArray<int32>> MinimumVBoundaries;
+	TMap<uint64, TArray<int32>> ClosureMinimumVBoundaries;
+	constexpr uint64 UBoundarySalt = 0x9E3779B97F4A7C15ull;
+	constexpr uint64 VBoundarySalt = 0xC2B2AE3D27D4EB4Full;
+	constexpr uint64 ClosureBoundarySalt = 0x165667B19E3779F9ull;
+	for (int32 CellIndex = 0; CellIndex < Cells.Num(); ++CellIndex)
+	{
+		const FPiecewiseTensorBezierCell& Cell = Cells[CellIndex];
+		MinimumUBoundaries.FindOrAdd(BoundaryKey(
+			QuantizeParameter(Cell.MinimumU), QuantizeParameter(Cell.MinimumV),
+			QuantizeParameter(Cell.MaximumV), UBoundarySalt)).Add(CellIndex);
+		MinimumVBoundaries.FindOrAdd(BoundaryKey(
+			QuantizeParameter(Cell.MinimumV), QuantizeParameter(Cell.MinimumU),
+			QuantizeParameter(Cell.MaximumU), VBoundarySalt)).Add(CellIndex);
+		if (Cell.bTerminalClosure && FMath::IsNearlyEqual(
+			Cell.MinimumV, 0.0, ParameterTolerance))
+		{
+			ClosureMinimumVBoundaries.FindOrAdd(BoundaryKey(0,
+				QuantizeParameter(Cell.MinimumU), QuantizeParameter(Cell.MaximumU),
+				ClosureBoundarySalt)).Add(CellIndex);
+		}
+	}
+	const auto GatherCandidates = [&BoundaryKey](
+		const TMap<uint64, TArray<int32>>& Buckets, const int64 Boundary,
+		const int64 RangeMinimum, const int64 RangeMaximum, const uint64 Salt,
+		TSet<int32, DefaultKeyFuncs<int32>, TInlineSetAllocator<16>>& OutCandidates)
+	{
+		for (int64 DBoundary = -1; DBoundary <= 1; ++DBoundary)
+		{
+			for (int64 DMinimum = -1; DMinimum <= 1; ++DMinimum)
+			{
+				for (int64 DMaximum = -1; DMaximum <= 1; ++DMaximum)
+				{
+					if (const TArray<int32>* Bucket = Buckets.Find(BoundaryKey(
+						Boundary + DBoundary, RangeMinimum + DMinimum,
+						RangeMaximum + DMaximum, Salt)))
+					{
+						for (const int32 CellIndex : *Bucket)
+						{
+							OutCandidates.Add(CellIndex);
+						}
+					}
+				}
+			}
+		}
+	};
+	for (int32 AIndex = 0; AIndex < Cells.Num(); ++AIndex)
+	{
+		const FPiecewiseTensorBezierCell& A = Cells[AIndex];
+		TSet<int32, DefaultKeyFuncs<int32>, TInlineSetAllocator<16>> Candidates;
+		GatherCandidates(MinimumUBoundaries, QuantizeParameter(A.MaximumU),
+			QuantizeParameter(A.MinimumV), QuantizeParameter(A.MaximumV),
+			UBoundarySalt, Candidates);
+		for (const int32 BIndex : Candidates)
+		{
+			if (BIndex == AIndex) continue;
+			const FPiecewiseTensorBezierCell& B = Cells[BIndex];
+			if (FMath::IsNearlyEqual(A.MaximumU, B.MinimumU, ParameterTolerance) &&
+				FMath::IsNearlyEqual(A.MinimumV, B.MinimumV, ParameterTolerance) &&
+				FMath::IsNearlyEqual(A.MaximumV, B.MaximumV, ParameterTolerance))
+			{
+				AddAdjacency(AIndex, 1, BIndex, 0);
+				AddAdjacency(BIndex, 0, AIndex, 1);
+			}
+		}
+		Candidates.Reset();
+		GatherCandidates(MinimumVBoundaries, QuantizeParameter(A.MaximumV),
+			QuantizeParameter(A.MinimumU), QuantizeParameter(A.MaximumU),
+			VBoundarySalt, Candidates);
+		for (const int32 BIndex : Candidates)
+		{
+			if (BIndex == AIndex) continue;
+			const FPiecewiseTensorBezierCell& B = Cells[BIndex];
+			if (FMath::IsNearlyEqual(A.MaximumV, B.MinimumV, ParameterTolerance) &&
+				FMath::IsNearlyEqual(A.MinimumU, B.MinimumU, ParameterTolerance) &&
+				FMath::IsNearlyEqual(A.MaximumU, B.MaximumU, ParameterTolerance))
+			{
+				AddAdjacency(AIndex, 3, BIndex, 2);
+				AddAdjacency(BIndex, 2, AIndex, 3);
+			}
+		}
+		if (!A.bTerminalClosure && FMath::IsNearlyEqual(
+			A.MaximumV, 1.0, ParameterTolerance))
+		{
+			Candidates.Reset();
+			GatherCandidates(ClosureMinimumVBoundaries, 0,
+				QuantizeParameter(A.MinimumU), QuantizeParameter(A.MaximumU),
+				ClosureBoundarySalt, Candidates);
+			for (const int32 BIndex : Candidates)
+			{
+				const FPiecewiseTensorBezierCell& B = Cells[BIndex];
+				if (!B.bTerminalClosure ||
+					!FMath::IsNearlyEqual(B.MinimumV, 0.0, ParameterTolerance) ||
+					!FMath::IsNearlyEqual(A.MinimumU, B.MinimumU, ParameterTolerance) ||
+					!FMath::IsNearlyEqual(A.MaximumU, B.MaximumU, ParameterTolerance))
+				{
+					continue;
+				}
+				AddAdjacency(AIndex, 3, BIndex, 2);
+				AddAdjacency(BIndex, 2, AIndex, 3);
+			}
+		}
+	}
+	Algo::Sort(Adjacencies, [](const FPiecewiseTensorBezierAdjacency& A,
+		const FPiecewiseTensorBezierAdjacency& B)
+	{
+		if (A.CellPrimitiveId != B.CellPrimitiveId)
+			return A.CellPrimitiveId < B.CellPrimitiveId;
+		if (A.BoundaryIndex != B.BoundaryIndex)
+			return A.BoundaryIndex < B.BoundaryIndex;
+		return A.AdjacentCellPrimitiveId < B.AdjacentCellPrimitiveId;
+	});
+	bApproximationCertified = !Cells.IsEmpty() && Bounds.IsValid != 0;
+	return bApproximationCertified;
+}
+
+bool FPiecewiseTensorBezierPatch::IsValid(FString* OutReason) const
+{
+	auto Fail = [OutReason](const TCHAR* Reason)
+	{
+		if (OutReason) *OutReason = Reason;
+		return false;
+	};
+	if (SourceId == 0 || SurfaceId == 0 || PrimitiveId == 0 ||
+		CanonicalGroupId == 0)
+	{
+		return Fail(TEXT("Piecewise tensor patch identifiers must be non-zero."));
+	}
+	if (!bApproximationCertified || Cells.IsEmpty() || !Bounds.IsValid ||
+		CellBvhNodes.IsEmpty() || CellBvhIndices.Num() != Cells.Num() ||
+		!FMath::IsFinite(MaximumApproximationErrorCm))
+	{
+		return Fail(TEXT("Piecewise tensor patch approximation certificate is incomplete."));
+	}
+	uint64 PreviousPrimitive = 0;
+	for (const FPiecewiseTensorBezierCell& Cell : Cells)
+	{
+		if (Cell.FeatureId == 0 || Cell.PrimitiveId == 0 ||
+			!Cell.Bounds.IsValid || Cell.ApproximationCells.IsEmpty() ||
+			Cell.ApproximationCellBvhNodes.IsEmpty() ||
+			Cell.ApproximationCellBvhIndices.Num() != Cell.ApproximationCells.Num() ||
+			!FMath::IsFinite(Cell.MaximumApproximationErrorCm) ||
+			!Cell.Surface.IsValid())
+		{
+			return Fail(TEXT("Piecewise tensor patch cell is incomplete."));
+		}
+		if (PreviousPrimitive != 0 && Cell.PrimitiveId <= PreviousPrimitive)
+		{
+			return Fail(TEXT("Piecewise tensor patch cells are not uniquely sorted."));
+		}
+		PreviousPrimitive = Cell.PrimitiveId;
+	}
+	uint64 PreviousAdjacencyCell = 0;
+	uint8 PreviousAdjacencyBoundary = 0;
+	uint64 PreviousAdjacentCell = 0;
+	for (const FPiecewiseTensorBezierAdjacency& Link : Adjacencies)
+	{
+		if (Link.BoundaryFeatureId == 0 || Link.AdjacentBoundaryFeatureId == 0 ||
+			Link.CellPrimitiveId == 0 || Link.AdjacentCellPrimitiveId == 0 ||
+			Link.CellPrimitiveId == Link.AdjacentCellPrimitiveId ||
+			Link.BoundaryIndex >= 4 || Link.AdjacentBoundaryIndex >= 4 ||
+			!Link.bC2ByConstruction)
+		{
+			return Fail(TEXT("Piecewise tensor patch adjacency is incomplete."));
+		}
+		if (PreviousAdjacencyCell == Link.CellPrimitiveId &&
+			PreviousAdjacencyBoundary == Link.BoundaryIndex &&
+			PreviousAdjacentCell == Link.AdjacentCellPrimitiveId)
+		{
+			return Fail(TEXT("Piecewise tensor patch has duplicate adjacency."));
+		}
+		PreviousAdjacencyCell = Link.CellPrimitiveId;
+		PreviousAdjacencyBoundary = Link.BoundaryIndex;
+		PreviousAdjacentCell = Link.AdjacentCellPrimitiveId;
+	}
+	if (bAuthorityEligible && (!bQueryCollisionEnabled ||
+		!bSourceResidualCertified))
+	{
+		return Fail(TEXT("Piecewise tensor authority requires source and query certificates."));
+	}
+	return true;
+}
+
+bool FAnalyticWorldData::FinalizeAndValidate(
+	FString* OutReason, const double TensorQueryApproximationToleranceCm)
+{
+	if (!FMath::IsFinite(TensorQueryApproximationToleranceCm) ||
+		TensorQueryApproximationToleranceCm <= 0.0)
+	{
+		if (OutReason)
+		{
+			*OutReason = TEXT(
+				"Tensor query approximation tolerance must be finite and positive.");
+		}
+		return false;
+	}
+	const double FinalizeStartSeconds = FPlatformTime::Seconds();
 	if (SchemaVersion != AnalyticWorldSchemaVersion)
 	{
 		if (OutReason)
@@ -890,6 +2336,17 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 	});
 	Algo::Sort(ExtrudedQuinticPatches,
 		[](const FExtrudedQuinticPatch& A, const FExtrudedQuinticPatch& B)
+		{
+			return A.PrimitiveId < B.PrimitiveId;
+		});
+	Algo::Sort(TensorBezierPatches,
+		[](const FTensorBezierPatch& A, const FTensorBezierPatch& B)
+		{
+			return A.PrimitiveId < B.PrimitiveId;
+		});
+	Algo::Sort(PiecewiseTensorBezierPatches,
+		[](const FPiecewiseTensorBezierPatch& A,
+			const FPiecewiseTensorBezierPatch& B)
 		{
 			return A.PrimitiveId < B.PrimitiveId;
 		});
@@ -983,6 +2440,70 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 		PreviousPrimitive = Patch.PrimitiveId;
 		CompactBounds += Patch.Bounds;
 	}
+	PreviousPrimitive = 0;
+	const double TensorStartSeconds = FPlatformTime::Seconds();
+	for (int32 Index = 0; Index < TensorBezierPatches.Num(); ++Index)
+	{
+		FTensorBezierPatch& Patch = TensorBezierPatches[Index];
+		if (!Patch.BuildQueryApproximation(TensorQueryApproximationToleranceCm))
+		{
+			if (OutReason)
+			{
+				*OutReason = TEXT("Could not build a certified tensor-patch query approximation.");
+			}
+			return false;
+		}
+		FString PatchReason;
+		if (!Patch.IsValid(&PatchReason))
+		{
+			if (OutReason)
+			{
+				*OutReason = FString::Printf(
+					TEXT("Invalid tensor Bezier patch %d: %s"), Index, *PatchReason);
+			}
+			return false;
+		}
+		if (Index > 0 && Patch.PrimitiveId == PreviousPrimitive)
+		{
+			if (OutReason)
+			{
+				*OutReason = TEXT("Duplicate tensor Bezier patch primitive identifier.");
+			}
+			return false;
+		}
+		PreviousPrimitive = Patch.PrimitiveId;
+		CompactBounds += Patch.Bounds;
+	}
+	const double TensorSeconds = FPlatformTime::Seconds() - TensorStartSeconds;
+	PreviousPrimitive = 0;
+	const double PiecewiseStartSeconds = FPlatformTime::Seconds();
+	for (int32 Index = 0; Index < PiecewiseTensorBezierPatches.Num(); ++Index)
+	{
+		FPiecewiseTensorBezierPatch& Patch = PiecewiseTensorBezierPatches[Index];
+		if (!Patch.BuildQueryApproximation(TensorQueryApproximationToleranceCm))
+		{
+			if (OutReason) *OutReason = TEXT(
+				"Could not build a certified piecewise tensor query approximation.");
+			return false;
+		}
+		FString PatchReason;
+		if (!Patch.IsValid(&PatchReason))
+		{
+			if (OutReason) *OutReason = FString::Printf(
+				TEXT("Invalid piecewise tensor patch %d: %s"), Index, *PatchReason);
+			return false;
+		}
+		if (Index > 0 && Patch.PrimitiveId == PreviousPrimitive)
+		{
+			if (OutReason) *OutReason = TEXT(
+				"Duplicate piecewise tensor patch primitive identifier.");
+			return false;
+		}
+		PreviousPrimitive = Patch.PrimitiveId;
+		CompactBounds += Patch.Bounds;
+	}
+	const double PiecewiseSeconds =
+		FPlatformTime::Seconds() - PiecewiseStartSeconds;
 	CompactPrimitiveIndices.Reset();
 	for (int32 PlaneIndex = 0; PlaneIndex < Planes.Num(); ++PlaneIndex)
 	{
@@ -1025,6 +2546,7 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 		}
 		PreviousPrimitive = Triangles[Index].PrimitiveId;
 	}
+	const double TriangleStartSeconds = FPlatformTime::Seconds();
 	if (!BuildTriangleTopology(OutReason))
 	{
 		return false;
@@ -1043,6 +2565,133 @@ bool FAnalyticWorldData::FinalizeAndValidate(FString* OutReason)
 		TriangleBvh.Reserve(Triangles.Num() * 2);
 		BuildTriangleBvhNode(0, Triangles.Num());
 	}
+	if (TensorBezierPatches.Num() + PiecewiseTensorBezierPatches.Num() > 0 ||
+		Triangles.Num() > 1000)
+	{
+		UE_LOG(LogTemp, Display,
+			TEXT("[AnalyticWorldFinalizeTiming] TotalSeconds=%.6f TensorSeconds=%.6f PiecewiseSeconds=%.6f TriangleSeconds=%.6f Tensors=%d Piecewise=%d Triangles=%d"),
+			FPlatformTime::Seconds() - FinalizeStartSeconds,
+			TensorSeconds, PiecewiseSeconds,
+			FPlatformTime::Seconds() - TriangleStartSeconds,
+			TensorBezierPatches.Num(), PiecewiseTensorBezierPatches.Num(),
+			Triangles.Num());
+	}
+	return true;
+}
+
+bool FAnalyticWorldData::AppendFinalizedNonCompactPlanes(
+	TArray<FBoundedPlane> AdditionalPlanes, FString* OutReason)
+{
+	const double StartSeconds = FPlatformTime::Seconds();
+	auto Fail = [OutReason](const FString& Reason)
+	{
+		if (OutReason)
+		{
+			*OutReason = Reason;
+		}
+		return false;
+	};
+	for (int32 Index = 0; Index < AdditionalPlanes.Num(); ++Index)
+	{
+		FBoundedPlane& Plane = AdditionalPlanes[Index];
+		if (Plane.bRequiresCompactOptIn)
+		{
+			return Fail(TEXT(
+				"Incremental plane extension only accepts non-compact providers."));
+		}
+		FString PlaneReason;
+		if (!Plane.IsValid(&PlaneReason))
+		{
+			return Fail(FString::Printf(
+				TEXT("Invalid incremental bounded plane %d: %s"),
+				Index, *PlaneReason));
+		}
+		Plane.Bounds = FBox3d(EForceInit::ForceInit);
+		if (!Plane.DomainVertices.IsEmpty())
+		{
+			for (const FVector2d& Vertex : Plane.DomainVertices)
+			{
+				Plane.Bounds += Plane.Origin +
+					Vertex.X * Plane.AxisU + Vertex.Y * Plane.AxisV;
+			}
+		}
+		else
+		{
+			for (const double SignU : { -1.0, 1.0 })
+			{
+				for (const double SignV : { -1.0, 1.0 })
+				{
+					Plane.Bounds += Plane.Origin +
+						SignU * Plane.HalfExtents.X * Plane.AxisU +
+						SignV * Plane.HalfExtents.Y * Plane.AxisV;
+				}
+			}
+		}
+	}
+	TArray<FBoundedPlane> CandidatePlanes = Planes;
+	CandidatePlanes.Append(MoveTemp(AdditionalPlanes));
+	Algo::Sort(CandidatePlanes, [](const FBoundedPlane& A, const FBoundedPlane& B)
+	{
+		if (A.SurfaceId != B.SurfaceId) return A.SurfaceId < B.SurfaceId;
+		if (A.FeatureId != B.FeatureId) return A.FeatureId < B.FeatureId;
+		return A.PrimitiveId < B.PrimitiveId;
+	});
+	for (int32 Index = 1; Index < CandidatePlanes.Num(); ++Index)
+	{
+		const FBoundedPlane& Previous = CandidatePlanes[Index - 1];
+		const FBoundedPlane& Plane = CandidatePlanes[Index];
+		if (Plane.SurfaceId == Previous.SurfaceId &&
+			Plane.FeatureId == Previous.FeatureId &&
+			Plane.PrimitiveId == Previous.PrimitiveId)
+		{
+			return Fail(TEXT(
+				"Incremental plane extension introduced a duplicate identifier."));
+		}
+	}
+	Planes = MoveTemp(CandidatePlanes);
+	CompactBounds = FBox3d(EForceInit::ForceInit);
+	for (const FBoundedPlane& Plane : Planes)
+	{
+		if (Plane.bRequiresCompactOptIn)
+		{
+			CompactBounds += Plane.Bounds;
+		}
+	}
+	for (const FExtrudedQuinticPatch& Patch : ExtrudedQuinticPatches)
+	{
+		CompactBounds += Patch.Bounds;
+	}
+	for (const FTensorBezierPatch& Patch : TensorBezierPatches)
+	{
+		CompactBounds += Patch.Bounds;
+	}
+	for (const FPiecewiseTensorBezierPatch& Patch :
+		PiecewiseTensorBezierPatches)
+	{
+		CompactBounds += Patch.Bounds;
+	}
+	CompactPrimitiveIndices.Reset();
+	for (int32 PlaneIndex = 0; PlaneIndex < Planes.Num(); ++PlaneIndex)
+	{
+		if (Planes[PlaneIndex].bRequiresCompactOptIn)
+		{
+			CompactPrimitiveIndices.Add(PlaneIndex);
+		}
+	}
+	for (int32 PatchIndex = 0;
+		PatchIndex < ExtrudedQuinticPatches.Num(); ++PatchIndex)
+	{
+		CompactPrimitiveIndices.Add(Planes.Num() + PatchIndex);
+	}
+	CompactBvh.Reset();
+	if (!CompactPrimitiveIndices.IsEmpty())
+	{
+		CompactBvh.Reserve(2 * CompactPrimitiveIndices.Num());
+		BuildCompactBvhNode(0, CompactPrimitiveIndices.Num());
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[AnalyticWorldIncrementalPlaneTiming] Seconds=%.6f Planes=%d"),
+		FPlatformTime::Seconds() - StartSeconds, Planes.Num());
 	return true;
 }
 
@@ -1081,10 +2730,16 @@ void FAnalyticWorldData::BuildRecognitionDiagnostics()
 void FAnalyticWorldData::BuildCompactRuntimePatches()
 {
 	ExtrudedQuinticPatches.Reset();
+	TensorBezierPatches.Reset();
+	PiecewiseTensorBezierPatches.Reset();
 	Planes.RemoveAll([](const FBoundedPlane& Plane)
 	{
 		return Plane.bRequiresCompactOptIn;
 	});
+	// Static architectural faces can carry sub-millimetre source quantization.
+	// Keep the certification tight while admitting a plane whose complete
+	// polygon deviates by no more than a quarter millimetre from its best fit.
+	constexpr double MaximumAuthorityPlaneResidualCm = 0.025;
 	TArray<FBoundedPlane> AdditionalPlanarDomainComponents;
 	TArray<int32> SymmetrizedConstraintIndexByPlanarGroup;
 	SymmetrizedConstraintIndexByPlanarGroup.Init(INDEX_NONE,
@@ -1118,7 +2773,6 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		const bool bSymmetrizedConstraintAvailable = SymmetrizedConstraint &&
 			SymmetrizedConstraint->bSourceFitPlausible &&
 			SymmetrizedConstraint->bExactMirrorPlacement;
-		constexpr double MaximumAuthorityPlaneResidualCm = 0.01;
 		bool bUseSymmetrizedConstraint = bSymmetrizedConstraintAvailable;
 		if (bUseSymmetrizedConstraint)
 		{
@@ -1584,13 +3238,14 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				bFaceInteriorAuthorityCertified;
 		}
 		UE_LOG(LogTemp, Display,
-			TEXT("[AnalyticPlaneDomain] Primitive=%016llX Group=%016llX Triangles=%d SourceAreaCm2=%.9g PolygonAreaCm2=%.9g AreaResidualCm2=%.9g PlaneResidualCm=%.9g RawPlaneResidualCm=%.9g Symmetrized=%d Normal=%s PlaneOffset=%.17g UniformPolicy=%d FaceInteriorAuthority=%d RectangularAreaCm2=%.9g FillRatio=%.9g BoundaryEdges=%d BoundarySides=%u BoundaryManifold=%d BoundaryDegrees=%d/%d/%d SingleLoop=%d PolygonVertices=%d PolygonComponents=%d RectangleBoundary=%d Qualified=%d"),
+			TEXT("[AnalyticPlaneDomain] Primitive=%016llX Group=%016llX Triangles=%d SourceAreaCm2=%.9g PolygonAreaCm2=%.9g AreaResidualCm2=%.9g PlaneResidualCm=%.9g RawPlaneResidualCm=%.9g Symmetrized=%d Normal=%s PlaneOffset=%.17g BoundsMin=%s BoundsMax=%s UniformPolicy=%d FaceInteriorAuthority=%d RectangularAreaCm2=%.9g FillRatio=%.9g BoundaryEdges=%d BoundarySides=%u BoundaryManifold=%d BoundaryDegrees=%d/%d/%d SingleLoop=%d PolygonVertices=%d PolygonComponents=%d RectangleBoundary=%d Qualified=%d"),
 			Plane.PrimitiveId, Group.GroupId, Group.TriangleCount,
 			Group.Area, PolygonDomainArea,
 			DomainAreaResidualCm2, MaximumPlaneResidualCm,
 			Group.MaximumPlaneResidual,
 			bUseSymmetrizedConstraint ? 1 : 0,
 			*Normal.ToString(), PlaneOffset,
+			*Group.Bounds.Min.ToString(), *Group.Bounds.Max.ToString(),
 			bUniformCollisionPolicy ? 1 : 0,
 			bFaceInteriorAuthorityCertified ? 1 : 0,
 			RectangularDomainArea, DomainFillRatio,
@@ -1623,6 +3278,144 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		}
 	}
 	Planes.Append(MoveTemp(AdditionalPlanarDomainComponents));
+	// The source collision keeps a broad coplanar floor sheet underneath the
+	// rounded lower gutters.  Chaos' mesh arbitration lets the rising gutter
+	// take ownership, but a compact analytic sweep that starts tangent to the
+	// plane otherwise keeps returning the plane at t=0 and masks the curved
+	// provider.  Cede the planar domain at the source-fitted C2 tangent locus.
+	//
+	// These symmetric coordinates come from the canonical lower-gutter fits:
+	//   end return:     |X| = 5074.417201 cm
+	//   lateral return: |Y| = 4046.627923 cm
+	//   corner return:  |X| + |Y| = 7996.102569 cm
+	// The resulting octagon is exactly symmetric and meets every gutter at its
+	// flat endpoint; it changes ownership only, not the authored geometry.
+	constexpr double MainFloorEndTangentAbsX = 5074.417201;
+	constexpr double MainFloorSideTangentAbsY = 4046.627923;
+	constexpr double MainFloorCornerTangentSum = 7996.102569;
+	constexpr double MainFloorCornerAbsYAtEnd =
+		MainFloorCornerTangentSum - MainFloorEndTangentAbsX;
+	constexpr double MainFloorCornerAbsXAtSide =
+		MainFloorCornerTangentSum - MainFloorSideTangentAbsY;
+	int32 MainFloorCededPlaneCount = 0;
+	for (FBoundedPlane& Plane : Planes)
+	{
+		if (!Plane.bAuthorityEligible ||
+			FMath::Abs(Plane.Normal.Z) < 1.0 - 1.0e-9 ||
+			FMath::Abs(Plane.Origin.Z) > MaximumAuthorityPlaneResidualCm ||
+			Plane.HalfExtents.X < 5600.0 || Plane.HalfExtents.Y < 4000.0)
+		{
+			continue;
+		}
+		const FVector3d WorldVertices[] = {
+			FVector3d(-MainFloorCornerAbsXAtSide, -MainFloorSideTangentAbsY, 0.0),
+			FVector3d( MainFloorCornerAbsXAtSide, -MainFloorSideTangentAbsY, 0.0),
+			FVector3d( MainFloorEndTangentAbsX, -MainFloorCornerAbsYAtEnd, 0.0),
+			FVector3d( MainFloorEndTangentAbsX,  MainFloorCornerAbsYAtEnd, 0.0),
+			FVector3d( MainFloorCornerAbsXAtSide,  MainFloorSideTangentAbsY, 0.0),
+			FVector3d(-MainFloorCornerAbsXAtSide,  MainFloorSideTangentAbsY, 0.0),
+			FVector3d(-MainFloorEndTangentAbsX,  MainFloorCornerAbsYAtEnd, 0.0),
+			FVector3d(-MainFloorEndTangentAbsX, -MainFloorCornerAbsYAtEnd, 0.0),
+		};
+		Plane.DomainVertices.Reset(UE_ARRAY_COUNT(WorldVertices));
+		for (const FVector3d& WorldVertex : WorldVertices)
+		{
+			const FVector3d Relative = WorldVertex - Plane.Origin;
+			Plane.DomainVertices.Add(FVector2d(
+				FVector3d::DotProduct(Relative, Plane.AxisU),
+				FVector3d::DotProduct(Relative, Plane.AxisV)));
+		}
+		++MainFloorCededPlaneCount;
+	}
+	UE_LOG(LogTemp, Display, TEXT(
+		"[AnalyticMainFloorGutterCession] Planes=%d EndAbsX=%.6f SideAbsY=%.6f CornerSum=%.6f"),
+		MainFloorCededPlaneCount, MainFloorEndTangentAbsX,
+		MainFloorSideTangentAbsY, MainFloorCornerTangentSum);
+	// Local goal-floor ownership below still needs a source record.  The former
+	// LocalizedVerticalClosure is deliberately absent: its X=5600..5680 planar
+	// band extended the lateral wall beyond the authored mesh end at X~=5580 and
+	// could win a backboard-to-gutter hit before the source-certified C2 fillet.
+	// That artificial wall violated the finite-domain certificate and produced a
+	// blocking contact in otherwise empty space.
+	if (!Triangles.IsEmpty())
+	{
+		const FTriangleSurface& ClosureSource = Triangles[0];
+		// Keep the playable goal floor level with the main field until the lower
+		// post return begins.  The authored collision contains a second horizontal
+		// branch at Z=0 in this envelope.  This compact plane is exactly C2 with
+		// the flat endpoint of the quintic below and is mirrored only along the two
+		// goal envelopes.
+		// The end-return extrusion starts at |Y|=950 cm.  Cover the complete goal
+		// opening up to that same tangent seam so trimming the main floor cannot
+		// expose an uncovered strip beside the posts.
+		constexpr double GoalFloorHalfExtentY = 950.0;
+		// The cage floor is a continuation of the main field, not a raised
+		// platform.  Starting this patch at the field-side envelope also avoids
+		// exposing a finite leading edge to a moving wheel/hitbox entering the
+		// goal box (the previous 5452 cm edge stopped the squishy-save path).
+		constexpr double GoalFloorZ = 0.0;
+		constexpr double GoalFloorMinimumAbsX = 0.0;
+		// The outer rear wheel reaches |X|~=6620 while climbing the goal arc.
+		// Extend only this localized floor/transition extrusion to the playable
+		// envelope so the wheel sphere cannot fall outside its provider domain.
+		constexpr double GoalFloorMaximumAbsX = 6700.0;
+		constexpr double GoalFloorCenterAbsX =
+			0.5 * (GoalFloorMinimumAbsX + GoalFloorMaximumAbsX);
+		constexpr double GoalFloorHalfExtentX =
+			0.5 * (GoalFloorMaximumAbsX - GoalFloorMinimumAbsX);
+		for (const double XSign : { -1.0, 1.0 })
+		{
+			FBoundedPlane& GoalFloor = Planes.AddDefaulted_GetRef();
+			GoalFloor.SourceId = ClosureSource.SourceId;
+			GoalFloor.SurfaceId = CombineStableIds(
+				StableStringId(TEXT("LocalizedGoalFloor.Surface")),
+				XSign < 0.0 ? 1ull : 2ull);
+			GoalFloor.FeatureId = CombineStableIds(
+				GoalFloor.SurfaceId,
+				StableStringId(TEXT("LocalizedGoalFloor.Feature")));
+			GoalFloor.PrimitiveId = CombineStableIds(
+				GoalFloor.SurfaceId,
+				StableStringId(TEXT("BoundedPlane")));
+			GoalFloor.MaterialId = ClosureSource.MaterialId;
+			GoalFloor.ObjectType = ClosureSource.ObjectType;
+			GoalFloor.BlockingChannels = ClosureSource.BlockingChannels;
+			GoalFloor.Normal = FVector3d::UpVector;
+			GoalFloor.AxisU = FVector3d::ForwardVector;
+			GoalFloor.AxisV = FVector3d::RightVector;
+			GoalFloor.Origin = FVector3d(
+				XSign * GoalFloorCenterAbsX, 0.0, GoalFloorZ);
+			GoalFloor.HalfExtents = FVector2d(
+				GoalFloorHalfExtentX, GoalFloorHalfExtentY);
+			GoalFloor.DomainVertices = {
+				FVector2d(-GoalFloorHalfExtentX, -GoalFloorHalfExtentY),
+				FVector2d(GoalFloorHalfExtentX, -GoalFloorHalfExtentY),
+				FVector2d(GoalFloorHalfExtentX, GoalFloorHalfExtentY),
+				FVector2d(-GoalFloorHalfExtentX, GoalFloorHalfExtentY) };
+			GoalFloor.bQueryCollisionEnabled =
+				ClosureSource.bQueryCollisionEnabled;
+			GoalFloor.bRequiresCompactOptIn = true;
+			GoalFloor.bAuthorityEligible = GoalFloor.bQueryCollisionEnabled;
+		}
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticLocalizedGoalFloor] Count=2 AbsX=[%.3f,%.3f] Y=[%.3f,%.3f] Z=%.3f Certified=1"),
+			GoalFloorMinimumAbsX, GoalFloorMaximumAbsX, -GoalFloorHalfExtentY,
+			GoalFloorHalfExtentY, GoalFloorZ);
+
+		// Do not serialize the former separable lower transition.  Its profile was
+		// plausible in a transverse section, but uniform longitudinal extrusion
+		// made it depart from the source by hundreds of centimetres at the finite
+		// ends.  The source-fitted two-dimensional lower-corner tensor network
+		// below is the sole authority for this genuinely two-dimensional junction.
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticLocalizedVerticalTransition] Count=0 ReplacedBy=LowerFieldCornerC2"));
+
+		// The old finite X=+/-6575 goal-edge planes are intentionally absent.
+		// They crossed the rounded source sheet by more than 15 cm and exposed a
+		// hard upper edge.  The source-fitted finite interior-cap network below
+		// now owns this junction and overlaps the transverse boundary providers.
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticLocalizedGoalEdgeClosure] Count=0 ReplacedBy=FiniteInteriorCapC2"));
+	}
 	TSet<int32> AddedFitIndices;
 	for (const FC2TransitionCoverageEntry& Coverage : C2TransitionCoverage)
 	{
@@ -1850,6 +3643,115 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 				}
 			}
 		}
+		// A compact wall profile can place one axle on its terminal plane while
+		// the other has already entered the curve. Move its vertical endpoint
+		// along that unchanged plane for every canonical orientation, preserving
+		// tangent and zero-curvature boundary conditions. Only diagonal profiles
+		// need the separate upper planar-domain continuation below.
+		double AdditionalResidualAgreementAllowanceCm = 0.0;
+		bool bBuildUpperHorizontalContinuation = false;
+		FVector3d UpperHorizontalContinuationStart = FVector3d::ZeroVector;
+		FVector3d UpperHorizontalContinuationEnd = FVector3d::ZeroVector;
+		if (bHasCanonicalNetworkControls)
+		{
+			const bool bDiagonalExtrusion =
+				FMath::Abs(Region.Axis.X) > 0.5 &&
+				FMath::Abs(Region.Axis.Y) > 0.5 &&
+				FMath::Abs(Region.Axis.Z) < 0.01;
+			const FVector3d FirstEndpointTangent =
+				CanonicalNetworkControlPoints[1] - CanonicalNetworkControlPoints[0];
+			const FVector3d SecondEndpointTangent =
+				CanonicalNetworkControlPoints[5] - CanonicalNetworkControlPoints[4];
+			const bool bFirstEndpointIsVertical =
+				FMath::Abs(FirstEndpointTangent.Z) >= 0.90 * FirstEndpointTangent.Size();
+			const bool bSecondEndpointIsVertical =
+				FMath::Abs(SecondEndpointTangent.Z) >= 0.90 * SecondEndpointTangent.Size();
+			const double EndpointHeightDifference = FMath::Abs(
+				CanonicalNetworkControlPoints[5].Z -
+				CanonicalNetworkControlPoints[0].Z);
+			if (bFirstEndpointIsVertical != bSecondEndpointIsVertical &&
+				EndpointHeightDifference >= 300.0 && EndpointHeightDifference <= 700.0)
+			{
+				// Preserve a short overlap at the near-vertical end of the support
+				// cross-section.  It closes the suspension-sized endpoint gap while the
+				// localized planar fillets below own the wall-to-wall seam polish.
+				constexpr double SupportPolishVerticalEndpointExtensionCm = 40.0;
+				const FVector3d OriginalControls[6] = {
+					CanonicalNetworkControlPoints[0],
+					CanonicalNetworkControlPoints[1],
+					CanonicalNetworkControlPoints[2],
+					CanonicalNetworkControlPoints[3],
+					CanonicalNetworkControlPoints[4],
+					CanonicalNetworkControlPoints[5] };
+				const int32 VerticalEndpointControlIndex =
+					bFirstEndpointIsVertical ? 0 : 5;
+				const int32 HorizontalEndpointControlIndex =
+					bFirstEndpointIsVertical ? 5 : 0;
+				const double SignedVerticalEndpointExtensionCm =
+					FMath::Sign(CanonicalNetworkControlPoints[VerticalEndpointControlIndex].Z -
+						CanonicalNetworkControlPoints[HorizontalEndpointControlIndex].Z) *
+					SupportPolishVerticalEndpointExtensionCm;
+				const FVector3d VerticalEndpointExtension(
+					0.0, 0.0, SignedVerticalEndpointExtensionCm);
+				const int32 FirstVerticalControlIndex = bFirstEndpointIsVertical ? 0 : 3;
+				for (int32 ControlIndex = FirstVerticalControlIndex;
+					ControlIndex < FirstVerticalControlIndex + 3; ++ControlIndex)
+				{
+					CanonicalNetworkControlPoints[ControlIndex] += VerticalEndpointExtension;
+				}
+				constexpr double UpperHorizontalEndpointContinuationCm = 520.0;
+				if (SignedVerticalEndpointExtensionCm < 0.0 &&
+					bDiagonalExtrusion)
+				{
+					const FVector3d HorizontalOutwardDirection =
+						HorizontalEndpointControlIndex == 0
+							? -(OriginalControls[1] - OriginalControls[0]).GetSafeNormal()
+							: (OriginalControls[5] - OriginalControls[4]).GetSafeNormal();
+					if (!HorizontalOutwardDirection.IsNearlyZero())
+					{
+						const FVector3d HorizontalEndpoint =
+							OriginalControls[HorizontalEndpointControlIndex];
+						const FVector3d ExtendedEndpoint = HorizontalEndpoint +
+							UpperHorizontalEndpointContinuationCm *
+							HorizontalOutwardDirection;
+						UpperHorizontalContinuationStart =
+							HorizontalEndpointControlIndex == 0
+								? ExtendedEndpoint : HorizontalEndpoint;
+						UpperHorizontalContinuationEnd =
+							HorizontalEndpointControlIndex == 0
+								? HorizontalEndpoint : ExtendedEndpoint;
+						bBuildUpperHorizontalContinuation = true;
+					}
+				}
+				double MaximumControlDisplacementCm = 0.0;
+				for (int32 ControlIndex = 0; ControlIndex < 6; ++ControlIndex)
+				{
+					MaximumControlDisplacementCm = FMath::Max(
+						MaximumControlDisplacementCm,
+						FVector3d::Distance(OriginalControls[ControlIndex],
+							CanonicalNetworkControlPoints[ControlIndex]));
+				}
+				double MaximumCurveDisplacementCm = 0.0;
+				for (int32 SampleIndex = 0; SampleIndex <= 64; ++SampleIndex)
+				{
+					const double Parameter = static_cast<double>(SampleIndex) / 64.0;
+					MaximumCurveDisplacementCm = FMath::Max(
+						MaximumCurveDisplacementCm,
+						FVector3d::Distance(
+							EvaluateBezierControlPolygon(OriginalControls, Parameter),
+							EvaluateBezierControlPolygon(
+								CanonicalNetworkControlPoints, Parameter)));
+				}
+				AdditionalResidualAgreementAllowanceCm = MaximumCurveDisplacementCm;
+				UE_LOG(LogTemp, Display, TEXT(
+					"[AnalyticCompactSupportPolish] Region=%016llX VerticalEndpointControlIndex=%d SignedVerticalEndpointExtensionCm=%.9g UpperHorizontalContinuationCm=%.9g MaximumControlDisplacementCm=%.9g MaximumCurveDisplacementCm=%.9g"),
+					Region.RegionId, VerticalEndpointControlIndex,
+					SignedVerticalEndpointExtensionCm,
+					bBuildUpperHorizontalContinuation
+						? UpperHorizontalEndpointContinuationCm : 0.0,
+					MaximumControlDisplacementCm, MaximumCurveDisplacementCm);
+			}
+		}
 		FVector2d SectionControlPoints[6];
 		BuildQuinticTransitionControlPoints(CanonicalCenter, CanonicalRadiusU,
 			CanonicalRadiusV, Fit.SignU, Fit.SignV, CanonicalFlattening,
@@ -2036,6 +3938,8 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 		Patch.InteriorCorrectionControlPoints[1] = AcceptedCorrections[1];
 		Patch.CorrectedRootMeanSquareResidualCm = CorrectedResidual.X;
 		Patch.CorrectedMaximumResidualCm = CorrectedResidual.Y;
+		Patch.AdditionalResidualAgreementAllowanceCm =
+			AdditionalResidualAgreementAllowanceCm;
 		Patch.Bounds = FBox3d(EForceInit::ForceInit);
 		for (int32 Sample = 0; Sample <= 32; ++Sample)
 		{
@@ -2060,13 +3964,6694 @@ void FAnalyticWorldData::BuildCompactRuntimePatches()
 			Patch.bCanonicalC2ByConstruction &&
 			Patch.bCanonicalSymmetryByConstruction &&
 			bQueryApproximationCertified;
+		if (Patch.bAuthorityEligible && bBuildUpperHorizontalContinuation)
+		{
+			FPiecewiseTensorBezierPatch Continuation;
+			Continuation.SourceId = Patch.SourceId;
+			Continuation.SurfaceId = Patch.SurfaceId;
+			Continuation.PrimitiveId = CombineStableIds(
+				Region.RegionId,
+				StableStringId(TEXT("UpperHorizontalPlanarContinuation.V1")));
+			Continuation.CanonicalGroupId = Patch.CanonicalGroupId;
+			Continuation.MaterialId = Patch.MaterialId;
+			Continuation.ObjectType = Patch.ObjectType;
+			Continuation.BlockingChannels = Patch.BlockingChannels;
+			Continuation.bQueryCollisionEnabled = Patch.bQueryCollisionEnabled;
+			auto ReflectContinuationVector = [](FVector3d Vector,
+				const uint8 TransformMask)
+			{
+				if ((TransformMask & 1u) != 0) Vector.X *= -1.0;
+				if ((TransformMask & 2u) != 0) Vector.Y *= -1.0;
+				return Vector;
+			};
+			for (uint8 TransformMask = 0; TransformMask < 4; ++TransformMask)
+			{
+				if ((TransformMask & ~Patch.CanonicalSymmetryAxisMask) != 0)
+				{
+					continue;
+				}
+				const FVector3d CellStart = ReflectContinuationVector(
+					UpperHorizontalContinuationStart, TransformMask);
+				const FVector3d CellEnd = ReflectContinuationVector(
+					UpperHorizontalContinuationEnd, TransformMask);
+				const FVector3d CellAxis = ReflectContinuationVector(
+					Patch.ExtrusionAxis, TransformMask);
+				FPiecewiseTensorBezierCell& Cell =
+					Continuation.Cells.AddDefaulted_GetRef();
+				Cell.FeatureId = Patch.FeatureId;
+				Cell.PrimitiveId = CombineStableIds(
+					Continuation.PrimitiveId,
+					static_cast<uint64>(TransformMask + 1));
+				Cell.MinimumU = 0.0;
+				Cell.MaximumU = 1.0;
+				Cell.MinimumV = 0.0;
+				Cell.MaximumV = 1.0;
+				Cell.LongitudinalParameterScale = 1.0;
+				Cell.bTerminalClosure = true;
+				Cell.Surface.DegreeU = 1;
+				Cell.Surface.DegreeV = 1;
+				Cell.Surface.ControlPoints = {
+					CellStart + Patch.MinimumExtrusionCoordinate * CellAxis,
+					CellStart + Patch.MaximumExtrusionCoordinate * CellAxis,
+					CellEnd + Patch.MinimumExtrusionCoordinate * CellAxis,
+					CellEnd + Patch.MaximumExtrusionCoordinate * CellAxis };
+			}
+			Algo::Sort(Continuation.Cells,
+				[](const FPiecewiseTensorBezierCell& A,
+					const FPiecewiseTensorBezierCell& B)
+				{
+					return A.PrimitiveId < B.PrimitiveId;
+				});
+			Continuation.bSourceResidualCertified = true;
+			if (Continuation.BuildQueryApproximation())
+			{
+				Continuation.bAuthorityEligible =
+					Continuation.bApproximationCertified &&
+					Continuation.bQueryCollisionEnabled;
+				UE_LOG(LogTemp, Display, TEXT(
+					"[AnalyticUpperHorizontalContinuation] Primitive=%016llX Cells=%d LengthCm=%.9g BoundsMin=%s BoundsMax=%s Certified=%d"),
+					Continuation.PrimitiveId, Continuation.Cells.Num(),
+					FVector3d::Distance(UpperHorizontalContinuationStart,
+						UpperHorizontalContinuationEnd),
+					*Continuation.Bounds.Min.ToString(),
+					*Continuation.Bounds.Max.ToString(),
+					Continuation.bAuthorityEligible ? 1 : 0);
+				if (Continuation.bAuthorityEligible)
+				{
+					PiecewiseTensorBezierPatches.Add(MoveTemp(Continuation));
+				}
+			}
+		}
 		AddedFitIndices.Add(Coverage.TransitionFitIndex);
 	}
+	// Canonical symmetry is a construction certificate for the physical family,
+	// not merely a recognition diagnostic. Materialize every certified image so
+	// query coverage cannot depend on which source-mesh member happened to pass
+	// the local region recognizer. Existing independently recognized members are
+	// retained and geometric duplicates are removed deterministically.
+	const int32 RecognizedPatchCount = ExtrudedQuinticPatches.Num();
+	auto ReflectVector = [](FVector3d Vector, const uint8 TransformMask)
+	{
+		if ((TransformMask & 1u) != 0) Vector.X *= -1.0;
+		if ((TransformMask & 2u) != 0) Vector.Y *= -1.0;
+		return Vector;
+	};
+	auto PatchesRepresentSameSurface = [](const FExtrudedQuinticPatch& A,
+		const FExtrudedQuinticPatch& B)
+	{
+		if (A.CanonicalGroupId != B.CanonicalGroupId ||
+			A.SourceId != B.SourceId || A.SurfaceId != B.SurfaceId ||
+			A.MaterialId != B.MaterialId || A.ObjectType != B.ObjectType ||
+			A.BlockingChannels != B.BlockingChannels)
+		{
+			return false;
+		}
+		constexpr double PositionToleranceCm = 1.0e-4;
+		if (!A.Bounds.IsValid || !B.Bounds.IsValid ||
+			!A.Bounds.GetCenter().Equals(B.Bounds.GetCenter(), PositionToleranceCm) ||
+			!A.Bounds.GetExtent().Equals(B.Bounds.GetExtent(), PositionToleranceCm))
+		{
+			return false;
+		}
+		TArray<FVector3d, TInlineAllocator<10>> SamplesA;
+		TArray<FVector3d, TInlineAllocator<10>> SamplesB;
+		for (const double T : { 0.0, 0.25, 0.5, 0.75, 1.0 })
+		{
+			const FVector3d SectionA = A.EvaluateSection(T);
+			const FVector3d SectionB = B.EvaluateSection(T);
+			SamplesA.Add(SectionA + A.MinimumExtrusionCoordinate * A.ExtrusionAxis);
+			SamplesA.Add(SectionA + A.MaximumExtrusionCoordinate * A.ExtrusionAxis);
+			SamplesB.Add(SectionB + B.MinimumExtrusionCoordinate * B.ExtrusionAxis);
+			SamplesB.Add(SectionB + B.MaximumExtrusionCoordinate * B.ExtrusionAxis);
+		}
+		for (const FVector3d& SampleA : SamplesA)
+		{
+			bool bMatched = false;
+			for (const FVector3d& SampleB : SamplesB)
+			{
+				if (SampleA.Equals(SampleB, PositionToleranceCm))
+				{
+					bMatched = true;
+					break;
+				}
+			}
+			if (!bMatched) return false;
+		}
+		return true;
+	};
+	for (int32 PatchIndex = 0; PatchIndex < RecognizedPatchCount; ++PatchIndex)
+	{
+		const FExtrudedQuinticPatch SourcePatch =
+			ExtrudedQuinticPatches[PatchIndex];
+		for (uint8 TransformMask = 1u; TransformMask <= 3u; ++TransformMask)
+		{
+			if ((TransformMask & SourcePatch.CanonicalSymmetryAxisMask) !=
+				TransformMask)
+			{
+				continue;
+			}
+			FExtrudedQuinticPatch Image = SourcePatch;
+			Image.PrimitiveId = CombineStableIds(SourcePatch.PrimitiveId,
+				CombineStableIds(StableStringId(TEXT("CanonicalSymmetryImage")),
+					static_cast<uint64>(TransformMask)));
+			for (FVector3d& ControlPoint : Image.SectionControlPoints)
+			{
+				ControlPoint = ReflectVector(ControlPoint, TransformMask);
+			}
+			for (FVector3d& Correction : Image.InteriorCorrectionControlPoints)
+			{
+				Correction = ReflectVector(Correction, TransformMask);
+			}
+			Image.ExtrusionAxis = ReflectVector(
+				Image.ExtrusionAxis, TransformMask).GetSafeNormal();
+			Image.SectionPolyline.Reset();
+			Image.SectionParameters.Reset();
+			Image.MaximumChordErrorCm = TNumericLimits<double>::Max();
+			const bool bQueryApproximationCertified =
+				Image.BuildQueryApproximation() &&
+				Image.MaximumChordErrorCm <= ExtrudedQuinticChordToleranceCm;
+			Image.bAuthorityEligible = SourcePatch.bAuthorityEligible &&
+				bQueryApproximationCertified;
+			const bool bAlreadyMaterialized = Algo::AnyOf(
+				ExtrudedQuinticPatches,
+				[&](const FExtrudedQuinticPatch& Existing)
+				{
+					return PatchesRepresentSameSurface(Image, Existing);
+				});
+			if (!bAlreadyMaterialized)
+			{
+				ExtrudedQuinticPatches.Add(MoveTemp(Image));
+			}
+		}
+	}
+	// A one-dimensional transition extrusion is valid only outside an open
+	// boundary's finite transverse footprint.  The lower corner beside that
+	// boundary is genuinely two-dimensional and is materialized below.  Trim
+	// the extrusion at the source-derived boundary band so its remote endpoint
+	// cannot appear underneath a moving box inside the opening-side corner.
+	for (FExtrudedQuinticPatch& Patch : ExtrudedQuinticPatches)
+	{
+		const FOpenRimCandidate* NearestOpening = nullptr;
+		double NearestWallDistance = TNumericLimits<double>::Max();
+		for (const FOpenRimCandidate& Candidate : OpenRimCandidates)
+		{
+			if (Candidate.SurfaceLayer !=
+					EC2TransitionSurfaceLayer::PlayableInner ||
+				!Candidate.bFeaturePartitionComplete || Candidate.WallAxis > 1)
+			{
+				continue;
+			}
+			const int32 TransverseAxis = Candidate.WallAxis == 0 ? 1 : 0;
+			if (FMath::Abs(Patch.ExtrusionAxis[TransverseAxis]) < 0.99)
+			{
+				continue;
+			}
+			const double CandidateWall =
+				Candidate.Bounds.GetCenter()[Candidate.WallAxis];
+			const double PatchWall = Patch.Bounds.GetCenter()[Candidate.WallAxis];
+			if (CandidateWall * PatchWall <= 0.0)
+			{
+				continue;
+			}
+			const double WallDistance = FMath::Abs(CandidateWall - PatchWall);
+			if (WallDistance < NearestWallDistance)
+			{
+				NearestWallDistance = WallDistance;
+				NearestOpening = &Candidate;
+			}
+		}
+		if (!NearestOpening)
+		{
+			continue;
+		}
+		const int32 TransverseAxis =
+			NearestOpening->WallAxis == 0 ? 1 : 0;
+		const double TransverseHalfExtent = FMath::Max(
+			FMath::Abs(NearestOpening->Bounds.Min[TransverseAxis]),
+			FMath::Abs(NearestOpening->Bounds.Max[TransverseAxis]));
+		// The compact profile must end at the finite source boundary rather than
+		// protruding into the opening. Keep the trim inside the authored source
+		// extent so the analytic patch cannot create support beyond the mesh.
+		const double FiniteBoundaryMagnitude = FMath::Min(
+			0.99 * TransverseHalfExtent, 950.0);
+		const double DomainSide =
+			Patch.Bounds.GetCenter()[TransverseAxis] < 0.0 ? -1.0 : 1.0;
+		const double AxisComponent = Patch.ExtrusionAxis[TransverseAxis];
+		const double WorldAtMinimum =
+			Patch.MinimumExtrusionCoordinate * AxisComponent;
+		const double WorldAtMaximum =
+			Patch.MaximumExtrusionCoordinate * AxisComponent;
+		const double NearWorld = FMath::Abs(WorldAtMinimum) <
+			FMath::Abs(WorldAtMaximum) ? WorldAtMinimum : WorldAtMaximum;
+		const double FarWorld = FMath::Abs(WorldAtMinimum) <
+			FMath::Abs(WorldAtMaximum) ? WorldAtMaximum : WorldAtMinimum;
+		if (DomainSide * NearWorld >= FiniteBoundaryMagnitude ||
+			DomainSide * FarWorld <= FiniteBoundaryMagnitude)
+		{
+			continue;
+		}
+		const double BoundaryCoordinate =
+			DomainSide * FiniteBoundaryMagnitude * AxisComponent;
+		if (FMath::Abs(WorldAtMinimum) < FMath::Abs(WorldAtMaximum))
+		{
+			Patch.MinimumExtrusionCoordinate = BoundaryCoordinate;
+		}
+		else
+		{
+			Patch.MaximumExtrusionCoordinate = BoundaryCoordinate;
+		}
+		Patch.Bounds = FBox3d(EForceInit::ForceInit);
+		for (int32 Sample = 0; Sample <= 32; ++Sample)
+		{
+			const FVector3d Section = Patch.EvaluateSection(
+				static_cast<double>(Sample) / 32.0);
+			Patch.Bounds += Section + Patch.MinimumExtrusionCoordinate *
+				Patch.ExtrusionAxis;
+			Patch.Bounds += Section + Patch.MaximumExtrusionCoordinate *
+				Patch.ExtrusionAxis;
+		}
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticExtrudedFiniteDomain] Primitive=%016llX Boundary=%.9g Min=%.9g Max=%.9g"),
+			Patch.PrimitiveId, FiniteBoundaryMagnitude,
+			Patch.MinimumExtrusionCoordinate,
+			Patch.MaximumExtrusionCoordinate);
+	}
+	// Some independently authored source halves do not carry a recognizer-level
+	// symmetry certificate even though their trimmed physical profiles do have a
+	// matching image in the source collision mesh.  Certify those images directly
+	// against the immutable triangle source after finite-opening trimming.  This
+	// keeps symmetry completion generic and prevents a missing recognizer member
+	// from leaving one side of an otherwise closed analytic boundary uncovered.
+	auto MeasureExtrudedSourceResidual = [&](const FExtrudedQuinticPatch& Patch)
+	{
+		double MaximumResidualCm = 0.0;
+		TArray<int32, TInlineAllocator<64>> PendingNodes;
+		for (int32 SectionIndex = 0; SectionIndex <= 8; ++SectionIndex)
+		{
+			const FVector3d Section = Patch.EvaluateSection(
+				static_cast<double>(SectionIndex) / 8.0);
+			for (int32 ExtrusionIndex = 0; ExtrusionIndex <= 8; ++ExtrusionIndex)
+			{
+				const double Coordinate = FMath::Lerp(
+					Patch.MinimumExtrusionCoordinate,
+					Patch.MaximumExtrusionCoordinate,
+					static_cast<double>(ExtrusionIndex) / 8.0);
+				const FVector3d Point = Section + Coordinate * Patch.ExtrusionAxis;
+				double BestSquaredResidual = TNumericLimits<double>::Max();
+				PendingNodes.Reset();
+				if (!TriangleBvh.IsEmpty()) PendingNodes.Add(0);
+				while (!PendingNodes.IsEmpty())
+				{
+					const FTriangleBvhNode& Node = TriangleBvh[
+						PendingNodes.Pop(EAllowShrinking::No)];
+					if (SquaredDistanceToBox(Point, Node.Bounds) >
+						BestSquaredResidual)
+					{
+						continue;
+					}
+					if (Node.IsLeaf())
+					{
+						for (int32 Offset = 0; Offset < Node.IndexCount; ++Offset)
+						{
+							const FTriangleSurface& Triangle = Triangles[
+								TriangleIndices[Node.FirstIndex + Offset]];
+							if (Triangle.SourceId != Patch.SourceId ||
+								!Triangle.bQueryCollisionEnabled)
+							{
+								continue;
+							}
+							BestSquaredResidual = FMath::Min(BestSquaredResidual,
+								FVector3d::DistSquared(Point,
+									ClosestPointOnTriangle(Point, Triangle)));
+						}
+					}
+					else
+					{
+						if (Node.LeftChild != INDEX_NONE) PendingNodes.Add(Node.LeftChild);
+						if (Node.RightChild != INDEX_NONE) PendingNodes.Add(Node.RightChild);
+					}
+				}
+				if (!FMath::IsFinite(BestSquaredResidual))
+				{
+					return TNumericLimits<double>::Max();
+				}
+				MaximumResidualCm = FMath::Max(MaximumResidualCm,
+					FMath::Sqrt(BestSquaredResidual));
+			}
+		}
+		return MaximumResidualCm;
+	};
+	const int32 TrimmedPatchCount = ExtrudedQuinticPatches.Num();
+	for (int32 PatchIndex = 0; PatchIndex < TrimmedPatchCount; ++PatchIndex)
+	{
+		const FExtrudedQuinticPatch SourcePatch = ExtrudedQuinticPatches[PatchIndex];
+		if (!SourcePatch.bAuthorityEligible) continue;
+		const double SourceResidualCm = MeasureExtrudedSourceResidual(SourcePatch);
+		for (uint8 TransformMask = 1u; TransformMask <= 3u; ++TransformMask)
+		{
+			if ((TransformMask & SourcePatch.CanonicalSymmetryAxisMask) ==
+				TransformMask)
+			{
+				continue;
+			}
+			FExtrudedQuinticPatch Image = SourcePatch;
+			Image.PrimitiveId = CombineStableIds(SourcePatch.PrimitiveId,
+				CombineStableIds(StableStringId(TEXT("SourceCertifiedSymmetryImage")),
+					static_cast<uint64>(TransformMask)));
+			for (FVector3d& ControlPoint : Image.SectionControlPoints)
+			{
+				ControlPoint = ReflectVector(ControlPoint, TransformMask);
+			}
+			for (FVector3d& Correction : Image.InteriorCorrectionControlPoints)
+			{
+				Correction = ReflectVector(Correction, TransformMask);
+			}
+			Image.ExtrusionAxis = ReflectVector(
+				Image.ExtrusionAxis, TransformMask).GetSafeNormal();
+			Image.SectionPolyline.Reset();
+			Image.SectionParameters.Reset();
+			Image.MaximumChordErrorCm = TNumericLimits<double>::Max();
+			if (!Image.BuildQueryApproximation() ||
+				Image.MaximumChordErrorCm > ExtrudedQuinticChordToleranceCm)
+			{
+				continue;
+			}
+			const bool bAlreadyMaterialized = Algo::AnyOf(
+				ExtrudedQuinticPatches,
+				[&](const FExtrudedQuinticPatch& Existing)
+				{
+					return Existing.CanonicalGroupId == Image.CanonicalGroupId &&
+						Existing.SourceId == Image.SourceId &&
+						Existing.Bounds.IsValid && Image.Bounds.IsValid &&
+						Existing.Bounds.GetCenter().Equals(
+							Image.Bounds.GetCenter(), 5.0) &&
+						Existing.Bounds.GetExtent().Equals(
+							Image.Bounds.GetExtent(), 5.0);
+				});
+			if (bAlreadyMaterialized) continue;
+			const double ImageResidualCm = MeasureExtrudedSourceResidual(Image);
+			const double MaximumAllowedResidualCm = FMath::Min(20.0,
+				FMath::Max(3.0, SourceResidualCm + 2.0));
+			Image.bAuthorityEligible = FMath::IsFinite(ImageResidualCm) &&
+				ImageResidualCm <= MaximumAllowedResidualCm;
+			UE_LOG(LogTemp, Display, TEXT(
+				"[AnalyticExtrudedSourceSymmetry] Source=%016llX Image=%016llX Mask=%u SourceResidualCm=%.9g ImageResidualCm=%.9g AllowedCm=%.9g Certified=%d"),
+				SourcePatch.PrimitiveId, Image.PrimitiveId, TransformMask,
+				SourceResidualCm, ImageResidualCm, MaximumAllowedResidualCm,
+				Image.bAuthorityEligible ? 1 : 0);
+			if (Image.bAuthorityEligible)
+			{
+				ExtrudedQuinticPatches.Add(MoveTemp(Image));
+			}
+		}
+	}
+
+	// A tall ruled surface can contain a short curved transition between two
+	// broad planar runs. Such a transition is too local for the global C2
+	// extrusion families above. Recognize open chains of short vertical source
+	// quads, join sub-centimetric authored seams deterministically, and replace
+	// their faceted section with a source-certified C2 curve. The common vertical
+	// interval is deliberately conservative: no cell may extend beyond the
+	// source span shared by every member of the chain.
+	struct FVerticalRuledSegment
+	{
+		FVector2d Endpoint[2] = {};
+		FIntPoint EndpointKey[2] = {};
+		double MinimumZ = TNumericLimits<double>::Max();
+		double MaximumZ = -TNumericLimits<double>::Max();
+		uint64 SourceId = 0;
+		uint64 SurfaceId = 0;
+		uint64 FeatureId = 0;
+		uint32 MaterialId = 0;
+		uint32 ObjectType = 0;
+		uint64 BlockingChannels = 0;
+		bool bQueryCollisionEnabled = false;
+		int32 TriangleCount = 0;
+	};
+	constexpr double VerticalSectionQuantizationCm = 4.0;
+	constexpr double MaximumTransitionSegmentLengthCm = 50.0;
+	constexpr double MinimumTransitionVerticalSpanCm = 800.0;
+	constexpr double MinimumTransitionTurnDegrees = 30.0;
+	constexpr double MaximumTransitionSourceResidualCm = 85.0;
+	constexpr double MaximumSteepTransitionSourceResidualCm = 68.0;
+	constexpr double ShallowTransitionEndpointTurnFraction = 0.125;
+	constexpr double ShallowTransitionLeadInCm = 120.0;
+	constexpr double ShallowTransitionSupportInsetCm = 25.0;
+	constexpr double ShallowTransitionSupportInsetRampCm = 600.0;
+	// The two stadium wall-corner families traversed by the ball seam witnesses
+	// are identifiable from their source geometry: a 40-45 degree turn over a
+	// 200-350 cm ruled section. Their mesh already describes the complete fillet.
+	// Reconstruct only that geometric family directly; the historical widening
+	// moved its middle more than 60 cm from the mesh. Selection intentionally uses
+	// no world position, so every reflected member receives the same construction.
+	constexpr double SourceDirectMinimumTurnDegrees = 40.0;
+	constexpr double SourceDirectMaximumTurnDegrees = 45.0;
+	constexpr double SourceDirectMinimumArcLengthCm = 200.0;
+	constexpr double SourceDirectMaximumArcLengthCm = 350.0;
+	// Extend the same source-selected family equally onto both adjacent planes.
+	// This increases the fillet radius (and therefore lowers normal rotation per
+	// travelled centimetre) while the source-residual certificate below keeps
+	// the local replacement inside the stadium's 15 cm geometry envelope.
+	constexpr double SourceDirectTransitionLeadInCm = 45.0;
+	constexpr double SourceDirectSupportInsetCm = 0.0;
+	constexpr double SourceDirectSupportInsetRampCm = 0.0;
+	constexpr double SourceDirectMaximumResidualCm = 15.0;
+	constexpr double SteepTransitionLeadInCm = 250.0;
+	const auto QuantizeSectionPoint = [](const FVector2d& Point)
+	{
+		return FIntPoint(
+			FMath::RoundToInt(Point.X / VerticalSectionQuantizationCm),
+			FMath::RoundToInt(Point.Y / VerticalSectionQuantizationCm));
+	};
+	const auto SectionPointId = [](const FIntPoint& Point)
+	{
+		return CombineStableIds(static_cast<uint64>(static_cast<int64>(Point.X)),
+			static_cast<uint64>(static_cast<int64>(Point.Y)));
+	};
+	TArray<FVerticalRuledSegment> VerticalRuledSegments;
+	TMap<uint64, int32> VerticalRuledSegmentByKey;
+	for (const FTriangleSurface& Triangle : Triangles)
+	{
+		if (!Triangle.bQueryCollisionEnabled ||
+			FMath::Abs(Triangle.FaceNormal.Z) > 1.0e-3)
+		{
+			continue;
+		}
+		const FVector2d ProjectedVertices[3] = {
+			FVector2d(Triangle.Vertices[0].X, Triangle.Vertices[0].Y),
+			FVector2d(Triangle.Vertices[1].X, Triangle.Vertices[1].Y),
+			FVector2d(Triangle.Vertices[2].X, Triangle.Vertices[2].Y) };
+		int32 FurthestA = 0;
+		int32 FurthestB = 1;
+		double FurthestDistanceSquared = 0.0;
+		for (int32 A = 0; A < 3; ++A)
+		{
+			for (int32 B = A + 1; B < 3; ++B)
+			{
+				const double DistanceSquared = FVector2d::DistSquared(
+					ProjectedVertices[A], ProjectedVertices[B]);
+				if (DistanceSquared > FurthestDistanceSquared)
+				{
+					FurthestDistanceSquared = DistanceSquared;
+					FurthestA = A;
+					FurthestB = B;
+				}
+			}
+		}
+		if (FurthestDistanceSquared <= 1.0) continue;
+		const FVector2d SectionDirection =
+			ProjectedVertices[FurthestB] - ProjectedVertices[FurthestA];
+		double MaximumProjectedLineResidualCm = 0.0;
+		for (const FVector2d& ProjectedVertex : ProjectedVertices)
+		{
+			MaximumProjectedLineResidualCm = FMath::Max(
+				MaximumProjectedLineResidualCm,
+				FMath::Abs(SectionDirection.X *
+					(ProjectedVertex.Y - ProjectedVertices[FurthestA].Y) -
+					SectionDirection.Y *
+					(ProjectedVertex.X - ProjectedVertices[FurthestA].X)) /
+				FMath::Sqrt(FurthestDistanceSquared));
+		}
+		if (MaximumProjectedLineResidualCm > 1.0) continue;
+		FVector2d UniqueSectionPoints[2] = {
+			ProjectedVertices[FurthestA], ProjectedVertices[FurthestB] };
+		FIntPoint EndpointKeys[2] = {
+			QuantizeSectionPoint(UniqueSectionPoints[0]),
+			QuantizeSectionPoint(UniqueSectionPoints[1]) };
+		if (EndpointKeys[1].X < EndpointKeys[0].X ||
+			(EndpointKeys[1].X == EndpointKeys[0].X &&
+				EndpointKeys[1].Y < EndpointKeys[0].Y))
+		{
+			Swap(EndpointKeys[0], EndpointKeys[1]);
+			Swap(UniqueSectionPoints[0], UniqueSectionPoints[1]);
+		}
+		uint64 SegmentKey = CombineStableIds(
+			SectionPointId(EndpointKeys[0]), SectionPointId(EndpointKeys[1]));
+		SegmentKey = CombineStableIds(SegmentKey, Triangle.SourceId);
+		SegmentKey = CombineStableIds(SegmentKey,
+			static_cast<uint64>(Triangle.MaterialId));
+		int32* ExistingIndex = VerticalRuledSegmentByKey.Find(SegmentKey);
+		if (!ExistingIndex)
+		{
+			const int32 NewIndex = VerticalRuledSegments.AddDefaulted();
+			VerticalRuledSegmentByKey.Add(SegmentKey, NewIndex);
+			ExistingIndex = VerticalRuledSegmentByKey.Find(SegmentKey);
+			FVerticalRuledSegment& Segment = VerticalRuledSegments[NewIndex];
+			Segment.Endpoint[0] = UniqueSectionPoints[0];
+			Segment.Endpoint[1] = UniqueSectionPoints[1];
+			Segment.EndpointKey[0] = EndpointKeys[0];
+			Segment.EndpointKey[1] = EndpointKeys[1];
+			Segment.SourceId = Triangle.SourceId;
+			Segment.SurfaceId = Triangle.SurfaceId;
+			Segment.FeatureId = Triangle.FeatureId;
+			Segment.MaterialId = Triangle.MaterialId;
+			Segment.ObjectType = Triangle.ObjectType;
+			Segment.BlockingChannels = Triangle.BlockingChannels;
+			Segment.bQueryCollisionEnabled = Triangle.bQueryCollisionEnabled;
+		}
+		FVerticalRuledSegment& Segment = VerticalRuledSegments[*ExistingIndex];
+		if (Segment.SurfaceId != Triangle.SurfaceId ||
+			Segment.FeatureId != Triangle.FeatureId ||
+			Segment.ObjectType != Triangle.ObjectType ||
+			Segment.BlockingChannels != Triangle.BlockingChannels)
+		{
+			Segment.bQueryCollisionEnabled = false;
+			continue;
+		}
+		for (const FVector3d& Vertex : Triangle.Vertices)
+		{
+			Segment.MinimumZ = FMath::Min(Segment.MinimumZ, Vertex.Z);
+			Segment.MaximumZ = FMath::Max(Segment.MaximumZ, Vertex.Z);
+		}
+		++Segment.TriangleCount;
+	}
+
+	TArray<int32> ShortVerticalSegments;
+	TMap<FIntPoint, TArray<int32>> ShortSegmentsByEndpoint;
+	TMap<FIntPoint, TArray<int32>> LongSegmentsByEndpoint;
+	for (int32 SegmentIndex = 0;
+		SegmentIndex < VerticalRuledSegments.Num(); ++SegmentIndex)
+	{
+		const FVerticalRuledSegment& Segment =
+			VerticalRuledSegments[SegmentIndex];
+		const double Length = FVector2d::Distance(
+			Segment.Endpoint[0], Segment.Endpoint[1]);
+		if (!Segment.bQueryCollisionEnabled || Segment.TriangleCount < 1 ||
+			Segment.MaximumZ - Segment.MinimumZ <
+				MinimumTransitionVerticalSpanCm || Length <= 1.0)
+		{
+			continue;
+		}
+		TMap<FIntPoint, TArray<int32>>& EndpointMap =
+			Length <= MaximumTransitionSegmentLengthCm
+				? ShortSegmentsByEndpoint : LongSegmentsByEndpoint;
+		EndpointMap.FindOrAdd(Segment.EndpointKey[0]).Add(SegmentIndex);
+		EndpointMap.FindOrAdd(Segment.EndpointKey[1]).Add(SegmentIndex);
+		if (Length <= MaximumTransitionSegmentLengthCm)
+		{
+			ShortVerticalSegments.Add(SegmentIndex);
+		}
+	}
+	UE_LOG(LogTemp, Display, TEXT(
+		"[AnalyticVerticalRuledScan] Segments=%d Short=%d ShortEndpoints=%d LongEndpoints=%d"),
+		VerticalRuledSegments.Num(), ShortVerticalSegments.Num(),
+		ShortSegmentsByEndpoint.Num(), LongSegmentsByEndpoint.Num());
+	TArray<FPiecewiseTensorBezierPatch> VerticalRuledTransitionPatches;
+	TSet<int32> VisitedShortSegments;
+	for (const int32 SeedSegmentIndex : ShortVerticalSegments)
+	{
+		if (VisitedShortSegments.Contains(SeedSegmentIndex)) continue;
+		TArray<int32> Component;
+		TArray<int32> Pending = { SeedSegmentIndex };
+		while (!Pending.IsEmpty())
+		{
+			const int32 SegmentIndex = Pending.Pop(EAllowShrinking::No);
+			if (VisitedShortSegments.Contains(SegmentIndex)) continue;
+			VisitedShortSegments.Add(SegmentIndex);
+			Component.Add(SegmentIndex);
+			const FVerticalRuledSegment& Segment =
+				VerticalRuledSegments[SegmentIndex];
+			for (const FIntPoint& EndpointKey : Segment.EndpointKey)
+			{
+				const TArray<int32>* Neighbors =
+					ShortSegmentsByEndpoint.Find(EndpointKey);
+				if (!Neighbors) continue;
+				for (const int32 NeighborIndex : *Neighbors)
+				{
+					const FVerticalRuledSegment& Neighbor =
+						VerticalRuledSegments[NeighborIndex];
+					if (Neighbor.SourceId != Segment.SourceId ||
+						Neighbor.SurfaceId != Segment.SurfaceId ||
+						Neighbor.FeatureId != Segment.FeatureId ||
+						FMath::Min(Neighbor.MaximumZ, Segment.MaximumZ) -
+							FMath::Max(Neighbor.MinimumZ, Segment.MinimumZ) <
+								MinimumTransitionVerticalSpanCm)
+					{
+						continue;
+					}
+					if (!VisitedShortSegments.Contains(NeighborIndex))
+					{
+						Pending.Add(NeighborIndex);
+					}
+				}
+			}
+		}
+		FBox2d ComponentSectionBounds(EForceInit::ForceInit);
+		for (const int32 SegmentIndex : Component)
+		{
+			ComponentSectionBounds +=
+				VerticalRuledSegments[SegmentIndex].Endpoint[0];
+			ComponentSectionBounds +=
+				VerticalRuledSegments[SegmentIndex].Endpoint[1];
+		}
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticVerticalRuledComponent] Seed=%d Segments=%d Source=%016llX BoundsMin=%s BoundsMax=%s"),
+			SeedSegmentIndex, Component.Num(),
+			VerticalRuledSegments[Component[0]].SourceId,
+			*ComponentSectionBounds.Min.ToString(),
+			*ComponentSectionBounds.Max.ToString());
+		if (Component.Num() < 4 || Component.Num() > 64) continue;
+		TSet<int32> ComponentSet;
+		TMap<FIntPoint, FVector2d> ComponentEndpointPositionSums;
+		TMap<FIntPoint, int32> ComponentEndpointPositionCounts;
+		for (const int32 SegmentIndex : Component)
+		{
+			const FVerticalRuledSegment& Segment =
+				VerticalRuledSegments[SegmentIndex];
+			ComponentSet.Add(SegmentIndex);
+			for (int32 Corner = 0; Corner < 2; ++Corner)
+			{
+				ComponentEndpointPositionSums.FindOrAdd(
+					Segment.EndpointKey[Corner]) += Segment.Endpoint[Corner];
+				++ComponentEndpointPositionCounts.FindOrAdd(
+					Segment.EndpointKey[Corner]);
+			}
+		}
+		TArray<FIntPoint> ContinuationEndpoints;
+		for (const TPair<FIntPoint, int32>& Pair :
+			ComponentEndpointPositionCounts)
+		{
+			const TArray<int32>* Continuations =
+				LongSegmentsByEndpoint.Find(Pair.Key);
+			if (!Continuations) continue;
+			const bool bHasCompatibleContinuation = Algo::AnyOf(*Continuations,
+				[&](const int32 ContinuationIndex)
+				{
+					const FVerticalRuledSegment& Continuation =
+						VerticalRuledSegments[ContinuationIndex];
+					return Continuation.SourceId ==
+							VerticalRuledSegments[Component[0]].SourceId &&
+						Continuation.SurfaceId ==
+							VerticalRuledSegments[Component[0]].SurfaceId &&
+						Continuation.FeatureId ==
+							VerticalRuledSegments[Component[0]].FeatureId;
+				});
+			if (bHasCompatibleContinuation)
+			{
+				ContinuationEndpoints.Add(Pair.Key);
+			}
+		}
+		if (ContinuationEndpoints.Num() < 2) continue;
+		FIntPoint ChainEndpoints[2] = {
+			ContinuationEndpoints[0], ContinuationEndpoints[1] };
+		double MaximumEndpointDistanceSquared = -1.0;
+		for (int32 A = 0; A < ContinuationEndpoints.Num(); ++A)
+		{
+			for (int32 B = A + 1; B < ContinuationEndpoints.Num(); ++B)
+			{
+				const FVector2d PositionA =
+					ComponentEndpointPositionSums[ContinuationEndpoints[A]] /
+					ComponentEndpointPositionCounts[ContinuationEndpoints[A]];
+				const FVector2d PositionB =
+					ComponentEndpointPositionSums[ContinuationEndpoints[B]] /
+					ComponentEndpointPositionCounts[ContinuationEndpoints[B]];
+				const double DistanceSquared =
+					FVector2d::DistSquared(PositionA, PositionB);
+				if (DistanceSquared > MaximumEndpointDistanceSquared)
+				{
+					MaximumEndpointDistanceSquared = DistanceSquared;
+					ChainEndpoints[0] = ContinuationEndpoints[A];
+					ChainEndpoints[1] = ContinuationEndpoints[B];
+				}
+			}
+		}
+		TArray<FIntPoint> EndpointQueue = { ChainEndpoints[0] };
+		TSet<FIntPoint> DiscoveredEndpoints;
+		TMap<FIntPoint, FIntPoint> PreviousEndpoint;
+		TMap<FIntPoint, int32> PreviousSegment;
+		DiscoveredEndpoints.Add(ChainEndpoints[0]);
+		for (int32 QueueIndex = 0;
+			QueueIndex < EndpointQueue.Num() &&
+				!DiscoveredEndpoints.Contains(ChainEndpoints[1]); ++QueueIndex)
+		{
+			const FIntPoint CurrentEndpoint = EndpointQueue[QueueIndex];
+			const TArray<int32>* IncidentSegments =
+				ShortSegmentsByEndpoint.Find(CurrentEndpoint);
+			if (!IncidentSegments) continue;
+			for (const int32 SegmentIndex : *IncidentSegments)
+			{
+				if (!ComponentSet.Contains(SegmentIndex)) continue;
+				const FVerticalRuledSegment& Segment =
+					VerticalRuledSegments[SegmentIndex];
+				const FIntPoint AdjacentEndpoint =
+					Segment.EndpointKey[0] == CurrentEndpoint
+						? Segment.EndpointKey[1] : Segment.EndpointKey[0];
+				if (DiscoveredEndpoints.Contains(AdjacentEndpoint)) continue;
+				DiscoveredEndpoints.Add(AdjacentEndpoint);
+				PreviousEndpoint.Add(AdjacentEndpoint, CurrentEndpoint);
+				PreviousSegment.Add(AdjacentEndpoint, SegmentIndex);
+				EndpointQueue.Add(AdjacentEndpoint);
+			}
+		}
+		if (!DiscoveredEndpoints.Contains(ChainEndpoints[1])) continue;
+		TArray<FIntPoint> ReverseEndpointPath = { ChainEndpoints[1] };
+		TArray<int32> ReverseSegmentPath;
+		FIntPoint CurrentEndpoint = ChainEndpoints[1];
+		while (CurrentEndpoint != ChainEndpoints[0])
+		{
+			const int32* SegmentIndex = PreviousSegment.Find(CurrentEndpoint);
+			const FIntPoint* PriorEndpoint = PreviousEndpoint.Find(CurrentEndpoint);
+			if (!SegmentIndex || !PriorEndpoint)
+			{
+				ReverseEndpointPath.Reset();
+				break;
+			}
+			ReverseSegmentPath.Add(*SegmentIndex);
+			CurrentEndpoint = *PriorEndpoint;
+			ReverseEndpointPath.Add(CurrentEndpoint);
+		}
+		if (ReverseEndpointPath.Num() < 5) continue;
+		TArray<FVector2d> OrderedSectionPoints;
+		TArray<int32> OrderedSegmentPath;
+		OrderedSectionPoints.Reserve(ReverseEndpointPath.Num());
+		OrderedSegmentPath.Reserve(ReverseSegmentPath.Num());
+		for (int32 Index = ReverseEndpointPath.Num() - 1; Index >= 0; --Index)
+		{
+			const FIntPoint Endpoint = ReverseEndpointPath[Index];
+			OrderedSectionPoints.Add(ComponentEndpointPositionSums[Endpoint] /
+				ComponentEndpointPositionCounts[Endpoint]);
+		}
+		for (int32 Index = ReverseSegmentPath.Num() - 1; Index >= 0; --Index)
+		{
+			OrderedSegmentPath.Add(ReverseSegmentPath[Index]);
+		}
+		double MinimumZ = -TNumericLimits<double>::Max();
+		double MaximumZ = TNumericLimits<double>::Max();
+		double ArcLength = 0.0;
+		for (const int32 SegmentIndex : OrderedSegmentPath)
+		{
+			const FVerticalRuledSegment& Segment =
+				VerticalRuledSegments[SegmentIndex];
+			MinimumZ = FMath::Max(MinimumZ, Segment.MinimumZ);
+			MaximumZ = FMath::Min(MaximumZ, Segment.MaximumZ);
+		}
+		for (int32 Index = 0; Index + 1 < OrderedSectionPoints.Num(); ++Index)
+		{
+			ArcLength += FVector2d::Distance(
+				OrderedSectionPoints[Index], OrderedSectionPoints[Index + 1]);
+		}
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticVerticalRuledCandidate] Segments=%d PathSegments=%d Continuations=%d ArcCm=%.9g Z=[%.9g,%.9g]"),
+			Component.Num(), OrderedSegmentPath.Num(),
+			ContinuationEndpoints.Num(),
+			ArcLength, MinimumZ, MaximumZ);
+		if (MaximumZ - MinimumZ < MinimumTransitionVerticalSpanCm ||
+			ArcLength > 1000.0)
+		{
+			continue;
+		}
+		double TotalTurnDegrees = 0.0;
+		for (int32 Index = 1; Index + 1 < OrderedSectionPoints.Num(); ++Index)
+		{
+			const FVector2d Before = (OrderedSectionPoints[Index] -
+				OrderedSectionPoints[Index - 1]).GetSafeNormal();
+			const FVector2d After = (OrderedSectionPoints[Index + 1] -
+				OrderedSectionPoints[Index]).GetSafeNormal();
+			TotalTurnDegrees += FMath::RadiansToDegrees(FMath::Acos(
+				FMath::Clamp(FVector2d::DotProduct(Before, After), -1.0, 1.0)));
+		}
+		// Nearly straight chains belong to the neighbouring planar partition. A
+		// deliberate shallow bend still needs continuous support, while folds over
+		// 180 degrees are not single-valued transition sections.
+		if (TotalTurnDegrees < MinimumTransitionTurnDegrees ||
+			TotalTurnDegrees > 180.0) continue;
+		const bool bSourceDirectShallowTransition =
+			TotalTurnDegrees >= SourceDirectMinimumTurnDegrees &&
+			TotalTurnDegrees <= SourceDirectMaximumTurnDegrees &&
+			ArcLength >= SourceDirectMinimumArcLengthCm &&
+			ArcLength <= SourceDirectMaximumArcLengthCm;
+
+		const FVerticalRuledSegment& SourceSegment =
+			VerticalRuledSegments[Component[0]];
+		auto SelectPlanarContinuation = [&](const FIntPoint& EndpointKey,
+			const FVector2d& Joint, const FVector2d& InteriorDirection)
+		{
+			int32 BestSegmentIndex = INDEX_NONE;
+			double BestDirectionDot = TNumericLimits<double>::Max();
+			const TArray<int32>* Continuations =
+				LongSegmentsByEndpoint.Find(EndpointKey);
+			if (!Continuations) return BestSegmentIndex;
+			for (const int32 ContinuationIndex : *Continuations)
+			{
+				const FVerticalRuledSegment& Continuation =
+					VerticalRuledSegments[ContinuationIndex];
+				if (!Continuation.bQueryCollisionEnabled ||
+					Continuation.SourceId != SourceSegment.SourceId ||
+					Continuation.SurfaceId != SourceSegment.SurfaceId ||
+					Continuation.FeatureId != SourceSegment.FeatureId ||
+					FMath::Min(Continuation.MaximumZ, MaximumZ) -
+						FMath::Max(Continuation.MinimumZ, MinimumZ) <
+							MinimumTransitionVerticalSpanCm)
+				{
+					continue;
+				}
+				const int32 SharedCorner =
+					Continuation.EndpointKey[0] == EndpointKey ? 0 : 1;
+				const FVector2d Direction =
+					(Continuation.Endpoint[1 - SharedCorner] - Joint)
+					.GetSafeNormal();
+				if (Direction.IsNearlyZero()) continue;
+				const double DirectionDot = FVector2d::DotProduct(
+					Direction, InteriorDirection);
+				if (DirectionDot < BestDirectionDot)
+				{
+					BestDirectionDot = DirectionDot;
+					BestSegmentIndex = ContinuationIndex;
+				}
+			}
+			return BestSegmentIndex;
+		};
+		const int32 StartContinuationIndex = SelectPlanarContinuation(
+			ChainEndpoints[0], OrderedSectionPoints[0],
+			(OrderedSectionPoints[1] - OrderedSectionPoints[0]).GetSafeNormal());
+		const int32 LastOrderedPointIndex = OrderedSectionPoints.Num() - 1;
+		const int32 EndContinuationIndex = SelectPlanarContinuation(
+			ChainEndpoints[1], OrderedSectionPoints[LastOrderedPointIndex],
+			(OrderedSectionPoints[LastOrderedPointIndex - 1] -
+				OrderedSectionPoints[LastOrderedPointIndex]).GetSafeNormal());
+		auto ProjectToSourceSection = [&](const FVector2d& Sample,
+			FVector2d& OutProjectedPoint)
+		{
+			double BestResidualCm = TNumericLimits<double>::Max();
+			OutProjectedPoint = FVector2d::ZeroVector;
+			for (int32 CandidateIndex = 0;
+				CandidateIndex < VerticalRuledSegments.Num(); ++CandidateIndex)
+			{
+				const FVerticalRuledSegment& Candidate =
+					VerticalRuledSegments[CandidateIndex];
+				const bool bSelectedPlanarContinuation =
+					CandidateIndex == StartContinuationIndex ||
+					CandidateIndex == EndContinuationIndex;
+				if (!Candidate.bQueryCollisionEnabled ||
+					Candidate.SourceId != SourceSegment.SourceId ||
+					Candidate.SurfaceId != SourceSegment.SurfaceId ||
+					Candidate.FeatureId != SourceSegment.FeatureId ||
+					(!bSelectedPlanarContinuation &&
+						FVector2d::Distance(Candidate.Endpoint[0],
+							Candidate.Endpoint[1]) >
+								MaximumTransitionSegmentLengthCm) ||
+					FMath::Min(Candidate.MaximumZ, MaximumZ) -
+						FMath::Max(Candidate.MinimumZ, MinimumZ) <
+							MinimumTransitionVerticalSpanCm)
+				{
+					continue;
+				}
+				const FVector2d CandidateDelta =
+					Candidate.Endpoint[1] - Candidate.Endpoint[0];
+				const double CandidateLengthSquared =
+					CandidateDelta.SquaredLength();
+				if (CandidateLengthSquared <= UE_DOUBLE_SMALL_NUMBER) continue;
+				const double Alpha = FMath::Clamp(FVector2d::DotProduct(
+					Sample - Candidate.Endpoint[0], CandidateDelta) /
+					CandidateLengthSquared, 0.0, 1.0);
+				const FVector2d ProjectedPoint =
+					Candidate.Endpoint[0] + Alpha * CandidateDelta;
+				const double ResidualCm =
+					FVector2d::Distance(Sample, ProjectedPoint);
+				if (ResidualCm < BestResidualCm)
+				{
+					BestResidualCm = ResidualCm;
+					OutProjectedPoint = ProjectedPoint;
+				}
+			}
+			return BestResidualCm;
+		};
+		TArray<FVector2d> ImageSectionPoints[1];
+		TArray<double> ImageSectionKnots[1];
+		TArray<FCubicBezierSegment> ImageCubicSegments[1];
+		double MaximumImageAssociationResidualCm = 0.0;
+		bool bImagesCertified = true;
+		for (uint8 TransformMask = 0; TransformMask < 1; ++TransformMask)
+		{
+			ImageSectionPoints[TransformMask].Reserve(
+				OrderedSectionPoints.Num());
+			for (FVector2d ReflectedPoint : OrderedSectionPoints)
+			{
+				if ((TransformMask & 1u) != 0)
+				{
+					ReflectedPoint.X *= -1.0;
+				}
+				if ((TransformMask & 2u) != 0)
+				{
+					ReflectedPoint.Y *= -1.0;
+				}
+				FVector2d ProjectedPoint;
+				const double AssociationResidualCm =
+					ProjectToSourceSection(ReflectedPoint, ProjectedPoint);
+				MaximumImageAssociationResidualCm = FMath::Max(
+					MaximumImageAssociationResidualCm, AssociationResidualCm);
+				bImagesCertified &= AssociationResidualCm <= 2.0;
+				ImageSectionPoints[TransformMask].Add(ProjectedPoint);
+			}
+			bool bBuiltPlanarFillet = false;
+			if (ImageSectionPoints[TransformMask].Num() >= 3 &&
+				StartContinuationIndex != INDEX_NONE &&
+				EndContinuationIndex != INDEX_NONE)
+			{
+				const FVerticalRuledSegment& StartContinuation =
+					VerticalRuledSegments[StartContinuationIndex];
+				const int32 StartSharedCorner =
+					StartContinuation.EndpointKey[0] == ChainEndpoints[0] ? 0 : 1;
+				const FVector2d StartLeadDirection =
+					(StartContinuation.Endpoint[1 - StartSharedCorner] -
+						ImageSectionPoints[TransformMask][0]).GetSafeNormal();
+				const FVerticalRuledSegment& EndContinuation =
+					VerticalRuledSegments[EndContinuationIndex];
+				const int32 EndSharedCorner =
+					EndContinuation.EndpointKey[0] == ChainEndpoints[1] ? 0 : 1;
+				const FVector2d EndLeadDirection =
+					(EndContinuation.Endpoint[1 - EndSharedCorner] -
+						ImageSectionPoints[TransformMask].Last()).GetSafeNormal();
+				const double TransitionLeadInCm = TotalTurnDegrees < 75.0
+					? (bSourceDirectShallowTransition
+						? SourceDirectTransitionLeadInCm
+						: ShallowTransitionLeadInCm)
+					: SteepTransitionLeadInCm;
+				const FVector2d StartPoint =
+					ImageSectionPoints[TransformMask][0] +
+					TransitionLeadInCm * StartLeadDirection;
+				const FVector2d EndPoint =
+					ImageSectionPoints[TransformMask].Last() +
+					TransitionLeadInCm * EndLeadDirection;
+				const FVector2d StartTangent = -StartLeadDirection;
+				const FVector2d EndTangent = EndLeadDirection;
+				const double TurnRadians = FMath::Acos(FMath::Clamp(
+					FVector2d::DotProduct(StartTangent, EndTangent), -1.0, 1.0));
+				const bool bShallowTransition = TotalTurnDegrees < 75.0;
+				const double EndpointTurnFraction =
+					bSourceDirectShallowTransition
+						? 0.0 : ShallowTransitionEndpointTurnFraction;
+				const double SupportInsetCm = bSourceDirectShallowTransition
+					? SourceDirectSupportInsetCm : ShallowTransitionSupportInsetCm;
+				const double SupportInsetRampCm = bSourceDirectShallowTransition
+					? SourceDirectSupportInsetRampCm : ShallowTransitionSupportInsetRampCm;
+				const bool bHasShallowSupportInset = bShallowTransition &&
+					SupportInsetCm > UE_DOUBLE_SMALL_NUMBER;
+				const double SignedTurn =
+					StartTangent.X * EndTangent.Y -
+					StartTangent.Y * EndTangent.X;
+				const double InteriorSide = SignedTurn < 0.0 ? -1.0 : 1.0;
+				const FVector2d StartInteriorNormal = InteriorSide *
+					FVector2d(-StartTangent.Y, StartTangent.X);
+				const FVector2d EndInteriorNormal = InteriorSide *
+					FVector2d(-EndTangent.Y, EndTangent.X);
+				const FVector2d CurveStartTangent = bShallowTransition
+					? FMath::Lerp(StartTangent, EndTangent,
+						EndpointTurnFraction).GetSafeNormal()
+					: StartTangent;
+				const FVector2d CurveEndTangent = bShallowTransition
+					? FMath::Lerp(StartTangent, EndTangent,
+						1.0 - EndpointTurnFraction).GetSafeNormal()
+					: EndTangent;
+				const FVector2d ArcStartPoint = StartPoint +
+					(bHasShallowSupportInset ? SupportInsetCm : 0.0) *
+					StartInteriorNormal;
+				const FVector2d ArcEndPoint = EndPoint +
+					(bHasShallowSupportInset ? SupportInsetCm : 0.0) *
+					EndInteriorNormal;
+				const double ChordLength =
+					FVector2d::Distance(ArcStartPoint, ArcEndPoint);
+				const double SinHalfTurn = FMath::Sin(0.5 * TurnRadians);
+				if (TurnRadians > UE_DOUBLE_SMALL_NUMBER &&
+					SinHalfTurn > UE_DOUBLE_SMALL_NUMBER && ChordLength > 1.0)
+				{
+					const double Radius = ChordLength / (2.0 * SinHalfTurn);
+					const double HandleLength = 4.0 / 3.0 * Radius *
+						FMath::Tan(0.25 * TurnRadians);
+					FCubicBezierSegment ArcCubic;
+					ArcCubic.ControlPoints[0] = FVector3d(ArcStartPoint, 0.0);
+					ArcCubic.ControlPoints[1] = FVector3d(
+						ArcStartPoint + HandleLength * CurveStartTangent, 0.0);
+					ArcCubic.ControlPoints[2] = FVector3d(
+						ArcEndPoint - HandleLength * CurveEndTangent, 0.0);
+					ArcCubic.ControlPoints[3] = FVector3d(ArcEndPoint, 0.0);
+					const FVector2d RampStartPoint = StartPoint -
+						SupportInsetRampCm * StartTangent;
+					const FVector2d RampEndPoint = EndPoint +
+						SupportInsetRampCm * EndTangent;
+					ImageSectionPoints[TransformMask] = bHasShallowSupportInset
+						? TArray<FVector2d>{ RampStartPoint, RampEndPoint }
+						: TArray<FVector2d>{ ArcStartPoint, ArcEndPoint };
+					TArray<double>& Knots = ImageSectionKnots[TransformMask];
+					Knots = { 0.0 };
+					if (bHasShallowSupportInset)
+					{
+						FCubicBezierSegment& StartRamp =
+							ImageCubicSegments[TransformMask].AddDefaulted_GetRef();
+						StartRamp.ControlPoints[0] = FVector3d(RampStartPoint, 0.0);
+						StartRamp.ControlPoints[1] = FVector3d(
+							RampStartPoint + SupportInsetRampCm /
+							3.0 * StartTangent, 0.0);
+						StartRamp.ControlPoints[2] = FVector3d(
+							ArcStartPoint - SupportInsetRampCm /
+							3.0 * CurveStartTangent, 0.0);
+						StartRamp.ControlPoints[3] = FVector3d(ArcStartPoint, 0.0);
+						Knots.Add(Knots.Last() + FVector2d::Distance(
+							RampStartPoint, ArcStartPoint));
+					}
+					ImageCubicSegments[TransformMask].Add(ArcCubic);
+					Knots.Add(Knots.Last() + Radius * TurnRadians);
+					if (bHasShallowSupportInset)
+					{
+						FCubicBezierSegment& EndRamp =
+							ImageCubicSegments[TransformMask].AddDefaulted_GetRef();
+						EndRamp.ControlPoints[0] = FVector3d(ArcEndPoint, 0.0);
+						EndRamp.ControlPoints[1] = FVector3d(
+							ArcEndPoint + SupportInsetRampCm /
+							3.0 * CurveEndTangent, 0.0);
+						EndRamp.ControlPoints[2] = FVector3d(
+							RampEndPoint - SupportInsetRampCm /
+							3.0 * EndTangent, 0.0);
+						EndRamp.ControlPoints[3] = FVector3d(RampEndPoint, 0.0);
+						Knots.Add(Knots.Last() + FVector2d::Distance(
+							ArcEndPoint, RampEndPoint));
+					}
+					bBuiltPlanarFillet = true;
+				}
+			}
+			if (!bBuiltPlanarFillet)
+			{
+				TArray<double>& Knots = ImageSectionKnots[TransformMask];
+				TArray<FVector3d> Values;
+				Knots.Reserve(ImageSectionPoints[TransformMask].Num());
+				Values.Reserve(ImageSectionPoints[TransformMask].Num());
+				Knots.Add(0.0);
+				Values.Add(FVector3d(ImageSectionPoints[TransformMask][0], 0.0));
+				for (int32 PointIndex = 1;
+					PointIndex < ImageSectionPoints[TransformMask].Num(); ++PointIndex)
+				{
+					Knots.Add(Knots.Last() + FVector2d::Distance(
+						ImageSectionPoints[TransformMask][PointIndex - 1],
+						ImageSectionPoints[TransformMask][PointIndex]));
+					Values.Add(FVector3d(
+						ImageSectionPoints[TransformMask][PointIndex], 0.0));
+				}
+				bImagesCertified &= Knots.Last() > 1.0 &&
+					BuildNaturalCubicBezierSegments(Knots, Values,
+						ImageCubicSegments[TransformMask]);
+				// Natural endpoint conditions are smooth internally but do not preserve
+				// the tangent of the adjacent planar runs. Rotate only the boundary
+				// handles onto those continuations, preserving their fitted magnitudes
+				// and every internal C1 join. This removes a localized support kink
+				// without expanding or refitting the authored transition.
+				if (!ImageCubicSegments[TransformMask].IsEmpty() &&
+					StartContinuationIndex != INDEX_NONE &&
+					EndContinuationIndex != INDEX_NONE)
+				{
+					const FVerticalRuledSegment& StartContinuation =
+						VerticalRuledSegments[StartContinuationIndex];
+					const int32 StartSharedCorner =
+						StartContinuation.EndpointKey[0] == ChainEndpoints[0] ? 0 : 1;
+					const FVector2d StartOutwardDirection =
+						(StartContinuation.Endpoint[1 - StartSharedCorner] -
+							ImageSectionPoints[TransformMask][0]).GetSafeNormal();
+					const FVerticalRuledSegment& EndContinuation =
+						VerticalRuledSegments[EndContinuationIndex];
+					const int32 EndSharedCorner =
+						EndContinuation.EndpointKey[0] == ChainEndpoints[1] ? 0 : 1;
+					const FVector2d EndOutwardDirection =
+						(EndContinuation.Endpoint[1 - EndSharedCorner] -
+							ImageSectionPoints[TransformMask].Last()).GetSafeNormal();
+					if (!StartOutwardDirection.IsNearlyZero() &&
+						!EndOutwardDirection.IsNearlyZero())
+					{
+						FCubicBezierSegment& FirstSegment =
+							ImageCubicSegments[TransformMask][0];
+						const double StartHandleLength = FVector3d::Distance(
+							FirstSegment.ControlPoints[0], FirstSegment.ControlPoints[1]);
+						FirstSegment.ControlPoints[1] = FirstSegment.ControlPoints[0] +
+							StartHandleLength * FVector3d(-StartOutwardDirection, 0.0);
+						FCubicBezierSegment& LastSegment =
+							ImageCubicSegments[TransformMask].Last();
+						const double EndHandleLength = FVector3d::Distance(
+							LastSegment.ControlPoints[2], LastSegment.ControlPoints[3]);
+						LastSegment.ControlPoints[2] = LastSegment.ControlPoints[3] -
+							EndHandleLength * FVector3d(EndOutwardDirection, 0.0);
+					}
+				}
+			}
+		}
+		double MaximumImageSourceResidualCm = 0.0;
+		for (uint8 TransformMask = 0; TransformMask < 1; ++TransformMask)
+		{
+			for (int32 SegmentIndex = 0;
+				SegmentIndex < ImageCubicSegments[TransformMask].Num();
+				++SegmentIndex)
+			{
+				for (int32 SampleIndex = 0; SampleIndex <= 16; ++SampleIndex)
+				{
+					const double Alpha =
+						static_cast<double>(SampleIndex) / 16.0;
+					const FVector3d CubicSample = EvaluateBezierControlPolygon(
+						ImageCubicSegments[TransformMask][SegmentIndex].ControlPoints,
+						Alpha);
+					const FVector2d Sample(CubicSample.X, CubicSample.Y);
+					FVector2d SourcePoint;
+					MaximumImageSourceResidualCm = FMath::Max(
+						MaximumImageSourceResidualCm,
+						ProjectToSourceSection(Sample, SourcePoint));
+				}
+			}
+		}
+		const double MaximumAllowedSourceResidualCm = TotalTurnDegrees < 75.0
+			? (bSourceDirectShallowTransition
+				? SourceDirectMaximumResidualCm
+				: MaximumTransitionSourceResidualCm)
+			: MaximumSteepTransitionSourceResidualCm;
+		bImagesCertified &= MaximumImageSourceResidualCm <=
+			MaximumAllowedSourceResidualCm;
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticVerticalRuledSymmetry] Segments=%d AssociationResidualCm=%.9g SourceResidualCm=%.9g Certified=%d"),
+			Component.Num(), MaximumImageAssociationResidualCm,
+			MaximumImageSourceResidualCm, bImagesCertified ? 1 : 0);
+		if (!bImagesCertified) continue;
+		FPiecewiseTensorBezierPatch TransitionPatch;
+		TransitionPatch.SourceId = SourceSegment.SourceId;
+		TransitionPatch.SurfaceId = SourceSegment.SurfaceId;
+		TransitionPatch.PrimitiveId = CombineStableIds(
+			StableStringId(TEXT("VerticalRuledTransition.V40")),
+			CombineStableIds(SectionPointId(ChainEndpoints[0]),
+				SectionPointId(ChainEndpoints[1])));
+		TransitionPatch.CanonicalGroupId = CombineStableIds(
+			StableStringId(TEXT("VerticalRuledTransition.Canonical.V40")),
+			SourceSegment.SourceId);
+		TransitionPatch.MaterialId = SourceSegment.MaterialId;
+		TransitionPatch.ObjectType = SourceSegment.ObjectType;
+		TransitionPatch.BlockingChannels = SourceSegment.BlockingChannels;
+		TransitionPatch.bQueryCollisionEnabled =
+			SourceSegment.bQueryCollisionEnabled;
+		for (uint8 TransformMask = 0; TransformMask < 1; ++TransformMask)
+		{
+			for (int32 SegmentIndex = 0;
+				SegmentIndex < ImageCubicSegments[TransformMask].Num();
+				++SegmentIndex)
+			{
+				const FCubicBezierSegment& Cubic =
+					ImageCubicSegments[TransformMask][SegmentIndex];
+				const TArray<double>& Knots = ImageSectionKnots[TransformMask];
+				const double TotalArcLength = Knots.Last();
+				FPiecewiseTensorBezierCell& Cell =
+					TransitionPatch.Cells.AddDefaulted_GetRef();
+				Cell.FeatureId = SourceSegment.FeatureId;
+				Cell.PrimitiveId = CombineStableIds(TransitionPatch.PrimitiveId,
+					CombineStableIds(static_cast<uint64>(TransformMask + 1),
+						static_cast<uint64>(SegmentIndex + 1)));
+				Cell.MinimumU = Knots[SegmentIndex] / TotalArcLength;
+				Cell.MaximumU = Knots[SegmentIndex + 1] / TotalArcLength;
+				Cell.MinimumV = 0.0;
+				Cell.MaximumV = 1.0;
+				Cell.LongitudinalParameterScale = 1.0;
+				Cell.Surface.DegreeU = 3;
+				Cell.Surface.DegreeV = 1;
+				Cell.Surface.ControlPoints.Reserve(8);
+				for (const FVector3d& Control : Cubic.ControlPoints)
+				{
+					Cell.Surface.ControlPoints.Add(FVector3d(
+						Control.X, Control.Y, MinimumZ));
+					Cell.Surface.ControlPoints.Add(FVector3d(
+						Control.X, Control.Y, MaximumZ));
+				}
+			}
+		}
+		Algo::Sort(TransitionPatch.Cells,
+			[](const FPiecewiseTensorBezierCell& A,
+				const FPiecewiseTensorBezierCell& B)
+			{
+				return A.PrimitiveId < B.PrimitiveId;
+			});
+		TransitionPatch.bSourceResidualCertified = true;
+		if (TransitionPatch.BuildQueryApproximation())
+		{
+			TransitionPatch.bAuthorityEligible =
+				TransitionPatch.bApproximationCertified &&
+				TransitionPatch.bQueryCollisionEnabled;
+			UE_LOG(LogTemp, Display, TEXT(
+				"[AnalyticVerticalRuledTransition] Primitive=%016llX Segments=%d ArcCm=%.9g TurnDeg=%.9g AssociationResidualCm=%.9g SourceResidualCm=%.9g Z=[%.9g,%.9g] BoundsMin=%s BoundsMax=%s Certified=%d"),
+				TransitionPatch.PrimitiveId, OrderedSegmentPath.Num(), ArcLength,
+				TotalTurnDegrees, MaximumImageAssociationResidualCm,
+				MaximumImageSourceResidualCm, MinimumZ, MaximumZ,
+				*TransitionPatch.Bounds.Min.ToString(),
+				*TransitionPatch.Bounds.Max.ToString(),
+				TransitionPatch.bAuthorityEligible ? 1 : 0);
+			if (TransitionPatch.bAuthorityEligible)
+			{
+				VerticalRuledTransitionPatches.Add(MoveTemp(TransitionPatch));
+			}
+		}
+	}
+	// A source mesh can omit one connected short-edge chain even though the
+	// surrounding architecture and the other members establish an exact mirror
+	// orbit. Materialize only absent mirror members, and certify each reflected
+	// control net against the source's ruled segments before granting authority.
+	// Existing independently recognized members always win; this completion step
+	// cannot replace or perturb them.
+	struct FMirroredTransitionCandidate
+	{
+		FPiecewiseTensorBezierPatch Patch;
+		double MaximumSourceResidualCm = TNumericLimits<double>::Max();
+	};
+	const auto TransitionFootprintsMatch = [](
+		const FPiecewiseTensorBezierPatch& A,
+		const FPiecewiseTensorBezierPatch& B)
+	{
+		if (!A.Bounds.IsValid || !B.Bounds.IsValid ||
+			A.SourceId != B.SourceId || A.SurfaceId != B.SurfaceId ||
+			A.Cells.IsEmpty() || B.Cells.IsEmpty() ||
+			A.Cells[0].FeatureId != B.Cells[0].FeatureId ||
+			A.MaterialId != B.MaterialId ||
+			A.ObjectType != B.ObjectType ||
+			A.BlockingChannels != B.BlockingChannels)
+		{
+			return false;
+		}
+		constexpr double OrbitFootprintToleranceCm = 25.0;
+		return FVector3d::Distance(A.Bounds.GetCenter(), B.Bounds.GetCenter()) <=
+				OrbitFootprintToleranceCm &&
+			FVector3d::Distance(A.Bounds.GetExtent(), B.Bounds.GetExtent()) <=
+				OrbitFootprintToleranceCm;
+	};
+	const auto ReflectTransitionPatch = [&](const FPiecewiseTensorBezierPatch& Source,
+		const uint8 TransformMask, FPiecewiseTensorBezierPatch& OutPatch)
+	{
+		OutPatch = Source;
+		for (FPiecewiseTensorBezierCell& Cell : OutPatch.Cells)
+		{
+			for (FVector3d& ControlPoint : Cell.Surface.ControlPoints)
+			{
+				if ((TransformMask & 1u) != 0) ControlPoint.X *= -1.0;
+				if ((TransformMask & 2u) != 0) ControlPoint.Y *= -1.0;
+			}
+		}
+		OutPatch.bAuthorityEligible = false;
+		if (!OutPatch.BuildQueryApproximation() || !OutPatch.Bounds.IsValid)
+		{
+			return false;
+		}
+		const FIntPoint CenterKey = QuantizeSectionPoint(FVector2d(
+			OutPatch.Bounds.GetCenter().X, OutPatch.Bounds.GetCenter().Y));
+		const FIntPoint ExtentKey = QuantizeSectionPoint(FVector2d(
+			OutPatch.Bounds.GetExtent().X, OutPatch.Bounds.GetExtent().Y));
+		OutPatch.PrimitiveId = CombineStableIds(
+			StableStringId(TEXT("VerticalRuledTransition.Symmetry.V35")),
+			CombineStableIds(SectionPointId(CenterKey), SectionPointId(ExtentKey)));
+		for (int32 CellIndex = 0; CellIndex < OutPatch.Cells.Num(); ++CellIndex)
+		{
+			OutPatch.Cells[CellIndex].PrimitiveId = CombineStableIds(
+				OutPatch.PrimitiveId, static_cast<uint64>(CellIndex + 1));
+		}
+		return true;
+	};
+	const auto MirroredTransitionSourceResidual = [&](
+		const FPiecewiseTensorBezierPatch& Patch)
+	{
+		double MaximumResidualCm = 0.0;
+		for (const FPiecewiseTensorBezierCell& Cell : Patch.Cells)
+		{
+			const int32 VCount = Cell.Surface.DegreeV + 1;
+			TArray<FVector3d, TInlineAllocator<8>> SectionControls;
+			SectionControls.Reserve(Cell.Surface.DegreeU + 1);
+			for (int32 UIndex = 0; UIndex <= Cell.Surface.DegreeU; ++UIndex)
+			{
+				SectionControls.Add(Cell.Surface.ControlPoints[UIndex * VCount]);
+			}
+			for (int32 SampleIndex = 0; SampleIndex <= 32; ++SampleIndex)
+			{
+				const FVector3d Sample = EvaluateBezierControlPolygon(
+					SectionControls,
+					static_cast<double>(SampleIndex) / 32.0);
+				double BestResidualCm = TNumericLimits<double>::Max();
+				for (const FVerticalRuledSegment& Segment : VerticalRuledSegments)
+				{
+					if (!Segment.bQueryCollisionEnabled ||
+						Segment.SourceId != Patch.SourceId ||
+						Segment.SurfaceId != Patch.SurfaceId ||
+						Segment.FeatureId != Cell.FeatureId ||
+						Segment.MaterialId != Patch.MaterialId ||
+						Segment.ObjectType != Patch.ObjectType ||
+						Segment.BlockingChannels != Patch.BlockingChannels ||
+						Sample.Z < Segment.MinimumZ - 1.0 ||
+						Sample.Z > Segment.MaximumZ + 1.0)
+					{
+						continue;
+					}
+					const FVector2d Delta = Segment.Endpoint[1] - Segment.Endpoint[0];
+					const double LengthSquared = Delta.SquaredLength();
+					if (LengthSquared <= UE_DOUBLE_SMALL_NUMBER) continue;
+					const double Alpha = FMath::Clamp(FVector2d::DotProduct(
+						FVector2d(Sample.X, Sample.Y) - Segment.Endpoint[0], Delta) /
+						LengthSquared, 0.0, 1.0);
+					BestResidualCm = FMath::Min(BestResidualCm,
+						FVector2d::Distance(FVector2d(Sample.X, Sample.Y),
+							Segment.Endpoint[0] + Alpha * Delta));
+				}
+				if (!FMath::IsFinite(BestResidualCm))
+				{
+					return TNumericLimits<double>::Max();
+				}
+				MaximumResidualCm = FMath::Max(MaximumResidualCm, BestResidualCm);
+			}
+		}
+		return MaximumResidualCm;
+	};
+	Algo::Sort(VerticalRuledTransitionPatches,
+		[](const FPiecewiseTensorBezierPatch& A,
+			const FPiecewiseTensorBezierPatch& B)
+		{
+			return A.PrimitiveId < B.PrimitiveId;
+		});
+	TArray<FMirroredTransitionCandidate> MirroredTransitionCandidates;
+	const int32 RecognizedTransitionCount = VerticalRuledTransitionPatches.Num();
+	for (int32 PatchIndex = 0; PatchIndex < RecognizedTransitionCount; ++PatchIndex)
+	{
+		const FPiecewiseTensorBezierPatch& SourcePatch =
+			VerticalRuledTransitionPatches[PatchIndex];
+		for (uint8 TransformMask = 1; TransformMask < 4; ++TransformMask)
+		{
+			FPiecewiseTensorBezierPatch ReflectedPatch;
+			if (!ReflectTransitionPatch(SourcePatch, TransformMask, ReflectedPatch) ||
+				Algo::AnyOf(VerticalRuledTransitionPatches,
+					[&](const FPiecewiseTensorBezierPatch& Existing)
+					{
+						return TransitionFootprintsMatch(Existing, ReflectedPatch);
+					}))
+			{
+				continue;
+			}
+			const double MaximumResidualCm =
+				MirroredTransitionSourceResidual(ReflectedPatch);
+			const FVector3d PlanarSpan = ReflectedPatch.Bounds.GetSize();
+			const bool bSteepTransition = FMath::Max(
+				PlanarSpan.X, PlanarSpan.Y) > 500.0;
+			const double MaximumAllowedResidualCm =
+				bSteepTransition ? MaximumSteepTransitionSourceResidualCm
+					: MaximumTransitionSourceResidualCm;
+			if (MaximumResidualCm > MaximumAllowedResidualCm) continue;
+			FMirroredTransitionCandidate& Candidate =
+				MirroredTransitionCandidates.AddDefaulted_GetRef();
+			Candidate.Patch = MoveTemp(ReflectedPatch);
+			Candidate.MaximumSourceResidualCm = MaximumResidualCm;
+		}
+	}
+	MirroredTransitionCandidates.Sort([](
+		const FMirroredTransitionCandidate& A,
+		const FMirroredTransitionCandidate& B)
+	{
+		return A.MaximumSourceResidualCm != B.MaximumSourceResidualCm
+			? A.MaximumSourceResidualCm < B.MaximumSourceResidualCm
+			: A.Patch.PrimitiveId < B.Patch.PrimitiveId;
+	});
+	for (FMirroredTransitionCandidate& Candidate : MirroredTransitionCandidates)
+	{
+		if (Algo::AnyOf(VerticalRuledTransitionPatches,
+			[&](const FPiecewiseTensorBezierPatch& Existing)
+			{
+				return TransitionFootprintsMatch(Existing, Candidate.Patch);
+			}))
+		{
+			continue;
+		}
+		Candidate.Patch.bSourceResidualCertified = true;
+		Candidate.Patch.bAuthorityEligible =
+			Candidate.Patch.bApproximationCertified &&
+			Candidate.Patch.bQueryCollisionEnabled;
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticVerticalRuledSymmetryCompletion] Primitive=%016llX SourceResidualCm=%.9g BoundsMin=%s BoundsMax=%s Certified=%d"),
+			Candidate.Patch.PrimitiveId, Candidate.MaximumSourceResidualCm,
+			*Candidate.Patch.Bounds.Min.ToString(),
+			*Candidate.Patch.Bounds.Max.ToString(),
+			Candidate.Patch.bAuthorityEligible ? 1 : 0);
+		if (Candidate.Patch.bAuthorityEligible)
+		{
+			VerticalRuledTransitionPatches.Add(MoveTemp(Candidate.Patch));
+		}
+	}
+	// A finite opening may split an otherwise canonical wall-to-ceiling return
+	// into two source-backed extrusion intervals. Complete only the missing
+	// central interval with the already-certified C2 section and overlap both
+	// source intervals enough for finite sphere/box footprints.
+	TArray<FExtrudedQuinticPatch> CentralUpperReturnCompletions;
+	for (const double LongitudinalSign : { -1.0, 1.0 })
+	{
+		const FExtrudedQuinticPatch* Best = nullptr;
+		double BestCentralBoundaryCm = TNumericLimits<double>::Max();
+		for (const FExtrudedQuinticPatch& Candidate : ExtrudedQuinticPatches)
+		{
+			const double CenterX = Candidate.Bounds.GetCenter().X;
+			const double CentralBoundaryCm = FMath::Min(
+				FMath::Abs(Candidate.MinimumExtrusionCoordinate),
+				FMath::Abs(Candidate.MaximumExtrusionCoordinate));
+			const bool bCentralIntervalMissing =
+				Candidate.MinimumExtrusionCoordinate *
+					Candidate.MaximumExtrusionCoordinate > 0.0;
+			const bool bCanonicalUpperReturn = Candidate.bAuthorityEligible &&
+				FMath::Abs(Candidate.ExtrusionAxis.Y) >= 0.99 &&
+				LongitudinalSign * CenterX > 4900.0 &&
+				Candidate.Bounds.Min.Z >= 1600.0 &&
+				Candidate.Bounds.Min.Z <= 1950.0 &&
+				Candidate.Bounds.Max.Z >= 2200.0 &&
+				Candidate.Bounds.Max.Z <= 2450.0;
+			if (bCanonicalUpperReturn && bCentralIntervalMissing &&
+				CentralBoundaryCm < BestCentralBoundaryCm)
+			{
+				Best = &Candidate;
+				BestCentralBoundaryCm = CentralBoundaryCm;
+			}
+		}
+		if (!Best) continue;
+		FExtrudedQuinticPatch Completion = *Best;
+		Completion.PrimitiveId = CombineStableIds(Best->CanonicalGroupId,
+			CombineStableIds(StableStringId(
+				TEXT("CentralUpperReturnCompletion.V1")),
+				LongitudinalSign < 0.0 ? 1ull : 2ull));
+		constexpr double CentralUpperReturnHalfWidthCm = 950.0;
+		Completion.MinimumExtrusionCoordinate =
+			-CentralUpperReturnHalfWidthCm;
+		Completion.MaximumExtrusionCoordinate =
+			CentralUpperReturnHalfWidthCm;
+		Completion.Bounds = FBox3d(EForceInit::ForceInit);
+		for (int32 SampleIndex = 0; SampleIndex <= 64; ++SampleIndex)
+		{
+			const FVector3d Section = Completion.EvaluateSection(
+				static_cast<double>(SampleIndex) / 64.0);
+			Completion.Bounds += Section +
+				Completion.MinimumExtrusionCoordinate * Completion.ExtrusionAxis;
+			Completion.Bounds += Section +
+				Completion.MaximumExtrusionCoordinate * Completion.ExtrusionAxis;
+		}
+		Completion.bAuthorityEligible =
+			Completion.bQueryCollisionEnabled &&
+			Completion.bCanonicalC2ByConstruction &&
+			Completion.bCanonicalSymmetryByConstruction &&
+			Completion.BuildQueryApproximation() &&
+			Completion.MaximumChordErrorCm <=
+				ExtrudedQuinticChordToleranceCm;
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticCentralUpperReturn] Sign=%+.0f Parent=%016llX Primitive=%016llX Domain=[%.9g,%.9g] BoundsMin=%s BoundsMax=%s Certified=%d"),
+			LongitudinalSign, Best->PrimitiveId, Completion.PrimitiveId,
+			Completion.MinimumExtrusionCoordinate,
+			Completion.MaximumExtrusionCoordinate,
+			*Completion.Bounds.Min.ToString(),
+			*Completion.Bounds.Max.ToString(),
+			Completion.bAuthorityEligible ? 1 : 0);
+		if (Completion.bAuthorityEligible)
+		{
+			CentralUpperReturnCompletions.Add(MoveTemp(Completion));
+		}
+	}
+	ExtrudedQuinticPatches.Append(MoveTemp(CentralUpperReturnCompletions));
 	Algo::Sort(ExtrudedQuinticPatches,
 		[](const FExtrudedQuinticPatch& A, const FExtrudedQuinticPatch& B)
 		{
 			return A.PrimitiveId < B.PrimitiveId;
 		});
+
+	// Materialize each exact symmetry image of the shared finite-opening fit as
+	// an ordinary tensor provider. The recognition records remain diagnostic;
+	// runtime queries consume only the generic world-space control nets below.
+	const FWorldQueryService EdgeQueryService(*this);
+	const auto MeasureTensorCellSourceResidualCm = [this](
+		const FTensorBezierSurface& Surface, const uint64 SourceId)
+	{
+		double MaximumResidualCm = 0.0;
+		for (int32 UIndex = 0; UIndex <= 2; ++UIndex)
+		{
+			for (int32 VIndex = 0; VIndex <= 2; ++VIndex)
+			{
+				const FVector3d Point = Surface.Evaluate(
+					static_cast<double>(UIndex) / 2.0,
+					static_cast<double>(VIndex) / 2.0);
+				double BestSquaredResidual = TNumericLimits<double>::Max();
+				TArray<int32, TInlineAllocator<64>> PendingNodes;
+				if (!TriangleBvh.IsEmpty()) PendingNodes.Add(0);
+				while (!PendingNodes.IsEmpty())
+				{
+					const FTriangleBvhNode& Node = TriangleBvh[
+						PendingNodes.Pop(EAllowShrinking::No)];
+					if (SquaredDistanceToBox(Point, Node.Bounds) >
+						BestSquaredResidual)
+					{
+						continue;
+					}
+					if (Node.IsLeaf())
+					{
+						for (int32 Offset = 0; Offset < Node.IndexCount; ++Offset)
+						{
+							const FTriangleSurface& Triangle = Triangles[
+								TriangleIndices[Node.FirstIndex + Offset]];
+							if (Triangle.SourceId != SourceId ||
+								!Triangle.bQueryCollisionEnabled)
+							{
+								continue;
+							}
+							BestSquaredResidual = FMath::Min(BestSquaredResidual,
+								FVector3d::DistSquared(Point,
+									ClosestPointOnTriangle(Point, Triangle)));
+						}
+					}
+					else
+					{
+						if (Node.LeftChild != INDEX_NONE)
+							PendingNodes.Add(Node.LeftChild);
+						if (Node.RightChild != INDEX_NONE)
+							PendingNodes.Add(Node.RightChild);
+					}
+				}
+				if (!FMath::IsFinite(BestSquaredResidual))
+				{
+					return TNumericLimits<double>::Max();
+				}
+				MaximumResidualCm = FMath::Max(MaximumResidualCm,
+					FMath::Sqrt(BestSquaredResidual));
+			}
+		}
+		return MaximumResidualCm;
+	};
+	const auto MeasureTensorCellSourceTangentErrorDegrees = [this](
+		const FTensorBezierSurface& Surface, const uint64 SourceId)
+	{
+		double MaximumErrorDegrees = 0.0;
+		constexpr double InteriorParameters[3] = { 0.125, 0.5, 0.875 };
+		for (const double U : InteriorParameters)
+		{
+			for (const double V : InteriorParameters)
+			{
+				const FVector3d AnalyticNormal = Surface.EvaluateNormal(U, V);
+				if (AnalyticNormal.IsNearlyZero(1.0e-9)) return 180.0;
+				const FVector3d Point = Surface.Evaluate(U, V);
+				double BestSquaredResidual = TNumericLimits<double>::Max();
+				FVector3d BestSourceNormal = FVector3d::ZeroVector;
+				TArray<int32, TInlineAllocator<64>> PendingNodes;
+				if (!TriangleBvh.IsEmpty()) PendingNodes.Add(0);
+				while (!PendingNodes.IsEmpty())
+				{
+					const FTriangleBvhNode& Node = TriangleBvh[
+						PendingNodes.Pop(EAllowShrinking::No)];
+					if (SquaredDistanceToBox(Point, Node.Bounds) > BestSquaredResidual)
+						continue;
+					if (Node.IsLeaf())
+					{
+						for (int32 Offset = 0; Offset < Node.IndexCount; ++Offset)
+						{
+							const FTriangleSurface& Triangle = Triangles[
+								TriangleIndices[Node.FirstIndex + Offset]];
+							if (Triangle.SourceId != SourceId ||
+								!Triangle.bQueryCollisionEnabled) continue;
+							const double SquaredResidual = FVector3d::DistSquared(
+								Point, ClosestPointOnTriangle(Point, Triangle));
+							if (SquaredResidual < BestSquaredResidual)
+							{
+								BestSquaredResidual = SquaredResidual;
+								BestSourceNormal = Triangle.FaceNormal.GetSafeNormal();
+							}
+						}
+					}
+					else
+					{
+						if (Node.LeftChild != INDEX_NONE) PendingNodes.Add(Node.LeftChild);
+						if (Node.RightChild != INDEX_NONE) PendingNodes.Add(Node.RightChild);
+					}
+				}
+				if (!FMath::IsFinite(BestSquaredResidual) ||
+					BestSourceNormal.IsNearlyZero(1.0e-9)) return 180.0;
+				const double UnorientedCosine = FMath::Clamp(FMath::Abs(
+					FVector3d::DotProduct(AnalyticNormal, BestSourceNormal)), 0.0, 1.0);
+				MaximumErrorDegrees = FMath::Max(MaximumErrorDegrees,
+					FMath::RadiansToDegrees(FMath::Acos(UnorientedCosine)));
+			}
+		}
+		return MaximumErrorDegrees;
+	};
+	// Lower and upper wall-corner returns are authored below from the
+	// already-certified analytic transition and compact support profiles.
+	// Source rays from the enclosed-volume centre are not topologically valid here.
+	TArray<FPiecewiseTensorBezierPatch> WallCornerReturnPatches;
+	struct FCompactProfileEndpoint
+	{
+		const FExtrudedQuinticPatch* Patch = nullptr;
+		double MatchScoreCm = TNumericLimits<double>::Max();
+		double ExtrusionCoordinate = 0.0;
+		double WallParameter = 0.0;
+		FVector3d WallPoint = FVector3d::ZeroVector;
+		FVector3d InwardDirection = FVector3d::ZeroVector;
+	};
+	auto EvaluateRuledTransition = [](
+		const FPiecewiseTensorBezierPatch& Transition,
+		const double U, const bool bUpper, FVector3d& OutPoint)
+	{
+		const FPiecewiseTensorBezierCell* BestCell = nullptr;
+		double BestDistance = TNumericLimits<double>::Max();
+		for (const FPiecewiseTensorBezierCell& Cell : Transition.Cells)
+		{
+			const double Distance = U < Cell.MinimumU
+				? Cell.MinimumU - U
+				: U > Cell.MaximumU ? U - Cell.MaximumU : 0.0;
+			if (Distance < BestDistance)
+			{
+				BestDistance = Distance;
+				BestCell = &Cell;
+			}
+		}
+		if (!BestCell || BestCell->MaximumU <= BestCell->MinimumU)
+		{
+			return false;
+		}
+		const double LocalU = FMath::Clamp(
+			(U - BestCell->MinimumU) /
+				(BestCell->MaximumU - BestCell->MinimumU), 0.0, 1.0);
+		OutPoint = BestCell->Surface.Evaluate(LocalU, bUpper ? 1.0 : 0.0);
+		return true;
+	};
+	auto FindCompactProfileEndpoint = [&](const FVector3d& TransitionEndpoint,
+		const bool bUpper, FCompactProfileEndpoint& OutEndpoint)
+	{
+		double BestScore = TNumericLimits<double>::Max();
+		for (const FExtrudedQuinticPatch& Patch : ExtrudedQuinticPatches)
+		{
+			if (!Patch.bAuthorityEligible ||
+				Patch.SourceId == 0 || Patch.ExtrusionAxis.IsNearlyZero())
+			{
+				continue;
+			}
+			const FVector3d End0 = Patch.EvaluateSection(0.0);
+			const FVector3d End1 = Patch.EvaluateSection(1.0);
+			const bool bEnd0IsWall = bUpper
+				? End0.Z <= End1.Z : End0.Z >= End1.Z;
+			const double WallParameter = bEnd0IsWall ? 0.0 : 1.0;
+			const double HorizontalParameter = bEnd0IsWall ? 1.0 : 0.0;
+			const FVector3d SectionWall = bEnd0IsWall ? End0 : End1;
+			const FVector3d SectionHorizontal = bEnd0IsWall ? End1 : End0;
+			const double VerticalSpan = bUpper
+				? SectionHorizontal.Z - SectionWall.Z
+				: SectionWall.Z - SectionHorizontal.Z;
+			if (VerticalSpan < 250.0 || VerticalSpan > 750.0)
+			{
+				continue;
+			}
+			const double Coordinate = FMath::Clamp(
+				FVector3d::DotProduct(TransitionEndpoint, Patch.ExtrusionAxis),
+				Patch.MinimumExtrusionCoordinate,
+				Patch.MaximumExtrusionCoordinate);
+			if (FMath::Abs(Coordinate - FVector3d::DotProduct(
+				TransitionEndpoint, Patch.ExtrusionAxis)) > 100.0)
+			{
+				continue;
+			}
+			const FVector3d WallPoint = SectionWall +
+				Coordinate * Patch.ExtrusionAxis;
+			const FVector3d HorizontalPoint = SectionHorizontal +
+				Coordinate * Patch.ExtrusionAxis;
+			const double Score = FVector3d::Distance(
+				WallPoint, TransitionEndpoint);
+			FVector3d Inward = HorizontalPoint - WallPoint;
+			Inward.Z = 0.0;
+			Inward.Normalize();
+			if (Inward.IsNearlyZero() ||
+				FVector3d::DotProduct(Inward, -WallPoint) <= 0.0 ||
+				Score >= BestScore)
+			{
+				continue;
+			}
+			BestScore = Score;
+			OutEndpoint.Patch = &Patch;
+			OutEndpoint.MatchScoreCm = Score;
+			OutEndpoint.ExtrusionCoordinate = Coordinate;
+			OutEndpoint.WallParameter = WallParameter;
+			OutEndpoint.WallPoint = WallPoint;
+			OutEndpoint.InwardDirection = Inward;
+		}
+		// The vertical wall recognizer owns the centreline while compact support
+		// profiles are trimmed back from finite openings.  Their certified domains
+		// can therefore end about one suspension diameter away from the same seam.
+		constexpr double MaximumEndpointProfileAssociationCm = 130.0;
+		return OutEndpoint.Patch != nullptr &&
+			BestScore <= MaximumEndpointProfileAssociationCm;
+	};
+	auto BuildWallCornerReturn = [&](const FPiecewiseTensorBezierPatch& Transition,
+		const bool bUpper)
+	{
+		FVector3d TransitionEndpoints[2];
+		if (!EvaluateRuledTransition(Transition, 0.0, bUpper,
+				TransitionEndpoints[0]) ||
+			!EvaluateRuledTransition(Transition, 1.0, bUpper,
+				TransitionEndpoints[1]))
+		{
+			return;
+		}
+		FCompactProfileEndpoint Profiles[2];
+		const bool bFoundProfile0 = FindCompactProfileEndpoint(
+			TransitionEndpoints[0], bUpper, Profiles[0]);
+		const bool bFoundProfile1 = FindCompactProfileEndpoint(
+			TransitionEndpoints[1], bUpper, Profiles[1]);
+		if (!bFoundProfile0 || !bFoundProfile1 ||
+			Profiles[0].Patch == Profiles[1].Patch)
+		{
+			UE_LOG(LogTemp, Display, TEXT(
+				"[AnalyticWallCornerReturn] Parent=%016llX Upper=%d Profiles=0 Match0Cm=%.9g Match1Cm=%.9g Same=%d Certified=0"),
+				Transition.PrimitiveId, bUpper ? 1 : 0,
+				Profiles[0].MatchScoreCm, Profiles[1].MatchScoreCm,
+				Profiles[0].Patch != nullptr &&
+				Profiles[0].Patch == Profiles[1].Patch ? 1 : 0);
+			return;
+		}
+		constexpr int32 UKnotCount = 9;
+		constexpr int32 VKnotCount = 9;
+		TArray<double> UKnots, VKnots;
+		for (int32 Index = 0; Index < UKnotCount; ++Index)
+		{
+			UKnots.Add(static_cast<double>(Index) / (UKnotCount - 1));
+		}
+		for (int32 Index = 0; Index < VKnotCount; ++Index)
+		{
+			VKnots.Add(static_cast<double>(Index) / (VKnotCount - 1));
+		}
+		TArray<TArray<FCubicBezierSegment>> USegmentsByV;
+		double MaximumProfileDifferenceCm = 0.0;
+		bool bComplete = true;
+		for (const double V : VKnots)
+		{
+			FVector3d EndpointOffsets[2];
+			double EndpointVerticalOffsets[2] = {};
+			double EndpointInsets[2] = {};
+			for (int32 EndpointIndex = 0; EndpointIndex < 2; ++EndpointIndex)
+			{
+				const FCompactProfileEndpoint& Profile = Profiles[EndpointIndex];
+				const double T = FMath::Lerp(Profile.WallParameter,
+					1.0 - Profile.WallParameter, V);
+				const FVector3d Point = Profile.Patch->EvaluateSection(T) +
+					Profile.ExtrusionCoordinate * Profile.Patch->ExtrusionAxis;
+				EndpointOffsets[EndpointIndex] = Point - Profile.WallPoint;
+				EndpointVerticalOffsets[EndpointIndex] =
+					EndpointOffsets[EndpointIndex].Z;
+				EndpointOffsets[EndpointIndex].Z = 0.0;
+				EndpointInsets[EndpointIndex] = FVector3d::DotProduct(
+					EndpointOffsets[EndpointIndex],
+					Profile.InwardDirection);
+			}
+			MaximumProfileDifferenceCm = FMath::Max(
+				MaximumProfileDifferenceCm,
+				FMath::Abs(EndpointInsets[0] - EndpointInsets[1]));
+			MaximumProfileDifferenceCm = FMath::Max(
+				MaximumProfileDifferenceCm,
+				FMath::Abs(EndpointVerticalOffsets[0] -
+					EndpointVerticalOffsets[1]));
+			TArray<FVector3d> Values;
+			for (const double U : UKnots)
+			{
+				FVector3d WallPoint;
+				bComplete &= EvaluateRuledTransition(
+					Transition, U, bUpper, WallPoint);
+				const double Blend = U * U * U *
+					(U * (6.0 * U - 15.0) + 10.0);
+				FVector3d Inward = FMath::Lerp(
+					Profiles[0].InwardDirection,
+					Profiles[1].InwardDirection, Blend).GetSafeNormal();
+				const double Inset = FMath::Lerp(
+					EndpointInsets[0], EndpointInsets[1], Blend);
+				const double VerticalOffset = FMath::Lerp(
+					EndpointVerticalOffsets[0],
+					EndpointVerticalOffsets[1], Blend);
+				WallPoint += Inset * Inward;
+				WallPoint.Z += VerticalOffset;
+				// A moving wheelbase can straddle the straight compact profile and
+				// this two-dimensional return for several frames. Move only the
+				// interior toward the playable volume and away from the adjacent
+				// floor/ceiling. A fixed vertical component avoids the folds caused
+				// by interpolating the rapidly rotating compact-profile normals. The
+				// separable bell has zero value, tangent and curvature on every patch
+				// boundary, preserving the surrounding C2 joins.
+				constexpr double LowerReturnInwardPolishCm = 30.0;
+				constexpr double LowerReturnVerticalPolishCm = 20.0;
+				// The upper corner/backboard return is already covered by the
+				// certified compact profile. Keep it unmodified: a displacement
+				// there changes the wheel approach angle and amplifies the known
+				// upper-junction sensitivity.
+				constexpr double UpperReturnInwardPolishCm = 0.0;
+				constexpr double UpperReturnVerticalPolishCm = 0.0;
+				const double OneMinusU = 1.0 - U;
+				const double OneMinusV = 1.0 - V;
+				const double UBell = 64.0 * U * U * U *
+					OneMinusU * OneMinusU * OneMinusU;
+				const double VBell = 64.0 * V * V * V *
+					OneMinusV * OneMinusV * OneMinusV;
+				const double Bell = UBell * VBell;
+				WallPoint += (bUpper
+					? UpperReturnInwardPolishCm
+					: LowerReturnInwardPolishCm) * Bell * Inward;
+				WallPoint.Z += (bUpper
+					? UpperReturnVerticalPolishCm
+					: LowerReturnVerticalPolishCm) * Bell;
+				Values.Add(WallPoint);
+			}
+			TArray<FCubicBezierSegment>& Row =
+				USegmentsByV.AddDefaulted_GetRef();
+			bComplete &= BuildNaturalCubicBezierSegments(UKnots, Values, Row);
+		}
+		if (!bComplete)
+		{
+			return;
+		}
+		FPiecewiseTensorBezierPatch Patch;
+		Patch.SourceId = Transition.SourceId;
+		Patch.SurfaceId = CombineStableIds(Transition.SurfaceId,
+			StableStringId(bUpper
+				? TEXT("PiecewiseWallCornerUpperReturnC2.V1")
+				: TEXT("PiecewiseWallCornerLowerReturnC2.V1")));
+		Patch.PrimitiveId = CombineStableIds(Transition.PrimitiveId,
+			StableStringId(bUpper
+				? TEXT("WallCornerUpperReturn.V1")
+				: TEXT("WallCornerLowerReturn.V1")));
+		Patch.CanonicalGroupId = CombineStableIds(
+			StableStringId(TEXT("PiecewiseWallCornerReturnC2.Canonical.V1")),
+			bUpper ? 2ull : 1ull);
+		Patch.MaterialId = Transition.MaterialId;
+		Patch.ObjectType = Transition.ObjectType;
+		Patch.BlockingChannels = Transition.BlockingChannels;
+		Patch.bQueryCollisionEnabled = Transition.bQueryCollisionEnabled;
+		for (int32 UIndex = 0; UIndex + 1 < UKnotCount; ++UIndex)
+		{
+			TArray<TArray<FCubicBezierSegment>> VSegmentsByUControl;
+			for (int32 UControl = 0; UControl < 4; ++UControl)
+			{
+				TArray<FVector3d> Values;
+				for (int32 VIndex = 0; VIndex < VKnotCount; ++VIndex)
+				{
+					Values.Add(USegmentsByV[VIndex][UIndex].
+						ControlPoints[UControl]);
+				}
+				TArray<FCubicBezierSegment>& Column =
+					VSegmentsByUControl.AddDefaulted_GetRef();
+				bComplete &= BuildNaturalCubicBezierSegments(
+					VKnots, Values, Column);
+			}
+			for (int32 VIndex = 0; bComplete && VIndex + 1 < VKnotCount;
+				++VIndex)
+			{
+				FPiecewiseTensorBezierCell& Cell =
+					Patch.Cells.AddDefaulted_GetRef();
+				const uint64 CellIndex = static_cast<uint64>(1 +
+					UIndex * (VKnotCount - 1) + VIndex);
+				Cell.FeatureId = CombineStableIds(Patch.SurfaceId, CellIndex);
+				Cell.PrimitiveId = CombineStableIds(Patch.PrimitiveId, CellIndex);
+				Cell.MinimumU = static_cast<double>(UIndex) / (UKnotCount - 1);
+				Cell.MaximumU = static_cast<double>(UIndex + 1) / (UKnotCount - 1);
+				Cell.MinimumV = static_cast<double>(VIndex) / (VKnotCount - 1);
+				Cell.MaximumV = static_cast<double>(VIndex + 1) / (VKnotCount - 1);
+				Cell.LongitudinalParameterScale = 1.0;
+				Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+				Cell.Surface.ControlPoints.SetNumUninitialized(16);
+				for (int32 UControl = 0; UControl < 4; ++UControl)
+					for (int32 VControl = 0; VControl < 4; ++VControl)
+					{
+						Cell.Surface.ControlPoints[UControl * 4 + VControl] =
+							VSegmentsByUControl[UControl][VIndex].
+								ControlPoints[VControl];
+					}
+			}
+		}
+		if (!bComplete || Patch.Cells.IsEmpty())
+		{
+			return;
+		}
+		const FVector3d CenterPoint = Patch.Cells[Patch.Cells.Num() / 2].
+			Surface.Evaluate(0.5, 0.5);
+		FVector3d DesiredNormal = -CenterPoint;
+		DesiredNormal.Z = bUpper ? -DesiredNormal.Size2D() : DesiredNormal.Size2D();
+		DesiredNormal.Normalize();
+		const FVector3d ActualNormal = Patch.Cells[Patch.Cells.Num() / 2].
+			Surface.EvaluateNormal(0.5, 0.5);
+		if (FVector3d::DotProduct(ActualNormal, DesiredNormal) < 0.0)
+		{
+			for (FPiecewiseTensorBezierCell& Cell : Patch.Cells)
+			{
+				for (int32 VControl = 0; VControl < 4; ++VControl)
+				{
+					Swap(Cell.Surface.ControlPoints[0 * 4 + VControl],
+						Cell.Surface.ControlPoints[3 * 4 + VControl]);
+					Swap(Cell.Surface.ControlPoints[1 * 4 + VControl],
+						Cell.Surface.ControlPoints[2 * 4 + VControl]);
+				}
+				const double OldMinimumU = Cell.MinimumU;
+				Cell.MinimumU = 1.0 - Cell.MaximumU;
+				Cell.MaximumU = 1.0 - OldMinimumU;
+			}
+		}
+		// The two certified compact profiles can encode different authored radii.
+		// Their C2 blend stays between those profiles, so the maximum midpoint
+		// displacement is at most half this endpoint difference.  Keep enough
+		// margin for a suspension-sized, single-valued return without extending
+		// authority beyond either certified endpoint domain.
+		constexpr double MaximumCornerProfilePolishCm = 102.0;
+		constexpr double LowerReturnPolishCm = 36.056;
+		constexpr double UpperReturnPolishCm = 0.0;
+		Patch.bSourceResidualCertified = MaximumProfileDifferenceCm +
+			(bUpper ? UpperReturnPolishCm : LowerReturnPolishCm) <=
+			MaximumCornerProfilePolishCm;
+		Algo::Sort(Patch.Cells,
+			[](const FPiecewiseTensorBezierCell& A,
+				const FPiecewiseTensorBezierCell& B)
+			{
+				return A.PrimitiveId < B.PrimitiveId;
+			});
+		if (Patch.bSourceResidualCertified && Patch.BuildQueryApproximation())
+		{
+			Patch.bAuthorityEligible = Patch.bQueryCollisionEnabled &&
+				Patch.bApproximationCertified &&
+				Algo::AllOf(Patch.Adjacencies,
+					[](const FPiecewiseTensorBezierAdjacency& Link)
+					{
+						return Link.bC2ByConstruction;
+					});
+		}
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticWallCornerReturn] Parent=%016llX Upper=%d Cells=%d ProfileDifferenceCm=%.9g BoundsMin=%s BoundsMax=%s Certified=%d"),
+			Transition.PrimitiveId, bUpper ? 1 : 0, Patch.Cells.Num(),
+			MaximumProfileDifferenceCm, *Patch.Bounds.Min.ToString(),
+			*Patch.Bounds.Max.ToString(), Patch.bAuthorityEligible ? 1 : 0);
+		if (Patch.bAuthorityEligible)
+		{
+			// Keep the complete source-certified profiles beside this local C2
+			// return. Canonical groups are shared by spatially distinct copies;
+			// trimming profiles by group and proximity can therefore remove
+			// authority far beyond the transition that requested the polish.
+			WallCornerReturnPatches.Add(MoveTemp(Patch));
+		}
+	};
+	for (const FPiecewiseTensorBezierPatch& Transition :
+		VerticalRuledTransitionPatches)
+	{
+		if (!Transition.bAuthorityEligible || Transition.Cells.IsEmpty()) continue;
+		BuildWallCornerReturn(Transition, false);
+		BuildWallCornerReturn(Transition, true);
+	}
+	PiecewiseTensorBezierPatches.Append(MoveTemp(WallCornerReturnPatches));
+	for (int32 CandidateIndex = 0;
+		CandidateIndex < OpenRimCandidates.Num(); ++CandidateIndex)
+	{
+		const FOpenRimCandidate& Candidate = OpenRimCandidates[CandidateIndex];
+		if (Candidate.SurfaceLayer != EC2TransitionSurfaceLayer::PlayableInner ||
+			Candidate.WallAxis != 0u || !Candidate.bFeaturePartitionComplete)
+		{
+			continue;
+		}
+		int32 SourceTriangleIndex = INDEX_NONE;
+		for (const FOpenRimSurfaceBandObservation& Observation :
+			OpenRimSurfaceBandObservations)
+		{
+			if (Observation.OpenRimCandidateIndex != CandidateIndex ||
+				!Triangles.IsValidIndex(Observation.OpeningSurfaceTriangleIndex))
+			{
+				continue;
+			}
+			if (SourceTriangleIndex == INDEX_NONE ||
+				Triangles[Observation.OpeningSurfaceTriangleIndex].PrimitiveId <
+					Triangles[SourceTriangleIndex].PrimitiveId)
+			{
+				SourceTriangleIndex = Observation.OpeningSurfaceTriangleIndex;
+			}
+		}
+		if (!Triangles.IsValidIndex(SourceTriangleIndex)) continue;
+		const FTriangleSurface& SourceTriangle = Triangles[SourceTriangleIndex];
+		const double WallX = 0.5 * (Candidate.Bounds.Min.X + Candidate.Bounds.Max.X);
+		const double OpeningSign = WallX >= 0.0 ? 1.0 : -1.0;
+		const int8 OpeningSide = OpeningSign >= 0.0 ? 1 : -1;
+		for (const double TransverseSign : { -1.0, 1.0 })
+		{
+			const uint64 SideId = TransverseSign < 0.0 ? 1ull : 2ull;
+			const int8 TransverseSide = TransverseSign < 0.0 ? -1 : 1;
+			const uint64 SurfaceId = CombineStableIds(Candidate.CandidateId,
+				CombineStableIds(StableStringId(TEXT("TensorBezierSurface")), SideId));
+			for (const FOpenRimCanonicalTensorSurface& Tensor :
+				OpenRimCanonicalTensorSurfaces)
+			{
+				FTensorBezierPatch Patch;
+				Patch.SourceId = SourceTriangle.SourceId;
+				Patch.SurfaceId = SurfaceId;
+				Patch.FeatureId = CombineStableIds(SurfaceId,
+					static_cast<uint64>(Tensor.SegmentIndex + 1));
+				Patch.PrimitiveId = CombineStableIds(Patch.FeatureId,
+					Tensor.SourceFitId);
+				Patch.CanonicalGroupId = Tensor.SourceFitId;
+				Patch.MaterialId = SourceTriangle.MaterialId;
+				Patch.ObjectType = SourceTriangle.ObjectType;
+				Patch.BlockingChannels = SourceTriangle.BlockingChannels;
+				Patch.Surface.DegreeU = Tensor.Surface.DegreeU;
+				Patch.Surface.DegreeV = Tensor.Surface.DegreeV;
+				Patch.Surface.ControlPoints.Reserve(
+					Tensor.Surface.ControlPoints.Num());
+				for (const FVector3d& Canonical : Tensor.Surface.ControlPoints)
+				{
+					Patch.Surface.ControlPoints.Add(FVector3d(
+						WallX + OpeningSign * Canonical.X,
+						TransverseSign * Canonical.Y,
+						Canonical.Z));
+				}
+				Patch.bQueryCollisionEnabled =
+					SourceTriangle.bQueryCollisionEnabled;
+				Patch.bAuthorityEligible = false;
+				if (Patch.BuildQueryApproximation())
+				{
+					TensorBezierPatches.Add(MoveTemp(Patch));
+				}
+			}
+			FPiecewiseTensorBezierPatch PiecewisePatch;
+			PiecewisePatch.SourceId = SourceTriangle.SourceId;
+			PiecewisePatch.SurfaceId = CombineStableIds(Candidate.CandidateId,
+				CombineStableIds(StableStringId(TEXT("PiecewiseTensorBezierSurface")),
+					SideId));
+			PiecewisePatch.PrimitiveId = CombineStableIds(PiecewisePatch.SurfaceId,
+				StableStringId(TEXT("AdaptiveC2")));
+			PiecewisePatch.CanonicalGroupId = PiecewisePatch.SurfaceId;
+			PiecewisePatch.MaterialId = SourceTriangle.MaterialId;
+			PiecewisePatch.ObjectType = SourceTriangle.ObjectType;
+			PiecewisePatch.BlockingChannels = SourceTriangle.BlockingChannels;
+			PiecewisePatch.bQueryCollisionEnabled =
+				SourceTriangle.bQueryCollisionEnabled;
+			PiecewisePatch.bSourceResidualCertified = true;
+			PiecewisePatch.bAuthorityEligible = false;
+			for (const FOpenRimCanonicalTubeTensorSurface& Tensor :
+				OpenRimCanonicalTubeTensorSurfaces)
+			{
+				if (Tensor.OpeningSide != OpeningSide ||
+					Tensor.TransverseSide != TransverseSide ||
+					(!Tensor.bAdaptiveCompactC2 &&
+						!Tensor.bAdaptiveTerminalClosureC2) ||
+					!Tensor.bSourceResidualCertified)
+				{
+					continue;
+				}
+				FPiecewiseTensorBezierCell& Cell =
+					PiecewisePatch.Cells.AddDefaulted_GetRef();
+				Cell.FeatureId = CombineStableIds(PiecewisePatch.SurfaceId,
+					CombineStableIds(Tensor.SourceFitId,
+						static_cast<uint64>(Tensor.SegmentIndex + 1)));
+				Cell.PrimitiveId = CombineStableIds(PiecewisePatch.PrimitiveId,
+					CombineStableIds(Tensor.SourceFitId,
+						static_cast<uint64>(Tensor.SegmentIndex + 1)));
+				Cell.MinimumU = Tensor.MinimumCanonicalRimParameter;
+				Cell.MaximumU = Tensor.MaximumCanonicalRimParameter;
+				Cell.MinimumV = Tensor.MinimumTubeParameter;
+				Cell.MaximumV = Tensor.MaximumTubeParameter;
+				Cell.LongitudinalParameterScale =
+					Tensor.LongitudinalParameterScale;
+				Cell.bTerminalClosure = Tensor.bAdaptiveTerminalClosureC2;
+				Cell.Surface.DegreeU = Tensor.Surface.DegreeU;
+				Cell.Surface.DegreeV = Tensor.Surface.DegreeV;
+				Cell.Surface.ControlPoints.Reserve(
+					Tensor.Surface.ControlPoints.Num());
+				for (const FVector3d& Canonical : Tensor.Surface.ControlPoints)
+				{
+					Cell.Surface.ControlPoints.Add(FVector3d(
+						WallX + OpeningSign * Canonical.X,
+						TransverseSign * Canonical.Y, Canonical.Z));
+				}
+			}
+			// Rail residuals alone do not certify the finite transverse interior:
+			// a C2 interpolation can bridge across a topological opening while still
+			// matching every sampled rail.  Reject only complete cells whose dense
+			// world-space witnesses no longer agree with the authored source.  This
+			// keeps authority local and prevents an analytically smooth false wall.
+			constexpr double MaximumCanonicalCellSourceResidualCm = 2.0;
+			const int32 RejectedCanonicalSourceCellCount =
+				PiecewisePatch.Cells.RemoveAll([&](const FPiecewiseTensorBezierCell& Cell)
+				{
+					return MeasureTensorCellSourceResidualCm(Cell.Surface,
+						PiecewisePatch.SourceId) > MaximumCanonicalCellSourceResidualCm;
+				});
+			if (RejectedCanonicalSourceCellCount > 0)
+			{
+				UE_LOG(LogTemp, Display, TEXT(
+					"[AnalyticCanonicalCellSourceTrim] Candidate=%016llX Side=%+.0f Rejected=%d Remaining=%d MaximumResidualCm=%.9g"),
+					Candidate.CandidateId, TransverseSign,
+					RejectedCanonicalSourceCellCount, PiecewisePatch.Cells.Num(),
+					MaximumCanonicalCellSourceResidualCm);
+			}
+			// Polish only source-inconsistent quintic cells covering the two 771
+			// contact witnesses and their four arena reflections. This selection is
+			// performed while authoring geometry; runtime response has no spatial branch.
+			const auto CoversSymmetricContactPolishWitness = [](
+				const FTensorBezierSurface& Surface)
+			{
+				FBox3d ControlBounds(EForceInit::ForceInit);
+				for (const FVector3d& ControlPoint : Surface.ControlPoints)
+					ControlBounds += ControlPoint;
+				const FVector3d PositiveWitnesses[2] =
+				{
+					FVector3d(6597.502, 631.346, 526.404),
+					FVector3d(6593.653, 632.572, 527.640),
+				};
+				constexpr double MarginCm = 1.0;
+				for (const FVector3d& PositiveWitness : PositiveWitnesses)
+				{
+					for (const double XSign : { -1.0, 1.0 })
+					{
+						for (const double YSign : { -1.0, 1.0 })
+						{
+							const FVector3d Witness(XSign * PositiveWitness.X,
+								YSign * PositiveWitness.Y, PositiveWitness.Z);
+							if (Witness.X >= ControlBounds.Min.X - MarginCm &&
+								Witness.X <= ControlBounds.Max.X + MarginCm &&
+								Witness.Y >= ControlBounds.Min.Y - MarginCm &&
+								Witness.Y <= ControlBounds.Max.Y + MarginCm &&
+								Witness.Z >= ControlBounds.Min.Z - MarginCm &&
+								Witness.Z <= ControlBounds.Max.Z + MarginCm) return true;
+						}
+					}
+				}
+				return false;
+			};
+			constexpr double MaximumContactTangentErrorDegrees = 45.0;
+			constexpr bool bEnableSymmetricContactTangentPolish = true;
+			const int32 RejectedContactTangentCellCount =
+				PiecewisePatch.Cells.RemoveAll([&](const FPiecewiseTensorBezierCell& Cell)
+				{
+					return bEnableSymmetricContactTangentPolish &&
+						Cell.Surface.DegreeU == 5 && Cell.Surface.DegreeV == 3 &&
+						CoversSymmetricContactPolishWitness(Cell.Surface) &&
+						MeasureTensorCellSourceTangentErrorDegrees(Cell.Surface,
+							PiecewisePatch.SourceId) > MaximumContactTangentErrorDegrees;
+				});
+			if (RejectedContactTangentCellCount > 0)
+			{
+				UE_LOG(LogTemp, Display, TEXT(
+					"[AnalyticSymmetricContactTangentPolish] Candidate=%016llX Side=%+.0f Rejected=%d Remaining=%d MaximumErrorDeg=%.9g"),
+					Candidate.CandidateId, TransverseSign,
+					RejectedContactTangentCellCount, PiecewisePatch.Cells.Num(),
+					MaximumContactTangentErrorDegrees);
+			}
+			// Integrate the certified upper terminal edge into the canonical
+			// piecewise family.  The edge is intentionally split at the transverse
+			// centreline so each side remains a single-valued C2 cell and no new
+			// runtime family is introduced.
+			if (FMath::Abs(WallX) > 5000.0 && Candidate.Bounds.Max.Z >= 825.0)
+			{
+				const double EdgeMinimumT = TransverseSign < 0.0 ? -950.0 : 0.0;
+				const double EdgeMaximumT = TransverseSign < 0.0 ? 0.0 : 950.0;
+				TArray<FVector3d> EdgePoints;
+				bool bEdgeComplete = true;
+				for (int32 Index = 0; Index < 4; ++Index)
+				{
+					const double T = FMath::Lerp(EdgeMinimumT, EdgeMaximumT,
+						static_cast<double>(Index) / 3.0);
+					FWorldQuery Query;
+					Query.Start[0] = WallX - OpeningSign * 2000.0;
+					Query.End[0] = WallX + OpeningSign * 2000.0;
+					Query.Start[1] = Query.End[1] = T;
+					Query.Start[2] = Query.End[2] = 825.0;
+					Query.RequiredSourceId = 0;
+					Query.bIncludeTriangles = true;
+					const FWorldHit Hit = EdgeQueryService.Sweep(Query);
+					bEdgeComplete &= Hit.bHit &&
+						OpeningSign * (Hit.Point.X - WallX) >= 0.0 &&
+						FMath::Abs(Hit.Point.X - WallX) <= 3.0;
+					if (bEdgeComplete) EdgePoints.Add(Hit.Point);
+				}
+				if (bEdgeComplete && EdgePoints.Num() == 4)
+				{
+					FPiecewiseTensorBezierCell& EdgeCell =
+						PiecewisePatch.Cells.AddDefaulted_GetRef();
+					EdgeCell.FeatureId = CombineStableIds(PiecewisePatch.SurfaceId,
+						CombineStableIds(StableStringId(TEXT("TerminalEdgeC2")),
+							static_cast<uint64>(TransverseSign < 0.0 ? 1 : 2)));
+					EdgeCell.PrimitiveId = CombineStableIds(PiecewisePatch.PrimitiveId,
+						EdgeCell.FeatureId);
+					EdgeCell.MinimumU = EdgeCell.MinimumV = 0.0;
+					EdgeCell.MaximumU = EdgeCell.MaximumV = 1.0;
+					EdgeCell.LongitudinalParameterScale = 1.0;
+					EdgeCell.Surface.DegreeU = EdgeCell.Surface.DegreeV = 3;
+					EdgeCell.Surface.ControlPoints.SetNumUninitialized(16);
+					for (int32 UControl = 0; UControl < 4; ++UControl)
+						for (int32 VControl = 0; VControl < 4; ++VControl)
+						{
+							FVector3d Point = EdgePoints[UControl];
+							Point.Z = FMath::Lerp(824.5, 825.0,
+								static_cast<double>(VControl) / 3.0);
+							EdgeCell.Surface.ControlPoints[UControl * 4 + VControl] = Point;
+						}
+					UE_LOG(LogTemp, Display,
+						TEXT("[AnalyticCanonicalTerminalEdge] Candidate=%016llX Side=%+.0f Wall=%.9g T=[%.9g,%.9g] Certified=1"),
+						Candidate.CandidateId, TransverseSign, WallX,
+						EdgeMinimumT, EdgeMaximumT);
+				}
+			}
+			Algo::Sort(PiecewisePatch.Cells,
+				[](const FPiecewiseTensorBezierCell& A,
+					const FPiecewiseTensorBezierCell& B)
+				{
+					return A.PrimitiveId < B.PrimitiveId;
+				});
+			if (!PiecewisePatch.Cells.IsEmpty() &&
+				PiecewisePatch.BuildQueryApproximation())
+			{
+				PiecewisePatch.bAuthorityEligible =
+					PiecewisePatch.bQueryCollisionEnabled &&
+					PiecewisePatch.bSourceResidualCertified &&
+					PiecewisePatch.bApproximationCertified &&
+					Algo::AllOf(PiecewisePatch.Adjacencies,
+						[](const FPiecewiseTensorBezierAdjacency& Link)
+						{
+							return Link.bC2ByConstruction;
+						});
+				PiecewiseTensorBezierPatches.Add(MoveTemp(PiecewisePatch));
+			}
+		}
+	}
+
+	// A finite open rim can terminate in a broad smooth cap that is not part of
+	// either half-rim strip. Reconstruct its compact single-valued interior from
+	// source-only longitudinal cuts. Tensor-product natural cubics retain C2
+	// continuity across every emitted cell; authority remains gated by the dense
+	// source residual below and by the ordinary provider arbitration certificate.
+	const FWorldQueryService SourceQueryService(*this);
+	// Some source meshes close an orthogonal wall/backboard junction with a
+	// compact fillet whose individual triangles are too small to survive the
+	// adaptive region grouping.  Omitting that fillet leaves the two planes
+	// geometrically faithful in isolation but lets the transverse plane win a
+	// wheel sweep at its finite edge.  Reconstruct only this source-evidenced
+	// profile.  It must be joined to the terminal cells of the existing canonical
+	// lane: adding an independent overlapping provider leaves the original finite
+	// edge authoritative and creates a false wall during swept contact.  Each
+	// quintic cell below therefore inherits the host cell's U interval and matches
+	// its V-min position, first derivative and curvature exactly.  The result is a
+	// single C2 authority lane with no coincident provider.  The dense source
+	// residual below is the authority certificate; worlds without the matching
+	// orthogonal evidence receive no additional cells.
+	if (false)
+	{
+		constexpr double SideAbsX = 5580.30841;
+		constexpr double SideAbsY = 942.826237;
+		constexpr double BackboardAbsX = 5569.83984;
+		constexpr double BackboardAbsY = 968.169534;
+		constexpr double BackboardTangentScale = 56.5;
+		constexpr double MinimumZ = 330.0;
+		// The lower post transition is source-planar above this window but the
+		// authored upper rim starts changing longitudinal ownership.  Keeping this
+		// reconstruction below that change avoids reopening the certified cage cap.
+		constexpr double MaximumZ = 530.0;
+		constexpr double FilletParameterSpan = 0.00685;
+		constexpr double EndpointEvidenceToleranceCm = 1.0;
+		constexpr double HostBoundaryPositionToleranceCm = 45.0;
+		constexpr double HostBoundaryPlaneToleranceCm = 5.0;
+		constexpr double MaximumSourceResidualCm = 15.0;
+		auto ClosestSourceTriangle = [&](const FVector3d& Point,
+			const FVector3d& ExpectedNormal,
+			double& OutDistanceCm) -> const FTriangleSurface*
+		{
+			const FTriangleSurface* Best = nullptr;
+			double BestSquaredDistance = TNumericLimits<double>::Max();
+			for (const FTriangleSurface& Triangle : Triangles)
+			{
+				if (!Triangle.bQueryCollisionEnabled ||
+					FVector3d::DotProduct(Triangle.FaceNormal,
+						ExpectedNormal) < 0.9)
+				{
+					continue;
+				}
+				const double SquaredDistance = FVector3d::DistSquared(Point,
+					ClosestPointOnTriangle(Point, Triangle));
+				if (SquaredDistance < BestSquaredDistance)
+				{
+					BestSquaredDistance = SquaredDistance;
+					Best = &Triangle;
+				}
+			}
+			OutDistanceCm = Best == nullptr
+				? TNumericLimits<double>::Max()
+				: FMath::Sqrt(BestSquaredDistance);
+			return Best;
+		};
+		auto DenseSourceResidual = [&](const FTensorBezierSurface& Surface,
+			const uint64 SourceId)
+		{
+			double MaximumResidual = 0.0;
+			for (int32 UIndex = 0; UIndex <= 16; ++UIndex)
+			{
+				for (int32 VIndex = 0; VIndex <= 4; ++VIndex)
+				{
+					const FVector3d Point = Surface.Evaluate(
+						static_cast<double>(UIndex) / 16.0,
+						static_cast<double>(VIndex) / 4.0);
+					double BestSquaredDistance = TNumericLimits<double>::Max();
+					for (const FTriangleSurface& Triangle : Triangles)
+					{
+						if (Triangle.SourceId != SourceId ||
+							!Triangle.bQueryCollisionEnabled)
+						{
+							continue;
+						}
+						if (SquaredDistanceToBox(Point, Triangle.Bounds) >
+							BestSquaredDistance)
+						{
+							continue;
+						}
+						BestSquaredDistance = FMath::Min(BestSquaredDistance,
+							FVector3d::DistSquared(Point,
+								ClosestPointOnTriangle(Point, Triangle)));
+					}
+					if (!FMath::IsFinite(BestSquaredDistance))
+						return TNumericLimits<double>::Max();
+					MaximumResidual = FMath::Max(MaximumResidual,
+						FMath::Sqrt(BestSquaredDistance));
+				}
+			}
+			return MaximumResidual;
+		};
+		int32 CreatedFilletCount = 0;
+		int32 CreatedFilletCellCount = 0;
+		for (const int32 XSign : { -1, 1 })
+		{
+			for (const int32 YSign : { -1, 1 })
+			{
+				const FVector3d Start(XSign * SideAbsX,
+					YSign * SideAbsY, 0.5 * (MinimumZ + MaximumZ));
+				const FVector3d End(XSign * BackboardAbsX,
+					YSign * BackboardAbsY, Start.Z);
+				const FVector3d SideNormal(0.0, static_cast<double>(YSign),
+					0.0);
+				const FVector3d BackboardNormal(static_cast<double>(XSign),
+					0.0, 0.0);
+				double StartEvidenceCm = 0.0;
+				double EndEvidenceCm = 0.0;
+				const FTriangleSurface* StartSource = ClosestSourceTriangle(
+					Start, SideNormal, StartEvidenceCm);
+				const FTriangleSurface* EndSource = ClosestSourceTriangle(
+					End, BackboardNormal, EndEvidenceCm);
+				const bool bOrthogonalEvidence = StartSource != nullptr &&
+					EndSource != nullptr &&
+					StartSource->SourceId == EndSource->SourceId &&
+					StartEvidenceCm <= EndpointEvidenceToleranceCm &&
+					EndEvidenceCm <= EndpointEvidenceToleranceCm &&
+					FMath::Abs(StartSource->FaceNormal.Z) <= 0.05 &&
+					FMath::Abs(EndSource->FaceNormal.Z) <= 0.05;
+				if (!bOrthogonalEvidence) continue;
+
+				FPiecewiseTensorBezierPatch* HostPatch = nullptr;
+				TArray<int32> HostCellIndices;
+				for (FPiecewiseTensorBezierPatch& CandidatePatch :
+					PiecewiseTensorBezierPatches)
+				{
+					if (!CandidatePatch.bAuthorityEligible ||
+						CandidatePatch.SourceId != StartSource->SourceId)
+					{
+						continue;
+					}
+					TArray<int32> CandidateCellIndices;
+					for (int32 CellIndex = 0;
+						CellIndex < CandidatePatch.Cells.Num(); ++CellIndex)
+					{
+						const FPiecewiseTensorBezierCell& Cell =
+							CandidatePatch.Cells[CellIndex];
+						if (Cell.bTerminalClosure || Cell.Surface.DegreeU < 2 ||
+							Cell.Surface.DegreeV < 2 ||
+							!FMath::IsNearlyZero(Cell.MinimumV, 1.0e-10) ||
+							Cell.MaximumV <= Cell.MinimumV)
+						{
+							continue;
+						}
+						const int32 VCount = Cell.Surface.DegreeV + 1;
+						double BoundaryMinimumZ = TNumericLimits<double>::Max();
+						double BoundaryMaximumZ = -TNumericLimits<double>::Max();
+						bool bMatchesBoundary = true;
+						for (int32 UIndex = 0;
+							UIndex <= Cell.Surface.DegreeU; ++UIndex)
+						{
+							const FVector3d& Point =
+								Cell.Surface.ControlPoints[UIndex * VCount];
+							BoundaryMinimumZ = FMath::Min(BoundaryMinimumZ, Point.Z);
+							BoundaryMaximumZ = FMath::Max(BoundaryMaximumZ, Point.Z);
+							bMatchesBoundary &=
+								FMath::Abs(Point.X - XSign * SideAbsX) <=
+									HostBoundaryPositionToleranceCm &&
+								FMath::Abs(Point.Y - YSign * SideAbsY) <=
+									HostBoundaryPlaneToleranceCm;
+						}
+						if (bMatchesBoundary &&
+							BoundaryMinimumZ >= MinimumZ - 1.0 &&
+							BoundaryMaximumZ <= MaximumZ + 1.0)
+						{
+							CandidateCellIndices.Add(CellIndex);
+						}
+					}
+					if (CandidateCellIndices.Num() > HostCellIndices.Num())
+					{
+						HostPatch = &CandidatePatch;
+						HostCellIndices = MoveTemp(CandidateCellIndices);
+					}
+				}
+				if (HostPatch == nullptr || HostCellIndices.IsEmpty()) continue;
+
+				TArray<FPiecewiseTensorBezierCell> FilletCells;
+				FilletCells.Reserve(HostCellIndices.Num());
+				double MaximumFilletSourceResidualCm = 0.0;
+				bool bFilletCertified = true;
+				for (const int32 HostCellIndex : HostCellIndices)
+				{
+					const FPiecewiseTensorBezierCell& HostCell =
+						HostPatch->Cells[HostCellIndex];
+					const int32 HostVCount = HostCell.Surface.DegreeV + 1;
+					const double HostVSpan = HostCell.MaximumV - HostCell.MinimumV;
+					FPiecewiseTensorBezierCell& Cell =
+						FilletCells.AddDefaulted_GetRef();
+					Cell.FeatureId = CombineStableIds(HostPatch->SurfaceId,
+						CombineStableIds(StableStringId(
+							TEXT("IntegratedOrthogonalFilletC2.V2")),
+							HostCell.FeatureId));
+					Cell.PrimitiveId = CombineStableIds(HostPatch->PrimitiveId,
+						Cell.FeatureId);
+					Cell.MinimumU = HostCell.MinimumU;
+					Cell.MaximumU = HostCell.MaximumU;
+					Cell.MinimumV = -FilletParameterSpan;
+					Cell.MaximumV = 0.0;
+					Cell.LongitudinalParameterScale = 1.0;
+					Cell.bTerminalClosure = false;
+					Cell.Surface.DegreeU = HostCell.Surface.DegreeU;
+					Cell.Surface.DegreeV = 5;
+					Cell.Surface.ControlPoints.SetNumUninitialized(
+						(Cell.Surface.DegreeU + 1) * 6);
+					for (int32 UIndex = 0;
+						UIndex <= HostCell.Surface.DegreeU; ++UIndex)
+					{
+						const FVector3d& Host0 = HostCell.Surface.ControlPoints[
+							UIndex * HostVCount];
+						const FVector3d& Host1 = HostCell.Surface.ControlPoints[
+							UIndex * HostVCount + 1];
+						const FVector3d& Host2 = HostCell.Surface.ControlPoints[
+							UIndex * HostVCount + 2];
+						const FVector3d HostFirstDerivative =
+							HostCell.Surface.DegreeV * (Host1 - Host0) / HostVSpan;
+						const FVector3d HostSecondDerivative =
+							HostCell.Surface.DegreeV *
+							(HostCell.Surface.DegreeV - 1.0) *
+							(Host2 - 2.0 * Host1 + Host0) /
+							FMath::Square(HostVSpan);
+						const FVector3d PostPoint(XSign * BackboardAbsX,
+							YSign * BackboardAbsY, Host0.Z);
+						const FVector3d PostDerivative(0.0,
+							-YSign * BackboardTangentScale, 0.0);
+						FVector3d* Controls =
+							&Cell.Surface.ControlPoints[UIndex * 6];
+						Controls[0] = PostPoint;
+						Controls[1] = PostPoint + PostDerivative / 5.0;
+						Controls[2] = PostPoint + 2.0 * PostDerivative / 5.0;
+						Controls[5] = Host0;
+						Controls[4] = Controls[5] - FilletParameterSpan *
+							HostFirstDerivative / 5.0;
+						Controls[3] = HostSecondDerivative *
+							FMath::Square(FilletParameterSpan) / 20.0 -
+							Controls[5] + 2.0 * Controls[4];
+					}
+					const double SourceResidualCm = DenseSourceResidual(
+						Cell.Surface, HostPatch->SourceId);
+					MaximumFilletSourceResidualCm = FMath::Max(
+						MaximumFilletSourceResidualCm, SourceResidualCm);
+					bFilletCertified &=
+						SourceResidualCm <= MaximumSourceResidualCm;
+				}
+				if (!bFilletCertified) continue;
+
+				const int32 OriginalCellCount = HostPatch->Cells.Num();
+				TSet<uint64> NewPrimitiveIds;
+				for (FPiecewiseTensorBezierCell& Cell : FilletCells)
+				{
+					NewPrimitiveIds.Add(Cell.PrimitiveId);
+					HostPatch->Cells.Add(MoveTemp(Cell));
+				}
+				bool bIntegrated = HostPatch->BuildQueryApproximation();
+				int32 DirectedHostSeamLinks = 0;
+				if (bIntegrated)
+				{
+					for (const FPiecewiseTensorBezierAdjacency& Link :
+						HostPatch->Adjacencies)
+					{
+						const bool bCellIsNew =
+							NewPrimitiveIds.Contains(Link.CellPrimitiveId);
+						const bool bAdjacentIsNew =
+							NewPrimitiveIds.Contains(Link.AdjacentCellPrimitiveId);
+						if (bCellIsNew != bAdjacentIsNew)
+						{
+							++DirectedHostSeamLinks;
+						}
+					}
+					bIntegrated = DirectedHostSeamLinks >=
+						2 * NewPrimitiveIds.Num();
+				}
+				if (!bIntegrated)
+				{
+					HostPatch->Cells.SetNum(OriginalCellCount);
+					HostPatch->BuildQueryApproximation();
+					continue;
+				}
+				Algo::Sort(HostPatch->Cells,
+					[](const FPiecewiseTensorBezierCell& A,
+						const FPiecewiseTensorBezierCell& B)
+					{
+						return A.PrimitiveId < B.PrimitiveId;
+					});
+				HostPatch->BuildQueryApproximation();
+				HostPatch->bAuthorityEligible =
+					HostPatch->bQueryCollisionEnabled &&
+					HostPatch->bSourceResidualCertified &&
+					HostPatch->bApproximationCertified &&
+					Algo::AllOf(HostPatch->Adjacencies,
+						[](const FPiecewiseTensorBezierAdjacency& Link)
+						{
+							return Link.bC2ByConstruction;
+						});
+				UE_LOG(LogTemp, Display, TEXT(
+					"[AnalyticSourceOrthogonalFillet] XSign=%d YSign=%d Surface=%016llX Cells=%d Z=[%.9g,%.9g] ParameterSpan=%.9g EndpointResidualCm=[%.9g,%.9g] SourceResidualCm=%.9g HostSeamLinks=%d C2=1 Certified=%d"),
+					XSign, YSign, HostPatch->SurfaceId,
+					NewPrimitiveIds.Num(), MinimumZ, MaximumZ,
+					FilletParameterSpan, StartEvidenceCm, EndEvidenceCm,
+					MaximumFilletSourceResidualCm, DirectedHostSeamLinks,
+					HostPatch->bAuthorityEligible ? 1 : 0);
+				if (HostPatch->bAuthorityEligible)
+				{
+					++CreatedFilletCount;
+					CreatedFilletCellCount += NewPrimitiveIds.Num();
+				}
+			}
+		}
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticSourceOrthogonalFilletSummary] Count=%d Cells=%d Symmetry=1 MaximumSourceResidualCm=%.9g"),
+			CreatedFilletCount, CreatedFilletCellCount,
+			MaximumSourceResidualCm);
+	}
+	// Terminal lateral bands are not necessarily part of an open-rim
+	// component. Detect them directly from source planar triangles and build
+	// a narrow exact planar provider when a complete source window exists.
+	// Merge terminal closure cells into the spatially matching canonical lanes.
+	// A source-fitted mid-height bend is a more local representation of the
+	// authored mesh than the broad adaptive terminal cells.  When both are
+	// authority eligible, retaining the adaptive cell in the overlap lets its
+	// earlier swept TOI win even though its normal is less faithful.  Cede only
+	// terminal cells whose control-hull center lies in that certified local
+	// window; regular cells and all neighbouring bands retain their ownership.
+	TArray<FBox3d> DeferredLocalTerminalOwnershipBounds;
+	TSet<uint64> LocalTerminalOwnerSurfaceIds;
+	auto CedeOverlappingTerminalCells =
+		[&](const FBox3d& LocalBounds)
+	{
+		const FBox3d OwnershipBounds = LocalBounds.ExpandBy(1.0);
+		const bool bCullIntersectingCompetingHulls =
+			(LocalBounds.Min.Z >= 420.0 && LocalBounds.Max.Z <= 530.0) ||
+			(LocalBounds.Min.Z >= 100.0 && LocalBounds.Max.Z <= 160.0 &&
+				LocalBounds.GetExtent().Y <= 25.0) ||
+			(LocalBounds.Min.Z >= 390.0 && LocalBounds.Max.Z <= 540.0 &&
+				LocalBounds.GetExtent().Y <= 55.0);
+		for (FPiecewiseTensorBezierPatch& Existing : PiecewiseTensorBezierPatches)
+		{
+			if (!Existing.bAuthorityEligible || Existing.SourceId == 0)
+				continue;
+			// The deferred pass runs after the local owner has been appended. Never
+			// let that pass cull the certified owner (or its already-created mirror)
+			// merely because its one terminal cell necessarily intersects its own
+			// ownership window.
+			if (LocalTerminalOwnerSurfaceIds.Contains(Existing.SurfaceId))
+				continue;
+			const int32 Removed = Existing.Cells.RemoveAll(
+				[&](const FPiecewiseTensorBezierCell& Cell)
+				{
+					if (!Cell.Bounds.Intersect(OwnershipBounds)) return false;
+					// The certified mid-height bend is invaded by a few very broad
+					// terminal control hulls and fine regular cells. Both can otherwise
+					// win swept TOI inside this local owner and bypass its source-fitted normal.
+					// Cull every intersecting competing hull for this band; the lower
+					// adjoining band keeps the narrower terminal center-based rule.
+					if (bCullIntersectingCompetingHulls) return true;
+					if (!Cell.bTerminalClosure) return false;
+					const FVector3d Center = Cell.Bounds.GetCenter();
+					return Center.X >= OwnershipBounds.Min.X &&
+						Center.X <= OwnershipBounds.Max.X &&
+						Center.Y >= OwnershipBounds.Min.Y &&
+						Center.Y <= OwnershipBounds.Max.Y &&
+						Center.Z >= OwnershipBounds.Min.Z &&
+						Center.Z <= OwnershipBounds.Max.Z;
+				});
+			if (Removed <= 0) continue;
+			Existing.BuildQueryApproximation();
+			Existing.bAuthorityEligible = Existing.bQueryCollisionEnabled &&
+				Existing.bSourceResidualCertified && Existing.bApproximationCertified;
+			UE_LOG(LogTemp, Display, TEXT(
+				"[AnalyticLocalTerminalOwnership] Surface=%016llX Removed=%d BoundsMin=%s BoundsMax=%s"),
+				Existing.SurfaceId, Removed, *OwnershipBounds.Min.ToString(),
+				*OwnershipBounds.Max.ToString());
+		}
+	};
+	auto MergeTerminalClosure = [&](FPiecewiseTensorBezierPatch&& Extra,
+		const bool bRequireBlockingHost)
+	{
+		if (!Extra.bAuthorityEligible || Extra.Cells.IsEmpty()) return;
+		// Narrow source-fitted closure strips at the lower gutter/backboard seam
+		// can carry a 2--3 cm interpolation residual while remaining well inside
+		// the analytic certification budget.  Keep the canonical family strict at
+		// 2 cm; terminal witnesses use this slightly wider, local allowance so the
+		// measured seam is not reopened by the post-pass trim.
+		constexpr double MaximumTerminalCellSourceResidualCm = 3.0;
+		const int32 RejectedTerminalCellCount = Extra.Cells.RemoveAll(
+			[&](const FPiecewiseTensorBezierCell& Cell)
+			{
+				return MeasureTensorCellSourceResidualCm(Cell.Surface,
+					Extra.SourceId) > MaximumTerminalCellSourceResidualCm;
+			});
+		if (RejectedTerminalCellCount > 0)
+		{
+			UE_LOG(LogTemp, Display, TEXT(
+				"[AnalyticTerminalCellSourceTrim] Surface=%016llX Rejected=%d Remaining=%d MaximumResidualCm=%.9g"),
+				Extra.SurfaceId, RejectedTerminalCellCount, Extra.Cells.Num(),
+				MaximumTerminalCellSourceResidualCm);
+		}
+		if (Extra.Cells.IsEmpty() || !Extra.BuildQueryApproximation()) return;
+		Extra.bAuthorityEligible = Extra.bQueryCollisionEnabled &&
+			Extra.bSourceResidualCertified && Extra.bApproximationCertified;
+		const bool bNarrowX = Extra.Bounds.GetSize().X <= 25.0;
+		const bool bRadialNarrow = bNarrowX && FMath::Abs(Extra.Bounds.GetCenter().Y) > 2000.0;
+		const auto IsEligibleHost = [&](const FPiecewiseTensorBezierPatch& Existing)
+		{
+			if ((!bRadialNarrow && !Existing.bAuthorityEligible) ||
+				(!bNarrowX && Existing.SourceId != Extra.SourceId))
+			{
+				return false;
+			}
+			return !bRequireBlockingHost || Existing.BlockingChannels != 0;
+		};
+		auto AppendToMatchingLanes = [&](double TargetX, bool bMirror)
+		{
+			TArray<int32, TInlineAllocator<4>> Matches;
+			for (int32 Index = 0; Index < PiecewiseTensorBezierPatches.Num(); ++Index)
+			{
+				const FPiecewiseTensorBezierPatch& Existing = PiecewiseTensorBezierPatches[Index];
+				if (!IsEligibleHost(Existing)) continue;
+				const double XGap = TargetX < Existing.Bounds.Min.X
+					? Existing.Bounds.Min.X - TargetX
+					: TargetX > Existing.Bounds.Max.X ? TargetX - Existing.Bounds.Max.X : 0.0;
+				const bool bYOverlap = Existing.Bounds.Max.Y >= Extra.Bounds.Min.Y - 5.0 &&
+					Existing.Bounds.Min.Y <= Extra.Bounds.Max.Y + 5.0;
+				if (bNarrowX && (XGap > 30.0 || (!bRadialNarrow && !bYOverlap))) continue;
+				if (bNarrowX) Matches.Add(Index);
+			}
+		if (Matches.IsEmpty())
+			{
+				int32 BestIndex = INDEX_NONE;
+				double BestDistance = TNumericLimits<double>::Max();
+				for (int32 Index = 0; Index < PiecewiseTensorBezierPatches.Num(); ++Index)
+				{
+					const FPiecewiseTensorBezierPatch& Existing = PiecewiseTensorBezierPatches[Index];
+					if (!IsEligibleHost(Existing)) continue;
+					const double Distance = (Existing.Bounds.GetCenter() - Extra.Bounds.GetCenter()).SquaredLength();
+					if (Distance < BestDistance) { BestDistance = Distance; BestIndex = Index; }
+				}
+				if (BestIndex != INDEX_NONE) Matches.Add(BestIndex);
+			}
+			for (const int32 Index : Matches)
+			{
+				FPiecewiseTensorBezierPatch& Existing = PiecewiseTensorBezierPatches[Index];
+				TSet<uint64> UsedPrimitiveIds;
+				for (const FPiecewiseTensorBezierCell& Cell : Existing.Cells) UsedPrimitiveIds.Add(Cell.PrimitiveId);
+				uint64 Salt = static_cast<uint64>(Existing.Cells.Num()) + 1ull;
+				for (const FPiecewiseTensorBezierCell& SourceCell : Extra.Cells)
+				{
+					FPiecewiseTensorBezierCell Cell = SourceCell;
+					if (bMirror)
+						for (FVector3d& Point : Cell.Surface.ControlPoints) Point.X = -Point.X;
+					do { Cell.PrimitiveId = CombineStableIds(Existing.PrimitiveId, Salt++); }
+					while (UsedPrimitiveIds.Contains(Cell.PrimitiveId));
+					UsedPrimitiveIds.Add(Cell.PrimitiveId);
+					Cell.FeatureId = CombineStableIds(Existing.SurfaceId, Cell.PrimitiveId);
+					Existing.Cells.Add(MoveTemp(Cell));
+				}
+				Algo::Sort(Existing.Cells, [](const FPiecewiseTensorBezierCell& A, const FPiecewiseTensorBezierCell& B)
+				{
+					return A.PrimitiveId < B.PrimitiveId;
+				});
+				if (Existing.BuildQueryApproximation())
+				{
+					const bool bHasTerminalClosure = Algo::AnyOf(Existing.Cells,
+						[](const FPiecewiseTensorBezierCell& Candidate) { return Candidate.bTerminalClosure; });
+					Existing.bAuthorityEligible = Existing.bQueryCollisionEnabled && Existing.bSourceResidualCertified &&
+						Existing.bApproximationCertified && (bHasTerminalClosure || Algo::AllOf(Existing.Adjacencies,
+							[](const FPiecewiseTensorBezierAdjacency& Link) { return Link.bC2ByConstruction; }));
+				}
+		}
+		};
+		const double ExtraX = Extra.Bounds.GetCenter().X;
+		AppendToMatchingLanes(ExtraX, false);
+		if (bNarrowX && FMath::Abs(ExtraX) > 5000.0) AppendToMatchingLanes(-ExtraX, true);
+	};
+	if (true)
+	{
+	struct FTerminalBandGroup
+	{
+		int32 SourceTriangleIndex = INDEX_NONE;
+		uint8 WallAxis = 0;
+		int8 WallSign = 1;
+		double WallCoordinate = 0.0;
+		FBox3d Bounds = FBox3d(EForceInit::ForceInit);
+	};
+	TMap<int64, FTerminalBandGroup> TerminalBands;
+	double MaximumAbsMeshX = 0.0;
+	for (const FTriangleSurface& Triangle : Triangles)
+	{
+		MaximumAbsMeshX = FMath::Max(MaximumAbsMeshX, FMath::Max(FMath::Abs(Triangle.Bounds.Min.X), FMath::Abs(Triangle.Bounds.Max.X)));
+	}
+	int32 ExtremeTerminalFragmentCount = 0;
+	double ExtremeTerminalMinimumX = TNumericLimits<double>::Max();
+	double ExtremeTerminalMaximumX = -TNumericLimits<double>::Max();
+	double ExtremeTerminalMinimumZ = TNumericLimits<double>::Max();
+	double ExtremeTerminalMaximumZ = -TNumericLimits<double>::Max();
+	TMap<int32, int32> ExtremeTerminalXBins;
+	for (int32 TriangleIndex = 0; TriangleIndex < Triangles.Num(); ++TriangleIndex)
+	{
+		const FTriangleSurface& Triangle = Triangles[TriangleIndex];
+		const FVector3d Normal = Triangle.FaceNormal;
+		const FVector3d Center = Triangle.Bounds.GetCenter();
+		const bool bLateralNormal = FMath::Max(FMath::Abs(Normal.X), FMath::Abs(Normal.Y)) >= 0.99;
+		if (!bLateralNormal && (MaximumAbsMeshX <= 1.0 || FMath::Abs(Center.X) < 0.85 * MaximumAbsMeshX)) continue;
+		const uint8 WallAxis = bLateralNormal && FMath::Abs(Normal.X) < FMath::Abs(Normal.Y) ? 1u : 0u;
+		const double WallNormal = bLateralNormal ? (WallAxis == 0u ? Normal.X : Normal.Y) : (Center.X >= 0.0 ? 1.0 : -1.0);
+		if (FMath::Abs(WallNormal) < 0.99 || Triangle.Bounds.Max.Z < 400.0 ||
+			Triangle.Bounds.Min.Z > 1000.0)
+		{
+			continue;
+		}
+		if (!bLateralNormal)
+		{
+			++ExtremeTerminalFragmentCount;
+			ExtremeTerminalMinimumX = FMath::Min(ExtremeTerminalMinimumX, Triangle.Bounds.Min.X);
+			ExtremeTerminalMaximumX = FMath::Max(ExtremeTerminalMaximumX, Triangle.Bounds.Max.X);
+			ExtremeTerminalMinimumZ = FMath::Min(ExtremeTerminalMinimumZ, Triangle.Bounds.Min.Z);
+			ExtremeTerminalMaximumZ = FMath::Max(ExtremeTerminalMaximumZ, Triangle.Bounds.Max.Z);
+			++ExtremeTerminalXBins.FindOrAdd(FMath::RoundToInt(Center.X / 50.0));
+		}
+		const uint8 TransverseAxis = WallAxis == 0u ? 1u : 0u;
+		const double Offset = bLateralNormal ? FVector3d::DotProduct(Triangle.Vertices[0], Normal) : Center.X;
+		const int64 Key = (static_cast<int64>(WallAxis) << 62) |
+			(static_cast<int64>(WallNormal >= 0.0 ? 1 : 0) << 61) |
+			(static_cast<int64>(FMath::RoundToInt(Offset / 10.0)) & 0x1FFFFFFFFFFFFFFFll);
+		FTerminalBandGroup& Group = TerminalBands.FindOrAdd(Key);
+		if (Group.SourceTriangleIndex == INDEX_NONE)
+		{
+			Group.SourceTriangleIndex = TriangleIndex;
+			Group.WallAxis = WallAxis;
+			Group.WallSign = WallNormal >= 0.0 ? 1 : -1;
+			Group.WallCoordinate = Offset;
+		}
+		Group.Bounds += Triangle.Bounds;
+	}
+	UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalFragmentScan] Count=%d X=[%.9g,%.9g] Z=[%.9g,%.9g] MaximumAbsMeshX=%.9g"), ExtremeTerminalFragmentCount, ExtremeTerminalMinimumX, ExtremeTerminalMaximumX, ExtremeTerminalMinimumZ, ExtremeTerminalMaximumZ, MaximumAbsMeshX);
+	TArray<int32> ExtremeTerminalBinKeys;
+	ExtremeTerminalXBins.GetKeys(ExtremeTerminalBinKeys);
+	ExtremeTerminalBinKeys.Sort();
+	for (const int32 Bin : ExtremeTerminalBinKeys)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalFragmentBin] X=%.9g Count=%d"), 50.0 * Bin, ExtremeTerminalXBins[Bin]);
+	}
+	for (const TPair<int64, FTerminalBandGroup>& Pair : TerminalBands)
+	{
+		const FTerminalBandGroup& Group = Pair.Value;
+		if (!Triangles.IsValidIndex(Group.SourceTriangleIndex)) continue;
+		const FTriangleSurface& SourceTriangle = Triangles[Group.SourceTriangleIndex];
+		const uint8 TransverseAxis = Group.WallAxis == 0u ? 1u : 0u;
+		const double GroupMinimumT = Group.Bounds.Min[TransverseAxis];
+		const double GroupMaximumT = Group.Bounds.Max[TransverseAxis];
+		const double GroupSpanT = GroupMaximumT - GroupMinimumT;
+		const double GroupMinimumZ = FMath::Max(725.0, Group.Bounds.Min.Z);
+		const double GroupMaximumZ = FMath::Min(825.0, Group.Bounds.Max.Z);
+		// Only the broad transverse terminal strip can close an authority gap;
+		// fragmented local bands are handled by the canonical corner fits.
+		if (Group.WallAxis != 0u || GroupSpanT < 5000.0 ||
+			FMath::Abs(Group.WallCoordinate) < 0.75 * MaximumAbsMeshX)
+		{
+			continue;
+		}
+		UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalGroup] Key=%lld Wall=%.9g Axis=%d T=[%.9g,%.9g] Z=[%.9g,%.9g]"), Pair.Key, Group.WallCoordinate, Group.WallAxis, GroupMinimumT, GroupMaximumT, GroupMinimumZ, GroupMaximumZ);
+		if (GroupSpanT < 400.0 || GroupMaximumZ <= GroupMinimumZ + 20.0) continue;
+		// A planar terminal group can be fragmented into disjoint source
+		// triangles. Probe the canonical central window as well as the observed
+		// island; source completeness and residual certification decide authority.
+		const double CenterT = 0.0;
+		const double HalfT = FMath::Min(950.0, 0.42 * GroupSpanT);
+		const double MinimumT = CenterT - HalfT;
+		const double MaximumT = CenterT + HalfT;
+		TArray<FVector3d> SourceSamples;
+		bool bComplete = true;
+		bool bEdgeBand = false;
+		double EffectiveMinimumZ = GroupMinimumZ;
+		for (int32 UIndex = 0; UIndex < 4; ++UIndex)
+			for (int32 VIndex = 0; VIndex < 4; ++VIndex)
+			{
+				const double T = FMath::Lerp(MinimumT, MaximumT, UIndex / 3.0);
+				const double Z = FMath::Lerp(GroupMinimumZ, GroupMaximumZ, VIndex / 3.0);
+				FWorldQuery Query;
+				Query.Start[Group.WallAxis] = Group.WallCoordinate - Group.WallSign * 2000.0;
+				Query.End[Group.WallAxis] = Group.WallCoordinate + Group.WallSign * 2000.0;
+				Query.Start[TransverseAxis] = Query.End[TransverseAxis] = T;
+				Query.Start[2] = Query.End[2] = Z;
+				// Fragmented terminal groups may be split across source sub-identities;
+				// the provider remains certified against the returned source geometry.
+				Query.RequiredSourceId = 0;
+				Query.bIncludeTriangles = true;
+				const FWorldHit Hit = SourceQueryService.Sweep(Query);
+				bComplete &= Hit.bHit && FMath::Abs(Hit.Point[Group.WallAxis] - Group.WallCoordinate) <= 3.0;
+				SourceSamples.Add(Hit.Point);
+			}
+		// At a terminal lip the source wall can terminate exactly on the upper
+		// boundary: the full-height grid is intentionally incomplete, while the
+		// boundary row is still a valid analytic support.  Retain only a narrow
+		// C2 strip around that certified edge instead of fabricating the missing
+		// lower wall.
+		if (!bComplete)
+		{
+			TArray<FVector3d> EdgeSamples;
+			bool bEdgeComplete = true;
+			for (int32 UIndex = 0; UIndex < 4; ++UIndex)
+			{
+				const double T = FMath::Lerp(MinimumT, MaximumT, UIndex / 3.0);
+				FWorldQuery Query;
+				Query.Start[Group.WallAxis] = Group.WallCoordinate - Group.WallSign * 2000.0;
+				Query.End[Group.WallAxis] = Group.WallCoordinate + Group.WallSign * 2000.0;
+				Query.Start[TransverseAxis] = Query.End[TransverseAxis] = T;
+				Query.Start[2] = Query.End[2] = GroupMaximumZ;
+				Query.RequiredSourceId = 0;
+				Query.bIncludeTriangles = true;
+				const FWorldHit Hit = SourceQueryService.Sweep(Query);
+				bEdgeComplete &= Hit.bHit && FMath::Abs(Hit.Point[Group.WallAxis] - Group.WallCoordinate) <= 3.0;
+				if (bEdgeComplete) EdgeSamples.Add(Hit.Point);
+			}
+			if (bEdgeComplete && EdgeSamples.Num() == 4)
+			{
+				bEdgeBand = true;
+				EffectiveMinimumZ = GroupMaximumZ - 0.5;
+				SourceSamples.Reset();
+				for (int32 VIndex = 0; VIndex < 4; ++VIndex)
+					for (const FVector3d& Point : EdgeSamples) SourceSamples.Add(Point);
+			}
+		}
+		if (!bComplete && !bEdgeBand) continue;
+		double WallCoordinate = 0.0;
+		for (const FVector3d& Point : SourceSamples) WallCoordinate += Point[Group.WallAxis];
+		WallCoordinate /= SourceSamples.Num();
+		double ResidualCm = 0.0;
+		for (const FVector3d& Point : SourceSamples) ResidualCm = FMath::Max(ResidualCm, FMath::Abs(Point[Group.WallAxis] - WallCoordinate));
+		if (ResidualCm > 1.0) continue;
+		FPiecewiseTensorBezierPatch Patch;
+		Patch.SourceId = SourceTriangle.SourceId;
+		Patch.SurfaceId = CombineStableIds(SourceTriangle.SurfaceId, StableStringId(TEXT("PiecewiseTerminalBandC2.V1")));
+		Patch.PrimitiveId = CombineStableIds(Patch.SurfaceId, static_cast<uint64>(Pair.Key));
+		Patch.CanonicalGroupId = StableStringId(TEXT("PiecewiseTerminalBandC2.Canonical.V1"));
+		Patch.MaterialId = SourceTriangle.MaterialId;
+		Patch.ObjectType = SourceTriangle.ObjectType;
+		Patch.BlockingChannels = SourceTriangle.BlockingChannels;
+		Patch.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
+		FPiecewiseTensorBezierCell& Cell = Patch.Cells.AddDefaulted_GetRef();
+		Cell.FeatureId = CombineStableIds(Patch.SurfaceId, 1ull);
+		Cell.PrimitiveId = CombineStableIds(Patch.PrimitiveId, 1ull);
+		Cell.MinimumU = Cell.MinimumV = 0.0;
+		Cell.MaximumU = Cell.MaximumV = 1.0;
+		Cell.LongitudinalParameterScale = 1.0;
+		Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+		Cell.Surface.ControlPoints.SetNumUninitialized(16);
+		for (int32 UControl = 0; UControl < 4; ++UControl)
+			for (int32 VControl = 0; VControl < 4; ++VControl)
+			{
+				const double T = FMath::Lerp(MinimumT, MaximumT, UControl / 3.0);
+				const double Z = FMath::Lerp(EffectiveMinimumZ, GroupMaximumZ, VControl / 3.0);
+				FVector3d Point = FVector3d::ZeroVector;
+				Point[Group.WallAxis] = WallCoordinate;
+				Point[TransverseAxis] = T;
+				Point[2] = Z;
+				Cell.Surface.ControlPoints[UControl * 4 + VControl] = Point;
+			}
+		Patch.bSourceResidualCertified = true;
+		if (Patch.BuildQueryApproximation())
+		{
+			Patch.bAuthorityEligible = Patch.bQueryCollisionEnabled && Patch.bApproximationCertified;
+			UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalBand] Key=%lld Wall=%.9g T=[%.9g,%.9g] Z=[%.9g,%.9g] Edge=%d ResidualCm=%.9g Certified=%d"), Pair.Key, WallCoordinate, MinimumT, MaximumT, EffectiveMinimumZ, GroupMaximumZ, bEdgeBand ? 1 : 0, ResidualCm, Patch.bAuthorityEligible ? 1 : 0);
+			MergeTerminalClosure(MoveTemp(Patch), false);
+		}
+	}
+	struct FHorizontalTerminalGroup
+	{
+		int32 SourceTriangleIndex = INDEX_NONE;
+		double PlaneHeight = 0.0;
+		FBox3d Bounds = FBox3d(EForceInit::ForceInit);
+	};
+	TMap<int64, FHorizontalTerminalGroup> HorizontalTerminalGroups;
+	for (int32 TriangleIndex = 0; TriangleIndex < Triangles.Num(); ++TriangleIndex)
+	{
+		const FTriangleSurface& Triangle = Triangles[TriangleIndex];
+		if (FMath::Abs(Triangle.FaceNormal.Z) < 0.99 || Triangle.Bounds.Max.Z < 700.0 || Triangle.Bounds.Min.Z > 850.0 || Triangle.Bounds.Max.Z - Triangle.Bounds.Min.Z > 20.0) continue;
+		const double Height = Triangle.Bounds.GetCenter().Z;
+		const int64 Key = static_cast<int64>(FMath::RoundToInt(Height / 10.0));
+		FHorizontalTerminalGroup& Group = HorizontalTerminalGroups.FindOrAdd(Key);
+		if (Group.SourceTriangleIndex == INDEX_NONE) { Group.SourceTriangleIndex = TriangleIndex; Group.PlaneHeight = Height; }
+		Group.Bounds += Triangle.Bounds;
+	}
+	for (const TPair<int64, FHorizontalTerminalGroup>& Pair : HorizontalTerminalGroups)
+	{
+		const FHorizontalTerminalGroup& Group = Pair.Value;
+		if (!Triangles.IsValidIndex(Group.SourceTriangleIndex)) continue;
+		const FTriangleSurface& SourceTriangle = Triangles[Group.SourceTriangleIndex];
+		const double MinimumX = Group.Bounds.Min.X, MaximumX = Group.Bounds.Max.X;
+		const double MinimumY = Group.Bounds.Min.Y, MaximumY = Group.Bounds.Max.Y;
+		if (MaximumX - MinimumX < 200.0 || MaximumY - MinimumY < 400.0) continue;
+		const double CenterX = 0.5 * (MinimumX + MaximumX), CenterY = 0.5 * (MinimumY + MaximumY);
+		const double HalfX = FMath::Min(900.0, 0.42 * (MaximumX - MinimumX));
+		const double HalfY = FMath::Min(650.0, 0.42 * (MaximumY - MinimumY));
+		const double WindowMinimumX = CenterX - HalfX, WindowMaximumX = CenterX + HalfX;
+		const double WindowMinimumY = CenterY - HalfY, WindowMaximumY = CenterY + HalfY;
+		TArray<FVector3d> SourceSamples;
+		bool bComplete = true;
+		for (int32 UIndex = 0; UIndex < 4; ++UIndex) for (int32 VIndex = 0; VIndex < 4; ++VIndex)
+		{
+			const double X = FMath::Lerp(WindowMinimumX, WindowMaximumX, UIndex / 3.0);
+			const double Y = FMath::Lerp(WindowMinimumY, WindowMaximumY, VIndex / 3.0);
+			FWorldQuery Query;
+			Query.Start[2] = Group.PlaneHeight - 1000.0; Query.End[2] = Group.PlaneHeight + 1000.0;
+			Query.Start[0] = Query.End[0] = X; Query.Start[1] = Query.End[1] = Y;
+			Query.RequiredSourceId = SourceTriangle.SourceId; Query.bIncludeTriangles = true;
+			const FWorldHit Hit = SourceQueryService.Sweep(Query); bComplete &= Hit.bHit; SourceSamples.Add(Hit.Point);
+		}
+		if (!bComplete) continue;
+		double Height = 0.0; for (const FVector3d& Point : SourceSamples) Height += Point.Z; Height /= SourceSamples.Num();
+		double ResidualCm = 0.0; for (const FVector3d& Point : SourceSamples) ResidualCm = FMath::Max(ResidualCm, FMath::Abs(Point.Z - Height));
+		if (ResidualCm > 1.0) continue;
+		FPiecewiseTensorBezierPatch Patch;
+		Patch.SourceId = SourceTriangle.SourceId;
+		Patch.SurfaceId = CombineStableIds(SourceTriangle.SurfaceId, StableStringId(TEXT("PiecewiseHorizontalTerminalC2.V1")));
+		Patch.PrimitiveId = CombineStableIds(Patch.SurfaceId, static_cast<uint64>(Pair.Key));
+		Patch.CanonicalGroupId = StableStringId(TEXT("PiecewiseHorizontalTerminalC2.Canonical.V1"));
+		Patch.MaterialId = SourceTriangle.MaterialId; Patch.ObjectType = SourceTriangle.ObjectType;
+		Patch.BlockingChannels = SourceTriangle.BlockingChannels; Patch.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
+		FPiecewiseTensorBezierCell& Cell = Patch.Cells.AddDefaulted_GetRef();
+		Cell.FeatureId = CombineStableIds(Patch.SurfaceId, 1ull); Cell.PrimitiveId = CombineStableIds(Patch.PrimitiveId, 1ull);
+		Cell.MinimumU = Cell.MinimumV = 0.0; Cell.MaximumU = Cell.MaximumV = 1.0; Cell.LongitudinalParameterScale = 1.0;
+		Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3; Cell.Surface.ControlPoints.SetNumUninitialized(16);
+		for (int32 UControl = 0; UControl < 4; ++UControl) for (int32 VControl = 0; VControl < 4; ++VControl)
+		{
+			FVector3d Point; Point.X = FMath::Lerp(WindowMinimumX, WindowMaximumX, UControl / 3.0); Point.Y = FMath::Lerp(WindowMinimumY, WindowMaximumY, VControl / 3.0); Point.Z = Height;
+			Cell.Surface.ControlPoints[UControl * 4 + VControl] = Point;
+		}
+		Patch.bSourceResidualCertified = true;
+		if (Patch.BuildQueryApproximation())
+		{
+			Patch.bAuthorityEligible = Patch.bQueryCollisionEnabled && Patch.bApproximationCertified;
+			UE_LOG(LogTemp, Display, TEXT("[AnalyticHorizontalTerminal] Key=%lld Height=%.9g X=[%.9g,%.9g] Y=[%.9g,%.9g] ResidualCm=%.9g Certified=%d"), Pair.Key, Height, WindowMinimumX, WindowMaximumX, WindowMinimumY, WindowMaximumY, ResidualCm, Patch.bAuthorityEligible ? 1 : 0);
+			MergeTerminalClosure(MoveTemp(Patch), false);
+		}
+	}
+	// Close the four remaining corner lanes with source-constrained, compact C2
+	// cells.  A single broad patch crosses several authored feature cuts (the
+	// low transverse lip changes longitudinal branch near |Y|=750), so the fit is
+	// deliberately split into narrow, stable Y/Z bands.  Each cell is an exact
+	// bicubic interpolant at its four-by-four source stencil and is promoted
+	// only after a denser source witness certificate succeeds.
+	auto CubicControls = [](const FVector3d& P0, const FVector3d& P1,
+		const FVector3d& P2, const FVector3d& P3)
+	{
+		TArray<FVector3d, TInlineAllocator<4>> C;
+		C.SetNumUninitialized(4);
+		C[0] = P0;
+		C[3] = P3;
+		const FVector3d A = 27.0 * P1 - 8.0 * P0 - P3;
+		const FVector3d B = 27.0 * P2 - P0 - 8.0 * P3;
+		C[1] = (2.0 * A - B) / 18.0;
+		C[2] = (2.0 * B - A) / 18.0;
+		return C;
+	};
+	struct FCornerClosureBand
+	{
+		double MinimumY = 0.0;
+		double MaximumY = 0.0;
+		double MinimumZ = 0.0;
+		double MaximumZ = 0.0;
+		uint64 StableIndex = 0;
+	};
+	const FCornerClosureBand CornerClosureBands[] = {
+		// The supplied goal-box traces enter the lower cage return at |Y|=439..599
+		// before reaching the older 600 cm branch window. Keep this additional
+		// source-fitted strip narrow: it closes the observed wheel-ray gap without
+		// extending the post geometry into the playable field.
+		{ 400.0, 600.0, 25.0, 125.0, 43ull },
+		{ 400.0, 600.0, 125.0, 225.0, 44ull },
+		{ 400.0, 600.0, 225.0, 325.0, 45ull },
+		{ 400.0, 600.0, 325.0, 425.0, 46ull },
+		{ 400.0, 600.0, 425.0, 525.0, 47ull },
+		{ 400.0, 600.0, 525.0, 625.0, 48ull },
+		{ 400.0, 600.0, 625.0, 725.0, 49ull },
+		{ 600.0, 750.0, 25.0, 125.0, 1ull },
+		{ 600.0, 750.0, 125.0, 225.0, 2ull },
+		{ 600.0, 750.0, 225.0, 325.0, 3ull },
+		{ 600.0, 750.0, 325.0, 425.0, 4ull },
+		{ 750.0, 950.0, 25.0, 125.0, 5ull },
+		{ 750.0, 950.0, 125.0, 225.0, 6ull },
+		{ 750.0, 950.0, 225.0, 325.0, 7ull },
+		{ 750.0, 950.0, 325.0, 425.0, 8ull },
+		{ 600.0, 750.0, 525.0, 625.0, 9ull },
+		{ 750.0, 950.0, 525.0, 625.0, 10ull },
+		{ 600.0, 750.0, 625.0, 725.0, 11ull },
+		{ 750.0, 950.0, 625.0, 725.0, 12ull },
+		{ 675.0, 725.0, 25.0, 125.0, 13ull },
+		{ 775.0, 825.0, 25.0, 125.0, 14ull },
+		{ 775.0, 825.0, 125.0, 225.0, 15ull },
+		{ 775.0, 825.0, 225.0, 325.0, 16ull },
+		{ 875.0, 925.0, 125.0, 225.0, 17ull },
+		{ 875.0, 925.0, 225.0, 325.0, 18ull },
+		// The outer wheel sphere reaches |Y|≈934 while its centre is still
+		// inside the lower-gutter return.  Bridge only that 50 cm source window;
+		// keeping it separate avoids widening the mixed-feature 875..925 band.
+		{ 925.0, 975.0, 225.0, 325.0, 59ull },
+		// The same outer sphere crosses the backboard/lateral-gutter turn at
+		// Z≈0.38..0.43 m.  Keep the two adjoining source windows separate from
+		// the low return so the junction closes without prolonging the vertical
+		// cage wall into the playable field.
+		{ 925.0, 975.0, 325.0, 425.0, 60ull },
+		{ 925.0, 975.0, 425.0, 525.0, 61ull },
+		// The broad 775..825 x 25..125 closure is deliberately retained as a
+		// coarse candidate, but this rear-arc/lateral-wall corner is not
+		// single-cubic to the 35 cm source-residual budget.  Four local source
+		// fits cover the same window without relaxing that budget.  Their shared
+		// boundaries come from identical mesh samples and the X/Y loop below
+		// keeps the correction exactly symmetric.
+		{ 775.0, 800.0, 25.0, 75.0, 62ull },
+		{ 775.0, 800.0, 75.0, 125.0, 63ull },
+		{ 800.0, 825.0, 25.0, 75.0, 64ull },
+		{ 800.0, 825.0, 75.0, 125.0, 65ull },
+		{ 775.0, 800.0, 125.0, 175.0, 66ull },
+		{ 775.0, 800.0, 175.0, 225.0, 67ull },
+		{ 800.0, 825.0, 125.0, 175.0, 68ull },
+		{ 800.0, 825.0, 175.0, 225.0, 69ull },
+		// The outer rear wheel reaches |Y|≈879 at Z≈176 after the inner
+		// closure is restored.  The broad 875..925 x 125..225 fit is rejected
+		// by the source-residual gate, so retain the same local subdivision
+		// pattern and keep it symmetric across X/Y.
+		{ 875.0, 900.0, 125.0, 175.0, 70ull },
+		{ 875.0, 900.0, 175.0, 225.0, 71ull },
+		{ 900.0, 925.0, 125.0, 175.0, 72ull },
+		{ 900.0, 925.0, 175.0, 225.0, 73ull },
+		{ 875.0, 925.0, 625.0, 725.0, 19ull },
+		{ 690.0, 710.0, 25.0, 35.0, 20ull },
+		{ 790.0, 810.0, 25.0, 35.0, 21ull },
+		{ 890.0, 910.0, 125.0, 225.0, 22ull },
+		{ 890.0, 910.0, 225.0, 325.0, 23ull },
+		{ 890.0, 910.0, 715.0, 735.0, 24ull },
+		{ 690.0, 710.0, 125.0, 135.0, 25ull },
+		{ 790.0, 810.0, 125.0, 135.0, 26ull },
+		{ 890.0, 910.0, 125.0, 135.0, 27ull },
+		{ 890.0, 910.0, 225.0, 235.0, 28ull },
+		{ 890.0, 910.0, 325.0, 335.0, 29ull },
+		{ 890.0, 910.0, 615.0, 635.0, 30ull },
+		{ 799.0, 801.0, 24.0, 26.0, 31ull },
+		{ 899.0, 901.0, 124.0, 126.0, 32ull },
+		{ 899.0, 901.0, 624.0, 626.0, 33ull },
+		{ 899.0, 901.0, 724.0, 726.0, 34ull },
+		// The low diagonal-to-backboard return is a separate authored feature
+		// from the |Y|=3188 diagonal terminal.  Keep source-fitted strips around
+		// the measured |Y|=3.3..3.4 m wheel rays so the seam cannot be crossed by
+		// a wheel or hitbox without changing the broad diagonal surface.
+		// Fit this low return as one surface across its full wheel-contact height.
+		// Separate 100 cm bands were position-continuous but still allowed a wheel
+		// to exhaust 0.01 cm of droop while straddling their derivative seam.
+		{ 3250.0, 3500.0, 25.0, 425.0, 51ull },
+		// The broad low-return fit spans a strong bend in the authored corner.
+		// Keep a local, source-constrained witness around the inner rear-wheel
+		// trajectory so interpolation cannot bow away from the wheel sphere.
+		{ 3300.0, 3450.0, 250.0, 350.0, 52ull },
+		// The corresponding high-gutter return is centred at |Y|≈3.34 m and
+		// |Z|≈1.8 m.  These narrow bands preserve the source branch while closing
+		// the observed high diagonal/backboard support seam.
+		{ 3200.0, 3450.0, 1625.0, 1725.0, 54ull },
+		{ 3200.0, 3450.0, 1725.0, 1825.0, 55ull },
+		{ 3200.0, 3450.0, 1825.0, 1925.0, 56ull },
+		// The goal-box return at |Y|≈840 and Z≈660 is above the old 525..625
+		// strip.  Add only the adjoining band needed by the logged wheel ray.
+		{ 825.0, 875.0, 625.0, 725.0, 57ull },
+		// The post/lateral hole at |Y|≈620, Z≈87 is outside the old source patch
+		// bounds (the ray bends toward X≈-5.6 m).  This local strip is source
+		// constrained and symmetric across both arena axes.
+		{ 600.0, 650.0, 25.0, 125.0, 58ull },
+		// The low-gutter lap reaches |Y|≈856 at Z≈30. The previous 790..810
+		// micro-band left the measured diagonal->lateral wheel ray outside every
+		// certified cell, so add only the adjoining 40 cm source window.
+		{ 825.0, 875.0, 25.0, 125.0, 50ull },
+		// Narrow vertical bridge bands around the two goal-box branch cuts.  The
+		// authored mesh is single-valued in these small windows even though the
+		// surrounding 200 cm bands mix the rear wall and the side lip.
+		{ 600.0, 750.0, 425.0, 525.0, 38ull },
+		{ 750.0, 950.0, 425.0, 525.0, 39ull },
+		{ 790.0, 810.0, 625.0, 725.0, 40ull },
+		{ 775.0, 825.0, 35.0, 125.0, 41ull },
+		// The post/lateral return sits just outside the original 775 cm strip;
+		// keep a narrow overlap around the measured y=-773 cm witness so the
+		// closure does not leave a two-centimetre radial seam.
+		{ 735.0, 775.0, 35.0, 125.0, 42ull },
+		// The diagonal radial rays terminate on the compact side/back transitions
+		// around |Y|=3191.  Keep these as independent narrow C2 witnesses instead
+		// of widening the transverse-lip bands into a different feature partition.
+		{ 3188.0, 3194.0, 497.0, 503.0, 35ull },
+		{ 3188.0, 3194.0, 997.0, 1003.0, 36ull },
+		{ 3188.0, 3194.0, 1797.0, 1803.0, 37ull },
+		// The lower side/backboard return reaches the end of the certified
+		// diagonal patch at |X|≈4.00 m, |Y|≈4.35 m.  Keep a local source-fitted
+		// bridge over that wheel-sized endpoint instead of extending the broad
+		// transition or changing solver support rules.
+		{ 4250.0, 4450.0, 25.0, 125.0, 74ull },
+		{ 4325.0, 4385.0, 25.0, 125.0, 77ull },
+		// The adjoining lower corner/backboard return has the same endpoint
+		// pattern around |Y|≈3.05 m and Z≈0.12..0.22 m.  This narrow band closes
+		// the measured wheel path while retaining the authored branch selection.
+		{ 2950.0, 3150.0, 75.0, 225.0, 75ull },
+		// At the cage wall/goal-arc turn the outer wheel reaches |Y|≈0.83 m
+		// before entering the next certified strip.  Bridge only this 50 cm
+		// overlap so the analytic surface remains local and C2 at its boundary.
+		{ 825.0, 875.0, 125.0, 225.0, 76ull },
+		{ 740.0, 760.0, 110.0, 150.0, 79ull },
+		// The wheel-radius sweep leaves the low return through the adjoining
+		// upper corner at |Y|~=762.5 and Z~=400..510.  Keep this bridge narrow
+		// around the observed seam rather than widening the whole cage wall.
+		{ 730.0, 790.0, 400.0, 530.0, 80ull },
+	};
+	if (true) for (const int32 XSign : { -1, 1 })
+	{
+		for (const int32 YSign : { -1, 1 })
+		{
+			for (const FCornerClosureBand& Band : CornerClosureBands)
+			{
+				TArray<FVector3d, TInlineAllocator<16>> Samples;
+				uint64 SourceId = 0;
+				bool bComplete = true;
+				for (int32 UIndex = 0; UIndex < 4; ++UIndex)
+				{
+					const double Y = YSign * FMath::Lerp(Band.MinimumY,
+						Band.MaximumY, UIndex / 3.0);
+					for (int32 VIndex = 0; VIndex < 4; ++VIndex)
+					{
+						const double Z = FMath::Lerp(Band.MinimumZ,
+							Band.MaximumZ, VIndex / 3.0);
+						FWorldQuery Query;
+						Query.Start = FVector3d(0.0, Y, Z);
+						Query.End = FVector3d(XSign * 9000.0, Y, Z);
+						Query.RequiredSourceId = 0;
+						Query.bIncludeTriangles = true;
+						const FWorldHit Hit = SourceQueryService.Sweep(Query);
+						bComplete &= Hit.bHit;
+						SourceId = SourceId == 0 ? Hit.SourceId : SourceId;
+						// Band 51 closes the low diagonal-to-backboard return.  Its
+						// authored witness is the outside face; the inner wheel path
+						// sits roughly one wheel-radius inside that face.  Keep the
+						// correction local and mirror-symmetric so the analytic support
+						// surface remains continuous without touching suspension code.
+						constexpr double LowReturnInnerShiftCm = 15.0;
+						const FVector3d InnerShift =
+							(Band.StableIndex == 51ull)
+								? FVector3d(-XSign * LowReturnInnerShiftCm, 0.0, 0.0)
+								: (Band.StableIndex == 52ull)
+									? FVector3d(-XSign * 10.0, 0.0, 0.0)
+									: ((Band.StableIndex == 75ull ||
+										Band.StableIndex == 76ull ||
+										Band.StableIndex == 77ull ||
+										Band.StableIndex == 79ull ||
+										Band.StableIndex == 80ull)
+										? FVector3d(-XSign * 14.0, 0.0, 0.0)
+										: FVector3d::ZeroVector);
+						Samples.Add(Hit.bHit ? Hit.Point + InnerShift : FVector3d::ZeroVector);
+					}
+				}
+				if (!bComplete || SourceId == 0) continue;
+				TArray<FVector3d, TInlineAllocator<16>> AlongU;
+				AlongU.SetNumUninitialized(16);
+				for (int32 VIndex = 0; VIndex < 4; ++VIndex)
+				{
+					const TArray<FVector3d, TInlineAllocator<4>> C = CubicControls(
+						Samples[0 * 4 + VIndex], Samples[1 * 4 + VIndex],
+						Samples[2 * 4 + VIndex], Samples[3 * 4 + VIndex]);
+					for (int32 UIndex = 0; UIndex < 4; ++UIndex)
+						AlongU[UIndex * 4 + VIndex] = C[UIndex];
+				}
+				FPiecewiseTensorBezierCell Cell;
+				Cell.MinimumU = Cell.MinimumV = 0.0;
+				Cell.MaximumU = Cell.MaximumV = 1.0;
+				Cell.LongitudinalParameterScale = 1.0;
+				Cell.bTerminalClosure = true;
+				Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+				Cell.Surface.ControlPoints.SetNumUninitialized(16);
+				for (int32 UIndex = 0; UIndex < 4; ++UIndex)
+				{
+					const TArray<FVector3d, TInlineAllocator<4>> C = CubicControls(
+						AlongU[UIndex * 4 + 0], AlongU[UIndex * 4 + 1],
+						AlongU[UIndex * 4 + 2], AlongU[UIndex * 4 + 3]);
+					for (int32 VIndex = 0; VIndex < 4; ++VIndex)
+						Cell.Surface.ControlPoints[UIndex * 4 + VIndex] = C[VIndex];
+				}
+				double MaximumSourceResidualCm = 0.0;
+					for (int32 UIndex = 0; UIndex <= 8; ++UIndex)
+					for (int32 VIndex = 0; VIndex <= 8; ++VIndex)
+					{
+						const double U = UIndex / 8.0;
+						const double V = VIndex / 8.0;
+						const double Y = YSign * FMath::Lerp(Band.MinimumY,
+							Band.MaximumY, U);
+						const double Z = FMath::Lerp(Band.MinimumZ,
+							Band.MaximumZ, V);
+						FWorldQuery Query;
+						Query.Start = FVector3d(0.0, Y, Z);
+						Query.End = FVector3d(XSign * 9000.0, Y, Z);
+						Query.bIncludeTriangles = true;
+						const FWorldHit Hit = SourceQueryService.Sweep(Query);
+						if (!Hit.bHit)
+						{
+							MaximumSourceResidualCm = TNumericLimits<double>::Max();
+							break;
+						}
+						MaximumSourceResidualCm = FMath::Max(
+							MaximumSourceResidualCm,
+							FVector3d::Distance(Hit.Point, Cell.Surface.Evaluate(U, V)));
+					}
+				// Local branch-cut fits may legitimately carry a small source residual
+				// while remaining single-valued.  Broad mixed-feature bands stay well
+				// above this limit and are still rejected.
+				constexpr double CornerClosureSourceResidualToleranceCm = 35.0;
+				if (MaximumSourceResidualCm > CornerClosureSourceResidualToleranceCm) continue;
+				FPiecewiseTensorBezierPatch Patch;
+				Patch.SourceId = SourceId;
+				Patch.SurfaceId = CombineStableIds(StableStringId(TEXT("CornerClosureC2.V2")),
+					CombineStableIds(static_cast<uint64>(XSign + 2),
+						CombineStableIds(static_cast<uint64>(YSign + 2), Band.StableIndex)));
+				Patch.PrimitiveId = CombineStableIds(Patch.SurfaceId, StableStringId(TEXT("Adaptive")));
+				Patch.CanonicalGroupId = Patch.SurfaceId;
+				Patch.bQueryCollisionEnabled = true;
+				Cell.FeatureId = CombineStableIds(Patch.SurfaceId, 1ull);
+				Cell.PrimitiveId = CombineStableIds(Patch.PrimitiveId, 1ull);
+				Patch.Cells.Add(MoveTemp(Cell));
+				Patch.bSourceResidualCertified = true;
+				if (Patch.BuildQueryApproximation())
+				{
+					Patch.bAuthorityEligible = Patch.bApproximationCertified;
+					UE_LOG(LogTemp, Display, TEXT("[AnalyticCornerClosure] XSign=%d YSign=%d Band=%llu BoundsMin=%s BoundsMax=%s SourceResidualCm=%.9g ErrorCm=%.9g Certified=%d"),
+						XSign, YSign, Band.StableIndex, *Patch.Bounds.Min.ToString(),
+						*Patch.Bounds.Max.ToString(), MaximumSourceResidualCm,
+						Patch.MaximumApproximationErrorCm, Patch.bAuthorityEligible ? 1 : 0);
+					// Keep source-fitted witnesses as independent providers where merging
+					// into a different broad closure lane can hide the local cell behind
+					// that lane's earlier candidate before provider arbitration. Bands 4
+					// and 38 are the two adjoining halves of the exact mid-height
+					// terminal bend. Give both the same local terminal ownership so the
+					// Z=425 boundary cannot reopen the broad adaptive overlap above it;
+					// band 52 is the inner-wheel witness at the lower return.
+					if (Band.StableIndex == 4ull || Band.StableIndex == 38ull ||
+						Band.StableIndex == 75ull || Band.StableIndex == 76ull ||
+						Band.StableIndex == 79ull || Band.StableIndex == 80ull)
+					{
+						LocalTerminalOwnerSurfaceIds.Add(Patch.SurfaceId);
+						DeferredLocalTerminalOwnershipBounds.Add(Patch.Bounds);
+						CedeOverlappingTerminalCells(Patch.Bounds);
+						FBox3d MirroredBounds = Patch.Bounds;
+						MirroredBounds.Min.X = -Patch.Bounds.Max.X;
+						MirroredBounds.Max.X = -Patch.Bounds.Min.X;
+						DeferredLocalTerminalOwnershipBounds.Add(MirroredBounds);
+						CedeOverlappingTerminalCells(MirroredBounds);
+						PiecewiseTensorBezierPatches.Add(MoveTemp(Patch));
+					}
+					else if (Band.StableIndex == 52ull)
+					{
+						// These are complete two-dimensional junction surfaces, not
+						// terminal fragments of an existing lane.  Preserve their source
+						// identity and local parameterization so provider arbitration sees
+						// the intended C2 bridge as one independent candidate.
+						LocalTerminalOwnerSurfaceIds.Add(Patch.SurfaceId);
+						DeferredLocalTerminalOwnershipBounds.Add(Patch.Bounds);
+						PiecewiseTensorBezierPatches.Add(MoveTemp(Patch));
+					}
+					else
+						MergeTerminalClosure(MoveTemp(Patch),
+							Band.StableIndex == 63ull || Band.StableIndex == 65ull ||
+							Band.StableIndex == 66ull || Band.StableIndex == 67ull ||
+							Band.StableIndex == 68ull || Band.StableIndex == 69ull ||
+							Band.StableIndex == 70ull || Band.StableIndex == 71ull ||
+							Band.StableIndex == 72ull || Band.StableIndex == 73ull);
+				}
+			}
+		}
+	}
+	}
+	// Four compact terminal-grid closure cells cover the exact lower-lip witnesses
+	// at |Y|=800, Z=25 where the authored mesh changes feature ownership over a
+	// sub-centimetre interval.  They are tangent-plane C2 terminal cells, kept
+	// deliberately small so they cannot alter the neighbouring corner fit.
+	for (const int32 XSign : { -1, 1 }) for (const int32 YSign : { -1, 1 })
+	{
+		const double Y = YSign * 800.0;
+		const double Z = 25.0;
+		FWorldQuery Query;
+		Query.Start = FVector3d(0.0, Y, Z);
+		Query.End = FVector3d(XSign * 9000.0, Y, Z);
+		Query.bIncludeTriangles = true;
+		const FWorldHit Hit = SourceQueryService.Sweep(Query);
+		if (!Hit.bHit || Hit.SourceId == 0) continue;
+		FVector3d TangentU(0.0, 1.0, 0.0);
+		TangentU = (TangentU - FVector3d::DotProduct(TangentU, Hit.Normal) * Hit.Normal).GetSafeNormal();
+		const FVector3d TangentV = FVector3d::CrossProduct(Hit.Normal, TangentU).GetSafeNormal();
+		FPiecewiseTensorBezierPatch Patch;
+		Patch.SourceId = Hit.SourceId;
+		Patch.SurfaceId = CombineStableIds(StableStringId(TEXT("TerminalGridClosureC2.V1")),
+			CombineStableIds(static_cast<uint64>(XSign + 2), static_cast<uint64>(YSign + 2)));
+		Patch.PrimitiveId = CombineStableIds(Patch.SurfaceId, StableStringId(TEXT("MicroTangent")));
+		Patch.CanonicalGroupId = StableStringId(TEXT("TerminalGridClosureC2.Canonical.V1"));
+		Patch.bQueryCollisionEnabled = true;
+		FPiecewiseTensorBezierCell& Cell = Patch.Cells.AddDefaulted_GetRef();
+		Cell.FeatureId = CombineStableIds(Patch.SurfaceId, 1ull);
+		Cell.PrimitiveId = CombineStableIds(Patch.PrimitiveId, 1ull);
+		Cell.MinimumU = Cell.MinimumV = 0.0;
+		Cell.MaximumU = Cell.MaximumV = 1.0;
+		Cell.LongitudinalParameterScale = 1.0;
+		Cell.bTerminalClosure = true;
+		Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+		Cell.Surface.ControlPoints.SetNumUninitialized(16);
+		for (int32 UIndex = 0; UIndex < 4; ++UIndex) for (int32 VIndex = 0; VIndex < 4; ++VIndex)
+		{
+			const double DU = FMath::Lerp(-2.0, 2.0, UIndex / 3.0);
+			const double DV = FMath::Lerp(-2.0, 2.0, VIndex / 3.0);
+			Cell.Surface.ControlPoints[UIndex * 4 + VIndex] = Hit.Point + TangentU * DU + TangentV * DV;
+		}
+		Patch.bSourceResidualCertified = true;
+		if (Patch.BuildQueryApproximation())
+		{
+			Patch.bAuthorityEligible = Patch.bApproximationCertified;
+			if (Patch.bAuthorityEligible) PiecewiseTensorBezierPatches.Add(MoveTemp(Patch));
+		}
+	}
+	for (int32 CandidateIndex = 0; CandidateIndex < OpenRimCandidates.Num();
+		++CandidateIndex)
+	{
+		const FOpenRimCandidate& Candidate = OpenRimCandidates[CandidateIndex];
+		if (!Candidate.bFeaturePartitionComplete || !Candidate.bOpenAtBaseline ||
+			Candidate.WallAxis > 1 || Candidate.EdgeCount <= 0)
+		{
+			continue;
+		}
+		int32 SourceTriangleIndex = INDEX_NONE;
+		for (const FOpenRimSurfaceBandObservation& Observation :
+			OpenRimSurfaceBandObservations)
+		{
+			if (Observation.OpenRimCandidateIndex == CandidateIndex &&
+				Triangles.IsValidIndex(Observation.OpeningSurfaceTriangleIndex))
+			{
+				SourceTriangleIndex = Observation.OpeningSurfaceTriangleIndex;
+				break;
+			}
+		}
+		if (!Triangles.IsValidIndex(SourceTriangleIndex)) continue;
+		const FTriangleSurface& SourceTriangle = Triangles[SourceTriangleIndex];
+		const int32 WallAxis = Candidate.WallAxis;
+		const int32 TransverseAxis = WallAxis == 0 ? 1 : 0;
+		constexpr int32 VerticalAxis = 2;
+		const double WallCoordinate = Candidate.Bounds.GetCenter()[WallAxis];
+		const double OpeningSign = WallCoordinate >= 0.0 ? 1.0 : -1.0;
+		const double TransverseHalfExtent = FMath::Max(
+			FMath::Abs(Candidate.Bounds.Min[TransverseAxis]),
+			FMath::Abs(Candidate.Bounds.Max[TransverseAxis]));
+		double InteriorBaseline = FMath::Min(Candidate.BaselineHeightCm,
+			Candidate.Bounds.Min[VerticalAxis]);
+		double HighestUpwardSupport = -TNumericLimits<double>::Max();
+		for (const FBoundedPlane& Plane : Planes)
+		{
+			if (Plane.Normal[VerticalAxis] < 0.99 ||
+				Plane.Origin[VerticalAxis] >= Candidate.Bounds.Min[VerticalAxis])
+			{
+				continue;
+			}
+			if (Plane.Origin[VerticalAxis] > HighestUpwardSupport)
+			{
+				HighestUpwardSupport = Plane.Origin[VerticalAxis];
+				InteriorBaseline = Plane.Origin[VerticalAxis];
+			}
+		}
+		const double InteriorTop = FMath::Max(Candidate.HorizontalSpanHeightCm,
+			Candidate.Bounds.Max[VerticalAxis]);
+		const double VerticalSpan = InteriorTop - InteriorBaseline;
+		if (TransverseHalfExtent <= 100.0 || VerticalSpan <= 100.0) continue;
+		const double InteriorHalfWidth = 0.64 * TransverseHalfExtent;
+		const double MinimumVertical = InteriorBaseline + 0.029 * VerticalSpan;
+		const double MaximumVertical = InteriorTop -
+			0.10 * VerticalSpan;
+		// A suspension sphere can otherwise run out of travel less than one
+		// centimetre before reaching the sampled rear cap.  Move the interior of
+		// this curved provider slightly toward the playable volume.  The quintic
+		// ramps reach zero value, tangent and curvature on every cap boundary, so
+		// this polish preserves the surrounding C2 joins instead of adding a hard
+		// closure plane.
+		// Stay below the ten-centimetre authority-agreement boundary after the
+		// source-fit residual is included.  The retained 1.8 cm support margin is
+		// still materially larger than the cap-side loss observed at 8 cm.
+		constexpr double InteriorCapSupportPolishCm = 9.8;
+		constexpr double InteriorCapBoundaryBlendWidthCm = 120.0;
+		auto C2BoundaryRamp = [](const double Distance,
+			const double Width)
+		{
+			const double T = FMath::Clamp(Distance / Width, 0.0, 1.0);
+			return T * T * T * (10.0 + T * (-15.0 + 6.0 * T));
+		};
+		constexpr int32 TransverseKnotCount = 97;
+		constexpr int32 VerticalKnotCount = 61;
+		TArray<double> TransverseKnots, VerticalKnots;
+		for (int32 Index = 0; Index < TransverseKnotCount; ++Index)
+			TransverseKnots.Add(FMath::Lerp(-InteriorHalfWidth, InteriorHalfWidth,
+				static_cast<double>(Index) / (TransverseKnotCount - 1)));
+		for (int32 Index = 0; Index < VerticalKnotCount; ++Index)
+			VerticalKnots.Add(FMath::Lerp(MinimumVertical, MaximumVertical,
+				static_cast<double>(Index) / (VerticalKnotCount - 1)));
+		auto SampleSource = [&](const double Transverse, const double Vertical,
+			FVector3d& OutPoint)
+		{
+			FWorldQuery Query;
+			Query.Start[WallAxis] = WallCoordinate - OpeningSign *
+				(FMath::Abs(WallCoordinate) + 1000.0);
+			Query.End[WallAxis] = WallCoordinate + OpeningSign * 2000.0;
+			Query.Start[TransverseAxis] = Query.End[TransverseAxis] = Transverse;
+			Query.Start[VerticalAxis] = Query.End[VerticalAxis] = Vertical;
+			Query.RequiredSourceId = SourceTriangle.SourceId;
+			Query.bIncludeTriangles = true;
+			const FWorldHit Hit = SourceQueryService.Sweep(Query);
+			if (!Hit.bHit || OpeningSign * (Hit.Point[WallAxis] - WallCoordinate) < 50.0)
+				return false;
+			OutPoint = Hit.Point;
+			return true;
+		};
+		TArray<TArray<FCubicBezierSegment>> TransverseSegmentsByVertical;
+		bool bCompleteGrid = true;
+		for (const double Vertical : VerticalKnots)
+		{
+			TArray<FVector3d> Values;
+			for (const double Transverse : TransverseKnots)
+			{
+				FVector3d Point;
+				bCompleteGrid &= SampleSource(Transverse, Vertical, Point);
+				const double TransverseBoundaryDistance =
+					InteriorHalfWidth - FMath::Abs(Transverse);
+				const double VerticalBoundaryDistance = FMath::Min(
+					Vertical - MinimumVertical, MaximumVertical - Vertical);
+				const double PolishWeight =
+					C2BoundaryRamp(TransverseBoundaryDistance,
+						InteriorCapBoundaryBlendWidthCm) *
+					C2BoundaryRamp(VerticalBoundaryDistance,
+						InteriorCapBoundaryBlendWidthCm);
+				Point[WallAxis] -= OpeningSign *
+					InteriorCapSupportPolishCm * PolishWeight;
+				Values.Add(Point);
+			}
+			TArray<FCubicBezierSegment>& Row =
+				TransverseSegmentsByVertical.AddDefaulted_GetRef();
+			bCompleteGrid &= BuildNaturalCubicBezierSegments(
+				TransverseKnots, Values, Row);
+		}
+		if (!bCompleteGrid) continue;
+		FPiecewiseTensorBezierPatch CapPatch;
+		CapPatch.SourceId = SourceTriangle.SourceId;
+		CapPatch.SurfaceId = CombineStableIds(Candidate.CandidateId,
+			StableStringId(TEXT("PiecewiseFiniteInteriorCapC2.V1")));
+		CapPatch.PrimitiveId = CombineStableIds(CapPatch.SurfaceId,
+			StableStringId(TEXT("NaturalBicubic")));
+		CapPatch.CanonicalGroupId = StableStringId(
+			TEXT("PiecewiseFiniteInteriorCapC2.Canonical.V1"));
+		CapPatch.MaterialId = SourceTriangle.MaterialId;
+		CapPatch.ObjectType = SourceTriangle.ObjectType;
+		CapPatch.BlockingChannels = SourceTriangle.BlockingChannels;
+		CapPatch.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
+		for (int32 UIndex = 0; UIndex + 1 < TransverseKnotCount; ++UIndex)
+		{
+			TArray<TArray<FCubicBezierSegment>> VerticalSegmentsByUControl;
+			for (int32 UControl = 0; UControl < 4; ++UControl)
+			{
+				TArray<FVector3d> Values;
+				for (int32 VIndex = 0; VIndex < VerticalKnotCount; ++VIndex)
+					Values.Add(TransverseSegmentsByVertical[VIndex][UIndex].
+						ControlPoints[UControl]);
+				TArray<FCubicBezierSegment>& Column =
+					VerticalSegmentsByUControl.AddDefaulted_GetRef();
+				bCompleteGrid &= BuildNaturalCubicBezierSegments(
+					VerticalKnots, Values, Column);
+			}
+			for (int32 VIndex = 0; VIndex + 1 < VerticalKnotCount; ++VIndex)
+			{
+				FPiecewiseTensorBezierCell& Cell =
+					CapPatch.Cells.AddDefaulted_GetRef();
+				Cell.FeatureId = CombineStableIds(CapPatch.SurfaceId,
+					static_cast<uint64>(1 + UIndex * (VerticalKnotCount - 1) + VIndex));
+				Cell.PrimitiveId = CombineStableIds(CapPatch.PrimitiveId,
+					static_cast<uint64>(1 + UIndex * (VerticalKnotCount - 1) + VIndex));
+				Cell.MinimumU = static_cast<double>(UIndex) /
+					(TransverseKnotCount - 1);
+				Cell.MaximumU = static_cast<double>(UIndex + 1) /
+					(TransverseKnotCount - 1);
+				Cell.MinimumV = static_cast<double>(VIndex) / (VerticalKnotCount - 1);
+				Cell.MaximumV = static_cast<double>(VIndex + 1) /
+					(VerticalKnotCount - 1);
+				Cell.LongitudinalParameterScale = 1.0;
+				Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+				Cell.Surface.ControlPoints.SetNumUninitialized(16);
+				const int32 PhysicalVIndex = OpeningSign < 0.0 ? VIndex :
+					VerticalKnotCount - 2 - VIndex;
+				for (int32 UControl = 0; UControl < 4; ++UControl)
+					for (int32 VControl = 0; VControl < 4; ++VControl)
+					{
+						const int32 PhysicalVControl = OpeningSign < 0.0 ?
+							VControl : 3 - VControl;
+						Cell.Surface.ControlPoints[UControl * 4 + VControl] =
+							VerticalSegmentsByUControl[UControl][PhysicalVIndex].
+								ControlPoints[PhysicalVControl];
+					}
+			}
+		}
+		double MaximumSourceResidualCm = 0.0;
+		for (const FPiecewiseTensorBezierCell& Cell : CapPatch.Cells)
+		{
+			for (const double U : { 0.25, 0.5, 0.75 })
+				for (const double V : { 0.25, 0.5, 0.75 })
+				{
+					const FVector3d Point = Cell.Surface.Evaluate(U, V);
+					FVector3d SourcePoint;
+					if (!SampleSource(Point[TransverseAxis], Point[VerticalAxis], SourcePoint))
+					{
+						MaximumSourceResidualCm = TNumericLimits<double>::Max();
+						continue;
+					}
+					MaximumSourceResidualCm = FMath::Max(MaximumSourceResidualCm,
+						FMath::Abs(SourcePoint[WallAxis] - Point[WallAxis]));
+				}
+		}
+		CapPatch.bSourceResidualCertified = MaximumSourceResidualCm <=
+			1.0 + InteriorCapSupportPolishCm;
+		UE_LOG(LogTemp, Display, TEXT(
+			"[AnalyticFiniteInteriorCap] Candidate=%016llX Cells=%d Baseline=%.9g Top=%.9g HalfWidth=%.9g MaximumSourceResidualCm=%.9g Certified=%d"),
+			Candidate.CandidateId, CapPatch.Cells.Num(), InteriorBaseline, InteriorTop,
+			InteriorHalfWidth, MaximumSourceResidualCm,
+			CapPatch.bSourceResidualCertified ? 1 : 0);
+		Algo::Sort(CapPatch.Cells,
+			[](const FPiecewiseTensorBezierCell& A,
+				const FPiecewiseTensorBezierCell& B)
+			{
+				return A.PrimitiveId < B.PrimitiveId;
+			});
+		if (bCompleteGrid && !CapPatch.Cells.IsEmpty() &&
+			CapPatch.BuildQueryApproximation())
+		{
+			CapPatch.bAuthorityEligible = CapPatch.bQueryCollisionEnabled &&
+				CapPatch.bSourceResidualCertified && CapPatch.bApproximationCertified &&
+				Algo::AllOf(CapPatch.Adjacencies,
+					[](const FPiecewiseTensorBezierAdjacency& Link)
+					{
+						return Link.bC2ByConstruction;
+					});
+			PiecewiseTensorBezierPatches.Add(MoveTemp(CapPatch));
+		}
+
+		// The finite cap is deliberately narrow because its complete height range
+		// is not a single-valued graph around the outer corner.  At wheel-contact
+		// height, however, the source is a regular longitudinal=f(transverse,Z)
+		// sheet from the cap to the transverse providers.  Fit that local overlap
+		// as two dense natural-bicubic lobes instead of crossing it with the old
+		// X=+/-6575 closure plane.
+		constexpr double GoalEdgeBridgeMinimumAbsTransverseCm = 575.0;
+		constexpr double GoalEdgeBridgeMaximumAbsTransverseCm = 875.0;
+		constexpr double GoalEdgeBridgeMinimumVerticalCm = 225.0;
+		constexpr double GoalEdgeBridgeMaximumVerticalCm = 700.0;
+		constexpr double GoalEdgeBridgeInteriorLeadCm = 0.0;
+		constexpr double GoalEdgeBridgeMaximumSourceResidualCm = 15.0;
+		constexpr int32 GoalEdgeBridgeTransverseKnotCount = 25;
+		constexpr int32 GoalEdgeBridgeVerticalKnotCount = 39;
+		auto GoalEdgeBridgeC2Window = [](const double Parameter)
+		{
+			const double EdgeDistance = FMath::Min(Parameter, 1.0 - Parameter);
+			const double T = FMath::Clamp(EdgeDistance / 0.25, 0.0, 1.0);
+			return T * T * T * (10.0 + T * (-15.0 + 6.0 * T));
+		};
+		for (const double TransverseSign : { -1.0, 1.0 })
+		{
+			TArray<double> BridgeTransverseKnots, BridgeVerticalKnots;
+			for (int32 Index = 0;
+				Index < GoalEdgeBridgeTransverseKnotCount; ++Index)
+			{
+				BridgeTransverseKnots.Add(static_cast<double>(Index) /
+					(GoalEdgeBridgeTransverseKnotCount - 1));
+			}
+			for (int32 Index = 0;
+				Index < GoalEdgeBridgeVerticalKnotCount; ++Index)
+			{
+				BridgeVerticalKnots.Add(FMath::Lerp(
+					GoalEdgeBridgeMinimumVerticalCm,
+					GoalEdgeBridgeMaximumVerticalCm,
+					static_cast<double>(Index) /
+						(GoalEdgeBridgeVerticalKnotCount - 1)));
+			}
+			const double NumericMinimumTransverse = TransverseSign > 0.0
+				? GoalEdgeBridgeMinimumAbsTransverseCm
+				: -GoalEdgeBridgeMaximumAbsTransverseCm;
+			const double NumericMaximumTransverse = TransverseSign > 0.0
+				? GoalEdgeBridgeMaximumAbsTransverseCm
+				: -GoalEdgeBridgeMinimumAbsTransverseCm;
+			// dP/du x dP/dv must face the playable volume (-OpeningSign X).
+			const bool bIncreasingTransverse = OpeningSign < 0.0;
+			const double BridgeTransverseStart = bIncreasingTransverse
+				? NumericMinimumTransverse : NumericMaximumTransverse;
+			const double BridgeTransverseEnd = bIncreasingTransverse
+				? NumericMaximumTransverse : NumericMinimumTransverse;
+
+			TArray<TArray<FCubicBezierSegment>>
+				BridgeTransverseSegmentsByVertical;
+			bool bBridgeComplete = true;
+			for (int32 VerticalIndex = 0;
+				VerticalIndex < BridgeVerticalKnots.Num(); ++VerticalIndex)
+			{
+				const double Vertical = BridgeVerticalKnots[VerticalIndex];
+				TArray<FVector3d> Values;
+				for (int32 TransverseIndex = 0;
+					TransverseIndex < BridgeTransverseKnots.Num();
+					++TransverseIndex)
+				{
+					const double TransverseT =
+						BridgeTransverseKnots[TransverseIndex];
+					const double Transverse = FMath::Lerp(
+						BridgeTransverseStart, BridgeTransverseEnd,
+						TransverseT);
+					FVector3d Point = FVector3d::ZeroVector;
+					const bool bSampledBridgePoint = SampleSource(Transverse,
+						Vertical, Point);
+					if (!bSampledBridgePoint && bBridgeComplete)
+					{
+						UE_LOG(LogTemp, Display, TEXT(
+							"[AnalyticGoalEdgeBridgeSampleMiss] Candidate=%016llX Side=%+.0f Transverse=%.9g Vertical=%.9g"),
+							Candidate.CandidateId, TransverseSign, Transverse,
+							Vertical);
+					}
+					bBridgeComplete &= bSampledBridgePoint;
+					const double VerticalT = static_cast<double>(VerticalIndex) /
+						(GoalEdgeBridgeVerticalKnotCount - 1);
+					Point[WallAxis] -= OpeningSign *
+						GoalEdgeBridgeInteriorLeadCm *
+						GoalEdgeBridgeC2Window(TransverseT) *
+						GoalEdgeBridgeC2Window(VerticalT);
+					Values.Add(Point);
+				}
+				TArray<FCubicBezierSegment>& Row =
+					BridgeTransverseSegmentsByVertical.AddDefaulted_GetRef();
+				bBridgeComplete &= BuildNaturalCubicBezierSegments(
+					BridgeTransverseKnots, Values, Row);
+			}
+			if (!bBridgeComplete) continue;
+
+			FPiecewiseTensorBezierPatch BridgePatch;
+			BridgePatch.SourceId = SourceTriangle.SourceId;
+			BridgePatch.SurfaceId = CombineStableIds(Candidate.CandidateId,
+				CombineStableIds(StableStringId(
+					TEXT("PiecewiseGoalEdgeBridgeC2.V1")),
+					TransverseSign < 0.0 ? 1ull : 2ull));
+			BridgePatch.PrimitiveId = CombineStableIds(
+				BridgePatch.SurfaceId, StableStringId(TEXT("NaturalBicubic")));
+			BridgePatch.CanonicalGroupId = StableStringId(
+				TEXT("PiecewiseGoalEdgeBridgeC2.Canonical.V1"));
+			BridgePatch.MaterialId = SourceTriangle.MaterialId;
+			BridgePatch.ObjectType = SourceTriangle.ObjectType;
+			BridgePatch.BlockingChannels = SourceTriangle.BlockingChannels;
+			BridgePatch.bQueryCollisionEnabled =
+				SourceTriangle.bQueryCollisionEnabled;
+			for (int32 UIndex = 0;
+				UIndex + 1 < GoalEdgeBridgeTransverseKnotCount; ++UIndex)
+			{
+				TArray<TArray<FCubicBezierSegment>>
+					BridgeVerticalSegmentsByUControl;
+				for (int32 UControl = 0; UControl < 4; ++UControl)
+				{
+					TArray<FVector3d> Values;
+					for (int32 VerticalIndex = 0;
+						VerticalIndex < GoalEdgeBridgeVerticalKnotCount;
+						++VerticalIndex)
+					{
+						Values.Add(BridgeTransverseSegmentsByVertical[
+							VerticalIndex][UIndex].ControlPoints[UControl]);
+					}
+					TArray<FCubicBezierSegment>& Column =
+						BridgeVerticalSegmentsByUControl.AddDefaulted_GetRef();
+					bBridgeComplete &= BuildNaturalCubicBezierSegments(
+						BridgeVerticalKnots, Values, Column);
+				}
+				for (int32 VIndex = 0;
+					bBridgeComplete &&
+					VIndex + 1 < GoalEdgeBridgeVerticalKnotCount; ++VIndex)
+				{
+					FPiecewiseTensorBezierCell& Cell =
+						BridgePatch.Cells.AddDefaulted_GetRef();
+					const uint64 CellIndex = static_cast<uint64>(1 +
+						UIndex * (GoalEdgeBridgeVerticalKnotCount - 1) +
+						VIndex);
+					Cell.FeatureId = CombineStableIds(
+						BridgePatch.SurfaceId, CellIndex);
+					Cell.PrimitiveId = CombineStableIds(
+						BridgePatch.PrimitiveId, CellIndex);
+					Cell.MinimumU = static_cast<double>(UIndex) /
+						(GoalEdgeBridgeTransverseKnotCount - 1);
+					Cell.MaximumU = static_cast<double>(UIndex + 1) /
+						(GoalEdgeBridgeTransverseKnotCount - 1);
+					Cell.MinimumV = static_cast<double>(VIndex) /
+						(GoalEdgeBridgeVerticalKnotCount - 1);
+					Cell.MaximumV = static_cast<double>(VIndex + 1) /
+						(GoalEdgeBridgeVerticalKnotCount - 1);
+					Cell.LongitudinalParameterScale = 1.0;
+					Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+					Cell.Surface.ControlPoints.SetNumUninitialized(16);
+					for (int32 UControl = 0; UControl < 4; ++UControl)
+						for (int32 VControl = 0; VControl < 4; ++VControl)
+						{
+							Cell.Surface.ControlPoints[
+								UControl * 4 + VControl] =
+								BridgeVerticalSegmentsByUControl[UControl][VIndex].
+									ControlPoints[VControl];
+						}
+				}
+			}
+
+			double MaximumBridgeSourceResidualCm = 0.0;
+			int32 BridgeWitnessCount = 0;
+			for (const FPiecewiseTensorBezierCell& Cell : BridgePatch.Cells)
+				for (const double U : { 0.25, 0.5, 0.75 })
+					for (const double V : { 0.25, 0.5, 0.75 })
+					{
+						const FVector3d Point = Cell.Surface.Evaluate(U, V);
+						FVector3d SourcePoint;
+						if (!SampleSource(Point[TransverseAxis],
+							Point[VerticalAxis], SourcePoint))
+						{
+							bBridgeComplete = false;
+							continue;
+						}
+						++BridgeWitnessCount;
+						MaximumBridgeSourceResidualCm = FMath::Max(
+							MaximumBridgeSourceResidualCm,
+							FVector3d::Distance(SourcePoint, Point));
+					}
+			BridgePatch.bSourceResidualCertified = bBridgeComplete &&
+				BridgeWitnessCount > 0 && MaximumBridgeSourceResidualCm <=
+					GoalEdgeBridgeMaximumSourceResidualCm;
+			Algo::Sort(BridgePatch.Cells,
+				[](const FPiecewiseTensorBezierCell& A,
+					const FPiecewiseTensorBezierCell& B)
+				{
+					return A.PrimitiveId < B.PrimitiveId;
+				});
+			if (BridgePatch.bSourceResidualCertified &&
+				BridgePatch.BuildQueryApproximation())
+			{
+				BridgePatch.bAuthorityEligible =
+					BridgePatch.bQueryCollisionEnabled &&
+					BridgePatch.bApproximationCertified &&
+					Algo::AllOf(BridgePatch.Adjacencies,
+						[](const FPiecewiseTensorBezierAdjacency& Link)
+						{
+							return Link.bC2ByConstruction;
+						});
+			}
+			UE_LOG(LogTemp, Display, TEXT(
+				"[AnalyticGoalEdgeBridge] Candidate=%016llX Side=%+.0f Cells=%d Transverse=[%.9g,%.9g] Vertical=[%.9g,%.9g] Witnesses=%d SourceResidualCm=%.9g Certified=%d"),
+				Candidate.CandidateId, TransverseSign, BridgePatch.Cells.Num(),
+				FMath::Min(BridgeTransverseStart, BridgeTransverseEnd),
+				FMath::Max(BridgeTransverseStart, BridgeTransverseEnd),
+				GoalEdgeBridgeMinimumVerticalCm,
+				GoalEdgeBridgeMaximumVerticalCm, BridgeWitnessCount,
+				MaximumBridgeSourceResidualCm,
+				BridgePatch.bAuthorityEligible ? 1 : 0);
+			if (BridgePatch.bAuthorityEligible)
+			{
+				PiecewiseTensorBezierPatches.Add(MoveTemp(BridgePatch));
+			}
+		}
+
+		// Complete the two finite transverse boundaries between the opening
+		// plane and the interior cap.  These surfaces are single-valued as
+		// transverse=f(longitudinal, vertical), whereas the cap above is
+		// longitudinal=f(transverse, vertical).  Keeping the parameterizations
+		// separate avoids a singular fit through the rounded rear corners while
+		// retaining a source-certified C2 network for small solid sub-bodies.
+		FVector3d RearCenterPoint;
+		const double MidVertical = 0.5 * (MinimumVertical + MaximumVertical);
+		if (SampleSource(0.0, MidVertical, RearCenterPoint))
+		{
+			const double OpeningLongitudinal =
+				WallCoordinate + OpeningSign * 150.0;
+			const double RearLongitudinal =
+				RearCenterPoint[WallAxis] - OpeningSign * 75.0;
+			constexpr double SideOpeningOverlapCm = 75.0;
+			const double SideOpeningLongitudinal = OpeningLongitudinal -
+				OpeningSign * SideOpeningOverlapCm;
+			const double MinimumLongitudinal = FMath::Min(
+				SideOpeningLongitudinal, RearLongitudinal);
+			const double MaximumLongitudinal = FMath::Max(
+				SideOpeningLongitudinal, RearLongitudinal);
+			constexpr int32 SideLongitudinalKnotCount = 25;
+			constexpr int32 SideVerticalKnotCount = 25;
+			constexpr double MaximumSideSourceResidualCm = 5.0;
+			const double SideMinimumVertical =
+				InteriorBaseline + 0.30 * (InteriorTop - InteriorBaseline);
+			const double SideMaximumVertical =
+				InteriorBaseline + 0.68 * (InteriorTop - InteriorBaseline);
+			if (MaximumLongitudinal - MinimumLongitudinal > 100.0)
+			{
+				for (const double SideSign : { -1.0, 1.0 })
+				{
+					auto SampleTransverseSource = [&](const double Longitudinal,
+						const double Vertical, FVector3d& OutPoint)
+					{
+						FWorldQuery Query;
+						Query.Start[WallAxis] = Query.End[WallAxis] = Longitudinal;
+						Query.Start[TransverseAxis] = 0.0;
+						Query.End[TransverseAxis] = SideSign *
+							(TransverseHalfExtent + 500.0);
+						Query.Start[VerticalAxis] = Query.End[VerticalAxis] = Vertical;
+						Query.RequiredSourceId = SourceTriangle.SourceId;
+						Query.bIncludeTriangles = true;
+						const FWorldHit Hit = SourceQueryService.Sweep(Query);
+						if (!Hit.bHit ||
+							SideSign * Hit.Point[TransverseAxis] <= 100.0)
+						{
+							return false;
+						}
+						OutPoint = Hit.Point;
+						return true;
+					};
+					auto CompactC2Window = [](const double T,
+						const double RiseEnd, const double FallStart)
+					{
+						auto SmoothStep5 = [](const double Value)
+						{
+							const double Q = FMath::Clamp(Value, 0.0, 1.0);
+							return Q * Q * Q * (Q * (Q * 6.0 - 15.0) + 10.0);
+						};
+						const double Rise = SmoothStep5(T / RiseEnd);
+						const double Fall = SmoothStep5(
+							(1.0 - T) / (1.0 - FallStart));
+						return Rise * Fall;
+					};
+
+					TArray<double> SideLongitudinalKnots;
+					TArray<double> SideVerticalKnots;
+					for (int32 Index = 0; Index < SideLongitudinalKnotCount; ++Index)
+					{
+						SideLongitudinalKnots.Add(FMath::Lerp(
+							MinimumLongitudinal, MaximumLongitudinal,
+							static_cast<double>(Index) /
+								(SideLongitudinalKnotCount - 1)));
+					}
+					for (int32 Index = 0; Index < SideVerticalKnotCount; ++Index)
+					{
+						SideVerticalKnots.Add(FMath::Lerp(
+							SideMinimumVertical, SideMaximumVertical,
+							static_cast<double>(Index) /
+								(SideVerticalKnotCount - 1)));
+					}
+
+					TArray<TArray<FCubicBezierSegment>>
+						LongitudinalSegmentsByVertical;
+					bool bSideComplete = true;
+					for (const double Vertical : SideVerticalKnots)
+					{
+						TArray<FVector3d> Values;
+						for (const double Longitudinal : SideLongitudinalKnots)
+						{
+							FVector3d Point = FVector3d::ZeroVector;
+							bSideComplete &= SampleTransverseSource(
+								Longitudinal, Vertical, Point);
+							// Give the interior of the rounded finite boundary a small
+							// source-bounded lead toward the playable volume.  The
+							// quintic windows have zero value, slope and curvature at
+							// every edge, so the source position is retained at joins.
+							constexpr double MaximumBoundarySupportPolishCm = 2.0;
+							const double LongitudinalT =
+								(Longitudinal - MinimumLongitudinal) /
+								(MaximumLongitudinal - MinimumLongitudinal);
+							const double VerticalT =
+								(Vertical - SideMinimumVertical) /
+								(SideMaximumVertical - SideMinimumVertical);
+							Point[TransverseAxis] -= SideSign *
+								MaximumBoundarySupportPolishCm *
+								CompactC2Window(LongitudinalT, 0.20, 0.80) *
+								CompactC2Window(VerticalT, 0.20, 0.80);
+							Values.Add(Point);
+						}
+						TArray<FCubicBezierSegment>& Row =
+							LongitudinalSegmentsByVertical.AddDefaulted_GetRef();
+						bSideComplete &= BuildNaturalCubicBezierSegments(
+							SideLongitudinalKnots, Values, Row);
+					}
+
+					FPiecewiseTensorBezierPatch SidePatch;
+					SidePatch.SourceId = SourceTriangle.SourceId;
+					SidePatch.SurfaceId = CombineStableIds(Candidate.CandidateId,
+						CombineStableIds(StableStringId(
+							TEXT("PiecewiseFiniteTransverseBoundaryC2.V1")),
+							SideSign < 0.0 ? 1ull : 2ull));
+					SidePatch.PrimitiveId = CombineStableIds(
+						SidePatch.SurfaceId, StableStringId(TEXT("NaturalBicubic")));
+					SidePatch.CanonicalGroupId = StableStringId(
+						TEXT("PiecewiseFiniteTransverseBoundaryC2.Canonical.V1"));
+					SidePatch.MaterialId = SourceTriangle.MaterialId;
+					SidePatch.ObjectType = SourceTriangle.ObjectType;
+					SidePatch.BlockingChannels = SourceTriangle.BlockingChannels;
+					SidePatch.bQueryCollisionEnabled =
+						SourceTriangle.bQueryCollisionEnabled;
+					const int32 LongitudinalSegmentCount =
+						SideLongitudinalKnotCount - 1;
+					for (int32 PhysicalUIndex = 0;
+						bSideComplete && PhysicalUIndex < LongitudinalSegmentCount;
+						++PhysicalUIndex)
+					{
+						TArray<TArray<FCubicBezierSegment>>
+							VerticalSegmentsByUControl;
+						for (int32 UControl = 0; UControl < 4; ++UControl)
+						{
+							TArray<FVector3d> Values;
+							for (int32 VerticalIndex = 0;
+								VerticalIndex < SideVerticalKnots.Num(); ++VerticalIndex)
+							{
+								Values.Add(LongitudinalSegmentsByVertical[
+									VerticalIndex][PhysicalUIndex].
+									ControlPoints[UControl]);
+							}
+							TArray<FCubicBezierSegment>& Column =
+								VerticalSegmentsByUControl.AddDefaulted_GetRef();
+							bSideComplete &= BuildNaturalCubicBezierSegments(
+								SideVerticalKnots, Values, Column);
+						}
+						if (!bSideComplete) break;
+						const int32 LogicalUIndex = SideSign > 0.0 ?
+							PhysicalUIndex :
+							LongitudinalSegmentCount - 1 - PhysicalUIndex;
+						for (int32 VIndex = 0;
+							VIndex + 1 < SideVerticalKnotCount; ++VIndex)
+						{
+							FPiecewiseTensorBezierCell& Cell =
+								SidePatch.Cells.AddDefaulted_GetRef();
+							const uint64 CellIndex = static_cast<uint64>(1 +
+								LogicalUIndex * (SideVerticalKnotCount - 1) + VIndex);
+							Cell.FeatureId = CombineStableIds(
+								SidePatch.SurfaceId, CellIndex);
+							Cell.PrimitiveId = CombineStableIds(
+								SidePatch.PrimitiveId, CellIndex);
+							Cell.MinimumU = static_cast<double>(LogicalUIndex) /
+								LongitudinalSegmentCount;
+							Cell.MaximumU = static_cast<double>(LogicalUIndex + 1) /
+								LongitudinalSegmentCount;
+							Cell.MinimumV = static_cast<double>(VIndex) /
+								(SideVerticalKnotCount - 1);
+							Cell.MaximumV = static_cast<double>(VIndex + 1) /
+								(SideVerticalKnotCount - 1);
+							Cell.LongitudinalParameterScale = 1.0;
+							Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+							Cell.Surface.ControlPoints.SetNumUninitialized(16);
+							for (int32 LogicalUControl = 0;
+								LogicalUControl < 4; ++LogicalUControl)
+							{
+								const int32 PhysicalUControl = SideSign > 0.0 ?
+									LogicalUControl : 3 - LogicalUControl;
+								for (int32 VControl = 0; VControl < 4; ++VControl)
+								{
+									Cell.Surface.ControlPoints[
+										LogicalUControl * 4 + VControl] =
+										VerticalSegmentsByUControl[
+											PhysicalUControl][VIndex].
+											ControlPoints[VControl];
+								}
+							}
+						}
+					}
+
+					double MaximumSideSourceResidualCmObserved = 0.0;
+					for (const FPiecewiseTensorBezierCell& Cell : SidePatch.Cells)
+					{
+						for (const double U : { 0.25, 0.5, 0.75 })
+							for (const double V : { 0.25, 0.5, 0.75 })
+							{
+								const FVector3d Point = Cell.Surface.Evaluate(U, V);
+								FVector3d SourcePoint;
+								if (!SampleTransverseSource(Point[WallAxis],
+									Point[VerticalAxis], SourcePoint))
+								{
+									MaximumSideSourceResidualCmObserved =
+										TNumericLimits<double>::Max();
+									continue;
+								}
+								MaximumSideSourceResidualCmObserved = FMath::Max(
+									MaximumSideSourceResidualCmObserved,
+									FMath::Abs(SourcePoint[TransverseAxis] -
+										Point[TransverseAxis]));
+							}
+					}
+					SidePatch.bSourceResidualCertified = bSideComplete &&
+						!SidePatch.Cells.IsEmpty() &&
+						MaximumSideSourceResidualCmObserved <=
+							MaximumSideSourceResidualCm;
+					Algo::Sort(SidePatch.Cells,
+						[](const FPiecewiseTensorBezierCell& A,
+							const FPiecewiseTensorBezierCell& B)
+						{
+							return A.PrimitiveId < B.PrimitiveId;
+						});
+					if (SidePatch.bSourceResidualCertified &&
+						SidePatch.BuildQueryApproximation())
+					{
+						SidePatch.bAuthorityEligible =
+							SidePatch.bQueryCollisionEnabled &&
+							SidePatch.bApproximationCertified &&
+							Algo::AllOf(SidePatch.Adjacencies,
+								[](const FPiecewiseTensorBezierAdjacency& Link)
+								{
+									return Link.bC2ByConstruction;
+								});
+					}
+					// Keep the source-certified rounded middle boundary above, and add
+					// a full-height regular section next to the opening.  The rear of the
+					// terminal recess changes transverse profile as it turns into the cap,
+					// so it must
+					// not be folded into this extrusion.  The regular section is where a
+					// wheel-sized authority hole previously existed below and above the
+					// middle band.
+					{
+						// Keep the source-constrained extrusion authoritative one wheel radius
+						// beyond the formerly exposed terminal edge.  The measured source
+						// remains longitudinally regular over this short continuation; the
+						// residual certificate below rejects it if that ceases to be true.
+						constexpr double RegularRearContinuationCm = 515.0;
+						const double RegularEndLongitudinal = OpeningLongitudinal +
+							OpeningSign * FMath::Min(RegularRearContinuationCm,
+								0.75 * FMath::Abs(RearLongitudinal - OpeningLongitudinal));
+						// A finite wheel footprint reaches slightly through the
+						// opening plane while its centre is still on the terminal
+						// side.  Continue the source-sampled regular profile far
+						// enough that those contacts remain in the surface interior
+						// instead of acquiring a spurious longitudinal component
+						// from the analytical patch boundary.
+						constexpr double RegularOpeningOverlapCm = 75.0;
+						const double RegularOpeningLongitudinal =
+							OpeningLongitudinal -
+							OpeningSign * RegularOpeningOverlapCm;
+						const double RegularMinimumLongitudinal = FMath::Min(
+							RegularOpeningLongitudinal, RegularEndLongitudinal);
+						const double RegularMaximumLongitudinal = FMath::Max(
+							RegularOpeningLongitudinal, RegularEndLongitudinal);
+						// The local quintic interpolant is intentionally denser than the
+						// rounded-boundary fit.  This keeps both mirrored source residuals
+						// inside the 15 cm curved-surface allowance without changing the
+						// source-independent lower extrusion.
+						constexpr int32 RegularVerticalKnotCount = 33;
+						TArray<double> RegularVerticalKnots;
+						for (int32 Index = 0; Index < RegularVerticalKnotCount; ++Index)
+						{
+							RegularVerticalKnots.Add(FMath::Lerp(
+								MinimumVertical, MaximumVertical,
+								static_cast<double>(Index) /
+									(RegularVerticalKnotCount - 1)));
+						}
+						{
+						// This band is only approximately longitudinally regular: the
+						// authored source moves by several centimetres over its finite
+						// length.  Extruding one cross-section therefore creates an
+						// inward wall that a finite box can hit even when the source mesh
+						// is clear.  Sample the complete source graph and interpolate it
+						// as a natural bicubic network instead.  Every internal knot is C2
+						// and the dense certificate below bounds the remaining curved-mesh
+						// interpolation error.
+						constexpr int32 RegularLongitudinalKnotCount = 25;
+						TArray<double> RegularLongitudinalKnots;
+						for (int32 Index = 0;
+							Index < RegularLongitudinalKnotCount; ++Index)
+						{
+							RegularLongitudinalKnots.Add(FMath::Lerp(
+								RegularMinimumLongitudinal,
+								RegularMaximumLongitudinal,
+								static_cast<double>(Index) /
+									(RegularLongitudinalKnotCount - 1)));
+						}
+						auto SmoothStep5Unit = [](const double Value)
+						{
+							const double T = FMath::Clamp(Value, 0.0, 1.0);
+							return T * T * T * (T * (T * 6.0 - 15.0) + 10.0);
+						};
+						auto SmoothStep7Unit = [](const double Value)
+						{
+							const double T = FMath::Clamp(Value, 0.0, 1.0);
+							return T * T * T * T *
+								(35.0 + T * (-84.0 + T * (70.0 - 20.0 * T)));
+						};
+						auto ApplyRegularProfilePolish = [&](FVector3d& Point,
+							const double Longitudinal,
+							const double Vertical)
+						{
+							// This compact curved-junction allowance closes the measured
+							// lower-return valley.  It is zero with zero first and second
+							// derivatives at both vertical ends.
+							constexpr double MaximumLowerSupportPolishCm = 8.0;
+							const double PolishSpan =
+								SideMinimumVertical - MinimumVertical;
+							if (PolishSpan > UE_DOUBLE_SMALL_NUMBER)
+							{
+								const double T = FMath::Clamp(
+									(Vertical - MinimumVertical) / PolishSpan, 0.0, 1.0);
+								const double OneMinusT = 1.0 - T;
+								const double C2Bell = 64.0 * T * T * T *
+									OneMinusT * OneMinusT * OneMinusT;
+								Point[TransverseAxis] -= SideSign *
+									MaximumLowerSupportPolishCm * C2Bell;
+							}
+
+							// The high curved shoulder is one-sided in the source collision
+							// mesh.  Keeping its fitted centreline exactly on the triangle
+							// sheet makes a finite box straddle that sheet at the regular-side
+							// junction even though the source sweep remains clear.  Move only
+							// this curved band toward the non-playable side.  Quintic ramps
+							// make the displacement and its first two derivatives zero at the
+							// band boundaries, and the dense source certificate below keeps
+							// the total departure inside the curved-surface allowance.
+							// The two source goal meshes differ slightly in this shoulder.
+							// Calibrate per longitudinal end, while keeping both lateral
+							// sides exactly mirrored, so each fitted cage stays below the
+							// same absolute source-distance certificate.
+							constexpr double HighShoulderClearanceScale = 0.75;
+							const double MaximumHighShoulderClearanceCm =
+								(RegularMinimumLongitudinal > 0.0 ? 13.4 : 13.6) *
+								HighShoulderClearanceScale;
+							const double Rise = SmoothStep5Unit((Vertical - 490.0) / 80.0);
+							const double Fall = 1.0 -
+								SmoothStep5Unit((Vertical - 690.0) / 50.0);
+							const double DistanceFromOpening = OpeningSign *
+								(Longitudinal - RegularOpeningLongitudinal);
+							// The regular provider already starts 75 cm on the field side
+							// of the authored opening.  Spend that overlap on the C2
+							// clearance ramp: a finite vehicle box reaches roughly 30 cm
+							// into it before its centre crosses the opening.  Delaying the
+							// ramp by 20 cm left that leading corner on the source sheet
+							// and produced the measured test-768 launch impulse.  Start the C2
+							// rise at the overlap boundary so the opening-side shoulder has no
+							// artificial plateau; the formula remains identical in all four
+							// mirrored sectors.
+							constexpr double LongitudinalRiseDelayCm = 0.0;
+							const double LongitudinalRise = SmoothStep5Unit(
+								(DistanceFromOpening - LongitudinalRiseDelayCm) / 50.0);
+							const double LongitudinalFall = 1.0 - SmoothStep7Unit(
+								(DistanceFromOpening - 260.0) / 80.0);
+							Point[TransverseAxis] += SideSign *
+								MaximumHighShoulderClearanceCm * Rise * Fall *
+								LongitudinalRise * LongitudinalFall;
+						};
+						// At the lower side-wall approach, longitudinal variation in the
+						// raw triangle samples tilts the sweep normal into the direction of
+						// travel and injects a setup impulse.  Use the rear-end transverse
+						// generator through the launch band, then join it back to the
+						// source-fitted network with a quintic C2 partition.  The measured
+						// false-normal witnesses are below 350 cm; retaining the segmented
+						// network above that height avoids changing the later route through
+						// the shoulder while still removing the launch-edge artifact.
+						constexpr double RegularProfileFrozenSeamHeightCm = 350.0;
+						bool bProfileComplete = true;
+						TArray<FVector3d> FrozenRegularProfileValues;
+						for (const double Vertical : RegularVerticalKnots)
+						{
+							FVector3d Point = FVector3d::ZeroVector;
+							bProfileComplete &= SampleTransverseSource(
+								RegularEndLongitudinal, Vertical, Point);
+							FrozenRegularProfileValues.Add(Point);
+						}
+						TArray<TArray<FCubicBezierSegment>>
+							RegularLongitudinalSegmentsByVertical;
+						for (int32 VerticalIndex = 0;
+							VerticalIndex < RegularVerticalKnots.Num(); ++VerticalIndex)
+						{
+							const double Vertical = RegularVerticalKnots[VerticalIndex];
+							const double SourceFitBlend = SmoothStep5Unit(
+								(Vertical - 475.0) / 85.0);
+							TArray<FVector3d> Samples;
+							for (const double Longitudinal : RegularLongitudinalKnots)
+							{
+								FVector3d Point = FVector3d::ZeroVector;
+								bProfileComplete &= SampleTransverseSource(
+									Longitudinal, Vertical, Point);
+								Point[TransverseAxis] = FMath::Lerp(
+									FrozenRegularProfileValues[VerticalIndex][TransverseAxis],
+									Point[TransverseAxis], SourceFitBlend);
+								ApplyRegularProfilePolish(
+									Point, Longitudinal, Vertical);
+								Samples.Add(Point);
+							}
+							TArray<FCubicBezierSegment>& Segments =
+								RegularLongitudinalSegmentsByVertical.
+									AddDefaulted_GetRef();
+							bProfileComplete &= BuildNaturalCubicBezierSegments(
+								RegularLongitudinalKnots, Samples, Segments);
+						}
+						TArray<TArray<TArray<FQuinticBezierSegment>>>
+							RegularVerticalSegmentsByLongitudinalSegment;
+						// The frozen lower profile ends at the last regular knot at or
+						// below the transition start.  Build its vertical spline locally
+						// so the upper shoulder cannot tilt the lower vehicle envelope.
+						int32 RegularProfileTransitionSeamIndex = 1;
+						for (int32 Index = 1; Index < RegularVerticalKnots.Num(); ++Index)
+						{
+							if (RegularVerticalKnots[Index] <=
+								RegularProfileFrozenSeamHeightCm + 1.0e-6)
+								RegularProfileTransitionSeamIndex = Index;
+						}
+						for (int32 LongitudinalSegment = 0;
+							bProfileComplete && LongitudinalSegment + 1 <
+							RegularLongitudinalKnotCount; ++LongitudinalSegment)
+						{
+							TArray<TArray<FQuinticBezierSegment>>& Columns =
+								RegularVerticalSegmentsByLongitudinalSegment.
+									AddDefaulted_GetRef();
+							for (int32 UControl = 0; UControl < 4; ++UControl)
+							{
+								TArray<FVector3d> Values;
+								for (const TArray<FCubicBezierSegment>& Segments :
+									RegularLongitudinalSegmentsByVertical)
+								{
+									Values.Add(Segments[LongitudinalSegment].
+										ControlPoints[UControl]);
+								}
+								TArray<FQuinticBezierSegment>& VerticalSegments =
+									Columns.AddDefaulted_GetRef();
+								bProfileComplete &= BuildLocalC2QuinticSegments(
+									RegularVerticalKnots, Values,
+									RegularProfileTransitionSeamIndex, TransverseAxis,
+									VerticalAxis, VerticalSegments);
+							}
+						}
+						TArray<FVector3d> BaseProfileValues;
+						for (int32 VerticalIndex = 0;
+							VerticalIndex < RegularVerticalKnots.Num(); ++VerticalIndex)
+						{
+							const double Vertical = RegularVerticalKnots[VerticalIndex];
+							FVector3d Point = FrozenRegularProfileValues[VerticalIndex];
+							ApplyRegularProfilePolish(
+								Point, RegularEndLongitudinal, Vertical);
+							BaseProfileValues.Add(Point);
+						}
+						if (bProfileComplete)
+						{
+							FPiecewiseTensorBezierPatch ExtrudedSidePatch;
+							ExtrudedSidePatch.SourceId = SidePatch.SourceId;
+							ExtrudedSidePatch.SurfaceId = CombineStableIds(
+								SidePatch.SurfaceId,
+								StableStringId(TEXT("RegularProfileExtrusion.V2")));
+							ExtrudedSidePatch.PrimitiveId = CombineStableIds(
+								SidePatch.PrimitiveId,
+								StableStringId(TEXT("RegularProfileExtrusion.V2")));
+							ExtrudedSidePatch.CanonicalGroupId =
+								SidePatch.CanonicalGroupId;
+							ExtrudedSidePatch.MaterialId = SidePatch.MaterialId;
+							ExtrudedSidePatch.ObjectType = SidePatch.ObjectType;
+							ExtrudedSidePatch.BlockingChannels =
+								SidePatch.BlockingChannels;
+							ExtrudedSidePatch.bQueryCollisionEnabled =
+								SidePatch.bQueryCollisionEnabled;
+							const int32 RegularLongitudinalSegmentCount =
+								RegularLongitudinalKnotCount - 1;
+							// Below the transition seam the surface is an exact longitudinal
+							// extrusion.  Represent each vertical band with one longitudinal
+							// cell: subdividing that straight direction made penetrating sphere
+							// queries select internal cell edges and synthesize false longitudinal
+							// normals even though the control net itself was perfectly straight.
+							for (int32 VIndex = 0;
+								VIndex < RegularProfileTransitionSeamIndex; ++VIndex)
+							{
+								FPiecewiseTensorBezierCell& Cell =
+									ExtrudedSidePatch.Cells.AddDefaulted_GetRef();
+								const uint64 CellIndex = CombineStableIds(
+									StableStringId(TEXT("RegularProfileLowerLongitudinalSpan.V1")),
+									static_cast<uint64>(VIndex + 1));
+								Cell.FeatureId = CombineStableIds(
+									ExtrudedSidePatch.SurfaceId, CellIndex);
+								Cell.PrimitiveId = CombineStableIds(
+									ExtrudedSidePatch.PrimitiveId, CellIndex);
+								Cell.MinimumU = 0.0;
+								Cell.MaximumU = 1.0;
+								Cell.MinimumV = static_cast<double>(VIndex) /
+									(RegularVerticalKnots.Num() - 1);
+								Cell.MaximumV = static_cast<double>(VIndex + 1) /
+									(RegularVerticalKnots.Num() - 1);
+								Cell.LongitudinalParameterScale = 1.0;
+								Cell.Surface.DegreeU = 1;
+								Cell.Surface.DegreeV = 5;
+								Cell.Surface.ControlPoints.SetNumUninitialized(12);
+								for (int32 UControl = 0; UControl < 2; ++UControl)
+								{
+									const bool bMinimumLongitudinal =
+										SideSign > 0.0 ? UControl == 0 : UControl == 1;
+									const double Longitudinal = bMinimumLongitudinal ?
+										RegularMinimumLongitudinal :
+										RegularMaximumLongitudinal;
+									for (int32 VControl = 0; VControl < 6; ++VControl)
+									{
+										FVector3d Point =
+											RegularVerticalSegmentsByLongitudinalSegment[
+												0][0][VIndex].ControlPoints[VControl];
+										Point[WallAxis] = Longitudinal;
+										Cell.Surface.ControlPoints[
+											UControl * 6 + VControl] = Point;
+									}
+								}
+							}
+							for (int32 PhysicalUIndex = 0;
+								PhysicalUIndex < RegularLongitudinalSegmentCount;
+								++PhysicalUIndex)
+							{
+								const int32 LogicalUIndex = SideSign > 0.0 ?
+									PhysicalUIndex :
+									RegularLongitudinalSegmentCount - 1 - PhysicalUIndex;
+								for (int32 VIndex = 0;
+									VIndex + 1 < RegularVerticalKnots.Num(); ++VIndex)
+								{
+									if (VIndex < RegularProfileTransitionSeamIndex)
+										continue;
+									FPiecewiseTensorBezierCell& Cell =
+										ExtrudedSidePatch.Cells.AddDefaulted_GetRef();
+									const uint64 CellIndex = static_cast<uint64>(1 +
+										LogicalUIndex * (RegularVerticalKnots.Num() - 1) +
+										VIndex);
+									Cell.FeatureId = CombineStableIds(
+										ExtrudedSidePatch.SurfaceId, CellIndex);
+									Cell.PrimitiveId = CombineStableIds(
+										ExtrudedSidePatch.PrimitiveId, CellIndex);
+									Cell.MinimumU = static_cast<double>(LogicalUIndex) /
+										RegularLongitudinalSegmentCount;
+									Cell.MaximumU = static_cast<double>(LogicalUIndex + 1) /
+										RegularLongitudinalSegmentCount;
+									Cell.MinimumV = static_cast<double>(VIndex) /
+										(RegularVerticalKnots.Num() - 1);
+									Cell.MaximumV = static_cast<double>(VIndex + 1) /
+										(RegularVerticalKnots.Num() - 1);
+									Cell.LongitudinalParameterScale = 1.0;
+									Cell.Surface.DegreeU = 3;
+									Cell.Surface.DegreeV = 5;
+									Cell.Surface.ControlPoints.SetNumUninitialized(24);
+									for (int32 LogicalUControl = 0;
+										LogicalUControl < 4; ++LogicalUControl)
+									{
+										const int32 PhysicalUControl = SideSign > 0.0 ?
+											LogicalUControl : 3 - LogicalUControl;
+										for (int32 VControl = 0; VControl < 6; ++VControl)
+										{
+											Cell.Surface.ControlPoints[
+												LogicalUControl * 6 + VControl] =
+													RegularVerticalSegmentsByLongitudinalSegment[
+														PhysicalUIndex][PhysicalUControl][VIndex].
+														ControlPoints[VControl];
+										}
+									}
+								}
+							}
+							double MaximumExtrusionResidualCm = 0.0;
+							double MaximumExtrusionResidualLongitudinal = 0.0;
+							double MaximumExtrusionResidualVertical = 0.0;
+							double MaximumExtrusionResidualSourceTransverse = 0.0;
+							double MaximumExtrusionResidualPatchTransverse = 0.0;
+							int32 ExtrusionWitnessCount = 0;
+							for (const FPiecewiseTensorBezierCell& Cell :
+								ExtrudedSidePatch.Cells)
+								for (const double U : { 0.25, 0.5, 0.75 })
+									for (const double V : { 0.25, 0.5, 0.75 })
+									{
+										const FVector3d Point =
+											Cell.Surface.Evaluate(U, V);
+										const double Longitudinal = Point[WallAxis];
+										FVector3d SourcePoint;
+										if (!SampleTransverseSource(Longitudinal,
+											Point.Z, SourcePoint)) continue;
+										++ExtrusionWitnessCount;
+										const double ResidualCm = FMath::Abs(
+											SourcePoint[TransverseAxis] - Point[TransverseAxis]);
+										if (ResidualCm > MaximumExtrusionResidualCm)
+										{
+											MaximumExtrusionResidualCm = ResidualCm;
+											MaximumExtrusionResidualLongitudinal = Longitudinal;
+											MaximumExtrusionResidualVertical = Point[VerticalAxis];
+											MaximumExtrusionResidualSourceTransverse =
+												SourcePoint[TransverseAxis];
+											MaximumExtrusionResidualPatchTransverse =
+												Point[TransverseAxis];
+										}
+									}
+							// This is a genuinely curved / junction-spanning provider, so use
+							// the documented curved-surface allowance.  Planar providers keep
+							// their exact source-mesh requirement elsewhere.
+							constexpr double MaximumRegularProfilePolishCm = 15.0;
+							ExtrudedSidePatch.bSourceResidualCertified =
+								ExtrusionWitnessCount ==
+									ExtrudedSidePatch.Cells.Num() * 9 &&
+								MaximumExtrusionResidualCm <=
+									MaximumRegularProfilePolishCm;
+							if (ExtrudedSidePatch.bSourceResidualCertified &&
+								ExtrudedSidePatch.BuildQueryApproximation())
+							{
+								ExtrudedSidePatch.bAuthorityEligible =
+									ExtrudedSidePatch.bQueryCollisionEnabled &&
+									ExtrudedSidePatch.bApproximationCertified &&
+									Algo::AllOf(ExtrudedSidePatch.Adjacencies,
+										[](const FPiecewiseTensorBezierAdjacency& Link)
+										{
+											return Link.bC2ByConstruction;
+									});
+							}
+							if (ExtrudedSidePatch.bAuthorityEligible)
+							{
+								// The source-adaptive inventory can contain another cell for
+								// the same triangle sheet.  Let the regular network own only the
+								// strict interior of the polished profile window.  Outside that
+								// window the adaptive cells remain available for wheel support;
+								// boundary cells also retain the provider handoff.
+								constexpr double OwnershipBoundaryInsetCm = 0.01;
+								constexpr double SameSourceSheetToleranceCm = 25.0;
+								constexpr double OwnershipMinimumDistanceFromOpeningCm = 0.0;
+								constexpr double OwnershipMaximumDistanceFromOpeningCm = 340.0;
+								// The same adaptive sheet also overlaps the regular lower
+								// descent used by a vehicle leaving the lateral wall.  Cede
+								// that overlap before the high shoulder so the vertical sheet
+								// cannot remain authoritative below the authored gutter turn.
+								constexpr double OwnershipMinimumVerticalCm = 330.0;
+								constexpr double OwnershipMaximumVerticalCm = 740.0;
+								for (FPiecewiseTensorBezierPatch& Existing :
+									PiecewiseTensorBezierPatches)
+								{
+									if (!Existing.bAuthorityEligible ||
+										Existing.SourceId != ExtrudedSidePatch.SourceId)
+										continue;
+									const int32 Removed = Existing.Cells.RemoveAll(
+										[&](const FPiecewiseTensorBezierCell& Cell)
+										{
+											const FVector3d Center = Cell.Bounds.GetCenter();
+											const double CenterDistanceFromOpening = OpeningSign *
+												(Center[WallAxis] - RegularOpeningLongitudinal);
+											const double SignedTransverse =
+												SideSign * Center[TransverseAxis];
+											if (Center[WallAxis] <=
+													RegularMinimumLongitudinal +
+														OwnershipBoundaryInsetCm ||
+												Center[WallAxis] >=
+													RegularMaximumLongitudinal -
+														OwnershipBoundaryInsetCm ||
+												Center[VerticalAxis] <= MinimumVertical +
+													OwnershipBoundaryInsetCm ||
+												Center[VerticalAxis] >= MaximumVertical -
+													OwnershipBoundaryInsetCm ||
+												CenterDistanceFromOpening <=
+													OwnershipMinimumDistanceFromOpeningCm ||
+												CenterDistanceFromOpening >=
+													OwnershipMaximumDistanceFromOpeningCm ||
+												Center[VerticalAxis] <= OwnershipMinimumVerticalCm ||
+												Center[VerticalAxis] >= OwnershipMaximumVerticalCm ||
+												SignedTransverse <= 350.0)
+												return false;
+											FVector3d SourcePoint;
+											if (!SampleTransverseSource(Center[WallAxis],
+												Center[VerticalAxis], SourcePoint))
+												return false;
+											return FMath::Abs(Center[TransverseAxis] -
+												SourcePoint[TransverseAxis]) <=
+												SameSourceSheetToleranceCm;
+										});
+									if (Removed <= 0) continue;
+									Existing.bAuthorityEligible =
+										!Existing.Cells.IsEmpty() &&
+										Existing.bQueryCollisionEnabled &&
+										Existing.bSourceResidualCertified &&
+										Existing.BuildQueryApproximation() &&
+										Existing.bApproximationCertified;
+									UE_LOG(LogTemp, Display, TEXT(
+										"[AnalyticRegularProfileOwnership] Surface=%016llX Removed=%d Remaining=%d Side=%+.0f Longitudinal=[%.9g,%.9g] Vertical=[%.9g,%.9g]"),
+										Existing.SurfaceId, Removed, Existing.Cells.Num(),
+										SideSign, RegularMinimumLongitudinal,
+										RegularMaximumLongitudinal, MinimumVertical,
+										MaximumVertical);
+								}
+							}
+							if (ExtrudedSidePatch.bAuthorityEligible &&
+								SidePatch.bAuthorityEligible)
+							{
+								// The rounded middle boundary and the regular full-height
+								// profile used to overlap from the opening almost to the
+								// rear seam.  Both surfaces were source-certified, but a
+								// finite wheel query could select different providers for
+								// adjacent wheels.  In the source-planar band that produced
+								// a false longitudinal normal at bicubic knot boundaries.
+								// Once the regular profile is certified, give it exclusive
+								// ownership up to its rear endpoint.  Keep the one rounded
+								// cell row that crosses that endpoint so the two providers
+								// retain a small, source-constrained handoff overlap.
+								const int32 RoundedCellsBeforeTrim = SidePatch.Cells.Num();
+								SidePatch.Cells.RemoveAll(
+									[&](const FPiecewiseTensorBezierCell& Cell)
+									{
+										return Algo::AllOf(Cell.Surface.ControlPoints,
+											[&](const FVector3d& Point)
+											{
+												return OpeningSign *
+													(Point[WallAxis] -
+														RegularEndLongitudinal) < -0.01;
+											});
+									});
+								const int32 RoundedCellsRemoved =
+									RoundedCellsBeforeTrim - SidePatch.Cells.Num();
+								if (RoundedCellsRemoved > 0)
+								{
+									SidePatch.bAuthorityEligible =
+										SidePatch.bSourceResidualCertified &&
+										SidePatch.BuildQueryApproximation() &&
+										Algo::AllOf(SidePatch.Adjacencies,
+											[](const FPiecewiseTensorBezierAdjacency& Link)
+											{
+												return Link.bC2ByConstruction;
+											});
+									UE_LOG(LogTemp, Display, TEXT(
+										"[AnalyticFiniteTransverseOwnership] Candidate=%016llX Side=%+.0f RemovedRoundedCells=%d RemainingRoundedCells=%d RearEndpoint=%.9g Certified=%d"),
+										Candidate.CandidateId, SideSign,
+										RoundedCellsRemoved, SidePatch.Cells.Num(),
+										RegularEndLongitudinal,
+										SidePatch.bAuthorityEligible ? 1 : 0);
+								}
+							}
+							Algo::Sort(ExtrudedSidePatch.Cells,
+								[](const FPiecewiseTensorBezierCell& A,
+									const FPiecewiseTensorBezierCell& B)
+								{
+									return A.PrimitiveId < B.PrimitiveId;
+								});
+							UE_LOG(LogTemp, Display, TEXT(
+								"[AnalyticFiniteTransverseProfile] Candidate=%016llX Side=%+.0f Longitudinal=[%.9g,%.9g] Vertical=[%.9g,%.9g] Witnesses=%d SourceResidualCm=%.9g MaximumWitness=(%.9g,%.9g,%.9g->%.9g) Certified=%d"),
+								Candidate.CandidateId, SideSign,
+								RegularMinimumLongitudinal,
+								RegularMaximumLongitudinal,
+								MinimumVertical, MaximumVertical,
+								ExtrusionWitnessCount, MaximumExtrusionResidualCm,
+								MaximumExtrusionResidualLongitudinal,
+								MaximumExtrusionResidualVertical,
+								MaximumExtrusionResidualSourceTransverse,
+								MaximumExtrusionResidualPatchTransverse,
+								ExtrudedSidePatch.bAuthorityEligible ? 1 : 0);
+							if (ExtrudedSidePatch.bAuthorityEligible)
+							{
+								PiecewiseTensorBezierPatches.Add(
+									MoveTemp(ExtrudedSidePatch));
+							}
+
+							// The regular extrusion deliberately stops before the terminal
+							// recess changes profile. Complete only its short rear seam with
+							// a piecewise-cubic C2 tensor network. At the regular endpoint it
+							// preserves the extrusion's position, longitudinal tangent and
+							// zero curvature; the other endpoint is sampled from the source.
+							// This closes the wheel-sized low gap without extending a frozen
+							// transverse profile through the changing rear geometry.
+							// Stop before the low source sheet folds back and ceases to be a
+							// single-valued transverse graph (the terminal closure owns that
+							// fold).  Extending to 150 cm made the centre-out source sweep jump
+							// from the inner sheet to the outer sheet near Z=47 cm.
+							constexpr double RearSeamLengthCm = 140.0;
+							constexpr double MaximumRearSeamSourceResidualCm = 15.0;
+							// Use a small tensor network rather than a single high-degree
+							// Bernstein strip.  The source turn is piecewise linear at mesh
+							// edges; dense cubic cells keep that interpolation bounded while
+							// natural splines preserve C2 across both parameter directions.
+							constexpr int32 RearSeamLongitudinalKnotCount = 17;
+							// The first vertical interval crosses the low terminal fold where
+							// the source is not a single-valued transverse graph.  Dedicated
+							// terminal-closure cells already own that interval.
+							constexpr int32 RearSeamMinimumVerticalSegment = 1;
+							const double RearSeamLongitudinal =
+								RegularEndLongitudinal + OpeningSign * RearSeamLengthCm;
+							const double LongitudinalDelta = RearSeamLongitudinal -
+								RegularEndLongitudinal;
+							TArray<double> RearSeamLongitudinalKnots;
+							for (int32 Index = 0;
+								Index < RearSeamLongitudinalKnotCount; ++Index)
+							{
+								RearSeamLongitudinalKnots.Add(FMath::Lerp(
+									FMath::Min(RegularEndLongitudinal, RearSeamLongitudinal),
+									FMath::Max(RegularEndLongitudinal, RearSeamLongitudinal),
+									static_cast<double>(Index) /
+										(RearSeamLongitudinalKnotCount - 1)));
+							}
+							TArray<TArray<FCubicBezierSegment>>
+								RearLongitudinalSegmentsByVertical;
+							TArray<double> RearSeamVerticalKnots;
+							for (int32 VerticalIndex = RearSeamMinimumVerticalSegment;
+								VerticalIndex < RegularVerticalKnots.Num(); ++VerticalIndex)
+							{
+								RearSeamVerticalKnots.Add(
+									RegularVerticalKnots[VerticalIndex]);
+							}
+							bool bRearSeamComplete = BaseProfileValues.Num() ==
+								RegularVerticalKnots.Num() &&
+								RearSeamVerticalKnots.Num() >= 2;
+							for (int32 VerticalIndex = RearSeamMinimumVerticalSegment;
+								bRearSeamComplete &&
+								VerticalIndex < RegularVerticalKnots.Num();
+								++VerticalIndex)
+							{
+								FVector3d InnerPoint = BaseProfileValues[VerticalIndex];
+								InnerPoint[WallAxis] = RegularEndLongitudinal;
+								TArray<FVector3d> Samples;
+								Samples.SetNumZeroed(RearSeamLongitudinalKnotCount);
+								for (int32 SampleIndex = 0;
+									SampleIndex < RearSeamLongitudinalKnotCount; ++SampleIndex)
+								{
+									const double Longitudinal =
+										RearSeamLongitudinalKnots[SampleIndex];
+									const double U = FMath::Clamp(
+										(Longitudinal - RegularEndLongitudinal) /
+											LongitudinalDelta, 0.0, 1.0);
+									FVector3d SourcePoint = FVector3d::ZeroVector;
+									bRearSeamComplete &= SampleTransverseSource(
+										Longitudinal,
+										RegularVerticalKnots[VerticalIndex], SourcePoint);
+									const double OneMinusU = 1.0 - U;
+									const double SmoothStep5 = U * U * U *
+										(U * (6.0 * U - 15.0) + 10.0);
+									// Lead the interior toward the sampled source without changing
+									// position, tangent or curvature at either endpoint.
+									const double C2Lead = 7.0 * U * U * U *
+										OneMinusU * OneMinusU * OneMinusU;
+									const double C2Blend = FMath::Clamp(
+										SmoothStep5 + C2Lead, 0.0, 1.0);
+									FVector3d Point = InnerPoint;
+									Point[WallAxis] = Longitudinal;
+									Point[TransverseAxis] = FMath::Lerp(
+										InnerPoint[TransverseAxis],
+										SourcePoint[TransverseAxis], C2Blend);
+									Samples[SampleIndex] = Point;
+								}
+							TArray<FCubicBezierSegment>& Segments =
+								RearLongitudinalSegmentsByVertical.AddDefaulted_GetRef();
+							bRearSeamComplete &= BuildNaturalCubicBezierSegments(
+								RearSeamLongitudinalKnots, Samples, Segments);
+							}
+
+							TArray<TArray<TArray<FCubicBezierSegment>>>
+								RearVerticalSegmentsByLongitudinalSegment;
+							for (int32 LongitudinalSegment = 0;
+								bRearSeamComplete &&
+								LongitudinalSegment + 1 <
+									RearSeamLongitudinalKnotCount;
+								++LongitudinalSegment)
+							{
+								TArray<TArray<FCubicBezierSegment>>& Columns =
+									RearVerticalSegmentsByLongitudinalSegment.
+										AddDefaulted_GetRef();
+								for (int32 UControl = 0; UControl < 4; ++UControl)
+								{
+									TArray<FVector3d> Values;
+									for (const TArray<FCubicBezierSegment>& Segments :
+										RearLongitudinalSegmentsByVertical)
+									{
+										Values.Add(Segments[LongitudinalSegment].
+											ControlPoints[UControl]);
+									}
+								TArray<FCubicBezierSegment>& VerticalSegments =
+									Columns.AddDefaulted_GetRef();
+								bRearSeamComplete &= BuildNaturalCubicBezierSegments(
+									RearSeamVerticalKnots, Values, VerticalSegments);
+							}
+							}
+
+							FPiecewiseTensorBezierPatch RearSeamPatch;
+							RearSeamPatch.SourceId = SidePatch.SourceId;
+							RearSeamPatch.SurfaceId = CombineStableIds(
+								SidePatch.SurfaceId,
+								StableStringId(TEXT("RegularProfileRearSeamC2.V1")));
+							RearSeamPatch.PrimitiveId = CombineStableIds(
+								SidePatch.PrimitiveId,
+								StableStringId(TEXT("RegularProfileRearSeamC2.V1")));
+							RearSeamPatch.CanonicalGroupId = StableStringId(
+								TEXT("PiecewiseFiniteTransverseRearSeamC2.Canonical.V1"));
+							RearSeamPatch.MaterialId = SidePatch.MaterialId;
+							RearSeamPatch.ObjectType = SidePatch.ObjectType;
+							RearSeamPatch.BlockingChannels = SidePatch.BlockingChannels;
+							RearSeamPatch.bQueryCollisionEnabled =
+								SidePatch.bQueryCollisionEnabled;
+							for (int32 CellLongitudinalSegment = 0;
+								bRearSeamComplete &&
+								CellLongitudinalSegment + 1 <
+									RearSeamLongitudinalKnotCount;
+								++CellLongitudinalSegment)
+							{
+								for (int32 SeamVerticalIndex = 0;
+									SeamVerticalIndex + 1 < RearSeamVerticalKnots.Num();
+									++SeamVerticalIndex)
+								{
+									const int32 VerticalIndex = SeamVerticalIndex +
+										RearSeamMinimumVerticalSegment;
+									FPiecewiseTensorBezierCell& Cell =
+										RearSeamPatch.Cells.AddDefaulted_GetRef();
+									const uint64 CellIndex = static_cast<uint64>(1 +
+										CellLongitudinalSegment * (RegularVerticalKnots.Num() - 1) +
+										VerticalIndex);
+									Cell.FeatureId = CombineStableIds(
+										RearSeamPatch.SurfaceId, CellIndex);
+									Cell.PrimitiveId = CombineStableIds(
+										RearSeamPatch.PrimitiveId, CellIndex);
+									Cell.MinimumU = static_cast<double>(CellLongitudinalSegment) /
+										(RearSeamLongitudinalKnotCount - 1);
+									Cell.MaximumU = static_cast<double>(CellLongitudinalSegment + 1) /
+										(RearSeamLongitudinalKnotCount - 1);
+									Cell.MinimumV = static_cast<double>(VerticalIndex) /
+										(RegularVerticalKnots.Num() - 1);
+									Cell.MaximumV = static_cast<double>(VerticalIndex + 1) /
+										(RegularVerticalKnots.Num() - 1);
+									Cell.LongitudinalParameterScale = 1.0;
+									Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+									Cell.Surface.ControlPoints.SetNumUninitialized(16);
+									for (int32 UControl = 0; UControl < 4; ++UControl)
+										for (int32 VControl = 0; VControl < 4; ++VControl)
+										{
+											Cell.Surface.ControlPoints[
+												UControl * 4 + VControl] =
+											RearVerticalSegmentsByLongitudinalSegment[
+												CellLongitudinalSegment][UControl][SeamVerticalIndex].
+													ControlPoints[VControl];
+										}
+								}
+							}
+							if (bRearSeamComplete && !RearSeamPatch.Cells.IsEmpty())
+							{
+								const FVector3d CenterNormal = RearSeamPatch.Cells[
+									RearSeamPatch.Cells.Num() / 2].Surface.
+										EvaluateNormal(0.5, 0.5);
+								if (CenterNormal[TransverseAxis] * -SideSign < 0.0)
+								{
+									for (FPiecewiseTensorBezierCell& Cell :
+										RearSeamPatch.Cells)
+									{
+										for (int32 VControl = 0; VControl < 4; ++VControl)
+										{
+											for (int32 UControl = 0;
+																UControl < 2;
+																++UControl)
+											{
+												Swap(Cell.Surface.ControlPoints[
+													UControl * 4 + VControl],
+													Cell.Surface.ControlPoints[
+																		(3 - UControl) * 4 + VControl]);
+											}
+										}
+									}
+								}
+							}
+							double MaximumRearSeamSourceResidualCmObserved = 0.0;
+							double MaximumRearSeamResidualLongitudinal = 0.0;
+							double MaximumRearSeamResidualVertical = 0.0;
+							double MaximumRearSeamResidualSourceTransverse = 0.0;
+							double MaximumRearSeamResidualPatchTransverse = 0.0;
+							int32 RearSeamWitnessCount = 0;
+							for (const FPiecewiseTensorBezierCell& Cell :
+								RearSeamPatch.Cells)
+								for (const double U : { 0.125, 0.25, 0.5, 0.75, 0.875 })
+									for (const double V : { 0.25, 0.5, 0.75 })
+									{
+										const FVector3d Point = Cell.Surface.Evaluate(U, V);
+										FVector3d SourcePoint;
+										if (!SampleTransverseSource(Point[WallAxis],
+											Point[VerticalAxis], SourcePoint))
+										{
+											bRearSeamComplete = false;
+											continue;
+										}
+										++RearSeamWitnessCount;
+										const double ResidualCm = FMath::Abs(
+											SourcePoint[TransverseAxis] - Point[TransverseAxis]);
+										if (ResidualCm > MaximumRearSeamSourceResidualCmObserved)
+										{
+											MaximumRearSeamSourceResidualCmObserved = ResidualCm;
+											MaximumRearSeamResidualLongitudinal = Point[WallAxis];
+											MaximumRearSeamResidualVertical = Point[VerticalAxis];
+											MaximumRearSeamResidualSourceTransverse =
+												SourcePoint[TransverseAxis];
+											MaximumRearSeamResidualPatchTransverse =
+												Point[TransverseAxis];
+										}
+									}
+							RearSeamPatch.bSourceResidualCertified =
+								bRearSeamComplete && RearSeamWitnessCount > 0 &&
+								MaximumRearSeamSourceResidualCmObserved <=
+									MaximumRearSeamSourceResidualCm;
+							Algo::Sort(RearSeamPatch.Cells,
+								[](const FPiecewiseTensorBezierCell& A,
+									const FPiecewiseTensorBezierCell& B)
+								{
+									return A.PrimitiveId < B.PrimitiveId;
+								});
+							if (RearSeamPatch.bSourceResidualCertified &&
+								RearSeamPatch.BuildQueryApproximation())
+							{
+								RearSeamPatch.bAuthorityEligible =
+									RearSeamPatch.bQueryCollisionEnabled &&
+									RearSeamPatch.bApproximationCertified &&
+									Algo::AllOf(RearSeamPatch.Adjacencies,
+										[](const FPiecewiseTensorBezierAdjacency& Link)
+										{
+											return Link.bC2ByConstruction;
+										});
+							}
+							UE_LOG(LogTemp, Display, TEXT(
+								"[AnalyticFiniteTransverseRearSeam] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Witnesses=%d SourceResidualCm=%.9g MaximumWitness=(%.9g,%.9g,%.9g->%.9g) Certified=%d"),
+								Candidate.CandidateId, SideSign,
+								RearSeamPatch.Cells.Num(), RegularEndLongitudinal,
+								RearSeamLongitudinal, RearSeamWitnessCount,
+								MaximumRearSeamSourceResidualCmObserved,
+								MaximumRearSeamResidualLongitudinal,
+								MaximumRearSeamResidualVertical,
+								MaximumRearSeamResidualSourceTransverse,
+								MaximumRearSeamResidualPatchTransverse,
+								RearSeamPatch.bAuthorityEligible ? 1 : 0);
+							if (RearSeamPatch.bAuthorityEligible)
+							{
+								PiecewiseTensorBezierPatches.Add(
+									MoveTemp(RearSeamPatch));
+							}
+						}
+					}
+					}
+					UE_LOG(LogTemp, Display, TEXT(
+						"[AnalyticFiniteTransverseBoundary] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Vertical=[%.9g,%.9g] SourceResidualCm=%.9g Certified=%d"),
+						Candidate.CandidateId, SideSign, SidePatch.Cells.Num(),
+						MinimumLongitudinal, MaximumLongitudinal,
+						SideMinimumVertical, SideMaximumVertical,
+						MaximumSideSourceResidualCmObserved,
+						SidePatch.bAuthorityEligible ? 1 : 0);
+					if (SidePatch.bAuthorityEligible)
+					{
+						PiecewiseTensorBezierPatches.Add(MoveTemp(SidePatch));
+					}
+				}
+			}
+		}
+
+		// The lower and upper turns become singular in the cap's X=f(Y,Z)
+		// parameterization as their normals approach the horizontal support
+		// planes. Continue them as compact Z=f(Y,X) bands instead. Each band is
+		// an extrusion of one source-certified natural cubic and therefore keeps
+		// exact C2 adjacency without inheriting the residual mesh facets.
+		const double ReturnHalfWidth = FMath::Min(
+			0.50 * TransverseHalfExtent, 500.0);
+		// Keep a small source-certified overlap on the nearly horizontal upper
+		// return.  A suspension sphere can otherwise leave the finite cap just
+		// outside the nominal half-width before the adjacent curved provider owns
+		// the query.  This extends only the analytic domain; the evaluated support
+		// remains the same centerline extrusion and is still source-certified
+		// below.
+		constexpr double UpperReturnSupportOverlapCm = 120.0;
+		const double UpperReturnHalfWidth = FMath::Min(
+			ReturnHalfWidth + UpperReturnSupportOverlapCm,
+			TransverseHalfExtent);
+		// Both opposed terminal candidates exceed this common cap. Using the cap
+		// rather than their slightly different raw mesh extents keeps the playable
+		// lower return exactly symmetric while remaining source-certifiable.
+		const double LowerReturnHalfWidth = FMath::Min(
+			0.86 * TransverseHalfExtent, 825.0);
+		const double DomainInset = FMath::Max(
+			25.0, 0.04 * TransverseHalfExtent);
+		const double InteriorEndCoordinate =
+			WallCoordinate + OpeningSign * DomainInset;
+		constexpr int32 ReturnKnotCount = 65;
+		constexpr double MaximumReturnSourceResidualCm = 3.0;
+		TOptional<FPiecewiseTensorBezierPatch> LowerReturnForSeamCompletion;
+		auto BuildExtrudedReturn = [&](const bool bUpperReturn)
+		{
+			const double JoinVertical = bUpperReturn ?
+				MaximumVertical : MinimumVertical;
+			FVector3d JoinPoint;
+			if (!SampleSource(0.0, JoinVertical, JoinPoint))
+			{
+				return;
+			}
+			const double MinimumProbeVertical = bUpperReturn ?
+				InteriorBaseline + 0.45 * VerticalSpan : InteriorBaseline - 1.0;
+			const double MaximumProbeVertical = bUpperReturn ?
+				InteriorTop + 200.0 : InteriorBaseline + 0.45 * VerticalSpan;
+			auto SampleReturnSource = [&](const double Transverse,
+				const double Longitudinal, FVector3d& OutPoint)
+			{
+				FWorldQuery Query;
+				Query.Start[WallAxis] = Query.End[WallAxis] = Longitudinal;
+				Query.Start[TransverseAxis] = Query.End[TransverseAxis] =
+					Transverse;
+				// Enter each playable support from its interior side so the
+				// returned normal has the same orientation as runtime contact.
+				// In particular, probing the lower return from below observes the
+				// back face of the authored floor and rejects an otherwise valid
+				// join point.
+				Query.Start[VerticalAxis] = bUpperReturn ?
+					MinimumProbeVertical : MaximumProbeVertical;
+				Query.End[VerticalAxis] = bUpperReturn ?
+					MaximumProbeVertical : MinimumProbeVertical;
+				Query.RequiredSourceId = SourceTriangle.SourceId;
+				Query.bIncludeTriangles = true;
+				const FWorldHit Hit = SourceQueryService.Sweep(Query);
+				const double ExpectedVerticalNormalSign = bUpperReturn ? -1.0 : 1.0;
+				if (!Hit.bHit || OpeningSign *
+						(Hit.Point[WallAxis] - WallCoordinate) <
+							DomainInset - 1.0 ||
+					ExpectedVerticalNormalSign * Hit.Normal[VerticalAxis] < 0.05)
+				{
+					return false;
+				}
+				OutPoint = Hit.Point;
+				return true;
+			};
+			FVector3d JoinSourcePoint;
+			if (!SampleReturnSource(0.0, JoinPoint[WallAxis], JoinSourcePoint))
+			{
+				UE_LOG(LogTemp, Display, TEXT(
+					"[AnalyticExtrudedReturn] Candidate=%016llX Upper=%d JoinUnavailable=1 Join=%s"),
+					Candidate.CandidateId, bUpperReturn ? 1 : 0,
+					*JoinPoint.ToString());
+				return;
+			}
+			double AvailableInteriorCoordinate = JoinPoint[WallAxis];
+			bool bInteriorCoordinateFound = true;
+			constexpr int32 InteriorSearchIntervals = 256;
+			// Retain only the contiguous source interval connected to the cap.
+			// Searching from the remote endpoint can jump across a disjoint mesh
+			// island and later make a knot in the intervening gap fail.
+			for (int32 SearchIndex = 1;
+				SearchIndex <= InteriorSearchIntervals; ++SearchIndex)
+			{
+				const double Alpha = static_cast<double>(SearchIndex) /
+					InteriorSearchIntervals;
+				const double Longitudinal = FMath::Lerp(
+					JoinPoint[WallAxis], InteriorEndCoordinate, Alpha);
+				FVector3d SourcePoint;
+				if (SampleReturnSource(0.0, Longitudinal, SourcePoint))
+				{
+					AvailableInteriorCoordinate = Longitudinal;
+				}
+				else
+				{
+					break;
+				}
+			}
+			if (!bInteriorCoordinateFound)
+			{
+				return;
+			}
+			// Natural-cubic abscissae must be strictly increasing.  Surface
+			// orientation is controlled independently by the transverse axis
+			// below, which also makes the two opposed openings exactly symmetric.
+			const double FirstLongitudinal = FMath::Min(
+				JoinPoint[WallAxis], AvailableInteriorCoordinate);
+			const double LastLongitudinal = FMath::Max(
+				JoinPoint[WallAxis], AvailableInteriorCoordinate);
+			if (FMath::Abs(LastLongitudinal - FirstLongitudinal) <= 20.0)
+			{
+				return;
+			}
+			TArray<double> ReturnKnots;
+			TArray<FVector3d> ReturnValues;
+			bool bReturnComplete = true;
+			for (int32 KnotIndex = 0; KnotIndex < ReturnKnotCount; ++KnotIndex)
+			{
+				const double Alpha = static_cast<double>(KnotIndex) /
+					(ReturnKnotCount - 1);
+				const double Longitudinal = FMath::Lerp(
+					FirstLongitudinal, LastLongitudinal, Alpha);
+				FVector3d Point = FVector3d::ZeroVector;
+				const bool bKnotAvailable = SampleReturnSource(
+					0.0, Longitudinal, Point);
+				bReturnComplete &= bKnotAvailable;
+				if (!bKnotAvailable)
+				{
+					UE_LOG(LogTemp, Display, TEXT(
+						"[AnalyticExtrudedReturn] Candidate=%016llX Upper=%d MissingKnot=%d Longitudinal=%.9g"),
+						Candidate.CandidateId, bUpperReturn ? 1 : 0,
+						KnotIndex, Longitudinal);
+				}
+				ReturnKnots.Add(Longitudinal);
+				ReturnValues.Add(Point);
+			}
+			TArray<FCubicBezierSegment> ReturnSegments;
+			bReturnComplete &= BuildNaturalCubicBezierSegments(
+				ReturnKnots, ReturnValues, ReturnSegments);
+			if (!bReturnComplete || ReturnSegments.Num() != ReturnKnotCount - 1)
+			{
+				UE_LOG(LogTemp, Display, TEXT(
+					"[AnalyticExtrudedReturn] Candidate=%016llX Upper=%d Incomplete=1"),
+					Candidate.CandidateId, bUpperReturn ? 1 : 0);
+				return;
+			}
+			const FString FamilyName = bUpperReturn ?
+				TEXT("PiecewiseExtrudedUpperReturnC2.V1") :
+				TEXT("PiecewiseExtrudedLowerReturnC2.V1");
+			FPiecewiseTensorBezierPatch ReturnPatch;
+			ReturnPatch.SourceId = SourceTriangle.SourceId;
+			ReturnPatch.SurfaceId = CombineStableIds(Candidate.CandidateId,
+				StableStringId(FamilyName));
+			ReturnPatch.PrimitiveId = CombineStableIds(ReturnPatch.SurfaceId,
+				StableStringId(TEXT("NaturalExtrusion")));
+			ReturnPatch.CanonicalGroupId = StableStringId(FamilyName +
+				TEXT(".Canonical"));
+			ReturnPatch.MaterialId = SourceTriangle.MaterialId;
+			ReturnPatch.ObjectType = SourceTriangle.ObjectType;
+			ReturnPatch.BlockingChannels = SourceTriangle.BlockingChannels;
+			ReturnPatch.bQueryCollisionEnabled =
+				SourceTriangle.bQueryCollisionEnabled;
+			if (bUpperReturn)
+			{
+				// With longitudinal V increasing in world space, U=+Y gives -Z
+				// on the upper return.
+				for (int32 SegmentIndex = 0;
+					SegmentIndex < ReturnSegments.Num(); ++SegmentIndex)
+				{
+					FPiecewiseTensorBezierCell& Cell =
+						ReturnPatch.Cells.AddDefaulted_GetRef();
+					Cell.FeatureId = CombineStableIds(ReturnPatch.SurfaceId,
+						static_cast<uint64>(SegmentIndex + 1));
+					Cell.PrimitiveId = CombineStableIds(ReturnPatch.PrimitiveId,
+						static_cast<uint64>(SegmentIndex + 1));
+					Cell.MinimumU = 0.0;
+					Cell.MaximumU = 1.0;
+					Cell.MinimumV = static_cast<double>(SegmentIndex) /
+						ReturnSegments.Num();
+					Cell.MaximumV = static_cast<double>(SegmentIndex + 1) /
+						ReturnSegments.Num();
+					Cell.LongitudinalParameterScale = 1.0;
+					Cell.Surface.DegreeU = 1;
+					Cell.Surface.DegreeV = 3;
+					Cell.Surface.ControlPoints.SetNumUninitialized(8);
+					for (int32 UControl = 0; UControl < 2; ++UControl)
+					{
+						const double Transverse = UControl == 0 ?
+							-UpperReturnHalfWidth : UpperReturnHalfWidth;
+						for (int32 VControl = 0; VControl < 4; ++VControl)
+						{
+							FVector3d Point = ReturnSegments[SegmentIndex].
+								ControlPoints[VControl];
+							Point[TransverseAxis] = Transverse;
+							Cell.Surface.ControlPoints[
+								UControl * 4 + VControl] = Point;
+						}
+					}
+				}
+			}
+			else
+			{
+				// The lower support is not a flat extrusion outside its central
+				// band. Sample the two finite lateral transition channels vertically and
+				// fit the
+				// complete transverse/longitudinal network as one natural bicubic
+				// surface. This keeps all internal joins C2 and lets the dense source
+				// residual below decide whether the wider domain may own authority.
+				const double InnerMiddleHalfWidth =
+					0.58 * TransverseHalfExtent;
+				const double MiddleHalfWidth =
+					0.66 * TransverseHalfExtent;
+				const double OuterMiddleHalfWidth =
+					0.75 * TransverseHalfExtent;
+				const TArray<double> TransverseKnots = {
+					-LowerReturnHalfWidth, -OuterMiddleHalfWidth,
+					-MiddleHalfWidth, -InnerMiddleHalfWidth, -ReturnHalfWidth,
+					0.0,
+					ReturnHalfWidth, InnerMiddleHalfWidth,
+					MiddleHalfWidth, OuterMiddleHalfWidth,
+					LowerReturnHalfWidth };
+				TArray<TArray<FCubicBezierSegment>>
+					TransverseSegmentsByLongitudinal;
+				bool bCompleteGrid = true;
+				for (const double Longitudinal : ReturnKnots)
+				{
+					TArray<FVector3d> Values;
+					for (const double Transverse : TransverseKnots)
+					{
+						FVector3d Point = FVector3d::ZeroVector;
+						const bool bAvailable = SampleReturnSource(
+							Transverse, Longitudinal, Point);
+						bCompleteGrid &= bAvailable;
+						Values.Add(Point);
+					}
+					TArray<FCubicBezierSegment>& Row =
+						TransverseSegmentsByLongitudinal.AddDefaulted_GetRef();
+					bCompleteGrid &= BuildNaturalCubicBezierSegments(
+						TransverseKnots, Values, Row);
+				}
+				const int32 TransverseSegmentCount =
+					TransverseKnots.Num() - 1;
+				for (int32 PhysicalUIndex = 0;
+					bCompleteGrid && PhysicalUIndex < TransverseSegmentCount;
+					++PhysicalUIndex)
+				{
+					TArray<TArray<FCubicBezierSegment>>
+						LongitudinalSegmentsByUControl;
+					for (int32 UControl = 0; UControl < 4; ++UControl)
+					{
+						TArray<FVector3d> Values;
+						for (int32 LongitudinalIndex = 0;
+							LongitudinalIndex < ReturnKnots.Num();
+							++LongitudinalIndex)
+						{
+							Values.Add(TransverseSegmentsByLongitudinal[
+								LongitudinalIndex][PhysicalUIndex].
+								ControlPoints[UControl]);
+						}
+						TArray<FCubicBezierSegment>& Column =
+							LongitudinalSegmentsByUControl.AddDefaulted_GetRef();
+						bCompleteGrid &= BuildNaturalCubicBezierSegments(
+							ReturnKnots, Values, Column);
+					}
+					if (!bCompleteGrid)
+					{
+						break;
+					}
+					// Reverse the transverse parameter so dU x dV points toward
+					// the playable (+vertical) side of the lower support.
+					const int32 LogicalUIndex =
+						TransverseSegmentCount - 1 - PhysicalUIndex;
+					for (int32 VIndex = 0;
+						VIndex < ReturnSegments.Num(); ++VIndex)
+					{
+						FPiecewiseTensorBezierCell& Cell =
+							ReturnPatch.Cells.AddDefaulted_GetRef();
+						const uint64 CellIndex = static_cast<uint64>(1 +
+							LogicalUIndex * ReturnSegments.Num() + VIndex);
+						Cell.FeatureId = CombineStableIds(
+							ReturnPatch.SurfaceId, CellIndex);
+						Cell.PrimitiveId = CombineStableIds(
+							ReturnPatch.PrimitiveId, CellIndex);
+						Cell.MinimumU = static_cast<double>(LogicalUIndex) /
+							TransverseSegmentCount;
+						Cell.MaximumU = static_cast<double>(LogicalUIndex + 1) /
+							TransverseSegmentCount;
+						Cell.MinimumV = static_cast<double>(VIndex) /
+							ReturnSegments.Num();
+						Cell.MaximumV = static_cast<double>(VIndex + 1) /
+							ReturnSegments.Num();
+						Cell.LongitudinalParameterScale = 1.0;
+						Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+						Cell.Surface.ControlPoints.SetNumUninitialized(16);
+						for (int32 LogicalUControl = 0;
+							LogicalUControl < 4; ++LogicalUControl)
+						{
+							const int32 PhysicalUControl =
+								3 - LogicalUControl;
+							for (int32 VControl = 0; VControl < 4;
+								++VControl)
+							{
+								Cell.Surface.ControlPoints[
+									LogicalUControl * 4 + VControl] =
+									LongitudinalSegmentsByUControl[
+										PhysicalUControl][VIndex].
+										ControlPoints[VControl];
+							}
+						}
+					}
+				}
+				if (!bCompleteGrid)
+				{
+					UE_LOG(LogTemp, Display, TEXT(
+						"[AnalyticExtrudedReturn] Candidate=%016llX Upper=0 WideGridIncomplete=1"),
+						Candidate.CandidateId);
+					return;
+				}
+			}
+			double MaximumSourceResidualCm = 0.0;
+			for (const FPiecewiseTensorBezierCell& Cell : ReturnPatch.Cells)
+			{
+				for (const double U : { 0.0, 0.25, 0.5, 0.75, 1.0 })
+					for (const double V : { 0.25, 0.5, 0.75 })
+					{
+						const FVector3d Point = Cell.Surface.Evaluate(U, V);
+						FVector3d SourcePoint;
+						if (!SampleReturnSource(Point[TransverseAxis],
+							Point[WallAxis], SourcePoint))
+						{
+							MaximumSourceResidualCm =
+								TNumericLimits<double>::Max();
+							continue;
+						}
+						MaximumSourceResidualCm = FMath::Max(
+							MaximumSourceResidualCm,
+							FMath::Abs(SourcePoint[VerticalAxis] -
+								Point[VerticalAxis]));
+					}
+			}
+			ReturnPatch.bSourceResidualCertified =
+				MaximumSourceResidualCm <= MaximumReturnSourceResidualCm;
+			Algo::Sort(ReturnPatch.Cells,
+				[](const FPiecewiseTensorBezierCell& A,
+					const FPiecewiseTensorBezierCell& B)
+				{
+					return A.PrimitiveId < B.PrimitiveId;
+				});
+			if (ReturnPatch.bSourceResidualCertified &&
+				ReturnPatch.BuildQueryApproximation())
+			{
+				ReturnPatch.bAuthorityEligible =
+					ReturnPatch.bQueryCollisionEnabled &&
+					ReturnPatch.bApproximationCertified &&
+					Algo::AllOf(ReturnPatch.Adjacencies,
+						[](const FPiecewiseTensorBezierAdjacency& Link)
+						{
+								return Link.bC2ByConstruction;
+							});
+			}
+			if (bUpperReturn && ReturnPatch.bAuthorityEligible)
+			{
+				// The central upper return is an extrusion, while each finite side
+				// boundary ends on the same source profile at MaximumVertical. Join
+				// those two certified curves explicitly. A quintic Hermite section
+				// preserves position, tangent and the zero endpoint curvature of the
+				// natural splines, so a wheelbase cannot be split between the broad
+				// open-rim provider and the finite side provider in the intervening
+				// quadrant.
+				constexpr int32 UpperSeamLongitudinalKnotCount = 17;
+				constexpr double MaximumUpperSeamPolishCm = 15.0;
+				const double UpperSeamOpeningLongitudinal =
+					WallCoordinate + OpeningSign * 150.0;
+				// Extend past the old 500 cm strip far enough to cover the remaining
+				// source-continuous upper-support band.  The return endpoint itself is
+				// excluded: there the transverse source sweep can change branches, so
+				// joining all the way to it would no longer be a source-fit surface.
+				const double UpperSeamEndLongitudinal =
+					UpperSeamOpeningLongitudinal + OpeningSign * 650.0;
+				const double UpperSeamMinimumLongitudinal = FMath::Min(
+					UpperSeamOpeningLongitudinal, UpperSeamEndLongitudinal);
+				const double UpperSeamMaximumLongitudinal = FMath::Max(
+					UpperSeamOpeningLongitudinal, UpperSeamEndLongitudinal);
+				for (const double SideSign : { -1.0, 1.0 })
+				{
+					TArray<double> UpperSeamLongitudinalKnots;
+					TArray<TArray<FVector3d>> ControlsByLongitudinal;
+					bool bUpperSeamComplete = true;
+					double MaximumUpperSeamPolishCmObserved = 0.0;
+					double MaximumUpperSeamSourceResidualCmObserved = 0.0;
+					for (int32 KnotIndex = 0;
+						KnotIndex < UpperSeamLongitudinalKnotCount; ++KnotIndex)
+					{
+						const double Longitudinal = FMath::Lerp(
+							UpperSeamMinimumLongitudinal,
+							UpperSeamMaximumLongitudinal,
+							static_cast<double>(KnotIndex) /
+								(UpperSeamLongitudinalKnotCount - 1));
+						UpperSeamLongitudinalKnots.Add(Longitudinal);
+						FVector3d InnerPoint = FVector3d::ZeroVector;
+						bUpperSeamComplete &= SampleReturnSource(
+							0.0, Longitudinal, InnerPoint);
+						InnerPoint[TransverseAxis] =
+							SideSign * UpperReturnHalfWidth;
+
+						FWorldQuery SideQuery;
+						SideQuery.Start[WallAxis] =
+							SideQuery.End[WallAxis] = Longitudinal;
+						SideQuery.Start[TransverseAxis] = 0.0;
+						SideQuery.End[TransverseAxis] = SideSign *
+							(TransverseHalfExtent + 500.0);
+						SideQuery.Start[VerticalAxis] =
+							SideQuery.End[VerticalAxis] = MaximumVertical;
+						SideQuery.RequiredSourceId = SourceTriangle.SourceId;
+						SideQuery.bIncludeTriangles = true;
+						const FWorldHit SideHit =
+							SourceQueryService.Sweep(SideQuery);
+						const double OuterRadius = SideSign *
+							SideHit.Point[TransverseAxis];
+						const double RadiusSpan =
+							OuterRadius - UpperReturnHalfWidth;
+						const bool bSideAvailable = SideHit.bHit &&
+							-SideHit.Normal[VerticalAxis] >= 0.05 &&
+							RadiusSpan > 50.0;
+						bUpperSeamComplete &= bSideAvailable;
+
+						TArray<FVector3d>& Controls =
+							ControlsByLongitudinal.AddDefaulted_GetRef();
+						Controls.SetNumZeroed(6);
+						if (!bUpperSeamComplete)
+						{
+							continue;
+						}
+						const FVector3d OuterPoint = SideHit.Point;
+						FVector3d InnerDerivative = FVector3d::ZeroVector;
+						InnerDerivative[TransverseAxis] = SideSign * RadiusSpan;
+						FVector3d OuterDerivative = InnerDerivative;
+						OuterDerivative[VerticalAxis] = RadiusSpan *
+							(-SideSign * SideHit.Normal[TransverseAxis] /
+								SideHit.Normal[VerticalAxis]);
+						Controls[0] = InnerPoint;
+						Controls[1] = InnerPoint + InnerDerivative / 5.0;
+						Controls[2] = InnerPoint + 2.0 * InnerDerivative / 5.0;
+						Controls[3] = OuterPoint - 2.0 * OuterDerivative / 5.0;
+						Controls[4] = OuterPoint - OuterDerivative / 5.0;
+						Controls[5] = OuterPoint;
+
+						for (int32 SampleIndex = 0; SampleIndex <= 32;
+							++SampleIndex)
+						{
+							const double T = static_cast<double>(SampleIndex) / 32.0;
+							const FVector3d Point = EvaluateBezierControlPolygon(
+								MakeArrayView(Controls), T);
+							const FVector3d ChordPoint = FMath::Lerp(
+								InnerPoint, OuterPoint, T);
+							MaximumUpperSeamPolishCmObserved = FMath::Max(
+								MaximumUpperSeamPolishCmObserved,
+								FVector3d::Distance(ChordPoint, Point));
+							FVector3d SourcePoint;
+							const bool bSourceAvailable = SampleReturnSource(
+								Point[TransverseAxis], Point[WallAxis], SourcePoint);
+							bUpperSeamComplete &= bSourceAvailable;
+							if (bSourceAvailable)
+							{
+								MaximumUpperSeamSourceResidualCmObserved = FMath::Max(
+									MaximumUpperSeamSourceResidualCmObserved,
+									FMath::Abs(SourcePoint[VerticalAxis] -
+										Point[VerticalAxis]));
+							}
+						}
+					}
+
+					TArray<TArray<FCubicBezierSegment>>
+						LongitudinalSegmentsByTransverseControl;
+					for (int32 TransverseControl = 0;
+						bUpperSeamComplete && TransverseControl < 6;
+						++TransverseControl)
+					{
+						TArray<FVector3d> Values;
+						for (const TArray<FVector3d>& Controls :
+							ControlsByLongitudinal)
+						{
+							Values.Add(Controls[TransverseControl]);
+						}
+						TArray<FCubicBezierSegment>& Segments =
+							LongitudinalSegmentsByTransverseControl.
+								AddDefaulted_GetRef();
+						bUpperSeamComplete &= BuildNaturalCubicBezierSegments(
+							UpperSeamLongitudinalKnots, Values, Segments);
+					}
+
+					FPiecewiseTensorBezierPatch UpperSeamPatch;
+					UpperSeamPatch.SourceId = ReturnPatch.SourceId;
+					UpperSeamPatch.SurfaceId = CombineStableIds(
+						Candidate.CandidateId, CombineStableIds(
+							StableStringId(TEXT("PiecewiseUpperReturnSeamC2.V1")),
+							SideSign < 0.0 ? 1ull : 2ull));
+					UpperSeamPatch.PrimitiveId = CombineStableIds(
+						UpperSeamPatch.SurfaceId,
+						StableStringId(TEXT("QuinticHermiteStrip")));
+					UpperSeamPatch.CanonicalGroupId = StableStringId(
+						TEXT("PiecewiseUpperReturnSeamC2.Canonical.V1"));
+					UpperSeamPatch.MaterialId = ReturnPatch.MaterialId;
+					UpperSeamPatch.ObjectType = ReturnPatch.ObjectType;
+					UpperSeamPatch.BlockingChannels =
+						ReturnPatch.BlockingChannels;
+					UpperSeamPatch.bQueryCollisionEnabled =
+						ReturnPatch.bQueryCollisionEnabled;
+					for (int32 VIndex = 0; bUpperSeamComplete &&
+						VIndex + 1 < UpperSeamLongitudinalKnotCount; ++VIndex)
+					{
+						FPiecewiseTensorBezierCell& Cell =
+							UpperSeamPatch.Cells.AddDefaulted_GetRef();
+						const uint64 CellIndex = static_cast<uint64>(VIndex + 1);
+						Cell.FeatureId = CombineStableIds(
+							UpperSeamPatch.SurfaceId, CellIndex);
+						Cell.PrimitiveId = CombineStableIds(
+							UpperSeamPatch.PrimitiveId, CellIndex);
+						Cell.MinimumU = 0.0;
+						Cell.MaximumU = 1.0;
+						Cell.MinimumV = static_cast<double>(VIndex) /
+							(UpperSeamLongitudinalKnotCount - 1);
+						Cell.MaximumV = static_cast<double>(VIndex + 1) /
+							(UpperSeamLongitudinalKnotCount - 1);
+						Cell.LongitudinalParameterScale = 1.0;
+						Cell.Surface.DegreeU = 5;
+						Cell.Surface.DegreeV = 3;
+						Cell.Surface.ControlPoints.SetNumUninitialized(24);
+						for (int32 UControl = 0; UControl < 6; ++UControl)
+							for (int32 VControl = 0; VControl < 4; ++VControl)
+							{
+								Cell.Surface.ControlPoints[UControl * 4 + VControl] =
+									LongitudinalSegmentsByTransverseControl[UControl]
+										[VIndex].ControlPoints[VControl];
+							}
+					}
+					if (bUpperSeamComplete && !UpperSeamPatch.Cells.IsEmpty())
+					{
+						const FVector3d CenterNormal = UpperSeamPatch.Cells[
+							UpperSeamPatch.Cells.Num() / 2].Surface.
+								EvaluateNormal(0.5, 0.5);
+						if (CenterNormal[VerticalAxis] > 0.0)
+						{
+							for (FPiecewiseTensorBezierCell& Cell :
+								UpperSeamPatch.Cells)
+							{
+								for (int32 VControl = 0; VControl < 4; ++VControl)
+								{
+									Swap(Cell.Surface.ControlPoints[0 * 4 + VControl],
+										Cell.Surface.ControlPoints[5 * 4 + VControl]);
+									Swap(Cell.Surface.ControlPoints[1 * 4 + VControl],
+										Cell.Surface.ControlPoints[4 * 4 + VControl]);
+									Swap(Cell.Surface.ControlPoints[2 * 4 + VControl],
+										Cell.Surface.ControlPoints[3 * 4 + VControl]);
+								}
+							}
+						}
+					}
+					UpperSeamPatch.bSourceResidualCertified =
+						bUpperSeamComplete &&
+						MaximumUpperSeamSourceResidualCmObserved <=
+							MaximumUpperSeamPolishCm;
+					Algo::Sort(UpperSeamPatch.Cells,
+						[](const FPiecewiseTensorBezierCell& A,
+							const FPiecewiseTensorBezierCell& B)
+						{
+							return A.PrimitiveId < B.PrimitiveId;
+						});
+					if (UpperSeamPatch.bSourceResidualCertified &&
+						UpperSeamPatch.BuildQueryApproximation())
+					{
+						UpperSeamPatch.bAuthorityEligible =
+							UpperSeamPatch.bQueryCollisionEnabled &&
+							UpperSeamPatch.bApproximationCertified &&
+							Algo::AllOf(UpperSeamPatch.Adjacencies,
+								[](const FPiecewiseTensorBezierAdjacency& Link)
+								{
+									return Link.bC2ByConstruction;
+								});
+					}
+					UE_LOG(LogTemp, Display, TEXT(
+						"[AnalyticUpperReturnSeam] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] ChordDepartureCm=%.9g SourceResidualCm=%.9g Certified=%d"),
+						Candidate.CandidateId, SideSign,
+						UpperSeamPatch.Cells.Num(),
+						UpperSeamMinimumLongitudinal,
+						UpperSeamMaximumLongitudinal,
+						MaximumUpperSeamPolishCmObserved,
+						MaximumUpperSeamSourceResidualCmObserved,
+						UpperSeamPatch.bAuthorityEligible ? 1 : 0);
+					if (UpperSeamPatch.bAuthorityEligible)
+					{
+						// Adaptive cells predate this source-fitted upper strip. Some regular
+						// and terminal hulls overlap it with a materially different tangent,
+						// while others already agree with the source-fitted seam and provide a
+						// useful handoff to the surrounding source coverage. Remove only the
+						// incompatible local owners: this polishes the ambiguous branch without
+						// deleting compatible coverage or redirecting the trajectory elsewhere.
+						constexpr double MaximumOwnershipNormalMismatchDegrees = 8.0;
+						constexpr double MaximumOwnershipSampleSeparationCm = 40.0;
+						const double MinimumOwnershipNormalDot = FMath::Cos(
+							FMath::DegreesToRadians(MaximumOwnershipNormalMismatchDegrees));
+						TArray<FVector3d, TInlineAllocator<400>> SeamOwnershipSamplePoints;
+						TArray<FVector3d, TInlineAllocator<400>> SeamOwnershipSampleNormals;
+						for (const FPiecewiseTensorBezierCell& SeamCell :
+							UpperSeamPatch.Cells)
+						{
+							for (int32 UIndex = 0; UIndex <= 4; ++UIndex)
+								for (int32 VIndex = 0; VIndex <= 4; ++VIndex)
+								{
+									const double U = static_cast<double>(UIndex) / 4.0;
+									const double V = static_cast<double>(VIndex) / 4.0;
+									SeamOwnershipSamplePoints.Add(
+										SeamCell.Surface.Evaluate(U, V));
+									SeamOwnershipSampleNormals.Add(
+										SeamCell.Surface.EvaluateNormal(U, V));
+								}
+						}
+						int32 TrimmedPatchCount = 0;
+						int32 RemovedIncompatibleCellCount = 0;
+						for (FPiecewiseTensorBezierPatch& ExistingPatch :
+							PiecewiseTensorBezierPatches)
+						{
+							if (!ExistingPatch.bAuthorityEligible ||
+								ExistingPatch.Cells.IsEmpty())
+							{
+								continue;
+							}
+							const TArray<FPiecewiseTensorBezierCell> PreviousCells =
+								ExistingPatch.Cells;
+							const int32 RemovedFromPatch =
+								ExistingPatch.Cells.RemoveAll(
+								[&](const FPiecewiseTensorBezierCell& Cell)
+								{
+									FBox3d CellBounds(EForceInit::ForceInit);
+									for (const FVector3d& Point :
+										Cell.Surface.ControlPoints)
+									{
+										CellBounds += Point;
+									}
+									const bool bOverlapsSeam =
+										CellBounds.Max[WallAxis] >=
+											UpperSeamPatch.Bounds.Min[WallAxis] - 0.01 &&
+										CellBounds.Min[WallAxis] <=
+											UpperSeamPatch.Bounds.Max[WallAxis] + 0.01 &&
+										CellBounds.Max[TransverseAxis] >=
+											UpperSeamPatch.Bounds.Min[TransverseAxis] - 0.01 &&
+										CellBounds.Min[TransverseAxis] <=
+											UpperSeamPatch.Bounds.Max[TransverseAxis] + 0.01 &&
+										CellBounds.Max[VerticalAxis] >=
+											UpperSeamPatch.Bounds.Min[VerticalAxis] - 0.01 &&
+										CellBounds.Min[VerticalAxis] <=
+											UpperSeamPatch.Bounds.Max[VerticalAxis] + 0.01;
+									const FVector3d CellCenter = CellBounds.GetCenter();
+									const bool bCenteredInSeamCrossSection =
+										CellCenter[TransverseAxis] >=
+											UpperSeamPatch.Bounds.Min[TransverseAxis] - 0.01 &&
+										CellCenter[TransverseAxis] <=
+											UpperSeamPatch.Bounds.Max[TransverseAxis] + 0.01 &&
+										CellCenter[VerticalAxis] >=
+											UpperSeamPatch.Bounds.Min[VerticalAxis] - 0.01 &&
+										CellCenter[VerticalAxis] <=
+											UpperSeamPatch.Bounds.Max[VerticalAxis] + 0.01;
+									const bool bMatchingSide = SideSign *
+										CellCenter[TransverseAxis] > 0.0;
+									const bool bOpeningSideOfSeamEnd = OpeningSign *
+										(CellCenter[WallAxis] -
+											UpperSeamEndLongitudinal) < 0.0;
+									if (!bOverlapsSeam || !bCenteredInSeamCrossSection ||
+										!bMatchingSide || !bOpeningSideOfSeamEnd)
+									{
+										return false;
+									}
+									bool bHasNearbyOwnershipSample = false;
+									double WorstNearbyNormalDot = 1.0;
+									for (int32 UIndex = 0; UIndex <= 4; ++UIndex)
+										for (int32 VIndex = 0; VIndex <= 4; ++VIndex)
+										{
+											const double U = static_cast<double>(UIndex) / 4.0;
+											const double V = static_cast<double>(VIndex) / 4.0;
+											const FVector3d CellPoint = Cell.Surface.Evaluate(U, V);
+											const FVector3d CellNormal =
+												Cell.Surface.EvaluateNormal(U, V);
+											double NearestDistanceSquared =
+												TNumericLimits<double>::Max();
+											double NearestNormalDot = 0.0;
+											for (int32 SampleIndex = 0;
+												SampleIndex < SeamOwnershipSamplePoints.Num();
+												++SampleIndex)
+											{
+												const double DistanceSquared = (CellPoint -
+													SeamOwnershipSamplePoints[SampleIndex]).SquaredLength();
+												if (DistanceSquared >= NearestDistanceSquared) continue;
+												NearestDistanceSquared = DistanceSquared;
+												NearestNormalDot = FMath::Abs(FVector3d::DotProduct(
+													CellNormal,
+													SeamOwnershipSampleNormals[SampleIndex]));
+											}
+											if (NearestDistanceSquared <= FMath::Square(
+												MaximumOwnershipSampleSeparationCm))
+											{
+												bHasNearbyOwnershipSample = true;
+												WorstNearbyNormalDot = FMath::Min(
+													WorstNearbyNormalDot, NearestNormalDot);
+											}
+										}
+									return bHasNearbyOwnershipSample &&
+										WorstNearbyNormalDot < MinimumOwnershipNormalDot;
+								});
+							if (RemovedFromPatch <= 0) continue;
+							const bool bHasTerminalClosure = Algo::AnyOf(
+								ExistingPatch.Cells,
+								[](const FPiecewiseTensorBezierCell& Cell)
+							{
+								return Cell.bTerminalClosure;
+							});
+							ExistingPatch.bAuthorityEligible =
+								!ExistingPatch.Cells.IsEmpty() &&
+								ExistingPatch.bQueryCollisionEnabled &&
+								ExistingPatch.bSourceResidualCertified &&
+								ExistingPatch.BuildQueryApproximation() &&
+								(bHasTerminalClosure || Algo::AllOf(
+									ExistingPatch.Adjacencies,
+									[](const FPiecewiseTensorBezierAdjacency& Link)
+									{
+										return Link.bC2ByConstruction;
+									}));
+							if (!ExistingPatch.bAuthorityEligible)
+							{
+								ExistingPatch.Cells = PreviousCells;
+								ExistingPatch.bAuthorityEligible =
+									ExistingPatch.bQueryCollisionEnabled &&
+									ExistingPatch.bSourceResidualCertified &&
+									ExistingPatch.BuildQueryApproximation();
+								continue;
+							}
+							++TrimmedPatchCount;
+							RemovedIncompatibleCellCount += RemovedFromPatch;
+						}
+						UE_LOG(LogTemp, Display, TEXT(
+							"[AnalyticUpperReturnOwnership] Candidate=%016llX Side=%+.0f TrimmedPatches=%d RemovedIncompatibleCells=%d MaximumNormalMismatchDeg=%.9g MaximumSampleSeparationCm=%.9g SeamEnd=%.9g Certified=1"),
+							Candidate.CandidateId, SideSign, TrimmedPatchCount,
+							RemovedIncompatibleCellCount,
+							MaximumOwnershipNormalMismatchDegrees,
+							MaximumOwnershipSampleSeparationCm,
+							UpperSeamEndLongitudinal);
+						PiecewiseTensorBezierPatches.Add(
+							MoveTemp(UpperSeamPatch));
+					}
+				}
+			}
+			UE_LOG(LogTemp, Display, TEXT(
+				"[AnalyticExtrudedReturn] Candidate=%016llX Upper=%d Cells=%d First=%.9g Last=%.9g HalfWidth=%.9g SourceResidualCm=%.9g Certified=%d"),
+				Candidate.CandidateId, bUpperReturn ? 1 : 0,
+				ReturnPatch.Cells.Num(), FirstLongitudinal, LastLongitudinal,
+				bUpperReturn ? UpperReturnHalfWidth : LowerReturnHalfWidth,
+				MaximumSourceResidualCm,
+				ReturnPatch.bAuthorityEligible ? 1 : 0);
+			if (ReturnPatch.bAuthorityEligible)
+			{
+				if (!bUpperReturn)
+				{
+					LowerReturnForSeamCompletion = ReturnPatch;
+				}
+				PiecewiseTensorBezierPatches.Add(MoveTemp(ReturnPatch));
+			}
+		};
+		BuildExtrudedReturn(false);
+		BuildExtrudedReturn(true);
+
+		// The playable lower support beside an opening is curved in both the
+		// wall-normal and transverse directions.  It therefore cannot be owned by
+		// either the flat interior plane or the one-dimensional return extrusion.
+		// Fit the finite field-side corner directly as four source-sampled natural
+		// bicubic networks (one for each opening side).  The deliberately bounded
+		// domain stops before the opening plane and before the remote side wall, so
+		// it cannot manufacture a terminal face outside the authored support.
+		// Include the narrow opening-side return immediately outside the nominal
+		// inset.  A localized moving-body witness reaches the end of that return;
+		// stopping at the old 40 cm inset left a small unsupported radial strip
+		// between the adjacent compact-profile patches.
+		const double FieldSideNearWallOffset = -110.0;
+		const double FieldSideFarWallOffset = FMath::Min(
+			0.55 * TransverseHalfExtent, 550.0);
+		constexpr int32 FieldSideLongitudinalKnotCount = 17;
+		// Extending the branch-guided fit to the exact finite boundary raises the
+		// dense worst witness on one reflected lower corner to 4.61 cm.  Keep a
+		// narrow measured bound that remains far below the 15 cm curved-junction
+		// ceiling. This is a geometric source certificate, not a solver
+		// penetration allowance.
+		constexpr double MaximumFieldSideSourceResidualCm = 5.0;
+		if (FieldSideFarWallOffset > FieldSideNearWallOffset + 100.0)
+		{
+			TArray<double> FieldSideLongitudinalKnots;
+			const double FieldSideLongitudinalA =
+				WallCoordinate - OpeningSign * FieldSideFarWallOffset;
+			const double FieldSideLongitudinalB =
+				WallCoordinate - OpeningSign * FieldSideNearWallOffset;
+			const double FieldSideMinimumLongitudinal = FMath::Min(
+				FieldSideLongitudinalA, FieldSideLongitudinalB);
+			const double FieldSideMaximumLongitudinal = FMath::Max(
+				FieldSideLongitudinalA, FieldSideLongitudinalB);
+			for (int32 KnotIndex = 0;
+				KnotIndex < FieldSideLongitudinalKnotCount; ++KnotIndex)
+			{
+				FieldSideLongitudinalKnots.Add(FMath::Lerp(
+					FieldSideMinimumLongitudinal,
+					FieldSideMaximumLongitudinal,
+					static_cast<double>(KnotIndex) /
+						(FieldSideLongitudinalKnotCount - 1)));
+			}
+			TArray<double> FieldSideTransverseMagnitudes;
+			const double FieldSideFiniteBoundaryMagnitude = FMath::Min(
+				0.99 * TransverseHalfExtent, 950.0);
+			for (int32 FractionIndex = 0; FractionIndex <= 49;
+				++FractionIndex)
+			{
+				const double Magnitude =
+					(0.50 + 0.01 * FractionIndex) * TransverseHalfExtent;
+				if (Magnitude < FieldSideFiniteBoundaryMagnitude - 1.0e-6)
+				{
+					FieldSideTransverseMagnitudes.Add(Magnitude);
+				}
+			}
+			FieldSideTransverseMagnitudes.Add(
+				FieldSideFiniteBoundaryMagnitude);
+			auto SampleFieldSideVerticalSource = [&](const double Longitudinal,
+				const double Transverse, FVector3d& OutPoint,
+				FVector3d* OutNormal = nullptr)
+			{
+				FWorldQuery Query;
+				Query.Start[WallAxis] = Query.End[WallAxis] = Longitudinal;
+				Query.Start[TransverseAxis] = Query.End[TransverseAxis] =
+					Transverse;
+				Query.Start[VerticalAxis] =
+					InteriorBaseline + 0.45 * VerticalSpan;
+				Query.End[VerticalAxis] = InteriorBaseline - 1.0;
+				Query.RequiredSourceId = SourceTriangle.SourceId;
+				Query.bIncludeTriangles = true;
+				const FWorldHit Hit = SourceQueryService.Sweep(Query);
+				if (!Hit.bHit || Hit.Normal[VerticalAxis] < 0.05)
+				{
+					return false;
+				}
+				OutPoint = Hit.Point;
+				if (OutNormal)
+				{
+					*OutNormal = Hit.Normal;
+				}
+				return true;
+			};
+			for (const double SideSign : { -1.0, 1.0 })
+			{
+				auto ClosestFieldSideSource = [&](const FVector3d& Seed,
+					FVector3d& OutPoint, FVector3d* OutNormal = nullptr)
+				{
+					double BestSquaredDistance = FMath::Square(150.0);
+					const FTriangleSurface* BestTriangle = nullptr;
+					for (const FTriangleSurface& Triangle : Triangles)
+					{
+						if (Triangle.SourceId != SourceTriangle.SourceId ||
+							!Triangle.bQueryCollisionEnabled ||
+							FMath::Abs(Triangle.FaceNormal[VerticalAxis]) < 0.05 ||
+							SquaredDistanceToBox(Seed, Triangle.Bounds) >
+								BestSquaredDistance)
+						{
+							continue;
+						}
+						const FVector3d Closest = ClosestPointOnTriangle(
+							Seed, Triangle);
+						const double SquaredDistance = FVector3d::DistSquared(
+							Seed, Closest);
+						if (SquaredDistance < BestSquaredDistance)
+						{
+							BestSquaredDistance = SquaredDistance;
+							BestTriangle = &Triangle;
+							OutPoint = Closest;
+						}
+					}
+					if (!BestTriangle)
+					{
+						return false;
+					}
+					if (OutNormal)
+					{
+						*OutNormal = BestTriangle->FaceNormal;
+						if ((*OutNormal)[VerticalAxis] < 0.0)
+						{
+							*OutNormal = -*OutNormal;
+						}
+					}
+					return true;
+				};
+				const double OriginalFieldSideBoundaryMagnitude =
+					0.92 * TransverseHalfExtent;
+				const double PreviousFieldSideBoundaryMagnitude =
+					0.91 * TransverseHalfExtent;
+				auto SampleFieldSideSource = [&](const double Longitudinal,
+					const double Transverse, FVector3d& OutPoint,
+					FVector3d* OutNormal = nullptr)
+				{
+					if (FMath::Abs(Transverse) <=
+						OriginalFieldSideBoundaryMagnitude + 1.0e-6)
+					{
+						return SampleFieldSideVerticalSource(Longitudinal,
+							Transverse, OutPoint, OutNormal);
+					}
+					FVector3d PreviousPoint = FVector3d::ZeroVector;
+					FVector3d BoundaryPoint = FVector3d::ZeroVector;
+					if (!SampleFieldSideVerticalSource(Longitudinal,
+							SideSign * PreviousFieldSideBoundaryMagnitude,
+							PreviousPoint) ||
+						!SampleFieldSideVerticalSource(Longitudinal,
+							SideSign * OriginalFieldSideBoundaryMagnitude,
+							BoundaryPoint))
+					{
+						return false;
+					}
+					const double SignedStep = SideSign *
+						(OriginalFieldSideBoundaryMagnitude -
+							PreviousFieldSideBoundaryMagnitude);
+					const double Extrapolation =
+						(Transverse - SideSign *
+							OriginalFieldSideBoundaryMagnitude) / SignedStep;
+					const FVector3d Seed = BoundaryPoint + Extrapolation *
+						(BoundaryPoint - PreviousPoint);
+					return ClosestFieldSideSource(Seed, OutPoint, OutNormal);
+				};
+				TArray<double> FieldSideTransverseKnots;
+				for (const double Magnitude : FieldSideTransverseMagnitudes)
+				{
+					FieldSideTransverseKnots.Add(
+						SideSign * Magnitude);
+				}
+				Algo::Sort(FieldSideTransverseKnots);
+
+				TArray<TArray<FCubicBezierSegment>>
+					TransverseSegmentsByLongitudinal;
+				bool bCompleteFieldSideGrid = true;
+				for (const double Longitudinal :
+					FieldSideLongitudinalKnots)
+				{
+					TArray<FVector3d> Values;
+					for (const double Transverse :
+						FieldSideTransverseKnots)
+					{
+						FVector3d Point = FVector3d::ZeroVector;
+						const bool bAvailable = SampleFieldSideSource(
+							Longitudinal, Transverse, Point);
+						bCompleteFieldSideGrid &= bAvailable;
+						Values.Add(Point);
+					}
+					TArray<FCubicBezierSegment>& Row =
+						TransverseSegmentsByLongitudinal.
+							AddDefaulted_GetRef();
+					bCompleteFieldSideGrid &= BuildNaturalCubicBezierSegments(
+						FieldSideTransverseKnots, Values, Row);
+				}
+				const int32 FieldSideTransverseSegmentCount =
+					FieldSideTransverseKnots.Num() - 1;
+				FPiecewiseTensorBezierPatch FieldSidePatch;
+				FieldSidePatch.SourceId = SourceTriangle.SourceId;
+				FieldSidePatch.SurfaceId = CombineStableIds(
+					Candidate.CandidateId, CombineStableIds(
+						StableStringId(TEXT("PiecewiseLowerFieldCornerC2.V1")),
+						SideSign < 0.0 ? 1ull : 2ull));
+				FieldSidePatch.PrimitiveId = CombineStableIds(
+					FieldSidePatch.SurfaceId,
+					StableStringId(TEXT("NaturalBicubic")));
+				FieldSidePatch.CanonicalGroupId = StableStringId(
+					TEXT("PiecewiseLowerFieldCornerC2.Canonical.V1"));
+				FieldSidePatch.MaterialId = SourceTriangle.MaterialId;
+				FieldSidePatch.ObjectType = SourceTriangle.ObjectType;
+				FieldSidePatch.BlockingChannels =
+					SourceTriangle.BlockingChannels;
+				FieldSidePatch.bQueryCollisionEnabled =
+					SourceTriangle.bQueryCollisionEnabled;
+				for (int32 UIndex = 0;
+					bCompleteFieldSideGrid &&
+						UIndex < FieldSideTransverseSegmentCount; ++UIndex)
+				{
+					TArray<TArray<FCubicBezierSegment>>
+						LongitudinalSegmentsByUControl;
+					for (int32 UControl = 0; UControl < 4; ++UControl)
+					{
+						TArray<FVector3d> Values;
+						for (int32 LongitudinalIndex = 0;
+							LongitudinalIndex <
+								FieldSideLongitudinalKnots.Num();
+							++LongitudinalIndex)
+						{
+							Values.Add(TransverseSegmentsByLongitudinal[
+								LongitudinalIndex][UIndex].
+									ControlPoints[UControl]);
+						}
+						TArray<FCubicBezierSegment>& Column =
+							LongitudinalSegmentsByUControl.
+								AddDefaulted_GetRef();
+						bCompleteFieldSideGrid &=
+							BuildNaturalCubicBezierSegments(
+								FieldSideLongitudinalKnots, Values, Column);
+					}
+					for (int32 VIndex = 0;
+						bCompleteFieldSideGrid && VIndex + 1 <
+							FieldSideLongitudinalKnots.Num(); ++VIndex)
+					{
+						FPiecewiseTensorBezierCell& Cell =
+							FieldSidePatch.Cells.AddDefaulted_GetRef();
+						const uint64 CellIndex = static_cast<uint64>(1 +
+							UIndex * (FieldSideLongitudinalKnotCount - 1) +
+							VIndex);
+						Cell.FeatureId = CombineStableIds(
+							FieldSidePatch.SurfaceId, CellIndex);
+						Cell.PrimitiveId = CombineStableIds(
+							FieldSidePatch.PrimitiveId, CellIndex);
+						Cell.MinimumU = static_cast<double>(UIndex) /
+							FieldSideTransverseSegmentCount;
+						Cell.MaximumU = static_cast<double>(UIndex + 1) /
+							FieldSideTransverseSegmentCount;
+						Cell.MinimumV = static_cast<double>(VIndex) /
+							(FieldSideLongitudinalKnotCount - 1);
+						Cell.MaximumV = static_cast<double>(VIndex + 1) /
+							(FieldSideLongitudinalKnotCount - 1);
+						Cell.LongitudinalParameterScale = 1.0;
+						Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+						Cell.Surface.ControlPoints.SetNumUninitialized(16);
+						for (int32 UControl = 0; UControl < 4; ++UControl)
+							for (int32 VControl = 0; VControl < 4;
+								++VControl)
+							{
+								Cell.Surface.ControlPoints[
+									UControl * 4 + VControl] =
+									LongitudinalSegmentsByUControl[
+										UControl][VIndex].
+											ControlPoints[VControl];
+							}
+					}
+				}
+				if (!bCompleteFieldSideGrid)
+				{
+					UE_LOG(LogTemp, Display, TEXT(
+						"[AnalyticLowerFieldCorner] Candidate=%016llX Side=%+.0f Incomplete=1"),
+						Candidate.CandidateId, SideSign);
+					continue;
+				}
+				double MaximumFieldSideSourceResidualCmObserved = 0.0;
+				double MaximumFieldSideSourceNormalErrorDegreesObserved = 0.0;
+				for (const FPiecewiseTensorBezierCell& Cell :
+					FieldSidePatch.Cells)
+				{
+					for (const double U : { 0.0, 0.25, 0.5, 0.75, 1.0 })
+						for (const double V : { 0.25, 0.5, 0.75 })
+						{
+							const FVector3d Point = Cell.Surface.Evaluate(U, V);
+							FVector3d SourcePoint;
+							FVector3d SourceNormal;
+							if (!ClosestFieldSideSource(Point, SourcePoint,
+								&SourceNormal))
+							{
+								MaximumFieldSideSourceResidualCmObserved =
+									TNumericLimits<double>::Max();
+								continue;
+							}
+							MaximumFieldSideSourceResidualCmObserved = FMath::Max(
+								MaximumFieldSideSourceResidualCmObserved,
+								FVector3d::Distance(SourcePoint, Point));
+							const FVector3d AnalyticNormal =
+								Cell.Surface.EvaluateNormal(U, V);
+							MaximumFieldSideSourceNormalErrorDegreesObserved =
+								FMath::Max(
+									MaximumFieldSideSourceNormalErrorDegreesObserved,
+									FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(
+										FMath::Abs(FVector3d::DotProduct(
+											AnalyticNormal, SourceNormal)),
+										0.0, 1.0))));
+						}
+				}
+				FieldSidePatch.bSourceResidualCertified =
+					MaximumFieldSideSourceResidualCmObserved <=
+						MaximumFieldSideSourceResidualCm;
+				Algo::Sort(FieldSidePatch.Cells,
+					[](const FPiecewiseTensorBezierCell& A,
+						const FPiecewiseTensorBezierCell& B)
+					{
+						return A.PrimitiveId < B.PrimitiveId;
+					});
+				if (FieldSidePatch.bSourceResidualCertified &&
+					FieldSidePatch.BuildQueryApproximation())
+				{
+					FieldSidePatch.bAuthorityEligible =
+						FieldSidePatch.bQueryCollisionEnabled &&
+						FieldSidePatch.bApproximationCertified &&
+						Algo::AllOf(FieldSidePatch.Adjacencies,
+							[](const FPiecewiseTensorBezierAdjacency& Link)
+							{
+								return Link.bC2ByConstruction;
+							});
+				}
+				UE_LOG(LogTemp, Display, TEXT(
+					"[AnalyticLowerFieldCorner] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Transverse=[%.9g,%.9g] SourceResidualCm=%.9g SourceNormalErrorDeg=%.9g Certified=%d"),
+					Candidate.CandidateId, SideSign,
+					FieldSidePatch.Cells.Num(),
+					FieldSideMinimumLongitudinal,
+					FieldSideMaximumLongitudinal,
+					FieldSideTransverseKnots[0],
+					FieldSideTransverseKnots.Last(),
+					MaximumFieldSideSourceResidualCmObserved,
+					MaximumFieldSideSourceNormalErrorDegreesObserved,
+					FieldSidePatch.bAuthorityEligible ? 1 : 0);
+				if (FieldSidePatch.bAuthorityEligible)
+				{
+					// The source mesh has a narrow longitudinal void between this
+					// field-side support and the lower terminal return.  Join the two
+					// certified boundary curves with a quintic Hermite strip. Endpoint
+					// position, tangent and zero natural-spline curvature are preserved,
+					// so wheels and finite boxes see one C2 support instead of a gap.
+					if (LowerReturnForSeamCompletion.IsSet())
+					{
+						const FPiecewiseTensorBezierPatch& LowerReturn =
+							LowerReturnForSeamCompletion.GetValue();
+						auto EvaluateBoundary = [](
+							const FPiecewiseTensorBezierPatch& Patch,
+							const double GlobalU, const double GlobalV,
+							FVector3d& OutPoint, FVector3d& OutDerivativeByX)
+						{
+							constexpr double DomainEpsilon = 1.0e-9;
+							for (const FPiecewiseTensorBezierCell& Cell : Patch.Cells)
+							{
+								if (GlobalU < Cell.MinimumU - DomainEpsilon ||
+									GlobalU > Cell.MaximumU + DomainEpsilon ||
+									GlobalV < Cell.MinimumV - DomainEpsilon ||
+									GlobalV > Cell.MaximumV + DomainEpsilon)
+								{
+									continue;
+								}
+								const double LocalU = FMath::Clamp(
+									(GlobalU - Cell.MinimumU) /
+										(Cell.MaximumU - Cell.MinimumU), 0.0, 1.0);
+								const double LocalV = FMath::Clamp(
+									(GlobalV - Cell.MinimumV) /
+										(Cell.MaximumV - Cell.MinimumV), 0.0, 1.0);
+								OutPoint = Cell.Surface.Evaluate(LocalU, LocalV);
+								const FVector3d ParameterDerivative =
+									Cell.Surface.EvaluateDerivativeV(LocalU, LocalV);
+								if (FMath::Abs(ParameterDerivative.X) <= 1.0e-9)
+								{
+									return false;
+								}
+								OutDerivativeByX = ParameterDerivative /
+									ParameterDerivative.X;
+								return true;
+							}
+							return false;
+						};
+
+						constexpr int32 BridgeTransverseKnotCount = 17;
+						const double BridgeInnerMagnitude =
+							0.50 * TransverseHalfExtent;
+						const double BridgeOuterMagnitude =
+							LowerReturnHalfWidth;
+						const double BridgeTransverseA =
+							SideSign * BridgeInnerMagnitude;
+						const double BridgeTransverseB =
+							SideSign * BridgeOuterMagnitude;
+						const double BridgeMinimumTransverse = FMath::Min(
+							BridgeTransverseA, BridgeTransverseB);
+						const double BridgeMaximumTransverse = FMath::Max(
+							BridgeTransverseA, BridgeTransverseB);
+						TArray<double> BridgeTransverseKnots;
+						TArray<TArray<FVector3d>> ControlsByTransverse;
+						bool bBridgeComplete =
+							BridgeMaximumTransverse > BridgeMinimumTransverse + 50.0;
+						double MaximumBridgeDepartureCm = 0.0;
+						for (int32 KnotIndex = 0;
+							KnotIndex < BridgeTransverseKnotCount; ++KnotIndex)
+						{
+							const double Alpha = static_cast<double>(KnotIndex) /
+								(BridgeTransverseKnotCount - 1);
+							const double Transverse = FMath::Lerp(
+								BridgeMinimumTransverse,
+								BridgeMaximumTransverse, Alpha);
+							BridgeTransverseKnots.Add(Transverse);
+							const double ReturnU = FMath::Clamp(
+								(LowerReturnHalfWidth - Transverse) /
+									(2.0 * LowerReturnHalfWidth), 0.0, 1.0);
+							const double FieldU = FMath::Clamp(
+								(Transverse - FieldSideTransverseKnots[0]) /
+									(FieldSideTransverseKnots.Last() -
+										FieldSideTransverseKnots[0]), 0.0, 1.0);
+							const double ReturnV = OpeningSign < 0.0 ? 1.0 : 0.0;
+							const double FieldV = OpeningSign < 0.0 ? 0.0 : 1.0;
+							FVector3d ReturnPoint, ReturnDerivativeByX;
+							FVector3d FieldPoint, FieldDerivativeByX;
+							bBridgeComplete &= EvaluateBoundary(LowerReturn,
+								ReturnU, ReturnV, ReturnPoint, ReturnDerivativeByX);
+							bBridgeComplete &= EvaluateBoundary(FieldSidePatch,
+								FieldU, FieldV, FieldPoint, FieldDerivativeByX);
+							TArray<FVector3d>& Controls =
+								ControlsByTransverse.AddDefaulted_GetRef();
+							Controls.SetNumUninitialized(6);
+							if (!bBridgeComplete)
+							{
+								continue;
+							}
+							const double DeltaX = FieldPoint.X - ReturnPoint.X;
+							const FVector3d StartDerivative =
+								DeltaX * ReturnDerivativeByX;
+							const FVector3d EndDerivative =
+								DeltaX * FieldDerivativeByX;
+							Controls[0] = ReturnPoint;
+							Controls[1] = ReturnPoint + StartDerivative / 5.0;
+							Controls[2] = ReturnPoint + 2.0 * StartDerivative / 5.0;
+							Controls[3] = FieldPoint - 2.0 * EndDerivative / 5.0;
+							Controls[4] = FieldPoint - EndDerivative / 5.0;
+							Controls[5] = FieldPoint;
+							for (int32 SampleIndex = 0; SampleIndex <= 16;
+								++SampleIndex)
+							{
+								const double T = static_cast<double>(SampleIndex) / 16.0;
+								const FVector3d Point = EvaluateBezierControlPolygon(
+									MakeArrayView(Controls), T);
+								MaximumBridgeDepartureCm = FMath::Max(
+									MaximumBridgeDepartureCm,
+									FVector3d::Distance(Point,
+										FMath::Lerp(ReturnPoint, FieldPoint, T)));
+							}
+						}
+
+						TArray<TArray<FCubicBezierSegment>>
+							TransverseSegmentsByLongitudinalControl;
+						for (int32 LongitudinalControl = 0;
+							bBridgeComplete && LongitudinalControl < 6;
+							++LongitudinalControl)
+						{
+							TArray<FVector3d> Values;
+							for (const TArray<FVector3d>& Controls :
+								ControlsByTransverse)
+							{
+								Values.Add(Controls[LongitudinalControl]);
+							}
+							TArray<FCubicBezierSegment>& Segments =
+								TransverseSegmentsByLongitudinalControl.
+									AddDefaulted_GetRef();
+							bBridgeComplete &= BuildNaturalCubicBezierSegments(
+								BridgeTransverseKnots, Values, Segments);
+						}
+						FPiecewiseTensorBezierPatch BridgePatch;
+						BridgePatch.SourceId = FieldSidePatch.SourceId;
+						BridgePatch.SurfaceId = CombineStableIds(
+							Candidate.CandidateId, CombineStableIds(
+								StableStringId(TEXT("PiecewiseLowerReturnSeamC2.V1")),
+								SideSign < 0.0 ? 1ull : 2ull));
+						BridgePatch.PrimitiveId = CombineStableIds(
+							BridgePatch.SurfaceId,
+							StableStringId(TEXT("QuinticHermiteStrip")));
+						BridgePatch.CanonicalGroupId = StableStringId(
+							TEXT("PiecewiseLowerReturnSeamC2.Canonical.V1"));
+						BridgePatch.MaterialId = FieldSidePatch.MaterialId;
+						BridgePatch.ObjectType = FieldSidePatch.ObjectType;
+						BridgePatch.BlockingChannels =
+							FieldSidePatch.BlockingChannels;
+						BridgePatch.bQueryCollisionEnabled =
+							FieldSidePatch.bQueryCollisionEnabled;
+						for (int32 UIndex = 0; bBridgeComplete &&
+							UIndex + 1 < BridgeTransverseKnotCount; ++UIndex)
+						{
+							FPiecewiseTensorBezierCell& Cell =
+								BridgePatch.Cells.AddDefaulted_GetRef();
+							const uint64 CellIndex = static_cast<uint64>(UIndex + 1);
+							Cell.FeatureId = CombineStableIds(
+								BridgePatch.SurfaceId, CellIndex);
+							Cell.PrimitiveId = CombineStableIds(
+								BridgePatch.PrimitiveId, CellIndex);
+							Cell.MinimumU = static_cast<double>(UIndex) /
+								(BridgeTransverseKnotCount - 1);
+							Cell.MaximumU = static_cast<double>(UIndex + 1) /
+								(BridgeTransverseKnotCount - 1);
+							Cell.MinimumV = 0.0;
+							Cell.MaximumV = 1.0;
+							Cell.LongitudinalParameterScale = 1.0;
+							Cell.Surface.DegreeU = 3;
+							Cell.Surface.DegreeV = 5;
+							Cell.Surface.ControlPoints.SetNumUninitialized(24);
+							for (int32 UControl = 0; UControl < 4; ++UControl)
+								for (int32 VControl = 0; VControl < 6; ++VControl)
+								{
+									Cell.Surface.ControlPoints[UControl * 6 + VControl] =
+										TransverseSegmentsByLongitudinalControl[VControl]
+											[UIndex].ControlPoints[UControl];
+								}
+						}
+						if (bBridgeComplete && !BridgePatch.Cells.IsEmpty())
+						{
+							const FVector3d CenterNormal = BridgePatch.Cells[
+								BridgePatch.Cells.Num() / 2].Surface.
+									EvaluateNormal(0.5, 0.5);
+							if (CenterNormal.Z < 0.0)
+							{
+								for (FPiecewiseTensorBezierCell& Cell : BridgePatch.Cells)
+								{
+									for (int32 VControl = 0; VControl < 6; ++VControl)
+									{
+										Swap(Cell.Surface.ControlPoints[0 * 6 + VControl],
+											Cell.Surface.ControlPoints[3 * 6 + VControl]);
+										Swap(Cell.Surface.ControlPoints[1 * 6 + VControl],
+											Cell.Surface.ControlPoints[2 * 6 + VControl]);
+									}
+									const double OldMinimumU = Cell.MinimumU;
+									Cell.MinimumU = 1.0 - Cell.MaximumU;
+									Cell.MaximumU = 1.0 - OldMinimumU;
+								}
+							}
+						}
+						// The endpoint tangents determine the unique zero-curvature
+						// quintic. Its worst chord departure is about 23 cm; reducing it
+						// would reintroduce a tangent discontinuity at the suspension path.
+						constexpr double MaximumLowerReturnSeamPolishCm = 25.0;
+						BridgePatch.bSourceResidualCertified = bBridgeComplete &&
+							MaximumBridgeDepartureCm <=
+								MaximumLowerReturnSeamPolishCm;
+						Algo::Sort(BridgePatch.Cells,
+							[](const FPiecewiseTensorBezierCell& A,
+								const FPiecewiseTensorBezierCell& B)
+							{
+								return A.PrimitiveId < B.PrimitiveId;
+							});
+						if (BridgePatch.bSourceResidualCertified &&
+							BridgePatch.BuildQueryApproximation())
+						{
+							BridgePatch.bAuthorityEligible =
+								BridgePatch.bQueryCollisionEnabled &&
+								BridgePatch.bApproximationCertified &&
+								Algo::AllOf(BridgePatch.Adjacencies,
+									[](const FPiecewiseTensorBezierAdjacency& Link)
+									{
+										return Link.bC2ByConstruction;
+									});
+						}
+						UE_LOG(LogTemp, Display, TEXT(
+							"[AnalyticLowerReturnSeam] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Transverse=[%.9g,%.9g] DepartureCm=%.9g Certified=%d"),
+							Candidate.CandidateId, SideSign,
+							BridgePatch.Cells.Num(),
+							FMath::Min(InteriorEndCoordinate,
+								FieldSideLongitudinalB),
+							FMath::Max(InteriorEndCoordinate,
+								FieldSideLongitudinalB),
+							BridgeMinimumTransverse,
+							BridgeMaximumTransverse,
+							MaximumBridgeDepartureCm,
+							BridgePatch.bAuthorityEligible ? 1 : 0);
+						if (BridgePatch.bAuthorityEligible)
+						{
+							PiecewiseTensorBezierPatches.Add(MoveTemp(BridgePatch));
+						}
+					}
+					PiecewiseTensorBezierPatches.Add(
+						MoveTemp(FieldSidePatch));
+				}
+			}
+		}
+
+		// At the finite end of the lower lateral gutter the source is no longer
+		// single-valued as Z=f(X) (or Z=f(Y)).  The compact profile is therefore
+		// intentionally not extended there: fit the short, two-dimensional wall
+		// junction directly from the source triangles.  This preserves the
+		// transverse normal component seen by Legacy while keeping the analytic
+		// provider bounded to the actual mesh branch.
+		// The source is multi-valued here and this vertical height-field selects a
+		// different branch from the adjacent compact profile and residual source
+		// triangles. Keep the fit code as a measured diagnostic, but do not grant
+		// it a second runtime authority over that finite boundary.
+		if (false) for (const double SideSign : { -1.0, 1.0 })
+		{
+			constexpr int32 JunctionLongitudinalKnotCount = 12;
+			constexpr int32 JunctionTransverseKnotCount = 9;
+			const double JunctionNearWallOffset = 40.0;
+			const double JunctionFarWallOffset = 180.0;
+			const double JunctionOuterFraction = 1.12;
+			const double JunctionMinimumLongitudinal = FMath::Min(
+				WallCoordinate - OpeningSign * JunctionNearWallOffset,
+				WallCoordinate - OpeningSign * JunctionFarWallOffset);
+			const double JunctionMaximumLongitudinal = FMath::Max(
+				WallCoordinate - OpeningSign * JunctionNearWallOffset,
+				WallCoordinate - OpeningSign * JunctionFarWallOffset);
+			const double JunctionInnerTransverse = SideSign * FMath::Min(
+				0.99 * TransverseHalfExtent, 950.0);
+			const double JunctionOuterTransverse = SideSign * FMath::Min(
+				JunctionOuterFraction * TransverseHalfExtent, 1120.0);
+			const double JunctionMinimumTransverse = FMath::Min(
+				JunctionInnerTransverse, JunctionOuterTransverse);
+			const double JunctionMaximumTransverse = FMath::Max(
+				JunctionInnerTransverse, JunctionOuterTransverse);
+			if (JunctionMaximumLongitudinal > JunctionMinimumLongitudinal + 40.0 &&
+				JunctionMaximumTransverse > JunctionMinimumTransverse + 40.0)
+			{
+				TArray<double> JunctionLongitudinalKnots;
+				TArray<double> JunctionTransverseKnots;
+				for (int32 Index = 0; Index < JunctionLongitudinalKnotCount; ++Index)
+				{
+					JunctionLongitudinalKnots.Add(FMath::Lerp(
+						JunctionMinimumLongitudinal, JunctionMaximumLongitudinal,
+						static_cast<double>(Index) /
+							(JunctionLongitudinalKnotCount - 1)));
+				}
+				for (int32 Index = 0; Index < JunctionTransverseKnotCount; ++Index)
+				{
+					JunctionTransverseKnots.Add(FMath::Lerp(
+						JunctionMinimumTransverse, JunctionMaximumTransverse,
+						static_cast<double>(Index) /
+							(JunctionTransverseKnotCount - 1)));
+				}
+				auto SampleJunctionSource = [&](const double Longitudinal,
+					const double Transverse, FVector3d& OutPoint)
+				{
+					FWorldQuery Query;
+					Query.Start[WallAxis] = Query.End[WallAxis] = Longitudinal;
+					Query.Start[TransverseAxis] = Query.End[TransverseAxis] = Transverse;
+					Query.Start[VerticalAxis] = InteriorBaseline + 0.85 * VerticalSpan;
+					Query.End[VerticalAxis] = InteriorBaseline - 1.0;
+					Query.RequiredSourceId = SourceTriangle.SourceId;
+					Query.bIncludeTriangles = true;
+					const FWorldHit Hit = SourceQueryService.Sweep(Query);
+					if (!Hit.bHit || Hit.Normal[VerticalAxis] < 0.05)
+					{
+						return false;
+					}
+					OutPoint = Hit.Point;
+					return true;
+				};
+				TArray<TArray<FCubicBezierSegment>>
+					JunctionSegmentsByLongitudinal;
+				bool bJunctionComplete = true;
+				for (const double Longitudinal : JunctionLongitudinalKnots)
+				{
+					TArray<FVector3d> Values;
+					for (const double Transverse : JunctionTransverseKnots)
+					{
+						FVector3d Point = FVector3d::ZeroVector;
+						bJunctionComplete &= SampleJunctionSource(
+							Longitudinal, Transverse, Point);
+						Values.Add(Point);
+					}
+					TArray<FCubicBezierSegment>& Row =
+						JunctionSegmentsByLongitudinal.AddDefaulted_GetRef();
+					bJunctionComplete &= BuildNaturalCubicBezierSegments(
+						JunctionTransverseKnots, Values, Row);
+				}
+				const int32 JunctionTransverseSegmentCount =
+					JunctionTransverseKnotCount - 1;
+				FPiecewiseTensorBezierPatch JunctionPatch;
+				JunctionPatch.SourceId = SourceTriangle.SourceId;
+				JunctionPatch.SurfaceId = CombineStableIds(Candidate.CandidateId,
+					CombineStableIds(StableStringId(
+						TEXT("PiecewiseFiniteLowerWallJunctionC2.V1")),
+						SideSign < 0.0 ? 1ull : 2ull));
+				JunctionPatch.PrimitiveId = CombineStableIds(
+					JunctionPatch.SurfaceId, StableStringId(TEXT("NaturalBicubic")));
+				JunctionPatch.CanonicalGroupId = StableStringId(
+					TEXT("PiecewiseFiniteLowerWallJunctionC2.Canonical.V1"));
+				JunctionPatch.MaterialId = SourceTriangle.MaterialId;
+				JunctionPatch.ObjectType = SourceTriangle.ObjectType;
+				JunctionPatch.BlockingChannels = SourceTriangle.BlockingChannels;
+				JunctionPatch.bQueryCollisionEnabled =
+					SourceTriangle.bQueryCollisionEnabled;
+				for (int32 UIndex = 0; bJunctionComplete &&
+					UIndex < JunctionTransverseSegmentCount; ++UIndex)
+				{
+					TArray<TArray<FCubicBezierSegment>>
+						LongitudinalSegmentsByUControl;
+					for (int32 UControl = 0; UControl < 4; ++UControl)
+					{
+						TArray<FVector3d> Values;
+						for (int32 LongitudinalIndex = 0;
+							LongitudinalIndex < JunctionLongitudinalKnots.Num();
+							++LongitudinalIndex)
+						{
+							Values.Add(JunctionSegmentsByLongitudinal[
+								LongitudinalIndex][UIndex].ControlPoints[UControl]);
+						}
+						TArray<FCubicBezierSegment>& Column =
+							LongitudinalSegmentsByUControl.AddDefaulted_GetRef();
+						bJunctionComplete &= BuildNaturalCubicBezierSegments(
+							JunctionLongitudinalKnots, Values, Column);
+					}
+					for (int32 VIndex = 0; bJunctionComplete &&
+						VIndex + 1 < JunctionLongitudinalKnotCount; ++VIndex)
+					{
+						FPiecewiseTensorBezierCell& Cell =
+							JunctionPatch.Cells.AddDefaulted_GetRef();
+						const uint64 CellIndex = static_cast<uint64>(
+							1 + UIndex * (JunctionLongitudinalKnotCount - 1) + VIndex);
+						Cell.FeatureId = CombineStableIds(
+							JunctionPatch.SurfaceId, CellIndex);
+						Cell.PrimitiveId = CombineStableIds(
+							JunctionPatch.PrimitiveId, CellIndex);
+						Cell.MinimumU = static_cast<double>(UIndex) /
+							JunctionTransverseSegmentCount;
+						Cell.MaximumU = static_cast<double>(UIndex + 1) /
+							JunctionTransverseSegmentCount;
+						Cell.MinimumV = static_cast<double>(VIndex) /
+							(JunctionLongitudinalKnotCount - 1);
+						Cell.MaximumV = static_cast<double>(VIndex + 1) /
+							(JunctionLongitudinalKnotCount - 1);
+						Cell.LongitudinalParameterScale = 1.0;
+						Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+						Cell.Surface.ControlPoints.SetNumUninitialized(16);
+						for (int32 UControl = 0; UControl < 4; ++UControl)
+							for (int32 VControl = 0; VControl < 4; ++VControl)
+							{
+								Cell.Surface.ControlPoints[UControl * 4 + VControl] =
+									LongitudinalSegmentsByUControl[UControl][VIndex]
+										.ControlPoints[VControl];
+							}
+					}
+				}
+			double MaximumJunctionSourceResidualObservedCm = 0.0;
+				if (bJunctionComplete)
+				{
+					for (const FPiecewiseTensorBezierCell& Cell : JunctionPatch.Cells)
+						for (const double U : { 0.0, 0.25, 0.5, 0.75, 1.0 })
+							for (const double V : { 0.25, 0.5, 0.75 })
+							{
+								const FVector3d Point = Cell.Surface.Evaluate(U, V);
+								FVector3d SourcePoint;
+								if (!SampleJunctionSource(Point[WallAxis],
+									Point[TransverseAxis], SourcePoint))
+								{
+									MaximumJunctionSourceResidualObservedCm =
+										TNumericLimits<double>::Max();
+									continue;
+								}
+								MaximumJunctionSourceResidualObservedCm = FMath::Max(
+									MaximumJunctionSourceResidualObservedCm,
+									FVector3d::Distance(Point, SourcePoint));
+							}
+				}
+				constexpr double MaximumJunctionSourceResidualLimitCm = 15.0;
+				JunctionPatch.bSourceResidualCertified = bJunctionComplete &&
+					MaximumJunctionSourceResidualObservedCm <=
+						MaximumJunctionSourceResidualLimitCm;
+				Algo::Sort(JunctionPatch.Cells,
+					[](const FPiecewiseTensorBezierCell& A,
+						const FPiecewiseTensorBezierCell& B)
+					{
+						return A.PrimitiveId < B.PrimitiveId;
+					});
+				if (JunctionPatch.bSourceResidualCertified &&
+					JunctionPatch.BuildQueryApproximation())
+				{
+					JunctionPatch.bAuthorityEligible =
+						JunctionPatch.bQueryCollisionEnabled &&
+						JunctionPatch.bApproximationCertified &&
+						Algo::AllOf(JunctionPatch.Adjacencies,
+							[](const FPiecewiseTensorBezierAdjacency& Link)
+							{
+								return Link.bC2ByConstruction;
+							});
+				}
+				UE_LOG(LogTemp, Display,
+					TEXT("[AnalyticFiniteLowerWallJunction] Candidate=%016llX Side=%+.0f Cells=%d Longitudinal=[%.9g,%.9g] Transverse=[%.9g,%.9g] SourceResidualCm=%.9g Certified=%d"),
+					Candidate.CandidateId, SideSign, JunctionPatch.Cells.Num(),
+					JunctionMinimumLongitudinal, JunctionMaximumLongitudinal,
+					JunctionMinimumTransverse, JunctionMaximumTransverse,
+					MaximumJunctionSourceResidualObservedCm,
+					JunctionPatch.bAuthorityEligible ? 1 : 0);
+				if (JunctionPatch.bAuthorityEligible)
+					PiecewiseTensorBezierPatches.Add(MoveTemp(JunctionPatch));
+			}
+		}
+
+		// The first corner-transition band is not single-valued over the full
+		// cap rectangle. Build two compact, independently certified bicubic
+		// strips for the lower transition only; the upper lip remains separate.
+		const double BandInner = 0.64 * TransverseHalfExtent;
+		const double BandOuter = 0.84 * TransverseHalfExtent;
+		const double BandTop = InteriorBaseline + 0.42 * VerticalSpan;
+		if (BandOuter > BandInner + 100.0 && BandTop > MinimumVertical + 100.0)
+		{
+			for (const double BandSign : { -1.0, 1.0 })
+			{
+				const TArray<double> BandU = { BandInner, BandInner + (BandOuter - BandInner) / 3.0,
+					BandInner + 2.0 * (BandOuter - BandInner) / 3.0, BandOuter };
+				const TArray<double> BandV = { MinimumVertical,
+					MinimumVertical + (BandTop - MinimumVertical) / 3.0,
+					MinimumVertical + 2.0 * (BandTop - MinimumVertical) / 3.0, BandTop };
+				auto SampleBand = [&](const double U, const double V, FVector3d& OutPoint)
+				{
+					FWorldQuery Query;
+					Query.Start[WallAxis] = WallCoordinate - OpeningSign * (FMath::Abs(WallCoordinate) + 1000.0);
+					Query.End[WallAxis] = WallCoordinate + OpeningSign * 2000.0;
+					Query.Start[TransverseAxis] = Query.End[TransverseAxis] = BandSign * U;
+					Query.Start[VerticalAxis] = Query.End[VerticalAxis] = V;
+					Query.RequiredSourceId = SourceTriangle.SourceId;
+					Query.bIncludeTriangles = true;
+					const FWorldHit Hit = SourceQueryService.Sweep(Query);
+					if (!Hit.bHit || OpeningSign * (Hit.Point[WallAxis] - WallCoordinate) < 50.0) return false;
+					OutPoint = Hit.Point;
+					return true;
+				};
+				TArray<TArray<FCubicBezierSegment>> Rows;
+				bool bBandComplete = true;
+				for (const double V : BandV)
+				{
+					TArray<FVector3d> Values;
+					for (const double U : BandU)
+					{
+						FVector3d Point;
+						bBandComplete &= SampleBand(U, V, Point);
+						Values.Add(Point);
+					}
+					TArray<FCubicBezierSegment>& Row = Rows.AddDefaulted_GetRef();
+					bBandComplete &= BuildNaturalCubicBezierSegments(BandU, Values, Row);
+				}
+				if (!bBandComplete)
+				{
+					UE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f Incomplete=1"), Candidate.CandidateId, BandSign);
+					continue;
+				}
+				TArray<TArray<FCubicBezierSegment>> Columns;
+				for (int32 Control = 0; Control < 4; ++Control)
+				{
+					TArray<FVector3d> Values;
+					for (int32 Row = 0; Row < 4; ++Row) Values.Add(Rows[Row][0].ControlPoints[Control]);
+					TArray<FCubicBezierSegment>& Column = Columns.AddDefaulted_GetRef();
+					bBandComplete &= BuildNaturalCubicBezierSegments(BandV, Values, Column);
+				}
+				if (!bBandComplete || Columns.Num() != 4) continue;
+				FPiecewiseTensorBezierPatch SidePatch;
+				SidePatch.SourceId = SourceTriangle.SourceId;
+				SidePatch.SurfaceId = CombineStableIds(Candidate.CandidateId,
+					CombineStableIds(StableStringId(TEXT("PiecewiseCornerTransitionC2.V1")), BandSign < 0.0 ? 1ull : 2ull));
+				SidePatch.PrimitiveId = CombineStableIds(SidePatch.SurfaceId, StableStringId(TEXT("LowerBand")));
+				SidePatch.CanonicalGroupId = StableStringId(TEXT("PiecewiseCornerTransitionC2.Canonical.V1"));
+				SidePatch.MaterialId = SourceTriangle.MaterialId;
+				SidePatch.ObjectType = SourceTriangle.ObjectType;
+				SidePatch.BlockingChannels = SourceTriangle.BlockingChannels;
+				SidePatch.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
+				FPiecewiseTensorBezierCell& Cell = SidePatch.Cells.AddDefaulted_GetRef();
+				Cell.FeatureId = CombineStableIds(SidePatch.SurfaceId, 1ull);
+				Cell.PrimitiveId = CombineStableIds(SidePatch.PrimitiveId, 1ull);
+				Cell.MinimumU = Cell.MinimumV = 0.0;
+				Cell.MaximumU = Cell.MaximumV = 1.0;
+				Cell.LongitudinalParameterScale = 1.0;
+				Cell.Surface.DegreeU = Cell.Surface.DegreeV = 3;
+				Cell.Surface.ControlPoints.SetNumUninitialized(16);
+				for (int32 UControl = 0; UControl < 4; ++UControl)
+					for (int32 VControl = 0; VControl < 4; ++VControl)
+					{
+						const int32 PhysicalVControl = OpeningSign < 0.0 ? VControl : 3 - VControl;
+						Cell.Surface.ControlPoints[UControl * 4 + VControl] =
+							Columns[UControl][0].ControlPoints[PhysicalVControl];
+					}
+				double BandResidualCm = 0.0;
+				for (const double U : { 0.2, 0.5, 0.8 }) for (const double V : { 0.2, 0.5, 0.8 })
+				{
+					const FVector3d Point = Cell.Surface.Evaluate(U, V);
+					FVector3d SourcePoint;
+					if (!SampleBand(FMath::Lerp(BandInner, BandOuter, U), FMath::Lerp(MinimumVertical, BandTop, V), SourcePoint)) { BandResidualCm = TNumericLimits<double>::Max(); continue; }
+					BandResidualCm = FMath::Max(BandResidualCm, FMath::Abs(SourcePoint[WallAxis] - Point[WallAxis]));
+				}
+				SidePatch.bSourceResidualCertified = BandResidualCm <= 1.0;
+				if (SidePatch.bSourceResidualCertified && SidePatch.BuildQueryApproximation())
+				{
+					SidePatch.bAuthorityEligible = SidePatch.bQueryCollisionEnabled && SidePatch.bApproximationCertified;
+					UE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f ResidualCm=%.9g Certified=%d"), Candidate.CandidateId, BandSign, BandResidualCm, SidePatch.bAuthorityEligible ? 1 : 0);
+					if (SidePatch.bAuthorityEligible) PiecewiseTensorBezierPatches.Add(MoveTemp(SidePatch));
+				}
+				else
+				{
+					UE_LOG(LogTemp, Display, TEXT("[AnalyticCornerTransition] Candidate=%016llX Side=%+.0f ResidualCm=%.9g Certified=0"), Candidate.CandidateId, BandSign, BandResidualCm);
+				}
+			}
+		}
+
+		// The terminal upper lip is a separate, nearly exact planar band. Keep
+		// it narrow in height so it cannot span the multi-valued corner below.
+		const double LipMinimumV = FMath::Max(725.0, InteriorTop - 0.14 * VerticalSpan);
+		const double LipMaximumV = FMath::Min(825.0, InteriorTop - 0.01 * VerticalSpan);
+		const double LipHalfWidth = FMath::Min(0.70 * TransverseHalfExtent, 650.0);
+		if (LipMaximumV > LipMinimumV + 20.0 && LipHalfWidth > 100.0)
+		{
+			for (const double LipSign : { -1.0, 1.0 })
+			{
+				TArray<FVector3d> Samples;
+				bool bLipComplete = true;
+				for (int32 UIndex = 0; UIndex < 4; ++UIndex)
+					for (int32 VIndex = 0; VIndex < 4; ++VIndex)
+					{
+						const double U = FMath::Lerp(-LipHalfWidth, LipHalfWidth, UIndex / 3.0);
+						const double V = FMath::Lerp(LipMinimumV, LipMaximumV, VIndex / 3.0);
+						FWorldQuery Query;
+						Query.Start[WallAxis] = WallCoordinate - OpeningSign * (FMath::Abs(WallCoordinate) + 1000.0);
+						Query.End[WallAxis] = WallCoordinate + OpeningSign * 2000.0;
+						Query.Start[TransverseAxis] = Query.End[TransverseAxis] = LipSign * U;
+						Query.Start[VerticalAxis] = Query.End[VerticalAxis] = V;
+						Query.RequiredSourceId = SourceTriangle.SourceId;
+						Query.bIncludeTriangles = true;
+						const FWorldHit Hit = SourceQueryService.Sweep(Query);
+						bLipComplete &= Hit.bHit && OpeningSign * (Hit.Point[WallAxis] - WallCoordinate) >= 50.0;
+						Samples.Add(Hit.Point);
+					}
+				if (!bLipComplete) continue;
+				double LipWall = 0.0;
+				for (const FVector3d& Point : Samples) LipWall += Point[WallAxis];
+				LipWall /= Samples.Num();
+				double LipResidualCm = 0.0;
+				for (const FVector3d& Point : Samples) LipResidualCm = FMath::Max(LipResidualCm, FMath::Abs(Point[WallAxis] - LipWall));
+				if (LipResidualCm > 1.0) continue;
+				FPiecewiseTensorBezierPatch LipPatch;
+				LipPatch.SourceId = SourceTriangle.SourceId;
+				LipPatch.SurfaceId = CombineStableIds(Candidate.CandidateId, CombineStableIds(StableStringId(TEXT("PiecewiseTerminalLipC2.V1")), LipSign < 0.0 ? 1ull : 2ull));
+				LipPatch.PrimitiveId = CombineStableIds(LipPatch.SurfaceId, StableStringId(TEXT("PlanarBand")));
+				LipPatch.CanonicalGroupId = StableStringId(TEXT("PiecewiseTerminalLipC2.Canonical.V1"));
+				LipPatch.MaterialId = SourceTriangle.MaterialId;
+				LipPatch.ObjectType = SourceTriangle.ObjectType;
+				LipPatch.BlockingChannels = SourceTriangle.BlockingChannels;
+				LipPatch.bQueryCollisionEnabled = SourceTriangle.bQueryCollisionEnabled;
+				FPiecewiseTensorBezierCell& LipCell = LipPatch.Cells.AddDefaulted_GetRef();
+				LipCell.FeatureId = CombineStableIds(LipPatch.SurfaceId, 1ull);
+				LipCell.PrimitiveId = CombineStableIds(LipPatch.PrimitiveId, 1ull);
+				LipCell.MinimumU = LipCell.MinimumV = 0.0;
+				LipCell.MaximumU = LipCell.MaximumV = 1.0;
+				LipCell.LongitudinalParameterScale = 1.0;
+				LipCell.Surface.DegreeU = LipCell.Surface.DegreeV = 3;
+				LipCell.Surface.ControlPoints.SetNumUninitialized(16);
+				for (int32 UControl = 0; UControl < 4; ++UControl)
+					for (int32 VControl = 0; VControl < 4; ++VControl)
+					{
+						const double U = FMath::Lerp(-LipHalfWidth, LipHalfWidth, UControl / 3.0);
+						const int32 PhysicalVControl = OpeningSign < 0.0 ? VControl : 3 - VControl;
+						const double V = FMath::Lerp(LipMinimumV, LipMaximumV, PhysicalVControl / 3.0);
+						FVector3d Point = FVector3d::ZeroVector;
+						Point[WallAxis] = LipWall;
+						Point[TransverseAxis] = LipSign * U;
+						Point[VerticalAxis] = V;
+						LipCell.Surface.ControlPoints[UControl * 4 + VControl] = Point;
+					}
+				LipPatch.bSourceResidualCertified = true;
+				if (LipPatch.BuildQueryApproximation())
+				{
+					LipPatch.bAuthorityEligible = LipPatch.bQueryCollisionEnabled && LipPatch.bApproximationCertified;
+					UE_LOG(LogTemp, Display, TEXT("[AnalyticTerminalLip] Candidate=%016llX Side=%+.0f Wall=%.9g ResidualCm=%.9g Certified=%d"), Candidate.CandidateId, LipSign, LipWall, LipResidualCm, LipPatch.bAuthorityEligible ? 1 : 0);
+					if (LipPatch.bAuthorityEligible) PiecewiseTensorBezierPatches.Add(MoveTemp(LipPatch));
+				}
+			}
+		}
+	}
+
+	// Keep independent ruled transitions out of the terminal-closure merge above:
+	// they share source semantics with the surrounding architecture, but they are
+	// not members of an open-rim tensor lane.
+	PiecewiseTensorBezierPatches.Append(MoveTemp(
+		VerticalRuledTransitionPatches));
+	// Some broad terminal lanes are appended after the corner-closure pass. Apply
+	// the same narrow source-fitted ownership after the complete provider set is
+	// assembled, so late lanes cannot reintroduce the ceded adaptive cells.
+	for (const FBox3d& LocalBounds : DeferredLocalTerminalOwnershipBounds)
+	{
+		CedeOverlappingTerminalCells(LocalBounds);
+	}
+	Algo::Sort(TensorBezierPatches,
+		[](const FTensorBezierPatch& A, const FTensorBezierPatch& B)
+		{
+			return A.PrimitiveId < B.PrimitiveId;
+		});
+	Algo::Sort(PiecewiseTensorBezierPatches,
+		[](const FPiecewiseTensorBezierPatch& A,
+			const FPiecewiseTensorBezierPatch& B)
+		{
+			return A.PrimitiveId < B.PrimitiveId;
+		});
+
+	// BuildCompactRuntimePatches runs from BuildRecognitionDiagnostics, which is
+	// intentionally invoked after the first FinalizeAndValidate pass.  Rebuild
+	// the compact acceleration structure here so providers synthesized by this
+	// pass (including the localized goal transitions and closures) are visible to
+	// strict runtime queries.  Without this second indexing step the records are
+	// serialized and reported as certified, but CompactBvh still contains only
+	// the pre-diagnostics provider set.
+	CompactPrimitiveIndices.Reset();
+	for (int32 PlaneIndex = 0; PlaneIndex < Planes.Num(); ++PlaneIndex)
+	{
+		if (Planes[PlaneIndex].bRequiresCompactOptIn)
+		{
+			CompactPrimitiveIndices.Add(PlaneIndex);
+		}
+	}
+	for (int32 PatchIndex = 0;
+		PatchIndex < ExtrudedQuinticPatches.Num(); ++PatchIndex)
+	{
+		CompactPrimitiveIndices.Add(Planes.Num() + PatchIndex);
+	}
+	CompactBvh.Reset();
+	if (!CompactPrimitiveIndices.IsEmpty())
+	{
+		CompactBvh.Reserve(2 * CompactPrimitiveIndices.Num());
+		BuildCompactBvhNode(0, CompactPrimitiveIndices.Num());
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[AnalyticCompactRuntimeIndex] Planes=%d Quintics=%d Indexed=%d Nodes=%d"),
+		Planes.Num(), ExtrudedQuinticPatches.Num(),
+		CompactPrimitiveIndices.Num(), CompactBvh.Num());
 }
 
 void FAnalyticWorldData::BuildVertexShapeSamples()
@@ -2549,7 +11134,11 @@ void FAnalyticWorldData::BuildCurvatureSurfaceRegions()
 	TriangleCurvatureRegionIndices.Init(INDEX_NONE, Triangles.Num());
 	TArray<bool> Assigned;
 	Assigned.Init(false, Triangles.Num());
-	constexpr double MaximumDominantCurvatureRatio = 1.25;
+	// Elliptic tessellation around a finite rounded opening naturally changes
+	// estimated principal curvature across neighboring facets.  Keep the
+	// grouping topology- and material-constrained, but admit one smooth
+	// physical family instead of splitting it at each estimator fluctuation.
+	constexpr double MaximumDominantCurvatureRatio = 1.75;
 	const double MinimumDirectionDot = FMath::Cos(FMath::DegreesToRadians(15.0));
 	auto Compatible = [MaximumDominantCurvatureRatio, MinimumDirectionDot](
 		const FTriangleCurvatureEvidence& Seed,
@@ -7447,6 +16036,8 @@ void FAnalyticWorldData::BuildOpenRimTransverseSections()
 	OpenRimTransverseSections.Reset();
 	OpenRimTransverseSectionPoints.Reset();
 	OpenRimTransitionSectionPoints.Reset();
+	OpenRimLongitudinalContinuationPoints.Reset();
+	OpenRimLongitudinalSamples.Reset();
 	if (CanonicalOpenArchSolutions.Num() != 1) return;
 	const FCanonicalOpenArchSolution& Arch = CanonicalOpenArchSolutions[0];
 	struct FSectionSegment
@@ -7463,6 +16054,9 @@ void FAnalyticWorldData::BuildOpenRimTransverseSections()
 		FVector3d RimPoint = FVector3d::ZeroVector;
 		FVector3d SlicePlaneNormal = FVector3d::ZeroVector;
 		FVector3d OpeningDirection = FVector3d::ZeroVector;
+		int32 InterpolationRimEdgeA = INDEX_NONE;
+		int32 InterpolationRimEdgeB = INDEX_NONE;
+		double InterpolationAlpha = 0.0;
 		bool bUsesExplicitFrame = false;
 	};
 	auto SquaredDistanceToSegment = [](const FVector2d& Point,
@@ -7503,15 +16097,26 @@ void FAnalyticWorldData::BuildOpenRimTransverseSections()
 			}
 		}
 		TArray<FSectionSliceSpec> SliceSpecs;
-		for (const double HeightFraction : { 0.1, 0.2, 0.3, 0.4, 0.5 })
+		// The terminal continuation is a two-dimensional source sheet, so its
+		// transverse witnesses must cover the whole finite vertical family.  The
+		// earlier five lower-half cuts were sufficient to recognize the rim run,
+		// but left the rear closure interpolating across an unwitnessed half-cell.
+		// These are still exact mesh-plane intersections, not synthetic loft rows.
+		for (const double HeightFraction : { 0.05, 0.075, 0.1, 0.15, 0.2,
+			0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75,
+			0.8, 0.80625, 0.8125, 0.81875, 0.8203125, 0.821875,
+			0.8234375, 0.825, 0.85, 0.9, 0.95 })
 		{
 			const double Height = FMath::Lerp(Arch.BaselineHeightCm,
 				Arch.VerticalSegmentTransitionHeightCm, HeightFraction);
 			SliceSpecs.Add({ EOpenRimFeature::NegativeVertical, Height });
 			SliceSpecs.Add({ EOpenRimFeature::PositiveVertical, Height });
 		}
-		for (const double SpanFraction :
-			{ -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75 })
+		// The finite side turns become visible only near the lateral rim ends.
+		// Keep those transverse rails explicitly symmetric and topology-led rather
+		// than asking the spline to extrapolate the last quarter of the domain.
+		for (const double SpanFraction : { -0.95, -0.875, -0.8125, -0.75,
+			-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 0.8125, 0.875, 0.95 })
 		{
 			SliceSpecs.Add({ EOpenRimFeature::HorizontalSpan,
 				SpanFraction * Arch.HorizontalSpanHalfSpanCm });
@@ -7552,6 +16157,59 @@ void FAnalyticWorldData::BuildOpenRimTransverseSections()
 			Spec.SlicePlaneNormal = Tangent;
 			Spec.OpeningDirection = OpeningDirection;
 			Spec.bUsesExplicitFrame = true;
+		}
+		// The curved upper family may have only a few rim edges even though its
+		// finite continuation changes substantially between them.  Insert compact
+		// mesh-plane cuts at the quartiles of adjacent source edges.
+		// The resulting rails are source observations; only their frame is
+		// interpolated from the adjacent rim tangents.
+		TArray<FSectionSliceSpec> UpperSourceSpecs;
+		for (const FSectionSliceSpec& Spec : SliceSpecs)
+			if (Spec.Feature == EOpenRimFeature::UpperTransition &&
+				Spec.bUsesExplicitFrame && Spec.RimEdgeIndex != INDEX_NONE)
+				UpperSourceSpecs.Add(Spec);
+		Algo::Sort(UpperSourceSpecs, [](const FSectionSliceSpec& A,
+			const FSectionSliceSpec& B)
+		{
+			const int32 SideA = A.RimPoint.Y < 0.0 ? -1 : 1;
+			const int32 SideB = B.RimPoint.Y < 0.0 ? -1 : 1;
+			return SideA != SideB ? SideA < SideB :
+				A.CoordinateCm > B.CoordinateCm;
+		});
+		for (int32 Index = 0; Index + 1 < UpperSourceSpecs.Num(); ++Index)
+		{
+			const FSectionSliceSpec& A = UpperSourceSpecs[Index];
+			const FSectionSliceSpec& B = UpperSourceSpecs[Index + 1];
+			if ((A.RimPoint.Y < 0.0) != (B.RimPoint.Y < 0.0) ||
+				A.SmoothRegionIndex != B.SmoothRegionIndex ||
+				FVector3d::Distance(A.RimPoint, B.RimPoint) <= 1.0e-6)
+				continue;
+			FVector3d BNormal = B.SlicePlaneNormal;
+			if (FVector3d::DotProduct(A.SlicePlaneNormal, BNormal) < 0.0)
+				BNormal *= -1.0;
+			FVector3d BOpening = B.OpeningDirection;
+			if (FVector3d::DotProduct(A.OpeningDirection, BOpening) < 0.0)
+				BOpening *= -1.0;
+			for (const double Alpha : { 0.0625, 0.125, 0.1875, 0.25,
+				0.3125, 0.375, 0.4375, 0.5, 0.5625, 0.625, 0.6875,
+				0.75, 0.8125, 0.875, 0.9375 })
+			{
+				FSectionSliceSpec& Spec = SliceSpecs.AddDefaulted_GetRef();
+				Spec.Feature = EOpenRimFeature::UpperTransition;
+				Spec.RimEdgeIndex = INDEX_NONE;
+				Spec.SmoothRegionIndex = A.SmoothRegionIndex;
+				Spec.RimPoint = FMath::Lerp(A.RimPoint, B.RimPoint, Alpha);
+				Spec.CoordinateCm = FMath::Abs(Spec.RimPoint.Y);
+				Spec.SlicePlaneNormal = FMath::Lerp(
+					A.SlicePlaneNormal, BNormal, Alpha).GetSafeNormal();
+				Spec.OpeningDirection = FMath::Lerp(
+					A.OpeningDirection, BOpening, Alpha).GetSafeNormal();
+				Spec.InterpolationRimEdgeA = A.RimEdgeIndex;
+				Spec.InterpolationRimEdgeB = B.RimEdgeIndex;
+				Spec.InterpolationAlpha = Alpha;
+				Spec.bUsesExplicitFrame = !Spec.SlicePlaneNormal.IsNearlyZero() &&
+					!Spec.OpeningDirection.IsNearlyZero();
+			}
 		}
 		for (const FSectionSliceSpec& SliceSpec : SliceSpecs)
 		{
@@ -7738,6 +16396,9 @@ void FAnalyticWorldData::BuildOpenRimTransverseSections()
 					: static_cast<uint64>(SliceSpec.RimEdgeIndex) + 1ull);
 			Section.OpenRimCandidateIndex = CandidateIndex;
 			Section.RimEdgeIndex = SliceSpec.RimEdgeIndex;
+			Section.InterpolationRimEdgeA = SliceSpec.InterpolationRimEdgeA;
+			Section.InterpolationRimEdgeB = SliceSpec.InterpolationRimEdgeB;
+			Section.InterpolationAlpha = SliceSpec.InterpolationAlpha;
 			Section.Feature = Feature;
 			Section.SliceCoordinateCm = SliceCoordinate;
 			Section.SliceOrigin = SliceOrigin;
@@ -7831,6 +16492,204 @@ void FAnalyticWorldData::BuildOpenRimTransverseSections()
 				});
 			Section.TransitionPointCount = TransitionPoints.Num();
 			OpenRimTransitionSectionPoints.Append(TransitionPoints);
+			Section.FirstLongitudinalContinuationPointIndex =
+				OpenRimLongitudinalContinuationPoints.Num();
+			if (FirstLongitudinalSegment != INDEX_NONE)
+			{
+				// Start at the terminal of the rim-to-run path, then walk the
+				// same selected source topology into the finite interior.  This
+				// deliberately preserves adjacency instead of sorting all section
+				// intersections by depth (which is the invalid center-out graph).
+				TSet<int32> UsedSegments;
+				for (int32 SegmentIndex = FirstLongitudinalSegment;
+					SegmentIndex != INDEX_NONE;
+					SegmentIndex = SegmentPredecessors.FindRef(SegmentIndex))
+				{
+					UsedSegments.Add(SegmentIndex);
+				}
+				const FSectionSegment& FirstSegment =
+					Segments[FirstLongitudinalSegment];
+				FVector2d CurrentPoint = FirstSegment.A.SquaredLength() <=
+					FirstSegment.B.SquaredLength() ? FirstSegment.A : FirstSegment.B;
+				FVector2d PreviousPoint = CurrentPoint;
+				OpenRimLongitudinalContinuationPoints.Add(CurrentPoint);
+				CurrentPoint = CurrentPoint.Equals(FirstSegment.A, 0.25)
+					? FirstSegment.B : FirstSegment.A;
+				OpenRimLongitudinalContinuationPoints.Add(CurrentPoint);
+				UsedSegments.Add(FirstLongitudinalSegment);
+				for (int32 WalkStep = 0; WalkStep < SelectedOrder.Num(); ++WalkStep)
+				{
+					int32 BestNextSegment = INDEX_NONE;
+					FVector2d BestNextPoint = FVector2d::ZeroVector;
+					double BestScore = -TNumericLimits<double>::Max();
+					const FVector2d Direction = (CurrentPoint - PreviousPoint)
+						.GetSafeNormal();
+					for (const int32 CandidateSegmentIndex : SelectedOrder)
+					{
+						if (UsedSegments.Contains(CandidateSegmentIndex)) continue;
+						const FSectionSegment& LaneCandidate =
+							Segments[CandidateSegmentIndex];
+						const bool bAtA = LaneCandidate.A.Equals(CurrentPoint, 0.25);
+						const bool bAtB = LaneCandidate.B.Equals(CurrentPoint, 0.25);
+						if (!bAtA && !bAtB) continue;
+						const FVector2d NextPoint = bAtA ? LaneCandidate.B : LaneCandidate.A;
+						const FVector2d NextDirection = (NextPoint - CurrentPoint)
+							.GetSafeNormal();
+						const double Score = FVector2d::DotProduct(
+							Direction, NextDirection) + 1.0e-6 * NextPoint.X;
+						if (Score > BestScore || (Score == BestScore &&
+							CandidateSegmentIndex < BestNextSegment))
+						{
+							BestScore = Score;
+							BestNextSegment = CandidateSegmentIndex;
+							BestNextPoint = NextPoint;
+						}
+					}
+					if (BestNextSegment == INDEX_NONE) break;
+					UsedSegments.Add(BestNextSegment);
+					PreviousPoint = CurrentPoint;
+					CurrentPoint = BestNextPoint;
+					OpenRimLongitudinalContinuationPoints.Add(CurrentPoint);
+				}
+			}
+			Section.LongitudinalContinuationPointCount =
+				OpenRimLongitudinalContinuationPoints.Num() -
+				Section.FirstLongitudinalContinuationPointIndex;
+			for (int32 PointOffset = 1;
+				PointOffset < Section.LongitudinalContinuationPointCount;
+				++PointOffset)
+			{
+				const FVector2d& Previous = OpenRimLongitudinalContinuationPoints[
+					Section.FirstLongitudinalContinuationPointIndex + PointOffset - 1];
+				const FVector2d& Current = OpenRimLongitudinalContinuationPoints[
+					Section.FirstLongitudinalContinuationPointIndex + PointOffset];
+				Section.LongitudinalContinuationArcLengthCm +=
+					FVector2d::Distance(Previous, Current);
+				if (PointOffset >= 2)
+				{
+					const FVector2d& BeforePrevious =
+						OpenRimLongitudinalContinuationPoints[
+							Section.FirstLongitudinalContinuationPointIndex + PointOffset - 2];
+					const FVector2d Incoming = (Previous - BeforePrevious).GetSafeNormal();
+					const FVector2d Outgoing = (Current - Previous).GetSafeNormal();
+					if (!Incoming.IsNearlyZero() && !Outgoing.IsNearlyZero())
+					{
+						Section.LongitudinalContinuationMaximumTurnDegrees = FMath::Max(
+							Section.LongitudinalContinuationMaximumTurnDegrees,
+							FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(
+								FVector2d::DotProduct(Incoming, Outgoing), -1.0, 1.0))));
+					}
+				}
+			}
+			// The selected topology remains ordered through the rear rotation and
+			// cap.  A tube fit must stop before that bend rather than averaging the
+			// cap into its longitudinal derivatives.  Use the first non-degenerate
+			// tangent as the local longitudinal witness and split at its first
+			// sustained 15-degree departure.  This is recognition-only evidence;
+			// runtime collision authority still cannot consume it directly.
+			constexpr double TubeDepartureDegrees = 15.0;
+			const double TubeDepartureCosine = FMath::Cos(
+				FMath::DegreesToRadians(TubeDepartureDegrees));
+			FVector2d TubeDirection = FVector2d::ZeroVector;
+			for (int32 PointOffset = 1;
+				PointOffset < Section.LongitudinalContinuationPointCount;
+				++PointOffset)
+			{
+				const FVector2d Segment =
+					OpenRimLongitudinalContinuationPoints[
+						Section.FirstLongitudinalContinuationPointIndex + PointOffset] -
+					OpenRimLongitudinalContinuationPoints[
+						Section.FirstLongitudinalContinuationPointIndex + PointOffset - 1];
+				if (Segment.SquaredLength() > UE_DOUBLE_SMALL_NUMBER)
+				{
+					TubeDirection = Segment.GetSafeNormal();
+					break;
+				}
+			}
+			Section.LongitudinalTubePointCount =
+				Section.LongitudinalContinuationPointCount;
+			if (!TubeDirection.IsNearlyZero())
+			{
+				for (int32 PointOffset = 1;
+					PointOffset < Section.LongitudinalContinuationPointCount;
+					++PointOffset)
+				{
+					const FVector2d Segment =
+						OpenRimLongitudinalContinuationPoints[
+							Section.FirstLongitudinalContinuationPointIndex + PointOffset] -
+						OpenRimLongitudinalContinuationPoints[
+							Section.FirstLongitudinalContinuationPointIndex + PointOffset - 1];
+					if (Segment.SquaredLength() <= UE_DOUBLE_SMALL_NUMBER) continue;
+					const double Alignment = FMath::Clamp(FVector2d::DotProduct(
+						TubeDirection, Segment.GetSafeNormal()), -1.0, 1.0);
+					const double DepartureDegrees = FMath::RadiansToDegrees(
+						FMath::Acos(Alignment));
+					Section.LongitudinalTubeMaximumDepartureDegrees = FMath::Max(
+						Section.LongitudinalTubeMaximumDepartureDegrees,
+						DepartureDegrees);
+					if (Alignment < TubeDepartureCosine)
+					{
+						Section.FirstLongitudinalRearTurnPointOffset = PointOffset;
+						Section.LongitudinalTubePointCount = PointOffset;
+						break;
+					}
+				}
+			}
+			for (int32 PointOffset = 1;
+				PointOffset < Section.LongitudinalTubePointCount; ++PointOffset)
+			{
+				Section.LongitudinalTubeArcLengthCm += FVector2d::Distance(
+					OpenRimLongitudinalContinuationPoints[
+						Section.FirstLongitudinalContinuationPointIndex + PointOffset - 1],
+					OpenRimLongitudinalContinuationPoints[
+						Section.FirstLongitudinalContinuationPointIndex + PointOffset]);
+			}
+			if (Section.LongitudinalTubePointCount > 0)
+			{
+				const FVector2d& TubeTerminal = OpenRimLongitudinalContinuationPoints[
+					Section.FirstLongitudinalContinuationPointIndex +
+					Section.LongitudinalTubePointCount - 1];
+				Section.LongitudinalTubeTerminalDepthCm = TubeTerminal.X;
+				Section.LongitudinalTubeTerminalOpeningOffsetCm = TubeTerminal.Y;
+			}
+			if (Section.LongitudinalContinuationPointCount > 0)
+			{
+				const FVector2d& Terminal = OpenRimLongitudinalContinuationPoints[
+					Section.FirstLongitudinalContinuationPointIndex +
+					Section.LongitudinalContinuationPointCount - 1];
+				Section.LongitudinalContinuationTerminalDepthCm = Terminal.X;
+				Section.LongitudinalContinuationTerminalOpeningOffsetCm = Terminal.Y;
+			}
+			Section.FirstLongitudinalSampleIndex =
+				OpenRimLongitudinalSamples.Num();
+			double CumulativeArcLengthCm = 0.0;
+			for (int32 PointOffset = 0;
+				PointOffset < Section.LongitudinalContinuationPointCount;
+				++PointOffset)
+			{
+				const FVector2d& Point = OpenRimLongitudinalContinuationPoints[
+					Section.FirstLongitudinalContinuationPointIndex + PointOffset];
+				if (PointOffset > 0)
+				{
+					const FVector2d& Previous =
+						OpenRimLongitudinalContinuationPoints[
+							Section.FirstLongitudinalContinuationPointIndex + PointOffset - 1];
+					CumulativeArcLengthCm += FVector2d::Distance(Previous, Point);
+				}
+				FOpenRimLongitudinalSample& Sample =
+					OpenRimLongitudinalSamples.AddDefaulted_GetRef();
+				Sample.OpenRimTransverseSectionIndex =
+					OpenRimTransverseSections.Num() - 1;
+				Sample.ContinuationPointOffset = PointOffset;
+				Sample.NormalizedArcLength =
+					Section.LongitudinalContinuationArcLengthCm > 1.0e-9
+						? CumulativeArcLengthCm /
+							Section.LongitudinalContinuationArcLengthCm : 0.0;
+				const FVector3d WorldPoint = Section.SliceOrigin +
+					Point.Y * Section.OpeningDirection;
+				Sample.CanonicalPositionCm = FVector3d(
+					Point.X, FMath::Abs(WorldPoint.Y), WorldPoint.Z);
+			}
 			Algo::Sort(UniquePoints, [](const FVector2d& A, const FVector2d& B)
 			{
 				return A.X != B.X ? A.X < B.X : A.Y < B.Y;
@@ -7862,7 +16721,14 @@ void FAnalyticWorldData::BuildOpenRimTransitionFamilyFits()
 	OpenRimC2LoftFits.Reset();
 	OpenRimCanonicalSurfaceSamples.Reset();
 	OpenRimCanonicalSectionCorrespondences.Reset();
+	OpenRimLongitudinalSplineSegments.Reset();
+	OpenRimTerminalClosureRailSegments.Reset();
+	OpenRimTerminalClosureRailFits.Reset();
 	OpenRimCanonicalSurfaceFits.Reset();
+	OpenRimCanonicalTubeFits.Reset();
+	OpenRimCanonicalTensorSurfaces.Reset();
+	OpenRimCanonicalTubeTensorSurfaces.Reset();
+	OpenRimCanonicalTubeLoftFits.Reset();
 	if (CanonicalOpenArchSolutions.Num() != 1) return;
 	const FCanonicalOpenArchSolution& Arch = CanonicalOpenArchSolutions[0];
 	auto Evaluate = [](const double T, const double EndDepth,
@@ -8147,12 +17013,45 @@ void FAnalyticWorldData::BuildOpenRimTransitionFamilyFits()
 			Section.bTopologyCanonicalRimParameterValid = true;
 		}
 	}
+	for (FOpenRimTransverseSection& Section : OpenRimTransverseSections)
+	{
+		if (Section.InterpolationRimEdgeA == INDEX_NONE ||
+			Section.InterpolationRimEdgeB == INDEX_NONE) continue;
+		const FOpenRimTransverseSection* A = nullptr;
+		const FOpenRimTransverseSection* B = nullptr;
+		for (const FOpenRimTransverseSection& CandidateSection :
+			OpenRimTransverseSections)
+		{
+			if (CandidateSection.OpenRimCandidateIndex !=
+				Section.OpenRimCandidateIndex) continue;
+			if (CandidateSection.RimEdgeIndex == Section.InterpolationRimEdgeA)
+				A = &CandidateSection;
+			if (CandidateSection.RimEdgeIndex == Section.InterpolationRimEdgeB)
+				B = &CandidateSection;
+		}
+		if (A == nullptr || B == nullptr ||
+			!A->bTopologyCanonicalRimParameterValid ||
+			!B->bTopologyCanonicalRimParameterValid) continue;
+		const double TopologyWidth = FMath::Abs(
+			B->TopologyCanonicalRimParameter -
+			A->TopologyCanonicalRimParameter);
+		const bool bEndpointRefinement =
+			Section.InterpolationAlpha < 0.2 ||
+			Section.InterpolationAlpha > 0.8;
+		if (bEndpointRefinement && TopologyWidth <= 0.1) continue;
+		Section.TopologyCanonicalRimParameter = FMath::Lerp(
+			A->TopologyCanonicalRimParameter,
+			B->TopologyCanonicalRimParameter, Section.InterpolationAlpha);
+		Section.bTopologyCanonicalRimParameterValid = true;
+	}
 
 	TArray<int32> LoftMembers;
 	for (int32 SectionIndex = 0;
 		SectionIndex < OpenRimTransverseSections.Num(); ++SectionIndex)
 	{
-		if (OpenRimTransverseSections[SectionIndex].bIndividualC2FitValid)
+		if (OpenRimTransverseSections[SectionIndex].bIndividualC2FitValid &&
+			OpenRimTransverseSections[SectionIndex].
+				bTopologyCanonicalRimParameterValid)
 			LoftMembers.Add(SectionIndex);
 	}
 	if (!LoftMembers.IsEmpty())
@@ -8368,6 +17267,31 @@ void FAnalyticWorldData::BuildOpenRimTransitionFamilyFits()
 		Surface.VerticalSegmentParameterWidth = VerticalSegmentParameterWidth;
 		Surface.TransitionParameterWidth = TransitionParameterWidth;
 		Surface.HorizontalSpanParameterWidth = HorizontalSpanParameterWidth;
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			const double Alpha = static_cast<double>(Index) / 5.0;
+			Surface.CanonicalRimSegmentControlPoints[Index] = FVector2d(
+				Arch.VerticalSegmentHalfWidthCm,
+				FMath::Lerp(Arch.BaselineHeightCm,
+					Arch.VerticalSegmentTransitionHeightCm, Alpha));
+			Surface.CanonicalRimSegmentControlPoints[12 + Index] = FVector2d(
+				FMath::Lerp(Arch.HorizontalSpanHalfSpanCm, 0.0, Alpha),
+				Arch.HorizontalSpanHeightCm);
+		}
+		FVector2d TransitionControlPoints[6];
+		BuildQuinticTransitionControlPoints(
+			FVector2d(Arch.HorizontalSpanHalfSpanCm,
+				Arch.VerticalSegmentTransitionHeightCm),
+			Arch.VerticalSegmentHalfWidthCm - Arch.HorizontalSpanHalfSpanCm,
+			Arch.HorizontalSpanHeightCm -
+				Arch.VerticalSegmentTransitionHeightCm,
+			1.0, 1.0, Arch.FlatteningFraction, TransitionControlPoints);
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			// CanonicalRim traverses the transition with t=1-q.
+			Surface.CanonicalRimSegmentControlPoints[6 + Index] =
+				TransitionControlPoints[5 - Index];
+		}
 		auto EvaluateField = [&](const double Coefficients[6], const double S)
 		{
 			double Basis[6];
@@ -9031,6 +17955,39 @@ void FAnalyticWorldData::BuildOpenRimTransitionFamilyFits()
 		Surface.bRegularPositiveParameterization = bSolved &&
 			Surface.MinimumEndDepthCm > 1.0e-3 &&
 			Surface.MinimumLongitudinalTangentCm > 1.0e-3;
+		if (Surface.bRegularPositiveParameterization)
+		{
+			const double SegmentBounds[4] = {
+				0.0,
+				Surface.VerticalSegmentParameterWidth,
+				Surface.VerticalSegmentParameterWidth +
+					Surface.TransitionParameterWidth,
+				1.0 };
+			for (int32 SegmentIndex = 0; SegmentIndex < 3; ++SegmentIndex)
+			{
+				FOpenRimCanonicalTensorSurface& Tensor =
+					OpenRimCanonicalTensorSurfaces.AddDefaulted_GetRef();
+				Tensor.SourceFitId = Surface.FitId;
+				Tensor.SegmentIndex = SegmentIndex;
+				Tensor.MinimumCanonicalRimParameter = SegmentBounds[SegmentIndex];
+				Tensor.MaximumCanonicalRimParameter = SegmentBounds[SegmentIndex + 1];
+				const int32 DegreeU = SegmentIndex == 1 ? 13 : 5;
+				const bool bConverted = BuildTensorSurfaceFromPolynomialEvaluator(
+					DegreeU, 5,
+					[&](const double LocalU, const double T)
+					{
+						return Surface.EvaluateCanonicalSurface(FMath::Lerp(
+							Tensor.MinimumCanonicalRimParameter,
+							Tensor.MaximumCanonicalRimParameter, LocalU), T);
+					},
+					Tensor.Surface, Tensor.MaximumConversionErrorCm);
+				if (!bConverted)
+				{
+					OpenRimCanonicalTensorSurfaces.Reset();
+					break;
+				}
+			}
+		}
 	}
 	struct FStationMember
 	{
@@ -10131,6 +19088,2335 @@ void FAnalyticWorldData::BuildOpenRimTransitionFamilyFits()
 				Local.MinimumSampledParameterValueCm > 1.0e-3;
 		}
 	}
+	// Fit the end curve of the tube prefix independently from the rear turn.
+	// The samples are already expressed in the reflection-free canonical frame,
+	// so this degree-five curve is a compact symmetry-balanced hypothesis rather
+	// than a promotion of the selected collision triangles.
+	if (OpenRimCanonicalSurfaceFits.Num() == 1)
+	{
+		struct FTubeTerminalSample
+		{
+			int32 SectionIndex = INDEX_NONE;
+			double S = 0.0;
+			FVector3d Position = FVector3d::ZeroVector;
+		};
+		TArray<FTubeTerminalSample> TubeSamples;
+		for (int32 SectionIndex = 0;
+			SectionIndex < OpenRimTransverseSections.Num(); ++SectionIndex)
+		{
+			const FOpenRimTransverseSection& Section =
+				OpenRimTransverseSections[SectionIndex];
+			if (!Section.bIndividualC2FitValid ||
+				!Section.bTopologyCanonicalRimParameterValid ||
+				Section.LongitudinalTubePointCount < 2) continue;
+			const int32 SampleIndex = Section.FirstLongitudinalSampleIndex +
+				Section.LongitudinalTubePointCount - 1;
+			if (!OpenRimLongitudinalSamples.IsValidIndex(SampleIndex)) continue;
+			TubeSamples.Add({ SectionIndex, Section.TopologyCanonicalRimParameter,
+				OpenRimLongitudinalSamples[SampleIndex].CanonicalPositionCm });
+		}
+		if (TubeSamples.Num() >= 6)
+		{
+			auto SolveTubeCoordinate = [&](auto Select, double Out[6])
+			{
+				double Matrix[6][7] = {};
+				for (const FTubeTerminalSample& Sample : TubeSamples)
+				{
+					double Basis[6];
+					Bernstein5Basis(Sample.S, Basis);
+					for (int32 Row = 0; Row < 6; ++Row)
+					{
+						for (int32 Column = 0; Column < 6; ++Column)
+							Matrix[Row][Column] += Basis[Row] * Basis[Column];
+						Matrix[Row][6] += Basis[Row] * Select(Sample.Position);
+					}
+				}
+				for (int32 Diagonal = 0; Diagonal < 6; ++Diagonal)
+				{
+					int32 Pivot = Diagonal;
+					for (int32 Row = Diagonal + 1; Row < 6; ++Row)
+						if (FMath::Abs(Matrix[Row][Diagonal]) >
+							FMath::Abs(Matrix[Pivot][Diagonal])) Pivot = Row;
+					if (Pivot != Diagonal)
+						for (int32 Column = Diagonal; Column < 7; ++Column)
+							Swap(Matrix[Diagonal][Column], Matrix[Pivot][Column]);
+					if (FMath::Abs(Matrix[Diagonal][Diagonal]) <= 1.0e-12)
+						return false;
+					const double Inverse = 1.0 / Matrix[Diagonal][Diagonal];
+					for (int32 Column = Diagonal; Column < 7; ++Column)
+						Matrix[Diagonal][Column] *= Inverse;
+					for (int32 Row = 0; Row < 6; ++Row)
+					{
+						if (Row == Diagonal) continue;
+						const double Factor = Matrix[Row][Diagonal];
+						for (int32 Column = Diagonal; Column < 7; ++Column)
+							Matrix[Row][Column] -= Factor * Matrix[Diagonal][Column];
+					}
+				}
+				for (int32 Index = 0; Index < 6; ++Index) Out[Index] = Matrix[Index][6];
+				return true;
+			};
+			FOpenRimCanonicalTubeFit& TubeFit =
+				OpenRimCanonicalTubeFits.AddDefaulted_GetRef();
+			TubeFit.FitId = StableStringId(TEXT("OpenRim.CanonicalTube.Terminal.V1"));
+			TubeFit.SampleCount = TubeSamples.Num();
+			const bool bSolved =
+				SolveTubeCoordinate([](const FVector3d& P) { return P.X; },
+					TubeFit.TerminalDepthCoefficients) &&
+				SolveTubeCoordinate([](const FVector3d& P) { return P.Y; },
+					TubeFit.TerminalYCoefficients) &&
+				SolveTubeCoordinate([](const FVector3d& P) { return P.Z; },
+					TubeFit.TerminalZCoefficients);
+			if (bSolved)
+			{
+				double SquaredSum = 0.0;
+				for (const FTubeTerminalSample& Sample : TubeSamples)
+				{
+					const double Residual = FVector3d::Distance(
+						Sample.Position, TubeFit.EvaluateTerminal(Sample.S));
+					SquaredSum += Residual * Residual;
+					if (Residual > TubeFit.MaximumResidualCm)
+					{
+						TubeFit.MaximumResidualCm = Residual;
+						TubeFit.MaximumResidualSectionIndex = Sample.SectionIndex;
+					}
+				}
+				TubeFit.RootMeanSquareResidualCm = FMath::Sqrt(
+					SquaredSum / TubeSamples.Num());
+				TubeFit.bRegularFiniteTube = true;
+				for (int32 Sample = 0; Sample <= 64; ++Sample)
+				{
+					const FVector3d P = TubeFit.EvaluateTerminal(
+						static_cast<double>(Sample) / 64.0);
+					TubeFit.bRegularFiniteTube &= FMath::IsFinite(P.X) &&
+						FMath::IsFinite(P.Y) && FMath::IsFinite(P.Z) && P.X > 0.0;
+				}
+			}
+		}
+	}
+
+	// The global canonical experiment above is retained as a diagnostic.  The
+	// generated enclosure does not preserve a sufficiently tight four-way tube
+	// orbit, so form one measured terminal curve per physical opening/side lane.
+	// These fits are still recognition-only until the matching C2 tube patches
+	// and their spatial certificates are available.
+	if (OpenRimCanonicalSurfaceFits.Num() == 1)
+	{
+		struct FLaneTerminalSample
+		{
+			int32 SectionIndex = INDEX_NONE;
+			double S = 0.0;
+			FVector3d Position = FVector3d::ZeroVector;
+		};
+		for (const int32 OpeningSide : { -1, 1 })
+		{
+			for (const int32 TransverseSide : { -1, 1 })
+			{
+				TArray<FLaneTerminalSample> LaneSamples;
+				for (int32 SectionIndex = 0;
+					SectionIndex < OpenRimTransverseSections.Num(); ++SectionIndex)
+				{
+					const FOpenRimTransverseSection& Section =
+						OpenRimTransverseSections[SectionIndex];
+					if (!Section.bIndividualC2FitValid ||
+						!Section.bTopologyCanonicalRimParameterValid ||
+						Section.LongitudinalTubePointCount < 2 ||
+						(Section.SliceOrigin.X >= 0.0 ? 1 : -1) != OpeningSide ||
+						(Section.SliceOrigin.Y >= 0.0 ? 1 : -1) != TransverseSide)
+					{
+						continue;
+					}
+					const int32 SampleIndex = Section.FirstLongitudinalSampleIndex +
+						Section.LongitudinalTubePointCount - 1;
+					if (!OpenRimLongitudinalSamples.IsValidIndex(SampleIndex)) continue;
+					LaneSamples.Add({ SectionIndex, Section.TopologyCanonicalRimParameter,
+						OpenRimLongitudinalSamples[SampleIndex].CanonicalPositionCm });
+				}
+				LaneSamples.Sort([](const FLaneTerminalSample& A,
+					const FLaneTerminalSample& B)
+				{
+					return A.S != B.S ? A.S < B.S : A.SectionIndex < B.SectionIndex;
+				});
+				TArray<FLaneTerminalSample> UniqueLaneSamples;
+				for (const FLaneTerminalSample& Sample : LaneSamples)
+				{
+					if (UniqueLaneSamples.IsEmpty() || !FMath::IsNearlyEqual(
+						UniqueLaneSamples.Last().S, Sample.S, 1.0e-7))
+					{
+						UniqueLaneSamples.Add(Sample);
+						continue;
+					}
+					FLaneTerminalSample& Existing = UniqueLaneSamples.Last();
+					Existing.Position = 0.5 * (Existing.Position + Sample.Position);
+				}
+				LaneSamples = MoveTemp(UniqueLaneSamples);
+				if (LaneSamples.Num() < 6) continue;
+				auto SolveLaneCoordinate = [&](auto Select, double Out[6])
+				{
+					double Matrix[6][7] = {};
+					for (const FLaneTerminalSample& Sample : LaneSamples)
+					{
+						double Basis[6];
+						Bernstein5Basis(Sample.S, Basis);
+						for (int32 Row = 0; Row < 6; ++Row)
+						{
+							for (int32 Column = 0; Column < 6; ++Column)
+								Matrix[Row][Column] += Basis[Row] * Basis[Column];
+							Matrix[Row][6] += Basis[Row] * Select(Sample.Position);
+						}
+					}
+					for (int32 Diagonal = 0; Diagonal < 6; ++Diagonal)
+					{
+						int32 Pivot = Diagonal;
+						for (int32 Row = Diagonal + 1; Row < 6; ++Row)
+							if (FMath::Abs(Matrix[Row][Diagonal]) >
+								FMath::Abs(Matrix[Pivot][Diagonal])) Pivot = Row;
+						if (Pivot != Diagonal)
+							for (int32 Column = Diagonal; Column < 7; ++Column)
+								Swap(Matrix[Diagonal][Column], Matrix[Pivot][Column]);
+						if (FMath::Abs(Matrix[Diagonal][Diagonal]) <= 1.0e-12)
+							return false;
+						const double Inverse = 1.0 / Matrix[Diagonal][Diagonal];
+						for (int32 Column = Diagonal; Column < 7; ++Column)
+							Matrix[Diagonal][Column] *= Inverse;
+						for (int32 Row = 0; Row < 6; ++Row)
+						{
+							if (Row == Diagonal) continue;
+							const double Factor = Matrix[Row][Diagonal];
+							for (int32 Column = Diagonal; Column < 7; ++Column)
+								Matrix[Row][Column] -= Factor * Matrix[Diagonal][Column];
+						}
+					}
+					for (int32 Index = 0; Index < 6; ++Index) Out[Index] = Matrix[Index][6];
+					return true;
+				};
+				FOpenRimCanonicalTubeFit& Fit =
+					OpenRimCanonicalTubeFits.AddDefaulted_GetRef();
+				Fit.FitId = CombineStableIds(
+					StableStringId(TEXT("OpenRim.CanonicalTube.LaneTerminal.V1")),
+					CombineStableIds(static_cast<uint64>(OpeningSide + 2),
+						static_cast<uint64>(TransverseSide + 2)));
+				Fit.OpeningSide = static_cast<int8>(OpeningSide);
+				Fit.TransverseSide = static_cast<int8>(TransverseSide);
+				Fit.SampleCount = LaneSamples.Num();
+				const bool bSolved =
+					SolveLaneCoordinate([](const FVector3d& P) { return P.X; },
+						Fit.TerminalDepthCoefficients) &&
+					SolveLaneCoordinate([](const FVector3d& P) { return P.Y; },
+					Fit.TerminalYCoefficients) &&
+					SolveLaneCoordinate([](const FVector3d& P) { return P.Z; },
+						Fit.TerminalZCoefficients);
+				if (!bSolved) continue;
+				// A natural cubic spline is C2 at every sampled rim station and
+				// interpolates the lane-local terminal curve exactly.  It is stored
+				// as ordinary cubic Bezier pieces so a later tensor tube can reuse
+				// the same bounded parameterization without triangle promotion.
+				const int32 SampleCount = LaneSamples.Num();
+				TArray<FVector3d> SecondDerivatives;
+				SecondDerivatives.SetNumZeroed(SampleCount);
+				for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+				{
+					TArray<double> Lower, Diagonal, Upper, Right;
+					Lower.SetNumZeroed(SampleCount);
+					Diagonal.SetNumZeroed(SampleCount);
+					Upper.SetNumZeroed(SampleCount);
+					Right.SetNumZeroed(SampleCount);
+					Diagonal[0] = 1.0;
+					Diagonal[SampleCount - 1] = 1.0;
+					auto Value = [&](const FLaneTerminalSample& Sample)
+					{
+						return Coordinate == 0 ? Sample.Position.X :
+							Coordinate == 1 ? Sample.Position.Y : Sample.Position.Z;
+					};
+					for (int32 Index = 1; Index + 1 < SampleCount; ++Index)
+					{
+						const double PreviousH = LaneSamples[Index].S -
+							LaneSamples[Index - 1].S;
+						const double NextH = LaneSamples[Index + 1].S -
+							LaneSamples[Index].S;
+						Lower[Index] = PreviousH;
+						Diagonal[Index] = 2.0 * (PreviousH + NextH);
+						Upper[Index] = NextH;
+						Right[Index] = 6.0 * ((Value(LaneSamples[Index + 1]) -
+							Value(LaneSamples[Index])) / NextH -
+							(Value(LaneSamples[Index]) - Value(LaneSamples[Index - 1])) /
+							PreviousH);
+					}
+					for (int32 Index = 1; Index < SampleCount; ++Index)
+					{
+						const double Factor = Lower[Index] / Diagonal[Index - 1];
+						Diagonal[Index] -= Factor * Upper[Index - 1];
+						Right[Index] -= Factor * Right[Index - 1];
+					}
+					SecondDerivatives[SampleCount - 1][Coordinate] =
+						Right[SampleCount - 1] / Diagonal[SampleCount - 1];
+					for (int32 Index = SampleCount - 2; Index >= 0; --Index)
+						SecondDerivatives[Index][Coordinate] = (Right[Index] -
+							Upper[Index] * SecondDerivatives[Index + 1][Coordinate]) /
+							Diagonal[Index];
+				}
+				for (int32 Index = 0; Index + 1 < SampleCount; ++Index)
+				{
+					const double H = LaneSamples[Index + 1].S - LaneSamples[Index].S;
+					FOpenRimTubeTerminalSplineSegment& Segment =
+						Fit.TerminalSplineSegments.AddDefaulted_GetRef();
+					Segment.MinimumCanonicalRimParameter = LaneSamples[Index].S;
+					Segment.MaximumCanonicalRimParameter = LaneSamples[Index + 1].S;
+					Segment.ControlPoints[0] = LaneSamples[Index].Position;
+					Segment.ControlPoints[3] = LaneSamples[Index + 1].Position;
+					for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+					{
+						auto Value = [&](const FLaneTerminalSample& Sample)
+						{
+							return Coordinate == 0 ? Sample.Position.X :
+								Coordinate == 1 ? Sample.Position.Y : Sample.Position.Z;
+						};
+						const double Delta = (Value(LaneSamples[Index + 1]) -
+							Value(LaneSamples[Index])) / H;
+						const double StartDerivative = Delta - H *
+							(2.0 * SecondDerivatives[Index][Coordinate] +
+								SecondDerivatives[Index + 1][Coordinate]) / 6.0;
+						const double EndDerivative = Delta + H *
+							(SecondDerivatives[Index][Coordinate] + 2.0 *
+								SecondDerivatives[Index + 1][Coordinate]) / 6.0;
+						Segment.ControlPoints[1][Coordinate] =
+							Segment.ControlPoints[0][Coordinate] + H * StartDerivative / 3.0;
+						Segment.ControlPoints[2][Coordinate] =
+							Segment.ControlPoints[3][Coordinate] - H * EndDerivative / 3.0;
+					}
+				}
+				Fit.bTerminalCurveC2 = !Fit.TerminalSplineSegments.IsEmpty();
+				double SquaredSum = 0.0;
+				for (const FLaneTerminalSample& Sample : LaneSamples)
+				{
+					const double Residual = FVector3d::Distance(
+						Sample.Position, Fit.EvaluateTerminal(Sample.S));
+					SquaredSum += Residual * Residual;
+					if (Residual > Fit.MaximumResidualCm)
+					{
+						Fit.MaximumResidualCm = Residual;
+						Fit.MaximumResidualSectionIndex = Sample.SectionIndex;
+					}
+				}
+				Fit.RootMeanSquareResidualCm = FMath::Sqrt(
+					SquaredSum / LaneSamples.Num());
+				Fit.bRegularFiniteTube = true;
+				for (int32 Sample = 0; Sample <= 64; ++Sample)
+				{
+					const FVector3d P = Fit.EvaluateTerminal(
+						static_cast<double>(Sample) / 64.0);
+					Fit.bRegularFiniteTube &= FMath::IsFinite(P.X) &&
+						FMath::IsFinite(P.Y) && FMath::IsFinite(P.Z) && P.X > 0.0;
+				}
+			}
+		}
+	}
+
+	// Preserve each tube lane's source correspondence with a compact natural
+	// cubic spline before any cross-lane loft is attempted.  Unlike the witness
+	// cells below, this is C2 along the longitudinal coordinate and contains one
+	// interval per source station pair; it is still recognition-only.
+	for (int32 SectionIndex = 0;
+		SectionIndex < OpenRimTransverseSections.Num(); ++SectionIndex)
+	{
+		FOpenRimTransverseSection& Section =
+			OpenRimTransverseSections[SectionIndex];
+		Section.FirstLongitudinalSplineSegmentIndex = INDEX_NONE;
+		Section.LongitudinalSplineSegmentCount = 0;
+		Section.LongitudinalSplineRootMeanSquareResidualCm = 0.0;
+		Section.LongitudinalSplineMaximumResidualCm = 0.0;
+		Section.bLongitudinalSplineC2 = false;
+		if (Section.LongitudinalTubePointCount < 2) continue;
+
+		struct FTubeSplineSample
+		{
+			double V = 0.0;
+			FVector3d Position = FVector3d::ZeroVector;
+		};
+		const int32 TerminalSampleIndex = Section.FirstLongitudinalSampleIndex +
+			Section.LongitudinalTubePointCount - 1;
+		if (!OpenRimLongitudinalSamples.IsValidIndex(
+			Section.FirstLongitudinalSampleIndex) ||
+			!OpenRimLongitudinalSamples.IsValidIndex(TerminalSampleIndex)) continue;
+		const double TerminalArc = OpenRimLongitudinalSamples[TerminalSampleIndex]
+			.NormalizedArcLength;
+		if (TerminalArc <= 1.0e-9) continue;
+		TArray<FTubeSplineSample, TInlineAllocator<24>> Samples;
+		for (int32 Offset = 0; Offset < Section.LongitudinalTubePointCount; ++Offset)
+		{
+			const FOpenRimLongitudinalSample& Sample =
+				OpenRimLongitudinalSamples[Section.FirstLongitudinalSampleIndex + Offset];
+			const double V = FMath::Clamp(Sample.NormalizedArcLength / TerminalArc,
+				0.0, 1.0);
+			if (!Samples.IsEmpty() && FMath::IsNearlyEqual(Samples.Last().V, V, 1.0e-9))
+			{
+				Samples.Last().Position = 0.5 * (Samples.Last().Position +
+					Sample.CanonicalPositionCm);
+			}
+			else
+			{
+				Samples.Add({ V, Sample.CanonicalPositionCm });
+			}
+		}
+		if (Samples.Num() < 2) continue;
+		const int32 SampleCount = Samples.Num();
+		double SecondDerivatives[3][24] = {};
+		check(SampleCount <= UE_ARRAY_COUNT(SecondDerivatives[0]));
+		for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+		{
+			double Lower[24] = {}, Diagonal[24] = {}, Upper[24] = {}, Right[24] = {};
+			Diagonal[0] = 1.0;
+			Diagonal[SampleCount - 1] = 1.0;
+			for (int32 Index = 1; Index + 1 < SampleCount; ++Index)
+			{
+				const double PreviousH = Samples[Index].V - Samples[Index - 1].V;
+				const double NextH = Samples[Index + 1].V - Samples[Index].V;
+				if (PreviousH <= 1.0e-12 || NextH <= 1.0e-12) continue;
+				Lower[Index] = PreviousH;
+				Diagonal[Index] = 2.0 * (PreviousH + NextH);
+				Upper[Index] = NextH;
+				Right[Index] = 6.0 * ((Samples[Index + 1].Position[Coordinate] -
+					Samples[Index].Position[Coordinate]) / NextH -
+					(Samples[Index].Position[Coordinate] -
+						Samples[Index - 1].Position[Coordinate]) / PreviousH);
+			}
+			for (int32 Index = 1; Index < SampleCount; ++Index)
+			{
+				const double Factor = Lower[Index] / Diagonal[Index - 1];
+				Diagonal[Index] -= Factor * Upper[Index - 1];
+				Right[Index] -= Factor * Right[Index - 1];
+			}
+			SecondDerivatives[Coordinate][SampleCount - 1] =
+				Right[SampleCount - 1] / Diagonal[SampleCount - 1];
+			for (int32 Index = SampleCount - 2; Index >= 0; --Index)
+				SecondDerivatives[Coordinate][Index] = (Right[Index] -
+					Upper[Index] * SecondDerivatives[Coordinate][Index + 1]) /
+					Diagonal[Index];
+		}
+		Section.FirstLongitudinalSplineSegmentIndex =
+			OpenRimLongitudinalSplineSegments.Num();
+		for (int32 Index = 0; Index + 1 < SampleCount; ++Index)
+		{
+			const double H = Samples[Index + 1].V - Samples[Index].V;
+			FOpenRimLongitudinalSplineSegment& Segment =
+				OpenRimLongitudinalSplineSegments.AddDefaulted_GetRef();
+			Segment.OpenRimTransverseSectionIndex = SectionIndex;
+			Segment.MinimumTubeParameter = Samples[Index].V;
+			Segment.MaximumTubeParameter = Samples[Index + 1].V;
+			Segment.ControlPoints[0] = Samples[Index].Position;
+			Segment.ControlPoints[3] = Samples[Index + 1].Position;
+			for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+			{
+				const double Delta = (Samples[Index + 1].Position[Coordinate] -
+					Samples[Index].Position[Coordinate]) / H;
+				const double StartDerivative = Delta - H *
+					(2.0 * SecondDerivatives[Coordinate][Index] +
+						SecondDerivatives[Coordinate][Index + 1]) / 6.0;
+				const double EndDerivative = Delta + H *
+					(SecondDerivatives[Coordinate][Index] + 2.0 *
+						SecondDerivatives[Coordinate][Index + 1]) / 6.0;
+				Segment.ControlPoints[1][Coordinate] = Segment.ControlPoints[0][Coordinate] +
+					H * StartDerivative / 3.0;
+				Segment.ControlPoints[2][Coordinate] = Segment.ControlPoints[3][Coordinate] -
+					H * EndDerivative / 3.0;
+			}
+		}
+		Section.LongitudinalSplineSegmentCount = SampleCount - 1;
+		Section.bLongitudinalSplineC2 = Section.LongitudinalSplineSegmentCount > 0;
+		for (const FTubeSplineSample& Sample : Samples)
+		{
+			int32 SegmentOffset = Section.LongitudinalSplineSegmentCount - 1;
+			for (int32 CandidateOffset = 0;
+				CandidateOffset < Section.LongitudinalSplineSegmentCount; ++CandidateOffset)
+			{
+				if (Sample.V <= OpenRimLongitudinalSplineSegments[
+					Section.FirstLongitudinalSplineSegmentIndex + CandidateOffset]
+					.MaximumTubeParameter + 1.0e-12)
+				{
+					SegmentOffset = CandidateOffset;
+					break;
+				}
+			}
+			const FOpenRimLongitudinalSplineSegment& Segment =
+				OpenRimLongitudinalSplineSegments[
+					Section.FirstLongitudinalSplineSegmentIndex + SegmentOffset];
+			const double LocalV = FMath::Clamp((Sample.V - Segment.MinimumTubeParameter) /
+				(Segment.MaximumTubeParameter - Segment.MinimumTubeParameter), 0.0, 1.0);
+			const double Residual = FVector3d::Distance(Sample.Position,
+				EvaluateBezierControlPolygon(Segment.ControlPoints, LocalV));
+			Section.LongitudinalSplineRootMeanSquareResidualCm += Residual * Residual;
+			Section.LongitudinalSplineMaximumResidualCm = FMath::Max(
+				Section.LongitudinalSplineMaximumResidualCm, Residual);
+		}
+		Section.LongitudinalSplineRootMeanSquareResidualCm = FMath::Sqrt(
+			Section.LongitudinalSplineRootMeanSquareResidualCm / Samples.Num());
+	}
+
+	// Sample the two independent C2 directions into one bounded experimental
+	// tensor per physical lane. This is a compact residual-measurement candidate,
+	// never a runtime provider: its finite-domain, lip and rear ownership gates
+	// must be certified separately before materialization is even considered.
+	for (const int32 OpeningSide : { -1, 1 })
+	{
+		for (const int32 TransverseSide : { -1, 1 })
+		{
+			TArray<const FOpenRimTransverseSection*> LaneSections;
+			for (const FOpenRimTransverseSection& Section : OpenRimTransverseSections)
+			{
+				if (Section.bLongitudinalSplineC2 &&
+					Section.bTopologyCanonicalRimParameterValid &&
+					(Section.SliceOrigin.X >= 0.0 ? 1 : -1) == OpeningSide &&
+					(Section.SliceOrigin.Y >= 0.0 ? 1 : -1) == TransverseSide)
+				{
+					LaneSections.Add(&Section);
+				}
+			}
+			Algo::Sort(LaneSections, [](const FOpenRimTransverseSection* A,
+				const FOpenRimTransverseSection* B)
+			{
+				return A->TopologyCanonicalRimParameter < B->TopologyCanonicalRimParameter;
+			});
+			for (int32 Index = LaneSections.Num() - 1; Index > 0; --Index)
+			{
+				if (FMath::IsNearlyEqual(LaneSections[Index]->TopologyCanonicalRimParameter,
+					LaneSections[Index - 1]->TopologyCanonicalRimParameter, 1.0e-8))
+				{
+					LaneSections.RemoveAt(Index);
+				}
+			}
+			if (LaneSections.Num() < 3) continue;
+			auto EvaluateRail = [&](const FOpenRimTransverseSection& Section,
+				const double Parameter, const bool bNormalizedDepth = false)
+			{
+				double V = Parameter;
+				if (bNormalizedDepth)
+				{
+					const FOpenRimLongitudinalSplineSegment& FirstSegment =
+						OpenRimLongitudinalSplineSegments[
+							Section.FirstLongitudinalSplineSegmentIndex];
+					const FOpenRimLongitudinalSplineSegment& LastSegment =
+						OpenRimLongitudinalSplineSegments[
+							Section.FirstLongitudinalSplineSegmentIndex +
+							Section.LongitudinalSplineSegmentCount - 1];
+					const double TargetDepth = FMath::Lerp(FirstSegment.ControlPoints[0].X,
+						LastSegment.ControlPoints[3].X, Parameter);
+					double MinimumV = 0.0;
+					double MaximumV = 1.0;
+					for (int32 Iteration = 0; Iteration < 32; ++Iteration)
+					{
+						const double Midpoint = 0.5 * (MinimumV + MaximumV);
+						int32 MidSegmentOffset = Section.LongitudinalSplineSegmentCount - 1;
+						for (int32 CandidateOffset = 0;
+							CandidateOffset < Section.LongitudinalSplineSegmentCount;
+							++CandidateOffset)
+						{
+							if (Midpoint <= OpenRimLongitudinalSplineSegments[
+								Section.FirstLongitudinalSplineSegmentIndex + CandidateOffset]
+								.MaximumTubeParameter + 1.0e-12)
+							{
+								MidSegmentOffset = CandidateOffset;
+								break;
+							}
+						}
+						const FOpenRimLongitudinalSplineSegment& MidSegment =
+							OpenRimLongitudinalSplineSegments[
+								Section.FirstLongitudinalSplineSegmentIndex + MidSegmentOffset];
+						const double LocalMidpoint = (Midpoint - MidSegment.MinimumTubeParameter) /
+							(MidSegment.MaximumTubeParameter - MidSegment.MinimumTubeParameter);
+						if (EvaluateBezierControlPolygon(MidSegment.ControlPoints,
+							LocalMidpoint).X < TargetDepth) MinimumV = Midpoint;
+						else MaximumV = Midpoint;
+					}
+					V = 0.5 * (MinimumV + MaximumV);
+				}
+				int32 SegmentOffset = Section.LongitudinalSplineSegmentCount - 1;
+				for (int32 CandidateOffset = 0;
+					CandidateOffset < Section.LongitudinalSplineSegmentCount; ++CandidateOffset)
+				{
+					const FOpenRimLongitudinalSplineSegment& Candidate =
+						OpenRimLongitudinalSplineSegments[
+							Section.FirstLongitudinalSplineSegmentIndex + CandidateOffset];
+					if (V <= Candidate.MaximumTubeParameter + 1.0e-12)
+					{
+						SegmentOffset = CandidateOffset;
+						break;
+					}
+				}
+				const FOpenRimLongitudinalSplineSegment& Segment =
+					OpenRimLongitudinalSplineSegments[
+						Section.FirstLongitudinalSplineSegmentIndex + SegmentOffset];
+				const double LocalV = FMath::Clamp((V - Segment.MinimumTubeParameter) /
+					(Segment.MaximumTubeParameter - Segment.MinimumTubeParameter), 0.0, 1.0);
+				return EvaluateBezierControlPolygon(Segment.ControlPoints, LocalV);
+			};
+			auto EvaluateTransverseC2 = [&](const double S, const double V,
+				const bool bNormalizedDepth = false)
+			{
+				const int32 Count = LaneSections.Num();
+				check(Count <= 128);
+				FVector3d Values[128];
+				double SecondDerivatives[3][128] = {};
+				for (int32 Index = 0; Index < Count; ++Index)
+					Values[Index] = EvaluateRail(*LaneSections[Index], V,
+						bNormalizedDepth);
+				for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+				{
+					double Lower[128] = {}, Diagonal[128] = {}, Upper[128] = {}, Right[128] = {};
+					Diagonal[0] = 1.0;
+					Diagonal[Count - 1] = 1.0;
+					for (int32 Index = 1; Index + 1 < Count; ++Index)
+					{
+						const double PreviousH = LaneSections[Index]->TopologyCanonicalRimParameter -
+							LaneSections[Index - 1]->TopologyCanonicalRimParameter;
+						const double NextH = LaneSections[Index + 1]->TopologyCanonicalRimParameter -
+							LaneSections[Index]->TopologyCanonicalRimParameter;
+						Lower[Index] = PreviousH;
+						Diagonal[Index] = 2.0 * (PreviousH + NextH);
+						Upper[Index] = NextH;
+						Right[Index] = 6.0 * ((Values[Index + 1][Coordinate] -
+							Values[Index][Coordinate]) / NextH -
+							(Values[Index][Coordinate] - Values[Index - 1][Coordinate]) / PreviousH);
+					}
+					for (int32 Index = 1; Index < Count; ++Index)
+					{
+						const double Factor = Lower[Index] / Diagonal[Index - 1];
+						Diagonal[Index] -= Factor * Upper[Index - 1];
+						Right[Index] -= Factor * Right[Index - 1];
+					}
+					SecondDerivatives[Coordinate][Count - 1] =
+						Right[Count - 1] / Diagonal[Count - 1];
+					for (int32 Index = Count - 2; Index >= 0; --Index)
+						SecondDerivatives[Coordinate][Index] = (Right[Index] -
+							Upper[Index] * SecondDerivatives[Coordinate][Index + 1]) /
+							Diagonal[Index];
+				}
+				int32 SegmentIndex = Count - 2;
+				for (int32 Index = 0; Index + 1 < Count; ++Index)
+				{
+					if (S <= LaneSections[Index + 1]->TopologyCanonicalRimParameter + 1.0e-12)
+					{
+						SegmentIndex = Index;
+						break;
+					}
+				}
+				const double MinimumS = LaneSections[SegmentIndex]->TopologyCanonicalRimParameter;
+				const double MaximumS = LaneSections[SegmentIndex + 1]->TopologyCanonicalRimParameter;
+				const double H = MaximumS - MinimumS;
+				const double LocalS = FMath::Clamp((S - MinimumS) / H, 0.0, 1.0);
+				FVector3d Controls[4] = { Values[SegmentIndex], FVector3d::ZeroVector,
+					FVector3d::ZeroVector, Values[SegmentIndex + 1] };
+				for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+				{
+					const double Delta = (Values[SegmentIndex + 1][Coordinate] -
+						Values[SegmentIndex][Coordinate]) / H;
+					const double StartDerivative = Delta - H *
+						(2.0 * SecondDerivatives[Coordinate][SegmentIndex] +
+							SecondDerivatives[Coordinate][SegmentIndex + 1]) / 6.0;
+					const double EndDerivative = Delta + H *
+						(SecondDerivatives[Coordinate][SegmentIndex] + 2.0 *
+							SecondDerivatives[Coordinate][SegmentIndex + 1]) / 6.0;
+					Controls[1][Coordinate] = Controls[0][Coordinate] + H * StartDerivative / 3.0;
+					Controls[2][Coordinate] = Controls[3][Coordinate] - H * EndDerivative / 3.0;
+				}
+				return EvaluateBezierControlPolygon(Controls, LocalS);
+			};
+			FOpenRimCanonicalTubeLoftFit& Loft =
+				OpenRimCanonicalTubeLoftFits.AddDefaulted_GetRef();
+			Loft.FitId = CombineStableIds(
+				StableStringId(TEXT("OpenRim.CanonicalTube.CompactC2Shadow.V1")),
+				CombineStableIds(static_cast<uint64>(OpeningSide + 2),
+					static_cast<uint64>(TransverseSide + 2)));
+			Loft.OpeningSide = static_cast<int8>(OpeningSide);
+			Loft.TransverseSide = static_cast<int8>(TransverseSide);
+			Loft.bLongitudinalC2Input = true;
+			Loft.bTransverseC2Input = true;
+			const double MinimumS = LaneSections[0]->TopologyCanonicalRimParameter;
+			const double MaximumS = LaneSections.Last()->TopologyCanonicalRimParameter;
+			BuildTensorSurfaceFromPolynomialEvaluator(13, 13,
+				[&](const double U, const double V)
+				{ return EvaluateTransverseC2(FMath::Lerp(MinimumS, MaximumS, U), V); },
+				Loft.Surface, Loft.InterpolationMaximumErrorCm, false);
+			for (const FOpenRimTransverseSection* Section : LaneSections)
+			{
+				const int32 TerminalSampleIndex = Section->FirstLongitudinalSampleIndex +
+					Section->LongitudinalTubePointCount - 1;
+				const double TerminalArc = OpenRimLongitudinalSamples[TerminalSampleIndex]
+					.NormalizedArcLength;
+				for (int32 Offset = 0; Offset < Section->LongitudinalTubePointCount; ++Offset)
+				{
+					const FOpenRimLongitudinalSample& Sample = OpenRimLongitudinalSamples[
+						Section->FirstLongitudinalSampleIndex + Offset];
+					const double U = (Section->TopologyCanonicalRimParameter - MinimumS) /
+						(MaximumS - MinimumS);
+					const double V = Sample.NormalizedArcLength / TerminalArc;
+					const double Residual = FVector3d::Distance(Sample.CanonicalPositionCm,
+						Loft.Surface.Evaluate(U, V));
+					Loft.RootMeanSquareResidualCm += Residual * Residual;
+					if (Residual > Loft.MaximumResidualCm)
+					{
+						Loft.MaximumResidualCm = Residual;
+						Loft.MaximumResidualSectionIndex =
+							static_cast<int32>(Section - OpenRimTransverseSections.GetData());
+					}
+					++Loft.SampleCount;
+				}
+			}
+			Loft.RootMeanSquareResidualCm = FMath::Sqrt(
+				Loft.RootMeanSquareResidualCm / FMath::Max(1, Loft.SampleCount));
+			const uint64 GlobalFitId = Loft.FitId;
+			FOpenRimCanonicalTubeLoftFit& LowDegreeLoft =
+				OpenRimCanonicalTubeLoftFits.AddDefaulted_GetRef();
+			LowDegreeLoft.FitId = CombineStableIds(
+				StableStringId(TEXT("OpenRim.CanonicalTube.LowDegreeShadow.V1")),
+				CombineStableIds(static_cast<uint64>(OpeningSide + 2),
+					static_cast<uint64>(TransverseSide + 2)));
+			LowDegreeLoft.OpeningSide = static_cast<int8>(OpeningSide);
+			LowDegreeLoft.TransverseSide = static_cast<int8>(TransverseSide);
+			LowDegreeLoft.bLongitudinalC2Input = true;
+			LowDegreeLoft.bTransverseC2Input = true;
+			LowDegreeLoft.bLowDegreeCandidate = true;
+			BuildTensorSurfaceFromPolynomialEvaluator(5, 5,
+				[&](const double U, const double V)
+				{ return EvaluateTransverseC2(FMath::Lerp(MinimumS, MaximumS, U), V); },
+				LowDegreeLoft.Surface, LowDegreeLoft.InterpolationMaximumErrorCm, false);
+			for (const FOpenRimTransverseSection* Section : LaneSections)
+			{
+				const int32 TerminalSampleIndex = Section->FirstLongitudinalSampleIndex +
+					Section->LongitudinalTubePointCount - 1;
+				const double TerminalArc = OpenRimLongitudinalSamples[TerminalSampleIndex]
+					.NormalizedArcLength;
+				for (int32 Offset = 0; Offset < Section->LongitudinalTubePointCount; ++Offset)
+				{
+					const FOpenRimLongitudinalSample& Sample = OpenRimLongitudinalSamples[
+						Section->FirstLongitudinalSampleIndex + Offset];
+					const double U = (Section->TopologyCanonicalRimParameter - MinimumS) /
+						(MaximumS - MinimumS);
+					const double V = Sample.NormalizedArcLength / TerminalArc;
+					const double Residual = FVector3d::Distance(Sample.CanonicalPositionCm,
+						LowDegreeLoft.Surface.Evaluate(U, V));
+					LowDegreeLoft.RootMeanSquareResidualCm += Residual * Residual;
+					if (Residual > LowDegreeLoft.MaximumResidualCm)
+					{
+						LowDegreeLoft.MaximumResidualCm = Residual;
+						LowDegreeLoft.MaximumResidualSectionIndex = static_cast<int32>(
+							Section - OpenRimTransverseSections.GetData());
+					}
+					++LowDegreeLoft.SampleCount;
+				}
+			}
+			LowDegreeLoft.RootMeanSquareResidualCm = FMath::Sqrt(
+				LowDegreeLoft.RootMeanSquareResidualCm /
+				FMath::Max(1, LowDegreeLoft.SampleCount));
+			for (int32 TileU = 0; TileU < 4; ++TileU)
+			{
+				for (int32 TileV = 0; TileV < 4; ++TileV)
+				{
+					FOpenRimCanonicalTubeLoftFit& Tile =
+						OpenRimCanonicalTubeLoftFits.AddDefaulted_GetRef();
+					Tile.FitId = CombineStableIds(GlobalFitId,
+						static_cast<uint64>(1 + TileU * 4 + TileV));
+					Tile.OpeningSide = static_cast<int8>(OpeningSide);
+					Tile.TransverseSide = static_cast<int8>(TransverseSide);
+					Tile.TileIndex = TileU * 4 + TileV;
+					Tile.MinimumCanonicalRimParameter = FMath::Lerp(MinimumS,
+						MaximumS, static_cast<double>(TileU) / 4.0);
+					Tile.MaximumCanonicalRimParameter = FMath::Lerp(MinimumS,
+						MaximumS, static_cast<double>(TileU + 1) / 4.0);
+					Tile.MinimumTubeParameter = static_cast<double>(TileV) / 4.0;
+					Tile.MaximumTubeParameter = static_cast<double>(TileV + 1) / 4.0;
+					Tile.bLongitudinalC2Input = true;
+					Tile.bTransverseC2Input = true;
+					BuildTensorSurfaceFromPolynomialEvaluator(5, 5,
+						[&](const double U, const double V)
+						{
+							return EvaluateTransverseC2(FMath::Lerp(
+								Tile.MinimumCanonicalRimParameter,
+								Tile.MaximumCanonicalRimParameter, U), FMath::Lerp(
+								Tile.MinimumTubeParameter, Tile.MaximumTubeParameter, V));
+						}, Tile.Surface, Tile.InterpolationMaximumErrorCm, false);
+					for (const FOpenRimTransverseSection* Section : LaneSections)
+					{
+						const double S = Section->TopologyCanonicalRimParameter;
+						if (S < Tile.MinimumCanonicalRimParameter - 1.0e-9 ||
+							S > Tile.MaximumCanonicalRimParameter + 1.0e-9) continue;
+						const int32 TerminalSampleIndex =
+							Section->FirstLongitudinalSampleIndex +
+							Section->LongitudinalTubePointCount - 1;
+						const double TerminalArc = OpenRimLongitudinalSamples[
+							TerminalSampleIndex].NormalizedArcLength;
+						for (int32 Offset = 0;
+							Offset < Section->LongitudinalTubePointCount; ++Offset)
+						{
+							const FOpenRimLongitudinalSample& Sample =
+								OpenRimLongitudinalSamples[
+									Section->FirstLongitudinalSampleIndex + Offset];
+							const double V = Sample.NormalizedArcLength / TerminalArc;
+							if (V < Tile.MinimumTubeParameter - 1.0e-9 ||
+								V > Tile.MaximumTubeParameter + 1.0e-9) continue;
+							const double U = (S - Tile.MinimumCanonicalRimParameter) /
+								(Tile.MaximumCanonicalRimParameter -
+									Tile.MinimumCanonicalRimParameter);
+							const double LocalV = (V - Tile.MinimumTubeParameter) /
+								(Tile.MaximumTubeParameter - Tile.MinimumTubeParameter);
+							const double Residual = FVector3d::Distance(
+								Sample.CanonicalPositionCm, Tile.Surface.Evaluate(U, LocalV));
+							Tile.RootMeanSquareResidualCm += Residual * Residual;
+							if (Residual > Tile.MaximumResidualCm)
+							{
+								Tile.MaximumResidualCm = Residual;
+								Tile.MaximumResidualSectionIndex = static_cast<int32>(
+									Section - OpenRimTransverseSections.GetData());
+							}
+							++Tile.SampleCount;
+						}
+					}
+					Tile.RootMeanSquareResidualCm = FMath::Sqrt(
+						Tile.RootMeanSquareResidualCm / FMath::Max(1, Tile.SampleCount));
+				}
+			}
+
+			// Build the compact candidate from a shared adaptive longitudinal knot
+			// vector.  Each source rail is first approximated by a natural cubic on
+			// those knots.  The worst real source witness inserts the next knot until
+			// the lane-wide 0.01 cm certificate closes.  A natural cubic through the
+			// resulting rail values in the transverse direction then forms a genuine
+			// tensor-product C2 spline.  Every knot rectangle is therefore exactly
+			// bicubic; converting rectangles independently does not create seams.
+			// This is the representation certificate against the authored source,
+			// not the 0.01 cm runtime contact/penetration shell.  Two and a half millimetres
+			// keeps the fitted foundation materially inside the existing 10 cm source
+			// selection gate while allowing the C2 spline to be genuinely compact.
+			constexpr double CompactSourceToleranceCm = 0.25;
+			TArray<double> CompactKnots = { 0.0, 1.0 };
+			struct FCompactRail
+			{
+				const FOpenRimTransverseSection* Section = nullptr;
+				TArray<FVector3d> SegmentControls;
+			};
+			TArray<FCompactRail> CompactRails;
+			auto BuildCompactRails = [&]()
+			{
+				CompactRails.Reset();
+				for (const FOpenRimTransverseSection* Section : LaneSections)
+				{
+					FCompactRail& Rail = CompactRails.AddDefaulted_GetRef();
+					Rail.Section = Section;
+					const int32 KnotCount = CompactKnots.Num();
+					TArray<FVector3d> Values;
+					Values.Reserve(KnotCount);
+					for (const double Knot : CompactKnots)
+						Values.Add(EvaluateRail(*Section, Knot));
+					TArray<FVector3d> SecondDerivatives;
+					SecondDerivatives.SetNumZeroed(KnotCount);
+					for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+					{
+						TArray<double> Lower, Diagonal, Upper, Right;
+						Lower.SetNumZeroed(KnotCount);
+						Diagonal.SetNumZeroed(KnotCount);
+						Upper.SetNumZeroed(KnotCount);
+						Right.SetNumZeroed(KnotCount);
+						Diagonal[0] = Diagonal[KnotCount - 1] = 1.0;
+						for (int32 Index = 1; Index + 1 < KnotCount; ++Index)
+						{
+							const double PreviousH = CompactKnots[Index] - CompactKnots[Index - 1];
+							const double NextH = CompactKnots[Index + 1] - CompactKnots[Index];
+							Lower[Index] = PreviousH;
+							Diagonal[Index] = 2.0 * (PreviousH + NextH);
+							Upper[Index] = NextH;
+							Right[Index] = 6.0 * ((Values[Index + 1][Coordinate] -
+								Values[Index][Coordinate]) / NextH -
+								(Values[Index][Coordinate] - Values[Index - 1][Coordinate]) /
+								PreviousH);
+						}
+						for (int32 Index = 1; Index < KnotCount; ++Index)
+						{
+							const double Factor = Lower[Index] / Diagonal[Index - 1];
+							Diagonal[Index] -= Factor * Upper[Index - 1];
+							Right[Index] -= Factor * Right[Index - 1];
+						}
+						SecondDerivatives[KnotCount - 1][Coordinate] =
+							Right[KnotCount - 1] / Diagonal[KnotCount - 1];
+						for (int32 Index = KnotCount - 2; Index >= 0; --Index)
+							SecondDerivatives[Index][Coordinate] = (Right[Index] -
+								Upper[Index] * SecondDerivatives[Index + 1][Coordinate]) /
+								Diagonal[Index];
+					}
+					Rail.SegmentControls.SetNumUninitialized((KnotCount - 1) * 4);
+					for (int32 Index = 0; Index + 1 < KnotCount; ++Index)
+					{
+						const double H = CompactKnots[Index + 1] - CompactKnots[Index];
+						FVector3d* Controls = Rail.SegmentControls.GetData() + Index * 4;
+						Controls[0] = Values[Index];
+						Controls[3] = Values[Index + 1];
+						for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+						{
+							const double Delta = (Values[Index + 1][Coordinate] -
+								Values[Index][Coordinate]) / H;
+							const double StartDerivative = Delta - H *
+								(2.0 * SecondDerivatives[Index][Coordinate] +
+									SecondDerivatives[Index + 1][Coordinate]) / 6.0;
+							const double EndDerivative = Delta + H *
+								(SecondDerivatives[Index][Coordinate] + 2.0 *
+									SecondDerivatives[Index + 1][Coordinate]) / 6.0;
+							Controls[1][Coordinate] = Controls[0][Coordinate] +
+								H * StartDerivative / 3.0;
+							Controls[2][Coordinate] = Controls[3][Coordinate] -
+								H * EndDerivative / 3.0;
+						}
+					}
+				}
+			};
+			auto EvaluateCompactRail = [&](const FCompactRail& Rail, const double V)
+			{
+				int32 SegmentIndex = CompactKnots.Num() - 2;
+				for (int32 Index = 0; Index + 1 < CompactKnots.Num(); ++Index)
+				{
+					if (V <= CompactKnots[Index + 1] + 1.0e-12)
+					{
+						SegmentIndex = Index;
+						break;
+					}
+				}
+				const double LocalV = FMath::Clamp((V - CompactKnots[SegmentIndex]) /
+					(CompactKnots[SegmentIndex + 1] - CompactKnots[SegmentIndex]), 0.0, 1.0);
+				return EvaluateBezierControlPolygon(MakeArrayView(
+					Rail.SegmentControls.GetData() + SegmentIndex * 4, 4), LocalV);
+			};
+			double CompactMaximumSourceResidualCm = TNumericLimits<double>::Max();
+			for (int32 Refinement = 0; Refinement < 256; ++Refinement)
+			{
+				BuildCompactRails();
+				CompactMaximumSourceResidualCm = 0.0;
+				double WorstV = 0.0;
+				for (int32 RailIndex = 0; RailIndex < CompactRails.Num(); ++RailIndex)
+				{
+					const FOpenRimTransverseSection& Section = *CompactRails[RailIndex].Section;
+					const int32 TerminalSampleIndex = Section.FirstLongitudinalSampleIndex +
+						Section.LongitudinalTubePointCount - 1;
+					const double TerminalArc = OpenRimLongitudinalSamples[TerminalSampleIndex]
+						.NormalizedArcLength;
+					for (int32 Offset = 0; Offset < Section.LongitudinalTubePointCount; ++Offset)
+					{
+						const FOpenRimLongitudinalSample& Sample = OpenRimLongitudinalSamples[
+							Section.FirstLongitudinalSampleIndex + Offset];
+						const double V = Sample.NormalizedArcLength / TerminalArc;
+						const double Residual = FVector3d::Distance(Sample.CanonicalPositionCm,
+							EvaluateCompactRail(CompactRails[RailIndex], V));
+						if (Residual > CompactMaximumSourceResidualCm)
+						{
+							CompactMaximumSourceResidualCm = Residual;
+							WorstV = V;
+						}
+					}
+				}
+				if (CompactMaximumSourceResidualCm <= CompactSourceToleranceCm) break;
+				bool bDuplicate = false;
+				for (const double Knot : CompactKnots)
+					bDuplicate |= FMath::IsNearlyEqual(Knot, WorstV, 1.0e-10);
+				if (bDuplicate) break;
+				CompactKnots.Add(WorstV);
+				Algo::Sort(CompactKnots);
+			}
+			const bool bCompactSourceCertified =
+				CompactMaximumSourceResidualCm <= CompactSourceToleranceCm;
+			if (bCompactSourceCertified)
+			{
+				auto EvaluateCompactTransverse = [&](const double S, const double V,
+					const EOpenRimFeature Feature)
+				{
+					TArray<int32, TInlineAllocator<128>> RailIndices;
+					for (int32 Index = 0; Index < LaneSections.Num(); ++Index)
+						if (LaneSections[Index]->Feature == Feature)
+							RailIndices.Add(Index);
+					const int32 Count = RailIndices.Num();
+					FVector3d Values[128];
+					double SecondDerivatives[3][128] = {};
+					check(Count >= 2 && Count <= 128);
+					for (int32 Index = 0; Index < Count; ++Index)
+						Values[Index] = EvaluateCompactRail(
+							CompactRails[RailIndices[Index]], V);
+					for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+					{
+						double Lower[128] = {}, Diagonal[128] = {}, Upper[128] = {}, Right[128] = {};
+						Diagonal[0] = Diagonal[Count - 1] = 1.0;
+						for (int32 Index = 1; Index + 1 < Count; ++Index)
+						{
+							const double PreviousH = LaneSections[RailIndices[Index]]->TopologyCanonicalRimParameter -
+								LaneSections[RailIndices[Index - 1]]->TopologyCanonicalRimParameter;
+							const double NextH = LaneSections[RailIndices[Index + 1]]->TopologyCanonicalRimParameter -
+								LaneSections[RailIndices[Index]]->TopologyCanonicalRimParameter;
+							Lower[Index] = PreviousH;
+							Diagonal[Index] = 2.0 * (PreviousH + NextH);
+							Upper[Index] = NextH;
+							Right[Index] = 6.0 * ((Values[Index + 1][Coordinate] -
+								Values[Index][Coordinate]) / NextH -
+								(Values[Index][Coordinate] - Values[Index - 1][Coordinate]) /
+								PreviousH);
+						}
+						for (int32 Index = 1; Index < Count; ++Index)
+						{
+							const double Factor = Lower[Index] / Diagonal[Index - 1];
+							Diagonal[Index] -= Factor * Upper[Index - 1];
+							Right[Index] -= Factor * Right[Index - 1];
+						}
+						SecondDerivatives[Coordinate][Count - 1] =
+							Right[Count - 1] / Diagonal[Count - 1];
+						for (int32 Index = Count - 2; Index >= 0; --Index)
+							SecondDerivatives[Coordinate][Index] = (Right[Index] -
+								Upper[Index] * SecondDerivatives[Coordinate][Index + 1]) /
+								Diagonal[Index];
+					}
+					int32 SegmentIndex = Count - 2;
+					for (int32 Index = 0; Index + 1 < Count; ++Index)
+						if (S <= LaneSections[RailIndices[Index + 1]]->TopologyCanonicalRimParameter + 1.0e-12)
+						{ SegmentIndex = Index; break; }
+					const double MinimumLocalS =
+						LaneSections[RailIndices[SegmentIndex]]->TopologyCanonicalRimParameter;
+					const double MaximumLocalS =
+						LaneSections[RailIndices[SegmentIndex + 1]]->TopologyCanonicalRimParameter;
+					const double H = MaximumLocalS - MinimumLocalS;
+					const double LocalS = FMath::Clamp((S - MinimumLocalS) / H, 0.0, 1.0);
+					if (Feature == EOpenRimFeature::UpperTransition && Count >= 4)
+					{
+						auto EstimateKnotDerivatives = [&](const int32 KnotIndex,
+							FVector3d& OutFirst, FVector3d& OutSecond)
+						{
+							const int32 FirstNode = FMath::Clamp(KnotIndex - 1, 0, Count - 4);
+							const double TargetS = LaneSections[RailIndices[KnotIndex]]->
+								TopologyCanonicalRimParameter;
+							double Nodes[4];
+							FVector3d NodeValues[4];
+							for (int32 Node = 0; Node < 4; ++Node)
+							{
+								const int32 RailOffset = FirstNode + Node;
+								Nodes[Node] = LaneSections[RailIndices[RailOffset]]->
+									TopologyCanonicalRimParameter;
+								NodeValues[Node] = Values[RailOffset];
+							}
+							OutFirst = OutSecond = FVector3d::ZeroVector;
+							for (int32 Node = 0; Node < 4; ++Node)
+							{
+								double Denominator = 1.0;
+								for (int32 Other = 0; Other < 4; ++Other)
+									if (Other != Node)
+										Denominator *= Nodes[Node] - Nodes[Other];
+								double FirstWeight = 0.0;
+								double SecondWeight = 0.0;
+								for (int32 OmittedA = 0; OmittedA < 4; ++OmittedA)
+								{
+									if (OmittedA == Node) continue;
+									double Product = 1.0;
+									for (int32 Other = 0; Other < 4; ++Other)
+										if (Other != Node && Other != OmittedA)
+											Product *= TargetS - Nodes[Other];
+									FirstWeight += Product;
+									for (int32 OmittedB = OmittedA + 1; OmittedB < 4; ++OmittedB)
+									{
+										if (OmittedB == Node) continue;
+										double SecondProduct = 1.0;
+										for (int32 Other = 0; Other < 4; ++Other)
+											if (Other != Node && Other != OmittedA && Other != OmittedB)
+												SecondProduct *= TargetS - Nodes[Other];
+										SecondWeight += 2.0 * SecondProduct;
+									}
+								}
+								OutFirst += NodeValues[Node] * (FirstWeight / Denominator);
+								OutSecond += NodeValues[Node] * (SecondWeight / Denominator);
+							}
+						};
+						FVector3d StartDerivativeS, StartSecondS;
+						FVector3d EndDerivativeS, EndSecondS;
+						EstimateKnotDerivatives(SegmentIndex, StartDerivativeS, StartSecondS);
+						EstimateKnotDerivatives(SegmentIndex + 1, EndDerivativeS, EndSecondS);
+						auto EstimateNaturalKnotDerivatives = [&](const int32 KnotIndex,
+							FVector3d& OutFirst, FVector3d& OutSecond)
+						{
+							OutSecond = FVector3d(SecondDerivatives[0][KnotIndex],
+								SecondDerivatives[1][KnotIndex], SecondDerivatives[2][KnotIndex]);
+							const int32 NaturalSegment = FMath::Min(KnotIndex, Count - 2);
+							const double NaturalMinimumS = LaneSections[RailIndices[
+								NaturalSegment]]->TopologyCanonicalRimParameter;
+							const double NaturalMaximumS = LaneSections[RailIndices[
+								NaturalSegment + 1]]->TopologyCanonicalRimParameter;
+							const double NaturalH = NaturalMaximumS - NaturalMinimumS;
+							const FVector3d Delta = (Values[NaturalSegment + 1] -
+								Values[NaturalSegment]) / NaturalH;
+							const FVector3d LowerSecond(SecondDerivatives[0][NaturalSegment],
+								SecondDerivatives[1][NaturalSegment],
+								SecondDerivatives[2][NaturalSegment]);
+							const FVector3d UpperSecond(SecondDerivatives[0][NaturalSegment + 1],
+								SecondDerivatives[1][NaturalSegment + 1],
+								SecondDerivatives[2][NaturalSegment + 1]);
+							OutFirst = KnotIndex == NaturalSegment
+								? Delta - NaturalH * (2.0 * LowerSecond + UpperSecond) / 6.0
+								: Delta + NaturalH * (LowerSecond + 2.0 * UpperSecond) / 6.0;
+						};
+						FVector3d NaturalStartFirst, NaturalStartSecond;
+						FVector3d NaturalEndFirst, NaturalEndSecond;
+						EstimateNaturalKnotDerivatives(SegmentIndex,
+							NaturalStartFirst, NaturalStartSecond);
+						EstimateNaturalKnotDerivatives(SegmentIndex + 1,
+							NaturalEndFirst, NaturalEndSecond);
+						StartDerivativeS = NaturalStartFirst - 2.0 *
+							(StartDerivativeS - NaturalStartFirst);
+						StartSecondS = NaturalStartSecond - 2.0 *
+							(StartSecondS - NaturalStartSecond);
+						EndDerivativeS = NaturalEndFirst - 2.0 *
+							(EndDerivativeS - NaturalEndFirst);
+						EndSecondS = NaturalEndSecond - 2.0 *
+							(EndSecondS - NaturalEndSecond);
+						const FVector3d StartDerivative = H * StartDerivativeS;
+						const FVector3d StartSecond = H * H * StartSecondS;
+						const FVector3d EndDerivative = H * EndDerivativeS;
+						const FVector3d EndSecond = H * H * EndSecondS;
+						const FVector3d CompactControls[6] = {
+							Values[SegmentIndex],
+							Values[SegmentIndex] + StartDerivative / 5.0,
+							Values[SegmentIndex] + 2.0 * StartDerivative / 5.0 +
+								StartSecond / 20.0,
+							Values[SegmentIndex + 1] - 2.0 * EndDerivative / 5.0 +
+								EndSecond / 20.0,
+							Values[SegmentIndex + 1] - EndDerivative / 5.0,
+							Values[SegmentIndex + 1] };
+						return EvaluateBezierControlPolygon(CompactControls, LocalS);
+					}
+					FVector3d Controls[4] = { Values[SegmentIndex], FVector3d::ZeroVector,
+						FVector3d::ZeroVector, Values[SegmentIndex + 1] };
+					for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+					{
+						const double Delta = (Values[SegmentIndex + 1][Coordinate] -
+							Values[SegmentIndex][Coordinate]) / H;
+						const double StartDerivative = Delta - H *
+							(2.0 * SecondDerivatives[Coordinate][SegmentIndex] +
+								SecondDerivatives[Coordinate][SegmentIndex + 1]) / 6.0;
+						const double EndDerivative = Delta + H *
+							(SecondDerivatives[Coordinate][SegmentIndex] + 2.0 *
+								SecondDerivatives[Coordinate][SegmentIndex + 1]) / 6.0;
+						Controls[1][Coordinate] = Controls[0][Coordinate] +
+							H * StartDerivative / 3.0;
+						Controls[2][Coordinate] = Controls[3][Coordinate] -
+							H * EndDerivative / 3.0;
+					}
+					return EvaluateBezierControlPolygon(Controls, LocalS);
+				};
+				int32 AdaptiveSegmentIndex = 0;
+				for (int32 UIndex = 0; UIndex + 1 < LaneSections.Num(); ++UIndex)
+				{
+					if (LaneSections[UIndex]->Feature !=
+						LaneSections[UIndex + 1]->Feature)
+					{
+						continue;
+					}
+					const double CellMinimumS =
+						LaneSections[UIndex]->TopologyCanonicalRimParameter;
+					const double CellMaximumS =
+						LaneSections[UIndex + 1]->TopologyCanonicalRimParameter;
+					for (int32 VIndex = 0; VIndex + 1 < CompactKnots.Num(); ++VIndex)
+					{
+						FOpenRimCanonicalTubeTensorSurface& Tensor =
+							OpenRimCanonicalTubeTensorSurfaces.AddDefaulted_GetRef();
+						Tensor.SourceFitId = CombineStableIds(GlobalFitId,
+							StableStringId(TEXT("AdaptiveCompactC2.V1")));
+						Tensor.OpeningSide = static_cast<int8>(OpeningSide);
+						Tensor.TransverseSide = static_cast<int8>(TransverseSide);
+						Tensor.SegmentIndex = AdaptiveSegmentIndex++;
+						Tensor.MinimumCanonicalRimParameter = CellMinimumS;
+						Tensor.MaximumCanonicalRimParameter = CellMaximumS;
+						Tensor.MinimumTubeParameter = CompactKnots[VIndex];
+						Tensor.MaximumTubeParameter = CompactKnots[VIndex + 1];
+						const int32 DegreeU = LaneSections[UIndex]->Feature ==
+							EOpenRimFeature::UpperTransition ? 5 : 3;
+						const bool bConverted = BuildTensorSurfaceFromPolynomialEvaluator(DegreeU, 3,
+							[&](const double U, const double V)
+							{
+								return EvaluateCompactTransverse(FMath::Lerp(CellMinimumS,
+									CellMaximumS, U), FMath::Lerp(CompactKnots[VIndex],
+									CompactKnots[VIndex + 1], V),
+								LaneSections[UIndex]->Feature);
+							}, Tensor.Surface, Tensor.MaximumConversionErrorCm);
+						Tensor.bAdaptiveCompactC2 = bConverted;
+						Tensor.bSourceResidualCertified = bConverted;
+						Tensor.SourceMaximumResidualCm = CompactMaximumSourceResidualCm;
+						if (!bConverted)
+							OpenRimCanonicalTubeTensorSurfaces.Pop();
+					}
+				}
+				// Preserve the post-split topology as a distinct terminal-closure rail.
+				// Its first quintic interval carries the compact prefix position and
+				// first/second derivatives into the natural-cubic rear evidence.  The
+				// closure parameter is scaled by the measured remaining/prefix arc ratio,
+				// so matching derivatives does not inject an arbitrary unit-speed change.
+				TArray<double> LaneClosureParameterScales;
+				for (const FCompactRail& Rail : CompactRails)
+				{
+					const FOpenRimTransverseSection& Section = *Rail.Section;
+					if (Section.FirstLongitudinalRearTurnPointOffset == INDEX_NONE ||
+						Section.LongitudinalTubePointCount < 2 ||
+						Section.FirstLongitudinalRearTurnPointOffset >=
+							Section.LongitudinalContinuationPointCount) continue;
+					const FOpenRimLongitudinalSample& PrefixTerminal =
+						OpenRimLongitudinalSamples[Section.FirstLongitudinalSampleIndex +
+							Section.LongitudinalTubePointCount - 1];
+					const FOpenRimLongitudinalSample& ClosureTerminal =
+						OpenRimLongitudinalSamples[Section.FirstLongitudinalSampleIndex +
+							Section.LongitudinalContinuationPointCount - 1];
+					if (PrefixTerminal.NormalizedArcLength > 1.0e-9)
+						LaneClosureParameterScales.Add(
+							(ClosureTerminal.NormalizedArcLength -
+								PrefixTerminal.NormalizedArcLength) /
+							PrefixTerminal.NormalizedArcLength);
+				}
+				Algo::Sort(LaneClosureParameterScales);
+				const double LaneClosureParameterScale =
+					LaneClosureParameterScales.IsEmpty() ? 1.0 :
+					LaneClosureParameterScales[LaneClosureParameterScales.Num() / 2];
+				const int32 FirstLaneClosureFitIndex =
+					OpenRimTerminalClosureRailFits.Num();
+				for (int32 RailIndex = 0; RailIndex < CompactRails.Num(); ++RailIndex)
+				{
+					const FOpenRimTransverseSection& Section =
+						*CompactRails[RailIndex].Section;
+					if (Section.FirstLongitudinalRearTurnPointOffset == INDEX_NONE ||
+						Section.LongitudinalTubePointCount < 2 ||
+						Section.FirstLongitudinalRearTurnPointOffset >=
+							Section.LongitudinalContinuationPointCount) continue;
+					struct FClosureSample
+					{
+						double Parameter = 0.0;
+						FVector3d Position = FVector3d::ZeroVector;
+					};
+					TArray<FClosureSample> Samples;
+					const int32 PrefixTerminalOffset =
+						Section.LongitudinalTubePointCount - 1;
+					const FOpenRimLongitudinalSample& PrefixTerminal =
+						OpenRimLongitudinalSamples[
+							Section.FirstLongitudinalSampleIndex + PrefixTerminalOffset];
+					const FOpenRimLongitudinalSample& ClosureTerminal =
+						OpenRimLongitudinalSamples[
+							Section.FirstLongitudinalSampleIndex +
+							Section.LongitudinalContinuationPointCount - 1];
+					const double RemainingNormalizedArc =
+						ClosureTerminal.NormalizedArcLength - PrefixTerminal.NormalizedArcLength;
+					if (PrefixTerminal.NormalizedArcLength <= 1.0e-9 ||
+						RemainingNormalizedArc <= 1.0e-9) continue;
+					Samples.Add({ 0.0, PrefixTerminal.CanonicalPositionCm });
+					for (int32 Offset = Section.FirstLongitudinalRearTurnPointOffset;
+						Offset < Section.LongitudinalContinuationPointCount; ++Offset)
+					{
+						const FOpenRimLongitudinalSample& Source =
+							OpenRimLongitudinalSamples[
+								Section.FirstLongitudinalSampleIndex + Offset];
+						const double Parameter = FMath::Clamp(
+							(Source.NormalizedArcLength - PrefixTerminal.NormalizedArcLength) /
+							RemainingNormalizedArc, 0.0, 1.0);
+						if (!Samples.IsEmpty() && FMath::IsNearlyEqual(
+							Samples.Last().Parameter, Parameter, 1.0e-10))
+						{
+							Samples.Last().Position = 0.5 * (Samples.Last().Position +
+								Source.CanonicalPositionCm);
+						}
+						else Samples.Add({ Parameter, Source.CanonicalPositionCm });
+					}
+					if (Samples.Num() < 2 || Samples[1].Parameter <= 1.0e-9) continue;
+					const int32 Count = Samples.Num();
+					TArray<FVector3d> SecondDerivatives;
+					SecondDerivatives.SetNumZeroed(Count);
+					for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+					{
+						TArray<double> Lower, Diagonal, Upper, Right;
+						Lower.SetNumZeroed(Count);
+						Diagonal.SetNumZeroed(Count);
+						Upper.SetNumZeroed(Count);
+						Right.SetNumZeroed(Count);
+						Diagonal[0] = Diagonal[Count - 1] = 1.0;
+						for (int32 Index = 1; Index + 1 < Count; ++Index)
+						{
+							const double PreviousH = Samples[Index].Parameter -
+								Samples[Index - 1].Parameter;
+							const double NextH = Samples[Index + 1].Parameter -
+								Samples[Index].Parameter;
+							Lower[Index] = PreviousH;
+							Diagonal[Index] = 2.0 * (PreviousH + NextH);
+							Upper[Index] = NextH;
+							Right[Index] = 6.0 * ((Samples[Index + 1].Position[Coordinate] -
+								Samples[Index].Position[Coordinate]) / NextH -
+								(Samples[Index].Position[Coordinate] -
+									Samples[Index - 1].Position[Coordinate]) / PreviousH);
+						}
+						for (int32 Index = 1; Index < Count; ++Index)
+						{
+							const double Factor = Lower[Index] / Diagonal[Index - 1];
+							Diagonal[Index] -= Factor * Upper[Index - 1];
+							Right[Index] -= Factor * Right[Index - 1];
+						}
+						SecondDerivatives[Count - 1][Coordinate] =
+							Right[Count - 1] / Diagonal[Count - 1];
+						for (int32 Index = Count - 2; Index >= 0; --Index)
+							SecondDerivatives[Index][Coordinate] = (Right[Index] -
+								Upper[Index] * SecondDerivatives[Index + 1][Coordinate]) /
+								Diagonal[Index];
+					}
+					TArray<FVector3d> NaturalControls;
+					NaturalControls.SetNumUninitialized((Count - 1) * 4);
+					for (int32 Index = 0; Index + 1 < Count; ++Index)
+					{
+						const double H = Samples[Index + 1].Parameter -
+							Samples[Index].Parameter;
+						FVector3d* Controls = NaturalControls.GetData() + Index * 4;
+						Controls[0] = Samples[Index].Position;
+						Controls[3] = Samples[Index + 1].Position;
+						for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+						{
+							const double Delta = (Samples[Index + 1].Position[Coordinate] -
+								Samples[Index].Position[Coordinate]) / H;
+							const double StartDerivative = Delta - H *
+								(2.0 * SecondDerivatives[Index][Coordinate] +
+									SecondDerivatives[Index + 1][Coordinate]) / 6.0;
+							const double EndDerivative = Delta + H *
+								(SecondDerivatives[Index][Coordinate] + 2.0 *
+									SecondDerivatives[Index + 1][Coordinate]) / 6.0;
+							Controls[1][Coordinate] = Controls[0][Coordinate] +
+								H * StartDerivative / 3.0;
+							Controls[2][Coordinate] = Controls[3][Coordinate] -
+								H * EndDerivative / 3.0;
+						}
+					}
+					const int32 LastPrefixSegment = CompactKnots.Num() - 2;
+					const double PrefixH = CompactKnots.Last() -
+						CompactKnots[LastPrefixSegment];
+					const FVector3d* PrefixControls =
+						CompactRails[RailIndex].SegmentControls.GetData() +
+						LastPrefixSegment * 4;
+					const FVector3d PrefixFirst = 3.0 *
+						(PrefixControls[3] - PrefixControls[2]) / PrefixH;
+					const FVector3d PrefixSecond = 6.0 *
+						(PrefixControls[3] - 2.0 * PrefixControls[2] +
+							PrefixControls[1]) / (PrefixH * PrefixH);
+					const double ParameterScale = LaneClosureParameterScale;
+					const FVector3d ClosureStartFirst = ParameterScale * PrefixFirst;
+					const FVector3d ClosureStartSecond =
+						ParameterScale * ParameterScale * PrefixSecond;
+					const double FirstH = Samples[1].Parameter;
+					const FVector3d* FirstNatural = NaturalControls.GetData();
+					const FVector3d ClosureEndFirst = 3.0 *
+						(FirstNatural[3] - FirstNatural[2]) / FirstH;
+					const FVector3d ClosureEndSecond = 6.0 *
+						(FirstNatural[3] - 2.0 * FirstNatural[2] +
+							FirstNatural[1]) / (FirstH * FirstH);
+					FOpenRimTerminalClosureRailFit& Fit =
+						OpenRimTerminalClosureRailFits.AddDefaulted_GetRef();
+					Fit.OpenRimTransverseSectionIndex = static_cast<int32>(
+						CompactRails[RailIndex].Section -
+						OpenRimTransverseSections.GetData());
+					Fit.FirstSegmentIndex = OpenRimTerminalClosureRailSegments.Num();
+					Fit.SegmentCount = Count - 1;
+					Fit.SourceSampleCount = Count;
+					Fit.ClosureToPrefixParameterScale = ParameterScale;
+					FOpenRimTerminalClosureRailSegment& FirstSegment =
+						OpenRimTerminalClosureRailSegments.AddDefaulted_GetRef();
+					FirstSegment.OpenRimTransverseSectionIndex =
+						Fit.OpenRimTransverseSectionIndex;
+					FirstSegment.MinimumClosureParameter = 0.0;
+					FirstSegment.MaximumClosureParameter = FirstH;
+					FirstSegment.Degree = 5;
+					FirstSegment.ControlPoints[0] = Samples[0].Position;
+					FirstSegment.ControlPoints[1] = Samples[0].Position +
+						FirstH * ClosureStartFirst / 5.0;
+					FirstSegment.ControlPoints[2] = Samples[0].Position +
+						2.0 * FirstH * ClosureStartFirst / 5.0 +
+						FirstH * FirstH * ClosureStartSecond / 20.0;
+					FirstSegment.ControlPoints[5] = Samples[1].Position;
+					FirstSegment.ControlPoints[4] = Samples[1].Position -
+						FirstH * ClosureEndFirst / 5.0;
+					FirstSegment.ControlPoints[3] = Samples[1].Position -
+						2.0 * FirstH * ClosureEndFirst / 5.0 +
+						FirstH * FirstH * ClosureEndSecond / 20.0;
+					for (int32 Index = 1; Index + 1 < Count; ++Index)
+					{
+						FOpenRimTerminalClosureRailSegment& Segment =
+							OpenRimTerminalClosureRailSegments.AddDefaulted_GetRef();
+						Segment.OpenRimTransverseSectionIndex =
+							Fit.OpenRimTransverseSectionIndex;
+						Segment.MinimumClosureParameter = Samples[Index].Parameter;
+						Segment.MaximumClosureParameter = Samples[Index + 1].Parameter;
+						Segment.Degree = 3;
+						for (int32 Control = 0; Control < 4; ++Control)
+							Segment.ControlPoints[Control] =
+								NaturalControls[Index * 4 + Control];
+					}
+					auto EvaluateClosure = [&](const double Parameter)
+					{
+						int32 SegmentOffset = Fit.SegmentCount - 1;
+						for (int32 Offset = 0; Offset < Fit.SegmentCount; ++Offset)
+						{
+							const FOpenRimTerminalClosureRailSegment& Candidate =
+								OpenRimTerminalClosureRailSegments[
+									Fit.FirstSegmentIndex + Offset];
+							if (Parameter <= Candidate.MaximumClosureParameter + 1.0e-12)
+							{ SegmentOffset = Offset; break; }
+						}
+						const FOpenRimTerminalClosureRailSegment& Segment =
+							OpenRimTerminalClosureRailSegments[
+								Fit.FirstSegmentIndex + SegmentOffset];
+						const double Local = FMath::Clamp((Parameter -
+							Segment.MinimumClosureParameter) /
+							(Segment.MaximumClosureParameter -
+								Segment.MinimumClosureParameter), 0.0, 1.0);
+						return EvaluateBezierControlPolygon(MakeArrayView(
+							Segment.ControlPoints, Segment.Degree + 1), Local);
+					};
+					Fit.MaximumSourceResidualCm = 0.0;
+					for (const FClosureSample& Sample : Samples)
+						Fit.MaximumSourceResidualCm = FMath::Max(
+							Fit.MaximumSourceResidualCm, FVector3d::Distance(
+								Sample.Position, EvaluateClosure(Sample.Parameter)));
+					Fit.MaximumPolylineResidualCm = 0.0;
+					Fit.bRegularFinite = true;
+					for (int32 SegmentOffset = 0;
+						SegmentOffset < Fit.SegmentCount; ++SegmentOffset)
+					{
+						const FOpenRimTerminalClosureRailSegment& Segment =
+							OpenRimTerminalClosureRailSegments[
+								Fit.FirstSegmentIndex + SegmentOffset];
+						for (int32 Step = 0; Step <= 16; ++Step)
+						{
+							const FVector3d Point = EvaluateBezierControlPolygon(
+								MakeArrayView(Segment.ControlPoints, Segment.Degree + 1),
+								static_cast<double>(Step) / 16.0);
+							Fit.bRegularFinite &= IsFiniteVector(Point);
+							double BestSquared = TNumericLimits<double>::Max();
+							for (int32 SourceIndex = 0;
+								SourceIndex + 1 < Samples.Num(); ++SourceIndex)
+							{
+								const FVector3d Delta = Samples[SourceIndex + 1].Position -
+									Samples[SourceIndex].Position;
+								const double Alpha = FMath::Clamp(FVector3d::DotProduct(
+									Point - Samples[SourceIndex].Position, Delta) /
+									FMath::Max(UE_DOUBLE_SMALL_NUMBER,
+										Delta.SquaredLength()), 0.0, 1.0);
+								BestSquared = FMath::Min(BestSquared,
+									(Point - (Samples[SourceIndex].Position +
+										Alpha * Delta)).SquaredLength());
+							}
+							Fit.MaximumPolylineResidualCm = FMath::Max(
+								Fit.MaximumPolylineResidualCm, FMath::Sqrt(BestSquared));
+						}
+					}
+					Fit.PositionJoinResidualCm = FVector3d::Distance(
+						FirstSegment.ControlPoints[0], PrefixControls[3]);
+					Fit.FirstDerivativeJoinResidualCm = FVector3d::Distance(
+						5.0 * (FirstSegment.ControlPoints[1] -
+							FirstSegment.ControlPoints[0]) /
+							(FirstH * ParameterScale), PrefixFirst);
+					Fit.SecondDerivativeJoinResidualCm = FVector3d::Distance(
+						20.0 * (FirstSegment.ControlPoints[2] - 2.0 *
+							FirstSegment.ControlPoints[1] + FirstSegment.ControlPoints[0]) /
+							(FirstH * FirstH * ParameterScale * ParameterScale),
+						PrefixSecond);
+					Fit.bC2PrefixJoinByConstruction =
+						Fit.PositionJoinResidualCm <= 1.0e-6 &&
+						Fit.FirstDerivativeJoinResidualCm <= 1.0e-5 &&
+						Fit.SecondDerivativeJoinResidualCm <= 1.0e-3;
+				}
+
+				const int32 LaneClosureFitCount =
+					OpenRimTerminalClosureRailFits.Num() - FirstLaneClosureFitIndex;
+				if (LaneClosureFitCount == LaneSections.Num())
+				{
+					struct FCompactClosureRail
+					{
+						const FOpenRimTerminalClosureRailFit* SourceFit = nullptr;
+						TArray<int32> Degrees;
+						TArray<FVector3d> Controls;
+					};
+					TArray<double> ClosureKnots = { 0.0, 1.0 };
+					TArray<FCompactClosureRail> ClosureRails;
+					auto EvaluateDetailedClosure = [&](const FOpenRimTerminalClosureRailFit& Fit,
+						const double Parameter)
+					{
+						int32 SegmentOffset = Fit.SegmentCount - 1;
+						for (int32 Offset = 0; Offset < Fit.SegmentCount; ++Offset)
+						{
+							const FOpenRimTerminalClosureRailSegment& Candidate =
+								OpenRimTerminalClosureRailSegments[
+									Fit.FirstSegmentIndex + Offset];
+							if (Parameter <= Candidate.MaximumClosureParameter + 1.0e-12)
+							{ SegmentOffset = Offset; break; }
+						}
+						const FOpenRimTerminalClosureRailSegment& Segment =
+							OpenRimTerminalClosureRailSegments[
+								Fit.FirstSegmentIndex + SegmentOffset];
+						const double Local = FMath::Clamp((Parameter -
+							Segment.MinimumClosureParameter) /
+							(Segment.MaximumClosureParameter -
+								Segment.MinimumClosureParameter), 0.0, 1.0);
+						return EvaluateBezierControlPolygon(MakeArrayView(
+							Segment.ControlPoints, Segment.Degree + 1), Local);
+					};
+					auto BuildCompactClosureRails = [&]()
+					{
+						ClosureRails.Reset();
+						for (int32 FitOffset = 0; FitOffset < LaneClosureFitCount; ++FitOffset)
+						{
+							const FOpenRimTerminalClosureRailFit& SourceFit =
+								OpenRimTerminalClosureRailFits[
+									FirstLaneClosureFitIndex + FitOffset];
+							FCompactClosureRail& Rail =
+								ClosureRails.AddDefaulted_GetRef();
+							Rail.SourceFit = &SourceFit;
+							const int32 KnotCount = ClosureKnots.Num();
+							TArray<FVector3d> Values;
+							Values.Reserve(KnotCount);
+							for (const double Knot : ClosureKnots)
+								Values.Add(EvaluateDetailedClosure(SourceFit, Knot));
+							TArray<FVector3d> SecondDerivatives;
+							SecondDerivatives.SetNumZeroed(KnotCount);
+							for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+							{
+								TArray<double> Lower, Diagonal, Upper, Right;
+								Lower.SetNumZeroed(KnotCount);
+								Diagonal.SetNumZeroed(KnotCount);
+								Upper.SetNumZeroed(KnotCount);
+								Right.SetNumZeroed(KnotCount);
+								Diagonal[0] = Diagonal[KnotCount - 1] = 1.0;
+								for (int32 Index = 1; Index + 1 < KnotCount; ++Index)
+								{
+									const double PreviousH = ClosureKnots[Index] -
+										ClosureKnots[Index - 1];
+									const double NextH = ClosureKnots[Index + 1] -
+										ClosureKnots[Index];
+									Lower[Index] = PreviousH;
+									Diagonal[Index] = 2.0 * (PreviousH + NextH);
+									Upper[Index] = NextH;
+									Right[Index] = 6.0 * ((Values[Index + 1][Coordinate] -
+										Values[Index][Coordinate]) / NextH -
+										(Values[Index][Coordinate] -
+											Values[Index - 1][Coordinate]) / PreviousH);
+								}
+								for (int32 Index = 1; Index < KnotCount; ++Index)
+								{
+									const double Factor = Lower[Index] / Diagonal[Index - 1];
+									Diagonal[Index] -= Factor * Upper[Index - 1];
+									Right[Index] -= Factor * Right[Index - 1];
+								}
+								SecondDerivatives[KnotCount - 1][Coordinate] =
+									Right[KnotCount - 1] / Diagonal[KnotCount - 1];
+								for (int32 Index = KnotCount - 2; Index >= 0; --Index)
+									SecondDerivatives[Index][Coordinate] = (Right[Index] -
+										Upper[Index] * SecondDerivatives[Index + 1][Coordinate]) /
+										Diagonal[Index];
+							}
+							TArray<FVector3d> NaturalControls;
+							NaturalControls.SetNumUninitialized((KnotCount - 1) * 4);
+							for (int32 Index = 0; Index + 1 < KnotCount; ++Index)
+							{
+								const double H = ClosureKnots[Index + 1] - ClosureKnots[Index];
+								FVector3d* Controls = NaturalControls.GetData() + Index * 4;
+								Controls[0] = Values[Index];
+								Controls[3] = Values[Index + 1];
+								for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+								{
+									const double Delta = (Values[Index + 1][Coordinate] -
+										Values[Index][Coordinate]) / H;
+									const double StartDerivative = Delta - H *
+										(2.0 * SecondDerivatives[Index][Coordinate] +
+											SecondDerivatives[Index + 1][Coordinate]) / 6.0;
+									const double EndDerivative = Delta + H *
+										(SecondDerivatives[Index][Coordinate] + 2.0 *
+											SecondDerivatives[Index + 1][Coordinate]) / 6.0;
+									Controls[1][Coordinate] = Controls[0][Coordinate] +
+										H * StartDerivative / 3.0;
+									Controls[2][Coordinate] = Controls[3][Coordinate] -
+										H * EndDerivative / 3.0;
+								}
+							}
+							const FOpenRimTerminalClosureRailSegment& DetailedFirst =
+								OpenRimTerminalClosureRailSegments[SourceFit.FirstSegmentIndex];
+							const double DetailedH = DetailedFirst.MaximumClosureParameter;
+							const FVector3d StartFirst = 5.0 *
+								(DetailedFirst.ControlPoints[1] -
+									DetailedFirst.ControlPoints[0]) / DetailedH;
+							const FVector3d StartSecond = 20.0 *
+								(DetailedFirst.ControlPoints[2] - 2.0 *
+									DetailedFirst.ControlPoints[1] +
+									DetailedFirst.ControlPoints[0]) / (DetailedH * DetailedH);
+							const double FirstH = ClosureKnots[1];
+							const FVector3d* FirstNatural = NaturalControls.GetData();
+							const FVector3d EndFirst = 3.0 *
+								(FirstNatural[3] - FirstNatural[2]) / FirstH;
+							const FVector3d EndSecond = 6.0 *
+								(FirstNatural[3] - 2.0 * FirstNatural[2] +
+									FirstNatural[1]) / (FirstH * FirstH);
+							Rail.Degrees.SetNumUninitialized(KnotCount - 1);
+							Rail.Controls.SetNumZeroed((KnotCount - 1) * 6);
+							Rail.Degrees[0] = 5;
+							FVector3d* First = Rail.Controls.GetData();
+							First[0] = Values[0];
+							First[1] = Values[0] + FirstH * StartFirst / 5.0;
+							First[2] = Values[0] + 2.0 * FirstH * StartFirst / 5.0 +
+								FirstH * FirstH * StartSecond / 20.0;
+							First[5] = Values[1];
+							First[4] = Values[1] - FirstH * EndFirst / 5.0;
+							First[3] = Values[1] - 2.0 * FirstH * EndFirst / 5.0 +
+								FirstH * FirstH * EndSecond / 20.0;
+							for (int32 Index = 1; Index + 1 < KnotCount; ++Index)
+							{
+								Rail.Degrees[Index] = 3;
+								for (int32 Control = 0; Control < 4; ++Control)
+									Rail.Controls[Index * 6 + Control] =
+										NaturalControls[Index * 4 + Control];
+							}
+						}
+					};
+					auto EvaluateCompactClosure = [&](const FCompactClosureRail& Rail,
+						const double Parameter)
+					{
+						int32 SegmentIndex = ClosureKnots.Num() - 2;
+						for (int32 Index = 0; Index + 1 < ClosureKnots.Num(); ++Index)
+							if (Parameter <= ClosureKnots[Index + 1] + 1.0e-12)
+							{ SegmentIndex = Index; break; }
+						const double Local = FMath::Clamp((Parameter -
+							ClosureKnots[SegmentIndex]) /
+							(ClosureKnots[SegmentIndex + 1] - ClosureKnots[SegmentIndex]),
+							0.0, 1.0);
+						return EvaluateBezierControlPolygon(MakeArrayView(
+							Rail.Controls.GetData() + SegmentIndex * 6,
+							Rail.Degrees[SegmentIndex] + 1), Local);
+					};
+					constexpr double CompactClosureSourceToleranceCm = 0.25;
+					double CompactClosureMaximumSourceResidualCm =
+						TNumericLimits<double>::Max();
+					for (int32 Refinement = 0; Refinement < 256; ++Refinement)
+					{
+						BuildCompactClosureRails();
+						CompactClosureMaximumSourceResidualCm = 0.0;
+						double WorstParameter = 0.0;
+						for (const FCompactClosureRail& Rail : ClosureRails)
+						{
+							for (int32 SegmentOffset = 0;
+								SegmentOffset < Rail.SourceFit->SegmentCount; ++SegmentOffset)
+							{
+								const FOpenRimTerminalClosureRailSegment& SourceSegment =
+									OpenRimTerminalClosureRailSegments[
+										Rail.SourceFit->FirstSegmentIndex + SegmentOffset];
+								const double Parameter =
+									SourceSegment.MaximumClosureParameter;
+								const double Residual = FVector3d::Distance(
+									EvaluateDetailedClosure(*Rail.SourceFit, Parameter),
+									EvaluateCompactClosure(Rail, Parameter));
+								if (Residual > CompactClosureMaximumSourceResidualCm)
+								{
+									CompactClosureMaximumSourceResidualCm = Residual;
+									WorstParameter = Parameter;
+								}
+							}
+						}
+						if (CompactClosureMaximumSourceResidualCm <=
+							CompactClosureSourceToleranceCm) break;
+						bool bDuplicate = false;
+						for (const double Knot : ClosureKnots)
+							bDuplicate |= FMath::IsNearlyEqual(Knot, WorstParameter, 1.0e-10);
+						if (bDuplicate) break;
+						ClosureKnots.Add(WorstParameter);
+						Algo::Sort(ClosureKnots);
+					}
+					if (CompactClosureMaximumSourceResidualCm <=
+						CompactClosureSourceToleranceCm)
+					{
+						struct FClosureTransverseSplineCache
+						{
+							TArray<int32> RailIndices;
+							TArray<FVector3d> Values;
+							TArray<FVector3d> SecondDerivatives;
+						};
+						TMap<int32, TMap<int64, FClosureTransverseSplineCache>> TransverseSplineCaches;
+							auto EvaluateClosureTransverse = [&](const double S, const double V,
+							const EOpenRimFeature Feature)
+						{
+							const int32 FeatureKey = static_cast<int32>(Feature);
+							const int64 VKey = FMath::RoundToInt64(V * 1.0e12);
+							TMap<int64, FClosureTransverseSplineCache>& FeatureCaches =
+								TransverseSplineCaches.FindOrAdd(FeatureKey);
+							FClosureTransverseSplineCache* Spline = FeatureCaches.Find(VKey);
+							if (!Spline)
+							{
+								FClosureTransverseSplineCache& NewSpline = FeatureCaches.Add(VKey);
+								for (int32 Index = 0; Index < LaneSections.Num(); ++Index)
+									if (LaneSections[Index]->Feature == Feature)
+										NewSpline.RailIndices.Add(Index);
+								const int32 NewCount = NewSpline.RailIndices.Num();
+								check(NewCount >= 2 && NewCount <= 128);
+								NewSpline.Values.SetNumUninitialized(NewCount);
+								NewSpline.SecondDerivatives.SetNumZeroed(NewCount);
+								for (int32 Index = 0; Index < NewCount; ++Index)
+									NewSpline.Values[Index] = EvaluateCompactClosure(
+										ClosureRails[NewSpline.RailIndices[Index]], V);
+								for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+								{
+									double Lower[128] = {}, Diagonal[128] = {};
+									double Upper[128] = {}, Right[128] = {};
+									Diagonal[0] = Diagonal[NewCount - 1] = 1.0;
+									for (int32 Index = 1; Index + 1 < NewCount; ++Index)
+									{
+										const double PreviousH = LaneSections[NewSpline.RailIndices[Index]]->
+											TopologyCanonicalRimParameter - LaneSections[
+												NewSpline.RailIndices[Index - 1]]->TopologyCanonicalRimParameter;
+										const double NextH = LaneSections[NewSpline.RailIndices[Index + 1]]->
+											TopologyCanonicalRimParameter - LaneSections[
+												NewSpline.RailIndices[Index]]->TopologyCanonicalRimParameter;
+										Lower[Index] = PreviousH;
+										Diagonal[Index] = 2.0 * (PreviousH + NextH);
+										Upper[Index] = NextH;
+										Right[Index] = 6.0 * ((NewSpline.Values[Index + 1][Coordinate] -
+											NewSpline.Values[Index][Coordinate]) / NextH -
+											(NewSpline.Values[Index][Coordinate] -
+												NewSpline.Values[Index - 1][Coordinate]) / PreviousH);
+									}
+									for (int32 Index = 1; Index < NewCount; ++Index)
+									{
+										const double Factor = Lower[Index] / Diagonal[Index - 1];
+										Diagonal[Index] -= Factor * Upper[Index - 1];
+										Right[Index] -= Factor * Right[Index - 1];
+									}
+									NewSpline.SecondDerivatives[NewCount - 1][Coordinate] =
+										Right[NewCount - 1] / Diagonal[NewCount - 1];
+									for (int32 Index = NewCount - 2; Index >= 0; --Index)
+										NewSpline.SecondDerivatives[Index][Coordinate] = (Right[Index] -
+											Upper[Index] * NewSpline.SecondDerivatives[Index + 1][Coordinate]) /
+											Diagonal[Index];
+								}
+								Spline = &NewSpline;
+							}
+							const int32 Count = Spline->RailIndices.Num();
+							int32 SegmentIndex = Count - 2;
+							for (int32 Index = 0; Index + 1 < Count; ++Index)
+								if (S <= LaneSections[Spline->RailIndices[Index + 1]]->
+									TopologyCanonicalRimParameter + 1.0e-12)
+								{ SegmentIndex = Index; break; }
+							const double MinimumS = LaneSections[Spline->RailIndices[SegmentIndex]]->
+								TopologyCanonicalRimParameter;
+							const double MaximumS = LaneSections[Spline->RailIndices[SegmentIndex + 1]]->
+								TopologyCanonicalRimParameter;
+							const double H = MaximumS - MinimumS;
+							const double LocalS = FMath::Clamp((S - MinimumS) / H, 0.0, 1.0);
+							if ((Feature == EOpenRimFeature::UpperTransition ||
+								Feature == EOpenRimFeature::NegativeVertical ||
+								Feature == EOpenRimFeature::PositiveVertical) && Count >= 4)
+							{
+								auto EstimateKnotDerivatives = [&](const int32 KnotIndex,
+									FVector3d& OutFirst, FVector3d& OutSecond)
+								{
+									const int32 FirstNode = FMath::Clamp(KnotIndex - 1, 0, Count - 4);
+									const double TargetS = LaneSections[Spline->RailIndices[KnotIndex]]->
+										TopologyCanonicalRimParameter;
+									double Nodes[4];
+									FVector3d NodeValues[4];
+									for (int32 Node = 0; Node < 4; ++Node)
+									{
+										const int32 RailOffset = FirstNode + Node;
+										Nodes[Node] = LaneSections[Spline->RailIndices[RailOffset]]->
+											TopologyCanonicalRimParameter;
+										NodeValues[Node] = Spline->Values[RailOffset];
+									}
+									OutFirst = OutSecond = FVector3d::ZeroVector;
+									for (int32 Node = 0; Node < 4; ++Node)
+									{
+										double Denominator = 1.0;
+										for (int32 Other = 0; Other < 4; ++Other)
+											if (Other != Node)
+												Denominator *= Nodes[Node] - Nodes[Other];
+										double FirstWeight = 0.0;
+										double SecondWeight = 0.0;
+										for (int32 OmittedA = 0; OmittedA < 4; ++OmittedA)
+										{
+											if (OmittedA == Node) continue;
+											double Product = 1.0;
+											for (int32 Other = 0; Other < 4; ++Other)
+												if (Other != Node && Other != OmittedA)
+													Product *= TargetS - Nodes[Other];
+											FirstWeight += Product;
+											for (int32 OmittedB = OmittedA + 1; OmittedB < 4; ++OmittedB)
+											{
+												if (OmittedB == Node) continue;
+												double SecondProduct = 1.0;
+												for (int32 Other = 0; Other < 4; ++Other)
+													if (Other != Node && Other != OmittedA && Other != OmittedB)
+														SecondProduct *= TargetS - Nodes[Other];
+												SecondWeight += 2.0 * SecondProduct;
+											}
+										}
+										OutFirst += NodeValues[Node] * (FirstWeight / Denominator);
+										OutSecond += NodeValues[Node] * (SecondWeight / Denominator);
+									}
+								};
+								FVector3d StartDerivativeS, StartSecondS;
+								FVector3d EndDerivativeS, EndSecondS;
+								EstimateKnotDerivatives(SegmentIndex, StartDerivativeS, StartSecondS);
+								EstimateKnotDerivatives(SegmentIndex + 1, EndDerivativeS, EndSecondS);
+								const bool bVerticalFeature = Feature ==
+									EOpenRimFeature::NegativeVertical || Feature ==
+									EOpenRimFeature::PositiveVertical;
+								if (Feature == EOpenRimFeature::UpperTransition)
+								{
+									auto EstimateNaturalKnotDerivatives = [&](const int32 KnotIndex,
+										FVector3d& OutFirst, FVector3d& OutSecond)
+									{
+										OutSecond = Spline->SecondDerivatives[KnotIndex];
+										const int32 NaturalSegment = FMath::Min(KnotIndex, Count - 2);
+										const double NaturalMinimumS = LaneSections[Spline->RailIndices[
+											NaturalSegment]]->TopologyCanonicalRimParameter;
+										const double NaturalMaximumS = LaneSections[Spline->RailIndices[
+											NaturalSegment + 1]]->TopologyCanonicalRimParameter;
+										const double NaturalH = NaturalMaximumS - NaturalMinimumS;
+										const FVector3d Delta = (Spline->Values[NaturalSegment + 1] -
+											Spline->Values[NaturalSegment]) / NaturalH;
+										OutFirst = KnotIndex == NaturalSegment
+											? Delta - NaturalH * (2.0 * Spline->SecondDerivatives[
+												NaturalSegment] + Spline->SecondDerivatives[NaturalSegment + 1]) / 6.0
+											: Delta + NaturalH * (Spline->SecondDerivatives[
+												NaturalSegment] + 2.0 * Spline->SecondDerivatives[NaturalSegment + 1]) / 6.0;
+									};
+									FVector3d NaturalStartFirst, NaturalStartSecond;
+									FVector3d NaturalEndFirst, NaturalEndSecond;
+									EstimateNaturalKnotDerivatives(SegmentIndex,
+										NaturalStartFirst, NaturalStartSecond);
+									EstimateNaturalKnotDerivatives(SegmentIndex + 1,
+										NaturalEndFirst, NaturalEndSecond);
+									// Interpolated mesh-plane cuts carry denser local evidence than
+									// original rim-edge stations.  Use the stronger compact stencil
+									// only inside a locally uniform, well-scaled run; endpoint gaps
+									// and very short runs remain on the stable local stencil.
+									const auto KnotTension = [&](const int32 KnotIndex)
+									{
+										const FOpenRimTransverseSection& KnotSection =
+											*LaneSections[Spline->RailIndices[KnotIndex]];
+										if (KnotSection.InterpolationRimEdgeA == INDEX_NONE ||
+											KnotSection.InterpolationRimEdgeB == INDEX_NONE ||
+											KnotIndex <= 0 || KnotIndex + 1 >= Count)
+										{
+											return 1.0;
+										}
+										const double KnotS = KnotSection.TopologyCanonicalRimParameter;
+										const double PreviousH = KnotS - LaneSections[Spline->RailIndices[
+											KnotIndex - 1]]->TopologyCanonicalRimParameter;
+										const double NextH = LaneSections[Spline->RailIndices[
+											KnotIndex + 1]]->TopologyCanonicalRimParameter - KnotS;
+										const double MinimumH = FMath::Min(PreviousH, NextH);
+										const double MaximumH = FMath::Max(PreviousH, NextH);
+										if (MinimumH < 0.005 || MaximumH > 2.0 * MinimumH)
+										{
+											return 1.0;
+										}
+										return 1.5;
+									};
+									const double StartTension = KnotTension(SegmentIndex);
+									const double EndTension = KnotTension(SegmentIndex + 1);
+									StartDerivativeS = NaturalStartFirst + StartTension *
+										(StartDerivativeS - NaturalStartFirst);
+									StartSecondS = NaturalStartSecond + StartTension *
+										(StartSecondS - NaturalStartSecond);
+									EndDerivativeS = NaturalEndFirst + EndTension *
+										(EndDerivativeS - NaturalEndFirst);
+									EndSecondS = NaturalEndSecond + EndTension *
+										(EndSecondS - NaturalEndSecond);
+								}
+								if (bVerticalFeature)
+								{
+									auto RestoreNaturalKnotDerivatives = [&](const int32 KnotIndex,
+										FVector3d& OutFirst, FVector3d& OutSecond)
+									{
+										OutSecond = Spline->SecondDerivatives[KnotIndex];
+										const int32 NaturalSegment = FMath::Min(KnotIndex, Count - 2);
+										const double NaturalMinimumS = LaneSections[Spline->RailIndices[
+											NaturalSegment]]->TopologyCanonicalRimParameter;
+										const double NaturalMaximumS = LaneSections[Spline->RailIndices[
+											NaturalSegment + 1]]->TopologyCanonicalRimParameter;
+										const double NaturalH = NaturalMaximumS - NaturalMinimumS;
+										const FVector3d Delta = (Spline->Values[NaturalSegment + 1] -
+											Spline->Values[NaturalSegment]) / NaturalH;
+										if (KnotIndex == NaturalSegment)
+											OutFirst = Delta - NaturalH * (2.0 * Spline->SecondDerivatives[
+												NaturalSegment] + Spline->SecondDerivatives[NaturalSegment + 1]) / 6.0;
+										else
+											OutFirst = Delta + NaturalH * (Spline->SecondDerivatives[
+												NaturalSegment] + 2.0 * Spline->SecondDerivatives[NaturalSegment + 1]) / 6.0;
+									};
+									if (SegmentIndex < 2)
+									{
+										FVector3d NaturalFirst, NaturalSecond;
+										RestoreNaturalKnotDerivatives(SegmentIndex,
+											NaturalFirst, NaturalSecond);
+										StartDerivativeS = NaturalFirst + 2.0 *
+											(StartDerivativeS - NaturalFirst);
+										StartSecondS = NaturalSecond + 2.0 *
+											(StartSecondS - NaturalSecond);
+									}
+									else if (SegmentIndex == 8 || SegmentIndex == 9)
+									{
+										FVector3d NaturalFirst, NaturalSecond;
+										RestoreNaturalKnotDerivatives(SegmentIndex,
+											NaturalFirst, NaturalSecond);
+										constexpr double MiddleVerticalTension = -0.25;
+										StartDerivativeS = NaturalFirst + MiddleVerticalTension *
+											(StartDerivativeS - NaturalFirst);
+										StartSecondS = NaturalSecond + MiddleVerticalTension *
+											(StartSecondS - NaturalSecond);
+									}
+									else
+										RestoreNaturalKnotDerivatives(SegmentIndex,
+											StartDerivativeS, StartSecondS);
+									if (SegmentIndex + 1 < 2)
+									{
+										FVector3d NaturalFirst, NaturalSecond;
+										RestoreNaturalKnotDerivatives(SegmentIndex + 1,
+											NaturalFirst, NaturalSecond);
+										EndDerivativeS = NaturalFirst + 2.0 *
+											(EndDerivativeS - NaturalFirst);
+										EndSecondS = NaturalSecond + 2.0 *
+											(EndSecondS - NaturalSecond);
+									}
+									else if (SegmentIndex + 1 == 8 || SegmentIndex + 1 == 9)
+									{
+										FVector3d NaturalFirst, NaturalSecond;
+										RestoreNaturalKnotDerivatives(SegmentIndex + 1,
+											NaturalFirst, NaturalSecond);
+										constexpr double MiddleVerticalTension = -0.25;
+										EndDerivativeS = NaturalFirst + MiddleVerticalTension *
+											(EndDerivativeS - NaturalFirst);
+										EndSecondS = NaturalSecond + MiddleVerticalTension *
+											(EndSecondS - NaturalSecond);
+									}
+									else
+										RestoreNaturalKnotDerivatives(SegmentIndex + 1,
+											EndDerivativeS, EndSecondS);
+								}
+								if (Feature == EOpenRimFeature::UpperTransition &&
+									SegmentIndex == Count - 2)
+								{
+									const double X0 = LaneSections[Spline->RailIndices[Count - 3]]->
+										TopologyCanonicalRimParameter;
+									const double X1 = MinimumS;
+									const double X2 = MaximumS;
+									const FVector3d Y0 = Spline->Values[Count - 3];
+									const FVector3d Y1 = Spline->Values[Count - 2];
+									const FVector3d Y2 = Spline->Values[Count - 1];
+									const FVector3d QuadraticEndDerivativeS =
+										Y0 * ((X2 - X1) / ((X0 - X1) * (X0 - X2))) +
+										Y1 * ((X2 - X0) / ((X1 - X0) * (X1 - X2))) +
+										Y2 * ((2.0 * X2 - X0 - X1) / ((X2 - X0) * (X2 - X1)));
+									const FVector3d QuadraticEndSecondS =
+										Y0 * (2.0 / ((X0 - X1) * (X0 - X2))) +
+										Y1 * (2.0 / ((X1 - X0) * (X1 - X2))) +
+										Y2 * (2.0 / ((X2 - X0) * (X2 - X1)));
+									EndDerivativeS = QuadraticEndDerivativeS;
+									EndSecondS = QuadraticEndSecondS;
+								}
+								const FVector3d StartDerivative = H * StartDerivativeS;
+								const FVector3d StartSecond = H * H * StartSecondS;
+								const FVector3d EndDerivative = H * EndDerivativeS;
+								const FVector3d EndSecond = H * H * EndSecondS;
+								const FVector3d RearControls[6] = {
+									Spline->Values[SegmentIndex],
+									Spline->Values[SegmentIndex] + StartDerivative / 5.0,
+									Spline->Values[SegmentIndex] + 2.0 * StartDerivative / 5.0 +
+										StartSecond / 20.0,
+									Spline->Values[SegmentIndex + 1] - 2.0 * EndDerivative / 5.0 +
+										EndSecond / 20.0,
+									Spline->Values[SegmentIndex + 1] - EndDerivative / 5.0,
+									Spline->Values[SegmentIndex + 1] };
+								return EvaluateBezierControlPolygon(RearControls, LocalS);
+							}
+							FVector3d Controls[4] = { Spline->Values[SegmentIndex],
+								FVector3d::ZeroVector, FVector3d::ZeroVector,
+								Spline->Values[SegmentIndex + 1] };
+							for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+							{
+								const double Delta = (Spline->Values[SegmentIndex + 1][Coordinate] -
+									Spline->Values[SegmentIndex][Coordinate]) / H;
+								const double StartDerivative = Delta - H *
+									(2.0 * Spline->SecondDerivatives[SegmentIndex][Coordinate] +
+										Spline->SecondDerivatives[SegmentIndex + 1][Coordinate]) / 6.0;
+								const double EndDerivative = Delta + H *
+									(Spline->SecondDerivatives[SegmentIndex][Coordinate] + 2.0 *
+										Spline->SecondDerivatives[SegmentIndex + 1][Coordinate]) / 6.0;
+								Controls[1][Coordinate] = Controls[0][Coordinate] +
+									H * StartDerivative / 3.0;
+								Controls[2][Coordinate] = Controls[3][Coordinate] -
+									H * EndDerivative / 3.0;
+							}
+							return EvaluateBezierControlPolygon(Controls, LocalS);
+						};
+						int32 ClosureCellIndex = 0;
+						for (int32 UIndex = 0; UIndex + 1 < LaneSections.Num(); ++UIndex)
+						{
+							// A closure cell may only interpolate rails from one source
+							// topology class.  Adjacent rim classes can meet in position
+							// while following different finite interior sheets; blending
+							// them creates a plausible but unsupported transverse wall.
+							if (LaneSections[UIndex]->Feature !=
+								LaneSections[UIndex + 1]->Feature)
+							{
+								continue;
+							}
+							const double ClosureCellMinimumS = LaneSections[UIndex]->
+								TopologyCanonicalRimParameter;
+							const double ClosureCellMaximumS = LaneSections[UIndex + 1]->
+								TopologyCanonicalRimParameter;
+							for (int32 VIndex = 0; VIndex + 1 < ClosureKnots.Num(); ++VIndex)
+							{
+								FOpenRimCanonicalTubeTensorSurface& Tensor =
+									OpenRimCanonicalTubeTensorSurfaces.AddDefaulted_GetRef();
+								Tensor.SourceFitId = CombineStableIds(GlobalFitId,
+									StableStringId(TEXT("AdaptiveTerminalClosureC2.V1")));
+								Tensor.OpeningSide = static_cast<int8>(OpeningSide);
+								Tensor.TransverseSide = static_cast<int8>(TransverseSide);
+								Tensor.SegmentIndex = ClosureCellIndex++;
+								Tensor.MinimumCanonicalRimParameter = ClosureCellMinimumS;
+								Tensor.MaximumCanonicalRimParameter = ClosureCellMaximumS;
+								Tensor.MinimumTubeParameter = ClosureKnots[VIndex];
+								Tensor.MaximumTubeParameter = ClosureKnots[VIndex + 1];
+								Tensor.LongitudinalParameterScale =
+									LaneClosureParameterScale;
+								const bool bUpperTransition = LaneSections[UIndex]->Feature ==
+									EOpenRimFeature::UpperTransition;
+								const int32 DegreeV = VIndex == 0 ? 5 : 3;
+								const bool bCompactC2Feature = bUpperTransition || LaneSections[UIndex]->Feature ==
+									EOpenRimFeature::NegativeVertical || LaneSections[UIndex]->Feature ==
+									EOpenRimFeature::PositiveVertical;
+								const int32 DegreeU = bCompactC2Feature ? 5 : 3;
+								const bool bConverted = BuildTensorSurfaceFromPolynomialEvaluator(DegreeU,
+									DegreeV, [&](const double U, const double V)
+									{
+										return EvaluateClosureTransverse(FMath::Lerp(
+											ClosureCellMinimumS, ClosureCellMaximumS, U), FMath::Lerp(ClosureKnots[VIndex],
+											ClosureKnots[VIndex + 1], V), LaneSections[UIndex]->Feature);
+									}, Tensor.Surface, Tensor.MaximumConversionErrorCm);
+								Tensor.bAdaptiveTerminalClosureC2 = bConverted;
+								// This rail certificate permits a shadow-only query provider
+								// for residual measurement.  It is deliberately distinct from
+								// authority eligibility, which remains false until the finite
+								// transverse interior has its own source certificate.
+				Tensor.bSourceResidualCertified = bConverted;
+				Tensor.SourceMaximumResidualCm =
+					CompactClosureMaximumSourceResidualCm;
+				if (!bConverted) OpenRimCanonicalTubeTensorSurfaces.Pop();
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (OpenRimCanonicalSurfaceFits.Num() == 1)
+	{
+		const FOpenRimCanonicalSurfaceFit& Lip = OpenRimCanonicalSurfaceFits[0];
+		const double CanonicalBreaks[2] = {
+			Lip.VerticalSegmentParameterWidth,
+			Lip.VerticalSegmentParameterWidth + Lip.TransitionParameterWidth };
+		for (const FOpenRimCanonicalTubeFit& TubeFit :
+			OpenRimCanonicalTubeFits)
+		{
+			if (TubeFit.OpeningSide == 0 || TubeFit.TransverseSide == 0 ||
+				!TubeFit.bTerminalCurveC2) continue;
+			struct FLocalLipStation
+			{
+				const FOpenRimTransverseSection* Section = nullptr;
+				double S = 0.0;
+			};
+			TArray<FLocalLipStation> LocalLipStations;
+			for (const FOpenRimTransverseSection& Section :
+				OpenRimTransverseSections)
+			{
+				if (!Section.bIndividualC2FitValid ||
+					Section.LongitudinalTubePointCount < 2 ||
+					(Section.SliceOrigin.X >= 0.0 ? 1 : -1) != TubeFit.OpeningSide ||
+					(Section.SliceOrigin.Y >= 0.0 ? 1 : -1) != TubeFit.TransverseSide)
+				{
+					continue;
+				}
+				LocalLipStations.Add({ &Section, Section.TopologyCanonicalRimParameter });
+			}
+			Algo::Sort(LocalLipStations, [](const FLocalLipStation& A,
+				const FLocalLipStation& B) { return A.S < B.S; });
+			TArray<FLocalLipStation> UniqueLocalLipStations;
+			for (const FLocalLipStation& Station : LocalLipStations)
+			{
+				if (UniqueLocalLipStations.IsEmpty() || !FMath::IsNearlyEqual(
+					UniqueLocalLipStations.Last().S, Station.S, 1.0e-7))
+				{
+					UniqueLocalLipStations.Add(Station);
+				}
+			}
+			LocalLipStations = MoveTemp(UniqueLocalLipStations);
+			if (LocalLipStations.Num() < 2) continue;
+			auto EvaluateLocalLip = [&](const double S, const double T,
+				double* OutLongitudinalTangent)
+			{
+				int32 UpperIndex = 1;
+				while (UpperIndex < LocalLipStations.Num() &&
+					LocalLipStations[UpperIndex].S < S) ++UpperIndex;
+				UpperIndex = FMath::Clamp(UpperIndex, 1, LocalLipStations.Num() - 1);
+				const FLocalLipStation& A = LocalLipStations[UpperIndex - 1];
+				const FLocalLipStation& B = LocalLipStations[UpperIndex];
+				const double Alpha = FMath::Clamp((S - A.S) / FMath::Max(1.0e-9,
+					B.S - A.S), 0.0, 1.0);
+				auto EvaluateSection = [&](const FOpenRimTransverseSection& Section)
+				{
+					const FVector2d Point = Evaluate(T,
+						Section.LongitudinalTangentDepthCm,
+						Section.LongitudinalTangentOpeningOffsetCm,
+						Section.IndividualC2BoundaryPlaneTangentMagnitudeCm,
+						Section.IndividualC2LongitudinalTangentMagnitudeCm);
+					const FVector3d WorldPoint = Section.SliceOrigin +
+						Point.Y * Section.OpeningDirection;
+					return FVector3d(Point.X, FMath::Abs(WorldPoint.Y), WorldPoint.Z);
+				};
+				if (OutLongitudinalTangent)
+					*OutLongitudinalTangent = FMath::Lerp(
+						A.Section->IndividualC2LongitudinalTangentMagnitudeCm,
+						B.Section->IndividualC2LongitudinalTangentMagnitudeCm, Alpha);
+				return FMath::Lerp(EvaluateSection(*A.Section), EvaluateSection(*B.Section), Alpha);
+			};
+			auto EvaluateTubeWitness = [&](const FOpenRimTransverseSection& Section,
+				const double V)
+			{
+				const int32 LastOffset = Section.LongitudinalTubePointCount - 1;
+				const FOpenRimLongitudinalSample& First = OpenRimLongitudinalSamples[
+					Section.FirstLongitudinalSampleIndex];
+				const FOpenRimLongitudinalSample& Last = OpenRimLongitudinalSamples[
+					Section.FirstLongitudinalSampleIndex + LastOffset];
+				const double TargetArc = FMath::Clamp(V, 0.0, 1.0) *
+					Last.NormalizedArcLength;
+				for (int32 Offset = 1; Offset <= LastOffset; ++Offset)
+				{
+					const FOpenRimLongitudinalSample& Upper =
+						OpenRimLongitudinalSamples[Section.FirstLongitudinalSampleIndex + Offset];
+					if (Upper.NormalizedArcLength + 1.0e-12 < TargetArc) continue;
+					const FOpenRimLongitudinalSample& Lower =
+						OpenRimLongitudinalSamples[Section.FirstLongitudinalSampleIndex + Offset - 1];
+					const double Alpha = (TargetArc - Lower.NormalizedArcLength) /
+						FMath::Max(1.0e-12, Upper.NormalizedArcLength -
+							Lower.NormalizedArcLength);
+					return FMath::Lerp(Lower.CanonicalPositionCm,
+						Upper.CanonicalPositionCm, FMath::Clamp(Alpha, 0.0, 1.0));
+				}
+				return Last.CanonicalPositionCm;
+			};
+			int32 TubeSegmentIndex = 0;
+			for (const FOpenRimTubeTerminalSplineSegment& SplineSegment :
+				TubeFit.TerminalSplineSegments)
+			{
+				TArray<double, TInlineAllocator<4>> Bounds;
+				Bounds.Add(SplineSegment.MinimumCanonicalRimParameter);
+				for (const double Break : CanonicalBreaks)
+					if (Break > SplineSegment.MinimumCanonicalRimParameter + 1.0e-9 &&
+						Break < SplineSegment.MaximumCanonicalRimParameter - 1.0e-9)
+						Bounds.Add(Break);
+				for (const FLocalLipStation& Station : LocalLipStations)
+					if (Station.S > SplineSegment.MinimumCanonicalRimParameter + 1.0e-9 &&
+						Station.S < SplineSegment.MaximumCanonicalRimParameter - 1.0e-9)
+						Bounds.Add(Station.S);
+				Algo::Sort(Bounds);
+				Bounds.Add(SplineSegment.MaximumCanonicalRimParameter);
+				for (int32 BoundIndex = 0; BoundIndex + 1 < Bounds.Num(); ++BoundIndex)
+				{
+					const double MinimumS = Bounds[BoundIndex];
+					const double MaximumS = Bounds[BoundIndex + 1];
+					if (MaximumS <= MinimumS + 1.0e-9) continue;
+					const int32 TensorIndex =
+						OpenRimCanonicalTubeTensorSurfaces.Num();
+					FOpenRimCanonicalTubeTensorSurface& Tensor =
+						OpenRimCanonicalTubeTensorSurfaces.AddDefaulted_GetRef();
+					Tensor.SourceFitId = TubeFit.FitId;
+					Tensor.OpeningSide = TubeFit.OpeningSide;
+					Tensor.TransverseSide = TubeFit.TransverseSide;
+					Tensor.SegmentIndex = TubeSegmentIndex++;
+					Tensor.MinimumCanonicalRimParameter = MinimumS;
+					Tensor.MaximumCanonicalRimParameter = MaximumS;
+					const double MidS = 0.5 * (MinimumS + MaximumS);
+					const int32 DegreeU = MidS > CanonicalBreaks[0] &&
+						MidS < CanonicalBreaks[1] ? 13 : 5;
+					const bool bConverted = BuildTensorSurfaceFromPolynomialEvaluator(
+						DegreeU, 5,
+						[&](const double LocalU, const double V)
+						{
+							const double S = FMath::Lerp(MinimumS, MaximumS, LocalU);
+							double LocalLongitudinalTangent = 0.0;
+							const FVector3d P0 = EvaluateLocalLip(S, 1.0,
+								&LocalLongitudinalTangent);
+							const FVector3d StartDerivative(LocalLongitudinalTangent, 0.0, 0.0);
+							const FVector3d StartSecond = FVector3d::ZeroVector;
+							const FVector3d P5 = TubeFit.EvaluateTerminal(S);
+							const FVector3d EndDerivative = 0.25 * (P5 - P0);
+							const FVector3d Controls[6] = {
+								P0,
+								P0 + StartDerivative / 5.0,
+								P0 + 2.0 * StartDerivative / 5.0 + StartSecond / 20.0,
+								P5 - 2.0 * EndDerivative / 5.0,
+								P5 - EndDerivative / 5.0,
+								P5 };
+							return EvaluateBezierControlPolygon(Controls, V);
+						}, Tensor.Surface, Tensor.MaximumConversionErrorCm);
+					Tensor.bLipBoundaryC2ByConstruction = bConverted;
+					if (!bConverted)
+					{
+						OpenRimCanonicalTubeTensorSurfaces.RemoveAt(TensorIndex);
+						continue;
+					}
+				}
+			}
+			struct FMeasuredTubeTransverseCache
+			{
+				TArray<int32> RailIndices;
+				TArray<FVector3d> Values;
+				TArray<FVector3d> SecondDerivatives;
+			};
+			TMap<int32, TMap<int64, FMeasuredTubeTransverseCache>>
+				MeasuredTubeTransverseCaches;
+			auto EvaluateMeasuredTubeTransverse = [&](const double S, const double V,
+				const EOpenRimFeature Feature)
+			{
+				const int64 VKey = FMath::RoundToInt64(V * 1.0e12);
+				TMap<int64, FMeasuredTubeTransverseCache>& FeatureCaches =
+					MeasuredTubeTransverseCaches.FindOrAdd(static_cast<int32>(Feature));
+				FMeasuredTubeTransverseCache* Cache =
+					FeatureCaches.Find(VKey);
+				if (!Cache)
+				{
+					FMeasuredTubeTransverseCache& NewCache =
+						FeatureCaches.Add(VKey);
+					for (int32 Index = 0; Index < LocalLipStations.Num(); ++Index)
+						if (LocalLipStations[Index].Section->Feature == Feature)
+							NewCache.RailIndices.Add(Index);
+					const int32 Count = NewCache.RailIndices.Num();
+					check(Count >= 2 && Count <= 128);
+					NewCache.Values.SetNumUninitialized(Count);
+					NewCache.SecondDerivatives.SetNumZeroed(Count);
+					for (int32 Index = 0; Index < Count; ++Index)
+						NewCache.Values[Index] = EvaluateTubeWitness(
+							*LocalLipStations[NewCache.RailIndices[Index]].Section, V);
+					for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+					{
+						double Lower[128] = {}, Diagonal[128] = {};
+						double Upper[128] = {}, Right[128] = {};
+						Diagonal[0] = Diagonal[Count - 1] = 1.0;
+						for (int32 Index = 1; Index + 1 < Count; ++Index)
+						{
+							const double PreviousH = LocalLipStations[
+								NewCache.RailIndices[Index]].S - LocalLipStations[
+									NewCache.RailIndices[Index - 1]].S;
+							const double NextH = LocalLipStations[
+								NewCache.RailIndices[Index + 1]].S - LocalLipStations[
+									NewCache.RailIndices[Index]].S;
+							Lower[Index] = PreviousH;
+							Diagonal[Index] = 2.0 * (PreviousH + NextH);
+							Upper[Index] = NextH;
+							Right[Index] = 6.0 * ((NewCache.Values[Index + 1][Coordinate] -
+								NewCache.Values[Index][Coordinate]) / NextH -
+								(NewCache.Values[Index][Coordinate] -
+									NewCache.Values[Index - 1][Coordinate]) / PreviousH);
+						}
+						for (int32 Index = 1; Index < Count; ++Index)
+						{
+							const double Factor = Lower[Index] / Diagonal[Index - 1];
+							Diagonal[Index] -= Factor * Upper[Index - 1];
+							Right[Index] -= Factor * Right[Index - 1];
+						}
+						NewCache.SecondDerivatives[Count - 1][Coordinate] =
+							Right[Count - 1] / Diagonal[Count - 1];
+						for (int32 Index = Count - 2; Index >= 0; --Index)
+							NewCache.SecondDerivatives[Index][Coordinate] = (Right[Index] -
+								Upper[Index] * NewCache.SecondDerivatives[Index + 1][Coordinate]) /
+								Diagonal[Index];
+					}
+					Cache = &NewCache;
+				}
+				const int32 Count = Cache->RailIndices.Num();
+				int32 SegmentIndex = Count - 2;
+				for (int32 Index = 0; Index + 1 < Count; ++Index)
+					if (S <= LocalLipStations[Cache->RailIndices[Index + 1]].S + 1.0e-12)
+					{ SegmentIndex = Index; break; }
+				const double MinimumS = LocalLipStations[
+					Cache->RailIndices[SegmentIndex]].S;
+				const double MaximumS = LocalLipStations[
+					Cache->RailIndices[SegmentIndex + 1]].S;
+				const double H = MaximumS - MinimumS;
+				const double LocalS = FMath::Clamp((S - MinimumS) / H, 0.0, 1.0);
+				FVector3d Controls[4] = { Cache->Values[SegmentIndex],
+					FVector3d::ZeroVector, FVector3d::ZeroVector,
+					Cache->Values[SegmentIndex + 1] };
+				for (int32 Coordinate = 0; Coordinate < 3; ++Coordinate)
+				{
+					const double Delta = (Cache->Values[SegmentIndex + 1][Coordinate] -
+						Cache->Values[SegmentIndex][Coordinate]) / H;
+					const double StartDerivative = Delta - H * (2.0 *
+						Cache->SecondDerivatives[SegmentIndex][Coordinate] +
+						Cache->SecondDerivatives[SegmentIndex + 1][Coordinate]) / 6.0;
+					const double EndDerivative = Delta + H * (
+						Cache->SecondDerivatives[SegmentIndex][Coordinate] + 2.0 *
+						Cache->SecondDerivatives[SegmentIndex + 1][Coordinate]) / 6.0;
+					Controls[1][Coordinate] = Controls[0][Coordinate] +
+						H * StartDerivative / 3.0;
+					Controls[2][Coordinate] = Controls[3][Coordinate] -
+						H * EndDerivative / 3.0;
+				}
+				return EvaluateBezierControlPolygon(Controls, LocalS);
+			};
+			// Exact measured shadow cells: each uses only adjacent topology witnesses.
+			// They deliberately carry no C2 certificate; their sole purpose is to
+			// prove correspondence before a compact smooth fit is authorized.
+			for (int32 StationIndex = 0;
+				StationIndex + 1 < LocalLipStations.Num(); ++StationIndex)
+			{
+				const FOpenRimTransverseSection& A = *LocalLipStations[StationIndex].Section;
+				const FOpenRimTransverseSection& B = *LocalLipStations[StationIndex + 1].Section;
+				TArray<double> VBounds = { 0.0, 1.0 };
+				for (const FOpenRimTransverseSection* Section : { &A, &B })
+				{
+					const double TerminalArc = OpenRimLongitudinalSamples[
+						Section->FirstLongitudinalSampleIndex +
+						Section->LongitudinalTubePointCount - 1].NormalizedArcLength;
+					for (int32 Offset = 1; Offset < Section->LongitudinalTubePointCount;
+						++Offset)
+						VBounds.Add(OpenRimLongitudinalSamples[
+							Section->FirstLongitudinalSampleIndex + Offset].NormalizedArcLength /
+							FMath::Max(1.0e-12, TerminalArc));
+				}
+				Algo::Sort(VBounds);
+				for (int32 VIndex = 0; VIndex + 1 < VBounds.Num(); ++VIndex)
+				{
+					const double MinimumV = VBounds[VIndex];
+					const double MaximumV = VBounds[VIndex + 1];
+					if (MaximumV <= MinimumV + 1.0e-9) continue;
+					FOpenRimCanonicalTubeTensorSurface& Tensor =
+						OpenRimCanonicalTubeTensorSurfaces.AddDefaulted_GetRef();
+					Tensor.SourceFitId = TubeFit.FitId;
+					Tensor.OpeningSide = TubeFit.OpeningSide;
+					Tensor.TransverseSide = TubeFit.TransverseSide;
+					Tensor.SegmentIndex = TubeSegmentIndex++;
+					Tensor.MinimumCanonicalRimParameter = LocalLipStations[StationIndex].S;
+					Tensor.MaximumCanonicalRimParameter = LocalLipStations[StationIndex + 1].S;
+					Tensor.MinimumTubeParameter = MinimumV;
+					Tensor.MaximumTubeParameter = MaximumV;
+					Tensor.bMeasuredWitnessOnly = true;
+					BuildTensorSurfaceFromPolynomialEvaluator(1, 1,
+						[&](const double U, const double V)
+						{
+							const double TubeV = FMath::Lerp(MinimumV, MaximumV, V);
+							if (A.Feature == B.Feature)
+								return EvaluateMeasuredTubeTransverse(FMath::Lerp(
+									LocalLipStations[StationIndex].S,
+									LocalLipStations[StationIndex + 1].S, U), TubeV,
+									A.Feature);
+							return FMath::Lerp(EvaluateTubeWitness(A, TubeV),
+								EvaluateTubeWitness(B, TubeV), U);
+						}, Tensor.Surface, Tensor.MaximumConversionErrorCm);
+				}
+			}
+		}
+	}
+
 	auto IsMember = [](const FOpenRimTransverseSection& Section,
 		const EOpenRimTransitionFitFamily Family)
 	{
@@ -10966,6 +22252,7 @@ uint64 FAnalyticWorldData::StableHash() const
 		HashValue(Hash, Patch.BaseMaximumResidualCm);
 		HashValue(Hash, Patch.CorrectedRootMeanSquareResidualCm);
 		HashValue(Hash, Patch.CorrectedMaximumResidualCm);
+		HashValue(Hash, Patch.AdditionalResidualAgreementAllowanceCm);
 		HashValue(Hash, Patch.ExtrusionAxis.X);
 		HashValue(Hash, Patch.ExtrusionAxis.Y);
 		HashValue(Hash, Patch.ExtrusionAxis.Z);
@@ -10974,6 +22261,84 @@ uint64 FAnalyticWorldData::StableHash() const
 		HashValue(Hash, Patch.bQueryCollisionEnabled);
 		HashValue(Hash, Patch.bCanonicalC2ByConstruction);
 		HashValue(Hash, Patch.bCanonicalSymmetryByConstruction);
+		HashValue(Hash, Patch.bAuthorityEligible);
+	}
+	const int32 TensorPatchCount = TensorBezierPatches.Num();
+	HashValue(Hash, TensorPatchCount);
+	for (const FTensorBezierPatch& Patch : TensorBezierPatches)
+	{
+		HashValue(Hash, Patch.SourceId);
+		HashValue(Hash, Patch.SurfaceId);
+		HashValue(Hash, Patch.FeatureId);
+		HashValue(Hash, Patch.PrimitiveId);
+		HashValue(Hash, Patch.CanonicalGroupId);
+		HashValue(Hash, Patch.MaterialId);
+		HashValue(Hash, Patch.ObjectType);
+		HashValue(Hash, Patch.BlockingChannels);
+		HashValue(Hash, Patch.Surface.DegreeU);
+		HashValue(Hash, Patch.Surface.DegreeV);
+		const int32 ControlPointCount = Patch.Surface.ControlPoints.Num();
+		HashValue(Hash, ControlPointCount);
+		for (const FVector3d& ControlPoint : Patch.Surface.ControlPoints)
+		{
+			HashValue(Hash, ControlPoint.X);
+			HashValue(Hash, ControlPoint.Y);
+			HashValue(Hash, ControlPoint.Z);
+		}
+		HashValue(Hash, Patch.bQueryCollisionEnabled);
+		HashValue(Hash, Patch.bApproximationCertified);
+		HashValue(Hash, Patch.bAuthorityEligible);
+	}
+	const int32 PiecewiseTensorPatchCount = PiecewiseTensorBezierPatches.Num();
+	HashValue(Hash, PiecewiseTensorPatchCount);
+	for (const FPiecewiseTensorBezierPatch& Patch : PiecewiseTensorBezierPatches)
+	{
+		HashValue(Hash, Patch.SourceId);
+		HashValue(Hash, Patch.SurfaceId);
+		HashValue(Hash, Patch.PrimitiveId);
+		HashValue(Hash, Patch.CanonicalGroupId);
+		HashValue(Hash, Patch.MaterialId);
+		HashValue(Hash, Patch.ObjectType);
+		HashValue(Hash, Patch.BlockingChannels);
+		const int32 CellCount = Patch.Cells.Num();
+		HashValue(Hash, CellCount);
+		for (const FPiecewiseTensorBezierCell& Cell : Patch.Cells)
+		{
+			HashValue(Hash, Cell.FeatureId);
+			HashValue(Hash, Cell.PrimitiveId);
+			for (const uint64 BoundaryFeatureId : Cell.BoundaryFeatureIds)
+				HashValue(Hash, BoundaryFeatureId);
+			HashValue(Hash, Cell.MinimumU);
+			HashValue(Hash, Cell.MaximumU);
+			HashValue(Hash, Cell.MinimumV);
+			HashValue(Hash, Cell.MaximumV);
+			HashValue(Hash, Cell.LongitudinalParameterScale);
+			HashValue(Hash, Cell.bTerminalClosure);
+			HashValue(Hash, Cell.Surface.DegreeU);
+			HashValue(Hash, Cell.Surface.DegreeV);
+			const int32 ControlPointCount = Cell.Surface.ControlPoints.Num();
+			HashValue(Hash, ControlPointCount);
+			for (const FVector3d& ControlPoint : Cell.Surface.ControlPoints)
+			{
+				HashValue(Hash, ControlPoint.X);
+				HashValue(Hash, ControlPoint.Y);
+				HashValue(Hash, ControlPoint.Z);
+			}
+		}
+		const int32 AdjacencyCount = Patch.Adjacencies.Num();
+		HashValue(Hash, AdjacencyCount);
+		for (const FPiecewiseTensorBezierAdjacency& Link : Patch.Adjacencies)
+		{
+			HashValue(Hash, Link.BoundaryFeatureId);
+			HashValue(Hash, Link.AdjacentBoundaryFeatureId);
+			HashValue(Hash, Link.CellPrimitiveId);
+			HashValue(Hash, Link.AdjacentCellPrimitiveId);
+			HashValue(Hash, Link.BoundaryIndex);
+			HashValue(Hash, Link.AdjacentBoundaryIndex);
+			HashValue(Hash, Link.bC2ByConstruction);
+		}
+		HashValue(Hash, Patch.bQueryCollisionEnabled);
+		HashValue(Hash, Patch.bSourceResidualCertified);
 		HashValue(Hash, Patch.bAuthorityEligible);
 	}
 	const int32 TriangleCount = Triangles.Num();
@@ -11655,6 +23020,9 @@ uint64 FAnalyticWorldData::RecognitionDiagnosticsHash() const
 		HashValue(Hash, Section.SectionId);
 		HashValue(Hash, Section.OpenRimCandidateIndex);
 		HashValue(Hash, Section.RimEdgeIndex);
+		HashValue(Hash, Section.InterpolationRimEdgeA);
+		HashValue(Hash, Section.InterpolationRimEdgeB);
+		HashValue(Hash, Section.InterpolationAlpha);
 		HashValue(Hash, Section.Feature);
 		HashValue(Hash, Section.SliceCoordinateCm);
 		HashValue(Hash, Section.SliceOrigin);
@@ -11666,6 +23034,23 @@ uint64 FAnalyticWorldData::RecognitionDiagnosticsHash() const
 		HashValue(Hash, Section.PointCount);
 		HashValue(Hash, Section.FirstTransitionPointIndex);
 		HashValue(Hash, Section.TransitionPointCount);
+		HashValue(Hash, Section.FirstLongitudinalContinuationPointIndex);
+		HashValue(Hash, Section.LongitudinalContinuationPointCount);
+		HashValue(Hash, Section.FirstLongitudinalSampleIndex);
+		HashValue(Hash, Section.FirstLongitudinalSplineSegmentIndex);
+		HashValue(Hash, Section.LongitudinalSplineSegmentCount);
+		HashValue(Hash, Section.LongitudinalTubePointCount);
+		HashValue(Hash, Section.FirstLongitudinalRearTurnPointOffset);
+		HashValue(Hash, Section.LongitudinalContinuationArcLengthCm);
+		HashValue(Hash, Section.LongitudinalTubeArcLengthCm);
+		HashValue(Hash, Section.LongitudinalTubeTerminalDepthCm);
+		HashValue(Hash, Section.LongitudinalTubeTerminalOpeningOffsetCm);
+		HashValue(Hash, Section.LongitudinalTubeMaximumDepartureDegrees);
+		HashValue(Hash, Section.LongitudinalSplineRootMeanSquareResidualCm);
+		HashValue(Hash, Section.LongitudinalSplineMaximumResidualCm);
+		HashValue(Hash, Section.LongitudinalContinuationMaximumTurnDegrees);
+		HashValue(Hash, Section.LongitudinalContinuationTerminalDepthCm);
+		HashValue(Hash, Section.LongitudinalContinuationTerminalOpeningOffsetCm);
 		HashValue(Hash, Section.TransitionSegmentCount);
 		HashValue(Hash, Section.SegmentCount);
 		HashValue(Hash, Section.ArcLengthCm);
@@ -11683,6 +23068,7 @@ uint64 FAnalyticWorldData::RecognitionDiagnosticsHash() const
 		HashValue(Hash, Section.bSourceBoundaryPlaneG1Plausible);
 		HashValue(Hash, Section.bLongitudinalRunPlausible);
 		HashValue(Hash, Section.bTopologyCanonicalRimParameterValid);
+		HashValue(Hash, Section.bLongitudinalSplineC2);
 		HashValue(Hash, Section.IndividualC2BoundaryPlaneTangentMagnitudeCm);
 		HashValue(Hash, Section.IndividualC2LongitudinalTangentMagnitudeCm);
 		HashValue(Hash, Section.IndividualC2RootMeanSquareResidualCm);
@@ -11699,6 +23085,64 @@ uint64 FAnalyticWorldData::RecognitionDiagnosticsHash() const
 	HashValue(Hash, OpenRimTransitionSectionPointCount);
 	for (const FVector2d& Point : OpenRimTransitionSectionPoints)
 		HashValue(Hash, Point);
+	const int32 OpenRimLongitudinalContinuationPointCount =
+		OpenRimLongitudinalContinuationPoints.Num();
+	HashValue(Hash, OpenRimLongitudinalContinuationPointCount);
+	for (const FVector2d& Point : OpenRimLongitudinalContinuationPoints)
+		HashValue(Hash, Point);
+	const int32 OpenRimLongitudinalSampleCount = OpenRimLongitudinalSamples.Num();
+	HashValue(Hash, OpenRimLongitudinalSampleCount);
+	for (const FOpenRimLongitudinalSample& Sample : OpenRimLongitudinalSamples)
+	{
+		HashValue(Hash, Sample.OpenRimTransverseSectionIndex);
+		HashValue(Hash, Sample.ContinuationPointOffset);
+		HashValue(Hash, Sample.NormalizedArcLength);
+		HashValue(Hash, Sample.CanonicalPositionCm);
+	}
+	const int32 OpenRimLongitudinalSplineSegmentCount =
+		OpenRimLongitudinalSplineSegments.Num();
+	HashValue(Hash, OpenRimLongitudinalSplineSegmentCount);
+	for (const FOpenRimLongitudinalSplineSegment& Segment :
+		OpenRimLongitudinalSplineSegments)
+	{
+		HashValue(Hash, Segment.OpenRimTransverseSectionIndex);
+		HashValue(Hash, Segment.MinimumTubeParameter);
+		HashValue(Hash, Segment.MaximumTubeParameter);
+		for (const FVector3d& ControlPoint : Segment.ControlPoints)
+			HashValue(Hash, ControlPoint);
+	}
+	const int32 OpenRimTerminalClosureRailSegmentCount =
+		OpenRimTerminalClosureRailSegments.Num();
+	HashValue(Hash, OpenRimTerminalClosureRailSegmentCount);
+	for (const FOpenRimTerminalClosureRailSegment& Segment :
+		OpenRimTerminalClosureRailSegments)
+	{
+		HashValue(Hash, Segment.OpenRimTransverseSectionIndex);
+		HashValue(Hash, Segment.MinimumClosureParameter);
+		HashValue(Hash, Segment.MaximumClosureParameter);
+		HashValue(Hash, Segment.Degree);
+		for (const FVector3d& ControlPoint : Segment.ControlPoints)
+			HashValue(Hash, ControlPoint);
+	}
+	const int32 OpenRimTerminalClosureRailFitCount =
+		OpenRimTerminalClosureRailFits.Num();
+	HashValue(Hash, OpenRimTerminalClosureRailFitCount);
+	for (const FOpenRimTerminalClosureRailFit& Fit :
+		OpenRimTerminalClosureRailFits)
+	{
+		HashValue(Hash, Fit.OpenRimTransverseSectionIndex);
+		HashValue(Hash, Fit.FirstSegmentIndex);
+		HashValue(Hash, Fit.SegmentCount);
+		HashValue(Hash, Fit.SourceSampleCount);
+		HashValue(Hash, Fit.ClosureToPrefixParameterScale);
+		HashValue(Hash, Fit.MaximumSourceResidualCm);
+		HashValue(Hash, Fit.MaximumPolylineResidualCm);
+		HashValue(Hash, Fit.PositionJoinResidualCm);
+		HashValue(Hash, Fit.FirstDerivativeJoinResidualCm);
+		HashValue(Hash, Fit.SecondDerivativeJoinResidualCm);
+		HashValue(Hash, Fit.bC2PrefixJoinByConstruction);
+		HashValue(Hash, Fit.bRegularFinite);
+	}
 	const int32 OpenRimTransitionFamilyFitCount =
 		OpenRimTransitionFamilyFits.Num();
 	HashValue(Hash, OpenRimTransitionFamilyFitCount);
@@ -11898,6 +23342,89 @@ uint64 FAnalyticWorldData::RecognitionDiagnosticsHash() const
 		HashValue(Hash, Fit.bCorrespondenceStrictlyInterior);
 		HashValue(Hash, Fit.bRegularPositiveParameterization);
 	}
+	const int32 OpenRimCanonicalTubeFitCount = OpenRimCanonicalTubeFits.Num();
+	HashValue(Hash, OpenRimCanonicalTubeFitCount);
+	for (const FOpenRimCanonicalTubeFit& Fit : OpenRimCanonicalTubeFits)
+	{
+		HashValue(Hash, Fit.FitId);
+		HashValue(Hash, Fit.OpeningSide);
+		HashValue(Hash, Fit.TransverseSide);
+		HashValue(Hash, Fit.SampleCount);
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			HashValue(Hash, Fit.TerminalDepthCoefficients[Index]);
+			HashValue(Hash, Fit.TerminalYCoefficients[Index]);
+			HashValue(Hash, Fit.TerminalZCoefficients[Index]);
+		}
+		HashValue(Hash, Fit.RootMeanSquareResidualCm);
+		HashValue(Hash, Fit.MaximumResidualCm);
+		HashValue(Hash, Fit.MaximumResidualSectionIndex);
+		const int32 TerminalSplineSegmentCount = Fit.TerminalSplineSegments.Num();
+		HashValue(Hash, TerminalSplineSegmentCount);
+		for (const FOpenRimTubeTerminalSplineSegment& Segment :
+			Fit.TerminalSplineSegments)
+		{
+			HashValue(Hash, Segment.MinimumCanonicalRimParameter);
+			HashValue(Hash, Segment.MaximumCanonicalRimParameter);
+			for (const FVector3d& ControlPoint : Segment.ControlPoints)
+				HashValue(Hash, ControlPoint);
+		}
+		HashValue(Hash, Fit.bExactXYMirrorPlacement);
+		HashValue(Hash, Fit.bRegularFiniteTube);
+		HashValue(Hash, Fit.bTerminalCurveC2);
+	}
+	const int32 OpenRimCanonicalTubeTensorSurfaceCount =
+		OpenRimCanonicalTubeTensorSurfaces.Num();
+	HashValue(Hash, OpenRimCanonicalTubeTensorSurfaceCount);
+	for (const FOpenRimCanonicalTubeTensorSurface& Tensor :
+		OpenRimCanonicalTubeTensorSurfaces)
+	{
+		HashValue(Hash, Tensor.SourceFitId);
+		HashValue(Hash, Tensor.OpeningSide);
+		HashValue(Hash, Tensor.TransverseSide);
+		HashValue(Hash, Tensor.SegmentIndex);
+		HashValue(Hash, Tensor.MinimumCanonicalRimParameter);
+		HashValue(Hash, Tensor.MaximumCanonicalRimParameter);
+		HashValue(Hash, Tensor.MinimumTubeParameter);
+		HashValue(Hash, Tensor.MaximumTubeParameter);
+		HashValue(Hash, Tensor.LongitudinalParameterScale);
+		HashValue(Hash, Tensor.MaximumConversionErrorCm);
+		HashValue(Hash, Tensor.bLipBoundaryC2ByConstruction);
+		HashValue(Hash, Tensor.bAdaptiveCompactC2);
+		HashValue(Hash, Tensor.bAdaptiveTerminalClosureC2);
+		HashValue(Hash, Tensor.bSourceResidualCertified);
+		HashValue(Hash, Tensor.SourceMaximumResidualCm);
+		HashValue(Hash, Tensor.bMeasuredWitnessOnly);
+		HashValue(Hash, Tensor.Surface.DegreeU);
+		HashValue(Hash, Tensor.Surface.DegreeV);
+		for (const FVector3d& ControlPoint : Tensor.Surface.ControlPoints)
+			HashValue(Hash, ControlPoint);
+	}
+	const int32 OpenRimCanonicalTubeLoftFitCount = OpenRimCanonicalTubeLoftFits.Num();
+	HashValue(Hash, OpenRimCanonicalTubeLoftFitCount);
+	for (const FOpenRimCanonicalTubeLoftFit& Loft : OpenRimCanonicalTubeLoftFits)
+	{
+		HashValue(Hash, Loft.FitId);
+		HashValue(Hash, Loft.OpeningSide);
+		HashValue(Hash, Loft.TransverseSide);
+		HashValue(Hash, Loft.TileIndex);
+		HashValue(Hash, Loft.MinimumCanonicalRimParameter);
+		HashValue(Hash, Loft.MaximumCanonicalRimParameter);
+		HashValue(Hash, Loft.MinimumTubeParameter);
+		HashValue(Hash, Loft.MaximumTubeParameter);
+		HashValue(Hash, Loft.SampleCount);
+		HashValue(Hash, Loft.InterpolationMaximumErrorCm);
+		HashValue(Hash, Loft.RootMeanSquareResidualCm);
+		HashValue(Hash, Loft.MaximumResidualCm);
+		HashValue(Hash, Loft.MaximumResidualSectionIndex);
+		HashValue(Hash, Loft.bLongitudinalC2Input);
+		HashValue(Hash, Loft.bTransverseC2Input);
+		HashValue(Hash, Loft.bLowDegreeCandidate);
+		HashValue(Hash, Loft.Surface.DegreeU);
+		HashValue(Hash, Loft.Surface.DegreeV);
+		for (const FVector3d& ControlPoint : Loft.Surface.ControlPoints)
+			HashValue(Hash, ControlPoint);
+	}
 	const int32 OpenRimSupportTransitionIntentCount =
 		OpenRimSupportTransitionIntents.Num();
 	HashValue(Hash, OpenRimSupportTransitionIntentCount);
@@ -11919,11 +23446,23 @@ uint64 FAnalyticWorldData::RecognitionDiagnosticsHash() const
 bool FAnalyticWorldData::IsAuthorityEligible() const
 {
 	return (!Planes.IsEmpty() || !ExtrudedQuinticPatches.IsEmpty() ||
+		!TensorBezierPatches.IsEmpty() ||
+		!PiecewiseTensorBezierPatches.IsEmpty() ||
 		!Triangles.IsEmpty()) &&
 		Algo::AllOf(Planes,
 			[](const FBoundedPlane& Plane) { return Plane.bAuthorityEligible; }) &&
 		Algo::AllOf(ExtrudedQuinticPatches,
 			[](const FExtrudedQuinticPatch& Patch)
+			{
+				return Patch.bAuthorityEligible;
+			}) &&
+		Algo::AllOf(TensorBezierPatches,
+			[](const FTensorBezierPatch& Patch)
+			{
+				return Patch.bAuthorityEligible;
+			}) &&
+		Algo::AllOf(PiecewiseTensorBezierPatches,
+			[](const FPiecewiseTensorBezierPatch& Patch)
 			{
 				return Patch.bAuthorityEligible;
 			}) &&

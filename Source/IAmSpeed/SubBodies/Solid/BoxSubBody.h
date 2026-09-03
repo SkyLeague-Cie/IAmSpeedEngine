@@ -33,6 +33,8 @@ public:
     SSBox MakeBox() const;
     SSBox MakeBoxFromKS(const SKinematic& CarKinematicState) const;
     void ResetForFrame(const float& Delta) override;
+	bool ProjectEstablishedStaticContact(const float& Delta) override;
+	bool RequiresEstablishedStaticContactTransport() const override;
     void AcceptHit() override;
 
     static void GetBoxVertices(const FVector& Center, const FQuat& Rot, const FVector& Ext, TArray<FVector>& OutVerts);
@@ -92,6 +94,9 @@ protected:
     const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
     const TArray<TWeakObjectPtr<USWheelSubBody>> GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 private:
+    bool RefreshVariableNormalGroundSupport(const float Delta);
+	bool ProjectEstablishedStaticContactImpl(
+		const float& Delta, bool bProjectVelocity);
     void ResolveHitVsGround(const float& delta);
     void ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta);
     // void ResolveHitVsWheel(USWheelSubBody& OtherWheel, const float& delta);
@@ -301,6 +306,8 @@ private:
     FVector GroundPlaneN = FVector::UpVector;
     float GroundPlaneD = 0.f; // plane equation: dot(X, N) - D = 0
     TWeakObjectPtr<UPrimitiveComponent> GroundComp;
+    uint64 EstablishedSupportSourceId = 0;
+    uint64 EstablishedSupportSurfaceId = 0;
     int32 FreshSupportClampUntilFrame = INDEX_NONE;
     FVector FreshSupportClampN = FVector::UpVector;
     TWeakObjectPtr<UPrimitiveComponent> FreshSupportClampComp;

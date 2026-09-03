@@ -65,7 +65,8 @@ bool URayWheelSubBody::SweepSuspensionOnGround(
 	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
 		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
-		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
+		nullptr))
 	{
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->LineTraceSingleByChannel(UnrealHit, Start, End,
@@ -219,7 +220,8 @@ bool URayWheelSubBody::SweepSuspensionAlongNormal(
 	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
 		Start, End, FQuat::Identity, FCollisionShape::MakeSphere(0.0f),
-		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit))
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
+		nullptr))
 	{
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->LineTraceSingleByChannel(UnrealHit, Start, End,
