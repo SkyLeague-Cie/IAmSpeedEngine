@@ -286,7 +286,7 @@ FFlatLandscapeAdapterOutput BuildFlatLandscapePlane(
 		if (!Component) continue;
 		Source.bHoleCoverageValidated = true;
 		uint64 BlockingChannels = 0;
-		for (int32 Channel = 0; Channel < static_cast<int32>(ECC_MAX) && Channel < 64;
+		for (int32 Channel = 0; Channel < UE_ARRAY_COUNT(FCollisionResponseContainer::EnumArray) && Channel < 64;
 			++Channel)
 		{
 			if (Component->GetCollisionResponseToChannel(

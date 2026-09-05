@@ -3,6 +3,12 @@
 
 #include "SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Controllers/SpeedController.h"
+#if !UE_BUILD_SHIPPING
+#include "IAmSpeed/World/Simulation/SpeedGameMode.h"
+#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#endif
+#include "EnhancedInputComponent.h"
 
 ASpeedCar::ASpeedCar(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer.SetDefaultSubobjectClass<USpeedWheeledComponent>(ASpeedCar::VehicleMovementComponentName))
@@ -23,9 +29,36 @@ void ASpeedCar::BeginPlay()
 void ASpeedCar::Tick(float Delta)
 {
 	Super::Tick(Delta);
+#if !UE_BUILD_SHIPPING
+	AuditPresentationFrameCadence(Delta);
+#endif
 	HandleKinematics();
 	HandleSparkle();
 }
+
+#if !UE_BUILD_SHIPPING
+void ASpeedCar::AuditPresentationFrameCadence(const float GameDeltaSeconds)
+{
+	if (!PresentationSimulation.IsValid())
+	{
+		const UWorld* World = GetWorld();
+		const ASpeedGameMode* SpeedGameMode = World
+			? Cast<ASpeedGameMode>(World->GetAuthGameMode())
+			: nullptr;
+		PresentationSimulation = SpeedGameMode
+			? SpeedGameMode->GetSpeedSimulation()
+			: nullptr;
+	}
+
+	if (ASpeedSimulation* Simulation = PresentationSimulation.Get())
+	{
+		// The virtual policy is deliberately invoked immediately before the
+		// actor consumes the newest physical state in HandleKinematics().
+		Simulation->AuditPresentationFrameCadence(
+			*this, GameDeltaSeconds, LastObservedSimulationFrame);
+	}
+}
+#endif
 
 void ASpeedCar::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
@@ -33,6 +66,21 @@ void ASpeedCar::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 	// Alternatively you can clear ALL timers that belong to this (Actor) instance.
 	GetWorld()->GetTimerManager().ClearAllTimersForObject(this);
+}
+
+void ASpeedCar::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	if (UEnhancedInputComponent* EnhancedInputComponent =
+		Cast<UEnhancedInputComponent>(PlayerInputComponent))
+	{
+		if (ASpeedController* SpeedController =
+			Cast<ASpeedController>(GetController()))
+		{
+			SpeedController->SetupEnhancedInputComponent(EnhancedInputComponent);
+		}
+	}
 }
 
 void ASpeedCar::FreezeMovement()

@@ -6,19 +6,13 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "IAmSpeed/SubBodies/SSubBody.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
-#include "IAmSpeed/World/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Simulation/SimulationWorld.h"
 #include "SpeedWorldSubsystem.generated.h"
 
 class ISpeedComponent;
 class USolidSubBody;
 struct FCanonicalFrameContext;
-
-enum class ERollingManifoldContactState : uint8
-{
-	Absent,
-	IdentityOnly,
-	ActiveContact,
-};
 
 enum class ECanonicalRunControlState : uint8
 {
@@ -56,35 +50,6 @@ struct FPendingOp
 {
     bool bAdd = false;
     ISpeedComponent* Comp = nullptr;
-};
-
-struct FDynamicContactPair
-{
-	TWeakObjectPtr<USolidSubBody> BodyA;
-	TWeakObjectPtr<USolidSubBody> BodyB;
-	FVector LocalAnchorA = FVector::ZeroVector;
-	FVector LocalAnchorB = FVector::ZeroVector;
-	FVector LocalNormalB = FVector::UpVector;
-	FVector LastCOMA = FVector::ZeroVector;
-	FVector LastCOMB = FVector::ZeroVector;
-	uint64 PairKey = 0;
-	unsigned int FirstSeenFrame = 0;
-	unsigned int LastSeenFrame = 0;
-	unsigned int LastSolvedFrame = TNumericLimits<unsigned int>::Max();
-	unsigned int SupportedFrameCount = 0;
-	unsigned int ActiveContactFrameCount = 0;
-	unsigned int ReactionFrameCount = 0;
-	unsigned int FeatureTransitionCount = 0;
-	float AcquisitionNormalSpeed = 0.0f;
-	float AccumulatedNormalImpulse = 0.0f;
-	float AccumulatedNormalActivity = 0.0f;
-	float AccumulatedNormalSupportActivity = 0.0f;
-	float PeakNormalActivity = 0.0f;
-	float PeakNormalSupportActivity = 0.0f;
-	float MinimumSeparation = TNumericLimits<float>::Max();
-	float MaximumSeparation = TNumericLimits<float>::Lowest();
-	bool bRollingManifoldReady = false;
-	bool bActiveContactLastSolve = false;
 };
 
 /**
@@ -125,20 +90,26 @@ public:
 	}
 	const Speed::IStaticCollisionWorld* GetStaticCollisionWorld() const
 	{
-		return StaticCollisionWorld.Get();
+		return SimulationWorld.GetStaticCollisionWorld();
 	}
 	const FSpeedStepDiagnostics& GetLastStepDiagnostics() const
 	{
 		return LastStepDiagnostics;
 	}
+	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash);
+	/** Restores one validated canonical snapshot without advancing simulation time. */
+	bool RestoreSimulationSnapshot(
+		const FSimulationSnapshot& Snapshot,
+		uint64 ExpectedInputJournalHash);
+	/** Resolves the address assigned to a registered simulation component. */
+	uint64 GetSimulationStableId(const ISpeedComponent& Component);
+	/** Applies the sealed input commands for a frame before component preparation. */
+	bool ApplySimulationInputs(uint64 NumFrame, const Speed::SimulationBoundary::FInputJournal& Journal);
 	TWeakObjectPtr<UPrimitiveComponent> FindAnalyticSourceComponent(
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
-    TArray<ISpeedComponent*> Components;
-	TArray<FDynamicContactPair> DynamicContactPairs;
-	TArray<FDynamicContactPair> PendingRollingContactPairs;
-	unsigned int CurrentStepFrame = 0;
+	Speed::FSimulationWorld SimulationWorld;
 	uint64 StepSerial = 0;
 	FSpeedStepDiagnostics LastStepDiagnostics;
 	mutable bool bLoggedRollingOwnershipState = false;
@@ -147,19 +118,12 @@ private:
 	// finalized shared payload, so retaining it avoids a deep copy and a second
 	// rebuild of every compact-provider acceleration structure at world start.
 	TSharedPtr<const Speed::Analytic::FAnalyticWorldData> AnalyticWorldData;
-	// Authoritative immutable collision service. Its lifetime is owned by the
-	// physical world, independently from per-frame audit/shadow instrumentation.
-	TUniquePtr<Speed::IStaticCollisionWorld> StaticCollisionWorld;
 	// Runtime-only Unreal bridge. The analytical payload retains stable ids;
 	// legacy consumers receive their source component without coupling the
 	// generic query backend to UObjects.
 	TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>> AnalyticSourceComponents;
 	uint8 AnalyticWorldBuildAttempt = 0;
 	void BuildAnalyticWorldFromLoadedSources();
-
-	// Sorted array of components based on their UObject ID
-    TArray<ISpeedComponent*> ComponentsSorted;
-    bool bDirtyOrder = true;
 
     void RebuildSortedIfNeeded();
 	void AddComponent(ISpeedComponent& Comp);

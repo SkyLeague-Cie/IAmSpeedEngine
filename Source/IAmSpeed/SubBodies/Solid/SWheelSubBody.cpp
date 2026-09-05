@@ -328,10 +328,9 @@ void USWheelSubBody::ResetForFrame(const float& Delta)
 {
     // CurrentHit = SHitResult(); // do not reset current hit, because netcode needs it to know if wheel is transitionning on wall/ground
     FutureHit = SHitResult();
-    IgnoredComponents.Empty();
+    ResetIgnoredComponents();
     bWasOnGroundPrevFrame = IsOnGround();
     bCountedGroundFrame = false;
-	IgnoredComponents.Append(AlwaysIgnoredComponents);
 }
 
 void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
@@ -1366,13 +1365,15 @@ bool USWheelSubBody::IsAtSuspensionBumpStop() const
 
 float USWheelSubBody::StaticSpringCompression() const
 {
-    if (!PSuspension || PSuspension->Setup().SpringRate <= SMALL_NUMBER)
-    {
-        return 0.0f;
-    }
+    return ConfiguredStaticSpringCompression;
+}
 
-    return QuantizeSuspensionDisplacement(
-        PSuspension->Setup().RestingForce / PSuspension->Setup().SpringRate);
+void USWheelSubBody::ConfigureStaticSpringCompression(const float RestingForce)
+{
+    const float SpringRate = SuspensionSpringRateCm();
+    ConfiguredStaticSpringCompression = SpringRate > SMALL_NUMBER
+        ? QuantizeSuspensionDisplacement(RestingForce / SpringRate)
+        : 0.0f;
 }
 
 float USWheelSubBody::SuspensionCompressionDamping() const

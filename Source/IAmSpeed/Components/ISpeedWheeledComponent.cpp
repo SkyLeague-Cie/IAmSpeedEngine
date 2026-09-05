@@ -1252,6 +1252,9 @@ FVector ISpeedWheeledComponent::QuantizeUnitNormal(const FVector& n, float q)
 void ISpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 {
 	ResolveGroupedWheelGroundContacts(delta);
+	// Contact impulses are still resolved first. A changed pose, velocity or
+	// force revokes sleep and takes the full feasibility-projection path.
+	if (IsPhysicsSleeping()) return;
 	ProjectWheelSupportNonPenetration();
 	TryProjectCanonicalWheelSupportPose();
 	// Wheel and canonical-support corrections are allowed to move the rigid

@@ -1,4 +1,5 @@
 #include "SUtils.h"
+#include "QuaternionQuantizationCache.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 
@@ -252,14 +253,19 @@ SHitResult SSphere::IntersectNextFrame(const SSphere& Other, const float& deltaT
 
 SHitResult SSphere::IntersectNextFrame(const SBox& Box, const float& deltaTime, const uint8 NbSubSteps) const
 {
-	auto HitResult = Box.IntersectNextFrame(*this, deltaTime, NbSubSteps);
-	if (HitResult.bHit)
-	{
-		// Flip normal to point into the sphere (self)
-		HitResult.ImpactNormal *= -1.0f;
-		Swap(HitResult.ContactPointThis, HitResult.ContactPointOther);
-	}
+	SHitResult HitResult;
+	TryIntersectNextFrame(Box, deltaTime, NbSubSteps, HitResult);
 	return HitResult;
+}
+
+bool SSphere::TryIntersectNextFrame(const SBox& Box, const float DeltaTime,
+	const uint8 NbSubSteps, SHitResult& OutHit) const
+{
+	if (!Box.TryIntersectNextFrame(*this, DeltaTime, NbSubSteps, OutHit)) return false;
+	// Flip normal to point into the sphere (self), only for a complete contact.
+	OutHit.ImpactNormal *= -1.0f;
+	Swap(OutHit.ContactPointThis, OutHit.ContactPointOther);
+	return true;
 }
 
 SHitResult SSphere::IntersectDuringMovement(const SSphere& StaticSphere, const FVector& Start, const FVector& End, const float& delta) const
@@ -387,14 +393,9 @@ SHitResult SSphere::IntersectDuringMovement(const SBox& StaticBox,
 	float t = 0.f;
 	float tPrev = 0.f;
 
-	FVector ContactPoint;
-	float f = StaticBox.SphereOBBSeparation(
-		StaticBox.Rot,
-		StaticBox.WorldCenter,
-		C0,
-		R,
-		&ContactPoint
-	);
+	// The initial separation and witness were already evaluated at this exact pose.
+	FVector ContactPoint = ContactPoint0;
+	float f = Sep0;
 
 	// If already overlapping at the start
 	if (f <= 0.f)
@@ -622,10 +623,18 @@ std::optional<FVector> Speed::SBox::Intersect(const SBox& OtherBox) const
 // ==== Continuous CCD for sphere vs OBB with full kinematics ====
 SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& deltaTime, const uint8 NbSubsteps) const
 {
-	if (deltaTime <= 0.f || NbSubsteps == 0) return SHitResult();
+	SHitResult Hit;
+	TryIntersectNextFrame(Sphere, deltaTime, NbSubsteps, Hit);
+	return Hit;
+}
+
+bool Speed::SBox::TryIntersectNextFrame(const SSphere& Sphere, const float deltaTime,
+	const uint8 NbSubsteps, SHitResult& OutHit) const
+{
+	if (deltaTime <= 0.f || NbSubsteps == 0) return false;
 	if (Extent() == FVector::ZeroVector || Sphere.Radius == 0.0f)
 	{
-		return SHitResult();
+		return false;
 	}
 
 	// Initial state at t=0
@@ -642,8 +651,8 @@ SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& d
 	const float Rs = Sphere.Radius;
 
 	// -------- - EARLY OUT -------------
-	FVector ContactPoint0;
-	const float Sep0 = SphereOBBSeparation(Qb0, Xb0, Xs0, Rs, &ContactPoint0);
+	// Distant-pair rejection needs only distance, not a transformed world witness.
+	const float Sep0 = SphereOBBSeparation(Qb0, Xb0, Xs0, Rs);
 	if (Sep0 > 0.f)
 	{
 		const float MaxLinearClosing = SEarlyOut::MaxRelativeTravel(Vb0, Ab0, Vs0, As0, deltaTime);
@@ -651,7 +660,7 @@ SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& d
 		const float MaxRotClosing = SEarlyOut::MaxAngularTravel(Wb0, Alphab0, BoxAngularRadius, deltaTime);
 		const float MaxPossibleClosing = MaxLinearClosing + MaxRotClosing;
 		if (Sep0 > MaxPossibleClosing)
-			return SHitResult(); // no hit possible
+			return false; // no hit possible; keep the caller's scratch untouched
 	}
 	// ---------------------------------
 
@@ -691,7 +700,8 @@ SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& d
 		Hit.PenetrationDepth = FMath::Max(0.f, -PrevSep);
 		Hit.ContactPointThis = PrevContactPoint;
 		Hit.ContactPointOther = Xs0 + PrevNormal * Rs;
-		return Hit;
+		OutHit = Hit;
+		return true;
 	}
 
 	for (int32 i = 1; i <= static_cast<int32>(NbSubsteps); ++i)
@@ -738,27 +748,26 @@ SHitResult Speed::SBox::IntersectNextFrame(const SSphere& Sphere, const float& d
 
 			FVector FinalContactPoint;
 			FVector FinalNormal;
-			EvalSeparation(HighT, FinalContactPoint, FinalNormal);
+			const float FinalSeparation = EvalSeparation(HighT, FinalContactPoint, FinalNormal);
 			if (!FinalNormal.IsNearlyZero())
 			{
 				BestContactPoint = FinalContactPoint;
 				BestNormal = FinalNormal;
 			}
 
-			const float FinalSeparation = EvalSeparation(
-				HighT, FinalContactPoint, FinalNormal);
 			SHitResult Hit(true, BestContactPoint, BestNormal, HighT);
 			Hit.Location = SphereC(HighT);
 			Hit.PenetrationDepth = FMath::Max(0.f, -FinalSeparation);
 			Hit.ContactPointThis = FinalContactPoint;
 			Hit.ContactPointOther = Hit.Location + FinalNormal * Rs;
-			return Hit;
+			OutHit = Hit;
+			return true;
 		}
 
 		PrevT = T;
 	}
 
-	return SHitResult();
+	return false;
 }
 
 // ==== Continuous CCD for box vs box with full kinematics ====
@@ -1286,10 +1295,9 @@ float Speed::SBox::SphereOBBSeparation(const FQuat& Q, const FVector& X, const F
 		SignedPointDistance = FVector::Distance(SphereLocal, ClosestLocal);
 	}
 
-	const FVector Closest = Q.RotateVector(ClosestLocal) + X;
 	if (OutContactPointWorld)
 	{
-		*OutContactPointWorld = Closest;
+		*OutContactPointWorld = Q.RotateVector(ClosestLocal) + X;
 	}
 
 	return SignedPointDistance - R;
@@ -1342,28 +1350,8 @@ FVector Speed::RoundVectorToNetQuantize(const FVector& vector, const unsigned in
 
 FQuat Speed::RoundQuatToNetQuantize(const FQuat& quat, const FQuat& QRefForHemisphere)
 {
-	FRotator R = quat.Rotator();
-	R.Normalize();
-	R.Pitch = FRotator::NormalizeAxis(R.Pitch);
-	R.Yaw = FRotator::NormalizeAxis(R.Yaw);
-	R.Roll = FRotator::NormalizeAxis(R.Roll);
-
-	const uint16 SP = FRotator::CompressAxisToShort(R.Pitch);
-	const uint16 SY = FRotator::CompressAxisToShort(R.Yaw);
-	const uint16 SR = FRotator::CompressAxisToShort(R.Roll);
-
-	const float Pitch = FRotator::DecompressAxisFromShort(SP);
-	const float Yaw = FRotator::DecompressAxisFromShort(SY);
-	const float Roll = FRotator::DecompressAxisFromShort(SR);
-
-	FQuat Out = FRotator(Pitch, Yaw, Roll).Quaternion();
-	Out.Normalize();
-
-	if (QuatDot(Out, QRefForHemisphere) < 0.f)
-	{
-		Out.X *= -1; Out.Y *= -1; Out.Z *= -1; Out.W *= -1;
-	}
-	return Out;
+	static thread_local FQuaternionQuantizationCache Cache;
+	return Cache.Get(quat, QRefForHemisphere);
 }
 
 FRotator Speed::CompressAllAxisRotator(const FRotator& rotator)

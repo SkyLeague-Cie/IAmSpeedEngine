@@ -2,6 +2,7 @@
 
 
 #include "SSubBody.h"
+#include "IAmSpeed/Base/ExactRotatorQuaternionCache.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
@@ -50,8 +51,20 @@ void USSubBody::ResetForFrame(const float& Delta)
 {
     FutureHit = SHitResult();
     CurrentHit = SHitResult();
-    IgnoredComponents.Empty();
-	IgnoredComponents.Append(AlwaysIgnoredComponents);
+    ResetIgnoredComponents();
+}
+
+void USSubBody::ResetIgnoredComponents()
+{
+    // Reuse the ordinary frame's buffer instead of freeing/reallocating it at
+    // 300 Hz. An exceptional contact burst must not retain unbounded slack:
+    // keep at most 1 KiB or the permanent registry's existing allocation.
+    const SIZE_T RetainedBytes = FMath::Max<SIZE_T>(1024, AlwaysIgnoredComponents.GetAllocatedSize());
+    if (IgnoredComponents.GetAllocatedSize() > RetainedBytes)
+        IgnoredComponents.Empty(AlwaysIgnoredComponents.Num());
+    else
+        IgnoredComponents.Reset(AlwaysIgnoredComponents.Num());
+    IgnoredComponents.Append(AlwaysIgnoredComponents);
 }
 
 void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
@@ -104,13 +117,17 @@ void USSubBody::RemoveExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 
 void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
 {
+	// Reuse only pure local Euler conversion, independently on each calling lane.
+	// Do not share USceneComponent's mutable rotation cache with the game thread.
+	static thread_local Speed::FExactRotatorQuaternionCache LocalRotationCache;
 	auto RelativeLocationVar = GetRelativeLocation();
-	auto RelativeRotationVar = GetRelativeRotation().Quaternion();
-	Kinematics.Location = ParentKinematic.Location + ParentKinematic.Rotation.RotateVector(RelativeLocationVar);
-	Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, ParentKinematic.Rotation.RotateVector(RelativeLocationVar));
-	Kinematics.Acceleration = ParentKinematic.Acceleration + 
-        FVector::CrossProduct(ParentKinematic.AngularAcceleration, ParentKinematic.Rotation.RotateVector(RelativeLocationVar)) + 
-        FVector::CrossProduct(ParentKinematic.AngularVelocity, FVector::CrossProduct(ParentKinematic.AngularVelocity, ParentKinematic.Rotation.RotateVector(RelativeLocationVar)));
+	auto RelativeRotationVar = LocalRotationCache.Get(GetRelativeRotation());
+	const FVector WorldOffset = ParentKinematic.Rotation.RotateVector(RelativeLocationVar);
+	Kinematics.Location = ParentKinematic.Location + WorldOffset;
+	Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);
+	Kinematics.Acceleration = ParentKinematic.Acceleration +
+        FVector::CrossProduct(ParentKinematic.AngularAcceleration, WorldOffset) +
+        FVector::CrossProduct(ParentKinematic.AngularVelocity, FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset));
     Kinematics.Rotation = ParentKinematic.Rotation * RelativeRotationVar;
 	Kinematics.AngularVelocity = ParentKinematic.AngularVelocity;
 	Kinematics.AngularAcceleration = ParentKinematic.AngularAcceleration;
@@ -198,7 +215,6 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
     UWorld* World = GetWorld();
     if (!World) return false;
 
-    FCollisionQueryParams Params = BuildTraceParams();
 	FHitResult Hit;
 	bool bHit = false;
 	Speed::Analytic::FWorldHit AnalyticHit;
@@ -210,6 +226,7 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
 		&AnalyticHit);
 	if (!bUsedAnalyticAuthority)
 	{
+		const FCollisionQueryParams Params = BuildTraceParams();
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(Hit, Start, End,
 			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
@@ -279,17 +296,17 @@ USSubBody* USSubBody::PickResolver(USSubBody* A, USSubBody* B)
     return (A->GetUniqueID() < B->GetUniqueID()) ? A : B;
 }
 
-const TArray<TWeakObjectPtr<UBoxSubBody>> USSubBody::GetExternalBoxSubBodies() const
+const TArray<TWeakObjectPtr<UBoxSubBody>>& USSubBody::GetExternalBoxSubBodies() const
 {
     return ExternalBoxSubBodies;
 }
 
-const TArray<TWeakObjectPtr<USphereSubBody>> USSubBody::GetExternalSphereSubBodies() const
+const TArray<TWeakObjectPtr<USphereSubBody>>& USSubBody::GetExternalSphereSubBodies() const
 {
     return ExternalSphereSubBodies;
 }
 
-const TArray<TWeakObjectPtr<USWheelSubBody>> USSubBody::GetExternalWheelSubBodies() const
+const TArray<TWeakObjectPtr<USWheelSubBody>>& USSubBody::GetExternalWheelSubBodies() const
 {
     return ExternalWheelSubBodies;
 }

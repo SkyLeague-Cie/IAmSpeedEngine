@@ -2,19 +2,20 @@
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/IAmSpeed.h"
-#include "IAmSpeed/World/CanonicalFrameContext.h"
-#include "IAmSpeed/World/CanonicalFrameDriver.h"
+#include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/CanonicalFrameDriver.h"
 #include "ChaosVehicleManager.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/SubBodies/Configs/WheelSubBodyConfig.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
-#include "IAmSpeed/World/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 #include "ChaosVehicleWheel.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
+#include "Misc/ScopeLock.h"
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
@@ -570,7 +571,11 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 			Suspension.Setup().SuspensionMaxDrop + Suspension.Setup().SuspensionMaxRaise;
 		Suspension.AccessSetup().ReboundDamping = ReboundDamping;
 		Suspension.AccessSetup().CompressionDamping = CompressionDamping;
-		Suspension.AccessSetup().RestingForce = SprungMass * -GetGravityZ();
+		const float RestingForce = SprungMass * -GetGravityZ();
+		Suspension.AccessSetup().RestingForce = RestingForce;
+		// Keep the configuration-facing value away from the live Chaos setup,
+		// whose state is owned and mutated by the simulation thread.
+		WheelSubBody->ConfigureStaticSpringCompression(RestingForce);
 		Suspension.SetLocalRestingPosition(WheelSubBody->GetLocalOffset());
 
 		if (PVehicle->Wheels.IsValidIndex(WheelIdx))
@@ -1167,6 +1172,7 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 
 void USpeedWheeledComponent::ConsumeQueuedWheeledInputsForFrame(const int32 CurrentFrame)
 {
+	FScopeLock InputLock(&PendingWheeledInputMutex);
 	for (int32 i = PendingWheeledInputCommands.Num() - 1; i >= 0; --i)
 	{
 		const FPendingWheeledInputCommand& Cmd = PendingWheeledInputCommands[i];
@@ -1190,9 +1196,31 @@ void USpeedWheeledComponent::UpdateInputs()
 {
 	const int32 CurrentFrame = NumFrame();
 
+	ConsumePendingLiveWheeledInputs();
 	ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
 
 	UpdateWheeledPhysicalInputFromUser(false);
+}
+
+void USpeedWheeledComponent::ConsumePendingLiveWheeledInputs()
+{
+	const uint8 DirtyMask = PendingLiveWheeledInputMask.exchange(
+		0, std::memory_order_acquire);
+	if ((DirtyMask & LiveThrottleDirty) != 0)
+	{
+		WheeledUserInput.Throttle = PendingLiveThrottle.load(
+			std::memory_order_relaxed);
+	}
+	if ((DirtyMask & LiveBrakeDirty) != 0)
+	{
+		WheeledUserInput.Brake = PendingLiveBrake.load(
+			std::memory_order_relaxed);
+	}
+	if ((DirtyMask & LiveSteeringDirty) != 0)
+	{
+		WheeledUserInput.Steer = PendingLiveSteering.load(
+			std::memory_order_relaxed);
+	}
 }
 
 void USpeedWheeledComponent::UpdateWheeledPhysicalInputFromUser(bool bForce)
@@ -1246,44 +1274,31 @@ void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
 
 void USpeedWheeledComponent::QueueWheeledInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
 {
-	if (ActivationFrame == INDEX_NONE)
-	{
-		return;
-	}
+	QueueWheeledInputCommand(ActivationFrame, Input, false, false);
+}
 
-	// If a command already exists for this frame -> replace it
-	for (FPendingWheeledInputCommand& Cmd : PendingWheeledInputCommands)
-	{
-		if (Cmd.ActivationFrame == ActivationFrame)
-		{
-			Cmd.Input = Input;
-			Cmd.bBypassSlew = false;
-			return;
-		}
-	}
+void USpeedWheeledComponent::QueueNetworkWheeledInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
+{
+	QueueWheeledInputCommand(ActivationFrame, Input, false, true);
+}
 
-	FPendingWheeledInputCommand NewCmd;
-	NewCmd.ActivationFrame = ActivationFrame;
-	NewCmd.Input = Input;
-
-	PendingWheeledInputCommands.Add(NewCmd);
-
-	PendingWheeledInputCommands.Sort(
-		[](const FPendingWheeledInputCommand& A, const FPendingWheeledInputCommand& B)
-		{
-			return A.ActivationFrame < B.ActivationFrame;
-		}
-	);
-
-	while (PendingWheeledInputCommands.Num() > MaxPendingWheeledInputs)
-	{
-		PendingWheeledInputCommands.RemoveAt(0);
-	}
+void USpeedWheeledComponent::SetTestInputOverrideEnabled(const bool bEnabled)
+{
+	FScopeLock InputLock(&PendingWheeledInputMutex);
+	bTestInputOverrideEnabled.store(bEnabled, std::memory_order_release);
+	if (bEnabled) PendingWheeledInputCommands.Reset();
 }
 
 void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
 {
-	if (ActivationFrame == INDEX_NONE)
+	QueueWheeledInputCommand(ActivationFrame, Input, true, false);
+}
+
+void USpeedWheeledComponent::QueueWheeledInputCommand(const int32 ActivationFrame,
+	const FWheeledInputState& Input, const bool bBypassSlew, const bool bFromNetwork)
+{
+	FScopeLock InputLock(&PendingWheeledInputMutex);
+	if (ActivationFrame == INDEX_NONE || (bFromNetwork && IsTestInputOverrideEnabled()))
 	{
 		return;
 	}
@@ -1293,7 +1308,7 @@ void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 A
 		if (Cmd.ActivationFrame == ActivationFrame)
 		{
 			Cmd.Input = Input;
-			Cmd.bBypassSlew = true;
+			Cmd.bBypassSlew = bBypassSlew;
 			return;
 		}
 	}
@@ -1301,7 +1316,7 @@ void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 A
 	FPendingWheeledInputCommand NewCmd;
 	NewCmd.ActivationFrame = ActivationFrame;
 	NewCmd.Input = Input;
-	NewCmd.bBypassSlew = true;
+	NewCmd.bBypassSlew = bBypassSlew;
 	PendingWheeledInputCommands.Add(NewCmd);
 
 	PendingWheeledInputCommands.Sort(
@@ -2641,20 +2656,32 @@ float USpeedWheeledComponent::GetPhysSteeringInput() const
 
 void USpeedWheeledComponent::SetPhysThrottleInput(const float& Throttle)
 {
-	auto ClampedThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
-	WheeledUserInput.Throttle = static_cast<uint8>(FMath::RoundToInt(ClampedThrottle * 255));
+	const float ClampedThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
+	PendingLiveThrottle.store(
+		static_cast<uint8>(FMath::RoundToInt(ClampedThrottle * 255)),
+		std::memory_order_relaxed);
+	PendingLiveWheeledInputMask.fetch_or(
+		LiveThrottleDirty, std::memory_order_release);
 }
 
 void USpeedWheeledComponent::SetPhysBrakeInput(const float& Brake)
 {
-	auto ClampedBrake = FMath::Clamp(Brake, 0.0f, 1.0f);
-	WheeledUserInput.Brake = static_cast<uint8>(FMath::RoundToInt(ClampedBrake * 255));
+	const float ClampedBrake = FMath::Clamp(Brake, 0.0f, 1.0f);
+	PendingLiveBrake.store(
+		static_cast<uint8>(FMath::RoundToInt(ClampedBrake * 255)),
+		std::memory_order_relaxed);
+	PendingLiveWheeledInputMask.fetch_or(
+		LiveBrakeDirty, std::memory_order_release);
 }
 
 void USpeedWheeledComponent::SetPhysSteeringInput(const float& Steering)
 {
-	auto ClampedSteering = FMath::Clamp(Steering, -1.0f, 1.0f);
-	WheeledUserInput.Steer = static_cast<int8>(FMath::RoundToInt(ClampedSteering * 127));
+	const float ClampedSteering = FMath::Clamp(Steering, -1.0f, 1.0f);
+	PendingLiveSteering.store(
+		static_cast<int8>(FMath::RoundToInt(ClampedSteering * 127)),
+		std::memory_order_relaxed);
+	PendingLiveWheeledInputMask.fetch_or(
+		LiveSteeringDirty, std::memory_order_release);
 }
 
 TArray<SWheelGroundContact>& USpeedWheeledComponent::GetPendingWheelContacts()
@@ -3986,7 +4013,7 @@ void USpeedWheeledComponent::QuantizePhysicalState()
 		return;
 
 	// Quantize kinematic state to reduce precision errors on client and server
-	BasePhysicsState.Kinematic.Quantize(GetKinematicStateForFrame(NumFrame() - 1).Rotation);
+	QuantizeKinematicState(BasePhysicsState.Kinematic, GetKinematicStateForFrame(NumFrame() - 1).Rotation);
 
 	// round trip on last suspension length to avoid precision drift on client and server
 	for (const auto& W : WheelSubBodies)

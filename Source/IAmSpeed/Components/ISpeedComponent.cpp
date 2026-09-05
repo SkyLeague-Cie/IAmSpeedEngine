@@ -10,6 +10,42 @@ namespace
 	constexpr int32 ConstraintProjectionPasses = 4;
 	constexpr float ConstraintPersistSignedDistCm = 5.0f;
 	constexpr float ConstraintPersistSeparatingSpeed = 50.0f;
+
+	// A call-local view shares the origin formulas without reconstructing fields
+	// that a single-field getter will discard. No state is cached across calls.
+	struct FOriginKinematicView
+	{
+		const SKinematic& COM;
+		const FVector OriginToCOM;
+		FOriginKinematicView(const SKinematic& State, const FVector& LocalCOM)
+			: COM(State), OriginToCOM(State.Rotation.RotateVector(LocalCOM)) {}
+		FVector Location() const { return COM.Location - OriginToCOM; }
+		FVector Velocity() const { return COM.Velocity - FVector::CrossProduct(COM.AngularVelocity, OriginToCOM); }
+		FVector Acceleration() const
+		{
+			return COM.Acceleration - FVector::CrossProduct(COM.AngularAcceleration, OriginToCOM)
+				- FVector::CrossProduct(COM.AngularVelocity, FVector::CrossProduct(COM.AngularVelocity, OriginToCOM));
+		}
+	};
+}
+
+void ISpeedComponent::RestoreSimulationSnapshot(
+	const SKinematic& KinematicState,
+	const bool bFrozen,
+	const TConstArrayView<uint8> MechanicPayload)
+{
+	check(CanRestoreSimulationSnapshot(MechanicPayload));
+	SleepState.Reset();
+	KinematicQuantizationCache.Reset();
+	SetKinematicState(KinematicState);
+	SetIsFrozen(bFrozen);
+	RestoreSimulationSnapshotPayload(MechanicPayload);
+	UpdateSubBodiesKinematics();
+}
+
+void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& PreviousRotation)
+{
+	KinematicQuantizationCache.Quantize(State, PreviousRotation);
 }
 
 void ISpeedComponent:: ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint, const USolidSubBody* SubBody)
@@ -24,13 +60,29 @@ void ISpeedComponent::IntegrateKinematicsPrv(const float& SubDelta)
     SetKinematicState(GetKinematicState().Integrate(SubDelta));
 }
 
+bool ISpeedComponent::IsPhysicsSleeping() const
+{
+	return !IsFrozen() && SleepState.CanSleep(GetKinematicState(), HasStableSleepSupport());
+}
+
 void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 {
 	if (IsFrozen())
 		return;
 
-    if (SubDelta <= 0.f)
+	if (SubDelta <= 0.f)
 		return;
+
+	if (IsPhysicsSleeping())
+	{
+#if !UE_BUILD_SHIPPING
+		++Speed::FSimulationSleepState::ThreadIntegrationSkips();
+#endif
+		// Keep support bookkeeping and all collision detection alive. Only the
+		// unchanged rigid pose and its redundant transport/projection are skipped.
+		PostIntegrateKinematics(SubDelta);
+		return;
+	}
 
 	bool bRequiresContactTransport = false;
 	for (const USSubBody* SubBody : GetSubBodies())
@@ -92,9 +144,11 @@ bool ISpeedComponent::ProjectEstablishedStaticContacts(const float& Delta)
 
 void ISpeedComponent::UpdateSubBodiesKinematics()
 {
+    // Every child observes the same parent state; derive origin from COM once.
+    const SKinematic OriginState = GetOriginKinematicState();
     for (USSubBody* SubBody : GetSubBodies())
     {
-        SubBody->UpdateKinematicsFromOwner(GetOriginKinematicState());
+        SubBody->UpdateKinematicsFromOwner(OriginState);
     }
 }
 
@@ -107,12 +161,10 @@ SKinematic ISpeedComponent::GetOriginKinematicStateForFrame(const unsigned int& 
 {
 	const SKinematic& COMState = GetKinematicStateForFrame(NumFrameToRead);
 	SKinematic OriginState = COMState;
-	const FVector OriginToCOM = COMState.Rotation.RotateVector(GetPhysCenterOfMassLocal());
-	OriginState.Location = COMState.Location - OriginToCOM;
-	OriginState.Velocity = COMState.Velocity - FVector::CrossProduct(COMState.AngularVelocity, OriginToCOM);
-	OriginState.Acceleration = COMState.Acceleration
-		- FVector::CrossProduct(COMState.AngularAcceleration, OriginToCOM)
-		- FVector::CrossProduct(COMState.AngularVelocity, FVector::CrossProduct(COMState.AngularVelocity, OriginToCOM));
+	const FOriginKinematicView Origin(COMState, GetPhysCenterOfMassLocal());
+	OriginState.Location = Origin.Location();
+	OriginState.Velocity = Origin.Velocity();
+	OriginState.Acceleration = Origin.Acceleration();
 	return OriginState;
 }
 
@@ -241,12 +293,15 @@ void ISpeedComponent::PostPhysicsUpdate(const float& delta)
 	}
 
     PostPhysicsUpdatePrv(delta);
+	SleepState.ObserveCompletedPose(GetKinematicState());
 }
 
 // ===================== Kinematics getters and setters =================
 FVector ISpeedComponent::GetPhysLocation() const
 {
-    return GetOriginKinematicState().Location;
+	// Keep the historical-frame selection used by the complete origin getter.
+	const SKinematic& COMState = GetKinematicStateForFrame(NumFrame());
+	return FOriginKinematicView(COMState, GetPhysCenterOfMassLocal()).Location();
 }
 
 void ISpeedComponent::SetPhysCOMLocation(const FVector& NewCOMLocation)
@@ -282,7 +337,8 @@ void ISpeedComponent::SetPhysRotationPreserveCOM(const FQuat& NewRotation)
 
 FVector ISpeedComponent::GetPhysVelocity() const
 {
-    return GetOriginKinematicState().Velocity;
+	const SKinematic& COMState = GetKinematicStateForFrame(NumFrame());
+	return FOriginKinematicView(COMState, GetPhysCenterOfMassLocal()).Velocity();
 }
 
 void ISpeedComponent::SetPhysVelocity(const FVector& NewVelocity)

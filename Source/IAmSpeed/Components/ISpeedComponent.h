@@ -4,6 +4,8 @@
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/SHitResult.h"
 #include "IAmSpeed/Base/Kinematic.h"
+#include "IAmSpeed/Base/KinematicQuantizationCache.h"
+#include "IAmSpeed/World/Simulation/SimulationSleepState.h"
 
 class USSubBody;
 class USolidSubBody;
@@ -31,6 +33,20 @@ public:
 	// Runs component-owned preparation/gameplay for one integer-addressed frame.
 	// This virtual dispatch also covers derived components declared by game modules.
 	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;
+	/** Applies an opaque, frame-latched input payload addressed by FSimulationWorld. */
+	virtual bool ApplySimulationInput(TConstArrayView<uint8> Payload) { return false; }
+	/** Appends deterministic mechanic state not covered by the common kinematic snapshot. */
+	virtual void AppendSimulationSnapshot(TArray<uint8>& OutPayload) const {}
+	/** Validates component-specific bytes before an atomic world restore starts. */
+	virtual bool CanRestoreSimulationSnapshot(TConstArrayView<uint8> Payload) const
+	{
+		return Payload.IsEmpty();
+	}
+	/** Restores the common rigid state, then delegates only component-specific bytes. */
+	void RestoreSimulationSnapshot(
+		const SKinematic& KinematicState,
+		bool bFrozen,
+		TConstArrayView<uint8> MechanicPayload);
 	// Optional simulation-owned run control. A test/controller seals its complete
 	// frame-addressed scenario before FastSimulation starts and marks completion
 	// from the canonical lane after publishing the terminal result.
@@ -55,6 +71,8 @@ public:
 
 	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
 	virtual bool IsFrozen() const = 0;
+	/** True only for an unchanged, force-free pose on certified stable support. */
+	bool IsPhysicsSleeping() const;
 	// Freezes the Movement. It serves when we want to pause the game
 	void FreezeMovement();
 	// Unfreezes the Movement. It serves when we want to resume the game after being paused
@@ -82,6 +100,7 @@ public:
 	// Derives the component/mesh-origin state for rendering and local sub-body geometry.
 	SKinematic GetOriginKinematicState() const;
 	SKinematic GetOriginKinematicStateForFrame(const unsigned int& NumFrame) const;
+	/** Derives only origin position, retaining the same current-frame history lookup as the full state. */
 	FVector GetPhysLocation() const;
 	void SetPhysCOMLocation(const FVector& NewCOMLocation);
 	void SetPhysLocation(const FVector& NewLocation);
@@ -90,6 +109,7 @@ public:
 	// Applies an instantaneous orientation correction without teleporting the
 	// rigid body's center of mass or changing its COM velocity.
 	void SetPhysRotationPreserveCOM(const FQuat& NewRotation);
+	/** Derives only origin velocity (COM velocity minus angular transport), without rebuilding acceleration. */
 	FVector GetPhysVelocity() const;
 	FVector GetPhysVelocityAtPoint(const FVector& Point) const;
 	// The stored kinematic velocity is attached to the component origin.
@@ -173,6 +193,10 @@ public:
 
 	virtual ~ISpeedComponent() = default;
 protected:
+	/** Quantizes in place unless the exact state/reference was already proved a no-op. */
+	void QuantizeKinematicState(SKinematic& State, const FQuat& PreviousRotation);
+	/** Opt-in support certificate; unsupported component kinds remain awake. */
+	virtual bool HasStableSleepSupport() const { return false; }
 	// overload this function to advance the physics state of the parent component by `SubDelta` seconds
 	// SubDelta is a fraction of delta during which there is NO collision, so the physics state should be advanced by SubDelta seconds without checking for collision.
 	// This is used to advance the state to the time of impact after a hit is detected
@@ -193,6 +217,13 @@ protected:
 	static bool AreSimilarPhysicalConstraints(const FPhysicalContactConstraint& A, const FPhysicalContactConstraint& B);
 
 	virtual void SetIsFrozen(bool bFrozen) = 0;
+	/** Applies bytes previously emitted by AppendSimulationSnapshot after validation. */
+	virtual void RestoreSimulationSnapshotPayload(TConstArrayView<uint8> Payload)
+	{
+		check(Payload.IsEmpty());
+	}
 
 	TArray<FPhysicalContactConstraint> PhysicalConstraints;
+	Speed::FSimulationSleepState SleepState;
+	Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
 };

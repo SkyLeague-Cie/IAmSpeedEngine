@@ -7,7 +7,7 @@
 #include "SWheelSubBody.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
-#include "IAmSpeed/World/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HAL/IConsoleManager.h"
@@ -80,12 +80,12 @@ void USphereSubBody::ResetForFrame(const float& Delta)
 
 bool USphereSubBody::IsSphereBoxProjectionEnabled()
 {
-	return CVarIAmSpeedSphereBoxProjection.GetValueOnGameThread() != 0;
+	return CVarIAmSpeedSphereBoxProjection.GetValueOnAnyThread() != 0;
 }
 
 bool USphereSubBody::IsWorldStaticProjectionEnabled()
 {
-	return CVarIAmSpeedSphereWorldProjection.GetValueOnGameThread() != 0;
+	return CVarIAmSpeedSphereWorldProjection.GetValueOnAnyThread() != 0;
 }
 
 void USphereSubBody::PostPhysicsUpdate()

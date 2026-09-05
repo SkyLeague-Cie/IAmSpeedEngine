@@ -1,4 +1,6 @@
 #include "AnalyticWorldQuery.h"
+#include "AnalyticBoxSweepContext.h"
+#include "IAmSpeed/World/Collision/OrderedBoundsIndex.h"
 
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
@@ -6,13 +8,19 @@
 
 namespace
 {
+#if !UE_BUILD_SHIPPING
+	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldCacheProfile(
+		TEXT("p.IAmSpeed.AnalyticWorld.CacheProfile"), 0,
+		TEXT("Log exact sweep-cache hits, misses and hit ways every 1000 eligible queries. Development only."),
+		ECVF_Default);
+
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldPhaseTiming(
 		TEXT("p.IAmSpeed.AnalyticWorld.PhaseTiming"),
 		0,
 		TEXT("Accumulate and periodically log strict analytical query phase timing.\n")
 		TEXT("0: disabled (default)\n")
 		TEXT("1: log average phase cost every 10000 queries\n")
-		TEXT("2: also sample slow piecewise-provider traversals"),
+		TEXT("2: log every 1000 queries and also sample slow piecewise-provider traversals"),
 		ECVF_Default);
 
 	struct FAnalyticQueryPhaseTiming
@@ -25,6 +33,14 @@ namespace
 		double PiecewiseSeconds = 0.0;
 		double TriangleSeconds = 0.0;
 		double ArbitrationSeconds = 0.0;
+		double PlaneEvaluationSeconds = 0.0;
+		double PlaneTriangulationSeconds = 0.0;
+		double CoplanarBoundarySeconds = 0.0;
+		double ExtrudedEvaluationSeconds = 0.0;
+		uint64 PlaneCalls = 0;
+		uint64 TriangulationCalls = 0;
+		uint64 CoplanarBoundaryCalls = 0;
+		uint64 ExtrudedCalls = 0;
 	};
 
 	thread_local FAnalyticQueryPhaseTiming GAnalyticQueryPhaseTiming;
@@ -33,6 +49,25 @@ namespace
 	thread_local uint64 GAnalyticApproximationCellVisits = 0;
 	thread_local uint32 GAnalyticPiecewiseSlowQueryLogs = 0;
 	constexpr uint64 AnalyticQueryPhaseTimingLogInterval = 10000;
+
+	// Inclusive nested timings: triangulation/union are part of plane evaluation,
+	// and a synthetic facet's plane evaluation is part of an extruded query.
+	class FScopedAnalyticKernelTiming
+	{
+	public:
+		FScopedAnalyticKernelTiming(double& Seconds, uint64& Calls)
+			: Accumulator(GAnalyticQueryDetailedTimingEnabled ? &Seconds : nullptr)
+		{
+			if (Accumulator) { ++Calls; StartSeconds = FPlatformTime::Seconds(); }
+		}
+		~FScopedAnalyticKernelTiming()
+		{
+			if (Accumulator) *Accumulator += FPlatformTime::Seconds() - StartSeconds;
+		}
+	private:
+		double* Accumulator;
+		double StartSeconds = 0.0;
+	};
 
 	void RecordAnalyticQueryPhaseTiming(
 		const double TotalSeconds,
@@ -52,7 +87,9 @@ namespace
 		Timing.PiecewiseSeconds += PiecewiseSeconds;
 		Timing.TriangleSeconds += TriangleSeconds;
 		Timing.ArbitrationSeconds += ArbitrationSeconds;
-		if (Timing.Queries < AnalyticQueryPhaseTimingLogInterval)
+		const uint64 LogInterval = GAnalyticQueryDetailedTimingEnabled
+			? 1000 : AnalyticQueryPhaseTimingLogInterval;
+		if (Timing.Queries < LogInterval)
 		{
 			return;
 		}
@@ -77,8 +114,20 @@ namespace
 			Timing.ArbitrationSeconds * ToAverageMicroseconds,
 			FMath::Max(0.0, Timing.TotalSeconds - ClassifiedSeconds) *
 				ToAverageMicroseconds);
+		if (GAnalyticQueryDetailedTimingEnabled)
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticQueryKernelTiming] Queries=%llu PlaneUs=%.6f TriangulationUs=%.6f ")
+				TEXT("CoplanarUnionUs=%.6f ExtrudedUs=%.6f PlaneCalls=%llu TriangulationCalls=%llu UnionCalls=%llu ExtrudedCalls=%llu"),
+				Timing.Queries, Timing.PlaneEvaluationSeconds * ToAverageMicroseconds,
+				Timing.PlaneTriangulationSeconds * ToAverageMicroseconds,
+				Timing.CoplanarBoundarySeconds * ToAverageMicroseconds,
+				Timing.ExtrudedEvaluationSeconds * ToAverageMicroseconds,
+				Timing.PlaneCalls, Timing.TriangulationCalls, Timing.CoplanarBoundaryCalls, Timing.ExtrudedCalls);
+		}
 		Timing = FAnalyticQueryPhaseTiming{};
 	}
+#endif
 }
 
 namespace Speed::Analytic
@@ -87,6 +136,16 @@ namespace Speed::Analytic
 FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld)
 	: World(InWorld)
 {
+	TArray<FBox3d> PiecewiseBounds;
+	PiecewiseBounds.Reserve(World.PiecewiseTensorBezierPatches.Num());
+	for (const FPiecewiseTensorBezierPatch& Patch : World.PiecewiseTensorBezierPatches)
+		PiecewiseBounds.Add(Patch.Bounds);
+	PiecewiseProviderIndex = Speed::Collision::FOrderedBoundsIndex::Create(PiecewiseBounds);
+#if !UE_BUILD_SHIPPING
+	if (CVarIAmSpeedAnalyticWorldPhaseTiming.GetValueOnAnyThread() != 0)
+		UE_LOG(LogTemp, Display, TEXT("[AnalyticQueryStorage] PiecewiseProviders=%d ProviderIndexBytes=%llu"),
+			PiecewiseBounds.Num(), uint64(PiecewiseProviderIndex->GetAllocatedSize()));
+#endif
 	TMap<uint64, FSourceAuthorityCoverage> CoverageBySource;
 	const auto RegisterPrimitive = [&CoverageBySource](
 		const uint64 SourceId, const FBox3d& Bounds, const uint32 ObjectType,
@@ -197,51 +256,8 @@ namespace
 		double DistanceSquared = TNumericLimits<double>::Max();
 	};
 
-	struct FBoxSweepContext
-	{
-		FVector3d Axis[3] = {};
-		FVector3d Motion = FVector3d::ZeroVector;
-		FVector3d HalfExtent = FVector3d::ZeroVector;
-		FVector3d WorldExtent = FVector3d::ZeroVector;
-		double DomainTolerance = 0.0;
-
-		FBoxSweepContext() = default;
-
-		explicit FBoxSweepContext(const FWorldQuery& Query)
-		{
-			Initialize(Query);
-		}
-
-		void Initialize(
-			const FWorldQuery& Query,
-			const FVector3d* CachedAxes = nullptr)
-		{
-			Motion = Query.End - Query.Start;
-			HalfExtent = FVector3d(
-				FMath::Max(0.0, Query.HalfExtent.X),
-				FMath::Max(0.0, Query.HalfExtent.Y),
-				FMath::Max(0.0, Query.HalfExtent.Z));
-			DomainTolerance = FMath::Max(0.0, Query.DomainTolerance);
-			if (CachedAxes)
-			{
-				Axis[0] = CachedAxes[0];
-				Axis[1] = CachedAxes[1];
-				Axis[2] = CachedAxes[2];
-			}
-			else
-			{
-				Axis[0] = Query.Rotation.RotateVector(
-					FVector3d::ForwardVector).GetSafeNormal();
-				Axis[1] = Query.Rotation.RotateVector(
-					FVector3d::RightVector).GetSafeNormal();
-				Axis[2] = Query.Rotation.RotateVector(
-					FVector3d::UpVector).GetSafeNormal();
-			}
-			WorldExtent = Axis[0].GetAbs() * HalfExtent.X +
-				Axis[1].GetAbs() * HalfExtent.Y +
-				Axis[2].GetAbs() * HalfExtent.Z;
-		}
-	};
+	using Private::FBoxSweepContext;
+	using Private::FBoxBoundsSweepContext;
 
 	struct FPlaneTriangle
 	{
@@ -267,6 +283,10 @@ namespace
 	void TriangulatePlaneDomain(
 		const FBoundedPlane& Plane, TArray<FPlaneTriangle, TInlineAllocator<32>>& Out)
 	{
+#if !UE_BUILD_SHIPPING
+		FScopedAnalyticKernelTiming ScopedTiming(GAnalyticQueryPhaseTiming.PlaneTriangulationSeconds,
+			GAnalyticQueryPhaseTiming.TriangulationCalls);
+#endif
 		TArray<FVector2d, TInlineAllocator<32>> Vertices;
 		if (Plane.DomainVertices.IsEmpty())
 		{
@@ -279,6 +299,30 @@ namespace
 		else
 		{
 			Vertices.Append(Plane.DomainVertices);
+		}
+		const auto AppendTriangle = [&](const int32 A, const int32 B, const int32 C)
+		{
+			FPlaneTriangle& Triangle = Out.AddDefaulted_GetRef();
+			const int32 PolygonIndices[3] = { A, B, C };
+			for (int32 Corner = 0; Corner < 3; ++Corner)
+			{
+				const FVector2d& Local = Vertices[PolygonIndices[Corner]];
+				Triangle.Vertex[Corner] = Plane.Origin + Local.X * Plane.AxisU +
+					Local.Y * Plane.AxisV;
+				Triangle.PolygonVertex[Corner] = PolygonIndices[Corner];
+			}
+		};
+		if (Plane.DomainVertices.IsEmpty() &&
+			Plane.HalfExtents.X > 0.0 && Plane.HalfExtents.Y > 0.0 &&
+			Cross2D(Vertices[0] - Vertices[3], Vertices[1] - Vertices[0]) > 1.0e-12)
+		{
+			// A non-degenerate rectangle always clips the same first ear. Keep
+			// its original diagonal, vertex indices and floating-point operations;
+			// authored polygons and numerically collapsed rectangles use the
+			// generic certificate below instead of inventing a triangulation.
+			AppendTriangle(3, 0, 1);
+			AppendTriangle(1, 2, 3);
+			return;
 		}
 
 		double TwiceArea = 0.0;
@@ -321,15 +365,7 @@ namespace
 				}
 				if (bContainsVertex) continue;
 
-				FPlaneTriangle& Triangle = Out.AddDefaulted_GetRef();
-				const int32 PolygonIndices[3] = { Previous, Current, Next };
-				for (int32 Corner = 0; Corner < 3; ++Corner)
-				{
-					const FVector2d& Local = Vertices[PolygonIndices[Corner]];
-					Triangle.Vertex[Corner] = Plane.Origin + Local.X * Plane.AxisU +
-						Local.Y * Plane.AxisV;
-					Triangle.PolygonVertex[Corner] = PolygonIndices[Corner];
-				}
+				AppendTriangle(Previous, Current, Next);
 				Remaining.RemoveAt(Slot, 1, EAllowShrinking::No);
 				bFoundEar = true;
 				break;
@@ -345,15 +381,7 @@ namespace
 		}
 		if (Remaining.Num() == 3)
 		{
-			FPlaneTriangle& Triangle = Out.AddDefaulted_GetRef();
-			for (int32 Corner = 0; Corner < 3; ++Corner)
-			{
-				const int32 PolygonIndex = Remaining[Corner];
-				const FVector2d& Local = Vertices[PolygonIndex];
-				Triangle.Vertex[Corner] = Plane.Origin + Local.X * Plane.AxisU +
-					Local.Y * Plane.AxisV;
-				Triangle.PolygonVertex[Corner] = PolygonIndex;
-			}
+			AppendTriangle(Remaining[0], Remaining[1], Remaining[2]);
 		}
 	}
 
@@ -1021,7 +1049,7 @@ namespace
 	}
 
 	bool SweptBoxIntersectsBounds(
-		const FWorldQuery& Query, const FBoxSweepContext& Context,
+		const FWorldQuery& Query, const FBoxBoundsSweepContext& Context,
 		const FBox3d& Bounds, const double MaximumSearchTime = 1.0)
 	{
 		if (!Bounds.IsValid) return false;
@@ -1045,30 +1073,20 @@ namespace
 			MaximumTime = FMath::Min(MaximumTime, Exit);
 			return MinimumTime <= MaximumTime;
 		};
-		const auto IntersectGeneralAxis = [&](const FVector3d& Axis)
+		const auto IntersectGeneralAxis = [&](const FBoxBoundsSweepContext::FProjection& Projection)
 		{
-			const double AxisLengthSquared = Axis.SquaredLength();
-			if (AxisLengthSquared <= 1.0e-24) return true;
-			const double BoxRadius =
-				Context.HalfExtent.X * FMath::Abs(FVector3d::DotProduct(Context.Axis[0], Axis)) +
-				Context.HalfExtent.Y * FMath::Abs(FVector3d::DotProduct(Context.Axis[1], Axis)) +
-				Context.HalfExtent.Z * FMath::Abs(FVector3d::DotProduct(Context.Axis[2], Axis));
+			if (Projection.bDegenerate) return true;
+			const FVector3d& Axis = Projection.Axis;
 			const double BoundsRadius =
 				BoundsExtent.X * FMath::Abs(Axis.X) +
 				BoundsExtent.Y * FMath::Abs(Axis.Y) +
 				BoundsExtent.Z * FMath::Abs(Axis.Z);
-			const double Radius = BoxRadius + BoundsRadius +
-				Context.DomainTolerance * FMath::Sqrt(AxisLengthSquared);
+			const double Radius = Projection.BoxRadius + BoundsRadius + Projection.ToleranceRadius;
 			const double StartDistance = FVector3d::DotProduct(
 				Query.Start - BoundsCenter, Axis);
-			const double MotionDistance = FVector3d::DotProduct(Context.Motion, Axis);
 			return IntersectProjectedAxis(
-				StartDistance, MotionDistance, Radius);
+				StartDistance, Projection.MotionDistance, Radius);
 		};
-		static const FVector3d WorldAxes[3] = {
-			FVector3d::ForwardVector,
-			FVector3d::RightVector,
-			FVector3d::UpVector };
 		for (int32 AxisIndex = 0; AxisIndex < 3; ++AxisIndex)
 		{
 			if (!IntersectProjectedAxis(
@@ -1096,12 +1114,12 @@ namespace
 				return false;
 			}
 		}
-		for (const FVector3d& BoxAxis : Context.Axis)
+		for (int32 BoxAxisIndex = 0; BoxAxisIndex < 3; ++BoxAxisIndex)
 		{
-			for (const FVector3d& WorldAxis : WorldAxes)
+			for (int32 WorldAxisIndex = 0; WorldAxisIndex < 3; ++WorldAxisIndex)
 			{
 				if (!IntersectGeneralAxis(
-					FVector3d::CrossProduct(BoxAxis, WorldAxis)))
+					Context.GetCrossAxis(BoxAxisIndex, WorldAxisIndex)))
 				{
 					return false;
 				}
@@ -1112,14 +1130,14 @@ namespace
 
 	bool SweptShapeIntersectsBounds(
 		const FWorldQuery& Query, const FBox3d& Bounds,
-		const FBoxSweepContext* BoxContext = nullptr,
+		const FBoxBoundsSweepContext* BoxContext = nullptr,
 		const double MaximumSearchTime = 1.0)
 	{
 		if (Query.Shape == EQueryShape::Box)
 		{
 			if (BoxContext) return SweptBoxIntersectsBounds(
 				Query, *BoxContext, Bounds, MaximumSearchTime);
-			const FBoxSweepContext LocalContext(Query);
+			const FBoxBoundsSweepContext LocalContext(Query);
 			return SweptBoxIntersectsBounds(
 				Query, LocalContext, Bounds, MaximumSearchTime);
 		}
@@ -1156,13 +1174,30 @@ double FWorldQueryService::SupportRadius(
 
 FWorldHit FWorldQueryService::SweepPlane(
 	const FWorldQuery& Query, const FBoundedPlane& Plane,
-	const FAnalyticWorldData* PlaneUnionWorld)
+	const FAnalyticWorldData* PlaneUnionWorld,
+	const FBoxSweepContext* CachedBoxContext)
 {
 	if (Query.Shape == EQueryShape::Box)
 	{
-		return SweepBoxPlane(Query, Plane);
+#if !UE_BUILD_SHIPPING
+		FScopedAnalyticKernelTiming ScopedTiming(GAnalyticQueryPhaseTiming.PlaneEvaluationSeconds,
+			GAnalyticQueryPhaseTiming.PlaneCalls);
+#endif
+		return SweepBoxPlane(Query, Plane, CachedBoxContext);
 	}
 	FWorldHit Hit;
+	TrySweepRoundPlane(Query, Plane, Hit, PlaneUnionWorld);
+	return Hit;
+}
+
+bool FWorldQueryService::TrySweepRoundPlane(
+	const FWorldQuery& Query, const FBoundedPlane& Plane,
+	FWorldHit& OutHit, const FAnalyticWorldData* PlaneUnionWorld)
+{
+#if !UE_BUILD_SHIPPING
+	FScopedAnalyticKernelTiming ScopedTiming(GAnalyticQueryPhaseTiming.PlaneEvaluationSeconds,
+		GAnalyticQueryPhaseTiming.PlaneCalls);
+#endif
 	FVector3d Normal = Plane.Normal;
 	double RawStartDistance = Plane.SignedDistance(Query.Start);
 	if (RawStartDistance < 0.0)
@@ -1176,23 +1211,25 @@ FWorldHit FWorldQueryService::SweepPlane(
 		Query.End - Plane.Origin, Normal) - Support;
 
 	double Time = 1.0;
+	bool bStartPenetrating = false;
+	double PenetrationDepth = 0.0;
 	if (StartDistance <= 0.0)
 	{
 		Time = 0.0;
-		Hit.bStartPenetrating = StartDistance < 0.0;
-		Hit.PenetrationDepth = FMath::Max(0.0, -StartDistance);
+		bStartPenetrating = StartDistance < 0.0;
+		PenetrationDepth = FMath::Max(0.0, -StartDistance);
 	}
 	else
 	{
 		const double Denominator = StartDistance - EndDistance;
 		if (Denominator <= 0.0 || EndDistance > 0.0)
 		{
-			return Hit;
+			return false;
 		}
 		Time = StartDistance / Denominator;
 		if (Time < 0.0 || Time > 1.0)
 		{
-			return Hit;
+			return false;
 		}
 	}
 
@@ -1200,7 +1237,7 @@ FWorldHit FWorldQueryService::SweepPlane(
 	const FVector3d ContactPoint = Center - Support * Normal;
 	if (!Plane.ContainsProjectedPoint(ContactPoint, Query.DomainTolerance))
 	{
-		return FWorldHit();
+		return false;
 	}
 	if (Query.bAuthorityOnly &&
 		!Query.bAllowEstablishedFaceContactAtBoundary)
@@ -1222,11 +1259,17 @@ FWorldHit FWorldQueryService::SweepPlane(
 		if (DistanceToAuthorityBoundary +
 			Query.DomainTolerance < RequiredInteriorMargin)
 		{
-			return FWorldHit();
+			return false;
 		}
 	}
 
+	// Reinitialize only a successful witness, including fields a caller may
+	// have decorated after the previous hit. Misses do not write caller scratch.
+	OutHit = FWorldHit();
+	FWorldHit& Hit = OutHit;
 	Hit.bHit = true;
+	Hit.bStartPenetrating = bStartPenetrating;
+	Hit.PenetrationDepth = PenetrationDepth;
 	Hit.Time = Time;
 	Hit.Location = Center;
 	Hit.Point = Plane.ClosestPoint(ContactPoint);
@@ -1240,13 +1283,17 @@ FWorldHit FWorldQueryService::SweepPlane(
 	Hit.FeatureId = Plane.FeatureId;
 	Hit.PrimitiveId = Plane.PrimitiveId;
 	Hit.MaterialId = Plane.MaterialId;
-	return Hit;
+	return true;
 }
 
 double FWorldQueryService::DistanceToCoplanarSemanticUnionBoundary(
 	const FAnalyticWorldData& UnionWorld, const FWorldQuery& Query,
 	const FBoundedPlane& SeedPlane, const FVector3d& Point)
 {
+#if !UE_BUILD_SHIPPING
+	FScopedAnalyticKernelTiming ScopedTiming(GAnalyticQueryPhaseTiming.CoplanarBoundarySeconds,
+		GAnalyticQueryPhaseTiming.CoplanarBoundaryCalls);
+#endif
 	struct FPlaneDomainEdge
 	{
 		FVector3d A = FVector3d::ZeroVector;
@@ -1438,15 +1485,25 @@ double FWorldQueryService::DistanceToCoplanarSemanticUnionBoundary(
 }
 
 FWorldHit FWorldQueryService::SweepBoxPlane(
-	const FWorldQuery& Query, const FBoundedPlane& Plane)
+	const FWorldQuery& Query, const FBoundedPlane& Plane,
+	const FBoxSweepContext* CachedBoxContext)
 {
 	FWorldHit Best;
 	TArray<FPlaneTriangle, TInlineAllocator<32>> Triangles;
 	TriangulatePlaneDomain(Plane, Triangles);
+	if (Triangles.IsEmpty()) return Best;
+	// Every facet and triangle sees the same box pose/path. Reuse an outer
+	// extrusion's immutable context, or construct one for a standalone plane.
+	FBoxSweepContext LocalContext;
+	if (!CachedBoxContext)
+	{
+		LocalContext.Initialize(Query);
+		CachedBoxContext = &LocalContext;
+	}
 	for (const FPlaneTriangle& Triangle : Triangles)
 	{
 		FWorldHit Candidate;
-		if (!SweepBoxTriangle(Query, Triangle, Candidate)) continue;
+		if (!SweepBoxTriangle(Query, Triangle, Candidate, CachedBoxContext)) continue;
 		Candidate.SourceId = Plane.SourceId;
 		Candidate.SurfaceId = Plane.SurfaceId;
 		Candidate.FeatureId = Plane.FeatureId;
@@ -1599,6 +1656,10 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FExtrudedQuinticPatch& Patch)
 {
+#if !UE_BUILD_SHIPPING
+	FScopedAnalyticKernelTiming ScopedTiming(GAnalyticQueryPhaseTiming.ExtrudedEvaluationSeconds,
+		GAnalyticQueryPhaseTiming.ExtrudedCalls);
+#endif
 	FWorldHit Best;
 	TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticSweepExtrudedQuintic);
 	if (!PatchPassesFilter(Query, Patch))
@@ -1611,6 +1672,7 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 	}
 	if (Patch.SectionPolyline.Num() < 2 ||
 		Patch.SectionPolyline.Num() != Patch.SectionParameters.Num() ||
+		Patch.SectionSegmentBounds.Num() != Patch.SectionPolyline.Num() - 1 ||
 		!FMath::IsFinite(Patch.MaximumChordErrorCm))
 	{
 		return Best;
@@ -1619,8 +1681,32 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 		(Patch.MinimumExtrusionCoordinate + Patch.MaximumExtrusionCoordinate);
 	const double ExtrusionHalfExtent = 0.5 *
 		(Patch.MaximumExtrusionCoordinate - Patch.MinimumExtrusionCoordinate);
+	// Test the continuously swept shape against each node, not only its swept
+	// AABB. Thin rotated boxes otherwise visit many unrelated chord facets.
+	// Keep the full time interval and traversal order: equal-time witnesses must
+	// still reach the existing deterministic arbitration unchanged.
+	FBoxBoundsSweepContext BoxContext;
+	const bool bBoxQuery = Query.Shape == EQueryShape::Box;
+	if (bBoxQuery) BoxContext.Initialize(Query);
+	// These provider-level query changes are identical for every finite facet.
+	// Internal chord seams must not receive a standalone plane's footprint margin;
+	// the true patch boundaries are checked after a hit below.
+	FWorldQuery FaceQuery = Query;
+	FaceQuery.bAuthorityOnly = false;
+	// The patch already validated its canonical family; synthetic planes have none.
+	FaceQuery.RequiredCanonicalGroupId = 0;
+	FWorldHit Candidate;
 	const auto SweepSegment = [&](const int32 Segment)
 	{
+		// A leaf can contain eight chords. Reject its unrelated facets before
+		// constructing/triangulating planes for OBBs. Sphere/ray plane tests are
+		// already cheap; their broad phase stays at the node level.
+		if (bBoxQuery)
+		{
+			const FBox3d& FacetBounds = Patch.SectionSegmentBounds[Segment];
+			if (!FacetBounds.Intersect(QueryBounds) ||
+				!SweptShapeIntersectsBounds(Query, FacetBounds, &BoxContext)) return;
+		}
 		const FVector3d SectionA = Patch.SectionPolyline[Segment];
 		const FVector3d SectionB = Patch.SectionPolyline[Segment + 1];
 		const FVector3d Chord = SectionB - SectionA;
@@ -1637,8 +1723,7 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 		Face.AxisU = Chord / ChordLength;
 		Face.AxisV = Patch.ExtrusionAxis;
 		Face.Normal = FVector3d::CrossProduct(Face.AxisU, Face.AxisV).GetSafeNormal();
-		Face.Origin = 0.5 * (SectionA + SectionB) +
-			ExtrusionCenter * Patch.ExtrusionAxis;
+		Face.Origin = 0.5 * (SectionA + SectionB) + ExtrusionCenter * Patch.ExtrusionAxis;
 		if (FVector3d::DotProduct(Query.Start - Face.Origin, Face.Normal) < 0.0)
 		{
 			Face.Normal = -Face.Normal;
@@ -1651,14 +1736,18 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 		// the finite face first, then retain the footprint margin only at the four
 		// actual patch boundaries (the two section endpoints and two extrusion
 		// endpoints).
-		FWorldQuery FaceQuery = Query;
-		FaceQuery.bAuthorityOnly = false;
-		// The owning patch already validated its canonical family. The synthetic
-		// plane is an implementation facet and deliberately carries no group id.
-		FaceQuery.RequiredCanonicalGroupId = 0;
-		FWorldHit Candidate = SweepPlane(FaceQuery, Face);
-		if (Candidate.bHit &&
-			(Query.bAuthorityOnly || Patch.bAuthorityEligible))
+		if (bBoxQuery)
+		{
+			Candidate = SweepPlane(FaceQuery, Face, nullptr, &BoxContext);
+		}
+		else if (!TrySweepRoundPlane(FaceQuery, Face, Candidate))
+		{
+			return;
+		}
+		// A miss cannot enter arbitration. In particular, do not hash a stable
+		// primitive id or populate witness metadata for every rejected facet.
+		if (!Candidate.bHit) return;
+		if (Query.bAuthorityOnly || Patch.bAuthorityEligible)
 		{
 			// A certified provider owns only the source-certified finite domain. A
 			// volume contacting within one support radius of an authored patch
@@ -1689,7 +1778,7 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 			if (bCrossesExtrusionBoundary || bCrossesSectionStart ||
 				bCrossesSectionEnd)
 			{
-				Candidate = FWorldHit();
+				return;
 			}
 		}
 		Candidate.PrimitiveId = CombineStableIds(
@@ -1752,6 +1841,7 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 		if (!Patch.SectionSegmentBvhNodes.IsValidIndex(NodeIndex)) continue;
 		const FTriangleBvhNode& Node = Patch.SectionSegmentBvhNodes[NodeIndex];
 		if (!Node.Bounds.Intersect(QueryBounds)) continue;
+		if (!SweptShapeIntersectsBounds(Query, Node.Bounds, &BoxContext)) continue;
 		if (!Node.IsLeaf())
 		{
 			NodeStack.Add(Node.RightChild);
@@ -1825,17 +1915,19 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	{
 		return Best;
 	}
-	FBoxSweepContext BoxSweepContext;
+	FBoxBoundsSweepContext BoxSweepContext;
 	if (Query.Shape == EQueryShape::Box)
 	{
 		BoxSweepContext.Initialize(Query, CachedBoxAxes);
 	}
 	const auto SweepCell = [&](const int32 CellIndex)
 	{
+#if !UE_BUILD_SHIPPING
 		if (GAnalyticQueryDetailedTimingEnabled)
 		{
 			++GAnalyticApproximationCellVisits;
 		}
+#endif
 		const FTensorBezierApproximationCell& Cell =
 			(*Patch.ApproximationCells)[CellIndex];
 		FBox3d CellBounds(EForceInit::ForceInit);
@@ -1859,17 +1951,12 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			FVector2d(Cell.MaximumU, Cell.MaximumV) };
 		for (int32 TriangleIndex = 0; TriangleIndex < 2; ++TriangleIndex)
 		{
-			const uint64 TrianglePrimitiveId = CombineStableIds(Patch.PrimitiveId,
-				static_cast<uint64>(2 * CellIndex + TriangleIndex + 1));
 			FVector3d TriangleVertices[3];
 			for (int32 Corner = 0; Corner < 3; ++Corner)
 			{
 				const int32 SourceCorner = CornerIndices[TriangleIndex][Corner];
 				TriangleVertices[Corner] = Cell.Corners[SourceCorner];
 			}
-			const FVector3d TriangleFaceNormal = FVector3d::CrossProduct(
-				TriangleVertices[1] - TriangleVertices[0],
-				TriangleVertices[2] - TriangleVertices[0]);
 			FBox3d TriangleBounds(EForceInit::ForceInit);
 			for (const FVector3d& Vertex : TriangleVertices)
 			{
@@ -1897,6 +1984,9 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			}
 			else if (Query.Shape == EQueryShape::Sphere)
 			{
+				const FVector3d TriangleFaceNormal = FVector3d::CrossProduct(
+					TriangleVertices[1] - TriangleVertices[0],
+					TriangleVertices[2] - TriangleVertices[0]);
 				// The runtime triangle is a bilinear approximation of the
 				// certified Bezier cell.  Its Hausdorff error is carried by the
 				// cell and must enlarge the swept shell during detection; using
@@ -1913,10 +2003,12 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			else
 			{
 				FTriangleSurface Triangle;
+				const FVector3d TriangleFaceNormal = FVector3d::CrossProduct(
+					TriangleVertices[1] - TriangleVertices[0],
+					TriangleVertices[2] - TriangleVertices[0]);
 				Triangle.SourceId = Patch.SourceId;
 				Triangle.SurfaceId = Patch.SurfaceId;
 				Triangle.FeatureId = Patch.FeatureId;
-				Triangle.PrimitiveId = TrianglePrimitiveId;
 				Triangle.MaterialId = Patch.MaterialId;
 				Triangle.ObjectType = Patch.ObjectType;
 				Triangle.BlockingChannels = Patch.BlockingChannels;
@@ -1938,7 +2030,10 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			Candidate.SourceId = Patch.SourceId;
 			Candidate.SurfaceId = Patch.SurfaceId;
 			Candidate.FeatureId = Patch.FeatureId;
-			Candidate.PrimitiveId = TrianglePrimitiveId;
+			// Synthetic triangle ids do not participate in the local geometric
+			// kernel/filter. Decorate only real hits, before any provider arbitration.
+			Candidate.PrimitiveId = CombineStableIds(Patch.PrimitiveId,
+				static_cast<uint64>(2 * CellIndex + TriangleIndex + 1));
 			Candidate.MaterialId = Patch.MaterialId;
 			Candidate.CanonicalGroupId = Patch.CanonicalGroupId;
 			Candidate.GeometricErrorBoundCm = Cell.MaximumErrorCm;
@@ -1987,8 +2082,8 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 					Best.PenetrationDepth, 1.0e-12);
 			if (HitPassesReferenceNormal(Query, Candidate) &&
 				(bDeeperTensorConstraint ||
-				(!bSameInitialOverlap && IsBetterHit(Candidate, Best)) ||
-				(bEqualTensorConstraint && IsBetterHit(Candidate, Best))))
+					(!bSameInitialOverlap && IsBetterHit(Candidate, Best)) ||
+					(bEqualTensorConstraint && IsBetterHit(Candidate, Best))))
 			{
 				Best = Candidate;
 			}
@@ -1998,10 +2093,12 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	NodeStack.Add(0);
 	while (!NodeStack.IsEmpty())
 	{
+#if !UE_BUILD_SHIPPING
 		if (GAnalyticQueryDetailedTimingEnabled)
 		{
 			++GAnalyticApproximationNodeVisits;
 		}
+#endif
 		const int32 NodeIndex = NodeStack.Pop(EAllowShrinking::No);
 		if (!Patch.ApproximationCellBvhNodes->IsValidIndex(NodeIndex)) continue;
 		const FTriangleBvhNode& Node =
@@ -2051,6 +2148,7 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 			: InitialMaximumSearchTime;
 	};
 	TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticSweepPiecewiseTensorBezier);
+#if !UE_BUILD_SHIPPING
 	const double DetailedStartSeconds = GAnalyticQueryDetailedTimingEnabled
 		? FPlatformTime::Seconds()
 		: 0.0;
@@ -2060,12 +2158,13 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 		GAnalyticApproximationCellVisits;
 	uint64 ProviderNodeVisits = 0;
 	uint64 ProviderCellVisits = 0;
+#endif
 	if (!PatchPassesFilter(Query, Patch) || !Patch.bApproximationCertified ||
 		!Patch.Bounds.Intersect(QueryBounds))
 	{
 		return Best;
 	}
-	FBoxSweepContext ProviderBoxContext;
+	FBoxBoundsSweepContext ProviderBoxContext;
 	if (Query.Shape == EQueryShape::Box) ProviderBoxContext.Initialize(Query);
 	if (!SweptShapeIntersectsBounds(Query, Patch.Bounds,
 		Query.Shape == EQueryShape::Box ? &ProviderBoxContext : nullptr,
@@ -2077,7 +2176,9 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 	CellNodeStack.Add(0);
 	while (!CellNodeStack.IsEmpty())
 	{
+#if !UE_BUILD_SHIPPING
 		if (GAnalyticQueryDetailedTimingEnabled) ++ProviderNodeVisits;
+#endif
 		const int32 NodeIndex = CellNodeStack.Pop(EAllowShrinking::No);
 		if (!Patch.CellBvhNodes.IsValidIndex(NodeIndex)) continue;
 		const FTriangleBvhNode& Node = Patch.CellBvhNodes[NodeIndex];
@@ -2096,7 +2197,9 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 		}
 		for (int32 Offset = 0; Offset < Node.IndexCount; ++Offset)
 		{
+#if !UE_BUILD_SHIPPING
 			if (GAnalyticQueryDetailedTimingEnabled) ++ProviderCellVisits;
+#endif
 			const int32 PermutationIndex = Node.FirstIndex + Offset;
 			if (!Patch.CellBvhIndices.IsValidIndex(PermutationIndex)) continue;
 			const FPiecewiseTensorBezierCell& Cell =
@@ -2135,6 +2238,7 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 				IsBetterHit(Candidate, Best)) Best = Candidate;
 		}
 	}
+#if !UE_BUILD_SHIPPING
 	if (GAnalyticQueryDetailedTimingEnabled &&
 		GAnalyticPiecewiseSlowQueryLogs < 128)
 	{
@@ -2158,6 +2262,7 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 				*FVector(Query.Start).ToString(), *FVector(Query.End).ToString());
 		}
 	}
+#endif
 	return Best;
 }
 
@@ -2401,33 +2506,83 @@ bool FWorldQueryService::TrySweepAuthority(
 	return bCovered;
 }
 
+#if !UE_BUILD_SHIPPING
+void FWorldQueryService::RecordCacheProfile(
+	const EQueryShape Shape, const int32 HitWay, const bool bEvicted) const
+{
+	const uint32 ShapeIndex = static_cast<uint32>(Shape);
+	if (ShapeIndex >= UE_ARRAY_COUNT(CacheProfile.Hits)) return;
+	++CacheProfile.Queries;
+	if (HitWay != INDEX_NONE)
+	{
+		++CacheProfile.Hits[ShapeIndex];
+		++CacheProfile.HitWays[HitWay];
+	}
+	else
+	{
+		++CacheProfile.Misses[ShapeIndex];
+		CacheProfile.Evictions += bEvicted ? 1 : 0;
+	}
+	if (CacheProfile.Queries < 1000) return;
+	UE_LOG(LogTemp, Display,
+		TEXT("[AnalyticQueryCacheProfile] Queries=%llu RayHits=%llu RayMisses=%llu ")
+		TEXT("SphereHits=%llu SphereMisses=%llu BoxHits=%llu BoxMisses=%llu ")
+		TEXT("Way0=%llu Way1=%llu Way2=%llu Way3=%llu Evictions=%llu"),
+		CacheProfile.Queries, CacheProfile.Hits[0], CacheProfile.Misses[0],
+		CacheProfile.Hits[1], CacheProfile.Misses[1], CacheProfile.Hits[2], CacheProfile.Misses[2],
+		CacheProfile.HitWays[0], CacheProfile.HitWays[1], CacheProfile.HitWays[2], CacheProfile.HitWays[3],
+		CacheProfile.Evictions);
+	CacheProfile = FCacheProfile{};
+}
+#endif
+
 FWorldHit FWorldQueryService::Sweep(const FWorldQuery& Query) const
 
 {
-	for (uint8 Offset = 0; Offset < SweepCacheCapacity; ++Offset)
+	// Impossible filtered queries must not traverse providers or evict useful
+	// cached support probes. Dynamic sub-body overlaps are a separate caller path.
+	if (Query.RejectsAllCollision()) return FWorldHit();
+#if !UE_BUILD_SHIPPING
+	const bool bProfileCache = CVarIAmSpeedAnalyticWorldCacheProfile.GetValueOnAnyThread() != 0;
+	// Do not mix partial windows across a disabled interval in an interactive run.
+	if (!bProfileCache && CacheProfile.Queries != 0) CacheProfile = FCacheProfile{};
+#endif
+	// Slot collisions only cause recomputation; full query equality decides reuse.
+	const uint32 Bucket = HashCombineFast(GetTypeHash(Query.Start),
+		GetTypeHash(Query.End)) & (SweepCacheCapacity / SweepCacheWays - 1);
+	const uint32 First = Bucket * SweepCacheWays;
+	for (uint32 Way = 0; Way < SweepCacheWays; ++Way)
 	{
-		const uint8 CacheIndex = static_cast<uint8>(
-			(NextSweepCacheIndex + SweepCacheCapacity - 1 - Offset) &
-			(SweepCacheCapacity - 1));
-		const FCachedSweep& Entry = SweepCache[CacheIndex];
-		if (Entry.bValid && IsSameQuery(Query, Entry.Query))
+		const FCachedSweep& Cached = SweepCache[First + Way];
+		if (Cached.bValid && IsSameQuery(Query, Cached.Query))
 		{
-			return Entry.Hit;
+#if !UE_BUILD_SHIPPING
+			if (bProfileCache) RecordCacheProfile(Query.Shape, Way, false);
+#endif
+			return Cached.Hit;
 		}
 	}
-	FCachedSweep& Entry = SweepCache[NextSweepCacheIndex];
+	FCachedSweep& Entry = SweepCache[First + NextCacheWay[Bucket]];
+#if !UE_BUILD_SHIPPING
+	if (bProfileCache) RecordCacheProfile(Query.Shape, INDEX_NONE, Entry.bValid);
+#endif
+	NextCacheWay[Bucket] = (NextCacheWay[Bucket] + 1) & (SweepCacheWays - 1);
 	Entry.Hit = SweepDetailed(Query, nullptr);
 	Entry.Query = Query;
 	Entry.bValid = true;
-	NextSweepCacheIndex = static_cast<uint8>(
-		(NextSweepCacheIndex + 1) & (SweepCacheCapacity - 1));
 	return Entry.Hit;
 }
 
 FWorldHit FWorldQueryService::SweepDetailed(
 	const FWorldQuery& Query, FWorldHit* OutBestTriangle) const
 {
+	if (Query.RejectsAllCollision())
+	{
+		if (OutBestTriangle) *OutBestTriangle = FWorldHit();
+		return FWorldHit();
+	}
 	TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticSweepDetailed);
+#if !UE_BUILD_SHIPPING
 	const int32 PhaseTimingMode =
 		CVarIAmSpeedAnalyticWorldPhaseTiming.GetValueOnAnyThread();
 	const bool bPhaseTimingEnabled = PhaseTimingMode != 0;
@@ -2435,6 +2590,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 	const double TotalStartSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds()
 		: 0.0;
+#endif
 	FWorldHit Best;
 	TArray<FWorldHit, TInlineAllocator<128>> AuthorityProviderHits;
 	const bool bCollectAuthorityProviderHits =
@@ -2455,9 +2611,11 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		return Best.bHit ? FMath::Min(1.0, Best.Time + 1.0e-12) : 1.0;
 	};
 	const FBox3d QueryBounds = SweptQueryBounds(Query);
+#if !UE_BUILD_SHIPPING
 	const double PlaneStartSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds()
 		: 0.0;
+#endif
 	for (const FBoundedPlane& Plane : World.Planes)
 	{
 		if (Plane.bRequiresCompactOptIn) continue;
@@ -2475,12 +2633,14 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		}
 		ConsiderProviderHit(Candidate);
 	}
+#if !UE_BUILD_SHIPPING
 	const double PlaneSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds() - PlaneStartSeconds
 		: 0.0;
 	const double CompactStartSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds()
 		: 0.0;
+#endif
 	if (Query.bIncludeCompactPatches && !World.CompactBvh.IsEmpty())
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticCompactBvh);
@@ -2518,23 +2678,31 @@ FWorldHit FWorldQueryService::SweepDetailed(
 							EncodedIndex - World.Planes.Num()];
 					if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) continue;
 					if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) continue;
+					// Reject distant/filtered providers before entering the kernel and
+					// constructing its miss result. These are the kernel's exact guards;
+					// the leaf and provider arbitration order remain unchanged.
+					if (!Patch.Bounds.Intersect(QueryBounds) || !PatchPassesFilter(Query, Patch)) continue;
 					Candidate = SweepExtrudedQuintic(Query, QueryBounds, Patch);
 				}
 				ConsiderProviderHit(Candidate);
 			}
 		}
 	}
+#if !UE_BUILD_SHIPPING
 	const double CompactSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds() - CompactStartSeconds
 		: 0.0;
 	double TensorSeconds = 0.0;
 	double PiecewiseSeconds = 0.0;
+#endif
 	if (Query.bIncludeCompactPatches)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticTensorProviders);
+#if !UE_BUILD_SHIPPING
 		const double TensorStartSeconds = bPhaseTimingEnabled
 			? FPlatformTime::Seconds()
 			: 0.0;
+#endif
 		for (const FTensorBezierPatch& Patch : World.TensorBezierPatches)
 		{
 			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) continue;
@@ -2543,6 +2711,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 				Query, QueryBounds, Patch, CurrentMaximumSearchTime());
 			ConsiderProviderHit(Candidate);
 		}
+#if !UE_BUILD_SHIPPING
 		if (bPhaseTimingEnabled)
 		{
 			TensorSeconds = FPlatformTime::Seconds() - TensorStartSeconds;
@@ -2550,19 +2719,27 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		const double PiecewiseStartSeconds = bPhaseTimingEnabled
 			? FPlatformTime::Seconds()
 			: 0.0;
-		for (const FPiecewiseTensorBezierPatch& Patch :
-			World.PiecewiseTensorBezierPatches)
+#endif
+		Speed::Collision::FOrderedBoundsScratch ProviderScratch;
+		for (const int32 ProviderIndex : PiecewiseProviderIndex->FindCandidates(QueryBounds, ProviderScratch))
 		{
+			const FPiecewiseTensorBezierPatch& Patch = World.PiecewiseTensorBezierPatches[ProviderIndex];
 			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) continue;
 			if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) continue;
+			// Reject distant providers before constructing a result and entering
+			// their instrumented traversal. This is the same conservative bound
+			// checked by SweepPiecewiseTensorBezier; candidate order is unchanged.
+			if (!Patch.Bounds.Intersect(QueryBounds)) continue;
 			const FWorldHit Candidate = SweepPiecewiseTensorBezier(
 				Query, QueryBounds, Patch, CurrentMaximumSearchTime());
 			ConsiderProviderHit(Candidate);
 		}
+#if !UE_BUILD_SHIPPING
 		if (bPhaseTimingEnabled)
 		{
 			PiecewiseSeconds = FPlatformTime::Seconds() - PiecewiseStartSeconds;
 		}
+#endif
 	}
 	// Certified indexed faces are a residual complete-world provider. A compact
 	// primitive remains preferred while both representations agree within the
@@ -2570,9 +2747,11 @@ FWorldHit FWorldQueryService::SweepDetailed(
 	// evidence that the compact primitive is outside its certified domain, so
 	// the closed finite-face provider wins instead of creating a false wall.
 	FWorldHit BestTriangle;
+#if !UE_BUILD_SHIPPING
 	const double TriangleStartSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds()
 		: 0.0;
+#endif
 	if (Query.bIncludeTriangles && !World.TriangleBvh.IsEmpty())
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticTriangleBvh);
@@ -2616,12 +2795,14 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			}
 		}
 	}
+#if !UE_BUILD_SHIPPING
 	const double TriangleSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds() - TriangleStartSeconds
 		: 0.0;
 	const double ArbitrationStartSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds()
 		: 0.0;
+#endif
 	if (OutBestTriangle != nullptr)
 	{
 		*OutBestTriangle = BestTriangle;
@@ -2660,6 +2841,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			Best = BestAgreeingProvider.bHit ? BestAgreeingProvider : BestTriangle;
 		}
 	}
+#if !UE_BUILD_SHIPPING
 	if (bPhaseTimingEnabled)
 	{
 		const double EndSeconds = FPlatformTime::Seconds();
@@ -2673,6 +2855,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			EndSeconds - ArbitrationStartSeconds);
 	}
 	GAnalyticQueryDetailedTimingEnabled = false;
+#endif
 	return Best;
 }
 

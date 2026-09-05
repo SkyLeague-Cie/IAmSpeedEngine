@@ -3,8 +3,15 @@
 #include "AnalyticWorldData.h"
 #include "IAmSpeed/Base/ContactFeature.h"
 
+namespace Speed::Collision { class FOrderedBoundsIndex; }
+#if WITH_DEV_AUTOMATION_TESTS
+class FIAmSpeedPlaneSweepTest;
+#endif
+
 namespace Speed::Analytic
 {
+
+namespace Private { struct FBoxSweepContext; }
 
 using EContactFeatureKind = Speed::EContactFeatureKind;
 
@@ -62,6 +69,13 @@ struct IAMSPEED_API FWorldQuery
 	bool bExcludeAuthorityEligible = false;
 	bool bIncludeCompactPatches = false;
 	bool bIncludeTriangles = false;
+	/** True only when the query-side filter alone excludes every possible provider. */
+	bool RejectsAllCollision() const
+	{
+		return bApplyCollisionFilter && (bObjectQuery
+			? ObjectTypes == 0
+			: (BlockingObjectTypes == 0 || TraceChannel >= 64));
+	}
 };
 
 struct IAMSPEED_API FWorldHit
@@ -104,6 +118,9 @@ struct IAMSPEED_API FWorldHit
 
 class IAMSPEED_API FWorldQueryService
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class ::FIAmSpeedPlaneSweepTest;
+#endif
 public:
 	explicit FWorldQueryService(const FAnalyticWorldData& InWorld);
 
@@ -144,6 +161,8 @@ private:
 	};
 
 	const FAnalyticWorldData& World;
+	// Constructed from this service's immutable world; no spatial order reaches the solver.
+	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> PiecewiseProviderIndex;
 	TArray<FSourceAuthorityCoverage> SourceAuthorityCoverage;
 	struct FCachedSweep
 	{
@@ -153,11 +172,27 @@ private:
 	};
 	// The analytical world is immutable and canonical physics owns one query
 	// lane. Exactly identical requests therefore have the same result. A small
-	// fixed ring retains the interleaved wheel/hitbox projection probes without
+	// fixed table retains the interleaved wheel/hitbox projection probes without
 	// introducing a tolerance, eviction-dependent result, or unbounded storage.
-	static constexpr uint8 SweepCacheCapacity = 16;
+	static constexpr uint8 SweepCacheCapacity = 64;
+	static constexpr uint8 SweepCacheWays = 4;
 	mutable FCachedSweep SweepCache[SweepCacheCapacity];
-	mutable uint8 NextSweepCacheIndex = 0;
+	mutable uint8 NextCacheWay[SweepCacheCapacity / SweepCacheWays] = {};
+	static_assert(sizeof(SweepCache) + sizeof(NextCacheWay) <= 64 * 1024, "Keep the per-world query cache bounded to 64 KiB");
+#if !UE_BUILD_SHIPPING
+	struct FCacheProfile
+	{
+		uint64 Queries = 0;
+		uint64 Hits[3] = {};
+		uint64 Misses[3] = {};
+		uint64 HitWays[SweepCacheWays] = {};
+		uint64 Evictions = 0;
+	};
+	mutable FCacheProfile CacheProfile;
+	static_assert(sizeof(FCacheProfile) <= 128, "Keep opt-in cache attribution bounded");
+	/** Counts full-query cache reuse only; empty filters and direct detailed queries are excluded. */
+	void RecordCacheProfile(EQueryShape Shape, int32 HitWay, bool bEvicted) const;
+#endif
 	FWorldHit SweepDetailed(
 		const FWorldQuery& Query, FWorldHit* OutBestTriangle) const;
 	bool IsAuthorityMissDefinitive(
@@ -165,12 +200,18 @@ private:
 	static double SupportRadius(const FWorldQuery& Query, const FVector3d& Normal);
 	static FWorldHit SweepPlane(
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
-		const FAnalyticWorldData* PlaneUnionWorld = nullptr);
+		const FAnalyticWorldData* PlaneUnionWorld = nullptr,
+		const Private::FBoxSweepContext* CachedBoxContext = nullptr);
+	/** Ray/sphere plane kernel: a miss leaves OutHit untouched; a hit replaces every field. */
+	static bool TrySweepRoundPlane(
+		const FWorldQuery& Query, const FBoundedPlane& Plane,
+		FWorldHit& OutHit, const FAnalyticWorldData* PlaneUnionWorld = nullptr);
 	static double DistanceToCoplanarSemanticUnionBoundary(
 		const FAnalyticWorldData& UnionWorld, const FWorldQuery& Query,
 		const FBoundedPlane& SeedPlane, const FVector3d& Point);
 	static FWorldHit SweepBoxPlane(
-		const FWorldQuery& Query, const FBoundedPlane& Plane);
+		const FWorldQuery& Query, const FBoundedPlane& Plane,
+		const Private::FBoxSweepContext* CachedBoxContext = nullptr);
 	static FWorldHit SweepTriangleFace(
 		const FWorldQuery& Query, const FTriangleSurface& Triangle);
 	static FWorldHit SweepExtrudedQuintic(

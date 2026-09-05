@@ -7,9 +7,12 @@
 #include "SpeedCar.generated.h"
 
 class USpeedWheeledComponent;
+#if !UE_BUILD_SHIPPING
+class ASpeedSimulation;
+#endif
 
 /**
- * 
+ *
  */
 UCLASS()
 class IAMSPEED_API ASpeedCar : public AWheeledVehiclePawn
@@ -20,10 +23,12 @@ class IAMSPEED_API ASpeedCar : public AWheeledVehiclePawn
 	TObjectPtr<USpeedWheeledComponent> SpeedWheeledComponent;
 public:
 	ASpeedCar(const FObjectInitializer& ObjectInitializer);
-	
+
 	void BeginPlay() override;
 	void Tick(float Delta) override;
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	/** Lets the possessed SpeedController bind common and specialized actions. */
+	void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
 	// --- Input functions ---
 	// Set the throttle input for this frame, value between 0 and 1
@@ -64,7 +69,16 @@ protected:
 	virtual void DemoedByPrv(ASpeedCar* car);
 
 private:
+#if !UE_BUILD_SHIPPING
+	/** Resolves the authoritative simulation once and audits snapshot cadence. */
+	void AuditPresentationFrameCadence(float GameDeltaSeconds);
+#endif
+
 	bool hasSparkleLocation = false;
 	FVector SparkleLocation = FVector::ZeroVector;
 	FTimerHandle SparkleTimerHandler;
+#if !UE_BUILD_SHIPPING
+	TWeakObjectPtr<ASpeedSimulation> PresentationSimulation;
+	uint64 LastObservedSimulationFrame = MAX_uint64;
+#endif
 };

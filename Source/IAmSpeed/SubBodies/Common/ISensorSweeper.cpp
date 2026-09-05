@@ -5,9 +5,16 @@
 bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVector& End, SHitResult& OutHit, const float& delta)
 {
     if (!World) return false;
+	// Only the static-world query is empty; dynamic overlap sweeps still run.
+	if (Speed::Analytic::FStaticWorldQueryAudit::TryRecordEmptySingle(
+		World, static_cast<uint8>(GetCollisionChannel()), GetResponseParams()))
+	{
+		OutHit = SHitResult();
+		OutHit.bBlockingHit = false;
+		return false;
+	}
 
     const Speed::FKinematicState& KS = GetKinematicState();
-    FCollisionQueryParams Params = BuildTraceParams();
 	FHitResult Hit;
 	bool bHit = false;
 	Speed::Analytic::FWorldHit AnalyticHit;
@@ -19,6 +26,7 @@ bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FV
 		&AnalyticHit);
 	if (!bUsedAnalyticAuthority)
 	{
+		const FCollisionQueryParams Params = BuildTraceParams();
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(
 			Hit, Start, End, KS.Rotation, GetCollisionChannel(),

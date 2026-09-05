@@ -99,10 +99,13 @@ public:
     static int32 SubBodyPriority(USSubBody::ESubBodyType T);
     static USSubBody* PickResolver(USSubBody* A, USSubBody* B);
 protected:
+    /** Clear transient exclusions, retaining bounded scratch and permanent-list order. */
+    void ResetIgnoredComponents();
+    friend class FIAmSpeedSubBodyIgnoredScratchTest;
     virtual void ResolveCurrentHitPrv(const float& delta, const float& SimTime) {};
-    const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const;
-    const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const;
-    const TArray<TWeakObjectPtr<USWheelSubBody>> GetExternalWheelSubBodies() const;
+    const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const;
+    const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const;
+    const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const;
 protected:
 
 	ISpeedComponent* ParentComponent;

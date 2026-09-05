@@ -6,8 +6,9 @@
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Base/SUtils.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
-#include "IAmSpeed/World/SpeedWorldSubsystem.h"
-#include "IAmSpeed/World/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Collision/CollisionResponseMask.h"
 #include "SphereSubBody.h"
 #include "SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
@@ -686,16 +687,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     Query.Rotation = FQuat4d(PredictedState.Rotation);
     Query.HalfExtent = FVector3d(BoxExtent);
     Query.TraceChannel = static_cast<uint8>(GetCollisionChannel());
-    Query.BlockingObjectTypes = 0;
-    for (uint8 ObjectType = 0; ObjectType < ECollisionChannel::ECC_MAX;
-        ++ObjectType)
-    {
-        if (GetResponseParams().CollisionResponse.GetResponse(
-            static_cast<ECollisionChannel>(ObjectType)) == ECR_Block)
-        {
-            Query.BlockingObjectTypes |= 1ull << ObjectType;
-        }
-    }
+    Query.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
 
     Query.bApplyCollisionFilter = true;
     Query.bAuthorityOnly = true;

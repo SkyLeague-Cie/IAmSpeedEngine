@@ -100,6 +100,9 @@ public:
     bool HasConfiguredSuspensionTravel() const;
     bool IsAtSuspensionBumpStop() const;
     float SuspensionSpringRateCm() const;
+    /** Stores the equilibrium compression derived while the immutable suspension setup is built. */
+    void ConfigureStaticSpringCompression(float RestingForce);
+    /** Returns configuration data only; it never samples the live Chaos suspension state. */
     float StaticSpringCompression() const;
     float SuspensionCompressionDamping() const;
     float SuspensionReboundDamping() const;
@@ -186,6 +189,7 @@ protected:
     float SuspensionReboundDampingOverride = 0.0f;
     float SuspensionMaxRaiseOverride = -1.0f;
     float SuspensionMaxDropOverride = -1.0f;
+    float ConfiguredStaticSpringCompression = 0.0f;
 
     // --- State variables ---
     float SuspensionForce = 0.0; // suspension force to apply this frame

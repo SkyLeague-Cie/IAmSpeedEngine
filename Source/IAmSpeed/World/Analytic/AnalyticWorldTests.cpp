@@ -1,11 +1,57 @@
 #include "AnalyticLandscapeAdapter.h"
 #include "AnalyticWorldQuery.h"
 #include "IAmSpeed/Base/SHitResult.h"
-#include "IAmSpeed/World/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Misc/AutomationTest.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FIAmSpeedEmptyCollisionFilterTest,
+	"IAmSpeed.AnalyticWorld.EmptyCollisionFilter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedEmptyCollisionFilterTest::RunTest(const FString& Parameters)
+{
+	using namespace Speed::Analytic;
+	FAnalyticWorldData World;
+	FBoundedPlane Plane;
+	Plane.SurfaceId = 1;
+	Plane.FeatureId = 2;
+	Plane.HalfExtents = FVector2d(100, 100);
+	Plane.BlockingChannels = MAX_uint64;
+	World.Planes.Add(Plane);
+	TestTrue(TEXT("filtered test plane is valid"), World.FinalizeAndValidate());
+	FWorldQueryService Service(World);
+	for (EQueryShape Shape : { EQueryShape::Ray, EQueryShape::Sphere, EQueryShape::Box })
+	{
+		FWorldQuery Q;
+		Q.Shape = Shape;
+		Q.Start = FVector3d(0, 0, 20);
+		Q.End = FVector3d(0, 0, -20);
+		Q.Radius = 2;
+		Q.HalfExtent = FVector3d(2);
+		Q.bApplyCollisionFilter = true;
+		TestTrue(TEXT("nonempty mutual trace filter hits"), Service.Sweep(Q).bHit);
+		Q.BlockingObjectTypes = 0;
+		TestTrue(TEXT("empty trace response rejects all geometry"), Q.RejectsAllCollision());
+		TestFalse(TEXT("empty trace cannot reuse earlier cached hit"), Service.Sweep(Q).bHit);
+		Q.bObjectQuery = true;
+		TestFalse(TEXT("empty object mask misses"), Service.Sweep(Q).bHit);
+		Q.ObjectTypes = 1;
+		TestTrue(TEXT("object mask ignores the trace response mask"), Service.Sweep(Q).bHit);
+		Q.bObjectQuery = false;
+		Q.BlockingObjectTypes = 1;
+		Q.TraceChannel = 63;
+		TestTrue(TEXT("highest supported channel is valid"), Service.Sweep(Q).bHit);
+		Q.TraceChannel = 64;
+		TestFalse(TEXT("out-of-range channel misses"), Service.Sweep(Q).bHit);
+		Q.bApplyCollisionFilter = false;
+		TestTrue(TEXT("disabled filtering preserves geometry-only queries"), Service.Sweep(Q).bHit);
+	}
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FIAmSpeedAnalyticBoundedPlaneTest,
@@ -415,6 +461,88 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FIAmSpeedRectangleTriangulationTest,
+	"IAmSpeed.AnalyticWorld.RectangleTriangulation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedRectangleTriangulationTest::RunTest(const FString& Parameters)
+{
+	using namespace Speed::Analytic;
+	FRandomStream Random(31041);
+	int32 Hits = 0;
+	for (int32 Fixture = 0; Fixture < 3; ++Fixture)
+	{
+		FBoundedPlane Plane;
+		Plane.SurfaceId = 1;
+		Plane.PrimitiveId = 2;
+		Plane.FeatureId = 3;
+		Plane.Origin = FVector3d(1000.0 * Fixture, -400.0 * Fixture, 20.0 * Fixture);
+		const FQuat4d Frame = FRotator3d(13.0 * Fixture, 37.0 * Fixture, 19.0 * Fixture).Quaternion();
+		Plane.AxisU = Frame.RotateVector(FVector3d::ForwardVector);
+		Plane.AxisV = Frame.RotateVector(FVector3d::RightVector);
+		Plane.Normal = Frame.RotateVector(FVector3d::UpVector);
+		Plane.HalfExtents = FVector2d(100.0, Fixture == 2 ? 0.01 : 50.0);
+		FAnalyticWorldData RectangleWorld;
+		RectangleWorld.Planes.Add(Plane);
+		FString ValidationReason;
+		if (!RectangleWorld.FinalizeAndValidate(&ValidationReason))
+		{
+			AddError(ValidationReason);
+			return false;
+		}
+		// Explicit vertices force the original polygon ear-clipping path. This
+		// independently checks diagonal/feature choices as well as contact pose.
+		Plane.DomainVertices = {
+			FVector2d(-Plane.HalfExtents.X, -Plane.HalfExtents.Y),
+			FVector2d( Plane.HalfExtents.X, -Plane.HalfExtents.Y),
+			FVector2d( Plane.HalfExtents.X,  Plane.HalfExtents.Y),
+			FVector2d(-Plane.HalfExtents.X,  Plane.HalfExtents.Y) };
+		FAnalyticWorldData PolygonWorld;
+		PolygonWorld.Planes.Add(Plane);
+		if (!PolygonWorld.FinalizeAndValidate(&ValidationReason))
+		{
+			AddError(ValidationReason);
+			return false;
+		}
+		FWorldQueryService RectangleService(RectangleWorld);
+		FWorldQueryService PolygonService(PolygonWorld);
+		for (int32 Sample = 0; Sample < 400; ++Sample)
+		{
+			FWorldQuery Probe;
+			Probe.Shape = EQueryShape::Box;
+			Probe.DomainTolerance = Sample % 2 ? 0.0 : 1.0e-6;
+			Probe.InitialOverlapTolerance = Sample % 3 ? 0.0 : 0.05;
+			Probe.HalfExtent = FVector3d(6.0, 2.0, 0.5);
+			Probe.Rotation = FRotator3d(Random.FRandRange(-90.0f, 90.0f),
+				Random.FRandRange(-180.0f, 180.0f), Random.FRandRange(-90.0f, 90.0f)).Quaternion();
+			const FVector3d Target = Plane.Origin +
+				Random.FRandRange(-1.2f, 1.2f) * Plane.HalfExtents.X * Plane.AxisU +
+				Random.FRandRange(-1.2f, 1.2f) * Plane.HalfExtents.Y * Plane.AxisV;
+			const FVector3d Travel = Frame.RotateVector(FVector3d(
+				Random.FRandRange(-15.0f, 15.0f), Random.FRandRange(-15.0f, 15.0f), 20.0));
+			Probe.Start = Target + Travel;
+			Probe.End = Target - Travel;
+			if (Sample % 4 == 0) Probe.Start = Probe.End = Target + 0.1 * Plane.Normal;
+			const FWorldHit Actual = RectangleService.Sweep(Probe);
+			const FWorldHit Expected = PolygonService.Sweep(Probe);
+			Hits += Expected.bHit ? 1 : 0;
+			TestTrue(TEXT("Rectangle fast path is exactly the polygon oracle"),
+				Actual.bHit == Expected.bHit && Actual.bStartPenetrating == Expected.bStartPenetrating &&
+				Actual.Time == Expected.Time && Actual.PenetrationDepth == Expected.PenetrationDepth &&
+				Actual.Location == Expected.Location && Actual.Point == Expected.Point &&
+				Actual.QueryPoint == Expected.QueryPoint && Actual.Normal == Expected.Normal &&
+				Actual.PrimitiveId == Expected.PrimitiveId &&
+				Actual.QueryFeatureKind == Expected.QueryFeatureKind &&
+				Actual.SurfaceFeatureKind == Expected.SurfaceFeatureKind &&
+				Actual.QueryFeatureIndex == Expected.QueryFeatureIndex &&
+				Actual.SurfaceFeatureIndex == Expected.SurfaceFeatureIndex);
+		}
+	}
+	TestTrue(TEXT("Rectangle oracle includes contacts, not only misses"), Hits > 400);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FIAmSpeedAnalyticExtrudedQuinticTest,
 	"IAmSpeed.AnalyticWorld.ExtrudedQuintic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -581,6 +709,127 @@ bool FIAmSpeedAnalyticExtrudedQuinticTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Curved fixture exposes an internal adaptive join"),
 		RuntimeCurvedPatch.SectionPolyline.Num() >= 4);
 	const int32 JoinIndex = RuntimeCurvedPatch.SectionPolyline.Num() / 2;
+	TestEqual(TEXT("One derived bound per extruded facet"),
+		RuntimeCurvedPatch.SectionSegmentBounds.Num(), RuntimeCurvedPatch.SectionPolyline.Num() - 1);
+	for (int32 Segment = 0; Segment < RuntimeCurvedPatch.SectionSegmentBounds.Num(); ++Segment)
+	{
+		FBox3d ExpectedBounds(EForceInit::ForceInit);
+		for (int32 Endpoint = Segment; Endpoint <= Segment + 1; ++Endpoint)
+		{
+			ExpectedBounds += RuntimeCurvedPatch.SectionPolyline[Endpoint] +
+				RuntimeCurvedPatch.MinimumExtrusionCoordinate * RuntimeCurvedPatch.ExtrusionAxis;
+			ExpectedBounds += RuntimeCurvedPatch.SectionPolyline[Endpoint] +
+				RuntimeCurvedPatch.MaximumExtrusionCoordinate * RuntimeCurvedPatch.ExtrusionAxis;
+		}
+		TestTrue(TEXT("Facet bounds enclose the four original corners exactly"),
+			ExpectedBounds == RuntimeCurvedPatch.SectionSegmentBounds[Segment]);
+	}
+	// An intentionally unpruned copy preserves facet order and narrow phase.
+	// It is an oracle for node AND facet rejection, including long oblique paths,
+	// stationary overlap, zero domain tolerance and contacts near finite ends.
+	FAnalyticWorldData UnprunedWorld = CurvedWorld;
+	// Include the outer compact hierarchy/provider rejection in the oracle,
+	// while retaining the finite facet domains and original candidate order.
+	for (FTriangleBvhNode& Node : UnprunedWorld.CompactBvh)
+	{
+		Node.Bounds = FBox3d(FVector3d(-10000.0), FVector3d(10000.0));
+	}
+	UnprunedWorld.ExtrudedQuinticPatches[0].Bounds =
+		FBox3d(FVector3d(-10000.0), FVector3d(10000.0));
+	for (FTriangleBvhNode& Node : UnprunedWorld.ExtrudedQuinticPatches[0].SectionSegmentBvhNodes)
+	{
+		Node.Bounds = FBox3d(FVector3d(-10000.0), FVector3d(10000.0));
+	}
+	for (FBox3d& Bounds : UnprunedWorld.ExtrudedQuinticPatches[0].SectionSegmentBounds)
+	{
+		Bounds = FBox3d(FVector3d(-10000.0), FVector3d(10000.0));
+	}
+	FWorldQueryService PrunedService(CurvedWorld);
+	FWorldQueryService UnprunedService(UnprunedWorld);
+	FRandomStream Random(60427);
+	int32 OracleHits = 0;
+	for (int32 Sample = 0; Sample < 600; ++Sample)
+	{
+		FWorldQuery Probe;
+		Probe.bIncludeCompactPatches = true;
+		Probe.Shape = static_cast<EQueryShape>(Sample % 3);
+		Probe.DomainTolerance = Sample % 2 ? 0.0 : 1.0e-4;
+		Probe.InitialOverlapTolerance = 0.0;
+		Probe.Radius = Random.FRandRange(0.1f, 6.0f);
+		Probe.HalfExtent = FVector3d(6.0, 0.3, 2.0);
+		Probe.Rotation = FRotator3d(Random.FRandRange(-90.0f, 90.0f),
+			Random.FRandRange(-180.0f, 180.0f), Random.FRandRange(-90.0f, 90.0f)).Quaternion();
+		const double T = static_cast<double>(Sample % 101) / 100.0;
+		const FVector3d Target = RuntimeCurvedPatch.EvaluateSection(T) +
+			Random.FRandRange(-28.0f, 28.0f) * RuntimeCurvedPatch.ExtrusionAxis;
+		Probe.Start = Target + FVector3d(Random.FRandRange(-50.0f, 50.0f),
+			Random.FRandRange(-30.0f, 30.0f), Random.FRandRange(-20.0f, 20.0f));
+		Probe.End = 2.0 * Target - Probe.Start;
+		if (Sample % 4 == 0) Probe.Start = Probe.End = Target;
+		const FWorldHit Actual = PrunedService.Sweep(Probe);
+		const FWorldHit Expected = UnprunedService.Sweep(Probe);
+		OracleHits += Expected.bHit ? 1 : 0;
+		TestEqual(TEXT("Extruded BVH retains every contact/miss"), Actual.bHit, Expected.bHit);
+		TestEqual(TEXT("Extruded BVH retains exact TOI"), Actual.Time, Expected.Time);
+		TestEqual(TEXT("Extruded BVH retains exact overlap depth"), Actual.PenetrationDepth, Expected.PenetrationDepth);
+		TestEqual(TEXT("Extruded BVH retains overlap classification"), Actual.bStartPenetrating, Expected.bStartPenetrating);
+		TestTrue(TEXT("Extruded BVH retains exact witnesses and normal"),
+			Actual.Point == Expected.Point && Actual.QueryPoint == Expected.QueryPoint &&
+			Actual.Location == Expected.Location && Actual.Normal == Expected.Normal);
+		TestTrue(TEXT("Extruded BVH retains feature arbitration"),
+			Actual.PrimitiveId == Expected.PrimitiveId &&
+			Actual.QueryFeatureKind == Expected.QueryFeatureKind &&
+			Actual.SurfaceFeatureKind == Expected.SurfaceFeatureKind &&
+			Actual.QueryFeatureIndex == Expected.QueryFeatureIndex &&
+			Actual.SurfaceFeatureIndex == Expected.SurfaceFeatureIndex);
+	}
+	TestTrue(TEXT("Extruded BVH oracle actually exercises collisions"), OracleHits > 100);
+	// Isolate facet rejection from all outer BVHs. Short sphere/ray probes near
+	// every finite corner exercise the two-axis tolerance allowance explicitly.
+	FAnalyticWorldData FacetOnlyWorld = UnprunedWorld;
+	FacetOnlyWorld.ExtrudedQuinticPatches[0].SectionSegmentBounds = RuntimeCurvedPatch.SectionSegmentBounds;
+	FWorldQueryService FacetOnlyService(FacetOnlyWorld);
+	const auto SameBits = [](const auto& A, const auto& B)
+	{
+		return FMemory::Memcmp(&A, &B, sizeof(A)) == 0;
+	};
+	for (int32 Segment = 0; Segment < RuntimeCurvedPatch.SectionSegmentBounds.Num(); ++Segment)
+	{
+		const FVector3d A = RuntimeCurvedPatch.SectionPolyline[Segment];
+		const FVector3d B = RuntimeCurvedPatch.SectionPolyline[Segment + 1];
+		const FVector3d U = (B - A).GetSafeNormal();
+		const FVector3d V = RuntimeCurvedPatch.ExtrusionAxis;
+		const FVector3d Normal = FVector3d::CrossProduct(U, V).GetSafeNormal();
+		for (const double Tolerance : { 0.0, 1.e-6, 0.01 })
+		for (const double MarginScale : { -1.0, 0.0, 1.0, 1.01 })
+		for (const EQueryShape Shape : { EQueryShape::Ray, EQueryShape::Sphere })
+		for (int32 Corner = 0; Corner < 4; ++Corner)
+		{
+			const bool EndU = (Corner & 1) != 0, EndV = (Corner & 2) != 0;
+			const FVector3d Target = (EndU ? B : A) +
+				(EndV ? RuntimeCurvedPatch.MaximumExtrusionCoordinate : RuntimeCurvedPatch.MinimumExtrusionCoordinate) * V +
+				MarginScale * Tolerance * ((EndU ? U : -U) + (EndV ? V : -V));
+			FWorldQuery Probe;
+			Probe.bIncludeCompactPatches = true;
+			Probe.Shape = Shape;
+			Probe.DomainTolerance = Tolerance;
+			Probe.InitialOverlapTolerance = 0.0;
+			Probe.Radius = Shape == EQueryShape::Sphere ? 0.01 : 0.0;
+			Probe.Start = Target + (Probe.Radius + 1.e-4) * Normal;
+			Probe.End = Target - 1.e-4 * Normal;
+			const FWorldHit Actual = FacetOnlyService.Sweep(Probe);
+			const FWorldHit Expected = UnprunedService.Sweep(Probe);
+			if (!TestTrue(FString::Printf(TEXT("Facet corner oracle segment=%d corner=%d shape=%d tolerance=%.9g margin=%.9g"),
+				Segment, Corner, int32(Shape), Tolerance, MarginScale),
+				Actual.bHit == Expected.bHit && Actual.bStartPenetrating == Expected.bStartPenetrating &&
+				SameBits(Actual.Time, Expected.Time) && SameBits(Actual.PenetrationDepth, Expected.PenetrationDepth) &&
+				SameBits(Actual.Location, Expected.Location) && SameBits(Actual.Point, Expected.Point) &&
+				SameBits(Actual.QueryPoint, Expected.QueryPoint) && SameBits(Actual.Normal, Expected.Normal) &&
+				Actual.PrimitiveId == Expected.PrimitiveId && Actual.CanonicalGroupId == Expected.CanonicalGroupId &&
+				Actual.QueryFeatureKind == Expected.QueryFeatureKind && Actual.SurfaceFeatureKind == Expected.SurfaceFeatureKind &&
+				Actual.QueryFeatureIndex == Expected.QueryFeatureIndex && Actual.SurfaceFeatureIndex == Expected.SurfaceFeatureIndex)) return false;
+		}
+	}
 	const FVector3d JoinPoint = RuntimeCurvedPatch.SectionPolyline[JoinIndex];
 	const FVector3d PreviousChord =
 		(RuntimeCurvedPatch.SectionPolyline[JoinIndex] -
@@ -1083,6 +1332,32 @@ bool FIAmSpeedTensorBezierSurfaceTest::RunTest(const FString& Parameters)
 		FWorldQueryService(World).Sweep(BoxQuery).bHit);
 
 	FTensorBezierSurface Invalid = Plane;
+	// A point away from the diagonal belongs strictly to local triangle 0.
+	// All three kernels must decorate its stable identity after a real hit.
+	FAnalyticWorldData FlatWorld;
+	FTensorBezierPatch FlatPatch = Patch;
+	FlatPatch.Surface = Plane;
+	FlatWorld.TensorBezierPatches.Add(FlatPatch);
+	if (!TestTrue(TEXT("Flat tensor witness fixture validates"),
+		FlatWorld.FinalizeAndValidate(&Reason))) return false;
+	TestEqual(TEXT("Flat tensor fixture has exactly one cell"),
+		FlatWorld.TensorBezierPatches[0].ApproximationCells.Num(), 1);
+	FWorldQuery FlatQuery;
+	FlatQuery.Start = FVector3d(7.0, 3.0, 20.0);
+	FlatQuery.End = FVector3d(7.0, 3.0, -20.0);
+	FlatQuery.Radius = 0.1;
+	FlatQuery.HalfExtent = FVector3d(0.1);
+	FlatQuery.bIncludeCompactPatches = true;
+	for (EQueryShape Shape : { EQueryShape::Ray, EQueryShape::Sphere, EQueryShape::Box })
+	{
+		FlatQuery.Shape = Shape;
+		const FWorldHit FlatHit = FWorldQueryService(FlatWorld).Sweep(FlatQuery);
+		TestTrue(TEXT("Each query shape hits the expected tensor triangle"), FlatHit.bHit);
+		TestEqual(TEXT("Tensor hit gets the original stable triangle id"),
+			FlatHit.PrimitiveId, CombineStableIds(FlatPatch.PrimitiveId, uint64(1)));
+		TestEqual(TEXT("Tensor hit retains authored feature id"), FlatHit.FeatureId, FlatPatch.FeatureId);
+		TestEqual(TEXT("Tensor hit retains material id"), FlatHit.MaterialId, FlatPatch.MaterialId);
+	}
 	Invalid.ControlPoints.Pop();
 	TestFalse(TEXT("Incomplete tensor control net is rejected"),
 		Invalid.IsValid(&Reason));
@@ -1250,6 +1525,64 @@ bool FIAmSpeedPiecewiseTensorBezierProviderTest::RunTest(
 		*ArbitrationHit.Point.ToString()));
 	TestTrue(TEXT("Authority selects an agreeing polished provider behind an earlier out-of-domain provider"),
 		ArbitrationHit.bHit && ArbitrationHit.SurfaceId == Patch.SurfaceId);
+
+	// Exercise many providers with deliberately non-spatial
+	// insertion order. Each provider has a unique identity and translated cells.
+	FAnalyticWorldData IndexedWorld;
+	for (int32 Index = 40; Index >= 0; --Index)
+	{
+		FPiecewiseTensorBezierPatch Copy = Patch;
+		Copy.SourceId += 1000 * Index;
+		Copy.SurfaceId += 1000 * Index;
+		// Two spatially distinct primitives deliberately share the same surface:
+		// an indexed lookup must retain both, not just the first or last match.
+		if (Index == 1) Copy.SurfaceId = Patch.SurfaceId;
+		Copy.PrimitiveId += 1000 * Index;
+		Copy.CanonicalGroupId += 1000 * Index;
+		for (FPiecewiseTensorBezierCell& Cell : Copy.Cells)
+		{
+			Cell.FeatureId += 1000 * Index;
+			Cell.PrimitiveId += 1000 * Index;
+			for (FVector3d& Point : Cell.Surface.ControlPoints)
+			{
+				Point.X += 100.0 * Index;
+			}
+		}
+		IndexedWorld.PiecewiseTensorBezierPatches.Add(MoveTemp(Copy));
+	}
+	if (!TestTrue(TEXT("Indexed provider world validates"),
+		IndexedWorld.FinalizeAndValidate(&Reason)))
+	{
+		AddError(Reason);
+		return false;
+	}
+	FWorldQueryService IndexedService(IndexedWorld);
+	for (int32 Index = 0; Index <= 40; ++Index)
+	{
+		FWorldQuery IndexedQuery = Query;
+		IndexedQuery.RequiredSurfaceId = 0;
+		IndexedQuery.Start.X += 100.0 * Index;
+		IndexedQuery.End.X += 100.0 * Index;
+		const FWorldHit Hit = IndexedService.Sweep(IndexedQuery);
+		const uint64 ExpectedSurfaceId = Patch.SurfaceId + (Index == 1 ? 0 : 1000 * Index);
+		TestTrue(TEXT("Broad phase reaches every provider"),
+			Hit.bHit && Hit.SurfaceId == ExpectedSurfaceId &&
+			FMath::IsNearlyEqual(Hit.Time, RayHit.Time, 1.0e-12));
+		IndexedQuery.RequiredSurfaceId = ExpectedSurfaceId;
+		const FWorldHit RestrictedHit = IndexedService.Sweep(IndexedQuery);
+		TestTrue(TEXT("Restricted lookup preserves the exact unrestricted winner"),
+			RestrictedHit.bHit && RestrictedHit.SurfaceId == Hit.SurfaceId &&
+			RestrictedHit.PrimitiveId == Hit.PrimitiveId &&
+			RestrictedHit.Time == Hit.Time && RestrictedHit.Point == Hit.Point &&
+			RestrictedHit.Normal == Hit.Normal);
+		IndexedQuery.RequiredSourceId = MAX_uint64;
+		TestFalse(TEXT("Indexed surface lookup still applies source filtering"),
+			IndexedService.Sweep(IndexedQuery).bHit);
+		IndexedQuery.RequiredSourceId = 0;
+		IndexedQuery.RequiredSurfaceId = MAX_uint64;
+		TestFalse(TEXT("An absent surface does not fall back to unrestricted providers"),
+			IndexedService.Sweep(IndexedQuery).bHit);
+	}
 	return true;
 }
 

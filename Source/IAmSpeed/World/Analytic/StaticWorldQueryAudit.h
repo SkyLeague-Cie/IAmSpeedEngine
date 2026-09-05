@@ -51,6 +51,11 @@ public:
 	static bool IsSurfaceAnalyticBackend();
 	static bool IsAuthorityChaosShadowEnabled();
 	static bool ShouldBuildAnalyticWorld();
+	/** Records a proven empty single query without constructing geometry. Returns false
+	 * when the ordinary authority/audit path is required; the caller must then use it.
+	 * On true, reset the caller's miss output and do not call RecordSingle again. */
+	static bool TryRecordEmptySingle(
+		UWorld* World, uint8 TraceChannel, const FCollisionResponseParams& ResponseParams);
 
 	static bool TryCompactAuthoritySingle(
 		UWorld* World,

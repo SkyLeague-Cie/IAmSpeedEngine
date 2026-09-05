@@ -2,10 +2,23 @@
 
 #include "CoreMinimal.h"
 
+enum class ESimulationExecutionMode : uint8
+{
+	UnrealAsyncCallback = 0,
+	GameThread = 1,
+	IAmSpeedThread = 2,
+};
+
 namespace Speed::CanonicalFrameDriver
 {
-	/** Experimental ownership switch. Disabled by default until equivalence gates pass. */
+	/** Enables the canonical pipeline; its execution host remains the legacy callback by default. */
 	IAMSPEED_API bool IsEnabled();
+
+	/** Selects the temporary callback, game-thread milestone or owned worker. */
+	IAMSPEED_API ESimulationExecutionMode GetExecutionMode();
+
+	/** Allows the owned worker to pause without losing its canonical frame. */
+	IAMSPEED_API bool IsOwnedThreadPaused();
 
 	/** True only when a sealed scenario should run without real-time pacing. */
 	IAMSPEED_API bool IsFastSimulationEnabled();

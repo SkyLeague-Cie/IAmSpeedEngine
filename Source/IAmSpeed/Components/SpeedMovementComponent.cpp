@@ -3,13 +3,13 @@
 
 #include "SpeedMovementComponent.h"
 #include "IAmSpeed/IAmSpeed.h"
-#include "IAmSpeed/World/CanonicalFrameContext.h"
-#include "IAmSpeed/World/CanonicalFrameDriver.h"
+#include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/CanonicalFrameDriver.h"
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
-#include "IAmSpeed/World/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
 #include "UObject/UnrealType.h"
 
@@ -1026,7 +1026,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 void USpeedMovementComponent::QuantizePhysicalState()
 {
 	// Quantize kinematic state to reduce precision errors on client and server
-	BasePhysicsState.Kinematic.Quantize(GetKinematicStateForFrame(NumFrame() - 1).Rotation);
+	QuantizeKinematicState(BasePhysicsState.Kinematic, GetKinematicStateForFrame(NumFrame() - 1).Rotation);
 }
 
 void USpeedMovementComponent::TagStateHistoryProxyRole()

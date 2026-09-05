@@ -1256,6 +1256,9 @@ struct IAMSPEED_API FExtrudedQuinticPatch
 	// certified Hausdorff upper bound from each Bezier subcurve to its chord.
 	TArray<FVector3d> SectionPolyline;
 	TArray<double> SectionParameters;
+	// One immutable finite-facet AABB per section chord, rebuilt with the BVH.
+	// No per-query history: storage scales only with the fixed approximation.
+	TArray<FBox3d> SectionSegmentBounds;
 	TArray<FTriangleBvhNode> SectionSegmentBvhNodes;
 	TArray<int32> SectionSegmentBvhIndices;
 	double MaximumChordErrorCm = TNumericLimits<double>::Max();
@@ -1288,7 +1291,9 @@ struct IAMSPEED_API FTensorBezierSurface
 	int32 DegreeV = 0;
 	TArray<FVector3d, TInlineAllocator<16>> ControlPoints;
 
+	/** Evaluate the clamped control net without modifying it; scratch is local to this call. */
 	FVector3d Evaluate(double U, double V) const;
+	/** Exact de Casteljau derivatives; no temporal cache or change of interpolation order. */
 	FVector3d EvaluateDerivativeU(double U, double V) const;
 	FVector3d EvaluateDerivativeV(double U, double V) const;
 	FVector3d EvaluateNormal(double U, double V) const;

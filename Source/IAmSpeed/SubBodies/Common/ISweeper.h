@@ -21,9 +21,11 @@ protected:
 	virtual bool SweepVsSpheres(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI) = 0;
 	virtual bool SweepVsWheels(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI) = 0;
 
-	virtual const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const = 0;
-	virtual const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const = 0;
-	virtual const TArray<TWeakObjectPtr<USWheelSubBody>> GetExternalWheelSubBodies() const = 0;
+	// Borrowed only for this sweep. Registration changes are applied outside
+	// candidate traversal; implementations must return persistent storage.
+	virtual const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const = 0;
+	virtual const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const = 0;
+	virtual const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const = 0;
 	virtual bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const = 0;
 public:
 	virtual ~ISweeper() = default;

@@ -5,8 +5,12 @@
 #include "Components/PrimitiveComponent.h"
 #include "GameFramework/Actor.h"
 #include "HAL/IConsoleManager.h"
-#include "IAmSpeed/World/SpeedWorldSubsystem.h"
-#include "IAmSpeed/World/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Collision/CollisionResponseMask.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#endif
 
 namespace Speed::Analytic
 {
@@ -102,6 +106,8 @@ namespace
 		FWorldQuery StrictFirstMissQuery;
 		const FAnalyticWorldData* World = nullptr;
 		const USpeedWorldSubsystem* RuntimeBridge = nullptr;
+		const Speed::IStaticCollisionWorld* StaticWorld = nullptr;
+		const UWorld* QueryWorld = nullptr;
 		TArray<FPreviousTransition> PreviousTransitions;
 		TArray<uint64, TInlineAllocator<16>> StrictProviderIds;
 		uint32 MatchCount = 0;
@@ -110,6 +116,17 @@ namespace
 	};
 
 	thread_local FFrameState State;
+
+	// Canonical queries share one immutable bridge for the duration of the frame.
+	// Calls outside that frame, or against another world, retain ordinary lookup.
+	const USpeedWorldSubsystem* ResolveRuntimeBridge(UWorld* QueryWorld)
+	{
+		if (QueryWorld && State.bActive && State.QueryWorld == QueryWorld && State.RuntimeBridge)
+		{
+			return State.RuntimeBridge;
+		}
+		return QueryWorld ? QueryWorld->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+	}
 
 	Speed::EStaticCollisionBackend SelectedBackend()
 	{
@@ -197,16 +214,7 @@ namespace
 		Query.ObjectTypes = ObjectTypes;
 		if (!bObjectQuery && ResponseParams)
 		{
-			Query.BlockingObjectTypes = 0;
-			for (uint8 ObjectType = 0; ObjectType < ECollisionChannel::ECC_MAX;
-				++ObjectType)
-			{
-				if (ResponseParams->CollisionResponse.GetResponse(
-					static_cast<ECollisionChannel>(ObjectType)) == ECR_Block)
-				{
-					Query.BlockingObjectTypes |= 1ull << ObjectType;
-				}
-			}
+			Query.BlockingObjectTypes = GetBlockingResponseMask(ResponseParams->CollisionResponse);
 		}
 		Query.bObjectQuery = bObjectQuery;
 		Query.bApplyCollisionFilter = true;
@@ -665,6 +673,12 @@ namespace
 			return;
 		}
 		const uint32 QueryOrdinal = State.QueryCount++;
+		// Authority counters remain live without paying for unused diagnostic
+		// hashes and UObject path strings. Shadow comparison still needs both.
+		if (!FStaticWorldQueryAudit::IsEnabled())
+		{
+			return;
+		}
 		AuditHashValue(State.LegacyHash, Site);
 		HashVector(State.LegacyHash, Start);
 		HashVector(State.LegacyHash, End);
@@ -761,6 +775,28 @@ bool FStaticWorldQueryAudit::IsAuthorityChaosShadowEnabled()
 	return CVarAuthorityChaosShadowEnabled.GetValueOnAnyThread() != 0;
 }
 
+bool FStaticWorldQueryAudit::TryRecordEmptySingle(
+	UWorld* World, const uint8 TraceChannel, const FCollisionResponseParams& ResponseParams)
+{
+	// The canonical frame owns an immutable world. Outside it, retain ordinary
+	// lookup and missing-world/fallback diagnostics. Detailed audits keep their
+	// original query representation, hashes and ordinal-dependent diagnostics.
+	if (!World || !State.bActive || World != State.QueryWorld || !State.StaticWorld ||
+		!IsSurfaceAnalyticBackend() || IsEnabled() ||
+		CVarStrictQueryDetailEnabled.GetValueOnAnyThread() != 0 ||
+		CVarResidualSelectionAuditEnabled.GetValueOnAnyThread() != 0 ||
+		IsAuthorityChaosShadowEnabled())
+		return false;
+	if (TraceChannel < 64 && GetBlockingResponseMask(ResponseParams.CollisionResponse) != 0)
+		return false;
+
+	// Preserve the cheap query accounting. There is no authority kernel to time.
+	++State.QueryCount;
+	++State.AuthorityAttemptCount;
+	++State.AuthorityCoveredCount;
+	return true;
+}
+
 bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	UWorld* World,
 	const FVector& Start, const FVector& End, const FQuat& Rotation,
@@ -790,8 +826,7 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	++State.AuthorityAttemptCount;
 	const bool bStrict =
 		SelectedBackend() == Speed::EStaticCollisionBackend::SurfaceAnalytic;
-	const USpeedWorldSubsystem* RuntimeBridge = World
-		? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+	const USpeedWorldSubsystem* RuntimeBridge = ResolveRuntimeBridge(World);
 	const Speed::IStaticCollisionWorld* StaticWorld = RuntimeBridge
 		? RuntimeBridge->GetStaticCollisionWorld() : nullptr;
 	if (!StaticWorld)
@@ -874,8 +909,7 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	++State.AuthorityAttemptCount;
 	const bool bStrict =
 		SelectedBackend() == Speed::EStaticCollisionBackend::SurfaceAnalytic;
-	const USpeedWorldSubsystem* RuntimeBridge = World
-		? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+	const USpeedWorldSubsystem* RuntimeBridge = ResolveRuntimeBridge(World);
 	const Speed::IStaticCollisionWorld* StaticWorld = RuntimeBridge
 		? RuntimeBridge->GetStaticCollisionWorld() : nullptr;
 	if (!StaticWorld)
@@ -959,6 +993,8 @@ void FStaticWorldQueryAudit::BeginFrame(
 	State.AnalyticHash = AuditFnvOffset;
 	State.World = WorldData;
 	State.RuntimeBridge = RuntimeBridge;
+	State.StaticWorld = RuntimeBridge ? RuntimeBridge->GetStaticCollisionWorld() : nullptr;
+	State.QueryWorld = RuntimeBridge ? RuntimeBridge->GetWorld() : nullptr;
 	State.MatchCount = 0;
 	State.MismatchCount = 0;
 	FMemory::Memzero(State.FieldMismatches);
@@ -1040,6 +1076,8 @@ void FStaticWorldQueryAudit::EndFrame()
 	State.bActive = false;
 	State.World = nullptr;
 	State.RuntimeBridge = nullptr;
+	State.StaticWorld = nullptr;
+	State.QueryWorld = nullptr;
 }
 
 FStaticWorldQueryCounters FStaticWorldQueryAudit::GetCurrentFrameCounters()
@@ -1093,6 +1131,17 @@ void FStaticWorldQueryAudit::RecordMulti(
 	const uint64 ObjectTypes,
 	const TArray<FHitResult>& UnrealHits)
 {
+	if (!State.bActive)
+	{
+		return;
+	}
+	// A multi-hit call counts as one query even when its diagnostic payload
+	// is disabled; avoid copying and sorting hits which nobody will inspect.
+	if (!IsEnabled())
+	{
+		++State.QueryCount;
+		return;
+	}
 	TArray<FHitResult> OrderedHits = UnrealHits;
 	OrderedHits.Sort([](const FHitResult& A, const FHitResult& B)
 	{
@@ -1141,4 +1190,99 @@ void FStaticWorldQueryAudit::RecordMulti(
 	}
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedEmptySingleAccountingTest,
+	"IAmSpeed.ContactDetection.EmptySingleAccounting",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedEmptySingleAccountingTest::RunTest(const FString& Parameters)
+{
+	// Keep the private frame fixture in this translation unit; no production
+	// setter or UObject subsystem mutation is needed just to exercise accounting.
+	FFrameState SavedState = MoveTemp(State);
+	State = FFrameState();
+	struct FConsoleValue
+	{
+		IConsoleVariable* Variable;
+		int32 Value;
+		EConsoleVariableFlags Flags;
+	};
+	TArray<FConsoleValue> SavedVariables;
+	const TCHAR* Names[] = {
+		TEXT("p.IAmSpeed.StaticCollision.Backend"),
+		TEXT("p.IAmSpeed.AnalyticWorld.CompactAuthority"),
+		TEXT("p.IAmSpeed.StaticWorldQuery.Audit"),
+		TEXT("p.IAmSpeed.AnalyticWorld.Shadow"),
+		TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail"),
+		TEXT("p.IAmSpeed.AnalyticWorld.ResidualSelectionAudit"),
+		TEXT("p.IAmSpeed.AnalyticWorld.AuthorityChaosShadow")
+	};
+	for (const TCHAR* Name : Names)
+	{
+		IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(Name);
+		SavedVariables.Add({Variable, Variable->GetInt(), Variable->GetFlags()});
+		Variable->Set(0, ECVF_SetByCode);
+	}
+	ON_SCOPE_EXIT
+	{
+		State = MoveTemp(SavedState);
+		for (const FConsoleValue& Saved : SavedVariables)
+		{
+			Saved.Variable->Set(Saved.Value, ECVF_SetByCode);
+			Saved.Variable->SetFlags(Saved.Flags);
+		}
+	};
+	SavedVariables[0].Variable->Set(2, ECVF_SetByCode);
+	UWorld* World = NewObject<UWorld>();
+	UWorld* OtherWorld = NewObject<UWorld>();
+	FAnalyticWorldData WorldData;
+	FAnalyticStaticCollisionWorld StaticWorld(WorldData);
+	FCollisionResponseParams Responses;
+	Responses.CollisionResponse.SetAllChannels(ECR_Ignore);
+	const auto TryEmpty = [&]() { return FStaticWorldQueryAudit::TryRecordEmptySingle(World, 0, Responses); };
+	const auto CheckRejected = [&](const TCHAR* Message)
+	{
+		const uint32 Before = State.QueryCount;
+		TestFalse(Message, TryEmpty());
+		TestEqual(TEXT("declined shortcut does not record a query"), State.QueryCount, Before);
+	};
+	CheckRejected(TEXT("outside a canonical frame uses ordinary path"));
+	State.bActive = true;
+	State.QueryWorld = World;
+	CheckRejected(TEXT("missing static world retains diagnostics"));
+	State.StaticWorld = &StaticWorld;
+	TestFalse(TEXT("null world uses ordinary path"), FStaticWorldQueryAudit::TryRecordEmptySingle(nullptr, 0, Responses));
+	TestFalse(TEXT("other world uses ordinary path"), FStaticWorldQueryAudit::TryRecordEmptySingle(OtherWorld, 0, Responses));
+	TestTrue(TEXT("empty filter is a proved miss"), TryEmpty());
+	Responses.CollisionResponse.SetAllChannels(ECR_Overlap);
+	TestTrue(TEXT("overlaps cannot block a single world query"), TryEmpty());
+	for (uint8 Channel = 0; Channel < CollisionResponseChannelCount; ++Channel)
+	{
+		Responses.CollisionResponse.SetResponse(static_cast<ECollisionChannel>(Channel), ECR_Block);
+		CheckRejected(TEXT("any live blocking bit keeps ordinary query"));
+		Responses.CollisionResponse.SetResponse(static_cast<ECollisionChannel>(Channel), ECR_Overlap);
+	}
+	Responses.CollisionResponse.SetAllChannels(ECR_Block);
+	TestFalse(TEXT("trace channel 63 is representable"), FStaticWorldQueryAudit::TryRecordEmptySingle(World, 63, Responses));
+	TestTrue(TEXT("trace channel 64 has no representable blockers"), FStaticWorldQueryAudit::TryRecordEmptySingle(World, 64, Responses));
+	Responses.CollisionResponse.SetAllChannels(ECR_Ignore);
+	for (int32 Index = 2; Index < SavedVariables.Num(); ++Index)
+	{
+		SavedVariables[Index].Variable->Set(1, ECVF_SetByCode);
+		CheckRejected(TEXT("enabled diagnostics retain original query path"));
+		SavedVariables[Index].Variable->Set(0, ECVF_SetByCode);
+	}
+	for (int32 Backend = 0; Backend < 2; ++Backend)
+	{
+		SavedVariables[0].Variable->Set(Backend, ECVF_SetByCode);
+		CheckRejected(TEXT("Legacy and Hybrid keep their original authority path"));
+	}
+	TestEqual(TEXT("one record per proved miss"), State.QueryCount, uint32(3));
+	TestEqual(TEXT("authority attempts preserved"), State.AuthorityAttemptCount, uint32(3));
+	TestEqual(TEXT("authority coverage preserved"), State.AuthorityCoveredCount, uint32(3));
+	TestEqual(TEXT("no legacy sweep introduced"), State.LegacySweepCount, uint32(0));
+	TestEqual(TEXT("no fallback introduced"), State.AuthorityFallbackCount, uint32(0));
+	return true;
+}
+#endif
 } // namespace Speed::Analytic

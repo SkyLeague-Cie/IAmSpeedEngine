@@ -1183,6 +1183,7 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 {
 	SectionPolyline.Reset();
 	SectionParameters.Reset();
+	SectionSegmentBounds.Reset();
 	SectionSegmentBvhNodes.Reset();
 	SectionSegmentBvhIndices.Reset();
 	MaximumChordErrorCm = TNumericLimits<double>::Max();
@@ -1238,12 +1239,11 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 	}
 	const int32 SegmentCount = FMath::Max(0, SectionPolyline.Num() - 1);
 	SectionSegmentBvhIndices.SetNumUninitialized(SegmentCount);
+	SectionSegmentBounds.SetNumUninitialized(SegmentCount);
+	static_assert(sizeof(FBox3d) <= 56, "Account for per-chord derived geometry storage");
 	for (int32 Segment = 0; Segment < SegmentCount; ++Segment)
 	{
 		SectionSegmentBvhIndices[Segment] = Segment;
-	}
-	const auto SegmentBounds = [this](const int32 Segment)
-	{
 		FBox3d Result(EForceInit::ForceInit);
 		Result += SectionPolyline[Segment] +
 			MinimumExtrusionCoordinate * ExtrusionAxis;
@@ -1253,7 +1253,11 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 			MinimumExtrusionCoordinate * ExtrusionAxis;
 		Result += SectionPolyline[Segment + 1] +
 			MaximumExtrusionCoordinate * ExtrusionAxis;
-		return Result;
+		SectionSegmentBounds[Segment] = Result;
+	}
+	const auto SegmentBounds = [this](const int32 Segment) -> const FBox3d&
+	{
+		return SectionSegmentBounds[Segment];
 	};
 	TFunction<int32(int32, int32)> BuildNode =
 		[this, &SegmentBounds, &BuildNode](const int32 FirstIndex,
@@ -1473,12 +1477,11 @@ FVector3d FOpenRimCanonicalTubeFit::EvaluateTerminal(const double InS) const
 
 namespace
 {
-	FVector3d EvaluateBezierControlPolygon(
-		const TArrayView<const FVector3d> ControlPoints, const double Parameter)
+	// Consumes caller-owned scratch; interpolation order is the original de Casteljau order.
+	FVector3d EvaluateBezierControlPolygonInPlace(
+		const TArrayView<FVector3d> Work, const double Parameter)
 	{
-		if (ControlPoints.IsEmpty()) return FVector3d::ZeroVector;
-		TArray<FVector3d, TInlineAllocator<16>> Work;
-		Work.Append(ControlPoints.GetData(), ControlPoints.Num());
+		if (Work.IsEmpty()) return FVector3d::ZeroVector;
 		const double T = FMath::Clamp(Parameter, 0.0, 1.0);
 		for (int32 Remaining = Work.Num() - 1; Remaining > 0; --Remaining)
 		{
@@ -1488,6 +1491,35 @@ namespace
 			}
 		}
 		return Work[0];
+	}
+
+	template<bool DerivativeU>
+	FVector3d EvaluateBicubicDerivative(const FVector3d* Points, const double U, const double V)
+	{
+		// Fixed dimensions let the compiler specialize the same de Casteljau
+		// reductions. Only scratch storage changes; no polynomial reassociation.
+		constexpr int32 UCount = DerivativeU ? 3 : 4;
+		constexpr int32 VCount = DerivativeU ? 4 : 3;
+		constexpr int32 Next = DerivativeU ? 4 : 1;
+		FVector3d AlongU[UCount];
+		FVector3d AlongV[VCount];
+		for (int32 UI = 0; UI < UCount; ++UI)
+		{
+			for (int32 VI = 0; VI < VCount; ++VI)
+				AlongV[VI] = 3.0 * (Points[UI * 4 + VI + Next] - Points[UI * 4 + VI]);
+			AlongU[UI] = EvaluateBezierControlPolygonInPlace(MakeArrayView(AlongV), V);
+		}
+		return EvaluateBezierControlPolygonInPlace(MakeArrayView(AlongU), U);
+	}
+
+	// Recognition/build callers retain the non-destructive interface.
+	FVector3d EvaluateBezierControlPolygon(
+		const TArrayView<const FVector3d> ControlPoints, const double Parameter)
+	{
+		if (ControlPoints.IsEmpty()) return FVector3d::ZeroVector;
+		TArray<FVector3d, TInlineAllocator<16>> Work;
+		Work.Append(ControlPoints.GetData(), ControlPoints.Num());
+		return EvaluateBezierControlPolygonInPlace(Work, Parameter);
 	}
 
 	double TensorBilinearErrorBoundCm(const FTensorBezierSurface& Surface)
@@ -1668,14 +1700,17 @@ FVector3d FTensorBezierSurface::Evaluate(
 		return FVector3d::ZeroVector;
 	}
 	TArray<FVector3d, TInlineAllocator<16>> AlongU;
-	AlongU.Reserve(DegreeU + 1);
+	AlongU.SetNumUninitialized(DegreeU + 1);
 	const int32 VCount = DegreeV + 1;
+	TArray<FVector3d, TInlineAllocator<16>> AlongV;
+	AlongV.SetNumUninitialized(VCount);
 	for (int32 UIndex = 0; UIndex <= DegreeU; ++UIndex)
 	{
-		AlongU.Add(EvaluateBezierControlPolygon(
-			MakeArrayView(ControlPoints.GetData() + UIndex * VCount, VCount), V));
+		FMemory::Memcpy(AlongV.GetData(), ControlPoints.GetData() + UIndex * VCount,
+			VCount * sizeof(FVector3d));
+		AlongU[UIndex] = EvaluateBezierControlPolygonInPlace(AlongV, V);
 	}
-	return EvaluateBezierControlPolygon(AlongU, U);
+	return EvaluateBezierControlPolygonInPlace(AlongU, U);
 }
 
 FVector3d FTensorBezierSurface::EvaluateDerivativeU(
@@ -1687,21 +1722,21 @@ FVector3d FTensorBezierSurface::EvaluateDerivativeU(
 		return FVector3d::ZeroVector;
 	}
 	TArray<FVector3d, TInlineAllocator<16>> DerivativeControlPoints;
-	DerivativeControlPoints.Reserve(DegreeU);
+	DerivativeControlPoints.SetNumUninitialized(DegreeU);
 	const int32 VCount = DegreeV + 1;
+	TArray<FVector3d, TInlineAllocator<16>> AlongV;
+	AlongV.SetNumUninitialized(VCount);
 	for (int32 UIndex = 0; UIndex < DegreeU; ++UIndex)
 	{
-		TArray<FVector3d, TInlineAllocator<16>> AlongV;
-		AlongV.Reserve(VCount);
 		for (int32 VIndex = 0; VIndex < VCount; ++VIndex)
 		{
-			AlongV.Add(static_cast<double>(DegreeU) *
+			AlongV[VIndex] = static_cast<double>(DegreeU) *
 				(ControlPoints[(UIndex + 1) * VCount + VIndex] -
-					ControlPoints[UIndex * VCount + VIndex]));
+					ControlPoints[UIndex * VCount + VIndex]);
 		}
-		DerivativeControlPoints.Add(EvaluateBezierControlPolygon(AlongV, V));
+		DerivativeControlPoints[UIndex] = EvaluateBezierControlPolygonInPlace(AlongV, V);
 	}
-	return EvaluateBezierControlPolygon(DerivativeControlPoints, U);
+	return EvaluateBezierControlPolygonInPlace(DerivativeControlPoints, U);
 }
 
 FVector3d FTensorBezierSurface::EvaluateDerivativeV(
@@ -1713,26 +1748,34 @@ FVector3d FTensorBezierSurface::EvaluateDerivativeV(
 		return FVector3d::ZeroVector;
 	}
 	TArray<FVector3d, TInlineAllocator<16>> AlongU;
-	AlongU.Reserve(DegreeU + 1);
+	AlongU.SetNumUninitialized(DegreeU + 1);
 	const int32 VCount = DegreeV + 1;
+	TArray<FVector3d, TInlineAllocator<16>> DerivativeControlPoints;
+	DerivativeControlPoints.SetNumUninitialized(DegreeV);
 	for (int32 UIndex = 0; UIndex <= DegreeU; ++UIndex)
 	{
-		TArray<FVector3d, TInlineAllocator<16>> DerivativeControlPoints;
-		DerivativeControlPoints.Reserve(DegreeV);
 		for (int32 VIndex = 0; VIndex < DegreeV; ++VIndex)
 		{
-			DerivativeControlPoints.Add(static_cast<double>(DegreeV) *
+			DerivativeControlPoints[VIndex] = static_cast<double>(DegreeV) *
 				(ControlPoints[UIndex * VCount + VIndex + 1] -
-					ControlPoints[UIndex * VCount + VIndex]));
+					ControlPoints[UIndex * VCount + VIndex]);
 		}
-		AlongU.Add(EvaluateBezierControlPolygon(DerivativeControlPoints, V));
+		AlongU[UIndex] = EvaluateBezierControlPolygonInPlace(DerivativeControlPoints, V);
 	}
-	return EvaluateBezierControlPolygon(AlongU, U);
+	return EvaluateBezierControlPolygonInPlace(AlongU, U);
 }
 
 FVector3d FTensorBezierSurface::EvaluateNormal(
 	const double U, const double V) const
 {
+	// Degree is mutable authored data, not a runtime object's permanent subtype.
+	// Keep the generic public evaluator for every other valid or invalid net.
+	if (DegreeU == 3 && DegreeV == 3 && ControlPoints.Num() == 16)
+	{
+		return FVector3d::CrossProduct(
+			EvaluateBicubicDerivative<true>(ControlPoints.GetData(), U, V),
+			EvaluateBicubicDerivative<false>(ControlPoints.GetData(), U, V)).GetSafeNormal();
+	}
 	return FVector3d::CrossProduct(
 		EvaluateDerivativeU(U, V), EvaluateDerivativeV(U, V)).GetSafeNormal();
 }

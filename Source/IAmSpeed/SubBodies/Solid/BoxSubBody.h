@@ -90,9 +90,9 @@ protected:
     virtual FCollisionQueryParams BuildTraceParams() const { return USolidSubBody::BuildTraceParams(); }
 	bool ShouldSkipSphereSweep(const USphereSubBody& Sphere) const override;
     bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const { return USolidSubBody::ComponentHasBeenIgnored(OtherComp); }
-    const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const { return USolidSubBody::GetExternalBoxSubBodies(); }
-    const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
-    const TArray<TWeakObjectPtr<USWheelSubBody>> GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
+    const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const { return USolidSubBody::GetExternalBoxSubBodies(); }
+    const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
+    const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 private:
     bool RefreshVariableNormalGroundSupport(const float Delta);
 	bool ProjectEstablishedStaticContactImpl(

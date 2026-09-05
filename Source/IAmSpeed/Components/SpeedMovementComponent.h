@@ -17,6 +17,9 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 	GENERATED_BODY()
 
 	friend struct FNetworkBaseSpeedState;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FIAmSpeedOriginGetterTest;
+#endif
 	
 public:
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);

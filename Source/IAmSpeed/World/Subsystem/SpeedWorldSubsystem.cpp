@@ -5,7 +5,9 @@
 #include "SpeedWorldSubsystem.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
-#include "IAmSpeed/World/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
+#include "IAmSpeed/World/Collision/ResolvedPairSet.h"
 #include "IAmSpeed/World/Analytic/AnalyticLandscapeAdapter.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticCollisionAsset.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticSourceComponent.h"
@@ -66,7 +68,7 @@ namespace
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
-	StaticCollisionWorld.Reset();
+	SimulationWorld.ResetStaticCollisionWorld();
 	AnalyticWorldData.Reset();
 	AnalyticSourceComponents.Reset();
 	AnalyticWorldBuildAttempt = 0;
@@ -542,9 +544,21 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		ValidShapeSampleCount, Finalized.TriangleBvh.Num(), Finalized.StableHash(),
 		Finalized.IsAuthorityEligible() ? 1 : 0,
 		bSourceReadinessPending ? 1 : 0);
+#if !UE_BUILD_SHIPPING
+	uint64 ExtrudedFacetCount = 0;
+	uint64 ExtrudedFacetBoundsAllocatedBytes = 0;
+	for (const Speed::Analytic::FExtrudedQuinticPatch& Patch : Finalized.ExtrudedQuinticPatches)
+	{
+		ExtrudedFacetCount += Patch.SectionSegmentBounds.Num();
+		ExtrudedFacetBoundsAllocatedBytes += Patch.SectionSegmentBounds.GetAllocatedSize();
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("[AnalyticQueryStorage] ExtrudedFacets=%llu FacetBoundsAllocatedBytes=%llu"),
+		ExtrudedFacetCount, ExtrudedFacetBoundsAllocatedBytes);
+#endif
 	AnalyticWorldData = MoveTemp(FinalizedWorld);
-	StaticCollisionWorld = MakeUnique<Speed::FAnalyticStaticCollisionWorld>(
-		*AnalyticWorldData);
+	SimulationWorld.SetStaticCollisionWorld(
+		MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*AnalyticWorldData));
 }
 
 static TAutoConsoleVariable<float> CVarIAmSpeedRollingBaumgarte(
@@ -616,85 +630,45 @@ void USpeedWorldSubsystem::ApplyPendingOps()
 
         if (Op.bAdd)
         {
-            bool bExists = false;
-            for (auto& W : Components) { if (W == Op.Comp) { bExists = true; break; } }
-			if (!bExists) AddComponent(*Op.Comp);
+			if (!SimulationWorld.ContainsAdapter(*Op.Comp)) AddComponent(*Op.Comp);
         }
         else
         {
 			RemoveComponent(*Op.Comp);
         }
     }
-
-    bDirtyOrder = true;
 }
 
 void USpeedWorldSubsystem::RebuildSortedIfNeeded()
 {
-    if (!bDirtyOrder)
-        return;
-
-	// Clean invalids
-    Components.RemoveAll([](const ISpeedComponent* W)
-        {
-            return !W;
-        });
-
-    ComponentsSorted = Components;
-
-    // Deterministic order:
-    // - first Owner->GetUniqueID (stable during a run)
-    // - then Object UniqueID of the component
-    // Commented for the moment since there is a crash happening in the sort
-    /*Algo::Sort(ComponentsSorted, [](const ISpeedComponent* A, const ISpeedComponent* B)
-        {
-            const UObject* OA = reinterpret_cast<const UObject*>(A);
-            const UObject* OB = reinterpret_cast<const UObject*>(B);
-            if (!OA || !OB) return OA != nullptr; // valid ones first
-
-            AActor* AA = Cast<AActor>(OA->GetOuter());
-            AActor* AB = Cast<AActor>(OB->GetOuter());
-
-            const uint32 AOwnerId = AA ? (uint32)AA->GetUniqueID() : 0u;
-            const uint32 BOwnerId = AB ? (uint32)AB->GetUniqueID() : 0u;
-
-            if (AOwnerId != BOwnerId)
-                return AOwnerId < BOwnerId;
-
-            return OA->GetUniqueID() < OB->GetUniqueID();
-        });*/
-
-    bDirtyOrder = false;
+	SimulationWorld.RebuildOrderedAdapters();
 }
 
 void USpeedWorldSubsystem::AddComponent(ISpeedComponent& Comp)
 {
     // Add New component to all existing ones
-    for (ISpeedComponent* Component : Components)
+    for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
     {
 		Component->AddExternalSubBodies(Comp.GetSubBodies());
     }
 
 	// Add existing ones to the new component
-    for (ISpeedComponent* Component : Components)
+    for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
 	{
         Comp.AddExternalSubBodies(Component->GetSubBodies());
 	}
 
 	// Finally add to list
-    Components.Add(&Comp);
+    SimulationWorld.AddAdapter(Comp);
 }
 
 void USpeedWorldSubsystem::RemoveComponent(ISpeedComponent& Comp)
 {
 	// Remove component from list
-    Components.RemoveAll([&](const ISpeedComponent* W)
-    {
-        return !W || W == &Comp;
-    });
+	SimulationWorld.RemoveAdapter(Comp);
 
 	// Remove sub-bodies of the removed component from all existing ones
-	for (ISpeedComponent* Component : Components)
+	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
     {
         Component->RemoveExternalSubBodies(Comp.GetSubBodies());
 	}
@@ -707,6 +681,7 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	const FVector& NormalBToA,
 	const float ImpactRelativeNormalSpeed)
 {
+	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	if (CVarIAmSpeedPersistentDynamicPairs.GetValueOnAnyThread() == 0)
 	{
 		return;
@@ -726,30 +701,21 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	const uint32 Lo = FMath::Min(IdA, IdB);
 	const uint32 Hi = FMath::Max(IdA, IdB);
 	const uint64 PairKey = (static_cast<uint64>(Lo) << 32) | Hi;
-	FDynamicContactPair* Pair = DynamicContactPairs.FindByPredicate(
-		[PairKey](const FDynamicContactPair& Candidate)
-		{
-			return Candidate.PairKey == PairKey;
-		});
-	TArray<FDynamicContactPair>* DestinationPairs = &DynamicContactPairs;
+	FDynamicContactPair* Pair = SimulationWorld.FindDynamicContactPair(PairKey);
+	bool bPendingPair = false;
 	if (!Pair && AreUnilateralRollingPairsEnabled())
 	{
 		// Collision resolution runs inside the TOI iteration. Queue structural
 		// changes so the active pair array remains immutable until the iteration
 		// has completed.
-		DestinationPairs = &PendingRollingContactPairs;
-		Pair = PendingRollingContactPairs.FindByPredicate(
-			[PairKey](const FDynamicContactPair& Candidate)
-			{
-				return Candidate.PairKey == PairKey;
-			});
+		bPendingPair = true;
+		Pair = SimulationWorld.FindPendingRollingContactPair(PairKey);
 	}
 	if (!Pair)
 	{
-		Pair = &DestinationPairs->AddDefaulted_GetRef();
-		Pair->BodyA = &BodyA;
-		Pair->BodyB = &BodyB;
-		Pair->PairKey = PairKey;
+		Pair = bPendingPair
+			? &SimulationWorld.AddPendingRollingContactPair(PairKey, BodyA, BodyB)
+			: &SimulationWorld.AddDynamicContactPair(PairKey, BodyA, BodyB);
 		Pair->FirstSeenFrame = CurrentStepFrame;
 		Pair->AcquisitionNormalSpeed = ImpactRelativeNormalSpeed;
 	}
@@ -785,25 +751,10 @@ void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOI(
 	const uint32 Lo = FMath::Min(IdA, IdB);
 	const uint32 Hi = FMath::Max(IdA, IdB);
 	const uint64 PairKey = (static_cast<uint64>(Lo) << 32) | Hi;
-	const int32 PendingIndex = PendingRollingContactPairs.IndexOfByPredicate(
-		[PairKey](const FDynamicContactPair& Candidate)
-		{
-			return Candidate.PairKey == PairKey;
-		});
-	if (PendingIndex == INDEX_NONE)
+	if (!SimulationWorld.ActivatePendingRollingContactPair(PairKey))
 	{
 		return;
 	}
-
-	if (!DynamicContactPairs.ContainsByPredicate(
-		[PairKey](const FDynamicContactPair& Candidate)
-		{
-			return Candidate.PairKey == PairKey;
-		}))
-	{
-		DynamicContactPairs.Add(MoveTemp(PendingRollingContactPairs[PendingIndex]));
-	}
-	PendingRollingContactPairs.RemoveAtSwap(PendingIndex, 1, EAllowShrinking::No);
 
 	if (RemainingDt > KINDA_SMALL_NUMBER)
 	{
@@ -815,6 +766,8 @@ bool USpeedWorldSubsystem::IsDynamicContactPairOwnedByRollingManifold(
 	const USolidSubBody& BodyA,
 	const USolidSubBody& BodyB) const
 {
+	const auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
+	const unsigned int CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	if (!bLoggedRollingOwnershipState && AreUnilateralRollingPairsEnabled())
 	{
 		bLoggedRollingOwnershipState = true;
@@ -834,15 +787,11 @@ bool USpeedWorldSubsystem::IsDynamicContactPairOwnedByRollingManifold(
 	const uint32 Lo = FMath::Min(IdA, IdB);
 	const uint32 Hi = FMath::Max(IdA, IdB);
 	const uint64 PairKey = (static_cast<uint64>(Lo) << 32) | Hi;
-	return DynamicContactPairs.ContainsByPredicate(
-		[PairKey, this](const FDynamicContactPair& Pair)
-		{
-			// Once an acquired pair has been solved at its TOI, it owns the remaining
-			// substep and later sweeps must yield to the manifold.
-			return Pair.PairKey == PairKey &&
-				Pair.bRollingManifoldReady &&
-				Pair.BodyA.IsValid() && Pair.BodyB.IsValid();
-		});
+	const FDynamicContactPair* Pair = SimulationWorld.FindDynamicContactPair(PairKey);
+	// Once an acquired pair has been solved at its TOI, it owns the remaining
+	// substep and later sweeps must yield to the manifold.
+	return Pair && Pair->bRollingManifoldReady &&
+		Pair->BodyA.IsValid() && Pair->BodyB.IsValid();
 }
 
 ERollingManifoldContactState USpeedWorldSubsystem::GetRollingManifoldContactState(
@@ -853,17 +802,24 @@ ERollingManifoldContactState USpeedWorldSubsystem::GetRollingManifoldContactStat
 		return ERollingManifoldContactState::Absent;
 	}
 
-	ERollingManifoldContactState Result = ERollingManifoldContactState::Absent;
-	for (const FDynamicContactPair& Pair : DynamicContactPairs)
+	const TSet<uint64>* PairKeys = SimulationWorld.FindDynamicContactPairKeys(Body.GetUniqueID());
+	if (!PairKeys)
 	{
-		if (!Pair.bRollingManifoldReady ||
-			!Pair.BodyA.IsValid() || !Pair.BodyB.IsValid() ||
-			(Pair.BodyA.Get() != &Body && Pair.BodyB.Get() != &Body))
+		return ERollingManifoldContactState::Absent;
+	}
+
+	ERollingManifoldContactState Result = ERollingManifoldContactState::Absent;
+	for (const uint64 PairKey : *PairKeys)
+	{
+		const FDynamicContactPair* Pair = SimulationWorld.FindDynamicContactPair(PairKey);
+		if (!Pair || !Pair->bRollingManifoldReady ||
+			!Pair->BodyA.IsValid() || !Pair->BodyB.IsValid() ||
+			(Pair->BodyA.Get() != &Body && Pair->BodyB.Get() != &Body))
 		{
 			continue;
 		}
 
-		if (Pair.bActiveContactLastSolve)
+		if (Pair->bActiveContactLastSolve)
 		{
 			return ERollingManifoldContactState::ActiveContact;
 		}
@@ -878,10 +834,12 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 	const bool bFilterByPairKey,
 	const bool bSolveFirstSeenFrame)
 {
+	auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
+	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	constexpr unsigned int MaxUnseenFrames = 2;
 	const float SeparationToleranceCm = FMath::Max(
 		0.0f, CVarIAmSpeedRollingSeparationTolerance.GetValueOnAnyThread());
-	const auto LogRollingRelease = [this](
+	const auto LogRollingRelease = [&CurrentStepFrame](
 		const FDynamicContactPair& Pair,
 		const TCHAR* Reason,
 		const float Separation = 0.0f,
@@ -919,7 +877,18 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			RelativeNormalVelocity);
 	};
 
-	for (int32 Index = DynamicContactPairs.Num() - 1; Index >= 0; --Index)
+	int32 FirstPairIndex = DynamicContactPairs.Num() - 1;
+	int32 LastPairIndex = 0;
+	if (bFilterByPairKey)
+	{
+		FirstPairIndex = SimulationWorld.FindDynamicContactPairIndex(PairKeyFilter);
+		if (FirstPairIndex == INDEX_NONE)
+		{
+			return;
+		}
+		LastPairIndex = FirstPairIndex;
+	}
+	for (int32 Index = FirstPairIndex; Index >= LastPairIndex; --Index)
 	{
 		FDynamicContactPair& Pair = DynamicContactPairs[Index];
 		if ((bFilterByPairKey && Pair.PairKey != PairKeyFilter) ||
@@ -935,7 +904,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		if (!BodyA || !BodyB || !CompA || !CompB)
 		{
 			LogRollingRelease(Pair, TEXT("InvalidBody"));
-			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 
@@ -960,7 +929,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		if (!bUseRollingManifold &&
 			CurrentStepFrame - Pair.LastSeenFrame > MaxUnseenFrames)
 		{
-			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 
@@ -975,7 +944,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 					CurrentStepFrame, Pair.FirstSeenFrame);
 			}
 			LogRollingRelease(Pair, TEXT("FrameRewind"));
-			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 
@@ -997,7 +966,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			FVector::DistSquared(CurrentCOMB, Pair.LastCOMB) > FMath::Square(MaxExpectedMoveB))
 		{
 			LogRollingRelease(Pair, TEXT("DiscontinuousMotion"));
-			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 		Pair.LastCOMA = CurrentCOMA;
@@ -1036,7 +1005,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 						*CurrentBoxToSphereNormal.ToString(), *StoredBoxToSphereNormal.ToString());
 				}
 				LogRollingRelease(Pair, TEXT("Geometry"), ShapeSeparation);
-				DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+				SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 				continue;
 			}
 
@@ -1112,7 +1081,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			LogRollingRelease(
 				Pair, TEXT("SeparatingVelocity"), Separation,
 				PredictedRelativeNormalVelocity);
-			DynamicContactPairs.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 
@@ -1297,6 +1266,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 
 void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 {
+	auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
+	auto& PendingRollingContactPairs = SimulationWorld.GetPendingRollingContactPairs();
 	if (!USphereSubBody::IsSphereBoxProjectionEnabled())
 	{
 		return;
@@ -1333,29 +1304,9 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 	// New encounters and teleports do not necessarily own a persistent
 	// manifold yet. Measure every independent sphere/box pair from refreshed
 	// parent states so the next frame cannot inherit an overlap.
-	TArray<USphereSubBody*> Spheres;
-	TArray<UBoxSubBody*> Boxes;
-	for (ISpeedComponent* Component : ComponentsSorted)
+	for (USphereSubBody* Sphere : SimulationWorld.GetProjectionSpheres())
 	{
-		if (!Component)
-		{
-			continue;
-		}
-		for (USSubBody* SubBody : Component->GetSubBodies())
-		{
-			if (USphereSubBody* Sphere = Cast<USphereSubBody>(SubBody))
-			{
-				Spheres.Add(Sphere);
-			}
-			else if (UBoxSubBody* Box = Cast<UBoxSubBody>(SubBody))
-			{
-				Boxes.Add(Box);
-			}
-		}
-	}
-	for (USphereSubBody* Sphere : Spheres)
-	{
-		for (UBoxSubBody* Box : Boxes)
+		for (UBoxSubBody* Box : SimulationWorld.GetProjectionBoxes())
 		{
 			if (Sphere && Box &&
 				Sphere->GetParentComponent() != Box->GetParentComponent())
@@ -1372,10 +1323,11 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
 
-	for (ISpeedComponent* Component : ComponentsSorted)
+	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
 	{
 		if (Component)
 		{
+			IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Component, Prepare);
 			Component->PrepareCanonicalFrame(Context);
 		}
 	}
@@ -1389,7 +1341,7 @@ ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 	bool bFoundController = false;
 	bool bAllReady = true;
 	bool bAllComplete = true;
-	for (const ISpeedComponent* Component : ComponentsSorted)
+	for (const ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
 	{
 		if (!Component || !Component->IsCanonicalRunController())
 		{
@@ -1414,8 +1366,39 @@ ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 		: ECanonicalRunControlState::Ready;
 }
 
+FSimulationSnapshot USpeedWorldSubsystem::CaptureSimulationSnapshot(
+	const uint64 NumFrame, const uint64 InputJournalHash)
+{
+	RebuildSortedIfNeeded();
+	return SimulationWorld.CaptureSnapshot(NumFrame, InputJournalHash);
+}
+
+bool USpeedWorldSubsystem::RestoreSimulationSnapshot(
+	const FSimulationSnapshot& Snapshot,
+	const uint64 ExpectedInputJournalHash)
+{
+	ApplyPendingOps();
+	RebuildSortedIfNeeded();
+	return SimulationWorld.RestoreSnapshot(Snapshot, ExpectedInputJournalHash);
+}
+
+uint64 USpeedWorldSubsystem::GetSimulationStableId(const ISpeedComponent& Component)
+{
+	ApplyPendingOps();
+	RebuildSortedIfNeeded();
+	return SimulationWorld.FindStableId(Component);
+}
+
+bool USpeedWorldSubsystem::ApplySimulationInputs(
+	const uint64 NumFrame, const Speed::SimulationBoundary::FInputJournal& Journal)
+{
+	RebuildSortedIfNeeded();
+	return SimulationWorld.ApplyInputsForFrame(NumFrame, Journal);
+}
+
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
+	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	const double StepStartSeconds = FPlatformTime::Seconds();
 	LastStepDiagnostics = FSpeedStepDiagnostics();
 	LastStepDiagnostics.Serial = ++StepSerial;
@@ -1428,7 +1411,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     ApplyPendingOps();
     RebuildSortedIfNeeded();
 
-    if (Dt <= 0.f || ComponentsSorted.Num() == 0)
+    if (Dt <= 0.f || SimulationWorld.GetOrderedAdapters().Num() == 0)
 	{
 		LastStepDiagnostics.TotalMilliseconds =
 			(FPlatformTime::Seconds() - StepStartSeconds) * 1000.0;
@@ -1439,10 +1422,11 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     // 1) Reset frame
     // ------------------------------------------------------------
 	const double ResetStartSeconds = FPlatformTime::Seconds();
-	for (ISpeedComponent* Comp : ComponentsSorted)
+	for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
     {
         if (!Comp) continue;
 
+		IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Reset);
 		Comp->UpdateSubBodiesKinematics();
         Comp->ResetForFrame(Dt);
     }
@@ -1451,8 +1435,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		(FPlatformTime::Seconds() - ResetStartSeconds) * 1000.0;
 
     // Anti double-resolve (pair) on the frame
-    TSet<uint64> ResolvedPairs;
-    ResolvedPairs.Reserve(128);
+    Speed::Collision::FResolvedPairSet ResolvedPairs;
 
     float TimePassed = 0.f;
     float LastSubDelta = Dt;
@@ -1461,10 +1444,11 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	{
 		LastSubDelta = SubDelta;
 		const double IntegrateStartSeconds = FPlatformTime::Seconds();
-		for (ISpeedComponent* Comp : ComponentsSorted)
+		for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
 		{
 			if (Comp)
 			{
+				IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Integrate);
 				Comp->IntegrateKinematics(SubDelta);
 			}
 		}
@@ -1501,12 +1485,16 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		float EarliestTOI = Remaining;
 
         const double SweepStartSeconds = FPlatformTime::Seconds();
-        for (ISpeedComponent* Comp : ComponentsSorted)
+        for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
         {
             if (!Comp) continue;
 			++LastStepDiagnostics.ComponentSweepCount;
 
-            const SComponentTOI Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta);
+            SComponentTOI Ctoi;
+            {
+                IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Sweep);
+                Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta);
+            }
 
             // TOI sanity
             if (!Ctoi.bHit)
@@ -1610,7 +1598,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 
         // Optional: post update at each substep (useful if certain gameplay sensors need to react "immediately")
         /*
-        for (ISpeedComponent* Comp : ComponentsSorted)
+        for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
         {
             if (!Comp) continue;
             Comp->PostPhysicsUpdate();
@@ -1623,10 +1611,11 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	// an infeasible analytical pose. Moving the body here also avoids changing
 	// the within-frame CCD trajectory from inside an impact callback.
 	const double ProjectionStartSeconds = FPlatformTime::Seconds();
-	for (ISpeedComponent* Comp : ComponentsSorted)
+	for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
 	{
 		if (Comp)
 		{
+			IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Projection);
 			Comp->ProjectEstablishedStaticContacts(Dt);
 		}
 	}
@@ -1641,26 +1630,16 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     // 5) Final post update
     // ------------------------------------------------------------
 	const double PostStartSeconds = FPlatformTime::Seconds();
-    for (ISpeedComponent* Comp : ComponentsSorted)
+    for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
     {
         if (!Comp) continue;
+		IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Post);
 		Comp->PostPhysicsUpdate(Dt);
 	}
 
-	if (!PendingRollingContactPairs.IsEmpty())
+	if (!SimulationWorld.GetPendingRollingContactPairs().IsEmpty())
 	{
-		for (FDynamicContactPair& PendingPair : PendingRollingContactPairs)
-		{
-			if (!DynamicContactPairs.ContainsByPredicate(
-				[Key = PendingPair.PairKey](const FDynamicContactPair& ActivePair)
-				{
-					return ActivePair.PairKey == Key;
-				}))
-			{
-				DynamicContactPairs.Add(MoveTemp(PendingPair));
-			}
-		}
-		PendingRollingContactPairs.Reset();
+		SimulationWorld.MergePendingRollingContactPairs();
 	}
 
 	SolveDynamicContactPairs(Dt);

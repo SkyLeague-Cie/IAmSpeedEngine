@@ -8,7 +8,6 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
     if (!World) return false;
 
     const Speed::FKinematicState& KS = GetKinematicState();
-    FCollisionQueryParams Params = BuildTraceParams();
 	FHitResult Hit;
 	bool bHit = false;
 	Speed::Analytic::FWorldHit AnalyticHit;
@@ -20,6 +19,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 		&AnalyticHit);
 	if (!bUsedAnalyticAuthority)
 	{
+		const FCollisionQueryParams Params = BuildTraceParams();
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(
 			Hit, Start, End, KS.Rotation, GetCollisionChannel(),
@@ -36,6 +36,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 		{
 			bFirstAuthorityBoxHitReplayed = true;
 			FHitResult ChaosShadowHit;
+			const FCollisionQueryParams Params = BuildTraceParams();
 			Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 			const bool bChaosShadowHit = World->SweepSingleByChannel(
 				ChaosShadowHit, Start, End, KS.Rotation, GetCollisionChannel(),

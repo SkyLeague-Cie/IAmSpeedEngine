@@ -11,6 +11,17 @@ namespace Speed::CanonicalFrameDriver
 		1,
 		TEXT("When enabled, ASpeedSimulation owns component preparation and the world step."));
 
+	static TAutoConsoleVariable<int32> CVarExecutionMode(
+		TEXT("p.IAmSpeed.Simulation.ExecutionMode"),
+		2,
+		TEXT("Canonical execution host: 0=Unreal async callback (comparison), ")
+		TEXT("1=game thread, 2=single IAmSpeed-owned thread (default)."));
+
+	static TAutoConsoleVariable<int32> CVarOwnedThreadPaused(
+		TEXT("p.IAmSpeed.Simulation.WorkerPaused"),
+		0,
+		TEXT("Pauses the IAmSpeed-owned simulation thread without dropping frames."));
+
 	static TAutoConsoleVariable<int32> CVarFastEnabled(
 		TEXT("p.IAmSpeed.FastSimulation.Enabled"),
 		0,
@@ -31,6 +42,19 @@ namespace Speed::CanonicalFrameDriver
 	bool IsEnabled()
 	{
 		return CVarEnabled.GetValueOnAnyThread() != 0;
+	}
+
+	ESimulationExecutionMode GetExecutionMode()
+	{
+		return static_cast<ESimulationExecutionMode>(FMath::Clamp(
+			CVarExecutionMode.GetValueOnAnyThread(),
+			static_cast<int32>(ESimulationExecutionMode::UnrealAsyncCallback),
+			static_cast<int32>(ESimulationExecutionMode::IAmSpeedThread)));
+	}
+
+	bool IsOwnedThreadPaused()
+	{
+		return CVarOwnedThreadPaused.GetValueOnAnyThread() != 0;
 	}
 
 	bool IsFastSimulationEnabled()
