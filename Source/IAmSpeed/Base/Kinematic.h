@@ -7,6 +7,8 @@ namespace Speed
 	struct IAMSPEED_API FKinematicState
 	{
 		FKinematicState() = default;
+		/** Canonical position grid, shared with resolution-bounded contact laws. */
+		static constexpr uint32 PositionQuantizationScale = 100;
 
 		// Location in absolute space
 		FVector_NetQuantize100 Location = FVector::ZeroVector;

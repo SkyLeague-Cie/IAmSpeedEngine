@@ -1,5 +1,7 @@
 #include "IAmSpeed.h"
 
+DEFINE_LOG_CATEGORY(SpeedPhysicsLog);
+
 void IAmSpeed::StartupModule()
 {
 }

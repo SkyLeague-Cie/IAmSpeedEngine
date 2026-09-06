@@ -41,6 +41,8 @@ bool ISphereSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float
 {
     OutTOI = DeltaTime;
     OutHit = SHitResult();
+	const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = GetExternalBoxSubBodies();
+	if (OtherBoxes.IsEmpty()) return false;
 
     const Speed::FKinematicState& KS = GetKinematicState();
     const SSphere ThisSphere(
@@ -56,28 +58,29 @@ bool ISphereSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float
     float BestTime = DeltaTime + 1.f;
     SHitResult LocalBest(false, FVector::ZeroVector, FVector::ZeroVector, 0);
     TWeakObjectPtr<UBoxSubBody> BestBox = nullptr;
-    const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = GetExternalBoxSubBodies();
+	SHitResult Hit; // Reused locally; unsuccessful candidates do not write it.
 
-    for (auto& Box : OtherBoxes)
+    for (const auto& BoxRef : OtherBoxes)
     {
-        if (!Box.IsValid()) continue;
+        // Resolve once for this candidate; no pointer is retained across sweeps.
+        UBoxSubBody* Box = BoxRef.Get();
+        if (!Box) continue;
 		if (ShouldSkipBoxSweep(*Box))
 			continue;
 
         // Ignore if box's hitbox already hit this frame
-        if (ComponentHasBeenIgnored(*Box.Get()))
+        if (ComponentHasBeenIgnored(*Box))
             continue;
 
         SSBox BoxShape = Box->MakeBox();
-        SHitResult Hit = ThisSphere.IntersectNextFrame(BoxShape, DeltaTime, NbSteps);
-        if (!Hit.bHit) continue;
+        if (!ThisSphere.TryIntersectNextFrame(BoxShape, DeltaTime, NbSteps, Hit)) continue;
 
         const float t = Hit.TOI;
         if (t < BestTime)
         {
             BestTime = t;
             LocalBest = Hit;
-            BestBox = Box;
+            BestBox = BoxRef;
             bHit = true;
         }
     }
@@ -99,6 +102,8 @@ bool ISphereSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const flo
 {
     OutTOI = Delta;
     OutHit = SHitResult();
+	const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = GetExternalSphereSubBodies();
+	if (OtherSpheres.IsEmpty()) return false;
 
     const Speed::FKinematicState& KS = GetKinematicState();
     const SSphere ThisSphere(
@@ -113,14 +118,15 @@ bool ISphereSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const flo
 
     SHitResult BestHit;
     TWeakObjectPtr<USphereSubBody> BestSphere = nullptr;
-    const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = GetExternalSphereSubBodies();
 
-    for (auto& OtherSphere : OtherSpheres)
+    for (const auto& OtherSphereRef : OtherSpheres)
     {
-        if (!OtherSphere.IsValid()) continue;
+        // Resolve once for this candidate; no pointer is retained across sweeps.
+        USphereSubBody* OtherSphere = OtherSphereRef.Get();
+        if (!OtherSphere) continue;
 
         // Ignore already-hit Spheres this frame
-        if (ComponentHasBeenIgnored(*OtherSphere.Get()))
+        if (ComponentHasBeenIgnored(*OtherSphere))
             continue;
 
         SSphere OSphere = OtherSphere->MakeSphere();
@@ -133,7 +139,7 @@ bool ISphereSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const flo
         {
             BestTOI = Hit.TOI;
             BestHit = Hit;
-            BestSphere = OtherSphere;
+            BestSphere = OtherSphereRef;
             bHit = true;
         }
     }
@@ -156,6 +162,8 @@ bool ISphereSweeper::SweepVsWheels(UWorld* World, SHitResult& OutHit, const floa
 {
     OutTOI = Delta;
     OutHit = SHitResult();
+	const TArray<TWeakObjectPtr<USWheelSubBody>>& OtherWheels = GetExternalWheelSubBodies();
+	if (OtherWheels.IsEmpty()) return false;
     const Speed::FKinematicState& KS = GetKinematicState();
     const SSphere ThisSphere(
         KS.Location,
@@ -169,14 +177,15 @@ bool ISphereSweeper::SweepVsWheels(UWorld* World, SHitResult& OutHit, const floa
 
     SHitResult BestHit;
     TWeakObjectPtr<USWheelSubBody> BestWheel = nullptr;
-    const TArray<TWeakObjectPtr<USWheelSubBody>>& OtherWheels = GetExternalWheelSubBodies();
 
-    for (auto& OtherWheel : OtherWheels)
+    for (const auto& OtherWheelRef : OtherWheels)
     {
-        if (!OtherWheel.IsValid()) continue;
+        // Resolve once for this candidate; no pointer is retained across sweeps.
+        USWheelSubBody* OtherWheel = OtherWheelRef.Get();
+        if (!OtherWheel) continue;
 
         // Ignore already-hit Wheels this frame
-        if (ComponentHasBeenIgnored(*OtherWheel.Get()))
+        if (ComponentHasBeenIgnored(*OtherWheel))
             continue;
 
         SSphere OSphere = OtherWheel->MakeSphere();
@@ -189,7 +198,7 @@ bool ISphereSweeper::SweepVsWheels(UWorld* World, SHitResult& OutHit, const floa
         {
             BestTOI = Hit.TOI;
             BestHit = Hit;
-            BestWheel = OtherWheel;
+            BestWheel = OtherWheelRef;
             bHit = true;
         }
     }

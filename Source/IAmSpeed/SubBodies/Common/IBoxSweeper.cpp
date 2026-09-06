@@ -44,6 +44,8 @@ bool IBoxSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const float&
 {
     OutTOI = Delta;
     OutHit = SHitResult();
+	const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = GetExternalSphereSubBodies();
+	if (OtherSpheres.IsEmpty()) return false;
     bool bHit = false;
     float BestTOI = Delta;
 
@@ -52,29 +54,30 @@ bool IBoxSweeper::SweepVsSpheres(UWorld* World, SHitResult& OutHit, const float&
 
     SHitResult BestHit;
     TWeakObjectPtr<USphereSubBody> BestSphere = nullptr;
-    const TArray<TWeakObjectPtr<USphereSubBody>>& OtherSpheres = GetExternalSphereSubBodies();
+	SHitResult Hit; // Misses preserve this scratch; only successful candidates are read.
 
-    for (auto& OtherSphere : OtherSpheres)
+    for (const auto& OtherSphereRef : OtherSpheres)
     {
-        if (!OtherSphere.IsValid()) continue;
+        // Resolve once for this candidate; no pointer is retained across sweeps.
+        USphereSubBody* OtherSphere = OtherSphereRef.Get();
+        if (!OtherSphere) continue;
 		if (ShouldSkipSphereSweep(*OtherSphere))
 			continue;
 
         // Ignore already-hit Spheres this frame
-        if (ComponentHasBeenIgnored(*OtherSphere.Get()))
+        if (ComponentHasBeenIgnored(*OtherSphere))
             continue;
 
         SSphere OSphere = OtherSphere->MakeSphere(); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
 
-        SHitResult Hit = ThisBox.IntersectNextFrame(OSphere, Delta, SpeedConstants::NbCCDSubsteps);
-        if (!Hit.bHit)
+        if (!ThisBox.TryIntersectNextFrame(OSphere, Delta, SpeedConstants::NbCCDSubsteps, Hit))
             continue;
 
         if (Hit.TOI < BestTOI)
         {
             BestTOI = Hit.TOI;
             BestHit = Hit;
-            BestSphere = OtherSphere;
+            BestSphere = OtherSphereRef;
             bHit = true;
         }
     }
@@ -101,32 +104,35 @@ bool IBoxSweeper::SweepVsWheels(UWorld* World, SHitResult& OutHit, const float& 
 {
     OutTOI = Delta;
     OutHit = SHitResult();
+	const TArray<TWeakObjectPtr<USWheelSubBody>>& OtherWheels = GetExternalWheelSubBodies();
+	if (OtherWheels.IsEmpty()) return false;
     bool bHit = false;
     float BestTOI = Delta;
     // --- Build hitbox OBB from SubBody kinematics ---
     SSBox ThisBox = MakeBox();
     SHitResult BestHit;
     TWeakObjectPtr<USWheelSubBody> BestWheel = nullptr;
-    const TArray<TWeakObjectPtr<USWheelSubBody>>& OtherWheels = GetExternalWheelSubBodies();
-    for (auto& OtherWheel : OtherWheels)
+	SHitResult Hit;
+    for (const auto& OtherWheelRef : OtherWheels)
     {
-        if (!OtherWheel.IsValid()) continue;
+        // Resolve once for this candidate; no pointer is retained across sweeps.
+        USWheelSubBody* OtherWheel = OtherWheelRef.Get();
+        if (!OtherWheel) continue;
 
         // Ignore already-hit Wheels this frame
-        if (ComponentHasBeenIgnored(*OtherWheel.Get()))
+        if (ComponentHasBeenIgnored(*OtherWheel))
             continue;
 
         SSphere OWheel = OtherWheel->MakeSphere(); // useless to pass TimePassed here since every SubBodies are updated to current TimePassed before sweeping
 
-        SHitResult Hit = ThisBox.IntersectNextFrame(OWheel, Delta, SpeedConstants::NbCCDSubsteps);
-        if (!Hit.bHit)
+        if (!ThisBox.TryIntersectNextFrame(OWheel, Delta, SpeedConstants::NbCCDSubsteps, Hit))
             continue;
 
         if (Hit.TOI < BestTOI)
         {
             BestTOI = Hit.TOI;
             BestHit = Hit;
-            BestWheel = OtherWheel;
+            BestWheel = OtherWheelRef;
             bHit = true;
         }
     }
@@ -160,6 +166,10 @@ SSBox IBoxSweeper::MakeBox() const
 bool IBoxSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI)
 {
     OutTOI = Delta;
+	// Preserve the existing miss contract: unlike the other sweeps, this one
+	// leaves OutHit untouched when no candidate hits.
+	const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = GetExternalBoxSubBodies();
+	if (OtherBoxes.IsEmpty()) return false;
 
     bool bHit = false;
     float BestTOI = Delta + 1.f;
@@ -169,14 +179,15 @@ bool IBoxSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& D
     // This hitbox (already at TimePassed)
     SSBox ThisBox = MakeBox();
     TWeakObjectPtr<UBoxSubBody> BestBox = nullptr;
-    const TArray<TWeakObjectPtr<UBoxSubBody>>& OtherBoxes = GetExternalBoxSubBodies();
 
-    for (auto& Box : OtherBoxes)
+    for (const auto& BoxRef : OtherBoxes)
     {
-        if (!Box.IsValid()) continue;
+        // Resolve once for this candidate; no pointer is retained across sweeps.
+        UBoxSubBody* Box = BoxRef.Get();
+        if (!Box) continue;
 
         // Ignore if box's hitbox already hit this frame
-        if (ComponentHasBeenIgnored(*Box.Get()))
+        if (ComponentHasBeenIgnored(*Box))
             continue;
 
         SSBox BoxShape = Box->MakeBox();
@@ -188,7 +199,7 @@ bool IBoxSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& D
         {
             BestTOI = t;
             LocalBest = Hit;
-            BestBox = Box;
+            BestBox = BoxRef;
             bHit = true;
         }
     }

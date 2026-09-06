@@ -7,11 +7,12 @@
 #include "ISpeedWheeledComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
 #include "Netcode/SpeedWheeledPhysicsComponent.h"
+#include <atomic>
+
 #include "SpeedWheeledComponent.generated.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(WheelNetcodeLog, Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(SpeedInputLog, Log, All);
-DECLARE_LOG_CATEGORY_EXTERN(SpeedPhysicsLog, Log, All);
 
 class UBoxSubBody;
 class USpeedWheeledComponent;
@@ -123,6 +124,7 @@ public:
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
+	FVector GetNominalGravityAcceleration() const override { return bEnableGravity ? FVector(0, 0, GravityZ) : FVector::ZeroVector; }
 	void SetIsAffectedByGravity(bool value);
 	void EnableGravity();
 	bool HasAuthority() const;
@@ -254,6 +256,11 @@ protected:
 public:
 	// Queues a complete continuous input snapshot for deterministic consumers such as netcode and test scenarios.
 	void QueueWheeledInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
+	/** Network-only producer: ignored while a scripted scenario owns the input timeline. */
+	void QueueNetworkWheeledInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
+	/** Set at a quiescent scenario boundary, before queueing its commands; drops stale queued inputs on enable. */
+	void SetTestInputOverrideEnabled(bool bEnabled);
+	bool IsTestInputOverrideEnabled() const { return bTestInputOverrideEnabled.load(std::memory_order_acquire); }
 	// Test-only counterpart that applies the physical wheel input directly at its activation frame.
 	void QueueTestWheeledPhysicalInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
 	// Configuration access for native deterministic vehicle profiles.
@@ -306,6 +313,7 @@ protected:
 	virtual void QuantizePhysicalState();
 
 	TArray<SWheelGroundContact>& GetPendingWheelContacts() override;
+	const TArray<SWheelGroundContact>& GetPendingWheelContacts() const override;
 	float GetWheelContactNormalVelocityTimeConstant() const override;
 
 	void SetGroundState();
@@ -643,6 +651,8 @@ private:
 	}
 
 	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
+	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */
+	void ConsumePendingLiveWheeledInputs();
 	void UpdateWheeledPhysicalInputFromUser(bool bForce = false);
 	void RestoreWheeledPhysicalInputFromState();
 	void SyncWheeledPhysicalInputToState();
@@ -657,6 +667,16 @@ private:
 	FWheeledInputState WheeledUserInput; // input state given by the user for this component (replicated on network)
 	FWheeledInputState WheeledPhysicalInput; // input state used for physics simulation (e.g. after being processed from the user input)
 	FWheeledInputState WheeledPhysicalInputBeforeSlew;
+	enum : uint8
+	{
+		LiveThrottleDirty = 1 << 0,
+		LiveBrakeDirty = 1 << 1,
+		LiveSteeringDirty = 1 << 2
+	};
+	std::atomic<uint8> PendingLiveThrottle{0};
+	std::atomic<uint8> PendingLiveBrake{0};
+	std::atomic<int8> PendingLiveSteering{0};
+	std::atomic<uint8> PendingLiveWheeledInputMask{0};
 	int32 LastWheeledInputSlewFrame = INDEX_NONE;
 	FMatrix CarLocalInvI = FMatrix::Identity; // local inverse inertia tensor of the car body, expressed about the physical COM
 
@@ -694,6 +714,16 @@ private:
 	bool bSimTimelineHasGroundState = false;
 
 	static constexpr int32 MaxPendingWheeledInputs = 256;
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FIAmSpeedWheeledInputQueueTest;
+	friend class FIAmSpeedWheeledInertiaCovarianceTest;
+#endif
+	// Network callbacks and canonical test input share this bounded command queue.
+	// Protect whole commands; the simulation remains the only consumer.
+	FCriticalSection PendingWheeledInputMutex;
+	std::atomic<bool> bTestInputOverrideEnabled{false};
+	void QueueWheeledInputCommand(int32 ActivationFrame, const FWheeledInputState& Input,
+		bool bBypassSlew, bool bFromNetwork);
 	TArray<FPendingWheeledInputCommand> PendingWheeledInputCommands;
 	int TurnStartFrame = INDEX_NONE;
 	int LastTurnSummaryFrame = INDEX_NONE;

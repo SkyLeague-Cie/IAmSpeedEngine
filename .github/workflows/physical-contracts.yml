@@ -1,0 +1,49 @@
+name: IAmSpeed Physical Contracts
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iamspeed-physical-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-project:
+    # Never dispatch untrusted fork pull requests to the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      - name: Build HostProject and run physical contracts
+        shell: powershell
+        env:
+          IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
+        run: |
+          $engineRoot = $env:IAMSPEED_UE_ROOT
+          if ([string]::IsNullOrWhiteSpace($engineRoot)) {
+            $engineRoot = 'D:\Programs\UnrealEngine\5.7.4'
+          }
+          .\HostProject\Scripts\RunContracts.ps1 -EngineRoot $engineRoot
+
+      - name: Upload HostProject logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iamspeed-host-project-logs
+          path: HostProject/Saved/Logs
+          if-no-files-found: ignore

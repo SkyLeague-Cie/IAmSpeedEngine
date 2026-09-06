@@ -162,6 +162,9 @@ void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent
 {
 	if (USpeedWheeledComponent* Mover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
+		// A sealed local scenario is the sole input authority. The queue rechecks
+		// under lock so an already in-flight network producer cannot overwrite it.
+		if (Mover->IsTestInputOverrideEnabled()) return;
 		const int32 ActivationFrame = int32(LocalFrame);
 		const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
 		const int32 TimelineActivationFrame =
@@ -169,7 +172,7 @@ void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent
 			? SinceCanMoveFrame + ClientFramesSinceCanMove + 1
 			: ActivationFrame;
 
-		Mover->QueueWheeledInputForFrame(
+		Mover->QueueNetworkWheeledInputForFrame(
 			TimelineActivationFrame,
 			WheeledInput
 		);

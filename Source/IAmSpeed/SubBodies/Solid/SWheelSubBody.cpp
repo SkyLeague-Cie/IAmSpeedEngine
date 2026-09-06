@@ -2,6 +2,7 @@
 
 
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "Configs/WheelSubBodyConfig.h"
@@ -327,10 +328,9 @@ void USWheelSubBody::ResetForFrame(const float& Delta)
 {
     // CurrentHit = SHitResult(); // do not reset current hit, because netcode needs it to know if wheel is transitionning on wall/ground
     FutureHit = SHitResult();
-    IgnoredComponents.Empty();
+    ResetIgnoredComponents();
     bWasOnGroundPrevFrame = IsOnGround();
     bCountedGroundFrame = false;
-	IgnoredComponents.Append(AlwaysIgnoredComponents);
 }
 
 void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
@@ -455,21 +455,54 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
     }
 
     FHitResult UnrealHit;
-    const FVector CurrentPos = WorldPos();
-    if (!World->SweepSingleByChannel(
-        UnrealHit,
-        CurrentPos + SearchDistance * SweepNormal,
-        CurrentPos - SearchDistance * SweepNormal,
-        Kinematics.Rotation,
-        GetCollisionChannel(),
-        GetCollisionShape(),
-        Params,
-        GetResponseParams()))
-    {
-        return false;
+	const FVector CurrentPos = WorldPos();
+	const FVector Start = CurrentPos + SearchDistance * SweepNormal;
+	const FVector End = CurrentPos - SearchDistance * SweepNormal;
+	bool bHit = false;
+	Speed::Analytic::FWorldHit AnalyticHit;
+	const bool bUsedAnalyticAuthority =
+		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		World,
+		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
+		&AnalyticHit);
+	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
+	{
+		const SHitResult& PreviousHit = GetHit();
+		const FVector PreviousNormal = PreviousHit.ImpactNormal.GetSafeNormal();
+		const float InwardSpeed = FVector::DotProduct(
+			ParentComponent->GetPhysCOMVelocity(), PreviousNormal);
+		if (!PreviousNormal.IsNearlyZero() && InwardSpeed < 0.0f &&
+			PreviousHit.SourceId != 0)
+		{
+			Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+				World, Start, End, Kinematics.Rotation, GetCollisionShape(),
+				static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
+				UnrealHit, bHit, &AnalyticHit, PreviousHit.SourceId, 0, 0,
+				PreviousNormal, 0.9f, true);
+		}
+	}
+	if (!bUsedAnalyticAuthority)
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+		bHit = World->SweepSingleByChannel(UnrealHit, Start, End,
+			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			Params, GetResponseParams());
+	}
+	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
+		Speed::Analytic::EStaticQuerySite::WheelEstablishedSupportProbe,
+		Start, End,
+		Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
+	if (!bHit)
+	{
+		return false;
     }
 
-    OutHit = SHitResult::FromUnrealHit(UnrealHit, Delta);
+	OutHit = bUsedAnalyticAuthority
+		? SHitResult::FromAnalyticHit(
+			AnalyticHit, Delta, UnrealHit.Component.Get())
+		: SHitResult::FromUnrealHit(UnrealHit, Delta);
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     return true;
 }
@@ -509,20 +542,63 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
     }
 
     FHitResult UnrealHit;
-    if (!World->SweepSingleByChannel(
-        UnrealHit,
-        Start,
-        End,
-        Kinematics.Rotation,
-        GetCollisionChannel(),
-        GetCollisionShape(),
-        Params,
-        GetResponseParams()))
+	bool bHit = false;
+	Speed::Analytic::FWorldHit AnalyticHit;
+	const bool bUsedAnalyticAuthority =
+		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+		World,
+		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
+		&AnalyticHit);
+	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
+	{
+		const SHitResult& PreviousHit = GetHit();
+		const FVector PreviousNormal = PreviousHit.ImpactNormal.GetSafeNormal();
+		const float InwardSpeed = FVector::DotProduct(
+			ParentComponent->GetPhysCOMVelocity(), PreviousNormal);
+		if (!PreviousNormal.IsNearlyZero() && InwardSpeed < 0.0f &&
+			PreviousHit.SourceId != 0)
+		{
+			Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
+				World, Start, End, Kinematics.Rotation, GetCollisionShape(),
+				static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
+				UnrealHit, bHit, &AnalyticHit, PreviousHit.SourceId, 0, 0,
+				PreviousNormal, 0.9f, true);
+		}
+	}
+	if (!bUsedAnalyticAuthority)
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+		bHit = World->SweepSingleByChannel(UnrealHit, Start, End,
+			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			Params, GetResponseParams());
+	}
+	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
+		Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe,
+		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
+	if (!bHit)
     {
+		if (bUsedAnalyticAuthority && CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
+		{
+			UE_LOG(WheelSubBodyLog, Warning,
+				TEXT("[SuspensionAnalyticMiss] Frame=%d Wheel=%d Start=%s End=%s Hit=%d Time=%.9g Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX Group=%016llX Point=%s Normal=%s ErrorCm=%.3f"),
+				ParentComponent ? ParentComponent->NumFrame() : -1,
+				Idx(), *Start.ToString(), *End.ToString(),
+				AnalyticHit.bHit ? 1 : 0, AnalyticHit.Time,
+				AnalyticHit.SourceId, AnalyticHit.SurfaceId,
+				AnalyticHit.FeatureId, AnalyticHit.PrimitiveId,
+				AnalyticHit.CanonicalGroupId,
+				*AnalyticHit.Point.ToString(), *AnalyticHit.Normal.ToString(),
+				AnalyticHit.GeometricErrorBoundCm);
+		}
         return false;
     }
 
-    OutHit = SHitResult::FromUnrealHit(UnrealHit, Delta);
+	OutHit = bUsedAnalyticAuthority
+		? SHitResult::FromAnalyticHit(
+			AnalyticHit, Delta, UnrealHit.Component.Get())
+		: SHitResult::FromUnrealHit(UnrealHit, Delta);
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     return true;
 }
@@ -1022,6 +1098,9 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
             CurrentHit.Component,
             CurrentHit.ImpactPoint,
             CurrentHit.FaceIndex,
+			CurrentHit.SourceId,
+			CurrentHit.SurfaceId,
+			CurrentHit.FeatureId,
             ContactPoint,
             N,
             r,
@@ -1286,13 +1365,15 @@ bool USWheelSubBody::IsAtSuspensionBumpStop() const
 
 float USWheelSubBody::StaticSpringCompression() const
 {
-    if (!PSuspension || PSuspension->Setup().SpringRate <= SMALL_NUMBER)
-    {
-        return 0.0f;
-    }
+    return ConfiguredStaticSpringCompression;
+}
 
-    return QuantizeSuspensionDisplacement(
-        PSuspension->Setup().RestingForce / PSuspension->Setup().SpringRate);
+void USWheelSubBody::ConfigureStaticSpringCompression(const float RestingForce)
+{
+    const float SpringRate = SuspensionSpringRateCm();
+    ConfiguredStaticSpringCompression = SpringRate > SMALL_NUMBER
+        ? QuantizeSuspensionDisplacement(RestingForce / SpringRate)
+        : 0.0f;
 }
 
 float USWheelSubBody::SuspensionCompressionDamping() const

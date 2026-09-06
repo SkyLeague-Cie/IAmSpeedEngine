@@ -39,6 +39,8 @@ namespace Speed
 		bool IsInside(const FVector& Point) const;
 		SHitResult IntersectNextFrame(const SSphere& Sphere, const float& deltaTime) const;
 		SHitResult IntersectNextFrame(const SBox& Box, const float& deltaTime, const uint8 nbSubSteps) const;
+		/** Writes a complete contact only on success; a miss leaves OutHit unchanged. */
+		bool TryIntersectNextFrame(const SBox& Box, float DeltaTime, uint8 NbSubSteps, SHitResult& OutHit) const;
 		// Sweep this sphere from Start to End against a static sphere
 		SHitResult IntersectDuringMovement(const SSphere& StaticSphere, const FVector& Start, const FVector& End, const float& deltaTime) const;
 		SHitResult IntersectDuringMovement(const SBox& StaticBox, const FVector& Start, const FVector& End, const float& deltaTime) const;
@@ -82,6 +84,8 @@ namespace Speed
 		std::optional<FVector> Intersect(const SBox& OtherBox) const;
 		// Return the impact point in the next frame with a sphere if it exists
 		SHitResult IntersectNextFrame(const SSphere& Sphere, const float& deltaTime, const uint8 NbSubsteps) const;
+		/** Same CCD as IntersectNextFrame, without constructing a result for a miss. */
+		bool TryIntersectNextFrame(const SSphere& Sphere, float DeltaTime, uint8 NbSubsteps, SHitResult& OutHit) const;
 		// Return the impact point in the next frame with a box if it exists
 		SHitResult IntersectNextFrame(const SBox& Box, const float& deltaTime, const uint8 NbSubsteps) const;
 		// Sweep this box from Start to End against a static sphere
@@ -111,6 +115,7 @@ namespace Speed
 
 		// Signed "separation" between sphere and OBB at pose (Q, X) for a given sphere center CS and radius R.
 		// Negative => penetration; Zero => touching; Positive => separated.
+		// Omitting the optional witness avoids its local-to-world transformation.
 		float SphereOBBSeparation(const FQuat& Q, const FVector& X, const FVector& CS, float R, FVector* OutContactPointWorld = nullptr) const;
 
 		// Helpers
@@ -150,6 +155,7 @@ namespace Speed
 		return A.X * B.X + A.Y * B.Y + A.Z * B.Z + A.W * B.W;
 	}
 	FVector RoundVectorToNetQuantize(const FVector& vector, const unsigned int& base);
+	/** Canonical packed-axis round trip; preserves the hemisphere nearest the supplied previous rotation. */
 	FQuat RoundQuatToNetQuantize(const FQuat& quat, const FQuat& QRefForHemisphere);
 	FRotator CompressAllAxisRotator(const FRotator& rotator);
 	FRotator DecompressAllAxisRotator(const FRotator& compressedRotator);

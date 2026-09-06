@@ -2,11 +2,12 @@
 
 
 #include "SphereSubBody.h"
+#include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "BoxSubBody.h"
 #include "SWheelSubBody.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
-#include "IAmSpeed/World/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HAL/IConsoleManager.h"
@@ -21,7 +22,6 @@ namespace
 	TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxProjection(
 		TEXT("p.IAmSpeed.Collision.SphereBoxProjection"), 1,
 		TEXT("Enforces positional sphere/box non-penetration."));
-
     bool IAmSpeedSphereBoxImpulseDebugEnabled()
     {
         const IConsoleVariable* DebugCVar =
@@ -80,12 +80,12 @@ void USphereSubBody::ResetForFrame(const float& Delta)
 
 bool USphereSubBody::IsSphereBoxProjectionEnabled()
 {
-	return CVarIAmSpeedSphereBoxProjection.GetValueOnGameThread() != 0;
+	return CVarIAmSpeedSphereBoxProjection.GetValueOnAnyThread() != 0;
 }
 
 bool USphereSubBody::IsWorldStaticProjectionEnabled()
 {
-	return CVarIAmSpeedSphereWorldProjection.GetValueOnGameThread() != 0;
+	return CVarIAmSpeedSphereWorldProjection.GetValueOnAnyThread() != 0;
 }
 
 void USphereSubBody::PostPhysicsUpdate()
@@ -214,7 +214,12 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
     {
         ResolveHitVsBox(*Box, delta, SimTime);
     }
-    else if (OtherComponent && OtherComponent->GetCollisionObjectType() == ECC_WorldStatic)
+    // Analytical static-world hits intentionally carry no UObject component.
+    // SurfaceId is the engine-independent static-provider identity, so it must
+    // enter the same sphere/static restitution and support response as an
+    // Unreal WorldStatic component.
+    else if (CurrentHit.SurfaceId != 0 ||
+        (OtherComponent && OtherComponent->GetCollisionObjectType() == ECC_WorldStatic))
     {
         ResolveHitVsGround(delta, SimTime);
     }
@@ -239,7 +244,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
         // ------------------------------------------------------------------
         // 1) NORMAL IMPULSE (bounce)
         // ------------------------------------------------------------------
-        const float Rest = GetRestitution();
+		const float Rest = GetRestitution();
 
         // For a sphere vs plane: no angular coupling on normal
         const float jn = -(1.f + Rest) * vN * GetMass();
@@ -363,16 +368,12 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         }
     }*/
 
-    const FVector BoxLocalContactPoint = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKSAtTOI.Location);
     const FVector BoxLocalContactNormal = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactNormal.GetSafeNormal());
-    const float MixedRestitution = ResolveSphereBoxRestitutionAtContact(
+    const FVector BoxLocalContactPoint = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKSAtTOI.Location);
+    const float MixedRestitution = ResolveSphereBoxRestitution(
         *this,
         OtherBox,
-        MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max),
-        BoxLocalContactPoint,
-        BoxLocalContactNormal,
-        OtherBox.GetBoxExtent(),
-        CurrentHit.ImpactPoint);
+        MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max));
     const float MixedFriction = ResolveSphereBoxFriction(*this, OtherBox,
         MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
 	const FVector PreSpherePointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
@@ -789,6 +790,15 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
 
     constexpr int32 MaxProjectionPasses = 8;
     constexpr float DepthTieToleranceCm = 1.0e-6f;
+    // FKinematicState publishes positions on a 0.01 cm Cartesian grid.
+    // Half a quantum on all three axes can move a rounded point inward by
+    // sqrt(3) * 0.005 cm along an arbitrary normal. Project an inflated
+    // certificate shape so even a currently separated pose reserves enough
+    // room for its subsequent quantization. Residual checks below keep using
+    // the physical radius.
+    constexpr float PublishedPoseQuantizationClearanceCm = 0.015f;
+    const FCollisionShape ProjectionShape = FCollisionShape::MakeSphere(
+        GetRadius() + PublishedPoseQuantizationClearanceCm);
     FVector Center = ParentComponent->GetPhysLocation();
     FVector CorrectedVelocity = ParentComponent->GetPhysCOMVelocity();
     bool bMoved = false;
@@ -806,14 +816,24 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
     for (int32 Pass = 0; Pass < MaxProjectionPasses; ++Pass)
     {
         TArray<FHitResult> Hits;
-        GetWorld()->SweepMultiByObjectType(
-            Hits,
-            Center,
-            Center,
-            FQuat::Identity,
-            ObjectQuery,
-            FCollisionShape::MakeSphere(GetRadius()),
-            QueryParams);
+		Speed::Analytic::FWorldHit AnalyticHit;
+		if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+			GetWorld(),
+			Center, Center, FQuat::Identity,
+			ProjectionShape,
+			1ull << static_cast<uint8>(ECC_WorldStatic), Hits,
+			&AnalyticHit))
+		{
+			Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+			GetWorld()->SweepMultiByObjectType(Hits, Center, Center,
+				FQuat::Identity, ObjectQuery,
+				ProjectionShape, QueryParams);
+		}
+		Speed::Analytic::FStaticWorldQueryAudit::RecordMulti(
+			Speed::Analytic::EStaticQuerySite::SpherePenetrationProjection,
+			Center, Center, FQuat::Identity,
+			ProjectionShape,
+			1ull << static_cast<uint8>(ECC_WorldStatic), Hits);
 
         const FHitResult* DeepestHit = nullptr;
         for (const FHitResult& Hit : Hits)
@@ -840,24 +860,10 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
             }
         }
 
-        constexpr float ProjectionSlopCm = 0.0f;
-        if (!DeepestHit || DeepestHit->PenetrationDepth <= ProjectionSlopCm)
+        if (!DeepestHit)
         {
             break;
         }
-
-		if (WorldStaticPenetrationDiagnostics.bEnabled)
-		{
-			++WorldStaticPenetrationDiagnostics.ProjectionInputSamples;
-			if (DeepestHit->PenetrationDepth >
-				WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm)
-			{
-				WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm =
-					DeepestHit->PenetrationDepth;
-				WorldStaticPenetrationDiagnostics.MaximumProjectionInputFrame =
-					ParentComponent ? int32(ParentComponent->NumFrame()) : INDEX_NONE;
-			}
-		}
 
         FVector ProjectionNormal = DeepestHit->Normal.GetSafeNormal();
         if (ProjectionNormal.IsNearlyZero())
@@ -869,8 +875,72 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
             break;
         }
 
-        Center += ProjectionNormal *
-            (DeepestHit->PenetrationDepth + CollisionMargin());
+        const float PhysicalPenetrationDepth = FMath::Max(
+            0.0f,
+            DeepestHit->PenetrationDepth -
+                PublishedPoseQuantizationClearanceCm);
+		if (WorldStaticPenetrationDiagnostics.bEnabled &&
+			PhysicalPenetrationDepth > 0.0f)
+		{
+			++WorldStaticPenetrationDiagnostics.ProjectionInputSamples;
+			if (PhysicalPenetrationDepth >
+				WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm)
+			{
+				WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm =
+					PhysicalPenetrationDepth;
+				WorldStaticPenetrationDiagnostics.MaximumProjectionInputFrame =
+					ParentComponent ? int32(ParentComponent->NumFrame()) : INDEX_NONE;
+			}
+		}
+
+        const bool bVariableAnalyticNormal =
+            AnalyticHit.bHit && AnalyticHit.bSurfaceNormalMayVary;
+        FVector ProjectedCenter = Center;
+        const double MaximumNormalAxis = FMath::Max3(
+            FMath::Abs(ProjectionNormal.X),
+            FMath::Abs(ProjectionNormal.Y),
+            FMath::Abs(ProjectionNormal.Z));
+        constexpr double AxisAlignedNormalTolerance = 1.0e-6;
+        if (!bVariableAnalyticNormal &&
+            MaximumNormalAxis >= 1.0 - AxisAlignedNormalTolerance)
+        {
+            const int32 Axis = FMath::Abs(ProjectionNormal.X) == MaximumNormalAxis
+                ? 0
+                : (FMath::Abs(ProjectionNormal.Y) == MaximumNormalAxis ? 1 : 2);
+            const FVector TangentCenter =
+                DeepestHit->ImpactPoint + ProjectionNormal * GetRadius();
+            constexpr double PositionQuantizationScale = 100.0;
+            const double ScaledTangent =
+                TangentCenter[Axis] * PositionQuantizationScale;
+            const double NearestGridIndex = FMath::RoundToDouble(ScaledTangent);
+            constexpr double GridAlignmentTolerance = 1.0e-5;
+            const double OutwardGridIndex = FMath::IsNearlyEqual(
+                ScaledTangent, NearestGridIndex, GridAlignmentTolerance)
+                ? NearestGridIndex
+                : (ProjectionNormal[Axis] > 0.0
+                    ? FMath::CeilToDouble(ScaledTangent)
+                    : FMath::FloorToDouble(ScaledTangent));
+            ProjectedCenter[Axis] =
+                OutwardGridIndex / PositionQuantizationScale;
+        }
+        else
+        {
+            // Variable-normal providers need the inflated certificate depth;
+            // a non-axial plane uses the same conservative fallback because
+            // Cartesian component rounding cannot represent its tangent plane
+            // exactly.
+            ProjectedCenter += ProjectionNormal *
+                (DeepestHit->PenetrationDepth + CollisionMargin());
+        }
+        const float CorrectionDepth = FVector::DotProduct(
+            ProjectedCenter - Center, ProjectionNormal);
+        constexpr float ProjectionSlopCm = 1.0e-5f;
+        if (CorrectionDepth <= ProjectionSlopCm)
+        {
+            break;
+        }
+
+        Center = ProjectedCenter;
         const float InwardSpeed = FVector::DotProduct(
             CorrectedVelocity, ProjectionNormal);
         if (InwardSpeed < 0.0f)
@@ -889,9 +959,22 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
 	if (WorldStaticPenetrationDiagnostics.bEnabled)
 	{
 		TArray<FHitResult> ResidualHits;
-		GetWorld()->SweepMultiByObjectType(
-			ResidualHits, Center, Center, FQuat::Identity, ObjectQuery,
-			FCollisionShape::MakeSphere(GetRadius()), QueryParams);
+		if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
+			GetWorld(),
+			Center, Center, FQuat::Identity,
+			FCollisionShape::MakeSphere(GetRadius()),
+			1ull << static_cast<uint8>(ECC_WorldStatic), ResidualHits))
+		{
+			Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
+			GetWorld()->SweepMultiByObjectType(ResidualHits, Center, Center,
+				FQuat::Identity, ObjectQuery,
+				FCollisionShape::MakeSphere(GetRadius()), QueryParams);
+		}
+		Speed::Analytic::FStaticWorldQueryAudit::RecordMulti(
+			Speed::Analytic::EStaticQuerySite::SpherePenetrationResidual,
+			Center, Center, FQuat::Identity,
+			FCollisionShape::MakeSphere(GetRadius()),
+			1ull << static_cast<uint8>(ECC_WorldStatic), ResidualHits);
 		float MaximumResidualDepth = 0.0f;
 		for (const FHitResult& ResidualHit : ResidualHits)
 		{

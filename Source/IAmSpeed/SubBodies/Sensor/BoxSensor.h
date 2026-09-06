@@ -55,9 +55,9 @@ protected:
     virtual const FCollisionResponseParams& GetResponseParams() const { return USensorSubBody::GetResponseParams(); }
     virtual FCollisionQueryParams BuildTraceParams() const { return USensorSubBody::BuildTraceParams(); }
     bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const { return USensorSubBody::ComponentHasBeenIgnored(OtherComp); }
-    const TArray<TWeakObjectPtr<UBoxSubBody>> GetExternalBoxSubBodies() const { return USensorSubBody::GetExternalBoxSubBodies(); }
-    const TArray<TWeakObjectPtr<USphereSubBody>> GetExternalSphereSubBodies() const { return USensorSubBody::GetExternalSphereSubBodies(); }
-    const TArray<TWeakObjectPtr<USWheelSubBody>> GetExternalWheelSubBodies() const { return USensorSubBody::GetExternalWheelSubBodies(); }
+    const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const { return USensorSubBody::GetExternalBoxSubBodies(); }
+    const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const { return USensorSubBody::GetExternalSphereSubBodies(); }
+    const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const { return USensorSubBody::GetExternalWheelSubBodies(); }
 
 protected:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Shape)

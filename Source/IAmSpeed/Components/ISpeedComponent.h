@@ -4,11 +4,22 @@
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/SHitResult.h"
 #include "IAmSpeed/Base/Kinematic.h"
+#include "IAmSpeed/Base/KinematicQuantizationCache.h"
+#include "IAmSpeed/World/Simulation/SimulationSleepState.h"
 
 class USSubBody;
 class USolidSubBody;
 struct SubBodyConfig;
 struct FCanonicalFrameContext;
+namespace Speed { class IStaticCollisionWorld; }
+
+#if !UE_BUILD_SHIPPING
+/** Diagnostic rejection stage; separate from a shape's geometric support certificate. */
+enum class EStaticRestingReactionStatus : uint8
+{
+	NoWorld, Frozen, Moving, Spinning, AngularLoad, NoLoad, NoSupport, Supported
+};
+#endif
 
 struct SComponentTOI
 {
@@ -31,6 +42,20 @@ public:
 	// Runs component-owned preparation/gameplay for one integer-addressed frame.
 	// This virtual dispatch also covers derived components declared by game modules.
 	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;
+	/** Applies an opaque, frame-latched input payload addressed by FSimulationWorld. */
+	virtual bool ApplySimulationInput(TConstArrayView<uint8> Payload) { return false; }
+	/** Appends deterministic mechanic state not covered by the common kinematic snapshot. */
+	virtual void AppendSimulationSnapshot(TArray<uint8>& OutPayload) const {}
+	/** Validates component-specific bytes before an atomic world restore starts. */
+	virtual bool CanRestoreSimulationSnapshot(TConstArrayView<uint8> Payload) const
+	{
+		return Payload.IsEmpty();
+	}
+	/** Restores the common rigid state, then delegates only component-specific bytes. */
+	void RestoreSimulationSnapshot(
+		const SKinematic& KinematicState,
+		bool bFrozen,
+		TConstArrayView<uint8> MechanicPayload);
 	// Optional simulation-owned run control. A test/controller seals its complete
 	// frame-addressed scenario before FastSimulation starts and marks completion
 	// from the canonical lane after publishing the terminal result.
@@ -55,6 +80,8 @@ public:
 
 	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
 	virtual bool IsFrozen() const = 0;
+	/** True only for an unchanged, force-free pose on certified stable support. */
+	bool IsPhysicsSleeping() const;
 	// Freezes the Movement. It serves when we want to pause the game
 	void FreezeMovement();
 	// Unfreezes the Movement. It serves when we want to resume the game after being paused
@@ -62,6 +89,11 @@ public:
 
 	// ==================== SubBody-specific info retrieval functions ====================
 	virtual SubBodyConfig GetSubBodyConfig(const USSubBody& SubBody) const = 0;
+	// A fresh principal-body contact can belong to a static surface on which a
+	// subordinate support manifold is already established.  Components without
+	// subordinate supports keep the ordinary free-impact response.
+	virtual bool HasCompatibleEstablishedStaticSupport(
+		const SHitResult& SurfaceHit) const { return false; }
 	//===================================================================================
 
 	// overload this function to return the appropriate kinematic state for SubBody (e.g. wheel kinematics or hitbox kinematics from car body)
@@ -77,6 +109,7 @@ public:
 	// Derives the component/mesh-origin state for rendering and local sub-body geometry.
 	SKinematic GetOriginKinematicState() const;
 	SKinematic GetOriginKinematicStateForFrame(const unsigned int& NumFrame) const;
+	/** Derives only origin position, retaining the same current-frame history lookup as the full state. */
 	FVector GetPhysLocation() const;
 	void SetPhysCOMLocation(const FVector& NewCOMLocation);
 	void SetPhysLocation(const FVector& NewLocation);
@@ -85,6 +118,7 @@ public:
 	// Applies an instantaneous orientation correction without teleporting the
 	// rigid body's center of mass or changing its COM velocity.
 	void SetPhysRotationPreserveCOM(const FQuat& NewRotation);
+	/** Derives only origin velocity (COM velocity minus angular transport), without rebuilding acceleration. */
 	FVector GetPhysVelocity() const;
 	FVector GetPhysVelocityAtPoint(const FVector& Point) const;
 	// The stored kinematic velocity is attached to the component origin.
@@ -136,7 +170,38 @@ public:
 
 	// This is used to advance the state to the time of impact after a hit is detected
 	void IntegrateKinematics(const float& SubDelta);
+	// Make already-established static contacts feasible without advancing time.
+	// This is also run at the canonical frame boundary so a contact acquired at
+	// the final TOI cannot expose a penetrating pose to observers.
+	bool ProjectEstablishedStaticContacts(const float& Delta);
 	void UpdateSubBodiesKinematics();
+	/** Binds immutable query geometry for this frame; cleared at completion/restore, never snapshotted. */
+	void SetStaticCollisionWorldForFrame(const Speed::IStaticCollisionWorld* World, float FrameHorizon = 0)
+	{
+		StaticRestingWorld = World;
+		StaticSupportFrameHorizon = World ? FrameHorizon : 0;
+	}
+	/** Common conservative horizon for support admission in CCD and integration.
+	 * It must not shorten just because the sweep returned an earlier impact. */
+	float GetStaticSupportFrameHorizon() const { return StaticSupportFrameHorizon; }
+	/** Returns a currently feasible resting reaction, or zero; does not mutate physical state. */
+	FVector GetStaticRestingReaction(double* StopAfterSeconds = nullptr) const;
+	/** True when certified support keeps this whole interval below the speed cap;
+	 * do not cap a fictitious free-fall velocity before applying that reaction. */
+	bool IsSpeedLimitPreservedByExactSupport(float Delta) const;
+	/** Evaluates a shape's continuous contact force/torque without caching it across events. */
+	void GetStaticContactAcceleration(FVector& Linear, FVector& Angular) const;
+	/** Splits CCD at a certified material stop event, before friction could reverse slip. */
+	float GetMaximumCanonicalSupportInterval(float Remaining) const;
+	/** Nominal configured load used to certify support geometry, not a prepared frame force. */
+	virtual FVector GetNominalGravityAcceleration() const { return FVector::ZeroVector; }
+	/** Certifies the current stationary pose; never relies on a previous contact or sleeping state. */
+	bool HasExactStaticRestingSupport() const;
+	/** A stationary orientation may translate tangentially when its shape/material
+	 * certifies a torque-free support law; this is not complete mechanical rest. */
+	bool HasExactStaticFaceSupport() const;
+	/** Frame-local immutable geometry, also available during preparation and canonical quantization. */
+	const Speed::IStaticCollisionWorld* GetStaticCollisionWorldForFrame() const { return StaticRestingWorld; }
 
 	// Called once per physics frame to reset any cached info in the component or its sub-bodies (e.g. hit info)
 	virtual void ResetForFrame(const float& Delta);
@@ -161,9 +226,21 @@ public:
 	void RegisterPhysicalConstraint(const FPhysicalContactConstraint& Constraint);
 	void ClearPhysicalConstraints();
 	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PhysicalConstraints; }
+	/** True when another sub-body supplies a live constraint: an isolated
+	 * rigid-body contact response must then defer to the coupled solver. */
+	virtual bool HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const;
 
 	virtual ~ISpeedComponent() = default;
 protected:
+#if !UE_BUILD_SHIPPING
+	/** Opt-in observer of actual reaction evaluations; no diagnostic dispatch in normal runtime. */
+	virtual void ObserveStaticRestingReaction(EStaticRestingReactionStatus Status) const {}
+	bool bObserveStaticRestingReaction = false;
+#endif
+	/** Quantizes in place unless the exact state/reference was already proved a no-op. */
+	void QuantizeKinematicState(SKinematic& State, const FQuat& PreviousRotation);
+	/** Opt-in support certificate; unsupported component kinds remain awake. */
+	virtual bool HasStableSleepSupport() const { return false; }
 	// overload this function to advance the physics state of the parent component by `SubDelta` seconds
 	// SubDelta is a fraction of delta during which there is NO collision, so the physics state should be advanced by SubDelta seconds without checking for collision.
 	// This is used to advance the state to the time of impact after a hit is detected
@@ -184,6 +261,17 @@ protected:
 	static bool AreSimilarPhysicalConstraints(const FPhysicalContactConstraint& A, const FPhysicalContactConstraint& B);
 
 	virtual void SetIsFrozen(bool bFrozen) = 0;
+	/** Applies bytes previously emitted by AppendSimulationSnapshot after validation. */
+	virtual void RestoreSimulationSnapshotPayload(TConstArrayView<uint8> Payload)
+	{
+		check(Payload.IsEmpty());
+	}
 
 	TArray<FPhysicalContactConstraint> PhysicalConstraints;
+	Speed::FSimulationSleepState SleepState;
+	Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
+private:
+	// Borrowed only during the world's canonical step; no historical/cache state.
+	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;
+	float StaticSupportFrameHorizon = 0;
 };
