@@ -1,6 +1,7 @@
 #include "AnalyticLandscapeAdapter.h"
 
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "LandscapeComponent.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
 #include "LandscapeProxy.h"
@@ -259,7 +260,10 @@ FFlatLandscapeAdapterOutput BuildFlatLandscapePlane(
 	}
 
 	FFlatLandscapeSource Source;
-	Source.SourceId = StableStringId(Landscape.GetPathName());
+	// Match the authored identity used by the bake and the runtime component
+	// bridge. A PIE package prefix is a session detail, not a new surface: if
+	// retained here, queries hit the plane but cannot publish its support component.
+	Source.SourceId = StableStringId(UWorld::RemovePIEPrefix(Landscape.GetPathName()));
 	// In editor/bake builds, absence of a visibility-layer allocation is a
 	// durable no-hole certificate. Any allocation is rejected conservatively;
 	// authority never assumes that its weights happen to be fully visible.

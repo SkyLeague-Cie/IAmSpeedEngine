@@ -122,6 +122,25 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 		BoxHit.SurfaceFeatureKind, EContactFeatureKind::Face);
 	TestFalse(TEXT("Plane contact has a constant surface normal"),
 		BoxHit.bSurfaceNormalMayVary);
+	// A polygon's triangulation diagonal is not an edge of the physical plane.
+	// Every point of this box remains strictly inside the rectangular domain.
+	for (double Yaw : { 0.0, 30.0, 90.0 })
+	for (double Tilt : { 0.0, 1.e-8, 1.e-5 })
+	{
+		FWorldQuery Interior = BoxQuery;
+		Interior.HalfExtent = FVector3d(4, 2, 2);
+		Interior.Rotation = FRotator(Tilt, Yaw, 0).Quaternion();
+		const double Radius = FMath::Abs(Interior.Rotation.GetAxisX().Z) * 4 +
+			FMath::Abs(Interior.Rotation.GetAxisY().Z) * 2 + FMath::Abs(Interior.Rotation.GetAxisZ().Z) * 2;
+		Interior.Start = Interior.End = FVector3d(-8, 0, Radius - 1.e-6);
+		Interior.DomainTolerance = Interior.InitialOverlapTolerance = 0;
+		const FWorldHit InteriorHit = FWorldQueryService(World).Sweep(Interior);
+		TestTrue(TEXT("interior plane overlap preserves its complete normal depth"),
+			InteriorHit.bHit && InteriorHit.bStartPenetrating &&
+			FMath::IsNearlyEqual(InteriorHit.PenetrationDepth, 1.e-6, 1.e-12));
+		TestEqual(TEXT("internal triangulation cannot turn a plane face into an edge"),
+			InteriorHit.SurfaceFeatureKind, EContactFeatureKind::Face);
+	}
 
 	FWorldQuery BoxEdgeQuery = BoxQuery;
 	BoxEdgeQuery.Start = FVector3d(110.0, 0.0, 0.0);
@@ -154,6 +173,16 @@ bool FIAmSpeedAnalyticBoundedPlaneTest::RunTest(const FString& Parameters)
 		FWorldQueryService(World).Sweep(BoxPenetrationQuery);
 	TestTrue(TEXT("Box initial overlap is reported"),
 		BoxPenetrationHit.bHit && BoxPenetrationHit.bStartPenetrating);
+	for (double TinyYaw : { 1.e-10, 1.e-8, 1.e-6 })
+	{
+		FWorldQuery NearlyAligned = BoxPenetrationQuery;
+		NearlyAligned.Rotation = FRotator(0, TinyYaw, 0).Quaternion();
+		NearlyAligned.DomainTolerance = 0;
+		NearlyAligned.InitialOverlapTolerance = 0;
+		const FWorldHit Hit = FWorldQueryService(World).Sweep(NearlyAligned);
+		TestTrue(TEXT("near-parallel SAT axes must not hide finite box/plane penetration"),
+			Hit.bHit && Hit.bStartPenetrating && FMath::IsNearlyEqual(Hit.PenetrationDepth, 1.0, 1.e-10));
+	}
 	TestTrue(TEXT("Box initial overlap reports the MTD depth"),
 		FMath::IsNearlyEqual(BoxPenetrationHit.PenetrationDepth, 1.0, 1.0e-9));
 	TestTrue(TEXT("Box penetration witnesses encode the MTD"),

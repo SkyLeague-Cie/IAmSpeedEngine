@@ -50,6 +50,7 @@ IAMSPEED_API FFlatLandscapeAdapterOutput BuildFlatLandscapePlane(
 
 // Unreal is an import adapter only. Its output is plain immutable runtime data;
 // analytical queries never retain or dereference the Landscape actor.
+// Source/primitive identities use the authored path, independent of PIE instance.
 IAMSPEED_API FFlatLandscapeAdapterOutput BuildFlatLandscapePlane(
 	const ALandscapeProxy& Landscape,
 	double FlatnessToleranceCm);

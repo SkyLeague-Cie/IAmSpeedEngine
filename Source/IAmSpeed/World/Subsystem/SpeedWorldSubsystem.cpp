@@ -32,6 +32,11 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedPersistentDynamicPairs(
 	1,
 	TEXT("Enables finite-mass persistent constraints for opted-in dynamic body pairs."));
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedExactBoxRestingSupport(
+	TEXT("p.IAmSpeed.Collision.ExactBoxRestingSupport"),
+	1,
+	TEXT("Certify exact planar box support before CCD/integration. Requires strict SurfaceAnalytic; set to 0 for the legacy support comparison path."));
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedUnilateralRollingPairs(
 	TEXT("p.IAmSpeed.Collision.UnilateralRollingPairs"),
 	0,
@@ -1328,6 +1333,10 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
 		if (Component)
 		{
 			IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Component, Prepare);
+			Component->SetStaticCollisionWorldForFrame(
+				CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread() != 0 &&
+				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
+					? SimulationWorld.GetStaticCollisionWorld() : nullptr, Context.PhysicalDeltaTime);
 			Component->PrepareCanonicalFrame(Context);
 		}
 	}
@@ -1422,6 +1431,12 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     // 1) Reset frame
     // ------------------------------------------------------------
 	const double ResetStartSeconds = FPlatformTime::Seconds();
+	// A shadow-built analytical payload is not the selected collision authority.
+	// Keep Legacy/Hybrid unchanged, even if analytical diagnostic data is loaded.
+	const Speed::IStaticCollisionWorld* RestingWorld =
+		CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread() != 0 &&
+		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
+			? SimulationWorld.GetStaticCollisionWorld() : nullptr;
 	for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
     {
         if (!Comp) continue;
@@ -1429,6 +1444,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Reset);
 		Comp->UpdateSubBodiesKinematics();
         Comp->ResetForFrame(Dt);
+		Comp->SetStaticCollisionWorldForFrame(RestingWorld, Dt);
     }
 
 	LastStepDiagnostics.ResetMilliseconds =
@@ -1460,7 +1476,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     int32 Iter = 0;
 	while (TimePassed < Dt)
     {
-        const float Remaining = Dt - TimePassed;
+        float Remaining = Dt - TimePassed;
 		if (Remaining <= CompletionTolerance)
 		{
 			IntegrateAll(Remaining);
@@ -1474,6 +1490,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		}
 		++Iter;
 		LastStepDiagnostics.IterationCount = Iter;
+		// A material stop is a real temporal boundary just like a TOI. Never
+		// sweep a trajectory that decelerates past zero and reverses its slip.
+		for (const ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
+			if (Comp) Remaining = FMath::Min(Remaining, Comp->GetMaximumCanonicalSupportInterval(Remaining));
 
         // ------------------------------------------------------------
 		// 2) Find every independent hit at the global earliest TOI. The
@@ -1504,7 +1524,8 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			// Rediscovering the same time-zero event would only consume the bounded
 			// CCD iteration budget; IntegrateKinematics now owns its continuation.
 			if (Ctoi.Hit.SurfaceId != 0 &&
-				ResolvedPairs.Contains(Ctoi.PairKey))
+				ResolvedPairs.Contains(Ctoi.PairKey) &&
+				(!Ctoi.Resolver.IsValid() || !Ctoi.Resolver->CanResolveRepeatedContact(Ctoi.Hit)))
 			{
 				continue;
 			}
@@ -1551,7 +1572,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 
         // No hit => End
         if (!bWillResolve)
-            break;
+        {
+            if (TimePassed >= Dt) break;
+            continue;
+        }
 
         // ------------------------------------------------------------
 		// 4) Resolve the simultaneous batch once per pair. All candidates were
@@ -1561,7 +1585,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		for (const SComponentTOI& Hit : EarliestHits)
 		{
 			USSubBody* Resolver = Hit.Resolver.Get();
-			if (!Resolver || ResolvedPairs.Contains(Hit.PairKey))
+			if (!Resolver || (ResolvedPairs.Contains(Hit.PairKey) && !Resolver->CanResolveRepeatedContact(Hit.Hit)))
 			{
 				continue;
 			}

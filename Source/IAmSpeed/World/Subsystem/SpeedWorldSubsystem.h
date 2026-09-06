@@ -59,6 +59,9 @@ UCLASS()
 class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FIAmSpeedBoxEquilibriumWorldTest;
+#endif
 public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 	static bool AreUnilateralRollingPairsEnabled();

@@ -1209,6 +1209,9 @@ struct IAMSPEED_API FBoundedPlane
 	double SignedDistance(const FVector3d& Point) const;
 	FVector3d ClosestPoint(const FVector3d& Point) const;
 	bool ContainsProjectedPoint(const FVector3d& Point, double Tolerance = 0.0) const;
+	/** Certifies a whole straight segment inside this finite domain, not only its endpoints.
+	 * Conservatively refuses polygon-boundary crossings/tangencies; no domain skin. */
+	bool ContainsProjectedSegment(const FVector3d& Start, const FVector3d& End) const;
 	double DistanceToDomainBoundary(const FVector3d& Point) const;
 	bool IsValid(FString* OutReason = nullptr) const;
 };

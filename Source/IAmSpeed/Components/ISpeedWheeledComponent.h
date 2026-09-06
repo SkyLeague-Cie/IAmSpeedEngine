@@ -51,6 +51,8 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 	virtual float GetPhysSteeringInput() const = 0;
 
 	virtual void RegisterWheelGroundContact(const SWheelGroundContact& Contact) = 0;
+	/** Wheel support is solved in its own manifold, outside PhysicalConstraints. */
+	bool HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const override;
 	bool HasCompatibleEstablishedStaticSupport(
 		const SHitResult& SurfaceHit) const override;
 	// Vehicle presets may replace the per-wheel suspension law while retaining
@@ -93,6 +95,7 @@ protected:
 	void BeginDeferredWheelGroundStateUpdate();
 	void EndDeferredWheelGroundStateUpdate();
 	virtual TArray<SWheelGroundContact>& GetPendingWheelContacts() = 0;
+	virtual const TArray<SWheelGroundContact>& GetPendingWheelContacts() const = 0;
 	// Negative means that the diagnostic CVar is disabled and the vehicle preset
 	// remains authoritative.
 	static float GetWheelContactNormalVelocityTimeConstantOverride();

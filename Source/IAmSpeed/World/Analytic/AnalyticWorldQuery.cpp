@@ -136,6 +136,10 @@ namespace Speed::Analytic
 FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld)
 	: World(InWorld)
 {
+	TArray<FBox3d> PlaneBounds;
+	PlaneBounds.Reserve(World.Planes.Num());
+	for (const FBoundedPlane& Plane : World.Planes) PlaneBounds.Add(Plane.Bounds);
+	PlaneProviderIndex = Speed::Collision::FOrderedBoundsIndex::Create(PlaneBounds);
 	TArray<FBox3d> PiecewiseBounds;
 	PiecewiseBounds.Reserve(World.PiecewiseTensorBezierPatches.Num());
 	for (const FPiecewiseTensorBezierPatch& Patch : World.PiecewiseTensorBezierPatches)
@@ -627,9 +631,13 @@ namespace
 			for (const FVector3d& Edge : Edges)
 			{
 				const FVector3d Cross = FVector3d::CrossProduct(BoxAxis, Edge);
-				if (Cross.SquaredLength() > 1.0e-20)
+				const double CrossLengthSquared = Cross.SquaredLength();
+				if (CrossLengthSquared > 1.0e-20)
 				{
-					SeparatingAxes[SeparatingAxisCount++] = Cross.GetSafeNormal();
+					// This axis already passed the SAT degeneracy criterion. The
+					// much larger default GetSafeNormal threshold could turn it
+					// into zero, whose zero overlap depth masks real penetration.
+					SeparatingAxes[SeparatingAxisCount++] = Cross / FMath::Sqrt(CrossLengthSquared);
 				}
 			}
 		}
@@ -1004,6 +1012,13 @@ namespace
 			Bounds += Query.Start + Extent;
 			Bounds += Query.End - Extent;
 			Bounds += Query.End + Extent;
+			// This is a candidate bound, not a contact skin. Axis normalization
+			// and projected extents may round inward relative to the actual eight
+			// quaternion-transformed corners. Retain those last-ULP candidates;
+			// the narrow phase still decides the exact sign of their clearance.
+			const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0,
+				FMath::Max(Query.Start.GetAbsMax(), Query.End.GetAbsMax()) + Query.HalfExtent.GetMax());
+			Bounds = Bounds.ExpandBy(Roundoff);
 		}
 		else
 		{
@@ -1484,14 +1499,67 @@ double FWorldQueryService::DistanceToCoplanarSemanticUnionBoundary(
 		: SeedPlane.DistanceToDomainBoundary(Point);
 }
 
+bool FWorldQueryService::IsPlanarSupportTranslationCertified(const FWorldQuery& Query,
+	TConstArrayView<FVector3d> Points, const FVector3d& Normal, const FVector3d& Translation) const
+{
+	if (Points.IsEmpty() || Points.Num() > 4 || Normal.ContainsNaN() || Translation.ContainsNaN() ||
+		Query.RejectsAllCollision() || FMath::Abs(Normal.SizeSquared() - 1) > 64 * DBL_EPSILON) return false;
+	FBox3d Bounds(EForceInit::ForceInit);
+	for (const FVector3d& P : Points)
+	{
+		if (P.ContainsNaN()) return false;
+		Bounds += P; Bounds += P + Translation;
+	}
+	const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0, Bounds.Min.GetAbsMax() + Bounds.Max.GetAbsMax());
+	Bounds = Bounds.ExpandBy(Roundoff);
+	Speed::Collision::FOrderedBoundsScratch Scratch;
+	const auto Candidates = PlaneProviderIndex->FindCandidates(Bounds, Scratch);
+	for (const FVector3d& P : Points)
+	{
+		bool bSupported = false;
+		for (int32 Index : Candidates)
+		{
+			const FBoundedPlane& Plane = World.Planes[Index];
+			if (!PlanePassesFilter(Query, Plane) || !Plane.bAuthorityEligible ||
+				(!Plane.Normal.Equals(Normal, 32 * DBL_EPSILON) && !Plane.Normal.Equals(-Normal, 32 * DBL_EPSILON)) ||
+				FMath::Abs(Plane.SignedDistance(P)) > Roundoff ||
+				FMath::Abs(Plane.SignedDistance(P + Translation)) > Roundoff) continue;
+			if (Plane.ContainsProjectedSegment(P, P + Translation)) { bSupported = true; break; }
+		}
+		if (!bSupported) return false;
+	}
+	return true;
+}
+
+void FWorldQueryService::VisitPlanarCandidates(const FWorldQuery& Query,
+	TFunctionRef<void(const FWorldHit&)> Visitor) const
+{
+	if (Query.Shape != EQueryShape::Sphere || Query.Radius <= 0 || Query.RejectsAllCollision()) return;
+	FBox3d Bounds(Query.Start, Query.Start);
+	Bounds += Query.End;
+	Bounds = Bounds.ExpandBy(Query.Radius);
+	Speed::Collision::FOrderedBoundsScratch Scratch;
+	for (int32 Index : PlaneProviderIndex->FindCandidates(Bounds, Scratch))
+	{
+		const FBoundedPlane& Plane = World.Planes[Index];
+		if (!PlanePassesFilter(Query, Plane) || (Query.bAuthorityOnly && !Plane.bAuthorityEligible) ||
+			!Plane.Bounds.Intersect(Bounds)) continue;
+		FWorldHit Candidate;
+		Candidate.Normal = Plane.SignedDistance(Query.Start) >= 0 ? Plane.Normal : -Plane.Normal;
+		Candidate.Point = Plane.Origin;
+		Candidate.SourceId = Plane.SourceId; Candidate.SurfaceId = Plane.SurfaceId;
+		Candidate.FeatureId = Plane.FeatureId; Candidate.PrimitiveId = Plane.PrimitiveId;
+		Candidate.MaterialId = Plane.MaterialId;
+		Candidate.SurfaceFeatureKind = EContactFeatureKind::Face;
+		Visitor(Candidate);
+	}
+}
+
 FWorldHit FWorldQueryService::SweepBoxPlane(
 	const FWorldQuery& Query, const FBoundedPlane& Plane,
 	const FBoxSweepContext* CachedBoxContext)
 {
 	FWorldHit Best;
-	TArray<FPlaneTriangle, TInlineAllocator<32>> Triangles;
-	TriangulatePlaneDomain(Plane, Triangles);
-	if (Triangles.IsEmpty()) return Best;
 	// Every facet and triangle sees the same box pose/path. Reuse an outer
 	// extrusion's immutable context, or construct one for a standalone plane.
 	FBoxSweepContext LocalContext;
@@ -1500,6 +1568,93 @@ FWorldHit FWorldQueryService::SweepBoxPlane(
 		LocalContext.Initialize(Query);
 		CachedBoxContext = &LocalContext;
 	}
+	// If a disc enclosing the entire box trajectory fits strictly inside the
+	// finite domain, only the actual plane face can collide. Triangle diagonals
+	// are not physical edges and must not alter the witness or overlap depth.
+	// The boundary-distance certificate also applies to concave simple polygons;
+	// edge/vertex approaches outside this conservative interior use finite SAT.
+	const FVector3d Motion = Query.End - Query.Start;
+	const double Envelope = Query.HalfExtent.Length() + Motion.Length();
+	if (Plane.ContainsProjectedPoint(Query.Start, 0) &&
+		Plane.DistanceToDomainBoundary(Query.Start) > Envelope)
+	{
+		const FVector3d* Axes = CachedBoxContext->Axis;
+		const double Radius = FMath::Abs(FVector3d::DotProduct(Axes[0], Plane.Normal)) * Query.HalfExtent.X +
+			FMath::Abs(FVector3d::DotProduct(Axes[1], Plane.Normal)) * Query.HalfExtent.Y +
+			FMath::Abs(FVector3d::DotProduct(Axes[2], Plane.Normal)) * Query.HalfExtent.Z;
+		const double SignedDistance = FVector3d::DotProduct(Query.Start - Plane.Origin, Plane.Normal);
+		const FVector3d Normal = SignedDistance >= 0 ? Plane.Normal : -Plane.Normal;
+		const double Distance = FMath::Abs(SignedDistance);
+		const double NormalMotion = FVector3d::DotProduct(Motion, Normal);
+		double Gap = Distance - Radius;
+		// A composed quaternion's axis/radius formula can disagree by a few ULPs
+		// with RotateVector on the actual corners. Near zero, evaluate the latter
+		// explicitly: do not turn arithmetic disagreement into an overlap impulse,
+		// and do not suppress real negative clearances with a contact tolerance.
+		const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0,
+			Query.Start.GetAbsMax() + Plane.Origin.GetAbsMax() + Query.HalfExtent.GetMax());
+		int32 RefinedVertex = INDEX_NONE;
+		FVector3d RefinedPoint = FVector3d::ZeroVector;
+		if (FMath::Abs(Gap) <= Roundoff)
+		{
+			Gap = DBL_MAX;
+			for (int32 Vertex = 0; Vertex < 8; ++Vertex)
+			{
+				const FVector3d Corner = Query.Start + Query.Rotation.RotateVector(FVector3d(
+					(Vertex & 1) ? Query.HalfExtent.X : -Query.HalfExtent.X,
+					(Vertex & 2) ? Query.HalfExtent.Y : -Query.HalfExtent.Y,
+					(Vertex & 4) ? Query.HalfExtent.Z : -Query.HalfExtent.Z));
+				const double CornerGap = FVector3d::DotProduct(Corner - Plane.Origin, Normal);
+				if (CornerGap < Gap) { Gap = CornerGap; RefinedVertex = Vertex; RefinedPoint = Corner; }
+			}
+		}
+		double Time = 0, Depth = FMath::Max(0.0, -Gap);
+		if (Gap > 0)
+		{
+			if (NormalMotion >= 0) return Best;
+			Time = -Gap / NormalMotion;
+			if (Time > 1) return Best;
+		}
+		bool bPenetrating = Depth > Query.DomainTolerance;
+		if (bPenetrating && Depth <= FMath::Max(0.0, Query.InitialOverlapTolerance))
+		{
+			if (-NormalMotion <= Query.DomainTolerance) return Best;
+			bPenetrating = false;
+		}
+		Best.bHit = true;
+		Best.Time = Time;
+		Best.Location = Query.Start + Time * Motion;
+		Best.Normal = Normal;
+		Best.bStartPenetrating = bPenetrating;
+		Best.PenetrationDepth = bPenetrating ? Depth : 0;
+		Best.QueryPoint = Best.Location;
+		int32 ActiveAxes = 0;
+		int8 Vertex = 0;
+		for (int32 Axis = 0; Axis < 3; ++Axis)
+		{
+			const double Projection = FVector3d::DotProduct(-Normal, Axes[Axis]);
+			const double Sign = Projection >= 0 ? 1 : -1;
+			if (Sign > 0) Vertex |= 1 << Axis;
+			Best.QueryPoint += Sign * Query.HalfExtent[Axis] * Axes[Axis];
+			if (FMath::Abs(Projection) > 1.e-10) ++ActiveAxes;
+		}
+		if (RefinedVertex != INDEX_NONE)
+		{
+			Best.QueryPoint = RefinedPoint + Time * Motion;
+			Vertex = static_cast<int8>(RefinedVertex);
+		}
+		Best.Point = Best.QueryPoint - FVector3d::DotProduct(Best.QueryPoint - Plane.Origin, Normal) * Normal;
+		Best.QueryFeatureKind = ActiveAxes <= 1 ? EContactFeatureKind::Face :
+			ActiveAxes == 2 ? EContactFeatureKind::Edge : EContactFeatureKind::Vertex;
+		Best.QueryFeatureIndex = Vertex;
+		Best.SurfaceFeatureKind = EContactFeatureKind::Face;
+		Best.SourceId = Plane.SourceId; Best.SurfaceId = Plane.SurfaceId;
+		Best.FeatureId = Plane.FeatureId; Best.PrimitiveId = Plane.PrimitiveId;
+		Best.MaterialId = Plane.MaterialId;
+		return HitPassesReferenceNormal(Query, Best) ? Best : FWorldHit();
+	}
+	TArray<FPlaneTriangle, TInlineAllocator<32>> Triangles;
+	TriangulatePlaneDomain(Plane, Triangles);
 	for (const FPlaneTriangle& Triangle : Triangles)
 	{
 		FWorldHit Candidate;

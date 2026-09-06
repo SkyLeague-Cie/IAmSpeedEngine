@@ -524,6 +524,7 @@ void USpeedMovementComponent::ApplyAccelKinematicsConstraint(const float& delta)
 
 void USpeedMovementComponent::applyAccelerationConstraint(const float& delta)
 {
+	if (IsSpeedLimitPreservedByExactSupport(delta)) return;
 	const FVector COMVelocity = GetPhysCOMVelocity();
 	const FVector NewCOMVelocity = SSBox::AdvanceVelocity(COMVelocity, GetPhysAcceleration(), delta);
 	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());

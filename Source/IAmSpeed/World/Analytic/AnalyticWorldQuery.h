@@ -128,6 +128,13 @@ public:
 	bool TrySweepAuthority(
 		const FWorldQuery& Query, FWorldHit& OutAuthorityHit) const;
 	FWorldHit Sweep(const FWorldQuery& Query) const;
+	/** Uses immutable bounds to visit every eligible plane near a conservative
+	 * sphere trajectory. Returned plane witnesses are candidates, never TOIs. */
+	void VisitPlanarCandidates(const FWorldQuery& Query, TFunctionRef<void(const FWorldHit&)> Visitor) const;
+	/** Each support point must retain an exact finite planar provider over the
+	 * whole translation. A seam requiring provider handover is conservatively refused. */
+	bool IsPlanarSupportTranslationCertified(const FWorldQuery& Query,
+		TConstArrayView<FVector3d> Points, const FVector3d& Normal, const FVector3d& Translation) const;
 
 private:
 	struct FSourceAuthorityCoverage
@@ -163,6 +170,7 @@ private:
 	const FAnalyticWorldData& World;
 	// Constructed from this service's immutable world; no spatial order reaches the solver.
 	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> PiecewiseProviderIndex;
+	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> PlaneProviderIndex;
 	TArray<FSourceAuthorityCoverage> SourceAuthorityCoverage;
 	struct FCachedSweep
 	{

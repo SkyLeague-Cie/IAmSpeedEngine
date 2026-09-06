@@ -11,6 +11,7 @@ class ISpeedComponent;
 class UBoxSubBody;
 class USphereSubBody;
 class USWheelSubBody;
+namespace Speed { class IStaticCollisionWorld; }
 
 /**
  * USubBody : Base class for any physics sub-body (wheel, hitbox, sphere) and detection SubBodies
@@ -47,6 +48,23 @@ public:
 
     // --- Called once per physics frame ---
     virtual void ResetForFrame(const float& Delta);
+	/** Shape-specific proof of a feasible resting reaction; unsupported shapes leave the load unchanged. */
+	virtual FVector GetStaticRestingReaction(const Speed::IStaticCollisionWorld& World,
+		double* StopAfterSeconds = nullptr) const { return FVector::ZeroVector; }
+	/** Cheap candidate; the owner must certify support before splitting at it. */
+	virtual double GetStaticSupportStopTimeCandidate() const { return TNumericLimits<double>::Max(); }
+	/** Continuous normal reaction of already touching features, including torque; no impact impulse. */
+	virtual bool TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const { return false; }
+	/** A genuine later arrival may revisit a pair already resolved in this frame. */
+	virtual bool CanResolveRepeatedContact(const SHitResult& Hit) const { return false; }
+	/** Keeps canonical pose precision while a native exact contact is being solved. */
+	virtual bool RequiresUnquantizedContactPose() const { return false; }
+	/** A canonical rounding operation is not a physical sweep. Shapes can reject
+	 * a proposed owner pose which would create static-world penetration. */
+	virtual bool CanApplyQuantizedPose(const Speed::IStaticCollisionWorld& World,
+		const SKinematic& OwnerPose) const { return true; }
+	/** Shape-specific exact support under a nominal load, independent of transient prepared acceleration. */
+	virtual bool HasExactStaticRestingSupport(const Speed::IStaticCollisionWorld& World, const FVector& Load) const { return false; }
 	// Enforce an already-established static contact after unconstrained pose
 	// prediction. Returns true when owner kinematics changed.
 	virtual bool ProjectEstablishedStaticContact(const float& Delta) { return false; }

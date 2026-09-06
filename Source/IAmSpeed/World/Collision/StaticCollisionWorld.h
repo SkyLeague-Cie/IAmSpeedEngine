@@ -24,6 +24,13 @@ public:
 		const Analytic::FWorldQuery& Query,
 		Analytic::FWorldHit& OutAuthorityHit) const = 0;
 	virtual EStaticCollisionBackend GetBackend() const = 0;
+	/** Visits finite planar broad-phase candidates, not accepted contacts.
+	 * The caller must refine its actual rotating trajectory and finite witness. */
+	virtual void VisitPlanarCandidates(const Analytic::FWorldQuery& Query,
+		TFunctionRef<void(const Analytic::FWorldHit&)> Visitor) const {}
+	/** Certifies continuous support, not a pair of endpoint samples or an impact sweep. */
+	virtual bool IsPlanarSupportTranslationCertified(const Analytic::FWorldQuery& Query,
+		TConstArrayView<FVector3d> Points, const FVector3d& Normal, const FVector3d& Translation) const { return false; }
 };
 
 // Result of projecting a predicted query pose back into the feasible region of
@@ -91,6 +98,16 @@ public:
 	EStaticCollisionBackend GetBackend() const override
 	{
 		return EStaticCollisionBackend::SurfaceAnalytic;
+	}
+	void VisitPlanarCandidates(const Analytic::FWorldQuery& Query,
+		TFunctionRef<void(const Analytic::FWorldHit&)> Visitor) const override
+	{
+		QueryService.VisitPlanarCandidates(Query, Visitor);
+	}
+	bool IsPlanarSupportTranslationCertified(const Analytic::FWorldQuery& Query,
+		TConstArrayView<FVector3d> Points, const FVector3d& Normal, const FVector3d& Translation) const override
+	{
+		return QueryService.IsPlanarSupportTranslationCertified(Query, Points, Normal, Translation);
 	}
 
 private:

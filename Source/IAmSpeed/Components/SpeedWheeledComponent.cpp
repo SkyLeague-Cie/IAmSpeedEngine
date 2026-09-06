@@ -1042,7 +1042,10 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 
 	// Handle rest force after gameplay tick so that the component can be at rest at the end of the tick if it should be
 	UpdateAutoRecoverState();
-	HandleRestForce();
+	// The exact-support lane owns normal/Coulomb reactions during CCD and
+	// integration. A legacy host pre-cancellation would hide the actual load
+	// (or cancel gravity while a face is still separated from its support).
+	if (!GetStaticCollisionWorldForFrame()) HandleRestForce();
 	HandlePhysicsAutoRecover();
 
 	// Handle any necessary updates after the gameplay tick
@@ -2352,6 +2355,7 @@ void USpeedWheeledComponent::ApplyAccelKinematicsConstraint(const float& delta)
 
 void USpeedWheeledComponent::applyAccelerationConstraint(const float& delta)
 {
+	if (IsSpeedLimitPreservedByExactSupport(delta)) return;
 	const FVector COMVelocity = GetPhysCOMVelocity();
 	const FVector NewCOMVelocity = SSBox::AdvanceVelocity(COMVelocity, GetPhysAcceleration(), delta);
 	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
@@ -2685,6 +2689,11 @@ void USpeedWheeledComponent::SetPhysSteeringInput(const float& Steering)
 }
 
 TArray<SWheelGroundContact>& USpeedWheeledComponent::GetPendingWheelContacts()
+{
+	return PendingWheelContacts;
+}
+
+const TArray<SWheelGroundContact>& USpeedWheeledComponent::GetPendingWheelContacts() const
 {
 	return PendingWheelContacts;
 }

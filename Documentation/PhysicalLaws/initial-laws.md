@@ -83,6 +83,15 @@ invalid geometry, or support loss releases the equilibrium at a defined frame
 phase. Owners include movement components, sub-bodies, support state, and the
 canonical frame solver.
 
+### Box-specific refinements
+
+The box-specific refinement of RestingEquilibrium deliberately separates
+[BoxStandingStill](BoxStandingStill.md) (maintenance of complete rest) from
+[BoxEquilibrium](BoxEquilibrium.md) (convergence and supported sliding).
+BoxEquilibrium depends on BoxStandingStill; passing a stationary fixture does
+not certify convergence after impact. These identifiers do not rename or relax
+the existing generic RestingEquilibrium law or historical automation names.
+
 ## `IAMSPEED.PHYS.ROLLING.V1` — Rolling
 
 - `CompositionLevel`: Molecular

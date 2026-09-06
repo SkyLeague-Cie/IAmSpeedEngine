@@ -863,6 +863,18 @@ bool ISpeedWheeledComponent::IsOnTheGround() const
 	return true;
 }
 
+bool ISpeedWheeledComponent::HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const
+{
+	if (ISpeedComponent::HasActivePhysicalConstraintsOtherThan(Source)) return true;
+	// A swept contact awaiting the grouped solve still owns a response even
+	// if a later pose probe temporarily cleared the wheel's on-ground flag.
+	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
+		if (Contact.Wheel && Contact.Wheel != Source && Contact.SurfaceComponent.IsValid()) return true;
+	for (const USWheelSubBody* Wheel : GetWheelSubBodies())
+		if (Wheel && Wheel != Source && Wheel->IsOnGround()) return true;
+	return false;
+}
+
 bool ISpeedWheeledComponent::OneWheelOnGround() const
 {
 	const auto& WheelSubBodies = GetWheelSubBodies();

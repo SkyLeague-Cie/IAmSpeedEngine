@@ -1,6 +1,8 @@
 #include "ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+#include "Misc/ScopeExit.h"
+#include <cmath>
 
 namespace
 {
@@ -36,6 +38,7 @@ void ISpeedComponent::RestoreSimulationSnapshot(
 {
 	check(CanRestoreSimulationSnapshot(MechanicPayload));
 	SleepState.Reset();
+	SetStaticCollisionWorldForFrame(nullptr);
 	KinematicQuantizationCache.Reset();
 	SetKinematicState(KinematicState);
 	SetIsFrozen(bFrozen);
@@ -45,7 +48,46 @@ void ISpeedComponent::RestoreSimulationSnapshot(
 
 void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& PreviousRotation)
 {
+	// IAMSPEED.PHYS.BOX_STANDING_STILL/BOX_EQUILIBRIUM.V1: independent world
+	// and actor grids need not intersect at a valid contact pose. Preserve the
+	// pose of an ALREADY geometrically certified, non-rotating face (including
+	// its material's admissible tangent slide), never round motion into rest.
+	bool bPreserveSupportedPose = HasExactStaticFaceSupport();
+	if (!bPreserveSupportedPose && StaticRestingWorld)
+	{
+		for (const USSubBody* Body : GetSubBodies())
+			if (Body && Body->RequiresUnquantizedContactPose()) { bPreserveSupportedPose = true; break; }
+	}
+	const FVector SupportedLocation = State.Location;
+	const FQuat SupportedRotation = State.Rotation;
+	const FVector SupportedVelocity = State.Velocity;
+	const FVector SupportedAngularVelocity = State.AngularVelocity;
 	KinematicQuantizationCache.Quantize(State, PreviousRotation);
+	bool bRejectedQuantizedPose = false;
+	if (!bPreserveSupportedPose && StaticRestingWorld &&
+		(State.Location != SupportedLocation || State.Rotation != SupportedRotation))
+	{
+		for (const USSubBody* Body : GetSubBodies())
+			if (Body && !Body->CanApplyQuantizedPose(*StaticRestingWorld, State))
+			{
+				bRejectedQuantizedPose = true;
+				break;
+			}
+	}
+	// An approaching body may have no contact yet. Rounding must not cross the
+	// surface before CCD reaches it; retain its integrated exterior pose instead.
+	if (bPreserveSupportedPose || bRejectedQuantizedPose)
+	{
+		State.Location = SupportedLocation;
+		State.Rotation = SupportedRotation;
+	}
+	if (bPreserveSupportedPose)
+	{
+		// Edge support couples normal COM velocity and angular velocity. Rounding
+		// them independently breaks the constraint even if pose precision is kept.
+		State.Velocity = SupportedVelocity;
+		State.AngularVelocity = SupportedAngularVelocity;
+	}
 }
 
 void ISpeedComponent:: ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint, const USolidSubBody* SubBody)
@@ -65,6 +107,116 @@ bool ISpeedComponent::IsPhysicsSleeping() const
 	return !IsFrozen() && SleepState.CanSleep(GetKinematicState(), HasStableSleepSupport());
 }
 
+bool ISpeedComponent::HasExactStaticRestingSupport() const
+{
+	return GetKinematicState().Velocity.IsZero() && HasExactStaticFaceSupport();
+}
+
+bool ISpeedComponent::HasExactStaticFaceSupport() const
+{
+	if (!StaticRestingWorld || IsFrozen()) return false;
+	const SKinematic& State = GetKinematicState();
+	if (!State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero()) return false;
+	const FVector Load = GetNominalGravityAcceleration();
+	if (Load.IsZero() || FVector::DotProduct(State.Velocity, Load) != 0) return false;
+	for (const USSubBody* Body : GetSubBodies())
+		if (Body && Body->HasExactStaticRestingSupport(*StaticRestingWorld, Load)) return true;
+	return false;
+}
+
+float ISpeedComponent::GetMaximumCanonicalSupportInterval(float Remaining) const
+{
+	if (!StaticRestingWorld || IsFrozen()) return Remaining;
+	double Candidate = TNumericLimits<double>::Max();
+	for (const USSubBody* Body : GetSubBodies())
+		if (Body) Candidate = FMath::Min(Candidate, Body->GetStaticSupportStopTimeCandidate());
+	if (Candidate >= Remaining) return Remaining;
+	double CertifiedTime = TNumericLimits<double>::Max();
+	if (GetStaticRestingReaction(&CertifiedTime).IsZero() || CertifiedTime <= 0 || CertifiedTime >= Remaining) return Remaining;
+	float Interval = static_cast<float>(CertifiedTime);
+	if (Interval < CertifiedTime) Interval = std::nextafter(Interval, FLT_MAX);
+	return FMath::Min(Interval, Remaining);
+}
+
+FVector ISpeedComponent::GetStaticRestingReaction(double* StopAfterSeconds) const
+{
+	if (StopAfterSeconds) *StopAfterSeconds = TNumericLimits<double>::Max();
+#if !UE_BUILD_SHIPPING
+	const auto Observe = [this](EStaticRestingReactionStatus Status)
+	{
+		if (bObserveStaticRestingReaction) ObserveStaticRestingReaction(Status);
+	};
+	if (!StaticRestingWorld) { Observe(EStaticRestingReactionStatus::NoWorld); return FVector::ZeroVector; }
+#else
+	if (!StaticRestingWorld) return FVector::ZeroVector;
+#endif
+	const SKinematic& State = GetKinematicState();
+	// Shape-independent rejection is cheap in the ordinary moving-body path.
+	// No closing/separating motion or spin is accepted. Each shape must also
+	// certify its material law before admitting tangential motion; no damping
+	// or sleep acquisition is performed here.
+	if (IsFrozen() || FVector::DotProduct(State.Velocity, State.Acceleration) != 0 || !State.AngularVelocity.IsZero() ||
+		!State.AngularAcceleration.IsZero() || State.Acceleration.IsZero())
+	{
+#if !UE_BUILD_SHIPPING
+		Observe(IsFrozen() ? EStaticRestingReactionStatus::Frozen :
+			!State.Velocity.IsZero() ? EStaticRestingReactionStatus::Moving :
+			!State.AngularVelocity.IsZero() ? EStaticRestingReactionStatus::Spinning :
+			!State.AngularAcceleration.IsZero() ? EStaticRestingReactionStatus::AngularLoad :
+			EStaticRestingReactionStatus::NoLoad);
+#endif
+		return FVector::ZeroVector;
+	}
+	for (const USSubBody* SubBody : GetSubBodies())
+	{
+		if (SubBody)
+		{
+			const FVector Reaction = SubBody->GetStaticRestingReaction(*StaticRestingWorld, StopAfterSeconds);
+			if (!Reaction.IsZero())
+			{
+#if !UE_BUILD_SHIPPING
+				Observe(EStaticRestingReactionStatus::Supported);
+#endif
+				return Reaction;
+			}
+		}
+	}
+#if !UE_BUILD_SHIPPING
+	Observe(EStaticRestingReactionStatus::NoSupport);
+#endif
+	return FVector::ZeroVector;
+}
+
+bool ISpeedComponent::IsSpeedLimitPreservedByExactSupport(float Delta) const
+{
+	if (!StaticRestingWorld || Delta <= 0 || StaticSupportFrameHorizon < Delta) return false;
+	const SKinematic& State = GetKinematicState();
+	const double MaxSpeedSquared = FMath::Square(double(GetPhysMaxSpeed()));
+	// Squaring a normalized/clamped oblique vector can exceed the squared cap
+	// by one ULP (2300 at 40 degrees is a regression). Bound only double
+	// arithmetic in the norm comparison; this never changes the velocity.
+	const double NormRoundoff = 8 * DBL_EPSILON * FMath::Max(1.0, MaxSpeedSquared);
+	if (State.Velocity.SizeSquared() > MaxSpeedSquared + NormRoundoff) return false;
+	double StopAfter = TNumericLimits<double>::Max();
+	const FVector Reaction = GetStaticRestingReaction(&StopAfter);
+	if (Reaction.IsZero()) return false;
+	// The admitted law has a straight, constant-acceleration trajectory up to
+	// its Coulomb stop, then rest. Its speed norm is convex on that interval,
+	// so endpoints suffice. A boundary/hole or incompatible load rejects the
+	// support certificate and retains ordinary unconstrained speed limiting.
+	const FVector EndVelocity = State.Velocity + (State.Acceleration + Reaction) *
+		FMath::Min(double(Delta), StopAfter);
+	return EndVelocity.SizeSquared() <= MaxSpeedSquared + NormRoundoff;
+}
+
+void ISpeedComponent::GetStaticContactAcceleration(FVector& Linear, FVector& Angular) const
+{
+	Linear = Angular = FVector::ZeroVector;
+	if (!StaticRestingWorld || IsFrozen()) return;
+	for (const USSubBody* Body : GetSubBodies())
+		if (Body && Body->TryGetStaticContactAcceleration(Linear, Angular)) return;
+}
+
 void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 {
 	if (IsFrozen())
@@ -72,6 +224,39 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 
 	if (SubDelta <= 0.f)
 		return;
+
+	// Apply only during this segment. Restoring the external load afterwards
+	// lets a later TOI impulse/torque release support immediately in this frame.
+	double StopAfterSeconds = TNumericLimits<double>::Max();
+	FVector RestingReaction = GetStaticRestingReaction(&StopAfterSeconds);
+	FVector AngularReaction = FVector::ZeroVector;
+	if (RestingReaction.IsZero()) GetStaticContactAcceleration(RestingReaction, AngularReaction);
+	if (!RestingReaction.IsZero()) SetPhysAcceleration(GetPhysAcceleration() + RestingReaction);
+	if (!AngularReaction.IsZero()) SetPhysAngularAcceleration(GetPhysAngularAcceleration() + AngularReaction);
+	ON_SCOPE_EXIT
+	{
+		if (!RestingReaction.IsZero() || !AngularReaction.IsZero())
+		{
+			SetPhysAcceleration(GetPhysAcceleration() - RestingReaction);
+			SetPhysAngularAcceleration(GetPhysAngularAcceleration() - AngularReaction);
+			UpdateSubBodiesKinematics();
+		}
+	};
+
+	if (!RestingReaction.IsZero() && StopAfterSeconds <= SubDelta)
+	{
+		// Integrate the exact Coulomb stop event. The remainder of this float
+		// interval is rest, not reversed slip; no velocity threshold or sleep
+		// is involved. The world split CCD at this event before reaching here.
+		SKinematic State = GetKinematicState();
+		State.Location += State.Velocity * (0.5 * StopAfterSeconds);
+		State.Velocity = FVector::ZeroVector;
+		SetKinematicState(State);
+		UpdateSubBodiesKinematics();
+		ProjectEstablishedStaticContacts(SubDelta);
+		PostIntegrateKinematics(SubDelta);
+		return;
+	}
 
 	if (IsPhysicsSleeping())
 	{
@@ -196,6 +381,26 @@ void ISpeedComponent::ResetForFrame(const float& Delta)
 
 SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, const float& LastSubDelta)
 {
+	// CCD predicts from the same constrained acceleration as integration, but
+	// no reaction is cached across a collision, teleport or force change.
+	FVector RestingReaction = GetStaticRestingReaction();
+	FVector AngularReaction = FVector::ZeroVector;
+	if (RestingReaction.IsZero()) GetStaticContactAcceleration(RestingReaction, AngularReaction);
+	if (!RestingReaction.IsZero() || !AngularReaction.IsZero())
+	{
+		SetPhysAcceleration(GetPhysAcceleration() + RestingReaction);
+		SetPhysAngularAcceleration(GetPhysAngularAcceleration() + AngularReaction);
+		UpdateSubBodiesKinematics();
+	}
+	ON_SCOPE_EXIT
+	{
+		if (!RestingReaction.IsZero() || !AngularReaction.IsZero())
+		{
+			SetPhysAcceleration(GetPhysAcceleration() - RestingReaction);
+			SetPhysAngularAcceleration(GetPhysAngularAcceleration() - AngularReaction);
+			UpdateSubBodiesKinematics();
+		}
+	};
     SComponentTOI Best;
     Best.bHit = false;
     Best.TOI = RemainingDelta;
@@ -248,6 +453,14 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, co
             Best.PairKey = Speed::Analytic::CombineStableIds(
                 Best.PairKey, ProviderId);
         }
+        if (StaticRestingWorld && HR.SurfaceId != 0 && !HR.bSurfaceNormalMayVary &&
+            HR.ContactFeatureThis == Speed::EContactFeatureKind::Vertex && HR.ContactFeatureIndexThis >= 0)
+        {
+            // A newly arriving vertex is a new event on the same plane, not
+            // a repeated resolution of its already-established old contact.
+            Best.PairKey = Speed::Analytic::CombineStableIds(Best.PairKey,
+                0x504c414e00000000ull | static_cast<uint64>(HR.ContactFeatureIndexThis + 1));
+        }
     }
 
     return Best;
@@ -279,6 +492,7 @@ void ISpeedComponent::RemoveExternalSubBodies(const TArray<USSubBody*>& ExtSubBo
 
 void ISpeedComponent::PostPhysicsUpdate(const float& delta)
 {
+	ON_SCOPE_EXIT { SetStaticCollisionWorldForFrame(nullptr); };
 	// reset accelerations after physics update so that they can be set again during the next tick
 	SetPhysAcceleration(FVector::ZeroVector);
 	SetPhysAngularAcceleration(FVector::ZeroVector);
@@ -663,6 +877,14 @@ void ISpeedComponent::RegisterPhysicalConstraint(const FPhysicalContactConstrain
 void ISpeedComponent::ClearPhysicalConstraints()
 {
 	PhysicalConstraints.Reset();
+}
+
+bool ISpeedComponent::HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const
+{
+	for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
+		if (Constraint.SourceSubBody.Get() != Source && IsPhysicalConstraintStillRelevant(Constraint))
+			return true;
+	return false;
 }
 
 bool ISpeedComponent::IsPhysicalConstraintStillRelevant(const FPhysicalContactConstraint& Constraint) const

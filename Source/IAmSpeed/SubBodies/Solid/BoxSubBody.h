@@ -10,6 +10,8 @@
 
 class USphereSubBody;
 class USWheelSubBody;
+namespace Speed { struct FBoxRestingSupport; }
+namespace Speed::Analytic { struct FWorldQuery; }
 
 DECLARE_LOG_CATEGORY_EXTERN(BoxSubBodyLog, Log, All);
 
@@ -33,6 +35,19 @@ public:
     SSBox MakeBox() const;
     SSBox MakeBoxFromKS(const SKinematic& CarKinematicState) const;
     void ResetForFrame(const float& Delta) override;
+	/** Publishes independently certified passive support, without an impact callback or pose change. */
+	void PostPhysicsUpdate() override;
+	FVector GetStaticRestingReaction(const Speed::IStaticCollisionWorld& World,
+		double* StopAfterSeconds = nullptr) const override;
+	double GetStaticSupportStopTimeCandidate() const override;
+	bool TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const override;
+	bool CanResolveRepeatedContact(const SHitResult& Hit) const override;
+	bool RequiresUnquantizedContactPose() const override;
+	bool CanApplyQuantizedPose(const Speed::IStaticCollisionWorld& World, const SKinematic& OwnerPose) const override;
+	/** Evaluates the current box pose/filters against a supplied load, without changing any state. */
+	bool EvaluateStaticRestingSupport(const Speed::IStaticCollisionWorld& World,
+		const FVector& ExternalAcceleration, Speed::FBoxRestingSupport& OutSupport) const;
+	bool HasExactStaticRestingSupport(const Speed::IStaticCollisionWorld& World, const FVector& Load) const override;
 	bool ProjectEstablishedStaticContact(const float& Delta) override;
 	bool RequiresEstablishedStaticContactTransport() const override;
     void AcceptHit() override;
@@ -94,6 +109,28 @@ protected:
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
     const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 private:
+    /** Expresses the box-local inverse inertia in a frame, preserving quaternion precision. */
+    FMatrix RotateLocalInverseInertia(const FQuat& BoxToFrame) const;
+    /** Actual box from an owner COM pose, with shared authoritative collision filters. */
+    Speed::Analytic::FWorldQuery MakeSupportBoxQuery(const SKinematic& OwnerPose) const;
+    /** Revalidates and publishes passive finite face support; never edits motion or emits an impact. */
+    bool PublishExactStaticSupport();
+    /** Shares query construction; geometry-only diagnostics do not depend on live velocity. */
+    bool EvaluateStaticBoxSupport(const Speed::IStaticCollisionWorld& World,
+        const FVector& ExternalAcceleration, Speed::FBoxRestingSupport& OutSupport,
+        bool bIncludeMotion, double HorizonSeconds = 0) const;
+    /** Resolves a certified simultaneous full-face normal impact as one resultant,
+     * avoiding corner-order torque. Rejects spinning/sliding or partial support. */
+    bool TryResolveExactFaceImpact();
+    /** Resolves certified planar vertex/edge/face witnesses simultaneously;
+     * geometry acquisition and position feasibility remain separate phases. */
+    bool TryResolveExactPlanarImpact(bool bNotifyImpact = true);
+    /** Refines a candidate plane against the owner-integrated vertices and
+     * already established unilateral support; returns only a new contact. */
+    bool RefineExactPlanarTOI(SHitResult& Hit, float Delta) const;
+    /** Projects only the float-TOI roundoff of an arriving edge/face; never
+     * settles a finite tilt or edits the live state before contact validation. */
+    void ProjectPlanarEventRoundoff(SKinematic& State, const SHitResult& Hit) const;
     bool RefreshVariableNormalGroundSupport(const float Delta);
 	bool ProjectEstablishedStaticContactImpl(
 		const float& Delta, bool bProjectVelocity);

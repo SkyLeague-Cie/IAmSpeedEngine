@@ -1143,13 +1143,16 @@ FQuat Speed::SBox::IntegrateRotation(const FQuat& Q0, const FVector& W0, const F
 {
 	// Theta(t) = w0 t + 0.5 alpha t^2 (axis-angle in world space)
 	const FVector Theta = W0 * t + 0.5f * Alpha * (t * t);
-	const float Angle = Theta.Size();
-	if (Angle < 1e-8f)
-	{
-		return Q0;
-	}
-	const FVector Axis = Theta / Angle;
-	FQuat DQ = FQuat(Axis, Angle);
+	if (Theta.IsZero()) return Q0;
+	const double AngleSquared = Theta.SizeSquared();
+	// exp(theta / 2), with a regular limit at zero. Dropping finite tiny
+	// rotations makes a vertex TOI discontinuous: translation keeps moving
+	// while the box's approaching edge is artificially pinned in orientation.
+	const double Angle = FMath::Sqrt(AngleSquared);
+	const double Scale = AngleSquared < 1.e-8
+		? 0.5 - AngleSquared / 48.0 + AngleSquared * AngleSquared / 3840.0
+		: FMath::Sin(Angle * 0.5) / Angle;
+	const FQuat DQ(Theta.X * Scale, Theta.Y * Scale, Theta.Z * Scale, FMath::Cos(Angle * 0.5));
 	return (DQ * Q0).GetNormalized();
 }
 
@@ -1396,7 +1399,7 @@ bool Speed::FKinematicState::Serialize(FArchive& Ar)
 }
 void Speed::FKinematicState::Quantize(const FQuat& PrevRotation)
 {
-	Location = RoundVectorToNetQuantize(Location, 100);
+	Location = RoundVectorToNetQuantize(Location, PositionQuantizationScale);
 	Velocity = RoundVectorToNetQuantize(Velocity, 100);
 	// Acceleration = RoundVectorToNetQuantize(Acceleration, 1);
 	Rotation = RoundQuatToNetQuantize(Rotation, PrevRotation);

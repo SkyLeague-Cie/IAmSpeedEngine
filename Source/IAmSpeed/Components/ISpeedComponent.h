@@ -11,6 +11,15 @@ class USSubBody;
 class USolidSubBody;
 struct SubBodyConfig;
 struct FCanonicalFrameContext;
+namespace Speed { class IStaticCollisionWorld; }
+
+#if !UE_BUILD_SHIPPING
+/** Diagnostic rejection stage; separate from a shape's geometric support certificate. */
+enum class EStaticRestingReactionStatus : uint8
+{
+	NoWorld, Frozen, Moving, Spinning, AngularLoad, NoLoad, NoSupport, Supported
+};
+#endif
 
 struct SComponentTOI
 {
@@ -166,6 +175,33 @@ public:
 	// the final TOI cannot expose a penetrating pose to observers.
 	bool ProjectEstablishedStaticContacts(const float& Delta);
 	void UpdateSubBodiesKinematics();
+	/** Binds immutable query geometry for this frame; cleared at completion/restore, never snapshotted. */
+	void SetStaticCollisionWorldForFrame(const Speed::IStaticCollisionWorld* World, float FrameHorizon = 0)
+	{
+		StaticRestingWorld = World;
+		StaticSupportFrameHorizon = World ? FrameHorizon : 0;
+	}
+	/** Common conservative horizon for support admission in CCD and integration.
+	 * It must not shorten just because the sweep returned an earlier impact. */
+	float GetStaticSupportFrameHorizon() const { return StaticSupportFrameHorizon; }
+	/** Returns a currently feasible resting reaction, or zero; does not mutate physical state. */
+	FVector GetStaticRestingReaction(double* StopAfterSeconds = nullptr) const;
+	/** True when certified support keeps this whole interval below the speed cap;
+	 * do not cap a fictitious free-fall velocity before applying that reaction. */
+	bool IsSpeedLimitPreservedByExactSupport(float Delta) const;
+	/** Evaluates a shape's continuous contact force/torque without caching it across events. */
+	void GetStaticContactAcceleration(FVector& Linear, FVector& Angular) const;
+	/** Splits CCD at a certified material stop event, before friction could reverse slip. */
+	float GetMaximumCanonicalSupportInterval(float Remaining) const;
+	/** Nominal configured load used to certify support geometry, not a prepared frame force. */
+	virtual FVector GetNominalGravityAcceleration() const { return FVector::ZeroVector; }
+	/** Certifies the current stationary pose; never relies on a previous contact or sleeping state. */
+	bool HasExactStaticRestingSupport() const;
+	/** A stationary orientation may translate tangentially when its shape/material
+	 * certifies a torque-free support law; this is not complete mechanical rest. */
+	bool HasExactStaticFaceSupport() const;
+	/** Frame-local immutable geometry, also available during preparation and canonical quantization. */
+	const Speed::IStaticCollisionWorld* GetStaticCollisionWorldForFrame() const { return StaticRestingWorld; }
 
 	// Called once per physics frame to reset any cached info in the component or its sub-bodies (e.g. hit info)
 	virtual void ResetForFrame(const float& Delta);
@@ -190,9 +226,17 @@ public:
 	void RegisterPhysicalConstraint(const FPhysicalContactConstraint& Constraint);
 	void ClearPhysicalConstraints();
 	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PhysicalConstraints; }
+	/** True when another sub-body supplies a live constraint: an isolated
+	 * rigid-body contact response must then defer to the coupled solver. */
+	virtual bool HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const;
 
 	virtual ~ISpeedComponent() = default;
 protected:
+#if !UE_BUILD_SHIPPING
+	/** Opt-in observer of actual reaction evaluations; no diagnostic dispatch in normal runtime. */
+	virtual void ObserveStaticRestingReaction(EStaticRestingReactionStatus Status) const {}
+	bool bObserveStaticRestingReaction = false;
+#endif
 	/** Quantizes in place unless the exact state/reference was already proved a no-op. */
 	void QuantizeKinematicState(SKinematic& State, const FQuat& PreviousRotation);
 	/** Opt-in support certificate; unsupported component kinds remain awake. */
@@ -226,4 +270,8 @@ protected:
 	TArray<FPhysicalContactConstraint> PhysicalConstraints;
 	Speed::FSimulationSleepState SleepState;
 	Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
+private:
+	// Borrowed only during the world's canonical step; no historical/cache state.
+	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;
+	float StaticSupportFrameHorizon = 0;
 };

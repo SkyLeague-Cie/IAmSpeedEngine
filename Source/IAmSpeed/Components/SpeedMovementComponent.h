@@ -19,6 +19,9 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 	friend struct FNetworkBaseSpeedState;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedOriginGetterTest;
+	friend class FIAmSpeedBoxRestingEquilibriumTest;
+	friend class FIAmSpeedBoxCanonicalRestTest;
+	friend class FIAmSpeedBoxApproachQuantizationTest;
 #endif
 	
 public:
@@ -76,6 +79,7 @@ public:
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
+	FVector GetNominalGravityAcceleration() const override { return bEnableGravity ? FVector(0, 0, GravityZ) : FVector::ZeroVector; }
 	void SetIsAffectedByGravity(bool value);
 	void EnableGravity();
 	bool HasAuthority() const;

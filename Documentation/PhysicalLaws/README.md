@@ -27,6 +27,8 @@ be appended after the law identifier without changing it.
 | `IAMSPEED.PHYS.FRICTION.V1` | Atomic | yes | Bound tangential response by the selected static/dynamic friction model. |
 | `IAMSPEED.PHYS.SLIDING.V1` | Molecular | no | Compose contact, normal response, and dynamic friction during sustained slip. |
 | `IAMSPEED.PHYS.RESTING_EQUILIBRIUM.V1` | Molecular | yes | Preserve a valid low-energy equilibrium and release it on invalidation. |
+| `IAMSPEED.PHYS.BOX_STANDING_STILL.V1` | Molecular | yes | [Preserve an already supported stationary box](BoxStandingStill.md), with zero linear/angular motion and penetration. |
+| `IAMSPEED.PHYS.BOX_EQUILIBRIUM.V1` | Molecular | yes | [Converge to and retain a stable supported box face](BoxEquilibrium.md); tangential translation is allowed, spin and normal translation are not. |
 | `IAMSPEED.PHYS.ROLLING.V1` | Molecular | no | Couple translation, angular motion, contact, and rolling resistance without artificial slip. |
 | `IAMSPEED.PHYS.SUPPORT.V1` | Molecular | yes | Acquire, retain, and release load-bearing contact with explicit topology. |
 | `IAMSPEED.PHYS.MULTI_CONTACT_EQUILIBRIUM.V1` | System | yes | Solve compatible simultaneous contacts deterministically without violating hard feasibility. |

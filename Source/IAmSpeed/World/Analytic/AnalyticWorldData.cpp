@@ -964,6 +964,39 @@ FVector3d FBoundedPlane::ClosestPoint(const FVector3d& Point) const
 	return Point - SignedDistance(Point) * Normal;
 }
 
+bool FBoundedPlane::ContainsProjectedSegment(const FVector3d& Start, const FVector3d& End) const
+{
+	if (!ContainsProjectedPoint(Start, 0) || !ContainsProjectedPoint(End, 0)) return false;
+	// Rectangles are convex. A concave polygon needs an interior-crossing
+	// guard: two supported endpoints could otherwise bridge a notch/hole.
+	if (DomainVertices.IsEmpty() || Start == End) return true;
+	const auto Local = [this](const FVector3d& P)
+	{
+		return FVector2d(FVector3d::DotProduct(P - Origin, AxisU), FVector3d::DotProduct(P - Origin, AxisV));
+	};
+	const FVector2d A = Local(Start), D = Local(End) - A;
+	if (D.IsZero()) return true;
+	const auto Cross = [](const FVector2d& P, const FVector2d& Q) { return P.X * Q.Y - P.Y * Q.X; };
+	for (int32 I = 0; I < DomainVertices.Num(); ++I)
+	{
+		const FVector2d Q = DomainVertices[I] - A;
+		const FVector2d E = DomainVertices[(I + 1) % DomainVertices.Num()] - DomainVertices[I];
+		const double Denominator = Cross(D, E);
+		if (Denominator != 0)
+		{
+			const double T = Cross(Q, E) / Denominator, U = Cross(Q, D) / Denominator;
+			if (T > 0 && T < 1 && U >= 0 && U <= 1) return false;
+		}
+		else if (Cross(Q, D) == 0)
+		{
+			const double T0 = FVector2d::DotProduct(Q, D) / D.SizeSquared();
+			const double T1 = FVector2d::DotProduct(Q + E, D) / D.SizeSquared();
+			if (FMath::Max(T0, T1) > 0 && FMath::Min(T0, T1) < 1) return false;
+		}
+	}
+	return true;
+}
+
 bool FBoundedPlane::ContainsProjectedPoint(
 	const FVector3d& Point, const double Tolerance) const
 {

@@ -124,6 +124,7 @@ public:
 	void ApplyTestVelocity();
 
 	bool IsAffectedByGravity() const;
+	FVector GetNominalGravityAcceleration() const override { return bEnableGravity ? FVector(0, 0, GravityZ) : FVector::ZeroVector; }
 	void SetIsAffectedByGravity(bool value);
 	void EnableGravity();
 	bool HasAuthority() const;
@@ -312,6 +313,7 @@ protected:
 	virtual void QuantizePhysicalState();
 
 	TArray<SWheelGroundContact>& GetPendingWheelContacts() override;
+	const TArray<SWheelGroundContact>& GetPendingWheelContacts() const override;
 	float GetWheelContactNormalVelocityTimeConstant() const override;
 
 	void SetGroundState();
