@@ -1286,6 +1286,10 @@ struct IAMSPEED_API FTensorBezierApproximationCell
 	// U0V0, U0V1, U1V0, U1V1.
 	FVector3d Corners[4] = {};
 	double MaximumErrorCm = TNumericLimits<double>::Max();
+	// Derived finite-triangle topology, never serialized/hashed. Bits identify
+	// concave internal edges as seen from each oriented face side (two triangles).
+	uint8 PositiveConcaveEdges[2] = {};
+	uint8 NegativeConcaveEdges[2] = {};
 };
 
 struct IAMSPEED_API FTensorBezierSurface
@@ -1419,6 +1423,9 @@ struct IAMSPEED_API FTensorBezierPatch
 // large collection of unrelated broad-phase primitives.
 struct IAMSPEED_API FPiecewiseTensorBezierCell
 {
+	// Derived indices for complete C2 corner fans, in U0V0/U0V1/U1V0/U1V1 order.
+	// Unproved/open/nonconforming fans retain INDEX_NONE and ordinary finite SAT.
+	int32 InternalCornerNormalCone[4] = { INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE };
 	// 0/1 are the U min/max edges and 2/3 the V min/max edges.  The values
 	// identify authored boundaries, not tessellation edges.
 	uint64 BoundaryFeatureIds[4] = {};
@@ -1460,6 +1467,9 @@ struct IAMSPEED_API FPiecewiseTensorBezierPatch
 	uint64 BlockingChannels = 0;
 	TArray<FPiecewiseTensorBezierCell> Cells;
 	TArray<FPiecewiseTensorBezierAdjacency> Adjacencies;
+	// Derived unit axis xyz and minimum incident-face dot product w. Shared by
+	// the four cells of a closed corner fan; excluded from serialization/hash.
+	TArray<FVector4d> InternalCornerNormalCones;
 	FBox3d Bounds = FBox3d(EForceInit::ForceInit);
 	// A deterministic, provider-level broad phase over the stable cells.
 	TArray<FTriangleBvhNode> CellBvhNodes;

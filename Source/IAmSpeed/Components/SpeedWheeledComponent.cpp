@@ -16,9 +16,17 @@
 #include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
+#include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
+
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarIAmSpeedCovariantVehicleInertia(
+	TEXT("p.IAmSpeed.VehicleInertia.CovariantFrame"), 0,
+	TEXT("Experimental correct chassis-to-world inertia conversion. Off until dependent vehicle contracts are requalified; does not change the already-correct box accessor."),
+	ECVF_Default);
+#endif
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedDebugKinematics(
 	TEXT("p.IAmSpeed.DebugKinematics"),
@@ -779,6 +787,18 @@ SKinematic USpeedWheeledComponent::GetKinematicsOfSubBody(const USSubBody& SubBo
 }
 FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
 {
+	// The covariant correction is not yet qualified against the host's existing
+	// steering/contact contracts. Preserve the published response by default.
+#if !UE_BUILD_SHIPPING
+	if (CVarIAmSpeedCovariantVehicleInertia.GetValueOnAnyThread() != 0)
+	{
+		// TransformVector uses row vectors: unrotate the world torque, apply the
+		// chassis tensor, then rotate back. Match the box accessor without Euler
+		// pole loss; wheel impulses must not depend on the vehicle's world heading.
+		const FMatrix ChassisToWorld = FQuatRotationMatrix(GetPhysRotation());
+		return ChassisToWorld.GetTransposed() * CarLocalInvI * ChassisToWorld;
+	}
+#endif
 	const FMatrix ChassisToWorld = FRotationMatrix::Make(GetPhysRotation().Rotator());
 	return ChassisToWorld * CarLocalInvI * ChassisToWorld.GetTransposed();
 }

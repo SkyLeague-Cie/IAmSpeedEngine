@@ -22,6 +22,7 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 	friend class FIAmSpeedBoxRestingEquilibriumTest;
 	friend class FIAmSpeedBoxCanonicalRestTest;
 	friend class FIAmSpeedBoxApproachQuantizationTest;
+	friend class FIAmSpeedBoxObjectOnlyQuantizationTest;
 #endif
 	
 public:

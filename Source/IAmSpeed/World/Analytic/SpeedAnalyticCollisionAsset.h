@@ -208,7 +208,9 @@ struct IAMSPEED_API FSpeedAnalyticExtrudedQuinticPatchRecord
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint32 ObjectType = 0;
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") uint64 BlockingChannels = 0;
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") TArray<FVector> SectionControlPoints;
-	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") TArray<FVector> InteriorCorrectionControlPoints;
+	// Explicit bake/editor correction; its basis preserves both endpoint jets
+	// through order two. Runtime still consumes a validated immutable copy.
+	UPROPERTY(EditAnywhere, Category = "Analytic Collision") TArray<FVector> InteriorCorrectionControlPoints;
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double BaseRootMeanSquareResidualCm = 0.0;
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double BaseMaximumResidualCm = 0.0;
 	UPROPERTY(VisibleAnywhere, Category = "Analytic Collision") double CorrectedRootMeanSquareResidualCm = 0.0;

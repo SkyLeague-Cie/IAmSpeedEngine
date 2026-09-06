@@ -58,6 +58,11 @@ struct IAMSPEED_API FWorldQuery
 	// inside a finite domain even when the query footprint overlaps a certified
 	// adjacent surface. Fresh authority queries keep the full-footprint margin.
 	bool bAllowEstablishedFaceContactAtBoundary = false;
+	// Strict collision retains proven finite contacts: a round face witness or
+	// finite OBB SAT. Hybrid replacement keeps its conservative footprint guard
+	// and can defer unproved edge neighborhoods to Legacy. This changes coverage,
+	// never the finite domain or the SAT/contact-normal proof.
+	bool bUseFiniteContactDomain = false;
 	bool bObjectQuery = false;
 	bool bApplyCollisionFilter = false;
 	// Authority execution may consume only explicitly certified primitives.
@@ -128,6 +133,10 @@ public:
 	bool TrySweepAuthority(
 		const FWorldQuery& Query, FWorldHit& OutAuthorityHit) const;
 	FWorldHit Sweep(const FWorldQuery& Query) const;
+	/** Pose-only maximum overlap, using finite geometry and no CCD release shell.
+	 * Returns false for moving/unsupported queries, separately from a clear pose.
+	 * Maximum single-constraint depth is not the compound world's global MTD. */
+	bool TryFindDeepestOverlap(const FWorldQuery& Query, FWorldHit& OutHit) const;
 	/** Uses immutable bounds to visit every eligible plane near a conservative
 	 * sphere trajectory. Returned plane witnesses are candidates, never TOIs. */
 	void VisitPlanarCandidates(const FWorldQuery& Query, TFunctionRef<void(const FWorldHit&)> Visitor) const;
@@ -137,6 +146,9 @@ public:
 		TConstArrayView<FVector3d> Points, const FVector3d& Normal, const FVector3d& Translation) const;
 
 private:
+	// An operation policy, not a provider subtype flag. It remains private so
+	// neither Sweep nor Hybrid replacement can accidentally inherit overlap order.
+	enum class EHitSelection : uint8 { FirstSweepHit, DeepestOverlap };
 	struct FSourceAuthorityCoverage
 	{
 		uint64 SourceId = 0;
@@ -162,6 +174,8 @@ private:
 		const TArray<FTensorBezierApproximationCell>* ApproximationCells = nullptr;
 		const TArray<FTriangleBvhNode>* ApproximationCellBvhNodes = nullptr;
 		const TArray<int32>* ApproximationCellBvhIndices = nullptr;
+		const TArray<FVector4d>* InternalCornerNormalCones = nullptr;
+		const int32* InternalCornerNormalConeIndices = nullptr;
 		bool bQueryCollisionEnabled = false;
 		bool bApproximationCertified = false;
 		bool bAuthorityEligible = false;
@@ -176,6 +190,7 @@ private:
 	{
 		FWorldQuery Query;
 		FWorldHit Hit;
+		EHitSelection Selection = EHitSelection::FirstSweepHit;
 		bool bValid = false;
 	};
 	// The analytical world is immutable and canonical physics owns one query
@@ -201,15 +216,17 @@ private:
 	/** Counts full-query cache reuse only; empty filters and direct detailed queries are excluded. */
 	void RecordCacheProfile(EQueryShape Shape, int32 HitWay, bool bEvicted) const;
 #endif
-	FWorldHit SweepDetailed(
-		const FWorldQuery& Query, FWorldHit* OutBestTriangle) const;
+	FWorldHit QueryCached(const FWorldQuery& Query, EHitSelection Selection) const;
+	FWorldHit SweepDetailed(const FWorldQuery& Query, FWorldHit* OutBestTriangle,
+		EHitSelection Selection = EHitSelection::FirstSweepHit) const;
 	bool IsAuthorityMissDefinitive(
 		const FWorldQuery& Query, const FBox3d& QueryBounds) const;
 	static double SupportRadius(const FWorldQuery& Query, const FVector3d& Normal);
 	static FWorldHit SweepPlane(
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
 		const FAnalyticWorldData* PlaneUnionWorld = nullptr,
-		const Private::FBoxSweepContext* CachedBoxContext = nullptr);
+		const Private::FBoxSweepContext* CachedBoxContext = nullptr,
+		EHitSelection Selection = EHitSelection::FirstSweepHit);
 	/** Ray/sphere plane kernel: a miss leaves OutHit untouched; a hit replaces every field. */
 	static bool TrySweepRoundPlane(
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
@@ -219,25 +236,29 @@ private:
 		const FBoundedPlane& SeedPlane, const FVector3d& Point);
 	static FWorldHit SweepBoxPlane(
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
-		const Private::FBoxSweepContext* CachedBoxContext = nullptr);
+		const Private::FBoxSweepContext* CachedBoxContext = nullptr,
+		EHitSelection Selection = EHitSelection::FirstSweepHit);
 	static FWorldHit SweepTriangleFace(
 		const FWorldQuery& Query, const FTriangleSurface& Triangle);
 	static FWorldHit SweepExtrudedQuintic(
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
-		const FExtrudedQuinticPatch& Patch);
+		const FExtrudedQuinticPatch& Patch, EHitSelection Selection);
 	static FWorldHit SweepTensorBezier(
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FTensorBezierPatch& Patch,
-		double MaximumSearchTime = 1.0);
+		double MaximumSearchTime = 1.0,
+		EHitSelection Selection = EHitSelection::FirstSweepHit);
 	static FWorldHit SweepTensorBezierApproximation(
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FTensorBezierQueryView& Patch,
 		double MaximumSearchTime = 1.0,
-		const FVector3d* CachedBoxAxes = nullptr);
+		const FVector3d* CachedBoxAxes = nullptr,
+		EHitSelection Selection = EHitSelection::FirstSweepHit);
 	static FWorldHit SweepPiecewiseTensorBezier(
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FPiecewiseTensorBezierPatch& Patch,
-		double MaximumSearchTime = 1.0);
+		double MaximumSearchTime = 1.0,
+		EHitSelection Selection = EHitSelection::FirstSweepHit);
 	static bool TrianglePassesFilter(
 		const FWorldQuery& Query, const FTriangleSurface& Triangle);
 	static bool PatchPassesFilter(
@@ -249,7 +270,8 @@ private:
 	static bool PlanePassesFilter(
 		const FWorldQuery& Query, const FBoundedPlane& Plane);
 	static bool IsSameQuery(const FWorldQuery& A, const FWorldQuery& B);
-	static bool IsBetterHit(const FWorldHit& Candidate, const FWorldHit& Best);
+	static bool IsBetterHit(const FWorldHit& Candidate, const FWorldHit& Best,
+		EHitSelection Selection = EHitSelection::FirstSweepHit);
 	static bool HitPassesReferenceNormal(
 		const FWorldQuery& Query, const FWorldHit& Hit);
 };

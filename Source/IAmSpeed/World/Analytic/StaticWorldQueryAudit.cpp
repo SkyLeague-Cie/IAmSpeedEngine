@@ -115,15 +115,15 @@ namespace
 		uint32 FieldMismatches[9] = {};
 	};
 
-	thread_local FFrameState State;
+	thread_local FFrameState GStaticWorldAuditFrame;
 
 	// Canonical queries share one immutable bridge for the duration of the frame.
 	// Calls outside that frame, or against another world, retain ordinary lookup.
 	const USpeedWorldSubsystem* ResolveRuntimeBridge(UWorld* QueryWorld)
 	{
-		if (QueryWorld && State.bActive && State.QueryWorld == QueryWorld && State.RuntimeBridge)
+		if (QueryWorld && GStaticWorldAuditFrame.bActive && GStaticWorldAuditFrame.QueryWorld == QueryWorld && GStaticWorldAuditFrame.RuntimeBridge)
 		{
-			return State.RuntimeBridge;
+			return GStaticWorldAuditFrame.RuntimeBridge;
 		}
 		return QueryWorld ? QueryWorld->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
 	}
@@ -273,7 +273,7 @@ namespace
 		const Speed::IStaticCollisionWorld& StaticWorld)
 	{
 		if (CVarResidualSelectionAuditEnabled.GetValueOnAnyThread() == 0 ||
-			State.ResidualSelectionDetailCount != 0 || !AuthorityHit.bHit ||
+			GStaticWorldAuditFrame.ResidualSelectionDetailCount != 0 || !AuthorityHit.bHit ||
 			!Query.bIncludeTriangles)
 		{
 			return;
@@ -298,7 +298,7 @@ namespace
 		NormalRayQuery.Start = AuthorityHit.Point + 100.0 * AuthorityHit.Normal;
 		NormalRayQuery.End = AuthorityHit.Point - 100.0 * AuthorityHit.Normal;
 		const FWorldHit NormalRayHit = StaticWorld.SweepSingle(NormalRayQuery);
-		if (State.World)
+		if (GStaticWorldAuditFrame.World)
 		{
 			FBox3d QueryBounds(EForceInit::ForceInit);
 			QueryBounds += Query.Start;
@@ -313,7 +313,7 @@ namespace
 			}
 			static thread_local TSet<uint64> LoggedCandidateSurfaces;
 			for (const FPiecewiseTensorBezierPatch& Patch :
-				State.World->PiecewiseTensorBezierPatches)
+				GStaticWorldAuditFrame.World->PiecewiseTensorBezierPatches)
 			{
 				if (!Patch.Bounds.Intersect(QueryBounds) ||
 					LoggedCandidateSurfaces.Contains(Patch.SurfaceId))
@@ -330,7 +330,7 @@ namespace
 						(Query.BlockingObjectTypes & (1ull << Patch.ObjectType)) != 0;
 				UE_LOG(LogTemp, Display,
 					TEXT("[AnalyticResidualCandidate] Frame=%llu Surface=%016llX Primitive=%016llX Group=%016llX BoundsMin=%s BoundsMax=%s Cells=%d ObjectType=%u BlockingChannels=%016llX QueryTraceChannel=%u QueryBlockingObjectTypes=%016llX QueryEnabled=%d Authority=%d CanBlock=%d"),
-					State.Frame, Patch.SurfaceId, Patch.PrimitiveId,
+					GStaticWorldAuditFrame.Frame, Patch.SurfaceId, Patch.PrimitiveId,
 					Patch.CanonicalGroupId, *FVector(Patch.Bounds.Min).ToString(),
 					*FVector(Patch.Bounds.Max).ToString(), Patch.Cells.Num(),
 					Patch.ObjectType, Patch.BlockingChannels, Query.TraceChannel,
@@ -339,10 +339,10 @@ namespace
 			}
 		}
 
-		++State.ResidualSelectionDetailCount;
+		++GStaticWorldAuditFrame.ResidualSelectionDetailCount;
 		UE_LOG(LogTemp, Display,
 			TEXT("[AnalyticResidualSelection] Frame=%llu Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX ResidualTime=%.17g ResidualPoint=%s ResidualNormal=%s ResidualSource=%016llX ResidualSurface=%016llX ResidualFeature=%016llX ResidualPrimitive=%016llX PolishedHit=%d PolishedTime=%.17g PolishedPoint=%s PolishedNormal=%s PolishedSource=%016llX PolishedSurface=%016llX PolishedFeature=%016llX PolishedPrimitive=%016llX NormalRayHit=%d NormalRayTime=%.17g NormalRayPoint=%s NormalRayNormal=%s NormalRaySource=%016llX NormalRaySurface=%016llX NormalRayFeature=%016llX NormalRayPrimitive=%016llX"),
-			State.Frame, static_cast<uint8>(Query.Shape),
+			GStaticWorldAuditFrame.Frame, static_cast<uint8>(Query.Shape),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
 			*FQuat(Query.Rotation).ToString(), *FVector(Query.HalfExtent).ToString(),
 			Query.Radius, Query.RequiredSourceId, Query.RequiredSurfaceId,
@@ -365,7 +365,8 @@ namespace
 		const FWorldQuery& Query,
 		const FWorldHit& Hit,
 		const uint32 AuthorityAttempt,
-		const Speed::IStaticCollisionWorld& StaticWorld)
+		const Speed::IStaticCollisionWorld& StaticWorld,
+		const bool bOverlapQuery = false)
 	{
 		const int32 DetailMode =
 			CVarStrictQueryDetailEnabled.GetValueOnAnyThread();
@@ -378,38 +379,38 @@ namespace
 		const int32 DetailFrameEnd =
 			CVarStrictQueryDetailFrameEnd.GetValueOnAnyThread();
 		if ((DetailFrameStart >= 0 &&
-				State.Frame < static_cast<uint64>(DetailFrameStart)) ||
+				GStaticWorldAuditFrame.Frame < static_cast<uint64>(DetailFrameStart)) ||
 			(DetailFrameEnd >= 0 &&
-				State.Frame > static_cast<uint64>(DetailFrameEnd)))
+				GStaticWorldAuditFrame.Frame > static_cast<uint64>(DetailFrameEnd)))
 		{
 			return;
 		}
 		if (Hit.bHit)
 		{
-			++State.StrictHitCount;
+			++GStaticWorldAuditFrame.StrictHitCount;
 			if (Hit.PrimitiveId != 0)
 			{
-				State.StrictProviderIds.AddUnique(Hit.PrimitiveId);
+				GStaticWorldAuditFrame.StrictProviderIds.AddUnique(Hit.PrimitiveId);
 			}
 		}
 		else
 		{
-			++State.StrictMissCount;
+			++GStaticWorldAuditFrame.StrictMissCount;
 		}
 		if (DetailMode == 1)
 		{
-			if (Hit.bHit || State.bStrictFirstMissCaptured)
+			if (Hit.bHit || GStaticWorldAuditFrame.bStrictFirstMissCaptured)
 			{
 				return;
 			}
-			State.bStrictFirstMissCaptured = true;
-			State.StrictFirstMissAuthorityAttempt = AuthorityAttempt;
-			State.StrictFirstMissQuery = Query;
+			GStaticWorldAuditFrame.bStrictFirstMissCaptured = true;
+			GStaticWorldAuditFrame.StrictFirstMissAuthorityAttempt = AuthorityAttempt;
+			GStaticWorldAuditFrame.StrictFirstMissQuery = Query;
 			return;
 		}
 		UE_LOG(LogTemp, Display,
 			TEXT("[AnalyticStrictQuery] Frame=%llu Attempt=%u Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX Hit=%d StartPenetrating=%d PenetrationDepth=%.17g ErrorCm=%.17g Time=%.17g Point=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
-			State.Frame, AuthorityAttempt, static_cast<uint8>(Query.Shape),
+			GStaticWorldAuditFrame.Frame, AuthorityAttempt, static_cast<uint8>(Query.Shape),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
 			*FQuat(Query.Rotation).ToString(), *FVector(Query.HalfExtent).ToString(),
 			Query.Radius, Query.RequiredSourceId, Query.RequiredSurfaceId,
@@ -423,10 +424,12 @@ namespace
 		{
 			FWorldQuery ResidualQuery = Query;
 			ResidualQuery.bIncludeTriangles = true;
-			const FWorldHit ResidualHit = StaticWorld.SweepSingle(ResidualQuery);
+			FWorldHit ResidualHit;
+			if (bOverlapQuery) StaticWorld.TryFindDeepestOverlap(ResidualQuery, ResidualHit);
+			else ResidualHit = StaticWorld.SweepSingle(ResidualQuery);
 			UE_LOG(LogTemp, Display,
 				TEXT("[AnalyticStrictResidual] Frame=%llu Attempt=%u Hit=%d StartPenetrating=%d PenetrationDepth=%.17g Time=%.17g Point=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
-				State.Frame, AuthorityAttempt, ResidualHit.bHit ? 1 : 0,
+				GStaticWorldAuditFrame.Frame, AuthorityAttempt, ResidualHit.bHit ? 1 : 0,
 				ResidualHit.bStartPenetrating ? 1 : 0,
 				ResidualHit.PenetrationDepth, ResidualHit.Time,
 				*FVector(ResidualHit.Point).ToString(),
@@ -441,19 +444,19 @@ namespace
 		const FWorldQuery& Query, const bool bLegacyHit,
 		const FHitResult& Legacy, const FWorldHit& Analytic)
 	{
-		if (State.bFirstDivergenceReported)
+		if (GStaticWorldAuditFrame.bFirstDivergenceReported)
 		{
 			return;
 		}
-		State.bFirstDivergenceReported = true;
+		GStaticWorldAuditFrame.bFirstDivergenceReported = true;
 		UE_LOG(LogTemp, Warning,
 			TEXT("[AnalyticShadowFirstDivergence] Frame=%llu Query=%u Site=%s Field=%s"),
-			State.Frame, QueryOrdinal, SiteName(Site), Field);
+			GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site), Field);
 		const UPrimitiveComponent* LegacyComponent = Legacy.Component.Get();
 		const AActor* LegacyOwner = LegacyComponent ? LegacyComponent->GetOwner() : nullptr;
 		UE_LOG(LogTemp, Display,
 			TEXT("[AnalyticShadowFirstDivergenceDetail] Frame=%llu Query=%u Site=%s Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g TraceChannel=%u ObjectTypes=%016llX BlockingObjectTypes=%016llX LegacyHit=%d LegacyTime=%.9g LegacyLocation=%s LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g LegacyOwner=%s LegacyComponent=%s LegacyFace=%d AnalyticHit=%d AnalyticTime=%.17g AnalyticLocation=%s AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSource=%016llX AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX"),
-			State.Frame, QueryOrdinal, SiteName(Site), static_cast<uint8>(Query.Shape),
+			GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site), static_cast<uint8>(Query.Shape),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
 			*FQuat(Query.Rotation).ToString(), *FVector(Query.HalfExtent).ToString(),
 			Query.Radius, Query.TraceChannel, Query.ObjectTypes,
@@ -479,12 +482,12 @@ namespace
 		const FWorldQuery& Query, const bool bLegacyHit,
 		const FHitResult& Legacy, const FWorldHit& Analytic)
 	{
-		if (State.bFirstHitDivergenceReported) return;
-		State.bFirstHitDivergenceReported = true;
+		if (GStaticWorldAuditFrame.bFirstHitDivergenceReported) return;
+		GStaticWorldAuditFrame.bFirstHitDivergenceReported = true;
 		const UPrimitiveComponent* LegacyComponent = Legacy.Component.Get();
 		UE_LOG(LogTemp, Display,
 			TEXT("[AnalyticShadowFirstHitDivergence] Frame=%llu Query=%u Site=%s Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g LegacyComponent=%s LegacyFace=%d AnalyticHit=%d AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSource=%016llX AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX"),
-			State.Frame, QueryOrdinal, SiteName(Site),
+			GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site),
 			static_cast<uint8>(Query.Shape), *FVector(Query.Start).ToString(),
 			*FVector(Query.End).ToString(), *FQuat(Query.Rotation).ToString(),
 			*FVector(Query.HalfExtent).ToString(), Query.Radius,
@@ -561,11 +564,11 @@ namespace
 		const FHitResult& Legacy,
 		const FWorldHit& Analytic)
 	{
-		if (State.PreviousTransitions.Num() <= static_cast<int32>(QueryOrdinal))
+		if (GStaticWorldAuditFrame.PreviousTransitions.Num() <= static_cast<int32>(QueryOrdinal))
 		{
-			State.PreviousTransitions.SetNum(QueryOrdinal + 1);
+			GStaticWorldAuditFrame.PreviousTransitions.SetNum(QueryOrdinal + 1);
 		}
-		FPreviousTransition& Previous = State.PreviousTransitions[QueryOrdinal];
+		FPreviousTransition& Previous = GStaticWorldAuditFrame.PreviousTransitions[QueryOrdinal];
 		const uint64 LegacyFeature = bLegacyHit ? LegacyFeatureId(Legacy) : 0;
 		const bool bLegacyTransition = Previous.bLegacyHit != bLegacyHit ||
 			(Previous.bLegacyHit && Previous.LegacyFeature != LegacyFeature);
@@ -641,14 +644,14 @@ namespace
 		}
 		if (DivergenceField)
 		{
-			++State.MismatchCount;
-			++State.FieldMismatches[DivergenceIndex];
+			++GStaticWorldAuditFrame.MismatchCount;
+			++GStaticWorldAuditFrame.FieldMismatches[DivergenceIndex];
 			ReportDivergence(
 				Site, QueryOrdinal, DivergenceField, Query, bLegacyHit, Legacy, Analytic);
 		}
 		else
 		{
-			++State.MatchCount;
+			++GStaticWorldAuditFrame.MatchCount;
 		}
 	}
 
@@ -668,29 +671,29 @@ namespace
 		const uint64 RequiredSurfaceId = 0,
 		const uint64 RequiredCanonicalGroupId = 0)
 	{
-		if (!State.bActive)
+		if (!GStaticWorldAuditFrame.bActive)
 		{
 			return;
 		}
-		const uint32 QueryOrdinal = State.QueryCount++;
+		const uint32 QueryOrdinal = GStaticWorldAuditFrame.QueryCount++;
 		// Authority counters remain live without paying for unused diagnostic
 		// hashes and UObject path strings. Shadow comparison still needs both.
 		if (!FStaticWorldQueryAudit::IsEnabled())
 		{
 			return;
 		}
-		AuditHashValue(State.LegacyHash, Site);
-		HashVector(State.LegacyHash, Start);
-		HashVector(State.LegacyHash, End);
-		AuditHashValue(State.LegacyHash, Rotation.X);
-		AuditHashValue(State.LegacyHash, Rotation.Y);
-		AuditHashValue(State.LegacyHash, Rotation.Z);
-		AuditHashValue(State.LegacyHash, Rotation.W);
+		AuditHashValue(GStaticWorldAuditFrame.LegacyHash, Site);
+		HashVector(GStaticWorldAuditFrame.LegacyHash, Start);
+		HashVector(GStaticWorldAuditFrame.LegacyHash, End);
+		AuditHashValue(GStaticWorldAuditFrame.LegacyHash, Rotation.X);
+		AuditHashValue(GStaticWorldAuditFrame.LegacyHash, Rotation.Y);
+		AuditHashValue(GStaticWorldAuditFrame.LegacyHash, Rotation.Z);
+		AuditHashValue(GStaticWorldAuditFrame.LegacyHash, Rotation.W);
 		const FVector ShapeExtent = Shape.GetExtent();
-		HashVector(State.LegacyHash, ShapeExtent);
-		HashLegacyHit(State.LegacyHash, bHit, UnrealHit);
+		HashVector(GStaticWorldAuditFrame.LegacyHash, ShapeExtent);
+		HashLegacyHit(GStaticWorldAuditFrame.LegacyHash, bHit, UnrealHit);
 
-		if (!FStaticWorldQueryAudit::IsShadowEnabled() || !State.World)
+		if (!FStaticWorldQueryAudit::IsShadowEnabled() || !GStaticWorldAuditFrame.World)
 		{
 			return;
 		}
@@ -700,9 +703,9 @@ namespace
 		Query.RequiredSourceId = RequiredSourceId;
 		Query.RequiredSurfaceId = RequiredSurfaceId;
 		Query.RequiredCanonicalGroupId = RequiredCanonicalGroupId;
-		const FWorldHit AnalyticHit = FWorldQueryService(*State.World).Sweep(Query);
-		AuditHashValue(State.AnalyticHash, Site);
-		HashAnalyticHit(State.AnalyticHash, AnalyticHit);
+		const FWorldHit AnalyticHit = FWorldQueryService(*GStaticWorldAuditFrame.World).Sweep(Query);
+		AuditHashValue(GStaticWorldAuditFrame.AnalyticHash, Site);
+		HashAnalyticHit(GStaticWorldAuditFrame.AnalyticHash, AnalyticHit);
 		Compare(Site, QueryOrdinal, Query, bHit, UnrealHit, AnalyticHit);
 		if (CVarCompactShadowDetailEnabled.GetValueOnAnyThread() != 0 &&
 			CVarCompactShadowEnabled.GetValueOnAnyThread() != 0 &&
@@ -710,7 +713,7 @@ namespace
 		{
 			UE_LOG(LogTemp, Display,
 				TEXT("[AnalyticCompactShadowBoxQuery] Frame=%llu Query=%u Site=%s Start=%s End=%s Rotation=%s HalfExtent=%s LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g AnalyticHit=%d AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
-				State.Frame, QueryOrdinal, SiteName(Site),
+				GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site),
 				*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
 				*FQuat(Query.Rotation).ToString(),
 				*FVector(Query.HalfExtent).ToString(), bHit ? 1 : 0,
@@ -733,7 +736,7 @@ namespace
 		{
 			UE_LOG(LogTemp, Display,
 				TEXT("[AnalyticCompactShadowHit] Frame=%llu Query=%u Site=%s Shape=%u LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
-				State.Frame, QueryOrdinal, SiteName(Site),
+				GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site),
 				static_cast<uint8>(Query.Shape), bHit ? 1 : 0,
 				bHit ? UnrealHit.Time : 1.0f,
 				bHit ? *UnrealHit.ImpactPoint.ToString() : TEXT("None"),
@@ -781,7 +784,7 @@ bool FStaticWorldQueryAudit::TryRecordEmptySingle(
 	// The canonical frame owns an immutable world. Outside it, retain ordinary
 	// lookup and missing-world/fallback diagnostics. Detailed audits keep their
 	// original query representation, hashes and ordinal-dependent diagnostics.
-	if (!World || !State.bActive || World != State.QueryWorld || !State.StaticWorld ||
+	if (!World || !GStaticWorldAuditFrame.bActive || World != GStaticWorldAuditFrame.QueryWorld || !GStaticWorldAuditFrame.StaticWorld ||
 		!IsSurfaceAnalyticBackend() || IsEnabled() ||
 		CVarStrictQueryDetailEnabled.GetValueOnAnyThread() != 0 ||
 		CVarResidualSelectionAuditEnabled.GetValueOnAnyThread() != 0 ||
@@ -791,9 +794,9 @@ bool FStaticWorldQueryAudit::TryRecordEmptySingle(
 		return false;
 
 	// Preserve the cheap query accounting. There is no authority kernel to time.
-	++State.QueryCount;
-	++State.AuthorityAttemptCount;
-	++State.AuthorityCoveredCount;
+	++GStaticWorldAuditFrame.QueryCount;
+	++GStaticWorldAuditFrame.AuthorityAttemptCount;
+	++GStaticWorldAuditFrame.AuthorityCoveredCount;
 	return true;
 }
 
@@ -814,16 +817,16 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	{
 		const double ElapsedMilliseconds =
 			(FPlatformTime::Seconds() - AuthorityStartSeconds) * 1000.0;
-		State.AuthorityMilliseconds += ElapsedMilliseconds;
-		State.MaximumAuthorityMilliseconds = FMath::Max(
-			State.MaximumAuthorityMilliseconds, ElapsedMilliseconds);
+		GStaticWorldAuditFrame.AuthorityMilliseconds += ElapsedMilliseconds;
+		GStaticWorldAuditFrame.MaximumAuthorityMilliseconds = FMath::Max(
+			GStaticWorldAuditFrame.MaximumAuthorityMilliseconds, ElapsedMilliseconds);
 	};
 	if (OutAnalyticHit) *OutAnalyticHit = FWorldHit();
 	if (!IsCompactAuthorityEnabled())
 	{
 		return false;
 	}
-	++State.AuthorityAttemptCount;
+	++GStaticWorldAuditFrame.AuthorityAttemptCount;
 	const bool bStrict =
 		SelectedBackend() == Speed::EStaticCollisionBackend::SurfaceAnalytic;
 	const USpeedWorldSubsystem* RuntimeBridge = ResolveRuntimeBridge(World);
@@ -833,10 +836,10 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	{
 		if (!bStrict)
 		{
-			++State.AuthorityFallbackCount;
+			++GStaticWorldAuditFrame.AuthorityFallbackCount;
 			return false;
 		}
-		++State.StrictMissingWorldCount;
+		++GStaticWorldAuditFrame.StrictMissingWorldCount;
 		OutHit = FHitResult();
 		bOutHit = false;
 		return true;
@@ -861,21 +864,21 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	{
 		if (!StaticWorld->TrySweepAuthority(Query, Analytic))
 		{
-			++State.AuthorityFallbackCount;
+			++GStaticWorldAuditFrame.AuthorityFallbackCount;
 			return false;
 		}
 	}
 	else
 	{
 		Analytic = StaticWorld->SweepSingle(Query);
-		LogStrictQueryDetail(Query, Analytic, State.AuthorityAttemptCount,
+		LogStrictQueryDetail(Query, Analytic, GStaticWorldAuditFrame.AuthorityAttemptCount,
 			*StaticWorld);
 	}
 	if (bStrict)
 	{
 		AuditResidualSelection(Query, Analytic, *StaticWorld);
 	}
-	++State.AuthorityCoveredCount;
+	++GStaticWorldAuditFrame.AuthorityCoveredCount;
 	if (OutAnalyticHit) *OutAnalyticHit = Analytic;
 	OutHit = ToUnrealHit(Query, Analytic, RuntimeBridge);
 	bOutHit = Analytic.bHit;
@@ -898,15 +901,15 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	{
 		const double ElapsedMilliseconds =
 			(FPlatformTime::Seconds() - AuthorityStartSeconds) * 1000.0;
-		State.AuthorityMilliseconds += ElapsedMilliseconds;
-		State.MaximumAuthorityMilliseconds = FMath::Max(
-			State.MaximumAuthorityMilliseconds, ElapsedMilliseconds);
+		GStaticWorldAuditFrame.AuthorityMilliseconds += ElapsedMilliseconds;
+		GStaticWorldAuditFrame.MaximumAuthorityMilliseconds = FMath::Max(
+			GStaticWorldAuditFrame.MaximumAuthorityMilliseconds, ElapsedMilliseconds);
 	};
 	if (!IsCompactAuthorityEnabled())
 	{
 		return false;
 	}
-	++State.AuthorityAttemptCount;
+	++GStaticWorldAuditFrame.AuthorityAttemptCount;
 	const bool bStrict =
 		SelectedBackend() == Speed::EStaticCollisionBackend::SurfaceAnalytic;
 	const USpeedWorldSubsystem* RuntimeBridge = ResolveRuntimeBridge(World);
@@ -916,10 +919,10 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	{
 		if (!bStrict)
 		{
-			++State.AuthorityFallbackCount;
+			++GStaticWorldAuditFrame.AuthorityFallbackCount;
 			return false;
 		}
-		++State.StrictMissingWorldCount;
+		++GStaticWorldAuditFrame.StrictMissingWorldCount;
 		OutHits.Reset();
 		return true;
 	}
@@ -933,15 +936,21 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	{
 		if (!StaticWorld->TrySweepAuthority(Query, Analytic))
 		{
-			++State.AuthorityFallbackCount;
+			++GStaticWorldAuditFrame.AuthorityFallbackCount;
 			return false;
 		}
 	}
 	else
 	{
-		Analytic = StaticWorld->SweepSingle(Query);
-		LogStrictQueryDetail(Query, Analytic, State.AuthorityAttemptCount,
-			*StaticWorld);
+		if (!StaticWorld->TryFindDeepestOverlap(Query, Analytic))
+		{
+			// A failed operation is not a clear pose, and strict physics must
+			// never fall through to an unsafe worker-thread Unreal scene query.
+			UE_LOG(LogTemp, Fatal, TEXT("Strict overlap requires a stationary sphere or box query."));
+			return false;
+		}
+		LogStrictQueryDetail(Query, Analytic, GStaticWorldAuditFrame.AuthorityAttemptCount,
+			*StaticWorld, true);
 	}
 	if (bStrict)
 	{
@@ -951,7 +960,7 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 	{
 		*OutAnalyticHit = Analytic;
 	}
-	++State.AuthorityCoveredCount;
+	++GStaticWorldAuditFrame.AuthorityCoveredCount;
 	OutHits.Reset();
 	if (Analytic.bHit)
 	{
@@ -972,37 +981,37 @@ void FStaticWorldQueryAudit::BeginFrame(
 	const uint64 Frame, const FAnalyticWorldData* WorldData,
 	const USpeedWorldSubsystem* RuntimeBridge)
 {
-	State.bActive = IsEnabled() || IsCompactAuthorityEnabled();
-	State.Frame = Frame;
-	State.QueryCount = 0;
-	State.LegacySweepCount = 0;
-	State.AuthorityAttemptCount = 0;
-	State.AuthorityCoveredCount = 0;
-	State.AuthorityFallbackCount = 0;
-	State.StrictMissingWorldCount = 0;
-	State.ResidualSelectionDetailCount = 0;
-	State.StrictHitCount = 0;
-	State.StrictMissCount = 0;
-	State.StrictFirstMissAuthorityAttempt = 0;
-	State.bStrictFirstMissCaptured = false;
-	State.StrictFirstMissQuery = FWorldQuery();
-	State.StrictProviderIds.Reset();
-	State.AuthorityMilliseconds = 0.0;
-	State.MaximumAuthorityMilliseconds = 0.0;
-	State.LegacyHash = AuditFnvOffset;
-	State.AnalyticHash = AuditFnvOffset;
-	State.World = WorldData;
-	State.RuntimeBridge = RuntimeBridge;
-	State.StaticWorld = RuntimeBridge ? RuntimeBridge->GetStaticCollisionWorld() : nullptr;
-	State.QueryWorld = RuntimeBridge ? RuntimeBridge->GetWorld() : nullptr;
-	State.MatchCount = 0;
-	State.MismatchCount = 0;
-	FMemory::Memzero(State.FieldMismatches);
+	GStaticWorldAuditFrame.bActive = IsEnabled() || IsCompactAuthorityEnabled();
+	GStaticWorldAuditFrame.Frame = Frame;
+	GStaticWorldAuditFrame.QueryCount = 0;
+	GStaticWorldAuditFrame.LegacySweepCount = 0;
+	GStaticWorldAuditFrame.AuthorityAttemptCount = 0;
+	GStaticWorldAuditFrame.AuthorityCoveredCount = 0;
+	GStaticWorldAuditFrame.AuthorityFallbackCount = 0;
+	GStaticWorldAuditFrame.StrictMissingWorldCount = 0;
+	GStaticWorldAuditFrame.ResidualSelectionDetailCount = 0;
+	GStaticWorldAuditFrame.StrictHitCount = 0;
+	GStaticWorldAuditFrame.StrictMissCount = 0;
+	GStaticWorldAuditFrame.StrictFirstMissAuthorityAttempt = 0;
+	GStaticWorldAuditFrame.bStrictFirstMissCaptured = false;
+	GStaticWorldAuditFrame.StrictFirstMissQuery = FWorldQuery();
+	GStaticWorldAuditFrame.StrictProviderIds.Reset();
+	GStaticWorldAuditFrame.AuthorityMilliseconds = 0.0;
+	GStaticWorldAuditFrame.MaximumAuthorityMilliseconds = 0.0;
+	GStaticWorldAuditFrame.LegacyHash = AuditFnvOffset;
+	GStaticWorldAuditFrame.AnalyticHash = AuditFnvOffset;
+	GStaticWorldAuditFrame.World = WorldData;
+	GStaticWorldAuditFrame.RuntimeBridge = RuntimeBridge;
+	GStaticWorldAuditFrame.StaticWorld = RuntimeBridge ? RuntimeBridge->GetStaticCollisionWorld() : nullptr;
+	GStaticWorldAuditFrame.QueryWorld = RuntimeBridge ? RuntimeBridge->GetWorld() : nullptr;
+	GStaticWorldAuditFrame.MatchCount = 0;
+	GStaticWorldAuditFrame.MismatchCount = 0;
+	FMemory::Memzero(GStaticWorldAuditFrame.FieldMismatches);
 }
 
 void FStaticWorldQueryAudit::EndFrame()
 {
-	if (!State.bActive)
+	if (!GStaticWorldAuditFrame.bActive)
 	{
 		return;
 	}
@@ -1010,27 +1019,27 @@ void FStaticWorldQueryAudit::EndFrame()
 	{
 		UE_LOG(LogTemp, Display,
 			TEXT("[StaticWorldQueryFrame] Frame=%llu Queries=%u LegacySweeps=%u AuthorityAttempts=%u AuthorityCovered=%u AuthorityFallback=%u StrictMissingWorld=%u Backend=%u LegacyHash=%016llX ShadowHash=%016llX Shadow=%d MeshShadow=%d Matches=%u Mismatches=%u Fields=%u/%u/%u/%u/%u/%u/%u/%u/%u"),
-			State.Frame, State.QueryCount, State.LegacySweepCount,
-			State.AuthorityAttemptCount,
-			State.AuthorityCoveredCount, State.AuthorityFallbackCount,
-			State.StrictMissingWorldCount, static_cast<uint8>(SelectedBackend()),
-			State.LegacyHash, State.AnalyticHash,
+			GStaticWorldAuditFrame.Frame, GStaticWorldAuditFrame.QueryCount, GStaticWorldAuditFrame.LegacySweepCount,
+			GStaticWorldAuditFrame.AuthorityAttemptCount,
+			GStaticWorldAuditFrame.AuthorityCoveredCount, GStaticWorldAuditFrame.AuthorityFallbackCount,
+			GStaticWorldAuditFrame.StrictMissingWorldCount, static_cast<uint8>(SelectedBackend()),
+			GStaticWorldAuditFrame.LegacyHash, GStaticWorldAuditFrame.AnalyticHash,
 			IsShadowEnabled() ? 1 : 0,
 			CVarMeshShadowEnabled.GetValueOnAnyThread() != 0 ? 1 : 0,
-			State.MatchCount, State.MismatchCount,
-			State.FieldMismatches[0], State.FieldMismatches[1],
-			State.FieldMismatches[2], State.FieldMismatches[3],
-			State.FieldMismatches[4], State.FieldMismatches[5],
-			State.FieldMismatches[6], State.FieldMismatches[7],
-			State.FieldMismatches[8]);
+			GStaticWorldAuditFrame.MatchCount, GStaticWorldAuditFrame.MismatchCount,
+			GStaticWorldAuditFrame.FieldMismatches[0], GStaticWorldAuditFrame.FieldMismatches[1],
+			GStaticWorldAuditFrame.FieldMismatches[2], GStaticWorldAuditFrame.FieldMismatches[3],
+			GStaticWorldAuditFrame.FieldMismatches[4], GStaticWorldAuditFrame.FieldMismatches[5],
+			GStaticWorldAuditFrame.FieldMismatches[6], GStaticWorldAuditFrame.FieldMismatches[7],
+			GStaticWorldAuditFrame.FieldMismatches[8]);
 	}
 	if (CVarStrictQueryDetailEnabled.GetValueOnAnyThread() == 1 &&
-		State.AuthorityAttemptCount > 0)
+		GStaticWorldAuditFrame.AuthorityAttemptCount > 0)
 	{
-		State.StrictProviderIds.Sort();
+		GStaticWorldAuditFrame.StrictProviderIds.Sort();
 		uint64 ProviderHash = AuditFnvOffset;
 		FString ProviderList;
-		for (const uint64 PrimitiveId : State.StrictProviderIds)
+		for (const uint64 PrimitiveId : GStaticWorldAuditFrame.StrictProviderIds)
 		{
 			AuditHashValue(ProviderHash, PrimitiveId);
 			if (!ProviderList.IsEmpty())
@@ -1040,26 +1049,26 @@ void FStaticWorldQueryAudit::EndFrame()
 			ProviderList += FString::Printf(TEXT("%016llX"), PrimitiveId);
 		}
 		const bool bProviderSetChanged =
-			!State.bHasPreviousStrictProviderHash ||
-			ProviderHash != State.PreviousStrictProviderHash;
+			!GStaticWorldAuditFrame.bHasPreviousStrictProviderHash ||
+			ProviderHash != GStaticWorldAuditFrame.PreviousStrictProviderHash;
 		const bool bMissCountChanged =
-			!State.bHasPreviousStrictProviderHash ||
-			State.StrictMissCount != State.PreviousStrictMissCount;
+			!GStaticWorldAuditFrame.bHasPreviousStrictProviderHash ||
+			GStaticWorldAuditFrame.StrictMissCount != GStaticWorldAuditFrame.PreviousStrictMissCount;
 		if (bProviderSetChanged || bMissCountChanged)
 		{
 			UE_LOG(LogTemp, Display,
 				TEXT("[AnalyticStrictQueryFrame] Frame=%llu Attempts=%u Hits=%u Misses=%u ProviderCount=%d ProviderHash=%016llX Providers=%s ProviderChanged=%d MissCountChanged=%d"),
-				State.Frame, State.AuthorityAttemptCount, State.StrictHitCount,
-				State.StrictMissCount, State.StrictProviderIds.Num(), ProviderHash,
+				GStaticWorldAuditFrame.Frame, GStaticWorldAuditFrame.AuthorityAttemptCount, GStaticWorldAuditFrame.StrictHitCount,
+				GStaticWorldAuditFrame.StrictMissCount, GStaticWorldAuditFrame.StrictProviderIds.Num(), ProviderHash,
 				*ProviderList, bProviderSetChanged ? 1 : 0,
 				bMissCountChanged ? 1 : 0);
-			if (State.StrictMissCount > 0 &&
-				State.bStrictFirstMissCaptured)
+			if (GStaticWorldAuditFrame.StrictMissCount > 0 &&
+				GStaticWorldAuditFrame.bStrictFirstMissCaptured)
 			{
-				const FWorldQuery& Query = State.StrictFirstMissQuery;
+				const FWorldQuery& Query = GStaticWorldAuditFrame.StrictFirstMissQuery;
 				UE_LOG(LogTemp, Display,
 					TEXT("[AnalyticStrictMiss] Frame=%llu Attempt=%u Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX"),
-					State.Frame, State.StrictFirstMissAuthorityAttempt,
+					GStaticWorldAuditFrame.Frame, GStaticWorldAuditFrame.StrictFirstMissAuthorityAttempt,
 					static_cast<uint8>(Query.Shape),
 					*FVector(Query.Start).ToString(),
 					*FVector(Query.End).ToString(),
@@ -1069,36 +1078,36 @@ void FStaticWorldQueryAudit::EndFrame()
 					Query.RequiredCanonicalGroupId);
 			}
 		}
-		State.PreviousStrictProviderHash = ProviderHash;
-		State.PreviousStrictMissCount = State.StrictMissCount;
-		State.bHasPreviousStrictProviderHash = true;
+		GStaticWorldAuditFrame.PreviousStrictProviderHash = ProviderHash;
+		GStaticWorldAuditFrame.PreviousStrictMissCount = GStaticWorldAuditFrame.StrictMissCount;
+		GStaticWorldAuditFrame.bHasPreviousStrictProviderHash = true;
 	}
-	State.bActive = false;
-	State.World = nullptr;
-	State.RuntimeBridge = nullptr;
-	State.StaticWorld = nullptr;
-	State.QueryWorld = nullptr;
+	GStaticWorldAuditFrame.bActive = false;
+	GStaticWorldAuditFrame.World = nullptr;
+	GStaticWorldAuditFrame.RuntimeBridge = nullptr;
+	GStaticWorldAuditFrame.StaticWorld = nullptr;
+	GStaticWorldAuditFrame.QueryWorld = nullptr;
 }
 
 FStaticWorldQueryCounters FStaticWorldQueryAudit::GetCurrentFrameCounters()
 {
 	FStaticWorldQueryCounters Counters;
-	Counters.QueryCount = State.QueryCount;
-	Counters.LegacySweepCount = State.LegacySweepCount;
-	Counters.AuthorityAttemptCount = State.AuthorityAttemptCount;
-	Counters.AuthorityCoveredCount = State.AuthorityCoveredCount;
-	Counters.AuthorityFallbackCount = State.AuthorityFallbackCount;
-	Counters.StrictMissingWorldCount = State.StrictMissingWorldCount;
-	Counters.AuthorityMilliseconds = State.AuthorityMilliseconds;
-	Counters.MaximumAuthorityMilliseconds = State.MaximumAuthorityMilliseconds;
+	Counters.QueryCount = GStaticWorldAuditFrame.QueryCount;
+	Counters.LegacySweepCount = GStaticWorldAuditFrame.LegacySweepCount;
+	Counters.AuthorityAttemptCount = GStaticWorldAuditFrame.AuthorityAttemptCount;
+	Counters.AuthorityCoveredCount = GStaticWorldAuditFrame.AuthorityCoveredCount;
+	Counters.AuthorityFallbackCount = GStaticWorldAuditFrame.AuthorityFallbackCount;
+	Counters.StrictMissingWorldCount = GStaticWorldAuditFrame.StrictMissingWorldCount;
+	Counters.AuthorityMilliseconds = GStaticWorldAuditFrame.AuthorityMilliseconds;
+	Counters.MaximumAuthorityMilliseconds = GStaticWorldAuditFrame.MaximumAuthorityMilliseconds;
 	return Counters;
 }
 
 void FStaticWorldQueryAudit::RecordLegacySweep()
 {
-	if (State.bActive)
+	if (GStaticWorldAuditFrame.bActive)
 	{
-		++State.LegacySweepCount;
+		++GStaticWorldAuditFrame.LegacySweepCount;
 	}
 }
 
@@ -1131,7 +1140,7 @@ void FStaticWorldQueryAudit::RecordMulti(
 	const uint64 ObjectTypes,
 	const TArray<FHitResult>& UnrealHits)
 {
-	if (!State.bActive)
+	if (!GStaticWorldAuditFrame.bActive)
 	{
 		return;
 	}
@@ -1139,7 +1148,7 @@ void FStaticWorldQueryAudit::RecordMulti(
 	// is disabled; avoid copying and sorting hits which nobody will inspect.
 	if (!IsEnabled())
 	{
-		++State.QueryCount;
+		++GStaticWorldAuditFrame.QueryCount;
 		return;
 	}
 	TArray<FHitResult> OrderedHits = UnrealHits;
@@ -1179,16 +1188,40 @@ void FStaticWorldQueryAudit::RecordMulti(
 	}
 	Record(Site, Start, End, Rotation, Shape, 0, ObjectTypes, true, nullptr,
 		bHit, Representative);
-	if (State.bActive)
+	if (GStaticWorldAuditFrame.bActive)
 	{
 		const int32 HitCount = OrderedHits.Num();
-		AuditHashValue(State.LegacyHash, HitCount);
+		AuditHashValue(GStaticWorldAuditFrame.LegacyHash, HitCount);
 		for (const FHitResult& Hit : OrderedHits)
 		{
-			HashLegacyHit(State.LegacyHash, true, Hit);
+			HashLegacyHit(GStaticWorldAuditFrame.LegacyHash, true, Hit);
 		}
 	}
 }
+
+#if !UE_BUILD_SHIPPING
+void FStaticWorldQueryAudit::RecordEstablishedContactQuery(
+	const FWorldQuery& Query, const FWorldHit& Hit,
+	const uint32 Iteration, const bool bValidation)
+{
+	if (!GStaticWorldAuditFrame.bActive || CVarStrictQueryDetailEnabled.GetValueOnAnyThread() < 2) return;
+	const int32 First = CVarStrictQueryDetailFrameStart.GetValueOnAnyThread();
+	const int32 Last = CVarStrictQueryDetailFrameEnd.GetValueOnAnyThread();
+	if ((First >= 0 && GStaticWorldAuditFrame.Frame < static_cast<uint64>(First)) ||
+		(Last >= 0 && GStaticWorldAuditFrame.Frame > static_cast<uint64>(Last))) return;
+	UE_LOG(LogTemp, Display,
+		TEXT("[AnalyticEstablishedContact] Frame=%llu Iteration=%u Validation=%d Start=%s Rotation=%s HalfExtent=%s RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX ReferenceNormal=%s MinNormalDot=%.17g Hit=%d StartPenetrating=%d Depth=%.17g Point=%s QueryPoint=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
+		GStaticWorldAuditFrame.Frame, Iteration, bValidation ? 1 : 0,
+		*FVector(Query.Start).ToString(), *FQuat(Query.Rotation).ToString(),
+		*FVector(Query.HalfExtent).ToString(), Query.RequiredSourceId,
+		Query.RequiredSurfaceId, Query.RequiredCanonicalGroupId,
+		*FVector(Query.ReferenceNormal).ToString(), Query.MinimumReferenceNormalDot,
+		Hit.bHit ? 1 : 0, Hit.bStartPenetrating ? 1 : 0, Hit.PenetrationDepth,
+		*FVector(Hit.Point).ToString(), *FVector(Hit.QueryPoint).ToString(),
+		*FVector(Hit.Normal).ToString(), Hit.SourceId, Hit.SurfaceId,
+		Hit.FeatureId, Hit.PrimitiveId, Hit.CanonicalGroupId);
+}
+#endif
 
 #if WITH_DEV_AUTOMATION_TESTS
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedEmptySingleAccountingTest,
@@ -1199,8 +1232,8 @@ bool FIAmSpeedEmptySingleAccountingTest::RunTest(const FString& Parameters)
 {
 	// Keep the private frame fixture in this translation unit; no production
 	// setter or UObject subsystem mutation is needed just to exercise accounting.
-	FFrameState SavedState = MoveTemp(State);
-	State = FFrameState();
+	FFrameState SavedState = MoveTemp(GStaticWorldAuditFrame);
+	GStaticWorldAuditFrame = FFrameState();
 	struct FConsoleValue
 	{
 		IConsoleVariable* Variable;
@@ -1225,7 +1258,7 @@ bool FIAmSpeedEmptySingleAccountingTest::RunTest(const FString& Parameters)
 	}
 	ON_SCOPE_EXIT
 	{
-		State = MoveTemp(SavedState);
+		GStaticWorldAuditFrame = MoveTemp(SavedState);
 		for (const FConsoleValue& Saved : SavedVariables)
 		{
 			Saved.Variable->Set(Saved.Value, ECVF_SetByCode);
@@ -1242,15 +1275,15 @@ bool FIAmSpeedEmptySingleAccountingTest::RunTest(const FString& Parameters)
 	const auto TryEmpty = [&]() { return FStaticWorldQueryAudit::TryRecordEmptySingle(World, 0, Responses); };
 	const auto CheckRejected = [&](const TCHAR* Message)
 	{
-		const uint32 Before = State.QueryCount;
+		const uint32 Before = GStaticWorldAuditFrame.QueryCount;
 		TestFalse(Message, TryEmpty());
-		TestEqual(TEXT("declined shortcut does not record a query"), State.QueryCount, Before);
+		TestEqual(TEXT("declined shortcut does not record a query"), GStaticWorldAuditFrame.QueryCount, Before);
 	};
 	CheckRejected(TEXT("outside a canonical frame uses ordinary path"));
-	State.bActive = true;
-	State.QueryWorld = World;
+	GStaticWorldAuditFrame.bActive = true;
+	GStaticWorldAuditFrame.QueryWorld = World;
 	CheckRejected(TEXT("missing static world retains diagnostics"));
-	State.StaticWorld = &StaticWorld;
+	GStaticWorldAuditFrame.StaticWorld = &StaticWorld;
 	TestFalse(TEXT("null world uses ordinary path"), FStaticWorldQueryAudit::TryRecordEmptySingle(nullptr, 0, Responses));
 	TestFalse(TEXT("other world uses ordinary path"), FStaticWorldQueryAudit::TryRecordEmptySingle(OtherWorld, 0, Responses));
 	TestTrue(TEXT("empty filter is a proved miss"), TryEmpty());
@@ -1277,11 +1310,11 @@ bool FIAmSpeedEmptySingleAccountingTest::RunTest(const FString& Parameters)
 		SavedVariables[0].Variable->Set(Backend, ECVF_SetByCode);
 		CheckRejected(TEXT("Legacy and Hybrid keep their original authority path"));
 	}
-	TestEqual(TEXT("one record per proved miss"), State.QueryCount, uint32(3));
-	TestEqual(TEXT("authority attempts preserved"), State.AuthorityAttemptCount, uint32(3));
-	TestEqual(TEXT("authority coverage preserved"), State.AuthorityCoveredCount, uint32(3));
-	TestEqual(TEXT("no legacy sweep introduced"), State.LegacySweepCount, uint32(0));
-	TestEqual(TEXT("no fallback introduced"), State.AuthorityFallbackCount, uint32(0));
+	TestEqual(TEXT("one record per proved miss"), GStaticWorldAuditFrame.QueryCount, uint32(3));
+	TestEqual(TEXT("authority attempts preserved"), GStaticWorldAuditFrame.AuthorityAttemptCount, uint32(3));
+	TestEqual(TEXT("authority coverage preserved"), GStaticWorldAuditFrame.AuthorityCoveredCount, uint32(3));
+	TestEqual(TEXT("no legacy sweep introduced"), GStaticWorldAuditFrame.LegacySweepCount, uint32(0));
+	TestEqual(TEXT("no fallback introduced"), GStaticWorldAuditFrame.AuthorityFallbackCount, uint32(0));
 	return true;
 }
 #endif

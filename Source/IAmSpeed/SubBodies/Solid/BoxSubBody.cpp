@@ -550,8 +550,31 @@ FVector FindBoxPlanarRoundoffCorrection(const Speed::IStaticCollisionWorld& Worl
 bool UBoxSubBody::CanApplyQuantizedPose(const Speed::IStaticCollisionWorld& World, const SKinematic& OwnerPose) const
 {
     if (!ParentComponent) return true;
-    const auto Query = MakeSupportBoxQuery(OwnerPose);
-    const auto Hit = World.SweepSingle(Query);
+    auto Query = MakeSupportBoxQuery(OwnerPose);
+    // Pose feasibility has the same static-object scope as penetration
+    // projection, not CCD's two-sided trace response filter. A query-enabled
+    // zero-channel-mask surface must not be crossed by the final rounding.
+    Query.bObjectQuery = true;
+    Query.ObjectTypes = uint64(1) << ECC_WorldStatic;
+    Speed::Analytic::FWorldHit Hit;
+    if (!World.TryFindDeepestOverlap(Query, Hit)) return false;
+#if !UE_BUILD_SHIPPING
+    // Observe the already-evaluated guard only; never replay a diagnostic query.
+    static const auto* Detail = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail"));
+    static const auto* First = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail.FrameStart"));
+    static const auto* Last = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail.FrameEnd"));
+    const int64 Frame = ParentComponent->NumFrame();
+    if (Detail && First && Last && Detail->GetValueOnAnyThread() >= 2 &&
+        (First->GetValueOnAnyThread() < 0 || Frame >= First->GetValueOnAnyThread()) &&
+        (Last->GetValueOnAnyThread() < 0 || Frame <= Last->GetValueOnAnyThread()))
+    {
+        UE_LOG(LogTemp, Display, TEXT("[BoxPoseQuantization] Frame=%lld Start=(%.17g,%.17g,%.17g) Rotation=(%.17g,%.17g,%.17g,%.17g) HalfExtent=(%.17g,%.17g,%.17g) Domain=%.17g Hit=%d Depth=%.17g Primitive=%016llX"),
+            Frame, Query.Start.X, Query.Start.Y, Query.Start.Z,
+            Query.Rotation.X, Query.Rotation.Y, Query.Rotation.Z, Query.Rotation.W,
+            Query.HalfExtent.X, Query.HalfExtent.Y, Query.HalfExtent.Z, Query.DomainTolerance,
+            Hit.bHit ? 1 : 0, Hit.PenetrationDepth, Hit.PrimitiveId);
+    }
+#endif
     return !Hit.bStartPenetrating && Hit.PenetrationDepth <= 0 &&
         FindBoxPlanarRoundoffCorrection(World, Query,
             !OwnerPose.Velocity.IsZero() || !OwnerPose.AngularVelocity.IsZero()).IsZero();
@@ -619,10 +642,7 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
         GroundComp.IsValid();
 	const bool bNativeAnalyticEstablishedContact =
 		bContinueRoofTraversalSupport &&
-		GroundHit.bSurfaceNormalMayVary &&
-		GroundHit.SourceId != 0 && GroundHit.SurfaceId != 0 &&
-		GroundHit.CanonicalGroupId != 0 &&
-		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend();
+		UsesNativeAnalyticEstablishedContact();
     if (bContinueRoofTraversalSupport)
     {
         UpdatePersistentGroundContact(Delta);
@@ -685,6 +705,14 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
         bContinueRoofTraversalSupport &&
         bGroundPlaneValid;
     bFreshEdgeRecoverCandidate = false;
+}
+
+bool UBoxSubBody::UsesNativeAnalyticEstablishedContact() const
+{
+    return GroundHit.bSurfaceNormalMayVary &&
+        GroundHit.SourceId != 0 && GroundHit.SurfaceId != 0 &&
+        GroundHit.CanonicalGroupId != 0 &&
+        Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend();
 }
 
 bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
@@ -3544,8 +3572,14 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         ? FMath::Max(SepVelTol, CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS.GetValueOnAnyThread())
         : SepVelTol;
 
+    // Native curved support is unilateral and finite. Its tangent plane can
+    // intersect a remote vertex even after the actual surface has ended. The
+    // legacy roof snap would attract the owner BEFORE CCD (and leave the child
+    // sweep pose stale). Only the native finite projection may move that pose.
+    const bool bUseLegacyRoofPlaneCorrection =
+        bRoofSurfaceTraversalActive && !UsesNativeAnalyticEstablishedContact();
     constexpr float MaxRoofTraversalDrift = 25.f;
-    if (bRoofSurfaceTraversalActive &&
+    if (bUseLegacyRoofPlaneCorrection &&
         minDist > ActiveContactTol &&
         minDist <= MaxRoofTraversalDrift)
     {
@@ -3555,7 +3589,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
             N * (minDist - TargetRoofTraversalDistance));
         minDist = TargetRoofTraversalDistance;
     }
-    else if (bRoofSurfaceTraversalActive &&
+    else if (bUseLegacyRoofPlaneCorrection &&
         minDist < -ActivePenTolSupport &&
         minDist >= -MaxRoofTraversalDrift)
     {

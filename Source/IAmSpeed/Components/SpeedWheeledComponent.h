@@ -716,6 +716,7 @@ private:
 	static constexpr int32 MaxPendingWheeledInputs = 256;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheeledInputQueueTest;
+	friend class FIAmSpeedWheeledInertiaCovarianceTest;
 #endif
 	// Network callbacks and canonical test input share this bounded command queue.
 	// Protect whole commands; the simulation remains the only consumer.

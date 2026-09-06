@@ -1,4 +1,5 @@
 #include "AnalyticWorldData.h"
+#include "TensorContactTopology.h"
 #include "AnalyticWorldQuery.h"
 
 #include "Algo/AllOf.h"
@@ -2302,6 +2303,7 @@ bool FPiecewiseTensorBezierPatch::BuildQueryApproximation(
 			return A.BoundaryIndex < B.BoundaryIndex;
 		return A.AdjacentCellPrimitiveId < B.AdjacentCellPrimitiveId;
 	});
+	BuildTensorContactTopology(*this);
 	bApproximationCertified = !Cells.IsEmpty() && Bounds.IsValid != 0;
 	return bApproximationCertified;
 }

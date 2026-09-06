@@ -1687,10 +1687,12 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			InitialMaximumDepth > Slop)
 		{
 			UE_LOG(LogTemp, Warning,
-				TEXT("[CoupledPose][HitboxRejected] Frame=%d InitialDepth=%.3f InitialHits=%d Constraints=%d Translation=%.3f RotationDeg=%.3f"),
+				TEXT("[CoupledPose][HitboxRejected] Frame=%d InitialDepth=%.3f InitialHits=%d Constraints=%d Translation=%.3f RotationDeg=%.3f Strict=%d CertifiedAge=%d CertifiedSweep=%.6f"),
 				NumFrame(), InitialMaximumDepth, InitialPenetrationHits.Num(),
 				HitboxConstraints.Num(), (GetPhysCOM() - TransactionCOM).Size(),
-				FMath::RadiansToDegrees(GetPhysRotation().AngularDistance(TransactionRotation)));
+				FMath::RadiansToDegrees(GetPhysRotation().AngularDistance(TransactionRotation)),
+				bStrictHitboxGate ? 1 : 0,
+				static_cast<int32>(NumFrame()) - LastCertifiedCoupledPoseFrame, CertifiedPoseSweepCm);
 		}
 #endif
 		SetPhysCOMLocation(TransactionCOM);

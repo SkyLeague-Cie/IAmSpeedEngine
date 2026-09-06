@@ -1190,7 +1190,7 @@ double FWorldQueryService::SupportRadius(
 FWorldHit FWorldQueryService::SweepPlane(
 	const FWorldQuery& Query, const FBoundedPlane& Plane,
 	const FAnalyticWorldData* PlaneUnionWorld,
-	const FBoxSweepContext* CachedBoxContext)
+	const FBoxSweepContext* CachedBoxContext, const EHitSelection Selection)
 {
 	if (Query.Shape == EQueryShape::Box)
 	{
@@ -1198,7 +1198,7 @@ FWorldHit FWorldQueryService::SweepPlane(
 		FScopedAnalyticKernelTiming ScopedTiming(GAnalyticQueryPhaseTiming.PlaneEvaluationSeconds,
 			GAnalyticQueryPhaseTiming.PlaneCalls);
 #endif
-		return SweepBoxPlane(Query, Plane, CachedBoxContext);
+		return SweepBoxPlane(Query, Plane, CachedBoxContext, Selection);
 	}
 	FWorldHit Hit;
 	TrySweepRoundPlane(Query, Plane, Hit, PlaneUnionWorld);
@@ -1254,7 +1254,7 @@ bool FWorldQueryService::TrySweepRoundPlane(
 	{
 		return false;
 	}
-	if (Query.bAuthorityOnly &&
+	if (Query.bAuthorityOnly && !Query.bUseFiniteContactDomain &&
 		!Query.bAllowEstablishedFaceContactAtBoundary)
 	{
 		double RequiredInteriorMargin = 0.0;
@@ -1557,7 +1557,7 @@ void FWorldQueryService::VisitPlanarCandidates(const FWorldQuery& Query,
 
 FWorldHit FWorldQueryService::SweepBoxPlane(
 	const FWorldQuery& Query, const FBoundedPlane& Plane,
-	const FBoxSweepContext* CachedBoxContext)
+	const FBoxSweepContext* CachedBoxContext, const EHitSelection Selection)
 {
 	FWorldHit Best;
 	// Every facet and triangle sees the same box pose/path. Reuse an outer
@@ -1665,7 +1665,7 @@ FWorldHit FWorldQueryService::SweepBoxPlane(
 		Candidate.PrimitiveId = Plane.PrimitiveId;
 		Candidate.MaterialId = Plane.MaterialId;
 		if (HitPassesReferenceNormal(Query, Candidate) &&
-			IsBetterHit(Candidate, Best)) Best = Candidate;
+			IsBetterHit(Candidate, Best, Selection)) Best = Candidate;
 	}
 	return Best;
 }
@@ -1809,7 +1809,7 @@ bool FWorldQueryService::PlanePassesFilter(
 
 FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
-	const FExtrudedQuinticPatch& Patch)
+	const FExtrudedQuinticPatch& Patch, const EHitSelection Selection)
 {
 #if !UE_BUILD_SHIPPING
 	FScopedAnalyticKernelTiming ScopedTiming(GAnalyticQueryPhaseTiming.ExtrudedEvaluationSeconds,
@@ -1843,6 +1843,12 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 	FBoxBoundsSweepContext BoxContext;
 	const bool bBoxQuery = Query.Shape == EQueryShape::Box;
 	if (bBoxQuery) BoxContext.Initialize(Query);
+	const double ExtrusionRadius = bBoxQuery ? SupportRadius(Query, Patch.ExtrusionAxis) : 0;
+	const double StartExtrusion = FVector3d::DotProduct(Query.Start, Patch.ExtrusionAxis);
+	const double EndExtrusion = FVector3d::DotProduct(Query.End, Patch.ExtrusionAxis);
+	const bool bInsideExtrusion = bBoxQuery &&
+		FMath::Min(StartExtrusion, EndExtrusion) - ExtrusionRadius > Patch.MinimumExtrusionCoordinate &&
+		FMath::Max(StartExtrusion, EndExtrusion) + ExtrusionRadius < Patch.MaximumExtrusionCoordinate;
 	// These provider-level query changes are identical for every finite facet.
 	// Internal chord seams must not receive a standalone plane's footprint margin;
 	// the true patch boundaries are checked after a hit below.
@@ -1893,7 +1899,68 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 		// endpoints).
 		if (bBoxQuery)
 		{
-			Candidate = SweepPlane(FaceQuery, Face, nullptr, &BoxContext);
+			// A concave polyline's internal chord joins/triangulation diagonals
+			// are not physical walls. Both neighbouring chords must lie on the
+			// query side of this plane; convex creases and actual patch endpoints
+			// retain the finite SAT kernel. Full extrusion-footprint containment
+			// also excludes the authored end edges from this face-only path.
+			const bool bConcaveInternalFacet = bInsideExtrusion && Segment > 0 &&
+				Segment + 2 < Patch.SectionPolyline.Num() &&
+				FVector3d::DotProduct(Patch.SectionPolyline[Segment - 1] - SectionA, Face.Normal) >= 0 &&
+				FVector3d::DotProduct(Patch.SectionPolyline[Segment + 2] - SectionB, Face.Normal) >= 0;
+			Candidate = SweepPlane(FaceQuery, Face, nullptr, &BoxContext, Selection);
+			if (bConcaveInternalFacet && Candidate.bHit)
+			{
+				// Normal projection of a penetrating support vertex can lie in
+				// the face even when the ORIGINAL OBB misses that finite facet.
+				// Keep finite SAT as the overlap/TOI proof; bounds pruning must
+				// remain observationally equivalent to an unpruned narrow phase.
+				const FVector3d N = Face.Normal;
+				FVector3d SupportPoint = Query.Start;
+				int32 ActiveAxes = 0;
+				int8 Vertex = 0;
+				for (int32 Axis = 0; Axis < 3; ++Axis)
+				{
+					const double D = FVector3d::DotProduct(-N, BoxContext.Axis[Axis]);
+					const double Sign = D >= 0 ? 1 : -1;
+					if (Sign > 0) Vertex |= 1 << Axis;
+					if (FMath::Abs(D) > 1.0e-10) ++ActiveAxes;
+					SupportPoint += Sign * Query.HalfExtent[Axis] * BoxContext.Axis[Axis];
+				}
+				const FVector3d Motion = Query.End - Query.Start;
+				const double Gap = FVector3d::DotProduct(SupportPoint - Face.Origin, N);
+				const double NormalMotion = FVector3d::DotProduct(Motion, N);
+				double Time = 0;
+				if (Gap > 0)
+				{
+					if (NormalMotion >= 0) return;
+					Time = -Gap / NormalMotion;
+				}
+				if (Time > 1 || Time + 1.0e-12 < Candidate.Time) return;
+				const double Depth = FMath::Max(0.0, -Gap);
+				SupportPoint += Time * Motion;
+				const FVector3d FacePoint = SupportPoint + Depth * N;
+				if (!Face.ContainsProjectedPoint(FacePoint, Query.DomainTolerance)) return;
+				// Recompute the normal/depth/witness as one finite face constraint;
+				// smoothing only the SAT normal would misrepresent penetration.
+				Candidate.bStartPenetrating = Depth > Query.DomainTolerance;
+				if (Candidate.bStartPenetrating && Depth <= FMath::Max(0.0, Query.InitialOverlapTolerance))
+				{
+					if (-FVector3d::DotProduct(Query.End - Query.Start, N) <= Query.DomainTolerance) return;
+					Candidate.bStartPenetrating = false;
+				}
+				Candidate.Normal = N;
+				Candidate.Time = Time;
+				Candidate.Location = Query.Start + Time * Motion;
+				Candidate.Point = FacePoint;
+				Candidate.QueryPoint = SupportPoint;
+				Candidate.PenetrationDepth = Candidate.bStartPenetrating ? Depth : 0;
+				Candidate.SurfaceFeatureKind = EContactFeatureKind::Face;
+				Candidate.SurfaceFeatureIndex = INDEX_NONE;
+				Candidate.QueryFeatureKind = ActiveAxes <= 1 ? EContactFeatureKind::Face :
+					ActiveAxes == 2 ? EContactFeatureKind::Edge : EContactFeatureKind::Vertex;
+				Candidate.QueryFeatureIndex = Vertex;
+			}
 		}
 		else if (!TrySweepRoundPlane(FaceQuery, Face, Candidate))
 		{
@@ -1902,8 +1969,15 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 		// A miss cannot enter arbitration. In particular, do not hash a stable
 		// primitive id or populate witness metadata for every rejected facet.
 		if (!Candidate.bHit) return;
-		if (Query.bAuthorityOnly || Patch.bAuthorityEligible)
+		const bool bProvenFiniteContact = Query.bUseFiniteContactDomain &&
+			(bBoxQuery || (Query.Shape == EQueryShape::Sphere &&
+				Candidate.SurfaceFeatureKind == EContactFeatureKind::Face));
+		if ((Query.bAuthorityOnly || Patch.bAuthorityEligible) && !bProvenFiniteContact)
 		{
+			// This is conservative replacement coverage, not the geometry of a
+			// finite intersection. The round witness or finite OBB SAT has already
+			// proved contact. Erosion in strict mode can hide a real intersection
+			// until its chosen witness abruptly enters this smaller coverage area.
 			// A certified provider owns only the source-certified finite domain. A
 			// volume contacting within one support radius of an authored patch
 			// endpoint cannot use the synthetic terminal edge as a wall; a
@@ -1983,7 +2057,7 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 			}
 		}
 		if (Candidate.bHit && HitPassesReferenceNormal(Query, Candidate) &&
-			IsBetterHit(Candidate, Best))
+			IsBetterHit(Candidate, Best, Selection))
 		{
 			Best = Candidate;
 		}
@@ -2017,7 +2091,8 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 
 FWorldHit FWorldQueryService::SweepTensorBezier(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
-	const FTensorBezierPatch& Patch, const double MaximumSearchTime)
+	const FTensorBezierPatch& Patch, const double MaximumSearchTime,
+	const EHitSelection Selection)
 {
 	FWorldHit Best;
 	TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AnalyticSweepTensorBezier);
@@ -2045,15 +2120,17 @@ FWorldHit FWorldQueryService::SweepTensorBezier(
 	View.bApproximationCertified = Patch.bApproximationCertified;
 	View.bAuthorityEligible = Patch.bAuthorityEligible;
 	return SweepTensorBezierApproximation(
-		Query, QueryBounds, View, MaximumSearchTime);
+		Query, QueryBounds, View, MaximumSearchTime, nullptr, Selection);
 }
 
 FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FTensorBezierQueryView& Patch, const double MaximumSearchTime,
-	const FVector3d* CachedBoxAxes)
+	const FVector3d* CachedBoxAxes, const EHitSelection Selection)
 {
 	FWorldHit Best;
+	int32 BestApproximationIndex = INDEX_NONE;
+	int32 BestTriangleIndex = INDEX_NONE;
 	const double InitialMaximumSearchTime =
 		FMath::Clamp(MaximumSearchTime, 0.0, 1.0);
 	const auto CurrentMaximumSearchTime = [&Best, InitialMaximumSearchTime]()
@@ -2135,6 +2212,102 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 					CurrentMaximumSearchTime()))
 				{
 					continue;
+				}
+				bool bOutsideInternalCornerCone = false;
+				if (Candidate.bStartPenetrating && Patch.InternalCornerNormalCones &&
+					Patch.InternalCornerNormalConeIndices)
+				{
+					double MaximumProjection = -TNumericLimits<double>::Max();
+					for (const auto& P : TriangleVertices)
+						MaximumProjection=FMath::Max(MaximumProjection,FVector3d::DotProduct(P,Candidate.Normal));
+					for (int32 K=0; K<3; ++K)
+					{
+						// Inspect the triangle's actual extreme vertex along the MTD,
+						// not the support-corner shortcut's possibly clipped witness.
+						if (FVector3d::DotProduct(TriangleVertices[K],Candidate.Normal) < MaximumProjection-Query.DomainTolerance) continue;
+						const auto& UV=ParameterCorners[CornerIndices[TriangleIndex][K]];
+						if ((UV.X!=0 && UV.X!=1) || (UV.Y!=0 && UV.Y!=1)) continue;
+						const int32 Corner=(UV.X==1 ? 2 : 0)+(UV.Y==1 ? 1 : 0);
+						const int32 Index=Patch.InternalCornerNormalConeIndices[Corner];
+						if (!Patch.InternalCornerNormalCones->IsValidIndex(Index)) continue;
+						const auto& Cone=(*Patch.InternalCornerNormalCones)[Index];
+						FVector3d Axis(Cone.X,Cone.Y,Cone.Z);
+						if (FVector3d::DotProduct(Query.Start-TriangleVertices[K],Axis)<0) Axis=-Axis;
+						bOutsideInternalCornerCone |= FVector3d::DotProduct(Candidate.Normal,Axis)<Cone.W-1.0e-12;
+					}
+				}
+				const bool bEdgeWitness=Candidate.SurfaceFeatureKind==EContactFeatureKind::Edge &&
+					Candidate.SurfaceFeatureIndex>=0 && Candidate.SurfaceFeatureIndex<3;
+				if (Candidate.bStartPenetrating && (bEdgeWitness || bOutsideInternalCornerCone))
+				{
+					// Non-overlapping tensor hits already recover the exact smooth
+					// normal below. Only an initial MTD couples an invalid internal
+					// edge direction to a penetration depth and needs reconstruction.
+					FVector3d N = FVector3d::CrossProduct(TriangleVertices[1]-TriangleVertices[0],
+						TriangleVertices[2]-TriangleVertices[0]).GetSafeNormal();
+					const bool bPositiveSide = FVector3d::DotProduct(Query.Start-TriangleVertices[0],N) >= 0;
+					const uint8 ConcaveEdges = bPositiveSide ? Cell.PositiveConcaveEdges[TriangleIndex] :
+						Cell.NegativeConcaveEdges[TriangleIndex];
+					if (bOutsideInternalCornerCone || (bEdgeWitness && (ConcaveEdges & (1u << Candidate.SurfaceFeatureIndex))))
+					{
+						// SAT proves a finite collision, but its concave INTERNAL edge
+						// escape axis is not a boundary of the joined surface. Rebuild
+						// a coherent finite face constraint, or let the incident facet
+						// own the contact when this face's support projection is outside.
+						// True boundaries, convex edges and uncertified joins keep SAT.
+						if (!bPositiveSide) N = -N;
+						FVector3d SupportPoint = Query.Start;
+						int32 ActiveAxes = 0;
+						int8 Vertex = 0;
+						for (int32 Axis=0; Axis<3; ++Axis)
+						{
+							const double D = FVector3d::DotProduct(-N,BoxSweepContext.Axis[Axis]);
+							const double Sign = D >= 0 ? 1 : -1;
+							if (Sign > 0) Vertex |= 1 << Axis;
+							if (FMath::Abs(D)>1.0e-10) ++ActiveAxes;
+							SupportPoint += Sign*Query.HalfExtent[Axis]*BoxSweepContext.Axis[Axis];
+						}
+						const FVector3d Motion = Query.End-Query.Start;
+						const double Gap = FVector3d::DotProduct(SupportPoint-TriangleVertices[0],N);
+						const double NormalMotion = FVector3d::DotProduct(Motion,N);
+						double Time = 0;
+						if (Gap > 0)
+						{
+							if (NormalMotion >= 0) continue;
+							Time = -Gap/NormalMotion;
+						}
+						if (Time>CurrentMaximumSearchTime() || Time+1.0e-12<Candidate.Time) continue;
+						const double Depth = FMath::Max(0.0,-Gap);
+						SupportPoint += Time*Motion;
+						const FVector3d FacePoint = SupportPoint+Depth*N;
+						const FVector3d Closest = ClosestPointOnTriangle(FacePoint,
+							TriangleVertices[0],TriangleVertices[1],TriangleVertices[2]);
+						// Projection and barycentric reconstruction round differently,
+						// even for a point strictly inside this finite face. A zero
+						// domain allowance must not erase a SAT-proven overlap. Bound
+						// only the membership arithmetic by coordinate-scale roundoff;
+						// keep SAT, physical depth and its acceptance threshold intact.
+						const double MembershipRoundoff = 64 * DBL_EPSILON * FMath::Max(1.0,
+							FacePoint.GetAbsMax() + TriangleBounds.Min.GetAbsMax() + TriangleBounds.Max.GetAbsMax());
+						if (!Closest.Equals(FacePoint,FMath::Max(Query.DomainTolerance,MembershipRoundoff))) continue;
+						Candidate.bStartPenetrating = Depth>Query.DomainTolerance;
+						if (Candidate.bStartPenetrating && Depth<=FMath::Max(0.0,Query.InitialOverlapTolerance))
+						{
+							if (-NormalMotion<=Query.DomainTolerance) continue;
+							Candidate.bStartPenetrating = false;
+						}
+						Candidate.Normal=N;
+						Candidate.Time=Time;
+						Candidate.Location=Query.Start+Time*Motion;
+						Candidate.Point=FacePoint;
+						Candidate.QueryPoint=SupportPoint;
+						Candidate.PenetrationDepth=Candidate.bStartPenetrating ? Depth : 0;
+						Candidate.SurfaceFeatureKind=EContactFeatureKind::Face;
+						Candidate.SurfaceFeatureIndex=INDEX_NONE;
+						Candidate.QueryFeatureKind=ActiveAxes<=1 ? EContactFeatureKind::Face :
+							ActiveAxes==2 ? EContactFeatureKind::Edge : EContactFeatureKind::Vertex;
+						Candidate.QueryFeatureIndex=Vertex;
+					}
 				}
 			}
 			else if (Query.Shape == EQueryShape::Sphere)
@@ -2235,12 +2408,18 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			const bool bEqualTensorConstraint = bSameInitialOverlap &&
 				FMath::IsNearlyEqual(Candidate.PenetrationDepth,
 					Best.PenetrationDepth, 1.0e-12);
-			if (HitPassesReferenceNormal(Query, Candidate) &&
-				(bDeeperTensorConstraint ||
+			// Preserve the historical tensor CCD rule exactly. Pose overlap must
+			// also reject tangent incumbents and order exact depth ties by identity.
+			const bool bPreferCandidate = Selection == EHitSelection::DeepestOverlap
+				? IsBetterHit(Candidate, Best, Selection)
+				: (bDeeperTensorConstraint ||
 					(!bSameInitialOverlap && IsBetterHit(Candidate, Best)) ||
-					(bEqualTensorConstraint && IsBetterHit(Candidate, Best))))
+					(bEqualTensorConstraint && IsBetterHit(Candidate, Best)));
+			if (HitPassesReferenceNormal(Query, Candidate) && bPreferCandidate)
 			{
 				Best = Candidate;
+				BestApproximationIndex = CellIndex;
+				BestTriangleIndex = TriangleIndex;
 			}
 		}
 	};
@@ -2285,13 +2464,44 @@ FWorldHit FWorldQueryService::SweepTensorBezierApproximation(
 			if (Node.LeftChild != INDEX_NONE) NodeStack.Add(Node.LeftChild);
 		}
 	}
+	if (Best.bStartPenetrating && Query.Shape == EQueryShape::Box &&
+		BestApproximationIndex != INDEX_NONE &&
+		FMath::Abs(FVector3d::DotProduct(Best.Point-Best.QueryPoint,Best.Normal)-
+			Best.PenetrationDepth) > Query.DomainTolerance)
+	{
+		// A support corner is not necessarily the touching witness when the
+		// minimum SAT axis belongs to an edge. Recover the actual closest pair
+		// on the TRANSLATED box, then undo only the measured MTD on its witness.
+		// This runs once for the selected inconsistent overlap, not per facet;
+		// normal, depth, TOI and finite intersection/arbitration stay unchanged.
+		static constexpr int32 Indices[2][3] = {{0,2,3},{0,3,1}};
+		FPlaneTriangle Triangle;
+		const auto& Cell = (*Patch.ApproximationCells)[BestApproximationIndex];
+		for (int32 Corner=0; Corner<3; ++Corner)
+		{
+			Triangle.Vertex[Corner]=Cell.Corners[Indices[BestTriangleIndex][Corner]];
+			Triangle.PolygonVertex[Corner]=static_cast<int8>(Corner);
+		}
+		const FContactWitness Witness = ClosestBoxTriangleWitness(
+			Best.Location+Best.PenetrationDepth*Best.Normal,
+			BoxSweepContext.Axis,Query.HalfExtent,Triangle);
+		if (Witness.DistanceSquared <= FMath::Square(Query.DomainTolerance))
+		{
+			Best.Point=Witness.SurfacePoint;
+			Best.QueryPoint=Witness.QueryPoint-Best.PenetrationDepth*Best.Normal;
+			Best.SurfaceFeatureKind=Witness.SurfaceKind;
+			Best.SurfaceFeatureIndex=Witness.SurfaceIndex;
+			Best.QueryFeatureKind=Witness.QueryKind;
+			Best.QueryFeatureIndex=Witness.QueryIndex;
+		}
+	}
 	return Best;
 }
 
 FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 	const FWorldQuery& Query, const FBox3d& QueryBounds,
 	const FPiecewiseTensorBezierPatch& Patch,
-	const double MaximumSearchTime)
+	const double MaximumSearchTime, const EHitSelection Selection)
 {
 	FWorldHit Best;
 	const double InitialMaximumSearchTime =
@@ -2381,6 +2591,8 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 				&Cell.ApproximationCellBvhNodes;
 			CellView.ApproximationCellBvhIndices =
 				&Cell.ApproximationCellBvhIndices;
+			CellView.InternalCornerNormalCones=&Patch.InternalCornerNormalCones;
+			CellView.InternalCornerNormalConeIndices=Cell.InternalCornerNormalCone;
 			CellView.bQueryCollisionEnabled = Patch.bQueryCollisionEnabled;
 			CellView.bApproximationCertified = true;
 			CellView.bAuthorityEligible = Patch.bAuthorityEligible;
@@ -2388,9 +2600,9 @@ FWorldHit FWorldQueryService::SweepPiecewiseTensorBezier(
 				Query, QueryBounds, CellView, CurrentMaximumSearchTime(),
 				Query.Shape == EQueryShape::Box
 					? ProviderBoxContext.Axis
-					: nullptr);
+					: nullptr, Selection);
 			if (Candidate.bHit && HitPassesReferenceNormal(Query, Candidate) &&
-				IsBetterHit(Candidate, Best)) Best = Candidate;
+				IsBetterHit(Candidate, Best, Selection)) Best = Candidate;
 		}
 	}
 #if !UE_BUILD_SHIPPING
@@ -2522,8 +2734,22 @@ FWorldHit FWorldQueryService::SweepTriangleFace(
 }
 
 bool FWorldQueryService::IsBetterHit(
-	const FWorldHit& Candidate, const FWorldHit& Best)
+	const FWorldHit& Candidate, const FWorldHit& Best, const EHitSelection Selection)
 {
+	if (Selection == EHitSelection::DeepestOverlap)
+	{
+		if (!Candidate.bHit || !Candidate.bStartPenetrating ||
+			!FMath::IsFinite(Candidate.PenetrationDepth) || Candidate.PenetrationDepth <= 0)
+			return false;
+		if (!Best.bHit || Candidate.PenetrationDepth > Best.PenetrationDepth) return true;
+		if (Candidate.PenetrationDepth < Best.PenetrationDepth) return false;
+		// Exact depth comparison avoids order-dependent epsilon chains. Witness
+		// distance and approximation error are not extra physical penetration.
+		if (Candidate.SourceId != Best.SourceId) return Candidate.SourceId < Best.SourceId;
+		if (Candidate.SurfaceId != Best.SurfaceId) return Candidate.SurfaceId < Best.SurfaceId;
+		if (Candidate.FeatureId != Best.FeatureId) return Candidate.FeatureId < Best.FeatureId;
+		return Candidate.PrimitiveId < Best.PrimitiveId;
+	}
 	return !Best.bHit || Candidate.Time < Best.Time - 1.0e-12 ||
 		(FMath::IsNearlyEqual(Candidate.Time, Best.Time, 1.0e-12) &&
 			((Candidate.QueryPoint - Candidate.Point).SquaredLength() <
@@ -2574,6 +2800,7 @@ bool FWorldQueryService::IsSameQuery(
 		A.MinimumReferenceNormalDot == B.MinimumReferenceNormalDot &&
 		A.bAllowEstablishedFaceContactAtBoundary ==
 			B.bAllowEstablishedFaceContactAtBoundary &&
+		A.bUseFiniteContactDomain == B.bUseFiniteContactDomain &&
 		A.bObjectQuery == B.bObjectQuery &&
 		A.bApplyCollisionFilter == B.bApplyCollisionFilter &&
 		A.bAuthorityOnly == B.bAuthorityOnly &&
@@ -2600,6 +2827,7 @@ bool FWorldQueryService::TrySweepAuthority(
 	// instead requires a complete-world certificate and treats a miss as final.
 	FWorldQuery AuthorityQuery = Query;
 	AuthorityQuery.bAuthorityOnly = true;
+	AuthorityQuery.bUseFiniteContactDomain = false;
 	FWorldHit AuthorityTriangle;
 	const FWorldHit AuthorityHit = SweepDetailed(
 		AuthorityQuery, &AuthorityTriangle);
@@ -2628,6 +2856,7 @@ bool FWorldQueryService::TrySweepAuthority(
 
 	FWorldQuery ProviderQuery = Query;
 	ProviderQuery.bAuthorityOnly = false;
+	ProviderQuery.bUseFiniteContactDomain = false;
 	ProviderQuery.bExcludeAuthorityEligible = true;
 	ProviderQuery.bIncludeCompactPatches = true;
 	// SweepDetailed above has already visited every authority-eligible residual
@@ -2692,7 +2921,28 @@ void FWorldQueryService::RecordCacheProfile(
 #endif
 
 FWorldHit FWorldQueryService::Sweep(const FWorldQuery& Query) const
+{
+	return QueryCached(Query, EHitSelection::FirstSweepHit);
+}
 
+bool FWorldQueryService::TryFindDeepestOverlap(const FWorldQuery& Query, FWorldHit& OutHit) const
+{
+	OutHit = FWorldHit();
+	if (Query.Start != Query.End || Query.Start.ContainsNaN() ||
+		Query.Rotation.ContainsNaN() || !Query.Rotation.IsNormalized() ||
+		!FMath::IsFinite(Query.DomainTolerance) || Query.DomainTolerance < 0 ||
+		(Query.Shape != EQueryShape::Sphere && Query.Shape != EQueryShape::Box)) return false;
+	if (Query.Shape == EQueryShape::Sphere && (!FMath::IsFinite(Query.Radius) || Query.Radius <= 0)) return false;
+	if (Query.Shape == EQueryShape::Box && (Query.HalfExtent.ContainsNaN() || Query.HalfExtent.GetMin() <= 0)) return false;
+	FWorldQuery PoseQuery = Query;
+	PoseQuery.bUseFiniteContactDomain = true;
+	// This is a geometric observation/correction, not CCD contact release.
+	PoseQuery.InitialOverlapTolerance = 0.0;
+	OutHit = QueryCached(PoseQuery, EHitSelection::DeepestOverlap);
+	return true;
+}
+
+FWorldHit FWorldQueryService::QueryCached(const FWorldQuery& Query, const EHitSelection Selection) const
 {
 	// Impossible filtered queries must not traverse providers or evict useful
 	// cached support probes. Dynamic sub-body overlaps are a separate caller path.
@@ -2709,7 +2959,7 @@ FWorldHit FWorldQueryService::Sweep(const FWorldQuery& Query) const
 	for (uint32 Way = 0; Way < SweepCacheWays; ++Way)
 	{
 		const FCachedSweep& Cached = SweepCache[First + Way];
-		if (Cached.bValid && IsSameQuery(Query, Cached.Query))
+		if (Cached.bValid && Cached.Selection == Selection && IsSameQuery(Query, Cached.Query))
 		{
 #if !UE_BUILD_SHIPPING
 			if (bProfileCache) RecordCacheProfile(Query.Shape, Way, false);
@@ -2722,14 +2972,15 @@ FWorldHit FWorldQueryService::Sweep(const FWorldQuery& Query) const
 	if (bProfileCache) RecordCacheProfile(Query.Shape, INDEX_NONE, Entry.bValid);
 #endif
 	NextCacheWay[Bucket] = (NextCacheWay[Bucket] + 1) & (SweepCacheWays - 1);
-	Entry.Hit = SweepDetailed(Query, nullptr);
+	Entry.Hit = SweepDetailed(Query, nullptr, Selection);
 	Entry.Query = Query;
+	Entry.Selection = Selection;
 	Entry.bValid = true;
 	return Entry.Hit;
 }
 
 FWorldHit FWorldQueryService::SweepDetailed(
-	const FWorldQuery& Query, FWorldHit* OutBestTriangle) const
+	const FWorldQuery& Query, FWorldHit* OutBestTriangle, const EHitSelection Selection) const
 {
 	if (Query.RejectsAllCollision())
 	{
@@ -2749,12 +3000,12 @@ FWorldHit FWorldQueryService::SweepDetailed(
 	FWorldHit Best;
 	TArray<FWorldHit, TInlineAllocator<128>> AuthorityProviderHits;
 	const bool bCollectAuthorityProviderHits =
-		Query.bAuthorityOnly && Query.bIncludeTriangles;
+		Query.bAuthorityOnly && Query.bIncludeTriangles && Selection == EHitSelection::FirstSweepHit;
 	const auto ConsiderProviderHit = [&](const FWorldHit& Candidate)
 	{
 		if (!Candidate.bHit || !HitPassesReferenceNormal(Query, Candidate)) return;
 		if (bCollectAuthorityProviderHits) AuthorityProviderHits.Add(Candidate);
-		if (IsBetterHit(Candidate, Best)) Best = Candidate;
+		if (IsBetterHit(Candidate, Best, Selection)) Best = Candidate;
 	};
 	const auto CurrentMaximumSearchTime = [&Best, bCollectAuthorityProviderHits]()
 	{
@@ -2781,7 +3032,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		// serialized asset lacks a valid acceleration box; the exact projected
 		// domain test below is the source of truth in that case.
 		if (Plane.Bounds.IsValid && !Plane.Bounds.Intersect(QueryBounds)) continue;
-		const FWorldHit Candidate = SweepPlane(Query, Plane, &World);
+		const FWorldHit Candidate = SweepPlane(Query, Plane, &World, nullptr, Selection);
 		if (!Candidate.bHit)
 		{
 			continue;
@@ -2824,7 +3075,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 					if (Query.bExcludeAuthorityEligible && Plane.bAuthorityEligible) continue;
 					if (!PlanePassesFilter(Query, Plane) ||
 						(Plane.Bounds.IsValid && !Plane.Bounds.Intersect(QueryBounds))) continue;
-					Candidate = SweepPlane(Query, Plane, &World);
+					Candidate = SweepPlane(Query, Plane, &World, nullptr, Selection);
 				}
 				else
 				{
@@ -2837,7 +3088,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 					// constructing its miss result. These are the kernel's exact guards;
 					// the leaf and provider arbitration order remain unchanged.
 					if (!Patch.Bounds.Intersect(QueryBounds) || !PatchPassesFilter(Query, Patch)) continue;
-					Candidate = SweepExtrudedQuintic(Query, QueryBounds, Patch);
+					Candidate = SweepExtrudedQuintic(Query, QueryBounds, Patch, Selection);
 				}
 				ConsiderProviderHit(Candidate);
 			}
@@ -2863,7 +3114,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			if (Query.bAuthorityOnly && !Patch.bAuthorityEligible) continue;
 			if (Query.bExcludeAuthorityEligible && Patch.bAuthorityEligible) continue;
 			const FWorldHit Candidate = SweepTensorBezier(
-				Query, QueryBounds, Patch, CurrentMaximumSearchTime());
+				Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection);
 			ConsiderProviderHit(Candidate);
 		}
 #if !UE_BUILD_SHIPPING
@@ -2886,7 +3137,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 			// checked by SweepPiecewiseTensorBezier; candidate order is unchanged.
 			if (!Patch.Bounds.Intersect(QueryBounds)) continue;
 			const FWorldHit Candidate = SweepPiecewiseTensorBezier(
-				Query, QueryBounds, Patch, CurrentMaximumSearchTime());
+				Query, QueryBounds, Patch, CurrentMaximumSearchTime(), Selection);
 			ConsiderProviderHit(Candidate);
 		}
 #if !UE_BUILD_SHIPPING
@@ -2943,7 +3194,7 @@ FWorldHit FWorldQueryService::SweepDetailed(
 				const FWorldHit Candidate = SweepTriangleFace(Query, Triangle);
 				if (Candidate.bHit &&
 					HitPassesReferenceNormal(Query, Candidate) &&
-					IsBetterHit(Candidate, BestTriangle))
+					IsBetterHit(Candidate, BestTriangle, Selection))
 				{
 					BestTriangle = Candidate;
 				}
@@ -2968,9 +3219,9 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		{
 			Best = BestTriangle;
 		}
-		else if (!Query.bAuthorityOnly)
+		else if (!Query.bAuthorityOnly || Selection == EHitSelection::DeepestOverlap)
 		{
-			if (IsBetterHit(BestTriangle, Best)) Best = BestTriangle;
+			if (IsBetterHit(BestTriangle, Best, Selection)) Best = BestTriangle;
 		}
 		else
 		{
@@ -2994,6 +3245,34 @@ FWorldHit FWorldQueryService::SweepDetailed(
 				}
 			}
 			Best = BestAgreeingProvider.bHit ? BestAgreeingProvider : BestTriangle;
+		}
+	}
+	if (Best.bStartPenetrating && Query.Shape == EQueryShape::Box &&
+		Query.bUseFiniteContactDomain &&
+		(Best.Point-Best.QueryPoint-Best.PenetrationDepth*Best.Normal).SquaredLength() >
+			FMath::Square(Query.DomainTolerance))
+	{
+		// A support-map tie corner can overhang a finite face while its clamped
+		// surface witness already touches the translated box. Repair only the
+		// body's matching witness after WORLD arbitration: IsBetterHit itself
+		// uses witness distance, so doing this per provider could change its win.
+		const FVector3d Axes[3]={
+			Query.Rotation.RotateVector(FVector3d::ForwardVector),
+			Query.Rotation.RotateVector(FVector3d::RightVector),
+			Query.Rotation.RotateVector(FVector3d::UpVector)};
+		EContactFeatureKind BoxKind;
+		int8 BoxIndex;
+		const FVector3d TranslatedPoint=ClosestPointOnBox(Best.Point,
+			Best.Location+Best.PenetrationDepth*Best.Normal,Axes,
+			Query.HalfExtent,&BoxKind,&BoxIndex);
+		// ClosestPointOnBox clamps to a volume; an interior point is not a
+		// contact witness. Keep unresolved pairs intact for further attribution.
+		if (BoxKind != EContactFeatureKind::Unknown &&
+			(TranslatedPoint-Best.Point).SquaredLength() <= FMath::Square(Query.DomainTolerance))
+		{
+			Best.QueryPoint=TranslatedPoint-Best.PenetrationDepth*Best.Normal;
+			Best.QueryFeatureKind=BoxKind;
+			Best.QueryFeatureIndex=BoxIndex;
 		}
 	}
 #if !UE_BUILD_SHIPPING

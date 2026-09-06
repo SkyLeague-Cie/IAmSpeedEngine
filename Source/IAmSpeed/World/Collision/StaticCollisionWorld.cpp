@@ -1,4 +1,7 @@
 #include "StaticCollisionWorld.h"
+#if !UE_BUILD_SHIPPING
+#include "../Analytic/StaticWorldQueryAudit.h"
+#endif
 
 namespace Speed
 {
@@ -24,6 +27,9 @@ FEstablishedStaticContactProjection ProjectEstablishedStaticContact(
 		Query.Start = Result.Location;
 		Query.End = Result.Location;
 		const Analytic::FWorldHit Candidate = World.SweepSingle(Query);
+#if !UE_BUILD_SHIPPING
+		Analytic::FStaticWorldQueryAudit::RecordEstablishedContactQuery(Query, Candidate, Iteration, false);
+#endif
 		if (!Candidate.bHit)
 		{
 			Result.ResidualPenetrationDepth = 0.0;
@@ -58,6 +64,9 @@ FEstablishedStaticContactProjection ProjectEstablishedStaticContact(
 	Query.Start = Result.Location;
 	Query.End = Result.Location;
 	const Analytic::FWorldHit ValidationHit = World.SweepSingle(Query);
+#if !UE_BUILD_SHIPPING
+	Analytic::FStaticWorldQueryAudit::RecordEstablishedContactQuery(Query, ValidationHit, MaxCorrectionIterations, true);
+#endif
 	if (ValidationHit.bHit)
 	{
 		Result.Hit = ValidationHit;

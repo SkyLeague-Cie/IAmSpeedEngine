@@ -5,6 +5,13 @@
 | `IAmSpeed.AnalyticWorld.BoundedPlane` | `IAMSPEED.PHYS.CONTACT_DETECTION.V1.RAY.PLANE`, `.SPHERE.PLANE`, `.BOX.PLANE`, `.DOMAIN`, `.FILTERS` |
 | `IAmSpeed.AnalyticWorld.TriangleFaceBvh` | `IAMSPEED.PHYS.CONTACT_DETECTION.V1.SYMMETRY`, `.FILTERS`, `.DETERMINISM` |
 | `IAmSpeed.AnalyticWorld.ExtrudedQuintic` | `IAMSPEED.PHYS.CONTACT_DETECTION.V1.BOX.PLANE`, `.SYMMETRY`, `.DETERMINISM` |
+| `IAmSpeed.AnalyticWorld.SphereFiniteFaceDomain` | Finite plane/extruded sphere-face witnesses, radius monotonicity, fresh CCD, real boundaries, conservative Hybrid coverage and cache-policy isolation; frozen curved-profile regression |
+| `IAmSpeed.AnalyticWorld.BoxFiniteContactDomain` | Finite overhangs, section/extrusion edge CCD, overlapping-AABB negative OBB, coplanar provider seams, Hybrid isolation and frozen curved overlap; matching MTD witnesses |
+| `IAmSpeed.AnalyticWorld.ExtrudedInternalContactNormal` | Finite concave internal-facet contact: exact overlapping-provider regression, coherent depth/normal/witnesses, four XY reflections and three positional perturbations; no host-trajectory certification |
+| `IAmSpeed.AnalyticWorld.TensorInternalContactNormal` | Frozen finite piecewise tensor neighborhood reproducing a false internal-edge normal; depth/witness and mirror/perturbation checks; no host certification |
+| `IAmSpeed.AnalyticWorld.TensorConcavityTopology` | Derived internal-edge masks: concave/convex sides, real free boundaries and absent C2 adjacency; no mask relaxation at unproved edges |
+| `IAmSpeed.AnalyticWorld.TensorInteriorVertexNormal` | Frozen finite saddle neighborhood reproducing a false interior-vertex MTD; no host certification |
+| `IAmSpeed.AnalyticWorld.TensorCornerConeTopology` | Complete C2 four-cell fans on plane/bowl/saddle, open-ring refusal, exterior borders and derived-data hash exclusion |
 | `IAmSpeed.AnalyticWorld.FlatLandscapeAdapter` | `IAMSPEED.PHYS.CONTACT_DETECTION.V1.DOMAIN`, `.FILTERS`, `.SERIALIZATION` |
 | `IAmSpeed.AnalyticWorld.LandscapeSourceIdentity` | Actual Landscape adapter/runtime bridge in normal and PIE 0/7 packages; authored source/primitive identity and support-component lookup (not physical map equilibrium) |
 | `IAmSpeed.PhysicalLaws.RestingEquilibrium.BoxSupportCertificate` | `IAMSPEED.PHYS.RESTING_EQUILIBRIUM.V1`, `.CONTACT_DETECTION.V1.DOMAIN`, `.FILTERS` |

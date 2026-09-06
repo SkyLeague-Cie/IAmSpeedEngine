@@ -18,6 +18,11 @@ public:
 	virtual ~IStaticCollisionWorld() = default;
 	virtual Analytic::FWorldHit SweepSingle(
 		const Analytic::FWorldQuery& Query) const = 0;
+	/** Greatest positive finite overlap at one pose, not the first CCD contact.
+	 * False means unsupported/invalid query; true with no hit means no overlap.
+	 * Start must equal End. Tangencies do not mask penetrating constraints. */
+	virtual bool TryFindDeepestOverlap(const Analytic::FWorldQuery& Query,
+		Analytic::FWorldHit& OutHit) const = 0;
 	virtual bool HasAuthorityCoverage(
 		const Analytic::FWorldQuery& Query) const = 0;
 	virtual bool TrySweepAuthority(
@@ -79,7 +84,18 @@ public:
 	Analytic::FWorldHit SweepSingle(
 		const Analytic::FWorldQuery& Query) const override
 	{
-		return QueryService.Sweep(Query);
+		// Strict collision has no legacy fallback. A conservative replacement
+		// footprint is not its physical surface domain: retain proven finite
+		// contacts even when the volume extends across an authored boundary.
+		Analytic::FWorldQuery CollisionQuery = Query;
+		CollisionQuery.bUseFiniteContactDomain = true;
+		return QueryService.Sweep(CollisionQuery);
+	}
+
+	bool TryFindDeepestOverlap(const Analytic::FWorldQuery& Query,
+		Analytic::FWorldHit& OutHit) const override
+	{
+		return QueryService.TryFindDeepestOverlap(Query, OutHit);
 	}
 
 	bool HasAuthorityCoverage(

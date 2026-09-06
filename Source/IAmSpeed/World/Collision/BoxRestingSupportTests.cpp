@@ -526,4 +526,68 @@ bool FIAmSpeedBoxApproachQuantizationTest::RunTest(const FString& Parameters)
 		Owner->GetPhysCOMLocation() == Initial.Location && Owner->GetPhysRotation() == Initial.Rotation);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedBoxObjectOnlyQuantizationTest,
+	"IAmSpeed.PhysicalLaws.BoxEquilibrium.ObjectOnlyApproachQuantization",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedBoxObjectOnlyQuantizationTest::RunTest(const FString& Parameters)
+{
+	// Static pose feasibility includes object-query surfaces even when their
+	// trace-channel mask is empty. Quantization must use the same geometry as
+	// post-integration overlap projection, without enabling new CCD responses.
+	constexpr double FloorZ = .0035156249068749703;
+	auto Data = RestingPlane(FVector(0, 0, FloorZ));
+	Data.Planes[0].BlockingChannels = 0;
+	if (!TestTrue(TEXT("object-only finite floor validates"), Data.FinalizeAndValidate())) return false;
+	Speed::FAnalyticStaticCollisionWorld World(Data);
+	TStrongObjectPtr<USpeedMovementComponent> Owner(NewObject<USpeedMovementComponent>());
+	TStrongObjectPtr<UBoxSubBody> Box(NewObject<UBoxSubBody>());
+	Owner->SubBodies = { Box.Get() }; Owner->SolidSubBodies = { Box.Get() };
+	Owner->CenterOfMass = FVector::ZeroVector;
+	Box->Initialize(Owner.Get()); Box->SetBoxExtent(FVector(60, 40, 20));
+	Owner->SetIsFrozen(false);
+	SKinematic Initial;
+	Initial.Location = FVector(0, 0, FloorZ + 20 + .001);
+	Initial.Velocity = FVector(0, 0, -100);
+	Owner->SetKinematicState(Initial); Owner->UpdateSubBodiesKinematics();
+	Owner->SetStaticCollisionWorldForFrame(&World, 1.0f / 300);
+	SKinematic Rounded = Initial;
+	Rounded.Quantize(FQuat::Identity);
+	auto Query = RestingBox();
+	Query.Start = Query.End = Rounded.Location;
+	Query.bApplyCollisionFilter = true;
+	Query.InitialOverlapTolerance = 0;
+	TestFalse(TEXT("trace response remains disabled"), World.SweepSingle(Query).bHit);
+	Query.bObjectQuery = true;
+	Query.ObjectTypes = uint64(1) << ECC_WorldStatic;
+	Speed::Analytic::FWorldHit Hit;
+	TestTrue(TEXT("stationary object query remains supported"), World.TryFindDeepestOverlap(Query, Hit));
+	TestTrue(TEXT("rounded pose overlaps the object-only floor"), Hit.bStartPenetrating && Hit.PenetrationDepth > 0);
+	TestTrue(TEXT("integrated pose is independently outside"), Initial.Location.Z - 20 - FloorZ > 0);
+	Owner->QuantizePhysicalState();
+	TestTrue(TEXT("object-only floor cannot be crossed by rounding"),
+		Owner->GetPhysCOMLocation().Z - 20 - FloorZ >= 0);
+	TestTrue(TEXT("rejecting rounding preserves the integrated pose"),
+		Owner->GetPhysCOMLocation() == Initial.Location && Owner->GetPhysRotation() == Initial.Rotation);
+	// Rejecting an invalid pose must not disable ordinary quantization in clear
+	// space, outside this finite patch, or against query-disabled/dynamic data.
+	SKinematic Clear = Rounded;
+	Clear.Location.Z += 1;
+	TestTrue(TEXT("exterior pose remains admissible"), Box->CanApplyQuantizedPose(World, Clear));
+	Clear = Rounded; Clear.Location.X = 2000;
+	TestTrue(TEXT("finite floor cannot become an infinite plane"), Box->CanApplyQuantizedPose(World, Clear));
+	auto DisabledData = Data;
+	DisabledData.Planes[0].bQueryCollisionEnabled = false;
+	DisabledData.Planes[0].bAuthorityEligible = false;
+	TestTrue(TEXT("disabled fixture validates"), DisabledData.FinalizeAndValidate());
+	Speed::FAnalyticStaticCollisionWorld DisabledWorld(DisabledData);
+	TestTrue(TEXT("disabled collision remains excluded"), Box->CanApplyQuantizedPose(DisabledWorld, Rounded));
+	auto DynamicData = Data;
+	DynamicData.Planes[0].ObjectType = ECC_WorldDynamic;
+	TestTrue(TEXT("dynamic fixture validates"), DynamicData.FinalizeAndValidate());
+	Speed::FAnalyticStaticCollisionWorld DynamicWorld(DynamicData);
+	TestTrue(TEXT("static feasibility does not include dynamic object types"), Box->CanApplyQuantizedPose(DynamicWorld, Rounded));
+	return true;
+}
 #endif

@@ -11,6 +11,7 @@ namespace Speed::Analytic
 {
 struct FAnalyticWorldData;
 struct FWorldHit;
+struct FWorldQuery;
 
 struct FStaticWorldQueryCounters
 {
@@ -70,6 +71,9 @@ public:
 		const FVector& ReferenceNormal = FVector::ZeroVector,
 		float MinimumReferenceNormalDot = -1.0f,
 		bool bAllowEstablishedFaceContactAtBoundary = false);
+	/** Stationary object-overlap bridge. Strict mode returns at most the deepest
+	 * positive constraint, not all contacts; callers iterate and check residuals.
+	 * Hybrid keeps its existing replacement/fallback semantics. */
 	static bool TryCompactAuthorityMulti(
 		UWorld* World,
 		const FVector& Start, const FVector& End, const FQuat& Rotation,
@@ -82,6 +86,14 @@ public:
 	static FStaticWorldQueryCounters GetCurrentFrameCounters();
 	static void EndFrame();
 	static void RecordLegacySweep();
+
+#if !UE_BUILD_SHIPPING
+	/** Logs an already evaluated persistent-contact projection; never replays the
+	 * query or changes authority counters. Uses the bounded StrictQueryDetail window. */
+	static void RecordEstablishedContactQuery(
+		const FWorldQuery& Query, const FWorldHit& Hit,
+		uint32 Iteration, bool bValidation);
+#endif
 
 	static void RecordSingle(
 		EStaticQuerySite Site,

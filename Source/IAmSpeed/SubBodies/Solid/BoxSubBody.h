@@ -109,6 +109,9 @@ protected:
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
     const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FIAmSpeedCurvedPersistentSupportTest;
+#endif
     /** Expresses the box-local inverse inertia in a frame, preserving quaternion precision. */
     FMatrix RotateLocalInverseInertia(const FQuat& BoxToFrame) const;
     /** Actual box from an owner COM pose, with shared authoritative collision filters. */
@@ -132,6 +135,9 @@ private:
      * settles a finite tilt or edits the live state before contact validation. */
     void ProjectPlanarEventRoundoff(SKinematic& State, const SHitResult& Hit) const;
     bool RefreshVariableNormalGroundSupport(const float Delta);
+    /** A finite analytical provider owns this varying support; cached tangent
+     * planes must not translate or attract the body to maintain contact. */
+    bool UsesNativeAnalyticEstablishedContact() const;
 	bool ProjectEstablishedStaticContactImpl(
 		const float& Delta, bool bProjectVelocity);
     void ResolveHitVsGround(const float& delta);

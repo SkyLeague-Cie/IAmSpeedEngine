@@ -12,6 +12,14 @@ symmetries, initial penetration, edges/vertices, filtering, release, and stable
 tie-breaking. Unreal `FHitResult` is an integration-adapter representation,
 not the intended authoritative backend result.
 
+Smooth extruded providers must not expose a concave internal approximation
+edge as a collision wall. The provider retains finite SAT intersection/TOI
+proof, then reconstructs normal, depth and both witnesses from the finite face.
+Both adjacent chords must lie on the query side and the complete swept box
+footprint must remain inside the extrusion ends. Convex and authored terminal
+edges keep finite SAT. A face separation is not a global minimum translation
+for a compound concave world; the bounded projection still reacquires contacts.
+
 The analytical static-world path returns both witnesses, the minimum-
 translation normal/depth for an overlap, local face/edge/vertex dimensions and
 stable source/surface/feature/primitive identity. `SHitResult` preserves these
