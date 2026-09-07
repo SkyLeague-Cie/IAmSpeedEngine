@@ -142,9 +142,14 @@ namespace Speed::SimulationBoundary
 		{
 			return false;
 		}
+		uint64 PresentationBytes = uint64(Snapshot.PresentationBodies.Num()) * sizeof(FSimulationPresentationBody);
+		for (const FSimulationPresentationBody& Body : Snapshot.PresentationBodies)
+			PresentationBytes += Body.Extension.Num();
+		if (PresentationBytes > MaxPayloadBytes) return false;
 		FScopeLock Lock(&Mutex);
 		const int32 NextSlot = PublishedSlot == INDEX_NONE ? 0 : 1 - PublishedSlot;
 		Slots[NextSlot] = Snapshot;
+		Slots[NextSlot].PublicationSerial = ++PublicationSerial;
 		PublishedSlot = NextSlot;
 		return true;
 	}
@@ -161,6 +166,35 @@ namespace Speed::SimulationBoundary
 	{
 		FScopeLock Lock(&Mutex);
 		return PublishedSlot == INDEX_NONE ? MAX_uint64 : Slots[PublishedSlot].NumFrame;
+	}
+
+	bool FPresentationFrameLatch::ReadBody(const uint64 GameFrame, const FSnapshotBuffer& Buffer,
+		const uint64 StableId, FSimulationPoseConsumption& Out)
+	{
+		Out = FSimulationPoseConsumption();
+		if (LatchedGameFrame != GameFrame)
+		{
+			LatchedGameFrame = GameFrame;
+			BodyIndices.Reset();
+			Snapshot = FSimulationSnapshot();
+			if (Buffer.ReadLatest(Snapshot))
+			{
+				for (int32 Index = 0; Index < Snapshot.PresentationBodies.Num(); ++Index)
+				{
+					const uint64 Id = Snapshot.PresentationBodies[Index].StableId;
+					if (Id == 0 || BodyIndices.Contains(Id)) { BodyIndices.Reset(); return false; }
+					BodyIndices.Add(Id, Index);
+				}
+			}
+		}
+		const int32* Index = BodyIndices.Find(StableId);
+		if (!Index) return false;
+		Out.NumFrame = Snapshot.NumFrame;
+		Out.PublicationSerial = Snapshot.PublicationSerial;
+		Out.StateHash = Snapshot.StateHash;
+		Out.InputJournalHash = Snapshot.InputJournalHash;
+		Out.Body = Snapshot.PresentationBodies[*Index];
+		return Out.IsValid();
 	}
 
 	FFrameHashJournal::FFrameHashJournal(const uint32 InCapacity)

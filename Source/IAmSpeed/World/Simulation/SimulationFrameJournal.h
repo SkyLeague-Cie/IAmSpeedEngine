@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/CriticalSection.h"
+#include "IAmSpeed/Base/Kinematic.h"
 
 /**
  * Small, engine-agnostic message used at the simulation boundary.  The
@@ -16,12 +17,40 @@ struct IAMSPEED_API FSimulationInputCommand
 	uint64 PayloadHash = 0;
 };
 
+/** Optional values-only presentation data; excluded from the canonical byte hash. */
+struct IAMSPEED_API FSimulationPresentationBody
+{
+	uint64 StableId = 0;
+	SKinematic COMState;
+	FVector CenterOfMassLocal = FVector::ZeroVector;
+	TArray<uint8> Extension;
+	FVector OriginLocation() const { return COMState.Location - COMState.Rotation.RotateVector(CenterOfMassLocal); }
+	FVector OriginVelocity() const
+	{
+		return COMState.Velocity - FVector::CrossProduct(COMState.AngularVelocity,
+			COMState.Rotation.RotateVector(CenterOfMassLocal));
+	}
+};
+
 struct IAMSPEED_API FSimulationSnapshot
 {
 	uint64 NumFrame = 0;
 	uint64 InputJournalHash = 0;
 	uint64 StateHash = 0;
 	TArray<uint8> Payload;
+	uint64 PublicationSerial = 0;
+	TArray<FSimulationPresentationBody> PresentationBodies;
+};
+
+/** Exact publication selected by a presentation consumer, scoped to one simulation. */
+struct IAMSPEED_API FSimulationPoseConsumption
+{
+	uint64 NumFrame = 0;
+	uint64 PublicationSerial = 0;
+	uint64 StateHash = 0;
+	uint64 InputJournalHash = 0;
+	FSimulationPresentationBody Body;
+	bool IsValid() const { return PublicationSerial != 0 && Body.StableId != 0; }
 };
 
 struct IAMSPEED_API FSimulationHashDivergence
@@ -108,6 +137,18 @@ namespace Speed::SimulationBoundary
 		mutable FCriticalSection Mutex;
 		FSimulationSnapshot Slots[2];
 		int32 PublishedSlot = INDEX_NONE;
+		uint64 PublicationSerial = 0;
+	};
+
+	/** Single-consumer frame latch: all actors on one game frame see one publication. */
+	class IAMSPEED_API FPresentationFrameLatch final
+	{
+	public:
+		bool ReadBody(uint64 GameFrame, const FSnapshotBuffer& Buffer, uint64 StableId, FSimulationPoseConsumption& Out);
+	private:
+		uint64 LatchedGameFrame = MAX_uint64;
+		FSimulationSnapshot Snapshot;
+		TMap<uint64, int32> BodyIndices;
 	};
 
 	/** Bounded per-frame hash history used for Fast/RealTime equivalence checks. */

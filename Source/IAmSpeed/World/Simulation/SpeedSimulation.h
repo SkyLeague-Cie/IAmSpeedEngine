@@ -38,6 +38,8 @@ public:
 	void SealSimulationInputs();
 	const Speed::SimulationBoundary::FInputJournal& GetSimulationInputJournal() const { return InputJournal; }
 	bool ReadLatestSimulationSnapshot(FSimulationSnapshot& OutSnapshot) const { return SnapshotBuffer.ReadLatest(OutSnapshot); }
+	/** GT-only opt-in view, shared by every actor on this game frame. No live adapter reads. */
+	bool ReadPresentationPose(uint64 StableId, FSimulationPoseConsumption& Out);
 	/** Complete per-frame hashes for comparing two drivers after a run. */
 	const Speed::SimulationBoundary::FFrameHashJournal& GetFrameHashes() const { return FrameHashes; }
 	/**
@@ -126,6 +128,8 @@ protected:
 	Speed::SimulationBoundary::FFrameHashJournal FrameHashes;
 
 private:
+	bool bPublishPresentation = false;
+	Speed::SimulationBoundary::FPresentationFrameLatch PresentationLatch;
 	struct FPendingRollbackRequest
 	{
 		FSimulationSnapshot Snapshot;

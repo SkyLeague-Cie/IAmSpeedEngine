@@ -99,7 +99,7 @@ public:
 	{
 		return LastStepDiagnostics;
 	}
-	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash);
+	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false);
 	/** Restores one validated canonical snapshot without advancing simulation time. */
 	bool RestoreSimulationSnapshot(
 		const FSimulationSnapshot& Snapshot,

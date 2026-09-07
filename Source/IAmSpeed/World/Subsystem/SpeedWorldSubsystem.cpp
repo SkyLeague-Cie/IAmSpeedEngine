@@ -1376,10 +1376,10 @@ ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 }
 
 FSimulationSnapshot USpeedWorldSubsystem::CaptureSimulationSnapshot(
-	const uint64 NumFrame, const uint64 InputJournalHash)
+	const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation)
 {
 	RebuildSortedIfNeeded();
-	return SimulationWorld.CaptureSnapshot(NumFrame, InputJournalHash);
+	return SimulationWorld.CaptureSnapshot(NumFrame, InputJournalHash, bIncludePresentation);
 }
 
 bool USpeedWorldSubsystem::RestoreSimulationSnapshot(

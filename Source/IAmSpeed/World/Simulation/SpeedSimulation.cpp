@@ -13,6 +13,8 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 
 namespace
@@ -49,7 +51,16 @@ ASpeedSimulation::ASpeedSimulation()
 void ASpeedSimulation::BeginPlay()
 {
 	Super::BeginPlay();
+	// Fixed before the worker starts; diagnostics never change the canonical payload.
+	bPublishPresentation = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
 	RefreshExecutionMode();
+}
+
+bool ASpeedSimulation::ReadPresentationPose(const uint64 StableId, FSimulationPoseConsumption& Out)
+{
+	check(IsInGameThread());
+	if (!bPublishPresentation) { Out = FSimulationPoseConsumption(); return false; }
+	return PresentationLatch.ReadBody(GFrameCounter, SnapshotBuffer, StableId, Out);
 }
 
 void ASpeedSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -527,7 +538,7 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		static_cast<unsigned int>(Context.NumFrame));
 	IAMSPEED_FRAME_PHASE(Snapshot);
 	const FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
-		Context.NumFrame, InputJournal.StableHash());
+		Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
 	IAMSPEED_FRAME_PHASE(Publish);
 	SnapshotBuffer.Publish(Snapshot);
 	IAMSPEED_FRAME_PHASE(Journal);

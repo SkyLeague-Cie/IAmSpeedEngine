@@ -218,6 +218,118 @@ bool FIAmSpeedSnapshotBufferTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FIAmSpeedPresentationSnapshotTest,
+	"IAmSpeed.Simulation.PresentationSnapshot",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedPresentationSnapshotTest::RunTest(const FString& Parameters)
+{
+	Speed::SimulationBoundary::FSnapshotBuffer Buffer(4096);
+	FSimulationSnapshot First;
+	First.NumFrame = 7;
+	First.InputJournalHash = 31;
+	First.Payload = { 4, 3, 2, 1 };
+	First.StateHash = Speed::SimulationBoundary::HashBytes(First.Payload.GetData(), First.Payload.Num());
+	FSimulationPresentationBody& Body = First.PresentationBodies.AddDefaulted_GetRef();
+	Body.StableId = 17;
+	Body.COMState.Location = FVector(10, 20, 30);
+	Body.COMState.Velocity = FVector(5, 7, 11);
+	Body.COMState.Rotation = FQuat::Identity;
+	Body.COMState.AngularVelocity = FVector(0, 0, 2);
+	Body.CenterOfMassLocal = FVector(1, 2, 3);
+	Body.Extension = { 8, 9 };
+	TestTrue(TEXT("presentation snapshot publishes"), Buffer.Publish(First));
+
+	Speed::SimulationBoundary::FPresentationFrameLatch Latch;
+	FSimulationPoseConsumption Consumed;
+	TestTrue(TEXT("stable body resolves"), Latch.ReadBody(100, Buffer, 17, Consumed));
+	TestEqual(TEXT("first publication serial"), Consumed.PublicationSerial, uint64(1));
+	TestTrue(TEXT("COM-local origin is reconstructed"), Consumed.Body.OriginLocation().Equals(FVector(9, 18, 27)));
+	TestTrue(TEXT("origin velocity includes angular offset"), Consumed.Body.OriginVelocity().Equals(FVector(9, 5, 11)));
+	TestEqual(TEXT("sidecar leaves canonical hash untouched"), Consumed.StateHash,
+		Speed::SimulationBoundary::HashBytes(First.Payload.GetData(), First.Payload.Num()));
+
+	FSimulationSnapshot Second = First;
+	Second.NumFrame = 8;
+	Second.PresentationBodies[0].COMState.Location = FVector(100, 200, 300);
+	TestTrue(TEXT("new presentation snapshot publishes"), Buffer.Publish(Second));
+	TestTrue(TEXT("same game frame still resolves"), Latch.ReadBody(100, Buffer, 17, Consumed));
+	TestEqual(TEXT("same game frame stays latched"), Consumed.NumFrame, uint64(7));
+	TestTrue(TEXT("next game frame resolves"), Latch.ReadBody(101, Buffer, 17, Consumed));
+	TestEqual(TEXT("next game frame observes new snapshot"), Consumed.NumFrame, uint64(8));
+	TestEqual(TEXT("publication serial advances"), Consumed.PublicationSerial, uint64(2));
+
+	FSimulationSnapshot Duplicate = Second;
+	const FSimulationPresentationBody DuplicateBody = Duplicate.PresentationBodies[0];
+	Duplicate.PresentationBodies.Add(DuplicateBody);
+	TestTrue(TEXT("buffer can carry an invalid identity set for reader validation"), Buffer.Publish(Duplicate));
+	TestFalse(TEXT("latch rejects duplicate stable ids"), Latch.ReadBody(102, Buffer, 17, Consumed));
+
+	Speed::SimulationBoundary::FSnapshotBuffer Tiny(4);
+	FSimulationSnapshot Oversized;
+	Oversized.PresentationBodies.AddDefaulted_GetRef().StableId = 1;
+	TestFalse(TEXT("presentation sidecar is bounded"), Tiny.Publish(Oversized));
+
+	Speed::SimulationBoundary::FSnapshotBuffer ConcurrentBuffer(4096);
+	TAtomic<bool> WriterDone = false;
+	TAtomic<bool> Coherent = true;
+	TFuture<void> Writer = Async(EAsyncExecution::Thread, [&ConcurrentBuffer, &WriterDone]()
+	{
+		for (uint64 Frame = 1; Frame <= 1000; ++Frame)
+		{
+			FSimulationSnapshot Snapshot;
+			Snapshot.NumFrame = Frame;
+			Snapshot.Payload.SetNumUninitialized(sizeof(Frame));
+			FMemory::Memcpy(Snapshot.Payload.GetData(), &Frame, sizeof(Frame));
+			Snapshot.StateHash = Speed::SimulationBoundary::HashBytes(Snapshot.Payload.GetData(), Snapshot.Payload.Num());
+			FSimulationPresentationBody& PublishedBody = Snapshot.PresentationBodies.AddDefaulted_GetRef();
+			PublishedBody.StableId = 17;
+			PublishedBody.Extension = Snapshot.Payload;
+			if (!ConcurrentBuffer.Publish(Snapshot)) break;
+		}
+		WriterDone.Store(true);
+	});
+	while (!WriterDone.Load())
+	{
+		FSimulationSnapshot Snapshot;
+		if (!ConcurrentBuffer.ReadLatest(Snapshot)) continue;
+		uint64 PayloadFrame = 0;
+		uint64 ExtensionFrame = 0;
+		if (Snapshot.Payload.Num() != sizeof(uint64) || Snapshot.PresentationBodies.Num() != 1 ||
+			Snapshot.PresentationBodies[0].Extension.Num() != sizeof(uint64))
+		{
+			Coherent.Store(false);
+			break;
+		}
+		FMemory::Memcpy(&PayloadFrame, Snapshot.Payload.GetData(), sizeof(uint64));
+		FMemory::Memcpy(&ExtensionFrame, Snapshot.PresentationBodies[0].Extension.GetData(), sizeof(uint64));
+		if (PayloadFrame != Snapshot.NumFrame || ExtensionFrame != Snapshot.NumFrame)
+		{
+			Coherent.Store(false);
+			break;
+		}
+	}
+	Writer.Wait();
+	FSimulationSnapshot FinalConcurrentSnapshot;
+	if (ConcurrentBuffer.ReadLatest(FinalConcurrentSnapshot) &&
+		FinalConcurrentSnapshot.Payload.Num() == sizeof(uint64) &&
+		FinalConcurrentSnapshot.PresentationBodies.Num() == 1 &&
+		FinalConcurrentSnapshot.PresentationBodies[0].Extension.Num() == sizeof(uint64))
+	{
+		uint64 PayloadFrame = 0;
+		uint64 ExtensionFrame = 0;
+		FMemory::Memcpy(&PayloadFrame, FinalConcurrentSnapshot.Payload.GetData(), sizeof(uint64));
+		FMemory::Memcpy(&ExtensionFrame,
+			FinalConcurrentSnapshot.PresentationBodies[0].Extension.GetData(), sizeof(uint64));
+		Coherent.Store(Coherent.Load() && PayloadFrame == FinalConcurrentSnapshot.NumFrame &&
+			ExtensionFrame == FinalConcurrentSnapshot.NumFrame);
+	}
+	else Coherent.Store(false);
+	TestTrue(TEXT("canonical payload and presentation sidecar publish coherently"), Coherent.Load());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FIAmSpeedFrameHashJournalTest,
 	"IAmSpeed.Simulation.FrameHashJournal",
 	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
@@ -302,6 +414,13 @@ bool FIAmSpeedSnapshotKinematicLayoutTest::RunTest(const FString& Parameters)
 		const FSimulationSnapshot Snapshot = World.CaptureSnapshot(Frame, InputHash);
 		if (!TestTrue(TEXT("batched fields keep the original bytes, including the unaligned second body"),
 			Snapshot.Payload == Expected)) return false;
+		const FSimulationSnapshot WithPresentation = World.CaptureSnapshot(Frame, InputHash, true);
+		if (!TestTrue(TEXT("presentation capture leaves canonical bytes unchanged"),
+			WithPresentation.Payload == Snapshot.Payload) ||
+			!TestEqual(TEXT("presentation capture leaves canonical hash unchanged"),
+				WithPresentation.StateHash, Snapshot.StateHash) ||
+			!TestEqual(TEXT("presentation capture includes every ordered body"),
+				WithPresentation.PresentationBodies.Num(), 2)) return false;
 	}
 	return true;
 }
@@ -316,6 +435,7 @@ bool FIAmSpeedSnapshotRestoreTest::RunTest(const FString& Parameters)
 	USpeedMovementComponent* Component = NewObject<USpeedMovementComponent>();
 	Speed::FSimulationWorld World;
 	TestTrue(TEXT("component registers"), World.AddAdapter(*Component));
+	TestTrue(TEXT("registration publishes stable id"), Component->GetPublishedSimulationStableId() != 0);
 	World.RebuildOrderedAdapters();
 
 	SKinematic ExpectedState;
@@ -351,6 +471,11 @@ bool FIAmSpeedSnapshotRestoreTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("rejected restore leaves live state unchanged"),
 		World.CaptureSnapshot(42, InputHash).StateHash, Snapshot.StateHash);
 	TestFalse(TEXT("wrong input history is rejected"), World.RestoreSnapshot(Snapshot, InputHash + 1));
+	const uint64 FirstStableId = Component->GetPublishedSimulationStableId();
+	TestTrue(TEXT("component removes"), World.RemoveAdapter(*Component));
+	TestEqual(TEXT("removal clears published stable id"), Component->GetPublishedSimulationStableId(), uint64(0));
+	TestTrue(TEXT("component re-registers"), World.AddAdapter(*Component));
+	TestTrue(TEXT("re-registration never reuses stable id"), Component->GetPublishedSimulationStableId() > FirstStableId);
 	return true;
 }
 

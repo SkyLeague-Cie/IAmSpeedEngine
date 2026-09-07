@@ -11,7 +11,7 @@ class USSubBody;
 class USolidSubBody;
 struct SubBodyConfig;
 struct FCanonicalFrameContext;
-namespace Speed { class IStaticCollisionWorld; }
+namespace Speed { class IStaticCollisionWorld; class FSimulationWorld; }
 
 #if !UE_BUILD_SHIPPING
 /** Diagnostic rejection stage; separate from a shape's geometric support certificate. */
@@ -46,6 +46,10 @@ public:
 	virtual bool ApplySimulationInput(TConstArrayView<uint8> Payload) { return false; }
 	/** Appends deterministic mechanic state not covered by the common kinematic snapshot. */
 	virtual void AppendSimulationSnapshot(TArray<uint8>& OutPayload) const {}
+	/** Optional simulation-owned presentation extension; never part of canonical hashes. */
+	virtual void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const {}
+	/** Read-only identity publication; querying this never mutates the world registry. */
+	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
 	/** Validates component-specific bytes before an atomic world restore starts. */
 	virtual bool CanRestoreSimulationSnapshot(TConstArrayView<uint8> Payload) const
 	{
@@ -271,6 +275,8 @@ protected:
 	Speed::FSimulationSleepState SleepState;
 	Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
 private:
+	friend class Speed::FSimulationWorld;
+	TAtomic<uint64> PublishedSimulationStableId = 0;
 	// Borrowed only during the world's canonical step; no historical/cache state.
 	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;
 	float StaticSupportFrameHorizon = 0;
