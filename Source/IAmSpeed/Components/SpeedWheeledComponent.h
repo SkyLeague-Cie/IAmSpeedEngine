@@ -651,6 +651,11 @@ private:
 	}
 
 	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
+	// Rebind wheel sub-bodies whenever Chaos recreates the vehicle. The
+	// suspension objects live inside PVehicle and their addresses are not stable
+	// across physics-state teardown/recreation.
+	void BindWheelSimulationPointers();
+	void ClearWheelSimulationPointers();
 	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */
 	void ConsumePendingLiveWheeledInputs();
 	void UpdateWheeledPhysicalInputFromUser(bool bForce = false);

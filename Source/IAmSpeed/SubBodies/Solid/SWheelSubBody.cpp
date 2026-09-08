@@ -1669,12 +1669,12 @@ void USWheelSubBody::SetChaosWheel(UChaosVehicleWheel* InChaosWheel)
 
 void USWheelSubBody::SetWheelSim(Chaos::FSimpleWheelSim* InPWheel)
 {
-    if (!InPWheel)
-    {
-        return;
-    }
-    PWheel = InPWheel;
-    PWheel->SetMassPerWheel(WheelMass);
+	PWheel = InPWheel;
+	if (!PWheel)
+	{
+		return;
+	}
+	PWheel->SetMassPerWheel(WheelMass);
     SetMass(WheelMass);
 }
 

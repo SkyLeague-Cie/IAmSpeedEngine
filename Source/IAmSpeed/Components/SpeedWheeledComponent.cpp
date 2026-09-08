@@ -396,16 +396,7 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 		}
 	}
 
-	for (int WheelIdx = 0; WheelIdx < Wheels.Num(); WheelIdx++)
-	{
-		auto Wheel = Wheels[WheelIdx].Get();
-		auto& Suspension = Wheel->GetPhysicsSuspensionConfig();
-		auto& WheelSubBody = WheelSubBodies[WheelIdx];
-		WheelSubBody->SetIdx(WheelIdx);
-		WheelSubBody->SetChaosWheel(Wheel);
-		WheelSubBody->SetWheelSim(&SkySimulation->PVehicle->Wheels[WheelIdx]);
-		WheelSubBody->SetSuspensionSim(&SkySimulation->PVehicle->Suspension[WheelIdx]);
-	}
+	BindWheelSimulationPointers();
 
 	// init all sub-bodies with the owner
 	HitboxSubBody->Initialize(this);
@@ -435,6 +426,55 @@ void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicl
 {
 	Super::SetupVehicle(PVehicle);
 	SetupSpeedSuspension(PVehicle);
+}
+
+void USpeedWheeledComponent::BindWheelSimulationPointers()
+{
+	if (!SkySimulation || !SkySimulation->PVehicle)
+	{
+		ClearWheelSimulationPointers();
+		return;
+	}
+
+	const int32 NumBindings = FMath::Min3(
+		WheelSubBodies.Num(),
+		SkySimulation->PVehicle->Wheels.Num(),
+		SkySimulation->PVehicle->Suspension.Num());
+	for (int32 WheelIdx = 0; WheelIdx < WheelSubBodies.Num(); ++WheelIdx)
+	{
+		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+		if (!WheelSubBody)
+		{
+			continue;
+		}
+
+		WheelSubBody->SetIdx(WheelIdx);
+		if (WheelIdx < NumBindings && Wheels.IsValidIndex(WheelIdx))
+		{
+			WheelSubBody->SetChaosWheel(Wheels[WheelIdx].Get());
+			WheelSubBody->SetWheelSim(&SkySimulation->PVehicle->Wheels[WheelIdx]);
+			WheelSubBody->SetSuspensionSim(&SkySimulation->PVehicle->Suspension[WheelIdx]);
+		}
+		else
+		{
+			WheelSubBody->SetChaosWheel(nullptr);
+			WheelSubBody->SetWheelSim(nullptr);
+			WheelSubBody->SetSuspensionSim(nullptr);
+		}
+	}
+}
+
+void USpeedWheeledComponent::ClearWheelSimulationPointers()
+{
+	for (USWheelSubBody* WheelSubBody : WheelSubBodies)
+	{
+		if (!WheelSubBody)
+		{
+			continue;
+		}
+		WheelSubBody->SetWheelSim(nullptr);
+		WheelSubBody->SetSuspensionSim(nullptr);
+	}
 }
 
 void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
@@ -615,10 +655,11 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	{
 		if (FPhysScene* PhysScene = World->GetPhysicsScene())
 		{
-			if (FChaosVehicleManager::GetVehicleManagerFromScene(PhysScene))
-			{
-				CreateVehicle();
-				FixupSkeletalMesh();
+		if (FChaosVehicleManager::GetVehicleManagerFromScene(PhysScene))
+		{
+			CreateVehicle();
+			BindWheelSimulationPointers();
+			FixupSkeletalMesh();
 				VehicleSimulationPT->PVehicle->bSuspensionEnabled = bSuspensionEnabled;
 				VehicleSimulationPT->PVehicle->bWheelFrictionEnabled = bWheelFrictionEnabled;
 				VehicleSimulationPT->PVehicle->bMechanicalSimEnabled = bMechanicalSimEnabled;
@@ -669,6 +710,10 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 
 void USpeedWheeledComponent::OnDestroyPhysicsState()
 {
+	// PVehicle owns the suspension storage; invalidate every sub-body alias
+	// before any physics-state teardown, even when the output handle was already
+	// released by the vehicle manager.
+	ClearWheelSimulationPointers();
 	if (PVehicleOutput.IsValid())
 	{
 		FChaosVehicleManager* VehicleManager = FChaosVehicleManager::GetVehicleManagerFromScene(GetWorld()->GetPhysicsScene());
