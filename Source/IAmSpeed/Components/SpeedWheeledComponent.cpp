@@ -426,11 +426,25 @@ void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicl
 {
 	Super::SetupVehicle(PVehicle);
 	SetupSpeedSuspension(PVehicle);
+	// This is the first lifecycle point where the newly constructed vehicle
+	// owns all four wheel and suspension simulations. SetOwner can run while
+	// SkySimulation still has no PVehicle, so binding there alone leaves each
+	// wheel at index -1 for the first canonical frame.
+	BindWheelSimulationPointers(PVehicle.Get());
 }
 
 void USpeedWheeledComponent::BindWheelSimulationPointers()
 {
-	if (!SkySimulation || !SkySimulation->PVehicle)
+	BindWheelSimulationPointers(
+		SkySimulation && SkySimulation->PVehicle
+			? SkySimulation->PVehicle.Get()
+			: nullptr);
+}
+
+void USpeedWheeledComponent::BindWheelSimulationPointers(
+	Chaos::FSimpleWheeledVehicle* PVehicle)
+{
+	if (!PVehicle)
 	{
 		ClearWheelSimulationPointers();
 		return;
@@ -438,8 +452,11 @@ void USpeedWheeledComponent::BindWheelSimulationPointers()
 
 	const int32 NumBindings = FMath::Min3(
 		WheelSubBodies.Num(),
-		SkySimulation->PVehicle->Wheels.Num(),
-		SkySimulation->PVehicle->Suspension.Num());
+		PVehicle->Wheels.Num(),
+		PVehicle->Suspension.Num());
+	UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
+		WheelSubBodies.Num(), PVehicle->Wheels.Num(),
+		PVehicle->Suspension.Num(), NumBindings, Wheels.Num());
 	for (int32 WheelIdx = 0; WheelIdx < WheelSubBodies.Num(); ++WheelIdx)
 	{
 		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
@@ -449,11 +466,14 @@ void USpeedWheeledComponent::BindWheelSimulationPointers()
 		}
 
 		WheelSubBody->SetIdx(WheelIdx);
-		if (WheelIdx < NumBindings && Wheels.IsValidIndex(WheelIdx))
+		if (WheelIdx < NumBindings)
 		{
-			WheelSubBody->SetChaosWheel(Wheels[WheelIdx].Get());
-			WheelSubBody->SetWheelSim(&SkySimulation->PVehicle->Wheels[WheelIdx]);
-			WheelSubBody->SetSuspensionSim(&SkySimulation->PVehicle->Suspension[WheelIdx]);
+			if (Wheels.IsValidIndex(WheelIdx))
+			{
+				WheelSubBody->SetChaosWheel(Wheels[WheelIdx].Get());
+			}
+			WheelSubBody->SetWheelSim(&PVehicle->Wheels[WheelIdx]);
+			WheelSubBody->SetSuspensionSim(&PVehicle->Suspension[WheelIdx]);
 		}
 		else
 		{
@@ -2546,6 +2566,11 @@ void USpeedWheeledComponent::RecoverWheelState()
 {
 	for (auto& W : WheelSubBodies)
 	{
+		if (!W->HasSuspensionSim())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[WheelSuspensionBinding] missing suspension sim for wheel %d during RecoverWheelState"), W->Idx());
+			continue;
+		}
 		// float rollAngle = WheeledPhysicsState.WheelsAngularPosition[W->Idx()];
 		// W->SetRollAngle(rollAngle);
 		// float omega = WheeledPhysicsState.WheelsOmega[W->Idx()];

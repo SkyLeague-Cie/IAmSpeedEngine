@@ -138,6 +138,7 @@ public:
 	void SetChaosWheel(UChaosVehicleWheel* InChaosWheel);
 	void SetWheelSim(Chaos::FSimpleWheelSim* InPWheel);
 	void SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension);
+	bool HasSuspensionSim() const { return PSuspension != nullptr; }
 	void SetLocalOffset(const FVector& InLocalOffset);
 
     void HandleTimers();

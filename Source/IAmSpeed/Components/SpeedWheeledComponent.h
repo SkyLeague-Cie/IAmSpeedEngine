@@ -655,6 +655,7 @@ private:
 	// suspension objects live inside PVehicle and their addresses are not stable
 	// across physics-state teardown/recreation.
 	void BindWheelSimulationPointers();
+	void BindWheelSimulationPointers(Chaos::FSimpleWheeledVehicle* PVehicle);
 	void ClearWheelSimulationPointers();
 	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */
 	void ConsumePendingLiveWheeledInputs();
