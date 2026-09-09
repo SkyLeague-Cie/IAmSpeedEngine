@@ -2056,8 +2056,14 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant);
 			const float CurrentYawRate = FVector::DotProduct(
 				GetPhysAngularVelocity(), SurfaceNormal);
-			AddPhysAngularAcceleration(SurfaceNormal
-				* ((TargetYawRate - CurrentYawRate) / TimeConstant));
+			// This controller supplies high-slip alignment. Below its minimum
+			// slip, wheel friction alone owns yaw settling; a zero target must
+			// not introduce an unrelated fast yaw brake at steering release.
+			if (SlipAuthority > KINDA_SMALL_NUMBER)
+			{
+				AddPhysAngularAcceleration(SurfaceNormal
+					* ((TargetYawRate - CurrentYawRate) / TimeConstant));
+			}
 		}
 	}
 	if (bDebugWheelFriction && DebugGroundedWheels > 0)
