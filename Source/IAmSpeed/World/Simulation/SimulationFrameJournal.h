@@ -62,6 +62,7 @@ struct IAMSPEED_API FCameraCanonicalSample
 	uint64 InputJournalHash = 0;
 	uint64 CarBodyStableId = 0;
 	uint64 BallBodyStableId = 0;
+	uint8 EvaluatorKind = 0; // 0: static CarCam, 1: high-ball look-at.
 	FVector Position = FVector::ZeroVector;
 	FQuat Rotation = FQuat::Identity;
 	bool IsValid() const
