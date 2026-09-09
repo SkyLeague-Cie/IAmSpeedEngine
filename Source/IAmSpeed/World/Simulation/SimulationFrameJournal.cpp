@@ -209,6 +209,22 @@ namespace Speed::SimulationBoundary
 		return false;
 	}
 
+	bool FCameraSampleBuffer::ReadRange(const uint64 FirstFrame, const uint64 LastFrame,
+		TArray<FCameraCanonicalSample>& Out) const
+	{
+		Out.Reset();
+		if (FirstFrame > LastFrame) return false;
+		FScopeLock Lock(&Mutex);
+		for (const FCameraCanonicalSample& Sample : Samples)
+		{
+			if (Sample.NumFrame >= FirstFrame && Sample.NumFrame <= LastFrame)
+			{
+				Out.Add(Sample);
+			}
+		}
+		return !Out.IsEmpty();
+	}
+
 	void FCameraSampleBuffer::Reset()
 	{
 		FScopeLock Lock(&Mutex);

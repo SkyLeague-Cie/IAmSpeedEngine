@@ -42,6 +42,9 @@ public:
 	bool ReadPresentationPose(uint64 StableId, FSimulationPoseConsumption& Out);
 	/** Reads an exact physics-side camera sample; never interpolates. */
 	bool ReadCanonicalCameraSample(uint64 NumFrame, FCameraCanonicalSample& Out) const;
+	/** Reads a contiguous exact-frame camera range; never interpolates. */
+	bool ReadCanonicalCameraSamples(uint64 FirstFrame, uint64 LastFrame,
+		TArray<FCameraCanonicalSample>& Out) const;
 	/** Complete per-frame hashes for comparing two drivers after a run. */
 	const Speed::SimulationBoundary::FFrameHashJournal& GetFrameHashes() const { return FrameHashes; }
 	/**

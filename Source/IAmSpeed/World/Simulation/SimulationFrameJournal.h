@@ -167,6 +167,8 @@ namespace Speed::SimulationBoundary
 		explicit FCameraSampleBuffer(uint32 InCapacity = 4096);
 		bool Publish(const FCameraCanonicalSample& Sample);
 		bool ReadFrame(uint64 NumFrame, FCameraCanonicalSample& Out) const;
+		bool ReadRange(uint64 FirstFrame, uint64 LastFrame,
+			TArray<FCameraCanonicalSample>& Out) const;
 		void Reset();
 		int32 Num() const;
 	private:

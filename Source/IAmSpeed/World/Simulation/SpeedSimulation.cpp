@@ -70,6 +70,13 @@ bool ASpeedSimulation::ReadCanonicalCameraSample(const uint64 NumFrame,
 	return CameraSampleBuffer.ReadFrame(NumFrame, Out);
 }
 
+bool ASpeedSimulation::ReadCanonicalCameraSamples(const uint64 FirstFrame,
+	const uint64 LastFrame, TArray<FCameraCanonicalSample>& Out) const
+{
+	check(IsInGameThread());
+	return CameraSampleBuffer.ReadRange(FirstFrame, LastFrame, Out);
+}
+
 void ASpeedSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	StopOwnedWorker();
