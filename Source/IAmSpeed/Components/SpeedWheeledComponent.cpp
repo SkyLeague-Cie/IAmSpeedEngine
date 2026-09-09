@@ -21,6 +21,21 @@
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 
+static float SteeringInputCalibrationScale(const float Input)
+{
+	// RL steering capture calibration: preserve the signed input and apply the
+	// same magnitude law to both turn directions. Values are fitted at the four
+	// captured steering magnitudes (0.25, 0.50, 0.75 and 1.00).
+	const float A = FMath::Abs(FMath::Clamp(Input, -1.0f, 1.0f));
+	if (A <= 0.25f)
+		return FMath::Lerp(1.0f, 1.10f, A / 0.25f);
+	if (A <= 0.50f)
+		return FMath::Lerp(1.10f, 1.08f, (A - 0.25f) / 0.25f);
+	if (A <= 0.75f)
+		return FMath::Lerp(1.08f, 1.00f, (A - 0.50f) / 0.25f);
+	return FMath::Lerp(1.00f, 0.72f, (A - 0.75f) / 0.25f);
+}
+
 #if !UE_BUILD_SHIPPING
 static TAutoConsoleVariable<int32> CVarIAmSpeedCovariantVehicleInertia(
 	TEXT("p.IAmSpeed.VehicleInertia.CovariantFrame"), 0,
@@ -1665,7 +1680,8 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		}
 	}
 	const float MaxSteerAngle = ComputeWheelFrameSteerAngle(AbsForwardSpeed, TargetRadius, Wheelbase);
-	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f) * MaxSteerAngle;
+	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
+		* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
 	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
 	const float GroundedWheelCountForFriction = FMath::Max(1.0f, static_cast<float>(NumWheelsOnGround()));
@@ -3041,7 +3057,8 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		}
 	}
 	const float MaxSteerAngle = ComputeWheelFrameSteerAngle(AbsForwardSpeed, TargetRadius, Wheelbase);
-	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f) * MaxSteerAngle;
+	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
+		* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
 	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
 	const float AccelPerWheel = Accel / static_cast<float>(GroundedWheelCount);
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
