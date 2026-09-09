@@ -168,6 +168,59 @@ namespace Speed::SimulationBoundary
 		return PublishedSlot == INDEX_NONE ? MAX_uint64 : Slots[PublishedSlot].NumFrame;
 	}
 
+	uint64 FSnapshotBuffer::PublishedSerial() const
+	{
+		FScopeLock Lock(&Mutex);
+		return PublishedSlot == INDEX_NONE ? 0 : Slots[PublishedSlot].PublicationSerial;
+	}
+
+	FCameraSampleBuffer::FCameraSampleBuffer(const uint32 InCapacity)
+		: Capacity(FMath::Max(1u, InCapacity))
+	{
+		Samples.Reserve(Capacity);
+	}
+
+	bool FCameraSampleBuffer::Publish(const FCameraCanonicalSample& Sample)
+	{
+		if (!Sample.IsValid()) return false;
+		FScopeLock Lock(&Mutex);
+		if (!Samples.IsEmpty() && Samples.Last().NumFrame >= Sample.NumFrame) return false;
+		if (Samples.Num() >= static_cast<int32>(Capacity))
+		{
+			Samples.RemoveAt(0, 1, EAllowShrinking::No);
+		}
+		Samples.Add(Sample);
+		return true;
+	}
+
+	bool FCameraSampleBuffer::ReadFrame(const uint64 NumFrame,
+		FCameraCanonicalSample& Out) const
+	{
+		FScopeLock Lock(&Mutex);
+		for (int32 Index = Samples.Num() - 1; Index >= 0; --Index)
+		{
+			if (Samples[Index].NumFrame == NumFrame)
+			{
+				Out = Samples[Index];
+				return true;
+			}
+		}
+		Out = FCameraCanonicalSample();
+		return false;
+	}
+
+	void FCameraSampleBuffer::Reset()
+	{
+		FScopeLock Lock(&Mutex);
+		Samples.Reset();
+	}
+
+	int32 FCameraSampleBuffer::Num() const
+	{
+		FScopeLock Lock(&Mutex);
+		return Samples.Num();
+	}
+
 	bool FPresentationFrameLatch::ReadBody(const uint64 GameFrame, const FSnapshotBuffer& Buffer,
 		const uint64 StableId, FSimulationPoseConsumption& Out)
 	{

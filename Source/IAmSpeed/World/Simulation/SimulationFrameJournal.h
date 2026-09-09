@@ -53,6 +53,25 @@ struct IAMSPEED_API FSimulationPoseConsumption
 	bool IsValid() const { return PublicationSerial != 0 && Body.StableId != 0; }
 };
 
+/** Canonical camera pose emitted by a physics-frame evaluator. */
+struct IAMSPEED_API FCameraCanonicalSample
+{
+	uint64 NumFrame = 0;
+	uint64 PublicationSerial = 0;
+	uint64 StateHash = 0;
+	uint64 InputJournalHash = 0;
+	uint64 CarBodyStableId = 0;
+	uint64 BallBodyStableId = 0;
+	FVector Position = FVector::ZeroVector;
+	FQuat Rotation = FQuat::Identity;
+	bool IsValid() const
+	{
+		return PublicationSerial != 0 && StateHash != 0 && InputJournalHash != 0 &&
+			CarBodyStableId != 0 && BallBodyStableId != 0 &&
+			!Position.ContainsNaN() && Rotation.IsNormalized();
+	}
+};
+
 struct IAMSPEED_API FSimulationHashDivergence
 {
 	uint64 NumFrame = 0;
@@ -131,6 +150,7 @@ namespace Speed::SimulationBoundary
 		bool Publish(const FSimulationSnapshot& Snapshot);
 		bool ReadLatest(FSimulationSnapshot& OutSnapshot) const;
 		uint64 PublishedFrame() const;
+		uint64 PublishedSerial() const;
 
 	private:
 		uint32 MaxPayloadBytes = 0;
@@ -138,6 +158,21 @@ namespace Speed::SimulationBoundary
 		FSimulationSnapshot Slots[2];
 		int32 PublishedSlot = INDEX_NONE;
 		uint64 PublicationSerial = 0;
+	};
+
+	/** Bounded exact-frame history for physics-side camera samples. */
+	class IAMSPEED_API FCameraSampleBuffer final
+	{
+	public:
+		explicit FCameraSampleBuffer(uint32 InCapacity = 4096);
+		bool Publish(const FCameraCanonicalSample& Sample);
+		bool ReadFrame(uint64 NumFrame, FCameraCanonicalSample& Out) const;
+		void Reset();
+		int32 Num() const;
+	private:
+		uint32 Capacity = 0;
+		mutable FCriticalSection Mutex;
+		TArray<FCameraCanonicalSample> Samples;
 	};
 
 	/** Single-consumer frame latch: all actors on one game frame see one publication. */

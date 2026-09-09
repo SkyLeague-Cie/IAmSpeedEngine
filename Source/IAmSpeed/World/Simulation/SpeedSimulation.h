@@ -40,6 +40,8 @@ public:
 	bool ReadLatestSimulationSnapshot(FSimulationSnapshot& OutSnapshot) const { return SnapshotBuffer.ReadLatest(OutSnapshot); }
 	/** GT-only opt-in view, shared by every actor on this game frame. No live adapter reads. */
 	bool ReadPresentationPose(uint64 StableId, FSimulationPoseConsumption& Out);
+	/** Reads an exact physics-side camera sample; never interpolates. */
+	bool ReadCanonicalCameraSample(uint64 NumFrame, FCameraCanonicalSample& Out) const;
 	/** Complete per-frame hashes for comparing two drivers after a run. */
 	const Speed::SimulationBoundary::FFrameHashJournal& GetFrameHashes() const { return FrameHashes; }
 	/**
@@ -90,6 +92,9 @@ protected:
 	virtual void OnOwnedSimulationPaused() {}
 	virtual void OnOwnedSimulationResumed() {}
 	virtual bool ShouldMeasureCallback() const { return true; }
+	/** Optional pure camera evaluator hook; false leaves the sample unpublished. */
+	virtual bool BuildCanonicalCameraSample(const FSimulationSnapshot& Snapshot,
+		FCameraCanonicalSample& OutSample) const { return false; }
 	bool EnsureSimulationWorldReady();
 	/** Gates controlled runs until their scenario and Unreal bridge are ready. */
 	ESimulationWorkerResult CheckCanonicalRunReadiness();
@@ -125,6 +130,7 @@ protected:
 	static unsigned int EngineFPS; // The FPS at which the IAmSpeed Engine is running
 	Speed::SimulationBoundary::FInputJournal InputJournal;
 	Speed::SimulationBoundary::FSnapshotBuffer SnapshotBuffer;
+	Speed::SimulationBoundary::FCameraSampleBuffer CameraSampleBuffer;
 	Speed::SimulationBoundary::FFrameHashJournal FrameHashes;
 
 private:

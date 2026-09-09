@@ -63,6 +63,13 @@ bool ASpeedSimulation::ReadPresentationPose(const uint64 StableId, FSimulationPo
 	return PresentationLatch.ReadBody(GFrameCounter, SnapshotBuffer, StableId, Out);
 }
 
+bool ASpeedSimulation::ReadCanonicalCameraSample(const uint64 NumFrame,
+	FCameraCanonicalSample& Out) const
+{
+	check(IsInGameThread());
+	return CameraSampleBuffer.ReadFrame(NumFrame, Out);
+}
+
 void ASpeedSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	StopOwnedWorker();
@@ -541,6 +548,15 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
 	IAMSPEED_FRAME_PHASE(Publish);
 	SnapshotBuffer.Publish(Snapshot);
+	FCameraCanonicalSample CameraSample;
+	if (BuildCanonicalCameraSample(Snapshot, CameraSample))
+	{
+		CameraSample.NumFrame = Snapshot.NumFrame;
+		CameraSample.PublicationSerial = SnapshotBuffer.PublishedSerial();
+		CameraSample.StateHash = Snapshot.StateHash;
+		CameraSample.InputJournalHash = Snapshot.InputJournalHash;
+		CameraSampleBuffer.Publish(CameraSample);
+	}
 	IAMSPEED_FRAME_PHASE(Journal);
 	FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
 	IAMSPEED_FRAME_PHASE(Finalize);
