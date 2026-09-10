@@ -33,7 +33,10 @@ static float SteeringInputCalibrationScale(const float Input)
 		return FMath::Lerp(1.10f, 1.08f, (A - 0.25f) / 0.25f);
 	if (A <= 0.75f)
 		return FMath::Lerp(1.08f, 1.00f, (A - 0.50f) / 0.25f);
-	return FMath::Lerp(1.00f, 0.72f, (A - 0.75f) / 0.25f);
+	// Preserve the existing partial gains, but keep input * scale monotone.
+	// A falling scale here previously made full input turn less than 75% input.
+	// Identity above 75% also preserves the configured full-steer endpoint.
+	return 1.0f;
 }
 
 #if !UE_BUILD_SHIPPING
