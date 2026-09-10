@@ -11,6 +11,14 @@
 
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
+class ISpeedComponent;
+
+struct FSimulationPresentationBinding
+{
+	uint64 OwnerStableId = 0;
+	uint64 TargetStableId = 0;
+	uint64 FirstFrame = 0;
+};
 
 /*
 * ASpeedSimulation : Actor responsible for ticking the IAmSpeed Engine simulation.
@@ -45,6 +53,14 @@ public:
 	 * then calls values-only producers without holding the registry lock. */
 	bool RegisterPresentationProducer(TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe> Producer);
 	void UnregisterPresentationProducer(const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer);
+	/** GT lifecycle transaction: pause/acknowledge the owned lane, resolve stable
+	 * identities and register before FirstFrame, then preserve the prior pause state.
+	 * Legacy Unreal-async hosting is rejected because it has no owned-lane join. */
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> BindPresentationAtFrameBoundary(
+		ISpeedComponent& OwnerComponent, ISpeedComponent& TargetComponent,
+		TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
+			const FSimulationPresentationBinding&)> Factory,
+		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr);
 	/** Reads an exact physics-side camera sample; never interpolates. */
 	bool ReadCanonicalCameraSample(uint64 NumFrame, FCameraCanonicalSample& Out) const;
 	/** Reads a contiguous exact-frame camera range; never interpolates. */
@@ -143,6 +159,7 @@ protected:
 
 private:
 	bool bPublishPresentation = false;
+	bool bPresentationBindingClosed = false;
 	FCriticalSection PresentationProducerMutex;
 	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> PresentationProducers;
 	Speed::SimulationBoundary::FPresentationFrameLatch PresentationLatch;

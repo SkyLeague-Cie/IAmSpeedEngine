@@ -40,6 +40,8 @@ struct IAMSPEED_API FSimulationPresentationOutput
 	uint64 NumFrame = 0;
 	uint64 PublicationSerial = 0;
 	TArray<uint8> Payload;
+	/** Game-owned solver checkpoint, excluded from physical state bytes/hash. */
+	TArray<uint8> StatePayload;
 };
 
 struct IAMSPEED_API FSimulationSnapshot
@@ -66,6 +68,10 @@ public:
 	virtual uint32 Channel() const = 0;
 	virtual void Produce(const FSimulationSnapshot& Bodies, FSimulationPresentationOutput& Out) = 0;
 	virtual void InvalidateTimeline() = 0;
+	virtual bool CanRestore(const FSimulationPresentationOutput& Output, uint64 ReplayThrough) const { return false; }
+	/** Called only after every producer and the body snapshot have validated. */
+	virtual void RestoreValidated(const FSimulationPresentationOutput& Output, uint64 ReplayThrough,
+		FSimulationPresentationOutput& Restored) { InvalidateTimeline(); }
 };
 
 /** Exact publication selected by a presentation consumer, scoped to one simulation. */

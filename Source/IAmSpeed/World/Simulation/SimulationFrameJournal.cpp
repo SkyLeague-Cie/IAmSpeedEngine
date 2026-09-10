@@ -151,7 +151,7 @@ namespace Speed::SimulationBoundary
 			if (!Output.OwnerStableId || !Output.Channel || Output.NumFrame != Snapshot.NumFrame ||
 				Addresses.Contains({Output.OwnerStableId, Output.Channel})) return false;
 			Addresses.Add({Output.OwnerStableId, Output.Channel});
-			PresentationBytes += sizeof(FSimulationPresentationOutput) + Output.Payload.Num();
+			PresentationBytes += sizeof(FSimulationPresentationOutput) + Output.Payload.Num() + Output.StatePayload.Num();
 		}
 		if (PresentationBytes > MaxPayloadBytes) return false;
 		FScopeLock Lock(&Mutex);
