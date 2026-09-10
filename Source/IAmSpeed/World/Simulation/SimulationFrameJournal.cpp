@@ -145,11 +145,21 @@ namespace Speed::SimulationBoundary
 		uint64 PresentationBytes = uint64(Snapshot.PresentationBodies.Num()) * sizeof(FSimulationPresentationBody);
 		for (const FSimulationPresentationBody& Body : Snapshot.PresentationBodies)
 			PresentationBytes += Body.Extension.Num();
+		TSet<TPair<uint64, uint32>> Addresses;
+		for (const FSimulationPresentationOutput& Output : Snapshot.PresentationOutputs)
+		{
+			if (!Output.OwnerStableId || !Output.Channel || Output.NumFrame != Snapshot.NumFrame ||
+				Addresses.Contains({Output.OwnerStableId, Output.Channel})) return false;
+			Addresses.Add({Output.OwnerStableId, Output.Channel});
+			PresentationBytes += sizeof(FSimulationPresentationOutput) + Output.Payload.Num();
+		}
 		if (PresentationBytes > MaxPayloadBytes) return false;
 		FScopeLock Lock(&Mutex);
 		const int32 NextSlot = PublishedSlot == INDEX_NONE ? 0 : 1 - PublishedSlot;
 		Slots[NextSlot] = Snapshot;
 		Slots[NextSlot].PublicationSerial = ++PublicationSerial;
+		for (FSimulationPresentationOutput& Output : Slots[NextSlot].PresentationOutputs)
+			Output.PublicationSerial = PublicationSerial;
 		PublishedSlot = NextSlot;
 		return true;
 	}
@@ -270,6 +280,22 @@ namespace Speed::SimulationBoundary
 		: Capacity(FMath::Max(1u, InCapacity))
 	{
 		Entries.Reserve(FMath::Min(Capacity, 1000000u));
+	}
+
+	bool FPresentationFrameLatch::ReadOutput(const uint64 GameFrame, const FSnapshotBuffer& Buffer,
+		const uint64 StableId, const uint32 Channel, FSimulationPresentationOutput& Out)
+	{
+		Out = FSimulationPresentationOutput();
+		FSimulationPoseConsumption Body;
+		if (!ReadBody(GameFrame, Buffer, StableId, Body)) return false;
+		for (const FSimulationPresentationOutput& Output : Snapshot.PresentationOutputs)
+		{
+			if (Output.OwnerStableId != StableId || Output.Channel != Channel) continue;
+			if (Output.NumFrame != Snapshot.NumFrame || Output.PublicationSerial != Snapshot.PublicationSerial) return false;
+			Out = Output;
+			return true;
+		}
+		return false;
 	}
 
 	bool FFrameHashJournal::Append(const uint64 NumFrame, const uint64 StateHash)

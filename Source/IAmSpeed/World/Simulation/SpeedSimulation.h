@@ -40,6 +40,11 @@ public:
 	bool ReadLatestSimulationSnapshot(FSimulationSnapshot& OutSnapshot) const { return SnapshotBuffer.ReadLatest(OutSnapshot); }
 	/** GT-only opt-in view, shared by every actor on this game frame. No live adapter reads. */
 	bool ReadPresentationPose(uint64 StableId, FSimulationPoseConsumption& Out);
+	bool ReadPresentationOutput(uint64 StableId, uint32 Channel, FSimulationPresentationOutput& Out);
+	/** Thread-safe registry: canonical code copies shared handles under a short lock,
+	 * then calls values-only producers without holding the registry lock. */
+	bool RegisterPresentationProducer(TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe> Producer);
+	void UnregisterPresentationProducer(const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer);
 	/** Reads an exact physics-side camera sample; never interpolates. */
 	bool ReadCanonicalCameraSample(uint64 NumFrame, FCameraCanonicalSample& Out) const;
 	/** Reads a contiguous exact-frame camera range; never interpolates. */
@@ -138,6 +143,8 @@ protected:
 
 private:
 	bool bPublishPresentation = false;
+	FCriticalSection PresentationProducerMutex;
+	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> PresentationProducers;
 	Speed::SimulationBoundary::FPresentationFrameLatch PresentationLatch;
 	struct FPendingRollbackRequest
 	{
