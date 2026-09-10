@@ -70,6 +70,34 @@ bool ASpeedSimulation::ReadCanonicalCameraSample(const uint64 NumFrame,
 	return CameraSampleBuffer.ReadFrame(NumFrame, Out);
 }
 
+bool ASpeedSimulation::ReadPresentationOutput(const uint64 StableId, const uint32 Channel,
+	FSimulationPresentationOutput& Out)
+{
+	check(IsInGameThread());
+	if (!bPublishPresentation) { Out = FSimulationPresentationOutput(); return false; }
+	return PresentationLatch.ReadOutput(GFrameCounter, SnapshotBuffer, StableId, Channel, Out);
+}
+
+bool ASpeedSimulation::RegisterPresentationProducer(
+	TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe> Producer)
+{
+	check(IsInGameThread());
+	FScopeLock Lock(&PresentationProducerMutex);
+	if (!Producer->OwnerStableId() || !Producer->Channel() || PresentationProducers.Num() >= 64) return false;
+	for (const auto& Existing : PresentationProducers)
+		if (Existing->OwnerStableId() == Producer->OwnerStableId() && Existing->Channel() == Producer->Channel()) return false;
+	PresentationProducers.Add(Producer);
+	return true;
+}
+
+void ASpeedSimulation::UnregisterPresentationProducer(
+	const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer)
+{
+	check(IsInGameThread());
+	FScopeLock Lock(&PresentationProducerMutex);
+	PresentationProducers.Remove(Producer);
+}
+
 bool ASpeedSimulation::ReadCanonicalCameraSamples(const uint64 FirstFrame,
 	const uint64 LastFrame, TArray<FCameraCanonicalSample>& Out) const
 {
@@ -551,10 +579,30 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		Context.SimTime,
 		static_cast<unsigned int>(Context.NumFrame));
 	IAMSPEED_FRAME_PHASE(Snapshot);
-	const FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
+	FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
 		Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
+	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
+	{
+		FScopeLock Lock(&PresentationProducerMutex);
+		Producers = PresentationProducers;
+	}
+	for (const auto& Producer : Producers)
+	{
+		FSimulationPresentationOutput Output;
+		Producer->Produce(Snapshot, Output);
+		// Producer cannot forge the envelope address or publication serial.
+		Output.OwnerStableId = Producer->OwnerStableId();
+		Output.Channel = Producer->Channel();
+		Output.NumFrame = Snapshot.NumFrame;
+		Output.PublicationSerial = 0;
+		Snapshot.PresentationOutputs.Add(MoveTemp(Output));
+	}
 	IAMSPEED_FRAME_PHASE(Publish);
-	SnapshotBuffer.Publish(Snapshot);
+	if (!SnapshotBuffer.Publish(Snapshot))
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
+		return false;
+	}
 	FCameraCanonicalSample CameraSample;
 	if (BuildCanonicalCameraSample(Snapshot, CameraSample))
 	{
@@ -615,6 +663,17 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 		return false;
 	}
 
+	// Restored body history must not reuse a derived pose from the old timeline.
+	// A producer without qualified restore support stays explicitly invalid.
+	{
+		TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
+		{
+			FScopeLock Lock(&PresentationProducerMutex);
+			Producers = PresentationProducers;
+		}
+		for (const auto& Producer : Producers) Producer->InvalidateTimeline();
+	}
+	Request->Snapshot.PresentationOutputs.Reset();
 	FrameHashes.RemoveFrom(Request->Snapshot.NumFrame);
 	if (!FrameHashes.Append(
 			Request->Snapshot.NumFrame, Request->Snapshot.StateHash) ||
