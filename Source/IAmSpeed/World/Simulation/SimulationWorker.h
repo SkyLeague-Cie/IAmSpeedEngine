@@ -64,6 +64,9 @@ public:
 	bool Start();
 	/** Prevents new work and waits until the worker reaches a frame boundary. */
 	void Pause();
+	/** Bounded boundary acknowledgment. Failure leaves the pause requested and
+	 * must not authorize mutation or automatic resume of a partially running frame. */
+	bool TryPause(uint32 TimeoutMilliseconds);
 	/** Resumes work and resets the real-time deadline to now. */
 	void Resume();
 	/** Requests termination and blocks until the owned thread has joined. */
@@ -80,6 +83,8 @@ private:
 	TAtomic<bool> bStopRequested = false;
 	TAtomic<bool> bPaused = false;
 	TAtomic<bool> bRunning = false;
+	TAtomic<uint64> PauseRequestSerial = 0;
+	TAtomic<uint64> PauseAckSerial = 0;
 	FEvent* WakeEvent = nullptr;
 	FEvent* PauseAcknowledgedEvent = nullptr;
 	FRunnableThread* Thread = nullptr;
