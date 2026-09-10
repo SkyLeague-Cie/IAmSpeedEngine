@@ -130,6 +130,12 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeLateralImpulse
 	TEXT("Overrides WheelFrameHandbrakeLateralImpulseScale when >= 0. Negative values keep the Blueprint/component value."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeSteerAngleScale(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeSteerAngleScale"),
+	1.0f,
+	TEXT("Multiplies the handbrake steer-angle curve for direction-independent sensitivity measurements."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeFrontLateralFrictionFactor(
 	TEXT("p.IAmSpeed.WheelFrame.HandbrakeFrontLateralFrictionFactor"),
 	-1.0f,
@@ -3017,7 +3023,9 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 
 	if (HandbrakeSteerAngleFromSpeedCurve.Num() > 0)
 	{
-		const float HandbrakeSteerAngle = EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurve, AbsForwardSpeed, MaxSteerAngle);
+		const float HandbrakeSteerAngle =
+			EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurve, AbsForwardSpeed, MaxSteerAngle) *
+			FMath::Max(0.0f, CVarIAmSpeedWheelFrameHandbrakeSteerAngleScale.GetValueOnAnyThread());
 		MaxSteerAngle = FMath::Lerp(MaxSteerAngle, HandbrakeSteerAngle, WheelFrameHandbrakeValue);
 	}
 
