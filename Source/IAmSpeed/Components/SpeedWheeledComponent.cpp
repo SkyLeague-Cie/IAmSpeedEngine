@@ -12,6 +12,7 @@
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SafeNetworkPhysicsComponent.h"
+#include "IAmSpeed/Components/UnsteeredAligningYaw.h"
 #include "ChaosVehicleWheel.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
@@ -2046,33 +2047,26 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				GetPhysCOMVelocity(), SurfaceRight);
 			const float FullSlipOverride =
 				CVarIAmSpeedWheelFrameUnsteeredAligningYawFullSlipSpeed.GetValueOnAnyThread();
-			const float FullSlipSpeed = FMath::Max(1.0f, FullSlipOverride >= 0.0f
-				? FullSlipOverride : WheelFrameUnsteeredAligningYawFullSlipSpeed);
+			const float FullSlipSpeed = FullSlipOverride >= 0.0f
+				? FullSlipOverride : WheelFrameUnsteeredAligningYawFullSlipSpeed;
 			const float MinSlipOverride =
 				CVarIAmSpeedWheelFrameUnsteeredAligningYawMinSlipSpeed.GetValueOnAnyThread();
-			const float MinSlipSpeed = FMath::Clamp(MinSlipOverride >= 0.0f
-				? MinSlipOverride : WheelFrameUnsteeredAligningYawMinSlipSpeed,
-				0.0f, FullSlipSpeed - KINDA_SMALL_NUMBER);
-			const float SlipAuthority = FMath::Clamp(
-				(FMath::Abs(SideSpeed) - MinSlipSpeed)
-					/ FMath::Max(1.0f, FullSlipSpeed - MinSlipSpeed),
-				0.0f, 1.0f);
-			const float TargetYawRate = -FMath::Sign(SideSpeed) * AligningMaxRate
-				* SlipAuthority;
+			const float MinSlipSpeed = MinSlipOverride >= 0.0f
+				? MinSlipOverride : WheelFrameUnsteeredAligningYawMinSlipSpeed;
 			const float TimeConstantOverride =
 				CVarIAmSpeedWheelFrameUnsteeredAligningYawTimeConstant.GetValueOnAnyThread();
-			const float TimeConstant = FMath::Max(delta, TimeConstantOverride >= 0.0f
-				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant);
+			const float TimeConstant = TimeConstantOverride >= 0.0f
+				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant;
 			const float CurrentYawRate = FVector::DotProduct(
 				GetPhysAngularVelocity(), SurfaceNormal);
-			// This controller supplies high-slip alignment. Below its minimum
-			// slip, wheel friction alone owns yaw settling; a zero target must
-			// not introduce an unrelated fast yaw brake at steering release.
-			if (SlipAuthority > KINDA_SMALL_NUMBER)
-			{
-				AddPhysAngularAcceleration(SurfaceNormal
-					* ((TargetYawRate - CurrentYawRate) / TimeConstant));
-			}
+			const Speed::UnsteeredAligningYaw::FResponse YawResponse =
+				Speed::UnsteeredAligningYaw::ComputeResponse(SideSpeed,
+					MinSlipSpeed, FullSlipSpeed, AligningMaxRate, CurrentYawRate,
+					TimeConstant, delta);
+			// Lateral slip selects the signed target. Residual yaw still settles
+			// toward zero below the target-authority threshold.
+			AddPhysAngularAcceleration(
+				SurfaceNormal * YawResponse.AngularAcceleration);
 		}
 	}
 	if (bDebugWheelFriction && DebugGroundedWheels > 0)
