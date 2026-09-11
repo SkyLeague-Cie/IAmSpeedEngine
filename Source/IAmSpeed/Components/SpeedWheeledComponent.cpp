@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Components/SpeedWheeledSteeringMath.h"
 #include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameDriver.h"
@@ -2059,14 +2060,13 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant);
 			const float CurrentYawRate = FVector::DotProduct(
 				GetPhysAngularVelocity(), SurfaceNormal);
-			// This controller supplies high-slip alignment. Below its minimum
-			// slip, wheel friction alone owns yaw settling; a zero target must
-			// not introduce an unrelated fast yaw brake at steering release.
-			if (SlipAuthority > KINDA_SMALL_NUMBER)
-			{
-				AddPhysAngularAcceleration(SurfaceNormal
-					* ((TargetYawRate - CurrentYawRate) / TimeConstant));
-			}
+			// Scale the whole correction so the high-slip controller enters
+			// continuously. At zero authority wheel friction alone owns yaw
+			// settling; full authority preserves the published response.
+			const float AligningYawAcceleration =
+				IAmSpeedSteering::ComputeUnsteeredAligningYawAcceleration(
+					TargetYawRate, CurrentYawRate, TimeConstant, SlipAuthority);
+			AddPhysAngularAcceleration(SurfaceNormal * AligningYawAcceleration);
 		}
 	}
 	if (bDebugWheelFriction && DebugGroundedWheels > 0)
