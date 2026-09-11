@@ -136,6 +136,10 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulatio
 		PresentationProducers[Index] = Producer.ToSharedRef();
 	}
 	else if (!RegisterPresentationProducer(Producer.ToSharedRef())) return nullptr;
+	// Successful binding opts into its body/output sidecars. The owned worker
+	// is pause-acknowledged above and resumes only after this boundary returns.
+	// Failed factories/registration must leave publication policy unchanged.
+	bPublishPresentation = true;
 	return Producer;
 }
 
