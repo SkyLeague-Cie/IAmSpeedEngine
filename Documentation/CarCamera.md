@@ -22,6 +22,15 @@ does not register a producer or retain state between calls. The guarded `Step`
 entry and its arithmetic are unchanged. This seam is not activated in a game
 solver yet, and the new boundary native tests have not been compiled or run.
 
+`FSpeedCarCameraArmState` now provides a single shared arm/filter/settings/
+timeline state base, reusing the eight-field aim history. Its raw aim defaults
+are zeroed intentionally; the host must supply configured forward seeds during
+initialization. A game specialization can inherit this base once and retain
+its target/constraint history in the derived complete state. Serialize explicit
+fields, never this C++ object layout. This source-only state extraction does
+not itself step a camera, register a producer, provide collision, or create an
+actor/component; its newly authored native tests have not been run.
+
 The next integration will place the generic arm/producer and component under
 ASpeedCar, with virtual specialization for game targeting. Pose computation
 stays on the canonical lane; the GT component reads a matching immutable
