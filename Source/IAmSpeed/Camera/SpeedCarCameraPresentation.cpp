@@ -158,6 +158,10 @@ bool FSpeedCarCameraPose::Read(const TArray<uint8>& Bytes, FSpeedCarCameraPose& 
 bool FSpeedCarCameraPose::Compose(const FSimulationPresentationOutput& Packet,
     const FSimulationPoseConsumption& Car, FTransform& OutWorld) const
 {
+    OutWorld = FTransform::Identity;
+    TArray<uint8> CanonicalPayload;
+    Write(CanonicalPayload);
+    if (CanonicalPayload != Packet.Payload) return false;
     if (Result.Status != ESpeedCarCameraStatus::Valid || !Car.IsValid() ||
         Packet.Channel != FSpeedCarCameraPresentation::CameraChannel || Packet.OwnerStableId != Owner ||
         Car.Body.StableId != Owner || Packet.NumFrame != Frame || Car.NumFrame != Frame ||
@@ -319,7 +323,8 @@ bool FSpeedCarCameraPresentation::CanRestore(const FSimulationPresentationOutput
     uint64 Frame = 0, Hash = 0; uint32 Count = 0;
     return ReadPublishedState(Packet, C, S, Pose, Frame, Count, Hash) &&
         Pose.Owner == Owner && Pose.FirstFrame == FirstFrame && Pose.Generation == Generation &&
-        Pose.Result.Status == ESpeedCarCameraStatus::Valid && !S.bTimelineInvalid && Epoch != MAX_uint64 &&
+        Pose.Result.Status == ESpeedCarCameraStatus::Valid && !S.bTimelineInvalid &&
+        Pose.Epoch <= Epoch && Epoch != MAX_uint64 &&
         SpeedCarCameraCodec::ConfigurationIdentity(C) == SpeedCarCameraCodec::ConfigurationIdentity(Configuration) &&
         Journal.CanRestore(Frame, Count, Hash);
 }
