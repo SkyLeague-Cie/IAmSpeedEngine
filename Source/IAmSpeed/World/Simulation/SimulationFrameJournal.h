@@ -32,6 +32,16 @@ struct IAMSPEED_API FSimulationPresentationBody
 	}
 };
 
+/** Opaque game-owned output; addressing/serial are owned by the common publisher. */
+struct IAMSPEED_API FSimulationPresentationOutput
+{
+	uint64 OwnerStableId = 0;
+	uint32 Channel = 0;
+	uint64 NumFrame = 0;
+	uint64 PublicationSerial = 0;
+	TArray<uint8> Payload;
+};
+
 struct IAMSPEED_API FSimulationSnapshot
 {
 	uint64 NumFrame = 0;
@@ -40,6 +50,22 @@ struct IAMSPEED_API FSimulationSnapshot
 	TArray<uint8> Payload;
 	uint64 PublicationSerial = 0;
 	TArray<FSimulationPresentationBody> PresentationBodies;
+	/** Derived presentation is committed under the SAME publication lock as bodies. */
+	TArray<FSimulationPresentationOutput> PresentationOutputs;
+};
+
+/** Values-only producer, retained by shared ownership across a canonical call.
+ * Registration never transfers a UObject to the worker. Rollback invalidation is
+ * explicit until a producer implements its own complete restoration protocol.
+ */
+class IAMSPEED_API ISimulationPresentationProducer
+{
+public:
+	virtual ~ISimulationPresentationProducer() = default;
+	virtual uint64 OwnerStableId() const = 0;
+	virtual uint32 Channel() const = 0;
+	virtual void Produce(const FSimulationSnapshot& Bodies, FSimulationPresentationOutput& Out) = 0;
+	virtual void InvalidateTimeline() = 0;
 };
 
 /** Exact publication selected by a presentation consumer, scoped to one simulation. */
@@ -183,6 +209,8 @@ namespace Speed::SimulationBoundary
 	{
 	public:
 		bool ReadBody(uint64 GameFrame, const FSnapshotBuffer& Buffer, uint64 StableId, FSimulationPoseConsumption& Out);
+		bool ReadOutput(uint64 GameFrame, const FSnapshotBuffer& Buffer, uint64 StableId,
+			uint32 Channel, FSimulationPresentationOutput& Out);
 	private:
 		uint64 LatchedGameFrame = MAX_uint64;
 		FSimulationSnapshot Snapshot;
