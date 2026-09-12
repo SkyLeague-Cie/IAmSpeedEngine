@@ -1,4 +1,12 @@
 #include "SpeedCarCameraAim.h"
+#include "SpeedCarCameraArmState.h"
+
+FSpeedCarCameraArmState::FSpeedCarCameraArmState()
+{
+    CachedAirCameraHorizontalTarget = FVector::ZeroVector;
+    CachedGroundCameraHorizontalForward = FVector::ZeroVector;
+    CarTarget = FVector::ZeroVector;
+}
 
 namespace SpeedCarCameraAimMath
 {

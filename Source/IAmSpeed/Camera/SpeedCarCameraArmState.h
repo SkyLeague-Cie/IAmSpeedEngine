@@ -9,12 +9,7 @@
  * configured initial state supplies its meaningful forward seed separately. */
 struct IAMSPEED_API FSpeedCarCameraArmState : public FSpeedCarCameraAimHistory
 {
-    FSpeedCarCameraArmState()
-    {
-        CachedAirCameraHorizontalTarget = FVector::ZeroVector;
-        CachedGroundCameraHorizontalForward = FVector::ZeroVector;
-        CarTarget = FVector::ZeroVector;
-    }
+    FSpeedCarCameraArmState();
 
 	float BaseDistance{};
 	float ConfiguredCameraHeight{};
