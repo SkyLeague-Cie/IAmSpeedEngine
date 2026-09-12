@@ -3,6 +3,22 @@
 
 namespace Speed
 {
+bool IsCanonicalBoxRepeatArrival(
+	const FVector& CurrentVertex, const FVector& ImpactPoint,
+	const FVector& ImpactNormal)
+{
+	if (CurrentVertex.ContainsNaN() || ImpactPoint.ContainsNaN() ||
+		ImpactNormal.ContainsNaN() || !ImpactNormal.IsNormalized())
+	{
+		return false;
+	}
+	constexpr double HalfPositionStepCm =
+		.5 / FKinematicState::PositionQuantizationScale;
+	const double SeparationCm = FVector::DotProduct(
+		CurrentVertex - ImpactPoint, ImpactNormal);
+	return FMath::IsFinite(SeparationCm) && SeparationCm >= HalfPositionStepCm;
+}
+
 bool CanStabilizeBoxMicroRocking(
 	const IStaticCollisionWorld& World, const Analytic::FWorldQuery& BoxQuery,
 	const FKinematicState& Incoming, const FMatrix& WorldInverseInertia,

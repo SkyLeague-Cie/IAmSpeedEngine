@@ -47,6 +47,30 @@ namespace
 	}
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedBoxRepeatContactArrivalTest,
+	"IAmSpeed.PhysicalLaws.Collision.BoxRepeatContactArrival",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedBoxRepeatContactArrivalTest::RunTest(const FString& Parameters)
+{
+	const FVector Point = FVector::ZeroVector;
+	const FVector Normal = FVector::UpVector;
+	constexpr double HalfStep = .5 / SKinematic::PositionQuantizationScale;
+	TestFalse(TEXT("an established vertex is not a new arrival"),
+		Speed::IsCanonicalBoxRepeatArrival(Point, Point, Normal));
+	TestFalse(TEXT("sub-grid separation stays in the established constraint"),
+		Speed::IsCanonicalBoxRepeatArrival(Point + Normal * (.999 * HalfStep), Point, Normal));
+	TestTrue(TEXT("half-grid separation admits a genuine later arrival"),
+		Speed::IsCanonicalBoxRepeatArrival(Point + Normal * HalfStep, Point, Normal));
+	TestTrue(TEXT("larger separation remains a genuine later arrival"),
+		Speed::IsCanonicalBoxRepeatArrival(Point + Normal, Point, Normal));
+	TestFalse(TEXT("penetration cannot be a later arrival"),
+		Speed::IsCanonicalBoxRepeatArrival(Point - Normal, Point, Normal));
+	TestFalse(TEXT("an invalid normal is rejected conservatively"),
+		Speed::IsCanonicalBoxRepeatArrival(Point + Normal, Point, FVector::ZeroVector));
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedBoxPlanarCornerRoundingTest,
 	"IAmSpeed.PhysicalLaws.BoxEquilibrium.PlanarCornerRounding",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
