@@ -49,6 +49,20 @@ FRotator FSpeedCarCameraAim::RearView(const FRotator& CarRotation)
 	return FRotator(CarRotation.Pitch, CarRotation.Yaw + 180.0, CarRotation.Roll);
 }
 
+void FSpeedCarCameraAim::AdvancePolicy(FSpeedCarCameraAimHistory& History,
+	const FSpeedCarCameraAimSettings& PolicySettings, const FVector& CarForward,
+	const FVector& CarUp, const FVector& CarVelocity, const bool bOnGround)
+{
+	// Temporary arithmetic context only. Standalone timeline/guards are neither
+	// invoked nor copied back into the caller's authoritative outer state.
+	FSpeedCarCameraAimState Values;
+	static_cast<FSpeedCarCameraAimHistory&>(Values) = History;
+	FSpeedCarCameraAim Policy(PolicySettings, Values);
+	constexpr float Delta = 1.0f / 300.0f;
+	Policy.ComputeCarRotation(CarForward, CarUp, CarVelocity, bOnGround, Delta);
+	History = static_cast<const FSpeedCarCameraAimHistory&>(Policy.GetState());
+}
+
 void FSpeedCarCameraAim::ComputeCarTarget(const FVector& carForwardVector, const FVector& carUpVector,
 	const FVector& carVelocity, bool isOnGround)
 {

@@ -13,6 +13,15 @@ rollback. Copying its state is an in-process test/initialization operation, not
 permission to import arbitrary wire state. Invalid input or a frame gap closes
 the timeline and leaves the caller's output untouched.
 
+The source-only connection preparation separates `FSpeedCarCameraAimHistory`
+(eight direction fields) from the standalone `FSpeedCarCameraAimState` timeline.
+`AdvancePolicy` advances caller-owned history at fixed1/300 without standalone
+admission checks. Its outer caller must own validation and failure ordering;
+it must not persist a second aim timeline. The temporary arithmetic context
+does not register a producer or retain state between calls. The guarded `Step`
+entry and its arithmetic are unchanged. This seam is not activated in a game
+solver yet, and the new boundary native tests have not been compiled or run.
+
 The next integration will place the generic arm/producer and component under
 ASpeedCar, with virtual specialization for game targeting. Pose computation
 stays on the canonical lane; the GT component reads a matching immutable

@@ -13,7 +13,7 @@ struct IAMSPEED_API FSpeedCarCameraAimSettings
 };
 
 /** Complete direction history, independent of an arm, UObject or output codec. */
-struct IAMSPEED_API FSpeedCarCameraAimState
+struct IAMSPEED_API FSpeedCarCameraAimHistory
 {
 	bool bHasCameraGroundState = false;
 	bool bWasOnGroundForCamera = false;
@@ -24,6 +24,11 @@ struct IAMSPEED_API FSpeedCarCameraAimState
 	FVector CachedGroundCameraHorizontalForward = FVector::ForwardVector;
 	FVector CarTarget = FVector::ForwardVector;
 	FRotator CarRotator = FRotator::ZeroRotator;
+};
+
+/** Standalone admission state; an outer camera owns its own timeline instead. */
+struct IAMSPEED_API FSpeedCarCameraAimState : public FSpeedCarCameraAimHistory
+{
 	uint64 LastFrame = MAX_uint64;
 	bool bTimelineInvalid = false;
 };
@@ -40,6 +45,12 @@ public:
 		bool bOnGround, bool bBackView, FRotator& OutBaseRotation);
 	const FSpeedCarCameraAimState& GetState() const { return *this; }
 	static FRotator RearView(const FRotator& CarRotation);
+	/** Pure fixed-step arithmetic on caller-owned history. No frame admission or
+	 * additional validation: the outer caller owns those guards and their order.
+	 * This seam does not install a producer or retain a second history. */
+	static void AdvancePolicy(FSpeedCarCameraAimHistory& History,
+		const FSpeedCarCameraAimSettings& PolicySettings, const FVector& CarForward,
+		const FVector& CarUp, const FVector& CarVelocity, bool bOnGround);
 private:
 	const FSpeedCarCameraAimSettings Settings;
 	void ComputeCarTarget(const FVector& carForwardVector, const FVector& carUpVector,
