@@ -16,6 +16,13 @@ access or an automatic partial resume. A successful operation preserves the
 prior instance pause. Unreal-async hosting is unsupported because it has no
 owned-lane acknowledgment.
 
+The optional-target overload uses the same transaction. A null target produces
+TargetStableId=0, never a synthetic body. The owner must still be registered;
+non-null targets must be registered and distinct from the owner. The historical
+two-reference overload delegates with a non-null target and retains its guards.
+Target absence does not unregister the owner producer. Host-specific last-known
+target policy and its rollback state remain outside IAmSpeed.
+
 Registration uses shared handles. The canonical lane copies them under a short
 mutex before invoking producers without that mutex. Unregistration does not
 destroy an in-flight values-only endpoint. EndPlay closes new bindings, joins

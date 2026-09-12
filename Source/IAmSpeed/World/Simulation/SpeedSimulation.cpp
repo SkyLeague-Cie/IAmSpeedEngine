@@ -104,6 +104,15 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulatio
 		const FSimulationPresentationBinding&)> Factory,
 	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous)
 {
+	return BindPresentationAtFrameBoundary(OwnerComponent, &TargetComponent, Factory, Previous);
+}
+
+TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulation::BindPresentationAtFrameBoundary(
+	ISpeedComponent& OwnerComponent, ISpeedComponent* TargetComponent,
+	TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
+		const FSimulationPresentationBinding&)> Factory,
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous)
+{
 	check(IsInGameThread());
 	if (bPresentationBindingClosed || GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback ||
 		bOwnedWorkerTerminal.Load() || !EnsureSimulationWorldReady()) return nullptr;
@@ -119,9 +128,9 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulatio
 	InitializeCanonicalFrame(0);
 	FSimulationPresentationBinding Binding;
 	Binding.OwnerStableId = SpeedWorldSubsystem->GetSimulationStableId(OwnerComponent);
-	Binding.TargetStableId = SpeedWorldSubsystem->GetSimulationStableId(TargetComponent);
+	Binding.TargetStableId = TargetComponent ? SpeedWorldSubsystem->GetSimulationStableId(*TargetComponent) : 0;
 	Binding.FirstFrame = CanonicalNumFrame;
-	if (!Binding.OwnerStableId || !Binding.TargetStableId || Binding.OwnerStableId == Binding.TargetStableId)
+	if (!Binding.OwnerStableId || (TargetComponent && !Binding.TargetStableId) || Binding.OwnerStableId == Binding.TargetStableId)
 		return nullptr;
 	auto Producer = Factory(Binding);
 	if (!Producer || Producer->OwnerStableId() != Binding.OwnerStableId || !Producer->Channel())

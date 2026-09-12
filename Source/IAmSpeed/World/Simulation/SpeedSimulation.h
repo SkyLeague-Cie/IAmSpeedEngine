@@ -61,6 +61,13 @@ public:
 		TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
 			const FSimulationPresentationBinding&)> Factory,
 		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr);
+	/** Same transaction; nullptr explicitly binds only the owner (target id zero).
+	 * A non-null target still requires a registered, distinct identity. */
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> BindPresentationAtFrameBoundary(
+		ISpeedComponent& OwnerComponent, ISpeedComponent* TargetComponent,
+		TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
+			const FSimulationPresentationBinding&)> Factory,
+		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr);
 	/** Reads an exact physics-side camera sample; never interpolates. */
 	bool ReadCanonicalCameraSample(uint64 NumFrame, FCameraCanonicalSample& Out) const;
 	/** Reads a contiguous exact-frame camera range; never interpolates. */
