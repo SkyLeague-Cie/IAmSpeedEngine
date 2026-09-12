@@ -3,6 +3,7 @@
 
 #include "BoxSubBody.h"
 #include "IAmSpeed/World/Collision/BoxRestingSupport.h"
+#include "IAmSpeed/World/Collision/ResolvedPairSet.h"
 #include "IAmSpeed/World/Collision/PlanarContactImpulse.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -3940,25 +3941,9 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
 bool UBoxSubBody::CanResolveRepeatedContact(const SHitResult& Hit) const
 {
-    if (!ParentComponent || !ParentComponent->GetStaticCollisionWorldForFrame() || Hit.TOI <= 0 ||
-        Hit.SourceId == 0 || Hit.bSurfaceNormalMayVary || Hit.GeometricErrorBoundCm != 0 ||
-        Hit.ContactFeatureThis != Speed::EContactFeatureKind::Vertex || Hit.ContactFeatureIndexThis < 0 ||
-        Hit.ContactFeatureOther != Speed::EContactFeatureKind::Face)
-    {
-        return false;
-    }
-    const int32 Corner = Hit.ContactFeatureIndexThis;
-    if (Corner >= 8) return false;
-    const SKinematic& State = ParentComponent->GetKinematicState();
-    const FVector Center = State.Location + State.Rotation.RotateVector(
-        GetLocalOffset() - ParentComponent->GetPhysCenterOfMassLocal());
-    const FQuat Rotation = State.Rotation * GetLocalRotation();
-    const FVector CurrentVertex = Center + Rotation.RotateVector(FVector(
-        (Corner & 1) ? BoxExtent.X : -BoxExtent.X,
-        (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y,
-        (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z));
-    return Speed::IsCanonicalBoxRepeatArrival(
-        CurrentVertex, Hit.ImpactPoint, Hit.ImpactNormal);
+    return ParentComponent && ParentComponent->GetStaticCollisionWorldForFrame() &&
+        Speed::Collision::IsEligibleExactStaticRepeatHit(Hit) && Hit.Component.IsValid() &&
+        Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
 }
 
 bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const

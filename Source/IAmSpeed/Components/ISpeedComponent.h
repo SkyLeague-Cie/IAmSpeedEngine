@@ -14,6 +14,18 @@ struct FCanonicalFrameContext;
 namespace Speed { class IStaticCollisionWorld; class FSimulationWorld; }
 
 #if !UE_BUILD_SHIPPING
+/** Observation-only record of one sub-body candidate considered by a component sweep. */
+struct SSubBodyTOIDiagnostic
+{
+	int32 SweepOrder = INDEX_NONE;
+	float TOI = 0.f;
+	TWeakObjectPtr<USSubBody> Sweeper;
+	TWeakObjectPtr<USSubBody> Resolver;
+	SHitResult Hit;
+};
+#endif
+
+#if !UE_BUILD_SHIPPING
 /** Diagnostic rejection stage; separate from a shape's geometric support certificate. */
 enum class EStaticRestingReactionStatus : uint8
 {
@@ -28,6 +40,11 @@ struct SComponentTOI
 	TWeakObjectPtr<USSubBody> Resolver;     // SubBody that will resolve the hit at TOI
 	SHitResult Hit;                         // Chosen hit result at TOI
 	uint64 PairKey = 0;                     // Optional: anti-double resolution
+#if !UE_BUILD_SHIPPING
+	// Never consulted by physics; carried only by opt-in diagnostics.
+	TArray<SSubBodyTOIDiagnostic, TInlineAllocator<8>> DiagnosticCandidates;
+	int32 DiagnosticBestCandidate = INDEX_NONE;
+#endif
 };
 
 /**
@@ -211,7 +228,12 @@ public:
 	virtual void ResetForFrame(const float& Delta);
 	// overload this function to sweep all sub-bodies for the remaining delta time and return the earliest time of impact and the sub-body that should resolve it
 	// (e.g. for a car body, if a wheel hits before the hitbox, then the wheel sub-body should resolve first)
-	SComponentTOI SweepTOISubBodies(const float& RemainingDelta, const float& LastSubDelta);
+	SComponentTOI SweepTOISubBodies(
+		const float& RemainingDelta, const float& LastSubDelta
+#if !UE_BUILD_SHIPPING
+		, bool bCaptureDiagnostics = false
+#endif
+	);
 	// overload this function for the component to perform any necessary updates after the physics state has been updated
 	void PostPhysicsUpdate(const float& delta);
 	// overload this function to set whether the component is upside down (e.g. for a car body, this would be whether the car is flipped over)

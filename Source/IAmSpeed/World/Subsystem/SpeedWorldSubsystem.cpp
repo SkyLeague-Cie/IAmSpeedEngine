@@ -62,6 +62,13 @@ static TAutoConsoleVariable<float> CVarIAmSpeedAnalyticLandscapeFlatnessToleranc
 	0.001f,
 	TEXT("Maximum full-source height residual accepted by the shadow-only flat Landscape adapter."));
 
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarIAmSpeedSolverEventTraceFrame(
+	TEXT("p.IAmSpeed.Collision.SolverEventTraceFrame"),
+	-1,
+	TEXT("Physical frame for observation-only deterministic solver candidate and resolution tracing."));
+#endif
+
 namespace
 {
 	FString AuthoredObjectPath(const UObject& Object)
@@ -1416,6 +1423,35 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		static_cast<double>(Dt) * 1000.0;
 	constexpr int32 MaxIter = 24;
 	LastStepDiagnostics.MaximumIterationCount = MaxIter;
+#if !UE_BUILD_SHIPPING
+	const bool bCaptureSolverEventTrace =
+		CVarIAmSpeedSolverEventTraceFrame.GetValueOnAnyThread() == static_cast<int32>(Frame);
+	const auto TraceEvent = [&](const TCHAR* Stage, const TCHAR* Disposition,
+		const int32 Iteration, const int32 Order, const uint64 PairKey,
+		const SHitResult& Hit, USSubBody* Resolver, const int32 GenerationBefore,
+		const int32 GenerationAfter)
+	{
+		if (!bCaptureSolverEventTrace) return;
+		ISpeedComponent* Parent = Resolver ? Resolver->GetParentComponent() : nullptr;
+		const uint64 ComponentStableId = Parent ? SimulationWorld.FindStableId(*Parent) : 0;
+		const int32 SubBodyIndex = Parent ? Parent->GetSubBodies().IndexOfByKey(Resolver) : INDEX_NONE;
+		UE_LOG(LogTemp, Display,
+			TEXT("[SpeedSolverEventV2] Frame=%u Iter=%d Stage=%s Disposition=%s Order=%d ComponentStableId=%llu ResolverClass=%s SubBodyIndex=%d PairKey=%llu SourceId=%llu SurfaceId=%llu FeatureId=%llu PrimitiveId=%llu ThisFeature=%d ThisIndex=%d OtherFeature=%d OtherIndex=%d HitTOI=%.9g GenerationBefore=%d GenerationAfter=%d"),
+			Frame, Iteration, Stage, Disposition, Order,
+			static_cast<unsigned long long>(ComponentStableId),
+			Resolver ? *Resolver->GetClass()->GetName() : TEXT("None"), SubBodyIndex,
+			static_cast<unsigned long long>(PairKey),
+			static_cast<unsigned long long>(Hit.SourceId),
+			static_cast<unsigned long long>(Hit.SurfaceId),
+			static_cast<unsigned long long>(Hit.FeatureId),
+			static_cast<unsigned long long>(Hit.PrimitiveId),
+			static_cast<int32>(Hit.ContactFeatureThis),
+			static_cast<int32>(Hit.ContactFeatureIndexThis),
+			static_cast<int32>(Hit.ContactFeatureOther),
+			static_cast<int32>(Hit.ContactFeatureIndexOther), Hit.TOI,
+			GenerationBefore, GenerationAfter);
+	};
+#endif
 	CurrentStepFrame = Frame;
     ApplyPendingOps();
     RebuildSortedIfNeeded();
@@ -1513,22 +1549,74 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
             SComponentTOI Ctoi;
             {
                 IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Sweep);
-                Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta);
+                Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta
+#if !UE_BUILD_SHIPPING
+					, bCaptureSolverEventTrace
+#endif
+				);
             }
 
             // TOI sanity
             if (!Ctoi.bHit)
                 continue;
+#if !UE_BUILD_SHIPPING
+			if (bCaptureSolverEventTrace)
+			{
+				for (int32 CandidateIndex = 0;
+					CandidateIndex < Ctoi.DiagnosticCandidates.Num(); ++CandidateIndex)
+				{
+					const SSubBodyTOIDiagnostic& Candidate = Ctoi.DiagnosticCandidates[CandidateIndex];
+					USSubBody* CandidateResolver = Candidate.Resolver.Get();
+					uint64 CandidatePairKey = USSubBody::MakePairKey(
+						CandidateResolver ? CandidateResolver : Candidate.Sweeper.Get(),
+						Candidate.Hit.Component.Get());
+					const uint64 CandidateProviderId = Candidate.Hit.CanonicalGroupId != 0
+						? Candidate.Hit.CanonicalGroupId : Candidate.Hit.SurfaceId;
+					if (CandidateProviderId != 0)
+					{
+						CandidatePairKey = Speed::Analytic::CombineStableIds(
+							CandidatePairKey, CandidateProviderId);
+					}
+					if (RestingWorld && Candidate.Hit.SurfaceId != 0 &&
+						!Candidate.Hit.bSurfaceNormalMayVary &&
+						Candidate.Hit.ContactFeatureThis == Speed::EContactFeatureKind::Vertex &&
+						Candidate.Hit.ContactFeatureIndexThis >= 0)
+					{
+						CandidatePairKey = Speed::Analytic::CombineStableIds(CandidatePairKey,
+							0x504c414e00000000ull |
+							static_cast<uint64>(Candidate.Hit.ContactFeatureIndexThis + 1));
+					}
+					const int32 CandidateGeneration = ResolvedPairs.GetGeneration(CandidatePairKey);
+					TraceEvent(TEXT("SubBodyCandidate"),
+						CandidateIndex == Ctoi.DiagnosticBestCandidate ? TEXT("Selected") : TEXT("NotSelected"),
+						Iter, Candidate.SweepOrder, CandidatePairKey, Candidate.Hit,
+						CandidateResolver, CandidateGeneration, CandidateGeneration);
+				}
+			}
+#endif
 			// Once an analytical provider has produced its event impulse during
 			// this canonical frame, it is an established unilateral constraint.
 			// Rediscovering the same time-zero event would only consume the bounded
 			// CCD iteration budget; IntegrateKinematics now owns its continuation.
+			const bool bEligibleExactReacquisition = Ctoi.Resolver.IsValid() &&
+				Ctoi.Resolver->CanResolveRepeatedContact(Ctoi.Hit);
 			if (Ctoi.Hit.SurfaceId != 0 &&
-				ResolvedPairs.Contains(Ctoi.PairKey) &&
-				(!Ctoi.Resolver.IsValid() || !Ctoi.Resolver->CanResolveRepeatedContact(Ctoi.Hit)))
+				!ResolvedPairs.CanResolve(Ctoi.PairKey, bEligibleExactReacquisition))
 			{
+#if !UE_BUILD_SHIPPING
+				const int32 Generation = ResolvedPairs.GetGeneration(Ctoi.PairKey);
+				TraceEvent(TEXT("ComponentFilter"), TEXT("Filtered"), Iter, 0,
+					Ctoi.PairKey, Ctoi.Hit, Ctoi.Resolver.Get(), Generation, Generation);
+#endif
 				continue;
 			}
+#if !UE_BUILD_SHIPPING
+			{
+				const int32 Generation = ResolvedPairs.GetGeneration(Ctoi.PairKey);
+				TraceEvent(TEXT("ComponentFilter"), TEXT("Eligible"), Iter, 0,
+					Ctoi.PairKey, Ctoi.Hit, Ctoi.Resolver.Get(), Generation, Generation);
+			}
+#endif
 
             const float T = FMath::Clamp(Ctoi.TOI, 0.f, Remaining);
 			if (EarliestHits.IsEmpty() ||
@@ -1548,6 +1636,18 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         }
 		LastStepDiagnostics.SweepMilliseconds +=
 			(FPlatformTime::Seconds() - SweepStartSeconds) * 1000.0;
+#if !UE_BUILD_SHIPPING
+		if (bCaptureSolverEventTrace)
+		{
+			for (int32 HitIndex = 0; HitIndex < EarliestHits.Num(); ++HitIndex)
+			{
+				const SComponentTOI& Hit = EarliestHits[HitIndex];
+				const int32 Generation = ResolvedPairs.GetGeneration(Hit.PairKey);
+				TraceEvent(TEXT("BeforeBatchSort"), TEXT("Queued"), Iter, HitIndex,
+					Hit.PairKey, Hit.Hit, Hit.Resolver.Get(), Generation, Generation);
+			}
+		}
+#endif
 		EarliestHits.Sort([](const SComponentTOI& A, const SComponentTOI& B)
 		{
 			if (A.PairKey != B.PairKey)
@@ -1560,6 +1660,18 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			const uint32 ResolverIdB = ResolverB ? ResolverB->GetUniqueID() : 0u;
 			return ResolverIdA < ResolverIdB;
 		});
+#if !UE_BUILD_SHIPPING
+		if (bCaptureSolverEventTrace)
+		{
+			for (int32 HitIndex = 0; HitIndex < EarliestHits.Num(); ++HitIndex)
+			{
+				const SComponentTOI& Hit = EarliestHits[HitIndex];
+				const int32 Generation = ResolvedPairs.GetGeneration(Hit.PairKey);
+				TraceEvent(TEXT("AfterBatchSort"), TEXT("Queued"), Iter, HitIndex,
+					Hit.PairKey, Hit.Hit, Hit.Resolver.Get(), Generation, Generation);
+			}
+		}
+#endif
 
         // ------------------------------------------------------------
 		// 3) Integrate everyone once to the shared TOI, or through the full
@@ -1569,6 +1681,14 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		const float SubDelta = FMath::Clamp(
 			bWillResolve ? EarliestTOI : Remaining, 0.0f, Remaining);
 		IntegrateAll(SubDelta);
+#if !UE_BUILD_SHIPPING
+		if (bCaptureSolverEventTrace)
+		{
+			UE_LOG(LogTemp, Display,
+				TEXT("[SpeedSolverIterationV2] Frame=%u Iter=%d SweepHorizon=%.9g EarliestTOI=%.9g SubDelta=%.9g TimePassed=%.9g Batch=%d"),
+				Frame, Iter, Remaining, EarliestTOI, SubDelta, TimePassed, EarliestHits.Num());
+		}
+#endif
 
         // No hit => End
         if (!bWillResolve)
@@ -1582,21 +1702,31 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		// measured from the same pre-resolution state, so independent objects do
 		// not consume additional temporal iterations.
         // ------------------------------------------------------------
-		for (const SComponentTOI& Hit : EarliestHits)
+		for (int32 HitIndex = 0; HitIndex < EarliestHits.Num(); ++HitIndex)
 		{
+			const SComponentTOI& Hit = EarliestHits[HitIndex];
 			USSubBody* Resolver = Hit.Resolver.Get();
-			if (!Resolver || (ResolvedPairs.Contains(Hit.PairKey) && !Resolver->CanResolveRepeatedContact(Hit.Hit)))
+			const bool bEligibleExactReacquisition = Resolver &&
+				Resolver->CanResolveRepeatedContact(Hit.Hit);
+			if (!Resolver || !ResolvedPairs.CanResolve(Hit.PairKey, bEligibleExactReacquisition))
 			{
+#if !UE_BUILD_SHIPPING
+				const int32 Generation = ResolvedPairs.GetGeneration(Hit.PairKey);
+				TraceEvent(TEXT("ResolveDecision"), Resolver ? TEXT("Filtered") : TEXT("Ineligible"),
+					Iter, HitIndex, Hit.PairKey, Hit.Hit, Resolver, Generation, Generation);
+#endif
 				continue;
 			}
 
 			Resolver->SetFutureHit(Hit.Hit);
 			Resolver->AcceptHit();
+			bool bIgnored = false;
 			if (UPrimitiveComponent* HitComponent =
 				Resolver->GetHit().Component.Get())
 			{
 				if (Resolver->ComponentHasBeenIgnored(*HitComponent))
 				{
+					bIgnored = true;
 					ResolvedPairs.Add(Hit.PairKey);
 				}
 			}
@@ -1611,8 +1741,23 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			++LastStepDiagnostics.ResolvedEventCount;
 			if (Hit.Hit.SurfaceId != 0)
 			{
-				ResolvedPairs.Add(Hit.PairKey);
+				if (!bIgnored && bEligibleExactReacquisition)
+				{
+					ResolvedPairs.RecordEligibleResolution(Hit.PairKey);
+				}
+				else
+				{
+					ResolvedPairs.Add(Hit.PairKey);
+				}
 			}
+#if !UE_BUILD_SHIPPING
+			const int32 GenerationAfter = ResolvedPairs.GetGeneration(Hit.PairKey);
+			const int32 GenerationBefore = bEligibleExactReacquisition && !bIgnored
+				? FMath::Max(0, GenerationAfter - 1) : GenerationAfter;
+			TraceEvent(TEXT("ResolveResult"), bIgnored ? TEXT("Ignored") : TEXT("Resolved"),
+				Iter, HitIndex, Hit.PairKey, Hit.Hit, Resolver,
+				GenerationBefore, GenerationAfter);
+#endif
 			if (RollingBodyA && RollingBodyB)
 			{
 				ActivatePendingRollingContactPairAtTOI(

@@ -61,11 +61,4 @@ IAMSPEED_API bool CanStabilizeBoxMicroRocking(
 	const FKinematicState& Incoming, const FMatrix& WorldInverseInertia,
 	double InverseMass, double ImpactRestitution, double DynamicFriction);
 
-/** A same-vertex/same-plane pair is a new arrival only after it has separated
- * by at least half a canonical position step. Sub-grid CCD rediscovery remains
- * part of the established unilateral constraint and must not spend another
- * impulse or temporal iteration. */
-IAMSPEED_API bool IsCanonicalBoxRepeatArrival(
-	const FVector& CurrentVertex, const FVector& ImpactPoint,
-	const FVector& ImpactNormal);
 }
