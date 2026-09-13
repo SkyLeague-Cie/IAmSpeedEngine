@@ -174,7 +174,7 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("complete input serializes"), Packet.NetSerialize(Writer, nullptr, bSuccess) && bSuccess);
 	const auto EqualPacket = [](const FNetworkWheeledSpeedInputState& L, const FNetworkWheeledSpeedInputState& R)
 	{
-		return L.LocalFrame == R.LocalFrame && L.ClientFrame == R.ClientFrame &&
+		return L.ServerFrame == R.ServerFrame && L.ClientFrame == R.ClientFrame &&
 			L.ClientFramesSinceCanMove == R.ClientFramesSinceCanMove && L.bIsAutonomousProxy == R.bIsAutonomousProxy &&
 			L.WheeledInput.bCanMove == R.WheeledInput.bCanMove && L.WheeledInput.Throttle == R.WheeledInput.Throttle &&
 			L.WheeledInput.Brake == R.WheeledInput.Brake && L.WheeledInput.Steer == R.WheeledInput.Steer &&
@@ -183,6 +183,10 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 	FNetworkWheeledSpeedInputState Decoded;
 	FMemoryReader Reader(Encoded, true);
 	TestTrue(TEXT("complete input roundtrip"), Decoded.NetSerialize(Reader, nullptr, bSuccess) && bSuccess && EqualPacket(Decoded, Packet));
+	// SerializeFrames transports ServerFrame. It only seeds the endpoint-local
+	// address here; ReceiveNewData applies that endpoint's frame offset later.
+	TestTrue(TEXT("raw decode seeds endpoint-local address from transported server frame"),
+		Decoded.LocalFrame == Decoded.ServerFrame && Decoded.ServerFrame == Packet.ServerFrame);
 	for (int32 Length = 0; Length < Encoded.Num(); ++Length)
 	{
 		TArray<uint8> Truncated;
@@ -192,7 +196,8 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 		Destination.LocalFrame = 7;
 		const auto Before = Destination;
 		TestFalse(TEXT("truncated whole input rejected"), Destination.NetSerialize(ShortReader, nullptr, bSuccess));
-		TestTrue(TEXT("truncation changes no destination fields"), EqualPacket(Destination, Before));
+		TestTrue(TEXT("truncation changes no destination fields"),
+			Destination.LocalFrame == Before.LocalFrame && EqualPacket(Destination, Before));
 	}
 	for (int32 TailOffset = 0; TailOffset < 4; ++TailOffset)
 	{
@@ -201,7 +206,8 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 		FMemoryReader BadReader(Corrupt, true);
 		auto Destination = Packet;
 		TestFalse(TEXT("unknown version flags or forbidden axes rejected"), Destination.NetSerialize(BadReader, nullptr, bSuccess));
-		TestTrue(TEXT("invalid tail leaves complete destination unchanged"), EqualPacket(Destination, Packet));
+		TestTrue(TEXT("invalid tail leaves complete destination unchanged"),
+			Destination.LocalFrame == Packet.LocalFrame && EqualPacket(Destination, Packet));
 	}
 	FNetworkWheeledSpeedInputState Neutral = Packet;
 	Neutral.WheeledInput.Camera = FSpeedCarCameraPhysicalInput();
