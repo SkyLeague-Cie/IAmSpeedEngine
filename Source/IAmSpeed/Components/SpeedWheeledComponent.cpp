@@ -17,6 +17,7 @@
 #include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
+#include "IAmSpeed/Camera/SpeedCarCameraPresentation.h"
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
@@ -1307,6 +1308,7 @@ void USpeedWheeledComponent::UpdateInputs()
 	ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
 
 	UpdateWheeledPhysicalInputFromUser(false);
+	ConsumeQueuedCameraInputsForFrame(CurrentFrame);
 }
 
 void USpeedWheeledComponent::ConsumePendingLiveWheeledInputs()
@@ -1328,6 +1330,146 @@ void USpeedWheeledComponent::ConsumePendingLiveWheeledInputs()
 		WheeledUserInput.Steer = PendingLiveSteering.load(
 			std::memory_order_relaxed);
 	}
+}
+
+namespace SpeedCameraInputPacking
+{
+uint32 Pack(const FSpeedCarCameraPhysicalInput& I)
+{
+	return uint32(I.Version) | (uint32(I.Flags) << 8) | (uint32(uint8(I.Yaw)) << 16) | (uint32(uint8(I.Pitch)) << 24);
+}
+FSpeedCarCameraPhysicalInput Unpack(uint32 Bits)
+{
+	FSpeedCarCameraPhysicalInput I;
+	I.Version = uint8(Bits); I.Flags = uint8(Bits >> 8);
+	I.Yaw = int8(uint8(Bits >> 16)); I.Pitch = int8(uint8(Bits >> 24));
+	return I;
+}
+}
+
+void USpeedWheeledComponent::EnableGenericCameraInput(bool bEnabled)
+{
+	check(IsInGameThread());
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	ClearHeldCameraInput();
+	PendingCameraInputCommands.Reset();
+	LastCameraCaptureHistoryFrame = INDEX_NONE;
+	LastCameraCaptureActivationFrame = INDEX_NONE;
+	LastCapturedCameraInput = FSpeedCarCameraPhysicalInput();
+	bGenericCameraInputEnabled.store(bEnabled, std::memory_order_release);
+}
+bool USpeedWheeledComponent::PublishHeldCameraInput(const FSpeedCarCameraPhysicalInput& Input)
+{
+	check(IsInGameThread());
+	if (!Input.IsValid()) return false;
+	PendingCameraInput.store(SpeedCameraInputPacking::Pack(Input), std::memory_order_release);
+	return true;
+}
+void USpeedWheeledComponent::ClearHeldCameraInput()
+{
+	PublishHeldCameraInput(FSpeedCarCameraPhysicalInput());
+}
+bool USpeedWheeledComponent::SetHeldCameraBack(bool bBack)
+{
+	check(IsInGameThread());
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	I.Flags = 1 | (bBack ? 2 : 0);
+	return PublishHeldCameraInput(I);
+}
+bool USpeedWheeledComponent::SetHeldCameraYaw(float Value)
+{
+	check(IsInGameThread());
+	if (!FMath::IsFinite(Value)) return false;
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	I.Flags |= 1;
+	I.Yaw = FMath::RoundToInt(FMath::Clamp(Value, -1.0f, 1.0f) * 127.0f);
+	return PublishHeldCameraInput(I);
+}
+bool USpeedWheeledComponent::SetHeldCameraPitch(float Value)
+{
+	check(IsInGameThread());
+	if (!FMath::IsFinite(Value)) return false;
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	I.Flags |= 1;
+	I.Pitch = FMath::RoundToInt(FMath::Clamp(Value, -1.0f, 1.0f) * 127.0f);
+	return PublishHeldCameraInput(I);
+}
+FSpeedCarCameraPhysicalInput USpeedWheeledComponent::CaptureNetworkCameraInput(
+	int32 HistoryFrame, int32 ActivationFrame) const
+{
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled() ||
+		HistoryFrame == INDEX_NONE || ActivationFrame == INDEX_NONE) return FSpeedCarCameraPhysicalInput();
+	if (HistoryFrame == LastCameraCaptureHistoryFrame && ActivationFrame == LastCameraCaptureActivationFrame)
+		return LastCapturedCameraInput;
+	const auto Input = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+#if WITH_DEV_AUTOMATION_TESTS
+	++CameraMailboxReadCount;
+#endif
+	if (!Input.IsValid()) return FSpeedCarCameraPhysicalInput();
+	LastCameraCaptureHistoryFrame = HistoryFrame;
+	LastCameraCaptureActivationFrame = ActivationFrame;
+	LastCapturedCameraInput = Input;
+	QueueCameraInputLocked(ActivationFrame, Input);
+	return Input;
+}
+
+void USpeedWheeledComponent::QueueCameraInputForFrame(int32 ActivationFrame,
+	const FSpeedCarCameraPhysicalInput& Input) const
+{
+	if (ActivationFrame == INDEX_NONE || !Input.IsValid()) return;
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
+	QueueCameraInputLocked(ActivationFrame, Input);
+}
+
+void USpeedWheeledComponent::QueueCameraInputLocked(int32 ActivationFrame,
+	const FSpeedCarCameraPhysicalInput& Input) const
+{
+	for (auto& Command : PendingCameraInputCommands)
+	{
+		if (Command.ActivationFrame == ActivationFrame) { Command.Input = Input; return; }
+	}
+	FPendingCameraInputCommand Command;
+	Command.ActivationFrame = ActivationFrame;
+	Command.Input = Input;
+	PendingCameraInputCommands.Add(Command);
+	PendingCameraInputCommands.Sort([](const FPendingCameraInputCommand& A, const FPendingCameraInputCommand& B)
+		{ return A.ActivationFrame < B.ActivationFrame; });
+	while (PendingCameraInputCommands.Num() > MaxPendingWheeledInputs) PendingCameraInputCommands.RemoveAt(0);
+}
+
+void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFrame)
+{
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
+	int32 LastDue = INDEX_NONE;
+	for (int32 Index = 0; Index < PendingCameraInputCommands.Num(); ++Index)
+	{
+		if (PendingCameraInputCommands[Index].ActivationFrame > CurrentFrame) break;
+		LastDue = Index;
+	}
+	if (LastDue == INDEX_NONE) return;
+	// Whole held value, once, after wheel processing. Multiple overdue captures
+	// select the latest frame; no second GT read and no camera slew/state hash.
+	const auto Input = PendingCameraInputCommands[LastDue].Input;
+	WheeledUserInput.Camera = Input;
+	WheeledPhysicalInput.Camera = Input;
+	PendingCameraInputCommands.RemoveAt(0, LastDue + 1);
+#if WITH_DEV_AUTOMATION_TESTS
+	++CameraInputApplyCount;
+#endif
+}
+void USpeedWheeledComponent::AppendPresentationSnapshot(TArray<uint8>& OutPayload) const
+{
+	OutPayload.Reset();
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || !WheeledPhysicalInput.Camera.IsValid()) return;
+	FSpeedCarCameraInputSnapshot Snapshot;
+	Snapshot.bOnGround = IsOnTheGround();
+	Snapshot.bBackCamera = WheeledPhysicalInput.Camera.IsBack();
+	Snapshot.CameraYaw = static_cast<float>(WheeledPhysicalInput.Camera.Yaw) / 127.0f;
+	Snapshot.CameraPitch = static_cast<float>(WheeledPhysicalInput.Camera.Pitch) / 127.0f;
+	Snapshot.Write(OutPayload);
 }
 
 void USpeedWheeledComponent::UpdateWheeledPhysicalInputFromUser(bool bForce)
@@ -1394,6 +1536,10 @@ void USpeedWheeledComponent::SetTestInputOverrideEnabled(const bool bEnabled)
 	FScopeLock InputLock(&PendingWheeledInputMutex);
 	bTestInputOverrideEnabled.store(bEnabled, std::memory_order_release);
 	if (bEnabled) PendingWheeledInputCommands.Reset();
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	PendingCameraInputCommands.Reset();
+	LastCameraCaptureHistoryFrame = INDEX_NONE;
+	LastCameraCaptureActivationFrame = INDEX_NONE;
 }
 
 void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
@@ -1404,6 +1550,7 @@ void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 A
 void USpeedWheeledComponent::QueueWheeledInputCommand(const int32 ActivationFrame,
 	const FWheeledInputState& Input, const bool bBypassSlew, const bool bFromNetwork)
 {
+	if (!Input.Camera.IsValid()) return;
 	FScopeLock InputLock(&PendingWheeledInputMutex);
 	if (ActivationFrame == INDEX_NONE || (bFromNetwork && IsTestInputOverrideEnabled()))
 	{

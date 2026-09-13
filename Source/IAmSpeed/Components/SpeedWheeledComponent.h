@@ -143,6 +143,13 @@ public:
 	void SetPhysThrottleInput(const float& Throttle);
 	void SetPhysBrakeInput(const float& Brake);
 	void SetPhysSteeringInput(const float& Steering);
+	/** Opt-in generic camera input; SL keeps its independent legacy input adapter. */
+	void EnableGenericCameraInput(bool bEnabled);
+	bool SetHeldCameraBack(bool bBack);
+	bool SetHeldCameraYaw(float Value);
+	bool SetHeldCameraPitch(float Value);
+	void ClearHeldCameraInput();
+	void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const override;
 
 	void RegisterWheelGroundContact(const SWheelGroundContact& Contact) override;
 
@@ -683,6 +690,30 @@ private:
 	std::atomic<uint8> PendingLiveBrake{0};
 	std::atomic<int8> PendingLiveSteering{0};
 	std::atomic<uint8> PendingLiveWheeledInputMask{0};
+	std::atomic<bool> bGenericCameraInputEnabled{false};
+	// One atomic word publishes all version/flags/axis fields coherently.
+	std::atomic<uint32> PendingCameraInput{1};
+	bool PublishHeldCameraInput(const FSpeedCarCameraPhysicalInput& Input);
+	struct FPendingCameraInputCommand
+	{
+		int32 ActivationFrame = INDEX_NONE;
+		FSpeedCarCameraPhysicalInput Input;
+	};
+	// BuildData is logically const: it captures input without advancing vehicle
+	// state. Only this deferred camera mailbox/queue is mutable, never wheel state.
+	mutable FCriticalSection PendingCameraInputMutex;
+	mutable TArray<FPendingCameraInputCommand> PendingCameraInputCommands;
+	mutable int32 LastCameraCaptureHistoryFrame = INDEX_NONE;
+	mutable int32 LastCameraCaptureActivationFrame = INDEX_NONE;
+	mutable FSpeedCarCameraPhysicalInput LastCapturedCameraInput;
+	FSpeedCarCameraPhysicalInput CaptureNetworkCameraInput(int32 HistoryFrame, int32 ActivationFrame) const;
+	void QueueCameraInputForFrame(int32 ActivationFrame, const FSpeedCarCameraPhysicalInput& Input) const;
+	void QueueCameraInputLocked(int32 ActivationFrame, const FSpeedCarCameraPhysicalInput& Input) const;
+	void ConsumeQueuedCameraInputsForFrame(int32 CurrentFrame);
+#if WITH_DEV_AUTOMATION_TESTS
+	mutable uint64 CameraMailboxReadCount = 0;
+	uint64 CameraInputApplyCount = 0;
+#endif
 	int32 LastWheeledInputSlewFrame = INDEX_NONE;
 	FMatrix CarLocalInvI = FMatrix::Identity; // local inverse inertia tensor of the car body, expressed about the physical COM
 
@@ -722,6 +753,7 @@ private:
 	static constexpr int32 MaxPendingWheeledInputs = 256;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheeledInputQueueTest;
+	friend class FIAmSpeedCameraInputBoundaryTest;
 	friend class FIAmSpeedWheeledInertiaCovarianceTest;
 #endif
 	// Network callbacks and canonical test input share this bounded command queue.
