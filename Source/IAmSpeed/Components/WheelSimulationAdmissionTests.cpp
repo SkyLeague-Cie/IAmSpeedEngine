@@ -63,7 +63,7 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 	TAtomic<ESimulationWorkerResult> WorkerResult{ESimulationWorkerResult::Idle};
 	FSimulationWorker Worker([&]
 	{
-		WorkerCalls.FetchAdd(1);
+		++WorkerCalls;
 		const auto Result = Driver->RunCanonicalFrames(1)
 			? ESimulationWorkerResult::Advanced : ESimulationWorkerResult::Failed;
 		WorkerResult.Store(Result);
