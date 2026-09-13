@@ -91,6 +91,73 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("historical application reads no live mailbox"), Replay->CameraMailboxReadCount, uint64(0));
 
+	// Exercise UE's missing-frame routes, not an independently authored lerp.
+	// Held axes are selected as one complete command with its source timeline.
+	TNetRewindHistory<FNetworkWheeledSpeedInputState, true> SparseHistory(32, true);
+	auto Lower = LastPackets[0];
+	Lower.LocalFrame = 100; Lower.ServerFrame = 200;
+	Lower.ClientFrame = 300; Lower.ClientFramesSinceCanMove = 200;
+	Lower.WheeledInput.Camera = A;
+	auto Upper = Lower;
+	Upper.LocalFrame = 104; Upper.ServerFrame = 204;
+	Upper.ClientFrame = 304; Upper.ClientFramesSinceCanMove = 204;
+	Upper.WheeledInput.Camera = B;
+	TestTrue(TEXT("record sparse lower"), SparseHistory.RecordData(100, &Lower));
+	TestTrue(TEXT("record sparse upper"), SparseHistory.RecordData(104, &Upper));
+	for (int32 Frame = 101; Frame <= 108; ++Frame)
+	{
+		FNetworkWheeledSpeedInputState Selected;
+		TestTrue(TEXT("UE interpolation/extrapolation extracts held packet"),
+			SparseHistory.ExtractData(Frame, true, &Selected));
+		const auto& Expected = Frame < 102 ? Lower : Upper;
+		TestTrue(TEXT("held axes and Back never become a blended command"), Selected.WheeledInput.Camera.Equals(Expected.WheeledInput.Camera));
+		TestTrue(TEXT("selected command keeps component activation provenance"),
+			Selected.ClientFrame == Expected.ClientFrame && Selected.ClientFramesSinceCanMove == Expected.ClientFramesSinceCanMove);
+		TestEqual(TEXT("UE extraction keeps requested history address"), int32(Selected.LocalFrame), Frame);
+		Selected.DecayData(1.0f);
+		TestTrue(TEXT("input decay preserves held camera"), Selected.WheeledInput.Camera.Equals(Expected.WheeledInput.Camera));
+		Replay->PublishHeldCameraInput(Expected.WheeledInput.Camera.IsBack() ? B : A);
+		Selected.ApplyData(Replay);
+		Replay->BaseGameState.NumFrame = Selected.ResolveActivationFrame(100, false);
+		Replay->UpdateInputs();
+		TestTrue(TEXT("missing-frame input applies without sampling GT"), Replay->WheeledPhysicalInput.Camera.Equals(Expected.WheeledInput.Camera));
+	}
+	auto Merged = Upper;
+	SparseHistory.MergeData(100, &Merged);
+	TestTrue(TEXT("UE merge retains newest whole held command"), Merged.WheeledInput.Camera.Equals(B) && Merged.ClientFrame == Upper.ClientFrame);
+	auto Different = Upper;
+	Different.WheeledInput.Camera = A;
+	Different.WheeledInput.bCanMove = false;
+	TestFalse(TEXT("camera mismatch requests rewind even during countdown"), Upper.CompareData(Different));
+	TestTrue(TEXT("identical camera packet compares equal"), Upper.CompareData(Upper));
+	TestEqual(TEXT("all history routes still avoid live mailbox reads"), Replay->CameraMailboxReadCount, uint64(0));
+
+	// Camera queue boundaries are independent of the mechanical command queue.
+	Replay->EnableGenericCameraInput(true);
+	for (int32 Frame = 0; Frame < 300; ++Frame) Replay->QueueCameraInputForFrame(Frame, Frame % 2 ? B : A);
+	TestEqual(TEXT("camera queue has bounded retention"), Replay->PendingCameraInputCommands.Num(), 256);
+	TestEqual(TEXT("overflow retains newest activation addresses"), Replay->PendingCameraInputCommands[0].ActivationFrame, 44);
+	Replay->QueueCameraInputForFrame(299, A);
+	Replay->QueueCameraInputForFrame(298, B);
+	TestEqual(TEXT("duplicate address replaces without growing queue"), Replay->PendingCameraInputCommands.Num(), 256);
+	Replay->ConsumeQueuedCameraInputsForFrame(298);
+	TestTrue(TEXT("future command is not applied early"), Replay->WheeledPhysicalInput.Camera.Equals(B));
+	TestEqual(TEXT("future command stays pending"), Replay->PendingCameraInputCommands.Num(), 1);
+	Replay->ConsumeQueuedCameraInputsForFrame(299);
+	TestTrue(TEXT("replacement at same frame is applied"), Replay->WheeledPhysicalInput.Camera.Equals(A));
+	Replay->QueueCameraInputForFrame(400, B);
+	Replay->EnableGenericCameraInput(false);
+	TestTrue(TEXT("disable removes pending old-owner captures"), Replay->PendingCameraInputCommands.IsEmpty());
+	const uint64 ReadsBeforeDisabled = Replay->CameraMailboxReadCount;
+	Replay->PublishHeldCameraInput(B);
+	TestFalse(TEXT("disabled capture is absent"), Replay->CaptureNetworkCameraInput(400, 400).IsPresent());
+	TestEqual(TEXT("disabled capture never reads mailbox"), Replay->CameraMailboxReadCount, ReadsBeforeDisabled);
+	Replay->EnableGenericCameraInput(true);
+	const auto Reactivated = Replay->CaptureNetworkCameraInput(400, 400);
+	TestFalse(TEXT("reactivation starts with a cleared mailbox"), Reactivated.IsPresent());
+	Replay->ConsumeQueuedCameraInputsForFrame(400);
+	TestTrue(TEXT("neutral reset reaches physical input through normal queue"), Replay->WheeledPhysicalInput.Camera.Equals(Reactivated));
+
 	FNetworkWheeledSpeedInputState Packet = LastPackets.Last();
 	Packet.ClientFramesSinceCanMove = INDEX_NONE;
 	TestEqual(TEXT("local countdown before start still uses next component frame"),

@@ -19,8 +19,17 @@ void ASpeedController::SetupInputComponent()
 
 void ASpeedController::OnPossess(APawn* InPawn)
 {
+	if (SpeedCar) SpeedCar->ClearCameraInputs();
 	Super::OnPossess(InPawn);
 	SpeedCar = CastChecked<ASpeedCar>(InPawn);
+	SpeedCar->ClearCameraInputs();
+}
+
+void ASpeedController::OnUnPossess()
+{
+	if (SpeedCar) SpeedCar->ClearCameraInputs();
+	SpeedCar = nullptr;
+	Super::OnUnPossess();
 }
 
 void ASpeedController::SetupEnhancedInputComponent(
@@ -44,6 +53,37 @@ void ASpeedController::SetupEnhancedInputComponent(
 		BrakeAction, ETriggerEvent::Completed, this, &ASpeedController::StopBrake);
 	EnhancedInputComponent->BindAction(
 		PauseAction, ETriggerEvent::Started, this, &ASpeedController::PauseInput);
+	EnhancedInputComponent->BindAction(StartBackCameraAction, ETriggerEvent::Started, this, &ASpeedController::StartBackCamera);
+	EnhancedInputComponent->BindAction(StartBackCameraAction, ETriggerEvent::Completed, this, &ASpeedController::CompleteBackCamera);
+	EnhancedInputComponent->BindAction(CamYawAction, ETriggerEvent::Triggered, this, &ASpeedController::CamYaw);
+	EnhancedInputComponent->BindAction(CamYawAction, ETriggerEvent::Completed, this, &ASpeedController::CompleteCamYaw);
+	EnhancedInputComponent->BindAction(CamPitchAction, ETriggerEvent::Triggered, this, &ASpeedController::CamPitch);
+	EnhancedInputComponent->BindAction(CamPitchAction, ETriggerEvent::Completed, this, &ASpeedController::CompleteCamPitch);
+}
+
+void ASpeedController::StartBackCamera(const FInputActionValue&)
+{
+	if (SpeedCar) SpeedCar->SetCameraBackInput(true);
+}
+void ASpeedController::CompleteBackCamera(const FInputActionValue&)
+{
+	if (SpeedCar) SpeedCar->SetCameraBackInput(false);
+}
+void ASpeedController::CamYaw(const FInputActionValue& Value)
+{
+	if (SpeedCar) SpeedCar->SetCameraYawInput(Value.Get<float>());
+}
+void ASpeedController::CamPitch(const FInputActionValue& Value)
+{
+	if (SpeedCar) SpeedCar->SetCameraPitchInput(Value.Get<float>());
+}
+void ASpeedController::CompleteCamYaw(const FInputActionValue&)
+{
+	CamYaw(FInputActionValue(0.0f));
+}
+void ASpeedController::CompleteCamPitch(const FInputActionValue&)
+{
+	CamPitch(FInputActionValue(0.0f));
 }
 
 void ASpeedController::Throttle(const FInputActionValue& Value)

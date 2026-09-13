@@ -18,12 +18,15 @@ ASpeedCar::ASpeedCar(const FObjectInitializer& ObjectInitializer) :
 	GetMesh()->SetSimulatePhysics(false);
 	GetMesh()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
 	SpeedWheeledComponent = Cast<USpeedWheeledComponent>(GetVehicleMovement());
+	CameraArm = CreateDefaultSubobject<USpeedArmComponent>(TEXT("Spring Arm"));
+	CameraArm->SetupAttachment(GetMesh());
 }
 
 void ASpeedCar::BeginPlay()
 {
 	Super::BeginPlay();
 	SpeedWheeledComponent->SetOwner(this);
+	CameraArm->InitializeForCar(*this, *SpeedWheeledComponent);
 }
 
 void ASpeedCar::Tick(float Delta)
@@ -34,6 +37,7 @@ void ASpeedCar::Tick(float Delta)
 #endif
 	HandleKinematics();
 	HandleSparkle();
+	HandleCameraPresentation(Delta);
 }
 
 #if !UE_BUILD_SHIPPING
@@ -90,6 +94,18 @@ void ASpeedCar::FreezeMovement()
 
 void ASpeedCar::HandleKinematics()
 {
+	if (CameraArm->UsesGenericOwnerSnapshot())
+	{
+		FSimulationPoseConsumption Consumption;
+		if (!CameraArm->ReadGenericOwnerSnapshot(Consumption)) return;
+		GenericOwnerConsumption = MoveTemp(Consumption);
+		SetActorLocation(GenericOwnerConsumption.Body.OriginLocation());
+		SetActorRotation(GenericOwnerConsumption.Body.COMState.Rotation);
+		GetMesh()->SetPhysicsLinearVelocity(GenericOwnerConsumption.Body.OriginVelocity());
+		GetMesh()->SetPhysicsAngularVelocityInDegrees(GenericOwnerConsumption.Body.COMState.AngularVelocity);
+		SpeedWheeledComponent->UpdateWheelVisuals();
+		return;
+	}
 	SetActorLocation(SpeedWheeledComponent->GetPhysLocation());
 	SetActorRotation(SpeedWheeledComponent->GetPhysRotation());
 	// GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Purple, FString::Printf(TEXT("[%s] Rotation = %s"), *GetRole(),
@@ -97,6 +113,11 @@ void ASpeedCar::HandleKinematics()
 	GetMesh()->SetPhysicsLinearVelocity(SpeedWheeledComponent->GetPhysVelocity());
 	GetMesh()->SetPhysicsAngularVelocityInDegrees(SpeedWheeledComponent->GetPhysAngularVelocity());
 	SpeedWheeledComponent->UpdateWheelVisuals();
+}
+
+void ASpeedCar::HandleCameraPresentation(float Delta)
+{
+	CameraArm->ApplyGenericCameraSnapshot(GenericOwnerConsumption);
 }
 
 void ASpeedCar::SetThrottleInput(const float& Throttle)
@@ -118,6 +139,23 @@ void ASpeedCar::SetPhysSparkleLocation(const FVector& HitLocation)
 {
 	hasSparkleLocation = true;
 	SparkleLocation = HitLocation;
+}
+
+void ASpeedCar::SetCameraBackInput(bool bBack)
+{
+	SpeedWheeledComponent->SetHeldCameraBack(bBack);
+}
+void ASpeedCar::SetCameraYawInput(float Value)
+{
+	SpeedWheeledComponent->SetHeldCameraYaw(Value);
+}
+void ASpeedCar::SetCameraPitchInput(float Value)
+{
+	SpeedWheeledComponent->SetHeldCameraPitch(Value);
+}
+void ASpeedCar::ClearCameraInputs()
+{
+	SpeedWheeledComponent->ClearHeldCameraInput();
 }
 
 void ASpeedCar::HandleSparkle()

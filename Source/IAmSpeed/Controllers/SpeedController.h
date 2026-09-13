@@ -37,6 +37,12 @@ public:
 	void Steering(const FInputActionValue& Value);
 	/** Handles the bound pause action; games may specialize their pause presentation. */
 	virtual void PauseInput(const FInputActionValue& Value);
+	virtual void StartBackCamera(const FInputActionValue& Value);
+	virtual void CompleteBackCamera(const FInputActionValue& Value);
+	virtual void CamYaw(const FInputActionValue& Value);
+	virtual void CamPitch(const FInputActionValue& Value);
+	void CompleteCamYaw(const FInputActionValue& Value);
+	void CompleteCamPitch(const FInputActionValue& Value);
 
 	/**
 	 * Toggles Unreal pause normally. In standalone mode, SetPause also suspends
@@ -48,6 +54,7 @@ public:
 protected:
 	void SetupInputComponent() override;
 	void OnPossess(APawn* InPawn) override;
+	void OnUnPossess() override;
 
 	/** Lets games apply their user-configured steering response or deadzone. */
 	virtual float FilterSteeringInput(float SteeringInput) const;
@@ -78,6 +85,15 @@ protected:
 	/** Exposed here so derived controllers can bind their own pause UI action. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
 	TObjectPtr<UInputAction> PauseAction = nullptr;
+
+	// Keep these reflected names when moving saved game-specific action assets
+	// to the common controller; the six bindings exist only in this base.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
+	UInputAction* StartBackCameraAction = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
+	UInputAction* CamYawAction = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
+	UInputAction* CamPitchAction = nullptr;
 
 private:
 	/** Updates the worker owned by the authoritative IAmSpeed game mode. */

@@ -107,7 +107,7 @@ void PoseValues(FArchive& Ar, FSpeedCarCameraPose& P)
         << P.Epoch << P.SettingsVersion << P.CommandSerial << Status << Reason;
     Bool(Ar, P.bBackCamera);
     Ar << P.FieldOfView << Position << Rotation;
-    if (Magic != 0x53504350 || Version != 1 || !P.Owner || !P.FirstFrame || !P.Generation || !P.SettingsVersion ||
+    if (Magic != 0x53504350 || Version != 1 || !P.Owner || !P.Generation || !P.SettingsVersion ||
         P.Frame == MAX_uint64 || P.FirstFrame == MAX_uint64 ||
         P.Frame < P.FirstFrame || Status > uint8(ESpeedCarCameraStatus::DegradedAttached) ||
         Reason > uint8(ESpeedCarCameraReason::InvalidRelativePose) || Position.ContainsNaN() ||
@@ -180,7 +180,9 @@ FSpeedCarCameraPresentation::FSpeedCarCameraPresentation(uint64 InOwner, uint64 
 {
     State.ProbeSize = Configuration.ProbeSize; State.SocketOffset = Configuration.SocketOffset;
     State.CameraRotationLagSpeed = Configuration.RotationLagSpeed; State.LagSpeedCoeff = Configuration.LagSpeedCoeff;
-    if (!Owner || !FirstFrame || !Generation ||
+    // The owned simulation negotiates frame zero before its first publication.
+    // Zero is an address, not a missing identity; MAX remains the sentinel.
+    if (!Owner || FirstFrame == MAX_uint64 || !Generation ||
         !SpeedCarCameraCodec::Valid(Configuration, State)) State.bTimelineInvalid = true;
 }
 bool FSpeedCarCameraPresentation::QueueSetting(ESpeedCarCameraCommandKind Kind, float Value)
