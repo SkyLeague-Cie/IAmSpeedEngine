@@ -157,7 +157,17 @@ bool USpeedArmComponent::UpdateCameraFromSnapshot(const FSimulationPresentationO
 		(Pose.Epoch == GenericSnapshot->Epoch && (Pose.Frame < GenericSnapshot->Frame ||
 		((Pose.Frame == GenericSnapshot->Frame) != (Output.PublicationSerial == LastPublicationSerial)))))) return false;
 	if (GenericSnapshot && !Camera->GetComponentTransform().Equals(ExpectedWorld, 0.0)) return false;
-	Camera->SetRelativeTransform_Direct(World);
+	FRotationConversionCache PhysicalRotationCache;
+	const FRotator PhysicalRotation = PhysicalRotationCache.NormalizedQuatToRotator(World.GetRotation());
+	FRotationConversionCache DisplacedRotationCache;
+	DisplacedRotationCache.RotatorToQuat(PhysicalRotation + FRotator(0, 180, 0));
+	// SetRelativeRotationCache compares only rotators. Displace it first so an
+	// equivalent rotator with different quaternion bits cannot retain stale data.
+	Camera->SetRelativeRotationCache(DisplacedRotationCache);
+	Camera->SetRelativeRotationCache(PhysicalRotationCache);
+	Camera->SetRelativeLocation_Direct(World.GetLocation());
+	Camera->SetRelativeRotation_Direct(PhysicalRotation);
+	Camera->SetRelativeScale3D_Direct(World.GetScale3D());
 	Camera->UpdateComponentToWorld(EUpdateTransformFlags::SkipPhysicsUpdate, ETeleportType::TeleportPhysics);
 	Camera->SetFieldOfView(Pose.FieldOfView);
 	ExpectedWorld = World;
