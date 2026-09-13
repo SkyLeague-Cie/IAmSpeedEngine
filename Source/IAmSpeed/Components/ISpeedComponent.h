@@ -56,6 +56,9 @@ struct SComponentTOI
 class IAMSPEED_API ISpeedComponent
 {
 public:
+	/** Frame-boundary admission, before inputs, preparation or publication.
+	 * Implementations validate their live storage without mutating physics state. */
+	virtual bool ValidateSimulationBindings(FString& OutReason) const { return true; }
 	// Runs component-owned preparation/gameplay for one integer-addressed frame.
 	// This virtual dispatch also covers derived components declared by game modules.
 	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;

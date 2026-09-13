@@ -627,6 +627,9 @@ void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
 
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
+	// Registrations queued during a frame are admitted at the next boundary.
+	// Prepare/Step must never pick up an adapter that missed validation.
+	if (bCanonicalFrameActive) return;
     TArray<FPendingOp> Local;
     {
         FScopeLock Lock(&PendingCS);
@@ -1327,6 +1330,29 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 			}
 		}
 	}
+}
+
+bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
+{
+	if (bCanonicalFrameActive)
+	{
+		OutReason = TEXT("canonical frame already active");
+		return false;
+	}
+	if (!ValidateSimulationBindings(OutReason)) return false;
+	bCanonicalFrameActive = true;
+	return true;
+}
+
+bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
+{
+	ApplyPendingOps();
+	RebuildSortedIfNeeded();
+	for (const ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+	{
+		if (Component && !Component->ValidateSimulationBindings(OutReason)) return false;
+	}
+	return true;
 }
 
 void USpeedWorldSubsystem::PrepareCanonicalFrame(

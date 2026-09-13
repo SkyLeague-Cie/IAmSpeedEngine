@@ -57,6 +57,7 @@ public:
 
 	// Set the owner of this component. Call this at begin play
 	virtual void SetOwner(AActor* NewOwner);
+	bool ValidateSimulationBindings(FString& OutReason) const override;
 	ASpeedCar* GetSpeedCarOwner() const;
 	/** Used to create any physics engine information for this component */
 	virtual void OnCreatePhysicsState() override;
@@ -753,6 +754,7 @@ private:
 	static constexpr int32 MaxPendingWheeledInputs = 256;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheeledInputQueueTest;
+	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedCameraInputBoundaryTest;
 	friend class FIAmSpeedWheeledInertiaCovarianceTest;
 #endif

@@ -28,6 +28,9 @@ UCLASS(Abstract)
 class IAMSPEED_API ASpeedSimulation : public AActor
 {
 	GENERATED_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FIAmSpeedWheelSimulationAdmissionTest;
+#endif
 
 public:
 	// Sets default values for this actor's properties

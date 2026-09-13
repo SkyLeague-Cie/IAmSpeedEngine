@@ -617,6 +617,16 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		}
 	}
 
+	FString BindingFailure;
+	if (!SpeedWorldSubsystem->BeginCanonicalFrame(BindingFailure))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[SimulationBindingRejected] frame=%llu %s"),
+			Context.NumFrame, *BindingFailure);
+		// Both drivers convert a rejected frame to Failed; the owned worker
+		// exits at this boundary without advancing time or publishing a pose.
+		return false;
+	}
+	ON_SCOPE_EXIT { SpeedWorldSubsystem->EndCanonicalFrame(); };
 	IAMSPEED_FRAME_SCOPE(Initialize);
 	Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
 		Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),

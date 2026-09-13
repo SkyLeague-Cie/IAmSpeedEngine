@@ -442,6 +442,45 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	}
 }
 
+bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) const
+{
+	const Chaos::FSimpleWheeledVehicle* Vehicle = SkySimulation ? SkySimulation->PVehicle.Get() : nullptr;
+	const int32 Count = WheelSubBodies.Num();
+	if (!Vehicle || Count <= 0 || Count > int32(UE_ARRAY_COUNT(WheeledPhysicsState.SuspensionLastDisplacement))
+		|| Count != WheelSetups.Num() || Count != Wheels.Num()
+		|| Count != Vehicle->Wheels.Num() || Count != Vehicle->Suspension.Num())
+	{
+		OutReason = FString::Printf(
+			TEXT("component=%s ordinal=-1 idx=-1 vehicle=%p subbodies=%d setups=%d configurations=%d wheel_sims=%d suspension_sims=%d state_capacity=%d"),
+			*GetPathName(), Vehicle, Count, WheelSetups.Num(), Wheels.Num(),
+			Vehicle ? Vehicle->Wheels.Num() : 0, Vehicle ? Vehicle->Suspension.Num() : 0,
+			int32(UE_ARRAY_COUNT(WheeledPhysicsState.SuspensionLastDisplacement)));
+		return false;
+	}
+	for (int32 Ordinal = 0; Ordinal < Count; ++Ordinal)
+	{
+		const USWheelSubBody* Wheel = WheelSubBodies[Ordinal].Get();
+		const auto* ExpectedWheel = &Vehicle->Wheels[Ordinal];
+		const auto* ExpectedSuspension = &Vehicle->Suspension[Ordinal];
+		const UChaosVehicleWheel* ExpectedConfiguration = Wheels[Ordinal].Get();
+		if (!Wheel || Wheel->Idx() != Ordinal || Wheel->GetParentComponent() != this
+			|| !ExpectedConfiguration || !WheelSetups[Ordinal].WheelClass
+			|| Wheel->GetChaosWheelConfiguration() != ExpectedConfiguration
+			|| Wheel->GetWheelSim() != ExpectedWheel || Wheel->GetSuspensionSim() != ExpectedSuspension)
+		{
+			OutReason = FString::Printf(
+				TEXT("component=%s ordinal=%d idx=%d body=%p parent=%p expected_parent=%p wheel=%p expected_wheel=%p suspension=%p expected_suspension=%p configuration=%p expected_configuration=%p"),
+				*GetPathName(), Ordinal, Wheel ? Wheel->Idx() : INDEX_NONE, Wheel,
+				Wheel ? Wheel->GetParentComponent() : nullptr, static_cast<const ISpeedComponent*>(this),
+				Wheel ? Wheel->GetWheelSim() : nullptr, ExpectedWheel,
+				Wheel ? Wheel->GetSuspensionSim() : nullptr, ExpectedSuspension,
+				Wheel ? Wheel->GetChaosWheelConfiguration() : nullptr, ExpectedConfiguration);
+			return false;
+		}
+	}
+	return true;
+}
+
 void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
 {
 	Super::SetupVehicle(PVehicle);
