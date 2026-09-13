@@ -39,6 +39,8 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 	Component->SetOwner(Car);
 	ON_SCOPE_EXIT { Bridge->UnregisterSpeedComponent(Component); Bridge->ApplyPendingOps(); };
 	TestEqual(TEXT("four production subbodies"), Component->WheelSubBodies.Num(), 4);
+	AddExpectedMessagePlain(TEXT("[SimulationBindingRejected]"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, 32);
 
 	const auto ExpectRejected = [&](const TCHAR* Label)
 	{
@@ -47,7 +49,6 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("reason identifies component and index"),
 			Reason.Contains(TEXT("component=")) && Reason.Contains(TEXT("ordinal=")) && Reason.Contains(TEXT("idx=")));
 		const uint32 BeforeComponentFrame = Component->NumFrame();
-		AddExpectedMessagePlain(TEXT("[SimulationBindingRejected]"), ELogVerbosity::Error);
 		// RunCanonicalFrames invokes the real StepCanonicalFrame. A rejected step
 		// must leave every counter and publication untouched, even on later wheels.
 		TestFalse(TEXT("canonical execution fails before preparation"), Driver->RunCanonicalFrames(1));
@@ -58,7 +59,6 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("no partial snapshot published"), Driver->ReadLatestSimulationSnapshot(Snapshot));
 	};
 	ExpectRejected(TEXT("uncreated physics state reproduces v16 safely"));
-	AddExpectedMessagePlain(TEXT("[SimulationBindingRejected]"), ELogVerbosity::Error);
 	TAtomic<uint32> WorkerCalls{0};
 	TAtomic<ESimulationWorkerResult> WorkerResult{ESimulationWorkerResult::Idle};
 	FSimulationWorker Worker([&]
@@ -131,7 +131,6 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 	Bridge->ApplyPendingOps();
 	TestTrue(TEXT("queued registration deferred inside admitted frame"), Bridge->ValidateSimulationBindings(AdmissionReason));
 	Bridge->EndCanonicalFrame();
-	AddExpectedMessagePlain(TEXT("[SimulationBindingRejected]"), ELogVerbosity::Error);
 	TestFalse(TEXT("next frame rejects the late incomplete vehicle"), Driver->RunCanonicalFrames(1));
 	Bridge->UnregisterSpeedComponent(Late);
 	Bridge->ApplyPendingOps();
