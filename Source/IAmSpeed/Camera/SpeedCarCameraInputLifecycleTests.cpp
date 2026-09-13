@@ -20,12 +20,13 @@ bool FGenericCameraInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	// A real possession/input-delegate test before BeginPlay, not a claim that
 	// a Chaos worker has resimulated or that the physical camera is activated.
-	const auto Options = UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(true)
+	const auto Options = UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false)
 		.RequiresHitProxies(false).CreateNavigation(false).CreateAISystem(false).ShouldSimulatePhysics(false).SetTransactional(false);
 	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, NAME_None, nullptr, true, ERHIFeatureLevel::Num, &Options);
 	if (!TestNotNull(TEXT("input lifecycle world"), World)) return false;
 	GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
 	ON_SCOPE_EXIT { World->DestroyWorld(false); GEngine->DestroyWorldContext(World); };
+	if (!TestNull(TEXT("input lifecycle deliberately has no physics scene"), World->GetPhysicsScene())) return false;
 	auto* Controller = World->SpawnActor<ASpeedController>();
 	auto* First = World->SpawnActorDeferred<ASpeedCar>(ASpeedCar::StaticClass(), FTransform::Identity);
 	auto* Second = World->SpawnActorDeferred<ASpeedCar>(ASpeedCar::StaticClass(), FTransform::Identity);
