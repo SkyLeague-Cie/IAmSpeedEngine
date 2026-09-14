@@ -30,7 +30,10 @@ namespace IAmSpeedSteering
 			0.0f, 1.0f);
 		const float TargetYawRate = -FMath::Sign(SideSpeed)
 			* FMath::Max(0.0f, AligningMaxRate) * SlipAuthority;
-		const float SafeTimeConstant = FMath::Max(DeltaTime, TimeConstant);
+		// The response stays finite even for direct diagnostic callers that do
+		// not provide the positive fixed-step delta enforced by production.
+		const float SafeTimeConstant = FMath::Max3(
+			FMath::Max(0.0f, DeltaTime), TimeConstant, SMALL_NUMBER);
 		return {SlipAuthority, TargetYawRate,
 			(TargetYawRate - CurrentYawRate) / SafeTimeConstant};
 	}

@@ -67,6 +67,29 @@ bool FIAmSpeedUnsteeredAligningYawAuthorityTest::RunTest(const FString& Paramete
 	TestEqual(TEXT("delta-bounded step reaches zero without reversing"),
 		1.0f + Bounded.AngularAcceleration * DeltaTime, 0.0f);
 
+	const FUnsteeredAligningYawResponse ZeroTime =
+		ComputeUnsteeredAligningYawResponse(0.0f, MinSlipSpeed,
+			FullSlipSpeed, MaxRate, 1.0f, 0.0f, 0.0f);
+	TestTrue(TEXT("zero delta and time constant retain finite authority"),
+		FMath::IsFinite(ZeroTime.SlipAuthority));
+	TestTrue(TEXT("zero delta and time constant retain finite target"),
+		FMath::IsFinite(ZeroTime.TargetYawRate));
+	TestTrue(TEXT("zero delta and time constant retain finite acceleration"),
+		FMath::IsFinite(ZeroTime.AngularAcceleration));
+
+	const FUnsteeredAligningYawResponse InvalidThresholds =
+		ComputeUnsteeredAligningYawResponse(2.0f, 10.0f,
+			0.0f, MaxRate, 0.4f, TimeConstant, DeltaTime);
+	TestTrue(TEXT("invalid thresholds normalize to finite authority"),
+		FMath::IsFinite(InvalidThresholds.SlipAuthority));
+	TestTrue(TEXT("invalid thresholds normalize to finite target"),
+		FMath::IsFinite(InvalidThresholds.TargetYawRate));
+	TestTrue(TEXT("invalid thresholds normalize to finite acceleration"),
+		FMath::IsFinite(InvalidThresholds.AngularAcceleration));
+	TestTrue(TEXT("invalid thresholds retain bounded authority"),
+		InvalidThresholds.SlipAuthority >= 0.0f &&
+		InvalidThresholds.SlipAuthority <= 1.0f);
+
 	return !HasAnyErrors();
 }
 #endif
