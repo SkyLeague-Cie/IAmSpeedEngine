@@ -2227,32 +2227,26 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				GetPhysCOMVelocity(), SurfaceRight);
 			const float FullSlipOverride =
 				CVarIAmSpeedWheelFrameUnsteeredAligningYawFullSlipSpeed.GetValueOnAnyThread();
-			const float FullSlipSpeed = FMath::Max(1.0f, FullSlipOverride >= 0.0f
-				? FullSlipOverride : WheelFrameUnsteeredAligningYawFullSlipSpeed);
+			const float FullSlipSpeed = FullSlipOverride >= 0.0f
+				? FullSlipOverride : WheelFrameUnsteeredAligningYawFullSlipSpeed;
 			const float MinSlipOverride =
 				CVarIAmSpeedWheelFrameUnsteeredAligningYawMinSlipSpeed.GetValueOnAnyThread();
-			const float MinSlipSpeed = FMath::Clamp(MinSlipOverride >= 0.0f
-				? MinSlipOverride : WheelFrameUnsteeredAligningYawMinSlipSpeed,
-				0.0f, FullSlipSpeed - KINDA_SMALL_NUMBER);
-			const float SlipAuthority = FMath::Clamp(
-				(FMath::Abs(SideSpeed) - MinSlipSpeed)
-					/ FMath::Max(1.0f, FullSlipSpeed - MinSlipSpeed),
-				0.0f, 1.0f);
-			const float TargetYawRate = -FMath::Sign(SideSpeed) * AligningMaxRate
-				* SlipAuthority;
+			const float MinSlipSpeed = MinSlipOverride >= 0.0f
+				? MinSlipOverride : WheelFrameUnsteeredAligningYawMinSlipSpeed;
 			const float TimeConstantOverride =
 				CVarIAmSpeedWheelFrameUnsteeredAligningYawTimeConstant.GetValueOnAnyThread();
-			const float TimeConstant = FMath::Max(delta, TimeConstantOverride >= 0.0f
-				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant);
+			const float TimeConstant = TimeConstantOverride >= 0.0f
+				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant;
 			const float CurrentYawRate = FVector::DotProduct(
 				GetPhysAngularVelocity(), SurfaceNormal);
-			// Scale the whole correction so the high-slip controller enters
-			// continuously. At zero authority wheel friction alone owns yaw
-			// settling; full authority preserves the published response.
-			const float AligningYawAcceleration =
-				IAmSpeedSteering::ComputeUnsteeredAligningYawAcceleration(
-					TargetYawRate, CurrentYawRate, TimeConstant, SlipAuthority);
-			AddPhysAngularAcceleration(SurfaceNormal * AligningYawAcceleration);
+			const IAmSpeedSteering::FUnsteeredAligningYawResponse YawResponse =
+				IAmSpeedSteering::ComputeUnsteeredAligningYawResponse(SideSpeed,
+					MinSlipSpeed, FullSlipSpeed, AligningMaxRate, CurrentYawRate,
+					TimeConstant, delta);
+			// Lateral slip selects the signed target. Residual yaw still settles
+			// toward zero below the target-authority threshold.
+			AddPhysAngularAcceleration(
+				SurfaceNormal * YawResponse.AngularAcceleration);
 		}
 	}
 	if (bDebugWheelFriction && DebugGroundedWheels > 0)
