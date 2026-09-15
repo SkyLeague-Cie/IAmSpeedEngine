@@ -142,9 +142,24 @@ namespace Speed::SimulationBoundary
 		{
 			return false;
 		}
+		uint64 PresentationBytes = uint64(Snapshot.PresentationBodies.Num()) * sizeof(FSimulationPresentationBody);
+		for (const FSimulationPresentationBody& Body : Snapshot.PresentationBodies)
+			PresentationBytes += Body.Extension.Num();
+		TSet<TPair<uint64, uint32>> Addresses;
+		for (const FSimulationPresentationOutput& Output : Snapshot.PresentationOutputs)
+		{
+			if (!Output.OwnerStableId || !Output.Channel || Output.NumFrame != Snapshot.NumFrame ||
+				Addresses.Contains({Output.OwnerStableId, Output.Channel})) return false;
+			Addresses.Add({Output.OwnerStableId, Output.Channel});
+			PresentationBytes += sizeof(FSimulationPresentationOutput) + Output.Payload.Num() + Output.StatePayload.Num();
+		}
+		if (PresentationBytes > MaxPayloadBytes) return false;
 		FScopeLock Lock(&Mutex);
 		const int32 NextSlot = PublishedSlot == INDEX_NONE ? 0 : 1 - PublishedSlot;
 		Slots[NextSlot] = Snapshot;
+		Slots[NextSlot].PublicationSerial = ++PublicationSerial;
+		for (FSimulationPresentationOutput& Output : Slots[NextSlot].PresentationOutputs)
+			Output.PublicationSerial = PublicationSerial;
 		PublishedSlot = NextSlot;
 		return true;
 	}
@@ -163,10 +178,124 @@ namespace Speed::SimulationBoundary
 		return PublishedSlot == INDEX_NONE ? MAX_uint64 : Slots[PublishedSlot].NumFrame;
 	}
 
+	uint64 FSnapshotBuffer::PublishedSerial() const
+	{
+		FScopeLock Lock(&Mutex);
+		return PublishedSlot == INDEX_NONE ? 0 : Slots[PublishedSlot].PublicationSerial;
+	}
+
+	FCameraSampleBuffer::FCameraSampleBuffer(const uint32 InCapacity)
+		: Capacity(FMath::Max(1u, InCapacity))
+	{
+		Samples.Reserve(Capacity);
+	}
+
+	bool FCameraSampleBuffer::Publish(const FCameraCanonicalSample& Sample)
+	{
+		if (!Sample.IsValid()) return false;
+		FScopeLock Lock(&Mutex);
+		if (!Samples.IsEmpty() && Samples.Last().NumFrame >= Sample.NumFrame) return false;
+		if (Samples.Num() >= static_cast<int32>(Capacity))
+		{
+			Samples.RemoveAt(0, 1, EAllowShrinking::No);
+		}
+		Samples.Add(Sample);
+		return true;
+	}
+
+	bool FCameraSampleBuffer::ReadFrame(const uint64 NumFrame,
+		FCameraCanonicalSample& Out) const
+	{
+		FScopeLock Lock(&Mutex);
+		for (int32 Index = Samples.Num() - 1; Index >= 0; --Index)
+		{
+			if (Samples[Index].NumFrame == NumFrame)
+			{
+				Out = Samples[Index];
+				return true;
+			}
+		}
+		Out = FCameraCanonicalSample();
+		return false;
+	}
+
+	bool FCameraSampleBuffer::ReadRange(const uint64 FirstFrame, const uint64 LastFrame,
+		TArray<FCameraCanonicalSample>& Out) const
+	{
+		Out.Reset();
+		if (FirstFrame > LastFrame) return false;
+		FScopeLock Lock(&Mutex);
+		for (const FCameraCanonicalSample& Sample : Samples)
+		{
+			if (Sample.NumFrame >= FirstFrame && Sample.NumFrame <= LastFrame)
+			{
+				Out.Add(Sample);
+			}
+		}
+		return !Out.IsEmpty();
+	}
+
+	void FCameraSampleBuffer::Reset()
+	{
+		FScopeLock Lock(&Mutex);
+		Samples.Reset();
+	}
+
+	int32 FCameraSampleBuffer::Num() const
+	{
+		FScopeLock Lock(&Mutex);
+		return Samples.Num();
+	}
+
+	bool FPresentationFrameLatch::ReadBody(const uint64 GameFrame, const FSnapshotBuffer& Buffer,
+		const uint64 StableId, FSimulationPoseConsumption& Out)
+	{
+		Out = FSimulationPoseConsumption();
+		if (LatchedGameFrame != GameFrame)
+		{
+			LatchedGameFrame = GameFrame;
+			BodyIndices.Reset();
+			Snapshot = FSimulationSnapshot();
+			if (Buffer.ReadLatest(Snapshot))
+			{
+				for (int32 Index = 0; Index < Snapshot.PresentationBodies.Num(); ++Index)
+				{
+					const uint64 Id = Snapshot.PresentationBodies[Index].StableId;
+					if (Id == 0 || BodyIndices.Contains(Id)) { BodyIndices.Reset(); return false; }
+					BodyIndices.Add(Id, Index);
+				}
+			}
+		}
+		const int32* Index = BodyIndices.Find(StableId);
+		if (!Index) return false;
+		Out.NumFrame = Snapshot.NumFrame;
+		Out.PublicationSerial = Snapshot.PublicationSerial;
+		Out.StateHash = Snapshot.StateHash;
+		Out.InputJournalHash = Snapshot.InputJournalHash;
+		Out.Body = Snapshot.PresentationBodies[*Index];
+		return Out.IsValid();
+	}
+
 	FFrameHashJournal::FFrameHashJournal(const uint32 InCapacity)
 		: Capacity(FMath::Max(1u, InCapacity))
 	{
 		Entries.Reserve(FMath::Min(Capacity, 1000000u));
+	}
+
+	bool FPresentationFrameLatch::ReadOutput(const uint64 GameFrame, const FSnapshotBuffer& Buffer,
+		const uint64 StableId, const uint32 Channel, FSimulationPresentationOutput& Out)
+	{
+		Out = FSimulationPresentationOutput();
+		FSimulationPoseConsumption Body;
+		if (!ReadBody(GameFrame, Buffer, StableId, Body)) return false;
+		for (const FSimulationPresentationOutput& Output : Snapshot.PresentationOutputs)
+		{
+			if (Output.OwnerStableId != StableId || Output.Channel != Channel) continue;
+			if (Output.NumFrame != Snapshot.NumFrame || Output.PublicationSerial != Snapshot.PublicationSerial) return false;
+			Out = Output;
+			return true;
+		}
+		return false;
 	}
 
 	bool FFrameHashJournal::Append(const uint64 NumFrame, const uint64 StateHash)

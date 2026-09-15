@@ -86,6 +86,11 @@ public:
 		const USolidSubBody& Body) const;
 
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context);
+	/** Validates every registered adapter before any adapter may prepare a frame. */
+	bool ValidateSimulationBindings(FString& OutReason);
+	/** Keeps the admitted registry fixed until the canonical frame has ended. */
+	bool BeginCanonicalFrame(FString& OutReason);
+	void EndCanonicalFrame() { bCanonicalFrameActive = false; }
 	ECanonicalRunControlState GetCanonicalRunControlState();
 	const Speed::Analytic::FAnalyticWorldData* GetAnalyticWorldData() const
 	{
@@ -99,7 +104,7 @@ public:
 	{
 		return LastStepDiagnostics;
 	}
-	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash);
+	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false);
 	/** Restores one validated canonical snapshot without advancing simulation time. */
 	bool RestoreSimulationSnapshot(
 		const FSimulationSnapshot& Snapshot,
@@ -112,6 +117,7 @@ public:
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
+	bool bCanonicalFrameActive = false; // owned by the simulation lane
 	Speed::FSimulationWorld SimulationWorld;
 	uint64 StepSerial = 0;
 	FSpeedStepDiagnostics LastStepDiagnostics;

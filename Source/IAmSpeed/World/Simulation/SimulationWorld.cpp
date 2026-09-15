@@ -113,6 +113,7 @@ namespace Speed
 		Adapters.Add(&Adapter);
 		StableIds.Add(&Adapter, StableId);
 		AdaptersByStableId.Add(StableId, &Adapter);
+		Adapter.PublishedSimulationStableId.Store(StableId);
 		bOrderDirty = true;
 		return true;
 	}
@@ -123,6 +124,7 @@ namespace Speed
 		const int32 Removed = Adapters.Remove(&Adapter);
 		StableIds.Remove(&Adapter);
 		AdaptersByStableId.Remove(StableId);
+		Adapter.PublishedSimulationStableId.Store(0);
 		bOrderDirty |= Removed > 0;
 		return Removed > 0;
 	}
@@ -203,7 +205,7 @@ namespace Speed
 	}
 
 	FSimulationSnapshot FSimulationWorld::CaptureSnapshot(
-		const uint64 NumFrame, const uint64 InputJournalHash) const
+		const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation) const
 	{
 		IAMSPEED_FRAME_SCOPE(SnapshotBodies);
 		FSimulationSnapshot Snapshot;
@@ -218,6 +220,14 @@ namespace Speed
 		{
 			if (!Body.Adapter) continue;
 			const SKinematic& State = Body.Adapter->GetKinematicState();
+			if (bIncludePresentation)
+			{
+				FSimulationPresentationBody& Pose = Snapshot.PresentationBodies.AddDefaulted_GetRef();
+				Pose.StableId = Body.StableId;
+				Pose.COMState = State;
+				Pose.CenterOfMassLocal = Body.Adapter->GetPhysCenterOfMassLocal();
+				Body.Adapter->AppendPresentationSnapshot(Pose.Extension);
+			}
 			AppendValue(Snapshot.Payload, Body.StableId);
 			AppendKinematic(Snapshot.Payload, State);
 			const uint8 bFrozen = Body.Adapter->IsFrozen() ? 1 : 0;

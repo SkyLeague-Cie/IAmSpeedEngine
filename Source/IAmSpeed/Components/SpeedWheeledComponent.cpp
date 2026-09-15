@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Components/SpeedWheeledSteeringMath.h"
 #include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameDriver.h"
@@ -16,10 +17,29 @@
 #include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
+#include "IAmSpeed/Camera/SpeedCarCameraPresentation.h"
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
+
+static float SteeringInputCalibrationScale(const float Input)
+{
+	// RL steering capture calibration: preserve the signed input and apply the
+	// same magnitude law to both turn directions. Values are fitted at the four
+	// captured steering magnitudes (0.25, 0.50, 0.75 and 1.00).
+	const float A = FMath::Abs(FMath::Clamp(Input, -1.0f, 1.0f));
+	if (A <= 0.25f)
+		return FMath::Lerp(1.0f, 1.10f, A / 0.25f);
+	if (A <= 0.50f)
+		return FMath::Lerp(1.10f, 1.08f, (A - 0.25f) / 0.25f);
+	if (A <= 0.75f)
+		return FMath::Lerp(1.08f, 1.00f, (A - 0.50f) / 0.25f);
+	// Preserve the existing partial gains, but keep input * scale monotone.
+	// A falling scale here previously made full input turn less than 75% input.
+	// Identity above 75% also preserves the configured full-steer endpoint.
+	return 1.0f;
+}
 
 #if !UE_BUILD_SHIPPING
 static TAutoConsoleVariable<int32> CVarIAmSpeedCovariantVehicleInertia(
@@ -396,16 +416,7 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 		}
 	}
 
-	for (int WheelIdx = 0; WheelIdx < Wheels.Num(); WheelIdx++)
-	{
-		auto Wheel = Wheels[WheelIdx].Get();
-		auto& Suspension = Wheel->GetPhysicsSuspensionConfig();
-		auto& WheelSubBody = WheelSubBodies[WheelIdx];
-		WheelSubBody->SetIdx(WheelIdx);
-		WheelSubBody->SetChaosWheel(Wheel);
-		WheelSubBody->SetWheelSim(&SkySimulation->PVehicle->Wheels[WheelIdx]);
-		WheelSubBody->SetSuspensionSim(&SkySimulation->PVehicle->Suspension[WheelIdx]);
-	}
+	BindWheelSimulationPointers();
 
 	// init all sub-bodies with the owner
 	HitboxSubBody->Initialize(this);
@@ -431,10 +442,118 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	}
 }
 
+bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) const
+{
+	const Chaos::FSimpleWheeledVehicle* Vehicle = SkySimulation ? SkySimulation->PVehicle.Get() : nullptr;
+	const int32 Count = WheelSubBodies.Num();
+	if (!Vehicle || Count <= 0 || Count > int32(UE_ARRAY_COUNT(WheeledPhysicsState.SuspensionLastDisplacement))
+		|| Count != WheelSetups.Num() || Count != Wheels.Num()
+		|| Count != Vehicle->Wheels.Num() || Count != Vehicle->Suspension.Num())
+	{
+		OutReason = FString::Printf(
+			TEXT("component=%s ordinal=-1 idx=-1 vehicle=%p subbodies=%d setups=%d configurations=%d wheel_sims=%d suspension_sims=%d state_capacity=%d"),
+			*GetPathName(), Vehicle, Count, WheelSetups.Num(), Wheels.Num(),
+			Vehicle ? Vehicle->Wheels.Num() : 0, Vehicle ? Vehicle->Suspension.Num() : 0,
+			int32(UE_ARRAY_COUNT(WheeledPhysicsState.SuspensionLastDisplacement)));
+		return false;
+	}
+	for (int32 Ordinal = 0; Ordinal < Count; ++Ordinal)
+	{
+		const USWheelSubBody* Wheel = WheelSubBodies[Ordinal].Get();
+		const auto* ExpectedWheel = &Vehicle->Wheels[Ordinal];
+		const auto* ExpectedSuspension = &Vehicle->Suspension[Ordinal];
+		const UChaosVehicleWheel* ExpectedConfiguration = Wheels[Ordinal].Get();
+		if (!Wheel || Wheel->Idx() != Ordinal || Wheel->GetParentComponent() != this
+			|| !ExpectedConfiguration || !WheelSetups[Ordinal].WheelClass
+			|| Wheel->GetChaosWheelConfiguration() != ExpectedConfiguration
+			|| Wheel->GetWheelSim() != ExpectedWheel || Wheel->GetSuspensionSim() != ExpectedSuspension)
+		{
+			OutReason = FString::Printf(
+				TEXT("component=%s ordinal=%d idx=%d body=%p parent=%p expected_parent=%p wheel=%p expected_wheel=%p suspension=%p expected_suspension=%p configuration=%p expected_configuration=%p"),
+				*GetPathName(), Ordinal, Wheel ? Wheel->Idx() : INDEX_NONE, Wheel,
+				Wheel ? Wheel->GetParentComponent() : nullptr, static_cast<const ISpeedComponent*>(this),
+				Wheel ? Wheel->GetWheelSim() : nullptr, ExpectedWheel,
+				Wheel ? Wheel->GetSuspensionSim() : nullptr, ExpectedSuspension,
+				Wheel ? Wheel->GetChaosWheelConfiguration() : nullptr, ExpectedConfiguration);
+			return false;
+		}
+	}
+	return true;
+}
+
 void USpeedWheeledComponent::SetupVehicle(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
 {
 	Super::SetupVehicle(PVehicle);
 	SetupSpeedSuspension(PVehicle);
+	// This is the first lifecycle point where the newly constructed vehicle
+	// owns all four wheel and suspension simulations. SetOwner can run while
+	// SkySimulation still has no PVehicle, so binding there alone leaves each
+	// wheel at index -1 for the first canonical frame.
+	BindWheelSimulationPointers(PVehicle.Get());
+}
+
+void USpeedWheeledComponent::BindWheelSimulationPointers()
+{
+	BindWheelSimulationPointers(
+		SkySimulation && SkySimulation->PVehicle
+			? SkySimulation->PVehicle.Get()
+			: nullptr);
+}
+
+void USpeedWheeledComponent::BindWheelSimulationPointers(
+	Chaos::FSimpleWheeledVehicle* PVehicle)
+{
+	if (!PVehicle)
+	{
+		ClearWheelSimulationPointers();
+		return;
+	}
+
+	const int32 NumBindings = FMath::Min3(
+		WheelSubBodies.Num(),
+		PVehicle->Wheels.Num(),
+		PVehicle->Suspension.Num());
+	UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
+		WheelSubBodies.Num(), PVehicle->Wheels.Num(),
+		PVehicle->Suspension.Num(), NumBindings, Wheels.Num());
+	for (int32 WheelIdx = 0; WheelIdx < WheelSubBodies.Num(); ++WheelIdx)
+	{
+		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();
+		if (!WheelSubBody)
+		{
+			continue;
+		}
+
+		WheelSubBody->SetIdx(WheelIdx);
+		if (WheelIdx < NumBindings)
+		{
+			if (Wheels.IsValidIndex(WheelIdx))
+			{
+				WheelSubBody->SetChaosWheel(Wheels[WheelIdx].Get());
+			}
+			WheelSubBody->SetWheelSim(&PVehicle->Wheels[WheelIdx]);
+			WheelSubBody->SetSuspensionSim(&PVehicle->Suspension[WheelIdx]);
+		}
+		else
+		{
+			WheelSubBody->SetChaosWheel(nullptr);
+			WheelSubBody->SetWheelSim(nullptr);
+			WheelSubBody->SetSuspensionSim(nullptr);
+		}
+	}
+}
+
+void USpeedWheeledComponent::ClearWheelSimulationPointers()
+{
+	for (USWheelSubBody* WheelSubBody : WheelSubBodies)
+	{
+		if (!WheelSubBody)
+		{
+			continue;
+		}
+		WheelSubBody->SetWheelSim(nullptr);
+		WheelSubBody->SetSuspensionSim(nullptr);
+	}
 }
 
 void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
@@ -615,10 +734,11 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	{
 		if (FPhysScene* PhysScene = World->GetPhysicsScene())
 		{
-			if (FChaosVehicleManager::GetVehicleManagerFromScene(PhysScene))
-			{
-				CreateVehicle();
-				FixupSkeletalMesh();
+		if (FChaosVehicleManager::GetVehicleManagerFromScene(PhysScene))
+		{
+			CreateVehicle();
+			BindWheelSimulationPointers();
+			FixupSkeletalMesh();
 				VehicleSimulationPT->PVehicle->bSuspensionEnabled = bSuspensionEnabled;
 				VehicleSimulationPT->PVehicle->bWheelFrictionEnabled = bWheelFrictionEnabled;
 				VehicleSimulationPT->PVehicle->bMechanicalSimEnabled = bMechanicalSimEnabled;
@@ -669,6 +789,10 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 
 void USpeedWheeledComponent::OnDestroyPhysicsState()
 {
+	// PVehicle owns the suspension storage; invalidate every sub-body alias
+	// before any physics-state teardown, even when the output handle was already
+	// released by the vehicle manager.
+	ClearWheelSimulationPointers();
 	if (PVehicleOutput.IsValid())
 	{
 		FChaosVehicleManager* VehicleManager = FChaosVehicleManager::GetVehicleManagerFromScene(GetWorld()->GetPhysicsScene());
@@ -1223,6 +1347,7 @@ void USpeedWheeledComponent::UpdateInputs()
 	ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
 
 	UpdateWheeledPhysicalInputFromUser(false);
+	ConsumeQueuedCameraInputsForFrame(CurrentFrame);
 }
 
 void USpeedWheeledComponent::ConsumePendingLiveWheeledInputs()
@@ -1244,6 +1369,146 @@ void USpeedWheeledComponent::ConsumePendingLiveWheeledInputs()
 		WheeledUserInput.Steer = PendingLiveSteering.load(
 			std::memory_order_relaxed);
 	}
+}
+
+namespace SpeedCameraInputPacking
+{
+uint32 Pack(const FSpeedCarCameraPhysicalInput& I)
+{
+	return uint32(I.Version) | (uint32(I.Flags) << 8) | (uint32(uint8(I.Yaw)) << 16) | (uint32(uint8(I.Pitch)) << 24);
+}
+FSpeedCarCameraPhysicalInput Unpack(uint32 Bits)
+{
+	FSpeedCarCameraPhysicalInput I;
+	I.Version = uint8(Bits); I.Flags = uint8(Bits >> 8);
+	I.Yaw = int8(uint8(Bits >> 16)); I.Pitch = int8(uint8(Bits >> 24));
+	return I;
+}
+}
+
+void USpeedWheeledComponent::EnableGenericCameraInput(bool bEnabled)
+{
+	check(IsInGameThread());
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	ClearHeldCameraInput();
+	PendingCameraInputCommands.Reset();
+	LastCameraCaptureHistoryFrame = INDEX_NONE;
+	LastCameraCaptureActivationFrame = INDEX_NONE;
+	LastCapturedCameraInput = FSpeedCarCameraPhysicalInput();
+	bGenericCameraInputEnabled.store(bEnabled, std::memory_order_release);
+}
+bool USpeedWheeledComponent::PublishHeldCameraInput(const FSpeedCarCameraPhysicalInput& Input)
+{
+	check(IsInGameThread());
+	if (!Input.IsValid()) return false;
+	PendingCameraInput.store(SpeedCameraInputPacking::Pack(Input), std::memory_order_release);
+	return true;
+}
+void USpeedWheeledComponent::ClearHeldCameraInput()
+{
+	PublishHeldCameraInput(FSpeedCarCameraPhysicalInput());
+}
+bool USpeedWheeledComponent::SetHeldCameraBack(bool bBack)
+{
+	check(IsInGameThread());
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	I.Flags = 1 | (bBack ? 2 : 0);
+	return PublishHeldCameraInput(I);
+}
+bool USpeedWheeledComponent::SetHeldCameraYaw(float Value)
+{
+	check(IsInGameThread());
+	if (!FMath::IsFinite(Value)) return false;
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	I.Flags |= 1;
+	I.Yaw = FMath::RoundToInt(FMath::Clamp(Value, -1.0f, 1.0f) * 127.0f);
+	return PublishHeldCameraInput(I);
+}
+bool USpeedWheeledComponent::SetHeldCameraPitch(float Value)
+{
+	check(IsInGameThread());
+	if (!FMath::IsFinite(Value)) return false;
+	auto I = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+	I.Flags |= 1;
+	I.Pitch = FMath::RoundToInt(FMath::Clamp(Value, -1.0f, 1.0f) * 127.0f);
+	return PublishHeldCameraInput(I);
+}
+FSpeedCarCameraPhysicalInput USpeedWheeledComponent::CaptureNetworkCameraInput(
+	int32 HistoryFrame, int32 ActivationFrame) const
+{
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled() ||
+		HistoryFrame == INDEX_NONE || ActivationFrame == INDEX_NONE) return FSpeedCarCameraPhysicalInput();
+	if (HistoryFrame == LastCameraCaptureHistoryFrame && ActivationFrame == LastCameraCaptureActivationFrame)
+		return LastCapturedCameraInput;
+	const auto Input = SpeedCameraInputPacking::Unpack(PendingCameraInput.load(std::memory_order_acquire));
+#if WITH_DEV_AUTOMATION_TESTS
+	++CameraMailboxReadCount;
+#endif
+	if (!Input.IsValid()) return FSpeedCarCameraPhysicalInput();
+	LastCameraCaptureHistoryFrame = HistoryFrame;
+	LastCameraCaptureActivationFrame = ActivationFrame;
+	LastCapturedCameraInput = Input;
+	QueueCameraInputLocked(ActivationFrame, Input);
+	return Input;
+}
+
+void USpeedWheeledComponent::QueueCameraInputForFrame(int32 ActivationFrame,
+	const FSpeedCarCameraPhysicalInput& Input) const
+{
+	if (ActivationFrame == INDEX_NONE || !Input.IsValid()) return;
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
+	QueueCameraInputLocked(ActivationFrame, Input);
+}
+
+void USpeedWheeledComponent::QueueCameraInputLocked(int32 ActivationFrame,
+	const FSpeedCarCameraPhysicalInput& Input) const
+{
+	for (auto& Command : PendingCameraInputCommands)
+	{
+		if (Command.ActivationFrame == ActivationFrame) { Command.Input = Input; return; }
+	}
+	FPendingCameraInputCommand Command;
+	Command.ActivationFrame = ActivationFrame;
+	Command.Input = Input;
+	PendingCameraInputCommands.Add(Command);
+	PendingCameraInputCommands.Sort([](const FPendingCameraInputCommand& A, const FPendingCameraInputCommand& B)
+		{ return A.ActivationFrame < B.ActivationFrame; });
+	while (PendingCameraInputCommands.Num() > MaxPendingWheeledInputs) PendingCameraInputCommands.RemoveAt(0);
+}
+
+void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFrame)
+{
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
+	int32 LastDue = INDEX_NONE;
+	for (int32 Index = 0; Index < PendingCameraInputCommands.Num(); ++Index)
+	{
+		if (PendingCameraInputCommands[Index].ActivationFrame > CurrentFrame) break;
+		LastDue = Index;
+	}
+	if (LastDue == INDEX_NONE) return;
+	// Whole held value, once, after wheel processing. Multiple overdue captures
+	// select the latest frame; no second GT read and no camera slew/state hash.
+	const auto Input = PendingCameraInputCommands[LastDue].Input;
+	WheeledUserInput.Camera = Input;
+	WheeledPhysicalInput.Camera = Input;
+	PendingCameraInputCommands.RemoveAt(0, LastDue + 1);
+#if WITH_DEV_AUTOMATION_TESTS
+	++CameraInputApplyCount;
+#endif
+}
+void USpeedWheeledComponent::AppendPresentationSnapshot(TArray<uint8>& OutPayload) const
+{
+	OutPayload.Reset();
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || !WheeledPhysicalInput.Camera.IsValid()) return;
+	FSpeedCarCameraInputSnapshot Snapshot;
+	Snapshot.bOnGround = IsOnTheGround();
+	Snapshot.bBackCamera = WheeledPhysicalInput.Camera.IsBack();
+	Snapshot.CameraYaw = static_cast<float>(WheeledPhysicalInput.Camera.Yaw) / 127.0f;
+	Snapshot.CameraPitch = static_cast<float>(WheeledPhysicalInput.Camera.Pitch) / 127.0f;
+	Snapshot.Write(OutPayload);
 }
 
 void USpeedWheeledComponent::UpdateWheeledPhysicalInputFromUser(bool bForce)
@@ -1310,6 +1575,10 @@ void USpeedWheeledComponent::SetTestInputOverrideEnabled(const bool bEnabled)
 	FScopeLock InputLock(&PendingWheeledInputMutex);
 	bTestInputOverrideEnabled.store(bEnabled, std::memory_order_release);
 	if (bEnabled) PendingWheeledInputCommands.Reset();
+	FScopeLock CameraLock(&PendingCameraInputMutex);
+	PendingCameraInputCommands.Reset();
+	LastCameraCaptureHistoryFrame = INDEX_NONE;
+	LastCameraCaptureActivationFrame = INDEX_NONE;
 }
 
 void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
@@ -1320,6 +1589,7 @@ void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 A
 void USpeedWheeledComponent::QueueWheeledInputCommand(const int32 ActivationFrame,
 	const FWheeledInputState& Input, const bool bBypassSlew, const bool bFromNetwork)
 {
+	if (!Input.Camera.IsValid()) return;
 	FScopeLock InputLock(&PendingWheeledInputMutex);
 	if (ActivationFrame == INDEX_NONE || (bFromNetwork && IsTestInputOverrideEnabled()))
 	{
@@ -1600,7 +1870,8 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		}
 	}
 	const float MaxSteerAngle = ComputeWheelFrameSteerAngle(AbsForwardSpeed, TargetRadius, Wheelbase);
-	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f) * MaxSteerAngle;
+	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
+		* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
 	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
 	const float GroundedWheelCountForFriction = FMath::Max(1.0f, static_cast<float>(NumWheelsOnGround()));
@@ -1820,7 +2091,15 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float ScrubScaleOverride = CVarIAmSpeedWheelFrameLongitudinalScrubScale.GetValueOnAnyThread();
 			const float ScrubScale = ScrubScaleOverride >= 0.0f ? ScrubScaleOverride : WheelFrameLongitudinalScrubScale;
 			const float HandbrakeImpulseScaleOverride = CVarIAmSpeedWheelFrameHandbrakeLateralImpulseScale.GetValueOnAnyThread();
-			const float HandbrakeImpulseScale = HandbrakeImpulseScaleOverride >= 0.0f ? HandbrakeImpulseScaleOverride : WheelFrameHandbrakeLateralImpulseScale;
+			const float HandbrakeScalarImpulseScale = HandbrakeImpulseScaleOverride >= 0.0f
+				? HandbrakeImpulseScaleOverride
+				: WheelFrameHandbrakeLateralImpulseScale;
+			const float HandbrakeImpulseScale = HandbrakeImpulseScaleOverride >= 0.0f
+				? HandbrakeScalarImpulseScale
+				: EvaluateLinearFloatCurve(
+					HandbrakeLateralImpulseScaleCurve,
+					FrictionCurveInput,
+					HandbrakeScalarImpulseScale);
 			const float HandbrakeRelaxationScale = FMath::Lerp(1.0f, FMath::Max(0.0f, HandbrakeImpulseScale), HandbrakeFrictionValue);
 			const float CombinedFrictionScale = FrictionScale * FrictionStateScale
 				* FMath::Max(0.0f, LateralScale) * SteeringLateralScale
@@ -1975,8 +2254,13 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant);
 			const float CurrentYawRate = FVector::DotProduct(
 				GetPhysAngularVelocity(), SurfaceNormal);
-			AddPhysAngularAcceleration(SurfaceNormal
-				* ((TargetYawRate - CurrentYawRate) / TimeConstant));
+			// Scale the whole correction so the high-slip controller enters
+			// continuously. At zero authority wheel friction alone owns yaw
+			// settling; full authority preserves the published response.
+			const float AligningYawAcceleration =
+				IAmSpeedSteering::ComputeUnsteeredAligningYawAcceleration(
+					TargetYawRate, CurrentYawRate, TimeConstant, SlipAuthority);
+			AddPhysAngularAcceleration(SurfaceNormal * AligningYawAcceleration);
 		}
 	}
 	if (bDebugWheelFriction && DebugGroundedWheels > 0)
@@ -2501,6 +2785,11 @@ void USpeedWheeledComponent::RecoverWheelState()
 {
 	for (auto& W : WheelSubBodies)
 	{
+		if (!W->HasSuspensionSim())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[WheelSuspensionBinding] missing suspension sim for wheel %d during RecoverWheelState"), W->Idx());
+			continue;
+		}
 		// float rollAngle = WheeledPhysicsState.WheelsAngularPosition[W->Idx()];
 		// W->SetRollAngle(rollAngle);
 		// float omega = WheeledPhysicsState.WheelsOmega[W->Idx()];
@@ -2971,7 +3260,8 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		}
 	}
 	const float MaxSteerAngle = ComputeWheelFrameSteerAngle(AbsForwardSpeed, TargetRadius, Wheelbase);
-	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f) * MaxSteerAngle;
+	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
+		* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
 	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
 	const float AccelPerWheel = Accel / static_cast<float>(GroundedWheelCount);
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
@@ -4142,6 +4432,7 @@ HandbrakeLowSlipYawCorrectionScaleCurve = {
 	WheelFrameHandbrakeEntryRearReleaseScale = 1.0f;
 	WheelFrameHandbrakeRiseRate = 5.0f;
 	WheelFrameHandbrakeFallRate = 2.0f;
+	HandbrakeLateralImpulseScaleCurve.Empty();
 	LateralFrictionSlipThreshold = 5.0f;
 
 	WheelSetups.SetNum(4);

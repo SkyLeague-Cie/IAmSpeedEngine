@@ -379,7 +379,12 @@ void ISpeedComponent::ResetForFrame(const float& Delta)
 	}
 }
 
-SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, const float& LastSubDelta)
+SComponentTOI ISpeedComponent::SweepTOISubBodies(
+	const float& RemainingDelta, const float& LastSubDelta
+#if !UE_BUILD_SHIPPING
+	, const bool bCaptureDiagnostics
+#endif
+)
 {
 	// CCD predicts from the same constrained acceleration as integration, but
 	// no reaction is cached across a collision, teleport or force change.
@@ -407,8 +412,17 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, co
 
     const TArray<USSubBody*>& InSubBodies = GetSubBodies();
 
+#if !UE_BUILD_SHIPPING
+	int32 DiagnosticSweepOrder = INDEX_NONE;
+#endif
     for (USSubBody* Sweeper : InSubBodies)
     {
+#if !UE_BUILD_SHIPPING
+		if (bCaptureDiagnostics)
+		{
+			++DiagnosticSweepOrder;
+		}
+#endif
         if (!Sweeper) continue;
 
         float TOI = RemainingDelta;
@@ -422,6 +436,25 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, co
         {
 			TOI = Sweeper->GetFutureTOI();
         }*/
+
+#if !UE_BUILD_SHIPPING
+		if (bCaptureDiagnostics)
+		{
+			const SHitResult& DiagnosticHit = Sweeper->GetFutureHit();
+			USSubBody* DiagnosticResolver = USSubBody::PickResolver(
+				Sweeper, DiagnosticHit.SubBody.Get());
+			SSubBodyTOIDiagnostic& Diagnostic = Best.DiagnosticCandidates.AddDefaulted_GetRef();
+			Diagnostic.SweepOrder = DiagnosticSweepOrder;
+			Diagnostic.TOI = TOI;
+			Diagnostic.Sweeper = Sweeper;
+			Diagnostic.Resolver = DiagnosticResolver;
+			Diagnostic.Hit = DiagnosticHit;
+			if (DiagnosticResolver && DiagnosticResolver != Sweeper)
+			{
+				Diagnostic.Hit.ImpactNormal *= -1.f;
+			}
+		}
+#endif
 
         if (TOI >= Best.TOI)
             continue;
@@ -441,6 +474,12 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(const float& RemainingDelta, co
         Best.TOI = TOI;
         Best.Resolver = Resolver;
         Best.Hit = HR;
+#if !UE_BUILD_SHIPPING
+		if (bCaptureDiagnostics)
+		{
+			Best.DiagnosticBestCandidate = Best.DiagnosticCandidates.Num() - 1;
+		}
+#endif
         Best.PairKey = USSubBody::MakePairKey(
             Resolver ? Resolver : Sweeper, HR.Component.Get());
         // One static component may own several adjacent analytical providers.

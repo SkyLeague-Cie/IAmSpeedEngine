@@ -43,6 +43,10 @@ Do not infer rollback readiness, cross-platform bit identity, or complete rigid-
 body coverage from the available foundations. Public contracts and their test
 status are documented under [`Documentation/`](Documentation/).
 
+The experimental [owned presentation boundary](Documentation/PresentationBoundary.md)
+defines values-only outputs, lifecycle registration, common publication and
+prevalidated restoration separately from canonical physics hashes.
+
 ## PhysicalLaw contracts
 
 IAmSpeed assigns stable identifiers such as
