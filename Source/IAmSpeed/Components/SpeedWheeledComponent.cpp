@@ -2091,7 +2091,15 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float ScrubScaleOverride = CVarIAmSpeedWheelFrameLongitudinalScrubScale.GetValueOnAnyThread();
 			const float ScrubScale = ScrubScaleOverride >= 0.0f ? ScrubScaleOverride : WheelFrameLongitudinalScrubScale;
 			const float HandbrakeImpulseScaleOverride = CVarIAmSpeedWheelFrameHandbrakeLateralImpulseScale.GetValueOnAnyThread();
-			const float HandbrakeImpulseScale = HandbrakeImpulseScaleOverride >= 0.0f ? HandbrakeImpulseScaleOverride : WheelFrameHandbrakeLateralImpulseScale;
+			const float HandbrakeScalarImpulseScale = HandbrakeImpulseScaleOverride >= 0.0f
+				? HandbrakeImpulseScaleOverride
+				: WheelFrameHandbrakeLateralImpulseScale;
+			const float HandbrakeImpulseScale = HandbrakeImpulseScaleOverride >= 0.0f
+				? HandbrakeScalarImpulseScale
+				: EvaluateLinearFloatCurve(
+					HandbrakeLateralImpulseScaleCurve,
+					FrictionCurveInput,
+					HandbrakeScalarImpulseScale);
 			const float HandbrakeRelaxationScale = FMath::Lerp(1.0f, FMath::Max(0.0f, HandbrakeImpulseScale), HandbrakeFrictionValue);
 			const float CombinedFrictionScale = FrictionScale * FrictionStateScale
 				* FMath::Max(0.0f, LateralScale) * SteeringLateralScale
@@ -4424,6 +4432,7 @@ HandbrakeLowSlipYawCorrectionScaleCurve = {
 	WheelFrameHandbrakeEntryRearReleaseScale = 1.0f;
 	WheelFrameHandbrakeRiseRate = 5.0f;
 	WheelFrameHandbrakeFallRate = 2.0f;
+	HandbrakeLateralImpulseScaleCurve.Empty();
 	LateralFrictionSlipThreshold = 5.0f;
 
 	WheelSetups.SetNum(4);
