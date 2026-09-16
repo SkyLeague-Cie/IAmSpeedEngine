@@ -8,11 +8,6 @@
 
 namespace
 {
-#if WITH_DEV_AUTOMATION_TESTS
-	// A thread-local observer is armed only by the private test seam below.
-	// Ordinary sweeps neither allocate nor read/write this diagnostic state.
-	thread_local Speed::Analytic::FExtrudedFacetEdgeObservation* GPlaneSweepEdgeObservation = nullptr;
-#endif
 #if !UE_BUILD_SHIPPING
 	TAutoConsoleVariable<int32> CVarIAmSpeedAnalyticWorldCacheProfile(
 		TEXT("p.IAmSpeed.AnalyticWorld.CacheProfile"), 0,
@@ -1212,51 +1207,6 @@ FWorldHit FWorldQueryService::SweepPlane(
 	return Hit;
 }
 
-#if WITH_DEV_AUTOMATION_TESTS
-EExtrudedFacetEdgeRole FWorldQueryService::ClassifyExtrudedFacetEdgeForTest(
-	const int32 SegmentCount, const int32 Segment, const int8 CornerA, const int8 CornerB)
-{
-	if (SegmentCount <= 0 || Segment < 0 || Segment >= SegmentCount ||
-		CornerA < 0 || CornerA > 3 || CornerB < 0 || CornerB > 3 || CornerA == CornerB)
-	{
-		return EExtrudedFacetEdgeRole::Unknown;
-	}
-	const int8 Low = FMath::Min(CornerA, CornerB);
-	const int8 High = FMath::Max(CornerA, CornerB);
-	if (Low == 0 && High == 3)
-	{
-		return Segment > 0 ? EExtrudedFacetEdgeRole::InternalSectionStart :
-			EExtrudedFacetEdgeRole::SectionStartBoundary;
-	}
-	if (Low == 1 && High == 2)
-	{
-		return Segment + 1 < SegmentCount ? EExtrudedFacetEdgeRole::InternalSectionEnd :
-			EExtrudedFacetEdgeRole::SectionEndBoundary;
-	}
-	if (Low == 0 && High == 1) return EExtrudedFacetEdgeRole::ExtrusionMinBoundary;
-	if (Low == 2 && High == 3) return EExtrudedFacetEdgeRole::ExtrusionMaxBoundary;
-	if ((Low == 0 && High == 2) || (Low == 1 && High == 3))
-		return EExtrudedFacetEdgeRole::InternalTriangulationEdge;
-	return EExtrudedFacetEdgeRole::Unknown;
-}
-
-FExtrudedFacetEdgeObservation FWorldQueryService::SweepPlaneWithEdgeObservationForTest(
-	const FWorldQuery& Query, const FBoundedPlane& Plane)
-{
-	FExtrudedFacetEdgeObservation Observation;
-	if (Query.Shape != EQueryShape::Box)
-	{
-		Observation.Hit = SweepPlane(Query, Plane);
-		return Observation;
-	}
-	FExtrudedFacetEdgeObservation* const Previous = GPlaneSweepEdgeObservation;
-	GPlaneSweepEdgeObservation = &Observation;
-	Observation.Hit = SweepPlane(Query, Plane);
-	GPlaneSweepEdgeObservation = Previous;
-	return Observation;
-}
-#endif
-
 bool FWorldQueryService::TrySweepRoundPlane(
 	const FWorldQuery& Query, const FBoundedPlane& Plane,
 	FWorldHit& OutHit, const FAnalyticWorldData* PlaneUnionWorld)
@@ -1614,12 +1564,6 @@ FWorldHit FWorldQueryService::SweepBoxPlane(
 {
 	FWorldHit Best;
 	if (OutPolygonEdge) *OutPolygonEdge = FIntPoint(INDEX_NONE, INDEX_NONE);
-#if WITH_DEV_AUTOMATION_TESTS
-	if (GPlaneSweepEdgeObservation)
-	{
-		*GPlaneSweepEdgeObservation = FExtrudedFacetEdgeObservation{};
-	}
-#endif
 	// Every facet and triangle sees the same box pose/path. Reuse an outer
 	// extrusion's immutable context, or construct one for a standalone plane.
 	FBoxSweepContext LocalContext;
@@ -1739,23 +1683,6 @@ FWorldHit FWorldQueryService::SweepBoxPlane(
 						Triangle.PolygonVertex[(Edge + 1) % 3]);
 				}
 			}
-#if WITH_DEV_AUTOMATION_TESTS
-			if (GPlaneSweepEdgeObservation)
-			{
-				GPlaneSweepEdgeObservation->Hit = Candidate;
-				GPlaneSweepEdgeObservation->CornerA = INDEX_NONE;
-				GPlaneSweepEdgeObservation->CornerB = INDEX_NONE;
-				GPlaneSweepEdgeObservation->bHasTriangleEdgeTags =
-					Candidate.SurfaceFeatureKind == EContactFeatureKind::Edge &&
-					Candidate.SurfaceFeatureIndex >= 0 && Candidate.SurfaceFeatureIndex < 3;
-				if (GPlaneSweepEdgeObservation->bHasTriangleEdgeTags)
-				{
-					const int32 Edge = Candidate.SurfaceFeatureIndex;
-					GPlaneSweepEdgeObservation->CornerA = Triangle.PolygonVertex[Edge];
-					GPlaneSweepEdgeObservation->CornerB = Triangle.PolygonVertex[(Edge + 1) % 3];
-				}
-			}
-#endif
 		}
 	}
 	return Best;

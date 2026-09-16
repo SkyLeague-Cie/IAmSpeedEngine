@@ -6,8 +6,6 @@
 namespace Speed::Collision { class FOrderedBoundsIndex; }
 #if WITH_DEV_AUTOMATION_TESTS
 class FIAmSpeedPlaneSweepTest;
-class FIAmSpeedExtrudedFacetEdgeClassificationTest;
-class FIAmSpeedRoofDiagonalObservationTest;
 #endif
 
 namespace Speed::Analytic
@@ -123,36 +121,10 @@ struct IAMSPEED_API FWorldHit
 	uint32 MaterialId = 0;
 };
 
-#if WITH_DEV_AUTOMATION_TESTS
-// Test-only semantic tags for the finite quad which a plane triangulation
-// happens to use. They do not alter FWorldHit's public, triangle-local index.
-enum class EExtrudedFacetEdgeRole : uint8
-{
-	Unknown,
-	InternalSectionStart,
-	SectionStartBoundary,
-	InternalSectionEnd,
-	SectionEndBoundary,
-	ExtrusionMinBoundary,
-	ExtrusionMaxBoundary,
-	InternalTriangulationEdge,
-};
-
-struct FExtrudedFacetEdgeObservation
-{
-	FWorldHit Hit;
-	int8 CornerA = INDEX_NONE;
-	int8 CornerB = INDEX_NONE;
-	bool bHasTriangleEdgeTags = false;
-};
-#endif
-
 class IAMSPEED_API FWorldQueryService
 {
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class ::FIAmSpeedPlaneSweepTest;
-	friend class ::FIAmSpeedExtrudedFacetEdgeClassificationTest;
-	friend class ::FIAmSpeedRoofDiagonalObservationTest;
 #endif
 public:
 	explicit FWorldQueryService(const FAnalyticWorldData& InWorld);
@@ -256,14 +228,6 @@ private:
 		const Private::FBoxSweepContext* CachedBoxContext = nullptr,
 		EHitSelection Selection = EHitSelection::FirstSweepHit,
 		FIntPoint* OutPolygonEdge = nullptr);
-#if WITH_DEV_AUTOMATION_TESTS
-	/** Observes the winning triangle's immutable semantic-corner tags without
-	 * changing the hit or its public feature-index interpretation. */
-	static FExtrudedFacetEdgeObservation SweepPlaneWithEdgeObservationForTest(
-		const FWorldQuery& Query, const FBoundedPlane& Plane);
-	static EExtrudedFacetEdgeRole ClassifyExtrudedFacetEdgeForTest(
-		int32 SegmentCount, int32 Segment, int8 CornerA, int8 CornerB);
-#endif
 	/** Ray/sphere plane kernel: a miss leaves OutHit untouched; a hit replaces every field. */
 	static bool TrySweepRoundPlane(
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
