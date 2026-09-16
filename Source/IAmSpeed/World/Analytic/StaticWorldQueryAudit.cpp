@@ -45,7 +45,8 @@ namespace
 		TEXT("Strict analytical query diagnostics.\n")
 		TEXT("0: disabled (default)\n")
 		TEXT("1: compact provider-set transitions plus the first miss in a frame\n")
-		TEXT("2: every strict query; use only for very short captures"));
+		TEXT("2: every strict query; use only for very short captures\n")
+		TEXT("3: also serialize full-precision query inputs and selected hit for exact replay"));
 	TAutoConsoleVariable<int32> CVarStrictQueryDetailFrameStart(
 		TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail.FrameStart"), -1,
 		TEXT("Optional inclusive canonical-frame lower bound for StrictQueryDetail logs; negative disables the bound."));
@@ -420,6 +421,35 @@ namespace
 			*FVector(Hit.Point).ToString(), *FVector(Hit.Normal).ToString(),
 			Hit.SourceId, Hit.SurfaceId, Hit.FeatureId, Hit.PrimitiveId,
 			Hit.CanonicalGroupId);
+		if (DetailMode >= 3)
+		{
+			// Observe the already selected result. Do not issue a second query or
+			// round inputs through FVector/Quat::ToString before reproducing a miss.
+			const auto Vector = [](const FVector3d& V)
+			{
+				return FString::Printf(TEXT("(%.17g,%.17g,%.17g)"), V.X, V.Y, V.Z);
+			};
+			UE_LOG(LogTemp, Display,
+				TEXT("[AnalyticStrictReplay] Frame=%llu Attempt=%u Overlap=%d Shape=%u Start=%s End=%s Rotation=(%.17g,%.17g,%.17g,%.17g) HalfExtent=%s Radius=%.17g DomainTolerance=%.17g InitialOverlapTolerance=%.17g TraceChannel=%u ObjectTypes=%016llX BlockingObjectTypes=%016llX RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX ReferenceNormal=%s MinimumReferenceNormalDot=%.17g EstablishedBoundary=%d FiniteDomain=%d ObjectQuery=%d ApplyFilter=%d AuthorityOnly=%d ExcludeAuthority=%d Compact=%d Triangles=%d Hit=%d StartPenetrating=%d Time=%.17g Depth=%.17g ErrorCm=%.17g Location=%s Point=%s QueryPoint=%s Normal=%s QueryFeature=%u QueryIndex=%d SurfaceFeature=%u SurfaceIndex=%d Source=%016llX Surface=%016llX Feature=%016llX Provider=%016llX Primitive=%016llX Group=%016llX"),
+				GStaticWorldAuditFrame.Frame, AuthorityAttempt, bOverlapQuery ? 1 : 0,
+				static_cast<uint8>(Query.Shape), *Vector(Query.Start), *Vector(Query.End),
+				Query.Rotation.X, Query.Rotation.Y, Query.Rotation.Z, Query.Rotation.W,
+				*Vector(Query.HalfExtent), Query.Radius, Query.DomainTolerance,
+				Query.InitialOverlapTolerance, Query.TraceChannel, Query.ObjectTypes,
+				Query.BlockingObjectTypes, Query.RequiredSourceId, Query.RequiredSurfaceId,
+				Query.RequiredCanonicalGroupId, *Vector(Query.ReferenceNormal),
+				Query.MinimumReferenceNormalDot, Query.bAllowEstablishedFaceContactAtBoundary ? 1 : 0,
+				Query.bUseFiniteContactDomain ? 1 : 0, Query.bObjectQuery ? 1 : 0,
+				Query.bApplyCollisionFilter ? 1 : 0, Query.bAuthorityOnly ? 1 : 0,
+				Query.bExcludeAuthorityEligible ? 1 : 0, Query.bIncludeCompactPatches ? 1 : 0,
+				Query.bIncludeTriangles ? 1 : 0, Hit.bHit ? 1 : 0, Hit.bStartPenetrating ? 1 : 0,
+				Hit.Time, Hit.PenetrationDepth, Hit.GeometricErrorBoundCm,
+				*Vector(Hit.Location), *Vector(Hit.Point), *Vector(Hit.QueryPoint), *Vector(Hit.Normal),
+				static_cast<uint8>(Hit.QueryFeatureKind), Hit.QueryFeatureIndex,
+				static_cast<uint8>(Hit.SurfaceFeatureKind), Hit.SurfaceFeatureIndex,
+				Hit.SourceId, Hit.SurfaceId, Hit.FeatureId, Hit.ProviderId, Hit.PrimitiveId,
+				Hit.CanonicalGroupId);
+		}
 		if (!Hit.bHit)
 		{
 			FWorldQuery ResidualQuery = Query;
