@@ -1360,8 +1360,10 @@ void USpeedWheeledComponent::UpdateInputs()
 void USpeedWheeledComponent::SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream)
 {
 	check(IsInGameThread());
-	if (Speed::Input::FPresentationInputScope::IsActive()) return;
+	// Null is mandatory lifecycle teardown, including UnPossess during dispatch.
+	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return;
 	FScopeLock Lock(&FrameInputProducerMutex);
+	if (FrameInputStream && FrameInputStream != Stream) FrameInputStream->Deactivate();
 	FrameInputStream = MoveTemp(Stream);
 	bResetProducedWheeledInputs = true;
 }
@@ -1392,7 +1394,8 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 	if (!Stream) return false;
 	if (IsTestInputOverrideEnabled())
 	{
-		Stream->Skip(CanonicalFrame);
+		const bool bSkipped = Stream->Skip(CanonicalFrame);
+		ensureMsgf(bSkipped, TEXT("Input producer cannot skip canonical frame %llu"), CanonicalFrame);
 		return true;
 	}
 	const auto Frame = Stream->Consume(CanonicalFrame);

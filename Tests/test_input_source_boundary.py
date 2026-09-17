@@ -67,12 +67,24 @@ class InputSourceBoundary(unittest.TestCase):
         self.assertNotIn("Latest =", consume)
 
     def test_component_writer_guards_precede_mutation(self):
-        for name in ("SetPhysThrottleInput", "SetPhysBrakeInput", "SetPhysSteeringInput", "QueueWheeledInputCommand", "SetTestInputOverrideEnabled", "SetFrameInputStream"):
+        for name in ("SetPhysThrottleInput", "SetPhysBrakeInput", "SetPhysSteeringInput", "QueueWheeledInputCommand", "SetTestInputOverrideEnabled"):
             writer = body("Components/SpeedWheeledComponent.cpp", f"void USpeedWheeledComponent::{name}(")
             self.assertIn("if (Speed::Input::FPresentationInputScope::IsActive()) return;", writer)
             prefix = writer[:writer.index("FPresentationInputScope::IsActive")]
             self.assertNotIn(".store(", prefix)
             self.assertNotIn("FScopeLock", prefix)
+
+    def test_teardown_bypasses_presentation_guard_and_disables_old_stream(self):
+        setter = body("Components/SpeedWheeledComponent.cpp", "void USpeedWheeledComponent::SetFrameInputStream(")
+        self.assertIn("if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return;", setter)
+        self.assertLess(setter.index("FrameInputStream->Deactivate()"), setter.index("FrameInputStream = MoveTemp(Stream)"))
+        detach = body("Controllers/SpeedController.cpp", "void ASpeedController::OnUnPossess(")
+        self.assertLess(detach.index("SetFrameInputStream(nullptr)"), detach.index("InputSnapshots.reset()"))
+
+    def test_override_observes_skip_failure(self):
+        consumer = body("Components/SpeedWheeledComponent.cpp", "bool USpeedWheeledComponent::ConsumeProducedWheeledInputs")
+        self.assertIn("const bool bSkipped = Stream->Skip(CanonicalFrame)", consumer)
+        self.assertIn("ensureMsgf(bSkipped", consumer)
 
     def test_worker_owns_no_controller_reference(self):
         stream = (ROOT / "Input/InputStream.h").read_text()

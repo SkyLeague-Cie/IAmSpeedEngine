@@ -15,6 +15,8 @@ public:
 	// A missing frame is a hard boundary, not permission to sample another clock
 	// or silently predict. Returned copies expose only const payload access.
 	virtual std::optional<FInputFrame> Produce(FFrameNumber ConsumptionFrame) = 0;
+	// Explicit suppression by the sealed test owner, never an implicit missing input.
+	virtual bool Skip(FFrameNumber) { return false; }
 };
 
 /** Injected device-sample adapter; real acquisition backend is not supplied.
@@ -29,21 +31,47 @@ public:
 
 	// Values are already mapped/filtered/quantized by an independent backend. Digital
 	// transitions use 0 = released, nonzero = held; axes opt out of edge emission.
+	// One acquisition writer stages a source sample, then commits it explicitly.
+	// Produce never observes staging. A failed staging call requires cancel/retry.
 	bool SetAction(FFrameNumber Source, FActionId Action, std::int16_t Value, bool bEmitEdges)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Mutex);
-		if (!Identity.Id || Action >= ActionCount || Source < LastSource) return false;
-		FActionValues Next = Held;
+		auto Reject = [&]() { StagingFailed = StagedSource.has_value(); return false; };
+		if (StagingFailed) return false;
+		if (!Identity.Id || Action >= ActionCount || (HasCommitted && Source <= LastSource)
+			|| (StagedSource && Source != *StagedSource)) return Reject();
+		FActionValues Next = StagedSource ? StagedHeld : Held;
+		const auto Previous = Next[Action];
 		Next[Action] = Value;
-		if (!FInputFrame(Source, 0, Identity, Next).IsValid()) return false;
-		const bool bTransition = bEmitEdges && ((Held[Action] != 0) != (Value != 0));
-		if (bTransition && EdgeCount == MaxEdges) return false; // No partial update/drop.
-		if (bTransition) Edges[EdgeCount++] = {Action, Value ? EEdgeKind::Start : EEdgeKind::Stop, Source};
-		Held = Next;
-		LastSource = Source;
+		if (!FInputFrame(Source, 0, Identity, Next).IsValid()) return Reject();
+		const bool bTransition = bEmitEdges && ((Previous != 0) != (Value != 0));
+		if (bTransition && EdgeCount + StagedEdgeCount == MaxEdges) return Reject();
+		if (bTransition) StagedEdges[StagedEdgeCount++] = {Action, Value ? EEdgeKind::Start : EEdgeKind::Stop, Source};
+		StagedHeld = Next;
+		StagedSource = Source;
 		return true;
 	}
+	bool CommitSample(FFrameNumber Source)
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (StagingFailed || !StagedSource || *StagedSource != Source) return false;
+		Held = StagedHeld;
+		for (std::size_t I = 0; I < StagedEdgeCount; ++I) Edges[EdgeCount++] = StagedEdges[I];
+		LastSource = Source;
+		HasCommitted = true;
+		StagedSource.reset(); StagedEdgeCount = 0; StagedEdges = {};
+		return true;
+	}
+	void CancelSample()
+	{
+		if (FPresentationInputScope::IsActive()) return;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		StagingFailed = false;
+		StagedSource.reset(); StagedEdgeCount = 0; StagedEdges = {};
+	}
+	bool Skip(FFrameNumber Frame) override { return bool(Produce(Frame)); }
 
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
 	{
@@ -64,6 +92,12 @@ private:
 	const FProducerIdentity Identity;
 	std::mutex Mutex;
 	FActionValues Held{};
+	FActionValues StagedHeld{};
+	std::optional<FFrameNumber> StagedSource;
+	std::array<FActionEdge, MaxEdges> StagedEdges{};
+	std::size_t StagedEdgeCount = 0;
+	bool HasCommitted = false;
+	bool StagingFailed = false;
 	std::array<FActionEdge, MaxEdges> Edges{};
 	std::size_t EdgeCount = 0;
 	FFrameNumber LastSource = 0;
@@ -78,6 +112,20 @@ private:
 class FQueuedInputProducer : public IInputProducer
 {
 public:
+	// Advance a suppressed exact frame even if absent. Preserve submitted payloads
+	// in producer history, without claiming the stream physically consumed them.
+	bool Skip(FFrameNumber Frame) override
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (bExhausted || Frame != NextFrame) return false;
+		auto& Slot = Pending[Frame % HistoryCapacity];
+		History[Frame % HistoryCapacity] = Slot;
+		Slot.reset();
+		bExhausted = Frame == std::numeric_limits<FFrameNumber>::max();
+		if (!bExhausted) ++NextFrame;
+		return true;
+	}
 	bool Submit(const FInputFrame& Input)
 	{
 		if (FPresentationInputScope::IsActive()) return false;

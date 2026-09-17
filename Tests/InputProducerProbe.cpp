@@ -32,8 +32,79 @@ static std::uint64_t Hash(const FInputFrame& Frame)
 	return Result;
 }
 
+static void ReviewRegressions()
+{
+	constexpr FActionId Jump = 3;
+	FDeviceInputProducer Device(101);
+	Check(Device.SetAction(1, Throttle, 10, false) && Device.SetAction(1, Brake, 20, false)
+		&& Device.CommitSample(1), "seed complete transaction");
+	Check(Device.SetAction(2, Throttle, 30, false), "stage first axis");
+	std::optional<FInputFrame> During;
+	std::thread Worker([&] { During = Device.Produce(0); });
+	Worker.join();
+	Check(During && During->GetSourceFrame() == 1 && During->GetActions()[Throttle] == 10
+		&& During->GetActions()[Brake] == 20, "worker cannot see partial transaction");
+	Check(Device.SetAction(2, Brake, 40, false) && Device.SetAction(2, Jump, 1, true)
+		&& Device.SetAction(2, Jump, 0, true) && Device.SetAction(2, Jump, 1, true), "stage remaining axis and ordered edges");
+	Check(!Device.CommitSample(3), "wrong source cannot commit staged sample");
+	Check(Device.Produce(1)->GetEdgeCount() == 0, "uncommitted edges invisible");
+	Check(Device.CommitSample(2) && !Device.CommitSample(2), "single atomic commit");
+	const auto After = Device.Produce(2);
+	Check(After && After->GetSourceFrame() == 2 && After->GetActions()[Throttle] == 30
+		&& After->GetActions()[Brake] == 40 && After->GetEdgeCount() == 3
+		&& After->GetEdges()[0].Kind == EEdgeKind::Start && After->GetEdges()[1].Kind == EEdgeKind::Stop
+		&& After->GetEdges()[2].Kind == EEdgeKind::Start, "complete values source and press release press appear together");
+	Check(!Device.SetAction(2, Brake, 0, false), "committed source cannot be reopened");
+	Check(Device.SetAction(3, Throttle, 99, false), "cancelled staging seed");
+	Device.CancelSample();
+	Check(!Device.CommitSample(3) && Device.Produce(3)->GetActions()[Throttle] == 30, "cancel changes no committed value");
+	Check(Device.SetAction(3, Throttle, 88, false) && !Device.SetAction(3, Brake, 256, false)
+		&& !Device.CommitSample(3), "invalid action rejects whole staged sample");
+	Device.CancelSample();
+	Check(Device.Produce(4)->GetActions()[Throttle] == 30, "failed sample cannot leak a valid prefix");
+
+	for (const auto Kind : {EProducerKind::AI, EProducerKind::Network})
+	{
+		std::shared_ptr<FQueuedInputProducer> Producer;
+		if (Kind == EProducerKind::AI) Producer = std::make_shared<FAIInputProducer>(102, 0);
+		else Producer = std::make_shared<FNetworkInputProducer>(102, 0);
+		FInputStream Stream(Producer);
+		Check(!Stream.Skip(1) && Stream.Skip(0), "skip rejects gap but advances missing exact frame");
+		Check(!Producer->Submit(FInputFrame(0, 0, {Kind, 102}, {})), "late suppressed frame rejected");
+		FActionValues Values{}; Values[Throttle] = 77;
+		const FInputFrame Submitted(1, 1, {Kind, 102}, Values);
+		Check(Producer->Submit(Submitted) && Producer->Submit(FInputFrame(2, 2, {Kind, 102}, Values)), "queued suppressed and future frames");
+		Check(Stream.Skip(1) && Hash(*Producer->Produce(1)) == Hash(Submitted), "submitted skipped payload preserved in producer history");
+		Check(!Stream.ReadRecorded(0) && !Stream.ReadRecorded(1)
+			&& !Stream.PublishCompleted(0) && !Stream.PublishCompleted(1), "override never publishes source as physical input");
+		Check(Stream.Consume(2)->GetActions()[Throttle] == 77 && Stream.PublishCompleted(2), "queued source resumes after missing and submitted overrides");
+	}
+
+	auto Source = std::make_shared<FDeviceInputProducer>(103);
+	std::weak_ptr<IInputProducer> Lifetime = Source;
+	auto Controller = std::make_shared<FInputStream>(Source);
+	auto Component = Controller;
+	auto LatchedWorker = Component;
+	Check(bool(Controller->Consume(0)) && Controller->PublishCompleted(0), "lifecycle seed");
+	const auto Snapshot = *Controller->ReadLatest();
+	Source.reset();
+	FInputPresentationBindings Bindings;
+	Bindings.BindAction("UnPossess", Jump, [&](const auto&, auto)
+	{
+		Component->Deactivate();
+		Component.reset(); Controller.reset();
+	});
+	Bindings.HandleInputs(Snapshot);
+	Check(!Component && !Controller && !Lifetime.expired(), "callback teardown releases owners but retains in-flight handle");
+	Check(!LatchedWorker->Consume(1) && !LatchedWorker->PublishCompleted(0)
+		&& !LatchedWorker->Skip(1), "detached latched worker cannot consume skip or publish");
+	LatchedWorker.reset();
+	Check(Lifetime.expired(), "callback detached source freed at final worker release");
+}
+
 int main()
 {
+	ReviewRegressions();
 	static_assert(std::is_same_v<decltype(std::declval<FInputFrame&>().GetActions()), const FActionValues&>);
 	static_assert(std::is_same_v<decltype(std::declval<FInputFrame&>().GetEdges()), const std::array<FActionEdge, MaxEdges>&>);
 	Check(!FromLegacyLocalFrame(0), "legacy zero rejected");
@@ -54,7 +125,9 @@ int main()
 	Check(Device.SetAction(40, Powerslide, 1, true), "PowerslideStart");
 	Check(Device.SetAction(40, Jump, 0, true), "JumpStop");
 	Check(Device.SetAction(40, Jump, 1, true), "JumpStart again same source frame");
+	Check(Device.CommitSample(40), "atomic multi-action commit");
 	Check(Device.SetAction(41, Powerslide, 0, true), "PowerslideStop next source frame");
+	Check(Device.CommitSample(41), "next source commit");
 	const auto First = Device.Produce(0);
 	Check(First && First->IsValid() && First->GetActions()[Throttle] == 203, "complete snapshot at canonical zero");
 	Check(First->GetSourceFrame() == 41 && First->GetEdgeCount() == 5, "all ordered edges retained");
@@ -63,6 +136,7 @@ int main()
 		&& First->GetEdges()[4].Action == Powerslide && First->GetEdges()[4].SourceFrame == 41, "total callback order");
 	const auto FirstHash = Hash(*First);
 	Check(Device.SetAction(42, Throttle, 80, false), "new live value");
+	Check(Device.CommitSample(42), "new value committed");
 	Check(Hash(*Device.Produce(0)) == FirstHash && Hash(*First) == FirstHash, "idempotent replay and immutable copy");
 	Check(!Device.Produce(2), "gap rejected");
 	const auto Held = Device.Produce(1);
@@ -76,6 +150,7 @@ int main()
 	FDeviceInputProducer Overflow(19);
 	for (std::size_t I = 0; I < MaxEdges; ++I)
 		Check(Overflow.SetAction(1, Jump, (I % 2) ? 0 : 1, true), "bounded edge insertion");
+	Check(Overflow.CommitSample(1), "full transaction committed");
 	Check(!Overflow.SetAction(2, Jump, 1, true), "overflow rejected atomically");
 	const auto Full = Overflow.Produce(0);
 	Check(Full && Full->GetEdgeCount() == MaxEdges && Full->GetActions()[Jump] == 0
@@ -129,6 +204,7 @@ int main()
 	auto Stream = std::make_shared<FInputStream>(Source);
 	Check(!Stream->ReadLatest() && !Stream->PublishCompleted(0), "nothing published before consume");
 	Check(Source->SetAction(1, Throttle, 21, false), "presentation input seed");
+	Check(Source->CommitSample(1), "presentation seed committed");
 	Check(bool(Stream->Consume(0)) && !Stream->ReadLatest(), "latch is not physical completion");
 	Check(Stream->PublishCompleted(0), "completed frame published");
 	const auto Copy = *Stream->ReadLatest();
@@ -153,8 +229,10 @@ int main()
 	Check(Order == std::vector<unsigned>({1, 2}) && RejectedWrites == 4, "one dispatch per serial and blocked reinjection");
 	Check(Hash(*Stream->ReadRecorded(0)) == Before && !FPresentationInputScope::IsActive(), "history unchanged scope released");
 	Check(Source->SetAction(2, Jump, 1, true), "legitimate input outside callback remains valid");
+	Check(Source->CommitSample(2), "press committed");
 	Check(bool(Stream->Consume(1)) && Stream->PublishCompleted(1), "intermediate press completed");
 	Check(Source->SetAction(3, Jump, 0, true), "release before next GT poll");
+	Check(Source->CommitSample(3), "release committed");
 	Check(bool(Stream->Consume(2)) && Stream->PublishCompleted(2), "latest release completed");
 	Bindings.HandleInputs(*Stream->ReadLatest());
 	Check(Order.size() == 4 && Stream->ReadRecorded(1)->GetEdges()[0].Kind == EEdgeKind::Start
@@ -180,6 +258,7 @@ int main()
 	for (FFrameNumber I = 0; I < 2; ++I)
 	{
 		JumpDevice->SetAction(I, Jump, I == 0 ? 1 : 0, true);
+		Check(JumpDevice->CommitSample(I), "Jump transaction committed");
 		const auto Physical = JumpStream.Consume(I);
 		for (std::size_t E = 0; E < Physical->GetEdgeCount(); ++E)
 			if (Physical->GetEdges()[E].Kind == EEdgeKind::Start) ++PhysicalStarts; else ++PhysicalStops;
@@ -204,6 +283,7 @@ int main()
 	for (FFrameNumber I = 0; I < 100; ++I)
 	{
 		Check(ConcurrentSource->SetAction(I, Throttle, static_cast<std::int16_t>(I), false), "concurrent source update");
+		Check(ConcurrentSource->CommitSample(I), "concurrent source commit");
 		Check(bool(Concurrent.Consume(I)) && Concurrent.PublishCompleted(I), "concurrent complete publication");
 	}
 	Complete.store(true); Reader.join();
@@ -212,6 +292,7 @@ int main()
 	for (FFrameNumber I = 0; I < 100; ++I)
 	{
 		Reference.SetAction(I, Throttle, static_cast<std::int16_t>(I), false);
+		Reference.CommitSample(I);
 		Check(Hash(*Reference.Produce(I)) == Hash(*Concurrent.ReadRecorded(I)), "polling independent physical history hashes");
 	}
 	std::weak_ptr<IInputProducer> Lifetime = Source;

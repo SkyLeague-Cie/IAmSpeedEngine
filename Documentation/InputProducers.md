@@ -30,7 +30,13 @@ targets and restarts. This is not a network-stable actor identity.
 `ASpeedController` can retain an externally configured `IInputProducer` and an
 `FInputStream`, but never constructs or feeds a device source. A device adapter
 accepts already mapped/filtered/quantized injected samples. Its short mutex
-protects a complete held-state/edge/source transaction; the worker never
+protects a complete held-state/edge/source transaction. A single acquisition
+writer stages every action with `SetAction(SourceFrame, ...)`, then calls
+`CommitSample(SourceFrame)` once. Until commit, the worker sees only the previous
+committed sample. Source frames increase strictly between commits; repeated
+updates and press-release-press are allowed within one staged source frame.
+Any failed staged action invalidates that transaction until `CancelSample`;
+no valid prefix can leak through a later commit. The worker never
 samples independent atomic axes or reads EnhancedInput. Capture transactions
 are independent of the GameThread. Tests inject samples directly; no OS/HID,
 Enhanced Input, UObject callback or other real capture backend is supplied.
@@ -41,7 +47,11 @@ the legacy round-to-nearest, ties toward positive infinity.
 The component latches the shared stream under a lifecycle mutex at its input
 frame boundary, then releases that mutex before producer consumption. Both
 sides retain `std::shared_ptr` handles; no controller/UObject pointer travels
-with the stream. Detach can finish the already latched frame safely. A new
+with the stream. Detach deactivates the old stream under its own mutex, including
+when UnPossess occurs inside a presentation callback. Installation remains
+guarded; null teardown always proceeds. An already returned frame remains valid,
+but after deactivation even a latched worker cannot consume, skip or publish
+through that stream. A new
 possession creates a fresh stream. The controller releases its handles on
 unpossession; an in-flight worker handle may outlive them without accessing it.
 
@@ -58,8 +68,8 @@ No wall-clock/SimTime reconstruction belongs in a producer.
 | No new injected sample | Same held values, no repeated edges | Missing input returns no frame; no prediction |
 | Duplicate/replay request | Exact retained immutable copy | Exact retained immutable copy |
 | Evicted past / skipped consumption | Reject | Reject |
-| Late submission | Decreasing device source rejected | Already consumed target rejected |
-| Duplicate submission | Held duplicate emits no edge | Reject; no implicit replacement |
+| Late submission | Non-increasing committed source rejected | Already consumed/suppressed target rejected |
+| Duplicate submission | Allowed inside staging; committed source cannot reopen | Reject; no implicit replacement |
 | Future submission | Device events carry no physical target | At most 255 frames ahead of NextFrame; out-of-order arrival allowed |
 | Edge overflow | Reject whole sample transaction; caller must handle failure | Invalid payload rejected |
 | Storage | 256 frames, 64 pending edges | 256 pending frames plus 256 retained frames |
@@ -88,9 +98,13 @@ boundary. Missing/invalid input produces a diagnostic and neutral targets;
 it never falls back to a live Unreal action. The old queue's reverse iteration
 behavior is retained only in the legacy adapter, not copied into producers.
 
-The sealed scenario override still owns scripted frames. A device frame is
-advanced but not recorded/published as physically consumed when that override
-is active. This is a migration guard, not producer-based test-harness parity.
+The sealed scenario override still owns scripted frames. Explicit `Skip` returns
+success/failure, checked by the component. Device advances normally. AI/network
+advance the exact expected frame even when missing; any submitted payload is
+retained in producer history and future pending frames remain intact. Late input
+for a suppressed frame is rejected. Suppression never records/publishes that
+payload as physically consumed by the stream. Gaps and terminal wrap fail.
+This is a migration guard, not producer-based test-harness parity.
 Execution-mode 0 is diagnostic legacy; completed input publication is wired
 through the canonical simulation pipeline only.
 

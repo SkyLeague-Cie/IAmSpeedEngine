@@ -25,23 +25,35 @@ public:
 	std::optional<FInputFrame> Consume(FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive() || !Source) return std::nullopt;
-		if (auto Recorded = ReadRecorded(Frame)) return Recorded;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (!Active) return std::nullopt;
+		const auto& Recorded = History[Frame % HistoryCapacity];
+		if (Recorded && Recorded->GetConsumptionFrame() == Frame) return Recorded;
 		auto Input = Source->Produce(Frame);
 		if (!Input || !Input->IsValid() || Input->GetConsumptionFrame() != Frame) return std::nullopt;
-		std::lock_guard<std::mutex> Lock(Mutex);
 		History[Frame % HistoryCapacity] = Input;
 		return Input;
 	}
 	// Suppressed live frames (sealed test owns input) must not be published as
-	// physically consumed. Advance only the device source, preserving its cadence.
-	void Skip(FFrameNumber Frame)
+	// physically consumed. Producer-specific policy advances its exact cadence.
+	bool Skip(FFrameNumber Frame)
 	{
-		if (!FPresentationInputScope::IsActive() && Source) Source->Produce(Frame);
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		return Active && Source && Source->Skip(Frame);
+	}
+	// Mandatory lifecycle cleanup is allowed during presentation. Existing copies
+	// stay immutable; even a previously latched worker cannot consume/publish again.
+	void Deactivate()
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		Active = false;
 	}
 	bool PublishCompleted(FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Mutex);
+		if (!Active) return false;
 		const auto& Input = History[Frame % HistoryCapacity];
 		if (!Input || Input->GetConsumptionFrame() != Frame) return false;
 		if (Latest && Latest->Frame.GetConsumptionFrame() == Frame) return true;
@@ -66,6 +78,7 @@ private:
 	std::array<std::optional<FInputFrame>, HistoryCapacity> History{};
 	std::optional<FPublishedInputFrame> Latest;
 	std::uint64_t Serial = 0;
+	bool Active = true;
 };
 
 /** GT-only named bindings. Registration order is dispatch order. Names are
