@@ -29,7 +29,24 @@ class InputSourceBoundary(unittest.TestCase):
         self.assertIn("if (!bProduced)", update)
         self.assertIn("if (!bProduced || IsTestInputOverrideEnabled())", update)
         header = (ROOT / "Controllers/SpeedController.h").read_text()
-        self.assertIn("bool bUseFrameInputProducer = false;", header)
+        self.assertIn("InputProducer = nullptr;", header)
+        configure = body("Controllers/SpeedController.cpp", "bool ASpeedController::ConfigureInputProducer(")
+        self.assertIn("if (SpeedCar ||", configure)
+        self.assertIn("FPresentationInputScope::IsActive()", configure)
+
+    def test_no_gt_acquisition_for_new_device_producer(self):
+        controller = (ROOT / "Controllers/SpeedController.cpp").read_text()
+        for forbidden in ("FDeviceInputProducer", "PublishDevice", "GFrameCounter", "SetAction(", "->Produce("):
+            self.assertNotIn(forbidden, controller)
+        for name in ("Throttle", "StartBrake", "Brake", "StopBrake", "Steering"):
+            handler = body("Controllers/SpeedController.cpp", f"void ASpeedController::{name}(")
+            self.assertIn("if (InputSnapshots) return;", handler)
+            for forbidden in ("InputProducer", "Publish", "SetAction", "GFrameCounter"):
+                self.assertNotIn(forbidden, handler)
+        for path in ("Input/InputFrame.h", "Input/InputProducer.h"):
+            core = (ROOT / path).read_text()
+            for forbidden in ("FInputActionValue", "EnhancedInput", "PlayerController", "GFrameCounter", "IsInGameThread", "CoreMinimal.h"):
+                self.assertNotIn(forbidden, core)
 
     def test_gt_observes_latest_only(self):
         tick = body("Controllers/SpeedController.cpp", "void ASpeedController::Tick(")

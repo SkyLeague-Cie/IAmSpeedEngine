@@ -5,7 +5,6 @@
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "InputActionValue.h"
-#include "CoreGlobals.h"
 
 void ASpeedController::Tick(float DeltaSeconds)
 {
@@ -30,6 +29,14 @@ void ASpeedController::HandleInputs(const Speed::Input::FPublishedInputFrame& Sn
 	PresentationBindings.HandleInputs(Snapshot);
 }
 
+bool ASpeedController::ConfigureInputProducer(std::shared_ptr<Speed::Input::IInputProducer> Producer)
+{
+	check(IsInGameThread());
+	if (SpeedCar || Speed::Input::FPresentationInputScope::IsActive()) return false;
+	InputProducer = MoveTemp(Producer);
+	return true;
+}
+
 void ASpeedController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
@@ -43,25 +50,19 @@ void ASpeedController::SetupInputComponent()
 
 void ASpeedController::OnPossess(APawn* InPawn)
 {
-	if (SpeedCar && bFrameInputProducerActive) SpeedCar->SetFrameInputStream(nullptr);
+	if (SpeedCar && InputSnapshots) SpeedCar->SetFrameInputStream(nullptr);
 	if (SpeedCar) SpeedCar->ClearCameraInputs();
 	Super::OnPossess(InPawn);
 	SpeedCar = CastChecked<ASpeedCar>(InPawn);
 	SpeedCar->ClearCameraInputs();
-	auto Device = std::make_shared<Speed::Input::FDeviceInputProducer>(FMath::Max(1, InputProducerId));
-	DeviceInputProducer = Device.get();
-	InputProducer = MoveTemp(Device);
-	InputSnapshots = std::make_shared<Speed::Input::FInputStream>(InputProducer);
+	InputSnapshots = InputProducer ? std::make_shared<Speed::Input::FInputStream>(InputProducer) : nullptr;
 	PresentationBindings.ResetObservation();
-	bFrameInputProducerActive = bUseFrameInputProducer;
-	if (bFrameInputProducerActive) SpeedCar->SetFrameInputStream(InputSnapshots);
+	if (InputSnapshots) SpeedCar->SetFrameInputStream(InputSnapshots);
 }
 
 void ASpeedController::OnUnPossess()
 {
-	if (SpeedCar && bFrameInputProducerActive) SpeedCar->SetFrameInputStream(nullptr);
-	bFrameInputProducerActive = false;
-	DeviceInputProducer = nullptr;
+	if (SpeedCar && InputSnapshots) SpeedCar->SetFrameInputStream(nullptr);
 	InputProducer.reset();
 	InputSnapshots.reset();
 	if (SpeedCar) SpeedCar->ClearCameraInputs();
@@ -69,23 +70,15 @@ void ASpeedController::OnUnPossess()
 	Super::OnUnPossess();
 }
 
-bool ASpeedController::PublishDeviceAction(Speed::Input::FActionId Action, int16 Value, bool bEmitEdges)
-{
-	check(IsInGameThread());
-	return DeviceInputProducer && DeviceInputProducer->SetAction(GFrameCounter, Action, Value, bEmitEdges);
-}
-
-bool ASpeedController::PublishDeviceAxis(Speed::Input::FActionId Action, float Value, bool bSigned)
-{
-	const auto Quantized = Speed::Input::QuantizeAxis(Value, bSigned);
-	return Quantized && PublishDeviceAction(Action, *Quantized);
-}
-
 void ASpeedController::SetupEnhancedInputComponent(
 	UEnhancedInputComponent* EnhancedInputComponent)
 {
 	check(EnhancedInputComponent);
 
+	// Legacy device/gameplay dispatch remains only when no independent producer
+	// was installed. Enhanced Input is never an acquisition source for that producer.
+	if (!InputProducer)
+	{
 	EnhancedInputComponent->BindAction(
 		SteeringAction, ETriggerEvent::Triggered, this, &ASpeedController::Steering);
 	EnhancedInputComponent->BindAction(
@@ -100,6 +93,7 @@ void ASpeedController::SetupEnhancedInputComponent(
 		BrakeAction, ETriggerEvent::Started, this, &ASpeedController::StartBrake);
 	EnhancedInputComponent->BindAction(
 		BrakeAction, ETriggerEvent::Completed, this, &ASpeedController::StopBrake);
+	}
 	EnhancedInputComponent->BindAction(
 		PauseAction, ETriggerEvent::Started, this, &ASpeedController::PauseInput);
 	EnhancedInputComponent->BindAction(StartBackCameraAction, ETriggerEvent::Started, this, &ASpeedController::StartBackCamera);
@@ -137,57 +131,46 @@ void ASpeedController::CompleteCamPitch(const FInputActionValue&)
 
 void ASpeedController::Throttle(const FInputActionValue& Value)
 {
+	if (InputSnapshots) return;
 	if (SpeedCar)
 	{
-		const float Input = FMath::Clamp(Value.Get<float>(), 0.0f, 1.0f);
-		if (bFrameInputProducerActive)
-		{
-			ensure(PublishDeviceAxis(Speed::Input::Throttle, Value.Get<float>(), false));
-		}
-		else SpeedCar->SetThrottleInput(Input); // Migration adapter.
+		SpeedCar->SetThrottleInput(FMath::Clamp(Value.Get<float>(), 0.0f, 1.0f));
 	}
 }
 
 void ASpeedController::StartBrake(const FInputActionValue&)
 {
+	if (InputSnapshots) return;
 	OnBrakeInputChanged(true);
 }
 
 void ASpeedController::Brake(const FInputActionValue& Value)
 {
+	if (InputSnapshots) return;
 	if (SpeedCar)
 	{
-		const float Input = FMath::Clamp(Value.Get<float>(), 0.0f, 1.0f);
-		if (bFrameInputProducerActive)
-		{
-			ensure(PublishDeviceAxis(Speed::Input::Brake, Value.Get<float>(), false));
-		}
-		else SpeedCar->SetBrakeInput(Input);
+		SpeedCar->SetBrakeInput(FMath::Clamp(Value.Get<float>(), 0.0f, 1.0f));
 	}
 }
 
 void ASpeedController::StopBrake(const FInputActionValue&)
 {
+	if (InputSnapshots) return;
 	OnBrakeInputChanged(false);
 	if (SpeedCar)
 	{
-		if (bFrameInputProducerActive) { ensure(PublishDeviceAction(Speed::Input::Brake, 0)); }
-		else SpeedCar->SetBrakeInput(0.0f);
+		SpeedCar->SetBrakeInput(0.0f);
 	}
 }
 
 void ASpeedController::Steering(const FInputActionValue& Value)
 {
+	if (InputSnapshots) return;
 	if (SpeedCar)
 	{
 		const float SteeringInput =
 			FMath::Clamp(Value.Get<float>(), -1.0f, 1.0f);
-		const float Filtered = FilterSteeringInput(SteeringInput);
-		if (bFrameInputProducerActive)
-		{
-			ensure(FMath::IsFinite(Value.Get<float>()) && PublishDeviceAxis(Speed::Input::Steering, Filtered, true));
-		}
-		else SpeedCar->SetSteeringInput(Filtered);
+		SpeedCar->SetSteeringInput(FilterSteeringInput(SteeringInput));
 	}
 }
 

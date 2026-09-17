@@ -13,8 +13,10 @@ existing throttle/brake [0,255] and steering [-127,127] quantization. Games own
 the other slots, their names and scales. No game-specific action law is added
 to the engine. Native tests use Jump/Powerslide as example game slots.
 
-`SourceFrame` belongs to the producer clock (device: Unreal game frame at the
-input callback). It is not comparable to the physical consumption clock.
+`SourceFrame` belongs to the injected sample's producer clock. The real device
+acquisition backend and clock remain unresolved; Unreal game frame counters
+are not an authoritative input clock. Source frames are not necessarily
+comparable to the physical consumption clock.
 Edges carry their own source frame and retain callback insertion order,
 including press-release-press in the same source frame. Edges newer than the
 snapshot source, decreasing source order, invalid IDs/ranges, and nonzero
@@ -23,15 +25,17 @@ padding, mutexes and pointer representations are not a wire format.
 
 Producer identity is a nonzero, serializable numeric ID scoped to the target
 stream and run, plus Device/AI/Network kind. The host owns uniqueness across
-targets and restarts. This is not a network-stable actor identity. The
-controller's default ID 1 is local to its newly possessed target's stream.
+targets and restarts. This is not a network-stable actor identity.
 
-`ASpeedController` owns an `IInputProducer` and an `FInputStream`. A device
-adapter accepts already mapped/filtered/quantized callbacks. Its short mutex
+`ASpeedController` can retain an externally configured `IInputProducer` and an
+`FInputStream`, but never constructs or feeds a device source. A device adapter
+accepts already mapped/filtered/quantized injected samples. Its short mutex
 protects a complete held-state/edge/source transaction; the worker never
-samples independent atomic axes or reads EnhancedInput. A sample can fall
-between two complete device callback transactions; no promise of one device
-frame per physics frame is made. Quantization rejects NaN/infinity and uses
+samples independent atomic axes or reads EnhancedInput. Capture transactions
+are independent of the GameThread. Tests inject samples directly; no OS/HID,
+Enhanced Input, UObject callback or other real capture backend is supplied.
+Choosing that backend requires a separate developer/lead decision. A physical
+sample can fall between two complete injected transactions. Quantization rejects NaN/infinity and uses
 the legacy round-to-nearest, ties toward positive infinity.
 
 The component latches the shared stream under a lifecycle mutex at its input
@@ -51,13 +55,13 @@ No wall-clock/SimTime reconstruction belongs in a producer.
 | Situation | Device | AI / Network minimal exact-frame inbox |
 | --- | --- | --- |
 | New frame | First requested frame, then contiguous frames | Explicit FirstFrame, then contiguous frames |
-| No new device callback | Same held values, no repeated edges | Missing input returns no frame; no prediction |
+| No new injected sample | Same held values, no repeated edges | Missing input returns no frame; no prediction |
 | Duplicate/replay request | Exact retained immutable copy | Exact retained immutable copy |
 | Evicted past / skipped consumption | Reject | Reject |
 | Late submission | Decreasing device source rejected | Already consumed target rejected |
 | Duplicate submission | Held duplicate emits no edge | Reject; no implicit replacement |
 | Future submission | Device events carry no physical target | At most 255 frames ahead of NextFrame; out-of-order arrival allowed |
-| Edge overflow | Reject whole callback; caller must handle failure | Invalid payload rejected |
+| Edge overflow | Reject whole sample transaction; caller must handle failure | Invalid payload rejected |
 | Storage | 256 frames, 64 pending edges | 256 pending frames plus 256 retained frames |
 
 AI has no planning implementation; network has no transport, authentication,
@@ -67,10 +71,14 @@ is not deterministic; replay of the recorded physical frames is.
 
 ## Consumption and migration
 
-`bUseFrameInputProducer=false` is the default. It is sampled at possession;
-changing the property is not a hot-switch operation. The opt-in path currently
-replaces only the generic throttle/brake/steering input route. Derived game
-actions, camera, pause, and their existing laws remain on their old paths.
+The default source is null, so existing controls retain the legacy adapter.
+Native `ConfigureInputProducer` can install an independently supplied test
+source only before possession; it cannot acquire or publish samples. It is not
+a Blueprint switch to working device acquisition. No production caller is
+added in CP1. When a source is supplied, the common driving Enhanced Input
+bindings are omitted, and legacy handlers return without writing components.
+There is no simultaneous legacy/new route for those axes. Derived game actions,
+camera, pause, and their laws remain on their old paths; migrating those is open.
 
 When enabled, the physical component consumes one explicitly addressed
 snapshot, updates its user target values, and applies the existing slew law.
@@ -119,7 +127,7 @@ The callback signature exposes no component, controller or producer handle.
 
 ## Evidence and remaining gates
 
-`Tests/InputProducerProbe.cpp` runs without Unreal and covers quantization,
+`Tests/InputProducerProbe.cpp` uses only injected synthetic samples, runs without Unreal and covers quantization,
 copy/immutability, held replay, ordered multi-edges, Jump/Powerslide boundaries,
 exact frame policies, capacity/overflow, three-producer parity, CanMove offsets,
 completed publication, polling coalescence, input-history hashes, rejected
@@ -135,6 +143,7 @@ replaced. Remaining gates are Unreal compile/link and automation, generic
 device parity, full game action migration with CanMove/edge timing tests,
 full regression/blocking Gold qualification, controller lifecycle/Freeplay,
 snapshot/journal rollback integration, and network frame/identity policy.
+The real local/client device acquisition source is an additional open gate.
 The migration adapter must remain until these relevant parity gates pass.
 
 The native Jump adapter is synthetic: it applies each exact-frame edge once
@@ -143,3 +152,8 @@ physical transition. Game-controller EnhancedInput Started/Completed bindings
 for Jump have **not** been replaced. Their migration must split physical
 edge handling from the existing controller methods that write the component,
 then bind only presentation observers through `SpeedController::BindAction`.
+
+Superseded checkpoint `f8ab01b` was rejected because its controller callbacks
+fed DeviceInputProducer from Enhanced Input/GFrameCounter. Its native test pass
+did not qualify that Unreal coupling. The corrected checkpoint removes that
+entire source path; only deterministic synthetic injection is qualified here.

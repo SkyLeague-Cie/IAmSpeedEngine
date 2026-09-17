@@ -17,7 +17,8 @@ public:
 	virtual std::optional<FInputFrame> Produce(FFrameNumber ConsumptionFrame) = 0;
 };
 
-/** GameThread/device adapter. Complete state and ordered edges are exchanged
+/** Injected device-sample adapter; real acquisition backend is not supplied.
+ * Complete state and ordered edges are exchanged
  * under one short lock. Live arrivals are nondeterministic; recorded frames
  * replay exactly. This is not a replacement for the simulation's sealed journal.
  */
@@ -26,7 +27,7 @@ class FDeviceInputProducer final : public IInputProducer
 public:
 	explicit FDeviceInputProducer(std::uint64_t Id) : Identity{EProducerKind::Device, Id} {}
 
-	// Values are already mapped/filtered/quantized by the game adapter. Digital
+	// Values are already mapped/filtered/quantized by an independent backend. Digital
 	// transitions use 0 = released, nonzero = held; axes opt out of edge emission.
 	bool SetAction(FFrameNumber Source, FActionId Action, std::int16_t Value, bool bEmitEdges)
 	{

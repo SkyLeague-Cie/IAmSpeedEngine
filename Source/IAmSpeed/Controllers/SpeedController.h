@@ -29,6 +29,10 @@ public:
 	 * Name is explicitly associated with a slot; unknown slots/duplicate names fail. */
 	bool BindAction(const FString& Name, Speed::Input::FActionId Action,
 		Speed::Input::FInputPresentationBindings::FCallback Callback);
+	/** Optional values-only source installation before possession. This is a
+	 * lifecycle operation, never device acquisition or a GameThread input feed.
+	 * No source is installed by default; the real device backend is unresolved. */
+	bool ConfigureInputProducer(std::shared_ptr<Speed::Input::IInputProducer> Producer);
 	/** Binds the common IAmSpeed driving actions to this controller. */
 	virtual void SetupEnhancedInputComponent(UEnhancedInputComponent* EnhancedInputComponent);
 
@@ -63,18 +67,6 @@ protected:
 	void SetupInputComponent() override;
 	void OnPossess(APawn* InPawn) override;
 	void OnUnPossess() override;
-	/** CP1 migration switch, sampled at possession. Legacy remains the default
-	 * until game-specific actions and player-control parity are qualified. */
-	UPROPERTY(EditDefaultsOnly, Category = Input)
-	bool bUseFrameInputProducer = false;
-
-	/** Identity is local to this possessed target's stream, not a network ID. */
-	UPROPERTY(EditDefaultsOnly, Category = Input, meta = (ClampMin = "1"))
-	int32 InputProducerId = 1;
-
-	/** GameThread-only publication hook for mapped, quantized game actions. */
-	bool PublishDeviceAction(Speed::Input::FActionId Action, int16 Value, bool bEmitEdges = false);
-	bool PublishDeviceAxis(Speed::Input::FActionId Action, float Value, bool bSigned);
 
 	/** Lets games apply their user-configured steering response or deadzone. */
 	virtual float FilterSteeringInput(float SteeringInput) const;
@@ -116,12 +108,9 @@ protected:
 	UInputAction* CamPitchAction = nullptr;
 
 private:
-	std::shared_ptr<Speed::Input::IInputProducer> InputProducer;
+	std::shared_ptr<Speed::Input::IInputProducer> InputProducer = nullptr;
 	std::shared_ptr<Speed::Input::FInputStream> InputSnapshots;
 	Speed::Input::FInputPresentationBindings PresentationBindings;
-	// Non-owning GameThread adapter; lifetime is that of InputProducer.
-	Speed::Input::FDeviceInputProducer* DeviceInputProducer = nullptr;
-	bool bFrameInputProducerActive = false;
 	/** Updates the worker owned by the authoritative IAmSpeed game mode. */
 	void SetStandaloneSimulationPaused(bool bPaused);
 };
