@@ -83,6 +83,31 @@ struct FWheeledPhysicsState
 	}
 };
 
+/** Camera INPUT only: never added to FWheeledPhysicsState or its hash.
+ * Flags bit0=present, bit1=held back view; absent extension is canonical neutral.
+ * Unknown versions/flags and -128 axes reject rather than silently clamp. */
+USTRUCT()
+struct IAMSPEED_API FSpeedCarCameraPhysicalInput
+{
+	GENERATED_BODY()
+	UPROPERTY()
+	uint8 Version = 1;
+	UPROPERTY()
+	uint8 Flags = 0;
+	UPROPERTY()
+	int8 Yaw = 0;
+	UPROPERTY()
+	int8 Pitch = 0;
+
+	bool IsValid() const;
+	bool IsPresent() const { return (Flags & 1) != 0; }
+	bool IsBack() const { return (Flags & 2) != 0; }
+	bool Equals(const FSpeedCarCameraPhysicalInput& Other) const;
+	static bool Quantize(bool bBack, float Yaw, float Pitch, FSpeedCarCameraPhysicalInput& Out);
+	/** Transactional field decode; callers own the enclosing packet boundary. */
+	bool Serialize(FArchive& Ar);
+};
+
 USTRUCT()
 struct FWheeledInputState
 {
@@ -96,6 +121,8 @@ struct FWheeledInputState
 	uint8 Brake = 0;
 	UPROPERTY()
 	int8 Steer = 0;
+	UPROPERTY()
+	FSpeedCarCameraPhysicalInput Camera;
 };
 
 /** Speed state data that will be used in the state history to rewind the simulation at some point in time */
@@ -167,6 +194,10 @@ struct FNetworkWheeledSpeedInputState : public FNetworkPhysicsData
 
 	UPROPERTY()
 	bool bIsAutonomousProxy = false;
+
+	/** Component timeline, not Chaos history address. Local capture has ClientFrame
+	 * even before countdown starts; remote fallback retains the old LocalFrame. */
+	int32 ResolveActivationFrame(int32 SinceCanMoveFrame, bool bLocalCapture) const;
 
 	/**  Apply the data onto the network physics component */
 	virtual void ApplyData(UActorComponent* NetworkComponent) const override;

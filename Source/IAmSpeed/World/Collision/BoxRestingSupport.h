@@ -60,4 +60,5 @@ IAMSPEED_API bool CanStabilizeBoxMicroRocking(
 	const IStaticCollisionWorld& World, const Analytic::FWorldQuery& BoxQuery,
 	const FKinematicState& Incoming, const FMatrix& WorldInverseInertia,
 	double InverseMass, double ImpactRestitution, double DynamicFriction);
+
 }

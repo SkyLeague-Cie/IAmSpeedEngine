@@ -1190,15 +1190,17 @@ double FWorldQueryService::SupportRadius(
 FWorldHit FWorldQueryService::SweepPlane(
 	const FWorldQuery& Query, const FBoundedPlane& Plane,
 	const FAnalyticWorldData* PlaneUnionWorld,
-	const FBoxSweepContext* CachedBoxContext, const EHitSelection Selection)
+	const FBoxSweepContext* CachedBoxContext, const EHitSelection Selection,
+	FIntPoint* OutPolygonEdge)
 {
+	if (OutPolygonEdge) *OutPolygonEdge = FIntPoint(INDEX_NONE, INDEX_NONE);
 	if (Query.Shape == EQueryShape::Box)
 	{
 #if !UE_BUILD_SHIPPING
 		FScopedAnalyticKernelTiming ScopedTiming(GAnalyticQueryPhaseTiming.PlaneEvaluationSeconds,
 			GAnalyticQueryPhaseTiming.PlaneCalls);
 #endif
-		return SweepBoxPlane(Query, Plane, CachedBoxContext, Selection);
+		return SweepBoxPlane(Query, Plane, CachedBoxContext, Selection, OutPolygonEdge);
 	}
 	FWorldHit Hit;
 	TrySweepRoundPlane(Query, Plane, Hit, PlaneUnionWorld);
@@ -1557,9 +1559,11 @@ void FWorldQueryService::VisitPlanarCandidates(const FWorldQuery& Query,
 
 FWorldHit FWorldQueryService::SweepBoxPlane(
 	const FWorldQuery& Query, const FBoundedPlane& Plane,
-	const FBoxSweepContext* CachedBoxContext, const EHitSelection Selection)
+	const FBoxSweepContext* CachedBoxContext, const EHitSelection Selection,
+	FIntPoint* OutPolygonEdge)
 {
 	FWorldHit Best;
+	if (OutPolygonEdge) *OutPolygonEdge = FIntPoint(INDEX_NONE, INDEX_NONE);
 	// Every facet and triangle sees the same box pose/path. Reuse an outer
 	// extrusion's immutable context, or construct one for a standalone plane.
 	FBoxSweepContext LocalContext;
@@ -1665,7 +1669,21 @@ FWorldHit FWorldQueryService::SweepBoxPlane(
 		Candidate.PrimitiveId = Plane.PrimitiveId;
 		Candidate.MaterialId = Plane.MaterialId;
 		if (HitPassesReferenceNormal(Query, Candidate) &&
-			IsBetterHit(Candidate, Best, Selection)) Best = Candidate;
+			IsBetterHit(Candidate, Best, Selection))
+		{
+			Best = Candidate;
+			if (OutPolygonEdge)
+			{
+				*OutPolygonEdge = FIntPoint(INDEX_NONE, INDEX_NONE);
+				if (Candidate.SurfaceFeatureKind == EContactFeatureKind::Edge &&
+					Candidate.SurfaceFeatureIndex >= 0 && Candidate.SurfaceFeatureIndex < 3)
+				{
+					const int32 Edge = Candidate.SurfaceFeatureIndex;
+					*OutPolygonEdge = FIntPoint(Triangle.PolygonVertex[Edge],
+						Triangle.PolygonVertex[(Edge + 1) % 3]);
+				}
+			}
+		}
 	}
 	return Best;
 }
@@ -1908,8 +1926,19 @@ FWorldHit FWorldQueryService::SweepExtrudedQuintic(
 				Segment + 2 < Patch.SectionPolyline.Num() &&
 				FVector3d::DotProduct(Patch.SectionPolyline[Segment - 1] - SectionA, Face.Normal) >= 0 &&
 				FVector3d::DotProduct(Patch.SectionPolyline[Segment + 2] - SectionB, Face.Normal) >= 0;
-			Candidate = SweepPlane(FaceQuery, Face, nullptr, &BoxContext, Selection);
-			if (bConcaveInternalFacet && Candidate.bHit)
+			FIntPoint PolygonEdge(INDEX_NONE, INDEX_NONE);
+			Candidate = SweepPlane(FaceQuery, Face, nullptr, &BoxContext, Selection, &PolygonEdge);
+			const int32 EdgeMin = FMath::Min(PolygonEdge.X, PolygonEdge.Y);
+			const int32 EdgeMax = FMath::Max(PolygonEdge.X, PolygonEdge.Y);
+			// A terminal facet still has one INTERNAL section edge. Its actual
+			// opposite boundary must keep SAT, so classify the winning triangle's
+			// polygon corners, never its ambiguous triangle-local edge index.
+			const bool bConcaveSectionEdge = bInsideExtrusion &&
+				((EdgeMin == 0 && EdgeMax == 3 && Segment > 0 &&
+					FVector3d::DotProduct(Patch.SectionPolyline[Segment - 1] - SectionA, Face.Normal) >= 0) ||
+				 (EdgeMin == 1 && EdgeMax == 2 && Segment + 2 < Patch.SectionPolyline.Num() &&
+					FVector3d::DotProduct(Patch.SectionPolyline[Segment + 2] - SectionB, Face.Normal) >= 0));
+			if ((bConcaveInternalFacet || bConcaveSectionEdge) && Candidate.bHit)
 			{
 				// Normal projection of a penetrating support vertex can lie in
 				// the face even when the ORIGINAL OBB misses that finite facet.

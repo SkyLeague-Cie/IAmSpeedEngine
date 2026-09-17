@@ -86,22 +86,35 @@ bool FSimulationWorker::Start()
 
 void FSimulationWorker::Pause()
 {
+	(void)TryPause(MAX_uint32);
+}
+
+bool FSimulationWorker::TryPause(const uint32 TimeoutMilliseconds)
+{
 	if (!bPaused.Load() && PauseAcknowledgedEvent)
 	{
 		PauseAcknowledgedEvent->Reset();
+		++PauseRequestSerial;
 	}
+	const uint64 RequestedSerial = PauseRequestSerial.Load();
 	bPaused.Store(true);
 	if (WakeEvent)
 	{
 		WakeEvent->Trigger();
 	}
 
-	// Pause is a boundary operation: callers may safely freeze presentation as
-	// soon as this method returns because no canonical frame is still running.
-	while (bRunning.Load() && PauseAcknowledgedEvent &&
-		!PauseAcknowledgedEvent->Wait(100))
+	// Only a true return proves the canonical boundary. A timeout leaves the
+	// request pending and never authorizes access to live simulation state.
+	const double Deadline = FPlatformTime::Seconds() + double(TimeoutMilliseconds) / 1000.0;
+	while (bRunning.Load() && PauseAcknowledgedEvent)
 	{
+		if (PauseAckSerial.Load() >= RequestedSerial && !bStopRequested.Load()) return true;
+		const double Remaining = Deadline - FPlatformTime::Seconds();
+		if (Remaining <= 0) return false;
+		PauseAcknowledgedEvent->Wait(uint32(FMath::Max(1,
+			FMath::CeilToInt(FMath::Min(Remaining * 1000.0, 100.0)))));
 	}
+	return false;
 }
 
 void FSimulationWorker::Resume()
@@ -135,17 +148,28 @@ void FSimulationWorker::StopAndJoin()
 
 uint32 FSimulationWorker::Run()
 {
+	auto AcknowledgePause = [this]()
+	{
+		// Read the request before the flag: never acknowledge a newer request
+		// using a stale observation of the preceding paused interval.
+		const uint64 Request = PauseRequestSerial.Load();
+		if (bPaused.Load())
+		{
+			PauseAckSerial.Store(Request);
+			PauseAcknowledgedEvent->Trigger();
+		}
+	};
 	FSimulationWorkerWaitContext WaitContext(
 		*WakeEvent, bStopRequested, bPaused);
 	while (!bStopRequested.Load())
 	{
 		if (bPaused.Load())
 		{
-			PauseAcknowledgedEvent->Trigger();
+			AcknowledgePause();
 			while (bPaused.Load() && !bStopRequested.Load())
 			{
 				WakeEvent->Wait(100);
-				PauseAcknowledgedEvent->Trigger();
+				AcknowledgePause();
 			}
 			PauseAcknowledgedEvent->Reset();
 			continue;

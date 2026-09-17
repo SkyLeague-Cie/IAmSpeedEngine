@@ -13,6 +13,8 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 
 namespace
@@ -49,12 +51,122 @@ ASpeedSimulation::ASpeedSimulation()
 void ASpeedSimulation::BeginPlay()
 {
 	Super::BeginPlay();
+	// Fixed before the worker starts; diagnostics never change the canonical payload.
+	bPublishPresentation = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
 	RefreshExecutionMode();
+}
+
+bool ASpeedSimulation::ReadPresentationPose(const uint64 StableId, FSimulationPoseConsumption& Out)
+{
+	check(IsInGameThread());
+	if (!bPublishPresentation) { Out = FSimulationPoseConsumption(); return false; }
+	return PresentationLatch.ReadBody(GFrameCounter, SnapshotBuffer, StableId, Out);
+}
+
+bool ASpeedSimulation::ReadCanonicalCameraSample(const uint64 NumFrame,
+	FCameraCanonicalSample& Out) const
+{
+	check(IsInGameThread());
+	return CameraSampleBuffer.ReadFrame(NumFrame, Out);
+}
+
+bool ASpeedSimulation::ReadPresentationOutput(const uint64 StableId, const uint32 Channel,
+	FSimulationPresentationOutput& Out)
+{
+	check(IsInGameThread());
+	if (!bPublishPresentation) { Out = FSimulationPresentationOutput(); return false; }
+	return PresentationLatch.ReadOutput(GFrameCounter, SnapshotBuffer, StableId, Channel, Out);
+}
+
+bool ASpeedSimulation::RegisterPresentationProducer(
+	TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe> Producer)
+{
+	check(IsInGameThread());
+	FScopeLock Lock(&PresentationProducerMutex);
+	if (bPresentationBindingClosed || !Producer->OwnerStableId() || !Producer->Channel() || PresentationProducers.Num() >= 64) return false;
+	for (const auto& Existing : PresentationProducers)
+		if (Existing->OwnerStableId() == Producer->OwnerStableId() && Existing->Channel() == Producer->Channel()) return false;
+	PresentationProducers.Add(Producer);
+	return true;
+}
+
+void ASpeedSimulation::UnregisterPresentationProducer(
+	const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer)
+{
+	check(IsInGameThread());
+	FScopeLock Lock(&PresentationProducerMutex);
+	PresentationProducers.Remove(Producer);
+}
+
+TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulation::BindPresentationAtFrameBoundary(
+	ISpeedComponent& OwnerComponent, ISpeedComponent& TargetComponent,
+	TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
+		const FSimulationPresentationBinding&)> Factory,
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous)
+{
+	return BindPresentationAtFrameBoundary(OwnerComponent, &TargetComponent, Factory, Previous);
+}
+
+TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulation::BindPresentationAtFrameBoundary(
+	ISpeedComponent& OwnerComponent, ISpeedComponent* TargetComponent,
+	TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
+		const FSimulationPresentationBinding&)> Factory,
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous)
+{
+	check(IsInGameThread());
+	if (bPresentationBindingClosed || GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback ||
+		bOwnedWorkerTerminal.Load() || !EnsureSimulationWorldReady()) return nullptr;
+	const bool bWasPaused = IsOwnedSimulationPaused();
+	bOwnedSimulationPaused.Store(true);
+	if (SimulationWorker && !SimulationWorker->TryPause(1000))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PresentationBindingPauseUnacknowledged] Registration rejected; simulation remains pause-requested."));
+		return nullptr;
+	}
+	if (!bWasPaused) OnOwnedSimulationPaused();
+	ON_SCOPE_EXIT { if (!bWasPaused) ResumeOwnedSimulation(); };
+	InitializeCanonicalFrame(0);
+	FSimulationPresentationBinding Binding;
+	Binding.OwnerStableId = SpeedWorldSubsystem->GetSimulationStableId(OwnerComponent);
+	Binding.TargetStableId = TargetComponent ? SpeedWorldSubsystem->GetSimulationStableId(*TargetComponent) : 0;
+	Binding.FirstFrame = CanonicalNumFrame;
+	if (!Binding.OwnerStableId || (TargetComponent && !Binding.TargetStableId) || Binding.OwnerStableId == Binding.TargetStableId)
+		return nullptr;
+	auto Producer = Factory(Binding);
+	if (!Producer || Producer->OwnerStableId() != Binding.OwnerStableId || !Producer->Channel())
+		return nullptr;
+	if (Previous)
+	{
+		FScopeLock Lock(&PresentationProducerMutex);
+		const int32 Index = PresentationProducers.IndexOfByKey(Previous.ToSharedRef());
+		if (Index == INDEX_NONE || Previous->OwnerStableId() != Producer->OwnerStableId() ||
+			Previous->Channel() != Producer->Channel()) return nullptr;
+		// The acknowledged boundary makes replacement atomic with respect to Produce.
+		PresentationProducers[Index] = Producer.ToSharedRef();
+	}
+	else if (!RegisterPresentationProducer(Producer.ToSharedRef())) return nullptr;
+	// Successful binding opts into its body/output sidecars. The owned worker
+	// is pause-acknowledged above and resumes only after this boundary returns.
+	// Failed factories/registration must leave publication policy unchanged.
+	bPublishPresentation = true;
+	return Producer;
+}
+
+bool ASpeedSimulation::ReadCanonicalCameraSamples(const uint64 FirstFrame,
+	const uint64 LastFrame, TArray<FCameraCanonicalSample>& Out) const
+{
+	check(IsInGameThread());
+	return CameraSampleBuffer.ReadRange(FirstFrame, LastFrame, Out);
 }
 
 void ASpeedSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	bPresentationBindingClosed = true;
 	StopOwnedWorker();
+	{
+		FScopeLock Lock(&PresentationProducerMutex);
+		PresentationProducers.Reset();
+	}
 	bAsyncPhysicsTickEnabled = false;
 	Super::EndPlay(EndPlayReason);
 }
@@ -77,7 +189,7 @@ void ASpeedSimulation::Tick(const float DeltaSeconds)
 		return;
 	case ESimulationExecutionMode::GameThread:
 	{
-		if (bExecutionPaused)
+		if (bExecutionPaused || bOwnedWorkerTerminal.Load())
 		{
 			return;
 		}
@@ -92,6 +204,11 @@ void ASpeedSimulation::Tick(const float DeltaSeconds)
 			if (Result == ESimulationWorkerResult::Failed ||
 				Result == ESimulationWorkerResult::Complete)
 			{
+				if (Result == ESimulationWorkerResult::Failed)
+				{
+					bOwnedWorkerTerminal.Store(true);
+					bOwnedSimulationPaused.Store(true);
+				}
 				GameThreadAccumulatorSeconds = 0.0;
 				return;
 			}
@@ -500,6 +617,16 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		}
 	}
 
+	FString BindingFailure;
+	if (!SpeedWorldSubsystem->BeginCanonicalFrame(BindingFailure))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[SimulationBindingRejected] frame=%llu %s"),
+			Context.NumFrame, *BindingFailure);
+		// Both drivers convert a rejected frame to Failed; the owned worker
+		// exits at this boundary without advancing time or publishing a pose.
+		return false;
+	}
+	ON_SCOPE_EXIT { SpeedWorldSubsystem->EndCanonicalFrame(); };
 	IAMSPEED_FRAME_SCOPE(Initialize);
 	Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
 		Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
@@ -526,10 +653,39 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		Context.SimTime,
 		static_cast<unsigned int>(Context.NumFrame));
 	IAMSPEED_FRAME_PHASE(Snapshot);
-	const FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
-		Context.NumFrame, InputJournal.StableHash());
+	FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
+		Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
+	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
+	{
+		FScopeLock Lock(&PresentationProducerMutex);
+		Producers = PresentationProducers;
+	}
+	for (const auto& Producer : Producers)
+	{
+		FSimulationPresentationOutput Output;
+		Producer->Produce(Snapshot, Output);
+		// Producer cannot forge the envelope address or publication serial.
+		Output.OwnerStableId = Producer->OwnerStableId();
+		Output.Channel = Producer->Channel();
+		Output.NumFrame = Snapshot.NumFrame;
+		Output.PublicationSerial = 0;
+		Snapshot.PresentationOutputs.Add(MoveTemp(Output));
+	}
 	IAMSPEED_FRAME_PHASE(Publish);
-	SnapshotBuffer.Publish(Snapshot);
+	if (!SnapshotBuffer.Publish(Snapshot))
+	{
+		Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
+		return false;
+	}
+	FCameraCanonicalSample CameraSample;
+	if (BuildCanonicalCameraSample(Snapshot, CameraSample))
+	{
+		CameraSample.NumFrame = Snapshot.NumFrame;
+		CameraSample.PublicationSerial = SnapshotBuffer.PublishedSerial();
+		CameraSample.StateHash = Snapshot.StateHash;
+		CameraSample.InputJournalHash = Snapshot.InputJournalHash;
+		CameraSampleBuffer.Publish(CameraSample);
+	}
 	IAMSPEED_FRAME_PHASE(Journal);
 	FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
 	IAMSPEED_FRAME_PHASE(Finalize);
@@ -571,6 +727,24 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 		PendingRollbackRequest.Reset();
 	}
 
+	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> RestoreProducers;
+	{
+		FScopeLock Lock(&PresentationProducerMutex);
+		RestoreProducers = PresentationProducers;
+	}
+	TArray<FSimulationPresentationOutput> RestoreOutputs;
+	if (Request->Snapshot.PresentationOutputs.Num() != RestoreProducers.Num()) return false;
+	for (const auto& Producer : RestoreProducers)
+	{
+		const FSimulationPresentationOutput* Output = Request->Snapshot.PresentationOutputs.FindByPredicate(
+			[&](const FSimulationPresentationOutput& Candidate)
+			{
+				return Candidate.OwnerStableId == Producer->OwnerStableId() && Candidate.Channel == Producer->Channel();
+			});
+		if (!Output || Output->NumFrame != Request->Snapshot.NumFrame ||
+			!Producer->CanRestore(*Output, Request->TargetFrameInclusive)) return false;
+		RestoreOutputs.Add(*Output);
+	}
 	if (!SpeedWorldSubsystem ||
 		!SpeedWorldSubsystem->RestoreSimulationSnapshot(
 			Request->Snapshot, InputJournal.StableHash()))
@@ -581,6 +755,13 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 		return false;
 	}
 
+	Request->Snapshot.PresentationOutputs.Reset();
+	for (int32 Index = 0; Index < RestoreProducers.Num(); ++Index)
+	{
+		FSimulationPresentationOutput Restored;
+		RestoreProducers[Index]->RestoreValidated(RestoreOutputs[Index], Request->TargetFrameInclusive, Restored);
+		Request->Snapshot.PresentationOutputs.Add(MoveTemp(Restored));
+	}
 	FrameHashes.RemoveFrom(Request->Snapshot.NumFrame);
 	if (!FrameHashes.Append(
 			Request->Snapshot.NumFrame, Request->Snapshot.StateHash) ||

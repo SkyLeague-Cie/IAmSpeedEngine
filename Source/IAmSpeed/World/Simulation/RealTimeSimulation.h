@@ -58,7 +58,7 @@ private:
 
 /** Paced real-time policy; the selected execution host advances canonical frames. */
 UCLASS()
-class IAMSPEED_API ARealTimeSimulation final : public ASpeedSimulation
+class IAMSPEED_API ARealTimeSimulation : public ASpeedSimulation
 {
 	GENERATED_BODY()
 

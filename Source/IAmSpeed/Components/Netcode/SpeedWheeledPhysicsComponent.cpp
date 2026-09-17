@@ -5,6 +5,37 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 
+bool FSpeedCarCameraPhysicalInput::IsValid() const
+{
+	return Version == 1 && Flags <= 3 && Yaw != MIN_int8 && Pitch != MIN_int8 &&
+		(IsPresent() || (Flags == 0 && Yaw == 0 && Pitch == 0));
+}
+
+bool FSpeedCarCameraPhysicalInput::Equals(const FSpeedCarCameraPhysicalInput& Other) const
+{
+	return Version == Other.Version && Flags == Other.Flags && Yaw == Other.Yaw && Pitch == Other.Pitch;
+}
+
+bool FSpeedCarCameraPhysicalInput::Quantize(bool bBack, float InYaw, float InPitch, FSpeedCarCameraPhysicalInput& Out)
+{
+	if (!FMath::IsFinite(InYaw) || !FMath::IsFinite(InPitch)) return false;
+	FSpeedCarCameraPhysicalInput Value;
+	Value.Flags = 1 | (bBack ? 2 : 0);
+	Value.Yaw = FMath::RoundToInt(FMath::Clamp(InYaw, -1.0f, 1.0f) * 127.0f);
+	Value.Pitch = FMath::RoundToInt(FMath::Clamp(InPitch, -1.0f, 1.0f) * 127.0f);
+	Out = Value;
+	return true;
+}
+
+bool FSpeedCarCameraPhysicalInput::Serialize(FArchive& Ar)
+{
+	auto Value = *this;
+	Ar << Value.Version << Value.Flags << Value.Yaw << Value.Pitch;
+	if (Ar.IsError() || !Value.IsValid()) { Ar.SetError(); return false; }
+	if (Ar.IsLoading()) *this = Value;
+	return true;
+}
+
 
 void FNetworkWheeledSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 {
@@ -158,24 +189,31 @@ float FWheeledPhysicsState::DequantizeLastSuspensionDisplacement(int16 q) const
 	return FWheeledPhysicsState::DequantizeSigned(q, SpeedConstants::SuspScale);
 }
 
+int32 FNetworkWheeledSpeedInputState::ResolveActivationFrame(int32 SinceCanMoveFrame, bool bLocalCapture) const
+{
+	const int64 Frame = (ClientFramesSinceCanMove != INDEX_NONE && SinceCanMoveFrame != INDEX_NONE)
+		? int64(SinceCanMoveFrame) + ClientFramesSinceCanMove + 1
+		: (bLocalCapture ? int64(ClientFrame) + 1 : int64(LocalFrame));
+	return Frame >= 0 && Frame <= MAX_int32 ? int32(Frame) : INDEX_NONE;
+}
+
 void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent) const
 {
+	if (!WheeledInput.Camera.IsValid()) return;
 	if (USpeedWheeledComponent* Mover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
 		// A sealed local scenario is the sole input authority. The queue rechecks
 		// under lock so an already in-flight network producer cannot overwrite it.
 		if (Mover->IsTestInputOverrideEnabled()) return;
-		const int32 ActivationFrame = int32(LocalFrame);
-		const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
-		const int32 TimelineActivationFrame =
-			(ClientFramesSinceCanMove != INDEX_NONE && SinceCanMoveFrame != INDEX_NONE)
-			? SinceCanMoveFrame + ClientFramesSinceCanMove + 1
-			: ActivationFrame;
+		const int32 TimelineActivationFrame = ResolveActivationFrame(Mover->GetSinceCanMoveFrame(), false);
 
 		Mover->QueueNetworkWheeledInputForFrame(
 			TimelineActivationFrame,
 			WheeledInput
 		);
+		// Same camera-only admission as the local BuildData capture. Never read
+		// the live mailbox here: this method also runs for historical resimulation.
+		Mover->QueueCameraInputForFrame(TimelineActivationFrame, WheeledInput.Camera);
 	}
 }
 
@@ -192,21 +230,31 @@ void FNetworkWheeledSpeedInputState::BuildData(const UActorComponent* NetworkCom
 				? int32(ClientFrame) - SinceCanMoveFrame
 				: INDEX_NONE;
 			bIsAutonomousProxy = Mover->GetOwnerRole() == ROLE_AutonomousProxy;
+			// UE records this very packet after BuildData on the normal locally
+			// controlled path only. Stage exactly its camera value, not wheel inputs
+			// copied above (which have their own unchanged UpdateInputs phase).
+			WheeledInput.Camera = Mover->CaptureNetworkCameraInput(
+				LocalFrame, ResolveActivationFrame(SinceCanMoveFrame, true));
 		}
 	}
 }
 
 bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
-	FNetworkPhysicsData::SerializeFrames(Ar);
-	Ar << WheeledInput.Throttle;
-	Ar << WheeledInput.Brake;
-	Ar << WheeledInput.Steer;
-	Ar << ClientFrame;
-	Ar << ClientFramesSinceCanMove;
-	Ar << bIsAutonomousProxy;
-	bOutSuccess = true;
-	return true;
+	// Decode the complete INPUT transactionally, including the new versioned
+	// camera tail. Old mechanical-state serializers remain byte-identical.
+	auto Value = *this;
+	Value.FNetworkPhysicsData::SerializeFrames(Ar);
+	Ar << Value.WheeledInput.Throttle;
+	Ar << Value.WheeledInput.Brake;
+	Ar << Value.WheeledInput.Steer;
+	Ar << Value.ClientFrame;
+	Ar << Value.ClientFramesSinceCanMove;
+	Ar << Value.bIsAutonomousProxy;
+	Ar << Value.WheeledInput.bCanMove;
+	bOutSuccess = Value.WheeledInput.Camera.Serialize(Ar) && !Ar.IsError();
+	if (bOutSuccess && Ar.IsLoading()) *this = Value;
+	return bOutSuccess;
 }
 
 void FNetworkWheeledSpeedInputState::InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData)
@@ -233,6 +281,7 @@ void FNetworkWheeledSpeedInputState::InterpolateData(const FNetworkPhysicsData& 
 	const FNetworkWheeledSpeedInputState& Source =
 		bUseMax ? MaxState : MinState;
 
+	if (!Source.WheeledInput.Camera.IsValid()) return;
 	WheeledInput = Source.WheeledInput;
 	ClientFrame = Source.ClientFrame;
 	ClientFramesSinceCanMove = Source.ClientFramesSinceCanMove;
@@ -244,6 +293,8 @@ bool FNetworkWheeledSpeedInputState::CompareData(const FNetworkPhysicsData& Pred
 	const FNetworkWheeledSpeedInputState& C = static_cast<const FNetworkWheeledSpeedInputState&>(PredictedData); // Client predicted
 	const FNetworkWheeledSpeedInputState& S = *this;                                                  // Server (authoritative for that frame)
 
+	if (!S.WheeledInput.Camera.IsValid() || !C.WheeledInput.Camera.IsValid() ||
+		!S.WheeledInput.Camera.Equals(C.WheeledInput.Camera)) return false;
 	if (!C.WheeledInput.bCanMove)
 	{
 		return true;

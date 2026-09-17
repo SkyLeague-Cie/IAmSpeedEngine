@@ -11,6 +11,14 @@
 
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
+class ISpeedComponent;
+
+struct FSimulationPresentationBinding
+{
+	uint64 OwnerStableId = 0;
+	uint64 TargetStableId = 0;
+	uint64 FirstFrame = 0;
+};
 
 /*
 * ASpeedSimulation : Actor responsible for ticking the IAmSpeed Engine simulation.
@@ -20,6 +28,9 @@ UCLASS(Abstract)
 class IAMSPEED_API ASpeedSimulation : public AActor
 {
 	GENERATED_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FIAmSpeedWheelSimulationAdmissionTest;
+#endif
 
 public:
 	// Sets default values for this actor's properties
@@ -38,6 +49,33 @@ public:
 	void SealSimulationInputs();
 	const Speed::SimulationBoundary::FInputJournal& GetSimulationInputJournal() const { return InputJournal; }
 	bool ReadLatestSimulationSnapshot(FSimulationSnapshot& OutSnapshot) const { return SnapshotBuffer.ReadLatest(OutSnapshot); }
+	/** GT-only opt-in view, shared by every actor on this game frame. No live adapter reads. */
+	bool ReadPresentationPose(uint64 StableId, FSimulationPoseConsumption& Out);
+	bool ReadPresentationOutput(uint64 StableId, uint32 Channel, FSimulationPresentationOutput& Out);
+	/** Thread-safe registry: canonical code copies shared handles under a short lock,
+	 * then calls values-only producers without holding the registry lock. */
+	bool RegisterPresentationProducer(TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe> Producer);
+	void UnregisterPresentationProducer(const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer);
+	/** GT lifecycle transaction: pause/acknowledge the owned lane, resolve stable
+	 * identities and register before FirstFrame, then preserve the prior pause state.
+	 * Legacy Unreal-async hosting is rejected because it has no owned-lane join. */
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> BindPresentationAtFrameBoundary(
+		ISpeedComponent& OwnerComponent, ISpeedComponent& TargetComponent,
+		TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
+			const FSimulationPresentationBinding&)> Factory,
+		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr);
+	/** Same transaction; nullptr explicitly binds only the owner (target id zero).
+	 * A non-null target still requires a registered, distinct identity. */
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> BindPresentationAtFrameBoundary(
+		ISpeedComponent& OwnerComponent, ISpeedComponent* TargetComponent,
+		TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
+			const FSimulationPresentationBinding&)> Factory,
+		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr);
+	/** Reads an exact physics-side camera sample; never interpolates. */
+	bool ReadCanonicalCameraSample(uint64 NumFrame, FCameraCanonicalSample& Out) const;
+	/** Reads a contiguous exact-frame camera range; never interpolates. */
+	bool ReadCanonicalCameraSamples(uint64 FirstFrame, uint64 LastFrame,
+		TArray<FCameraCanonicalSample>& Out) const;
 	/** Complete per-frame hashes for comparing two drivers after a run. */
 	const Speed::SimulationBoundary::FFrameHashJournal& GetFrameHashes() const { return FrameHashes; }
 	/**
@@ -88,6 +126,9 @@ protected:
 	virtual void OnOwnedSimulationPaused() {}
 	virtual void OnOwnedSimulationResumed() {}
 	virtual bool ShouldMeasureCallback() const { return true; }
+	/** Optional pure camera evaluator hook; false leaves the sample unpublished. */
+	virtual bool BuildCanonicalCameraSample(const FSimulationSnapshot& Snapshot,
+		FCameraCanonicalSample& OutSample) const { return false; }
 	bool EnsureSimulationWorldReady();
 	/** Gates controlled runs until their scenario and Unreal bridge are ready. */
 	ESimulationWorkerResult CheckCanonicalRunReadiness();
@@ -123,9 +164,15 @@ protected:
 	static unsigned int EngineFPS; // The FPS at which the IAmSpeed Engine is running
 	Speed::SimulationBoundary::FInputJournal InputJournal;
 	Speed::SimulationBoundary::FSnapshotBuffer SnapshotBuffer;
+	Speed::SimulationBoundary::FCameraSampleBuffer CameraSampleBuffer;
 	Speed::SimulationBoundary::FFrameHashJournal FrameHashes;
 
 private:
+	bool bPublishPresentation = false;
+	bool bPresentationBindingClosed = false;
+	FCriticalSection PresentationProducerMutex;
+	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> PresentationProducers;
+	Speed::SimulationBoundary::FPresentationFrameLatch PresentationLatch;
 	struct FPendingRollbackRequest
 	{
 		FSimulationSnapshot Snapshot;

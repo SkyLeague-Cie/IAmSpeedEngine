@@ -226,7 +226,8 @@ private:
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
 		const FAnalyticWorldData* PlaneUnionWorld = nullptr,
 		const Private::FBoxSweepContext* CachedBoxContext = nullptr,
-		EHitSelection Selection = EHitSelection::FirstSweepHit);
+		EHitSelection Selection = EHitSelection::FirstSweepHit,
+		FIntPoint* OutPolygonEdge = nullptr);
 	/** Ray/sphere plane kernel: a miss leaves OutHit untouched; a hit replaces every field. */
 	static bool TrySweepRoundPlane(
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
@@ -237,7 +238,8 @@ private:
 	static FWorldHit SweepBoxPlane(
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
 		const Private::FBoxSweepContext* CachedBoxContext = nullptr,
-		EHitSelection Selection = EHitSelection::FirstSweepHit);
+		EHitSelection Selection = EHitSelection::FirstSweepHit,
+		FIntPoint* OutPolygonEdge = nullptr);
 	static FWorldHit SweepTriangleFace(
 		const FWorldQuery& Query, const FTriangleSurface& Triangle);
 	static FWorldHit SweepExtrudedQuintic(

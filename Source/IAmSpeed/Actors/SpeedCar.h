@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "WheeledVehiclePawn.h"
+#include "IAmSpeed/Camera/SpeedArmComponent.h"
 #include "SpeedCar.generated.h"
 
 class USpeedWheeledComponent;
@@ -21,8 +22,11 @@ class IAMSPEED_API ASpeedCar : public AWheeledVehiclePawn
 
 	/** Cast pointer to the Chaos Vehicle movement component */
 	TObjectPtr<USpeedWheeledComponent> SpeedWheeledComponent;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Camera, meta = (AllowPrivateAccess = "true"))
+	USpeedArmComponent* CameraArm;
 public:
 	ASpeedCar(const FObjectInitializer& ObjectInitializer);
+	USpeedArmComponent* GetSpeedCameraArm() const { return CameraArm; }
 
 	void BeginPlay() override;
 	void Tick(float Delta) override;
@@ -37,6 +41,10 @@ public:
 	void SetBrakeInput(const float& Brake);
 	// Set the steering input for this frame, value between -1 and 1
 	void SetSteeringInput(const float& Steering);
+	void SetCameraBackInput(bool bBack);
+	void SetCameraYawInput(float Value);
+	void SetCameraPitchInput(float Value);
+	virtual void ClearCameraInputs();
 	// --- End of input functions ---
 
 	void SetPhysSparkleLocation(const FVector& HitLocation);
@@ -65,10 +73,12 @@ public:
 	void FreezeMovement();
 protected:
 	virtual void HandleKinematics();
+	virtual void HandleCameraPresentation(float Delta);
 	virtual void HandleSparkle();
 	virtual void DemoedByPrv(ASpeedCar* car);
 
 private:
+	FSimulationPoseConsumption GenericOwnerConsumption;
 #if !UE_BUILD_SHIPPING
 	/** Resolves the authoritative simulation once and audits snapshot cadence. */
 	void AuditPresentationFrameCadence(float GameDeltaSeconds);

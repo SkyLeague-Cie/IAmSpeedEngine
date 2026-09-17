@@ -10,6 +10,60 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedResolvedPairSetTest,
 
 bool FIAmSpeedResolvedPairSetTest::RunTest(const FString& Parameters)
 {
+	{
+		Speed::Collision::FResolvedPairSet Generations;
+		TestTrue(TEXT("new exact identity may resolve initially"), Generations.CanResolve(91, true));
+		Generations.RecordEligibleResolution(91);
+		TestEqual(TEXT("initial resolution records generation one"), Generations.GetGeneration(91), uint8(1));
+		TestTrue(TEXT("one exact reacquisition remains eligible"), Generations.CanResolve(91, true));
+		Generations.RecordEligibleResolution(91);
+		TestEqual(TEXT("reacquisition saturates at generation two"), Generations.GetGeneration(91), uint8(2));
+		TestFalse(TEXT("second repeat is rejected"), Generations.CanResolve(91, true));
+		Generations.RecordEligibleResolution(91);
+		TestEqual(TEXT("generation stays saturated"), Generations.GetGeneration(91), uint8(2));
+		TestTrue(TEXT("another vertex runtime key is independent"), Generations.CanResolve(92, true));
+		TestTrue(TEXT("another provider runtime key is independent"), Generations.CanResolve(93, true));
+		TestTrue(TEXT("another pair runtime key is independent"), Generations.CanResolve(94, true));
+
+		Speed::Collision::FResolvedPairSet Excluded;
+		Excluded.Add(101);
+		TestEqual(TEXT("ordinary or ignored add consumes no generation"), Excluded.GetGeneration(101), uint8(0));
+		TestFalse(TEXT("ordinary resolved pair cannot reacquire"), Excluded.CanResolve(101, false));
+		TestFalse(TEXT("unrecorded eligible generation cannot bypass ordinary membership"), Excluded.CanResolve(101, true));
+
+		SHitResult Eligible;
+		Eligible.TOI = .001f;
+		Eligible.SourceId = 11; Eligible.SurfaceId = 12;
+		Eligible.ContactFeatureThis = Speed::EContactFeatureKind::Vertex;
+		Eligible.ContactFeatureIndexThis = 7;
+		Eligible.ContactFeatureOther = Speed::EContactFeatureKind::Face;
+		TestTrue(TEXT("exact positive vertex-face event is structurally eligible"),
+			Speed::Collision::IsEligibleExactStaticRepeatHit(Eligible));
+		for (const float InvalidTOI : { 0.f, -.001f })
+		{
+			SHitResult Invalid = Eligible;
+			Invalid.TOI = InvalidTOI;
+			TestFalse(TEXT("nonpositive TOI is excluded"),
+				Speed::Collision::IsEligibleExactStaticRepeatHit(Invalid));
+		}
+		SHitResult Penetrating = Eligible;
+		Penetrating.bStartPenetrating = true;
+		Penetrating.PenetrationDepth = .001f;
+		TestFalse(TEXT("penetrating hit is excluded"),
+			Speed::Collision::IsEligibleExactStaticRepeatHit(Penetrating));
+		SHitResult Curved = Eligible;
+		Curved.bSurfaceNormalMayVary = true;
+		TestFalse(TEXT("varying normal is excluded"),
+			Speed::Collision::IsEligibleExactStaticRepeatHit(Curved));
+		SHitResult Uncertain = Eligible;
+		Uncertain.GeometricErrorBoundCm = .001;
+		TestFalse(TEXT("uncertain geometry is excluded"),
+			Speed::Collision::IsEligibleExactStaticRepeatHit(Uncertain));
+		SHitResult DifferentFeature = Eligible;
+		DifferentFeature.ContactFeatureThis = Speed::EContactFeatureKind::Face;
+		TestFalse(TEXT("non vertex-face contact is excluded"),
+			Speed::Collision::IsEligibleExactStaticRepeatHit(DifferentFeature));
+	}
 	FRandomStream Random(150941);
 	for (int32 Frame = 0; Frame < 16; ++Frame)
 	{
