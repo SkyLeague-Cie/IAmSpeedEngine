@@ -43,4 +43,3 @@ $metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputPath 'me
 if ($LASTEXITCODE -ne 0) { throw 'Observability summarizer failed' }
 if ($probeExit -ne 0) { throw "Native probe failed (exit $probeExit). Inspect observability.json before raw output." }
 Write-Output "[SLSUMMARY] native_probe=passed exit=0 artifacts=$outputPath"
-
