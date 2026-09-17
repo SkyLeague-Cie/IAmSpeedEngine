@@ -57,6 +57,16 @@ Only reconstruction recovers a permanent failure. Existing immutable replay
 remains readable until shutdown. A read-side disconnect does not forge a new
 callback event; the mailbox remains authoritative for subsequent reconnection.
 
+Permanent failure disables OS polling, not canonical production. After the
+neutral reset is prepared, forward Produce continues yielding neutral frames
+and the first true consumption receives RequiresReset. Skip advances the
+neutral session while preserving its pending marker across overrides.
+LastStatus remains Failed and the exact HRESULT remains available, including
+after later hotplug notifications. Following frames stay neutral until explicit
+reconstruction; retained pre-failure replay remains unchanged. If the portable
+reset itself cannot be prepared (for example sequence exhaustion), the source
+returns no frame and requires replacement instead of claiming neutral output.
+
 Gate serializes Produce, Skip and pause transitions. Lock order is Gate ->
 MailboxMutex -> portable session mutex; callbacks take MailboxMutex only.
 Destruction must occur after all caller handles stop using the instance and
@@ -81,7 +91,10 @@ The reset marker must reach real game consumers before this source is enabled.
   subprocess verifies fail-fast on unresolved destructor shutdown. For each
   HRESULT above assert LastStatus, preserved HRESULT and subsequent API call
   count; disconnected polling resumes only after a new epoch, permanent failure
-  never resumes on its own. These tests are not yet implemented/executed.
+  never resumes OS polling on its own. Fatal-before-consume must deliver a neutral
+  RequiresReset frame; fatal during override followed by several Skip calls must
+  preserve the reset until real consumption, without any extra API call or
+  change to old replay. These tests are not yet implemented/executed.
 - Register an all-device discovery service for arrival of new device identities.
   The current factory requires a selected device; it handles that device's
   connection notifications, not discovery/selection of a different new device.

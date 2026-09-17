@@ -104,9 +104,9 @@ public:
 		if (LastFrame && (*LastFrame == std::numeric_limits<FFrameNumber>::max() || Frame != *LastFrame + 1))
 			return std::nullopt;
 		LastStatus = PollLocked();
-		if (LastStatus == EPollStatus::Failed) return std::nullopt;
+		if (LastStatus == EPollStatus::Failed && (!PermanentFailure || !FatalResetReady)) return std::nullopt;
 		std::lock_guard<std::mutex> ConnectionLock(MailboxMutex);
-		if (!RefreshConnectionLocked()) return std::nullopt;
+		if (!PrepareLatchLocked()) return std::nullopt;
 		auto Result = Session.Produce(Frame);
 		if (Result) LastFrame = Frame;
 		return Result;
@@ -119,9 +119,9 @@ public:
 		if (LastFrame && Frame <= *LastFrame) return Session.Skip(Frame);
 		if (LastFrame && (*LastFrame == std::numeric_limits<FFrameNumber>::max() || Frame != *LastFrame + 1)) return false;
 		LastStatus = PollLocked();
-		if (LastStatus == EPollStatus::Failed) return false;
+		if (LastStatus == EPollStatus::Failed && (!PermanentFailure || !FatalResetReady)) return false;
 		std::lock_guard<std::mutex> ConnectionLock(MailboxMutex);
-		if (!RefreshConnectionLocked() || !Session.Skip(Frame)) return false;
+		if (!PrepareLatchLocked() || !Session.Skip(Frame)) return false;
 		LastFrame = Frame;
 		return true;
 	}
@@ -163,8 +163,16 @@ private:
 	{
 		LastError = Error; PermanentFailure = true;
 		Cursor.Reset();
-		Session.Resynchronize(); // Best-effort cancellation; no more forward reads.
+		FatalResetReady = bool(Session.Resynchronize());
 		return EPollStatus::Failed;
+	}
+	bool PrepareLatchLocked()
+	{
+		// Permanent OS failure still produces canonical neutral frames. Do not
+		// process later connection events or overwrite its diagnostic until rebuild.
+		if (PermanentFailure) return FatalResetReady;
+		if (RefreshConnectionLocked()) return true;
+		return PermanentFailure && FatalResetReady;
 	}
 	EPollStatus HandleReadErrorLocked(HRESULT Error)
 	{
@@ -284,6 +292,7 @@ private:
 	bool Registered = false;
 	bool ShutdownStarted = false;
 	bool PermanentFailure = false;
+	bool FatalResetReady = false;
 	HRESULT LastError = S_OK;
 	bool Connected = false;
 	bool EpochExhausted = false;
