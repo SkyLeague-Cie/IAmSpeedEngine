@@ -163,4 +163,3 @@ public:
 	HRESULT STDMETHODCALLTYPE CreateAggregateDevice(GameInputKind, APP_LOCAL_DEVICE_ID*) override { return E_NOTIMPL; }
 	HRESULT STDMETHODCALLTYPE DisableAggregateDevice(const APP_LOCAL_DEVICE_ID*) override { return E_NOTIMPL; }
 };
-
