@@ -3,13 +3,13 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [Parameter(Mandatory = $true)][string]$Summarizer,
     [string]$GameInputIncludePath,
-    [ValidateSet('DeviceDiscoveryProbe', 'WindowsDeviceDiscoveryProbe')][string]$ProbeName = 'DeviceDiscoveryProbe',
+    [ValidateSet('DeviceDiscoveryProbe', 'WindowsDeviceDiscoveryProbe', 'WindowsSelectedSourceProbe')][string]$ProbeName = 'DeviceDiscoveryProbe',
     [string]$Python = 'python'
 )
 $ErrorActionPreference = 'Stop'
 $moduleRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sdkFlags = ''
-if ($ProbeName -eq 'WindowsDeviceDiscoveryProbe') {
+if ($ProbeName -ne 'DeviceDiscoveryProbe') {
     if (!(Test-Path -LiteralPath (Join-Path $GameInputIncludePath 'GameInput.h'))) { throw 'Windows probe requires GameInput v3 headers' }
     $sdkFlags = "/external:I`"$GameInputIncludePath`" /external:W0"
 }

@@ -82,6 +82,16 @@ public:
 		std::lock_guard<std::mutex> Lock(Mailbox);
 		return !Stopping && Catalogue.SetPaused(Paused);
 	}
+	bool Resynchronize(const FLease& Lease)
+	{
+		std::lock_guard<std::mutex> Lock(Mailbox);
+		return !Stopping && Catalogue.Resynchronize(Lease.Ticket);
+	}
+	void FailAcquisition(HRESULT Reason)
+	{
+		std::lock_guard<std::mutex> Lock(Mailbox);
+		FailLocked(FAILED(Reason) ? Reason : E_UNEXPECTED);
+	}
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
 	{
 		std::lock_guard<std::mutex> Lock(Mailbox);

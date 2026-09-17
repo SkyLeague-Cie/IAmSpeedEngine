@@ -100,6 +100,19 @@ public:
 		if (Selection) Selection->Generation = *Generation;
 		return true;
 	}
+	// An obsolete poll must not reset a replacement's newer generation.
+	bool Resynchronize(const FDeviceSelection& Ticket)
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (Failed || !Selection || Ticket.Generation != Selection->Generation
+			|| Ticket.Device.Id != Selection->Device.Id || Ticket.Device.Revision != Selection->Device.Revision
+			|| Ticket.Kind != Selection->Kind) return false;
+		const auto Generation = Session.Resynchronize();
+		if (!Generation) { FailLocked(); return false; }
+		Selection->Generation = *Generation;
+		return true;
+	}
 	void Fail()
 	{
 		std::lock_guard<std::mutex> Lock(Mutex);
