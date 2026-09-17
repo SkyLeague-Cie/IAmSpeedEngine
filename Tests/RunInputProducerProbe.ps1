@@ -13,7 +13,7 @@ $batch = @"
 @echo off
 call "$VcVars64" -vcvars_ver=14.38
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /I"$moduleRoot\Source" "$PSScriptRoot\InputProducerProbe.cpp" "$moduleRoot\Source\IAmSpeed\Input\InputPresentationScope.cpp" /Fe:"$outputPath\InputProducerProbe.exe"
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /I"$moduleRoot\Source" "$PSScriptRoot\InputProducerProbe.cpp" "$moduleRoot\Source\IAmSpeed\Input\InputPresentationScope.cpp" /Fe:"$outputPath\InputProducerProbe.exe" /link /STACK:16777216
 if errorlevel 1 exit /b %errorlevel%
 "$outputPath\InputProducerProbe.exe"
 exit /b %errorlevel%
