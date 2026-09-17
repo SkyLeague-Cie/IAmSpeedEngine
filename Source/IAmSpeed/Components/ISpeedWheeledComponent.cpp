@@ -1,5 +1,4 @@
 #include "ISpeedWheeledComponent.h"
-#include "WheelSupportTravel.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
@@ -632,8 +631,6 @@ bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 	{
 		float LargestPenetration = 0.01f;
 		FVector CorrectionNormal = FVector::ZeroVector;
-		const FTransform ChassisTransform(GetPhysRotation(), GetPhysLocation());
-		const FVector SuspensionUp = ChassisTransform.GetUnitAxis(EAxis::Z);
 		for (const USWheelSubBody* Wheel : GetWheelSubBodies())
 		{
 			if (!Wheel || !Wheel->IsOnGround() || !Wheel->IsAtSuspensionBumpStop())
@@ -641,12 +638,9 @@ bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 				continue;
 			}
 			const FVector Normal = Wheel->GetHitContactNormal().GetSafeNormal();
-			// CurrentHit precedes UpdateSuspension: WorldPos may still be fully
-			// extended. Consume the available travel before projecting the chassis.
-			const float Penetration = Speed::WheelSupportTravelPenetration(
-				ChassisTransform.TransformPosition(Wheel->GetLocalOffset()), SuspensionUp,
-				Wheel->SuspensionMaxRaise(), Wheel->SuspensionMaxDrop(),
-				Wheel->GetHitContactPoint(), Normal, Wheel->Radius());
+			const float Penetration = FVector::DotProduct(
+				Wheel->GetHitContactPoint() + Wheel->Radius() * Normal - Wheel->WorldPos(),
+				Normal);
 			if (Penetration > LargestPenetration)
 			{
 				LargestPenetration = Penetration;
