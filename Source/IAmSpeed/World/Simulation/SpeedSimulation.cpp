@@ -688,6 +688,7 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 	}
 	IAMSPEED_FRAME_PHASE(Journal);
 	FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
+	SpeedWorldSubsystem->NotifyCanonicalFramePublished(Context.NumFrame);
 	IAMSPEED_FRAME_PHASE(Finalize);
 	Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
 	return true;

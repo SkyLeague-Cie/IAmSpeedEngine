@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "WheeledVehiclePawn.h"
 #include "IAmSpeed/Camera/SpeedArmComponent.h"
+#include "IAmSpeed/Input/InputStream.h"
+#include <memory>
 #include "SpeedCar.generated.h"
 
 class USpeedWheeledComponent;
@@ -41,6 +43,7 @@ public:
 	void SetBrakeInput(const float& Brake);
 	// Set the steering input for this frame, value between -1 and 1
 	void SetSteeringInput(const float& Steering);
+	void SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream);
 	void SetCameraBackInput(bool bBack);
 	void SetCameraYawInput(float Value);
 	void SetCameraPitchInput(float Value);

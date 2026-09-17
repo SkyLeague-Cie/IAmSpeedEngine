@@ -1408,6 +1408,11 @@ ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 		: ECanonicalRunControlState::Ready;
 }
 
+void USpeedWorldSubsystem::NotifyCanonicalFramePublished(uint64 NumFrame)
+{
+	SimulationWorld.NotifyCanonicalFramePublished(NumFrame);
+}
+
 FSimulationSnapshot USpeedWorldSubsystem::CaptureSimulationSnapshot(
 	const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation)
 {

@@ -125,6 +125,11 @@ void ASpeedCar::SetThrottleInput(const float& Throttle)
 	SpeedWheeledComponent->SetPhysThrottleInput(Throttle);
 }
 
+void ASpeedCar::SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream)
+{
+	SpeedWheeledComponent->SetFrameInputStream(MoveTemp(Stream));
+}
+
 void ASpeedCar::SetBrakeInput(const float& Brake)
 {
 	SpeedWheeledComponent->SetPhysBrakeInput(Brake);

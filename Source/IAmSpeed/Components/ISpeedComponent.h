@@ -68,6 +68,8 @@ public:
 	virtual void AppendSimulationSnapshot(TArray<uint8>& OutPayload) const {}
 	/** Optional simulation-owned presentation extension; never part of canonical hashes. */
 	virtual void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const {}
+	/** Observation only, after canonical snapshot publication succeeds. */
+	virtual void OnCanonicalFramePublished(uint64 NumFrame) {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
 	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
 	/** Validates component-specific bytes before an atomic world restore starts. */

@@ -1343,11 +1343,72 @@ void USpeedWheeledComponent::UpdateInputs()
 {
 	const int32 CurrentFrame = NumFrame();
 
-	ConsumePendingLiveWheeledInputs();
-	ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
+	const auto CanonicalFrame = Speed::Input::FromLegacyLocalFrame(NumFrame());
+	const bool bProduced = CanonicalFrame && ConsumeProducedWheeledInputs(*CanonicalFrame);
+	if (!bProduced)
+	{
+		ConsumePendingLiveWheeledInputs();
+	}
+	// An opt-in device frame has exclusive ownership over legacy live/network
+	// input. The existing sealed test override remains the sole scripted owner.
+	if (!bProduced || IsTestInputOverrideEnabled()) ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
 
 	UpdateWheeledPhysicalInputFromUser(false);
 	ConsumeQueuedCameraInputsForFrame(CurrentFrame);
+}
+
+void USpeedWheeledComponent::SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream)
+{
+	check(IsInGameThread());
+	if (Speed::Input::FPresentationInputScope::IsActive()) return;
+	FScopeLock Lock(&FrameInputProducerMutex);
+	FrameInputStream = MoveTemp(Stream);
+	bResetProducedWheeledInputs = true;
+}
+
+bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
+{
+	ConsumedFrameInputStream.reset();
+	std::shared_ptr<Speed::Input::FInputStream> Stream;
+	bool bReset = false;
+	{
+		FScopeLock Lock(&FrameInputProducerMutex);
+		Stream = FrameInputStream;
+		bReset = bResetProducedWheeledInputs;
+		bResetProducedWheeledInputs = false;
+	}
+	if (bReset)
+	{
+		if (!IsTestInputOverrideEnabled())
+		{
+			WheeledUserInput.Throttle = 0;
+			WheeledUserInput.Brake = 0;
+			WheeledUserInput.Steer = 0;
+			FScopeLock Lock(&PendingWheeledInputMutex);
+			PendingWheeledInputCommands.Reset();
+		}
+		PendingLiveWheeledInputMask.exchange(0, std::memory_order_acquire);
+	}
+	if (!Stream) return false;
+	if (IsTestInputOverrideEnabled())
+	{
+		Stream->Skip(CanonicalFrame);
+		return true;
+	}
+	const auto Frame = Stream->Consume(CanonicalFrame);
+	const bool bValid = Frame && Frame->IsValid() && Frame->GetConsumptionFrame() == CanonicalFrame;
+	ensureMsgf(bValid, TEXT("Input producer has no valid frame for canonical frame %llu"), CanonicalFrame);
+	// Fail closed instead of falling back to an unrelated live action/clock.
+	WheeledUserInput.Throttle = bValid ? static_cast<uint8>(Frame->GetActions()[Speed::Input::Throttle]) : 0;
+	WheeledUserInput.Brake = bValid ? static_cast<uint8>(Frame->GetActions()[Speed::Input::Brake]) : 0;
+	WheeledUserInput.Steer = bValid ? static_cast<int8>(Frame->GetActions()[Speed::Input::Steering]) : 0;
+	if (bValid) ConsumedFrameInputStream = MoveTemp(Stream);
+	return true;
+}
+
+void USpeedWheeledComponent::OnCanonicalFramePublished(uint64 Frame)
+{
+	if (ConsumedFrameInputStream) ConsumedFrameInputStream->PublishCompleted(Frame);
 }
 
 void USpeedWheeledComponent::ConsumePendingLiveWheeledInputs()
@@ -1572,6 +1633,7 @@ void USpeedWheeledComponent::QueueNetworkWheeledInputForFrame(const int32 Activa
 
 void USpeedWheeledComponent::SetTestInputOverrideEnabled(const bool bEnabled)
 {
+	if (Speed::Input::FPresentationInputScope::IsActive()) return;
 	FScopeLock InputLock(&PendingWheeledInputMutex);
 	bTestInputOverrideEnabled.store(bEnabled, std::memory_order_release);
 	if (bEnabled) PendingWheeledInputCommands.Reset();
@@ -1589,6 +1651,7 @@ void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 A
 void USpeedWheeledComponent::QueueWheeledInputCommand(const int32 ActivationFrame,
 	const FWheeledInputState& Input, const bool bBypassSlew, const bool bFromNetwork)
 {
+	if (Speed::Input::FPresentationInputScope::IsActive()) return;
 	if (!Input.Camera.IsValid()) return;
 	FScopeLock InputLock(&PendingWheeledInputMutex);
 	if (ActivationFrame == INDEX_NONE || (bFromNetwork && IsTestInputOverrideEnabled()))
@@ -2969,6 +3032,7 @@ float USpeedWheeledComponent::GetPhysSteeringInput() const
 
 void USpeedWheeledComponent::SetPhysThrottleInput(const float& Throttle)
 {
+	if (Speed::Input::FPresentationInputScope::IsActive()) return;
 	const float ClampedThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
 	PendingLiveThrottle.store(
 		static_cast<uint8>(FMath::RoundToInt(ClampedThrottle * 255)),
@@ -2979,6 +3043,7 @@ void USpeedWheeledComponent::SetPhysThrottleInput(const float& Throttle)
 
 void USpeedWheeledComponent::SetPhysBrakeInput(const float& Brake)
 {
+	if (Speed::Input::FPresentationInputScope::IsActive()) return;
 	const float ClampedBrake = FMath::Clamp(Brake, 0.0f, 1.0f);
 	PendingLiveBrake.store(
 		static_cast<uint8>(FMath::RoundToInt(ClampedBrake * 255)),
@@ -2989,6 +3054,7 @@ void USpeedWheeledComponent::SetPhysBrakeInput(const float& Brake)
 
 void USpeedWheeledComponent::SetPhysSteeringInput(const float& Steering)
 {
+	if (Speed::Input::FPresentationInputScope::IsActive()) return;
 	const float ClampedSteering = FMath::Clamp(Steering, -1.0f, 1.0f);
 	PendingLiveSteering.store(
 		static_cast<int8>(FMath::RoundToInt(ClampedSteering * 127)),

@@ -5,6 +5,30 @@
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "InputActionValue.h"
+#include "CoreGlobals.h"
+
+void ASpeedController::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	if (InputSnapshots)
+	{
+		const auto Snapshot = InputSnapshots->ReadLatest();
+		if (Snapshot) HandleInputs(*Snapshot);
+	}
+}
+
+bool ASpeedController::BindAction(const FString& Name, Speed::Input::FActionId Action,
+	Speed::Input::FInputPresentationBindings::FCallback Callback)
+{
+	check(IsInGameThread());
+	return PresentationBindings.BindAction(TCHAR_TO_UTF8(*Name), Action, MoveTemp(Callback));
+}
+
+void ASpeedController::HandleInputs(const Speed::Input::FPublishedInputFrame& Snapshot)
+{
+	check(IsInGameThread());
+	PresentationBindings.HandleInputs(Snapshot);
+}
 
 void ASpeedController::SetupInputComponent()
 {
@@ -19,17 +43,42 @@ void ASpeedController::SetupInputComponent()
 
 void ASpeedController::OnPossess(APawn* InPawn)
 {
+	if (SpeedCar && bFrameInputProducerActive) SpeedCar->SetFrameInputStream(nullptr);
 	if (SpeedCar) SpeedCar->ClearCameraInputs();
 	Super::OnPossess(InPawn);
 	SpeedCar = CastChecked<ASpeedCar>(InPawn);
 	SpeedCar->ClearCameraInputs();
+	auto Device = std::make_shared<Speed::Input::FDeviceInputProducer>(FMath::Max(1, InputProducerId));
+	DeviceInputProducer = Device.get();
+	InputProducer = MoveTemp(Device);
+	InputSnapshots = std::make_shared<Speed::Input::FInputStream>(InputProducer);
+	PresentationBindings.ResetObservation();
+	bFrameInputProducerActive = bUseFrameInputProducer;
+	if (bFrameInputProducerActive) SpeedCar->SetFrameInputStream(InputSnapshots);
 }
 
 void ASpeedController::OnUnPossess()
 {
+	if (SpeedCar && bFrameInputProducerActive) SpeedCar->SetFrameInputStream(nullptr);
+	bFrameInputProducerActive = false;
+	DeviceInputProducer = nullptr;
+	InputProducer.reset();
+	InputSnapshots.reset();
 	if (SpeedCar) SpeedCar->ClearCameraInputs();
 	SpeedCar = nullptr;
 	Super::OnUnPossess();
+}
+
+bool ASpeedController::PublishDeviceAction(Speed::Input::FActionId Action, int16 Value, bool bEmitEdges)
+{
+	check(IsInGameThread());
+	return DeviceInputProducer && DeviceInputProducer->SetAction(GFrameCounter, Action, Value, bEmitEdges);
+}
+
+bool ASpeedController::PublishDeviceAxis(Speed::Input::FActionId Action, float Value, bool bSigned)
+{
+	const auto Quantized = Speed::Input::QuantizeAxis(Value, bSigned);
+	return Quantized && PublishDeviceAction(Action, *Quantized);
 }
 
 void ASpeedController::SetupEnhancedInputComponent(
@@ -90,7 +139,12 @@ void ASpeedController::Throttle(const FInputActionValue& Value)
 {
 	if (SpeedCar)
 	{
-		SpeedCar->SetThrottleInput(FMath::Clamp(Value.Get<float>(), 0.0f, 1.0f));
+		const float Input = FMath::Clamp(Value.Get<float>(), 0.0f, 1.0f);
+		if (bFrameInputProducerActive)
+		{
+			ensure(PublishDeviceAxis(Speed::Input::Throttle, Value.Get<float>(), false));
+		}
+		else SpeedCar->SetThrottleInput(Input); // Migration adapter.
 	}
 }
 
@@ -103,7 +157,12 @@ void ASpeedController::Brake(const FInputActionValue& Value)
 {
 	if (SpeedCar)
 	{
-		SpeedCar->SetBrakeInput(FMath::Clamp(Value.Get<float>(), 0.0f, 1.0f));
+		const float Input = FMath::Clamp(Value.Get<float>(), 0.0f, 1.0f);
+		if (bFrameInputProducerActive)
+		{
+			ensure(PublishDeviceAxis(Speed::Input::Brake, Value.Get<float>(), false));
+		}
+		else SpeedCar->SetBrakeInput(Input);
 	}
 }
 
@@ -112,7 +171,8 @@ void ASpeedController::StopBrake(const FInputActionValue&)
 	OnBrakeInputChanged(false);
 	if (SpeedCar)
 	{
-		SpeedCar->SetBrakeInput(0.0f);
+		if (bFrameInputProducerActive) { ensure(PublishDeviceAction(Speed::Input::Brake, 0)); }
+		else SpeedCar->SetBrakeInput(0.0f);
 	}
 }
 
@@ -122,7 +182,12 @@ void ASpeedController::Steering(const FInputActionValue& Value)
 	{
 		const float SteeringInput =
 			FMath::Clamp(Value.Get<float>(), -1.0f, 1.0f);
-		SpeedCar->SetSteeringInput(FilterSteeringInput(SteeringInput));
+		const float Filtered = FilterSteeringInput(SteeringInput);
+		if (bFrameInputProducerActive)
+		{
+			ensure(FMath::IsFinite(Value.Get<float>()) && PublishDeviceAxis(Speed::Input::Steering, Filtered, true));
+		}
+		else SpeedCar->SetSteeringInput(Filtered);
 	}
 }
 
