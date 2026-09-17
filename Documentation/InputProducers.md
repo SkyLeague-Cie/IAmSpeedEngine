@@ -4,6 +4,44 @@ Status: opt-in source checkpoint. Existing player controls use the migration
 adapter by default. This checkpoint is not Unreal build, control-parity,
 multiplayer or rollback acceptance.
 
+## Portable acquisition lifecycle (CP2 first increment)
+
+`DeviceInputSession.h` wraps the device producer with a values-only lifecycle.
+Connection, pause/resume and explicit history-loss resynchronization each return
+a new generation token, neutralize held values and discard pending/staged old
+transitions. A backend must obtain a fresh reading and tag it with that token;
+it must not retag a previously queued reading. Each accepted reading supplies
+all action values, with an immutable host-provided digital-action mask, and a
+strictly increasing sequence inside the generation. Device timestamps do not
+serve as SourceFrame; the session supplies an increasing commit sequence.
+
+Disconnected or paused sessions reject readings. Reconnection and resume accept
+the first fresh held state immediately, with no release-before-use requirement.
+That first baseline emits neither Start nor Stop: a held Jump must not become
+a new trigger merely because acquisition restarted. Later actual transitions
+produce normal edges. Submit and reset share one session mutex through final
+commit, so a generation cannot change between validation and publication.
+Reset does not depend on a physical frame being run during pause. Old tokens,
+duplicate/out-of-order readings and invalid values fail explicitly. Edge-buffer
+overflow also fails; the adapter must report loss and resynchronize rather than
+silently continue with missing transitions. No concrete OS adapter is supplied
+by this increment.
+
+`FInputFrame::RequiresReset()` instructs a physical action consumer to cancel its
+previous held state before processing the frame's new values and edges. It is
+distinct from an ordinary Stop edge, which may trigger game-specific behavior.
+Reset removes old pending edges without manufacturing release actions. Fresh
+baseline and subsequent real transitions can follow reset before the next
+physical frame, so one snapshot can contain the marker and genuine new edges.
+Skip preserves the pending reset across any number of suppressed frames. The marker is consumed
+once on the forward path and retained unchanged in historical copies/replay.
+Consumers and future serialization/hashes must include it; actual game-action
+consumer migration and pause/hotplug wiring remain open gates.
+
+Lifecycle calls follow the synchronous presentation mutation guard. A future
+host lifecycle bridge must deliver control-boundary requests outside that
+observation dispatch; it must not use presentation callbacks to acquire input.
+
 ## Contract and ownership
 
 `Input/InputFrame.h` defines a values-only immutable API with source frame,

@@ -63,9 +63,10 @@ class FInputFrame final
 public:
 	FInputFrame(FFrameNumber Source, FFrameNumber Consumption,
 		FProducerIdentity Producer, const FActionValues& Values,
-		const std::array<FActionEdge, MaxEdges>& Edges = {}, std::size_t EdgeCount = 0)
+		const std::array<FActionEdge, MaxEdges>& Edges = {}, std::size_t EdgeCount = 0,
+		bool Reset = false)
 		: SourceFrame(Source), ConsumptionFrame(Consumption), Identity(Producer),
-		  Actions(Values), Events(Edges), EventCount(EdgeCount) {}
+		  Actions(Values), Events(Edges), EventCount(EdgeCount), ResetBeforeActions(Reset) {}
 
 	FFrameNumber GetSourceFrame() const { return SourceFrame; }
 	FFrameNumber GetConsumptionFrame() const { return ConsumptionFrame; }
@@ -73,6 +74,9 @@ public:
 	const FActionValues& GetActions() const { return Actions; }
 	const std::array<FActionEdge, MaxEdges>& GetEdges() const { return Events; }
 	std::size_t GetEdgeCount() const { return EventCount; }
+	// Cancel prior held action state before applying this frame. This is not a
+	// user release event (which may have gameplay meaning of its own).
+	bool RequiresReset() const { return ResetBeforeActions; }
 	bool IsValid() const
 	{
 		if (!Identity.Id || Identity.Kind > EProducerKind::Network || EventCount > MaxEdges
@@ -101,5 +105,6 @@ private:
 	FActionValues Actions;
 	std::array<FActionEdge, MaxEdges> Events;
 	std::size_t EventCount;
+	bool ResetBeforeActions;
 };
 }

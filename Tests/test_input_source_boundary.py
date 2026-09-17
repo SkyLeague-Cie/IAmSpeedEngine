@@ -43,7 +43,7 @@ class InputSourceBoundary(unittest.TestCase):
             self.assertIn("if (InputSnapshots) return;", handler)
             for forbidden in ("InputProducer", "Publish", "SetAction", "GFrameCounter"):
                 self.assertNotIn(forbidden, handler)
-        for path in ("Input/InputFrame.h", "Input/InputProducer.h"):
+        for path in ("Input/InputFrame.h", "Input/InputProducer.h", "Input/DeviceInputSession.h"):
             core = (ROOT / path).read_text()
             for forbidden in ("FInputActionValue", "EnhancedInput", "PlayerController", "GFrameCounter", "IsInGameThread", "CoreMinimal.h"):
                 self.assertNotIn(forbidden, core)

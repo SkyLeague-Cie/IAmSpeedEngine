@@ -1,4 +1,5 @@
 #include "IAmSpeed/Input/InputStream.h"
+#include "IAmSpeed/Input/DeviceInputSession.h"
 #include <atomic>
 #include <cstdlib>
 #include <iostream>
@@ -25,11 +26,105 @@ static std::uint64_t Hash(const FInputFrame& Frame)
 	Add(Frame.GetProducer().Id); Add(static_cast<unsigned>(Frame.GetProducer().Kind));
 	for (auto Value : Frame.GetActions()) Add(static_cast<std::uint16_t>(Value));
 	Add(Frame.GetEdgeCount());
+	Add(Frame.RequiresReset());
 	for (std::size_t I = 0; I < Frame.GetEdgeCount(); ++I)
 	{
 		const auto& E = Frame.GetEdges()[I]; Add(E.Action); Add(static_cast<unsigned>(E.Kind)); Add(E.SourceFrame);
 	}
 	return Result;
+}
+
+static void AcquisitionLifecycle()
+{
+	constexpr FActionId Jump = 3;
+	FDeviceInputProducer Raw(201);
+	Check(Raw.SetAction(1, Jump, 1, true) && Raw.CommitSample(1), "pending pre-reset press");
+	Check(Raw.SetAction(2, Throttle, 100, false), "partial sample before reset");
+	Check(Raw.ResetSample(3) && !Raw.CommitSample(2), "reset cancels partial transaction");
+	const auto Neutral = Raw.Produce(0);
+	Check(Neutral && Neutral->RequiresReset() && Neutral->GetActions() == FActionValues{}
+		&& Neutral->GetEdgeCount() == 0, "reset clears pending press without synthesizing release");
+	Check(!Raw.Produce(1)->RequiresReset() && Raw.Produce(0)->RequiresReset(), "reset once physically but retained on replay");
+
+	std::array<bool, ActionCount> Digital{}; Digital[Jump] = true;
+	FDeviceInputSession Session(202, Digital);
+	FActionValues Values{}; Values[Throttle] = 200; Values[Jump] = 1;
+	Check(!Session.Submit(0, 1, Values), "disconnected session rejects input");
+	const auto Connected = Session.SetConnected(true);
+	Check(Connected && Session.Submit(*Connected, 10, Values), "first fresh connected held input accepted");
+	const auto Held = Session.Produce(0);
+	const auto HeldHash = Hash(*Held);
+	Check(Held->RequiresReset() && Held->GetActions()[Throttle] == 200 && Held->GetActions()[Jump] == 1
+		&& Held->GetEdgeCount() == 0, "fresh held baseline has no synthetic start or stop");
+	Check(!Session.Submit(*Connected, 10, Values), "duplicate reading sequence rejected");
+	const auto Disconnected = Session.SetConnected(false);
+	Check(Disconnected && !Session.Submit(*Connected, 11, Values)
+		&& !Session.Submit(*Disconnected, 11, Values), "disconnect invalidates old and current readings");
+	Check(Session.Produce(1)->GetActions() == FActionValues{}, "disconnect neutralizes held axes");
+	const auto Reconnected = Session.SetConnected(true);
+	Check(Session.Produce(2)->GetActions() == FActionValues{}, "reconnect stays neutral before fresh reading");
+	Check(Session.Submit(*Reconnected, 0, Values) && Session.Produce(3)->GetActions()[Throttle] == 200,
+		"fresh reconnect may restart sequence and applies held immediately");
+	const auto Paused = Session.SetPaused(true);
+	Check(Paused && !Session.Submit(*Paused, 1, Values), "pause suppresses input even with current token");
+	// No physical frame is run while paused. Resume must still erase old pending data.
+	const auto Resumed = Session.SetPaused(false);
+	Check(!Session.Submit(*Reconnected, 30, Values) && !Session.Submit(*Paused, 30, Values), "late pre-pause reads rejected after resume");
+	Check(Session.Submit(*Resumed, 1, Values), "resume accepts first fresh held reading");
+	const auto ResumeFrame = Session.Produce(4);
+	Check(ResumeFrame->RequiresReset() && ResumeFrame->GetActions()[Throttle] == 200
+		&& ResumeFrame->GetEdgeCount() == 0, "resume baseline does not trigger held Jump");
+	Check(Hash(*Session.Produce(0)) == HeldHash, "resets never mutate recorded history");
+	Values[Jump] = 0;
+	Check(Session.Submit(*Resumed, 2, Values), "pending release before history loss");
+	const auto Rebased = Session.Resynchronize();
+	Check(Rebased && !Session.Submit(*Resumed, 3, Values), "loss invalidates old cursor generation");
+	const auto Lost = Session.Produce(5);
+	Check(Lost->RequiresReset() && Lost->GetEdgeCount() == 0 && Lost->GetActions() == FActionValues{},
+		"loss neutralizes and discards old transitions");
+	Values[Jump] = 0;
+	Check(Session.Submit(*Rebased, 0, Values), "fresh loss recovery baseline");
+	for (std::uint64_t I = 0; I < MaxEdges; ++I)
+	{
+		Values[Jump] = (I % 2) ? 0 : 1;
+		Check(Session.Submit(*Rebased, I + 1, Values), "fill bounded acquisition edges");
+	}
+	Values[Jump] = 1;
+	Check(!Session.Submit(*Rebased, MaxEdges + 1, Values), "overflow explicitly rejects complete reading");
+	const auto OverflowReset = Session.Resynchronize();
+	Check(OverflowReset && Session.Submit(*OverflowReset, 0, Values), "overflow recovers through explicit new generation");
+	const auto Recovery = Session.Produce(6);
+	Check(Recovery->RequiresReset() && Recovery->GetEdgeCount() == 0
+		&& Recovery->GetActions()[Jump] == 1, "overflow recovery held baseline has no synthetic press");
+	Values[Brake] = 256;
+	Check(!Session.Submit(*OverflowReset, 1, Values), "invalid reading rejected transactionally");
+	Values[Brake] = 0;
+	Check(Session.Submit(*OverflowReset, 1, Values), "rejected reading did not advance sequence");
+	Check(bool(Session.SetPaused(true)) && Session.Skip(7) && Session.Skip(8), "paused reset survives suppressed frames");
+	const auto AfterOverride = Session.SetPaused(false);
+	Check(Session.Submit(*AfterOverride, 0, Values) && Session.Skip(9), "fresh baseline can be suppressed without losing reset");
+	const auto ActualResume = Session.Produce(10);
+	Check(ActualResume->RequiresReset() && ActualResume->GetActions()[Jump] == 1
+		&& ActualResume->GetEdgeCount() == 0, "first true consume after skips still cancels previous state");
+	Check(!Session.Produce(11)->RequiresReset() && Session.Produce(10)->RequiresReset(), "override reset acknowledged once and replayable");
+	// Callback captured a token, stalls, then attempts its final commit after reset.
+	std::atomic<bool> CallbackReady{false}, MayCommit{false};
+	bool AcceptedStale = true;
+	std::thread Delayed([&]
+	{
+		CallbackReady.store(true);
+		while (!MayCommit.load()) std::this_thread::yield();
+		AcceptedStale = Session.Submit(*AfterOverride, 1, Values);
+	});
+	while (!CallbackReady.load()) std::this_thread::yield();
+	Check(bool(Session.Resynchronize()) && bool(Session.Resynchronize()), "multiple resets before physical consumption");
+	MayCommit.store(true); Delayed.join();
+	Check(!AcceptedStale && Session.Produce(12)->RequiresReset(), "stale callback cannot commit across generation reset");
+	{
+		FPresentationInputScope Scope;
+		Check(!Session.SetPaused(true) && !Session.SetConnected(false) && !Session.Resynchronize()
+			&& !Session.Submit(*Rebased, 1, Values) && !Raw.ResetSample(9), "presentation cannot mutate acquisition lifecycle");
+	}
 }
 
 static void ReviewRegressions()
@@ -104,6 +199,7 @@ static void ReviewRegressions()
 
 int main()
 {
+	AcquisitionLifecycle();
 	ReviewRegressions();
 	static_assert(std::is_same_v<decltype(std::declval<FInputFrame&>().GetActions()), const FActionValues&>);
 	static_assert(std::is_same_v<decltype(std::declval<FInputFrame&>().GetEdges()), const std::array<FActionEdge, MaxEdges>&>);

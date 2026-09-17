@@ -71,17 +71,46 @@ public:
 		StagingFailed = false;
 		StagedSource.reset(); StagedEdgeCount = 0; StagedEdges = {};
 	}
-	bool Skip(FFrameNumber Frame) override { return bool(Produce(Frame)); }
+	bool Skip(FFrameNumber Frame) override
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		const bool PendingReset = ResetPending;
+		const auto Result = ProduceLocked(Frame);
+		// A suppressed frame cannot acknowledge physical cancellation.
+		ResetPending = ResetPending || PendingReset;
+		return bool(Result);
+	}
+
+	// Acquisition lifecycle only. Historical physical frames are never changed.
+	// Reset cancellation survives fresh samples until the next physical consume.
+	bool ResetSample(FFrameNumber Source)
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (!Identity.Id || (HasCommitted && Source <= LastSource)) return false;
+		Held = {}; StagedHeld = {}; Edges = {}; StagedEdges = {};
+		EdgeCount = 0; StagedEdgeCount = 0; StagedSource.reset(); StagingFailed = false;
+		LastSource = Source; HasCommitted = true; ResetPending = true;
+		return true;
+	}
 
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
 	{
 		if (FPresentationInputScope::IsActive()) return std::nullopt;
 		std::lock_guard<std::mutex> Lock(Mutex);
+		return ProduceLocked(Frame);
+	}
+
+private:
+	std::optional<FInputFrame> ProduceLocked(FFrameNumber Frame)
+	{
 		auto& Slot = History[Frame % HistoryCapacity];
 		if (Slot && Slot->GetConsumptionFrame() == Frame) return Slot;
 		if (!Identity.Id || (LastConsumed && (*LastConsumed == std::numeric_limits<FFrameNumber>::max()
 			|| Frame != *LastConsumed + 1))) return std::nullopt;
-		Slot.emplace(LastSource, Frame, Identity, Held, Edges, EdgeCount);
+		Slot.emplace(LastSource, Frame, Identity, Held, Edges, EdgeCount, ResetPending);
+		ResetPending = false;
 		LastConsumed = Frame;
 		EdgeCount = 0;
 		Edges = {}; // No stale event bytes in a held-only snapshot.
@@ -98,6 +127,7 @@ private:
 	std::size_t StagedEdgeCount = 0;
 	bool HasCommitted = false;
 	bool StagingFailed = false;
+	bool ResetPending = false;
 	std::array<FActionEdge, MaxEdges> Edges{};
 	std::size_t EdgeCount = 0;
 	FFrameNumber LastSource = 0;
