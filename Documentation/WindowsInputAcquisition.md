@@ -1,12 +1,15 @@
-# Windows acquisition adapter — source-only candidate
+# Windows acquisition adapter — isolated native candidate
 
 `Source/IAmSpeed/Input/Windows/GameInputAcquisition.h` is an optional Windows
 leaf targeting the GameInput v3 header bundled with UE 5.8.2 (package declared
 as 3.1.26100.6879). No portable header includes it, no module dependency or
 plugin activation is added, and no production caller constructs it yet.
 
-**Not compiled or executed.** The active resource lease prohibits builds.
-CP2's 946 native checks qualify the portable lifecycle only, not this file.
+The production header at source checkpoint `188b38e` compiled against the local
+GameInput v3 SDK with MSVC 14.38 C++17 /W4 /WX. The isolated fake-API fixture
+passed **125 checks**, including an isolated terminate-handler subprocess.
+No real GameInput runtime, hardware, Unreal build or activation was used.
+CP2's earlier 946 native checks qualify the portable lifecycle separately.
 
 ## Ownership and operation
 
@@ -79,22 +82,29 @@ first newly fetched held state immediately, without synthetic triggers. This
 method still needs host pause wiring outside presentation-observation callbacks.
 The reset marker must reach real game consumers before this source is enabled.
 
-## Explicitly unfinished
+## Native evidence and remaining gates
 
-- Compile this header against the exact v3 SDK in a bounded native fixture.
-- Fake-API tests for reading order, no OS reads during replay, all HRESULT
-  outcomes, 64/65-report boundary, callback during mapping/final latch, shutdown,
-  pause/override reset retention, equal timestamps and mapping failures.
-  Specifically: unregister false then true retains context and rejects
-  Produce/Skip/SetPaused between attempts; a running callback delays successful
-  unregister; repeated successful shutdown and destruction are normal; a
-  subprocess verifies fail-fast on unresolved destructor shutdown. For each
-  HRESULT above assert LastStatus, preserved HRESULT and subsequent API call
-  count; disconnected polling resumes only after a new epoch, permanent failure
-  never resumes OS polling on its own. Fatal-before-consume must deliver a neutral
-  RequiresReset frame; fatal during override followed by several Skip calls must
-  preserve the reset until real consumption, without any extra API call or
-  change to old replay. These tests are not yet implemented/executed.
+`Tests/WindowsGameInputProbe.cpp` implements fake COM interfaces using the real
+v3 declarations. `Tests/RunWindowsGameInputProbe.ps1` builds/runs it in a fresh
+artifact directory and summarizes raw logs. The successful fixture covers SDK
+HRESULT policies, 64/65 bound, equal/backwards timestamps, keyboard/gamepad
+mapping, epoch changes during mapping and the physical latch, pause/resume,
+unregister false/retry with retained ownership, in-flight callback waiting,
+idempotent shutdown, isolated fail-fast, fatal reset before consumption and
+across multiple skips, no further OS calls after fatal, and immutable replay.
+
+First run: 125 PASS in 2.4716673 seconds, no source fix or retry.
+SDK header SHA256 `AC1F091174A9B80BA60F16A7F90A9B6B71208B490AAEAFDBF1004F2025B03C60`.
+Fixture SHA256 `F3525EE2A7CA5D8EF60BC52575F4F221AF3632C4E45B46F1AC16FD230C7EA225`.
+Executable SHA256 `BF97341665ADA09E6CE4CA43254FDFFDF633282CB31D24ACC1E94BB923AA6583`.
+Host artifact: `Artifacts/InputProducersCP2/windows-native-188b38e-v1/`.
+Metadata uses the generic package summary schema; no Unreal package was built.
+Fake failures prove adapter responses to those simulated outcomes, not actual
+SDK delivery/lifetime timing. Production header remained byte-identical to the
+approved source candidate throughout the run.
+
+Still unfinished:
+
 - Register an all-device discovery service for arrival of new device identities.
   The current factory requires a selected device; it handles that device's
   connection notifications, not discovery/selection of a different new device.
