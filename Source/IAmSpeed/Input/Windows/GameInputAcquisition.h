@@ -12,6 +12,7 @@
 #include <wrl/client.h>
 #include <functional>
 #include <memory>
+#include <exception>
 
 #if GAMEINPUT_API_VERSION != 3
 #error This adapter targets the inspected GameInput v3 API.
@@ -63,14 +64,32 @@ public:
 	}
 	~FGameInputAcquisition() override
 	{
-		// v3 UnregisterCallback waits for a running callback. Never hold MailboxMutex
-		// here and never destroy this object from inside OnConnection.
-		if (Registered) Api->UnregisterCallback(CallbackToken);
+		// Host must resolve a failed explicit Shutdown before releasing ownership.
+		// Fail-fast is the last resort: never free a possibly live callback context.
+		if (!Shutdown()) std::terminate();
+	}
+	bool Shutdown()
+	{
+		// Never invoke from OnConnection: unregister waits for that callback.
+		// Holding Gate is safe because OnConnection only takes MailboxMutex.
+		std::lock_guard<std::mutex> Lock(Gate);
+		ShutdownStarted = true;
+		Cursor.Reset();
+		// No mailbox lock: successful v3 unregister waits for callbacks to finish.
+		// false keeps Registered and this object's resources alive for a retry.
+		if (Registered && !Api->UnregisterCallback(CallbackToken))
+		{
+			LastStatus = EPollStatus::Failed; LastError = E_FAIL;
+			return false;
+		}
+		Registered = false;
+		return true;
 	}
 	bool SetPaused(bool Paused)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
+		if (ShutdownStarted || PermanentFailure) return false;
 		const auto Next = Session.SetPaused(Paused);
 		if (!Next) return false;
 		Generation = *Next; bPaused = Paused; Cursor.Reset(); ReadingSequence = 0;
@@ -80,6 +99,7 @@ public:
 	{
 		if (FPresentationInputScope::IsActive()) return std::nullopt;
 		std::lock_guard<std::mutex> Lock(Gate);
+		if (ShutdownStarted) return std::nullopt;
 		if (LastFrame && Frame <= *LastFrame) return Session.Produce(Frame);
 		if (LastFrame && (*LastFrame == std::numeric_limits<FFrameNumber>::max() || Frame != *LastFrame + 1))
 			return std::nullopt;
@@ -95,6 +115,7 @@ public:
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
+		if (ShutdownStarted) return false;
 		if (LastFrame && Frame <= *LastFrame) return Session.Skip(Frame);
 		if (LastFrame && (*LastFrame == std::numeric_limits<FFrameNumber>::max() || Frame != *LastFrame + 1)) return false;
 		LastStatus = PollLocked();
@@ -108,6 +129,11 @@ public:
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
 		return LastStatus;
+	}
+	HRESULT GetLastError() const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		return LastError;
 	}
 
 private:
@@ -133,18 +159,48 @@ private:
 		Generation = *Next;
 		return EPollStatus::Resynchronized;
 	}
+	EPollStatus FailLocked(HRESULT Error)
+	{
+		LastError = Error; PermanentFailure = true;
+		Cursor.Reset();
+		Session.Resynchronize(); // Best-effort cancellation; no more forward reads.
+		return EPollStatus::Failed;
+	}
+	EPollStatus HandleReadErrorLocked(HRESULT Error)
+	{
+		using namespace GameInput::v3;
+		LastError = Error;
+		if (Error == GAMEINPUT_E_REFERENCE_READING_TOO_OLD) return ResynchronizeLocked();
+		if (Error == GAMEINPUT_E_DEVICE_DISCONNECTED)
+		{
+			std::lock_guard<std::mutex> Lock(MailboxMutex);
+			// Keep the real callback mailbox untouched. Only a subsequent SDK
+			// connection epoch may clear this authoritative read-side disconnect.
+			DisconnectedAtEpoch = ConnectionEpoch;
+			SeenEpoch = ConnectionEpoch;
+			Cursor.Reset(); ReadingSequence = 0;
+			const auto Next = Session.SetConnected(false);
+			if (!Next) return FailLocked(Error);
+			Generation = *Next;
+			return EPollStatus::Disconnected;
+		}
+		// DEVICE_NOT_FOUND, OBJECT_NO_LONGER_EXISTS, INPUT_KIND_NOT_PRESENT,
+		// invalid arguments and unknown failures require explicit reconstruction.
+		return FailLocked(Error);
+	}
 	// Caller owns Gate + MailboxMutex. Also used at the final physical latch so
 	// a disconnect arriving after the last mapped reading still neutralizes it.
 	bool RefreshConnectionLocked()
 	{
-		if (EpochExhausted) return false;
+		if (EpochExhausted) { LastStatus = FailLocked(E_UNEXPECTED); return false; }
 		if (!SeenEpoch || *SeenEpoch != ConnectionEpoch)
 		{
+			DisconnectedAtEpoch.reset();
 			const auto Next = Session.SetConnected(Connected);
-			if (!Next) return false;
+			if (!Next) { LastStatus = FailLocked(E_FAIL); return false; }
 			Generation = *Next; SeenEpoch = ConnectionEpoch; Cursor.Reset(); ReadingSequence = 0;
 		}
-		if (!Connected) LastStatus = EPollStatus::Disconnected;
+		if (!Connected || DisconnectedAtEpoch) LastStatus = EPollStatus::Disconnected;
 		return true;
 	}
 	bool MapReading(FReading& Reading, FActionValues& Values)
@@ -173,12 +229,13 @@ private:
 	EPollStatus PollLocked()
 	{
 		using namespace GameInput::v3;
+		if (PermanentFailure) return EPollStatus::Failed;
 		std::uint64_t Epoch;
 		{
 			std::lock_guard<std::mutex> Lock(MailboxMutex);
 			if (!RefreshConnectionLocked()) return EPollStatus::Failed;
 			Epoch = ConnectionEpoch;
-			if (!Connected) return EPollStatus::Disconnected;
+			if (!Connected || DisconnectedAtEpoch) return EPollStatus::Disconnected;
 		}
 		if (bPaused) return EPollStatus::Paused;
 		bool Changed = false;
@@ -189,8 +246,15 @@ private:
 			const HRESULT Status = Cursor
 				? Api->GetNextReading(Cursor.Get(), Kind, Device.Get(), Next.GetAddressOf())
 				: Api->GetCurrentReading(Kind, Device.Get(), Next.GetAddressOf());
-			if (Status == GAMEINPUT_E_READING_NOT_FOUND) return Changed ? EPollStatus::Updated : EPollStatus::NoChange;
-			if (FAILED(Status) || !Next || I == MaxReadingsPerPoll) return ResynchronizeLocked();
+			if (Status == GAMEINPUT_E_READING_NOT_FOUND)
+			{
+				LastError = S_OK;
+				return Changed ? EPollStatus::Updated : EPollStatus::NoChange;
+			}
+			if (FAILED(Status)) return HandleReadErrorLocked(Status);
+			LastError = S_OK;
+			if (!Next) return FailLocked(E_UNEXPECTED);
+			if (I == MaxReadingsPerPoll) return ResynchronizeLocked();
 			if (Cursor && Next->GetTimestamp() < Cursor->GetTimestamp()) return ResynchronizeLocked();
 			FActionValues Values{};
 			if (!MapReading(*Next.Get(), Values)) return ResynchronizeLocked();
@@ -218,10 +282,14 @@ private:
 	std::mutex MailboxMutex;
 	GameInput::v3::GameInputCallbackToken CallbackToken = 0;
 	bool Registered = false;
+	bool ShutdownStarted = false;
+	bool PermanentFailure = false;
+	HRESULT LastError = S_OK;
 	bool Connected = false;
 	bool EpochExhausted = false;
 	std::uint64_t ConnectionEpoch = 0;
 	std::optional<std::uint64_t> SeenEpoch;
+	std::optional<std::uint64_t> DisconnectedAtEpoch;
 	std::uint64_t Generation = 0;
 	std::uint64_t ReadingSequence = 0;
 	TComPtr<FReading> Cursor;

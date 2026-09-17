@@ -21,7 +21,7 @@ complete canonical values. This leaf does not choose game action mappings.
 Forward Produce/Skip calls traverse current/next readings, bounded to 64
 readings per poll. All reports retain SDK order; a separate integer sequence
 identifies commits even when SDK timestamps are equal. A backwards timestamp,
-SDK error, mapping rejection, edge overflow or excessive backlog neutralizes
+mapping rejection, edge overflow or excessive backlog neutralizes
 and resynchronizes, with an explicit status. After a discontinuity the next
 poll establishes a fresh baseline, without synthetic Start/Stop. Replay and
 invalid frame-gap requests do not query live hardware.
@@ -31,8 +31,31 @@ selected device. Callbacks only update connected state and a monotonic epoch
 under a separate mailbox mutex. Polling checks the epoch through sample commit
 and again at the physical latch. A disconnect/reconnect pair between polls
 therefore still creates a new baseline. Mapper execution never owns that
-mailbox mutex. API lifetime is held by COM references; destruction unregisters
-the callback before its context is released, without holding the mailbox lock.
+mailbox mutex. API lifetime is held by COM references. Explicit `Shutdown()`
+must succeed before the host releases ownership. On false, registration/token,
+API/device/context and object storage remain alive for retry, while new reads,
+skips and pause calls are rejected. Successful shutdown is idempotent.
+Unregister runs without the mailbox lock; holding Gate is safe because the
+callback never takes Gate. Shutdown/destruction from the callback is forbidden.
+The destructor retries shutdown; if registration still cannot be cleared it
+calls `std::terminate` rather than freeing a possibly live callback context.
+This last resort is not graceful recovery: the host must retain ownership and
+resolve explicit shutdown failure before destruction. It requires a separate
+death-test subprocess before activation, never the main test runner.
+
+SDK error policy is explicit and `GetLastError()` preserves the HRESULT:
+
+| SDK outcome | Policy |
+| --- | --- |
+| READING_NOT_FOUND | Normal end, NoChange or Updated; no reset |
+| REFERENCE_READING_TOO_OLD | Neutralize and Resynchronized; fresh baseline next poll |
+| DEVICE_DISCONNECTED | Neutralize immediately, Disconnected; no reads until a new callback epoch |
+| DEVICE_NOT_FOUND / OBJECT_NO_LONGER_EXISTS / INPUT_KIND_NOT_PRESENT | Failed latched, no further OS reads |
+| Other failed HRESULT / success with null reading | Failed latched, exact error or E_UNEXPECTED |
+
+Only reconstruction recovers a permanent failure. Existing immutable replay
+remains readable until shutdown. A read-side disconnect does not forge a new
+callback event; the mailbox remains authoritative for subsequent reconnection.
 
 Gate serializes Produce, Skip and pause transitions. Lock order is Gate ->
 MailboxMutex -> portable session mutex; callbacks take MailboxMutex only.
@@ -52,6 +75,13 @@ The reset marker must reach real game consumers before this source is enabled.
 - Fake-API tests for reading order, no OS reads during replay, all HRESULT
   outcomes, 64/65-report boundary, callback during mapping/final latch, shutdown,
   pause/override reset retention, equal timestamps and mapping failures.
+  Specifically: unregister false then true retains context and rejects
+  Produce/Skip/SetPaused between attempts; a running callback delays successful
+  unregister; repeated successful shutdown and destruction are normal; a
+  subprocess verifies fail-fast on unresolved destructor shutdown. For each
+  HRESULT above assert LastStatus, preserved HRESULT and subsequent API call
+  count; disconnected polling resumes only after a new epoch, permanent failure
+  never resumes on its own. These tests are not yet implemented/executed.
 - Register an all-device discovery service for arrival of new device identities.
   The current factory requires a selected device; it handles that device's
   connection notifications, not discovery/selection of a different new device.
