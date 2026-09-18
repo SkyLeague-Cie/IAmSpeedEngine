@@ -103,7 +103,7 @@ class InputSourceBoundary(unittest.TestCase):
         for field in ("ThrottleValue", "BrakeValue", "SteeringValue"):
             self.assertIn("Targets." + field, consumer)
         self.assertNotIn("GetActions()[", consumer)
-        producer = (ROOT.parents[1] / "Tests/TestInputProducer.h").read_text()
+        producer = (ROOT / "Input/Testing/TestInputProducer.h").read_text()
         self.assertIn("final : public IInputProducer", producer)
         self.assertNotIn("EnhancedInput", producer)
         self.assertNotIn("CoreMinimal.h", producer)
