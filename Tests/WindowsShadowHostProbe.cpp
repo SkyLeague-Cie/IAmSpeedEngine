@@ -48,6 +48,7 @@ int main()
 		F.Api->Reading(1, true, 100);
 		const auto First = Host->BeginFrame(0);
 		Check(First && First->GetActions()[Throttle] == 255 && First->GetEdgeCount() == 0, "fresh held diagnostic baseline");
+		Check(!Host->ReadRecorded(0), "observer cannot read pending frame history");
 		const auto Calls = F.Api->ReadCalls.load();
 		Check(Host->BeginFrame(0).has_value() && F.Api->ReadCalls == Calls, "same pending frame no second read");
 		Check(!Host->BeginFrame(1) && !Host->ReadLatest(), "one pending frame and no early publication");
@@ -57,20 +58,24 @@ int main()
 		Check(!Host->CompleteFrame(1) && Host->CompleteFrame(0), "completion matches frame exactly");
 		const auto Published = Host->ReadLatest();
 		Check(Published && Published->Serial == 1 && Published->Frame.GetConsumptionFrame() == 0, "completed copy published");
+		Check(Host->ReadRecorded(0).has_value(), "observer history exposed only after successful completion");
 		Check(!Host->BeginFrame(0) && Host->ReadRecorded(0)->GetActions() == First->GetActions() && F.Api->ReadCalls == Calls, "replay observation does not repoll");
 		F.Api->Reading(0, false, 101); const auto Next = Host->BeginFrame(1);
 		Check(Next && Next->GetEdgeCount() == 1 && !Host->ReadLatest()->Frame.GetEdgeCount(), "later edges do not mutate completed copy");
 		Check(Host->AbortFrame(1) && !Host->CompleteFrame(1) && !Host->BeginFrame(1), "aborted frame cannot be resurrected");
+		Check(!Host->ReadRecorded(1), "observer cannot read aborted frame history");
 		Check(Host->ReadLatest()->Serial == 1 && Published->Frame.GetActions()[Throttle] == 255, "abort and later reads preserve old immutable observation");
 		F.Api->Reading(1, true, 102); Check(Host->BeginFrame(2).has_value(), "next contiguous frame after abort");
 		std::optional<std::uint64_t> Paused;
 		std::thread Control([&] { Paused = Host->SetPaused(true); });
 		Control.join();
 		Check(Paused && *Paused == 1 && !Host->CompleteFrame(2) && !Host->BeginFrame(2), "pause ack invalidates pre-control pending frame/cache");
+		Check(!Host->ReadRecorded(2) && Host->ReadRecorded(0).has_value(), "pause hides invalidated frame while retaining completed history");
 		const auto Before = F.Api->ReadCalls.load();
 		const auto Neutral = Host->BeginFrame(3);
 		Check(Neutral && Neutral->RequiresReset() && Neutral->GetActions() == FActionValues{} && F.Api->ReadCalls == Before, "paused neutral frame no API reads");
 		Check(Host->CompleteFrame(3), "paused diagnostic completion");
+		Check(Host->ReadRecorded(3).has_value() && !Host->ReadRecorded(1) && !Host->ReadRecorded(2), "later completion does not expose historical aborted or invalidated frames");
 		const auto Resumed = Host->SetPaused(false); Check(Resumed && *Resumed == 2, "resume synchronous monotonic ack");
 		F.Api->Reading(1, true, 103); const auto Held = Host->BeginFrame(4);
 		Check(Held && Held->RequiresReset() && Held->GetActions()[Throttle] == 255 && Held->GetEdgeCount() == 0, "resume first fresh held no synthetic edges");
@@ -80,6 +85,17 @@ int main()
 		F.Api->FailUnregister = false;
 		Check(Host->Shutdown() && Host->Shutdown() && !Host->BindOwnerThread(), "shutdown retry and idempotence");
 		Check(Host->ReadLatest()->Frame.GetConsumptionFrame() == 4, "stopped observer returns retained completed copy only");
+	}
+	{
+		Fixture F; auto Host = FGameInputShadowHost::Create(Config(), F.Backend());
+		Check(Host->BindOwnerThread(), "bounded completed history owner");
+		for (FFrameNumber Frame = 0; Frame <= HistoryCapacity; ++Frame)
+		{
+			Check(Host->BeginFrame(Frame).has_value() && !Host->ReadRecorded(Frame), "wrapped pending slot is not completed");
+			Check(Host->CompleteFrame(Frame) && Host->ReadRecorded(Frame).has_value(), "completed marker matches exact frame through wrap");
+		}
+		Check(!Host->ReadRecorded(0) && Host->ReadRecorded(HistoryCapacity).has_value(), "evicted completed frame cannot alias new slot");
+		Check(Host->Shutdown(), "bounded completed history cleanup");
 	}
 	{
 		Fixture F; auto C = Config(); C.Activity = FActivityConfig{{.2f,.15f,.1f},{.08f,.05f,.04f},0,8,EDeviceKind::Gamepad};

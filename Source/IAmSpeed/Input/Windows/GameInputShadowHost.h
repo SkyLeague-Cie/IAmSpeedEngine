@@ -71,6 +71,7 @@ public:
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (!IsOwner() || Stopping || !Pending || *Pending != Frame) return false;
 		if (!Stream.PublishCompleted(Frame)) return false;
+		Completed[Frame % HistoryCapacity] = Frame;
 		Pending.reset(); return true;
 	}
 	bool AbortFrame(FFrameNumber Frame)
@@ -81,7 +82,12 @@ public:
 		Pending.reset(); return true; // No publication of incomplete physics.
 	}
 	std::optional<FPublishedInputFrame> ReadLatest() const { return Stream.ReadLatest(); }
-	std::optional<FInputFrame> ReadRecorded(FFrameNumber Frame) const { return Stream.ReadRecorded(Frame); }
+	std::optional<FInputFrame> ReadRecorded(FFrameNumber Frame) const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		const auto& Published = Completed[Frame % HistoryCapacity];
+		return Published && *Published == Frame ? Stream.ReadRecorded(Frame) : std::nullopt;
+	}
 	bool RequestSelection(std::optional<std::pair<FDeviceId, EDeviceKind>> Choice)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
@@ -121,6 +127,7 @@ private:
 	mutable std::mutex Gate;
 	std::optional<std::thread::id> Owner;
 	std::optional<FFrameNumber> Pending, LastConsumed;
+	std::array<std::optional<FFrameNumber>, HistoryCapacity> Completed{};
 	std::uint64_t ControlEpoch = 0;
 	bool Stopping = false;
 };

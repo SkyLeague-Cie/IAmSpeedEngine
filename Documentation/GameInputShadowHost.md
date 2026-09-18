@@ -27,11 +27,14 @@ Another frame cannot begin before completion or abort. `CompleteFrame(N)` is
 called only after the corresponding canonical physical publication succeeded;
 it publishes the matching input copy. `AbortFrame(N)` prevents incomplete
 physics from appearing as completed input. Aborted/completed/control-invalidated
-frames cannot be reopened through BeginFrame; observers can still read their
-immutable history copies. Source forward-contiguity rules remain authoritative.
+frames cannot be reopened through BeginFrame. Pending copies remain private to
+the acquisition owner; observers cannot read pending, aborted or control-invalidated
+frames through history. Source forward-contiguity rules remain authoritative.
 
-`ReadLatest` and `ReadRecorded` return copies only; observers never poll OS or
-choose devices. The shared stream's publication serial follows completed
+`ReadLatest` and `ReadRecorded` return completed copies only; observers never poll
+OS or choose devices. A bounded exact-frame completion marker gates public history
+under the host lock, including after slot reuse; the private duplicate BeginFrame
+path alone can read a pending copy. The stream's publication serial follows completed
 diagnostic frames. It is separate from vehicle input and physical authority.
 Current shared history bounds remain unchanged; this is not a rollback journal
 serialization implementation.
@@ -41,8 +44,8 @@ calls the source reset immediately, invalidates pending diagnostic publication,
 and returns a monotonic control epoch as a synchronous acknowledgment. It does
 not wait for the next frame. Device revision/generation checking remains in
 the source; the host epoch is not substituted for those tokens. A cached
-pre-pause frame cannot be resurrected for publication; its historical copy
-remains readable. Already published snapshots remain past observations, never
+pre-pause pending frame cannot be resurrected for publication or read by observers.
+Already published snapshots remain past observations, never
 a claim of fresh input while paused. Actual stopped-worker/focus/possession
 integration is not wired by this header.
 
