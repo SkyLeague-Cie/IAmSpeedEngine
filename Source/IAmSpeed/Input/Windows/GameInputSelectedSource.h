@@ -26,7 +26,7 @@ public:
 	bool EnableObservations()
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
-		if (Stopping || LastFrame) return false;
+		if (Stopping || PollAttempted) return false;
 		Observations = std::make_unique<FPollObservation>(); return true;
 	}
 	std::optional<FPollObservation> ReadObservation() const
@@ -203,6 +203,7 @@ private:
 	void PollLocked(FFrameNumber Frame)
 	{
 		using namespace GameInput::v3;
+		PollAttempted = true;
 		if (Observations) { *Observations = {}; Observations->Frame = Frame; }
 		if (FAILED(Discovery->GetLastError())) { Status = EPollStatus::Failed; return; }
 		if (Activity && !PollActivityLocked(Frame)) { Status = EPollStatus::Failed; return; }
@@ -260,6 +261,7 @@ private:
 	mutable std::mutex Gate;
 	FGameInputReadCursor Cursor;
 	std::unique_ptr<FPollObservation> Observations;
+	bool PollAttempted = false;
 	std::optional<FLease> Active;
 	std::optional<std::pair<FDeviceId, std::uint64_t>> Disconnected;
 	std::optional<FFrameNumber> LastFrame;
