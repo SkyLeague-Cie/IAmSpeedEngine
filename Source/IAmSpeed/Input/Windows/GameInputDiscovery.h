@@ -69,6 +69,16 @@ public:
 		if (It == Records.end()) return std::nullopt;
 		return FLease{*Selection, It->second.Device};
 	}
+	// Raw activity observation only: generation zero cannot submit to the session.
+	std::optional<FLease> AcquireDevice(const FDeviceId& Id, EDeviceKind Kind) const
+	{
+		std::lock_guard<std::mutex> Lock(Mailbox);
+		if (Stopping || FAILED(Error)) return std::nullopt;
+		const auto It = Records.find(Id);
+		if (It == Records.end() || !It->second.Connected
+			|| !(It->second.Kinds & static_cast<std::uint8_t>(Kind))) return std::nullopt;
+		return FLease{{{Id, It->second.Timestamp, It->second.Kinds, true}, Kind, 0}, It->second.Device};
+	}
 	bool Submit(const FLease& Lease, std::uint64_t Sequence, const FActionValues& Values)
 	{
 		std::lock_guard<std::mutex> Lock(Mailbox);

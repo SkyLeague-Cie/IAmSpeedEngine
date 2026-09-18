@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameInputDiscovery.h"
+#include "../DeviceActivityPolicy.h"
 
 namespace Speed::Input::Windows
 {
@@ -23,10 +24,26 @@ public:
 			Api, std::move(Discovery), std::move(Keyboard), std::move(Gamepad)));
 	}
 	~FGameInputSelectedSource() override { if (!Shutdown()) std::terminate(); }
+	static std::unique_ptr<FGameInputSelectedSource> CreateAutomatic(FApi* Api, std::uint64_t ProducerId,
+		const std::array<bool, ActionCount>& Digital, FGameInputMapper Keyboard, FGameInputMapper Gamepad,
+		FActivityConfig Config)
+	{
+		if (!FDeviceActivityPolicy::ValidConfig(Config)) return nullptr;
+		auto Result = Create(Api, ProducerId, Digital, std::move(Keyboard), std::move(Gamepad));
+		if (Result) Result->Activity = std::make_unique<FDeviceActivityPolicy>(Config);
+		return Result;
+	}
+	bool RequestLock(std::optional<FDeviceId> Id)
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (Stopping || !Activity || FAILED(Discovery->GetLastError())) return false;
+		PendingLock = Id; HasPendingLock = true; return true;
+	}
 	bool Shutdown()
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
-		Stopping = true; Cursor.Reset(); Active.reset();
+		Stopping = true; Cursor.Reset(); Active.reset(); ActivityCursors.clear();
 		return Discovery->Shutdown(); // False retains discovery and its callback context.
 	}
 	// Latest explicit request applies only on a forward Produce/Skip boundary.
@@ -34,7 +51,7 @@ public:
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
-		if (Stopping || FAILED(Discovery->GetLastError())) return false;
+		if (Stopping || Activity || FAILED(Discovery->GetLastError())) return false;
 		if (Request && Request->second != EDeviceKind::Keyboard && Request->second != EDeviceKind::Gamepad) return false;
 		Pending = Request; HasPending = true;
 		return true;
@@ -45,6 +62,7 @@ public:
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (Stopping || !Discovery->SetPaused(Paused)) return false;
 		bPaused = Paused; Cursor.Reset(); Active.reset(); Sequence = 0;
+		if (Activity) { Activity->SetPaused(Paused); ActivityCursors.clear(); }
 		return true;
 	}
 	std::vector<FDiscoveredDevice> Snapshot() const { return Discovery->Snapshot(); }
@@ -55,7 +73,7 @@ public:
 		if (Stopping) return std::nullopt;
 		if (LastFrame && Frame <= *LastFrame) return Discovery->Produce(Frame);
 		if (!IsNext(Frame)) return std::nullopt;
-		PollLocked();
+		PollLocked(Frame);
 		auto Result = Discovery->Produce(Frame); // Final latch serializes with hotplug.
 		if (Result) LastFrame = Frame;
 		return Result;
@@ -67,7 +85,7 @@ public:
 		if (Stopping) return false;
 		if (LastFrame && Frame <= *LastFrame) return Discovery->Skip(Frame);
 		if (!IsNext(Frame)) return false;
-		PollLocked();
+		PollLocked(Frame);
 		if (!Discovery->Skip(Frame)) return false;
 		LastFrame = Frame;
 		return true;
@@ -104,10 +122,65 @@ private:
 		Cursor.Reset(); Active.reset(); Sequence = 0;
 		Status = EPollStatus::Resynchronized;
 	}
-	void PollLocked()
+	bool PollActivityLocked(FFrameNumber Frame)
+	{
+		using namespace GameInput::v3;
+		if (HasPendingLock) { Activity->SetLock(PendingLock); HasPendingLock = false; }
+		const auto Devices = Discovery->Snapshot();
+		if (!Activity->Sync(Devices)) { Discovery->FailAcquisition(E_OUTOFMEMORY); return false; }
+		std::map<FDeviceId, FActivityCursor> Retained;
+		if (!bPaused) for (const auto& D : Devices)
+		{
+			const auto Kind = Activity->Kind(D.Id);
+			if (!Kind) continue;
+			const auto Lease = Discovery->AcquireDevice(D.Id, *Kind);
+			if (!Lease || Lease->Ticket.Device.Revision != D.Revision) continue;
+			auto Old = ActivityCursors.find(D.Id);
+			FActivityCursor Reading;
+			if (Old != ActivityCursors.end() && Old->second.Revision == D.Revision) Reading = std::move(Old->second);
+			Reading.Revision = D.Revision;
+			if (!Reading.Disconnected)
+			{
+				const auto Result = Reading.Cursor.Poll(*Api.Get(), Lease->Device.Get(),
+					*Kind == EDeviceKind::Keyboard ? GameInputKindKeyboard : GameInputKindGamepad,
+					[&](const FDeviceState& Raw, FActionValues&)
+					{
+						FActivityState Sample; Sample.Axes = Raw.Axes;
+						if (*Kind == EDeviceKind::Keyboard) Sample.Buttons = Raw.VirtualKeys;
+						else for (std::size_t B = 0; B < 32; ++B) Sample.Buttons[B] = (Raw.GamepadButtons & (std::uint32_t(1) << B)) != 0;
+						return Activity->Observe(D.Id, D.Revision, Raw.TimestampMicroseconds, Sample);
+					}, [](const FActionValues&) { return true; });
+				if (Result.Status == EReadBatchStatus::Resynchronize || Result.Status == EReadBatchStatus::Error)
+				{
+					Activity->ResetDevice(D.Id); Reading.Cursor.Reset();
+					if (Result.Error == GAMEINPUT_E_DEVICE_DISCONNECTED) Reading.Disconnected = true;
+					else if (Result.Status == EReadBatchStatus::Error && Result.Error != GAMEINPUT_E_REFERENCE_READING_TOO_OLD)
+					{ Discovery->FailAcquisition(Result.Error); return false; }
+				}
+			}
+			Retained.emplace(D.Id, std::move(Reading));
+		}
+		ActivityCursors = std::move(Retained);
+		// Remove activity recorded from any lifecycle revision invalidated mid-poll.
+		auto Latest = Discovery->Snapshot();
+		for (auto& D : Latest)
+		{
+			const auto It = ActivityCursors.find(D.Id);
+			if (It != ActivityCursors.end() && It->second.Revision == D.Revision && It->second.Disconnected)
+				D.Connected = false;
+		}
+		if (!Activity->Sync(Latest)) { Discovery->FailAcquisition(E_FAIL); return false; }
+		const auto Choice = Activity->Decide(Frame);
+		if (Activity->IsFailed()) { Discovery->FailAcquisition(E_FAIL); return false; }
+		Pending.reset();
+		if (Choice) Pending = std::make_pair(Choice->Id, Choice->Kind);
+		HasPending = true; return true;
+	}
+	void PollLocked(FFrameNumber Frame)
 	{
 		using namespace GameInput::v3;
 		if (FAILED(Discovery->GetLastError())) { Status = EPollStatus::Failed; return; }
+		if (Activity && !PollActivityLocked(Frame)) { Status = EPollStatus::Failed; return; }
 		if (HasPending)
 		{
 			if (!Discovery->Select(Pending)) { Discovery->FailAcquisition(E_FAIL); Status = EPollStatus::Failed; return; }
@@ -147,6 +220,11 @@ private:
 		Status = Result.Status == EReadBatchStatus::Updated ? EPollStatus::Updated : EPollStatus::NoChange;
 	}
 	Microsoft::WRL::ComPtr<FApi> Api;
+	struct FActivityCursor { FGameInputReadCursor Cursor; std::uint64_t Revision = 0; bool Disconnected = false; };
+	std::unique_ptr<FDeviceActivityPolicy> Activity;
+	std::map<FDeviceId, FActivityCursor> ActivityCursors;
+	std::optional<FDeviceId> PendingLock;
+	bool HasPendingLock = false;
 	std::unique_ptr<FGameInputDiscovery> Discovery;
 	const FGameInputMapper Keyboard, Gamepad; // Pure/bounded/nonthrowing; no reentrant source calls.
 	mutable std::mutex Gate;
