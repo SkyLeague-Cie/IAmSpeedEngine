@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Input/DrivingInputTargets.h"
 #include "IAmSpeed/Components/SpeedWheeledSteeringMath.h"
 #include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
@@ -1399,12 +1400,13 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 		return true;
 	}
 	const auto Frame = Stream->Consume(CanonicalFrame);
-	const bool bValid = Frame && Frame->IsValid() && Frame->GetConsumptionFrame() == CanonicalFrame;
+	const auto Targets = Speed::Input::ReadDrivingInputTargets(Frame, CanonicalFrame);
+	const bool bValid = Targets.Valid;
 	ensureMsgf(bValid, TEXT("Input producer has no valid frame for canonical frame %llu"), CanonicalFrame);
 	// Fail closed instead of falling back to an unrelated live action/clock.
-	WheeledUserInput.Throttle = bValid ? static_cast<uint8>(Frame->GetActions()[Speed::Input::Throttle]) : 0;
-	WheeledUserInput.Brake = bValid ? static_cast<uint8>(Frame->GetActions()[Speed::Input::Brake]) : 0;
-	WheeledUserInput.Steer = bValid ? static_cast<int8>(Frame->GetActions()[Speed::Input::Steering]) : 0;
+	WheeledUserInput.Throttle = Targets.ThrottleValue;
+	WheeledUserInput.Brake = Targets.BrakeValue;
+	WheeledUserInput.Steer = Targets.SteeringValue;
 	if (bValid) ConsumedFrameInputStream = MoveTemp(Stream);
 	return true;
 }

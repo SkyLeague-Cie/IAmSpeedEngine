@@ -97,5 +97,17 @@ class InputSourceBoundary(unittest.TestCase):
         self.assertIn("InputSnapshots.reset()", controller)
 
 
+    def test_test_producer_uses_shared_player_target_boundary(self):
+        consumer = body("Components/SpeedWheeledComponent.cpp", "bool USpeedWheeledComponent::ConsumeProducedWheeledInputs")
+        self.assertIn("ReadDrivingInputTargets(Frame, CanonicalFrame)", consumer)
+        for field in ("ThrottleValue", "BrakeValue", "SteeringValue"):
+            self.assertIn("Targets." + field, consumer)
+        self.assertNotIn("GetActions()[", consumer)
+        producer = (ROOT.parents[1] / "Tests/TestInputProducer.h").read_text()
+        self.assertIn("final : public IInputProducer", producer)
+        self.assertNotIn("EnhancedInput", producer)
+        self.assertNotIn("CoreMinimal.h", producer)
+        self.assertNotIn("Windows.h", producer)
+
 if __name__ == "__main__":
     unittest.main()
