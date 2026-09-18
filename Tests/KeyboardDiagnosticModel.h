@@ -70,12 +70,17 @@ public:
 		{ Failed = true; return false; }
 		Active = Index; Pending.reset(); return true;
 	}
-	void Observe(bool F9, bool Focused)
+	void ObserveFocus(bool Focused)
 	{
 		// This first diagnostic qualifies foreground phases only, even when the
 		// explicitly selected API policy also allows background input.
+		// Focus must be checked even when the API returns no reading.
+		if (Active && !Focused) Failed = true;
+	}
+	void Observe(bool F9, bool Focused)
+	{
+		ObserveFocus(Focused);
 		if (!Active || Failed) return;
-		if (!Focused) { Failed = true; return; }
 		if (F9 == KeyboardCues[*Active].ExpectedF9) Covered[*Active] = true;
 	}
 	bool IsFailed() const { return Failed; }

@@ -68,6 +68,7 @@ static void Acquire()
 				if (Cues.IsFailed()) Failed = true;
 				const bool Focused = GetForegroundWindow() == Window;
 				Model.Focus(Focused);
+				Cues.ObserveFocus(Focused); // Also applies to READING_NOT_FOUND below.
 				if (Now == 0 || Focused != LastFocus)
 					Log("{\"type\":\"focus\",\"us\":" + std::to_string(Now) + ",\"foreground\":" + (Focused ? "true" : "false") + "}");
 				LastFocus = Focused;
@@ -165,7 +166,7 @@ int main(int Argc, char** Argv)
 	const auto Instance = GetModuleHandleW(nullptr);
 	WNDCLASSW Class{}; Class.lpfnWndProc = Procedure; Class.hInstance = Instance;
 	Class.lpszClassName = L"KeyboardDiagnosticWindow"; Class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-	Class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+	Class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
 	if (!RegisterClassW(&Class)) return 3;
 	Window = CreateWindowExW(0, Class.lpszClassName, L"Diagnostic clavier F9 - 30 secondes", WS_OVERLAPPEDWINDOW,
 		CW_USEDEFAULT, CW_USEDEFAULT, 740, 230, nullptr, nullptr, Instance, nullptr);

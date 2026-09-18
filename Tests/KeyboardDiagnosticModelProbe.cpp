@@ -38,6 +38,17 @@ int main()
 	Check(Unseen.IsFailed(), "unacknowledged cue timeout");
 	FCues Lost; Lost.Advance(0); Lost.Acknowledge(0, 0); Lost.Observe(false, false);
 	Check(Lost.IsFailed(), "focus loss invalidates foreground protocol");
+	FCues MissingOnBlur;
+	MissingOnBlur.Advance(0); MissingOnBlur.Acknowledge(0, 0); MissingOnBlur.Observe(false, true);
+	MissingOnBlur.ObserveFocus(false); // No reading: do not call Observe(F9,...).
+	MissingOnBlur.ObserveFocus(true);
+	Check(MissingOnBlur.IsFailed(), "brief focus loss without a reading remains invalid after regain");
+	FCues CoveredBeforeBlur;
+	for (unsigned I = 0; I < KeyboardCues.size(); ++I)
+	{ CoveredBeforeBlur.Advance(KeyboardCues[I].AtUs); CoveredBeforeBlur.Acknowledge(I, KeyboardCues[I].AtUs); CoveredBeforeBlur.Observe(KeyboardCues[I].ExpectedF9, true); }
+	Check(CoveredBeforeBlur.Complete(), "fixture establishes completed phases before loss");
+	CoveredBeforeBlur.ObserveFocus(false);
+	Check(!CoveredBeforeBlur.Complete(), "covered phases cannot hide focus loss without a reading");
 	FCues Backwards; Backwards.Advance(1000); Backwards.Advance(999);
 	Check(Backwards.IsFailed(), "monotonic local clock required");
 	FCues Wrong; Wrong.Advance(0); Check(!Wrong.Acknowledge(1, 1), "wrong cue acknowledgement rejected");
