@@ -83,6 +83,8 @@ int main(int Argc,char** Argv)
 	Log("{\"type\":\"ready\",\"hz\":300,\"keyboard_recorded\":\"F9 test value only; no keycodes/text\",\"pause_at_s\":"+std::to_string(PauseAt)+",\"pause_for_s\":"+std::to_string(PauseFor)+"}");
 	const auto Start=std::chrono::steady_clock::now(); bool Paused=false; std::uint64_t Frames=0,Missing=0;
 	std::map<std::string,std::uint64_t> RawStamps;
+	std::map<std::string,std::uint64_t> KeyStamps;
+	std::map<std::string,HRESULT> KeyErrors;
 	while(std::chrono::steady_clock::now()-Start<std::chrono::seconds(Seconds))
 	{
 		const auto Elapsed=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-Start).count();
@@ -103,7 +105,32 @@ int main(int Argc,char** Argv)
 			{ std::lock_guard<std::mutex> Lock(Monitor.Mutex); Devices=Monitor.Devices; }
 			for(const auto& D:Devices)
 			{
-				const GameInputDeviceInfo* Info=nullptr; if(FAILED(D.second->GetDeviceInfo(&Info))||!Info||!(Info->supportedInput&GameInputKindGamepad))continue;
+				const GameInputDeviceInfo* Info=nullptr; if(FAILED(D.second->GetDeviceInfo(&Info))||!Info)continue;
+				if(Info->supportedInput&GameInputKindKeyboard)
+				{
+					ComPtr<IGameInputReading> KeysReading;
+					const auto KeyHr=Api->GetCurrentReading(GameInputKindKeyboard,D.second.Get(),KeysReading.GetAddressOf());
+					if(FAILED(KeyHr)||!KeysReading)
+					{
+						if(!KeyErrors.count(D.first)||KeyErrors[D.first]!=KeyHr)
+							Log("{\"type\":\"raw_f9_error\",\"id\":\""+D.first+"\",\"us\":"+std::to_string(Elapsed)+",\"hr\":"+std::to_string(KeyHr)+"}");
+						KeyErrors[D.first]=KeyHr;
+					}
+					else if(!KeyStamps.count(D.first)||KeyStamps[D.first]!=KeysReading->GetTimestamp())
+					{
+						KeyErrors.erase(D.first); KeyStamps[D.first]=KeysReading->GetTimestamp();
+						std::array<GameInputKeyState,256> Keys{};
+						const auto Count=KeysReading->GetKeyCount();
+						const auto Read=KeysReading->GetKeyState(static_cast<std::uint32_t>(Keys.size()),Keys.data());
+						if(Count>Keys.size()||Read!=Count) { Log("{\"type\":\"raw_f9_state_error\"}"); }
+						else
+						{
+							bool F9=false; for(std::uint32_t K=0;K<Count;++K) F9=F9||Keys[K].virtualKey==VK_F9;
+							Log("{\"type\":\"raw_f9\",\"id\":\""+D.first+"\",\"us\":"+std::to_string(Elapsed)+",\"os_us\":"+std::to_string(KeysReading->GetTimestamp())+",\"f9\":"+(F9?"true":"false")+"}");
+						}
+					}
+				}
+				if(!(Info->supportedInput&GameInputKindGamepad))continue;
 				ComPtr<IGameInputReading> Reading;const auto Hr=Api->GetCurrentReading(GameInputKindGamepad,D.second.Get(),Reading.GetAddressOf());
 				if(FAILED(Hr)||!Reading)continue;
 				GameInputGamepadState Pad{};if(!Reading->GetGamepadState(&Pad)||RawStamps[D.first]==Reading->GetTimestamp())continue;
