@@ -82,7 +82,7 @@ int main()
 	{
 		FDeviceActivityPolicy P(Config()); auto D=Devices();
 		if (Reverse) std::reverse(D.begin(),D.end());
-		P.Sync(D); for (std::uint8_t N : {1,2,3}) P.Observe(Id(N),1,1,{});
+		P.Sync(D); for (std::uint8_t N : std::array<std::uint8_t,3>{1,2,3}) P.Observe(Id(N),1,1,{});
 		P.Observe(Id(1),1,100,Button(true)); Check(P.Decide(0)->Id==Id(1),"removed-current fixture claims global timestamp100");
 		for (auto& Device : D) if (Device.Id==Id(1)) Device.Connected=false;
 		if (Remove) D.erase(std::remove_if(D.begin(),D.end(),[](const auto& Device) { return Device.Id==Id(1); }),D.end());
