@@ -8,6 +8,9 @@
 
 namespace Speed::Input
 {
+#if WITH_DEV_AUTOMATION_TESTS
+struct FControllerInputTestAccess;
+#endif
 struct FPublishedInputFrame
 {
 	FInputFrame Frame;
@@ -20,6 +23,9 @@ struct FPublishedInputFrame
  */
 class FInputStream final
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	friend struct FControllerInputTestAccess;
+#endif
 public:
 	explicit FInputStream(std::shared_ptr<IInputProducer> Producer) : Source(std::move(Producer)) {}
 	std::optional<FInputFrame> Consume(FFrameNumber Frame)

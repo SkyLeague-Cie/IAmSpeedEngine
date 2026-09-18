@@ -108,6 +108,9 @@ protected:
 	UInputAction* CamPitchAction = nullptr;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend struct Speed::Input::FControllerInputTestAccess;
+#endif
 	std::shared_ptr<Speed::Input::IInputProducer> InputProducer = nullptr;
 	std::shared_ptr<Speed::Input::FInputStream> InputSnapshots;
 	Speed::Input::FInputPresentationBindings PresentationBindings;
