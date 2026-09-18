@@ -1,6 +1,6 @@
 #pragma once
 
-#if WITH_DEV_AUTOMATION_TESTS
+#if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS
 #include "IAmSpeed/Controllers/SpeedController.h"
 
 namespace Speed::Input

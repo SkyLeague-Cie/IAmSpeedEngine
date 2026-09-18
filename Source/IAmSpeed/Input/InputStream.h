@@ -8,7 +8,7 @@
 
 namespace Speed::Input
 {
-#if WITH_DEV_AUTOMATION_TESTS
+#if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS
 struct FControllerInputTestAccess;
 #endif
 struct FPublishedInputFrame
@@ -23,7 +23,7 @@ struct FPublishedInputFrame
  */
 class FInputStream final
 {
-#if WITH_DEV_AUTOMATION_TESTS
+#if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS
 	friend struct FControllerInputTestAccess;
 #endif
 public:

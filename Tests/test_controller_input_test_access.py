@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1] / "Source/IAmSpeed"
 class AccessBoundary(unittest.TestCase):
     def test_only_automation_and_read_only(self):
         text = (ROOT / "Input/Testing/ControllerInputTestAccess.h").read_text()
-        self.assertLess(text.index("#if WITH_DEV_AUTOMATION_TESTS"), text.index("#include"))
+        self.assertLess(text.index("#if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS"), text.index("#include"))
         self.assertIn("std::weak_ptr<const FInputStream>", text)
         self.assertIn("std::lock_guard<std::mutex>", text)
         for forbidden in ("Consume(", "PublishCompleted(", "Skip(", "Deactivate(",
@@ -20,7 +20,7 @@ class AccessBoundary(unittest.TestCase):
                          (ROOT / "Components/SpeedWheeledComponent.h").read_text())
         for path in ("Controllers/SpeedController.h", "Input/InputStream.h"):
             text = (ROOT / path).read_text()
-            self.assertIn("#if WITH_DEV_AUTOMATION_TESTS\n", text)
+            self.assertIn("#if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS\n", text)
             self.assertIn("friend struct", text)
 
 
