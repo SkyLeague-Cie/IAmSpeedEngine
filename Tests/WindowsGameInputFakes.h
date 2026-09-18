@@ -34,7 +34,11 @@ template<class P> static void Await(P Predicate)
 template<class Interface> class FakeCom : public Interface
 {
 public:
-	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** Out) override { *Out = nullptr; return E_NOINTERFACE; }
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID Id, void** Out) override {
+		*Out = nullptr;
+		if (Id != __uuidof(IUnknown) && Id != __uuidof(Interface)) return E_NOINTERFACE;
+		*Out = static_cast<Interface*>(this); AddRef(); return S_OK;
+	}
 	ULONG STDMETHODCALLTYPE AddRef() override { return ++References; }
 	ULONG STDMETHODCALLTYPE Release() override { auto N = --References; if (!N) delete this; return N; }
 	ULONG RefCount() const { return References.load(); }
@@ -73,9 +77,10 @@ public:
 	std::vector<GameInputKeyState> Keys;
 	uint64_t Stamp = 100;
 	bool ValidPad = true;
+	ComPtr<IGameInputDevice> ObservedDevice;
 	GameInputKind STDMETHODCALLTYPE GetInputKind() override { return GameInputKindGamepad | GameInputKindKeyboard; }
 	uint64_t STDMETHODCALLTYPE GetTimestamp() override { return Stamp; }
-	void STDMETHODCALLTYPE GetDevice(IGameInputDevice** Out) override { *Out = nullptr; }
+	void STDMETHODCALLTYPE GetDevice(IGameInputDevice** Out) override { *Out = ObservedDevice.Get(); if (*Out) (*Out)->AddRef(); }
 	uint32_t STDMETHODCALLTYPE GetControllerAxisCount() override { return 0; }
 	uint32_t STDMETHODCALLTYPE GetControllerAxisState(uint32_t, float*) override { return 0; }
 	uint32_t STDMETHODCALLTYPE GetControllerButtonCount() override { return 0; }

@@ -14,6 +14,26 @@ class FGameInputSelectedSource final : public IInputProducer
 	using FLease = FGameInputDiscovery::FLease;
 	using FRequest = std::optional<std::pair<FDeviceId, EDeviceKind>>;
 public:
+	struct FPollObservation
+	{
+		FFrameNumber Frame = 0;
+		std::optional<FDeviceSelection> AcquisitionTicket;
+		FReadObservations Readings;
+		std::uint64_t SubmitAccepted = 0, SubmitRejected = 0;
+	};
+	// Diagnostic-only opt-in before first polling. A ticket labels acquisition,
+	// not the final frame generation: hotplug can invalidate it before latching.
+	bool EnableObservations()
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (Stopping || LastFrame) return false;
+		Observations = std::make_unique<FPollObservation>(); return true;
+	}
+	std::optional<FPollObservation> ReadObservation() const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		return Observations ? std::optional<FPollObservation>(*Observations) : std::nullopt;
+	}
 	static std::unique_ptr<FGameInputSelectedSource> Create(FApi* Api, std::uint64_t ProducerId,
 		const std::array<bool, ActionCount>& Digital, FGameInputMapper Keyboard, FGameInputMapper Gamepad)
 	{
@@ -183,6 +203,7 @@ private:
 	void PollLocked(FFrameNumber Frame)
 	{
 		using namespace GameInput::v3;
+		if (Observations) { *Observations = {}; Observations->Frame = Frame; }
 		if (FAILED(Discovery->GetLastError())) { Status = EPollStatus::Failed; return; }
 		if (Activity && !PollActivityLocked(Frame)) { Status = EPollStatus::Failed; return; }
 		if (HasPending)
@@ -200,13 +221,18 @@ private:
 		Disconnected.reset();
 		if (!Active || !Same(*Active, *Lease)) { Cursor.Reset(); Sequence = 0; Active = Lease; }
 		const auto Kind = Lease->Ticket.Kind == EDeviceKind::Keyboard ? GameInputKindKeyboard : GameInputKindGamepad;
+		if (Observations) Observations->AcquisitionTicket = Lease->Ticket;
 		const auto& Mapper = Lease->Ticket.Kind == EDeviceKind::Keyboard ? Keyboard : Gamepad;
 		const auto Result = Cursor.Poll(*Api.Get(), Lease->Device.Get(), Kind, Mapper,
 			[&](const FActionValues& Values)
 			{
-				if (Sequence == std::numeric_limits<std::uint64_t>::max() || !Discovery->Submit(*Lease, Sequence + 1, Values)) return false;
+				if (Sequence == std::numeric_limits<std::uint64_t>::max() || !Discovery->Submit(*Lease, Sequence + 1, Values)) {
+					if (Observations) ++Observations->SubmitRejected;
+					return false;
+				}
+				if (Observations) ++Observations->SubmitAccepted;
 				++Sequence; return true;
-			});
+			}, Observations ? &Observations->Readings : nullptr);
 		Error = Result.Error;
 		if (Result.Status == EReadBatchStatus::Error)
 		{
@@ -233,6 +259,7 @@ private:
 	const FGameInputMapper Keyboard, Gamepad; // Pure/bounded/nonthrowing; no reentrant source calls.
 	mutable std::mutex Gate;
 	FGameInputReadCursor Cursor;
+	std::unique_ptr<FPollObservation> Observations;
 	std::optional<FLease> Active;
 	std::optional<std::pair<FDeviceId, std::uint64_t>> Disconnected;
 	std::optional<FFrameNumber> LastFrame;

@@ -13,6 +13,7 @@
 #include <functional>
 #include <memory>
 #include <exception>
+#include <cstring>
 
 #if GAMEINPUT_API_VERSION != 3
 #error This adapter targets the inspected GameInput v3 API.
@@ -32,6 +33,20 @@ struct FDeviceState
 using FGameInputMapper = std::function<bool(const FDeviceState&, FActionValues&)>;
 enum class EReadBatchStatus { NoChange, Updated, Resynchronize, Error };
 struct FReadBatchResult { EReadBatchStatus Status; HRESULT Error; };
+// Optional bounded diagnostic values. COM identities never cross this boundary.
+struct FReadingObservation
+{
+	bool Current = false, HasReading = false, HasDeviceId = false;
+	HRESULT Result = S_OK;
+	bool IdentityValid = false, SamePrevious = false;
+	std::uint64_t Timestamp = 0;
+	std::array<std::uint8_t, 32> DeviceId{};
+};
+struct FReadObservations
+{
+	std::array<FReadingObservation, 65> Calls{};
+	std::size_t Count = 0;
+};
 
 // Raw traversal only: no session, journal, selection or lifecycle authority.
 // The owner resets this cursor whenever its acquisition generation changes.
@@ -41,9 +56,10 @@ public:
 	void Reset() { Cursor.Reset(); }
 	FReadBatchResult Poll(GameInput::v3::IGameInput& Api, GameInput::v3::IGameInputDevice* Device,
 		GameInput::v3::GameInputKind Kind, const FGameInputMapper& Mapper,
-		const std::function<bool(const FActionValues&)>& Commit)
+		const std::function<bool(const FActionValues&)>& Commit, FReadObservations* Observations = nullptr)
 	{
 		using namespace GameInput::v3;
+		if (Observations) *Observations = {};
 		if (!Device || !Mapper || !Commit || (Kind != GameInputKindKeyboard && Kind != GameInputKindGamepad))
 			return {EReadBatchStatus::Error, E_INVALIDARG};
 		bool Changed = false;
@@ -54,6 +70,27 @@ public:
 			const auto Status = Cursor
 				? Api.GetNextReading(Cursor.Get(), Kind, Device, Next.GetAddressOf())
 				: Api.GetCurrentReading(Kind, Device, Next.GetAddressOf());
+			if (Observations)
+			{
+				auto& O = Observations->Calls[Observations->Count++];
+				O.Current = !Cursor; O.Result = Status; O.HasReading = !!Next;
+				if (Next) {
+					Microsoft::WRL::ComPtr<IUnknown> Identity, PreviousIdentity;
+					O.IdentityValid = SUCCEEDED(Next.As(&Identity)) && Identity;
+					if (Cursor) {
+						O.IdentityValid = O.IdentityValid && SUCCEEDED(Cursor.As(&PreviousIdentity)) && PreviousIdentity;
+						O.SamePrevious = O.IdentityValid && Identity.Get() == PreviousIdentity.Get();
+					}
+					O.Timestamp = Next->GetTimestamp();
+					Microsoft::WRL::ComPtr<IGameInputDevice> Observed;
+					Next->GetDevice(Observed.GetAddressOf());
+					const GameInputDeviceInfo* Info = nullptr;
+					if (Observed && SUCCEEDED(Observed->GetDeviceInfo(&Info)) && Info) {
+						static_assert(sizeof(Info->deviceId) == sizeof(O.DeviceId), "diagnostic ID size");
+						std::memcpy(O.DeviceId.data(), &Info->deviceId, O.DeviceId.size()); O.HasDeviceId = true;
+					}
+				}
+			}
 			if (Status == GAMEINPUT_E_READING_NOT_FOUND)
 				return {Changed ? EReadBatchStatus::Updated : EReadBatchStatus::NoChange, S_OK};
 			if (FAILED(Status)) return {EReadBatchStatus::Error, Status};
