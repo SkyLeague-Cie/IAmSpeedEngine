@@ -1,0 +1,90 @@
+#pragma once
+
+// Optional Windows leaf. No portable header includes this file. The host must
+// supply Microsoft GameInput v3 include/link dependencies before enabling it.
+// Source-only checkpoint: not included by the Unreal module yet.
+#include "../InputFrame.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <GameInput.h>
+#include <wrl/client.h>
+#include <functional>
+#include <memory>
+#include <exception>
+
+#if GAMEINPUT_API_VERSION != 3
+#error This adapter targets the inspected GameInput v3 API.
+#endif
+
+namespace Speed::Input::Windows
+{
+// Hardware mapping belongs to this platform leaf/host, never the portable core.
+struct FDeviceState
+{
+	std::array<bool, 256> VirtualKeys{};
+	std::uint32_t GamepadButtons = 0;
+	std::array<float, 6> Axes{}; // LT, RT, LX, LY, RX, RY (GameInput ranges).
+	std::uint64_t TimestampMicroseconds = 0;
+};
+
+using FGameInputMapper = std::function<bool(const FDeviceState&, FActionValues&)>;
+enum class EReadBatchStatus { NoChange, Updated, Resynchronize, Error };
+struct FReadBatchResult { EReadBatchStatus Status; HRESULT Error; };
+
+// Raw traversal only: no session, journal, selection or lifecycle authority.
+// The owner resets this cursor whenever its acquisition generation changes.
+class FGameInputReadCursor
+{
+public:
+	void Reset() { Cursor.Reset(); }
+	FReadBatchResult Poll(GameInput::v3::IGameInput& Api, GameInput::v3::IGameInputDevice* Device,
+		GameInput::v3::GameInputKind Kind, const FGameInputMapper& Mapper,
+		const std::function<bool(const FActionValues&)>& Commit)
+	{
+		using namespace GameInput::v3;
+		if (!Device || !Mapper || !Commit || (Kind != GameInputKindKeyboard && Kind != GameInputKindGamepad))
+			return {EReadBatchStatus::Error, E_INVALIDARG};
+		bool Changed = false;
+		constexpr std::size_t MaxReadings = 64;
+		for (std::size_t I = 0; I <= MaxReadings; ++I)
+		{
+			Microsoft::WRL::ComPtr<IGameInputReading> Next;
+			const auto Status = Cursor
+				? Api.GetNextReading(Cursor.Get(), Kind, Device, Next.GetAddressOf())
+				: Api.GetCurrentReading(Kind, Device, Next.GetAddressOf());
+			if (Status == GAMEINPUT_E_READING_NOT_FOUND)
+				return {Changed ? EReadBatchStatus::Updated : EReadBatchStatus::NoChange, S_OK};
+			if (FAILED(Status)) return {EReadBatchStatus::Error, Status};
+			if (!Next) return {EReadBatchStatus::Error, E_UNEXPECTED};
+			if (I == MaxReadings || (Cursor && Next->GetTimestamp() < Cursor->GetTimestamp()))
+				return {EReadBatchStatus::Resynchronize, S_OK};
+			FDeviceState State{};
+			State.TimestampMicroseconds = Next->GetTimestamp();
+			if (Kind == GameInputKindKeyboard)
+			{
+				std::array<GameInputKeyState, 256> Keys{};
+				const auto Count = Next->GetKeyCount();
+				if (Count > Keys.size() || Next->GetKeyState(static_cast<std::uint32_t>(Keys.size()), Keys.data()) != Count)
+					return {EReadBatchStatus::Resynchronize, S_OK};
+				for (std::uint32_t K = 0; K < Count; ++K) State.VirtualKeys[Keys[K].virtualKey] = true;
+			}
+			else
+			{
+				GameInputGamepadState Pad{};
+				if (!Next->GetGamepadState(&Pad)) return {EReadBatchStatus::Resynchronize, S_OK};
+				State.GamepadButtons = static_cast<std::uint32_t>(Pad.buttons);
+				State.Axes = {Pad.leftTrigger, Pad.rightTrigger, Pad.leftThumbstickX,
+					Pad.leftThumbstickY, Pad.rightThumbstickX, Pad.rightThumbstickY};
+			}
+			FActionValues Values{};
+			if (!Mapper(State, Values) || !Commit(Values)) return {EReadBatchStatus::Resynchronize, S_OK};
+			Cursor = std::move(Next); Changed = true;
+		}
+		return {EReadBatchStatus::Resynchronize, S_OK};
+	}
+private:
+	Microsoft::WRL::ComPtr<GameInput::v3::IGameInputReading> Cursor;
+};
+}
