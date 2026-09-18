@@ -5,6 +5,8 @@ class HistoryApi final : public DiscoveryApi
 {
 public:
 	std::map<IGameInputDevice*, std::vector<ComPtr<FakeReading>>> History;
+	std::map<IGameInputDevice*, bool> ReadDisconnected;
+	std::map<IGameInputDevice*, unsigned> DeviceCalls;
 	void Sample(FakeDevice* D, std::uint64_t Stamp, bool Held, float Stick = 0)
 	{
 		ComPtr<FakeReading> R; R.Attach(new FakeReading); R->Stamp = Stamp;
@@ -16,12 +18,14 @@ public:
 	HRESULT STDMETHODCALLTYPE GetCurrentReading(GameInputKind, IGameInputDevice* D, IGameInputReading** Out) override
 	{
 		++ReadCalls; ++CurrentCalls; *Out = nullptr;
+		++DeviceCalls[D]; if (ReadDisconnected[D]) return GAMEINPUT_E_DEVICE_DISCONNECTED;
 		const auto& H = History[D]; if (H.empty()) return GAMEINPUT_E_READING_NOT_FOUND;
 		*Out = H.back().Get(); (*Out)->AddRef(); return S_OK;
 	}
 	HRESULT STDMETHODCALLTYPE GetNextReading(IGameInputReading* Previous, GameInputKind, IGameInputDevice* D, IGameInputReading** Out) override
 	{
 		++ReadCalls; ++NextCalls; *Out = nullptr;
+		++DeviceCalls[D]; if (ReadDisconnected[D]) return GAMEINPUT_E_DEVICE_DISCONNECTED;
 		const auto& H = History[D];
 		for (std::size_t I = 0; I < H.size(); ++I) if (H[I].Get() == Previous)
 		{
@@ -78,6 +82,17 @@ int main()
 		Api->Sample(Pad.Get(),17,false,.4f); Check(S->Produce(16)->GetActions()==FActionValues{} && S->Produce(16)->RequiresReset(),"meaningful raw analog movement selects pad even when mapped values neutral");
 		Check(!S->RequestSelection(std::make_pair(Key(2),EDeviceKind::Keyboard)),"automatic source does not mix explicit selection control");
 		Check(S->Shutdown(),"auto shutdown");
+	}
+	{
+		ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi); auto Pad=MakeDevice(1);
+		Api->Initial={{Pad,1,true}}; Api->Sample(Pad.Get(),1,true); auto S=Source(Api.Get());
+		S->RequestLock(Key(1)); Check(S->Produce(0)->GetActions()[Throttle]==255,"locked startup fresh held");
+		Api->ReadDisconnected[Pad.Get()]=true;
+		Check(S->Produce(1)->GetActions()==FActionValues{},"activity read-side disconnect neutralizes without callback");
+		const auto Calls=Api->DeviceCalls[Pad.Get()]; S->SetPaused(true); S->Produce(2); S->SetPaused(false); S->Produce(3);
+		Check(Api->DeviceCalls[Pad.Get()]==Calls,"read-side disconnect quarantine survives pause/resume");
+		Api->ReadDisconnected[Pad.Get()]=false; Api->FireDevice(Pad.Get(),2,true); Api->Sample(Pad.Get(),2,true);
+		Check(S->Produce(4)->GetActions()[Throttle]==255,"new lifecycle revision clears quarantine");
 	}
 	std::cout<<"PASS WindowsActivitySourceProbe checks="<<Checks<<" hardware=none sdk=v3\n";
 }

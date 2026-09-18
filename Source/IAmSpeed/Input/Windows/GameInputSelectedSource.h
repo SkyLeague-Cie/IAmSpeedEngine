@@ -62,7 +62,11 @@ public:
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (Stopping || !Discovery->SetPaused(Paused)) return false;
 		bPaused = Paused; Cursor.Reset(); Active.reset(); Sequence = 0;
-		if (Activity) { Activity->SetPaused(Paused); ActivityCursors.clear(); }
+		if (Activity)
+		{
+			Activity->SetPaused(Paused);
+			for (auto& Item : ActivityCursors) Item.second.Cursor.Reset(); // Retain read-side disconnect quarantine.
+		}
 		return true;
 	}
 	std::vector<FDiscoveredDevice> Snapshot() const { return Discovery->Snapshot(); }
@@ -160,7 +164,7 @@ private:
 			}
 			Retained.emplace(D.Id, std::move(Reading));
 		}
-		ActivityCursors = std::move(Retained);
+		if (!bPaused) ActivityCursors = std::move(Retained);
 		// Remove activity recorded from any lifecycle revision invalidated mid-poll.
 		auto Latest = Discovery->Snapshot();
 		for (auto& D : Latest)
