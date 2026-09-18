@@ -1,6 +1,7 @@
 #include "IAmSpeed/Input/DeviceActivityPolicy.h"
 #include <cstdlib>
 #include <iostream>
+#include <algorithm>
 using namespace Speed::Input;
 static unsigned Checks = 0;
 static void Check(bool Value, const char* What) { ++Checks; if (!Value) { std::cerr << "FAIL " << What << '\n'; std::exit(1); } }
@@ -75,6 +76,22 @@ int main()
 		S.Axes[2]=.15f; S.Axes[3]=.15f; P.Observe(Id(1),1,12,S); Check(P.Decide(9)->Id==Id(1),"radial diagonal stick enters despite each component below threshold");
 		auto C=Config(); C.MaximumDevices=1; FDeviceActivityPolicy Limited(C);
 		Check(!Limited.Sync(Devices()) && Limited.IsFailed(),"candidate budget fails closed");
+	}
+	for (bool Remove : {false,true}) for (bool Reverse : {false,true})
+		for (std::uint64_t Stamp : {90ull,100ull,110ull})
+	{
+		FDeviceActivityPolicy P(Config()); auto D=Devices();
+		if (Reverse) std::reverse(D.begin(),D.end());
+		P.Sync(D); for (std::uint8_t N : {1,2,3}) P.Observe(Id(N),1,1,{});
+		P.Observe(Id(1),1,100,Button(true)); Check(P.Decide(0)->Id==Id(1),"removed-current fixture claims global timestamp100");
+		for (auto& Device : D) if (Device.Id==Id(1)) Device.Connected=false;
+		if (Remove) D.erase(std::remove_if(D.begin(),D.end(),[](const auto& Device) { return Device.Id==Id(1); }),D.end());
+		P.Sync(D);
+		P.Observe(Id(Reverse?3:2),1,Stamp,Button(true)); P.Observe(Id(Reverse?2:3),1,Stamp,Button(true));
+		const auto Choice=P.Decide(1);
+		Check(Stamp<100 ? !Choice : Choice && Choice->Id==Id(2),"removed current: older neutral, equal/newer stable lowest ID");
+		const auto Replay=P.Decide(1);
+		Check(Stamp<100 ? !Replay : Replay && Replay->Id==Id(2),"removed-current boundary choice replay unchanged");
 	}
 	std::cout << "PASS DeviceActivityProbe checks=" << Checks << '\n';
 }

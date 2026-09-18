@@ -40,7 +40,10 @@ device's observation; there is no manufactured button edge after reset.
 At each physical boundary, the newest significant activity in a common backend
 timestamp domain wins. Equal timestamps retain the current eligible ID; otherwise
 the lowest stable ID wins. A delayed older timestamp cannot steal ownership from
-a more recent accepted activity. No candidate activity means keep the current
+a more recent accepted activity. The accepted timestamp remains a global floor
+after removal of that device: older delayed activity leaves selection neutral;
+activity equal to the floor can choose the lowest eligible ID when the current
+ID is absent. No candidate activity means keep the current
 eligible device; startup without activity is neutral. A first held baseline alone
 does not claim an unselected device. Remembering the selected ID permits fresh-held
 reconnection if another device has not taken ownership meanwhile.

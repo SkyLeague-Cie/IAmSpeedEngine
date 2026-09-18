@@ -121,12 +121,14 @@ public:
 			else
 			{
 				if (Remembered && Trackers.count(*Remembered)) Winner = Remembered;
-				std::optional<std::uint64_t> Best = Winner ? LastClaimTimestamp : std::nullopt;
+				// Accepted time remains a global floor even if its device disappeared.
+				std::optional<std::uint64_t> Best = LastClaimTimestamp;
 				for (const auto& Item : Trackers)
 				{
 					const auto Stamp = Item.second.Pending;
 					if (!Stamp) continue;
-					if (!Best || *Stamp > *Best || (*Stamp == *Best && Remembered && Item.first == *Remembered))
+					if (!Best || *Stamp > *Best || (*Stamp == *Best
+						&& (!Winner || (Remembered && Item.first == *Remembered))))
 					{ Best = Stamp; Winner = Item.first; }
 				}
 				if (Winner && Remembered && *Winner != *Remembered && Trackers.count(*Remembered)

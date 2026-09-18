@@ -94,5 +94,19 @@ int main()
 		Api->ReadDisconnected[Pad.Get()]=false; Api->FireDevice(Pad.Get(),2,true); Api->Sample(Pad.Get(),2,true);
 		Check(S->Produce(4)->GetActions()[Throttle]==255,"new lifecycle revision clears quarantine");
 	}
+	for (bool Reverse : {false,true}) for (std::uint64_t Stamp : {90ull,100ull,110ull})
+	{
+		ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);
+		auto Pad=MakeDevice(1); auto Keyboard=MakeDevice(2,GameInputKindKeyboard);
+		Api->Initial={{Pad,1,true},{Keyboard,1,true}}; if(Reverse) std::reverse(Api->Initial.begin(),Api->Initial.end());
+		Api->Sample(Pad.Get(),1,false); Api->Sample(Keyboard.Get(),1,false); auto S=Source(Api.Get()); S->Produce(0);
+		Api->Sample(Pad.Get(),100,true); Check(S->Produce(1)->GetActions()[Throttle]==255,"callback removal fixture claims timestamp100");
+		Api->FireDevice(Pad.Get(),101,false); Api->Sample(Keyboard.Get(),Stamp,true);
+		const auto Choice=*S->Produce(2);
+		Check(Choice.RequiresReset() && Choice.GetEdgeCount()==0 && Choice.GetActions()[Throttle]==0
+			&& Choice.GetActions()[Brake]==(Stamp<100?0:255),"callback removal retains time floor for delayed/equal/newer raw activity");
+		const auto Calls=Api->ReadCalls.load();
+		Check(S->Produce(1)->GetActions()[Throttle]==255 && Api->ReadCalls==Calls,"pre-removal history unchanged without OS reads");
+	}
 	std::cout<<"PASS WindowsActivitySourceProbe checks="<<Checks<<" hardware=none sdk=v3\n";
 }
