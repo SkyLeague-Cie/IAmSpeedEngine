@@ -1,4 +1,4 @@
-#include "TestInputProducer.h"
+#include "IAmSpeed/Input/Testing/TestInputProducer.h"
 #include "IAmSpeed/Input/DeviceInputSession.h"
 #include "IAmSpeed/Input/InputStream.h"
 #include "IAmSpeed/Input/DrivingInputTargets.h"

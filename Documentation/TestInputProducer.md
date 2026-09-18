@@ -1,6 +1,10 @@
 # Exact-frame test producer — unit 1
 
-`Tests/TestInputProducer.h` provides `FTestInputProducer final : IInputProducer`.
+`Source/IAmSpeed/Input/Testing/TestInputProducer.h` provides
+`FTestInputProducer final : IInputProducer` through the normal module include path.
+This is the single definition used by native probes and opt-in downstream test
+modules. Production neither registers, constructs nor activates it. No default
+input source changes. Game-specific fixture expansion belongs to the test module.
 It is test support, not a shipped input policy or a default controller source.
 The caller explicitly supplies an existing Device/AI/Network identity, first
 canonical frame and a complete scenario of `FInputFrame` values. Identity is
