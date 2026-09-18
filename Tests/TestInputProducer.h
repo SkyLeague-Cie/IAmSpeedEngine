@@ -50,4 +50,3 @@ private:
 	std::size_t Next = 0;
 };
 }
-
