@@ -28,6 +28,13 @@ int main()
 	Check(bool(Contract), "valid base contract");
 	const auto Copy = V2::FInputActionContract::Create(D);
 	Check(Copy && Contract->GetFingerprint() == Copy->GetFingerprint(), "content identity independent of allocation");
+	D.Actions[0].Aliases = {"Accelerate", "Gas"};
+	const auto Named = V2::FInputActionContract::Create(D);
+	std::reverse(D.Actions[0].Aliases.begin(), D.Actions[0].Aliases.end());
+	std::reverse(D.Physical.begin(), D.Physical.end());
+	const auto Reordered = V2::FInputActionContract::Create(D);
+	Check(Named && Reordered && Named->GetFingerprint() == Reordered->GetFingerprint(), "nonsemantic order canonicalized");
+	D = Description();
 	D.Mapping[0].Scale = -1;
 	const auto Inverted = V2::FInputActionContract::Create(D);
 	Check(Inverted && Inverted->GetFingerprint() != Contract->GetFingerprint(), "mapping included in identity");

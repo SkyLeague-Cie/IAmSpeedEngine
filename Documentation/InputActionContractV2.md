@@ -13,6 +13,7 @@ future opt-in; it cannot supply missing activity by examining old values.
 descriptors and exact content fingerprint remain immutable. The fingerprint
 encodes each field (including mapping order and revision) in canonical bytes,
 not object padding or addresses; it is not a security hash or a network format.
+Alias and physical-destination ordering is canonicalized before fingerprinting.
 Producer, stream and sink must share this contract when implemented.
 
 The built-in definitions are IAmSpeed.Throttle (0, unsigned 255), Brake (1,

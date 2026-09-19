@@ -2,6 +2,7 @@
 
 #include "InputFrame.h"
 #include "RawInput.h"
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -55,6 +56,12 @@ public:
 	static std::shared_ptr<const FInputActionContract> Create(FInputActionContractDescription Description)
 	{
 		if (!Validate(Description)) return {};
+		// Alias and destination enumeration order has no runtime meaning.
+		// Mapping contribution order does, and is deliberately preserved.
+		for (auto& A : Description.Actions) std::sort(A.Aliases.begin(), A.Aliases.end());
+		std::sort(Description.Physical.begin(), Description.Physical.end(),
+			[](const FPhysicalBindingDescriptor& A, const FPhysicalBindingDescriptor& B)
+			{ return A.Destination < B.Destination; });
 		return std::shared_ptr<const FInputActionContract>(new FInputActionContract(std::move(Description)));
 	}
 	const FInputActionContractDescription& GetDescription() const { return Description; }
