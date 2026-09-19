@@ -1,6 +1,6 @@
-# Common canonical stream and presentation — A3 source checkpoint
+# Common canonical stream and presentation — A5a transaction source checkpoint
 
-Status: source prepared, not compiled or executed. All types remain in V2;
+Status: A5a source prepared, not compiled or executed. A3/A4 historical evidence does not qualify the changed transaction API. All types remain in V2;
 the existing player path, A1 schema/fingerprint, A2 response and v1 fixtures
 are unchanged. No controller, platform backend or game asset activates this.
 
@@ -15,7 +15,7 @@ activation. Presentation bindings are registered and sealed while the stream
 is configurable. The stream checks source/consumer fingerprints before becoming
 active. A single physical lane owns Consume, ConfirmPhysicalCommit and
 PublishCompleted. A real host must assign all targets together, apply its
-existing slew once, confirm success, and publish only after the whole physical
+existing slew once, confirm success with the Ready reservation token, and publish with that same token only after the whole physical
 frame completes. The native test models that grouped assignment; it does not
 claim that a UE component already calls this API.
 
@@ -89,3 +89,63 @@ This portable checkpoint prepares their replacement but removes none prematurely
 Presentation-only UI/camera controls require separate classification. Controller
 integration, mechanic migration and final legacy removal remain qualified future
 work; they are not acceptance claims for A3.
+
+
+## A5a opaque reservation, deferred stop and explicit abort
+
+Ready alone grants an optional FReservationToken. The token contains private
+stream epoch/frame plus a unique shared identity retained by all copies, so a
+stale capability cannot become valid through allocation address reuse. There is
+no public constructor from frame/epoch. ConfirmPhysicalCommit, PublishCompleted
+and Abort require this token; frame-number overloads are removed. Wrong/empty/
+foreign/stale or duplicate finalize tokens return false without disturbing a
+valid reservation. PublishedReplay grants no token and cannot authorize a new
+physical apply. Token copies represent the same owner capability; hosts must
+not distribute them to presentation code.
+
+| State/event | Result |
+| --- | --- |
+| Configurable or ActiveIdle + RequestStop/Deactivate | Stopped immediately |
+| Ready reservation | Reserved; complete tuple may be applied once |
+| Reserved + Confirm(token,true) | Committed; no second confirmation |
+| Reserved/Committed + RequestStop | Draining, IsActive false, presentation detached, no new Consume |
+| Committed + Publish(token) | Exactly one completed record; ActiveIdle, or Stopped if draining |
+| Reserved + Confirm(token,false) | Terminal Aborted(ApplicationFailed), no publication |
+| Reserved/Committed + Abort(token,reason) | Terminal Aborted(reason), no publication |
+| Stop before Ready returns | No token/tuple, no physical authority |
+| Wrong/duplicate token | No state change and no success |
+
+No waits or cross-frame mutex ownership: the stream's recursive Gate protects
+each atomic state transition, then releases. The physical lane keeps the token
+between Ready, grouped application, Confirm and completed-frame Publish. The
+presentation lane may RequestStop but cannot finalize under its read-only scope.
+GetState exposes Draining versus Stopped; the host must delay installing a new
+physical owner until the old stream reaches Stopped. The stream cannot police
+activation of an unrelated independently constructed stream. No global registry
+or hidden blocking has been added.
+
+ReadCompleted(frame) copies only retained completed journal entries, even after
+stop. ReadOutcome reports the last finalization (epoch/frame, Completed with no
+reason or Aborted with explicit reason). ReadRecorded remains diagnostic consumed
+history and never proves completion. ReadLatest/ReadPublishedSince detach from
+presentation at stop request; the separate witness is for lifecycle evidence.
+Successful publication survives a pending stop. Callback exceptions still request
+stop through Deactivate, which now preserves any in-flight reservation.
+
+Explicit Abort is terminal, even without a prior stop request. It cannot publish
+or restart the stream. SnapshotPublicationFailed is available for the later
+simulation integration: an unsuccessful global snapshot makes that canonical
+frame non-authoritative and must abort before worker exit. This portable change
+does not install that simulation notification or implement restoration. A lost
+worker cannot magically complete a token; the host must report success or abort.
+Publication serial exhaustion is rejected before granting a new Ready tuple.
+
+Prepared tests: InputTransactionProbe uses deterministic no-sleep interleavings
+at acquisition/Ready/application/confirmation/publication, duplicate stop,
+wrong-stream/same-address tokens, stale frame/epoch tokens, abort reasons,
+completion witness after stop and callback throw while another frame is reserved.
+ActionStreamProbe and ActionFamiliesProbe are migrated to the token API (including
+rejection of duplicate publication rather than the old idempotent-success API).
+Production wrappers, simulation and Build.cs remain unchanged and NOT_INTEGRATED.
+Exception containment semantics remain unchanged; future explicit module exception
+policy is a separate UE integration change.

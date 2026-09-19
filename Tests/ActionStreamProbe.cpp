@@ -93,8 +93,8 @@ public:
 		if (Mode == 1) S->Consume(N);
 		if (Mode == 2) S->Deactivate();
 		if (Mode == 3) S->Activate();
-		if (Mode == 4) S->ConfirmPhysicalCommit(N, true);
-		if (Mode == 5) S->PublishCompleted(N);
+		if (Mode == 4) S->ConfirmPhysicalCommit(FReservationToken{}, true);
+		if (Mode == 5) S->PublishCompleted(FReservationToken{});
 		return Frame;
 	}
 	const std::shared_ptr<const FInputActionContract>& GetContract() const override
@@ -120,20 +120,20 @@ static Speed::Input::FDrivingInputTargets ConsumeAndCommit(FInputStream& Stream,
 {
 	const auto Before = Stream.ReadLatest();
 	const auto Input = Stream.Consume(N);
-	Check(Input.Status == EConsumeStatus::Ready && Input.Frame && Input.Targets.Valid, "common consume and sink");
+	Check(Input.Status == EConsumeStatus::Ready && Input.Frame && Input.Targets.Valid && Input.Reservation, "common consume and sink");
 	const auto Duplicate = Stream.Consume(N);
 	Check(Duplicate.Status == EConsumeStatus::AlreadyPending && !Duplicate.Frame && !Duplicate.Targets.Valid
 		&& Duplicate.Targets.ThrottleValue == 0 && Duplicate.Targets.BrakeValue == 0 && Duplicate.Targets.SteeringValue == 0,
 		"pending repeat cannot authorize a second grouped apply");
-	Check(!Stream.PublishCompleted(N), "uncommitted physical input cannot publish");
+	Check(!Stream.PublishCompleted(*Input.Reservation), "uncommitted physical input cannot publish");
 	const auto Recorded = Stream.ReadRecorded(N);
 	Check(Recorded && Recorded->GetData().ConsumptionFrame == N, "consumed history records addressed frame");
 	const auto Still = Stream.ReadLatest();
 	Check((!Before && !Still) || (Before && Still && Before->Serial == Still->Serial), "latch not visible as completed");
 	const auto PhysicalTargets = Input.Targets; // Grouped assignment at native consumer boundary.
-	Check(Stream.ConfirmPhysicalCommit(N, true) && Stream.PublishCompleted(N), "publish only after successful commit");
+	Check(Stream.ConfirmPhysicalCommit(*Input.Reservation, true) && Stream.PublishCompleted(*Input.Reservation), "publish only after successful commit");
 	const auto Serial = Stream.ReadLatest()->Serial;
-	Check(Stream.PublishCompleted(N) && Stream.ReadLatest()->Serial == Serial, "publication idempotent");
+	Check(!Stream.PublishCompleted(*Input.Reservation) && Stream.ReadLatest()->Serial == Serial, "duplicate publication token rejected without republish");
 	return PhysicalTargets;
 }
 struct FReceiver
@@ -152,8 +152,8 @@ struct FReceiver
 			Check(!Bindings->Unbind("start") && !Bindings->BindSnapshotAction("late", 0, [](const FInputFrame&, Speed::Input::FActionId) {}), "binding mutation rejected during dispatch");
 			Check(Bindings->HandleInputs() == EDispatchStatus::Reentrant, "recursive dispatch rejected");
 			Check(Stream->Consume(E.Frame.GetData().ConsumptionFrame + 1).Status == EConsumeStatus::PresentationForbidden
-				&& !Stream->ConfirmPhysicalCommit(E.Frame.GetData().ConsumptionFrame, true)
-				&& !Stream->PublishCompleted(E.Frame.GetData().ConsumptionFrame), "callbacks cannot mutate canonical stream");
+				&& !Stream->ConfirmPhysicalCommit(FReservationToken{}, true)
+				&& !Stream->PublishCompleted(FReservationToken{}), "callbacks cannot mutate canonical stream");
 		}
 		if (E.State == EStateAction::Started && DetachOnStart) Stream->Deactivate();
 		if (E.State == EStateAction::Started && ThrowOnStart) throw std::runtime_error("intentional receiver failure");
@@ -206,7 +206,7 @@ int main()
 	Check(Receiver->Events == Expected, "drained edges ordered before latest-only triggered, reset never synthesizes completion");
 	Check(Snapshots == std::vector<FFrameNumber>({0, 3, 4, 63, 95}), "neutral latest snapshot observations preserved");
 	const auto Replay = Player->Consume(0);
-	Check(Replay.Status == EConsumeStatus::PublishedReplay && Replay.Frame && Replay.Targets.Valid && Raw->Polls == 96 && Player->PublishCompleted(0)
+	Check(Replay.Status == EConsumeStatus::PublishedReplay && Replay.Frame && Replay.Targets.Valid && Raw->Polls == 96 && !Replay.Reservation && !Player->PublishCompleted(FReservationToken{})
 		&& Player->ReadLatest()->Serial == 96, "retained replay does not poll or republish older frame");
 	const auto Batch = Player->ReadPublishedSince({{1}, 0});
 	Check(Batch.Status == EReadStatus::Batch && Batch.Frames.size() == 96 && Batch.Next.Serial == 96, "coherent complete published batch");
@@ -241,8 +241,8 @@ int main()
 		Check(Mode == 2 ? (Status == EDispatchStatus::Dispatched && Later == 1) : (Status == EDispatchStatus::Detached && Later == 0 && !S->IsActive()),
 			"expired receiver skipped; detach/exception stops remaining dispatch");
 	}
-	auto Failed = TestStream(C); Check(Failed->Activate() && Failed->Consume(0).Targets.Valid, "failure commit setup");
-	Check(!Failed->ConfirmPhysicalCommit(0, false) && !Failed->PublishCompleted(0) && !Failed->ReadLatest()
+	auto Failed = TestStream(C); Check(Failed->Activate(), "failure activation"); const auto FailedInput = Failed->Consume(0); Check(FailedInput.Targets.Valid && FailedInput.Reservation.has_value(), "failure commit setup");
+	Check(!Failed->ConfirmPhysicalCommit(*FailedInput.Reservation, false) && !Failed->PublishCompleted(FReservationToken{}) && !Failed->ReadLatest()
 		&& !Failed->Consume(1).Targets.Valid && !Failed->Activate(), "failed commit neutralizes and permanently detaches");
 	auto OtherDescription = C->GetDescription(); OtherDescription.Revision = {2};
 	const auto OtherContract = FInputActionContract::Create(OtherDescription);
@@ -260,7 +260,7 @@ int main()
 		Check(Invalid.Activate(), "invalid frame fixture activates matching producer contract");
 		const auto Rejected = Invalid.Consume(0);
 		Check(Rejected.Status == EConsumeStatus::InvalidInput && !Rejected.Frame && !Rejected.Targets.Valid
-			&& Rejected.Targets.ThrottleValue == 0 && !Invalid.PublishCompleted(0) && !Invalid.ReadLatest(), "invalid source fails neutral without publication");
+			&& Rejected.Targets.ThrottleValue == 0 && !Invalid.PublishCompleted(FReservationToken{}) && !Invalid.ReadLatest(), "invalid source fails neutral without publication");
 	}
 	auto WrongContractSource = std::make_shared<FInvalidSource>(OtherContract, Scenario(C, 1)[0]);
 	FInputStream WrongContract(WrongContractSource, C, {1}, {EProducerKind::Device, 7});
@@ -276,7 +276,7 @@ int main()
 		Check(Rejected.Status == EConsumeStatus::InvalidInput && !Rejected.Frame && !Rejected.Targets.Valid
 			&& Rejected.Targets.ThrottleValue == 0 && Rejected.Targets.BrakeValue == 0 && Rejected.Targets.SteeringValue == 0,
 			"producer exception returns neutral invalid tuple");
-		Check(!Faulted.IsActive() && !Faulted.ReadRecorded(0) && !Faulted.ReadLatest() && !Faulted.PublishCompleted(0)
+		Check(!Faulted.IsActive() && !Faulted.ReadRecorded(0) && !Faulted.ReadLatest() && !Faulted.PublishCompleted(FReservationToken{})
 			&& Faulted.Consume(0).Status == EConsumeStatus::Detached && !Faulted.Activate(), "producer exception cannot retry or publish");
 	}
 	Check(Throwing->Calls == 1 && ThrowingRaw->Calls == 1, "throwing producer and raw acquisition invoked once only");
@@ -291,7 +291,7 @@ int main()
 			Check(S->Activate(), "producer reentry setup");
 			Check(S->Consume(0).Status == EConsumeStatus::InvalidInput && Source->Calls == 1, "producer reentry cancels reserved read");
 		}
-		Check(!S->IsActive() && !S->ReadRecorded(0) && !S->ReadLatest() && !S->PublishCompleted(0)
+		Check(!S->IsActive() && !S->ReadRecorded(0) && !S->ReadLatest() && !S->PublishCompleted(FReservationToken{})
 			&& S->Consume(0).Status == EConsumeStatus::Detached && !S->Activate(), "reentry no deadlock/history/publication/retry");
 	}
 	std::cout << "PASS ActionStreamProbe checks=" << Checks << '\n';

@@ -16,11 +16,37 @@ struct FPublishedBatch
 	std::vector<FPublishedFrame> Frames;
 };
 enum class EConsumeStatus : std::uint8_t { Ready, AlreadyPending, PublishedReplay, Detached, WrongFrame, InvalidInput, PresentationForbidden };
+enum class EStreamState : std::uint8_t { Configurable, ActiveIdle, Reserved, Committed, Draining, Stopped };
+enum class EAbortReason : std::uint8_t { ApplicationFailed, SnapshotPublicationFailed, Cancelled };
+enum class ETransactionOutcome : std::uint8_t { Completed, Aborted };
+
+// Copyable capability, never reconstructible from an epoch/frame pair. The
+// shared identity stays alive with stale copies, preventing address reuse.
+class FReservationToken final
+{
+public:
+	FReservationToken() = default;
+private:
+	friend class FInputStream;
+	FReservationToken(FStreamEpoch InEpoch, FFrameNumber InFrame)
+		: Epoch(InEpoch), Frame(InFrame), Identity(std::make_shared<const std::uint8_t>(0)) {}
+	FStreamEpoch Epoch;
+	FFrameNumber Frame = 0;
+	std::shared_ptr<const std::uint8_t> Identity;
+};
+struct FTransactionOutcome
+{
+	FStreamEpoch Epoch;
+	FFrameNumber Frame = 0;
+	ETransactionOutcome Outcome = ETransactionOutcome::Aborted;
+	std::optional<EAbortReason> AbortReason;
+};
 struct FConsumedInput
 {
 	EConsumeStatus Status = EConsumeStatus::Detached;
 	std::optional<FInputFrame> Frame;
 	FDrivingInputTargets Targets; // Neutral/invalid for every failure.
+	std::optional<FReservationToken> Reservation; // Ready only; replay grants no authority.
 };
 
 // Single physical-lane producer/consumer, synchronized publication copies for
@@ -35,6 +61,14 @@ public:
 	FStreamEpoch GetEpoch() const { return Epoch; }
 	bool CanConfigure() const { std::lock_guard<std::recursive_mutex> Lock(Gate); return !CallingSource && !Started && !Terminated; }
 	bool IsActive() const { std::lock_guard<std::recursive_mutex> Lock(Gate); return Active; }
+	EStreamState GetState() const
+	{
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		if (Terminated) return EStreamState::Stopped;
+		if (StopRequested) return EStreamState::Draining;
+		if (Pending) return History[Pending->Frame % HistoryCapacity]->Committed ? EStreamState::Committed : EStreamState::Reserved;
+		return Started ? EStreamState::ActiveIdle : EStreamState::Configurable;
+	}
 	bool Activate()
 	{
 		if (FPresentationInputScope::IsActive()) return false;
@@ -53,8 +87,11 @@ public:
 	void Deactivate()
 	{
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
-		Active = false; Terminated = true; Pending.reset();
+		Active = false;
+		if (Pending) StopRequested = true; // Owner alone can drain; never wait on another lane.
+		else Terminated = true;
 	}
+	void RequestStop() { Deactivate(); }
 	FConsumedInput Consume(FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive()) return {EConsumeStatus::PresentationForbidden, {}, {}};
@@ -68,6 +105,7 @@ public:
 			return {EConsumeStatus::PublishedReplay, Retained->Frame, Retained->Targets};
 		}
 		if (Exhausted || Frame != NextFrame || Pending) return {EConsumeStatus::WrongFrame, {}, {}};
+		if (Serial == std::numeric_limits<std::uint64_t>::max()) return Fault(); // Never grant an unpublishable reservation.
 		std::optional<FInputFrame> Input;
 		CallingSource = true;
 		try { Input = Source->Produce(Frame); }
@@ -78,42 +116,59 @@ public:
 		const auto Targets = AssembleDrivingTargets(*Input, *Contract, Epoch, Frame);
 		if (!Targets.Valid) return Fault();
 		History[Frame % HistoryCapacity] = FHistoryEntry{*Input, Targets, false, false};
-		Pending = Frame;
-		return {EConsumeStatus::Ready, *Input, Targets};
+		Pending = FReservationToken(Epoch, Frame);
+		return {EConsumeStatus::Ready, *Input, Targets, Pending};
 	}
 	// The sole physical consumer calls this AFTER its grouped target commit.
 	// False permanently fails closed; no incomplete frame can be published.
-	bool ConfirmPhysicalCommit(FFrameNumber Frame, bool Succeeded)
+	bool ConfirmPhysicalCommit(const FReservationToken& Token, bool Succeeded)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		if (CallingSource) { Fault(); return false; }
-		if (!Active) return false;
-		auto& Slot = History[Frame % HistoryCapacity];
-		if (!Slot || Slot->Frame.GetData().ConsumptionFrame != Frame) return false;
-		if (!Succeeded) { Fault(); return false; }
-		if (Slot->Published) return true; // Replay cannot add a new publication.
-		if (!Pending || *Pending != Frame) return false;
+		if (!Matches(Token)) return false;
+		auto& Slot = History[Token.Frame % HistoryCapacity];
+		if (Slot->Committed) return false;
+		if (!Succeeded) { AbortLocked(Token, EAbortReason::ApplicationFailed); return false; }
 		Slot->Committed = true; return true;
 	}
-	bool PublishCompleted(FFrameNumber Frame)
+	bool PublishCompleted(const FReservationToken& Token)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		if (CallingSource) { Fault(); return false; }
-		if (!Active) return false;
+		if (!Matches(Token)) return false;
+		const auto Frame = Token.Frame;
 		auto& Slot = History[Frame % HistoryCapacity];
-		if (!Slot || Slot->Frame.GetData().ConsumptionFrame != Frame || !Slot->Committed) return false;
-		if (Slot->Published) return true;
-		if (!Pending || *Pending != Frame) return false;
-		if (Serial == std::numeric_limits<std::uint64_t>::max()) { Fault(); return false; }
+		if (!Slot->Committed) return false;
+		if (Serial == std::numeric_limits<std::uint64_t>::max()) { AbortLocked(Token, EAbortReason::SnapshotPublicationFailed); return false; }
 		const auto NextSerial = Serial + 1;
 		Published[NextSerial % HistoryCapacity] = FPublishedFrame{Slot->Frame, NextSerial};
 		Serial = NextSerial; Slot->Published = true; LastFrame = Slot->Frame;
+		Outcome = FTransactionOutcome{Epoch, Frame, ETransactionOutcome::Completed, {}};
 		Pending.reset(); Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
 		if (!Exhausted) NextFrame = Frame + 1;
+		if (StopRequested) Terminated = true;
 		return true;
 	}
+	bool Abort(const FReservationToken& Token, EAbortReason Reason)
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		if (CallingSource) { Fault(); return false; }
+		if (!Matches(Token) || Reason > EAbortReason::Cancelled) return false;
+		AbortLocked(Token, Reason); return true;
+	}
+	// Diagnostic completion witness, including after stop. Never returns merely
+	// consumed/committed data; bounded by the same completed publication journal.
+	std::optional<FPublishedFrame> ReadCompleted(FFrameNumber Frame) const
+	{
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		for (const auto& P : Published) if (P && P->Frame.GetData().ConsumptionFrame == Frame) return P;
+		return {};
+	}
+	std::optional<FTransactionOutcome> ReadOutcome() const
+	{ std::lock_guard<std::recursive_mutex> Lock(Gate); return Outcome; }
 	FPublishedBatch ReadPublishedSince(FPublicationCursor Cursor) const
 	{
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
@@ -145,6 +200,16 @@ public:
 	}
 private:
 	struct FHistoryEntry { FInputFrame Frame; FDrivingInputTargets Targets; bool Committed; bool Published; };
+	bool Matches(const FReservationToken& Token) const
+	{
+		return !Terminated && Pending && Token.Identity && Token.Identity == Pending->Identity
+			&& Token.Epoch.Value == Epoch.Value && Token.Frame == Pending->Frame;
+	}
+	void AbortLocked(const FReservationToken& Token, EAbortReason Reason)
+	{
+		Outcome = FTransactionOutcome{Epoch, Token.Frame, ETransactionOutcome::Aborted, Reason};
+		Pending.reset(); Active = false; Terminated = true;
+	}
 	FConsumedInput Fault() { Active = false; Terminated = true; Pending.reset(); return {EConsumeStatus::InvalidInput, {}, {}}; }
 	bool ValidContinuity(const FInputFrame& Frame, FFrameNumber Address) const
 	{
@@ -173,9 +238,10 @@ private:
 	// Other threads still cannot mutate lifecycle during the reserved source call.
 	mutable std::recursive_mutex Gate;
 	bool CallingSource = false;
-	bool Started = false, Active = false, Terminated = false, Exhausted = false;
+	bool Started = false, Active = false, Terminated = false, Exhausted = false, StopRequested = false;
 	FFrameNumber NextFrame;
-	std::optional<FFrameNumber> Pending;
+	std::optional<FReservationToken> Pending;
+	std::optional<FTransactionOutcome> Outcome;
 	std::optional<FInputFrame> LastFrame;
 	std::uint64_t Serial = 0;
 	std::array<std::optional<FHistoryEntry>, HistoryCapacity> History{};

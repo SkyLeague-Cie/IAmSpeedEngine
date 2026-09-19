@@ -162,7 +162,7 @@ int main()
 			const bool Held = N == 1 || N == 2 || N == 3 || N == 5 || N == 7;
 			Check(Input.Targets.ThrottleValue == (Held ? 255 : 0) && Input.Targets.BrakeValue == (Held ? 255 : 0)
 				&& Input.Targets.SteeringValue == (Held ? -127 : 0), "whole physical tuple independent oracle");
-			Check(Stream->ConfirmPhysicalCommit(N, true) && Stream->PublishCompleted(N), "common modeled physical commit/publication");
+			Check(Input.Reservation && Stream->ConfirmPhysicalCommit(*Input.Reservation, true) && Stream->PublishCompleted(*Input.Reservation), "common modeled physical commit/publication");
 			if (Schedule == 0 || (Schedule == 1 && (N == 0 || N == 3 || N == 7)) || (Schedule == 2 && N == 7))
 			{
 				if (Held) ExpectedTriggered += 6;
