@@ -7,6 +7,7 @@
 #include "CanonicalFrameDriver.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SUtils.h"
+#include "IAmSpeed/Components/ISpeedComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "PhysicsEngine/PhysicsSettings.h"
@@ -608,6 +609,7 @@ float ASpeedSimulation::GetWarningFrameFraction() const
 
 bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 {
+	if (bCanonicalPublicationTerminal.Load()) return false;
 	if (!SpeedWorldSubsystem)
 	{
 		SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());
@@ -618,7 +620,16 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 	}
 
 	FString BindingFailure;
-	if (!SpeedWorldSubsystem->BeginCanonicalFrame(BindingFailure))
+	bool bAdmitted = false;
+	try { bAdmitted = SpeedWorldSubsystem->BeginCanonicalFrame(BindingFailure); }
+	catch (...)
+	{
+		bCanonicalPublicationTerminal.Store(true);
+		bOwnedWorkerTerminal.Store(true);
+		UE_LOG(LogTemp, Error, TEXT("[CanonicalAdmissionExceptionTerminal] Frame=%llu"), Context.NumFrame);
+		return false; // BeginCanonicalFrame sets its active flag only after validation returns.
+	}
+	if (!bAdmitted)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[SimulationBindingRejected] frame=%llu %s"),
 			Context.NumFrame, *BindingFailure);
@@ -626,72 +637,108 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		// exits at this boundary without advancing time or publishing a pose.
 		return false;
 	}
-	ON_SCOPE_EXIT { SpeedWorldSubsystem->EndCanonicalFrame(); };
-	IAMSPEED_FRAME_SCOPE(Initialize);
-	Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
-		Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
-		SpeedWorldSubsystem);
-	if (InputJournal.IsSealed() &&
-		!SpeedWorldSubsystem->ApplySimulationInputs(Context.NumFrame, InputJournal))
+	bool bAuditStarted = false;
+	bool bGlobalPublished = false;
+	bool bOutcomeHandled = false;
+	ON_SCOPE_EXIT
 	{
-		if (!bInputConsumptionErrorReported)
+		if (bAuditStarted) Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
+		SpeedWorldSubsystem->EndCanonicalFrame();
+	};
+	const auto MarkTerminal = [this]()
+	{
+		bCanonicalPublicationTerminal.Store(true);
+		bOwnedWorkerTerminal.Store(true);
+	};
+	try
+	{
+		IAMSPEED_FRAME_SCOPE(Initialize);
+		bAuditStarted = true;
+		Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
+			Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
+			SpeedWorldSubsystem);
+		if (InputJournal.IsSealed() &&
+			!SpeedWorldSubsystem->ApplySimulationInputs(Context.NumFrame, InputJournal))
 		{
-			bInputConsumptionErrorReported = true;
-			UE_LOG(LogTemp, Error,
-				TEXT("[SimulationInputRejected] Frame=%llu JournalHash=%016llX"),
-				Context.NumFrame, InputJournal.StableHash());
+			if (!bInputConsumptionErrorReported)
+			{
+				bInputConsumptionErrorReported = true;
+				UE_LOG(LogTemp, Error,
+					TEXT("[SimulationInputRejected] Frame=%llu JournalHash=%016llX"),
+					Context.NumFrame, InputJournal.StableHash());
+			}
+			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			bOutcomeHandled = true;
+			MarkTerminal();
+			return false;
 		}
-		Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
-		return false;
+		bInputConsumptionErrorReported = false;
+		IAMSPEED_FRAME_PHASE(Prepare);
+		SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+		IAMSPEED_FRAME_PHASE(Core);
+		SpeedWorldSubsystem->Step(
+			Context.PhysicalDeltaTime,
+			Context.SimTime,
+			static_cast<unsigned int>(Context.NumFrame));
+		IAMSPEED_FRAME_PHASE(Snapshot);
+		FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
+			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
+		TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
+		{
+			FScopeLock Lock(&PresentationProducerMutex);
+			Producers = PresentationProducers;
+		}
+		for (const auto& Producer : Producers)
+		{
+			FSimulationPresentationOutput Output;
+			Producer->Produce(Snapshot, Output);
+			// Producer cannot forge the envelope address or publication serial.
+			Output.OwnerStableId = Producer->OwnerStableId();
+			Output.Channel = Producer->Channel();
+			Output.NumFrame = Snapshot.NumFrame;
+			Output.PublicationSerial = 0;
+			Snapshot.PresentationOutputs.Add(MoveTemp(Output));
+		}
+		IAMSPEED_FRAME_PHASE(Publish);
+		const ECanonicalPublicationResult Publication = SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame, [&]()
+		{
+			// One simulation owner. Avoid serial wrap before touching the inactive slot.
+			return SnapshotBuffer.PublishedSerial() != MAX_uint64 && SnapshotBuffer.Publish(Snapshot);
+		});
+		bOutcomeHandled = true;
+		bGlobalPublished = Publication == ECanonicalPublicationResult::Completed || Publication == ECanonicalPublicationResult::CommitInvariantFailed;
+		if (Publication != ECanonicalPublicationResult::Completed)
+		{
+			MarkTerminal();
+			UE_LOG(LogTemp, Error, TEXT("[CanonicalPublicationTerminal] Frame=%llu Result=%u GlobalPublished=%d"),
+				Context.NumFrame, static_cast<uint32>(Publication), bGlobalPublished ? 1 : 0);
+			return false;
+		}
+		// V2 authoritative commit is finished before any optional presentation work.
+		SpeedWorldSubsystem->NotifyCanonicalFramePublished(Context.NumFrame);
+		FCameraCanonicalSample CameraSample;
+		if (BuildCanonicalCameraSample(Snapshot, CameraSample))
+		{
+			CameraSample.NumFrame = Snapshot.NumFrame;
+			CameraSample.PublicationSerial = SnapshotBuffer.PublishedSerial();
+			CameraSample.StateHash = Snapshot.StateHash;
+			CameraSample.InputJournalHash = Snapshot.InputJournalHash;
+			CameraSampleBuffer.Publish(CameraSample);
+		}
+		IAMSPEED_FRAME_PHASE(Journal);
+		FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
+		IAMSPEED_FRAME_PHASE(Finalize);
+		return true;
 	}
-	bInputConsumptionErrorReported = false;
-	IAMSPEED_FRAME_PHASE(Prepare);
-	SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
-	IAMSPEED_FRAME_PHASE(Core);
-	SpeedWorldSubsystem->Step(
-		Context.PhysicalDeltaTime,
-		Context.SimTime,
-		static_cast<unsigned int>(Context.NumFrame));
-	IAMSPEED_FRAME_PHASE(Snapshot);
-	FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
-		Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
-	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
+	catch (...)
 	{
-		FScopeLock Lock(&PresentationProducerMutex);
-		Producers = PresentationProducers;
+		if (!bGlobalPublished && !bOutcomeHandled)
+			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+		MarkTerminal();
+		UE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d"),
+			Context.NumFrame, bGlobalPublished ? 1 : 0);
+		return false; // No exception escapes into the UE worker/callback boundary.
 	}
-	for (const auto& Producer : Producers)
-	{
-		FSimulationPresentationOutput Output;
-		Producer->Produce(Snapshot, Output);
-		// Producer cannot forge the envelope address or publication serial.
-		Output.OwnerStableId = Producer->OwnerStableId();
-		Output.Channel = Producer->Channel();
-		Output.NumFrame = Snapshot.NumFrame;
-		Output.PublicationSerial = 0;
-		Snapshot.PresentationOutputs.Add(MoveTemp(Output));
-	}
-	IAMSPEED_FRAME_PHASE(Publish);
-	if (!SnapshotBuffer.Publish(Snapshot))
-	{
-		Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
-		return false;
-	}
-	FCameraCanonicalSample CameraSample;
-	if (BuildCanonicalCameraSample(Snapshot, CameraSample))
-	{
-		CameraSample.NumFrame = Snapshot.NumFrame;
-		CameraSample.PublicationSerial = SnapshotBuffer.PublishedSerial();
-		CameraSample.StateHash = Snapshot.StateHash;
-		CameraSample.InputJournalHash = Snapshot.InputJournalHash;
-		CameraSampleBuffer.Publish(CameraSample);
-	}
-	IAMSPEED_FRAME_PHASE(Journal);
-	FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
-	SpeedWorldSubsystem->NotifyCanonicalFramePublished(Context.NumFrame);
-	IAMSPEED_FRAME_PHASE(Finalize);
-	Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
-	return true;
 }
 
 bool ASpeedSimulation::RequestRollbackAndResimulation(

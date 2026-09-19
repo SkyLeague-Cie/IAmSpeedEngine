@@ -106,6 +106,8 @@ public:
 	}
 	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false);
 	void NotifyCanonicalFramePublished(uint64 NumFrame);
+	ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
+	void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;
 	/** Restores one validated canonical snapshot without advancing simulation time. */
 	bool RestoreSimulationSnapshot(
 		const FSimulationSnapshot& Snapshot,

@@ -149,6 +149,8 @@ protected:
 	unsigned int _NumFrame = 0;
 	uint64 CanonicalNumFrame = 0;
 	bool bCanonicalFrameInitialized = false;
+	// Terminal publication failure cannot be cleared by pause/resume or replay.
+	TAtomic<bool> bCanonicalPublicationTerminal{false};
 	bool bStaticCollisionReadinessErrorReported = false;
 	bool bInputConsumptionErrorReported = false;
 	uint32 CanonicalReadyDelayPulsesObserved = 0;

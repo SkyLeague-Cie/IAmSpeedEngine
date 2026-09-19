@@ -1413,6 +1413,16 @@ void USpeedWorldSubsystem::NotifyCanonicalFramePublished(uint64 NumFrame)
 	SimulationWorld.NotifyCanonicalFramePublished(NumFrame);
 }
 
+ECanonicalPublicationResult USpeedWorldSubsystem::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
+{
+	return SimulationWorld.PublishCanonicalFrame(Frame, Publish);
+}
+
+void USpeedWorldSubsystem::AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept
+{
+	SimulationWorld.AbortCanonicalFrame(Frame, Reason);
+}
+
 FSimulationSnapshot USpeedWorldSubsystem::CaptureSimulationSnapshot(
 	const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation)
 {

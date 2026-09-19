@@ -11,6 +11,7 @@ class USSubBody;
 class USolidSubBody;
 struct SubBodyConfig;
 struct FCanonicalFrameContext;
+enum class ECanonicalFrameAbortReason : uint8 { PreparationFailed, SnapshotPublicationFailed };
 namespace Speed { class IStaticCollisionWorld; class FSimulationWorld; }
 
 #if !UE_BUILD_SHIPPING
@@ -70,6 +71,13 @@ public:
 	virtual void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const {}
 	/** Observation only, after canonical snapshot publication succeeds. */
 	virtual void OnCanonicalFramePublished(uint64 NumFrame) {}
+	/** Worker-only, side-effect-free validation of every pending reservation. */
+	virtual bool ValidateCanonicalFrameCommit(uint64 Frame) const { return true; }
+	/** After global publication: prevalidated, allocation-free and non-throwing.
+	 * False is an invariant violation; never a recoverable partial commit. */
+	virtual bool CommitCanonicalFrame(uint64 Frame) noexcept { return true; }
+	/** Terminal cancellation before global publication; must not throw or allocate. */
+	virtual void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
 	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
 	/** Validates component-specific bytes before an atomic world restore starts. */
