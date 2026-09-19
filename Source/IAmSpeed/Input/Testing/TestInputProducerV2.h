@@ -1,14 +1,14 @@
 #pragma once
 
-#include "IAmSpeed/Input/InputFrameV2.h"
+#include "IAmSpeed/Input/InputProducerV2.h"
 #include "IAmSpeed/Input/InputPresentationScope.h"
 #include <mutex>
 
 namespace Speed::Input::V2
 {
 // Test-only sealed action frames, AFTER the mapper. No v1 conversion and no
-// hidden raw-device evaluation. A3 may compose this with its versioned stream.
-class FTestInputProducer final
+// hidden raw-device evaluation. The same stream consumes player and test frames.
+class FTestInputProducer final : public IInputProducer
 {
 public:
 	static std::unique_ptr<FTestInputProducer> Create(std::shared_ptr<const FInputActionContract> Contract,
@@ -41,7 +41,7 @@ public:
 		}
 		return std::unique_ptr<FTestInputProducer>(new FTestInputProducer(std::move(Contract), FirstFrame, Frames));
 	}
-	std::optional<FInputFrame> Produce(FFrameNumber Frame)
+	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
 	{
 		if (FPresentationInputScope::IsActive()) return {};
 		std::lock_guard<std::mutex> Lock(Gate);
@@ -51,7 +51,7 @@ public:
 		if (Index == Next) ++Next;
 		return Frames[Index];
 	}
-	const std::shared_ptr<const FInputActionContract>& GetContract() const { return Contract; }
+	const std::shared_ptr<const FInputActionContract>& GetContract() const override { return Contract; }
 private:
 	FTestInputProducer(std::shared_ptr<const FInputActionContract> InContract, FFrameNumber FirstFrame, const std::vector<FInputFrame>& Scenario)
 		: Contract(std::move(InContract)), First(FirstFrame), Frames(Scenario) {}
