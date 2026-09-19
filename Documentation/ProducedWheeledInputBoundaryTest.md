@@ -43,13 +43,42 @@ scenarios are outside W1 and remain unqualified.
 
 ## Future execution, only after the manager grants the UE lease
 
-Freeze a clean parent SHA and all gitlinks containing this test. Compile that
-exact tuple against the approved UE5.8.2 installation, recording executable,
-module and source identities; an existing DLL is not evidence for new source.
-From the parent checkout, the exact build command is:
+Freeze a clean parent SHA and all gitlinks containing this test. The manager's
+lease preflight must resolve and pin `$QualifiedUERoot` to a clean UE checkout
+at `16d75d84714512edfb744e1fd0a59e9c74d57873`, and attest that its engine binary
+was built from that exact source. Merely hashing an existing binary does not
+prove its source provenance. Record the attestation with executable, module
+and source identities; an existing project DLL is not evidence for new source.
+
+`D:\Programs\UnrealEngine\5.8.2` is dirty and inadmissible; never fall back to it.
+The manager's clean worktree candidate
+`D:\UEWorktrees\UnrealEngine-5.8.2-16d75d847-slot2-01` may be selected only if
+its required build script and editor binary exist and their provenance has
+been attested. This document does not assert that they exist.
+
+From the parent checkout, substitute the lease-qualified path below and run
+these guards before building. A placeholder, missing binary, dirty checkout
+or different commit aborts the gate. The provenance attestation remains an
+additional required lease input; these guards alone cannot provide it.
 
 ```powershell
-& 'D:\Programs\UnrealEngine\5.8.2\Engine\Build\BatchFiles\Build.bat' SkyLeagueEditor Win64 Development "-Project=$((Get-Location).Path)\SkyLeague.uproject" -WaitMutex -NoHotReload -NoXGE -MaxParallelActions=4
+$QualifiedUERoot = '<lease-qualified-engine-root>'
+$ErrorActionPreference = 'Stop'
+if (-not (Test-Path -LiteralPath $QualifiedUERoot -PathType Container)) { throw 'Unresolved qualified UE root' }
+$QualifiedUERoot = (Resolve-Path -LiteralPath $QualifiedUERoot).Path
+if ($QualifiedUERoot.TrimEnd('\') -ieq 'D:\Programs\UnrealEngine\5.8.2') { throw 'Inadmissible dirty engine tree' }
+$EngineHead = & git -C $QualifiedUERoot rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or $EngineHead -cne '16d75d84714512edfb744e1fd0a59e9c74d57873') { throw 'Unqualified engine commit' }
+$EngineDirty = @(& git -C $QualifiedUERoot status --porcelain --untracked-files=normal)
+if ($LASTEXITCODE -ne 0 -or $EngineDirty.Count) { throw 'Engine source must be clean' }
+$QualifiedBuild = Join-Path $QualifiedUERoot 'Engine\Build\BatchFiles\Build.bat'
+$QualifiedEditor = Join-Path $QualifiedUERoot 'Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
+foreach ($Required in @($QualifiedBuild, $QualifiedEditor)) {
+    if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw "Required qualified file absent: $Required" }
+}
+Get-FileHash -LiteralPath $QualifiedBuild, $QualifiedEditor
+& $QualifiedBuild SkyLeagueEditor Win64 Development "-Project=$((Get-Location).Path)\SkyLeague.uproject" -WaitMutex -NoHotReload -NoXGE -MaxParallelActions=4
+if ($LASTEXITCODE -ne 0) { throw 'Qualified project build failed' }
 ```
 
 Capture stdout/stderr, exit code and timing in fresh artifacts and run
@@ -57,7 +86,7 @@ Capture stdout/stderr, exit code and timing in fresh artifacts and run
 build of the frozen tuple permits this exact automation command:
 
 ```powershell
-& .\Scripts\RunSLNativeAutomationWindows.ps1 -Filter 'IAmSpeed.Simulation.ProducedWheeledInputBoundary' -ExpectedTestsManifest 'Plugins\IAmSpeed\Tests\ProducedWheeledInputBoundaryAutomation.json' -ResultsDirectory 'Artifacts\InputActionContract\CI-Migration-W4\ue-v1' -EditorPath 'D:\Programs\UnrealEngine\5.8.2\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
+& .\Scripts\RunSLNativeAutomationWindows.ps1 -Filter 'IAmSpeed.Simulation.ProducedWheeledInputBoundary' -ExpectedTestsManifest 'Plugins\IAmSpeed\Tests\ProducedWheeledInputBoundaryAutomation.json' -ResultsDirectory 'Artifacts\InputActionContract\CI-Migration-W4\ue-v1' -EditorPath $QualifiedEditor
 ```
 
 Require exactly the named test, zero failure, matching receipt/source/binary
