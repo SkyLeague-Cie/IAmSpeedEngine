@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [Parameter(Mandatory = $true)][string]$Summarizer,
     [string]$Python = 'python',
-    [ValidateSet('InputProducerProbe', 'TestInputProducerProbe', 'WheeledTestProfileProbe')]
+    [ValidateSet('InputProducerProbe', 'TestInputProducerProbe', 'WheeledTestProfileProbe', 'WheeledPhaseContractProbe')]
     [string]$ProbeName = 'InputProducerProbe'
 )
 $ErrorActionPreference = 'Stop'
