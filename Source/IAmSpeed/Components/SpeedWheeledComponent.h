@@ -768,6 +768,7 @@ private:
 	static constexpr int32 MaxPendingWheeledInputs = 256;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheeledInputQueueTest;
+	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedCameraInputBoundaryTest;
 	friend class FIAmSpeedWheeledInertiaCovarianceTest;

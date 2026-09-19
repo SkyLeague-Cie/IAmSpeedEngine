@@ -1,0 +1,5 @@
+{
+  "schema": "skyleague.native-automation-inventory/v1",
+  "filter": "IAmSpeed.Simulation.ProducedWheeledInputBoundary",
+  "tests": ["IAmSpeed.Simulation.ProducedWheeledInputBoundary"]
+}
