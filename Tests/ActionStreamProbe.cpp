@@ -79,6 +79,35 @@ public:
 	unsigned Calls = 0;
 	std::optional<FRawInputSample> Poll(FFrameNumber) override { ++Calls; throw std::runtime_error("raw failure"); }
 };
+class FReentrantSource final : public IInputProducer
+{
+public:
+	FReentrantSource(std::shared_ptr<const FInputActionContract> C, FInputFrame F, unsigned InMode)
+		: Config(std::move(C)), Frame(std::move(F)), Mode(InMode) {}
+	std::weak_ptr<FInputStream> Target;
+	unsigned Calls = 0;
+	std::optional<FInputFrame> Produce(FFrameNumber N) override
+	{
+		++Calls;
+		const auto S = Target.lock();
+		if (Mode == 1) S->Consume(N);
+		if (Mode == 2) S->Deactivate();
+		if (Mode == 3) S->Activate();
+		if (Mode == 4) S->ConfirmPhysicalCommit(N, true);
+		if (Mode == 5) S->PublishCompleted(N);
+		return Frame;
+	}
+	const std::shared_ptr<const FInputActionContract>& GetContract() const override
+	{
+		if (Mode == 0) { if (const auto S = Target.lock()) S->Activate(); }
+		if (Mode == 6) throw std::runtime_error("contract failure");
+		return Config;
+	}
+private:
+	std::shared_ptr<const FInputActionContract> Config;
+	FInputFrame Frame;
+	unsigned Mode;
+};
 static std::shared_ptr<FInputStream> TestStream(const std::shared_ptr<const FInputActionContract>& C, std::size_t Count = 96)
 {
 	std::shared_ptr<IInputProducer> P = FTestInputProducer::Create(C, {1}, {EProducerKind::Device, 7}, 0, Scenario(C, Count));
@@ -251,5 +280,19 @@ int main()
 			&& Faulted.Consume(0).Status == EConsumeStatus::Detached && !Faulted.Activate(), "producer exception cannot retry or publish");
 	}
 	Check(Throwing->Calls == 1 && ThrowingRaw->Calls == 1, "throwing producer and raw acquisition invoked once only");
+	for (unsigned Mode = 0; Mode < 7; ++Mode)
+	{
+		auto Source = std::make_shared<FReentrantSource>(C, Scenario(C, 1)[0], Mode);
+		auto S = std::make_shared<FInputStream>(Source, C, FStreamEpoch{1}, Speed::Input::FProducerIdentity{EProducerKind::Device, 7});
+		Source->Target = S;
+		if (Mode == 0 || Mode == 6) Check(!S->Activate() && Source->Calls == 0, "contract reentry/exception fails before activation");
+		else
+		{
+			Check(S->Activate(), "producer reentry setup");
+			Check(S->Consume(0).Status == EConsumeStatus::InvalidInput && Source->Calls == 1, "producer reentry cancels reserved read");
+		}
+		Check(!S->IsActive() && !S->ReadRecorded(0) && !S->ReadLatest() && !S->PublishCompleted(0)
+			&& S->Consume(0).Status == EConsumeStatus::Detached && !S->Activate(), "reentry no deadlock/history/publication/retry");
+	}
 	std::cout << "PASS ActionStreamProbe checks=" << Checks << '\n';
 }

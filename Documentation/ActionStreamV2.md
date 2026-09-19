@@ -33,6 +33,13 @@ publication. Exceptions from any producer, including raw Poll and mapping, are
 caught at the stream boundary and permanently deactivate it with neutral invalid
 targets, no history/publication and no retry. Frame wrap fails closed and
 publication serial exhaustion permanently deactivates.
+The source-call reservation remains under a recursive boundary mutex solely to
+detect same-thread producer reentry without deadlock. Reentrant mutation calls
+fail closed; Deactivate can cancel the reservation. GetContract and Produce
+exceptions are contained, and returned data is discarded after cancellation.
+Other threads remain serialized by the mutex; this is not an unlocked producer
+call with a lifecycle race. Producers must still terminate their own work; the
+stream cannot make an arbitrary blocking implementation bounded.
 
 The consumed history and completed-publication journal are separate bounded
 256-entry arrays. `ReadPublishedSince({epoch,serial})` copies a coherent batch

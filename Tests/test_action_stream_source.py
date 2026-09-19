@@ -14,7 +14,9 @@ class StreamSource(unittest.TestCase):
         self.assertIn("EConsumeStatus::AlreadyPending, {}, {}", stream)
         self.assertIn("EConsumeStatus::PublishedReplay", stream)
         self.assertIn("try { Input = Source->Produce(Frame); }", stream)
-        self.assertIn("catch (...) { return Fault(); }", stream)
+        self.assertIn("catch (...) { CallingSource = false; return Fault(); }", stream)
+        self.assertIn("if (CallingSource) return Fault();", stream)
+        self.assertIn("if (!Active || Terminated) return Fault();", stream)
         self.assertIn("FTestInputProducer final : public IInputProducer",
                       (ROOT / "Testing/TestInputProducerV2.h").read_text())
         self.assertIn("FDeviceInputProducer final : public IInputProducer",

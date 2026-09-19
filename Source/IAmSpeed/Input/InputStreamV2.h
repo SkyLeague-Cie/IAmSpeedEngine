@@ -33,25 +33,33 @@ public:
 		: Source(std::move(InSource)), Contract(std::move(InContract)), Epoch(InEpoch), Identity(InIdentity), NextFrame(FirstFrame) {}
 	const std::shared_ptr<const FInputActionContract>& GetContract() const { return Contract; }
 	FStreamEpoch GetEpoch() const { return Epoch; }
-	bool CanConfigure() const { std::lock_guard<std::mutex> Lock(Gate); return !Started && !Terminated; }
-	bool IsActive() const { std::lock_guard<std::mutex> Lock(Gate); return Active; }
+	bool CanConfigure() const { std::lock_guard<std::recursive_mutex> Lock(Gate); return !CallingSource && !Started && !Terminated; }
+	bool IsActive() const { std::lock_guard<std::recursive_mutex> Lock(Gate); return Active; }
 	bool Activate()
 	{
 		if (FPresentationInputScope::IsActive()) return false;
-		std::lock_guard<std::mutex> Lock(Gate);
-		if (Started || Terminated || !Source || !Contract || !Epoch.Value || !Identity.Id || Identity.Kind > EProducerKind::Network
-			|| !Source->GetContract() || Source->GetContract()->GetFingerprint() != Contract->GetFingerprint()) return false;
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		if (CallingSource) { Fault(); return false; }
+		if (Started || Terminated || !Source || !Contract || !Epoch.Value || !Identity.Id
+			|| Identity.Kind > EProducerKind::Network) return false;
+		std::shared_ptr<const FInputActionContract> SourceContract;
+		CallingSource = true;
+		try { SourceContract = Source->GetContract(); }
+		catch (...) { CallingSource = false; Fault(); return false; }
+		CallingSource = false;
+		if (Terminated || !SourceContract || SourceContract->GetFingerprint() != Contract->GetFingerprint()) return false;
 		Started = Active = true; return true;
 	}
 	void Deactivate()
 	{
-		std::lock_guard<std::mutex> Lock(Gate);
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		Active = false; Terminated = true; Pending.reset();
 	}
 	FConsumedInput Consume(FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive()) return {EConsumeStatus::PresentationForbidden, {}, {}};
-		std::lock_guard<std::mutex> Lock(Gate);
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		if (CallingSource) return Fault();
 		if (!Active) return {};
 		const auto& Retained = History[Frame % HistoryCapacity];
 		if (Retained && Retained->Frame.GetData().ConsumptionFrame == Frame)
@@ -61,8 +69,11 @@ public:
 		}
 		if (Exhausted || Frame != NextFrame || Pending) return {EConsumeStatus::WrongFrame, {}, {}};
 		std::optional<FInputFrame> Input;
+		CallingSource = true;
 		try { Input = Source->Produce(Frame); }
-		catch (...) { return Fault(); } // Includes raw acquisition/mapper exceptions; no retry or fallback.
+		catch (...) { CallingSource = false; return Fault(); }
+		CallingSource = false;
+		if (!Active || Terminated) return Fault(); // Reentrant cancellation invalidates this in-flight reading.
 		if (!Input || !Input->IsValidFor(*Contract) || !ValidContinuity(*Input, Frame)) return Fault();
 		const auto Targets = AssembleDrivingTargets(*Input, *Contract, Epoch, Frame);
 		if (!Targets.Valid) return Fault();
@@ -75,7 +86,8 @@ public:
 	bool ConfirmPhysicalCommit(FFrameNumber Frame, bool Succeeded)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
-		std::lock_guard<std::mutex> Lock(Gate);
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		if (CallingSource) { Fault(); return false; }
 		if (!Active) return false;
 		auto& Slot = History[Frame % HistoryCapacity];
 		if (!Slot || Slot->Frame.GetData().ConsumptionFrame != Frame) return false;
@@ -87,7 +99,8 @@ public:
 	bool PublishCompleted(FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
-		std::lock_guard<std::mutex> Lock(Gate);
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		if (CallingSource) { Fault(); return false; }
 		if (!Active) return false;
 		auto& Slot = History[Frame % HistoryCapacity];
 		if (!Slot || Slot->Frame.GetData().ConsumptionFrame != Frame || !Slot->Committed) return false;
@@ -103,7 +116,7 @@ public:
 	}
 	FPublishedBatch ReadPublishedSince(FPublicationCursor Cursor) const
 	{
-		std::lock_guard<std::mutex> Lock(Gate);
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		if (!Active || Cursor.Epoch.Value != Epoch.Value) return {};
 		const FPublicationCursor Next{Epoch, Serial};
 		if (Cursor.Serial > Serial) return {EReadStatus::InvalidCursor, Next, {}};
@@ -121,12 +134,12 @@ public:
 	}
 	std::optional<FPublishedFrame> ReadLatest() const
 	{
-		std::lock_guard<std::mutex> Lock(Gate);
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		return Active && Serial ? Published[Serial % HistoryCapacity] : std::nullopt;
 	}
 	std::optional<FInputFrame> ReadRecorded(FFrameNumber Frame) const
 	{
-		std::lock_guard<std::mutex> Lock(Gate);
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		const auto& Slot = History[Frame % HistoryCapacity];
 		return Slot && Slot->Frame.GetData().ConsumptionFrame == Frame ? std::optional<FInputFrame>(Slot->Frame) : std::nullopt;
 	}
@@ -156,7 +169,10 @@ private:
 	const std::shared_ptr<const FInputActionContract> Contract;
 	const FStreamEpoch Epoch;
 	const FProducerIdentity Identity;
-	mutable std::mutex Gate;
+	// Recursive only to detect same-thread producer reentry and fail closed.
+	// Other threads still cannot mutate lifecycle during the reserved source call.
+	mutable std::recursive_mutex Gate;
+	bool CallingSource = false;
 	bool Started = false, Active = false, Terminated = false, Exhausted = false;
 	FFrameNumber NextFrame;
 	std::optional<FFrameNumber> Pending;
