@@ -27,8 +27,17 @@ Bool combines nonzero contributions with OR. Axis1D accumulates in mapping
 order, clamps to its signed/unsigned normalized range, then applies exactly one
 response: magnitude deadzone with `(abs(x)-deadzone)/(1-deadzone)` rescaling,
 exponent, sensitivity and final clamp. Signed response retains the sign.
+Mapper support is narrower than A1 structural validity: only exponent 1
+(identity) and 2 (explicit multiplication) are supported. `Create` rejects any
+other exponent before acquisition. Direct construction also returns
+InvalidConfiguration before changing frame/state. The A1 schema and fingerprint
+remain unchanged; an importer must reject unsupported curves rather than
+approximate them. No general library power function is used.
 Activation/hysteresis runs before canonical round-to-nearest/ties-positive
 quantization using the declared action scale. No threshold is inferred.
+Cross-toolchain bit parity is not established by source inspection or a single
+native run. Remaining float operations require Windows/Linux boundary-vector
+gates before U4B qualification; identity/square support alone is not that proof.
 
 Every intermediate raw state is evaluated. Transitions are emitted in raw
 change order then action-ID order. Their values describe that intermediate

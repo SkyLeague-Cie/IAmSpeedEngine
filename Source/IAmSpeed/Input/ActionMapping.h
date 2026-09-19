@@ -22,6 +22,21 @@ struct FMappingResult
 class FActionMapper final
 {
 public:
+	// A structurally valid A1 contract may describe a response this mapper
+	// deliberately does not implement. Do not silently approximate its curve.
+	static bool SupportsContract(const FInputActionContract& Candidate)
+	{
+		for (const auto& A : Candidate.GetDescription().Actions)
+			if (A.Exponent != 1.0f && A.Exponent != 2.0f) return false;
+		return true;
+	}
+	static std::unique_ptr<FActionMapper> Create(std::shared_ptr<const FInputActionContract> Candidate,
+		FStreamEpoch InEpoch, FProducerIdentity InProducer, FFrameNumber FirstFrame = 0)
+	{
+		if (!Candidate || !SupportsContract(*Candidate) || !InEpoch.Value || !InProducer.Id
+			|| InProducer.Kind != EProducerKind::Device) return {};
+		return std::unique_ptr<FActionMapper>(new FActionMapper(std::move(Candidate), InEpoch, InProducer, FirstFrame));
+	}
 	FActionMapper(std::shared_ptr<const FInputActionContract> InContract,
 		FStreamEpoch InEpoch, FProducerIdentity InProducer, FFrameNumber FirstFrame = 0)
 		: Contract(std::move(InContract)), Epoch(InEpoch), Producer(InProducer), NextFrame(FirstFrame) {}
@@ -29,8 +44,8 @@ public:
 	FMappingResult Map(const FRawInputSample& Sample, FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive()) return {EMappingStatus::PresentationForbidden, {}};
-		if (!Contract || !Epoch.Value || !Producer.Id || Producer.Kind != EProducerKind::Device)
-			return Reject(EMappingStatus::InvalidConfiguration);
+		if (!Contract || !SupportsContract(*Contract) || !Epoch.Value || !Producer.Id || Producer.Kind != EProducerKind::Device)
+			return {EMappingStatus::InvalidConfiguration, {}}; // No state/frame mutation.
 		if (Exhausted || Frame != NextFrame) return Reject(EMappingStatus::WrongFrame);
 		if (Sample.Status == ERawSampleStatus::Overflow || Sample.Changes.size() > FRawInputSample::MaxChanges)
 			return Reject(EMappingStatus::Overflow);
@@ -137,7 +152,8 @@ private:
 			Sum = std::clamp(Sum, Min, 1.0f);
 			const float Magnitude = std::abs(Sum);
 			const float Remapped = Magnitude <= A.Deadzone ? 0.0f : (Magnitude - A.Deadzone) / (1.0f - A.Deadzone);
-			float Response = std::pow(Remapped, A.Exponent) * A.Sensitivity;
+			const float Curved = A.Exponent == 1.0f ? Remapped : Remapped * Remapped;
+			float Response = Curved * A.Sensitivity;
 			if (!std::isfinite(Response)) return false;
 			Response = std::clamp(Sum < 0 ? -Response : Response, Min, 1.0f);
 			const auto Bit = std::uint32_t{1} << A.Id;

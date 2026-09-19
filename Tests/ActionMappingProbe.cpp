@@ -169,6 +169,40 @@ int main()
 	auto TinyFrame = Tiny.Map(A, 0);
 	Check(TinyFrame.Frame && TinyFrame.Frame->GetData().Values[2] == 0 && TinyFrame.Frame->GetData().ActiveMask == 4,
 		"activation precedes quantization to zero");
+	for (const float Exponent : {0.5f, 3.0f})
+	{
+		auto UnsupportedD = TinyD; UnsupportedD.Actions[2].Exponent = Exponent;
+		const auto Unsupported = FInputActionContract::Create(UnsupportedD);
+		Check(bool(Unsupported), "A1 structure accepts broader response domain");
+		Check(!FActionMapper::SupportsContract(*Unsupported)
+			&& !FActionMapper::Create(Unsupported, {1}, {EProducerKind::Device, 9}), "unsupported curve rejected before acquisition");
+		FActionMapper Direct(Unsupported, {1}, {EProducerKind::Device, 9});
+		for (unsigned I = 0; I < 2; ++I)
+			Check(Direct.Map(A, 0).Status == EMappingStatus::InvalidConfiguration, "direct configuration remains invalid without consuming frame");
+	}
+	// Binary-exact input vectors on both sides of the positive rounding tie.
+	TinyD.Actions[2].ActivateAbove = 0.5f; TinyD.Actions[2].DeactivateAtOrBelow = 0.25f;
+	const auto BoundaryContract = FInputActionContract::Create(TinyD);
+	const std::array<float, 4> BoundaryInputs{0.5f - 1.0f / 1024, 0.5f, 0.5f + 1.0f / 1024, -0.5f};
+	const std::array<std::int16_t, 4> BoundaryValues{63, 64, 64, -63};
+	const std::array<std::uint32_t, 4> BoundaryActivity{0, 0, 4, 0};
+	for (std::size_t I = 0; I < BoundaryInputs.size(); ++I)
+	{
+		auto Boundary = FActionMapper::Create(BoundaryContract, {1}, {EProducerKind::Device, 9});
+		Check(bool(Boundary), "identity response supported before acquisition");
+		A.FinalState[0].Value = BoundaryInputs[I];
+		const auto B = Boundary->Map(A, 0);
+		Check(B.Frame && B.Frame->GetData().Values[2] == BoundaryValues[I]
+			&& B.Frame->GetData().ActiveMask == BoundaryActivity[I], "explicit identity activation and tie vectors");
+	}
+	auto Hysteresis = FActionMapper::Create(BoundaryContract, {1}, {EProducerKind::Device, 9});
+	A.FinalState[0].Value = 1; Check(bool(Hysteresis->Map(A, 0).Frame), "boundary held baseline");
+	A.Status = ERawSampleStatus::Valid; A.Sequence = 2; A.FinalState[0].Value = 0.25f + 1.0f / 1024;
+	A.Changes = {{A.FinalState[0], {2, 0}}}; auto H = Hysteresis->Map(A, 1);
+	Check(H.Frame && H.Frame->GetData().ActiveMask == 4 && H.Frame->GetData().Transitions.empty(), "above deactivation boundary stays active");
+	A.Sequence = 3; A.FinalState[0].Value = 0.25f; A.Changes = {{A.FinalState[0], {3, 0}}}; H = Hysteresis->Map(A, 2);
+	Check(H.Frame && H.Frame->GetData().ActiveMask == 0 && H.Frame->GetData().Transitions.size() == 1
+		&& H.Frame->GetData().Transitions[0].ValueAtTransition == 32, "exact deactivation boundary completes at quantized32");
 	{
 		Speed::Input::FPresentationInputScope Scope;
 		Check(!Test->Produce(0) && Or.Map(One, 2).Status == EMappingStatus::PresentationForbidden, "presentation cannot advance source");
