@@ -11,6 +11,10 @@ class StreamSource(unittest.TestCase):
         self.assertEqual(stream.count("AssembleDrivingTargets("), 1)
         self.assertIn("Source->Produce(Frame)", stream)
         self.assertIn("!Slot->Committed", stream)
+        self.assertIn("EConsumeStatus::AlreadyPending, {}, {}", stream)
+        self.assertIn("EConsumeStatus::PublishedReplay", stream)
+        self.assertIn("try { Input = Source->Produce(Frame); }", stream)
+        self.assertIn("catch (...) { return Fault(); }", stream)
         self.assertIn("FTestInputProducer final : public IInputProducer",
                       (ROOT / "Testing/TestInputProducerV2.h").read_text())
         self.assertIn("FDeviceInputProducer final : public IInputProducer",

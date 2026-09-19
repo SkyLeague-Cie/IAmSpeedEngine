@@ -15,7 +15,7 @@ struct FPublishedBatch
 	FPublicationCursor Next;
 	std::vector<FPublishedFrame> Frames;
 };
-enum class EConsumeStatus : std::uint8_t { Ready, Detached, WrongFrame, InvalidInput, PresentationForbidden };
+enum class EConsumeStatus : std::uint8_t { Ready, AlreadyPending, PublishedReplay, Detached, WrongFrame, InvalidInput, PresentationForbidden };
 struct FConsumedInput
 {
 	EConsumeStatus Status = EConsumeStatus::Detached;
@@ -55,9 +55,14 @@ public:
 		if (!Active) return {};
 		const auto& Retained = History[Frame % HistoryCapacity];
 		if (Retained && Retained->Frame.GetData().ConsumptionFrame == Frame)
-			return {EConsumeStatus::Ready, Retained->Frame, Retained->Targets};
+		{
+			if (!Retained->Published) return {EConsumeStatus::AlreadyPending, {}, {}};
+			return {EConsumeStatus::PublishedReplay, Retained->Frame, Retained->Targets};
+		}
 		if (Exhausted || Frame != NextFrame || Pending) return {EConsumeStatus::WrongFrame, {}, {}};
-		auto Input = Source->Produce(Frame);
+		std::optional<FInputFrame> Input;
+		try { Input = Source->Produce(Frame); }
+		catch (...) { return Fault(); } // Includes raw acquisition/mapper exceptions; no retry or fallback.
 		if (!Input || !Input->IsValidFor(*Contract) || !ValidContinuity(*Input, Frame)) return Fault();
 		const auto Targets = AssembleDrivingTargets(*Input, *Contract, Epoch, Frame);
 		if (!Targets.Valid) return Fault();
@@ -87,7 +92,8 @@ public:
 		auto& Slot = History[Frame % HistoryCapacity];
 		if (!Slot || Slot->Frame.GetData().ConsumptionFrame != Frame || !Slot->Committed) return false;
 		if (Slot->Published) return true;
-		if (!Pending || *Pending != Frame || Serial == std::numeric_limits<std::uint64_t>::max()) return false;
+		if (!Pending || *Pending != Frame) return false;
+		if (Serial == std::numeric_limits<std::uint64_t>::max()) { Fault(); return false; }
 		const auto NextSerial = Serial + 1;
 		Published[NextSerial % HistoryCapacity] = FPublishedFrame{Slot->Frame, NextSerial};
 		Serial = NextSerial; Slot->Published = true; LastFrame = Slot->Frame;

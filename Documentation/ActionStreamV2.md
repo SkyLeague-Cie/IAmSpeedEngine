@@ -25,8 +25,14 @@ target tuple. Failure returns neutral invalid targets and permanently deactivate
 the stream; it never calls legacy input. Installation of a fresh stream is the
 recovery boundary. A missing commit acknowledgement prevents publication. Failed
 physical commit permanently deactivates; successful publication must precede the
-next forward consumption. Retained replay does not poll devices or add a new
-publication. Frame and publication serial wrap fail closed.
+next forward consumption. A repeated pending Consume returns AlreadyPending
+with no frame and neutral invalid targets, so it cannot authorize another apply.
+Retained completed history returns the distinct PublishedReplay status, requiring
+an explicit rollback/replay decision; it does not poll devices or add a new
+publication. Exceptions from any producer, including raw Poll and mapping, are
+caught at the stream boundary and permanently deactivate it with neutral invalid
+targets, no history/publication and no retry. Frame wrap fails closed and
+publication serial exhaustion permanently deactivates.
 
 The consumed history and completed-publication journal are separate bounded
 256-entry arrays. `ReadPublishedSince({epoch,serial})` copies a coherent batch

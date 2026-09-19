@@ -63,6 +63,22 @@ private:
 	std::shared_ptr<const FInputActionContract> Config;
 	std::optional<FInputFrame> Frame;
 };
+class FThrowingProducer final : public IInputProducer
+{
+public:
+	explicit FThrowingProducer(std::shared_ptr<const FInputActionContract> C) : Config(std::move(C)) {}
+	unsigned Calls = 0;
+	std::optional<FInputFrame> Produce(FFrameNumber) override { ++Calls; throw std::runtime_error("producer failure"); }
+	const std::shared_ptr<const FInputActionContract>& GetContract() const override { return Config; }
+private:
+	std::shared_ptr<const FInputActionContract> Config;
+};
+class FThrowingRaw final : public IRawInputSource
+{
+public:
+	unsigned Calls = 0;
+	std::optional<FRawInputSample> Poll(FFrameNumber) override { ++Calls; throw std::runtime_error("raw failure"); }
+};
 static std::shared_ptr<FInputStream> TestStream(const std::shared_ptr<const FInputActionContract>& C, std::size_t Count = 96)
 {
 	std::shared_ptr<IInputProducer> P = FTestInputProducer::Create(C, {1}, {EProducerKind::Device, 7}, 0, Scenario(C, Count));
@@ -76,6 +92,10 @@ static Speed::Input::FDrivingInputTargets ConsumeAndCommit(FInputStream& Stream,
 	const auto Before = Stream.ReadLatest();
 	const auto Input = Stream.Consume(N);
 	Check(Input.Status == EConsumeStatus::Ready && Input.Frame && Input.Targets.Valid, "common consume and sink");
+	const auto Duplicate = Stream.Consume(N);
+	Check(Duplicate.Status == EConsumeStatus::AlreadyPending && !Duplicate.Frame && !Duplicate.Targets.Valid
+		&& Duplicate.Targets.ThrottleValue == 0 && Duplicate.Targets.BrakeValue == 0 && Duplicate.Targets.SteeringValue == 0,
+		"pending repeat cannot authorize a second grouped apply");
 	Check(!Stream.PublishCompleted(N), "uncommitted physical input cannot publish");
 	const auto Recorded = Stream.ReadRecorded(N);
 	Check(Recorded && Recorded->GetData().ConsumptionFrame == N, "consumed history records addressed frame");
@@ -156,7 +176,8 @@ int main()
 		"reset:4", "4:0:1:255", "5:0:2:0"};
 	Check(Receiver->Events == Expected, "drained edges ordered before latest-only triggered, reset never synthesizes completion");
 	Check(Snapshots == std::vector<FFrameNumber>({0, 3, 4, 63, 95}), "neutral latest snapshot observations preserved");
-	Check(Player->Consume(0).Frame.has_value() && Raw->Polls == 96 && Player->PublishCompleted(0)
+	const auto Replay = Player->Consume(0);
+	Check(Replay.Status == EConsumeStatus::PublishedReplay && Replay.Frame && Replay.Targets.Valid && Raw->Polls == 96 && Player->PublishCompleted(0)
 		&& Player->ReadLatest()->Serial == 96, "retained replay does not poll or republish older frame");
 	const auto Batch = Player->ReadPublishedSince({{1}, 0});
 	Check(Batch.Status == EReadStatus::Batch && Batch.Frames.size() == 96 && Batch.Next.Serial == 96, "coherent complete published batch");
@@ -215,5 +236,20 @@ int main()
 	auto WrongContractSource = std::make_shared<FInvalidSource>(OtherContract, Scenario(C, 1)[0]);
 	FInputStream WrongContract(WrongContractSource, C, {1}, {EProducerKind::Device, 7});
 	Check(!WrongContract.Activate(), "producer contract mismatch fails before activation");
+	auto Throwing = std::make_shared<FThrowingProducer>(C);
+	auto ThrowingRaw = std::make_shared<FThrowingRaw>();
+	std::shared_ptr<IInputProducer> ThrowingDevice = FDeviceInputProducer::Create(ThrowingRaw, C, {1}, {EProducerKind::Device, 7});
+	for (const auto& Source : std::vector<std::shared_ptr<IInputProducer>>{Throwing, ThrowingDevice})
+	{
+		FInputStream Faulted(Source, C, {1}, {EProducerKind::Device, 7});
+		Check(Faulted.Activate(), "throwing producer setup");
+		const auto Rejected = Faulted.Consume(0);
+		Check(Rejected.Status == EConsumeStatus::InvalidInput && !Rejected.Frame && !Rejected.Targets.Valid
+			&& Rejected.Targets.ThrottleValue == 0 && Rejected.Targets.BrakeValue == 0 && Rejected.Targets.SteeringValue == 0,
+			"producer exception returns neutral invalid tuple");
+		Check(!Faulted.IsActive() && !Faulted.ReadRecorded(0) && !Faulted.ReadLatest() && !Faulted.PublishCompleted(0)
+			&& Faulted.Consume(0).Status == EConsumeStatus::Detached && !Faulted.Activate(), "producer exception cannot retry or publish");
+	}
+	Check(Throwing->Calls == 1 && ThrowingRaw->Calls == 1, "throwing producer and raw acquisition invoked once only");
 	std::cout << "PASS ActionStreamProbe checks=" << Checks << '\n';
 }
