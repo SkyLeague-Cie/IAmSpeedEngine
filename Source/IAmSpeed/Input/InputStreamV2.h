@@ -29,7 +29,7 @@ public:
 private:
 	friend class FInputStream;
 	FReservationToken(FStreamEpoch InEpoch, FFrameNumber InFrame)
-		: Epoch(InEpoch), Frame(InFrame), Identity(std::make_shared<const std::uint8_t>(0)) {}
+		: Epoch(InEpoch), Frame(InFrame), Identity(std::make_shared<const std::uint8_t>(std::uint8_t{0})) {}
 	FStreamEpoch Epoch;
 	FFrameNumber Frame = 0;
 	std::shared_ptr<const std::uint8_t> Identity;
