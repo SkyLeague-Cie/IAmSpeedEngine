@@ -37,7 +37,7 @@ public:
 	const std::shared_ptr<const FInputActionContract>& GetContract() const { return Contract; }
 	bool IsStructurallyValid() const
 	{
-		if (Data.Version != 2 || !Data.Producer.Id || Data.Producer.Kind > EProducerKind::Network
+		if (Data.Version != 2 || !Data.SourceSequence || !Data.Producer.Id || Data.Producer.Kind > EProducerKind::Network
 			|| !Data.StreamEpoch.Value || !Data.DeviceGeneration.Value || Data.Transitions.size() > MaxEdges
 			|| (Data.Reset && !Data.Transitions.empty())) return false;
 		for (std::size_t I = 0; I < Data.Transitions.size(); ++I)

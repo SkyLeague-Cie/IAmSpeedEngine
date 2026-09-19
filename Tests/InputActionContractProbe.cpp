@@ -67,6 +67,9 @@ int main()
 
 	V2::FInputFrameData F;
 	F.Producer = {EProducerKind::Device, 8}; F.StreamEpoch = {1}; F.DeviceGeneration = {1}; F.SourceSequence = 9;
+	F.SourceSequence = 0;
+	Check(!V2::FInputFrame(Contract, F).IsStructurallyValid(), "zero source sequence without transitions rejected");
+	F.SourceSequence = 9;
 	F.Reset = true; F.ActiveMask = 1; F.Values[Throttle] = 0;
 	Check(V2::FInputFrame(Contract, F).IsValidFor(*Contract), "active independent from rounded zero");
 	F.Values[Throttle] = 255; F.ActiveMask = 0;
