@@ -242,10 +242,12 @@ namespace Speed
 		}
 		// No allocation, callbacks, or other potentially throwing work between the
 		// global commit and these prevalidated per-participant finalizations.
+		bool bAllCommitted = true;
 		for (const FSimulationBodyRecord& Body : Bodies)
-			if (Body.Adapter && !Body.Adapter->CommitCanonicalFrame(Frame))
-				return ECanonicalPublicationResult::CommitInvariantFailed; // Never abort completed tokens.
-		return ECanonicalPublicationResult::Completed;
+			if (Body.Adapter) bAllCommitted &= Body.Adapter->CommitCanonicalFrame(Frame);
+		// Complete every participant even if an earlier hook reports an invariant
+		// failure. Global publication is irreversible; never abort completed tokens.
+		return bAllCommitted ? ECanonicalPublicationResult::Completed : ECanonicalPublicationResult::CommitInvariantFailed;
 	}
 
 	FSimulationSnapshot FSimulationWorld::CaptureSnapshot(

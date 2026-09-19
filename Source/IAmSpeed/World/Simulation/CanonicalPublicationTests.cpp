@@ -61,15 +61,16 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCanonicalPublicationTransactionTest,
 
 bool FCanonicalPublicationTransactionTest::RunTest(const FString&)
 {
-	for (unsigned Mode = 0; Mode < 7; ++Mode)
+	for (unsigned Mode = 0; Mode < 9; ++Mode)
 	{
 		Speed::FSimulationWorld World;
-		FPublicationAdapter First, Last;
+		FPublicationAdapter First, Middle, Last;
 		bool GlobalVisible = false;
-		First.GlobalVisible = Last.GlobalVisible = &GlobalVisible;
+		First.GlobalVisible = Middle.GlobalVisible = Last.GlobalVisible = &GlobalVisible;
 		First.Valid = Mode != 1; Last.Valid = Mode != 2;
 		Last.ThrowValidation = Mode == 3; Last.CommitValid = Mode != 6;
-		TestTrue(TEXT("register both real world participants"), World.AddAdapter(First) && World.AddAdapter(Last));
+		First.CommitValid = Mode != 7; Middle.CommitValid = Mode != 8;
+		TestTrue(TEXT("register all real world participants"), World.AddAdapter(First) && World.AddAdapter(Middle) && World.AddAdapter(Last));
 		World.RebuildOrderedAdapters();
 		Speed::SimulationBoundary::FSnapshotBuffer Buffer(128);
 		FSimulationSnapshot Previous; Previous.NumFrame = 6;
@@ -81,8 +82,8 @@ bool FCanonicalPublicationTransactionTest::RunTest(const FString&)
 		const auto Result = World.PublishCanonicalFrame(7, [&]()
 		{
 			++PublisherCalls;
-			TestEqual(TEXT("all participants validated before global publication"), First.Validations + Last.Validations, 2u);
-			TestEqual(TEXT("no input commits before global publication"), First.Commits + Last.Commits, 0u);
+			TestEqual(TEXT("all participants validated before global publication"), First.Validations + Middle.Validations + Last.Validations, 3u);
+			TestEqual(TEXT("no input commits before global publication"), First.Commits + Middle.Commits + Last.Commits, 0u);
 			if (Mode == 5) throw std::runtime_error("publisher before visibility");
 			GlobalVisible = Buffer.Publish(Next);
 			return GlobalVisible;
@@ -95,23 +96,26 @@ bool FCanonicalPublicationTransactionTest::RunTest(const FString&)
 		else if (Mode == 4 || Mode == 5)
 			TestTrue(TEXT("publisher false/throw rejected"), Result == ECanonicalPublicationResult::PublicationFailed);
 		else
-			TestTrue(TEXT("success or explicit commit invariant failure"), Result == (Mode == 6
+			TestTrue(TEXT("success or explicit commit invariant failure"), Result == (Mode >= 6
 				? ECanonicalPublicationResult::CommitInvariantFailed : ECanonicalPublicationResult::Completed));
-		const bool Visible = Mode == 0 || Mode == 6;
+		const bool Visible = Mode == 0 || Mode >= 6;
 		TestEqual(TEXT("global visibility and serial are atomic on failure"), Buffer.PublishedSerial(), BeforeSerial + (Visible ? uint64(1) : uint64(0)));
 		TestEqual(TEXT("previous snapshot retained on failure"), Buffer.PublishedFrame(), Visible ? uint64(7) : uint64(6));
 		if (!Visible)
 		{
-			TestEqual(TEXT("abort ALL including participants already validated"), First.Aborts + Last.Aborts, 2u);
-			TestEqual(TEXT("no partial input publication"), First.Commits + Last.Commits, 0u);
+			TestEqual(TEXT("abort ALL including participants already validated"), First.Aborts + Middle.Aborts + Last.Aborts, 3u);
+			TestEqual(TEXT("no partial input publication"), First.Commits + Middle.Commits + Last.Commits, 0u);
 			TestTrue(TEXT("snapshot failure abort reason"), First.Reason == ECanonicalFrameAbortReason::SnapshotPublicationFailed
+				&& Middle.Reason == ECanonicalFrameAbortReason::SnapshotPublicationFailed
 				&& Last.Reason == ECanonicalFrameAbortReason::SnapshotPublicationFailed);
 		}
 		else
 		{
-			TestEqual(TEXT("no abort after authoritative publication"), First.Aborts + Last.Aborts, 0u);
-			TestTrue(TEXT("input commit observes published global frame"), First.CommitSawGlobal && Last.CommitSawGlobal);
-			TestEqual(TEXT("one finalization per participant"), First.Commits + Last.Commits, 2u);
+			TestEqual(TEXT("no abort after authoritative publication"), First.Aborts + Middle.Aborts + Last.Aborts, 0u);
+			TestTrue(TEXT("input commit observes published global frame"), First.CommitSawGlobal && Middle.CommitSawGlobal && Last.CommitSawGlobal);
+			TestEqual(TEXT("first finalized exactly once even on invariant failure"), First.Commits, 1u);
+			TestEqual(TEXT("middle finalized exactly once even on invariant failure"), Middle.Commits, 1u);
+			TestEqual(TEXT("last finalized exactly once even on invariant failure"), Last.Commits, 1u);
 		}
 	}
 	return true;

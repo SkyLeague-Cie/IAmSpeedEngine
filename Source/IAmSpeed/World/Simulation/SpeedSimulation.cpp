@@ -653,10 +653,10 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 	try
 	{
 		IAMSPEED_FRAME_SCOPE(Initialize);
-		bAuditStarted = true;
 		Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
 			Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
 			SpeedWorldSubsystem);
+		bAuditStarted = true;
 		if (InputJournal.IsSealed() &&
 			!SpeedWorldSubsystem->ApplySimulationInputs(Context.NumFrame, InputJournal))
 		{
