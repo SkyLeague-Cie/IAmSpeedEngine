@@ -29,6 +29,75 @@ static std::vector<FInputFrame> Scenario(FProducerIdentity Id={EProducerKind::De
         FInputFrame(9,4,Id,Values(5,0,0,0),Release,1)};
 }
 struct FResult {std::vector<std::uint64_t> History;std::vector<FFrameNumber> Presented;};
+// Counts calls while forwarding unchanged to the real sealed producer.
+class FCountedReplayProducer final : public IInputProducer
+{
+public:
+    explicit FCountedReplayProducer(std::unique_ptr<FTestInputProducer> In) : Source(std::move(In)) {}
+    std::optional<FInputFrame> Produce(FFrameNumber Frame) override { ++Calls; return Source->Produce(Frame); }
+    unsigned Calls=0;
+private:
+    std::unique_ptr<FTestInputProducer> Source;
+};
+
+static void CheckStreamRollover(FFrameNumber First)
+{
+    constexpr std::size_t Count=HistoryCapacity*2+3;
+    Check(First<=std::numeric_limits<FFrameNumber>::max()-(Count-1),"fixture horizon does not overflow");
+    const FProducerIdentity Id{EProducerKind::Device,177};
+    std::vector<FInputFrame> Frames;
+    for(std::size_t N=0;N<Count;++N)
+        Frames.emplace_back(100+N/2,First+N,Id,
+            Values(static_cast<int>(N%256),-static_cast<int>(N%128),static_cast<int>(N%2),0));
+    auto Sealed=FTestInputProducer::Create(Id,First,Frames);
+    Check(bool(Sealed),"nonzero/terminal anchor with repeated source clock accepted");
+    auto Counted=std::make_shared<FCountedReplayProducer>(std::move(Sealed));
+    FInputStream Stream(Counted);
+    std::optional<FPublishedInputFrame> FirstCopy;
+    std::optional<FInputFrame> FirstRecordedCopy;
+    for(std::size_t N=0;N<Count;++N){
+        const auto C=First+N;
+        const auto Frame=Stream.Consume(C);
+        Check(Frame && Hash(*Frame)==Hash(Frames[N]),"rollover consumes exact immutable source frame");
+        const auto Calls=Counted->Calls;
+        Check(Stream.Consume(C).has_value() && Counted->Calls==Calls,"same-frame cache never repolls producer");
+        const auto Target=ReadDrivingInputTargets(Frame,C);
+        Check(Target.Valid && Target.ThrottleValue==N%256 && Target.SteeringValue==-static_cast<int>(N%128),
+            "shared target reader remains exact across modulo boundaries");
+        Check(Stream.PublishCompleted(C) && Stream.PublishCompleted(C),"current publication is idempotent");
+        const auto Latest=Stream.ReadLatest();
+        Check(Latest && Latest->Serial==N+1 && Hash(Latest->Frame)==Hash(Frames[N]),"publication serial independent of frame origin");
+        if(N==0){FirstCopy=Latest;FirstRecordedCopy=Frame;}
+        const auto Oldest=N>=HistoryCapacity-1 ? N-(HistoryCapacity-1) : 0;
+        const auto Retained=Stream.ReadRecorded(First+Oldest);
+        Check(Retained && Hash(*Retained)==Hash(Frames[Oldest]),"oldest retained ring boundary exact");
+        Check(Stream.Consume(First+Oldest).has_value() && Counted->Calls==Calls,"retained replay does not advance sealed cursor");
+        if(N>=HistoryCapacity){
+            const auto Evicted=First+N-HistoryCapacity;
+            Check(!Stream.ReadRecorded(Evicted),"wrapped slot cannot alias evicted frame");
+            Check(!Stream.Consume(Evicted),"evicted replay cannot be resurrected by producer");
+            Check(!Stream.PublishCompleted(Evicted),"evicted frame cannot publish");
+            Check(Counted->Calls==Calls+1,"evicted lookup attempts producer once then fails closed");
+            const auto After=Stream.ReadLatest();
+            Check(After && Hash(After->Frame)==Hash(Frames[N]) && After->Serial==N+1,
+                "failed replay/publication leaves latest immutable");
+        }
+        Check(FirstCopy && FirstRecordedCopy && Hash(FirstCopy->Frame)==Hash(Frames[0])
+            && Hash(*FirstRecordedCopy)==Hash(Frames[0]),"saved value copies survive ring overwrite");
+    }
+    // Verify every retained slot after two complete wraps, not only one edge.
+    const auto Calls=Counted->Calls;
+    for(std::size_t N=Count-HistoryCapacity;N<Count;++N){
+        const auto F=Stream.ReadRecorded(First+N);
+        Check(F && Hash(*F)==Hash(Frames[N]),"all retained slots have their exact frame identity");
+    }
+    Check(Counted->Calls==Calls,"history observation never polls producer");
+    Stream.Deactivate();
+    Check(!Stream.Consume(First+(Count-1)) && Counted->Calls==Calls,"deactivation rejects cached replay without producer call");
+    Check(!Stream.PublishCompleted(First+(Count-1)),"deactivation rejects cached publication");
+    Check(FirstCopy && Hash(FirstCopy->Frame)==Hash(Frames[0]),"teardown preserves caller-owned snapshot");
+}
+
 static FResult Run(bool Device,bool SlowPresentation)
 {
     const auto Expected=Scenario();
@@ -73,6 +142,9 @@ static FResult Run(bool Device,bool SlowPresentation)
 }
 int main()
 {
+    CheckStreamRollover(0);
+    CheckStreamRollover(17);
+    CheckStreamRollover(std::numeric_limits<FFrameNumber>::max()-(HistoryCapacity*2+2));
     const auto Fast=Run(false,false),Slow=Run(false,true),LiveFast=Run(true,false),LiveSlow=Run(true,true);
     Check(Fast.History==Slow.History && Fast.History==LiveFast.History && Fast.History==LiveSlow.History,"device/test parity independent of presentation cadence");
     Check(Fast.Presented==std::vector<FFrameNumber>({0,1,2,3,4}) && Slow.Presented==std::vector<FFrameNumber>({0,4}),"coalesced presentation retains exact physical history");
@@ -90,6 +162,12 @@ int main()
     Invalid=Scenario();Invalid[2]=Invalid[1];Check(!FTestInputProducer::Create(Id,0,Invalid),"duplicate frame rejected");
     Check(!FTestInputProducer::Create(Id,1,Scenario()),"wrong embedded consumption frame");
     Check(!FTestInputProducer::Create({EProducerKind::AI,77},0,Scenario()),"wrong explicit identity");
+    Invalid=Scenario();Invalid[3]=FInputFrame(4,3,Id,Values(5,0,1,0));
+    Check(!FTestInputProducer::Create(Id,0,Invalid),"regressing source clock rejects sealed scenario");
+    {
+        FPresentationInputScope Presentation;
+        Check(!FTestInputProducer::Create(Id,0,Scenario()),"presentation cannot construct a producer");
+    }
     const auto Last=std::numeric_limits<FFrameNumber>::max();
     std::vector<FInputFrame> End{FInputFrame(1,Last,Id,{})};auto P=FTestInputProducer::Create(Id,Last,End);
     Check(P && P->Produce(Last) && P->Produce(Last) && !P->Produce(0),"terminal frame does not wrap");
