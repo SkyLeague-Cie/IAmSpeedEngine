@@ -12,6 +12,8 @@ TEST = (ROOT / 'World/Simulation/ControllerInputLifecycleTests.cpp').read_text()
 
 def validate(controller, stream, owner, test):
     pause = controller.split('bool ASpeedController::SetPause(', 1)[1].split('void ASpeedController::SetStandaloneSimulationPaused', 1)[0]
+    if 'if (bPause || bInputLifecycleFault)' not in pause:
+        raise ValueError('Fault recovery requires renewed owner acknowledgement')
     owned = pause.split('if (bPause || bInputLifecycleFault)', 1)[1]
     if not owned.index('return false; // Pending pause remains') < owned.index('ApplyInputLifecyclePause(true)') < owned.index('Super::SetPause'):
         raise ValueError('Quiescence and source pause must precede Unreal pause')
