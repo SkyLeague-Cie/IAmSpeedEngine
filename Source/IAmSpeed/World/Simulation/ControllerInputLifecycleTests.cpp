@@ -257,6 +257,21 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	BlockRelease->Trigger();
 	if (!TestTrue(TEXT("same request can be acknowledged after release"), Controller->SetPause(true))) return false;
 	if (!TestTrue(TEXT("acknowledged retry may resume"), Controller->SetPause(false))) return false;
+	// Unreal may be paused by a menu before its owned-worker synchronization.
+	BlockEntered->Reset(); BlockRelease->Reset(); Block.store(true);
+	if (!TestTrue(TEXT("second in-flight hold entered"), BlockEntered->Wait(1000))) return false;
+	if (!TestTrue(TEXT("external Unreal pause accepted"), GameMode->SetPause(Controller, FCanUnpause()))) return false;
+	const uint32 BeforeExternalControls = Source->Controls;
+	Controller->SynchronizeOwnedSimulationPauseWithWorld();
+	TestTrue(TEXT("external synchronization timeout is latched"), Controller->bInputLifecycleFault);
+	TestFalse(TEXT("unpause cannot bypass a missing owner acknowledgement"), Controller->SetPause(false));
+	TestTrue(TEXT("failed unpause retains Unreal and worker pause"), Controller->IsPaused() && Driver->IsOwnedSimulationPaused());
+	TestEqual(TEXT("missing acknowledgement permits no source mutation"), Source->Controls, BeforeExternalControls);
+	BlockRelease->Trigger();
+	TestFalse(TEXT("same-state explicit pause recovery does not change Unreal state"), Controller->SetPause(true));
+	TestTrue(TEXT("same-state recovery cannot accidentally resume"), Controller->IsPaused()
+		&& Driver->IsOwnedSimulationPaused() && Stream->IsLifecyclePaused() && !Controller->bInputLifecycleFault);
+	if (!TestTrue(TEXT("acknowledged external pause can finally resume"), Controller->SetPause(false))) return false;
 	Driver->StopOwnedWorker();
 	TestEqual(TEXT("all controlled physical frames completed"), Steps.load(), uint32(3));
 	TestFalse(TEXT("worker did not fail"), Failed.load());

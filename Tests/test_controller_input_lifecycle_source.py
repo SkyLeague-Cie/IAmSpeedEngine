@@ -15,6 +15,8 @@ def validate(controller, stream, owner, test):
     owned = pause.split('const auto Boundary = QuiesceStandaloneInputOwner();', 1)[1]
     if not owned.index('return false; // Pending pause remains') < owned.index('ApplyInputLifecyclePause(true)') < owned.index('Super::SetPause'):
         raise ValueError('Quiescence and source pause must precede Unreal pause')
+    if 'if (bPause || bInputLifecycleFault)' not in pause or '!bChanged && bPause && !IsPaused()' not in owned:
+        raise ValueError('Fault recovery requires a new acknowledgement and cannot resume an already paused world')
     resume = owned.split('if ((bChanged && !bPause)', 1)[1]
     if resume.index('ApplyInputLifecyclePause(false)') > resume.index('SetStandaloneSimulationPaused(false)'):
         raise ValueError('Source must resume before the worker')
@@ -56,6 +58,10 @@ class ControllerLifecycleGuards(unittest.TestCase):
     def test_reject_missing_timeout_scenario(self):
         with self.assertRaises(ValueError):
             validate(CONTROLLER, STREAM, OWNER, TEST.replace('BlockEntered->Wait(1000)', 'true'))
+
+    def test_reject_resume_without_new_ack(self):
+        with self.assertRaises(ValueError):
+            validate(CONTROLLER.replace('if (bPause || bInputLifecycleFault)', 'if (bPause)'), STREAM, OWNER, TEST)
 
     def test_reject_missing_teardown(self):
         with self.assertRaises(ValueError):

@@ -18,7 +18,10 @@ the stream's lifecycle control, then requests Unreal pause. If Unreal rejects
 pause, source resume establishes a new neutral generation before resuming the
 worker. Successful unpause similarly resets the source before worker resume.
 World-pause synchronization respects a latched lifecycle fault. A later explicit
-pause retry can obtain a valid acknowledgement; a failed request is not silently
+pause retry can obtain a valid acknowledgement; an unpause after a failed
+external-world synchronization must obtain that acknowledgement too. A repeated
+already-paused Unreal request must never be mistaken for a rejected pause and
+resume its worker. Source success alone cannot clear a failed owner ack; a failed request is not silently
 converted into success by a repeated same-state call.
 
 `EInputLifecycleResult` is Applied, UnaffectedByPolicy or Rejected. The base

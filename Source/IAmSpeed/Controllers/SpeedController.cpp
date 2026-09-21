@@ -233,8 +233,13 @@ bool ASpeedController::ApplyInputLifecyclePause(const bool bPaused)
 {
 	if (!InputSnapshots) return true;
 	const auto Result = InputSnapshots->SetLifecyclePaused(bPaused);
-	bInputLifecycleFault = Result == Speed::Input::EInputLifecycleResult::Rejected;
-	return !bInputLifecycleFault;
+	if (Result == Speed::Input::EInputLifecycleResult::Rejected)
+	{
+		bInputLifecycleFault = true;
+		return false;
+	}
+	// A successful source call alone cannot discharge a failed worker acknowledgement.
+	return true;
 }
 
 ESimulationQuiescence ASpeedController::QuiesceStandaloneInputOwner()
@@ -252,15 +257,23 @@ bool ASpeedController::SetPause(const bool bPause, FCanUnpause CanUnpauseDelegat
 	{
 		const bool Standalone = GetNetMode() == NM_Standalone;
 		const bool Changed = bPause != IsPaused();
+		if (Standalone && Changed && !bPause && bInputLifecycleFault)
+		{
+			const auto Boundary = QuiesceStandaloneInputOwner();
+			if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
+				return false;
+			bInputLifecycleFault = false;
+		}
 		if (Standalone && bPause && Changed) SetStandaloneSimulationPaused(true);
 		const bool Accepted = Super::SetPause(bPause, MoveTemp(CanUnpauseDelegate));
 		if (Standalone && Changed && ((Accepted && !bPause) || (!Accepted && bPause)))
 			SetStandaloneSimulationPaused(false);
 		return Accepted;
 	}
-	if (GetNetMode() != NM_Standalone || bPause == IsPaused())
+	if (GetNetMode() != NM_Standalone
+		|| (bPause == IsPaused() && !(bPause && bInputLifecycleFault)))
 		return Super::SetPause(bPause, MoveTemp(CanUnpauseDelegate));
-	if (bPause)
+	if (bPause || bInputLifecycleFault)
 	{
 		const auto Boundary = QuiesceStandaloneInputOwner();
 		if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
@@ -270,9 +283,10 @@ bool ASpeedController::SetPause(const bool bPause, FCanUnpause CanUnpauseDelegat
 		}
 		// AlreadyStopped only permits source cancellation. No physical state write.
 		if (!ApplyInputLifecyclePause(true)) return false;
+		bInputLifecycleFault = false; // Both the owner boundary and source control succeeded.
 	}
 	const bool bChanged = Super::SetPause(bPause, MoveTemp(CanUnpauseDelegate));
-	if ((bChanged && !bPause) || (!bChanged && bPause))
+	if ((bChanged && !bPause) || (!bChanged && bPause && !IsPaused()))
 	{
 		// Unreal accepted resume, or rejected pause. Reset to a fresh neutral
 		// acquisition generation before allowing another real physical frame.
@@ -315,7 +329,7 @@ void ASpeedController::SynchronizeOwnedSimulationPauseWithWorld()
 			bInputLifecycleFault = true;
 			return;
 		}
-		ApplyInputLifecyclePause(true);
+		if (ApplyInputLifecyclePause(true)) bInputLifecycleFault = false;
 	}
 	else if (!bInputLifecycleFault && ApplyInputLifecyclePause(false))
 	{
