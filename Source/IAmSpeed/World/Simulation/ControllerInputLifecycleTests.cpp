@@ -22,6 +22,12 @@
 
 namespace
 {
+class FUnadaptedLifecycleProbe final : public Speed::Input::IInputProducer
+{
+public:
+	std::optional<Speed::Input::FInputFrame> Produce(Speed::Input::FFrameNumber) override { ++Calls; return {}; }
+	uint32 Calls = 0;
+};
 class FControllerLifecycleSessionProbe final : public Speed::Input::IInputProducer
 {
 public:
@@ -64,6 +70,14 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	using namespace Speed::Input;
 	if (!TestTrue(TEXT("controller fixture on game thread"), IsInGameThread())) return false;
+	auto Unadapted = std::make_shared<FUnadaptedLifecycleProbe>();
+	FInputStream UnadaptedStream(Unadapted);
+	TestEqual(TEXT("unadapted lifecycle defaults to rejection"), uint8(UnadaptedStream.SetLifecyclePaused(false)),
+		uint8(EInputLifecycleResult::Rejected));
+	TestFalse(TEXT("unadapted source remains gated"), UnadaptedStream.Consume(0).has_value());
+	TestEqual(TEXT("missing override cannot poll"), Unadapted->Calls, uint32(0));
+	TestEqual(TEXT("missing cancellation override is explicit"), uint8(UnadaptedStream.Deactivate()),
+		uint8(EInputLifecycleResult::Rejected));
 	const auto Options = UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false)
 		.RequiresHitProxies(false).CreateNavigation(false).CreateAISystem(false)
 		.ShouldSimulatePhysics(false).SetTransactional(false);
@@ -226,9 +240,12 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 		GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(NoModeWorld);
 		ON_SCOPE_EXIT { NoModeWorld->DestroyWorld(false); GEngine->DestroyWorldContext(NoModeWorld); };
 		auto* NoModeController = NoModeWorld->SpawnActor<ASpeedController>();
-		auto* NoModeCar = NoModeWorld->SpawnActorDeferred<ASpeedCar>(ASpeedCar::StaticClass(), FTransform::Identity);
+		auto* NoModeCar = NoModeWorld->SpawnActor<ASpeedCar>();
 		if (!TestNotNull(TEXT("no-mode controller"), NoModeController)
 			|| !TestNotNull(TEXT("no-mode pawn"), NoModeCar)) return false;
+		if (!NoModeController->PlayerState) NoModeController->SetPlayerState(NoModeWorld->SpawnActor<APlayerState>());
+		if (!TestNotNull(TEXT("no-mode pause owner player state"), NoModeController->PlayerState.Get())) return false;
+		TestNull(TEXT("only missing pause dependency is game mode"), NoModeWorld->GetAuthGameMode());
 		auto NoModeSource = std::make_shared<FControllerLifecycleSessionProbe>();
 		if (!TestTrue(TEXT("no-mode producer installed"), NoModeController->ConfigureInputProducer(NoModeSource))) return false;
 		NoModeController->Possess(NoModeCar);

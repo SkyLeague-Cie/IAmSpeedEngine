@@ -25,11 +25,17 @@ resume its worker. Source success alone cannot clear a failed owner ack; a faile
 converted into success by a repeated same-state call.
 
 `EInputLifecycleResult` is Applied, UnaffectedByPolicy or Rejected. The base
-producer compatibility policy and sealed TestInputProducer/queued producers
-explicitly preserve authored timelines; gating happens in the stream and does
-not rewind them. FDeviceInputSession implements real generation reset and
-pause. Other live backend adapters are not qualified by this default policy:
-their D1 integration must provide real lifecycle hooks before activation.
+producer returns Rejected: missing lifecycle implementation must fail closed.
+Only FQueuedInputProducer (including AI/network subclasses) and the sealed
+FTestInputProducer explicitly return UnaffectedByPolicy to preserve their
+frame-addressed authored timelines. FDeviceInputSession implements real reset.
+FDeviceInputProducer, FDeviceDiscovery and the Windows acquisition/discovery/
+selected-source classes remain Rejected until D1 supplies explicit live hooks.
+The counted W4/U3/L1 and standalone probe wrappers are not qualified controller
+lifecycle sources; their existing tests do not install them through this route.
+The independent V2 producer API is unchanged. No current parent 9b506 source
+installs another custom producer via ConfigureInputProducer; later CI adapters
+must declare a policy when integrated. Gating never rewinds a sealed timeline.
 
 The stream serializes control with Produce/publication. Paused/closed streams
 reject acquisition and publication. Control epochs invalidate unpublished old
@@ -62,7 +68,8 @@ and immediate fresh-held target. The actual controller pause/resume route
 proves source generation invalidation and stream gating without extra polling.
 A separate no-game-mode world exercises Unreal's genuine pause rejection:
 standalone GameMode ignores `bPauseable=false`, so that property cannot author
-the required rejection. A controlled in-flight worker delays acknowledgement
+the required rejection. Its controller has a real PlayerState and its pawn is
+fully spawned; absence of GameMode is the isolated missing dependency. A controlled in-flight worker delays acknowledgement
 to exercise timeout, no lifecycle mutation/no automatic resume, then an explicit
 successful retry. Joined-worker cancellation covers AlreadyStopped. Rejected
 source control must remain closed and can be retried explicitly.
