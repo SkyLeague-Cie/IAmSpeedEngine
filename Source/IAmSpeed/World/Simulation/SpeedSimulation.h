@@ -30,6 +30,7 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
+	friend class FIAmSpeedProducedInputWorkerOrderTest;
 #endif
 
 public:

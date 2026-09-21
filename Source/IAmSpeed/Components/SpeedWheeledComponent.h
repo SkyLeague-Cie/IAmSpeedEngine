@@ -769,6 +769,7 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheeledInputQueueTest;
 	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
+	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedCameraInputBoundaryTest;
 	friend class FIAmSpeedWheeledInertiaCovarianceTest;
