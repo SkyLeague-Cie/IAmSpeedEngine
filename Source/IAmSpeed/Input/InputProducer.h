@@ -8,6 +8,8 @@
 
 namespace Speed::Input
 {
+enum class EInputLifecycleResult : std::uint8_t { Applied, UnaffectedByPolicy, Rejected };
+
 class IInputProducer
 {
 public:
@@ -17,6 +19,13 @@ public:
 	virtual std::optional<FInputFrame> Produce(FFrameNumber ConsumptionFrame) = 0;
 	// Explicit suppression by the sealed test owner, never an implicit missing input.
 	virtual bool Skip(FFrameNumber) { return false; }
+	// Compatibility policy for sources without live acquisition state. Such a
+	// source is gated by its stream but its authored timeline is never rewound.
+	// Device hosts must override these hooks before production activation.
+	virtual EInputLifecycleResult ApplyLifecyclePause(bool) { return EInputLifecycleResult::UnaffectedByPolicy; }
+	// Mandatory non-polling cleanup; unlike ordinary control, allowed during
+	// presentation. This cancels source state, not OS callback/backend shutdown.
+	virtual EInputLifecycleResult CancelLifecycle() { return EInputLifecycleResult::UnaffectedByPolicy; }
 };
 
 /** Injected device-sample adapter; real acquisition backend is not supplied.
@@ -142,6 +151,8 @@ private:
 class FQueuedInputProducer : public IInputProducer
 {
 public:
+	EInputLifecycleResult ApplyLifecyclePause(bool) override { return EInputLifecycleResult::UnaffectedByPolicy; }
+	EInputLifecycleResult CancelLifecycle() override { return EInputLifecycleResult::UnaffectedByPolicy; }
 	// Advance a suppressed exact frame even if absent. Preserve submitted payloads
 	// in producer history, without claiming the stream physically consumed them.
 	bool Skip(FFrameNumber Frame) override

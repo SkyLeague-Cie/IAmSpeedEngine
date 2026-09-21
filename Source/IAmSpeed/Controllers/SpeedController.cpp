@@ -4,12 +4,13 @@
 #include "EnhancedInputSubsystems.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
+#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
 #include "InputActionValue.h"
 
 void ASpeedController::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	if (InputSnapshots)
+	if (InputSnapshots && !InputSnapshots->IsLifecyclePaused())
 	{
 		const auto Snapshot = InputSnapshots->ReadLatest();
 		if (Snapshot) HandleInputs(*Snapshot);
@@ -50,6 +51,7 @@ void ASpeedController::SetupInputComponent()
 
 void ASpeedController::OnPossess(APawn* InPawn)
 {
+	if (InputSnapshots) InputSnapshots->Deactivate();
 	if (SpeedCar && InputSnapshots) SpeedCar->SetFrameInputStream(nullptr);
 	if (SpeedCar) SpeedCar->ClearCameraInputs();
 	Super::OnPossess(InPawn);
@@ -57,17 +59,41 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	SpeedCar->ClearCameraInputs();
 	InputSnapshots = InputProducer ? std::make_shared<Speed::Input::FInputStream>(InputProducer) : nullptr;
 	PresentationBindings.ResetObservation();
-	if (InputSnapshots) SpeedCar->SetFrameInputStream(InputSnapshots);
+	if (InputSnapshots)
+	{
+		// Initial ownership establishes a fresh baseline without polling a device.
+		ApplyInputLifecyclePause(IsPaused());
+		SpeedCar->SetFrameInputStream(InputSnapshots);
+	}
+}
+
+void ASpeedController::ReleaseInputLifecycle()
+{
+	// Mandatory close happens before ownership is released. Retained worker
+	// references cannot acquire/publish again; copied history stays immutable.
+	const auto Closed = InputSnapshots ? InputSnapshots->Deactivate()
+		: (InputProducer ? InputProducer->CancelLifecycle() : Speed::Input::EInputLifecycleResult::UnaffectedByPolicy);
+	if (Closed == Speed::Input::EInputLifecycleResult::Rejected) bInputLifecycleFault = true;
+	if (IsValid(SpeedCar))
+	{
+		SpeedCar->SetFrameInputStream(nullptr);
+		SpeedCar->ClearCameraInputs();
+	}
+	InputSnapshots.reset();
+	InputProducer.reset();
+	SpeedCar = nullptr;
 }
 
 void ASpeedController::OnUnPossess()
 {
-	if (SpeedCar && InputSnapshots) SpeedCar->SetFrameInputStream(nullptr);
-	InputProducer.reset();
-	InputSnapshots.reset();
-	if (SpeedCar) SpeedCar->ClearCameraInputs();
-	SpeedCar = nullptr;
+	ReleaseInputLifecycle();
 	Super::OnUnPossess();
+}
+
+void ASpeedController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	ReleaseInputLifecycle();
+	Super::EndPlay(EndPlayReason);
 }
 
 void ASpeedController::SetupEnhancedInputComponent(
@@ -203,39 +229,58 @@ void ASpeedController::Pause()
 	Super::Pause();
 }
 
-bool ASpeedController::SetPause(
-	const bool bPause, FCanUnpause CanUnpauseDelegate)
+bool ASpeedController::ApplyInputLifecyclePause(const bool bPaused)
 {
-	const bool bStandalone = GetNetMode() == NM_Standalone;
-	const bool bStateWillChange = bPause != IsPaused();
+	if (!InputSnapshots) return true;
+	const auto Result = InputSnapshots->SetLifecyclePaused(bPaused);
+	bInputLifecycleFault = Result == Speed::Input::EInputLifecycleResult::Rejected;
+	return !bInputLifecycleFault;
+}
 
-	// Stop the worker before Unreal freezes the game thread. If Unreal rejects
-	// the pause request, resume it immediately so both clocks remain aligned.
-	if (bStandalone && bPause && bStateWillChange)
-	{
-		SetStandaloneSimulationPaused(true);
-	}
+ESimulationQuiescence ASpeedController::QuiesceStandaloneInputOwner()
+{
+	UWorld* World = GetWorld();
+	ASpeedGameMode* GameMode = World ? Cast<ASpeedGameMode>(World->GetAuthGameMode()) : nullptr;
+	ASpeedSimulation* Simulation = GameMode ? GameMode->GetSpeedSimulation() : nullptr;
+	return Simulation ? Simulation->TryPauseOwnedSimulation() : ESimulationQuiescence::AlreadyStopped;
+}
 
-	const bool bPauseChanged =
-		Super::SetPause(bPause, MoveTemp(CanUnpauseDelegate));
-	if (!bStandalone || !bStateWillChange)
+bool ASpeedController::SetPause(const bool bPause, FCanUnpause CanUnpauseDelegate)
+{
+	// Preserve existing pause hosting until an independent producer is installed.
+	if (!InputSnapshots)
 	{
-		return bPauseChanged;
-	}
-
-	if (bPauseChanged)
-	{
-		if (!bPause)
-		{
+		const bool Standalone = GetNetMode() == NM_Standalone;
+		const bool Changed = bPause != IsPaused();
+		if (Standalone && bPause && Changed) SetStandaloneSimulationPaused(true);
+		const bool Accepted = Super::SetPause(bPause, MoveTemp(CanUnpauseDelegate));
+		if (Standalone && Changed && ((Accepted && !bPause) || (!Accepted && bPause)))
 			SetStandaloneSimulationPaused(false);
-		}
+		return Accepted;
 	}
-	else if (bPause)
+	if (GetNetMode() != NM_Standalone || bPause == IsPaused())
+		return Super::SetPause(bPause, MoveTemp(CanUnpauseDelegate));
+	if (bPause)
 	{
+		const auto Boundary = QuiesceStandaloneInputOwner();
+		if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
+		{
+			bInputLifecycleFault = true;
+			return false; // Pending pause remains; no source mutation or automatic resume.
+		}
+		// AlreadyStopped only permits source cancellation. No physical state write.
+		if (!ApplyInputLifecyclePause(true)) return false;
+	}
+	const bool bChanged = Super::SetPause(bPause, MoveTemp(CanUnpauseDelegate));
+	if ((bChanged && !bPause) || (!bChanged && bPause))
+	{
+		// Unreal accepted resume, or rejected pause. Reset to a fresh neutral
+		// acquisition generation before allowing another real physical frame.
+		if (!ApplyInputLifecyclePause(false)) return false;
+		bInputLifecycleFault = false;
 		SetStandaloneSimulationPaused(false);
 	}
-
-	return bPauseChanged;
+	return bChanged;
 }
 
 void ASpeedController::SetStandaloneSimulationPaused(const bool bPaused)
@@ -255,8 +300,25 @@ void ASpeedController::SetStandaloneSimulationPaused(const bool bPaused)
 
 void ASpeedController::SynchronizeOwnedSimulationPauseWithWorld()
 {
-	if (GetNetMode() == NM_Standalone)
+	if (GetNetMode() != NM_Standalone) return;
+	const bool bPaused = IsPaused();
+	if (!InputSnapshots)
 	{
-		SetStandaloneSimulationPaused(IsPaused());
+		if (bPaused || !bInputLifecycleFault) SetStandaloneSimulationPaused(bPaused);
+		return;
+	}
+	if (bPaused)
+	{
+		const auto Boundary = QuiesceStandaloneInputOwner();
+		if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
+		{
+			bInputLifecycleFault = true;
+			return;
+		}
+		ApplyInputLifecyclePause(true);
+	}
+	else if (!bInputLifecycleFault && ApplyInputLifecyclePause(false))
+	{
+		SetStandaloneSimulationPaused(false);
 	}
 }

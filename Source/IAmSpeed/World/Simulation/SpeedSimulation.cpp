@@ -328,6 +328,23 @@ void ASpeedSimulation::RestartControlledRun()
 	ResumeOwnedSimulation();
 }
 
+ESimulationQuiescence ASpeedSimulation::TryPauseOwnedSimulation(const uint32 TimeoutMilliseconds)
+{
+	check(IsInGameThread());
+	bOwnedSimulationPaused.Store(true);
+	if (!SimulationWorker && HasActorBegunPlay()
+		&& GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback)
+		return ESimulationQuiescence::Failed; // No owned boundary for legacy async callbacks.
+	if (!SimulationWorker || !SimulationWorker->IsRunning())
+	{
+		OnOwnedSimulationPaused();
+		return ESimulationQuiescence::AlreadyStopped;
+	}
+	if (!SimulationWorker->TryPause(TimeoutMilliseconds)) return ESimulationQuiescence::TimedOut;
+	OnOwnedSimulationPaused();
+	return ESimulationQuiescence::BoundaryAcknowledged;
+}
+
 void ASpeedSimulation::PauseOwnedSimulation()
 {
 	bOwnedSimulationPaused.Store(true);

@@ -7,6 +7,7 @@
 #include "SpeedController.generated.h"
 
 class ASpeedCar;
+enum class ESimulationQuiescence : uint8;
 class UEnhancedInputComponent;
 class UInputAction;
 class UInputMappingContext;
@@ -25,6 +26,7 @@ class IAMSPEED_API ASpeedController : public APlayerController
 
 public:
 	void Tick(float DeltaSeconds) override;
+	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	/** Presentation only: callback receives const values, never a physical writer.
 	 * Name is explicitly associated with a slot; unknown slots/duplicate names fail. */
 	bool BindAction(const FString& Name, Speed::Input::FActionId Action,
@@ -110,10 +112,15 @@ protected:
 private:
 #if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS
 	friend struct Speed::Input::FControllerInputTestAccess;
+	friend class FIAmSpeedControllerInputLifecycleTest;
 #endif
 	std::shared_ptr<Speed::Input::IInputProducer> InputProducer = nullptr;
 	std::shared_ptr<Speed::Input::FInputStream> InputSnapshots;
 	Speed::Input::FInputPresentationBindings PresentationBindings;
 	/** Updates the worker owned by the authoritative IAmSpeed game mode. */
 	void SetStandaloneSimulationPaused(bool bPaused);
+	ESimulationQuiescence QuiesceStandaloneInputOwner();
+	bool ApplyInputLifecyclePause(bool bPaused);
+	void ReleaseInputLifecycle();
+	bool bInputLifecycleFault = false;
 };

@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
 
+// Quiescence is an explicit result, never inferred from a pause flag.
+enum class ESimulationQuiescence : uint8 { BoundaryAcknowledged, AlreadyStopped, TimedOut, Failed };
+
 enum class ESimulationWorkerResult : uint8
 {
 	Advanced,

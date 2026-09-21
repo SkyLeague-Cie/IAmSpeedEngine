@@ -14,6 +14,8 @@ namespace Speed::Input
 class FTestInputProducer final : public IInputProducer
 {
 public:
+	EInputLifecycleResult ApplyLifecyclePause(bool) override { return EInputLifecycleResult::UnaffectedByPolicy; }
+	EInputLifecycleResult CancelLifecycle() override { return EInputLifecycleResult::UnaffectedByPolicy; }
 	static std::unique_ptr<FTestInputProducer> Create(FProducerIdentity Identity,
 		FFrameNumber FirstFrame, const std::vector<FInputFrame>& Scenario)
 	{

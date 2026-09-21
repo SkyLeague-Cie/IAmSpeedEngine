@@ -32,6 +32,7 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
+	friend class FIAmSpeedControllerInputLifecycleTest;
 #endif
 
 public:
@@ -89,6 +90,9 @@ public:
 		uint64 TargetFrameInclusive);
 	/** Pauses the owned execution lane without changing the canonical frame. */
 	void PauseOwnedSimulation();
+	/** Bounded lifecycle boundary. Timeout retains pause request; never resume
+	 * automatically or access physical state after a non-acknowledged result. */
+	ESimulationQuiescence TryPauseOwnedSimulation(uint32 TimeoutMilliseconds = 1000);
 	/** Resumes the owned lane from its current canonical frame. */
 	void ResumeOwnedSimulation();
 	/** GT-only: re-arms a paused controlled run after its actors/inputs were replaced. Keeps the world's canonical frame continuous. */

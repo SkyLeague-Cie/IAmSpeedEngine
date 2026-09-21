@@ -16,6 +16,9 @@ UCLASS()
 class IAMSPEED_API ASpeedGameMode : public AGameMode
 {
 	GENERATED_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FIAmSpeedControllerInputLifecycleTest;
+#endif
 
 public:
 	ASpeedGameMode();
