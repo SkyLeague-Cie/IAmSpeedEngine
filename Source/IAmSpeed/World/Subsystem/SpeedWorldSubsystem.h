@@ -62,6 +62,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedBoxEquilibriumWorldTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FIAmSpeedProducedDeviceLifecycleTest;
 #endif
 public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;

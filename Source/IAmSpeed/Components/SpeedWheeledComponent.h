@@ -770,6 +770,7 @@ private:
 	friend class FIAmSpeedWheeledInputQueueTest;
 	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedCameraInputBoundaryTest;
 	friend class FIAmSpeedWheeledInertiaCovarianceTest;

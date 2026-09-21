@@ -31,6 +31,7 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FIAmSpeedProducedDeviceLifecycleTest;
 #endif
 
 public:
