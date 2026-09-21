@@ -143,6 +143,12 @@ bool FIAmSpeedProducedInputWorkerOrderTest::RunTest(const FString& Parameters)
 		|| !TestTrue(TEXT("driver sees analytical authority"), Driver->EnsureSimulationWorldReady())) return false;
 	Driver->InitializeCanonicalFrame(0.0f);
 	if (!TestEqual(TEXT("real driver initial canonical origin"), Driver->CanonicalNumFrame, uint64(0))) return false;
+	// The component constructor replaces the state struct default with the
+	// configured TimeBeforeCanMove * physics FPS. Observe it without mutation.
+	const uint16 InitialCountdown = Component->GetMinNbFramesBeforeCanMove();
+	if (!TestTrue(TEXT("configured initial countdown is positive"), InitialCountdown > 0)
+		|| !TestEqual(TEXT("initial state uses configured countdown"),
+			int32(Component->WheeledPhysicsState.nbFramesbeforeCanMove), int32(InitialCountdown))) return false;
 
 	FWheeledTestProfile Profile;
 	Profile.Identity = {EProducerKind::Device, 73};
@@ -247,8 +253,8 @@ bool FIAmSpeedProducedInputWorkerOrderTest::RunTest(const FString& Parameters)
 		TestEqual(Label + TEXT(" input serial"), Result.InputSerial, uint64(C + 1));
 		TestEqual(Label + TEXT(" target via producer"), Result.Target, TargetThrottle[C]);
 		TestEqual(Label + TEXT(" physical slew applied once"), Result.Physical, PhysicalThrottle[C]);
-		TestEqual(Label + TEXT(" natural countdown before frame"), Result.CountdownBefore, uint16(1));
-		TestEqual(Label + TEXT(" natural countdown after frame"), Result.CountdownAfter, uint16(1));
+		TestEqual(Label + TEXT(" natural countdown before frame"), int32(Result.CountdownBefore), int32(InitialCountdown));
+		TestEqual(Label + TEXT(" natural countdown after frame"), int32(Result.CountdownAfter), int32(InitialCountdown));
 		TestFalse(Label + TEXT(" countdown was not started"), Result.bCountdownStartedBefore || Result.bCountdownStartedAfter);
 		TestFalse(Label + TEXT(" no movement lifecycle transition"), Result.bCanMoveBefore || Result.bCanMoveAfter);
 		const auto Recorded = Stream->ReadRecorded(C);

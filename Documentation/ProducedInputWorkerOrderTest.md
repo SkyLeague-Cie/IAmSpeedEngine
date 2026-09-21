@@ -10,8 +10,12 @@ fixture supplies the storage/lifetime pattern; an empty collision world removes
 contacts without replacing the production world step or physical input consumer.
 The vehicle retains its default immobile state: no CanMove or axis setter is used.
 This unit proves consumption/slew/publication ordering, not a moving-car response.
-Before and after every frame it records the natural countdown value (1), its
-unstarted flag and CanMove=false; these values are asserted, never forced.
+Before starting the worker it captures the configured positive countdown via
+GetMinNbFramesBeforeCanMove and checks that the initial state agrees. The component
+constructor derives this value from TimeBeforeCanMove and the physics frequency;
+the state struct's default of 1 is not the initialized component's contract.
+Before and after every frame it requires that captured countdown to remain unchanged,
+with its unstarted flag and CanMove=false; these values are asserted, never forced.
 
 The sealed W1 profile passes through the actual FTestInputProducer and FInputStream.
 A forwarding wrapper records acquisition only. It must not re-enter FInputStream
