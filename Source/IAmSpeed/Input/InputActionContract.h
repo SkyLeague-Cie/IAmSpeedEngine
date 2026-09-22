@@ -197,7 +197,7 @@ private:
 	}
 	explicit FInputActionContract(FInputActionContractDescription D) : Description(std::move(D))
 	{
-		Add(3); Add(Description.Revision.Value); Add(Description.Actions.size());
+		Add(4); Add(Description.Revision.Value); Add(Description.Actions.size());
 		for (const auto& A : Description.Actions)
 		{
 			Add(A.Id); AddText(A.Owner); AddText(A.Name); Add(A.Version); Add(A.Aliases.size());

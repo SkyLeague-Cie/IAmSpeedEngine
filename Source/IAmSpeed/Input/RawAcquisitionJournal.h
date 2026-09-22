@@ -60,7 +60,9 @@ public:
 			for (std::size_t I = 0; I < Batch.Count; ++I)
 			{
 				const auto& R = Batch.Readings[I];
-				if (!R.DeviceId || !R.Generation.Value || !R.Sequence || !R.State.IsValid(R.Kind)
+				// Desktop needs its atomic provenance + lifecycle envelope; the old
+				// readings-only journal must not silently strip those fields.
+				if (R.Kind == ERawDeviceKind::Desktop || !R.DeviceId || !R.Generation.Value || !R.Sequence || !R.State.IsValid(R.Kind)
 					|| (Previous && (Previous->Sequence == std::numeric_limits<std::uint64_t>::max()
 						|| R.Sequence != Previous->Sequence + 1))) return false;
 				const bool Same = Previous && SameDevice(*Previous, R);

@@ -105,6 +105,18 @@ bool ImportInputMappings(const UInputMappingContext* Context, const TMap<const U
 		{
 			if (!PadControl(Mapping.Key, Binding.Control)) return Reject(TEXT("Unsupported canonical gamepad control"));
 		}
+		else if (Mapping.Key == EKeys::LeftMouseButton || Mapping.Key == EKeys::RightMouseButton || Mapping.Key == EKeys::MiddleMouseButton)
+		{
+			const auto Button = Mapping.Key == EKeys::LeftMouseButton ? EMouseButton::Left
+				: (Mapping.Key == EKeys::RightMouseButton ? EMouseButton::Right : EMouseButton::Middle);
+			Binding.Control = {ERawControlKind::MouseButton, uint16(Button)};
+		}
+		else if (Mapping.Key.IsMouseButton() || Mapping.Key == EKeys::MouseScrollUp || Mapping.Key == EKeys::MouseScrollDown
+			|| Mapping.Key.IsAxis1D() || Mapping.Key.IsAxis2D() || Mapping.Key.IsAxis3D())
+		{
+			Error = FString::Printf(TEXT("Unsupported mouse button or non-keyboard axis: %s"), *Mapping.Key.ToString());
+			return false;
+		}
 		else
 		{
 #if PLATFORM_WINDOWS && !UE_SERVER

@@ -31,6 +31,15 @@ static auto Contract()
 int main()
 {
 	{
+		FRawAcquisitionJournal Hub(21);
+		auto R = Reading(1, true, true); R.Kind = ERawDeviceKind::Desktop;
+		Check(R.State.IsValid(R.Kind), "desktop state structurally representable");
+		Check(!Hub.Publish(Hub.BeginAcquisition(), Batch({R})) && !Hub.ReadControlBaseline(),
+			"legacy journal rejects desktop without versioned provenance lifecycle envelope");
+		R.Kind = ERawDeviceKind::Keyboard;
+		Check(Hub.Publish(Hub.BeginAcquisition(), Batch({R})), "rejected desktop batch did not advance journal sequence");
+	}
+	{
 		auto D = Contract()->GetDescription(); D.Mapping.push_back({{ERawControlKind::KeyboardUsage, 5}, 3, 1});
 		auto C = FInputActionContract::Create(D); Check(bool(C), "OR binding fixture");
 		FActionMapper Mapper(C, {1}, {Speed::Input::EProducerKind::Device, 7});

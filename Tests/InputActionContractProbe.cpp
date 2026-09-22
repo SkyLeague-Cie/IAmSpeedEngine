@@ -113,6 +113,17 @@ int main()
 	S.FinalState = {{{V2::ERawControlKind::KeyboardUsage, 0x42}, 1}}; S.Kind = V2::ERawDeviceKind::Keyboard;
 	Check(S.IsValid(), "explicit HID F9 usage"); S.FinalState[0].Control.Code = 0;
 	Check(!S.IsValid(), "unknown physical usage");
+	S.Kind = V2::ERawDeviceKind::Desktop;
+	S.FinalState = {{{V2::ERawControlKind::KeyboardUsage, 0x42}, 1},
+		{{V2::ERawControlKind::MouseButton, uint16_t(V2::EMouseButton::Left)}, 0},
+		{{V2::ERawControlKind::MouseButton, uint16_t(V2::EMouseButton::Right)}, 1},
+		{{V2::ERawControlKind::MouseButton, uint16_t(V2::EMouseButton::Middle)}, 0}};
+	Check(S.IsValid(), "desktop union retains keyboard and three mouse controls");
+	S.Kind = V2::ERawDeviceKind::Keyboard; Check(!S.IsValid(), "keyboard cannot claim mouse capabilities");
+	S.Kind = V2::ERawDeviceKind::Gamepad; Check(!S.IsValid(), "gamepad cannot claim desktop capabilities");
+	S.Kind = V2::ERawDeviceKind::Desktop;
+	S.FinalState = {{{V2::ERawControlKind::PadButton, 0}, 1}};
+	Check(!S.IsValid(), "desktop cannot mix gamepad contribution");
 
 	// Existing v1 producer remains source-compatible and independently usable.
 	FActionValues LegacyValues{}; LegacyValues[Throttle] = 255;

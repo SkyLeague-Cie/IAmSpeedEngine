@@ -19,7 +19,8 @@ public:
         std::uint64_t ConsumptionFrame, const FRawInputSample& Sample)
     {
         if (!Target.Session.GetEpoch() || !Target.Generation ||
-            !StreamEpoch.Value || !MappingRevision.Value || !Sample.IsValid())
+            !StreamEpoch.Value || !MappingRevision.Value || !Sample.IsValid() ||
+            Sample.Kind == ERawDeviceKind::Desktop) // Requires the versioned composite provenance envelope.
             return {};
 
         // Validation precedes either vector copy. Allocation failure propagates;

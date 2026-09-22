@@ -57,6 +57,29 @@ static void Equal(const FInputFrame& Actual, const FInputFrame& Wanted)
 int main()
 {
 	{
+		for (std::uint16_t I = 0; I < 3; ++I)
+		{
+			FRawControl Mouse{ERawControlKind::MouseButton, I};
+			Check(Mouse.IsValid() && Mouse.Accepts(0) && Mouse.Accepts(1) && !Mouse.Accepts(0.5f), "mouse buttons are Boolean in distinct code space");
+			Check(!IsControlKindForDevice(Mouse.Kind, ERawDeviceKind::Keyboard)
+				&& !IsControlKindForDevice(Mouse.Kind, ERawDeviceKind::Gamepad)
+				&& IsControlKindForDevice(Mouse.Kind, ERawDeviceKind::Desktop), "mouse never aliases keyboard or gamepad namespace");
+		}
+		Check(!FRawControl{ERawControlKind::MouseButton, 3}.IsValid(), "unrepresented fourth mouse button rejected");
+		auto D = Definition(); D.Mapping.push_back({{ERawControlKind::MouseButton, 1}, 3, 1});
+		const auto DesktopContract = FInputActionContract::Create(D);
+		Check(bool(DesktopContract), "mouse mapping metadata is structurally representable");
+		Check(!FActionMapper::Create(DesktopContract, {1}, {EProducerKind::Device, 9}),
+			"mouse contract cannot activate until action-aware Desktop lifecycle integration");
+		const auto KeyboardContract = FInputActionContract::Create(Definition());
+		auto Mapper = FActionMapper::Create(KeyboardContract, {1}, {EProducerKind::Device, 9});
+		auto S = Keys(1, ERawSampleStatus::Resync, 1, 0, 0, 0); S.Kind = ERawDeviceKind::Desktop;
+		Check(S.IsValid() && Mapper->Map(S, 0).Status == EMappingStatus::UnsupportedControl,
+			"plain desktop sample cannot bypass missing provenance envelope");
+		S.Kind = ERawDeviceKind::Keyboard;
+		Check(bool(Mapper->Map(S, 0).Frame), "refused desktop did not consume physical frame");
+	}
+	{
 		auto D = Definition(); D.Mapping = {{Key(6), Steering, 1}, {Key(7), Steering, -1}};
 		D.Actions[Steering].Accumulation = EActionAccumulation::HighestAbsolute;
 		auto Evaluate = [&](const FInputActionContractDescription& Definition, float Left, float Right)

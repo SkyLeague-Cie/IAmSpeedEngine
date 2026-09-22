@@ -92,6 +92,9 @@ int main()
     const auto K = Keyboard();
     const auto G = Gamepad();
     Check(K.IsValid() && G.IsValid(), "authored raw fixtures meet existing contract");
+    auto Desktop = K; Desktop.Kind = ERawDeviceKind::Desktop;
+    Check(Desktop.IsValid(), "desktop raw DTO structure is representable");
+    RejectedWithoutMutation(Target, Desktop, "readings-only ingress cannot discard desktop provenance");
 
     for (const auto Frame : {std::uint64_t{0}, std::numeric_limits<std::uint64_t>::max()})
     {

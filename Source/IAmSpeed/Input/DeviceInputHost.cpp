@@ -25,7 +25,7 @@ FStreamEpoch AllocateInputStreamEpoch()
 std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostConfig& Config)
 {
 #if PLATFORM_WINDOWS && !UE_SERVER
-	if (!Config.Contract || !FDeviceActivityPolicy::ValidConfig(Config.Activity)
+	if (!Config.Contract || !FActionMapper::SupportsContract(*Config.Contract) || !FDeviceActivityPolicy::ValidConfig(Config.Activity)
 		|| Config.Cadence.count() <= 0 || Config.Cadence > std::chrono::seconds(1)
 		|| Config.StartupTimeout.count() <= 0 || FPresentationInputScope::IsActive()) return {};
 	const auto Epoch = AllocateInputStreamEpoch();

@@ -12,8 +12,19 @@ namespace Speed::Input::V2
 struct FStreamEpoch { std::uint64_t Value = 0; };
 struct FMappingRevision { std::uint64_t Value = 0; };
 struct FDeviceGeneration { std::uint64_t Value = 0; };
-enum class ERawDeviceKind : std::uint8_t { Keyboard, Gamepad };
-enum class ERawControlKind : std::uint8_t { KeyboardUsage, PadButton, PadAxis };
+enum class ERawDeviceKind : std::uint8_t { Keyboard, Gamepad, Desktop };
+enum class ERawControlKind : std::uint8_t { KeyboardUsage, PadButton, PadAxis, MouseButton };
+enum class EMouseButton : std::uint16_t { Left, Right, Middle, Count };
+inline bool IsControlKindForDevice(ERawControlKind Control, ERawDeviceKind Device)
+{
+	switch (Device)
+	{
+	case ERawDeviceKind::Keyboard: return Control == ERawControlKind::KeyboardUsage;
+	case ERawDeviceKind::Gamepad: return Control == ERawControlKind::PadButton || Control == ERawControlKind::PadAxis;
+	case ERawDeviceKind::Desktop: return Control == ERawControlKind::KeyboardUsage || Control == ERawControlKind::MouseButton;
+	default: return false;
+	}
+}
 enum class EPadButton : std::uint16_t
 {
 	South, East, West, North, DPadUp, DPadDown, DPadLeft, DPadRight,
@@ -33,6 +44,7 @@ struct FRawControl
 			return (Code >= 4 && Code <= 0xA4) || (Code >= 0xE0 && Code <= 0xE7);
 		case ERawControlKind::PadButton: return Code < static_cast<std::uint16_t>(EPadButton::Count);
 		case ERawControlKind::PadAxis: return Code < static_cast<std::uint16_t>(EPadAxis::Count);
+		case ERawControlKind::MouseButton: return Code < static_cast<std::uint16_t>(EMouseButton::Count);
 		default: return false;
 		}
 	}
@@ -68,11 +80,11 @@ struct FCanonicalRawState
 	std::size_t Count = 0;
 	bool IsValid(ERawDeviceKind Kind) const noexcept
 	{
-		if (!Count || Count > Values.size() || Kind > ERawDeviceKind::Gamepad) return false;
+		if (!Count || Count > Values.size() || Kind > ERawDeviceKind::Desktop) return false;
 		for (std::size_t I = 0; I < Count; ++I)
 			if (!Values[I].Control.Accepts(Values[I].Value)
 				|| (I && !(Values[I - 1].Control < Values[I].Control))
-				|| ((Kind == ERawDeviceKind::Keyboard) != (Values[I].Control.Kind == ERawControlKind::KeyboardUsage))) return false;
+				|| !IsControlKindForDevice(Values[I].Control.Kind, Kind)) return false;
 		return true;
 	}
 };
@@ -80,7 +92,9 @@ enum class ERawSampleStatus : std::uint8_t { Valid, Resync, Overflow, Unsupporte
 
 // An acquisition DTO, copied/validated by the future mapper. FinalState lists
 // EVERY supported control (including neutral values), in canonical order; this
-// is also the capability list. No cross-device merging or OS codes enter here.
+// is also the capability list. Desktop union DTOs may contain keyboard and
+// mouse controls, but need their versioned provenance/lifecycle envelope before
+// production admission. Raw structural validity alone does not authorize them.
 struct FRawInputSample
 {
 	static constexpr std::size_t MaxControls = 256;
@@ -94,7 +108,7 @@ struct FRawInputSample
 	std::vector<FRawChange> Changes;
 	bool IsValid() const
 	{
-		if (!DeviceId || !Generation.Value || !Sequence || Kind > ERawDeviceKind::Gamepad
+		if (!DeviceId || !Generation.Value || !Sequence || Kind > ERawDeviceKind::Desktop
 			|| Status > ERawSampleStatus::Resync || FinalState.empty()
 			|| FinalState.size() > MaxControls || Changes.size() > MaxChanges
 			|| (Status == ERawSampleStatus::Resync && !Changes.empty())) return false;
@@ -102,7 +116,7 @@ struct FRawInputSample
 		{
 			const auto& S = FinalState[I];
 			if (!S.Control.Accepts(S.Value) || (I && !(FinalState[I - 1].Control < S.Control))
-				|| ((Kind == ERawDeviceKind::Keyboard) != (S.Control.Kind == ERawControlKind::KeyboardUsage))) return false;
+				|| !IsControlKindForDevice(S.Control.Kind, Kind)) return false;
 		}
 		std::uint64_t LastGroup = 0;
 		for (std::size_t I = 0; I < Changes.size(); ++I)

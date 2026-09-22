@@ -29,6 +29,21 @@ bool FInputMappingImportTest::RunTest(const FString&)
 	FString Error; auto Description = Seed();
 	TestTrue(TEXT("canonical gamepad import independent of platform keyboard adapter"), ImportInputMappings(Context.Get(), Actions, Description, Error));
 	TestTrue(TEXT("UE default accumulation copied"), Description.Actions[0].Accumulation == EActionAccumulation::HighestAbsolute);
+	const FKey MouseKeys[] = {EKeys::LeftMouseButton, EKeys::RightMouseButton, EKeys::MiddleMouseButton};
+	for (int32 I = 0; I < 3; ++I) Context->GetMapping(I).Key = MouseKeys[I];
+	Description = Seed();
+	TestTrue(TEXT("three mouse buttons import into a distinct canonical namespace"), ImportInputMappings(Context.Get(), Actions, Description, Error));
+	if (Description.Mapping.size() == 3)
+		for (int32 I = 0; I < 3; ++I)
+			TestTrue(TEXT("mouse button identity preserved without keyboard VK translation"),
+				Description.Mapping[I].Control.Kind == ERawControlKind::MouseButton && Description.Mapping[I].Control.Code == I);
+	for (const FKey Unsupported : {EKeys::ThumbMouseButton, EKeys::MouseScrollUp, EKeys::MouseScrollDown, EKeys::MouseX, EKeys::MouseWheelAxis})
+	{
+		Context->GetMapping(0).Key = Unsupported; Description = Seed();
+		TestFalse(TEXT("unsupported mouse capability fails whole import"), ImportInputMappings(Context.Get(), Actions, Description, Error));
+		TestTrue(TEXT("unsupported key is reported and no mapping prefix escapes"), Error.Contains(Unsupported.ToString()) && Description.Mapping.empty());
+	}
+	for (int32 I = 0; I < 3; ++I) Context->GetMapping(I).Key = Keys[I];
 	const UInputAction* Steering = Context->GetMappings()[2].Action;
 	Context->MapKey(Steering, EKeys::Invalid);
 	Description = Seed();

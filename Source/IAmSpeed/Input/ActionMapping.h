@@ -28,6 +28,10 @@ public:
 	{
 		for (const auto& A : Candidate.GetDescription().Actions)
 			if (A.Exponent != 1.0f && A.Exponent != 2.0f) return false;
+		// Desktop metadata can be imported before its versioned contribution and
+		// lifecycle envelope is integrated. Never activate it by losing provenance.
+		for (const auto& B : Candidate.GetDescription().Mapping)
+			if (B.Control.Kind == ERawControlKind::MouseButton) return false;
 		return true;
 	}
 	static std::unique_ptr<FActionMapper> Create(std::shared_ptr<const FInputActionContract> Candidate,
@@ -53,6 +57,7 @@ public:
 		if (Sample.Status == ERawSampleStatus::Overflow || Sample.Changes.size() > FRawInputSample::MaxChanges)
 			return Reject(EMappingStatus::Overflow);
 		if (!Sample.IsValid()) return Reject(EMappingStatus::InvalidRaw);
+		if (Sample.Kind == ERawDeviceKind::Desktop) return Reject(EMappingStatus::UnsupportedControl);
 		const bool Reset = Sample.Status == ERawSampleStatus::Resync;
 		if (NeedsResync && !Reset) return Reject(EMappingStatus::ResyncRequired);
 		if (!Reset && (!SameDevice(Sample) || !SameCapabilities(Sample))) return Reject(EMappingStatus::DeviceChanged);
