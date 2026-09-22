@@ -62,6 +62,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedBoxEquilibriumWorldTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 #endif

@@ -1346,13 +1346,22 @@ void USpeedWheeledComponent::UpdateInputs()
 
 	const auto CanonicalFrame = Speed::Input::FromLegacyLocalFrame(NumFrame());
 	const bool bProduced = CanonicalFrame && ConsumeProducedWheeledInputs(*CanonicalFrame);
-	if (!bProduced)
+	bProducedInputFrameOwned = bProduced || (!CanonicalFrame && HasProducedInputAuthority());
+	if (!CanonicalFrame && bProducedInputFrameOwned)
+	{
+		ConsumedFrameInputStream.reset();
+		WheeledUserInput.Throttle = 0;
+		WheeledUserInput.Brake = 0;
+		WheeledUserInput.Steer = 0;
+		ResetProducedInputState();
+	}
+	if (!bProducedInputFrameOwned)
 	{
 		ConsumePendingLiveWheeledInputs();
 	}
 	// An opt-in device frame has exclusive ownership over legacy live/network
 	// input. The existing sealed test override remains the sole scripted owner.
-	if (!bProduced || IsTestInputOverrideEnabled()) ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
+	if (!bProducedInputFrameOwned || IsTestInputOverrideEnabled()) ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
 
 	UpdateWheeledPhysicalInputFromUser(false);
 	ConsumeQueuedCameraInputsForFrame(CurrentFrame);
@@ -1366,6 +1375,7 @@ void USpeedWheeledComponent::SetFrameInputStream(std::shared_ptr<Speed::Input::F
 	FScopeLock Lock(&FrameInputProducerMutex);
 	if (FrameInputStream && FrameInputStream != Stream) FrameInputStream->Deactivate();
 	FrameInputStream = MoveTemp(Stream);
+	if (FrameInputStream) bProducedInputAuthority.store(true, std::memory_order_release);
 	bResetProducedWheeledInputs = true;
 }
 
@@ -1382,6 +1392,7 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 	}
 	if (bReset)
 	{
+		ResetProducedInputState();
 		if (!IsTestInputOverrideEnabled())
 		{
 			WheeledUserInput.Throttle = 0;
@@ -1392,7 +1403,9 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 		}
 		PendingLiveWheeledInputMask.exchange(0, std::memory_order_acquire);
 	}
-	if (!Stream) return false;
+	// Detach cancels derived latches and cannot reapply an old queued/live value
+	// in the same frame as the cancellation.
+	if (!Stream) return bReset || HasProducedInputAuthority();
 	if (IsTestInputOverrideEnabled())
 	{
 		const bool bSkipped = Stream->Skip(CanonicalFrame);
@@ -1401,12 +1414,24 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 	}
 	const auto Frame = Stream->Consume(CanonicalFrame);
 	const auto Targets = Speed::Input::ReadDrivingInputTargets(Frame, CanonicalFrame);
-	const bool bValid = Targets.Valid;
+	bool bValid = Targets.Valid && ValidateProducedInputFrame(*Frame);
 	ensureMsgf(bValid, TEXT("Input producer has no valid frame for canonical frame %llu"), CanonicalFrame);
 	// Fail closed instead of falling back to an unrelated live action/clock.
-	WheeledUserInput.Throttle = Targets.ThrottleValue;
-	WheeledUserInput.Brake = Targets.BrakeValue;
-	WheeledUserInput.Steer = Targets.SteeringValue;
+	if (bValid)
+	{
+		WheeledUserInput.Throttle = Targets.ThrottleValue;
+		WheeledUserInput.Brake = Targets.BrakeValue;
+		WheeledUserInput.Steer = Targets.SteeringValue;
+		bValid = ApplyProducedInputFrame(*Frame);
+	}
+	if (!bValid)
+	{
+		WheeledUserInput.Throttle = 0;
+		WheeledUserInput.Brake = 0;
+		WheeledUserInput.Steer = 0;
+		ResetProducedInputState();
+		Stream->Deactivate();
+	}
 	if (bValid) ConsumedFrameInputStream = MoveTemp(Stream);
 	return true;
 }

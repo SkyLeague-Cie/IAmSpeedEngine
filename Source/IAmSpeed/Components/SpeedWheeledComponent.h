@@ -148,6 +148,9 @@ public:
 	void SetPhysSteeringInput(const float& Steering);
 	/** GameThread lifecycle boundary. The worker retains only a values producer. */
 	void SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream);
+	// Opt-in is lifetime scoped: detaching must not silently restore a legacy
+	// physical writer on the same component while cancellation is pending.
+	bool HasProducedInputAuthority() const { return bProducedInputAuthority.load(std::memory_order_acquire); }
 	/** Opt-in generic camera input; SL keeps its independent legacy input adapter. */
 	void EnableGenericCameraInput(bool bEnabled);
 	bool SetHeldCameraBack(bool bBack);
@@ -261,6 +264,14 @@ protected:
 
 	// Update Inputs
 	virtual void UpdateInputs();
+	// The physical owner passes the exact immutable frame from its sole Consume.
+	// Derived acceptance runs before any completed-input publication. False cancels
+	// this source; no live/queued fallback is permitted for that physical frame.
+	virtual bool ValidateProducedInputFrame(const Speed::Input::FInputFrame&) const { return true; }
+	virtual bool ApplyProducedInputFrame(const Speed::Input::FInputFrame&) { return true; }
+	// Simulation-lane cancellation, never a synthetic gameplay release event.
+	virtual void ResetProducedInputState() {}
+	bool IsProducedInputFrameOwned() const { return bProducedInputFrameOwned; }
 	// Vehicle presets may deterministically put an unchanged support manifold to
 	// sleep before frame forces are accumulated.
 	virtual void UpdateSupportForceSleepState() {}
@@ -681,6 +692,8 @@ private:
 	// Simulation-lane handle latched for this frame, including in-flight detach.
 	std::shared_ptr<Speed::Input::FInputStream> ConsumedFrameInputStream;
 	bool bResetProducedWheeledInputs = false; // Protected by FrameInputProducerMutex.
+	bool bProducedInputFrameOwned = false; // Simulation lane only, includes detach/reset frame.
+	std::atomic<bool> bProducedInputAuthority{false};
 	void UpdateWheeledPhysicalInputFromUser(bool bForce = false);
 	void RestoreWheeledPhysicalInputFromState();
 	void SyncWheeledPhysicalInputToState();
@@ -770,6 +783,7 @@ private:
 	friend class FIAmSpeedWheeledInputQueueTest;
 	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
