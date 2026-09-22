@@ -1464,10 +1464,20 @@ bool USpeedWheeledComponent::NeutralizeProducedInputAtBoundary()
 	check(IsInGameThread());
 	// This method requires an acknowledged live worker boundary, not merely a
 	// stopped or missing worker. The controller owns that distinction.
-	if (Speed::Input::FPresentationInputScope::IsActive() || InputReservationV2) return false;
+	if (Speed::Input::FPresentationInputScope::IsActive() || InputReservationV2
+		|| ReservedInputFrameV2 || ConsumedFrameInputStreamV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
 	WheeledUserInput.Throttle = 0; WheeledUserInput.Brake = 0; WheeledUserInput.Steer = 0;
 	WheeledPhysicalInput = WheeledUserInput; WheeledPhysicalInputBeforeSlew = WheeledUserInput;
-	SyncWheeledPhysicalInputToState(); ResetProducedInputState(); return true;
+	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
+	return PublishInputCancellationAtBoundary();
+}
+
+bool USpeedWheeledComponent::NeutralizeProducedInputAfterOwnerJoined()
+{
+	check(IsInGameThread());
+	// A joined thread must have finalized/aborted on its own lane. A leftover
+	// token or derived transaction is an invariant failure, never GT cleanup.
+	return NeutralizeProducedInputAtBoundary();
 }
 
 bool USpeedWheeledComponent::ConsumeProducedWheeledInputsV2(uint64 Frame,

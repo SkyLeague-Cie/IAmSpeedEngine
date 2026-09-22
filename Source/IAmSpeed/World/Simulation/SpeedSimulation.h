@@ -97,7 +97,7 @@ public:
 	ESimulationQuiescence TryPauseOwnedSimulation(uint32 TimeoutMilliseconds = 1000);
 	bool ReadInputFirstFrameAtPausedBoundary(uint64& OutFrame);
 	/** Teardown fallback: join the physical owner before releasing any input/actor lifetime. */
-	void JoinOwnedSimulationForInputTeardown();
+	bool JoinOwnedSimulationForInputTeardown();
 	/** Resumes the owned lane from its current canonical frame. */
 	void ResumeOwnedSimulation();
 	/** GT-only: re-arms a paused controlled run after its actors/inputs were replaced. Keeps the world's canonical frame continuous. */
@@ -207,6 +207,8 @@ private:
 	TAtomic<uint8> ActiveExecutionModeValue =
 		static_cast<uint8>(ESimulationExecutionMode::UnrealAsyncCallback);
 	TAtomic<bool> bOwnedWorkerTerminal = false;
+	// Permanent for this driver instance after input-owner teardown.
+	TAtomic<bool> bInputOwnerRetired = false;
 	/** Gameplay-owned pause, independent from the global automation pause. */
 	TAtomic<bool> bOwnedSimulationPaused = false;
 	double GameThreadAccumulatorSeconds = 0.0;

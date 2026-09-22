@@ -114,6 +114,37 @@ int main()
 		Ledger.Begin(3); Ledger.Append(Plan->Commands[0].Identity, Sky::Input::V2::EEffect::Cancelled);
 		Check(Ledger.PrepareCommit(3), "prepare abort effect fixture"); Ledger.Abort();
 		Check(Ledger.Read(Receipts.Next).Receipts.size() == 1, "aborted prepared effect not published and lock released");
+		{
+			Sky::Input::V2::FEffectLedger Terminal;
+			Check(Terminal.IsIdleAtBoundary(), "new ledger has no owner transaction");
+			std::array<std::optional<FInputEdgeIdentity>, 4> Cancelled;
+			for (std::size_t I = 0; I < Cancelled.size(); ++I) Cancelled[I] = Plan->Commands[I].Identity;
+			auto Invalid = Cancelled; Invalid[3]->Epoch = 0;
+			Check(!Terminal.PublishTerminalCancellations(Invalid) && Terminal.Read(0).Receipts.empty(),
+				"invalid final identity rejects whole terminal batch, no valid prefix");
+			Terminal.Begin(17);
+			Check(!Terminal.IsIdleAtBoundary(), "pending ledger forbids cross-thread teardown reset");
+			Check(!Terminal.PublishTerminalCancellations(Cancelled), "pending frame prevents terminal boundary publication");
+			Terminal.Append(*Cancelled[0], Sky::Input::V2::EEffect::ArmedFirstJump);
+			Check(Terminal.PrepareCommit(17), "prepare frame before lifecycle attempt");
+			Check(!Terminal.IsIdleAtBoundary(), "prepared ledger forbids cross-thread unlock");
+			Check(!Terminal.PublishTerminalCancellations(Cancelled), "prepared frame rejects terminal batch without acquiring held mutex");
+			Terminal.Abort();
+			Check(Terminal.IsIdleAtBoundary(), "owner abort closes transaction before joined teardown");
+			Check(Terminal.Read(0).Receipts.empty(), "failed terminal attempts and aborted frame remain unpublished");
+			Check(Terminal.PublishTerminalCancellations(Cancelled), "four cancellations publish without any next physics frame");
+			const auto Closed = Terminal.Read(0);
+			Check(Closed.Receipts.size() == Cancelled.size(), "one receipt per cancelled effect");
+			for (std::size_t I = 0; I < Closed.Receipts.size(); ++I)
+				Check(Closed.Receipts[I].Identity == *Cancelled[I]
+					&& Closed.Receipts[I].Effect == Sky::Input::V2::EEffect::Cancelled
+					&& Closed.Receipts[I].Boundary == Sky::Input::V2::FEffectReceipt::EBoundary::TerminalBoundary
+					&& Closed.Receipts[I].AppliedFrame == 0, "terminal outcome retains origin and does not invent an applied frame");
+			// The component clears its retained batch only after the ledger accepts it.
+			for (auto& Id : Cancelled) Id.reset();
+			Check(Terminal.PublishTerminalCancellations(Cancelled) && Terminal.Read(Closed.Next).Receipts.empty(),
+				"retry after successful owner acknowledgment adds no duplicate terminal receipt");
+		}
 		Ledger.Begin(3);
 		for (std::size_t I = 0; I <= Sky::Input::V2::FEffectLedger::FrameCapacity; ++I)
 			Ledger.Append(Plan->Commands[0].Identity, Sky::Input::V2::EEffect::FirstJumpImpulse);

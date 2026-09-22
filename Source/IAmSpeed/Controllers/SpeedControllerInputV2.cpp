@@ -118,21 +118,36 @@ bool ASpeedController::ReleaseInputSessionV2()
 {
 	check(IsInGameThread());
 	if (!InputSessionV2) return true;
-	// Stop admission immediately, retaining all owners if the boundary fails.
-	InputSessionV2->Stream->RequestStop();
-	const auto Boundary = QuiesceStandaloneInputOwner();
-	if ((Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
-		|| !InputSessionV2->CloseAtBoundary())
+	InputSessionV2->Stream->RequestStop(); // Closure admission is always permitted.
+	if (Speed::Input::FPresentationInputScope::IsActive())
 	{
-		// A timeout is not permission to destroy a worker-owned source. Join the
-		// physical owner first, abort its capability, then stop OS acquisition.
+		// Keep owners for a retry outside the callback. Never write physical
+		// state or release a prepared owner's locks from presentation dispatch.
+		bInputLifecycleFault = true; return false;
+	}
+	const auto Boundary = QuiesceStandaloneInputOwner();
+	bool Joined = false;
+	auto JoinAndFlush = [&]()
+	{
 		ASpeedGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASpeedGameMode>() : nullptr;
 		ASpeedSimulation* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
-		if (Driver) Driver->JoinOwnedSimulationForInputTeardown();
-		if (IsValid(SpeedCar)) SpeedCar->AbortProducedInputAfterOwnerJoined();
-		bInputLifecycleFault = true;
+		bInputLifecycleFault = true; // A retired driver must never restart in place.
+		if (!Driver || !Driver->JoinOwnedSimulationForInputTeardown()) return false;
+		Joined = true;
+		return IsValid(SpeedCar) && SpeedCar->NeutralizeProducedInputAfterOwnerJoined();
+	};
+	if (Boundary == ESimulationQuiescence::BoundaryAcknowledged)
+	{
+		if (IsValid(SpeedCar) && !SpeedCar->NeutralizeProducedInputAtBoundary())
+		{ bInputLifecycleFault = true; return false; }
+	}
+	else if (!JoinAndFlush()) return false; // Includes AlreadyStopped; no assumed fence.
+	if (!InputSessionV2->CloseAtBoundary())
+	{
+		if (!Joined && !JoinAndFlush()) return false;
+		// Terminal receipts succeeded before acquisition/session retirement.
 		if (!InputSessionV2->RetireAtJoinedBoundary()) return false;
-		UE_LOG(LogTemp, Error, TEXT("Input session %llu retired after joined-owner failure; no cancellation success or restart claimed"), InputSessionV2->Session);
+		UE_LOG(LogTemp, Error, TEXT("Input session %llu retired after joined-owner failure; no restart claimed"), InputSessionV2->Session);
 	}
 	if (IsValid(SpeedCar) && !SpeedCar->SetFrameInputStreamV2(nullptr))
 	{ bInputLifecycleFault = true; return false; }
@@ -141,7 +156,7 @@ bool ASpeedController::ReleaseInputSessionV2()
 
 bool ASpeedController::SetInputPauseV2(bool bPause, FCanUnpause CanUnpauseDelegate)
 {
-	if (GetNetMode() != NM_Standalone || Speed::Input::FPresentationInputScope::IsActive()) return false;
+	if (!HasAuthority() || Speed::Input::FPresentationInputScope::IsActive()) return false;
 	if (bPause == IsPaused() && !bInputLifecycleFault) return true;
 	const auto Boundary = QuiesceStandaloneInputOwner();
 	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)

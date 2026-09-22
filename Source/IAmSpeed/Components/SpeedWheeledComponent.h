@@ -37,13 +37,13 @@ public:
 };
 
 /**
- * 
+ *
  */
 UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
 	GENERATED_BODY()
-	
+
 	friend struct FNetworkBaseSpeedState;
 	friend struct FNetworkWheeledSpeedState;
 	friend struct FNetworkWheeledSpeedInputState;
@@ -152,6 +152,8 @@ public:
 	/** Caller owns acknowledged physical quiescence; no accepted token may remain. */
 	bool SetFrameInputStreamV2(std::shared_ptr<Speed::Input::V2::FInputStream> Stream);
 	bool NeutralizeProducedInputAtBoundary();
+	/** Caller has joined the actual IAmSpeed owner; never abort/unlock on GT. */
+	bool NeutralizeProducedInputAfterOwnerJoined();
 	// Opt-in is lifetime scoped: detaching must not silently restore a legacy
 	// physical writer on the same component while cancellation is pending.
 	bool HasProducedInputAuthority() const { return bProducedInputAuthority.load(std::memory_order_acquire); }
@@ -280,6 +282,9 @@ protected:
 	virtual bool ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame&) { return true; }
 	// Simulation-lane cancellation, never a synthetic gameplay release event.
 	virtual void ResetProducedInputState() {}
+	virtual bool PublishInputCancellationAtBoundary() { return true; }
+	/** Boundary-only inspection, without acquiring a possibly prepared owner lock. */
+	virtual bool CanNeutralizeProducedInputStateAtBoundary() const { return true; }
 	bool IsProducedInputFrameOwned() const { return bProducedInputFrameOwned; }
 	// Vehicle presets may deterministically put an unchanged support manifold to
 	// sleep before frame forces are accumulated.

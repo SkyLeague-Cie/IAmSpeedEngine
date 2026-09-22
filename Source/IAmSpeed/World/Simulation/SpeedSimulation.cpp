@@ -259,6 +259,7 @@ void ASpeedSimulation::RefreshExecutionMode()
 void ASpeedSimulation::TransitionExecutionMode(
 	const ESimulationExecutionMode NewMode)
 {
+	if (bInputOwnerRetired.Load()) return;
 	StopOwnedWorker();
 	bAsyncPhysicsTickEnabled = false;
 	ResetCanonicalFrame();
@@ -319,6 +320,7 @@ void ASpeedSimulation::StopOwnedWorker()
 void ASpeedSimulation::RestartControlledRun()
 {
 	check(IsInGameThread());
+	if (bInputOwnerRetired.Load()) return;
 	check(IsOwnedSimulationPaused());
 	// Join before clearing the terminal latch: the preceding frame can still
 	// be finishing its publication/metrics when the GT consumes its result.
@@ -358,21 +360,26 @@ void ASpeedSimulation::PauseOwnedSimulation()
 bool ASpeedSimulation::ReadInputFirstFrameAtPausedBoundary(uint64& OutFrame)
 {
 	check(IsInGameThread());
-	if (GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback
-		|| !bOwnedSimulationPaused.Load() || bCanonicalPublicationTerminal.Load()
+	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
+		|| bInputOwnerRetired.Load() || !bOwnedSimulationPaused.Load() || bCanonicalPublicationTerminal.Load()
 		|| (SimulationWorker && SimulationWorker->IsRunning() && !SimulationWorker->IsPaused())) return false;
 	InitializeCanonicalFrame(0.0f); OutFrame = CanonicalNumFrame; return true;
 }
 
-void ASpeedSimulation::JoinOwnedSimulationForInputTeardown()
+bool ASpeedSimulation::JoinOwnedSimulationForInputTeardown()
 {
 	check(IsInGameThread());
+	// An async callback (or absent driver) cannot grant an owned-thread fence.
+	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread) return false;
+	bInputOwnerRetired.Store(true);
 	bOwnedSimulationPaused.Store(true); bOwnedWorkerTerminal.Store(true);
 	StopOwnedWorker();
+	return !SimulationWorker;
 }
 
 void ASpeedSimulation::ResumeOwnedSimulation()
 {
+	if (bInputOwnerRetired.Load()) return;
 	bOwnedSimulationPaused.Store(false);
 	OnOwnedSimulationResumed();
 	if (SimulationWorker &&

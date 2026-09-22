@@ -335,7 +335,7 @@ void ASpeedController::SetStandaloneSimulationPaused(const bool bPaused)
 
 void ASpeedController::SynchronizeOwnedSimulationPauseWithWorld()
 {
-	if (GetNetMode() != NM_Standalone) return;
+	if (!InputSessionV2 && GetNetMode() != NM_Standalone) return;
 	const bool bPaused = IsPaused();
 	if (InputSessionV2)
 	{
