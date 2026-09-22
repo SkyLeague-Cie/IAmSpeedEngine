@@ -7,12 +7,13 @@
 
 namespace
 {
-    constexpr float SphereBoxContactPointQuantizationCm = 0.1f; // 1 mm
+    // Reserved for possible future network serialization; keep physics contact points unrounded.
+    // constexpr float SphereBoxContactPointQuantizationCm = 0.1f; // 1 mm
 
     void QuantizeSphereBoxContactHit(SHitResult& Hit)
     {
         Hit.ImpactNormal = Speed::QuantizeUnitNormal(Hit.ImpactNormal);
-        Hit.ImpactPoint = Speed::QuantizeVectorCm(Hit.ImpactPoint, SphereBoxContactPointQuantizationCm);
+        // Hit.ImpactPoint = Speed::QuantizeVectorCm(Hit.ImpactPoint, SphereBoxContactPointQuantizationCm);
     }
 }
 
