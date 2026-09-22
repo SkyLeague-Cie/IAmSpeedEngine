@@ -12,7 +12,7 @@ namespace
 
     void QuantizeBoxSphereContactHit(SHitResult& Hit)
     {
-        Hit.ImpactNormal = Speed::QuantizeUnitNormal(Hit.ImpactNormal);
+        // Hit.ImpactNormal = Speed::QuantizeUnitNormal(Hit.ImpactNormal);
         // Hit.ImpactPoint = Speed::QuantizeVectorCm(Hit.ImpactPoint, BoxSphereContactPointQuantizationCm);
     }
 }
