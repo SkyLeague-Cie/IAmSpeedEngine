@@ -1,8 +1,24 @@
 #include "IAmSpeed/Input/ActionDispatch.h"
 #include "IAmSpeed/Input/Testing/TestInputProducerV2.h"
+#include "IAmSpeed/Input/InputEdgeIdentity.h"
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <new>
+
+static int AllocationFailureCountdown = -1;
+void* operator new(std::size_t Size)
+{
+	if (AllocationFailureCountdown == 0) throw std::bad_alloc();
+	if (AllocationFailureCountdown > 0) --AllocationFailureCountdown;
+	if (void* Memory = std::malloc(Size ? Size : 1)) return Memory;
+	throw std::bad_alloc();
+}
+void operator delete(void* Memory) noexcept { std::free(Memory); }
+void operator delete(void* Memory, std::size_t) noexcept { std::free(Memory); }
+void* operator new[](std::size_t Size) { return ::operator new(Size); }
+void operator delete[](void* Memory) noexcept { ::operator delete(Memory); }
+void operator delete[](void* Memory, std::size_t) noexcept { ::operator delete(Memory); }
 
 using namespace Speed::Input::V2;
 using Speed::Input::EProducerKind;
@@ -52,8 +68,90 @@ public:
 	std::optional<FInputFrame> Produce(FFrameNumber) override { Target.lock()->RequestStop(); return {}; }
 	const std::shared_ptr<const FInputActionContract>& GetContract() const override { return C; }
 };
+struct FCountingReceiver
+{
+	unsigned Events = 0;
+	void Event(const FActionEvent&) { ++Events; }
+};
 int main()
 {
+	for (int FailureAt = 0; FailureAt < 4; ++FailureAt)
+	{
+		auto S = Stream(); Check(S->Activate(), "consume allocation fixture");
+		const auto Baseline = Reserve(*S, 0);
+		Check(S->ConfirmPhysicalCommit(Baseline, true) && S->PublishCompleted(Baseline), "consume allocation baseline");
+		AllocationFailureCountdown = FailureAt;
+		const auto Failed = S->Consume(1);
+		AllocationFailureCountdown = -1;
+		Check(Failed.Status == EConsumeStatus::InvalidInput && !Failed.Reservation, "consume allocation fails closed");
+		S->RequestStop();
+		Check(S->GetState() == EStreamState::Stopped && !S->ReadRecorded(1), "no stranded reservation or partial history");
+	}
+	for (int FailureAt = 0; FailureAt < 12; ++FailureAt)
+	{
+		auto S = Stream(); auto Receiver = std::make_shared<FCountingReceiver>();
+		FInputPresentationBindings Bindings(S);
+		Check(Bindings.BindAction("edge", 0, EStateAction::Started, std::weak_ptr<FCountingReceiver>(Receiver), &FCountingReceiver::Event)
+			&& Bindings.Seal() && S->Activate(), "dispatch allocation fixture");
+		for (unsigned N = 0; N < 2; ++N)
+		{
+			const auto T = Reserve(*S, N);
+			Check(S->ConfirmPhysicalCommit(T, true) && S->PublishCompleted(T), "dispatch allocation publication");
+		}
+		bool Threw = false;
+		AllocationFailureCountdown = FailureAt;
+		try { Bindings.HandleInputs(); } catch (const std::bad_alloc&) { Threw = true; }
+		AllocationFailureCountdown = -1;
+		Check(!Threw || Receiver->Events == 0, "allocation failure cannot occur after a delivered callback");
+		Bindings.HandleInputs();
+		Check(Receiver->Events == 1, "recovery or repeated tick never duplicates edge");
+	}
+	for (int FailureAt : {-1, 0, 1})
+	{
+		auto Prepared = Stream(); Check(Prepared->Activate(), "prepared activate");
+		const auto Baseline = Reserve(*Prepared, 0);
+		Check(Prepared->ConfirmPhysicalCommit(Baseline, true) && Prepared->PublishCompleted(Baseline), "prepared baseline");
+		const auto Token = Reserve(*Prepared, 1);
+		Check(Prepared->ConfirmPhysicalCommit(Token, true), "prepared physical confirmation");
+		Check(!Prepared->FinalizePublication(Token), "unprepared finalization refused");
+		AllocationFailureCountdown = FailureAt;
+		const bool Ready = Prepared->PreparePublication(Token);
+		AllocationFailureCountdown = -1;
+		Check(!Prepared->ReadCompleted(1) && Prepared->ReadCompleted(0)->Serial == 1, "preparation never publishes");
+		if (FailureAt >= 0)
+		{
+			Check(!Ready && Prepared->GetState() == EStreamState::Stopped, "either allocation failure aborts");
+			Check(!Prepared->IsPublicationPrepared(Token) && !Prepared->FinalizePublication(Token), "failed preparation grants no finalize authority");
+			Check(Prepared->ReadOutcome()->AbortReason == EAbortReason::SnapshotPublicationFailed, "allocation failure reason");
+			continue;
+		}
+		Check(Ready && Prepared->IsPublicationPrepared(Token), "successful preparation ready");
+		AllocationFailureCountdown = 0;
+		const bool PreparedAgain = Prepared->PreparePublication(Token);
+		AllocationFailureCountdown = -1;
+		Check(PreparedAgain, "double preparation needs no new allocation");
+		Prepared->RequestStop();
+		AllocationFailureCountdown = 0;
+		const bool Finalized = Prepared->FinalizePublication(Token);
+		AllocationFailureCountdown = -1;
+		Check(Finalized, "finalization after stop performs no allocation");
+		Completed(*Prepared, 1);
+		const auto Frame = Prepared->ReadCompleted(1)->Frame;
+		const auto Identity = IdentifyEdge(Frame, 0);
+		Check(Identity && Identity->Epoch == 1 && Identity->Frame == 1 && Identity->SourceSequence == 2
+			&& Identity->Ordinal == 0 && Identity->Action == 0 && Identity->ProducerId == 1, "edge identity comes from immutable physical frame");
+		auto OtherProducer = *Identity; OtherProducer.ProducerId = 2;
+		Check(!(OtherProducer == *Identity), "different producer cannot alias edge identity");
+		Check(!IdentifyEdge(Frame, 1), "invalid ordinal grants no identity");
+		Check(!Prepared->FinalizePublication(Token) && !Prepared->IsPublicationPrepared(Token), "no double finalization");
+	}
+	{
+		auto Prepared = Stream(); Check(Prepared->Activate(), "prepare abort activate");
+		const auto Token = Reserve(*Prepared, 0);
+		Check(Prepared->ConfirmPhysicalCommit(Token, true) && Prepared->PreparePublication(Token), "prepare before abort");
+		Check(Prepared->Abort(Token, EAbortReason::Cancelled) && !Prepared->ReadCompleted(0)
+			&& !Prepared->FinalizePublication(Token), "abort prepared frame cannot publish");
+	}
 	// Deterministic interleavings: no sleeps, threads or physical/UE claims.
 	for (unsigned StopAt = 0; StopAt < 4; ++StopAt)
 	{

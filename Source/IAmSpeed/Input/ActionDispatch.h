@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InputStreamV2.h"
+#include "InputEdgeIdentity.h"
 #include <functional>
 
 namespace Speed::Input::V2
@@ -11,6 +12,8 @@ struct FActionEvent
 	const FActionId Action;
 	const EStateAction State;
 	const std::int16_t Value;
+	// Only actual Started/Completed have identities. Held Triggered is not an edge.
+	const std::optional<FInputEdgeIdentity> Identity;
 };
 enum class EDispatchStatus : std::uint8_t { Dispatched, NoChange, ResyncRequired, Resynchronized, Detached, NotSealed, Reentrant };
 
@@ -29,15 +32,15 @@ public:
 	{
 		if (!Method || Receiver.expired() || State > EStateAction::Completed) return false;
 		return Add({std::move(Name), EBindingKind::Stateful, Action, State,
-			[Receiver, Method](const FInputFrame& Frame, FActionId Id, EStateAction Event, std::int16_t Value)
-			{ if (auto Target = Receiver.lock()) ((*Target).*Method)(FActionEvent{Frame, Id, Event, Value}); }});
+			[Receiver, Method](const FInputFrame& Frame, FActionId Id, EStateAction Event, std::int16_t Value, const std::optional<FInputEdgeIdentity>& Identity)
+			{ if (auto Target = Receiver.lock()) ((*Target).*Method)(FActionEvent{Frame, Id, Event, Value, Identity}); }});
 	}
 	template<class T>
 	bool BindReset(std::string Name, std::weak_ptr<T> Receiver, void (T::*Method)(const FInputFrame&))
 	{
 		if (!Method || Receiver.expired()) return false;
 		return Add({std::move(Name), EBindingKind::Reset, 0, EStateAction::Started,
-			[Receiver, Method](const FInputFrame& Frame, FActionId, EStateAction, std::int16_t)
+			[Receiver, Method](const FInputFrame& Frame, FActionId, EStateAction, std::int16_t, const std::optional<FInputEdgeIdentity>&)
 			{ if (auto Target = Receiver.lock()) ((*Target).*Method)(Frame); }});
 	}
 	template<class T>
@@ -53,7 +56,7 @@ public:
 	{
 		if (!Callback) return false;
 		return Add({std::move(Name), EBindingKind::Snapshot, Action, EStateAction::Triggered,
-			[Callback = std::move(Callback)](const FInputFrame& Frame, FActionId Id, EStateAction, std::int16_t) { Callback(Frame, Id); }});
+			[Callback = std::move(Callback)](const FInputFrame& Frame, FActionId Id, EStateAction, std::int16_t, const std::optional<FInputEdgeIdentity>&) { Callback(Frame, Id); }});
 	}
 	// Deprecated semantic alias: this observes each NEW LATEST even if neutral.
 	// It is NOT a stateful Triggered binding. Kept warning-free for /WX clients.
@@ -79,7 +82,10 @@ public:
 		if (!Source || !Source->IsActive()) return Detach();
 		const auto Latest = Source->ReadLatest();
 		if (!Latest) return EDispatchStatus::NoChange;
-		Cursor = {Source->GetEpoch(), Latest->Serial}; LastPresented = Latest->Frame;
+		std::optional<FInputFrame> NextPresented{Latest->Frame};
+		static_assert(std::is_nothrow_swappable_v<std::optional<FInputFrame>>);
+		LastPresented.swap(NextPresented);
+		Cursor = {Source->GetEpoch(), Latest->Serial};
 		NeedsResync = false;
 		return EDispatchStatus::Resynchronized; // Explicit baseline; no invented edges/callbacks.
 	}
@@ -96,6 +102,9 @@ public:
 		if (Batch.Status != EReadStatus::Batch || !ValidBatch(Batch, *Source))
 		{ NeedsResync = true; return EDispatchStatus::ResyncRequired; }
 		const auto Snapshot = Bindings;
+		// Prepare continuity before the first callback. A post-callback allocation
+		// failure must never leave a cursor advanced past its continuity frame.
+		std::optional<FInputFrame> NextPresented{Batch.Frames.back().Frame};
 		Dispatching = true;
 		struct FDispatchGuard { bool& Flag; ~FDispatchGuard() { Flag = false; } } Guard{Dispatching};
 		FPresentationInputScope ReadOnly;
@@ -108,13 +117,14 @@ public:
 					if (!Source->IsActive()) return Detach();
 					if (!Invoke(B, *Source, Frame, B.Action, B.State, 0)) return Detach();
 				}
-			for (const auto& E : Frame.GetData().Transitions)
+			for (std::size_t Ordinal = 0; Ordinal < Frame.GetData().Transitions.size(); ++Ordinal)
 			{
+				const auto& E = Frame.GetData().Transitions[Ordinal];
 				const auto State = E.State == ETransition::Started ? EStateAction::Started : EStateAction::Completed;
 				for (const auto& B : Snapshot) if (B.Kind == EBindingKind::Stateful && B.Action == E.Action && B.State == State)
 				{
 					if (!Source->IsActive()) return Detach();
-					if (!Invoke(B, *Source, Frame, E.Action, State, E.ValueAtTransition)) return Detach();
+						if (!Invoke(B, *Source, Frame, E.Action, State, E.ValueAtTransition, IdentifyEdge(Frame, Ordinal))) return Detach();
 				}
 			}
 		}
@@ -132,7 +142,8 @@ public:
 			if (!Invoke(B, *Source, Latest, B.Action, B.State, Latest.GetData().Values[B.Action])) return Detach();
 		}
 		if (!Source->IsActive()) return Detach();
-		Cursor = Batch.Next; LastPresented = Latest;
+		LastPresented.swap(NextPresented);
+		Cursor = Batch.Next;
 		return EDispatchStatus::Dispatched;
 	}
 private:
@@ -140,12 +151,12 @@ private:
 	struct FBinding
 	{
 		std::string Name; EBindingKind Kind; FActionId Action; EStateAction State;
-		std::function<void(const FInputFrame&, FActionId, EStateAction, std::int16_t)> Callback;
+		std::function<void(const FInputFrame&, FActionId, EStateAction, std::int16_t, const std::optional<FInputEdgeIdentity>&)> Callback;
 	};
 	static bool Invoke(const FBinding& B, FInputStream& Source, const FInputFrame& Frame,
-		FActionId Action, EStateAction State, std::int16_t Value)
+		FActionId Action, EStateAction State, std::int16_t Value, const std::optional<FInputEdgeIdentity>& Identity = {})
 	{
-		try { B.Callback(Frame, Action, State, Value); return true; }
+		try { B.Callback(Frame, Action, State, Value, Identity); return true; }
 		catch (...) { Source.Deactivate(); return false; } // Never retry a delivered prefix after a throwing callback.
 	}
 	bool CanEdit() const

@@ -3,6 +3,7 @@
 #include "InputProducerV2.h"
 #include "PhysicalActionSink.h"
 #include <mutex>
+#include <type_traits>
 
 namespace Speed::Input::V2
 {
@@ -115,9 +116,19 @@ public:
 		if (!Input || !Input->IsValidFor(*Contract) || !ValidContinuity(*Input, Frame)) return Fault();
 		const auto Targets = AssembleDrivingTargets(*Input, *Contract, Epoch, Frame);
 		if (!Targets.Valid) return Fault();
-		History[Frame % HistoryCapacity] = FHistoryEntry{*Input, Targets, false, false};
-		Pending = FReservationToken(Epoch, Frame);
-		return {EConsumeStatus::Ready, *Input, Targets, Pending};
+		try
+		{
+			FHistoryEntry Entry{*Input, Targets, false, false};
+			FReservationToken Token(Epoch, Frame);
+			FConsumedInput Result{EConsumeStatus::Ready, *Input, Targets, Token};
+			static_assert(std::is_nothrow_move_constructible_v<FConsumedInput>);
+			static_assert(std::is_nothrow_move_assignable_v<std::optional<FHistoryEntry>>);
+			static_assert(std::is_nothrow_move_assignable_v<std::optional<FReservationToken>>);
+			History[Frame % HistoryCapacity] = std::move(Entry);
+			Pending = std::move(Token);
+			return Result;
+		}
+		catch (...) { return Fault(); } // Never strand a reservation the caller cannot own.
 	}
 	// The sole physical consumer calls this AFTER its grouped target commit.
 	// False permanently fails closed; no incomplete frame can be published.
@@ -132,25 +143,60 @@ public:
 		if (!Succeeded) { AbortLocked(Token, EAbortReason::ApplicationFailed); return false; }
 		Slot->Committed = true; return true;
 	}
-	bool PublishCompleted(const FReservationToken& Token)
+	// Allocating preparation belongs before the global snapshot publication.
+	// Neither copy is visible until both have succeeded and the owner finalizes.
+	bool PreparePublication(const FReservationToken& Token)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		if (CallingSource) { Fault(); return false; }
 		if (!Matches(Token)) return false;
-		const auto Frame = Token.Frame;
-		auto& Slot = History[Frame % HistoryCapacity];
+		if (PublicationPrepared) return PreparedMatches(Token);
+		auto& Slot = History[Token.Frame % HistoryCapacity];
 		if (!Slot->Committed) return false;
 		if (Serial == std::numeric_limits<std::uint64_t>::max()) { AbortLocked(Token, EAbortReason::SnapshotPublicationFailed); return false; }
-		const auto NextSerial = Serial + 1;
-		Published[NextSerial % HistoryCapacity] = FPublishedFrame{Slot->Frame, NextSerial};
-		Serial = NextSerial; Slot->Published = true; LastFrame = Slot->Frame;
-		Outcome = FTransactionOutcome{Epoch, Frame, ETransactionOutcome::Completed, {}};
-		Pending.reset(); Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
-		if (!Exhausted) NextFrame = Frame + 1;
-		if (StopRequested) Terminated = true;
+		try
+		{
+			std::optional<FPublishedFrame> Publication{FPublishedFrame{Slot->Frame, Serial + 1}};
+			std::optional<FInputFrame> Continuity{Slot->Frame};
+			PreparedPublication.swap(Publication);
+			PreparedContinuity.swap(Continuity);
+			PublicationPrepared = true;
+		}
+		catch (...) { AbortLocked(Token, EAbortReason::SnapshotPublicationFailed); return false; }
 		return true;
 	}
+	bool IsPublicationPrepared(const FReservationToken& Token) const
+	{
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		return PreparedMatches(Token);
+	}
+	bool FinalizePublication(const FReservationToken& Token) noexcept
+	{
+		static_assert(std::is_nothrow_swappable_v<std::optional<FPublishedFrame>>);
+		static_assert(std::is_nothrow_swappable_v<std::optional<FInputFrame>>);
+		if (FPresentationInputScope::IsActive()) return false;
+		try
+		{
+			std::lock_guard<std::recursive_mutex> Lock(Gate);
+			if (CallingSource || !PreparedMatches(Token)) return false;
+			const auto Frame = Token.Frame;
+			const auto NextSerial = Serial + 1;
+			Published[NextSerial % HistoryCapacity].swap(PreparedPublication);
+			LastFrame.swap(PreparedContinuity);
+			Serial = NextSerial; History[Frame % HistoryCapacity]->Published = true;
+			Outcome = FTransactionOutcome{Epoch, Frame, ETransactionOutcome::Completed, {}};
+			PublicationPrepared = false;
+			Pending.reset(); Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
+			if (!Exhausted) NextFrame = Frame + 1;
+			if (StopRequested) Terminated = true;
+			return true;
+		}
+		catch (...) { return false; } // Lock acquisition failure occurs before mutation.
+	}
+	// Convenience for portable callers; the global worker MUST split these phases.
+	bool PublishCompleted(const FReservationToken& Token)
+	{ return PreparePublication(Token) && FinalizePublication(Token); }
 	bool Abort(const FReservationToken& Token, EAbortReason Reason)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
@@ -200,6 +246,14 @@ public:
 	}
 private:
 	struct FHistoryEntry { FInputFrame Frame; FDrivingInputTargets Targets; bool Committed; bool Published; };
+	bool PreparedMatches(const FReservationToken& Token) const
+	{
+		return Matches(Token) && PublicationPrepared && PreparedPublication && PreparedContinuity
+			&& History[Token.Frame % HistoryCapacity]->Committed
+			&& PreparedPublication->Serial == Serial + 1
+			&& PreparedPublication->Frame.GetData().ConsumptionFrame == Token.Frame
+			&& PreparedContinuity->GetData().ConsumptionFrame == Token.Frame;
+	}
 	bool Matches(const FReservationToken& Token) const
 	{
 		return !Terminated && Pending && Token.Identity && Token.Identity == Pending->Identity
@@ -207,10 +261,11 @@ private:
 	}
 	void AbortLocked(const FReservationToken& Token, EAbortReason Reason)
 	{
+		PublicationPrepared = false;
 		Outcome = FTransactionOutcome{Epoch, Token.Frame, ETransactionOutcome::Aborted, Reason};
 		Pending.reset(); Active = false; Terminated = true;
 	}
-	FConsumedInput Fault() { Active = false; Terminated = true; Pending.reset(); return {EConsumeStatus::InvalidInput, {}, {}}; }
+	FConsumedInput Fault() { PublicationPrepared = false; Active = false; Terminated = true; Pending.reset(); return {EConsumeStatus::InvalidInput, {}, {}}; }
 	bool ValidContinuity(const FInputFrame& Frame, FFrameNumber Address) const
 	{
 		const auto& D = Frame.GetData();
@@ -243,6 +298,9 @@ private:
 	std::optional<FReservationToken> Pending;
 	std::optional<FTransactionOutcome> Outcome;
 	std::optional<FInputFrame> LastFrame;
+	bool PublicationPrepared = false;
+	std::optional<FPublishedFrame> PreparedPublication;
+	std::optional<FInputFrame> PreparedContinuity;
 	std::uint64_t Serial = 0;
 	std::array<std::optional<FHistoryEntry>, HistoryCapacity> History{};
 	std::array<std::optional<FPublishedFrame>, HistoryCapacity> Published{};
