@@ -39,3 +39,22 @@ changes the already completed authoritative transaction outcome.
 The same-frame portable press/release tests establish ordered event transport,
 not game eligibility, actual jump/flip, powerslide forces or camera behavior.
 Native game tests and integration remain mandatory.
+
+## Portable lifecycle boundary
+
+V2 producers now expose explicit quiescent pause and cancellation operations.
+Sealed timelines can report Unaffected; device raw sources must positively
+implement pause/resume or are rejected. Applied device lifecycle changes require
+a fresh raw Resync baseline while retaining the next physical address.
+Stream lifecycle calls reject outstanding reservations without touching the
+source. Paused Consume returns Paused without polling/advancing. Old held state
+is hidden until a fresh publication; an observation cursor preceding the pause
+barrier must explicitly resynchronize rather than replay pre-pause edges.
+Cancellation executes outside the no-allocation finalizer, after drain/abort;
+successful cancellation is idempotent and rejected cancellation can be retried.
+
+These APIs are tested with a synthetic raw source only. Windows raw-source
+adaptation, controller/world quiescence, physical latch neutralization and a
+pause-independent control-plane remain unimplemented. No Skip implementation is
+added: host ownership of a sealed test source versus a device stream still needs
+explicit migration, rather than silently skipping real input history.

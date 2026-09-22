@@ -38,9 +38,56 @@ struct FReceiver
 		Edges.push_back(*E.Identity);
 	}
 };
+class FLifecycleRaw final : public IRawInputSource
+{
+public:
+	unsigned Polls = 0, Controls = 0;
+	bool Fresh = true, Reject = false;
+	std::uint64_t Generation = 1, Sequence = 0;
+	std::optional<FRawInputSample> Poll(Speed::Input::FFrameNumber) override
+	{
+		++Polls;
+		auto R = Raw(0, true); R.Generation = {Generation}; R.Sequence = ++Sequence;
+		R.FinalState[0].Value = 1;
+		R.Status = Fresh ? ERawSampleStatus::Resync : ERawSampleStatus::Valid;
+		Fresh = false; return R;
+	}
+	ELifecycleResult SetLifecyclePaused(bool) override
+	{
+		++Controls;
+		if (Reject) return ELifecycleResult::Rejected;
+		++Generation; Sequence = 0; Fresh = true;
+		return ELifecycleResult::Applied;
+	}
+	ELifecycleResult CancelLifecycle() override { ++Controls; return ELifecycleResult::Applied; }
+};
 int main()
 {
 	const auto C = Contract(); Check(bool(C), "contract");
+	{
+		auto RawSource = std::make_shared<FLifecycleRaw>();
+		std::shared_ptr<IInputProducer> P = FDeviceInputProducer::Create(RawSource, C, {11}, {EProducerKind::Device, 1});
+		auto S = std::make_shared<FInputStream>(P, C, FStreamEpoch{11}, Speed::Input::FProducerIdentity{EProducerKind::Device, 1});
+		Check(S->Activate(), "lifecycle activation");
+		const auto First = S->Consume(0);
+		Check(First.Reservation && First.Frame->GetData().Reset && First.Frame->GetData().Transitions.empty(), "initial held baseline is not a press");
+		Check(S->SetLifecyclePaused(true) == ELifecycleResult::Rejected && RawSource->Controls == 0, "pause cannot alter reserved source");
+		Check(S->ConfirmPhysicalCommit(*First.Reservation, true) && S->PublishCompleted(*First.Reservation), "lifecycle first completion");
+		Check(S->SetLifecyclePaused(true) == ELifecycleResult::Applied && S->IsLifecyclePaused(), "pause at quiescent boundary");
+		Check(S->Consume(1).Status == EConsumeStatus::Paused && RawSource->Polls == 1, "paused owner cannot poll or advance physical frame");
+		Check(!S->ReadLatest() && S->ReadPublishedSince({{11}, 0}).Frames.empty(), "paused presentation cannot replay prior held input");
+		Check(S->SetLifecyclePaused(false) == ELifecycleResult::Applied && !S->ReadLatest(), "resume waits for genuinely fresh publication");
+		const auto Fresh = S->Consume(1);
+		Check(Fresh.Reservation && Fresh.Frame->GetData().Reset && Fresh.Frame->GetData().Transitions.empty()
+			&& Fresh.Frame->GetData().Values[3] == 1, "fresh held resume without synthetic press");
+		Check(S->ConfirmPhysicalCommit(*Fresh.Reservation, true) && S->PublishCompleted(*Fresh.Reservation), "fresh resume completion");
+		Check(S->ReadPublishedSince({{11}, 0}).Status == EReadStatus::Overflow, "lifecycle barrier requires old observers to resync");
+		const auto Current = S->ReadPublishedSince({{11}, 1});
+		Check(Current.Status == EReadStatus::Batch && Current.Frames.size() == 1 && Current.Frames[0].Frame.GetData().Reset, "up-to-date observer gets reset only");
+		Check(S->CancelSourceAtBoundary() == ELifecycleResult::Applied && S->GetState() == EStreamState::Stopped, "source cancellation separated from finalization");
+		const auto Controls = RawSource->Controls;
+		Check(S->CancelSourceAtBoundary() == ELifecycleResult::Applied && RawSource->Controls == Controls, "successful cancellation is idempotent");
+	}
 	for (bool Mapped : {false, true})
 		for (std::size_t N : Mapped ? std::vector<std::size_t>{63, 64, 65} : std::vector<std::size_t>{255, 256, 257})
 		{

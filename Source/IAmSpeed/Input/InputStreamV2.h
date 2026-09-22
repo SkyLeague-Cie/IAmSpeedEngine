@@ -16,7 +16,7 @@ struct FPublishedBatch
 	FPublicationCursor Next;
 	std::vector<FPublishedFrame> Frames;
 };
-enum class EConsumeStatus : std::uint8_t { Ready, AlreadyPending, PublishedReplay, Detached, WrongFrame, InvalidInput, PresentationForbidden };
+enum class EConsumeStatus : std::uint8_t { Ready, AlreadyPending, PublishedReplay, Detached, WrongFrame, InvalidInput, PresentationForbidden, Paused };
 enum class EStreamState : std::uint8_t { Configurable, ActiveIdle, Reserved, Committed, Draining, Stopped };
 enum class EAbortReason : std::uint8_t { ApplicationFailed, SnapshotPublicationFailed, Cancelled };
 enum class ETransactionOutcome : std::uint8_t { Completed, Aborted };
@@ -93,12 +93,48 @@ public:
 		else Terminated = true;
 	}
 	void RequestStop() { Deactivate(); }
+	bool IsLifecyclePaused() const { std::lock_guard<std::recursive_mutex> Lock(Gate); return LifecyclePaused; }
+	ELifecycleResult SetLifecyclePaused(bool Paused)
+	{
+		if (FPresentationInputScope::IsActive()) return ELifecycleResult::Rejected;
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		if (CallingSource || Pending || Terminated || !Source) return ELifecycleResult::Rejected;
+		ELifecycleResult Result = ELifecycleResult::Rejected;
+		CallingSource = true;
+		try { Result = Source->SetLifecyclePaused(Paused); }
+		catch (...) { Result = ELifecycleResult::Rejected; }
+		CallingSource = false;
+		if (Terminated || (Result != ELifecycleResult::Applied && Result != ELifecycleResult::Unaffected))
+		{ Fault(); return ELifecycleResult::Rejected; }
+		LifecyclePaused = Paused;
+		if (Paused) { PresentationBarrier = Serial; AwaitingFreshPublication = true; }
+		return Result;
+	}
+	// Cancellation can call platform code and therefore cannot run inside the
+	// allocation-free finalizer. The host first drains/aborts its reservation.
+	ELifecycleResult CancelSourceAtBoundary()
+	{
+		if (FPresentationInputScope::IsActive()) return ELifecycleResult::Rejected;
+		std::lock_guard<std::recursive_mutex> Lock(Gate);
+		if (CallingSource || Pending || !Source) return ELifecycleResult::Rejected;
+		if (SourceCancelled) return CancellationResult;
+		Active = false; Terminated = true;
+		CallingSource = true;
+		ELifecycleResult Result = ELifecycleResult::Rejected;
+		try { Result = Source->CancelLifecycle(); }
+		catch (...) { Result = ELifecycleResult::Rejected; }
+		CallingSource = false;
+		if (Result != ELifecycleResult::Applied && Result != ELifecycleResult::Unaffected) return ELifecycleResult::Rejected;
+		SourceCancelled = true; CancellationResult = Result;
+		return Result;
+	}
 	FConsumedInput Consume(FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive()) return {EConsumeStatus::PresentationForbidden, {}, {}};
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		if (CallingSource) return Fault();
 		if (!Active) return {};
+		if (LifecyclePaused) return {EConsumeStatus::Paused, {}, {}};
 		const auto& Retained = History[Frame % HistoryCapacity];
 		if (Retained && Retained->Frame.GetData().ConsumptionFrame == Frame)
 		{
@@ -187,6 +223,7 @@ public:
 			Serial = NextSerial; History[Frame % HistoryCapacity]->Published = true;
 			Outcome = FTransactionOutcome{Epoch, Frame, ETransactionOutcome::Completed, {}};
 			PublicationPrepared = false;
+			AwaitingFreshPublication = false;
 			Pending.reset(); Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
 			if (!Exhausted) NextFrame = Frame + 1;
 			if (StopRequested) Terminated = true;
@@ -221,6 +258,8 @@ public:
 		if (!Active || Cursor.Epoch.Value != Epoch.Value) return {};
 		const FPublicationCursor Next{Epoch, Serial};
 		if (Cursor.Serial > Serial) return {EReadStatus::InvalidCursor, Next, {}};
+		if (LifecyclePaused || AwaitingFreshPublication) return {EReadStatus::NoChange, Cursor, {}};
+		if (Cursor.Serial < PresentationBarrier) return {EReadStatus::Overflow, Next, {}};
 		if (Cursor.Serial == Serial) return {EReadStatus::NoChange, Next, {}};
 		if (Serial - Cursor.Serial > HistoryCapacity) return {EReadStatus::Overflow, Next, {}};
 		std::vector<FPublishedFrame> Copies;
@@ -236,7 +275,7 @@ public:
 	std::optional<FPublishedFrame> ReadLatest() const
 	{
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
-		return Active && Serial ? Published[Serial % HistoryCapacity] : std::nullopt;
+		return Active && !LifecyclePaused && !AwaitingFreshPublication && Serial ? Published[Serial % HistoryCapacity] : std::nullopt;
 	}
 	std::optional<FInputFrame> ReadRecorded(FFrameNumber Frame) const
 	{
@@ -293,6 +332,11 @@ private:
 	// Other threads still cannot mutate lifecycle during the reserved source call.
 	mutable std::recursive_mutex Gate;
 	bool CallingSource = false;
+	bool LifecyclePaused = false;
+	bool SourceCancelled = false;
+	ELifecycleResult CancellationResult = ELifecycleResult::Rejected;
+	bool AwaitingFreshPublication = false;
+	std::uint64_t PresentationBarrier = 0;
 	bool Started = false, Active = false, Terminated = false, Exhausted = false, StopRequested = false;
 	FFrameNumber NextFrame;
 	std::optional<FReservationToken> Pending;

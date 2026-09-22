@@ -41,6 +41,9 @@ public:
 		FStreamEpoch InEpoch, FProducerIdentity InProducer, FFrameNumber FirstFrame = 0)
 		: Contract(std::move(InContract)), Epoch(InEpoch), Producer(InProducer), NextFrame(FirstFrame) {}
 	const std::shared_ptr<const FInputActionContract>& GetContract() const { return Contract; }
+	// Sole owner, at an acknowledged boundary. Preserve the next physical
+	// address; the raw source must supply a genuinely fresh Resync baseline.
+	void RequireFreshBaseline() { NeedsResync = true; }
 	FMappingResult Map(const FRawInputSample& Sample, FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive()) return {EMappingStatus::PresentationForbidden, {}};
