@@ -59,6 +59,8 @@ static std::vector<VFrame> Timeline(const std::shared_ptr<const FInputActionCont
 class FFencedFixture final : public VProducer, public IInputProducerPollFence
 {
 public:
+    IInputProducerPollFence* PollFence() noexcept override { return this; }
+    bool SupportsPollFence() const noexcept override { return true; }
     EProducerContract GetProducerContract() const noexcept override { return EProducerContract::Device; }
     FFencedFixture(std::shared_ptr<const FInputActionContract> C, std::vector<VFrame> F)
         : Contract(std::move(C)), Frames(std::move(F))
@@ -210,6 +212,8 @@ static void ReentrancyAndRecovery()
 class FInbox final : public VProducer, public IInputProducerPollFence
 {
 public:
+    IInputProducerPollFence* PollFence() noexcept override { return this; }
+    bool SupportsPollFence() const noexcept override { return true; }
     EProducerContract GetProducerContract() const noexcept override { return EProducerContract::Device; }
     explicit FInbox(std::shared_ptr<const FInputActionContract> C) : Contract(std::move(C)) {}
     std::function<void()> AfterFreeze;

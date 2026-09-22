@@ -188,7 +188,7 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 		const uint32 Index = Steps.load();
 		if (Index >= Budget.load()) return ESimulationWorkerResult::Idle;
 		if (Index >= 3 || !Driver->RunCanonicalFrames(1)) { Failed = true; return ESimulationWorkerResult::Failed; }
-		Frames[Index].Target = int32(Component->WheeledUserInput.Throttle);
+		Frames[Index].Target = int32((Stream->ReadRecorded(Component->NumFrame() - 1) ? Stream->ReadRecorded(Component->NumFrame() - 1)->GetActions()[Throttle] : 0));
 		const auto Latest = Stream->ReadLatest();
 		if (Latest) Frames[Index].Input = Latest->Frame;
 		Steps.store(Index + 1);

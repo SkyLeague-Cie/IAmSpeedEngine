@@ -1,6 +1,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include <memory>
+namespace Speed::Input::V2 { struct FOwnerInputSnapshot; class FInputSessionRegistry; }
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/SHitResult.h"
 #include "IAmSpeed/Base/Kinematic.h"
@@ -60,6 +62,21 @@ public:
 	/** Frame-boundary admission, before inputs, preparation or publication.
 	 * Implementations validate their live storage without mutating physics state. */
 	virtual bool ValidateSimulationBindings(FString& OutReason) const { return true; }
+	/** Input-only admission for every actor before any actor applies velocity,
+	 * gravity or gameplay. False rejects the whole canonical frame. */
+	/** Worker-only scenario authoring before producer polling. ExactScenario
+	 * sessions opt in explicitly; sealed frames cannot be replaced. This hook
+	 * must only append fixture input data, never apply physics or gameplay. */
+	virtual bool StageCanonicalScenarioInput(const FCanonicalFrameContext& Context,
+		Speed::Input::V2::FInputSessionRegistry& Registry) { return true; }
+	virtual bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context) { return true; }
+	virtual bool NeutralizeCanonicalInputAtBoundary() { return true; }
+	/** Retire input processors on their worker before actors can be destroyed. */
+	virtual bool RetireInputProcessingOnWorker() { return true; }
+	virtual bool ServiceInputRetirementAtBoundary() { return true; }
+	/** Retains immutable input for this actor; no gameplay or force application. */
+	virtual bool InstallCanonicalInput(uint64 Frame,
+		std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot) { return false; }
 	// Runs component-owned preparation/gameplay for one integer-addressed frame.
 	// This virtual dispatch also covers derived components declared by game modules.
 	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;

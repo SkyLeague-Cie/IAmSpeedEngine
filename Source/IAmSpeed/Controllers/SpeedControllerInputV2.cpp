@@ -4,6 +4,26 @@
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "InputActionValue.h"
 
+#if !UE_BUILD_SHIPPING
+bool ASpeedController::UseScenarioInputAuthorityAtBoundary()
+{
+	check(IsInGameThread());
+	if (GetNetMode()!=NM_Standalone || InputProducer || InputSnapshots
+		|| Speed::Input::FPresentationInputScope::IsActive()) return false;
+	auto* Mode=GetWorld()?GetWorld()->GetAuthGameMode<ASpeedGameMode>():nullptr;
+	auto* Driver=Mode?Mode->GetSpeedSimulation():nullptr;
+	if (!Driver || !ReleaseInputSessionV2()) return false;
+	const auto Boundary=Driver->TryPauseOwnedSimulation();
+	if (Boundary!=ESimulationQuiescence::BoundaryAcknowledged && Boundary!=ESimulationQuiescence::AlreadyStopped) return false;
+	uint64 First=0;
+	if (!Driver->ReadInputFirstFrameAtPausedBoundary(First)
+		&& !Driver->PrepareControlledInputRun()) return false;
+	bScenarioOwnsInputAuthority=true; bInputSessionPendingV2=false;
+	bInputSessionRequiredV2=false; bInputLifecycleFault=false;
+	return true; // Harness binds before it may resume the worker.
+}
+#endif
+
 bool ASpeedController::RestartInputSessionAtBoundary()
 {
 	check(IsInGameThread());
@@ -27,6 +47,16 @@ bool ASpeedController::RefreshInputSessionV2()
 		|| !Driver->ReadInputFirstFrameAtPausedBoundary(FirstFrame))
 	{ bInputLifecycleFault = true; return false; }
 	auto Session = CreateInputSessionV2(FirstFrame);
+	if (Session && Session->Descriptor)
+	{
+		if (!Session->Presentation || !Session->Observation || Session->Closed || Session->Session <= LastInputSessionV2)
+		{ Session->CloseAtBoundary(); bInputLifecycleFault = true; return false; }
+		InputSessionV2 = std::move(Session); LastInputSessionV2 = InputSessionV2->Session;
+		if (!BindInputPresentationV2() || !InputSessionV2->Activate() || !BeginRegistryInputSession())
+		{ bInputLifecycleFault = true; ReleaseInputSessionV2(); return false; }
+		bInputSessionPendingV2 = false;
+		return true;
+	}
 	if (!Session || !Session->Stream || !Session->Presentation || Session->Closed
 		|| Session->Session <= LastInputSessionV2 || Session->Stream->GetEpoch().Value != Session->Session
 		|| !Session->Stream->CanConfigure())
@@ -50,6 +80,13 @@ bool ASpeedController::RefreshInputSessionV2()
 bool ASpeedController::ConfigureInputSessionV2(std::shared_ptr<Speed::Input::V2::FInputHostSession> Session)
 {
 	check(IsInGameThread());
+	if (Session && Session->Descriptor)
+	{
+		if (SpeedCar || InputProducer || InputSnapshots || InputSessionV2 || !Session->Observation
+			|| !Session->Presentation || !Session->Observation->CanConfigure() || Session->Closed
+			|| Session->Session <= LastInputSessionV2 || Speed::Input::FPresentationInputScope::IsActive()) return false;
+		LastInputSessionV2 = Session->Session; InputSessionV2 = std::move(Session); return true;
+	}
 	if (SpeedCar || InputProducer || InputSnapshots || InputSessionV2 || !Session || !Session->Stream
 		|| !Session->Presentation || Session->Closed || !Session->Session || Session->Session <= LastInputSessionV2
 		|| Session->Stream->GetEpoch().Value != Session->Session || !Session->Stream->CanConfigure()
@@ -61,7 +98,7 @@ void ASpeedController::HandleInputs()
 {
 	check(IsInGameThread());
 	const auto Session = InputSessionV2;
-	if (!Session || !Session->Presentation || Session->Stream->IsLifecyclePaused()) return;
+	if (!Session || !Session->Presentation || Session->IsPaused()) return;
 	const auto Result = Session->Presentation->HandleInputs();
 	if (Result == Speed::Input::V2::EDispatchStatus::ResyncRequired)
 	{
@@ -81,7 +118,7 @@ bool ASpeedController::ServiceInputSessionV2()
 		const auto Batch = Session->Controls->Read();
 		if (Batch.Status == Speed::Input::V2::EControlRead::Invalid)
 		{
-			Session->Stream->RequestStop(); QuiesceStandaloneInputOwner();
+			Session->RequestStopObservation(); QuiesceStandaloneInputOwner();
 			bInputLifecycleFault = true; return false;
 		}
 		if (Batch.Status == Speed::Input::V2::EControlRead::Resynchronized)
@@ -98,6 +135,11 @@ bool ASpeedController::ServiceInputSessionV2()
 		}
 	}
 	if (InputSessionV2 != Session || Session->Closed) return false;
+	if (Session->Descriptor)
+	{
+		if (!ServiceRegistryInputSession()) return false;
+		HandleInputs(); return !bInputLifecycleFault;
+	}
 	if (Session->ResumePending && !IsPaused() && !bInputLifecycleFault && Session->CompleteFreshResume())
 		SetStandaloneSimulationPaused(false);
 	if (Session->Closed) { bInputLifecycleFault = true; return false; }
@@ -118,6 +160,7 @@ bool ASpeedController::ReleaseInputSessionV2()
 {
 	check(IsInGameThread());
 	if (!InputSessionV2) return true;
+	if (InputSessionV2->Descriptor) return ReleaseRegistryInputSession();
 	InputSessionV2->Stream->RequestStop(); // Closure admission is always permitted.
 	if (Speed::Input::FPresentationInputScope::IsActive())
 	{
@@ -157,6 +200,18 @@ bool ASpeedController::ReleaseInputSessionV2()
 bool ASpeedController::SetInputPauseV2(bool bPause, FCanUnpause CanUnpauseDelegate)
 {
 	if (!HasAuthority() || Speed::Input::FPresentationInputScope::IsActive()) return false;
+	if (InputSessionV2->Descriptor)
+	{
+		if (bPause && InputSessionV2->RegistryBound
+			&& !QueueRegistryInputCommand(Speed::Input::V2::EBoundaryOperation::PauseAll))
+		{ bInputLifecycleFault = true; return false; }
+		const auto Boundary = QuiesceStandaloneInputOwner();
+		if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
+		{ bInputLifecycleFault = true; return false; }
+		const bool Accepted = Super::SetPause(bPause, MoveTemp(CanUnpauseDelegate));
+		if (!ServiceRegistryInputSession()) return false;
+		return Accepted;
+	}
 	if (bPause == IsPaused() && !bInputLifecycleFault) return true;
 	const auto Boundary = QuiesceStandaloneInputOwner();
 	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)

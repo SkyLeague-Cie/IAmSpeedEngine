@@ -3,6 +3,8 @@
 #include "ActionDispatch.h"
 #include "ControlActionReader.h"
 #include "InputAcquisitionWorker.h"
+#include "InputSessionRegistry.h"
+#include "InputObservationChannel.h"
 
 namespace Speed::Input::V2
 {
@@ -15,6 +17,14 @@ struct FInputHostSession final
 	std::unique_ptr<FInputAcquisitionWorker> Acquisition;
 	std::unique_ptr<FControlActionReader> Controls;
 	std::unique_ptr<FInputPresentationBindings> Presentation;
+	std::optional<FSessionDescriptor> Descriptor;
+	std::shared_ptr<FInputObservationChannel> Observation;
+	std::uint64_t PendingCommand = 0, ResumeGeneration = 0, RegistryVersion = 0, WorkerGeneration = 0;
+	std::vector<std::uint64_t> SupersededCommands;
+	EBoundaryOperation PendingOperation = EBoundaryOperation::Bind;
+	bool RegistryBound = false, RegistryPaused = true;
+	bool IsPaused() const { return Descriptor ? RegistryPaused : Stream && Stream->IsLifecyclePaused(); }
+	void RequestStopObservation() { if (Observation) Observation->Deactivate(); else if (Stream) Stream->RequestStop(); }
 	std::uint64_t Session = 0;
 	bool ResumePending = false;
 	bool Closed = false;
@@ -30,8 +40,19 @@ struct FInputHostSession final
 		Out->Presentation = std::make_unique<FInputPresentationBindings>(Out->Stream);
 		return Out;
 	}
+	static std::shared_ptr<FInputHostSession> CreateDescriptor(FSessionDescriptor Binding)
+	{
+		if (!Binding.Id || !Binding.Epoch || !Binding.Contract || FPresentationInputScope::IsActive()) return {};
+		auto Out = std::make_shared<FInputHostSession>();
+		Out->Session = Binding.Epoch;
+		Out->Observation = std::make_shared<FInputObservationChannel>(Binding.Contract, FStreamEpoch{Binding.Epoch});
+		Out->Presentation = std::make_unique<FInputPresentationBindings>(Out->Observation);
+		Out->Descriptor = std::move(Binding);
+		return Out;
+	}
 	bool Activate()
 	{
+		if (Descriptor) return !Closed && Observation && Presentation && Presentation->Seal() && Observation->Activate();
 		return !Closed && Stream && Presentation && Presentation->Seal() && Stream->Activate();
 	}
 	// Host proves physical quiescence before calling either lifecycle method.
@@ -60,6 +81,12 @@ struct FInputHostSession final
 	}
 	bool CloseAtBoundary()
 	{
+		if (Descriptor)
+		{
+			if (RegistryBound || PendingCommand) return false;
+			RequestStopObservation(); Closed = true; ResumePending = false;
+			return !Acquisition || Acquisition->Stop();
+		}
 		ResumePending = false;
 		if (!Stream) return false;
 		Stream->RequestStop();

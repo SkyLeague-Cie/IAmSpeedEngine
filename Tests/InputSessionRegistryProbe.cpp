@@ -1,6 +1,11 @@
 #include "IAmSpeed/Input/InputSessionRegistry.h"
+#include "IAmSpeed/Input/InputObservationChannel.h"
+#include "IAmSpeed/Input/ActionDispatch.h"
 #include <iostream>
 #include <cstdlib>
+#include <atomic>
+#include <thread>
+#include "Car/Input/SkyGameActions.h"
 
 using namespace Speed::Input;
 using namespace Speed::Input::V2;
@@ -55,6 +60,162 @@ static std::shared_ptr<const FRegistryFrame> Step(FInputSessionRegistry& R, FFra
 }
 int main()
 {
+    {
+        FRegistryLimits Limits; Limits.Receipts=1;
+        auto Q=std::make_shared<FInputSessionCommands>(Limits);
+        FInputSessionRegistry R(Q,42);
+        for (std::uint64_t Id=1; Id<600; ++Id)
+        {
+            auto C=Command(Id,0,EBoundaryOperation::PauseAll);
+            Check(Q->Submit(C)==ECommandAdmission::Enqueued,"acknowledged receipts allow arbitrarily many lifecycle commands");
+            Check(!Q->Acknowledge(Id),"pending receipt cannot be removed");
+            Check(R.ServiceBoundary() && Q->Read(Id)->Status==EBoundaryStatus::Applied,"receipt published before acknowledgement");
+            Check(Q->Acknowledge(Id) && !Q->Read(Id),"only final copied receipt released");
+            Check(Q->Submit(C)==ECommandAdmission::Rejected,"acknowledgement never permits duplicate command execution");
+        }
+    }
+
+    {
+        auto C=FInputActionContract::Create(Sky::Input::V2::DescribeGameActions({1},{}));
+        auto Inbox=std::make_shared<FAIInputCommands>(C);
+        auto Queue=std::make_shared<FInputSessionCommands>();
+        FInputSessionRegistry Registry(Queue,42,{{9,{},Inbox}});
+        auto Bind=Command(1,0);
+        auto& D=Bind.Binding; D.Id=D.Epoch=D.Controller=D.Producer=1;
+        D.Journal=9; D.Kind=EProducerContract::AI; D.Contract=C; D.Actors={{10,1}};
+        Check(Queue->Submit(Bind)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"AI owner constructed at worker boundary");
+        auto F=Step(Registry,0);
+        Check(F->Inputs[0].Snapshot->Applied[Throttle]==0,"absent AI decision is neutral");
+        FActionValues V{}; V[Throttle]=255; V[Steering]=-127; V[Sky::Input::V2::Boost]=255;
+        Check(Inbox->Publish(V),"AI timer publishes complete inert decision");
+        F=Step(Registry,1);
+        Check(F->Frame==1 && F->Inputs[0].Snapshot->Applied==V,"AI throttle steering boost applied exactly at N, no shared slew");
+        Check(Inbox->Publish(V,{Sky::Input::V2::Jump}),"AI jump pulse accepted");
+        F=Step(Registry,2);
+        Check(F->Inputs[0].Snapshot->Input.GetData().Transitions.size()==2,"AI jump has one start and completion");
+        Check(Inbox->Publish(V,{},FAIInputCommands::FClock::now()-std::chrono::seconds(2)),"expired decision fixture accepted as data");
+        F=Step(Registry,3);
+        Check(F->Inputs[0].Snapshot->Applied==FActionValues{} && F->Inputs[0].Snapshot->Input.GetData().Reset,"stale AI decision neutralizes all axes");
+        auto Pause=Command(2,1,EBoundaryOperation::PauseAll);
+        Check(Queue->Submit(Pause)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"AI pause clears pending decision");
+        Check(Queue->Read(2)->Sessions[0].Phase==ESessionPhase::Paused,"AI PauseAll receipt reports genuinely paused owner");
+        Check(!Registry.PrepareFrame(4),"paused AI cannot poll or step");
+        auto ResumeAI=Command(3,1,EBoundaryOperation::Resume); ResumeAI.Session=ResumeAI.Epoch=ResumeAI.ResumeGeneration=1;
+        Check(Queue->Submit(ResumeAI)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"AI controller Resume command serviced");
+        Check(Queue->Read(3)->Status==EBoundaryStatus::Applied,"AI Resume is applied rather than rejected");
+        F=Step(Registry,4);
+        Check(F->Inputs[0].Snapshot->Applied==FActionValues{} && F->Inputs[0].Snapshot->Input.GetData().Reset,"first AI frame after Resume is neutral reset");
+        Check(Inbox->Publish(V),"fresh AI decision after pause");
+        F=Step(Registry,5);
+        Check(F->Inputs[0].Snapshot->Applied==V,"fresh held AI axes immediately restored");
+        auto Detach=Command(4,1,EBoundaryOperation::Detach); Detach.Session=Detach.Epoch=1;
+        Check(Queue->Submit(Detach)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"AI detach closes producer on worker");
+        Check(!Inbox->Publish(V),"retired AI mailbox rejects late timer callback");
+    }
+
+    {
+        auto C=FInputActionContract::Create(Sky::Input::V2::DescribeGameActions({1},{}));
+        auto Decisions=std::make_shared<FAIInputCommands>(C);
+        unsigned Calls=0;
+        Check(Decisions->SetPollEvaluator([&](FFrameNumber N)
+        {
+            ++Calls;
+            FAIInputCommands::FDecision D; D.Present=true;
+            D.Values[Throttle]=N==2 ? 128 : 255;
+            if (N<2) D.Pulses.push_back(Sky::Input::V2::Jump);
+            return D;
+        }),"AI physics evaluator installed");
+        auto P=FAIInputProducer::Create(Decisions,C,{1},{EProducerKind::AI,1},0);
+        Check(bool(P),"directly polled AI producer constructed");
+        auto Cut=P->FreezeForOwner(0);
+        auto F=P->Produce(0);
+        Check(Cut && F && F->GetData().Values[Throttle]==255 &&
+            F->GetData().Transitions.empty() && Calls==1,
+            "AI decision computed by the first physical poll");
+        Check(!Decisions->SetPollEvaluator([](FFrameNumber){ return FAIInputCommands::FDecision{}; })
+            && !Decisions->Publish(FActionValues{}),
+            "active AI decision source and goal cannot be replaced by a timer write");
+        Check(P->CloseFrozenCutoff(*Cut),"first AI cutoff closed");
+        Cut=P->FreezeForOwner(1); F=P->Produce(1);
+        Check(Cut && F && F->GetData().Values[Throttle]==255 &&
+            F->GetData().Transitions.size()==2 && Calls==2,
+            "next physical poll computes one pulse, without duplicated reset pulse");
+        Check(P->CloseFrozenCutoff(*Cut),"second AI cutoff closed");
+        Check(P->SetLifecyclePaused(true)==ELifecycleResult::Applied &&
+            !P->FreezeForOwner(2) && Calls==2,"paused AI cannot compute");
+        Check(P->SetLifecyclePaused(false)==ELifecycleResult::Applied,"AI resumed");
+        Cut=P->FreezeForOwner(2); F=P->Produce(2);
+        Check(Cut && F && F->GetData().Reset && F->GetData().Values[Throttle]==128 && Calls==3,
+            "first fresh resumed physical poll computes held AI decision");
+        Check(P->CloseFrozenCutoff(*Cut),"resumed AI cutoff closed");
+        Check(P->CancelLifecycle()==ELifecycleResult::Applied &&
+            !P->FreezeForOwner(3) && Calls==3,"retired AI cannot compute");
+    }
+    {
+        auto C=FInputActionContract::Create(Sky::Input::V2::DescribeGameActions({1},{}));
+        auto Decisions=std::make_shared<FAIInputCommands>(C);
+        std::atomic<bool> Entered{false}, AllowFinish{false}, Polled{false};
+        std::atomic<unsigned> Calls{0};
+        Check(Decisions->SetPollEvaluator([&](FFrameNumber)
+        {
+            ++Calls; Entered.store(true);
+            while (!AllowFinish.load()) std::this_thread::yield();
+            FAIInputCommands::FDecision D; D.Present=true; return D;
+        }),"blocking physical evaluator installed");
+        auto P=FAIInputProducer::Create(Decisions,C,{2},{EProducerKind::AI,2},0);
+        std::thread Poll([&]
+        {
+            auto Cut=P->FreezeForOwner(0);
+            if (Cut) { auto F=P->Produce(0); Polled.store(bool(F) && P->CloseFrozenCutoff(*Cut)); }
+        });
+        const auto Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+        while (!Entered.load() && std::chrono::steady_clock::now()<Deadline) std::this_thread::yield();
+        if (!Entered.load()) AllowFinish.store(true);
+        Check(Entered.load(),"physical evaluator entered");
+        Check(!Decisions->CloseAndWait(std::chrono::milliseconds(10)),
+            "source teardown cannot claim quiescence during an in-flight physical read");
+        AllowFinish.store(true); Poll.join();
+        Check(Polled.load() && Decisions->CloseAndWait(std::chrono::milliseconds(100)) && Calls.load()==1,
+            "teardown joins evaluator before physical source may be freed");
+        auto Cut=P->FreezeForOwner(1);
+        Check(Cut && Calls.load()==1,"closed source never calls captured physical pointers again");
+        auto F=P->Produce(1);
+        Check(F && F->GetData().Reset && F->GetData().Values==FActionValues{}
+            && F->GetData().ActiveMask==0 && P->CloseFrozenCutoff(*Cut),
+            "closed source yields a neutral reset frame while the owner keeps polling");
+    }
+
+    {
+        auto Queue=std::make_shared<FInputSessionCommands>();
+        auto B=Command(1,0); B.Binding=Scenario(); Queue->Submit(B);
+        bool ForeignAccepted=true;
+        std::thread Foreign([&]{ForeignAccepted=Queue->CancelUnprocessedAfterJoin();}); Foreign.join();
+        Check(!ForeignAccepted,"only bridge publisher can cancel never-started generation");
+        Check(Queue->CancelUnprocessedAfterJoin(),"cancel inert Bind after joined zero-owner proof");
+        Check(Queue->Read(1)->Status==EBoundaryStatus::TerminalFailure,"unstarted Bind receives terminal outcome");
+        B.Id=2; Check(Queue->Submit(B)==ECommandAdmission::Rejected,"closed unstarted generation cannot reopen");
+        auto Running=std::make_shared<FInputSessionCommands>(); B.Id=1; Running->Submit(B);
+        FInputSessionRegistry Registry(Running,42); Check(Registry.ServiceBoundary(),"construct real session");
+        Check(!Running->CancelUnprocessedAfterJoin(),"inert cancellation cannot replace retirement of serviced owners");
+    }
+
+    {
+        FRegistryLimits Limits; Limits.Sessions=1;
+        auto Queue=std::make_shared<FInputSessionCommands>(Limits);
+        FInputSessionRegistry Registry(Queue,42);
+        auto Journal=std::make_shared<FRawAcquisitionJournal>(1,0);
+        Check(Registry.RegisterJournalAtBoundary({7,Journal}),"register journal for rejected generation");
+        auto B=Command(1,0); B.WorkerGeneration=41; B.Binding=Device();
+        Check(Queue->Submit(B)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"process stale worker Bind");
+        Check(Queue->Read(1)->Status==EBoundaryStatus::Rejected,"stale worker Bind rejected");
+        auto Next=std::make_shared<FRawAcquisitionJournal>(1,0);
+        Check(Registry.RegisterJournalAtBoundary({8,Next}),"early rejection releases bounded journal slot");
+        B=Command(2,99); B.Binding=Device(1,8); Queue->Submit(B);
+        B=Command(3,0); B.Binding=Device(1,8); Queue->Submit(B);
+        Check(Registry.ServiceBoundary() && Queue->Read(2)->Status==EBoundaryStatus::Rejected
+            && Queue->Read(3)->Status==EBoundaryStatus::Applied,"stale version keeps journal required by later valid Bind");
+    }
+
     auto Q=std::make_shared<FInputSessionCommands>();
     auto C=Command(1,0); C.Binding=Scenario();
     Check(Q->Submit(C)==ECommandAdmission::Enqueued,"inert descriptor admitted");
@@ -225,6 +386,85 @@ int main()
         if (I.PrepareFrame(0) && I.InstallAll() && I.BeginAll()) { ++Gravity; ++Gameplay; ++PhysicsStep; }
         Check(Gravity==0 && Gameplay==0 && PhysicsStep==0 && I.IsTerminal(),"rejected participant blocks every force/gameplay/step hook");
         Check(!I.ReadLatest() && I.PollCount(1)==1 && I.PollCount(2)==0,"partial source preparation never publishes or retries");
+    }
+
+    {
+        struct FReceiver
+        {
+            std::vector<EStateAction> States;
+            void Receive(const FActionEvent& E) { States.push_back(E.State); }
+        };
+        auto Q2=std::make_shared<FInputSessionCommands>(); auto B=Command(1,0); B.Binding=Scenario(); Q2->Submit(B);
+        FInputSessionRegistry I(Q2,42); Check(I.ServiceBoundary(),"observer scenario bound");
+        auto Channel=std::make_shared<FInputObservationChannel>(B.Binding.Contract,FStreamEpoch{1});
+        Speed::Input::V2::FInputPresentationBindings Bindings(Channel);
+        auto Receiver=std::make_shared<FReceiver>();
+        Check(Bindings.BindAction("jump-start",3,EStateAction::Started,std::weak_ptr<FReceiver>(Receiver),&FReceiver::Receive),"observer binds Started");
+        Check(Bindings.BindAction("jump-end",3,EStateAction::Completed,std::weak_ptr<FReceiver>(Receiver),&FReceiver::Receive),"observer binds Completed");
+        Check(Bindings.Seal() && Channel->Activate(),"observation activates without producer");
+        const auto Zero=Step(I,0); Check(Channel->Publish(Zero->Inputs[0].Snapshot),"publish completed baseline");
+        const auto One=Step(I,1);
+        auto Applied=std::make_shared<FOwnerInputSnapshot>(*One->Inputs[0].Snapshot); Applied->Applied[Throttle]=16;
+        Check(Channel->Publish(Applied),"publish completed applied values");
+        Check(Channel->ReadLatest()->Frame.GetData().Values[Throttle]==16,"GT observes Applied not raw Requested");
+        Check(Bindings.HandleInputs()==EDispatchStatus::Dispatched && Receiver->States.size()==2
+            && Receiver->States[0]==EStateAction::Started && Receiver->States[1]==EStateAction::Completed,"slow GT sees both short-tap edges exactly once");
+        Check(Bindings.HandleInputs()==EDispatchStatus::NoChange && Receiver->States.size()==2,"no duplicate callbacks");
+        bool ForeignPublished=true;
+        std::thread Foreign([&] { ForeignPublished=Channel->Publish(Applied); }); Foreign.join();
+        Check(!ForeignPublished,"foreign lane cannot publish");
+        Channel->Pause(); Check(!Channel->ReadLatest(),"pause hides old held values");
+        const auto Two=Step(I,2); Check(Channel->Publish(Two->Inputs[0].Snapshot),"fresh completed baseline resumes observer");
+        Check(Channel->ReadLatest()->Frame.GetData().ConsumptionFrame==2,"fresh resumed frame visible");
+        Channel->Deactivate(); Check(!Channel->Publish(Two->Inputs[0].Snapshot),"closed observer cannot publish");
+    }
+    {
+        auto Q2=std::make_shared<FInputSessionCommands>(); FInputSessionRegistry I(Q2,42);
+        auto J=std::make_shared<FRawAcquisitionJournal>(1,0);
+        Check(I.RegisterJournalAtBoundary({7,J}),"worker registers thread-neutral acquisition journal");
+        Check(I.RegisterJournalAtBoundary({7,J}),"identical journal registration idempotent");
+        Check(!I.RegisterJournalAtBoundary({8,J}),"journal alias rejected");
+        bool Accepted=true; std::thread Foreign([&] { Accepted=I.RegisterJournalAtBoundary({9,J}); }); Foreign.join();
+        Check(!Accepted,"foreign lane cannot register journal");
+    }
+    {
+        auto Queue=std::make_shared<FInputSessionCommands>(); FInputSessionRegistry Registry(Queue,42);
+        auto Bind=Command(1,0); Bind.Binding=Scenario(); Bind.Binding.AllowScenarioAppend=true;
+        Bind.Binding.Scenario.erase(Bind.Binding.Scenario.begin()+1,Bind.Binding.Scenario.end());
+        Check(Queue->Submit(Bind)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"adaptive exact scenario binds from sealed baseline");
+        const auto Baseline=Step(Registry,0)->Inputs[0].Snapshot;
+        for (std::uint64_t N=1; N<HistoryCapacity+5; ++N)
+        {
+            FInputFrameData Data; Data.ConsumptionFrame=N; Data.SourceSequence=N+1;
+            Data.Producer={EProducerKind::Device,1}; Data.StreamEpoch={1}; Data.DeviceGeneration={1};
+            Data.Values[Throttle]=N%2 ? 255 : 0; Data.ActiveMask=N%2 ? 1 : 0;
+            Data.Transitions.push_back({Throttle,N%2 ? ETransition::Started : ETransition::Completed,Data.Values[Throttle],{N+1,0}});
+            VFrame Input(Bind.Binding.Contract,Data);
+            if (N==1)
+            {
+                Check(!Registry.AppendExactScenarioFrame(1,2,1,Input),"wrong author epoch rejected");
+                Check(!Registry.AppendExactScenarioFrame(1,1,2,Input),"wrong author controller rejected");
+                bool Foreign=true; std::thread Other([&]{ Foreign=Registry.AppendExactScenarioFrame(1,1,1,Input); }); Other.join();
+                Check(!Foreign,"foreign thread cannot author scenario");
+                { FPresentationInputScope Scope; Check(!Registry.AppendExactScenarioFrame(1,1,1,Input),"presentation cannot author scenario"); }
+            }
+            Check(Registry.AppendExactScenarioFrame(1,1,1,Input),"next exact frame sealed before cutoff");
+            Check(!Registry.AppendExactScenarioFrame(1,1,1,Input),"sealed future frame cannot be overwritten");
+            Check(Registry.PrepareFrame(N),"adaptive frame polled by same owner");
+            auto Future=Data; Future.ConsumptionFrame=N+1; Future.SourceSequence=N+2; Future.Reset=true; Future.Transitions.clear();
+            Check(!Registry.AppendExactScenarioFrame(1,1,1,VFrame(Bind.Binding.Contract,Future)),"no authoring during physical transaction");
+            Check(Registry.InstallAll(),"adaptive install");
+            const auto Installed=Registry.ReadInstalled();
+            Check(Installed && Installed->Inputs[0].Snapshot->Applied==Data.Values,"exact authored stimulus no hidden slew");
+            Check(Registry.BeginAll() && Registry.ValidateComplete() && Registry.CompleteAll(),"adaptive grouped commit");
+            Check(Baseline->Input.GetData().ConsumptionFrame==0 && Baseline->Applied[Throttle]==0,"retained baseline remains immutable");
+        }
+    }
+    {
+        auto Queue=std::make_shared<FInputSessionCommands>(); FInputSessionRegistry Registry(Queue,42);
+        auto Bind=Command(1,0); Bind.Binding=Scenario();
+        Check(Queue->Submit(Bind)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"static scenario binds");
+        Check(!Registry.AppendExactScenarioFrame(1,1,1,Bind.Binding.Scenario.back()),"static descriptor cannot opt into authoring later");
     }
     std::cout<<"PASS InputSessionRegistryProbe checks="<<Checks<<" native=none gameplay=none\n";
 }

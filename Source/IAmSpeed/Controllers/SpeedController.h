@@ -30,6 +30,11 @@ public:
 	ASpeedController();
 	/** Pause, retire the old epoch and queue a fresh immutable mapping session. */
 	bool RestartInputSessionAtBoundary();
+#if !UE_BUILD_SHIPPING
+	/** Explicit test harness takes over through a separately bound exact producer. */
+	bool UseScenarioInputAuthorityAtBoundary();
+#endif
+
 	bool ConfigureInputSessionV2(std::shared_ptr<Speed::Input::V2::FInputHostSession> Session);
 	Speed::Input::V2::FControlApplicationBatch ReadControlReceipts(uint64 Cursor) const
 	{ check(IsInGameThread()); return ControlReceiptsV2.Read(Cursor); }
@@ -148,6 +153,10 @@ private:
 	std::vector<std::shared_ptr<void>> InputReceiversV2;
 	uint64 LastInputSessionV2 = 0;
 	Speed::Input::V2::FControlApplicationJournal ControlReceiptsV2;
+	bool BeginRegistryInputSession();
+	bool QueueRegistryInputCommand(Speed::Input::V2::EBoundaryOperation Operation);
+	bool ServiceRegistryInputSession();
+	bool ReleaseRegistryInputSession();
 	bool ServiceInputSessionV2();
 	bool ReleaseInputSessionV2();
 	bool SetInputPauseV2(bool bPause, FCanUnpause CanUnpauseDelegate);
@@ -163,6 +172,7 @@ private:
 	ESimulationQuiescence QuiesceStandaloneInputOwner();
 	bool ApplyInputLifecyclePause(bool bPaused);
 	bool ReleaseInputLifecycle();
+	bool bScenarioOwnsInputAuthority = false;
 	bool bInputSessionRequiredV2 = false;
 	bool bInputSessionPendingV2 = false;
 	bool bInputLifecycleFault = false;

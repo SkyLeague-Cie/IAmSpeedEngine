@@ -11,6 +11,7 @@ struct FDeviceInputHostConfig
 {
 	std::shared_ptr<const FInputActionContract> Contract;
 	FFrameNumber FirstFrame = 0;
+	FInputProcessingPolicy Processing;
 	FActivityConfig Activity{}; // Zero is invalid, never an implicit product policy.
 	std::chrono::microseconds Cadence{0};
 	std::chrono::milliseconds StartupTimeout{0};

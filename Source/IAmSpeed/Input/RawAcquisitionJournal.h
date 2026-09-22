@@ -39,6 +39,7 @@ struct FAcquisitionBaseline { FAcquisitionCursor Cursor; FAcquiredRawState State
 class FRawAcquisitionJournal final : public IRawInputSource, public IInputProducerPollFence
 {
 public:
+	IInputProducerPollFence* PollFence() noexcept override { return this; }
 	static constexpr std::size_t Capacity = 256;
 	explicit FRawAcquisitionJournal(std::uint64_t Session, FFrameNumber FirstFrame = 0)
 		: SessionId(Session), NextFrame(FirstFrame) { Closed = !Session; }

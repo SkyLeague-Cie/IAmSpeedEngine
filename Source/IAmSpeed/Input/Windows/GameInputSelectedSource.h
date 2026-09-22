@@ -68,13 +68,13 @@ public:
 				if (Batch.Readings.Result.Status == EReadBatchStatus::Error
 					|| Batch.Readings.Result.Status == EReadBatchStatus::Resynchronize)
 				{
-					if (FAILED(Error) && Error != GAMEINPUT_E_REFERENCE_READING_TOO_OLD && Error != GAMEINPUT_E_DEVICE_DISCONNECTED)
+					if (FAILED(Error) && Error != GameInput::v3::GAMEINPUT_E_REFERENCE_READING_TOO_OLD && Error != GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED)
 					{ Discovery->FailAcquisition(Error); Status = EPollStatus::Failed; return false; }
 					ResetReadingLocked(*Lease);
-					if (Error == GAMEINPUT_E_DEVICE_DISCONNECTED)
+					if (Error == GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED)
 						Disconnected = std::make_pair(Lease->Ticket.Device.Id, Lease->Ticket.Device.Revision);
 					// Resynchronization changes generation. Never relabel an old batch.
-					Status = Error == GAMEINPUT_E_DEVICE_DISCONNECTED ? EPollStatus::Disconnected : EPollStatus::Resynchronized;
+					Status = Error == GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED ? EPollStatus::Disconnected : EPollStatus::Resynchronized;
 					return false;
 				}
 				Batch.Status = Batch.Readings.Result.Status == EReadBatchStatus::Updated ? EPollStatus::Updated : EPollStatus::NoChange;

@@ -5,9 +5,12 @@
 #include "HAL/RunnableThread.h"
 
 FSimulationWorker::FSimulationWorker(
-	FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames)
+	FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames,
+	FServiceBoundary InServiceBoundary, FCloseOnWorker InCloseOnWorker)
 	: Work(MoveTemp(InWork))
 	, WaitBetweenFrames(MoveTemp(InWaitBetweenFrames))
+	, ServiceBoundary(MoveTemp(InServiceBoundary))
+	, CloseOnWorker(MoveTemp(InCloseOnWorker))
 	, WakeEvent(FPlatformProcess::GetSynchEventFromPool(false))
 	, PauseAcknowledgedEvent(FPlatformProcess::GetSynchEventFromPool(true))
 {
@@ -64,7 +67,7 @@ FSimulationWorker::~FSimulationWorker()
 	}
 }
 
-bool FSimulationWorker::Start()
+bool FSimulationWorker::Start(bool bStartPaused)
 {
 	if (Thread || !Work || !WaitBetweenFrames || !WakeEvent ||
 		!PauseAcknowledgedEvent)
@@ -72,7 +75,8 @@ bool FSimulationWorker::Start()
 		return false;
 	}
 	bStopRequested.Store(false);
-	bPaused.Store(false);
+	bPaused.Store(bStartPaused);
+	PauseRequestSerial.Store(bStartPaused ? 1 : 0);
 	PauseAcknowledgedEvent->Reset();
 	bRunning.Store(true);
 	Thread = FRunnableThread::Create(
@@ -89,20 +93,25 @@ void FSimulationWorker::Pause()
 	(void)TryPause(MAX_uint32);
 }
 
-bool FSimulationWorker::TryPause(const uint32 TimeoutMilliseconds)
+void FSimulationWorker::RequestPause()
 {
 	if (!bPaused.Load() && PauseAcknowledgedEvent)
 	{
 		PauseAcknowledgedEvent->Reset();
 		++PauseRequestSerial;
 	}
-	const uint64 RequestedSerial = PauseRequestSerial.Load();
 	bPaused.Store(true);
 	if (WakeEvent)
 	{
 		WakeEvent->Trigger();
 	}
 
+}
+
+bool FSimulationWorker::TryPause(const uint32 TimeoutMilliseconds)
+{
+	RequestPause();
+	const uint64 RequestedSerial = PauseRequestSerial.Load();
 	// Only a true return proves the canonical boundary. A timeout leaves the
 	// request pending and never authorizes access to live simulation state.
 	const double Deadline = FPlatformTime::Seconds() + double(TimeoutMilliseconds) / 1000.0;
@@ -148,47 +157,64 @@ void FSimulationWorker::StopAndJoin()
 
 uint32 FSimulationWorker::Run()
 {
-	auto AcknowledgePause = [this]()
-	{
-		// Read the request before the flag: never acknowledge a newer request
-		// using a stale observation of the preceding paused interval.
-		const uint64 Request = PauseRequestSerial.Load();
-		if (bPaused.Load())
-		{
-			PauseAckSerial.Store(Request);
-			PauseAcknowledgedEvent->Trigger();
-		}
-	};
 	FSimulationWorkerWaitContext WaitContext(
 		*WakeEvent, bStopRequested, bPaused);
-	while (!bStopRequested.Load())
+	uint32 ExitCode = 0;
+	try
 	{
-		if (bPaused.Load())
+		while (!bStopRequested.Load())
 		{
-			AcknowledgePause();
-			while (bPaused.Load() && !bStopRequested.Load())
+			// Capture the request before servicing it. A newer pause cannot borrow
+			// an acknowledgment from work performed for an earlier boundary.
+			const uint64 Request = PauseRequestSerial.Load();
+			const bool bPauseAtBoundary = bPaused.Load();
+			const ESimulationBoundaryResult Boundary = ServiceBoundary
+				? ServiceBoundary(bPauseAtBoundary) : ESimulationBoundaryResult::Ready;
+			if (Boundary == ESimulationBoundaryResult::Failed)
 			{
-				WakeEvent->Wait(100);
-				AcknowledgePause();
+				ExitCode = 1;
+				break;
+			}
+			if (bStopRequested.Load()) break;
+			if (Boundary == ESimulationBoundaryResult::Waiting)
+			{
+				WakeEvent->Wait(1);
+				continue;
+			}
+			if (bPaused.Load())
+			{
+				if (bPauseAtBoundary && PauseRequestSerial.Load() == Request)
+				{
+					PauseAckSerial.Store(Request);
+					PauseAcknowledgedEvent->Trigger();
+				}
+				// Continue servicing commands while paused; no producer polling or
+				// physical frame runs from this branch.
+				WakeEvent->Wait(1);
+				continue;
 			}
 			PauseAcknowledgedEvent->Reset();
-			continue;
+			const ESimulationWorkerResult Result = Work();
+			if (Result == ESimulationWorkerResult::Complete || Result == ESimulationWorkerResult::Failed)
+			{
+				ExitCode = Result == ESimulationWorkerResult::Failed ? 1 : 0;
+				break;
+			}
+			if (Result == ESimulationWorkerResult::Idle)
+			{
+				WakeEvent->Wait(1);
+				continue;
+			}
+			WaitBetweenFrames(WaitContext);
 		}
-
-		const ESimulationWorkerResult Result = Work();
-		if (Result == ESimulationWorkerResult::Complete ||
-			Result == ESimulationWorkerResult::Failed)
-		{
-			break;
-		}
-		if (Result == ESimulationWorkerResult::Idle)
-		{
-			WakeEvent->Wait(1);
-			continue;
-		}
-		WaitBetweenFrames(WaitContext);
 	}
-	PauseAcknowledgedEvent->Trigger();
+	catch (...) { ExitCode = 1; }
+	// The callback retires and destroys thread-affine session owners before
+	// join can let the GT release their storage, on every exit path.
+	try { if (CloseOnWorker) CloseOnWorker(); }
+	catch (...) { ExitCode = 1; }
+	bStopRequested.Store(true);
 	bRunning.Store(false);
-	return 0;
+	PauseAcknowledgedEvent->Trigger();
+	return ExitCode;
 }

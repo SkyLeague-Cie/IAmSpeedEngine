@@ -27,6 +27,10 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 	
 public:
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Fixture-only control for an owned physical worker; UE keeps the underlying setter protected. */
+	void DisableAsyncPhysicsTickForTesting() { SetAsyncPhysicsTickEnabled(false); }
+#endif
 
 	void InitNetwork();
 	/** Used to create any physics engine information for this component */

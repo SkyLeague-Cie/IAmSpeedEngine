@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "SimulationWorld.h"
+#include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "SimulationWorker.h"
 #include "RealTimeSimulation.h"
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
@@ -22,58 +23,47 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FIAmSpeedWheeledInputQueueTest::RunTest(const FString& Parameters)
 {
-	TStrongObjectPtr<USpeedWheeledComponent> Owner(NewObject<USpeedWheeledComponent>());
-	USpeedWheeledComponent* Component = Owner.Get();
-	FWheeledInputState Input;
-	Component->QueueWheeledInputForFrame(7, Input);
-	Component->QueueTestWheeledPhysicalInputForFrame(7, Input);
-	TestEqual(TEXT("same activation frame replaces a complete command"), Component->PendingWheeledInputCommands.Num(), 1);
-	TestTrue(TEXT("test replacement carries bypass policy atomically"), Component->PendingWheeledInputCommands[0].bBypassSlew);
-	Component->ConsumeQueuedWheeledInputsForFrame(7);
-
-	// Reproduce network and canonical producers racing with the single consumer.
-	auto Network = Async(EAsyncExecution::Thread, [Component, Input]()
+	using namespace Speed::Input;
+	using namespace Speed::Input::V2;
+	FInputActionContractDescription Description;
+	Description.Revision={1}; Description.Actions=FInputActionContract::BaseActions();
+	Description.Physical={{Throttle,EPhysicalDestination::Throttle},{Brake,EPhysicalDestination::Brake},{Steering,EPhysicalDestination::Steering}};
+	auto Contract=FInputActionContract::Create(Description);
+	if (!TestTrue(TEXT("base action contract"),bool(Contract))) return false;
+	FSessionDescriptor Binding;
+	Binding.Id=Binding.Epoch=Binding.Controller=Binding.Producer=1;
+	Binding.Contract=Contract; Binding.Kind=EProducerContract::ExactScenario;
+	Binding.AllowScenarioAppend=true; Binding.Actors={{1,1}};
+	const auto MakeFrame=[&](uint64 N,int16 ThrottleValue)
 	{
-		for (int32 Frame = 0; Frame < 2000; ++Frame)
-			Component->QueueWheeledInputForFrame(Frame * 2, Input);
-	});
-	auto Canonical = Async(EAsyncExecution::Thread, [Component, Input]()
+		FInputFrameData D; D.ConsumptionFrame=N; D.SourceSequence=N+1;
+		D.Producer={EProducerKind::Device,1}; D.StreamEpoch={1}; D.DeviceGeneration={1}; D.Reset=N==0;
+		D.Values[Throttle]=ThrottleValue; D.ActiveMask=ThrottleValue?1:0;
+		if (N==1) D.Transitions.push_back({Throttle,ETransition::Started,ThrottleValue,{N+1,0}});
+		return Speed::Input::V2::FInputFrame(Contract,D);
+	};
+	Binding.Scenario.push_back(MakeFrame(0,0));
+	auto Commands=std::make_shared<FInputSessionCommands>();
+	FBoundaryCommandDescriptor Command;
+	Command.Id=1; Command.WorkerGeneration=1; Command.Binding=Binding;
+	if (!TestTrue(TEXT("inert scenario admitted"),Commands->Submit(Command)==ECommandAdmission::Enqueued)) return false;
+	FInputSessionRegistry Registry(Commands,1);
+	if (!TestTrue(TEXT("worker creates exact producer"),Registry.ServiceBoundary())) return false;
+	for (uint64 N=0; N<HistoryCapacity+4; ++N)
 	{
-		for (int32 Frame = 0; Frame < 2000; ++Frame)
-			Component->QueueTestWheeledPhysicalInputForFrame(Frame * 2 + 1, Input);
-	});
-	for (int32 Frame = 0; Frame < 4000; ++Frame)
-		Component->ConsumeQueuedWheeledInputsForFrame(Frame);
-	Network.Wait();
-	Canonical.Wait();
-	const auto& Commands = Component->PendingWheeledInputCommands;
-	TestTrue(TEXT("concurrent producers preserve the capacity bound"), Commands.Num() <= Component->MaxPendingWheeledInputs);
-	for (int32 Index = 1; Index < Commands.Num(); ++Index)
-		TestTrue(TEXT("pending frames remain sorted and unique"), Commands[Index - 1].ActivationFrame < Commands[Index].ActivationFrame);
-	Component->ConsumeQueuedWheeledInputsForFrame(MAX_int32);
-	TestTrue(TEXT("consumer drains all complete commands"), Commands.IsEmpty());
-
-	FNetworkWheeledSpeedInputState Packet;
-	Packet.LocalFrame = 7;
-	Packet.WheeledInput.Throttle = 0;
-	Packet.ApplyData(Component);
-	TestEqual(TEXT("ordinary network input still queues"), Commands.Num(), 1);
-	Component->SetTestInputOverrideEnabled(true);
-	TestTrue(TEXT("starting a sealed script discards stale queued inputs"), Commands.IsEmpty());
-	Input.Throttle = 255;
-	Component->QueueTestWheeledPhysicalInputForFrame(7, Input);
-	Packet.ApplyData(Component);
-	Component->QueueNetworkWheeledInputForFrame(6, Packet.WheeledInput);
-	TestEqual(TEXT("network cannot replace scripted commands or insert stale commands"), Commands.Num(), 1);
-	TestTrue(TEXT("scripted command keeps its complete payload and slew policy"),
-		Commands[0].Input.Throttle == 255 && Commands[0].bBypassSlew);
-	Component->ConsumeQueuedWheeledInputsForFrame(7);
-	Component->QueueWheeledInputForFrame(8, Input);
-	TestEqual(TEXT("script commands using ordinary slew remain accepted"), Commands.Num(), 1);
-	Component->ConsumeQueuedWheeledInputsForFrame(8);
-	Component->SetTestInputOverrideEnabled(false);
-	Packet.ApplyData(Component);
-	TestEqual(TEXT("leaving script mode restores network input"), Commands.Num(), 1);
+		if (N)
+		{
+			const auto Frame=MakeFrame(N,255);
+			if (!TestTrue(TEXT("append exact future frame"),Registry.AppendExactScenarioFrame(1,1,1,Frame))) return false;
+			TestFalse(TEXT("sealed frame cannot be replaced"),Registry.AppendExactScenarioFrame(1,1,1,Frame));
+		}
+		if (!TestTrue(TEXT("prepare and install same frame"),Registry.PrepareFrame(N) && Registry.InstallAll())) return false;
+		const auto Installed=Registry.ReadInstalled();
+		if (!TestTrue(TEXT("one snapshot"),Installed && Installed->Inputs.size()==1)) return false;
+		TestEqual(TEXT("canonical clock"),Installed->Frame,N);
+		TestEqual(TEXT("exact value without component slew"),int32(Installed->Inputs[0].Snapshot->Applied[Throttle]),N?255:0);
+		if (!TestTrue(TEXT("complete before next frame"),Registry.BeginAll() && Registry.ValidateComplete() && Registry.CompleteAll())) return false;
+	}
 	return true;
 }
 

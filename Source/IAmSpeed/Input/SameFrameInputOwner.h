@@ -118,7 +118,8 @@ public:
             else
             {
                 CallingSource = true;
-                auto* Fence = dynamic_cast<IInputProducerPollFence*>(Source.get());
+			auto* Fence = Source->PollFence();
+			if (!Fence) { CallingSource = false; return Reject(EOwnerInputStatus::ResyncRequired); }
                 std::optional<FInputPollCutoff> Cutoff;
                 bool ValidCutoff = false;
                 try
@@ -227,6 +228,13 @@ public:
     { return IsOwner() && Pending ? Pending->Entry->Before : std::nullopt; }
     EProducerContract GetProducerContract() const noexcept
     { return IsOwner() && Source ? Source->GetProducerContract() : EProducerContract::Unknown; }
+    bool AppendExactScenarioFrame(const FInputFrame& Frame)
+    {
+        if (!IsOwner() || CallingSource || Pending || Replay || Initial || !Source
+            || FPresentationInputScope::IsActive() || GetProducerContract() != EProducerContract::ExactScenario
+            || (Phase != EOwnerInputPhase::Idle && Phase != EOwnerInputPhase::Paused)) return false;
+        return Source->AppendExactScenarioFrame(Frame);
+    }
     std::optional<FInputFrame> InspectBaseline(FFrameNumber N) const
     {
         if (!IsOwner() || CallingSource || Pending || !Source || Initial) return {};
@@ -368,10 +376,10 @@ private:
     FPreparation Reject(EOwnerInputStatus S) noexcept { Quarantine(); return {S, {}}; }
     static bool ValidBinding(const IInputProducer* Source, const FOwnerInputBinding& B)
     {
-        // This phase does NOT implement AI/network V2 or enable their routes.
-        if (!Source || !dynamic_cast<const IInputProducerPollFence*>(Source) || !B.AdapterId || !B.Producer.Id || B.Producer.Kind != EProducerKind::Device
+        // AI is admitted only through its explicit exact command contract; network V2 stays excluded.
+		if (!Source || !Source->SupportsPollFence() || !B.AdapterId || !B.Producer.Id || B.Producer.Kind != (B.ProducerContract == EProducerContract::AI ? EProducerKind::AI : EProducerKind::Device)
             || !B.Epoch.Value || !B.Contract || B.ProducerContract != Source->GetProducerContract()
-            || (Source->GetProducerContract() != EProducerContract::Device && Source->GetProducerContract() != EProducerContract::ExactScenario)) return false;
+            || (Source->GetProducerContract() != EProducerContract::Device && Source->GetProducerContract() != EProducerContract::ExactScenario && Source->GetProducerContract() != EProducerContract::AI)) return false;
         try
         {
             const auto C = Source->GetContract();

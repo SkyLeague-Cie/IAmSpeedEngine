@@ -7,6 +7,8 @@
 #include "CanonicalFrameDriver.h"
 #include "SimulationFrameJournal.h"
 #include "SimulationWorker.h"
+#include "IAmSpeed/Input/InputSessionRegistry.h"
+#include "IAmSpeed/Input/InputObservationChannel.h"
 #include "SpeedSimulation.generated.h"
 
 class USpeedWorldSubsystem;
@@ -28,6 +30,9 @@ UCLASS(Abstract)
 class IAMSPEED_API ASpeedSimulation : public AActor
 {
 	GENERATED_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSkyAIInputPauseRegistryTest;
+#endif
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
@@ -90,6 +95,20 @@ public:
 	bool RequestRollbackAndResimulation(
 		const FSimulationSnapshot& Snapshot,
 		uint64 TargetFrameInclusive);
+	/** GT submits inert commands; only the worker constructs and owns producers. */
+	Speed::Input::V2::ECommandAdmission SubmitInputSessionCommand(
+		const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
+		std::shared_ptr<Speed::Input::V2::FRawAcquisitionJournal> Journal = {},
+		std::shared_ptr<Speed::Input::V2::FInputObservationChannel> Observation = {},
+		std::shared_ptr<Speed::Input::V2::FAIInputCommands> AI = {});
+	uint64 AllocateInputCommandId() { check(IsInGameThread()); return NextInputCommandId == MAX_uint64 ? 0 : NextInputCommandId++; }
+	std::optional<Speed::Input::V2::FBoundaryReceipt> ReadInputSessionReceipt(uint64 Id) const;
+	bool AcknowledgeInputSessionReceipt(uint64 Id) { return InputSessionCommands->Acknowledge(Id); }
+	std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ReadInputRegistryView() const;
+	std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ReadCompletedInputFrame() const;
+	uint64 GetInputWorkerGeneration() const { return InputWorkerGeneration; }
+	bool InputOwnersRetiredAfterJoin(uint64 Generation) const
+	{ return Generation == InputWorkerGeneration && bInputOwnerRetired.Load() && bInputOwnersClosedOnWorker.Load() && !SimulationWorker; }
 	/** Pauses the owned execution lane without changing the canonical frame. */
 	void PauseOwnedSimulation();
 	/** Bounded lifecycle boundary. Timeout retains pause request; never resume
@@ -102,11 +121,14 @@ public:
 	void ResumeOwnedSimulation();
 	/** GT-only: re-arms a paused controlled run after its actors/inputs were replaced. Keeps the world's canonical frame continuous. */
 	void RestartControlledRun();
+	/** After old actors/controllers are destroyed, before admitting replacement
+	 * scenario inputs. Joins the old lane and renews its command generation. */
+	bool PrepareControlledInputRun();
 	/** Thread-safe pause witness used by gameplay integration tests and diagnostics. */
 	bool IsOwnedSimulationPaused() const { return bOwnedSimulationPaused.Load(); }
-#if !UE_BUILD_SHIPPING
 	/** True when canonical frames are currently hosted by IAmSpeed's worker. */
 	bool IsOwnedWorkerExecutionMode() const;
+#if !UE_BUILD_SHIPPING
 	/**
 	 * Lets a simulation policy audit how many published frames a presentation
 	 * actor observed between two game-thread updates. The base policy is silent.
@@ -201,6 +223,21 @@ private:
 	/** Applies at most one queued restore/replay transaction on the owning lane. */
 	bool ProcessPendingRollbackRequest();
 
+	ESimulationBoundaryResult ServiceInputSessionBoundary(bool bPauseRequested);
+	void CloseInputSessionsOnWorker();
+	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;
+	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;
+	std::shared_ptr<const Speed::Input::V2::FInputRegistryView> PublishedInputRegistry;
+	std::shared_ptr<const Speed::Input::V2::FRegistryFrame> PublishedInputFrame;
+	FCriticalSection InputSessionAdmissionMutex;
+	std::vector<Speed::Input::V2::FInputSessionRegistry::FJournalService> PendingInputJournals;
+	std::map<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>> InputObservations;
+	std::vector<std::pair<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>>> PendingInputObservations;
+	uint64 InputWorkerGeneration = 0, NextInputCommandId = 1;
+	TAtomic<bool> bInputSessionAdmissionRequested = false;
+	TAtomic<bool> bInputOwnersClosedOnWorker = false;
+	uint64 NeutralizedInputRegistryVersion = MAX_uint64;
+	bool bInputNeutralizedDuringPause = false;
 	TUniquePtr<FSimulationWorker> SimulationWorker;
 	FCriticalSection RollbackRequestMutex;
 	TOptional<FPendingRollbackRequest> PendingRollbackRequest;

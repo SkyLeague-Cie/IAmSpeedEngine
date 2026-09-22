@@ -3,6 +3,7 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
@@ -679,6 +680,8 @@ void USpeedWorldSubsystem::AddComponent(ISpeedComponent& Comp)
 
 void USpeedWorldSubsystem::RemoveComponent(ISpeedComponent& Comp)
 {
+	if (!Comp.RetireInputProcessingOnWorker())
+	{ UE_LOG(LogTemp, Fatal, TEXT("Input processors must retire on the owning lane before adapter removal")); return; }
 	// Remove component from list
 	SimulationWorld.RemoveAdapter(Comp);
 
@@ -1352,6 +1355,75 @@ bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
 	{
 		if (Component && !Component->ValidateSimulationBindings(OutReason)) return false;
 	}
+	return true;
+}
+
+bool USpeedWorldSubsystem::ServiceInputRetirementsAtBoundary()
+{
+	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
+		if (Component && !Component->ServiceInputRetirementAtBoundary()) return false;
+	return true;
+}
+
+bool USpeedWorldSubsystem::RetireInputProcessingOnWorker()
+{
+	bool Retired = true;
+	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
+		if (Component && !Component->RetireInputProcessingOnWorker()) Retired = false;
+	return Retired;
+}
+
+bool USpeedWorldSubsystem::NeutralizeCanonicalInputs(const Speed::Input::V2::FInputRegistryView& View)
+{
+	if (bCanonicalFrameActive) return false;
+	for (const auto& Session : View.Bindings)
+		for (const auto& Actor : Session.Actors)
+		{
+			ISpeedComponent* Match = nullptr;
+			for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+				if (Component && Component->GetPublishedSimulationStableId() == Actor.Id) { Match = Component; break; }
+			if (!Match || Actor.Generation != Actor.Id || !Match->NeutralizeCanonicalInputAtBoundary()) return false;
+		}
+	return true;
+}
+
+bool USpeedWorldSubsystem::InstallCanonicalInputs(const Speed::Input::V2::FRegistryFrame& Frame)
+{
+	if (!bCanonicalFrameActive || !Frame.Registry || Frame.Registry->Terminal) return false;
+	// Resolve every identity before the first install. Stable ids are monotonic
+	// for this world lifetime; generation equals that non-reused registration id.
+	TArray<TPair<ISpeedComponent*, std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>>> Installs;
+	for (const auto& Session : Frame.Inputs)
+	{
+		if (!Session.Snapshot || Session.Snapshot->Input.GetData().ConsumptionFrame != Frame.Frame) return false;
+		for (const auto& Actor : Session.Actors)
+		{
+			ISpeedComponent* Match = nullptr;
+			for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+				if (Component && Component->GetPublishedSimulationStableId() == Actor.Id) { Match = Component; break; }
+			if (!Match || Actor.Generation != Actor.Id) return false;
+			Installs.Emplace(Match, Session.Snapshot);
+		}
+	}
+	for (const auto& Install : Installs)
+		if (!Install.Key->InstallCanonicalInput(Frame.Frame, Install.Value)) return false;
+	return true;
+}
+
+bool USpeedWorldSubsystem::StageCanonicalScenarioInputs(const FCanonicalFrameContext& Context,
+	Speed::Input::V2::FInputSessionRegistry& Registry)
+{
+	if (!bCanonicalFrameActive) return false;
+	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+		if (Component && !Component->StageCanonicalScenarioInput(Context, Registry)) return false;
+	return true;
+}
+
+bool USpeedWorldSubsystem::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
+{
+	// BeginCanonicalFrame has already frozen/validated the active adapter view.
+	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+		if (Component && !Component->PrepareCanonicalInputs(Context)) return false;
 	return true;
 }
 

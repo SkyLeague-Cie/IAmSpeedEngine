@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "SpeedCarCameraPresentation.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "UObject/StrongObjectPtr.h"
@@ -30,10 +31,10 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 	Live->EnableGenericCameraInput(true);
 	Replay->EnableGenericCameraInput(true);
 	Live->SinceCanMoveFrame = Replay->SinceCanMoveFrame = 100;
-	Live->WheeledUserInput.Throttle = 201;
-	Live->WheeledUserInput.Brake = 37;
-	Live->WheeledUserInput.Steer = -71;
-	Live->LastWheeledInputSlewFrame = 93;
+	ON_SCOPE_EXIT { Live->RetireInputProcessingOnWorker(); Replay->RetireInputProcessingOnWorker(); };
+	// Publish only the timeline origin before admitting the first remote packet.
+	TestTrue(TEXT("replay timeline projection prepared"), Replay->ValidateCanonicalFrameCommit(99));
+	TestTrue(TEXT("replay timeline projection committed"), Replay->CommitCanonicalFrame(99));
 	TNetRewindHistory<FNetworkWheeledSpeedInputState, true> History(32, true);
 	TArray<FNetworkWheeledSpeedInputState> LastPackets;
 
@@ -44,15 +45,23 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 		const auto Expected = Index % 2 ? B : A;
 		Live->PublishHeldCameraInput(Expected);
 		Live->BaseGameState.NumFrame = 120 + Index;
-		const int32 SlewBeforeCapture = Live->LastWheeledInputSlewFrame;
+		FWheeledInputState Requested;
+		Requested.Throttle = 201; Requested.Brake = 37; Requested.Steer = -71; Requested.Camera = Expected;
+		TestTrue(TEXT("immutable received packet admitted"), Live->SubmitLegacyWheeledInput(120 + Index, 120 + Index, Requested)
+			== Speed::Input::ELegacyRemoteAdmission::Accepted);
+		Live->UpdateInputs();
+		const auto PhysicalBeforeCapture = Live->WheeledPhysicalInput;
+		TestTrue(TEXT("same-frame projection prepared"), Live->ValidateCanonicalFrameCommit(119 + Index));
+		TestTrue(TEXT("same-frame projection committed"), Live->CommitCanonicalFrame(119 + Index));
 		FNetworkWheeledSpeedInputState Packet;
 		Packet.LocalFrame = 9000 + Index;
 		Packet.BuildData(Live);
 		TestTrue(TEXT("one capture supplies archived camera"), Packet.WheeledInput.Camera.Equals(Expected));
-		TestTrue(TEXT("capture leaves wheel command queue empty"), Live->PendingWheeledInputCommands.IsEmpty());
-		TestTrue(TEXT("capture never rewrites wheel controls or slew clock"),
-			Live->WheeledUserInput.Throttle == 201 && Live->WheeledUserInput.Brake == 37 &&
-			Live->WheeledUserInput.Steer == -71 && Live->LastWheeledInputSlewFrame == SlewBeforeCapture);
+		TestTrue(TEXT("network export keeps Requested and never changes Applied"),
+			Packet.WheeledInput.Throttle == 201 && Packet.WheeledInput.Brake == 37 && Packet.WheeledInput.Steer == -71
+			&& Live->WheeledPhysicalInput.Throttle == PhysicalBeforeCapture.Throttle
+			&& Live->WheeledPhysicalInput.Brake == PhysicalBeforeCapture.Brake
+			&& Live->WheeledPhysicalInput.Steer == PhysicalBeforeCapture.Steer);
 		TestEqual(TEXT("component mapping independent of Chaos offset"),
 			Packet.ResolveActivationFrame(100, true), 121 + Index);
 		TestTrue(TEXT("record real history"), History.RecordData(Packet.LocalFrame, &Packet));
@@ -60,8 +69,7 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 		auto Duplicate = Packet;
 		Duplicate.BuildData(Live);
 		TestTrue(TEXT("duplicate BuildData same frame does not recapture GT"), Duplicate.WheeledInput.Camera.Equals(Expected));
-		Live->BaseGameState.NumFrame = 121 + Index;
-		Live->UpdateInputs();
+		// Opposite GT mailbox cannot rewrite the completed physical snapshot.
 		TestTrue(TEXT("Step applies archived value despite opposite mailbox"), Live->WheeledPhysicalInput.Camera.Equals(Expected));
 		const uint64 ApplyCount = Live->CameraInputApplyCount;
 		Live->ConsumeQueuedCameraInputsForFrame(121 + Index);
@@ -69,7 +77,7 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("no growing camera input journal"), Live->PendingCameraInputCommands.IsEmpty());
 		if (Index >= 5084) LastPackets.Add(Packet);
 	}
-	TestEqual(TEXT("one mailbox capture per normal history frame"), Live->CameraMailboxReadCount, uint64(5100));
+	TestEqual(TEXT("network BuildData never polls a live mailbox"), Live->CameraMailboxReadCount, uint64(0));
 	for (const auto& Recorded : LastPackets)
 	{
 		FNetworkWheeledSpeedInputState Extracted;
@@ -78,6 +86,9 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 		Extracted.ApplyData(Replay);
 		Replay->BaseGameState.NumFrame = Extracted.ResolveActivationFrame(100, false);
 		Replay->UpdateInputs();
+		const uint64 N = uint64(Replay->NumFrame()) - 1;
+		TestTrue(TEXT("received frame prepares"), Replay->ValidateCanonicalFrameCommit(N));
+		TestTrue(TEXT("received frame commits"), Replay->CommitCanonicalFrame(N));
 		TestTrue(TEXT("historical ApplyData wins over opposite live mailbox"),
 			Replay->WheeledPhysicalInput.Camera.Equals(Recorded.WheeledInput.Camera));
 		TArray<uint8> Bytes;
@@ -116,11 +127,10 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("UE extraction keeps requested history address"), int32(Selected.LocalFrame), Frame);
 		Selected.DecayData(1.0f);
 		TestTrue(TEXT("input decay preserves held camera"), Selected.WheeledInput.Camera.Equals(Expected.WheeledInput.Camera));
-		Replay->PublishHeldCameraInput(Expected.WheeledInput.Camera.IsBack() ? B : A);
+		const auto BeforeStale = Replay->WheeledPhysicalInput.Camera;
 		Selected.ApplyData(Replay);
-		Replay->BaseGameState.NumFrame = Selected.ResolveActivationFrame(100, false);
-		Replay->UpdateInputs();
-		TestTrue(TEXT("missing-frame input applies without sampling GT"), Replay->WheeledPhysicalInput.Camera.Equals(Expected.WheeledInput.Camera));
+		TestTrue(TEXT("old/interpolated packet cannot rewrite committed forward-only input"),
+			Replay->WheeledPhysicalInput.Camera.Equals(BeforeStale));
 	}
 	auto Merged = Upper;
 	SparseHistory.MergeData(100, &Merged);

@@ -13,6 +13,44 @@ THIRD_PARTY_INCLUDES_END
 
 namespace Speed::Input::V2
 {
+#if PLATFORM_WINDOWS && !UE_SERVER
+namespace
+{
+// The host passes inert configuration. Native creation, polling and successful
+// destruction all occur on the acquisition worker, independently of UE ticks.
+class FNativeGameInputAcquisition final : public IInputAcquisition
+{
+public:
+    FNativeGameInputAcquisition(uint64_t Id, FActivityConfig Config, std::shared_ptr<FRawAcquisitionJournal> J)
+        : Producer(Id), Activity(Config), Journal(std::move(J)) {}
+    EAcquisitionPumpResult Pump() override
+    {
+        if (Closed) return EAcquisitionPumpResult::Closed;
+        if (!Source)
+        {
+            Microsoft::WRL::ComPtr<GameInput::v3::IGameInput> Api;
+            if (FAILED(GameInput::v3::GameInputCreate(Api.GetAddressOf()))) return EAcquisitionPumpResult::Rejected;
+            auto Raw=Windows::FGameInputSelectedSource::CreateRaw(Api.Get(),Producer,Activity);
+            if (!Raw) return EAcquisitionPumpResult::Rejected;
+            Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
+        }
+        return Source->Pump();
+    }
+    bool Close() override
+    {
+        Journal->Close();
+        if (Source && !Source->Close()) return false;
+        Source.reset(); Closed=true; return true;
+    }
+private:
+    uint64_t Producer;
+    FActivityConfig Activity;
+    std::shared_ptr<FRawAcquisitionJournal> Journal;
+    std::unique_ptr<Windows::FGameInputRawAcquisition> Source;
+    bool Closed=false;
+};
+}
+#endif
 FStreamEpoch AllocateInputStreamEpoch()
 {
 	static std::atomic<std::uint64_t> Next{1};
@@ -31,14 +69,13 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	const auto Epoch = AllocateInputStreamEpoch();
 	if (!Epoch.Value) return {};
 	const FProducerIdentity Identity{EProducerKind::Device, Epoch.Value};
-	Microsoft::WRL::ComPtr<GameInput::v3::IGameInput> Api;
-	if (FAILED(GameInput::v3::GameInputCreate(Api.GetAddressOf()))) return {};
-	auto Source = Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Identity.Id, Config.Activity);
-	if (!Source) return {};
 	auto Journal = std::make_shared<FRawAcquisitionJournal>(Epoch.Value, Config.FirstFrame);
-	auto Producer = FDeviceInputProducer::Create(Journal, Config.Contract, Epoch, Identity, Config.FirstFrame);
-	if (!Producer) return {};
-	auto Host = FInputHostSession::Create(std::move(Producer), Epoch, Identity, Config.FirstFrame);
+	FSessionDescriptor Binding;
+	Binding.Id = Binding.Epoch = Binding.Controller = Binding.Producer = Binding.Journal = Epoch.Value;
+	Binding.First = Config.FirstFrame; Binding.Kind = EProducerContract::Device;
+	Binding.Contract = Config.Contract; Binding.Processing = Config.Processing;
+	// Producer construction is deferred to the physical registry worker.
+	auto Host = FInputHostSession::CreateDescriptor(std::move(Binding));
 	if (!Host) return {};
 	Host->Journal = Journal;
 	if (!Config.Controls.empty())
@@ -46,7 +83,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		Host->Controls = FControlActionReader::Create(Config.Contract, Journal, Identity, Epoch.Value, Config.Controls);
 		if (!Host->Controls) return {};
 	}
-	auto Acquisition = std::make_shared<Windows::FGameInputRawAcquisition>(std::move(Source), Journal);
+	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal);
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
 	if (!Host->Acquisition->Start(Config.Cadence)
 		|| !Host->Acquisition->WaitForFirstPublication(Config.StartupTimeout)) return {};

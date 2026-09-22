@@ -24,7 +24,7 @@ class FInputPresentationBindings final
 {
 public:
 	using FSnapshotCallback = std::function<void(const FInputFrame&, FActionId)>;
-	explicit FInputPresentationBindings(const std::shared_ptr<FInputStream>& InStream)
+	explicit FInputPresentationBindings(const std::shared_ptr<IInputPublicationSource>& InStream)
 		: Stream(InStream), Cursor{InStream ? InStream->GetEpoch() : FStreamEpoch{}, 0} {}
 	template<class T>
 	bool BindAction(std::string Name, FActionId Action, EStateAction State,
@@ -153,7 +153,7 @@ private:
 		std::string Name; EBindingKind Kind; FActionId Action; EStateAction State;
 		std::function<void(const FInputFrame&, FActionId, EStateAction, std::int16_t, const std::optional<FInputEdgeIdentity>&)> Callback;
 	};
-	static bool Invoke(const FBinding& B, FInputStream& Source, const FInputFrame& Frame,
+	static bool Invoke(const FBinding& B, IInputPublicationSource& Source, const FInputFrame& Frame,
 		FActionId Action, EStateAction State, std::int16_t Value, const std::optional<FInputEdgeIdentity>& Identity = {})
 	{
 		try { B.Callback(Frame, Action, State, Value, Identity); return true; }
@@ -175,7 +175,7 @@ private:
 		Bindings.push_back(std::move(Binding)); return true;
 	}
 	EDispatchStatus Detach() { Cursor = {}; LastPresented.reset(); NeedsResync = true; return EDispatchStatus::Detached; }
-	bool ValidBatch(const FPublishedBatch& Batch, const FInputStream& Source) const
+	bool ValidBatch(const FPublishedBatch& Batch, const IInputPublicationSource& Source) const
 	{
 		if (Batch.Frames.empty() || !Source.GetContract() || Batch.Next.Epoch.Value != Cursor.Epoch.Value) return false;
 		auto Previous = LastPresented;
@@ -194,7 +194,7 @@ private:
 		}
 		return Serial == Batch.Next.Serial;
 	}
-	const std::weak_ptr<FInputStream> Stream;
+	const std::weak_ptr<IInputPublicationSource> Stream;
 	FPublicationCursor Cursor;
 	std::optional<FInputFrame> LastPresented;
 	std::vector<FBinding> Bindings;

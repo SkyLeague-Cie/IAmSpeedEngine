@@ -83,7 +83,7 @@ bool FIAmSpeedProducedInputWorkerOrderTest::RunTest(const FString& Parameters)
 	const uint32 FixtureThreadId = FPlatformTLS::GetCurrentThreadId();
 	constexpr uint32 FrameCount = 5;
 	const int32 TargetThrottle[FrameCount] = {0, 255, 255, 128, 128};
-	const int32 PhysicalThrottle[FrameCount] = {0, 16, 32, 48, 64};
+	const int32 PhysicalThrottle[FrameCount] = {0, 255, 255, 128, 128}; // Exact Test values; no component filter.
 	const auto Options = UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false)
 		.RequiresHitProxies(false).CreateNavigation(false).CreateAISystem(false)
 		.ShouldSimulatePhysics(false).SetTransactional(false);
@@ -204,7 +204,7 @@ bool FIAmSpeedProducedInputWorkerOrderTest::RunTest(const FString& Parameters)
 		const auto Published = Stream->ReadLatest();
 		Result.InputSerial = Published ? Published->Serial : 0;
 		if (Published) Result.InputCopy = Published->Frame;
-		Result.Target = int32(Component->WheeledUserInput.Throttle);
+		Result.Target = int32((Stream->ReadRecorded(Component->NumFrame() - 1) ? Stream->ReadRecorded(Component->NumFrame() - 1)->GetActions()[Throttle] : 0));
 		Result.Physical = int32(Component->WheeledPhysicalInput.Throttle);
 		Result.LocalFrame = Component->NumFrame();
 		Result.CountdownAfter = Component->WheeledPhysicsState.nbFramesbeforeCanMove;
@@ -252,7 +252,7 @@ bool FIAmSpeedProducedInputWorkerOrderTest::RunTest(const FString& Parameters)
 		TestEqual(Label + TEXT(" global serial"), Result.GlobalSerial, uint64(C + 1));
 		TestEqual(Label + TEXT(" input serial"), Result.InputSerial, uint64(C + 1));
 		TestEqual(Label + TEXT(" target via producer"), Result.Target, TargetThrottle[C]);
-		TestEqual(Label + TEXT(" physical slew applied once"), Result.Physical, PhysicalThrottle[C]);
+		TestEqual(Label + TEXT(" exact Test value applied on this frame"), Result.Physical, PhysicalThrottle[C]);
 		TestEqual(Label + TEXT(" natural countdown before frame"), int32(Result.CountdownBefore), int32(InitialCountdown));
 		TestEqual(Label + TEXT(" natural countdown after frame"), int32(Result.CountdownAfter), int32(InitialCountdown));
 		TestFalse(Label + TEXT(" countdown was not started"), Result.bCountdownStartedBefore || Result.bCountdownStartedAfter);

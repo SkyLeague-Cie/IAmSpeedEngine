@@ -1,7 +1,7 @@
 #include "IAmSpeed/Input/InputHostSession.h"
 #include "IAmSpeed/Input/ControlApplicationJournal.h"
 #include "IAmSpeed/Input/Testing/TestInputProducerV2.h"
-#include "../../Core/Car/Input/SkyProducedPlanV2.h"
+#include "Car/Input/SkyProducedPlanV2.h"
 #include <cstdlib>
 #include <iostream>
 
@@ -45,6 +45,34 @@ int main()
 	for (const auto A : {Sky::Input::V2::Jump, Sky::Input::V2::Powerslide, Sky::Input::V2::SwitchCam,
 		Sky::Input::V2::AirRoll, Sky::Input::V2::BackCam, Sky::Input::V2::Pause, Sky::Input::V2::ResetWorld, Sky::Input::V2::AutoControl})
 		Check(C->Find(A)->Type == EActionType::Bool, "every stored Boolean classified");
+	{
+		using namespace Sky::Input::V2;
+		const auto* Axis = C->Find(AirRollAxis);
+		Check(Axis && Axis->Type == EActionType::Axis1D && Axis->Signed && Axis->Quantization == 127,
+			"independent roll uses existing signed physical/wire quantization");
+		Speed::Input::FActionValues Values{};
+		Values[AirRollAxis]=127; Values[AirPitch]=127;
+		Check(ResolveAirRollAxis(Values)==127 && Values[AirYaw]==0 && Values[AirPitch]==127,
+			"case149 representation keeps roll127 and forward flip yaw0 independent");
+		Values[AirRollAxis]=0; Values[AirYaw]=63;
+		Check(ResolveAirRollAxis(Values)==0 && Values[AirYaw]==63,"yaw alone cannot generate roll");
+		Values[AirRoll]=1;
+		Check(ResolveAirRollAxis(Values)==63,"existing digital modifier retains stick behavior");
+		for (const auto Roll : {-127,-1,1,127})
+		{
+			Values[AirRollAxis]=std::int16_t(Roll);
+			Check(ResolveAirRollAxis(Values)==Roll && ResolveAirRollAxis(Values,false)==Roll && Values[AirYaw]==63,
+				"independent signed roll survives modifier release without changing yaw");
+			FInputFrameData Data; Data.Reset=true; Data.StreamEpoch={1}; Data.SourceSequence=1; Data.DeviceGeneration={1};
+			Data.Producer={Speed::Input::EProducerKind::Device,1}; Data.Values=Values;
+			for (Speed::Input::FActionId Id=0; Id<Speed::Input::ActionCount; ++Id)
+				if (Data.Values[Id]) Data.ActiveMask|=std::uint32_t(1)<<Id;
+			FInputFrame Frame(C,Data);
+			Check(Frame.IsValidFor(*C),"signed roll limits valid in immutable exact frame");
+			Data.Values[AirRollAxis]=std::int16_t(Roll<0?-128:128);
+			Check(!FInputFrame(C,Data).IsValidFor(*C),"out-of-range analog roll rejected, not silently clamped");
+		}
+	}
 	for (bool RePauseAfterAck : {false, true})
 	{
 		auto Hub = std::make_shared<FRawAcquisitionJournal>(77);

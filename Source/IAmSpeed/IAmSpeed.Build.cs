@@ -18,7 +18,7 @@ public class IAmSpeed : ModuleRules
 		{
 			string GameInputSdk = Path.Combine(EngineDirectory, "Plugins", "Runtime", "GameInput", "Source",
 				"GameInputWindowsLibrary", "ThirdParty");
-			PrivateSystemIncludePaths.Add(GameInputSdk);
+			PublicSystemIncludePaths.Add(GameInputSdk);
 			PublicAdditionalLibraries.Add(Path.Combine(GameInputSdk, "Binaries", "x64", "GameInput.lib"));
 		}
 

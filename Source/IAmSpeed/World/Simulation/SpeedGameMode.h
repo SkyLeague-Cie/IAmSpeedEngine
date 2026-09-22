@@ -17,11 +17,17 @@ class IAMSPEED_API ASpeedGameMode : public AGameMode
 {
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
+	friend class FSkyAIInputPauseRegistryTest;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedControllerInputLifecycleTest;
 #endif
 
 public:
 	ASpeedGameMode();
+	/** Automated scenarios reserve input authority and lifecycle for their
+	 * exact producer. Merely opening a test map may still allow devices. */
+	virtual bool AllowsDeviceInputAuthority() const { return true; }
 	virtual void BeginPlay() override;
 	/** Pauses or resumes the separately-owned simulation lane when it exists. */
 	void SetSimulationPaused(bool bPaused);

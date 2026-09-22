@@ -47,11 +47,8 @@ bool FIAmSpeedProducedWheeledInputBoundaryTest::RunTest(const FString& Parameter
 		{128, 128, -63}, {0, 255, 64}, {0, 255, 64}, {0, 0, 0},
 		{0, 0, 0}, {0, 0, 0}, {0, 0, 0}
 	}};
-	const std::array<FExpectedWheeledAxes, 11> Physical = {{
-		{0, 0, 0}, {16, 0, -16}, {32, 0, -32}, {48, 16, -48},
-		{64, 32, -63}, {48, 48, -47}, {32, 64, -31}, {16, 48, -15},
-		{0, 32, 0}, {0, 16, 0}, {0, 0, 0}
-	}};
+	const auto Physical = Targets; // Exact Test fixture: no implicit component slew.
+
 	for (const uint32 ObservationStride : {1u, 3u, 7u})
 	{
 		FWheeledTestProfile Profile;
@@ -80,21 +77,17 @@ bool FIAmSpeedProducedWheeledInputBoundaryTest::RunTest(const FString& Parameter
 		for (uint32 C = 0; C < Targets.size(); ++C)
 		{
 			Component->BaseGameState.NumFrame = C + 1;
-			// Only poison AFTER C0 reset, which legitimately clears stale sources.
-			// A due bypass command would immediately corrupt all physical axes.
+			// A competing remote packet must never displace the sealed Test owner.
 			if (C == 1)
 			{
 				FWheeledInputState Poison;
 				Poison.Throttle = 211; Poison.Brake = 213; Poison.Steer = 101;
-				Component->QueueTestWheeledPhysicalInputForFrame(2, Poison);
-				Component->PendingLiveThrottle.store(199);
-				Component->PendingLiveBrake.store(197);
-				Component->PendingLiveSteering.store(99);
-				Component->PendingLiveWheeledInputMask.store(7);
+				TestTrue(TEXT("remote poison rejected while Test producer owns input"),
+					Component->SubmitLegacyWheeledInput(2,2,Poison) != ELegacyRemoteAdmission::Accepted);
 			}
 			Component->UpdateInputs();
 			const FString Label = FString::Printf(TEXT("stride=%u C=%u"), ObservationStride, C);
-			CheckAxes(Label + TEXT(" target"), Component->WheeledUserInput, Targets[C]);
+			CheckAxes(Label + TEXT(" exact Test input"), Component->WheeledPhysicalInput, Targets[C]);
 			CheckAxes(Label + TEXT(" physical"), Component->WheeledPhysicalInput, Physical[C]);
 			TestEqual(Label + TEXT(" one producer call"), Counted->Calls, C + 1);
 			TestTrue(Label + TEXT(" consumed stream latched"), Component->ConsumedFrameInputStream == Stream);
@@ -103,30 +96,9 @@ bool FIAmSpeedProducedWheeledInputBoundaryTest::RunTest(const FString& Parameter
 				? !BeforePublication : BeforePublication && BeforePublication->Frame.GetConsumptionFrame() == C - 1);
 
 			Component->UpdateInputs();
-			CheckAxes(Label + TEXT(" repeat target"), Component->WheeledUserInput, Targets[C]);
+			CheckAxes(Label + TEXT(" repeat exact Test input"), Component->WheeledPhysicalInput, Targets[C]);
 			CheckAxes(Label + TEXT(" repeat physical"), Component->WheeledPhysicalInput, Physical[C]);
 			TestEqual(Label + TEXT(" repeat uses history"), Counted->Calls, C + 1);
-			if (C > 0)
-			{
-				TestEqual(Label + TEXT(" legacy live mask unconsumed"), int32(Component->PendingLiveWheeledInputMask.load()), 7);
-				TestEqual(Label + TEXT(" live throttle unchanged"), int32(Component->PendingLiveThrottle.load()), 199);
-				TestEqual(Label + TEXT(" live brake unchanged"), int32(Component->PendingLiveBrake.load()), 197);
-				TestEqual(Label + TEXT(" live steering unchanged"), int32(Component->PendingLiveSteering.load()), 99);
-				TestEqual(Label + TEXT(" legacy queue unconsumed"), Component->PendingWheeledInputCommands.Num(), 1);
-				if (Component->PendingWheeledInputCommands.Num() == 1)
-				{
-					const auto& Pending = Component->PendingWheeledInputCommands[0];
-					TestEqual(Label + TEXT(" poison activation unchanged"), Pending.ActivationFrame, 2);
-					TestTrue(Label + TEXT(" poison bypass unchanged"), Pending.bBypassSlew);
-					CheckAxes(Label + TEXT(" poison unchanged"), Pending.Input, {211, 213, 101});
-				}
-			}
-			else
-			{
-				TestEqual(Label + TEXT(" reset leaves no legacy commands"), Component->PendingWheeledInputCommands.Num(), 0);
-				TestEqual(Label + TEXT(" reset clears live mask"), int32(Component->PendingLiveWheeledInputMask.load()), 0);
-				TestFalse(Label + TEXT(" attachment reset consumed"), Component->bResetProducedWheeledInputs);
-			}
 			const auto Recorded = Stream->ReadRecorded(C);
 			TestTrue(Label + TEXT(" immutable frame recorded"), Recorded.has_value());
 			if (Recorded)

@@ -262,9 +262,9 @@ bool FIAmSpeedProducedDeviceLifecycleTest::RunTest(const FString& Parameters)
 		const auto Published = Stream->ReadLatest();
 		Result.InputSerial = Published ? Published->Serial : 0;
 		if (Published) Result.InputCopy = Published->Frame;
-		Result.Target = int32(Component->WheeledUserInput.Throttle);
-		Result.BrakeTarget = int32(Component->WheeledUserInput.Brake);
-		Result.SteeringTarget = int32(Component->WheeledUserInput.Steer);
+		Result.Target = int32((Stream->ReadRecorded(Component->NumFrame() - 1) ? Stream->ReadRecorded(Component->NumFrame() - 1)->GetActions()[Throttle] : 0));
+		Result.BrakeTarget = int32((Stream->ReadRecorded(Component->NumFrame() - 1) ? Stream->ReadRecorded(Component->NumFrame() - 1)->GetActions()[Brake] : 0));
+		Result.SteeringTarget = int32((Stream->ReadRecorded(Component->NumFrame() - 1) ? Stream->ReadRecorded(Component->NumFrame() - 1)->GetActions()[Steering] : 0));
 		Result.LocalFrame = Component->NumFrame();
 		Result.CountdownAfter = Component->WheeledPhysicsState.nbFramesbeforeCanMove;
 		Result.bCountdownStartedAfter = Component->CountdownHasStarted();

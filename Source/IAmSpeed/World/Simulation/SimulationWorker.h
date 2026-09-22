@@ -14,6 +14,10 @@ enum class ESimulationWorkerResult : uint8
 	Failed,
 };
 
+// Waiting keeps the lane alive to service lifecycle commands, but forbids physics
+// and pause acknowledgment until the requested boundary has actually completed.
+enum class ESimulationBoundaryResult : uint8 { Ready, Waiting, Failed };
+
 enum class ESimulationWaitResult : uint8
 {
 	DeadlineReached,
@@ -60,12 +64,17 @@ public:
 	using FWork = TFunction<ESimulationWorkerResult()>;
 	using FWaitBetweenFrames = TFunction<void(FSimulationWorkerWaitContext&)>;
 
-	FSimulationWorker(FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames);
+	using FServiceBoundary = TFunction<ESimulationBoundaryResult(bool bPauseRequested)>;
+	using FCloseOnWorker = TFunction<void()>;
+
+	FSimulationWorker(FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames,
+		FServiceBoundary InServiceBoundary = {}, FCloseOnWorker InCloseOnWorker = {});
 	~FSimulationWorker();
 
 	/** Starts the one worker thread; subsequent calls are rejected. */
-	bool Start();
+	bool Start(bool bStartPaused = false);
 	/** Prevents new work and waits until the worker reaches a frame boundary. */
+	void RequestPause();
 	void Pause();
 	/** Bounded boundary acknowledgment. Failure leaves the pause requested and
 	 * must not authorize mutation or automatic resume of a partially running frame. */
@@ -83,6 +92,8 @@ private:
 
 	FWork Work;
 	FWaitBetweenFrames WaitBetweenFrames;
+	FServiceBoundary ServiceBoundary;
+	FCloseOnWorker CloseOnWorker;
 	TAtomic<bool> bStopRequested = false;
 	TAtomic<bool> bPaused = false;
 	TAtomic<bool> bRunning = false;

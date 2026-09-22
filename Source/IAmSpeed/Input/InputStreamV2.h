@@ -1,25 +1,18 @@
 #pragma once
 
 #include "InputProducerV2.h"
+#include "InputPublication.h"
 #include "PhysicalActionSink.h"
 #include <mutex>
 #include <type_traits>
 
 namespace Speed::Input::V2
 {
-struct FPublicationCursor { FStreamEpoch Epoch; std::uint64_t Serial = 0; };
-struct FPublishedFrame { FInputFrame Frame; std::uint64_t Serial = 0; };
-enum class EReadStatus : std::uint8_t { NoChange, Batch, Overflow, Detached, InvalidCursor };
-struct FPublishedBatch
-{
-	EReadStatus Status = EReadStatus::Detached;
-	FPublicationCursor Next;
-	std::vector<FPublishedFrame> Frames;
-};
 enum class EConsumeStatus : std::uint8_t { Ready, AlreadyPending, PublishedReplay, Detached, WrongFrame, InvalidInput, PresentationForbidden, Paused };
 enum class EStreamState : std::uint8_t { Configurable, ActiveIdle, Reserved, Committed, Draining, Stopped };
 enum class EAbortReason : std::uint8_t { ApplicationFailed, SnapshotPublicationFailed, Cancelled };
 enum class ETransactionOutcome : std::uint8_t { Completed, Aborted };
+class FInputStream; // Resolve the friend to this namespace, not UE's global FInputStream.
 
 // Copyable capability, never reconstructible from an epoch/frame pair. The
 // shared identity stays alive with stale copies, preventing address reuse.
@@ -52,7 +45,7 @@ struct FConsumedInput
 
 // Single physical-lane producer/consumer, synchronized publication copies for
 // presentation. Both player and sealed tests use this exact class and sink.
-class FInputStream final
+class FInputStream final : public IInputPublicationSource
 {
 public:
 	FInputStream(std::shared_ptr<IInputProducer> InSource, std::shared_ptr<const FInputActionContract> InContract,

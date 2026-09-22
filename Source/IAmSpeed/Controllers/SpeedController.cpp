@@ -59,7 +59,8 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	{
 		if (!ReleaseInputLifecycle()) return;
 	}
-	bInputSessionRequiredV2 = InputSessionV2 != nullptr || RequiresInputSessionV2();
+	bInputSessionRequiredV2 = !bScenarioOwnsInputAuthority && (InputSessionV2 != nullptr || RequiresInputSessionV2());
+	if (!bInputSessionRequiredV2) bInputSessionPendingV2 = false;
 	if (InputSessionV2)
 	{
 		InputBoundary = QuiesceStandaloneInputOwner();
@@ -87,6 +88,11 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	}
 	if (InputSessionV2)
 	{
+		if (InputSessionV2->Descriptor)
+		{
+			if (!BindInputPresentationV2() || !InputSessionV2->Activate() || !BeginRegistryInputSession()) bInputLifecycleFault = true;
+			return;
+		}
 		if (!InputSessionV2->Activate() || (IsPaused() && !InputSessionV2->PauseAtBoundary())
 			|| !SpeedCar->SetFrameInputStreamV2(InputSessionV2->Stream))
 		{ InputSessionV2->CloseAtBoundary(); bInputLifecycleFault = true; return; }
@@ -335,8 +341,20 @@ void ASpeedController::SetStandaloneSimulationPaused(const bool bPaused)
 
 void ASpeedController::SynchronizeOwnedSimulationPauseWithWorld()
 {
+	if (bScenarioOwnsInputAuthority) return;
+	const auto* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASpeedGameMode>() : nullptr;
+	if (Mode && !Mode->AllowsDeviceInputAuthority()) return; // Scenario controls its worker boundary.
+
 	if (!InputSessionV2 && GetNetMode() != NM_Standalone) return;
 	const bool bPaused = IsPaused();
+	if (InputSessionV2 && InputSessionV2->Descriptor)
+	{
+		if (bPaused && InputSessionV2->RegistryBound && (!InputSessionV2->RegistryPaused
+			|| (InputSessionV2->PendingCommand && InputSessionV2->PendingOperation == Speed::Input::V2::EBoundaryOperation::Resume)))
+			QueueRegistryInputCommand(Speed::Input::V2::EBoundaryOperation::PauseAll);
+		if (bPaused) QuiesceStandaloneInputOwner();
+		ServiceRegistryInputSession(); return;
+	}
 	if (InputSessionV2)
 	{
 		if (bPaused)

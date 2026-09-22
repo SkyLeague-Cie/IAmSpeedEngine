@@ -11,6 +11,8 @@
 #include <memory>
 #include "IAmSpeed/Input/InputStream.h"
 #include "IAmSpeed/Input/InputStreamV2.h"
+#include "IAmSpeed/Input/SameFrameInputOwner.h"
+#include "IAmSpeed/Input/LegacyRemotePreSlew.h"
 
 #include "SpeedWheeledComponent.generated.h"
 
@@ -49,18 +51,26 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
-	struct FPendingWheeledInputCommand
-	{
-		int32 ActivationFrame = INDEX_NONE;
-		FWheeledInputState Input;
-		bool bBypassSlew = false;
-	};
 
 	USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer);
 
 	// Set the owner of this component. Call this at begin play
 	virtual void SetOwner(AActor* NewOwner);
 	bool ValidateSimulationBindings(FString& OutReason) const override;
+	bool RetireInputProcessingOnWorker() override;
+	int32 GetPublishedInputTimelineOrigin() const;
+	bool ServiceInputRetirementAtBoundary() override;
+	// Transitional network input is forward-only. State restore cannot leave
+	// its separate filter running against a corrected/replayed component state.
+	bool CanRestoreSimulationSnapshot(TConstArrayView<uint8> Payload) const override
+	{ return AllowsExternalNetworkStateRestore() && ISpeedComponent::CanRestoreSimulationSnapshot(Payload); }
+	bool AllowsExternalNetworkStateRestore() const { return !HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority(); }
+protected:
+	// Shared arbitration for both native wire payloads. No live input mailbox.
+	bool ClaimLegacyRemoteInputAuthority();
+	bool HasLegacyRemoteInputAuthority() const { return bLegacyRemoteInputAuthority.load(std::memory_order_acquire); }
+	void RejectCanonicalInputFrame() { bInputFrameRejectedV2 = true; }
+public:
 	ASpeedCar* GetSpeedCarOwner() const;
 	/** Used to create any physics engine information for this component */
 	virtual void OnCreatePhysicsState() override;
@@ -156,6 +166,7 @@ public:
 	bool NeutralizeProducedInputAfterOwnerJoined();
 	// Opt-in is lifetime scoped: detaching must not silently restore a legacy
 	// physical writer on the same component while cancellation is pending.
+	void JoinInputWorkerBeforeStorageDestruction();
 	bool HasProducedInputAuthority() const { return bProducedInputAuthority.load(std::memory_order_acquire); }
 	/** Opt-in generic camera input; SL keeps its independent legacy input adapter. */
 	void EnableGenericCameraInput(bool bEnabled);
@@ -228,6 +239,11 @@ public:
 
 	// Returns true if the movement is currently frozen (e.g. due to the game being paused)
 	bool IsFrozen() const override;
+	bool NeutralizeCanonicalInputAtBoundary() override;
+	bool InstallCanonicalInput(uint64 Frame,
+		std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot) override;
+	const std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>& GetCanonicalInputSnapshot() const { return CanonicalInputSnapshot; }
+	bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context) override;
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) override;
 	// Set whether the movement is currently frozen (e.g. due to the game being paused)
 	void SetIsFrozen(bool bFrozen) override;
@@ -292,15 +308,9 @@ protected:
 	virtual bool DisableGravityThisFrame() const { return false; }
 
 public:
-	// Queues a complete continuous input snapshot for deterministic consumers such as netcode and test scenarios.
-	void QueueWheeledInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
-	/** Network-only producer: ignored while a scripted scenario owns the input timeline. */
-	void QueueNetworkWheeledInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
-	/** Set at a quiescent scenario boundary, before queueing its commands; drops stale queued inputs on enable. */
+	// Legacy fixture admission flag; never writes physical values.
 	void SetTestInputOverrideEnabled(bool bEnabled);
 	bool IsTestInputOverrideEnabled() const { return bTestInputOverrideEnabled.load(std::memory_order_acquire); }
-	// Test-only counterpart that applies the physical wheel input directly at its activation frame.
-	void QueueTestWheeledPhysicalInputForFrame(int32 ActivationFrame, const FWheeledInputState& Input);
 	// Configuration access for native deterministic vehicle profiles.
 	UBoxSubBody* GetHitboxSubBodyForConfiguration() const { return HitboxSubBody.Get(); }
 
@@ -699,7 +709,6 @@ private:
 	void BindWheelSimulationPointers(Chaos::FSimpleWheeledVehicle* PVehicle);
 	void ClearWheelSimulationPointers();
 	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */
-	void ConsumePendingLiveWheeledInputs();
 	bool ConsumeProducedWheeledInputs(uint64 CanonicalFrame);
 	FCriticalSection FrameInputProducerMutex;
 	std::shared_ptr<Speed::Input::FInputStream> FrameInputStream;
@@ -714,10 +723,31 @@ private:
 	bool bResetProducedWheeledInputs = false; // Protected by FrameInputProducerMutex.
 	bool bProducedInputFrameOwned = false; // Simulation lane only, includes detach/reset frame.
 	std::atomic<bool> bProducedInputAuthority{false};
-	void UpdateWheeledPhysicalInputFromUser(bool bForce = false);
+	std::atomic<bool> bLegacyRemoteInputAuthority{false};
+	using FLegacyWheeledIngress = Speed::Input::TLegacyRemotePreSlewIngress<FWheeledInputState>;
+	using FLegacyWheeledOwner = Speed::Input::TLegacyRemotePreSlewOwner<FWheeledInputState>;
+	FCriticalSection LegacyWheeledIngressMutex;
+	std::shared_ptr<FLegacyWheeledIngress> LegacyWheeledIngress;
+	std::unique_ptr<FLegacyWheeledOwner> LegacyWheeledOwner;
+	bool bLegacyWheeledRetired = false;
+	std::atomic<bool> bInputRetirementRequested{false};
+	std::atomic<bool> bInputRetirementCompleted{false};
+	Speed::Input::ELegacyRemoteAdmission SubmitLegacyWheeledInput(uint64 SourceFrame, int32 ActivationFrame, const FWheeledInputState& Wire);
+	bool PrepareLegacyWheeledInput(uint64 Frame);
+	TOptional<uint64> PreparedCanonicalInputFrame;
+	std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> CanonicalInputSnapshot;
+	bool bCanonicalInputPending = false;
+	struct FCompletedWheeledInput
+	{
+		FWheeledInputState Requested;
+		uint32 LocalFrame = 0;
+		int32 SinceCanMove = INDEX_NONE;
+	};
+	mutable std::shared_ptr<const FCompletedWheeledInput> PreparedWheeledNetworkInput;
+	std::shared_ptr<const FCompletedWheeledInput> PublishedWheeledNetworkInput;
+	bool PrepareWheeledNetworkInput(uint64 Frame) const;
 	void RestoreWheeledPhysicalInputFromState();
 	void SyncWheeledPhysicalInputToState();
-	void ConsumeQueuedWheeledInputsForFrame(const int32 CurrentFrame);
 
 
 	//=========== Internal state variables for the movement component ===========
@@ -725,19 +755,7 @@ private:
 	FBasePhysicsState BasePhysicsState; // current physics state of the component (replicated on network)
 	FWheeledGameState WheeledGameState; // current wheeled game state of the component
 	FWheeledPhysicsState WheeledPhysicsState; // current wheeled physics state of the component (replicated on network)
-	FWheeledInputState WheeledUserInput; // input state given by the user for this component (replicated on network)
 	FWheeledInputState WheeledPhysicalInput; // input state used for physics simulation (e.g. after being processed from the user input)
-	FWheeledInputState WheeledPhysicalInputBeforeSlew;
-	enum : uint8
-	{
-		LiveThrottleDirty = 1 << 0,
-		LiveBrakeDirty = 1 << 1,
-		LiveSteeringDirty = 1 << 2
-	};
-	std::atomic<uint8> PendingLiveThrottle{0};
-	std::atomic<uint8> PendingLiveBrake{0};
-	std::atomic<int8> PendingLiveSteering{0};
-	std::atomic<uint8> PendingLiveWheeledInputMask{0};
 	std::atomic<bool> bGenericCameraInputEnabled{false};
 	// One atomic word publishes all version/flags/axis fields coherently.
 	std::atomic<uint32> PendingCameraInput{1};
@@ -762,7 +780,6 @@ private:
 	mutable uint64 CameraMailboxReadCount = 0;
 	uint64 CameraInputApplyCount = 0;
 #endif
-	int32 LastWheeledInputSlewFrame = INDEX_NONE;
 	FMatrix CarLocalInvI = FMatrix::Identity; // local inverse inertia tensor of the car body, expressed about the physical COM
 
 	TArray<int32> RecordedBaseFrames;
@@ -798,7 +815,7 @@ private:
 	bool bSimTimelineWasGrounded = false;
 	bool bSimTimelineHasGroundState = false;
 
-	static constexpr int32 MaxPendingWheeledInputs = 256;
+	static constexpr int32 MaxPendingCameraInputs = 256;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheeledInputQueueTest;
 	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
@@ -811,13 +828,7 @@ private:
 	friend class FIAmSpeedCameraInputBoundaryTest;
 	friend class FIAmSpeedWheeledInertiaCovarianceTest;
 #endif
-	// Network callbacks and canonical test input share this bounded command queue.
-	// Protect whole commands; the simulation remains the only consumer.
-	FCriticalSection PendingWheeledInputMutex;
 	std::atomic<bool> bTestInputOverrideEnabled{false};
-	void QueueWheeledInputCommand(int32 ActivationFrame, const FWheeledInputState& Input,
-		bool bBypassSlew, bool bFromNetwork);
-	TArray<FPendingWheeledInputCommand> PendingWheeledInputCommands;
 	int TurnStartFrame = INDEX_NONE;
 	int LastTurnSummaryFrame = INDEX_NONE;
 };

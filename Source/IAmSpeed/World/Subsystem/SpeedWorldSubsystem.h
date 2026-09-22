@@ -13,6 +13,7 @@
 class ISpeedComponent;
 class USolidSubBody;
 struct FCanonicalFrameContext;
+namespace Speed::Input::V2 { struct FRegistryFrame; struct FInputRegistryView; class FInputSessionRegistry; }
 
 enum class ECanonicalRunControlState : uint8
 {
@@ -90,6 +91,13 @@ public:
 	ERollingManifoldContactState GetRollingManifoldContactState(
 		const USolidSubBody& Body) const;
 
+	bool NeutralizeCanonicalInputs(const Speed::Input::V2::FInputRegistryView& View);
+	bool RetireInputProcessingOnWorker();
+	bool ServiceInputRetirementsAtBoundary();
+	bool InstallCanonicalInputs(const Speed::Input::V2::FRegistryFrame& Frame);
+	bool StageCanonicalScenarioInputs(const FCanonicalFrameContext& Context,
+		Speed::Input::V2::FInputSessionRegistry& Registry);
+	bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context);
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context);
 	/** Validates every registered adapter before any adapter may prepare a frame. */
 	bool ValidateSimulationBindings(FString& OutReason);
