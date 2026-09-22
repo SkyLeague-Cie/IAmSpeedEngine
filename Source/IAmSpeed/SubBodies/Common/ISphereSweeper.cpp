@@ -7,7 +7,7 @@
 
 namespace
 {
-    // Reserved for possible future network serialization; keep physics contact points unrounded.
+    // #TODO see if it is still useful for netcode with new architecture
     // constexpr float SphereBoxContactPointQuantizationCm = 0.1f; // 1 mm
 
     void QuantizeSphereBoxContactHit(SHitResult& Hit)
