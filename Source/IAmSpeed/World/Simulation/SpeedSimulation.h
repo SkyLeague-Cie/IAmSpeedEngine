@@ -32,6 +32,7 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
+	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 #endif

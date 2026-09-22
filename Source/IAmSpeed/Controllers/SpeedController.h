@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "IAmSpeed/Input/InputStream.h"
+#include "IAmSpeed/Input/InputHostSession.h"
+#include "IAmSpeed/Input/ControlApplicationJournal.h"
 #include <memory>
 #include "SpeedController.generated.h"
 
@@ -25,6 +27,29 @@ class IAMSPEED_API ASpeedController : public APlayerController
 	GENERATED_BODY()
 
 public:
+	ASpeedController();
+	bool ConfigureInputSessionV2(std::shared_ptr<Speed::Input::V2::FInputHostSession> Session);
+	Speed::Input::V2::FControlApplicationBatch ReadControlReceipts(uint64 Cursor) const
+	{ check(IsInGameThread()); return ControlReceiptsV2.Read(Cursor); }
+	/** Register before possession. UObject lifetime remains owned by Unreal. */
+	template<class T>
+	bool BindAction(const FString& Name, Speed::Input::FActionId Action,
+		Speed::Input::V2::EStateAction State, T* Receiver,
+		void (T::*Method)(const Speed::Input::V2::FActionEvent&))
+	{
+		if (!IsInGameThread() || !InputSessionV2 || !Receiver || !Method) return false;
+		struct FReceiver
+		{
+			TWeakObjectPtr<T> Target;
+			void (T::*Callback)(const Speed::Input::V2::FActionEvent&);
+			void Dispatch(const Speed::Input::V2::FActionEvent& Event)
+			{ if (T* Object = Target.Get()) (Object->*Callback)(Event); }
+		};
+		auto Adapter = std::make_shared<FReceiver>(FReceiver{Receiver, Method});
+		if (!InputSessionV2->Presentation->BindAction(TCHAR_TO_UTF8(*Name), Action, State,
+			std::weak_ptr<FReceiver>(Adapter), &FReceiver::Dispatch)) return false;
+		InputReceiversV2.push_back(std::move(Adapter)); return true;
+	}
 	void Tick(float DeltaSeconds) override;
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	/** Presentation only: callback receives const values, never a physical writer.
@@ -65,6 +90,9 @@ public:
 	bool SetPause(bool bPause, FCanUnpause CanUnpauseDelegate = FCanUnpause()) override;
 
 protected:
+	bool HasInputSessionV2() const { return InputSessionV2 != nullptr; }
+	virtual Speed::Input::V2::EControlApplication ExecuteInputControlV2(const Speed::Input::V2::FControlRequest& Request);
+	void HandleInputs();
 	void HandleInputs(const Speed::Input::FPublishedInputFrame& Snapshot);
 	void SetupInputComponent() override;
 	void OnPossess(APawn* InPawn) override;
@@ -110,6 +138,13 @@ protected:
 	UInputAction* CamPitchAction = nullptr;
 
 private:
+	std::shared_ptr<Speed::Input::V2::FInputHostSession> InputSessionV2;
+	std::vector<std::shared_ptr<void>> InputReceiversV2;
+	uint64 LastInputSessionV2 = 0;
+	Speed::Input::V2::FControlApplicationJournal ControlReceiptsV2;
+	bool ServiceInputSessionV2();
+	bool ReleaseInputSessionV2();
+	bool SetInputPauseV2(bool bPause, FCanUnpause CanUnpauseDelegate);
 #if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS
 	friend struct Speed::Input::FControllerInputTestAccess;
 	friend class FIAmSpeedControllerInputLifecycleTest;

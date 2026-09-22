@@ -10,6 +10,7 @@
 #include <atomic>
 #include <memory>
 #include "IAmSpeed/Input/InputStream.h"
+#include "IAmSpeed/Input/InputStreamV2.h"
 
 #include "SpeedWheeledComponent.generated.h"
 
@@ -148,6 +149,9 @@ public:
 	void SetPhysSteeringInput(const float& Steering);
 	/** GameThread lifecycle boundary. The worker retains only a values producer. */
 	void SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream);
+	/** Caller owns acknowledged physical quiescence; no accepted token may remain. */
+	bool SetFrameInputStreamV2(std::shared_ptr<Speed::Input::V2::FInputStream> Stream);
+	bool NeutralizeProducedInputAtBoundary();
 	// Opt-in is lifetime scoped: detaching must not silently restore a legacy
 	// physical writer on the same component while cancellation is pending.
 	bool HasProducedInputAuthority() const { return bProducedInputAuthority.load(std::memory_order_acquire); }
@@ -159,6 +163,9 @@ public:
 	void ClearHeldCameraInput();
 	void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const override;
 	void OnCanonicalFramePublished(uint64 NumFrame) override;
+	bool ValidateCanonicalFrameCommit(uint64 Frame) const override;
+	bool CommitCanonicalFrame(uint64 Frame) noexcept override;
+	void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept override;
 
 	void RegisterWheelGroundContact(const SWheelGroundContact& Contact) override;
 
@@ -269,6 +276,8 @@ protected:
 	// this source; no live/queued fallback is permitted for that physical frame.
 	virtual bool ValidateProducedInputFrame(const Speed::Input::FInputFrame&) const { return true; }
 	virtual bool ApplyProducedInputFrame(const Speed::Input::FInputFrame&) { return true; }
+	virtual bool ValidateProducedInputFrameV2(const Speed::Input::V2::FInputFrame&) const { return true; }
+	virtual bool ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame&) { return true; }
 	// Simulation-lane cancellation, never a synthetic gameplay release event.
 	virtual void ResetProducedInputState() {}
 	bool IsProducedInputFrameOwned() const { return bProducedInputFrameOwned; }
@@ -691,6 +700,12 @@ private:
 	std::shared_ptr<Speed::Input::FInputStream> FrameInputStream;
 	// Simulation-lane handle latched for this frame, including in-flight detach.
 	std::shared_ptr<Speed::Input::FInputStream> ConsumedFrameInputStream;
+	std::shared_ptr<Speed::Input::V2::FInputStream> FrameInputStreamV2;
+	std::shared_ptr<Speed::Input::V2::FInputStream> ConsumedFrameInputStreamV2;
+	std::optional<Speed::Input::V2::FReservationToken> InputReservationV2;
+	std::optional<uint64> ReservedInputFrameV2;
+	bool bInputFrameRejectedV2 = false;
+	bool ConsumeProducedWheeledInputsV2(uint64 Frame, const std::shared_ptr<Speed::Input::V2::FInputStream>& Stream);
 	bool bResetProducedWheeledInputs = false; // Protected by FrameInputProducerMutex.
 	bool bProducedInputFrameOwned = false; // Simulation lane only, includes detach/reset frame.
 	std::atomic<bool> bProducedInputAuthority{false};
@@ -784,6 +799,7 @@ private:
 	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
+	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;

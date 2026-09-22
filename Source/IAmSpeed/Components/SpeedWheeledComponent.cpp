@@ -1361,7 +1361,8 @@ void USpeedWheeledComponent::UpdateInputs()
 	}
 	// An opt-in device frame has exclusive ownership over legacy live/network
 	// input. The existing sealed test override remains the sole scripted owner.
-	if (!bProducedInputFrameOwned || IsTestInputOverrideEnabled()) ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
+	if (!bProducedInputFrameOwned || (IsTestInputOverrideEnabled() && !InputReservationV2 && !bInputFrameRejectedV2))
+		ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
 
 	UpdateWheeledPhysicalInputFromUser(false);
 	ConsumeQueuedCameraInputsForFrame(CurrentFrame);
@@ -1373,6 +1374,7 @@ void USpeedWheeledComponent::SetFrameInputStream(std::shared_ptr<Speed::Input::F
 	// Null is mandatory lifecycle teardown, including UnPossess during dispatch.
 	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return;
 	FScopeLock Lock(&FrameInputProducerMutex);
+	if (Stream && FrameInputStreamV2) return; // Never install a second authority.
 	if (FrameInputStream && FrameInputStream != Stream) FrameInputStream->Deactivate();
 	FrameInputStream = MoveTemp(Stream);
 	if (FrameInputStream) bProducedInputAuthority.store(true, std::memory_order_release);
@@ -1383,10 +1385,12 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 {
 	ConsumedFrameInputStream.reset();
 	std::shared_ptr<Speed::Input::FInputStream> Stream;
+	std::shared_ptr<Speed::Input::V2::FInputStream> StreamV2;
 	bool bReset = false;
 	{
 		FScopeLock Lock(&FrameInputProducerMutex);
 		Stream = FrameInputStream;
+		StreamV2 = FrameInputStreamV2;
 		bReset = bResetProducedWheeledInputs;
 		bResetProducedWheeledInputs = false;
 	}
@@ -1405,6 +1409,7 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 	}
 	// Detach cancels derived latches and cannot reapply an old queued/live value
 	// in the same frame as the cancellation.
+	if (StreamV2) return ConsumeProducedWheeledInputsV2(CanonicalFrame, StreamV2);
 	if (!Stream) return bReset || HasProducedInputAuthority();
 	if (IsTestInputOverrideEnabled())
 	{
@@ -1439,6 +1444,98 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 void USpeedWheeledComponent::OnCanonicalFramePublished(uint64 Frame)
 {
 	if (ConsumedFrameInputStream) ConsumedFrameInputStream->PublishCompleted(Frame);
+}
+
+bool USpeedWheeledComponent::SetFrameInputStreamV2(std::shared_ptr<Speed::Input::V2::FInputStream> Stream)
+{
+	check(IsInGameThread());
+	if (Speed::Input::FPresentationInputScope::IsActive()) return false;
+	FScopeLock Lock(&FrameInputProducerMutex);
+	if (InputReservationV2 || (Stream && (FrameInputStream || IsTestInputOverrideEnabled()))) return false;
+	if (FrameInputStreamV2 && FrameInputStreamV2 != Stream) FrameInputStreamV2->RequestStop();
+	FrameInputStreamV2 = MoveTemp(Stream);
+	if (FrameInputStreamV2) bProducedInputAuthority.store(true, std::memory_order_release);
+	bInputFrameRejectedV2 = false; bResetProducedWheeledInputs = true;
+	return true;
+}
+
+bool USpeedWheeledComponent::NeutralizeProducedInputAtBoundary()
+{
+	check(IsInGameThread());
+	// This method requires an acknowledged live worker boundary, not merely a
+	// stopped or missing worker. The controller owns that distinction.
+	if (Speed::Input::FPresentationInputScope::IsActive() || InputReservationV2) return false;
+	WheeledUserInput.Throttle = 0; WheeledUserInput.Brake = 0; WheeledUserInput.Steer = 0;
+	WheeledPhysicalInput = WheeledUserInput; WheeledPhysicalInputBeforeSlew = WheeledUserInput;
+	SyncWheeledPhysicalInputToState(); ResetProducedInputState(); return true;
+}
+
+bool USpeedWheeledComponent::ConsumeProducedWheeledInputsV2(uint64 Frame,
+	const std::shared_ptr<Speed::Input::V2::FInputStream>& Stream)
+{
+	using namespace Speed::Input::V2;
+	// A forgotten token is an invariant failure, never silently overwritten.
+	if (InputReservationV2) { bInputFrameRejectedV2 = true; return true; }
+	bInputFrameRejectedV2 = false;
+	auto Input = Stream->Consume(Frame);
+	// Retain the capability before calling any game hook. If a hook throws,
+	// the world's abort path must still be able to close this reservation.
+	if (Input.Reservation)
+	{
+		ConsumedFrameInputStreamV2 = Stream;
+		InputReservationV2 = Input.Reservation; ReservedInputFrameV2 = Frame;
+	}
+	bool Valid = !IsTestInputOverrideEnabled() && Input.Status == EConsumeStatus::Ready
+		&& Input.Frame && Input.Reservation && Input.Targets.Valid && ValidateProducedInputFrameV2(*Input.Frame);
+	if (Valid)
+	{
+		if (Input.Frame->GetData().Reset) ResetProducedInputState();
+		WheeledUserInput.Throttle = Input.Targets.ThrottleValue;
+		WheeledUserInput.Brake = Input.Targets.BrakeValue;
+		WheeledUserInput.Steer = Input.Targets.SteeringValue;
+		Valid = ApplyProducedInputFrameV2(*Input.Frame);
+	}
+	if (Valid) Valid = Stream->ConfirmPhysicalCommit(*Input.Reservation, true)
+		&& Stream->PreparePublication(*Input.Reservation);
+	if (!Valid)
+	{
+		if (Input.Reservation) Stream->Abort(*Input.Reservation, EAbortReason::ApplicationFailed);
+		InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
+		Stream->RequestStop(); bInputFrameRejectedV2 = true;
+		WheeledUserInput.Throttle = 0; WheeledUserInput.Brake = 0; WheeledUserInput.Steer = 0;
+		ResetProducedInputState(); return true;
+	}
+	return true;
+}
+
+bool USpeedWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
+{
+	if (bInputFrameRejectedV2) return false;
+	if (!InputReservationV2) return !ConsumedFrameInputStreamV2;
+	return ReservedInputFrameV2 && *ReservedInputFrameV2 == Frame && ConsumedFrameInputStreamV2
+		&& ConsumedFrameInputStreamV2->IsPublicationPrepared(*InputReservationV2);
+}
+
+bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
+{
+	if (!InputReservationV2) return !bInputFrameRejectedV2 && !ConsumedFrameInputStreamV2;
+	if (!ReservedInputFrameV2 || *ReservedInputFrameV2 != Frame || !ConsumedFrameInputStreamV2
+		|| !ConsumedFrameInputStreamV2->FinalizePublication(*InputReservationV2)) return false;
+	InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
+	return true;
+}
+
+void USpeedWheeledComponent::AbortCanonicalFrame(uint64, ECanonicalFrameAbortReason) noexcept
+{
+	if (!InputReservationV2) return;
+	try
+	{
+		if (ConsumedFrameInputStreamV2)
+			ConsumedFrameInputStreamV2->Abort(*InputReservationV2, Speed::Input::V2::EAbortReason::SnapshotPublicationFailed);
+	}
+	catch (...) {} // Terminal owner failure; never publish this reservation.
+	InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
+	bInputFrameRejectedV2 = true;
 }
 
 void USpeedWheeledComponent::ConsumePendingLiveWheeledInputs()

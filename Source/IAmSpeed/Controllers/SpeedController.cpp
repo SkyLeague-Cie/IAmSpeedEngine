@@ -7,9 +7,16 @@
 #include "IAmSpeed/World/Simulation/SpeedSimulation.h"
 #include "InputActionValue.h"
 
+ASpeedController::ASpeedController()
+{
+	PrimaryActorTick.bTickEvenWhenPaused = true;
+	bShouldPerformFullTickWhenPaused = true;
+}
+
 void ASpeedController::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (InputSessionV2) { ServiceInputSessionV2(); return; }
 	if (InputSnapshots && !InputSnapshots->IsLifecyclePaused())
 	{
 		const auto Snapshot = InputSnapshots->ReadLatest();
@@ -33,7 +40,7 @@ void ASpeedController::HandleInputs(const Speed::Input::FPublishedInputFrame& Sn
 bool ASpeedController::ConfigureInputProducer(std::shared_ptr<Speed::Input::IInputProducer> Producer)
 {
 	check(IsInGameThread());
-	if (SpeedCar || Speed::Input::FPresentationInputScope::IsActive()) return false;
+	if (SpeedCar || InputSessionV2 || Speed::Input::FPresentationInputScope::IsActive()) return false;
 	InputProducer = MoveTemp(Producer);
 	return true;
 }
@@ -41,6 +48,7 @@ bool ASpeedController::ConfigureInputProducer(std::shared_ptr<Speed::Input::IInp
 void ASpeedController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
+	if (InputSessionV2) return;
 
 	if (UEnhancedInputLocalPlayerSubsystem* Subsystem =
 		ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
@@ -51,12 +59,34 @@ void ASpeedController::SetupInputComponent()
 
 void ASpeedController::OnPossess(APawn* InPawn)
 {
+	ESimulationQuiescence InputBoundary = ESimulationQuiescence::AlreadyStopped;
+	if (SpeedCar && InputSessionV2)
+	{
+		// Never silently reuse a consumed epoch or fall back to UE on replacement.
+		// Unpossess, configure a new session, then possess at the new boundary.
+		bInputLifecycleFault = true; return;
+	}
+	if (InputSessionV2)
+	{
+		InputBoundary = QuiesceStandaloneInputOwner();
+		if (InputBoundary != ESimulationQuiescence::BoundaryAcknowledged && InputBoundary != ESimulationQuiescence::AlreadyStopped)
+		{ bInputLifecycleFault = true; return; }
+	}
 	if (InputSnapshots) InputSnapshots->Deactivate();
 	if (SpeedCar && InputSnapshots) SpeedCar->SetFrameInputStream(nullptr);
 	if (SpeedCar) SpeedCar->ClearCameraInputs();
 	Super::OnPossess(InPawn);
 	SpeedCar = CastChecked<ASpeedCar>(InPawn);
 	SpeedCar->ClearCameraInputs();
+	if (InputSessionV2)
+	{
+		if (!InputSessionV2->Activate() || (IsPaused() && !InputSessionV2->PauseAtBoundary())
+			|| !SpeedCar->SetFrameInputStreamV2(InputSessionV2->Stream))
+		{ InputSessionV2->CloseAtBoundary(); bInputLifecycleFault = true; return; }
+		bInputLifecycleFault = false;
+		if (!IsPaused()) SetStandaloneSimulationPaused(false);
+		return;
+	}
 	InputSnapshots = InputProducer ? std::make_shared<Speed::Input::FInputStream>(InputProducer) : nullptr;
 	PresentationBindings.ResetObservation();
 	if (InputSnapshots)
@@ -69,6 +99,7 @@ void ASpeedController::OnPossess(APawn* InPawn)
 
 void ASpeedController::ReleaseInputLifecycle()
 {
+	if (InputSessionV2 && !ReleaseInputSessionV2()) return;
 	// Mandatory close happens before ownership is released. Retained worker
 	// references cannot acquire/publish again; copied history stays immutable.
 	const auto Closed = InputSnapshots ? InputSnapshots->Deactivate()
@@ -100,6 +131,7 @@ void ASpeedController::SetupEnhancedInputComponent(
 	UEnhancedInputComponent* EnhancedInputComponent)
 {
 	check(EnhancedInputComponent);
+	if (InputSessionV2) return;
 
 	// Legacy device/gameplay dispatch remains only when no independent producer
 	// was installed. Enhanced Input is never an acquisition source for that producer.
@@ -252,6 +284,7 @@ ESimulationQuiescence ASpeedController::QuiesceStandaloneInputOwner()
 
 bool ASpeedController::SetPause(const bool bPause, FCanUnpause CanUnpauseDelegate)
 {
+	if (InputSessionV2) return SetInputPauseV2(bPause, MoveTemp(CanUnpauseDelegate));
 	// Preserve existing pause hosting until an independent producer is installed.
 	if (!InputSnapshots)
 	{
@@ -316,6 +349,20 @@ void ASpeedController::SynchronizeOwnedSimulationPauseWithWorld()
 {
 	if (GetNetMode() != NM_Standalone) return;
 	const bool bPaused = IsPaused();
+	if (InputSessionV2)
+	{
+		if (bPaused)
+		{
+			const auto Boundary = QuiesceStandaloneInputOwner();
+			bInputLifecycleFault = (Boundary != ESimulationQuiescence::BoundaryAcknowledged
+				&& Boundary != ESimulationQuiescence::AlreadyStopped) || !InputSessionV2->PauseAtBoundary();
+			if (!bInputLifecycleFault && Boundary == ESimulationQuiescence::BoundaryAcknowledged && IsValid(SpeedCar))
+				bInputLifecycleFault = !SpeedCar->NeutralizeProducedInputAtBoundary();
+		}
+		else if (!bInputLifecycleFault && InputSessionV2->Stream->IsLifecyclePaused())
+			bInputLifecycleFault = !InputSessionV2->RequestResumeAtBoundary();
+		return;
+	}
 	if (!InputSnapshots)
 	{
 		if (bPaused || !bInputLifecycleFault) SetStandaloneSimulationPaused(bPaused);

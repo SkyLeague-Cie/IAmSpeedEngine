@@ -130,6 +130,16 @@ void ASpeedCar::SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> 
 	SpeedWheeledComponent->SetFrameInputStream(MoveTemp(Stream));
 }
 
+bool ASpeedCar::SetFrameInputStreamV2(std::shared_ptr<Speed::Input::V2::FInputStream> Stream)
+{
+	return SpeedWheeledComponent->SetFrameInputStreamV2(MoveTemp(Stream));
+}
+
+bool ASpeedCar::NeutralizeProducedInputAtBoundary()
+{
+	return SpeedWheeledComponent->NeutralizeProducedInputAtBoundary();
+}
+
 void ASpeedCar::SetBrakeInput(const float& Brake)
 {
 	SpeedWheeledComponent->SetPhysBrakeInput(Brake);
