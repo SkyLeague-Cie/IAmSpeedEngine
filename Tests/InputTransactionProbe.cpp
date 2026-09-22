@@ -75,6 +75,22 @@ struct FCountingReceiver
 };
 int main()
 {
+	for (bool Abort : {false, true})
+	{
+		auto S = Stream(); Check(S->Activate(), "prepared commit fixture");
+		const auto Token = Reserve(*S, 0);
+		Check(!S->PrepareFinalization(Token), "unprepared reservation cannot lock commit");
+		Check(S->ConfirmPhysicalCommit(Token, true) && S->PreparePublication(Token), "prepare all allocations");
+		Check(S->PrepareFinalization(Token) && S->PrepareFinalization(Token), "commit synchronization retained once");
+		Check(!S->ReadCompleted(0), "no visibility before finalization");
+		AllocationFailureCountdown = 0;
+		if (Abort) Check(S->Abort(Token, EAbortReason::SnapshotPublicationFailed), "prepared abort releases lock");
+		else S->FinalizePreparedPublication();
+		AllocationFailureCountdown = -1;
+		if (Abort) Check(!S->ReadCompleted(0), "failed world publication never visible");
+		else Completed(*S, 0);
+		Check(S->CancelSourceAtBoundary() != ELifecycleResult::Rejected, "no stranded lock or reservation");
+	}
 	for (int FailureAt = 0; FailureAt < 4; ++FailureAt)
 	{
 		auto S = Stream(); Check(S->Activate(), "consume allocation fixture");

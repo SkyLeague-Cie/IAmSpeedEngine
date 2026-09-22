@@ -18,6 +18,7 @@ struct FInputHostSession final
 	std::uint64_t Session = 0;
 	bool ResumePending = false;
 	bool Closed = false;
+	bool TerminalRetired = false;
 
 	static std::shared_ptr<FInputHostSession> Create(std::shared_ptr<IInputProducer> Source,
 		FStreamEpoch Epoch, FProducerIdentity Identity, FFrameNumber FirstFrame)
@@ -66,6 +67,17 @@ struct FInputHostSession final
 		if (Stream->CancelSourceAtBoundary() == ELifecycleResult::Rejected) return false;
 		Closed = true;
 		return !Acquisition || Acquisition->Stop();
+	}
+	// Emergency teardown only after the physical owner has been joined and its
+	// outstanding reservation aborted. Cancellation failure is NOT success: the
+	// retired session is permanently terminal and cannot be replaced in place.
+	bool RetireAtJoinedBoundary()
+	{
+		if (!Stream) return false; // Mandatory stop is permitted during observer-triggered destruction.
+		Stream->RequestStop();
+		if (Acquisition && !Acquisition->Stop()) return false;
+		ResumePending = false; Closed = true; TerminalRetired = true;
+		return true;
 	}
 };
 }

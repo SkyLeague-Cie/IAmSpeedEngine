@@ -112,6 +112,24 @@ public:
 		return {EMappingStatus::Mapped, std::move(Result)};
 	}
 private:
+	static bool Transform(float& Value, const std::vector<FScalarModifier>& Modifiers)
+	{
+		for (const auto& M : Modifiers)
+		{
+			const float Sign = Value < 0 ? -1.0f : 1.0f;
+			switch (M.Kind)
+			{
+			case EScalarModifier::Scale: Value *= M.A; break;
+			case EScalarModifier::Deadzone:
+				Value = Sign * std::clamp((std::abs(Value) - M.A) / (M.B - M.A), 0.0f, 1.0f); break;
+			case EScalarModifier::Exponent: if (M.A == 2) Value = Sign * Value * Value; break;
+			case EScalarModifier::Clamp: Value = std::clamp(Value, M.A, M.B); break;
+			default: return false;
+			}
+			if (!std::isfinite(Value)) return false;
+		}
+		return true;
+	}
 	FMappingResult Reject(EMappingStatus Status) { NeedsResync = true; return {Status, {}}; }
 	bool SameDevice(const FRawInputSample& S) const
 	{ return HasBaseline && S.DeviceId == LastDevice && S.Kind == Kind && S.Generation.Value == Generation.Value; }
@@ -152,8 +170,16 @@ private:
 				for (const auto& S : Raw) if (S.Control == B.Control) { Found = &S; break; }
 				if (!Found) return false;
 				if (A.Type == EActionType::Bool) { if (Found->Value != 0) Sum = 1; }
-				else { Sum += Found->Value * B.Scale; if (!std::isfinite(Sum)) return false; }
+				else
+				{
+					float Contribution = Found->Value * B.Scale;
+					if (!std::isfinite(Contribution) || !Transform(Contribution, B.Modifiers)) return false;
+					if (A.Accumulation == EActionAccumulation::Sum) Sum += Contribution;
+					else if (std::abs(Contribution) >= std::abs(Sum)) Sum = Contribution;
+					if (!std::isfinite(Sum)) return false;
+				}
 			}
+			if (!Transform(Sum, A.Modifiers)) return false;
 			const float Min = A.Signed ? -1.0f : 0.0f;
 			Sum = std::clamp(Sum, Min, 1.0f);
 			const float Magnitude = std::abs(Sum);

@@ -47,6 +47,7 @@ public:
 	void SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream);
 	bool SetFrameInputStreamV2(std::shared_ptr<Speed::Input::V2::FInputStream> Stream);
 	bool NeutralizeProducedInputAtBoundary();
+	void AbortProducedInputAfterOwnerJoined();
 	void SetCameraBackInput(bool bBack);
 	void SetCameraYawInput(float Value);
 	void SetCameraPitchInput(float Value);

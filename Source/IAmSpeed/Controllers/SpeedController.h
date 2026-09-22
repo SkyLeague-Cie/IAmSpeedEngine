@@ -28,6 +28,8 @@ class IAMSPEED_API ASpeedController : public APlayerController
 
 public:
 	ASpeedController();
+	/** Pause, retire the old epoch and queue a fresh immutable mapping session. */
+	bool RestartInputSessionAtBoundary();
 	bool ConfigureInputSessionV2(std::shared_ptr<Speed::Input::V2::FInputHostSession> Session);
 	Speed::Input::V2::FControlApplicationBatch ReadControlReceipts(uint64 Cursor) const
 	{ check(IsInGameThread()); return ControlReceiptsV2.Read(Cursor); }
@@ -90,9 +92,13 @@ public:
 	bool SetPause(bool bPause, FCanUnpause CanUnpauseDelegate = FCanUnpause()) override;
 
 protected:
+	virtual bool RequiresInputSessionV2() const { return false; }
+	virtual std::shared_ptr<Speed::Input::V2::FInputHostSession> CreateInputSessionV2(uint64 FirstFrame) { return {}; }
+	virtual bool BindInputPresentationV2() { return true; }
+	bool RefreshInputSessionV2();
 	bool HasInputSessionV2() const { return InputSessionV2 != nullptr; }
 	virtual Speed::Input::V2::EControlApplication ExecuteInputControlV2(const Speed::Input::V2::FControlRequest& Request);
-	void HandleInputs();
+	virtual void HandleInputs();
 	void HandleInputs(const Speed::Input::FPublishedInputFrame& Snapshot);
 	void SetupInputComponent() override;
 	void OnPossess(APawn* InPawn) override;
@@ -156,6 +162,8 @@ private:
 	void SetStandaloneSimulationPaused(bool bPaused);
 	ESimulationQuiescence QuiesceStandaloneInputOwner();
 	bool ApplyInputLifecyclePause(bool bPaused);
-	void ReleaseInputLifecycle();
+	bool ReleaseInputLifecycle();
+	bool bInputSessionRequiredV2 = false;
+	bool bInputSessionPendingV2 = false;
 	bool bInputLifecycleFault = false;
 };

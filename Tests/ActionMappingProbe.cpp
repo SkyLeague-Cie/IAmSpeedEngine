@@ -56,6 +56,43 @@ static void Equal(const FInputFrame& Actual, const FInputFrame& Wanted)
 }
 int main()
 {
+	{
+		auto D = Definition(); D.Mapping = {{Key(6), Steering, 1}, {Key(7), Steering, -1}};
+		D.Actions[Steering].Accumulation = EActionAccumulation::HighestAbsolute;
+		auto Evaluate = [&](const FInputActionContractDescription& Definition, float Left, float Right)
+		{
+			const auto C = FInputActionContract::Create(Definition); Check(bool(C), "ordered response contract");
+			auto M = FActionMapper::Create(C, {1}, {EProducerKind::Device, 9});
+			const auto R = M->Map(Keys(1, ERawSampleStatus::Resync, 0, 0, Left, Right), 0);
+			Check(bool(R.Frame), "ordered response mapped"); return R.Frame->GetData().Values[Steering];
+		};
+		Check(Evaluate(D, 1, 1) == -127, "UE highest absolute tie selects last contribution");
+		const auto Original = FInputActionContract::Create(D);
+		std::reverse(D.Mapping.begin(), D.Mapping.end());
+		Check(Evaluate(D, 1, 1) == 127, "reversing equal opposite bindings reverses winner");
+		Check(Original->GetFingerprint() != FInputActionContract::Create(D)->GetFingerprint(), "order encoded in contract fingerprint");
+		D.Actions[Steering].Accumulation = EActionAccumulation::Sum;
+		Check(Evaluate(D, 1, 1) == 0, "explicit cumulative mode remains distinct");
+		D.Mapping = {{Key(6), Steering, 1}};
+		D.Mapping[0].Modifiers = {{EScalarModifier::Scale, 0.5f, 0}, {EScalarModifier::Deadzone, 0.25f, 1}};
+		D.Actions[Steering].Modifiers = {{EScalarModifier::Scale, 0.5f, 0}};
+		Check(Evaluate(D, 1, 0) == 21, "mapping scale then deadzone then action scale independent oracle");
+		std::reverse(D.Mapping[0].Modifiers.begin(), D.Mapping[0].Modifiers.end());
+		Check(Evaluate(D, 1, 0) == 32, "mapping modifier order preserved");
+		D.Mapping[0].Modifiers = {{EScalarModifier::Scale, 0.5f, 0}};
+		D.Actions[Steering].Modifiers = {{EScalarModifier::Exponent, 2, 0}, {EScalarModifier::Scale, 2, 0}};
+		Check(Evaluate(D, 1, 0) == 64, "action exponent before scale");
+		std::reverse(D.Actions[Steering].Modifiers.begin(), D.Actions[Steering].Modifiers.end());
+		Check(Evaluate(D, 1, 0) == 127, "action scale before exponent");
+		D.Actions[Steering].Modifiers = {{EScalarModifier::Clamp, -1, 0}};
+		Check(Evaluate(D, 1, 0) == 0, "right-roll positive half refused");
+		D.Actions[Steering].Modifiers = {{EScalarModifier::Exponent, 1.5f, 0}};
+		Check(!FInputActionContract::Create(D), "unsupported exponent rejected explicitly");
+		D.Actions[Steering].Modifiers.assign(17, {EScalarModifier::Scale, 1, 0});
+		Check(!FInputActionContract::Create(D), "modifier capacity fail closed");
+		D.Actions[Steering].Modifiers = {{EScalarModifier::Deadzone, 0.8f, 0.2f}};
+		Check(!FInputActionContract::Create(D), "inverted deadzone refused");
+	}
 	const auto Contract = FInputActionContract::Create(Definition()); Check(bool(Contract), "contract");
 	std::vector<FRawInputSample> Raw{Keys(1, ERawSampleStatus::Resync, 1, 0, 0, 0),
 		Keys(2, ERawSampleStatus::Valid, 0, 0, 0, 0), Keys(4, ERawSampleStatus::Valid, 0, 0, 0, 0),

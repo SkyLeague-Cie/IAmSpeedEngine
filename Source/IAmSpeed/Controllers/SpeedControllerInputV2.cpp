@@ -1,7 +1,51 @@
 #include "SpeedController.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "InputActionValue.h"
+
+bool ASpeedController::RestartInputSessionAtBoundary()
+{
+	check(IsInGameThread());
+	if (!bInputSessionRequiredV2 || bInputLifecycleFault || Speed::Input::FPresentationInputScope::IsActive()) return false;
+	if (!ReleaseInputSessionV2() || bInputLifecycleFault) return false;
+	bInputSessionPendingV2 = true;
+	return true;
+}
+
+bool ASpeedController::RefreshInputSessionV2()
+{
+	check(IsInGameThread());
+	if (!bInputSessionRequiredV2 || !IsValid(SpeedCar) || InputSessionV2 || bInputLifecycleFault
+		|| Speed::Input::FPresentationInputScope::IsActive()) return false;
+	ASpeedGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASpeedGameMode>() : nullptr;
+	ASpeedSimulation* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
+	if (!Driver) return false; // GameMode may spawn its owned driver after possession.
+	const auto Boundary = Driver->TryPauseOwnedSimulation();
+	uint64 FirstFrame = 0;
+	if ((Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
+		|| !Driver->ReadInputFirstFrameAtPausedBoundary(FirstFrame))
+	{ bInputLifecycleFault = true; return false; }
+	auto Session = CreateInputSessionV2(FirstFrame);
+	if (!Session || !Session->Stream || !Session->Presentation || Session->Closed
+		|| Session->Session <= LastInputSessionV2 || Session->Stream->GetEpoch().Value != Session->Session
+		|| !Session->Stream->CanConfigure())
+	{
+		if (Session) Session->CloseAtBoundary();
+		bInputLifecycleFault = true;
+		UE_LOG(LogTemp, Error, TEXT("Independent input session creation rejected; physics remains paused"));
+		return false;
+	}
+	InputSessionV2 = std::move(Session); LastInputSessionV2 = InputSessionV2->Session;
+	if (!BindInputPresentationV2() || !InputSessionV2->Activate()
+		|| !InputSessionV2->PauseAtBoundary() || !SpeedCar->SetFrameInputStreamV2(InputSessionV2->Stream)
+		|| (!IsPaused() && !InputSessionV2->RequestResumeAtBoundary()))
+	{ bInputLifecycleFault = true; ReleaseInputSessionV2(); return false; }
+	bInputSessionPendingV2 = false;
+	// Even initial attachment waits for the acquisition owner's fresh baseline.
+	// ServiceInputSessionV2 wakes physics only after that acknowledgement.
+	return true;
+}
 
 bool ASpeedController::ConfigureInputSessionV2(std::shared_ptr<Speed::Input::V2::FInputHostSession> Session)
 {
@@ -78,7 +122,18 @@ bool ASpeedController::ReleaseInputSessionV2()
 	InputSessionV2->Stream->RequestStop();
 	const auto Boundary = QuiesceStandaloneInputOwner();
 	if ((Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
-		|| !InputSessionV2->CloseAtBoundary()) { bInputLifecycleFault = true; return false; }
+		|| !InputSessionV2->CloseAtBoundary())
+	{
+		// A timeout is not permission to destroy a worker-owned source. Join the
+		// physical owner first, abort its capability, then stop OS acquisition.
+		ASpeedGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASpeedGameMode>() : nullptr;
+		ASpeedSimulation* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
+		if (Driver) Driver->JoinOwnedSimulationForInputTeardown();
+		if (IsValid(SpeedCar)) SpeedCar->AbortProducedInputAfterOwnerJoined();
+		bInputLifecycleFault = true;
+		if (!InputSessionV2->RetireAtJoinedBoundary()) return false;
+		UE_LOG(LogTemp, Error, TEXT("Input session %llu retired after joined-owner failure; no cancellation success or restart claimed"), InputSessionV2->Session);
+	}
 	if (IsValid(SpeedCar) && !SpeedCar->SetFrameInputStreamV2(nullptr))
 	{ bInputLifecycleFault = true; return false; }
 	InputSessionV2.reset(); InputReceiversV2.clear(); return true;

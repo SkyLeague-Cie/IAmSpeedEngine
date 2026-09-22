@@ -16,6 +16,16 @@ enum class EActionType : std::uint8_t { Bool, Axis1D };
 enum class EActionWiring : std::uint8_t { Unwired, Wired };
 enum class EStateAction : std::uint8_t { Started, Triggered, Completed };
 enum class EPhysicalDestination : std::uint8_t { Throttle, Brake, Steering };
+enum class EActionAccumulation : std::uint8_t { Sum, HighestAbsolute };
+enum class EScalarModifier : std::uint8_t { Scale, Deadzone, Exponent, Clamp };
+// Ordered, frame-independent transforms. Unsupported UE transforms are refused
+// by the importer rather than silently dropped or evaluated on the game thread.
+struct FScalarModifier
+{
+	EScalarModifier Kind = EScalarModifier::Scale;
+	float A = 1;
+	float B = 0;
+};
 struct FActionDefinition
 {
 	FActionId Id = 0;
@@ -34,10 +44,16 @@ struct FActionDefinition
 	float Deadzone = 0;
 	float Exponent = 1;
 	float Sensitivity = 1;
+	EActionAccumulation Accumulation = EActionAccumulation::Sum;
+	std::vector<FScalarModifier> Modifiers;
 	bool Accepts(std::int16_t Value) const
 	{ return Value >= (Signed ? -Quantization : 0) && Value <= Quantization; }
 };
-struct FRawActionBinding { FRawControl Control; FActionId Action = 0; float Scale = 1; };
+struct FRawActionBinding
+{
+	FRawControl Control; FActionId Action = 0; float Scale = 1;
+	std::vector<FScalarModifier> Modifiers;
+};
 struct FPhysicalBindingDescriptor { FActionId Action = 0; EPhysicalDestination Destination = EPhysicalDestination::Throttle; };
 struct FInputActionContractDescription
 {
@@ -86,6 +102,23 @@ public:
 		return Result;
 	}
 private:
+	static bool ValidModifiers(const std::vector<FScalarModifier>& Modifiers)
+	{
+		if (Modifiers.size() > 16) return false;
+		for (const auto& M : Modifiers)
+		{
+			if (!std::isfinite(M.A) || !std::isfinite(M.B)) return false;
+			switch (M.Kind)
+			{
+			case EScalarModifier::Scale: if (M.B != 0) return false; break;
+			case EScalarModifier::Deadzone: if (M.A < 0 || M.A >= M.B || M.B > 1) return false; break;
+			case EScalarModifier::Exponent: if ((M.A != 1 && M.A != 2) || M.B != 0) return false; break;
+			case EScalarModifier::Clamp: if (M.A < -1 || M.B > 1 || M.A > M.B) return false; break;
+			default: return false;
+			}
+		}
+		return true;
+	}
 	static bool Token(const std::string& S)
 	{
 		if (S.empty() || S.size() > 64) return false;
@@ -105,13 +138,14 @@ private:
 			if (A.Id >= ActionCount || (I && A.Id <= D.Actions[I - 1].Id) || !Token(A.Owner)
 				|| !Token(A.Name) || !A.Version || A.Aliases.size() > 16 || A.Type > EActionType::Axis1D
 				|| A.Wiring > EActionWiring::Wired || A.Quantization <= 0
+				|| A.Accumulation > EActionAccumulation::HighestAbsolute || !ValidModifiers(A.Modifiers)
 				|| !std::isfinite(A.ActivateAbove) || !std::isfinite(A.DeactivateAtOrBelow)
 				|| A.DeactivateAtOrBelow < 0 || A.ActivateAbove < A.DeactivateAtOrBelow || A.ActivateAbove >= 1
 				|| !std::isfinite(A.Deadzone) || A.Deadzone < 0 || A.Deadzone >= 1
 				|| !std::isfinite(A.Exponent) || A.Exponent <= 0
 				|| !std::isfinite(A.Sensitivity) || A.Sensitivity <= 0) return false;
 			if (A.Type == EActionType::Bool && (A.Signed || A.Quantization != 1
-				|| A.Deadzone != 0 || A.Exponent != 1 || A.Sensitivity != 1)) return false;
+				|| A.Deadzone != 0 || A.Exponent != 1 || A.Sensitivity != 1 || !A.Modifiers.empty())) return false;
 			if (I < 3 && (A.Id != Base[I].Id || A.Owner != Base[I].Owner || A.Name != Base[I].Name
 				|| A.Type != Base[I].Type || A.Signed != Base[I].Signed || A.Quantization != Base[I].Quantization
 				|| A.Wiring != EActionWiring::Wired)) return false;
@@ -131,8 +165,8 @@ private:
 		{
 			const auto* A = Find(B.Action);
 			if (!A || A->Wiring != EActionWiring::Wired || !B.Control.IsValid()
-				|| !std::isfinite(B.Scale) || B.Scale == 0
-				|| (A->Type == EActionType::Bool && B.Scale != 1)) return false;
+				|| !std::isfinite(B.Scale) || B.Scale == 0 || !ValidModifiers(B.Modifiers)
+				|| (A->Type == EActionType::Bool && (B.Scale != 1 || !B.Modifiers.empty()))) return false;
 		}
 		std::array<bool, 3> Destinations{};
 		for (const auto& B : D.Physical)
@@ -156,9 +190,14 @@ private:
 		if (Value == 0) Value = 0; // Canonical positive zero.
 		std::uint32_t Bits = 0; std::memcpy(&Bits, &Value, sizeof(Bits)); Add(Bits);
 	}
+	void AddModifiers(const std::vector<FScalarModifier>& Modifiers)
+	{
+		Add(Modifiers.size());
+		for (const auto& M : Modifiers) { Add(static_cast<unsigned>(M.Kind)); AddFloat(M.A); AddFloat(M.B); }
+	}
 	explicit FInputActionContract(FInputActionContractDescription D) : Description(std::move(D))
 	{
-		Add(2); Add(Description.Revision.Value); Add(Description.Actions.size());
+		Add(3); Add(Description.Revision.Value); Add(Description.Actions.size());
 		for (const auto& A : Description.Actions)
 		{
 			Add(A.Id); AddText(A.Owner); AddText(A.Name); Add(A.Version); Add(A.Aliases.size());
@@ -166,10 +205,11 @@ private:
 			Add(static_cast<unsigned>(A.Type)); Add(static_cast<unsigned>(A.Wiring)); Add(A.Signed);
 			Add(static_cast<std::uint16_t>(A.Quantization)); AddFloat(A.ActivateAbove); AddFloat(A.DeactivateAtOrBelow);
 			AddFloat(A.Deadzone); AddFloat(A.Exponent); AddFloat(A.Sensitivity);
+			Add(static_cast<unsigned>(A.Accumulation)); AddModifiers(A.Modifiers);
 		}
 		Add(Description.Mapping.size());
 		for (const auto& B : Description.Mapping)
-		{ Add(static_cast<unsigned>(B.Control.Kind)); Add(B.Control.Code); Add(B.Action); AddFloat(B.Scale); }
+		{ Add(static_cast<unsigned>(B.Control.Kind)); Add(B.Control.Code); Add(B.Action); AddFloat(B.Scale); AddModifiers(B.Modifiers); }
 		Add(Description.Physical.size());
 		for (const auto& B : Description.Physical) { Add(B.Action); Add(static_cast<unsigned>(B.Destination)); }
 	}

@@ -207,6 +207,35 @@ public:
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		return PreparedMatches(Token);
 	}
+	// Acquire every potentially failing synchronization BEFORE world publication.
+	// The physical owner must next finalize or abort on this same thread.
+	bool PrepareFinalization(const FReservationToken& Token)
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		try
+		{
+			if (FinalizationLock) return PreparedMatches(Token);
+			std::unique_lock<std::recursive_mutex> Lock(Gate);
+			if (CallingSource || !PreparedMatches(Token)) return false;
+			FinalizationLock.emplace(std::move(Lock)); return true;
+		}
+		catch (...) { return false; }
+	}
+	void FinalizePreparedPublication() noexcept
+	{
+		// Preconditions established by PrepareFinalization, retained under Gate.
+		const auto Frame = Pending->Frame;
+		const auto NextSerial = Serial + 1;
+		Published[NextSerial % HistoryCapacity].swap(PreparedPublication);
+		LastFrame.swap(PreparedContinuity);
+		Serial = NextSerial; History[Frame % HistoryCapacity]->Published = true;
+		Outcome = FTransactionOutcome{Epoch, Frame, ETransactionOutcome::Completed, {}};
+		PublicationPrepared = false; AwaitingFreshPublication = false;
+		Pending.reset(); Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
+		if (!Exhausted) NextFrame = Frame + 1;
+		if (StopRequested) Terminated = true;
+		FinalizationLock.reset();
+	}
 	bool FinalizePublication(const FReservationToken& Token) noexcept
 	{
 		static_assert(std::is_nothrow_swappable_v<std::optional<FPublishedFrame>>);
@@ -303,6 +332,7 @@ private:
 		PublicationPrepared = false;
 		Outcome = FTransactionOutcome{Epoch, Token.Frame, ETransactionOutcome::Aborted, Reason};
 		Pending.reset(); Active = false; Terminated = true;
+		FinalizationLock.reset();
 	}
 	FConsumedInput Fault() { PublicationPrepared = false; Active = false; Terminated = true; Pending.reset(); return {EConsumeStatus::InvalidInput, {}, {}}; }
 	bool ValidContinuity(const FInputFrame& Frame, FFrameNumber Address) const
@@ -331,6 +361,7 @@ private:
 	// Recursive only to detect same-thread producer reentry and fail closed.
 	// Other threads still cannot mutate lifecycle during the reserved source call.
 	mutable std::recursive_mutex Gate;
+	std::optional<std::unique_lock<std::recursive_mutex>> FinalizationLock;
 	bool CallingSource = false;
 	bool LifecyclePaused = false;
 	bool SourceCancelled = false;

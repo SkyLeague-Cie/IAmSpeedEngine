@@ -140,6 +140,12 @@ bool ASpeedCar::NeutralizeProducedInputAtBoundary()
 	return SpeedWheeledComponent->NeutralizeProducedInputAtBoundary();
 }
 
+void ASpeedCar::AbortProducedInputAfterOwnerJoined()
+{
+	check(IsInGameThread());
+	SpeedWheeledComponent->AbortCanonicalFrame(0, ECanonicalFrameAbortReason::PreparationFailed);
+}
+
 void ASpeedCar::SetBrakeInput(const float& Brake)
 {
 	SpeedWheeledComponent->SetPhysBrakeInput(Brake);

@@ -355,6 +355,22 @@ void ASpeedSimulation::PauseOwnedSimulation()
 	OnOwnedSimulationPaused();
 }
 
+bool ASpeedSimulation::ReadInputFirstFrameAtPausedBoundary(uint64& OutFrame)
+{
+	check(IsInGameThread());
+	if (GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback
+		|| !bOwnedSimulationPaused.Load() || bCanonicalPublicationTerminal.Load()
+		|| (SimulationWorker && SimulationWorker->IsRunning() && !SimulationWorker->IsPaused())) return false;
+	InitializeCanonicalFrame(0.0f); OutFrame = CanonicalNumFrame; return true;
+}
+
+void ASpeedSimulation::JoinOwnedSimulationForInputTeardown()
+{
+	check(IsInGameThread());
+	bOwnedSimulationPaused.Store(true); bOwnedWorkerTerminal.Store(true);
+	StopOwnedWorker();
+}
+
 void ASpeedSimulation::ResumeOwnedSimulation()
 {
 	bOwnedSimulationPaused.Store(false);

@@ -95,6 +95,9 @@ public:
 	/** Bounded lifecycle boundary. Timeout retains pause request; never resume
 	 * automatically or access physical state after a non-acknowledged result. */
 	ESimulationQuiescence TryPauseOwnedSimulation(uint32 TimeoutMilliseconds = 1000);
+	bool ReadInputFirstFrameAtPausedBoundary(uint64& OutFrame);
+	/** Teardown fallback: join the physical owner before releasing any input/actor lifetime. */
+	void JoinOwnedSimulationForInputTeardown();
 	/** Resumes the owned lane from its current canonical frame. */
 	void ResumeOwnedSimulation();
 	/** GT-only: re-arms a paused controlled run after its actors/inputs were replaced. Keeps the world's canonical frame continuous. */

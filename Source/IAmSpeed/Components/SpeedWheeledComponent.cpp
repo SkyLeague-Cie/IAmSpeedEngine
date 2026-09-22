@@ -1449,12 +1449,12 @@ void USpeedWheeledComponent::OnCanonicalFramePublished(uint64 Frame)
 bool USpeedWheeledComponent::SetFrameInputStreamV2(std::shared_ptr<Speed::Input::V2::FInputStream> Stream)
 {
 	check(IsInGameThread());
-	if (Speed::Input::FPresentationInputScope::IsActive()) return false;
+	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return false;
 	FScopeLock Lock(&FrameInputProducerMutex);
 	if (InputReservationV2 || (Stream && (FrameInputStream || IsTestInputOverrideEnabled()))) return false;
 	if (FrameInputStreamV2 && FrameInputStreamV2 != Stream) FrameInputStreamV2->RequestStop();
 	FrameInputStreamV2 = MoveTemp(Stream);
-	if (FrameInputStreamV2) bProducedInputAuthority.store(true, std::memory_order_release);
+	bProducedInputAuthority.store(true, std::memory_order_release);
 	bInputFrameRejectedV2 = false; bResetProducedWheeledInputs = true;
 	return true;
 }
@@ -1513,14 +1513,14 @@ bool USpeedWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
 	if (bInputFrameRejectedV2) return false;
 	if (!InputReservationV2) return !ConsumedFrameInputStreamV2;
 	return ReservedInputFrameV2 && *ReservedInputFrameV2 == Frame && ConsumedFrameInputStreamV2
-		&& ConsumedFrameInputStreamV2->IsPublicationPrepared(*InputReservationV2);
+		&& ConsumedFrameInputStreamV2->PrepareFinalization(*InputReservationV2);
 }
 
 bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
 {
 	if (!InputReservationV2) return !bInputFrameRejectedV2 && !ConsumedFrameInputStreamV2;
-	if (!ReservedInputFrameV2 || *ReservedInputFrameV2 != Frame || !ConsumedFrameInputStreamV2
-		|| !ConsumedFrameInputStreamV2->FinalizePublication(*InputReservationV2)) return false;
+	(void)Frame; // Validated and locked before the irreversible world publication.
+	ConsumedFrameInputStreamV2->FinalizePreparedPublication();
 	InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
 	return true;
 }

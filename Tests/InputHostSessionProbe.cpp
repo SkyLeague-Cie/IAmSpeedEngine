@@ -32,6 +32,15 @@ static FConsumedInput Consume(FInputHostSession& Host, std::uint64_t Frame)
 int main()
 {
 	const auto C = Contract(); Check(bool(C) && Sky::Input::V2::IsSkyContract(*C), "named Sky and base catalogue");
+	{
+		auto Hub = std::make_shared<FRawAcquisitionJournal>(88);
+		auto Source = FDeviceInputProducer::Create(Hub, C, {88}, {Speed::Input::EProducerKind::Device, 9});
+		auto Host = FInputHostSession::Create(std::move(Source), {88}, {Speed::Input::EProducerKind::Device, 9}, 0);
+		Check(Host->Activate(), "terminal retirement fixture");
+		Check(Host->RetireAtJoinedBoundary() && Host->Closed && Host->TerminalRetired, "explicit terminal retirement outcome");
+		Check(!Host->Activate() && !Host->RequestResumeAtBoundary() && !Host->Stream->Consume(0).Reservation,
+			"retired session never admits or resumes input");
+	}
 	Check(C->Find(Sky::Input::V2::SwitchCam)->Type == EActionType::Bool, "SwitchCam explicitly Boolean");
 	for (const auto A : {Sky::Input::V2::Jump, Sky::Input::V2::Powerslide, Sky::Input::V2::SwitchCam,
 		Sky::Input::V2::AirRoll, Sky::Input::V2::BackCam, Sky::Input::V2::Pause, Sky::Input::V2::ResetWorld, Sky::Input::V2::AutoControl})
@@ -98,6 +107,13 @@ int main()
 		Check(Receipts.Receipts.size() == 12 && Ledger.Read(Receipts.Next).Receipts.empty(), "individual outcomes no replay");
 		Ledger.Begin(2); Ledger.Append(Plan->Commands[0].Identity, Sky::Input::V2::EEffect::FirstJumpImpulse); Ledger.Abort();
 		Check(Ledger.Read(Receipts.Next).Receipts.empty(), "failed world publication exposes no effect receipt");
+		Ledger.Begin(3); Ledger.Append(Plan->Commands[0].Identity, Sky::Input::V2::EEffect::Cancelled);
+		Check(Ledger.PrepareCommit(3) && Ledger.PrepareCommit(3), "effect commit synchronization prepared once");
+		Ledger.FinalizePreparedCommit();
+		Check(Ledger.Read(Receipts.Next).Receipts.size() == 1, "prepared effect finalization publishes exactly once");
+		Ledger.Begin(3); Ledger.Append(Plan->Commands[0].Identity, Sky::Input::V2::EEffect::Cancelled);
+		Check(Ledger.PrepareCommit(3), "prepare abort effect fixture"); Ledger.Abort();
+		Check(Ledger.Read(Receipts.Next).Receipts.size() == 1, "aborted prepared effect not published and lock released");
 		Ledger.Begin(3);
 		for (std::size_t I = 0; I <= Sky::Input::V2::FEffectLedger::FrameCapacity; ++I)
 			Ledger.Append(Plan->Commands[0].Identity, Sky::Input::V2::EEffect::FirstJumpImpulse);

@@ -16,6 +16,7 @@ ASpeedController::ASpeedController()
 void ASpeedController::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (bInputSessionPendingV2 && !bInputLifecycleFault) RefreshInputSessionV2();
 	if (InputSessionV2) { ServiceInputSessionV2(); return; }
 	if (InputSnapshots && !InputSnapshots->IsLifecyclePaused())
 	{
@@ -48,13 +49,7 @@ bool ASpeedController::ConfigureInputProducer(std::shared_ptr<Speed::Input::IInp
 void ASpeedController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
-	if (InputSessionV2) return;
-
-	if (UEnhancedInputLocalPlayerSubsystem* Subsystem =
-		ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
-	{
-		Subsystem->AddMappingContext(InputMappingContext, 0);
-	}
+	// Mapping contexts are configuration data only. OS acquisition owns physical input.
 }
 
 void ASpeedController::OnPossess(APawn* InPawn)
@@ -62,10 +57,9 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	ESimulationQuiescence InputBoundary = ESimulationQuiescence::AlreadyStopped;
 	if (SpeedCar && InputSessionV2)
 	{
-		// Never silently reuse a consumed epoch or fall back to UE on replacement.
-		// Unpossess, configure a new session, then possess at the new boundary.
-		bInputLifecycleFault = true; return;
+		if (!ReleaseInputLifecycle()) return;
 	}
+	bInputSessionRequiredV2 = InputSessionV2 != nullptr || RequiresInputSessionV2();
 	if (InputSessionV2)
 	{
 		InputBoundary = QuiesceStandaloneInputOwner();
@@ -78,6 +72,19 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	Super::OnPossess(InPawn);
 	SpeedCar = CastChecked<ASpeedCar>(InPawn);
 	SpeedCar->ClearCameraInputs();
+	if (bInputSessionRequiredV2 && !InputSessionV2)
+	{
+		// Claim neutral authority immediately; a late GameMode/driver cannot
+		// open a one-frame fallback to Enhanced Input while the factory awaits it.
+		SpeedCar->SetFrameInputStreamV2(nullptr);
+		if (InputProducer)
+		{
+			QuiesceStandaloneInputOwner(); bInputLifecycleFault = true;
+			UE_LOG(LogTemp, Error, TEXT("Legacy test producer must be migrated to a V2 session; no device factory fallback"));
+			return;
+		}
+		bInputSessionPendingV2 = true; RefreshInputSessionV2(); return;
+	}
 	if (InputSessionV2)
 	{
 		if (!InputSessionV2->Activate() || (IsPaused() && !InputSessionV2->PauseAtBoundary())
@@ -97,9 +104,9 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	}
 }
 
-void ASpeedController::ReleaseInputLifecycle()
+bool ASpeedController::ReleaseInputLifecycle()
 {
-	if (InputSessionV2 && !ReleaseInputSessionV2()) return;
+	if (InputSessionV2 && !ReleaseInputSessionV2()) return false;
 	// Mandatory close happens before ownership is released. Retained worker
 	// references cannot acquire/publish again; copied history stays immutable.
 	const auto Closed = InputSnapshots ? InputSnapshots->Deactivate()
@@ -113,53 +120,34 @@ void ASpeedController::ReleaseInputLifecycle()
 	InputSnapshots.reset();
 	InputProducer.reset();
 	SpeedCar = nullptr;
+	bInputSessionPendingV2 = false;
+	return !bInputLifecycleFault;
 }
 
 void ASpeedController::OnUnPossess()
 {
-	ReleaseInputLifecycle();
+	if (!ReleaseInputLifecycle())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Input teardown failed; physical admission remains terminal"));
+		if (InputSessionV2) return; // Retryable ownership retention; never silently unpossess a live session.
+	}
 	Super::OnUnPossess();
 }
 
 void ASpeedController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	ReleaseInputLifecycle();
+	if (!ReleaseInputLifecycle())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Input end-play teardown failed; physical admission remains terminal"));
+		if (InputSessionV2)
+			UE_LOG(LogTemp, Fatal, TEXT("Cannot destroy controller while independent input owners remain live"));
+	}
 	Super::EndPlay(EndPlayReason);
 }
 
-void ASpeedController::SetupEnhancedInputComponent(
-	UEnhancedInputComponent* EnhancedInputComponent)
+void ASpeedController::SetupEnhancedInputComponent(UEnhancedInputComponent*)
 {
-	check(EnhancedInputComponent);
-	if (InputSessionV2) return;
-
-	// Legacy device/gameplay dispatch remains only when no independent producer
-	// was installed. Enhanced Input is never an acquisition source for that producer.
-	if (!InputProducer)
-	{
-	EnhancedInputComponent->BindAction(
-		SteeringAction, ETriggerEvent::Triggered, this, &ASpeedController::Steering);
-	EnhancedInputComponent->BindAction(
-		SteeringAction, ETriggerEvent::Completed, this, &ASpeedController::Steering);
-	EnhancedInputComponent->BindAction(
-		ThrottleAction, ETriggerEvent::Triggered, this, &ASpeedController::Throttle);
-	EnhancedInputComponent->BindAction(
-		ThrottleAction, ETriggerEvent::Completed, this, &ASpeedController::Throttle);
-	EnhancedInputComponent->BindAction(
-		BrakeAction, ETriggerEvent::Triggered, this, &ASpeedController::Brake);
-	EnhancedInputComponent->BindAction(
-		BrakeAction, ETriggerEvent::Started, this, &ASpeedController::StartBrake);
-	EnhancedInputComponent->BindAction(
-		BrakeAction, ETriggerEvent::Completed, this, &ASpeedController::StopBrake);
-	}
-	EnhancedInputComponent->BindAction(
-		PauseAction, ETriggerEvent::Started, this, &ASpeedController::PauseInput);
-	EnhancedInputComponent->BindAction(StartBackCameraAction, ETriggerEvent::Started, this, &ASpeedController::StartBackCamera);
-	EnhancedInputComponent->BindAction(StartBackCameraAction, ETriggerEvent::Completed, this, &ASpeedController::CompleteBackCamera);
-	EnhancedInputComponent->BindAction(CamYawAction, ETriggerEvent::Triggered, this, &ASpeedController::CamYaw);
-	EnhancedInputComponent->BindAction(CamYawAction, ETriggerEvent::Completed, this, &ASpeedController::CompleteCamYaw);
-	EnhancedInputComponent->BindAction(CamPitchAction, ETriggerEvent::Triggered, this, &ASpeedController::CamPitch);
-	EnhancedInputComponent->BindAction(CamPitchAction, ETriggerEvent::Completed, this, &ASpeedController::CompleteCamPitch);
+	// Retained ABI for saved pawns. No UE-frame physical or control dispatch.
 }
 
 void ASpeedController::StartBackCamera(const FInputActionValue&)
