@@ -12,7 +12,6 @@ class ASpeedCar;
 enum class ESimulationQuiescence : uint8;
 class UEnhancedInputComponent;
 class UInputAction;
-class UInputMappingContext;
 struct FInputActionValue;
 
 /**
@@ -117,10 +116,6 @@ protected:
 	virtual void OnPauseStateChanged(bool bPaused) {}
 	/** Aligns the owned standalone simulation with Unreal's current pause state. */
 	void SynchronizeOwnedSimulationPauseWithWorld();
-
-	/** Input mapping context shared by the generic and game-specific actions. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
-	TObjectPtr<UInputMappingContext> InputMappingContext = nullptr;
 
 	/** IAmSpeed car currently controlled by this player controller. */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = Input)

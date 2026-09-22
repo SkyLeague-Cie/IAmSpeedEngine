@@ -37,7 +37,7 @@ bool FInputMappingImportTest::RunTest(const FString&)
 		for (int32 I = 0; I < 3; ++I)
 			TestTrue(TEXT("mouse button identity preserved without keyboard VK translation"),
 				Description.Mapping[I].Control.Kind == ERawControlKind::MouseButton && Description.Mapping[I].Control.Code == I);
-	for (const FKey Unsupported : {EKeys::ThumbMouseButton, EKeys::MouseScrollUp, EKeys::MouseScrollDown, EKeys::MouseX, EKeys::MouseWheelAxis})
+	for (const FKey& Unsupported : {EKeys::ThumbMouseButton, EKeys::MouseScrollUp, EKeys::MouseScrollDown, EKeys::MouseX, EKeys::MouseWheelAxis})
 	{
 		Context->GetMapping(0).Key = Unsupported; Description = Seed();
 		TestFalse(TEXT("unsupported mouse capability fails whole import"), ImportInputMappings(Context.Get(), Actions, Description, Error));
