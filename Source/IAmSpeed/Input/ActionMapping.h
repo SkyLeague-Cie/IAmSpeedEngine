@@ -75,11 +75,14 @@ public:
 			FActionValues Values = HeldValues;
 			std::uint64_t TransitionSequence = 0;
 			std::uint32_t TransitionOrdinal = 0;
-			for (const auto& Change : Sample.Changes)
+			for (std::size_t ChangeIndex = 0; ChangeIndex < Sample.Changes.size(); ++ChangeIndex)
 			{
+				const auto& Change = Sample.Changes[ChangeIndex];
 				bool Found = false;
 				for (auto& S : Working) if (S.Control == Change.State.Control) { S.Value = Change.State.Value; Found = true; break; }
 				if (!Found) return Reject(EMappingStatus::UnsupportedControl);
+				if (Change.AtomicGroup && ChangeIndex + 1 < Sample.Changes.size()
+					&& Sample.Changes[ChangeIndex + 1].AtomicGroup == Change.AtomicGroup) continue;
 				std::uint32_t NextActive = 0;
 				if (!Evaluate(Working, Active, Values, NextActive)) return Reject(EMappingStatus::InvalidValue);
 				if (TransitionSequence != Change.Order.Sequence) { TransitionSequence = Change.Order.Sequence; TransitionOrdinal = 0; }

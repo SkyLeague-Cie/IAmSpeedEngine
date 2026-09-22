@@ -25,6 +25,10 @@ namespace Speed::Input::Windows
 struct FDeviceState
 {
 	std::array<bool, 256> VirtualKeys{};
+	// Preserve physical scan codes as well: virtual keys alone lose layout,
+	// left/right modifiers and keypad distinctions needed by canonical HID.
+	std::array<std::uint32_t, 256> ScanCodes{};
+	std::size_t KeyCount = 0;
 	std::uint32_t GamepadButtons = 0;
 	std::array<float, 6> Axes{}; // LT, RT, LX, LY, RX, RY (GameInput ranges).
 	std::uint64_t TimestampMicroseconds = 0;
@@ -137,7 +141,12 @@ public:
 				const auto Count = Next->GetKeyCount();
 				if (Count > Keys.size() || Next->GetKeyState(static_cast<std::uint32_t>(Keys.size()), Keys.data()) != Count)
 					return {EReadBatchStatus::Resynchronize, S_OK};
-				for (std::uint32_t K = 0; K < Count; ++K) State.VirtualKeys[Keys[K].virtualKey] = true;
+				State.KeyCount = Count;
+				for (std::uint32_t K = 0; K < Count; ++K)
+				{
+					State.VirtualKeys[Keys[K].virtualKey] = true;
+					State.ScanCodes[K] = Keys[K].scanCode;
+				}
 			}
 			else
 			{

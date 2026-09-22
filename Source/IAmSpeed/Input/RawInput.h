@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <array>
 
 namespace Speed::Input::V2
 {
@@ -53,7 +54,28 @@ struct FSourceOrder
 inline bool operator<(FSourceOrder A, FSourceOrder B)
 { return A.Sequence < B.Sequence || (A.Sequence == B.Sequence && A.WithinSequence < B.WithinSequence); }
 struct FRawValue { FRawControl Control; float Value = 0; };
-struct FRawChange { FRawValue State; FSourceOrder Order; };
+struct FRawChange
+{
+	FRawValue State; FSourceOrder Order;
+	// Nonzero identifies one atomic full-state observation. Evaluate actions
+	// after its last changed control, never after an arbitrary intermediate diff.
+	// Zero preserves individually ordered changes supplied by event backends.
+	std::uint64_t AtomicGroup = 0;
+};
+struct FCanonicalRawState
+{
+	std::array<FRawValue, 256> Values{};
+	std::size_t Count = 0;
+	bool IsValid(ERawDeviceKind Kind) const noexcept
+	{
+		if (!Count || Count > Values.size() || Kind > ERawDeviceKind::Gamepad) return false;
+		for (std::size_t I = 0; I < Count; ++I)
+			if (!Values[I].Control.Accepts(Values[I].Value)
+				|| (I && !(Values[I - 1].Control < Values[I].Control))
+				|| ((Kind == ERawDeviceKind::Keyboard) != (Values[I].Control.Kind == ERawControlKind::KeyboardUsage))) return false;
+		return true;
+	}
+};
 enum class ERawSampleStatus : std::uint8_t { Valid, Resync, Overflow, Unsupported };
 
 // An acquisition DTO, copied/validated by the future mapper. FinalState lists
@@ -82,11 +104,20 @@ struct FRawInputSample
 			if (!S.Control.Accepts(S.Value) || (I && !(FinalState[I - 1].Control < S.Control))
 				|| ((Kind == ERawDeviceKind::Keyboard) != (S.Control.Kind == ERawControlKind::KeyboardUsage))) return false;
 		}
+		std::uint64_t LastGroup = 0;
 		for (std::size_t I = 0; I < Changes.size(); ++I)
 		{
 			const auto& C = Changes[I];
 			if (!C.State.Control.Accepts(C.State.Value) || !C.Order.Sequence || C.Order.Sequence > Sequence
 				|| (I && !(Changes[I - 1].Order < C.Order))) return false;
+			if (C.AtomicGroup)
+			{
+				if (!I || Changes[I - 1].AtomicGroup != C.AtomicGroup)
+				{ if (C.AtomicGroup <= LastGroup) return false; LastGroup = C.AtomicGroup; }
+				else if (C.Order.Sequence != Changes[I - 1].Order.Sequence) return false;
+				for (std::size_t J = I; J && Changes[J - 1].AtomicGroup == C.AtomicGroup; --J)
+					if (Changes[J - 1].State.Control == C.State.Control) return false;
+			}
 			const FRawValue* Final = nullptr;
 			for (const auto& S : FinalState) if (S.Control == C.State.Control) Final = &S;
 			if (!Final) return false;

@@ -3,6 +3,7 @@
 #include "GameInputAcquisition.h"
 #include "../DeviceDiscovery.h"
 #include <cstring>
+#include <type_traits>
 
 namespace Speed::Input::Windows
 {
@@ -86,6 +87,26 @@ public:
 		const auto It = Records.find(Lease.Ticket.Device.Id);
 		return It != Records.end() && It->second.Device.Get() == Lease.Device.Get()
 			&& Catalogue.Submit(Lease.Ticket, Sequence, Values);
+	}
+	// Linearization point for a raw batch. The sink may only install prepared
+	// values: no allocation, callbacks into discovery, or gameplay execution.
+	// Holding Mailbox prevents hotplug from invalidating the ticket mid-install.
+	template<class TCommit> bool CommitRaw(const std::optional<FLease>& Lease, TCommit&& Commit)
+	{
+		static_assert(std::is_nothrow_invocable_r_v<bool, TCommit>, "raw installation must return acceptance without throwing");
+		std::lock_guard<std::mutex> Lock(Mailbox);
+		if (Stopping || FAILED(Error) || Catalogue.IsFailed()) return false;
+		const auto Selected = Catalogue.Selected();
+		if (bool(Selected) != bool(Lease)) return false;
+		if (Lease)
+		{
+			const auto& A = *Selected; const auto& B = Lease->Ticket;
+			const auto It = Records.find(B.Device.Id);
+			if (A.Generation != B.Generation || A.Device.Id != B.Device.Id
+				|| A.Device.Revision != B.Device.Revision || A.Kind != B.Kind
+				|| It == Records.end() || It->second.Device.Get() != Lease->Device.Get()) return false;
+		}
+		return Commit();
 	}
 	bool SetPaused(bool Paused)
 	{

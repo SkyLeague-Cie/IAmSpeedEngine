@@ -1,5 +1,7 @@
 #include "WindowsDiscoveryFakes.h"
 #include "IAmSpeed/Input/Windows/GameInputSelectedSource.h"
+#include "IAmSpeed/Input/Windows/GameInputCanonicalControls.h"
+#include "IAmSpeed/Input/Windows/GameInputRawAcquisition.h"
 using Speed::Input::Windows::FGameInputSelectedSource;
 class SelectedApi final : public DiscoveryApi
 {
@@ -34,11 +36,12 @@ struct SelectedFixture
 	ComPtr<SelectedApi> Api;
 	ComPtr<FakeDevice> Pad, Keyboard;
 	std::unique_ptr<FGameInputSelectedSource> Source;
-	SelectedFixture(FGameInputAcquisition::FMapper PadMapper = {})
+	SelectedFixture(FGameInputAcquisition::FMapper PadMapper = {}, bool Raw = false)
 	{
 		Api.Attach(new SelectedApi); Pad = MakeDevice(1); Keyboard = MakeDevice(2, GameInputKindKeyboard);
 		Api->Initial = {{Pad, 1, true}, {Keyboard, 1, true}};
 		std::array<bool, ActionCount> Digital{}; Digital[3] = true;
+		if (Raw) { Source = FGameInputSelectedSource::CreateRaw(Api.Get(), 501); Check(bool(Source), "raw factory"); return; }
 		if (!PadMapper) PadMapper = [](const FDeviceState& S, FActionValues& V)
 		{
 			const auto Axis = QuantizeAxis(S.Axes[1], false); if (!Axis) return false;
@@ -52,6 +55,94 @@ struct SelectedFixture
 };
 int main()
 {
+	{
+		using namespace Speed::Input::Windows;
+		using Speed::Input::V2::FRawAcquisitionJournal;
+		using Speed::Input::V2::ELifecycleResult;
+		SelectedFixture F({}, true); F.SelectPad();
+		auto Hub = std::make_shared<FRawAcquisitionJournal>(10);
+		FGameInputRawAcquisition Owner(std::move(F.Source), Hub);
+		F.Api->Pad(F.Pad.Get(), 0, false, 1); F.Api->Pad(F.Pad.Get(), 1, true, 2); F.Api->Pad(F.Pad.Get(), 0, false, 3);
+		Check(Owner.Pump() == ERawPumpResult::Installed, "real selected cursor through canonical acquisition hub");
+		const auto First = Hub->Poll(0); const auto Next = Hub->Poll(1);
+		Check(First && First->Status == Speed::Input::V2::ERawSampleStatus::Resync
+			&& Next && Next->Changes.size() == 4 && Next->FinalState[0].Value == 0, "OS batch short button and trigger retained across baseline");
+		const auto Calls = F.Api->ReadCalls.load();
+		ERawPumpResult OtherResult{}; std::thread Other([&] { OtherResult = Owner.Pump(); }); Other.join();
+		Check(OtherResult == ERawPumpResult::Rejected && F.Api->ReadCalls == Calls, "second polling owner refused without OS access");
+		Check(Hub->SetLifecyclePaused(true) == ELifecycleResult::Applied, "physical delivery paused independently");
+		F.Api->Pad(F.Pad.Get(), 1, true, 4); F.Api->Pad(F.Pad.Get(), 0, false, 5);
+		Check(Owner.Pump() == ERawPumpResult::Installed && !Hub->Poll(2)
+			&& Hub->ReadControlsSince({10, 3}).Readings.size() == 2, "pause leaves acquisition and controls active");
+		Check(Hub->RequestFreshResume(), "resume request");
+		const auto CurrentCalls = F.Api->CurrentCalls.load();
+		F.Api->Pad(F.Pad.Get(), 1, true, 6);
+		Check(Owner.Pump() == ERawPumpResult::Installed && F.Api->CurrentCalls == CurrentCalls + 1
+			&& Hub->IsResumeReady(), "resume actually calls current reading");
+		Check(Hub->SetLifecyclePaused(false) == ELifecycleResult::Applied, "fresh resume gate");
+		const auto Resume = Hub->Poll(2);
+		Check(Resume && Resume->Changes.empty() && Resume->FinalState[0].Value == 1, "resume held without replay");
+		F.Api->BeforeReturn = [&] { F.Api->FireDevice(F.Pad.Get(), 2, false); };
+		Check(Owner.Pump() == ERawPumpResult::Neutralized, "hotplug invalidation reaches hub");
+		const auto Neutral = Hub->Poll(3);
+		Check(Neutral && Neutral->Changes.empty() && Neutral->FinalState[0].Value == 0, "disconnect delivers neutral reset");
+		F.Api->FireDevice(F.Pad.Get(), 3, true); F.Api->Pad(F.Pad.Get(), 1, true, 7);
+		Check(Owner.Pump() == ERawPumpResult::Installed && Hub->Poll(4)->FinalState[0].Value == 1, "reconnect fresh held");
+		Check(Owner.Close() && Owner.Close() && Owner.Pump() == ERawPumpResult::Closed, "acquisition close prevents future reads");
+	}
+	{
+		using namespace Speed::Input::Windows;
+		SelectedFixture F({}, true); F.SelectPad();
+		FGameInputSelectedSource::FSelectedRawBatch Captured;
+		unsigned Installs = 0;
+		auto Sink = [&](const auto& Batch) noexcept { Captured = Batch; ++Installs; return true; };
+		F.Api->Pad(F.Pad.Get(), 1, true, 100);
+		Check(F.Source->PollRaw(1, Sink) && Captured.Readings.Count == 1 && Captured.Readings.FreshBaseline, "raw admitted fresh ticket");
+		const auto Generation = Captured.Ticket->Generation;
+		const auto Calls = F.Api->ReadCalls.load();
+		Check(!F.Source->Produce(0) && !F.Source->Skip(0) && !F.Source->PollRaw(1, Sink)
+			&& F.Api->ReadCalls == Calls && Installs == 1, "raw ownership rejects legacy and repeated clock");
+		F.Api->Pad(F.Pad.Get(), 0, false, 101); F.Api->Pad(F.Pad.Get(), 1, true, 102);
+		Check(F.Source->PollRaw(2, Sink) && Captured.Readings.Count == 2 && !Captured.Readings.FreshBaseline, "raw repeated transitions retained");
+		F.Api->BeforeReturn = [&] { F.Api->FireDevice(F.Pad.Get(), 2, false); };
+		F.Api->Pad(F.Pad.Get(), 1, false, 103);
+		Check(!F.Source->PollRaw(3, Sink) && Installs == 2, "hotplug mid-read rejects complete raw batch");
+		Check(F.Source->PollRaw(4, Sink) && !Captured.Ticket && Captured.Readings.Count == 0, "disconnected admission has no stale payload");
+		F.Api->FireDevice(F.Pad.Get(), 3, true); F.Api->Pad(F.Pad.Get(), .5f, true, 200);
+		Check(F.Source->PollRaw(5, Sink) && Captured.Ticket->Generation > Generation && Captured.Readings.FreshBaseline, "reconnect renews raw ticket and baseline");
+		FCanonicalDeviceState Canonical;
+		Check(Canonicalize(Captured.Readings.States[0], Speed::Input::V2::ERawDeviceKind::Gamepad, Canonical)
+			&& Canonical.Count == 20 && Canonical.Values[0].Value == 1 && Canonical.Values[19].Value == .5f, "standard gamepad canonical mapping");
+		const unsigned BeforeOverflow = Installs;
+		for (unsigned I = 0; I < 65; ++I) F.Api->Pad(F.Pad.Get(), 1, I % 2 == 0, 300 + I);
+		Check(!F.Source->PollRaw(6, Sink) && Installs == BeforeOverflow, "overflow installs no partial raw payload");
+		F.Api->Pad(F.Pad.Get(), 0, false, 400);
+		Check(F.Source->PollRaw(7, Sink) && Captured.Readings.Count == 1 && Captured.Readings.FreshBaseline, "overflow recovers only from fresh reading");
+		Check(F.Source->SetPaused(true) && !F.Source->PollRaw(8, Sink) && F.Source->SetPaused(false), "acquisition lifetime pause fences calls");
+		F.Api->Pad(F.Pad.Get(), 1, true, 500);
+		Check(F.Source->PollRaw(9, Sink) && Captured.Readings.FreshBaseline, "acquisition resume fresh state");
+		F.Api->Pad(F.Pad.Get(), 0, false, 501);
+		Check(!F.Source->PollRaw(10, [](const auto&) noexcept { return false; }), "sink refusal is propagated");
+		F.Api->Pad(F.Pad.Get(), 1, true, 502);
+		Check(F.Source->PollRaw(11, Sink) && Captured.Readings.FreshBaseline, "sink refusal forces fresh generation");
+		FDeviceState Keys; Keys.KeyCount = 5; Keys.ScanCodes = {0x11, 0x43, 0xe01d, 0x1d, 0xe036};
+		Check(KeyboardUsage(0x45) == 0x48 && KeyboardUsage(0xe045) == 0x53
+			&& KeyboardUsage(0xe11d45) == 0x48 && KeyboardUsage(0xe046) == 0x48
+			&& KeyboardUsage(0xe11d) == 0, "Pause versus NumLock and unsupported prefix are distinct");
+		Check(Canonicalize(Keys, Speed::Input::V2::ERawDeviceKind::Keyboard, Canonical), "keyboard canonical conversion");
+		for (const auto Usage : {0x1a, 0x42, 0xe4, 0xe0, 0xe5})
+		{
+			bool Found = false;
+			for (std::size_t I = 0; I < Canonical.Count; ++I)
+				if (Canonical.Values[I].Control.Code == Usage) Found = Canonical.Values[I].Value == 1;
+			Check(Found, "physical W/F9 and independent modifiers map to HID");
+		}
+		for (std::size_t I = 0; I < Canonical.Count; ++I)
+			Check(Canonical.Values[I].Control.Accepts(Canonical.Values[I].Value)
+				&& (!I || Canonical.Values[I - 1].Control < Canonical.Values[I].Control), "canonical keyboard capabilities sorted unique valid");
+		FDeviceState Invalid; Invalid.Axes[4] = std::numeric_limits<float>::quiet_NaN();
+		Check(!Canonicalize(Invalid, Speed::Input::V2::ERawDeviceKind::Gamepad, Canonical) && !Canonical.Count, "invalid analog state clears complete output");
+	}
 	{
 		SelectedFixture F;
 		Check(F.Source->Produce(0)->GetActions() == FActionValues{} && F.Api->ReadCalls == 0, "no implicit source");

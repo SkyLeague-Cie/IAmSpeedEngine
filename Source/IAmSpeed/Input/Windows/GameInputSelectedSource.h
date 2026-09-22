@@ -14,6 +14,81 @@ class FGameInputSelectedSource final : public IInputProducer
 	using FLease = FGameInputDiscovery::FLease;
 	using FRequest = std::optional<std::pair<FDeviceId, EDeviceKind>>;
 public:
+	struct FSelectedRawBatch
+	{
+		std::optional<FDeviceSelection> Ticket;
+		FRawDeviceReadBatch Readings;
+		EPollStatus Status = EPollStatus::Disconnected;
+		std::uint64_t AcquisitionTick = 0;
+	};
+	// Raw and legacy action ownership cannot be mixed on one cursor/session.
+	static std::unique_ptr<FGameInputSelectedSource> CreateRaw(FApi* Api, std::uint64_t ProducerId,
+		std::optional<FActivityConfig> Config = std::nullopt)
+	{
+		if (Config && !FDeviceActivityPolicy::ValidConfig(*Config)) return {};
+		auto Discovery = FGameInputDiscovery::Create(Api, ProducerId, {});
+		if (!Discovery) return {};
+		auto Result = std::unique_ptr<FGameInputSelectedSource>(new FGameInputSelectedSource(Api,
+			std::move(Discovery), {}, {}));
+		Result->RawMode = true;
+		if (Config) Result->Activity = std::make_unique<FDeviceActivityPolicy>(*Config);
+		return Result;
+	}
+	// AcquisitionTick is the acquisition owner's clock, never a physics frame.
+	// Sink installs a bounded value batch under the hotplug fence, without
+	// reentering this object. False means nothing was installed: discard all data.
+	template<class TSink> bool PollRaw(std::uint64_t AcquisitionTick, TSink&& Sink)
+	{
+		static_assert(std::is_nothrow_invocable_r_v<bool, TSink, const FSelectedRawBatch&>, "raw sink must return acceptance without throwing");
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!RawMode || Stopping || bPaused || !AcquisitionTick
+			|| AcquisitionTick <= LastAcquisitionTick || FAILED(Discovery->GetLastError())) return false;
+		LastAcquisitionTick = AcquisitionTick; PollAttempted = true;
+		if (Activity && !PollActivityLocked(AcquisitionTick)) return false;
+		if (HasPending)
+		{
+			if (!Discovery->Select(Pending)) { Discovery->FailAcquisition(E_FAIL); Status = EPollStatus::Failed; return false; }
+			HasPending = false;
+		}
+		const auto Lease = Discovery->AcquireSelected();
+		FSelectedRawBatch Batch; Batch.AcquisitionTick = AcquisitionTick;
+		if (!Lease) { Cursor.Reset(); Active.reset(); }
+		else
+		{
+			Batch.Ticket = Lease->Ticket;
+			if (!Disconnected || Disconnected->first != Lease->Ticket.Device.Id
+				|| Disconnected->second != Lease->Ticket.Device.Revision)
+			{
+				Disconnected.reset();
+				if (!Active || !Same(*Active, *Lease)) { Cursor.Reset(); Active = Lease; }
+				Batch.Readings = Cursor.PollRaw(*Api.Get(), Lease->Device.Get(),
+					Lease->Ticket.Kind == EDeviceKind::Keyboard ? GameInput::v3::GameInputKindKeyboard : GameInput::v3::GameInputKindGamepad);
+				Error = Batch.Readings.Result.Error;
+				if (Batch.Readings.Result.Status == EReadBatchStatus::Error
+					|| Batch.Readings.Result.Status == EReadBatchStatus::Resynchronize)
+				{
+					if (FAILED(Error) && Error != GAMEINPUT_E_REFERENCE_READING_TOO_OLD && Error != GAMEINPUT_E_DEVICE_DISCONNECTED)
+					{ Discovery->FailAcquisition(Error); Status = EPollStatus::Failed; return false; }
+					ResetReadingLocked(*Lease);
+					if (Error == GAMEINPUT_E_DEVICE_DISCONNECTED)
+						Disconnected = std::make_pair(Lease->Ticket.Device.Id, Lease->Ticket.Device.Revision);
+					// Resynchronization changes generation. Never relabel an old batch.
+					Status = Error == GAMEINPUT_E_DEVICE_DISCONNECTED ? EPollStatus::Disconnected : EPollStatus::Resynchronized;
+					return false;
+				}
+				Batch.Status = Batch.Readings.Result.Status == EReadBatchStatus::Updated ? EPollStatus::Updated : EPollStatus::NoChange;
+			}
+		}
+		const bool Accepted = Discovery->CommitRaw(Lease, [&]() noexcept { return Sink(Batch); });
+		if (!Accepted)
+		{
+			if (Lease) ResetReadingLocked(*Lease);
+			else { Cursor.Reset(); Active.reset(); }
+			Status = EPollStatus::Resynchronized; return false;
+		}
+		Status = Batch.Status; return true;
+	}
 	struct FPollObservation
 	{
 		FFrameNumber Frame = 0;
@@ -89,12 +164,21 @@ public:
 		}
 		return true;
 	}
+	// Acquisition owner only. Physical pause must not call SetPaused on this
+	// source: it continues supplying control requests while the worker is idle.
+	bool RequestFreshRawReading()
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!RawMode || Stopping || bPaused || FAILED(Discovery->GetLastError())) return false;
+		Cursor.Reset(); Active.reset(); return true;
+	}
 	std::vector<FDiscoveredDevice> Snapshot() const { return Discovery->Snapshot(); }
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
 	{
 		if (FPresentationInputScope::IsActive()) return std::nullopt;
 		std::lock_guard<std::mutex> Lock(Gate);
-		if (Stopping) return std::nullopt;
+		if (Stopping || RawMode) return std::nullopt;
 		if (LastFrame && Frame <= *LastFrame) return Discovery->Produce(Frame);
 		if (!IsNext(Frame)) return std::nullopt;
 		PollLocked(Frame);
@@ -106,7 +190,7 @@ public:
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
-		if (Stopping) return false;
+		if (Stopping || RawMode) return false;
 		if (LastFrame && Frame <= *LastFrame) return Discovery->Skip(Frame);
 		if (!IsNext(Frame)) return false;
 		PollLocked(Frame);
@@ -262,6 +346,8 @@ private:
 	FGameInputReadCursor Cursor;
 	std::unique_ptr<FPollObservation> Observations;
 	bool PollAttempted = false;
+	bool RawMode = false;
+	std::uint64_t LastAcquisitionTick = 0;
 	std::optional<FLease> Active;
 	std::optional<std::pair<FDeviceId, std::uint64_t>> Disconnected;
 	std::optional<FFrameNumber> LastFrame;
