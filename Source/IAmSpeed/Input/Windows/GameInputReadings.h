@@ -33,6 +33,13 @@ struct FDeviceState
 using FGameInputMapper = std::function<bool(const FDeviceState&, FActionValues&)>;
 enum class EReadBatchStatus { NoChange, Updated, Resynchronize, Error };
 struct FReadBatchResult { EReadBatchStatus Status; HRESULT Error; };
+struct FRawDeviceReadBatch
+{
+	FReadBatchResult Result{EReadBatchStatus::NoChange, S_OK};
+	std::array<FDeviceState, 64> States{};
+	std::size_t Count = 0;
+	bool FreshBaseline = false;
+};
 // Optional bounded diagnostic values. COM identities never cross this boundary.
 struct FReadingObservation
 {
@@ -54,6 +61,31 @@ class FGameInputReadCursor
 {
 public:
 	void Reset() { Cursor.Reset(); }
+	// Raw traversal seam for the V2 adapter. No action frame is converted: the
+	// existing device decoder supplies complete hardware state before mapping.
+	// A failed traversal returns no partial batch and requires a new baseline.
+	FRawDeviceReadBatch PollRaw(GameInput::v3::IGameInput& Api,
+		GameInput::v3::IGameInputDevice* Device, GameInput::v3::GameInputKind Kind)
+	{
+		FRawDeviceReadBatch Batch;
+		Batch.FreshBaseline = !Cursor;
+		FDeviceState Staged;
+		Batch.Result = Poll(Api, Device, Kind,
+			[&](const FDeviceState& State, FActionValues&) { Staged = State; return true; },
+			[&](const FActionValues&)
+			{
+				if (Batch.Count == Batch.States.size()) return false;
+				Batch.States[Batch.Count++] = Staged;
+				return true;
+			});
+		if (Batch.Result.Status != EReadBatchStatus::Updated && Batch.Result.Status != EReadBatchStatus::NoChange)
+		{
+			Batch.Count = 0;
+			Batch.States = {};
+			Cursor.Reset();
+		}
+		return Batch;
+	}
 	FReadBatchResult Poll(GameInput::v3::IGameInput& Api, GameInput::v3::IGameInputDevice* Device,
 		GameInput::v3::GameInputKind Kind, const FGameInputMapper& Mapper,
 		const std::function<bool(const FActionValues&)>& Commit, FReadObservations* Observations = nullptr)
