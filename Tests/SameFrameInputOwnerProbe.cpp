@@ -59,6 +59,7 @@ static std::vector<VFrame> Timeline(const std::shared_ptr<const FInputActionCont
 class FFencedFixture final : public VProducer, public IInputProducerPollFence
 {
 public:
+    EProducerContract GetProducerContract() const noexcept override { return EProducerContract::Device; }
     FFencedFixture(std::shared_ptr<const FInputActionContract> C, std::vector<VFrame> F)
         : Contract(std::move(C)), Frames(std::move(F))
     {
@@ -181,7 +182,7 @@ static void FailuresAndLifecycle()
     auto Policy = Bind(C); Policy.Processing.Step[Jump] = 1;
     Check(!FSameFrameInputOwner::Create(std::make_unique<FFencedFixture>(C, Timeline(C)), Policy, 10), "Boolean smoothing rejected");
     auto LegacyTest = Speed::Input::V2::FTestInputProducer::Create(C, {1}, {EProducerKind::Device,7}, 10, Timeline(C));
-    Check(!FSameFrameInputOwner::Create(std::move(LegacyTest), Bind(C), 10), "unfenced source cannot enter owner");
+    Check(!FSameFrameInputOwner::Create(std::move(LegacyTest), Bind(C), 10), "Test cannot masquerade as Device contract");
 }
 static void ReentrancyAndRecovery()
 {
@@ -209,6 +210,7 @@ static void ReentrancyAndRecovery()
 class FInbox final : public VProducer, public IInputProducerPollFence
 {
 public:
+    EProducerContract GetProducerContract() const noexcept override { return EProducerContract::Device; }
     explicit FInbox(std::shared_ptr<const FInputActionContract> C) : Contract(std::move(C)) {}
     std::function<void()> AfterFreeze;
     unsigned Polls = 0;

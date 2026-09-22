@@ -8,9 +8,16 @@ namespace Speed::Input::V2
 {
 // Test-only sealed action frames, AFTER the mapper. No v1 conversion and no
 // hidden raw-device evaluation. The same stream consumes player and test frames.
-class FTestInputProducer final : public IInputProducer
+class FTestInputProducer final : public IInputProducer, public IInputProducerPollFence
 {
 public:
+	EProducerContract GetProducerContract() const noexcept override { return EProducerContract::ExactScenario; }
+	std::optional<FInputFrame> InspectBaseline(FFrameNumber Frame) const override
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (Frame < First || Frame - First != Next || Next >= Frames.size() || !Frames[Next].GetData().Reset) return {};
+		return Frames[Next];
+	}
 	static std::unique_ptr<FTestInputProducer> Create(std::shared_ptr<const FInputActionContract> Contract,
 		FStreamEpoch Epoch, FProducerIdentity Producer, FFrameNumber FirstFrame, const std::vector<FInputFrame>& Frames)
 	{
@@ -41,11 +48,40 @@ public:
 		}
 		return std::unique_ptr<FTestInputProducer>(new FTestInputProducer(std::move(Contract), FirstFrame, Frames));
 	}
+	std::optional<FInputPollCutoff> FreezeForOwner(FFrameNumber Frame) override
+	{
+		if (FPresentationInputScope::IsActive()) return {};
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (FrozenFrame || Frame < First || Frame - First != Next || Next >= Frames.size()) return {};
+		FrozenFrame = Frame; FrozenDelivered = false;
+		const auto& D = Frames[Next].GetData();
+		return FInputPollCutoff{D.SourceSequence, D.DeviceGeneration.Value, 1};
+	}
+	bool CloseFrozenCutoff(const FInputPollCutoff& Cutoff) noexcept override
+	{
+		try
+		{
+			std::lock_guard<std::mutex> Lock(Gate);
+			bool Valid = false;
+			if (FrozenFrame && FrozenDelivered)
+			{
+				const auto& D = Frames[static_cast<std::size_t>(*FrozenFrame - First)].GetData();
+				Valid = Cutoff.LifecycleFence == 1 && Cutoff.Sequence == D.SourceSequence && Cutoff.Generation == D.DeviceGeneration.Value;
+			}
+			FrozenFrame.reset(); FrozenDelivered = false; return Valid;
+		}
+		catch (...) { return false; }
+	}
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
 	{
 		if (FPresentationInputScope::IsActive()) return {};
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (Frame < First || Frame - First >= Frames.size()) return {};
+		if (FrozenFrame)
+		{
+			if (*FrozenFrame != Frame || FrozenDelivered) return {};
+			FrozenDelivered = true;
+		}
 		const auto Index = static_cast<std::size_t>(Frame - First);
 		if (Index > Next || (Index < Next && Next - Index > HistoryCapacity)) return {};
 		if (Index == Next) ++Next;
@@ -58,7 +94,9 @@ private:
 	const std::shared_ptr<const FInputActionContract> Contract;
 	const FFrameNumber First;
 	const std::vector<FInputFrame> Frames;
-	std::mutex Gate;
+	mutable std::mutex Gate;
 	std::size_t Next = 0;
+	std::optional<FFrameNumber> FrozenFrame;
+	bool FrozenDelivered = false;
 };
 }

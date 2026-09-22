@@ -1,14 +1,18 @@
 #pragma once
 
 #include "ActionMapping.h"
+#include "InputProducerPollFence.h"
 
 namespace Speed::Input::V2
 {
+enum class EProducerContract : std::uint8_t { Unknown, Device, ExactScenario, ExactRemote };
 enum class ELifecycleResult : std::uint8_t { Applied, Unaffected, Rejected };
 class IInputProducer
 {
 public:
 	virtual ~IInputProducer() = default;
+	virtual EProducerContract GetProducerContract() const noexcept { return EProducerContract::Unknown; }
+	virtual std::optional<FInputFrame> InspectBaseline(FFrameNumber) const { return {}; }
 	virtual std::optional<FInputFrame> Produce(FFrameNumber Frame) = 0;
 	virtual const std::shared_ptr<const FInputActionContract>& GetContract() const = 0;
 	// Called by the host only at a quiescent owner boundary. Sealed timelines
@@ -29,9 +33,10 @@ public:
 	virtual ELifecycleResult SetLifecyclePaused(bool) { return ELifecycleResult::Rejected; }
 	virtual ELifecycleResult CancelLifecycle() { return ELifecycleResult::Rejected; }
 };
-class FDeviceInputProducer final : public IInputProducer
+class FDeviceInputProducer final : public IInputProducer, public IInputProducerPollFence
 {
 public:
+	EProducerContract GetProducerContract() const noexcept override { return EProducerContract::Device; }
 	static std::unique_ptr<FDeviceInputProducer> Create(std::shared_ptr<IRawInputSource> Raw,
 		std::shared_ptr<const FInputActionContract> Contract, FStreamEpoch Epoch,
 		FProducerIdentity Identity, FFrameNumber FirstFrame = 0)
@@ -47,6 +52,16 @@ public:
 		auto Sample = Raw->Poll(Frame);
 		if (!Sample) return {};
 		return Mapper->Map(*Sample, Frame).Frame;
+	}
+	std::optional<FInputPollCutoff> FreezeForOwner(FFrameNumber N) override
+	{
+		auto* Fence = dynamic_cast<IInputProducerPollFence*>(Raw.get());
+		return Fence ? Fence->FreezeForOwner(N) : std::nullopt;
+	}
+	bool CloseFrozenCutoff(const FInputPollCutoff& Cutoff) noexcept override
+	{
+		auto* Fence = dynamic_cast<IInputProducerPollFence*>(Raw.get());
+		return Fence && Fence->CloseFrozenCutoff(Cutoff);
 	}
 	const std::shared_ptr<const FInputActionContract>& GetContract() const override { return Mapper->GetContract(); }
 	ELifecycleResult SetLifecyclePaused(bool Paused) override

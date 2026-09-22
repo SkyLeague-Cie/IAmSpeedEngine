@@ -36,7 +36,7 @@ struct FAcquisitionBaseline { FAcquisitionCursor Cursor; FAcquiredRawState State
 // reads independently, including during physical pause. No OS/UObject calls.
 // The host must quiesce physical reservations BEFORE lifecycle operations here.
 // A separate acquisition lifetime fence joins the pump before Close/destruction.
-class FRawAcquisitionJournal final : public IRawInputSource
+class FRawAcquisitionJournal final : public IRawInputSource, public IInputProducerPollFence
 {
 public:
 	static constexpr std::size_t Capacity = 256;
@@ -53,7 +53,7 @@ public:
 		{
 			std::lock_guard<std::mutex> Lock(Gate);
 			if (Closed || Ticket.Session != SessionId || !Batch.Count || Batch.Count > Batch.Readings.size()
-				|| (RequiresFresh && !Batch.Readings[0].FreshBaseline)) return false;
+				|| (RequiresFresh && !Batch.Readings[0].FreshBaseline)) { FrozenInvalid = true; return false; }
 			auto Prepared = Physical;
 			auto Previous = LastAcquired;
 			bool Ready = ResumeReady;
@@ -64,10 +64,10 @@ public:
 				// readings-only journal must not silently strip those fields.
 				if (R.Kind == ERawDeviceKind::Desktop || !R.DeviceId || !R.Generation.Value || !R.Sequence || !R.State.IsValid(R.Kind)
 					|| (Previous && (Previous->Sequence == std::numeric_limits<std::uint64_t>::max()
-						|| R.Sequence != Previous->Sequence + 1))) return false;
+						|| R.Sequence != Previous->Sequence + 1))) { FrozenInvalid = true; return false; }
 				const bool Same = Previous && SameDevice(*Previous, R);
 				if ((!Same && !R.FreshBaseline) || (Same && !SameControls(Previous->State, R.State))
-					|| (Same && R.TimestampMicroseconds < Previous->TimestampMicroseconds)) return false;
+					|| (Same && R.TimestampMicroseconds < Previous->TimestampMicroseconds)) { FrozenInvalid = true; return false; }
 				if (!PhysicalClosed && Ticket.PhysicalFence == PhysicalFence
 					&& (!Paused || Ready || (ResumeRequested && R.FreshBaseline)))
 				{
@@ -78,11 +78,11 @@ public:
 					}
 					else
 					{
-						if (!Prepared.Latest || !SameDevice(*Prepared.Latest, R)) return false;
+						if (!Prepared.Latest || !SameDevice(*Prepared.Latest, R)) { FrozenInvalid = true; return false; }
 						for (std::size_t J = 0; J < R.State.Count; ++J)
 							if (Prepared.Latest->State.Values[J].Value != R.State.Values[J].Value)
 							{
-								if (Prepared.ChangeCount == Prepared.Changes.size()) return false;
+								if (Prepared.ChangeCount == Prepared.Changes.size()) { FrozenInvalid = true; return false; }
 								Prepared.Changes[Prepared.ChangeCount++] = {R.State.Values[J], {}, R.Sequence};
 							}
 						Prepared.Latest = R;
@@ -90,7 +90,10 @@ public:
 				}
 				Previous = R;
 			}
-			if (Serial > std::numeric_limits<std::uint64_t>::max() - Batch.Count) return false;
+			if (Serial > std::numeric_limits<std::uint64_t>::max() - Batch.Count) { FrozenInvalid = true; return false; }
+			if (Frozen)
+				for (std::size_t I = 0; I < Batch.Count; ++I)
+					if (Batch.Readings[I].FreshBaseline) FrozenInvalid = true;
 			Physical = Prepared; LastAcquired = Previous; ResumeReady = Ready; RequiresFresh = false;
 			for (std::size_t I = 0; I < Batch.Count; ++I) History[(++Serial) % Capacity] = Batch.Readings[I];
 			return true;
@@ -98,10 +101,44 @@ public:
 		catch (...) { return false; } // Lock failure happens before installation.
 	}
 
+	std::optional<FInputPollCutoff> FreezeForOwner(FFrameNumber Frame) override
+	{
+		if (FPresentationInputScope::IsActive()) return {};
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (Frozen) { FrozenInvalid = true; return {}; }
+		auto Sample = PollLocked(Frame);
+		if (!Sample) return {};
+		Frozen = std::move(Sample); FrozenFrame = Frame;
+		FrozenFence = PhysicalFence; FrozenDelivered = FrozenInvalid = false;
+		return FInputPollCutoff{Frozen->Sequence, Frozen->Generation.Value, FrozenFence};
+	}
+	bool CloseFrozenCutoff(const FInputPollCutoff& Cutoff) noexcept override
+	{
+		try
+		{
+			std::lock_guard<std::mutex> Lock(Gate);
+			const bool Valid = Frozen && FrozenDelivered && !FrozenInvalid && !Closed && !PhysicalClosed && !Paused
+				&& PhysicalFence == FrozenFence && Cutoff.LifecycleFence == FrozenFence
+				&& Cutoff.Sequence == Frozen->Sequence && Cutoff.Generation == Frozen->Generation.Value;
+			Frozen.reset(); FrozenDelivered = false;
+			return Valid;
+		}
+		catch (...) { return false; }
+	}
 	std::optional<FRawInputSample> Poll(FFrameNumber Frame) override
 	{
 		if (FPresentationInputScope::IsActive()) return {};
 		std::lock_guard<std::mutex> Lock(Gate);
+		if (Frozen)
+		{
+			if (FrozenInvalid || FrozenDelivered || Frame != FrozenFrame) { FrozenInvalid = true; return {}; }
+			FrozenDelivered = true; return Frozen;
+		}
+		return PollLocked(Frame);
+	}
+private:
+	std::optional<FRawInputSample> PollLocked(FFrameNumber Frame)
+	{
 		if (Closed || PhysicalClosed || Paused || Frame != NextFrame || Exhausted || !Physical.Latest
 			|| DeliverySequence == std::numeric_limits<std::uint64_t>::max()) return {};
 		const auto& R = Physical.Baseline ? *Physical.Baseline : *Physical.Latest;
@@ -128,6 +165,7 @@ public:
 		return Result;
 	}
 
+public:
 	ELifecycleResult SetLifecyclePaused(bool Value) override
 	{
 		if (FPresentationInputScope::IsActive()) return ELifecycleResult::Rejected;
@@ -196,7 +234,7 @@ public:
 	void Invalidate()
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
-		Physical = {}; RequiresFresh = true;
+		FrozenInvalid = true; Physical = {}; RequiresFresh = true;
 		if (Serial == std::numeric_limits<std::uint64_t>::max()) Closed = true;
 		else ControlBarrier = Serial + 1;
 		ResumeReady = false;
@@ -223,6 +261,10 @@ private:
 	std::array<FAcquiredRawState, Capacity> History{};
 	std::optional<FAcquiredRawState> LastAcquired;
 	FPhysicalBuffer Physical;
+	std::optional<FRawInputSample> Frozen;
+	FFrameNumber FrozenFrame = 0;
+	std::uint64_t FrozenFence = 0;
+	bool FrozenDelivered = false, FrozenInvalid = false;
 	std::uint64_t Serial = 0, DeliverySequence = 0, ControlBarrier = 0;
 	std::uint64_t PhysicalFence = 1;
 	FFrameNumber NextFrame = 0;

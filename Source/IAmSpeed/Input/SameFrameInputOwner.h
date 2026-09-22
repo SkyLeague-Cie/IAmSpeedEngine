@@ -1,23 +1,11 @@
 #pragma once
 
 #include "InputProducerV2.h"
+#include "InputProducerPollFence.h"
 #include <thread>
 
 namespace Speed::Input::V2
 {
-struct FInputPollCutoff { std::uint64_t Sequence = 0, Generation = 0, LifecycleFence = 0; };
-// Freeze retains actual immutable source evidence before Produce, not just a
-// counter. Later ordinary arrivals remain for the next poll. Lifecycle changes
-// or overflow invalidate the fence. Unadapted production producers are refused.
-class IInputProducerPollFence
-{
-public:
-    virtual ~IInputProducerPollFence() = default;
-    virtual std::optional<FInputPollCutoff> FreezeForOwner(FFrameNumber N) = 0;
-    // Atomic final validation + release under the source gate; false also closes
-    // the source lease. A zero cutoff closes an exceptional/failed preparation.
-    virtual bool CloseFrozenCutoff(const FInputPollCutoff& Cutoff) noexcept = 0;
-};
 enum class EOwnerInputStatus : std::uint8_t
 {
     Ready, WrongOwner, WrongFrame, Busy, Paused, InvalidBinding,
@@ -36,6 +24,7 @@ struct FOwnerInputBinding
     FStreamEpoch Epoch;
     std::shared_ptr<const FInputActionContract> Contract;
     FInputProcessingPolicy Processing;
+    EProducerContract ProducerContract = EProducerContract::Device;
 };
 struct FOwnerInputSnapshot
 {
@@ -84,8 +73,17 @@ public:
     static std::unique_ptr<FSameFrameInputOwner> Create(std::unique_ptr<IInputProducer> Producer,
         FOwnerInputBinding Binding, FFrameNumber FirstFrame = 0)
     {
-        if (FPresentationInputScope::IsActive() || !ValidBinding(Producer.get(), Binding)) return {};
-        return std::unique_ptr<FSameFrameInputOwner>(new FSameFrameInputOwner(std::move(Producer), std::move(Binding), FirstFrame));
+        if (FPresentationInputScope::IsActive()) return {};
+        try
+        {
+            if (!ValidBinding(Producer.get(), Binding))
+            { if (Producer) Producer->CancelLifecycle(); return {}; }
+            auto Fingerprint = FingerprintFor(Binding);
+            auto Filter = MakeFilter(Producer.get());
+            return std::unique_ptr<FSameFrameInputOwner>(new FSameFrameInputOwner(
+                std::move(Producer), std::move(Binding), FirstFrame, std::move(Fingerprint), std::move(Filter)));
+        }
+        catch (...) { if (Producer) { try { Producer->CancelLifecycle(); } catch (...) {} } return {}; }
     }
     FSameFrameInputOwner(const FSameFrameInputOwner&) = delete;
     FSameFrameInputOwner& operator=(const FSameFrameInputOwner&) = delete;
@@ -103,6 +101,12 @@ public:
         if (N != (Replay ? ReplayNext : NextFrame)) return {EOwnerInputStatus::WrongFrame, {}};
         try
         {
+            if (Initial && !Replay)
+            {
+                auto Identity = std::make_shared<const std::uint8_t>(0);
+                Pending = FPending{std::move(Identity), Initial}; Phase = EOwnerInputPhase::Prepared;
+                return {EOwnerInputStatus::Ready, FToken(Pending->Identity)};
+            }
             std::optional<FInputFrame> Input;
             if (Replay)
             {
@@ -138,7 +142,7 @@ public:
             if (!Input || !Input->IsValidFor(*Binding.Contract) || !ValidateAddress(*Input, N))
                 return Reject(EOwnerInputStatus::ResyncRequired);
             if (!Replay && !ValidateContinuity(*Input)) return Reject(EOwnerInputStatus::ResyncRequired);
-            const auto Before = Replay ? ReplayApplied : Applied;
+            const auto Before = Filter ? (Replay ? Filter->Replay : Filter->Applied) : FActionValues{};
             const auto Processed = Process(*Input, Before);
             if (Replay && Processed != History[N % HistoryCapacity]->Snapshot->Applied)
                 return Reject(EOwnerInputStatus::ResyncRequired);
@@ -146,7 +150,7 @@ public:
                 *Input, Fingerprint, Input->GetData().Values, Processed, Input->GetData().SourceSequence});
             auto Receipt = std::make_shared<const FOwnerInputReceipt>(FOwnerInputReceipt{
                 Snapshot, N, N, Binding.Epoch.Value, Replay ? ReplayPass : 0, Replay});
-            auto Entry = std::make_shared<const FHistoryEntry>(FHistoryEntry{Snapshot, Receipt, Before});
+            auto Entry = std::make_shared<const FHistoryEntry>(FHistoryEntry{Snapshot, Receipt, Filter ? std::optional<FActionValues>(Before) : std::nullopt});
             auto Identity = std::make_shared<const std::uint8_t>(0);
             Pending = FPending{std::move(Identity), std::move(Entry)};
             Phase = EOwnerInputPhase::Prepared;
@@ -181,13 +185,13 @@ public:
         if (!Allowed(Token, EOwnerInputPhase::Stepping) || N != Pending->Entry->Snapshot->Input.GetData().ConsumptionFrame) return false;
         if (Replay)
         {
-            ReplayApplied = Pending->Entry->Snapshot->Applied;
+            if (Filter) Filter->Replay = Pending->Entry->Snapshot->Applied;
             ReplayReceipt = Pending->Entry->Receipt;
             if (N == ReplayEnd) ReplayFinished = true; else ++ReplayNext;
         }
         else
         {
-            Applied = Pending->Entry->Snapshot->Applied;
+            if (Filter) Filter->Applied = Pending->Entry->Snapshot->Applied;
             History[N % HistoryCapacity] = Pending->Entry;
             Latest = Pending->Entry->Receipt;
             LastInput = Pending->Entry->Snapshot;
@@ -195,7 +199,7 @@ public:
             Exhausted = N == UINT64_MAX;
             if (!Exhausted) NextFrame = N + 1;
         }
-        Pending.reset(); Phase = EOwnerInputPhase::Idle; return true;
+        Pending.reset(); Initial.reset(); Phase = EOwnerInputPhase::Idle; return true;
     }
     // An aborted producer poll cannot be repeated: its source cursor may have
     // advanced. Quarantine the epoch, retain completed evidence only, and require
@@ -206,15 +210,51 @@ public:
         Quarantine(); return true;
     }
 
+    // Initial application is a closed boundary, not a completed physics step.
+    bool CloseInitialBoundary(const FToken& Token) noexcept
+    {
+        if (!Allowed(Token, EOwnerInputPhase::Installed) || Initial || LastInput || Replay
+            || !Pending->Entry->Snapshot->Input.GetData().Reset) return false;
+        Initial = Pending->Entry; Pending.reset(); Phase = EOwnerInputPhase::Idle; return true;
+    }
+    bool HasInitialReceipt() const noexcept { return IsOwner() && bool(Initial); }
+    std::shared_ptr<const FOwnerInputSnapshot> ReadInitialReceipt() const noexcept
+    { return IsOwner() && Initial ? Initial->Snapshot : nullptr; }
+    bool CanComplete(const FToken& Token, FFrameNumber N) const noexcept
+    { return Allowed(Token, EOwnerInputPhase::Stepping) && Pending->Entry->Snapshot->Input.GetData().ConsumptionFrame == N; }
+    bool HasFilterState() const noexcept { return IsOwner() && bool(Filter); }
+    std::optional<FActionValues> ReadPreparedFilterBefore() const noexcept
+    { return IsOwner() && Pending ? Pending->Entry->Before : std::nullopt; }
+    EProducerContract GetProducerContract() const noexcept
+    { return IsOwner() && Source ? Source->GetProducerContract() : EProducerContract::Unknown; }
+    std::optional<FInputFrame> InspectBaseline(FFrameNumber N) const
+    {
+        if (!IsOwner() || CallingSource || Pending || !Source || Initial) return {};
+        return Source->InspectBaseline(N);
+    }
+    bool RetireAtBoundary()
+    {
+        if (!IsOwner() || CallingSource || Pending) return false;
+        Quarantine();
+        if (!Source) return true;
+        CallingSource = true;
+        ELifecycleResult R = ELifecycleResult::Rejected;
+        try { R = Source->CancelLifecycle(); } catch (...) {}
+        if (R != ELifecycleResult::Applied && R != ELifecycleResult::Unaffected) { CallingSource = false; return false; }
+        Source.reset(); CallingSource = false; return true;
+    }
+
     bool PauseAtBoundary()
     {
-        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || Replay || Phase != EOwnerInputPhase::Idle) return false;
+        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || Replay
+            || (Phase != EOwnerInputPhase::Idle && Phase != EOwnerInputPhase::Paused)) return false;
+        if (Initial) { Quarantine(); return false; }
         CallingSource = true;
         ELifecycleResult Result = ELifecycleResult::Rejected;
         try { Result = Source->SetLifecyclePaused(true); } catch (...) {}
         CallingSource = false;
         if (Phase == EOwnerInputPhase::Quarantined || (Result != ELifecycleResult::Applied && Result != ELifecycleResult::Unaffected)) { Quarantine(); return false; }
-        Applied = {}; RequireBaseline = true; Latest.reset(); Phase = EOwnerInputPhase::Paused;
+        if (Filter) Filter->Applied = {}; RequireBaseline = true; Latest.reset(); Phase = EOwnerInputPhase::Paused;
         return true;
     }
     bool ResumeAtBoundary()
@@ -240,7 +280,8 @@ public:
         CallingSource = true;
         bool Valid = false;
         FContractFingerprint NewFingerprint;
-        try { Valid = ValidBinding(Producer.get(), NewBinding); if (Valid) NewFingerprint = FingerprintFor(NewBinding); }
+        std::unique_ptr<FFilterState> NewFilter;
+        try { Valid = ValidBinding(Producer.get(), NewBinding); if (Valid) { NewFingerprint = FingerprintFor(NewBinding); NewFilter = MakeFilter(Producer.get()); } }
         catch (...) { Valid = false; }
         CallingSource = false;
         if (!Valid || Phase != PriorPhase || FaultSerial != PriorFault || Pending) return false;
@@ -255,7 +296,7 @@ public:
         CallingSource = false;
         if (Phase != PriorPhase || FaultSerial != PriorFault) return false;
         Source = std::move(Producer); Binding = std::move(NewBinding); Fingerprint.swap(NewFingerprint);
-        History = {}; Applied = {}; LastInput.reset(); Latest.reset(); ReplayReceipt.reset();
+        History = {}; Initial.reset(); Filter = std::move(NewFilter); LastInput.reset(); Latest.reset(); ReplayReceipt.reset();
         NextFrame = FirstFrame; Exhausted = false; RequireBaseline = true; Phase = EOwnerInputPhase::Idle;
         return true;
     }
@@ -269,7 +310,7 @@ public:
             if (!E || E->Snapshot->Input.GetData().ConsumptionFrame != N || E->Snapshot->BindingFingerprint != Fingerprint) return false;
             if (N == Last) break;
         }
-        ReplayApplied = History[First % HistoryCapacity]->Before;
+        if (Filter) Filter->Replay = *History[First % HistoryCapacity]->Before;
         Replay = true; ReplayFinished = false; ReplayNext = First; ReplayEnd = Last;
         ++ReplayPass; ReplayReceipt.reset(); return true;
     }
@@ -289,27 +330,30 @@ public:
         return E && E->Snapshot->Input.GetData().ConsumptionFrame == N ? E->Receipt : nullptr;
     }
     FActionValues ReadBoundaryApplied() const noexcept
-    { return IsOwner() && Phase != EOwnerInputPhase::Quarantined ? Applied : FActionValues{}; }
+    { return IsOwner() && Phase != EOwnerInputPhase::Quarantined && Phase != EOwnerInputPhase::Paused
+        ? (Filter ? Filter->Applied : (Latest ? Latest->Snapshot->Applied : FActionValues{})) : FActionValues{}; }
     EOwnerInputPhase GetPhase() const noexcept { return IsOwner() ? Phase : EOwnerInputPhase::Quarantined; }
     FFrameNumber GetNextFrame() const noexcept { return IsOwner() ? NextFrame : UINT64_MAX; }
     std::uint64_t GetPollSerial() const noexcept { return IsOwner() ? PollSerial : 0; }
     FContractFingerprint GetBindingFingerprint() const { return IsOwner() ? Fingerprint : FContractFingerprint{}; }
 
 private:
+    struct FFilterState { FActionValues Applied{}, Replay{}; };
     struct FHistoryEntry
     {
         std::shared_ptr<const FOwnerInputSnapshot> Snapshot;
         std::shared_ptr<const FOwnerInputReceipt> Receipt;
-        FActionValues Before{};
+        std::optional<FActionValues> Before;
     };
     struct FPending
     {
         std::shared_ptr<const std::uint8_t> Identity;
         std::shared_ptr<const FHistoryEntry> Entry;
     };
-    FSameFrameInputOwner(std::unique_ptr<IInputProducer> Producer, FOwnerInputBinding InBinding, FFrameNumber First)
-        : Source(std::move(Producer)), Binding(std::move(InBinding)), Fingerprint(FingerprintFor(Binding)),
-          Owner(std::this_thread::get_id()), NextFrame(First) {}
+    FSameFrameInputOwner(std::unique_ptr<IInputProducer> Producer, FOwnerInputBinding InBinding, FFrameNumber First,
+        FContractFingerprint InFingerprint, std::unique_ptr<FFilterState> InFilter) noexcept
+        : Source(std::move(Producer)), Binding(std::move(InBinding)), Fingerprint(std::move(InFingerprint)),
+          Owner(std::this_thread::get_id()), NextFrame(First), Filter(std::move(InFilter)) {}
     bool IsOwner() const noexcept { return std::this_thread::get_id() == Owner; }
     bool Matches(const FToken& T) const noexcept { return Pending && T.Identity && Pending->Identity == T.Identity; }
     bool Allowed(const FToken& T, EOwnerInputPhase Required) const noexcept
@@ -317,7 +361,7 @@ private:
     void Quarantine() noexcept
     {
         Pending.reset(); Phase = EOwnerInputPhase::Quarantined;
-        Latest.reset(); ReplayReceipt.reset(); Applied = {};
+        Latest.reset(); ReplayReceipt.reset(); Initial.reset(); if (Filter) *Filter = {};
         Replay = false; ReplayFinished = false;
         if (FaultSerial != UINT64_MAX) ++FaultSerial;
     }
@@ -326,7 +370,8 @@ private:
     {
         // This phase does NOT implement AI/network V2 or enable their routes.
         if (!Source || !dynamic_cast<const IInputProducerPollFence*>(Source) || !B.AdapterId || !B.Producer.Id || B.Producer.Kind != EProducerKind::Device
-            || !B.Epoch.Value || !B.Contract) return false;
+            || !B.Epoch.Value || !B.Contract || B.ProducerContract != Source->GetProducerContract()
+            || (Source->GetProducerContract() != EProducerContract::Device && Source->GetProducerContract() != EProducerContract::ExactScenario)) return false;
         try
         {
             const auto C = Source->GetContract();
@@ -336,7 +381,7 @@ private:
         for (std::size_t I = 0; I < ActionCount; ++I)
         {
             const auto* A = B.Contract->Find(static_cast<FActionId>(I));
-            if (B.Processing.Step[I] && (!A || A->Wiring != EActionWiring::Wired || A->Type != EActionType::Axis1D
+            if (B.Processing.Step[I] && (Source->GetProducerContract() != EProducerContract::Device || !A || A->Wiring != EActionWiring::Wired || A->Type != EActionType::Axis1D
                 || B.Processing.Step[I] > static_cast<std::uint16_t>(2 * A->Quantization))) return false;
         }
         return true;
@@ -345,7 +390,8 @@ private:
     {
         FContractFingerprint F = B.Contract->GetFingerprint();
         const auto Add = [&](std::uint64_t V) { for (unsigned I = 0; I < 8; ++I) F.push_back(static_cast<std::uint8_t>(V >> (8 * I))); };
-        Add(1); Add(B.AdapterId); Add(static_cast<std::uint64_t>(B.Producer.Kind)); Add(B.Producer.Id); Add(B.Epoch.Value);
+        Add(2); Add(B.AdapterId); Add(static_cast<std::uint64_t>(B.Producer.Kind)); Add(B.Producer.Id); Add(B.Epoch.Value);
+        Add(static_cast<std::uint64_t>(B.ProducerContract));
         for (const auto S : B.Processing.Step) Add(S);
         return F;
     }
@@ -378,7 +424,7 @@ private:
     FActionValues Process(const FInputFrame& Input, const FActionValues& Before) const noexcept
     {
         auto Result = Input.GetData().Values;
-        if (Input.GetData().Reset) return Result; // first fresh held baseline is immediate
+        if (!Filter || Input.GetData().Reset) return Result; // first fresh held baseline is immediate
         for (std::size_t I = 0; I < ActionCount; ++I)
         {
             const int Step = Binding.Processing.Step[I];
@@ -397,7 +443,9 @@ private:
     FFrameNumber NextFrame = 0;
     std::uint64_t PollSerial = 0;
     std::uint64_t FaultSerial = 0;
-    FActionValues Applied{};
+    static std::unique_ptr<FFilterState> MakeFilter(const IInputProducer* P)
+    { return P->GetProducerContract() == EProducerContract::Device ? std::make_unique<FFilterState>() : nullptr; }
+    std::unique_ptr<FFilterState> Filter;
     std::optional<FPending> Pending;
     std::array<std::shared_ptr<const FHistoryEntry>, HistoryCapacity> History{};
     std::shared_ptr<const FOwnerInputSnapshot> LastInput;
@@ -405,6 +453,6 @@ private:
     bool Replay = false, ReplayFinished = false;
     FFrameNumber ReplayNext = 0, ReplayEnd = 0;
     std::uint64_t ReplayPass = 0;
-    FActionValues ReplayApplied{};
+    std::shared_ptr<const FHistoryEntry> Initial;
 };
 }
