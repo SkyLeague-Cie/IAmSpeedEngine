@@ -29,6 +29,7 @@ public:
 		ENeutralizeCause Cause;
 		EPollStatus PollStatus;
 		FGameInputSelectedSource::ERawPollReject RawPollReject;
+		HRESULT RawError;
 		ESinkReject SinkReject;
 		std::uint64_t AcquisitionTick;
 		V2::FAcquisitionInvalidation Barrier;
@@ -138,6 +139,7 @@ private:
 		LastNeutralizeDiagnostic = FNeutralizeDiagnostic{Cause, Source->GetLastPollStatus(),
 			Cause == ENeutralizeCause::PollRawRejected ? Source->GetLastRawPollReject()
 				: FGameInputSelectedSource::ERawPollReject::None,
+			Source->GetLastError(),
 			SinkReject, Tick,
 			Journal->Invalidate()};
 		return InstallNeutral(Ticket) ? ERawPumpResult::Neutralized : ERawPumpResult::Rejected;

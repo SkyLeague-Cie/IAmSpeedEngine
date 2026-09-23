@@ -5,6 +5,13 @@
 #include "InputActionValue.h"
 
 #if !UE_BUILD_SHIPPING
+#include "HAL/IConsoleManager.h"
+static TAutoConsoleVariable<int32> CVarInputControlPathTrace(
+	TEXT("p.IAmSpeed.InputControlPathTrace"), 0,
+	TEXT("Trace Pause and AutoControl command routing. Diagnostic only."), ECVF_Default);
+#endif
+
+#if !UE_BUILD_SHIPPING
 bool ASpeedController::UseScenarioInputAuthorityAtBoundary()
 {
 	check(IsInGameThread());
@@ -147,10 +154,23 @@ bool ASpeedController::ServiceInputSessionV2()
 				// The menu owns input while UE is paused. A batch can contain both
 				// Pause and a gameplay command, so preserve the entry state as well
 				// as checking whether an earlier request paused this same batch.
+#if !UE_BUILD_SHIPPING
+				const bool bTraceControl = Request.Command == Speed::Input::V2::EControlCommand::Pause
+					|| Request.Command == Speed::Input::V2::EControlCommand::AutoControl;
+				const bool bPausedBeforeRequest = bTraceControl && IsPaused();
+#endif
 				const bool bGameplaySuppressed = Request.Command != Speed::Input::V2::EControlCommand::Pause
 					&& (bPausedAtBatchStart || IsPaused());
 				const auto Result = bGameplaySuppressed
 					? Speed::Input::V2::EControlApplication::Rejected : ExecuteInputControlV2(Request);
+#if !UE_BUILD_SHIPPING
+				if (bTraceControl && CVarInputControlPathTrace.GetValueOnGameThread() != 0)
+					UE_LOG(LogTemp, Display, TEXT("[InputControlPath] Controller=%u Session=%llu ProducerKind=%u ProducerId=%llu Sequence=%llu Ordinal=%u Command=%u BatchPaused=%u BeforePaused=%u AfterPaused=%u Suppressed=%u Result=%u"),
+						GetUniqueID(), static_cast<unsigned long long>(Request.Session), unsigned(Request.Producer.Kind),
+						static_cast<unsigned long long>(Request.Producer.Id), static_cast<unsigned long long>(Request.AcquisitionSequence),
+						Request.Ordinal, unsigned(Request.Command), unsigned(bPausedAtBatchStart),
+						unsigned(bPausedBeforeRequest), unsigned(IsPaused()), unsigned(bGameplaySuppressed), unsigned(Result));
+#endif
 				if (!ControlReceiptsV2.Record(Request, Result)) { bInputLifecycleFault = true; return false; }
 			}
 		}
