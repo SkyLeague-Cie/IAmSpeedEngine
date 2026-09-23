@@ -122,7 +122,10 @@ bool ASpeedController::ServiceInputSessionV2()
 			bInputLifecycleFault = true; return false;
 		}
 		if (Batch.Status == Speed::Input::V2::EControlRead::Resynchronized)
-			UE_LOG(LogTemp, Error, TEXT("Control input history resynchronized in session %llu; missing commands were not replayed"), Session->Session);
+			UE_LOG(LogTemp, Error, TEXT("Control input history resynchronized in session %llu; missing commands were not replayed; game_frame=%llu history_status=%u needs_baseline_before=%u prior=%llu latest=%llu capacity=%llu barrier=%llu baseline=%llu ring_overflow=%u invalidation_barrier=%u"),
+				Session->Session, GFrameCounter, unsigned(Batch.HistoryStatus), unsigned(Batch.NeedsBaselineBeforeRead),
+				Batch.PreviousSerial, Batch.LatestSerial, static_cast<unsigned long long>(Speed::Input::V2::FRawAcquisitionJournal::Capacity),
+				Batch.ControlBarrier, Batch.BaselineSerial, unsigned(Batch.RingOverflow), unsigned(Batch.InvalidationBarrier));
 		for (const auto& Request : Batch.Requests)
 		{
 			if (InputSessionV2 != Session || Session->Closed) break;

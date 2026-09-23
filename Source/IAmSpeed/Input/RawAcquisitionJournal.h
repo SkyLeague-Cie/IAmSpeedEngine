@@ -29,8 +29,13 @@ struct FAcquisitionHistory
 	EAcquisitionRead Status = EAcquisitionRead::NoChange;
 	FAcquisitionCursor Next;
 	std::vector<FAcquiredRawState> Readings;
+	std::uint64_t ControlBarrier = 0; // Diagnostic only; read under the journal gate.
 };
 struct FAcquisitionBaseline { FAcquisitionCursor Cursor; FAcquiredRawState State; };
+struct FAcquisitionInvalidation
+{
+	std::uint64_t Session = 0, Serial = 0, BarrierBefore = 0, BarrierAfter = 0;
+};
 
 // One acquisition owner publishes; one physical owner polls; the control lane
 // reads independently, including during physical pause. No OS/UObject calls.
@@ -213,7 +218,7 @@ public:
 	FAcquisitionHistory ReadControlsSince(FAcquisitionCursor Cursor) const
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
-		FAcquisitionHistory Out; Out.Next = {SessionId, Serial};
+		FAcquisitionHistory Out; Out.Next = {SessionId, Serial}; Out.ControlBarrier = ControlBarrier;
 		if (Closed) { Out.Status = EAcquisitionRead::Closed; return Out; }
 		if (Cursor.Session != SessionId || Cursor.Serial > Serial)
 		{ Out.Status = EAcquisitionRead::InvalidCursor; return Out; }
@@ -232,13 +237,15 @@ public:
 	}
 	// An acquisition failure is explicit on both lanes; there is no partial
 	// suffix or cached held state to use. Recovery requires a fresh baseline.
-	void Invalidate()
+	FAcquisitionInvalidation Invalidate()
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
+		const auto Before = ControlBarrier;
 		FrozenInvalid = true; Physical = {}; RequiresFresh = true;
 		if (Serial == std::numeric_limits<std::uint64_t>::max()) Closed = true;
 		else ControlBarrier = Serial + 1;
 		ResumeReady = false;
+		return {SessionId, Serial, Before, ControlBarrier};
 	}
 	void Close()
 	{ std::lock_guard<std::mutex> Lock(Gate); Closed = true; Physical = {}; }

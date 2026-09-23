@@ -18,7 +18,17 @@ struct FControlRequest
 	EStateAction State = EStateAction::Started;
 };
 enum class EControlRead { NoChange, Batch, Resynchronized, WaitingForBaseline, Invalid };
-struct FControlRequests { EControlRead Status = EControlRead::NoChange; std::vector<FControlRequest> Requests; };
+struct FControlRequests
+{
+	EControlRead Status = EControlRead::NoChange;
+	std::vector<FControlRequest> Requests;
+	// Populated on Resynchronized. These are observability only: no commands are replayed.
+	std::uint64_t PreviousSerial = 0, LatestSerial = 0, ControlBarrier = 0;
+	std::uint64_t BaselineSerial = 0;
+	EAcquisitionRead HistoryStatus = EAcquisitionRead::NoChange;
+	bool NeedsBaselineBeforeRead = false;
+	bool RingOverflow = false, InvalidationBarrier = false;
+};
 
 // Values-only control-lane reader. The game executes only eligible requests
 // (normally Started) and returns its own application receipts. No physical
@@ -46,15 +56,25 @@ public:
 	FControlRequests Read()
 	{
 		const auto History = Journal->ReadControlsSince(Cursor);
+		const bool WaitingBeforeRead = NeedsBaseline;
 		if (History.Status == EAcquisitionRead::Closed || History.Status == EAcquisitionRead::InvalidCursor) return {EControlRead::Invalid, {}};
 		if (History.Status == EAcquisitionRead::Gap || NeedsBaseline)
 		{
+		const auto Previous = Cursor.Serial;
 			const auto Base = Journal->ReadControlBaseline();
 			if (!Base) { NeedsBaseline = true; return {EControlRead::WaitingForBaseline, {}}; }
 			std::uint32_t FreshActive = 0;
 			if (Base->Cursor.Session != Cursor.Session || !Evaluate(Base->State, FreshActive)) return {EControlRead::Invalid, {}};
 			Active = FreshActive; Cursor = Base->Cursor; NeedsBaseline = false;
-			return {EControlRead::Resynchronized, {}}; // No invented Started/Completed.
+			FControlRequests Out; Out.Status = EControlRead::Resynchronized;
+			Out.PreviousSerial = Previous; Out.LatestSerial = History.Next.Serial;
+			Out.ControlBarrier = History.ControlBarrier; Out.BaselineSerial = Base->Cursor.Serial;
+			Out.HistoryStatus = History.Status; Out.NeedsBaselineBeforeRead = WaitingBeforeRead;
+			Out.RingOverflow = History.Status == EAcquisitionRead::Gap
+				&& History.Next.Serial - Previous > FRawAcquisitionJournal::Capacity;
+			Out.InvalidationBarrier = History.Status == EAcquisitionRead::Gap
+				&& Previous < History.ControlBarrier;
+			return Out; // No invented Started/Completed.
 		}
 		if (History.Status == EAcquisitionRead::NoChange) return {};
 		FControlRequests Out; Out.Status = EControlRead::Batch;

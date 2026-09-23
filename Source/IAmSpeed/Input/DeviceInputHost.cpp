@@ -37,7 +37,15 @@ public:
             { UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
             Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
         }
-        return Source->Pump();
+		const auto Result = Source->Pump();
+		if (const auto Diagnostic = Source->TakeNeutralizeDiagnostic())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Independent input acquisition neutralized; cause=%u poll_status=%u acquisition_tick=%llu session=%llu journal_serial=%llu barrier_before=%llu barrier_after=%llu"),
+				unsigned(Diagnostic->Cause), unsigned(Diagnostic->PollStatus), Diagnostic->AcquisitionTick,
+				Diagnostic->Barrier.Session, Diagnostic->Barrier.Serial,
+				Diagnostic->Barrier.BarrierBefore, Diagnostic->Barrier.BarrierAfter);
+		}
+		return Result;
     }
     bool Close() override
     {

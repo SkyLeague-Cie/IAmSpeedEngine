@@ -63,14 +63,38 @@ int main()
 			&& First.Requests[0].State == EStateAction::Started && First.Requests[1].State == EStateAction::Completed
 			&& First.Requests[0].AcquisitionSequence == 2 && First.Requests[0].Session == 12, "first observer retains short press with acquisition identity");
 		Check(Reader->Read().Status == EControlRead::NoChange, "control cursor no duplicate requests");
-		Hub->Invalidate();
+		const auto Barrier = Hub->Invalidate();
+		Check(Barrier.Session == 12 && Barrier.Serial == 3 && Barrier.BarrierBefore == 0
+			&& Barrier.BarrierAfter == 4, "invalidation receipt captures barrier change under lock");
 		Check(!Hub->ReadControlBaseline() && Reader->Read().Status == EControlRead::WaitingForBaseline, "gap cannot resync from stale cache");
 		Check(Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(4, true, true)})), "control recovery fresh held");
-		Check(Reader->Read().Status == EControlRead::Resynchronized && Reader->Read().Requests.empty(), "atomic state cursor resync emits no synthetic start");
+		const auto Resync = Reader->Read();
+		Check(Resync.Status == EControlRead::Resynchronized && Resync.Requests.empty()
+			&& Resync.HistoryStatus == EAcquisitionRead::Gap && Resync.NeedsBaselineBeforeRead
+			&& Resync.PreviousSerial == 3 && Resync.LatestSerial == 4 && Resync.BaselineSerial == 4
+			&& Resync.ControlBarrier == 4 && Resync.InvalidationBarrier && !Resync.RingOverflow,
+			"barrier recovery reports exact cause without synthetic control start");
 		Check(Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(5, false), Reading(6, true)})), "post recovery transitions");
 		const auto Recovered = Reader->Read();
 		Check(Recovered.Requests.size() == 2 && Recovered.Requests[0].State == EStateAction::Completed
 			&& Recovered.Requests[1].State == EStateAction::Started, "recovery continues from exact held baseline");
+	}
+	{
+		auto Hub = std::make_shared<FRawAcquisitionJournal>(14);
+		auto Reader = FControlActionReader::Create(Contract(), Hub,
+			{Speed::Input::EProducerKind::Device, 7}, 14, {{3, EControlCommand::Pause}});
+		Check(bool(Reader), "capacity diagnostic reader");
+		bool Published = true;
+		for (std::uint64_t I = 1; I <= FRawAcquisitionJournal::Capacity + 1; ++I)
+			Published &= Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(I, false, true)}));
+		Check(Published, "fresh baselines fill control history without physical change overflow");
+		const auto Resync = Reader->Read();
+		Check(Resync.Status == EControlRead::Resynchronized && Resync.Requests.empty()
+			&& Resync.HistoryStatus == EAcquisitionRead::Gap && !Resync.NeedsBaselineBeforeRead
+			&& Resync.PreviousSerial == 0 && Resync.LatestSerial == FRawAcquisitionJournal::Capacity + 1
+			&& Resync.BaselineSerial == Resync.LatestSerial && Resync.ControlBarrier == 0
+			&& Resync.RingOverflow && !Resync.InvalidationBarrier,
+			"ring overflow reports exact capacity cause without replay");
 	}
 	{
 		struct FBlockingSource final : IInputAcquisition

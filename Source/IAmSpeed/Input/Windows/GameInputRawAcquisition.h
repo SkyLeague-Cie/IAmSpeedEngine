@@ -18,6 +18,14 @@ using ERawPumpResult = V2::EAcquisitionPumpResult;
 class FGameInputRawAcquisition final : public V2::IInputAcquisition
 {
 public:
+	enum class ENeutralizeCause : std::uint8_t { FreshResumeReadRejected, PollRawRejected };
+	struct FNeutralizeDiagnostic
+	{
+		ENeutralizeCause Cause;
+		EPollStatus PollStatus;
+		std::uint64_t AcquisitionTick;
+		V2::FAcquisitionInvalidation Barrier;
+	};
 	FGameInputRawAcquisition(std::unique_ptr<FGameInputSelectedSource> InSource,
 		std::shared_ptr<V2::FRawAcquisitionJournal> InJournal)
 		: Source(std::move(InSource)), Journal(std::move(InJournal)) {}
@@ -31,7 +39,8 @@ public:
 		Owner = Caller;
 		if (Tick == std::numeric_limits<std::uint64_t>::max()) return ERawPumpResult::Rejected;
 		const auto Ticket = Journal->BeginAcquisition();
-		if (Journal->NeedsFreshResume() && !Source->RequestFreshRawReading()) return Neutralize(Ticket);
+		if (Journal->NeedsFreshResume() && !Source->RequestFreshRawReading())
+			return Neutralize(Ticket, ENeutralizeCause::FreshResumeReadRejected);
 		bool HadData = false;
 		const bool Accepted = Source->PollRaw(++Tick, [&](const FGameInputSelectedSource::FSelectedRawBatch& Batch) noexcept
 		{
@@ -59,8 +68,15 @@ public:
 			LastState = Prepared.Readings[Prepared.Count - 1]; Neutral = false; HadData = true;
 			return true;
 		});
-		if (!Accepted) return Neutralize(Ticket);
+		if (!Accepted) return Neutralize(Ticket, ENeutralizeCause::PollRawRejected);
 		return HadData ? ERawPumpResult::Installed : ERawPumpResult::NoChange;
+	}
+	std::optional<FNeutralizeDiagnostic> TakeNeutralizeDiagnostic()
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		auto Result = LastNeutralizeDiagnostic;
+		LastNeutralizeDiagnostic.reset();
+		return Result;
 	}
 	bool Close() override
 	{
@@ -70,10 +86,11 @@ public:
 		return !Source || Source->Shutdown();
 	}
 private:
-	ERawPumpResult Neutralize(V2::FAcquisitionTicket Ticket)
+	ERawPumpResult Neutralize(V2::FAcquisitionTicket Ticket, ENeutralizeCause Cause)
 	{
 		if (Neutral && !Journal->NeedsFreshResume()) return ERawPumpResult::Neutralized;
-		Journal->Invalidate();
+		LastNeutralizeDiagnostic = FNeutralizeDiagnostic{Cause, Source->GetLastPollStatus(), Tick,
+			Journal->Invalidate()};
 		if (Sequence == std::numeric_limits<std::uint64_t>::max() || Generation == std::numeric_limits<std::uint64_t>::max())
 			return ERawPumpResult::Rejected;
 		Prepared.Count = 1; auto& R = Prepared.Readings[0]; R = LastState.value_or(V2::FAcquiredRawState{});
@@ -106,6 +123,7 @@ private:
 	std::size_t DeviceCount = 0;
 	std::optional<FDeviceSelection> LastTicket;
 	std::optional<V2::FAcquiredRawState> LastState;
+	std::optional<FNeutralizeDiagnostic> LastNeutralizeDiagnostic;
 	std::uint64_t Tick = 0, Sequence = 0, Generation = 0;
 	bool Closed = false, Neutral = false;
 };
