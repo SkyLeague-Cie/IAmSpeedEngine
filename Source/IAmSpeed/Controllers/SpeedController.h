@@ -94,6 +94,7 @@ public:
 	 */
 	void Pause() override;
 	bool SetPause(bool bPause, FCanUnpause CanUnpauseDelegate = FCanUnpause()) override;
+	bool IsInputLifecycleFaulted() const { return bInputLifecycleFault; }
 
 protected:
 	virtual bool RequiresInputSessionV2() const { return false; }

@@ -1,10 +1,16 @@
 #include "IAmSpeed/Input/RawAcquisitionJournal.h"
 #include "IAmSpeed/Input/InputStreamV2.h"
 #include "IAmSpeed/Input/ControlActionReader.h"
+#include "IAmSpeed/Input/ControlBatchPolicy.h"
+#include "IAmSpeed/Input/ControlApplicationJournal.h"
 #include "IAmSpeed/Input/InputAcquisitionWorker.h"
+#include "IAmSpeed/Input/SameFrameInputOwner.h"
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
+#include <future>
 #include <iostream>
+#include <stdexcept>
 
 using namespace Speed::Input::V2;
 static unsigned Checks = 0;
@@ -30,6 +36,150 @@ static auto Contract()
 }
 int main()
 {
+	{
+		const auto Request = [](EControlCommand Command, std::uint32_t Ordinal)
+		{
+			FControlRequest R; R.Session = 50; R.Command = Command;
+			R.Ordinal = Ordinal; R.State = EStateAction::Started; return R;
+		};
+		const auto Up = Request(EControlCommand::AutoControl, 0);
+		const auto Pause = Request(EControlCommand::Pause, 1);
+		const auto Reset = Request(EControlCommand::ResetWorld, 2);
+		const auto Verify = [&](std::initializer_list<FControlRequest> Requests,
+			bool PausedAtStart, bool PausedNow, bool ExpectSuppressed, const char* Message)
+		{
+			FControlRequests B; B.Status = EControlRead::Batch;
+			B.Requests.assign(Requests);
+			FControlApplicationJournal Receipts;
+			bool Valid = true;
+			for (const auto& R : B.Requests)
+			{
+				const bool Suppressed = SuppressGameplayControl(B, R, PausedAtStart, PausedNow);
+				Valid &= R.Command == EControlCommand::Pause || Suppressed == ExpectSuppressed;
+				Valid &= Receipts.Record(R, Suppressed ? EControlApplication::Rejected : EControlApplication::Applied);
+			}
+			const auto Read = Receipts.Read(0);
+			Valid &= Read.Receipts.size() == B.Requests.size();
+			for (std::size_t I = 0; I < B.Requests.size(); ++I)
+				Valid &= Read.Receipts[I].Result == (B.Requests[I].Command != EControlCommand::Pause && ExpectSuppressed
+					? EControlApplication::Rejected : EControlApplication::Applied);
+			Check(Valid, Message);
+		};
+		Verify({Up, Pause, Reset}, false, false, true, "Up before Pause cannot dispatch gameplay; refusals retained");
+		Verify({Pause, Up, Reset}, false, false, true, "Pause before Up cannot dispatch gameplay; refusals retained");
+		Verify({Pause, Up, Pause}, false, false, true, "two Pause starts do not reopen same-batch gameplay");
+		Verify({Up, Reset}, true, false, true, "paused batch remains suppressed after resume request");
+		Verify({Up, Reset}, false, false, false, "fresh unpaused batch resumes gameplay");
+		FControlRequests Resync; Resync.Status = EControlRead::Resynchronized;
+		Check(Resync.Requests.empty() && !SuppressGameplayControl(Resync, Up, false, false),
+			"resync contains no invented pause edge or gameplay receipt");
+	}
+	{
+		FRawAcquisitionJournal Hub(33);
+		Check(!Hub.FreezeForOwner(0) && !Hub.CloseFrozenCutoff({}),
+			"zero cutoff after failed preparation releases no lock");
+		Check(Hub.Publish(Hub.BeginAcquisition(), Batch({Reading(1, false, true)})),
+			"failed freeze does not obstruct later baseline");
+		const auto Cutoff = Hub.FreezeForOwner(0);
+		Check(bool(Cutoff), "owner freezes after failed preparation");
+		auto WrongThread = std::async(std::launch::async, [&] { return Hub.CloseFrozenCutoff(*Cutoff); });
+		Check(WrongThread.wait_for(std::chrono::seconds(2)) == std::future_status::ready && !WrongThread.get(),
+			"foreign close rejected without unlocking owner lease");
+		Check(Hub.Poll(0) && Hub.CloseFrozenCutoff(*Cutoff), "owner closes after foreign misuse");
+		Check(!Hub.CloseFrozenCutoff(*Cutoff), "double close cannot reuse released lease");
+	}
+	{
+		FRawAcquisitionJournal Hub(34);
+		Check(Hub.Publish(Hub.BeginAcquisition(), Batch({Reading(1, true, true)})), "shutdown fixture baseline");
+		const auto Cutoff = Hub.FreezeForOwner(0);
+		Check(Cutoff && Hub.Poll(0), "shutdown fixture frozen cutoff");
+		std::atomic<bool> Entered{false};
+		auto Shutdown = std::async(std::launch::async, [&]
+		{
+			Entered = true;
+			const auto Cancel = Hub.CancelLifecycle();
+			Hub.Close();
+			return Cancel == ELifecycleResult::Applied;
+		});
+		while (!Entered) std::this_thread::yield();
+		Check(Shutdown.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout,
+			"concurrent shutdown waits for owner cutoff");
+		Check(Hub.CloseFrozenCutoff(*Cutoff), "owner releases before lifecycle shutdown");
+		Check(Shutdown.wait_for(std::chrono::seconds(2)) == std::future_status::ready && Shutdown.get(),
+			"concurrent cancel and close complete after owner release");
+	}
+	{
+		struct FThrowingRaw final : IRawInputSource
+		{
+			std::shared_ptr<FRawAcquisitionJournal> Journal;
+			explicit FThrowingRaw(std::shared_ptr<FRawAcquisitionJournal> In) : Journal(std::move(In)) {}
+			IInputProducerPollFence* PollFence() noexcept override { return Journal.get(); }
+			std::optional<FRawInputSample> Poll(Speed::Input::FFrameNumber N) override
+			{ (void)Journal->Poll(N); throw std::runtime_error("mapping fixture"); }
+		};
+		auto Hub = std::make_shared<FRawAcquisitionJournal>(35);
+		Check(Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(1, true, true)})),
+			"exception fixture baseline");
+		auto C = Contract();
+		auto Producer = FDeviceInputProducer::Create(std::make_shared<FThrowingRaw>(Hub), C,
+			{35}, {Speed::Input::EProducerKind::Device, 35}, 0);
+		FOwnerInputBinding Binding{35, {Speed::Input::EProducerKind::Device, 35}, {35}, C, {}};
+		auto Owner = FSameFrameInputOwner::Create(std::move(Producer), Binding, 0);
+		Check(bool(Owner), "exception fixture owner constructed");
+		const auto Rejected = Owner->Poll(0);
+		Check(Rejected.Status == EOwnerInputStatus::ResyncRequired
+			&& Owner->GetLastPollFailure() == EOwnerPollFailure::Exception,
+			"producer exception rejects the frame without publication");
+		auto Acquisition = std::async(std::launch::async, [&]
+		{ auto Admission = Hub->ReserveAcquisition(); return Admission.owns_lock(); });
+		Check(Acquisition.wait_for(std::chrono::seconds(2)) == std::future_status::ready && Acquisition.get(),
+			"producer exception closed the journal cutoff lease");
+	}
+	{
+		FRawAcquisitionJournal Hub(31);
+		Check(Hub.Publish(Hub.BeginAcquisition(), Batch({Reading(1, true, true)})), "cutoff fixture baseline");
+		const auto Cutoff = Hub.FreezeForOwner(0);
+		Check(Cutoff && Hub.Poll(0), "physical cutoff freezes first state");
+		std::atomic<bool> Entered{false};
+		auto Recovery = std::async(std::launch::async, [&]
+		{
+			Entered = true;
+			auto Admission = Hub.ReserveAcquisition();
+			const auto Ticket = Hub.BeginAcquisition();
+			Hub.Invalidate();
+			return Hub.Publish(Ticket, Batch({Reading(2, false, true, 2)}));
+		});
+		while (!Entered) std::this_thread::yield();
+		Check(Recovery.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout,
+			"acquisition recovery waits until frozen physical cutoff closes");
+		Check(Hub.CloseFrozenCutoff(*Cutoff), "pre-recovery physical cutoff closes unchanged");
+		Check(Recovery.wait_for(std::chrono::seconds(2)) == std::future_status::ready && Recovery.get(),
+			"invalidation and fresh baseline publish after cutoff");
+		const auto Next = Hub.FreezeForOwner(1);
+		const auto Neutral = Hub.Poll(1);
+		Check(Next && Neutral && Neutral->Status == ERawSampleStatus::Resync && Neutral->Changes.empty()
+			&& Hub.CloseFrozenCutoff(*Next), "next cutoff is one fresh neutral baseline");
+	}
+	{
+		FRawAcquisitionJournal Hub(32);
+		Check(Hub.Publish(Hub.BeginAcquisition(), Batch({Reading(1, true, true)})), "pre-recovery fixture baseline");
+		auto Admission = Hub.ReserveAcquisition();
+		const auto Ticket = Hub.BeginAcquisition();
+		Hub.Invalidate();
+		auto Physical = std::async(std::launch::async, [&]
+		{
+			const auto Cutoff = Hub.FreezeForOwner(0);
+			const auto Sample = Hub.Poll(0);
+			return Cutoff && Sample && Sample->Status == ERawSampleStatus::Resync
+				&& Sample->Changes.empty() && Hub.CloseFrozenCutoff(*Cutoff);
+		});
+		Check(Physical.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout,
+			"physical freeze cannot split invalidation from neutral publish");
+		Check(Hub.Publish(Ticket, Batch({Reading(2, false, true, 2)})), "recovery publishes within acquisition transaction");
+		Admission.unlock();
+		Check(Physical.wait_for(std::chrono::seconds(2)) == std::future_status::ready && Physical.get(),
+			"physical poll resumes only after complete recovery");
+	}
 	{
 		FRawAcquisitionJournal Hub(21);
 		auto R = Reading(1, true, true); R.Kind = ERawDeviceKind::Desktop;

@@ -33,6 +33,7 @@ public:
 		ESinkReject SinkReject;
 		std::uint64_t AcquisitionTick;
 		V2::FAcquisitionInvalidation Barrier;
+		std::optional<FGameInputSelectedSource::FRawReadGapDiagnostic> ReadGap;
 	};
 	FGameInputRawAcquisition(std::unique_ptr<FGameInputSelectedSource> InSource,
 		std::shared_ptr<V2::FRawAcquisitionJournal> InJournal)
@@ -46,6 +47,10 @@ public:
 		if (Owner && *Owner != Caller) return ERawPumpResult::Rejected;
 		Owner = Caller;
 		if (Tick == std::numeric_limits<std::uint64_t>::max()) return ERawPumpResult::Rejected;
+		// Keep one acquisition admission transaction intact. In particular,
+		// Invalidate and its fresh neutral baseline must not straddle a physical
+		// Freeze/Produce/Close window.
+		auto Admission = Journal->ReserveAcquisition();
 		const auto Ticket = Journal->BeginAcquisition();
 		if (Journal->NeedsFreshResume() && !Source->RequestFreshRawReading())
 			return Neutralize(Ticket, ENeutralizeCause::FreshResumeReadRejected, ESinkReject::None);
@@ -108,6 +113,33 @@ public:
 		LastNeutralizeDiagnostic.reset();
 		return Result;
 	}
+	std::optional<FGameInputSelectedSource::FSelectedRawDeviceDiagnostic> ReadSelectedRawDeviceDiagnostic()
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!Source) return {};
+		return Source->ReadSelectedRawDeviceDiagnostic();
+	}
+	// The raw journal uses stable, one-based indices. Expose their opaque IDs
+	// only to the supervised diagnostic; this does not select or poll a device.
+	std::optional<FDeviceId> ReadIndexedRawDeviceIdDiagnostic(std::uint64_t Index)
+	{
+		if (FPresentationInputScope::IsActive()) return {};
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!Index || Index > DeviceCount) return {};
+		return Devices[static_cast<std::size_t>(Index - 1)];
+	}
+	struct FCommittedRawDiagnostic
+	{
+		std::uint64_t DeviceIndex = 0, Generation = 0, Sequence = 0;
+	};
+	std::optional<FCommittedRawDiagnostic> ReadLastCommittedRawDiagnostic()
+	{
+		if (FPresentationInputScope::IsActive()) return {};
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!LastState) return {};
+		return FCommittedRawDiagnostic{LastState->DeviceId,
+			LastState->Generation.Value, LastState->Sequence};
+	}
 	bool Close() override
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
@@ -141,7 +173,7 @@ private:
 				: FGameInputSelectedSource::ERawPollReject::None,
 			Source->GetLastError(),
 			SinkReject, Tick,
-			Journal->Invalidate()};
+			Journal->Invalidate(), Source->TakeRawReadGapDiagnostic()};
 		return InstallNeutral(Ticket) ? ERawPumpResult::Neutralized : ERawPumpResult::Rejected;
 	}
 	std::uint64_t DeviceIndex(const FDeviceId& Id) noexcept

@@ -11,8 +11,10 @@ class IInputProducerPollFence
 public:
     virtual ~IInputProducerPollFence() = default;
     virtual std::optional<FInputPollCutoff> FreezeForOwner(FFrameNumber N) = 0;
-    // Atomic final validation + release under the source gate; false also closes
-    // the source lease. A zero cutoff closes an exceptional/failed preparation.
+    // Atomic final validation + release under the source gate; a false result
+    // also closes the lease when called by the same owner that froze it. A
+    // foreign-thread call is invalid and cannot release an owner-held lock;
+    // that owner must still close. A zero cutoff closes a failed preparation.
     virtual bool CloseFrozenCutoff(const FInputPollCutoff& Cutoff) noexcept = 0;
 };
 }

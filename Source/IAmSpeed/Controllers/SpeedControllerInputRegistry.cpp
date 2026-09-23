@@ -132,6 +132,10 @@ bool ASpeedController::ReleaseRegistryInputSession()
     const auto RetireJoined = [&]()
     {
         if (!Driver->JoinOwnedSimulationForInputTeardown() || !Driver->InputOwnersRetiredAfterJoin(Session->WorkerGeneration)) return false;
+#if !UE_BUILD_SHIPPING
+        UE_LOG(LogTemp, Display, TEXT("[InputSessionTeardownAck] Controller=%u Session=%llu Epoch=%llu Route=JoinRetired WorkerGeneration=%llu"),
+            GetUniqueID(), Session->Descriptor->Id, Session->Descriptor->Epoch, Session->WorkerGeneration);
+#endif
         Session->PendingCommand = 0; Session->RegistryBound = false;
         if (!Session->CloseAtBoundary()) return false;
         InputSessionV2.reset(); InputReceiversV2.clear(); return true;
@@ -174,6 +178,11 @@ bool ASpeedController::ReleaseRegistryInputSession()
             if (Receipt->Status != EBoundaryStatus::Pending && Receipt->Status != EBoundaryStatus::WaitingForBaseline)
             {
                 if (Receipt->Status != EBoundaryStatus::Applied) return false;
+#if !UE_BUILD_SHIPPING
+                UE_LOG(LogTemp, Display, TEXT("[InputSessionTeardownAck] Controller=%u Session=%llu Epoch=%llu Route=DetachApplied Command=%llu RegistryVersion=%llu"),
+                    GetUniqueID(), Session->Descriptor->Id, Session->Descriptor->Epoch,
+                    Session->PendingCommand, Receipt->RegistryVersion);
+#endif
                 Driver->AcknowledgeInputSessionReceipt(Session->PendingCommand);
                 Session->PendingCommand = 0; Session->RegistryBound = false; break;
             }

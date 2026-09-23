@@ -2,6 +2,7 @@
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/World/Simulation/SpeedSimulation.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
+#include "IAmSpeed/Input/ControlBatchPolicy.h"
 #include "InputActionValue.h"
 
 #if !UE_BUILD_SHIPPING
@@ -151,16 +152,15 @@ bool ASpeedController::ServiceInputSessionV2()
 			if (Request.Session != Session->Session) { bInputLifecycleFault = true; return false; }
 			if (Request.State == Speed::Input::V2::EStateAction::Started)
 			{
-				// The menu owns input while UE is paused. A batch can contain both
-				// Pause and a gameplay command, so preserve the entry state as well
-				// as checking whether an earlier request paused this same batch.
+				// The menu owns the whole acquired batch containing a Pause edge,
+				// even when a gameplay edge was observed first.
 #if !UE_BUILD_SHIPPING
 				const bool bTraceControl = Request.Command == Speed::Input::V2::EControlCommand::Pause
 					|| Request.Command == Speed::Input::V2::EControlCommand::AutoControl;
 				const bool bPausedBeforeRequest = bTraceControl && IsPaused();
 #endif
-				const bool bGameplaySuppressed = Request.Command != Speed::Input::V2::EControlCommand::Pause
-					&& (bPausedAtBatchStart || IsPaused());
+				const bool bGameplaySuppressed = Speed::Input::V2::SuppressGameplayControl(
+					Batch, Request, bPausedAtBatchStart, IsPaused());
 				const auto Result = bGameplaySuppressed
 					? Speed::Input::V2::EControlApplication::Rejected : ExecuteInputControlV2(Request);
 #if !UE_BUILD_SHIPPING

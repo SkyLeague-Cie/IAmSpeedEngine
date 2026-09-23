@@ -21,6 +21,7 @@ class IAMSPEED_API ASpeedGameMode : public AGameMode
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedControllerInputLifecycleTest;
+	friend class FSLControlBatchTest;
 #endif
 
 public:

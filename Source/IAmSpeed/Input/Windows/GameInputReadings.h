@@ -59,6 +59,17 @@ struct FReadObservations
 	std::size_t Count = 0;
 };
 
+// Filled only when a stale history reference points to a distinct current
+// reading. This is diagnostic evidence, never an input recovery path.
+struct FTooOldReadDiagnostic
+{
+	bool Observed = false, HasCurrent = false, HasPreviousDeviceId = false, HasCurrentDeviceId = false;
+	HRESULT CurrentResult = S_OK;
+	std::uint64_t PreviousTimestamp = 0, CurrentTimestamp = 0;
+	std::uint32_t ReadCallOrdinal = 0;
+	std::array<std::uint8_t, 32> PreviousDeviceId{}, CurrentDeviceId{};
+};
+
 // Raw traversal only: no session, journal, selection or lifecycle authority.
 // The owner resets this cursor whenever its acquisition generation changes.
 class FGameInputReadCursor
@@ -69,7 +80,8 @@ public:
 	// existing device decoder supplies complete hardware state before mapping.
 	// A failed traversal returns no partial batch and requires a new baseline.
 	FRawDeviceReadBatch PollRaw(GameInput::v3::IGameInput& Api,
-		GameInput::v3::IGameInputDevice* Device, GameInput::v3::GameInputKind Kind)
+		GameInput::v3::IGameInputDevice* Device, GameInput::v3::GameInputKind Kind,
+		FTooOldReadDiagnostic* TooOld = nullptr)
 	{
 		FRawDeviceReadBatch Batch;
 		Batch.FreshBaseline = !Cursor;
@@ -81,7 +93,7 @@ public:
 				if (Batch.Count == Batch.States.size()) return false;
 				Batch.States[Batch.Count++] = Staged;
 				return true;
-			});
+			}, nullptr, TooOld);
 		if (Batch.Result.Status != EReadBatchStatus::Updated && Batch.Result.Status != EReadBatchStatus::NoChange)
 		{
 			Batch.Count = 0;
@@ -92,10 +104,12 @@ public:
 	}
 	FReadBatchResult Poll(GameInput::v3::IGameInput& Api, GameInput::v3::IGameInputDevice* Device,
 		GameInput::v3::GameInputKind Kind, const FGameInputMapper& Mapper,
-		const std::function<bool(const FActionValues&)>& Commit, FReadObservations* Observations = nullptr)
+		const std::function<bool(const FActionValues&)>& Commit, FReadObservations* Observations = nullptr,
+		FTooOldReadDiagnostic* TooOld = nullptr)
 	{
 		using namespace GameInput::v3;
 		if (Observations) *Observations = {};
+		if (TooOld) *TooOld = {};
 		if (!Device || !Mapper || !Commit || (Kind != GameInputKindKeyboard && Kind != GameInputKindGamepad))
 			return {EReadBatchStatus::Error, E_INVALIDARG};
 		bool Changed = false;
@@ -106,6 +120,35 @@ public:
 			const auto Status = Cursor
 				? Api.GetNextReading(Cursor.Get(), Kind, Device, Next.GetAddressOf())
 				: Api.GetCurrentReading(Kind, Device, Next.GetAddressOf());
+			// A quiet device may leave Cursor outside GameInput's bounded history.
+			// If the current singleton is still that exact reading, no input was
+			// lost. A different current reading remains an explicit resync.
+			if (Status == GAMEINPUT_E_REFERENCE_READING_TOO_OLD && Cursor)
+			{
+				Microsoft::WRL::ComPtr<IGameInputReading> Current;
+				const auto CurrentStatus = Api.GetCurrentReading(Kind, Device, Current.GetAddressOf());
+				if (SUCCEEDED(CurrentStatus) && Current && Current.Get() == Cursor.Get())
+					return {Changed ? EReadBatchStatus::Updated : EReadBatchStatus::NoChange, S_OK};
+				if (TooOld)
+				{
+					TooOld->Observed = true; TooOld->CurrentResult = CurrentStatus;
+					TooOld->ReadCallOrdinal = static_cast<std::uint32_t>(I + 1);
+					TooOld->PreviousTimestamp = Cursor->GetTimestamp();
+					TooOld->HasCurrent = !!Current;
+					if (Current) TooOld->CurrentTimestamp = Current->GetTimestamp();
+					const auto CaptureId = [](IGameInputReading* Reading, std::array<std::uint8_t, 32>& Id)
+					{
+						Microsoft::WRL::ComPtr<IGameInputDevice> ReadingDevice;
+						Reading->GetDevice(ReadingDevice.GetAddressOf());
+						const GameInputDeviceInfo* Info = nullptr;
+						if (!ReadingDevice || FAILED(ReadingDevice->GetDeviceInfo(&Info)) || !Info) return false;
+						static_assert(sizeof(Info->deviceId) == sizeof(Id), "diagnostic ID size");
+						std::memcpy(Id.data(), &Info->deviceId, Id.size()); return true;
+					};
+					TooOld->HasPreviousDeviceId = CaptureId(Cursor.Get(), TooOld->PreviousDeviceId);
+					if (Current) TooOld->HasCurrentDeviceId = CaptureId(Current.Get(), TooOld->CurrentDeviceId);
+				}
+			}
 			if (Observations)
 			{
 				auto& O = Observations->Calls[Observations->Count++];

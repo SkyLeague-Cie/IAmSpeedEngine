@@ -10,7 +10,7 @@ public:
 	std::map<IGameInputDevice*, unsigned> DeviceCalls;
 	void Sample(FakeDevice* D, std::uint64_t Stamp, bool Held, float Stick = 0)
 	{
-		ComPtr<FakeReading> R; R.Attach(new FakeReading); R->Stamp = Stamp;
+		ComPtr<FakeReading> R; R.Attach(new FakeReading); R->Stamp = Stamp; R->ObservedDevice = D;
 		if (D->Info.supportedInput & GameInputKindKeyboard)
 		{ if (Held) { GameInputKeyState K{}; K.virtualKey = 'W'; R->Keys.push_back(K); } }
 		else { R->Pad.buttons = Held ? GameInputGamepadA : GameInputGamepadNone; R->Pad.leftThumbstickX = Stick; R->Pad.rightTrigger = Held ? 1.f : 0.f; }
@@ -94,6 +94,64 @@ int main()
 		Check(Owner.Pump()==ERawPumpResult::Installed && Hub->Poll(3)->FinalState[0].Value==1,
 			"same owner reconnects with held input on first fresh reading");
 		Check(Owner.Close(),"raw startup source closes");
+	}
+	{
+		using namespace Speed::Input::Windows;
+		using namespace Speed::Input::V2;
+		ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);
+		auto Pad=MakeDevice(1); Api->Initial={{Pad,1,true}}; Api->Sample(Pad.Get(),100,false);
+		auto S=FGameInputSelectedSource::CreateRaw(Api.Get(),702);
+		Check(bool(S),"true-gap raw source created");
+		Check(S->RequestSelection(std::make_pair(Key(1),EDeviceKind::Gamepad)),
+			"true-gap fixture explicitly selects the raw device without an activity cursor");
+		auto Hub=std::make_shared<FRawAcquisitionJournal>(22);
+		FGameInputRawAcquisition Owner(std::move(S),Hub);
+		Check(Owner.Pump()==ERawPumpResult::Installed && Hub->Poll(0)->Status==ERawSampleStatus::Resync,
+			"true-gap fixture has real neutral baseline");
+		Api->History[Pad.Get()].clear(); Api->Sample(Pad.Get(),200,true);
+		Check(Owner.Pump()==ERawPumpResult::Neutralized,"expired selected reading fails closed");
+		const auto Diagnostic=Owner.TakeNeutralizeDiagnostic();
+		Check(Diagnostic && Diagnostic->RawError==GAMEINPUT_E_REFERENCE_READING_TOO_OLD
+			&& Diagnostic->RawPollReject==FGameInputSelectedSource::ERawPollReject::ReadBatch
+			&& Diagnostic->SinkReject==FGameInputRawAcquisition::ESinkReject::None
+			&& Diagnostic->ReadGap && Diagnostic->ReadGap->SelectedId==Key(1)
+			&& Diagnostic->ReadGap->Revision==1 && Diagnostic->ReadGap->AcquisitionTick==2
+			&& Diagnostic->ReadGap->LastSuccessfulReadTick==1
+			&& Diagnostic->ReadGap->Reading.PreviousTimestamp==100
+			&& Diagnostic->ReadGap->Reading.CurrentTimestamp==200
+			&& Diagnostic->ReadGap->Reading.HasPreviousDeviceId
+			&& Diagnostic->ReadGap->Reading.HasCurrentDeviceId
+			&& Diagnostic->ReadGap->Reading.PreviousDeviceId==Diagnostic->ReadGap->Reading.CurrentDeviceId
+			&& Diagnostic->Barrier.BarrierAfter>Diagnostic->Barrier.BarrierBefore,
+			"true gap propagates exact reading provenance and invalidation barrier");
+		const auto Neutral=Hub->Poll(1);
+		Check(Neutral && Neutral->Changes.empty() && Neutral->FinalState[0].Value==0,
+			"true gap never synthesizes a button Started");
+		Check(Owner.Close(),"true-gap raw source closes");
+	}
+	{
+		using namespace Speed::Input::Windows;
+		using namespace Speed::Input::V2;
+		ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);
+		auto Pad=MakeDevice(1); Api->Initial={{Pad,1,true}}; Api->Sample(Pad.Get(),1,false);
+		auto S=FGameInputSelectedSource::CreateRaw(Api.Get(),703);
+		Check(bool(S) && S->RequestSelection(std::make_pair(Key(1),EDeviceKind::Gamepad)),
+			"interpoll pulse fixture selects one raw gamepad");
+		auto Hub=std::make_shared<FRawAcquisitionJournal>(23);
+		FGameInputRawAcquisition Owner(std::move(S),Hub);
+		Check(Owner.Pump()==ERawPumpResult::Installed && Hub->Poll(0)->Status==ERawSampleStatus::Resync,
+			"interpoll pulse begins with a real released baseline");
+		Api->Sample(Pad.Get(),2,true); Api->Sample(Pad.Get(),3,false);
+		Check(Owner.Pump()==ERawPumpResult::Installed,"one GameInput traversal commits both interpoll readings");
+		const auto Pulse=Hub->Poll(1);
+		std::vector<float> South;
+		if (Pulse) for (const auto& Change : Pulse->Changes)
+			if (Change.State.Control.Kind==ERawControlKind::PadButton
+				&& Change.State.Control.Code==static_cast<std::uint16_t>(EPadButton::South))
+				South.push_back(Change.State.Value);
+		Check(Pulse && South==std::vector<float>{1.f,0.f},
+			"press and release between physical polls survive despite neutral final state");
+		Check(Owner.Close(),"interpoll pulse raw source closes");
 	}
 	for (bool Reverse : {false,true})
 	{

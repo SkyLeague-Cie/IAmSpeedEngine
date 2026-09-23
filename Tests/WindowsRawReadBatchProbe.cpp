@@ -4,6 +4,43 @@ using Speed::Input::Windows::EReadBatchStatus;
 
 int main()
 {
+	{
+		ComPtr<FakeApi> Api; Api.Attach(new FakeApi);
+		ComPtr<FakeDevice> Device; Device.Attach(new FakeDevice);
+		FGameInputReadCursor Cursor;
+		ComPtr<FakeReading> Held; Held.Attach(new FakeReading);
+		Held->Stamp = 100; Held->ObservedDevice = Device;
+		Api->Responses.push_back({S_OK, Held});
+		const auto Initial = Cursor.PollRaw(*Api.Get(), Device.Get(), GameInputKindGamepad);
+		Check(Initial.Result.Status == EReadBatchStatus::Updated && Initial.Count == 1, "initial singleton reading");
+		Api->Error(GAMEINPUT_E_REFERENCE_READING_TOO_OLD);
+		Api->Responses.push_back({S_OK, Held});
+		Speed::Input::Windows::FTooOldReadDiagnostic QuietDiagnostic;
+		const auto Quiet = Cursor.PollRaw(*Api.Get(), Device.Get(), GameInputKindGamepad, &QuietDiagnostic);
+		Check(Quiet.Result.Status == EReadBatchStatus::NoChange && Quiet.Count == 0,
+			"expired reference to same current singleton is not a lost input");
+		Check(!QuietDiagnostic.Observed, "same singleton does not emit a true-gap diagnostic");
+		Api->Reading(1, true, 200);
+		Api->Responses.back().Reading->ObservedDevice = Device;
+		const auto Next = Cursor.PollRaw(*Api.Get(), Device.Get(), GameInputKindGamepad);
+		Check(Next.Result.Status == EReadBatchStatus::Updated && Next.Count == 1 && !Next.FreshBaseline,
+			"quiet singleton preserves ordered cursor for next transition");
+		Api->Error(GAMEINPUT_E_REFERENCE_READING_TOO_OLD);
+		Api->Reading(0, false, 300);
+		Api->Responses.back().Reading->ObservedDevice = Device;
+		Speed::Input::Windows::FTooOldReadDiagnostic GapDiagnostic;
+		const auto Lost = Cursor.PollRaw(*Api.Get(), Device.Get(), GameInputKindGamepad, &GapDiagnostic);
+		Check(Lost.Result.Status == EReadBatchStatus::Error && Lost.Result.Error == GAMEINPUT_E_REFERENCE_READING_TOO_OLD
+			&& Lost.Count == 0, "distinct current singleton still requires resynchronization");
+		Check(GapDiagnostic.Observed && GapDiagnostic.HasCurrent && GapDiagnostic.CurrentResult == S_OK
+			&& GapDiagnostic.PreviousTimestamp == 200 && GapDiagnostic.CurrentTimestamp == 300
+			&& GapDiagnostic.ReadCallOrdinal == 1 && GapDiagnostic.HasPreviousDeviceId
+			&& GapDiagnostic.HasCurrentDeviceId && GapDiagnostic.PreviousDeviceId == GapDiagnostic.CurrentDeviceId,
+			"true gap records prior/current reading provenance without accepting an edge");
+		Api->Reading(0, false, 301);
+		const auto Fresh = Cursor.PollRaw(*Api.Get(), Device.Get(), GameInputKindGamepad);
+		Check(Fresh.FreshBaseline && Fresh.Count == 1, "true gap restarts with fresh baseline");
+	}
 	for (unsigned Count : {63u, 64u, 65u})
 	{
 		ComPtr<FakeApi> Api; Api.Attach(new FakeApi);

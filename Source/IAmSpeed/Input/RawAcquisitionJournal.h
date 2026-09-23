@@ -3,6 +3,8 @@
 #include "InputProducerV2.h"
 #include <mutex>
 #include <limits>
+#include <thread>
+#include <exception>
 
 namespace Speed::Input::V2
 {
@@ -48,15 +50,27 @@ public:
 	static constexpr std::size_t Capacity = 256;
 	explicit FRawAcquisitionJournal(std::uint64_t Session, FFrameNumber FirstFrame = 0)
 		: SessionId(Session), NextFrame(FirstFrame) { Closed = !Session; }
+	~FRawAcquisitionJournal() override
+	{
+		// A live physical reservation cannot be released on a destructor's
+		// foreign thread. Teardown must join the physical owner first.
+		if (FrozenLease.owns_lock()) std::terminate();
+	}
 
 	// Atomic bounded install, suitable as a selected-device admission sink.
 	// All validation/capacity checks happen before either lane is changed.
 	FAcquisitionTicket BeginAcquisition() const
 	{ std::lock_guard<std::mutex> Lock(Gate); return {SessionId, PhysicalFence}; }
+	// The acquisition owner holds this for one complete Pump, including a
+	// possible Invalidate + neutral baseline. A physical cutoff cannot begin
+	// halfway through that recovery transaction.
+	std::unique_lock<std::recursive_mutex> ReserveAcquisition()
+	{ return std::unique_lock<std::recursive_mutex>(PollWindowGate); }
 	bool Publish(FAcquisitionTicket Ticket, const FRawAcquisitionBatch& Batch) noexcept
 	{
 		try
 		{
+			std::lock_guard<std::recursive_mutex> Window(PollWindowGate);
 			std::lock_guard<std::mutex> Lock(Gate);
 			if (Closed || Ticket.Session != SessionId || !Batch.Count || Batch.Count > Batch.Readings.size()
 				|| (RequiresFresh && !Batch.Readings[0].FreshBaseline)) { FrozenInvalid = true; return false; }
@@ -110,12 +124,15 @@ public:
 	std::optional<FInputPollCutoff> FreezeForOwner(FFrameNumber Frame) override
 	{
 		if (FPresentationInputScope::IsActive()) return {};
+		std::unique_lock<std::recursive_mutex> Window(PollWindowGate);
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (Frozen) { FrozenInvalid = true; return {}; }
 		auto Sample = PollLocked(Frame);
 		if (!Sample) return {};
 		Frozen = std::move(Sample); FrozenFrame = Frame;
 		FrozenFence = PhysicalFence; FrozenDelivered = FrozenInvalid = false;
+		FrozenOwner = std::this_thread::get_id();
+		FrozenLease = std::move(Window);
 		return FInputPollCutoff{Frozen->Sequence, Frozen->Generation.Value, FrozenFence};
 	}
 	bool CloseFrozenCutoff(const FInputPollCutoff& Cutoff) noexcept override
@@ -123,10 +140,13 @@ public:
 		try
 		{
 			std::lock_guard<std::mutex> Lock(Gate);
+			if (!FrozenLease.owns_lock() || FrozenOwner != std::this_thread::get_id()) return false;
 			const bool Valid = Frozen && FrozenDelivered && !FrozenInvalid && !Closed && !PhysicalClosed && !Paused
 				&& PhysicalFence == FrozenFence && Cutoff.LifecycleFence == FrozenFence
 				&& Cutoff.Sequence == Frozen->Sequence && Cutoff.Generation == Frozen->Generation.Value;
 			Frozen.reset(); FrozenDelivered = false;
+			FrozenOwner = {};
+			FrozenLease.unlock();
 			return Valid;
 		}
 		catch (...) { return false; }
@@ -175,6 +195,7 @@ public:
 	ELifecycleResult SetLifecyclePaused(bool Value) override
 	{
 		if (FPresentationInputScope::IsActive()) return ELifecycleResult::Rejected;
+		std::lock_guard<std::recursive_mutex> Window(PollWindowGate);
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (Closed || PhysicalClosed) return ELifecycleResult::Rejected;
 		if (Value)
@@ -199,6 +220,7 @@ public:
 	bool RequestFreshResume()
 	{
 		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::recursive_mutex> Window(PollWindowGate);
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (Closed || PhysicalClosed || !Paused || PhysicalFence == std::numeric_limits<std::uint64_t>::max()) return false;
 		++PhysicalFence;
@@ -211,6 +233,7 @@ public:
 	ELifecycleResult CancelLifecycle() override
 	{
 		if (FPresentationInputScope::IsActive()) return ELifecycleResult::Rejected;
+		std::lock_guard<std::recursive_mutex> Window(PollWindowGate);
 		std::lock_guard<std::mutex> Lock(Gate);
 		PhysicalClosed = true; Physical = {}; ResumeRequested = ResumeReady = false;
 		return ELifecycleResult::Applied; // Control acquisition has a separate owner.
@@ -239,6 +262,7 @@ public:
 	// suffix or cached held state to use. Recovery requires a fresh baseline.
 	FAcquisitionInvalidation Invalidate()
 	{
+		std::lock_guard<std::recursive_mutex> Window(PollWindowGate);
 		std::lock_guard<std::mutex> Lock(Gate);
 		const auto Before = ControlBarrier;
 		FrozenInvalid = true; Physical = {}; RequiresFresh = true;
@@ -248,7 +272,7 @@ public:
 		return {SessionId, Serial, Before, ControlBarrier};
 	}
 	void Close()
-	{ std::lock_guard<std::mutex> Lock(Gate); Closed = true; Physical = {}; }
+	{ std::lock_guard<std::recursive_mutex> Window(PollWindowGate); std::lock_guard<std::mutex> Lock(Gate); Closed = true; Physical = {}; }
 private:
 	static bool SameDevice(const FAcquiredRawState& A, const FAcquiredRawState& B) noexcept
 	{ return A.DeviceId == B.DeviceId && A.Generation.Value == B.Generation.Value && A.Kind == B.Kind; }
@@ -265,6 +289,9 @@ private:
 		std::size_t ChangeCount = 0;
 	};
 	mutable std::mutex Gate;
+	std::recursive_mutex PollWindowGate;
+	std::unique_lock<std::recursive_mutex> FrozenLease;
+	std::thread::id FrozenOwner;
 	const std::uint64_t SessionId;
 	std::array<FAcquiredRawState, Capacity> History{};
 	std::optional<FAcquiredRawState> LastAcquired;

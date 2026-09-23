@@ -26,6 +26,38 @@ public:
 		EPollStatus Status = EPollStatus::Disconnected;
 		std::uint64_t AcquisitionTick = 0;
 	};
+	struct FSelectedRawDeviceDiagnostic
+	{
+		FDeviceId Id{};
+		EDeviceKind Kind = EDeviceKind::Keyboard;
+		std::uint16_t VendorId = 0, ProductId = 0;
+	};
+	struct FRawReadGapDiagnostic
+	{
+		FDeviceId SelectedId{};
+		EDeviceKind Kind = EDeviceKind::Keyboard;
+		std::uint64_t Revision = 0, SelectionGeneration = 0;
+		std::uint64_t AcquisitionTick = 0, LastSuccessfulReadTick = 0;
+		FTooOldReadDiagnostic Reading;
+	};
+	std::optional<FRawReadGapDiagnostic> TakeRawReadGapDiagnostic()
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		auto Result = LastRawReadGap;
+		LastRawReadGap.reset(); return Result;
+	}
+	// Read-only provenance for a supervised hardware diagnostic. This is not a
+	// second input path and cannot affect selection or action delivery.
+	std::optional<FSelectedRawDeviceDiagnostic> ReadSelectedRawDeviceDiagnostic() const
+	{
+		if (FPresentationInputScope::IsActive()) return {};
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!RawMode || Stopping || !Active) return {};
+		const GameInput::v3::GameInputDeviceInfo* Info = nullptr;
+		if (FAILED(Active->Device->GetDeviceInfo(&Info)) || !Info) return {};
+		return FSelectedRawDeviceDiagnostic{Active->Ticket.Device.Id, Active->Ticket.Kind,
+			Info->vendorId, Info->productId};
+	}
 	// Raw and legacy action ownership cannot be mixed on one cursor/session.
 	static std::unique_ptr<FGameInputSelectedSource> CreateRaw(FApi* Api, std::uint64_t ProducerId,
 		std::optional<FActivityConfig> Config = std::nullopt)
@@ -50,6 +82,7 @@ public:
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
 		LastRawPollReject = ERawPollReject::None;
+		LastRawReadGap.reset();
 		if (!RawMode || Stopping || bPaused || !AcquisitionTick
 			|| AcquisitionTick <= LastAcquisitionTick || FAILED(Discovery->GetLastError()))
 		{ LastRawPollReject = ERawPollReject::AdmissionGate; return false; }
@@ -64,7 +97,7 @@ public:
 		}
 		const auto Lease = Discovery->AcquireSelected();
 		FSelectedRawBatch Batch; Batch.AcquisitionTick = AcquisitionTick;
-		if (!Lease) { Cursor.Reset(); Active.reset(); }
+		if (!Lease) { Cursor.Reset(); Active.reset(); LastSuccessfulRawReadTick = 0; }
 		else
 		{
 			Batch.Ticket = Lease->Ticket;
@@ -72,13 +105,20 @@ public:
 				|| Disconnected->second != Lease->Ticket.Device.Revision)
 			{
 				Disconnected.reset();
-				if (!Active || !Same(*Active, *Lease)) { Cursor.Reset(); Active = Lease; }
+				if (!Active || !Same(*Active, *Lease))
+				{ Cursor.Reset(); Active = Lease; LastSuccessfulRawReadTick = 0; }
+				FTooOldReadDiagnostic TooOld;
 				Batch.Readings = Cursor.PollRaw(*Api.Get(), Lease->Device.Get(),
-					Lease->Ticket.Kind == EDeviceKind::Keyboard ? GameInput::v3::GameInputKindKeyboard : GameInput::v3::GameInputKindGamepad);
+					Lease->Ticket.Kind == EDeviceKind::Keyboard ? GameInput::v3::GameInputKindKeyboard : GameInput::v3::GameInputKindGamepad,
+					&TooOld);
 				Error = Batch.Readings.Result.Error;
 				if (Batch.Readings.Result.Status == EReadBatchStatus::Error
 					|| Batch.Readings.Result.Status == EReadBatchStatus::Resynchronize)
 				{
+					if (TooOld.Observed)
+						LastRawReadGap = FRawReadGapDiagnostic{Lease->Ticket.Device.Id,
+							Lease->Ticket.Kind, Lease->Ticket.Device.Revision,
+							Lease->Ticket.Generation, AcquisitionTick, LastSuccessfulRawReadTick, TooOld};
 					if (FAILED(Error) && Error != GameInput::v3::GAMEINPUT_E_REFERENCE_READING_TOO_OLD && Error != GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED)
 					{ Discovery->FailAcquisition(Error); Status = EPollStatus::Failed; LastRawPollReject = ERawPollReject::ReadBatch; return false; }
 					ResetReadingLocked(*Lease);
@@ -102,9 +142,15 @@ public:
 		{
 			LastRawPollReject = SinkCalled ? ERawPollReject::Sink : ERawPollReject::CommitGate;
 			if (Lease) ResetReadingLocked(*Lease);
-			else { Cursor.Reset(); Active.reset(); }
+			else { Cursor.Reset(); Active.reset(); LastSuccessfulRawReadTick = 0; }
 			Status = EPollStatus::Resynchronized; return false;
 		}
+		// A lock acknowledgement requires a committed real reading from that
+		// exact selected ID, not merely an activity-policy decision.
+		if (Activity && PendingLock && Batch.Ticket && Batch.Readings.Count
+			&& Batch.Ticket->Device.Id == *PendingLock)
+			AppliedLock = PendingLock;
+		if (Batch.Readings.Count) LastSuccessfulRawReadTick = AcquisitionTick;
 		Status = Batch.Status; return true;
 	}
 	ERawPollReject GetLastRawPollReject() const
@@ -158,6 +204,16 @@ public:
 		if (Stopping || !Activity || FAILED(Discovery->GetLastError())) return false;
 		PendingLock = Id; HasPendingLock = true; return true;
 	}
+	// A supervised hardware probe must not start its gesture window until a
+	// queued lock has crossed a real acquisition boundary.
+	bool HasAppliedRawLockDiagnostic(const FDeviceId& Id) const
+	{
+		if (FPresentationInputScope::IsActive()) return false;
+		std::lock_guard<std::mutex> Lock(Gate);
+		return RawMode && !Stopping && Activity && !HasPendingLock
+			&& AppliedLock && *AppliedLock == Id && Active
+			&& Active->Ticket.Device.Id == Id;
+	}
 	bool Shutdown()
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
@@ -194,7 +250,7 @@ public:
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (!RawMode || Stopping || bPaused || FAILED(Discovery->GetLastError())) return false;
-		Cursor.Reset(); Active.reset(); return true;
+		Cursor.Reset(); Active.reset(); AppliedLock.reset(); LastSuccessfulRawReadTick = 0; return true;
 	}
 	std::vector<FDiscoveredDevice> Snapshot() const { return Discovery->Snapshot(); }
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
@@ -250,13 +306,17 @@ private:
 	{
 		// A changed ticket already means the discovery callback purged old state.
 		Discovery->Resynchronize(Lease);
-		Cursor.Reset(); Active.reset(); Sequence = 0;
+		Cursor.Reset(); Active.reset(); Sequence = 0; LastSuccessfulRawReadTick = 0;
 		Status = EPollStatus::Resynchronized;
 	}
 	bool PollActivityLocked(FFrameNumber Frame)
 	{
 		using namespace GameInput::v3;
-		if (HasPendingLock) { Activity->SetLock(PendingLock); HasPendingLock = false; }
+		if (HasPendingLock)
+		{
+			Activity->SetLock(PendingLock);
+			AppliedLock.reset(); HasPendingLock = false;
+		}
 		const auto Devices = Discovery->Snapshot();
 		if (!Activity->Sync(Devices)) { Discovery->FailAcquisition(E_OUTOFMEMORY); return false; }
 		std::map<FDeviceId, FActivityCursor> Retained;
@@ -362,6 +422,9 @@ private:
 	std::unique_ptr<FDeviceActivityPolicy> Activity;
 	std::map<FDeviceId, FActivityCursor> ActivityCursors;
 	std::optional<FDeviceId> PendingLock;
+	std::optional<FDeviceId> AppliedLock;
+	std::optional<FRawReadGapDiagnostic> LastRawReadGap;
+	std::uint64_t LastSuccessfulRawReadTick = 0;
 	bool HasPendingLock = false;
 	std::unique_ptr<FGameInputDiscovery> Discovery;
 	const FGameInputMapper Keyboard, Gamepad; // Pure/bounded/nonthrowing; no reentrant source calls.
