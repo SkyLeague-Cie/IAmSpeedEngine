@@ -59,12 +59,77 @@ int main()
 		using namespace Speed::Input::Windows;
 		SelectedFixture F({}, true); // No selected device is a rejected sink, not an SDK read failure.
 		auto Hub = std::make_shared<Speed::Input::V2::FRawAcquisitionJournal>(9);
+		auto* Selection = F.Source.get();
 		FGameInputRawAcquisition Owner(std::move(F.Source), Hub);
-		Check(Owner.Pump() == ERawPumpResult::Neutralized, "unselected startup produces neutral baseline");
-		const auto Diagnostic = Owner.TakeNeutralizeDiagnostic();
-		Check(Diagnostic && Diagnostic->RawPollReject == FGameInputSelectedSource::ERawPollReject::Sink
-			&& Diagnostic->SinkReject == FGameInputRawAcquisition::ESinkReject::NoTicket,
-			"unselected startup names sink no-ticket instead of SDK failure");
+		Check(Owner.Pump() == ERawPumpResult::Installed, "unselected startup publishes one neutral baseline");
+		const auto Initial = Hub->ReadControlsSince({9, 0});
+		Check(Initial.Status == Speed::Input::V2::EAcquisitionRead::Batch && Initial.Next.Serial == 1
+			&& Initial.ControlBarrier == 0 && !Owner.TakeNeutralizeDiagnostic(),
+			"initial no-ticket is a valid neutral baseline without an invalidation barrier");
+		Check(Owner.Pump() == ERawPumpResult::NoChange
+			&& Hub->ReadControlsSince({9, 1}).Status == Speed::Input::V2::EAcquisitionRead::NoChange,
+			"idle no-ticket does not repeat a neutral baseline or invent control requests");
+		Check(Hub->SetLifecyclePaused(true) == Speed::Input::V2::ELifecycleResult::Applied
+			&& Hub->RequestFreshResume(), "fresh resume requested while no device is selected");
+		Check(Owner.Pump() == ERawPumpResult::NoChange && !Hub->IsResumeReady()
+			&& Hub->NeedsFreshResume(), "no-ticket neutral cannot masquerade as fresh resumed device reading");
+		Check(Selection->RequestSelection(std::make_pair(Key(1), EDeviceKind::Gamepad)),
+			"select device after neutral pause");
+		F.Api->Pad(F.Pad.Get(), 1, true, 10);
+		Check(Owner.Pump() == ERawPumpResult::Installed && Hub->IsResumeReady()
+			&& Hub->SetLifecyclePaused(false) == Speed::Input::V2::ELifecycleResult::Applied,
+			"fresh held reading releases pause on first device acquisition");
+		const auto Resumed = Hub->Poll(0);
+		Check(Resumed && Resumed->FinalState[0].Value == 1,
+			"held input applies on first resumed physical poll");
+	}
+	{
+		using namespace Speed::Input::Windows;
+		SelectedFixture F({}, true);
+		auto* Selection = F.Source.get();
+		auto Hub = std::make_shared<Speed::Input::V2::FRawAcquisitionJournal>(7);
+		FGameInputRawAcquisition Owner(std::move(F.Source), Hub);
+		Check(Hub->SetLifecyclePaused(true) == Speed::Input::V2::ELifecycleResult::Applied
+			&& Hub->RequestFreshResume(), "resume requested before first acquisition");
+		Check(Owner.Pump() == ERawPumpResult::NoChange && !Hub->IsResumeReady()
+			&& Hub->NeedsFreshResume()
+			&& Hub->ReadControlsSince({7, 0}).Status == Speed::Input::V2::EAcquisitionRead::NoChange,
+			"pre-first-poll no-ticket never fakes a fresh resumed reading");
+		Check(Selection->RequestSelection(std::make_pair(Key(1), EDeviceKind::Gamepad)),
+			"select device after pre-first-poll pause");
+		F.Api->Pad(F.Pad.Get(), 1, true, 11);
+		Check(Owner.Pump() == ERawPumpResult::Installed && Hub->IsResumeReady()
+			&& Hub->SetLifecyclePaused(false) == Speed::Input::V2::ELifecycleResult::Applied,
+			"only actual held device reading makes pre-first-poll resume ready");
+		const auto Resumed = Hub->Poll(0);
+		Check(Resumed && Resumed->FinalState[0].Value == 1,
+			"first physical poll after pre-first-poll pause receives held value");
+	}
+	{
+		using namespace Speed::Input::Windows;
+		SelectedFixture F({}, true); F.SelectPad();
+		auto* Selection = F.Source.get();
+		auto Hub = std::make_shared<Speed::Input::V2::FRawAcquisitionJournal>(8);
+		FGameInputRawAcquisition Owner(std::move(F.Source), Hub);
+		F.Api->Pad(F.Pad.Get(), 1, true, 1);
+		Check(Owner.Pump() == ERawPumpResult::Installed, "selected held device publishes an active baseline");
+		const auto Active = Hub->Poll(0);
+		Check(Active && Active->FinalState[0].Value == 1, "active physical snapshot contains held input");
+		Check(Selection->RequestSelection(std::nullopt), "explicitly drop selected device");
+		Check(Owner.Pump() == ERawPumpResult::Neutralized, "active ticket loss publishes neutral baseline");
+		const auto Lost = Owner.TakeNeutralizeDiagnostic();
+		const auto History = Hub->ReadControlsSince({8, 1});
+		Check(Lost && Lost->RawPollReject == FGameInputSelectedSource::ERawPollReject::Sink
+			&& Lost->SinkReject == FGameInputRawAcquisition::ESinkReject::NoTicket
+			&& History.Status == Speed::Input::V2::EAcquisitionRead::Gap
+			&& History.ControlBarrier == 2,
+			"real selected-device loss keeps the invalidation barrier");
+		const auto Neutral = Hub->Poll(1);
+		Check(Neutral && Neutral->FinalState[0].Value == 0 && Neutral->Changes.empty(),
+			"ticket loss clears held physical input without synthesizing an edge");
+		Check(Owner.Pump() == ERawPumpResult::NoChange
+			&& Hub->ReadControlsSince({8, 2}).Status == Speed::Input::V2::EAcquisitionRead::NoChange,
+			"continued absence after neutralization adds no repeated barrier");
 	}
 	{
 		using namespace Speed::Input::Windows;

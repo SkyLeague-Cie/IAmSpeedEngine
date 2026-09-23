@@ -52,7 +52,22 @@ public:
 		ESinkReject SinkReject = ESinkReject::None;
 		const bool Accepted = Source->PollRaw(++Tick, [&](const FGameInputSelectedSource::FSelectedRawBatch& Batch) noexcept
 		{
-			if (!Batch.Ticket) { SinkReject = ESinkReject::NoTicket; return false; }
+			if (!Batch.Ticket)
+			{
+				// Automatic selection has no owner until real device activity.
+				// The first neutral baseline has no missing commands to invalidate.
+				if (Neutral) return true;
+				if (!LastTicket && !LastState)
+				{
+					// A pause/resume requested before the first poll still needs a
+					// real current device reading; neutral cannot acknowledge it.
+					if (Journal->NeedsFreshResume()) return true;
+					if (!InstallNeutral(Ticket))
+					{ SinkReject = ESinkReject::JournalPublish; return false; }
+					HadData = true; return true;
+				}
+				SinkReject = ESinkReject::NoTicket; return false;
+			}
 			if (Batch.Status == EPollStatus::Disconnected) { SinkReject = ESinkReject::Disconnected; return false; }
 			if (!Batch.Readings.Count) return true;
 			if (Sequence > std::numeric_limits<std::uint64_t>::max() - Batch.Readings.Count)
@@ -99,6 +114,23 @@ public:
 		return !Source || Source->Shutdown();
 	}
 private:
+	bool InstallNeutral(V2::FAcquisitionTicket Ticket) noexcept
+	{
+		if (Sequence == std::numeric_limits<std::uint64_t>::max()
+			|| Generation == std::numeric_limits<std::uint64_t>::max()) return false;
+		Prepared.Count = 1; auto& R = Prepared.Readings[0]; R = LastState.value_or(V2::FAcquiredRawState{});
+		R.DeviceId = FDeviceDiscovery::Capacity + 1; // Reserved neutral source, never a real registry index.
+		R.Generation = {Generation + 1}; R.Sequence = Sequence + 1; R.FreshBaseline = true;
+		if (!R.State.Count)
+		{
+			R.Kind = V2::ERawDeviceKind::Gamepad;
+			if (!Canonicalize({}, R.Kind, R.State)) return false;
+		}
+		for (std::size_t I = 0; I < R.State.Count; ++I) R.State.Values[I].Value = 0;
+		if (!Journal->Publish(Ticket, Prepared)) return false;
+		++Sequence; ++Generation; Neutral = true; LastTicket.reset();
+		return true;
+	}
 	ERawPumpResult Neutralize(V2::FAcquisitionTicket Ticket, ENeutralizeCause Cause, ESinkReject SinkReject)
 	{
 		if (Neutral && !Journal->NeedsFreshResume()) return ERawPumpResult::Neutralized;
@@ -107,20 +139,7 @@ private:
 				: FGameInputSelectedSource::ERawPollReject::None,
 			SinkReject, Tick,
 			Journal->Invalidate()};
-		if (Sequence == std::numeric_limits<std::uint64_t>::max() || Generation == std::numeric_limits<std::uint64_t>::max())
-			return ERawPumpResult::Rejected;
-		Prepared.Count = 1; auto& R = Prepared.Readings[0]; R = LastState.value_or(V2::FAcquiredRawState{});
-		R.DeviceId = FDeviceDiscovery::Capacity + 1; // Reserved neutral source, never a real registry index.
-		R.Generation = {Generation + 1}; R.Sequence = Sequence + 1; R.FreshBaseline = true;
-		if (!R.State.Count)
-		{
-			R.Kind = V2::ERawDeviceKind::Gamepad;
-			if (!Canonicalize({}, R.Kind, R.State)) return ERawPumpResult::Rejected;
-		}
-		for (std::size_t I = 0; I < R.State.Count; ++I) R.State.Values[I].Value = 0;
-		if (!Journal->Publish(Ticket, Prepared)) return ERawPumpResult::Rejected;
-		++Sequence; ++Generation; Neutral = true; LastTicket.reset();
-		return ERawPumpResult::Neutralized;
+		return InstallNeutral(Ticket) ? ERawPumpResult::Neutralized : ERawPumpResult::Rejected;
 	}
 	std::uint64_t DeviceIndex(const FDeviceId& Id) noexcept
 	{
