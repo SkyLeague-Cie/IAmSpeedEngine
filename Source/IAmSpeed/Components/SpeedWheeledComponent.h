@@ -22,6 +22,7 @@ DECLARE_LOG_CATEGORY_EXTERN(SpeedInputLog, Log, All);
 class UBoxSubBody;
 class USpeedWheeledComponent;
 class ASpeedCar;
+class ASpeedSimulation;
 
 class IAMSPEED_API USpeedSimulation : public UChaosWheeledVehicleSimulation
 {
@@ -56,6 +57,7 @@ public:
 
 	// Set the owner of this component. Call this at begin play
 	virtual void SetOwner(AActor* NewOwner);
+	void BeginPlay() override;
 	bool ValidateSimulationBindings(FString& OutReason) const override;
 	bool RetireInputProcessingOnWorker() override;
 	int32 GetPublishedInputTimelineOrigin() const;
@@ -732,6 +734,12 @@ private:
 	bool bLegacyWheeledRetired = false;
 	std::atomic<bool> bInputRetirementRequested{false};
 	std::atomic<bool> bInputRetirementCompleted{false};
+	bool bWheeledEndPlayTeardown = false; // GT-only, excludes physics-state recreation.
+	bool bSpeedWorldAdapterRetiredForTeardown = false;
+	bool bResumeAfterPhysicsRecreation = false; // GT-only, captured before teardown pauses the worker.
+	bool bOwnedRecreationBoundary = false;
+	TWeakObjectPtr<ASpeedSimulation> RecreationDriver;
+	bool RetireSpeedWorldAdapterBeforeTeardown();
 	Speed::Input::ELegacyRemoteAdmission SubmitLegacyWheeledInput(uint64 SourceFrame, int32 ActivationFrame, const FWheeledInputState& Wire);
 	bool PrepareLegacyWheeledInput(uint64 Frame);
 	TOptional<uint64> PreparedCanonicalInputFrame;

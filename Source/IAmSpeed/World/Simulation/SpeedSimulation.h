@@ -40,6 +40,7 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
+	friend class FIAmSpeedAdapterRespawnBoundaryTest;
 #endif
 
 public:
@@ -114,6 +115,11 @@ public:
 	/** Bounded lifecycle boundary. Timeout retains pause request; never resume
 	 * automatically or access physical state after a non-acknowledged result. */
 	ESimulationQuiescence TryPauseOwnedSimulation(uint32 TimeoutMilliseconds = 1000);
+	/** Transfers exclusive adapter-registry access to the game thread. Unlike
+	 * TryPauseOwnedSimulation, this also parks lifecycle command service. */
+	ESimulationQuiescence TrySuspendOwnedBoundaryService(uint32 TimeoutMilliseconds = 1000);
+	void ResumeOwnedBoundaryService();
+	bool IsOwnedBoundaryServiceSuspended() const;
 	bool ReadInputFirstFrameAtPausedBoundary(uint64& OutFrame);
 	/** Teardown fallback: join the physical owner before releasing any input/actor lifetime. */
 	bool JoinOwnedSimulationForInputTeardown();
@@ -239,6 +245,9 @@ private:
 	uint64 NeutralizedInputRegistryVersion = MAX_uint64;
 	bool bInputNeutralizedDuringPause = false;
 	TUniquePtr<FSimulationWorker> SimulationWorker;
+	// Game-thread lease count. A late worker ACK after timeout is not ownership;
+	// only a successful TrySuspend call increments this count.
+	uint32 OwnedBoundarySuspendDepth = 0;
 	FCriticalSection RollbackRequestMutex;
 	TOptional<FPendingRollbackRequest> PendingRollbackRequest;
 	TAtomic<uint8> ActiveExecutionModeValue =

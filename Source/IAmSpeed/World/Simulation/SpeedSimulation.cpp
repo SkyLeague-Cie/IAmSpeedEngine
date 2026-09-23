@@ -387,6 +387,45 @@ ESimulationQuiescence ASpeedSimulation::TryPauseOwnedSimulation(const uint32 Tim
 	return ESimulationQuiescence::BoundaryAcknowledged;
 }
 
+ESimulationQuiescence ASpeedSimulation::TrySuspendOwnedBoundaryService(const uint32 TimeoutMilliseconds)
+{
+	check(IsInGameThread());
+	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread)
+		return ESimulationQuiescence::Failed;
+	if (OwnedBoundarySuspendDepth)
+	{
+		// Joining while a recreation lease is held supersedes the parked
+		// boundary. The GT may finish teardown after the worker is gone; the
+		// outstanding lease still has to be released exactly once.
+		if (!SimulationWorker || !SimulationWorker->IsRunning())
+			return ESimulationQuiescence::AlreadyStopped;
+		if (!SimulationWorker->IsBoundaryServiceSuspended())
+			return ESimulationQuiescence::Failed;
+		++OwnedBoundarySuspendDepth;
+		return ESimulationQuiescence::BoundaryAcknowledged;
+	}
+	if (!SimulationWorker || !SimulationWorker->IsRunning())
+		return ESimulationQuiescence::AlreadyStopped;
+	bOwnedSimulationPaused.Store(true);
+	if (!SimulationWorker->TrySuspendBoundaryService(TimeoutMilliseconds))
+		return ESimulationQuiescence::TimedOut;
+	OwnedBoundarySuspendDepth = 1;
+	return ESimulationQuiescence::BoundaryAcknowledged;
+}
+
+void ASpeedSimulation::ResumeOwnedBoundaryService()
+{
+	check(IsInGameThread());
+	if (!OwnedBoundarySuspendDepth) return;
+	if (--OwnedBoundarySuspendDepth == 0 && SimulationWorker)
+		SimulationWorker->ResumeBoundaryService();
+}
+
+bool ASpeedSimulation::IsOwnedBoundaryServiceSuspended() const
+{
+	return OwnedBoundarySuspendDepth && SimulationWorker && SimulationWorker->IsBoundaryServiceSuspended();
+}
+
 void ASpeedSimulation::PauseOwnedSimulation()
 {
 	bOwnedSimulationPaused.Store(true);
@@ -433,6 +472,9 @@ bool ASpeedSimulation::JoinOwnedSimulationForInputTeardown()
 void ASpeedSimulation::ResumeOwnedSimulation()
 {
 	if (bInputOwnerRetired.Load()) return;
+	// A timed-out structural request remains fail-closed until a later caller
+	// claims its ACK or joins the worker. Do not publish a false resumed state.
+	if (SimulationWorker && SimulationWorker->IsBoundaryServiceSuspendRequested()) return;
 	bOwnedSimulationPaused.Store(false);
 	OnOwnedSimulationResumed();
 	if (SimulationWorker &&

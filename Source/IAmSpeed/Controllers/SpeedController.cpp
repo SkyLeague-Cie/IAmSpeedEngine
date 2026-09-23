@@ -57,7 +57,12 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	ESimulationQuiescence InputBoundary = ESimulationQuiescence::AlreadyStopped;
 	if (SpeedCar && InputSessionV2)
 	{
-		if (!ReleaseInputLifecycle()) return;
+		if (!ReleaseInputLifecycle())
+		{
+			UE_LOG(LogTemp, Error, TEXT("[InputPossessReleaseFailed] old_car=%s new_pawn=%s fault=%d session_retained=%d"),
+				*GetNameSafe(SpeedCar), *GetNameSafe(InPawn), int32(bInputLifecycleFault), int32(InputSessionV2 != nullptr));
+			return;
+		}
 	}
 	bInputSessionRequiredV2 = !bScenarioOwnsInputAuthority && (InputSessionV2 != nullptr || RequiresInputSessionV2());
 	if (!bInputSessionRequiredV2) bInputSessionPendingV2 = false;

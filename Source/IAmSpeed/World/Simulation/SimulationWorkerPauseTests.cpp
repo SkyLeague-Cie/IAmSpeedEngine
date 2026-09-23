@@ -1,6 +1,7 @@
 #include "SimulationWorker.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/PlatformTime.h"
@@ -90,6 +91,61 @@ bool FSpeedWorkerLifecycleBoundaryTest::RunTest(const FString&)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpeedWorkerExclusiveBoundaryTest,
+    "IAmSpeed.Simulation.WorkerExclusiveBoundary", EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+bool FSpeedWorkerExclusiveBoundaryTest::RunTest(const FString&)
+{
+    TAtomic<int32> Services = 0;
+    TAtomic<int32> Frames = 0;
+    TAtomic<int32> ObservedAdapter = 0;
+    TArray<int32> Adapters{1};
+    FSimulationWorker Worker([&]()
+    {
+        ++Frames;
+        return ESimulationWorkerResult::Advanced;
+    }, [](FSimulationWorkerWaitContext& Wait)
+    {
+        Wait.WaitUntil(FPlatformTime::Seconds() + .001);
+    }, [&](bool)
+    {
+        for (const int32 Adapter : Adapters) ObservedAdapter.Store(Adapter);
+        ++Services;
+        return ESimulationBoundaryResult::Ready;
+    });
+    if (!TestTrue(TEXT("worker starts"), Worker.Start())) return false;
+    if (!TestTrue(TEXT("ordinary pause acknowledges"), Worker.TryPause(1000)))
+    { Worker.StopAndJoin(); return false; }
+    const int32 BeforeSuspend = Services.Load();
+    FPlatformProcess::SleepNoStats(.01f);
+    TestTrue(TEXT("ordinary pause continues boundary service"), Services.Load() > BeforeSuspend);
+    if (!TestTrue(TEXT("exclusive boundary acknowledges"), Worker.TrySuspendBoundaryService(1000)))
+    { Worker.StopAndJoin(); return false; }
+    const int32 FrozenServices = Services.Load();
+    const int32 FrozenFrames = Frames.Load();
+    TestTrue(TEXT("ordinary pause also acknowledges under exclusive suspension"), Worker.TryPause(1000));
+    FPlatformProcess::SleepNoStats(.01f);
+    TestEqual(TEXT("exclusive barrier parks service callback"), Services.Load(), FrozenServices);
+    TestEqual(TEXT("exclusive barrier parks physics"), Frames.Load(), FrozenFrames);
+    Adapters.RemoveAt(0);
+    Adapters.Add(2); // A replacement component is admitted under exclusive ACK.
+    Worker.Resume();
+    FPlatformProcess::SleepNoStats(.01f);
+    TestEqual(TEXT("physical resume cannot cross exclusive barrier"), Frames.Load(), FrozenFrames);
+    Worker.ResumeBoundaryService();
+    FPlatformProcess::SleepNoStats(.01f);
+    TestTrue(TEXT("ordinary paused service resumes"), Services.Load() > FrozenServices);
+    TestEqual(TEXT("service observes replacement adapter after release"), ObservedAdapter.Load(), 2);
+    TestEqual(TEXT("physical frames stay paused until explicit resume"), Frames.Load(), FrozenFrames);
+    Worker.Resume();
+    const double Deadline = FPlatformTime::Seconds() + 1.0;
+    while (Frames.Load() == FrozenFrames && FPlatformTime::Seconds() < Deadline)
+        FPlatformProcess::SleepNoStats(.001f);
+    TestTrue(TEXT("physical work resumes after barrier release"), Frames.Load() > FrozenFrames);
+    Worker.StopAndJoin();
+    TestFalse(TEXT("joined worker cannot acknowledge exclusive access"), Worker.TrySuspendBoundaryService(1));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpeedWorkerFailedLifecycleTest,
     "IAmSpeed.Simulation.WorkerFailedLifecycle", EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 bool FSpeedWorkerFailedLifecycleTest::RunTest(const FString&)
@@ -110,6 +166,39 @@ bool FSpeedWorkerFailedLifecycleTest::RunTest(const FString&)
     TestEqual(TEXT("failed boundary stops before any physics"), Frames.Load(), 0);
     TestFalse(TEXT("failure is never a pause acknowledgment"), Worker.TryPause(1));
     FPlatformProcess::ReturnSynchEventToPool(Closed);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpeedWorkerExclusiveBoundaryLateAckTest,
+    "IAmSpeed.Simulation.WorkerExclusiveBoundaryLateAck", EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+bool FSpeedWorkerExclusiveBoundaryLateAckTest::RunTest(const FString&)
+{
+    FEvent* Entered = FPlatformProcess::GetSynchEventFromPool(true);
+    FEvent* Release = FPlatformProcess::GetSynchEventFromPool(true);
+    TAtomic<int32> Services = 0;
+    FSimulationWorker Worker([]() { return ESimulationWorkerResult::Idle; },
+        [](FSimulationWorkerWaitContext&) {}, [&](bool)
+        {
+            if (++Services == 1) { Entered->Trigger(); Release->Wait(5000); }
+            return ESimulationBoundaryResult::Ready;
+        });
+    ON_SCOPE_EXIT
+    {
+        Release->Trigger();
+        Worker.StopAndJoin();
+        FPlatformProcess::ReturnSynchEventToPool(Entered);
+        FPlatformProcess::ReturnSynchEventToPool(Release);
+    };
+    if (!TestTrue(TEXT("worker starts paused"), Worker.Start(true))
+        || !TestTrue(TEXT("boundary callback is in flight"), Entered->Wait(1000))) return false;
+    TestFalse(TEXT("suspension timeout grants no adapter access"), Worker.TrySuspendBoundaryService(10));
+    TestFalse(TEXT("unacknowledged suspension is not exclusive"), Worker.IsBoundaryServiceSuspended());
+    Release->Trigger();
+    TestTrue(TEXT("later explicit request claims the completed barrier"), Worker.TrySuspendBoundaryService(1000));
+    const int32 Frozen = Services.Load();
+    FPlatformProcess::SleepNoStats(.01f);
+    TestEqual(TEXT("claimed late ACK parks callbacks"), Services.Load(), Frozen);
+    Worker.ResumeBoundaryService();
     return true;
 }
 #endif

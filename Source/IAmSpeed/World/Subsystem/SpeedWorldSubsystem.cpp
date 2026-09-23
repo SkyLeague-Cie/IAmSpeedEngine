@@ -7,6 +7,7 @@
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
 #include "IAmSpeed/World/Analytic/AnalyticLandscapeAdapter.h"
@@ -72,6 +73,43 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedSolverEventTraceFrame(
 
 namespace
 {
+	// The ordinary pause ACK only excludes physical frames. Adapter access from
+	// the game thread needs the stronger ACK that also parks ServiceBoundary.
+	class FScopedGameThreadAdapterAccess
+	{
+	public:
+		explicit FScopedGameThreadAdapterAccess(UWorld* World)
+		{
+			if (!IsInGameThread() || !World) return;
+			for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+			{
+				Driver = *It;
+				break;
+			}
+			if (!Driver || !Driver->IsOwnedWorkerExecutionMode()) return;
+			bWasPaused = Driver->IsOwnedSimulationPaused();
+			const auto Result = Driver->TrySuspendOwnedBoundaryService(1000);
+			if (Result == ESimulationQuiescence::BoundaryAcknowledged)
+				bOwnsSuspension = true;
+			else if (Result != ESimulationQuiescence::AlreadyStopped)
+				bValid = false;
+		}
+		~FScopedGameThreadAdapterAccess()
+		{
+			if (bOwnsSuspension && Driver)
+			{
+				Driver->ResumeOwnedBoundaryService();
+				if (!bWasPaused) Driver->ResumeOwnedSimulation();
+			}
+		}
+		bool IsValid() const { return bValid; }
+	private:
+		ASpeedSimulation* Driver = nullptr;
+		bool bWasPaused = true;
+		bool bOwnsSuspension = false;
+		bool bValid = true;
+	};
+
 	FString AuthoredObjectPath(const UObject& Object)
 	{
 		return UWorld::RemovePIEPrefix(Object.GetPathName());
@@ -628,6 +666,12 @@ void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
 
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
+	FScopedGameThreadAdapterAccess Access(GetWorld());
+	if (!Access.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Adapter admission deferred: exclusive worker boundary not acknowledged"));
+		return;
+	}
 	// Registrations queued during a frame are admitted at the next boundary.
 	// Prepare/Step must never pick up an adapter that missed validation.
 	if (bCanonicalFrameActive) return;
@@ -1513,6 +1557,8 @@ bool USpeedWorldSubsystem::RestoreSimulationSnapshot(
 
 uint64 USpeedWorldSubsystem::GetSimulationStableId(const ISpeedComponent& Component)
 {
+	FScopedGameThreadAdapterAccess Access(GetWorld());
+	if (!Access.IsValid()) return 0;
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
 	return SimulationWorld.FindStableId(Component);

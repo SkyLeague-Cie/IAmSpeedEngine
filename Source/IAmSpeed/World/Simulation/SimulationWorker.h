@@ -79,6 +79,17 @@ public:
 	/** Bounded boundary acknowledgment. Failure leaves the pause requested and
 	 * must not authorize mutation or automatic resume of a partially running frame. */
 	bool TryPause(uint32 TimeoutMilliseconds);
+	/** Parks the worker before ServiceBoundary as well as before physical work.
+	 * Only a successful acknowledgment permits game-thread structural access;
+	 * the ordinary pause acknowledgment intentionally keeps servicing commands. */
+	bool TrySuspendBoundaryService(uint32 TimeoutMilliseconds);
+	void ResumeBoundaryService();
+	bool IsBoundaryServiceSuspendRequested() const { return bBoundaryServiceSuspended.Load(); }
+	bool IsBoundaryServiceSuspended() const
+	{
+		return bBoundaryServiceSuspended.Load() && bRunning.Load() && !bStopRequested.Load()
+			&& BoundarySuspendAckSerial.Load() >= BoundarySuspendRequestSerial.Load();
+	}
 	/** Resumes work and resets the real-time deadline to now. */
 	void Resume();
 	/** Requests termination and blocks until the owned thread has joined. */
@@ -99,7 +110,11 @@ private:
 	TAtomic<bool> bRunning = false;
 	TAtomic<uint64> PauseRequestSerial = 0;
 	TAtomic<uint64> PauseAckSerial = 0;
+	TAtomic<bool> bBoundaryServiceSuspended = false;
+	TAtomic<uint64> BoundarySuspendRequestSerial = 0;
+	TAtomic<uint64> BoundarySuspendAckSerial = 0;
 	FEvent* WakeEvent = nullptr;
 	FEvent* PauseAcknowledgedEvent = nullptr;
+	FEvent* BoundarySuspendedEvent = nullptr;
 	FRunnableThread* Thread = nullptr;
 };

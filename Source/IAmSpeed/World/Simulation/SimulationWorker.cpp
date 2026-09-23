@@ -13,6 +13,7 @@ FSimulationWorker::FSimulationWorker(
 	, CloseOnWorker(MoveTemp(InCloseOnWorker))
 	, WakeEvent(FPlatformProcess::GetSynchEventFromPool(false))
 	, PauseAcknowledgedEvent(FPlatformProcess::GetSynchEventFromPool(true))
+	, BoundarySuspendedEvent(FPlatformProcess::GetSynchEventFromPool(true))
 {
 }
 
@@ -65,19 +66,28 @@ FSimulationWorker::~FSimulationWorker()
 		FPlatformProcess::ReturnSynchEventToPool(PauseAcknowledgedEvent);
 		PauseAcknowledgedEvent = nullptr;
 	}
+	if (BoundarySuspendedEvent)
+	{
+		FPlatformProcess::ReturnSynchEventToPool(BoundarySuspendedEvent);
+		BoundarySuspendedEvent = nullptr;
+	}
 }
 
 bool FSimulationWorker::Start(bool bStartPaused)
 {
 	if (Thread || !Work || !WaitBetweenFrames || !WakeEvent ||
-		!PauseAcknowledgedEvent)
+		!PauseAcknowledgedEvent || !BoundarySuspendedEvent)
 	{
 		return false;
 	}
 	bStopRequested.Store(false);
 	bPaused.Store(bStartPaused);
 	PauseRequestSerial.Store(bStartPaused ? 1 : 0);
+	bBoundaryServiceSuspended.Store(false);
+	BoundarySuspendRequestSerial.Store(0);
+	BoundarySuspendAckSerial.Store(0);
 	PauseAcknowledgedEvent->Reset();
+	BoundarySuspendedEvent->Reset();
 	bRunning.Store(true);
 	Thread = FRunnableThread::Create(
 		this, TEXT("IAmSpeedSimulation"), 0, TPri_AboveNormal);
@@ -126,8 +136,44 @@ bool FSimulationWorker::TryPause(const uint32 TimeoutMilliseconds)
 	return false;
 }
 
+bool FSimulationWorker::TrySuspendBoundaryService(const uint32 TimeoutMilliseconds)
+{
+	// A paused physical lane still services commands. This second barrier parks
+	// that callback as well. It can acknowledge even when a lifecycle command is
+	// waiting for baseline, because the entire callback has returned and no
+	// physical work can run before the next loop's suspension check.
+	if (!bRunning.Load() || bStopRequested.Load()) return false;
+	RequestPause();
+	if (!bBoundaryServiceSuspended.Load())
+	{
+		BoundarySuspendedEvent->Reset();
+		++BoundarySuspendRequestSerial;
+		bBoundaryServiceSuspended.Store(true);
+		WakeEvent->Trigger();
+	}
+	const uint64 RequestedSerial = BoundarySuspendRequestSerial.Load();
+	const double Deadline = FPlatformTime::Seconds() + double(TimeoutMilliseconds) / 1000.0;
+	while (bRunning.Load() && !bStopRequested.Load())
+	{
+		if (BoundarySuspendAckSerial.Load() >= RequestedSerial) return true;
+		const double Remaining = Deadline - FPlatformTime::Seconds();
+		if (Remaining <= 0) return false;
+		BoundarySuspendedEvent->Wait(uint32(FMath::Max(1,
+			FMath::CeilToInt(FMath::Min(Remaining * 1000.0, 100.0)))));
+	}
+	return false;
+}
+
+void FSimulationWorker::ResumeBoundaryService()
+{
+	bBoundaryServiceSuspended.Store(false);
+	if (WakeEvent) WakeEvent->Trigger();
+}
+
 void FSimulationWorker::Resume()
 {
+	// Structural access must be explicitly released before physical work resumes.
+	if (bBoundaryServiceSuspended.Load()) return;
 	bPaused.Store(false);
 	if (WakeEvent)
 	{
@@ -164,6 +210,22 @@ uint32 FSimulationWorker::Run()
 	{
 		while (!bStopRequested.Load())
 		{
+			if (bBoundaryServiceSuspended.Load())
+			{
+				const uint64 Request = BoundarySuspendRequestSerial.Load();
+				BoundarySuspendAckSerial.Store(Request);
+				BoundarySuspendedEvent->Trigger();
+				// Exclusive suspension is stronger than an ordinary pause: no
+				// callback or physical work can run. A nested pause request may
+				// therefore acknowledge the same parked boundary.
+				if (bPaused.Load())
+				{
+					PauseAckSerial.Store(PauseRequestSerial.Load());
+					PauseAcknowledgedEvent->Trigger();
+				}
+				WakeEvent->Wait(1);
+				continue;
+			}
 			// Capture the request before servicing it. A newer pause cannot borrow
 			// an acknowledgment from work performed for an earlier boundary.
 			const uint64 Request = PauseRequestSerial.Load();
@@ -216,5 +278,6 @@ uint32 FSimulationWorker::Run()
 	bStopRequested.Store(true);
 	bRunning.Store(false);
 	PauseAcknowledgedEvent->Trigger();
+	BoundarySuspendedEvent->Trigger();
 	return ExitCode;
 }

@@ -27,8 +27,19 @@ bool ASpeedController::UseScenarioInputAuthorityAtBoundary()
 bool ASpeedController::RestartInputSessionAtBoundary()
 {
 	check(IsInGameThread());
-	if (!bInputSessionRequiredV2 || bInputLifecycleFault || Speed::Input::FPresentationInputScope::IsActive()) return false;
-	if (!ReleaseInputSessionV2() || bInputLifecycleFault) return false;
+	if (!bInputSessionRequiredV2 || bInputLifecycleFault || Speed::Input::FPresentationInputScope::IsActive())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[InputSessionRestartRejected] required=%d fault=%d presentation_scope=%d possessed=%d"),
+			int32(bInputSessionRequiredV2), int32(bInputLifecycleFault),
+			int32(Speed::Input::FPresentationInputScope::IsActive()), int32(IsValid(SpeedCar)));
+		return false;
+	}
+	if (!ReleaseInputSessionV2() || bInputLifecycleFault)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[InputSessionRestartReleaseFailed] fault=%d session_retained=%d"),
+			int32(bInputLifecycleFault), int32(InputSessionV2 != nullptr));
+		return false;
+	}
 	bInputSessionPendingV2 = true;
 	return true;
 }

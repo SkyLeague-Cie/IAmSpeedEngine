@@ -788,10 +788,68 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 			WheeledNetworkPhysicsComponent->CreateDataHistory<FPhysicsWheeledTraits>(this);
 		}
 	}
+	if (bOwnedRecreationBoundary)
+	{
+		// A live RecreatePhysicsState keeps the same adapter identity and input
+		// binding. The worker has been parked across the whole storage gap.
+		ASpeedSimulation* Driver = RecreationDriver.Get();
+		if (!Driver || !Driver->IsOwnedBoundaryServiceSuspended())
+			UE_LOG(SpeedInputLog, Fatal, TEXT("Physics recreation lost its exclusive worker boundary"));
+		FString Reason;
+		if (!ValidateSimulationBindings(Reason))
+			UE_LOG(SpeedInputLog, Fatal, TEXT("Recreated physics state rejected before worker resume: %s"), *Reason);
+		bOwnedRecreationBoundary = false;
+		RecreationDriver.Reset();
+		Driver->ResumeOwnedBoundaryService();
+		if (bResumeAfterPhysicsRecreation) Driver->ResumeOwnedSimulation();
+		bResumeAfterPhysicsRecreation = false;
+	}
+	else if (HasBegunPlay() && !bWheeledEndPlayTeardown && bSpeedWorldAdapterRetiredForTeardown)
+	{
+		// RecreatePhysicsState is also used on a live component. Admit its new
+		// wheel storage only after the replacement physics state is complete.
+		if (UWorld* World = GetWorld())
+			if (USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>())
+			{
+				Subsystem->RegisterSpeedComponent(this);
+				Subsystem->ApplyPendingOps();
+				if (!Subsystem->GetSimulationStableId(*this))
+					UE_LOG(SpeedInputLog, Fatal, TEXT("Recreated wheeled adapter was not admitted"));
+				bSpeedWorldAdapterRetiredForTeardown = false;
+			}
+		if (bResumeAfterPhysicsRecreation)
+			if (UWorld* World = GetWorld())
+				for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+				{ It->ResumeOwnedSimulation(); break; }
+		bResumeAfterPhysicsRecreation = false;
+	}
+}
+
+void USpeedWheeledComponent::BeginPlay()
+{
+	bWheeledEndPlayTeardown = false;
+	bSpeedWorldAdapterRetiredForTeardown = false;
+	Super::BeginPlay();
+}
+
+bool USpeedWheeledComponent::RetireSpeedWorldAdapterBeforeTeardown()
+{
+	check(IsInGameThread());
+	if (bSpeedWorldAdapterRetiredForTeardown) return true;
+	if (UWorld* World = GetWorld())
+		if (USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>())
+		{
+			Subsystem->UnregisterSpeedComponent(this);
+			Subsystem->ApplyPendingOps();
+			if (Subsystem->GetSimulationStableId(*this) != 0) return false;
+		}
+	bSpeedWorldAdapterRetiredForTeardown = true;
+	return true;
 }
 
 void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 {
+	if (bSpeedWorldAdapterRetiredForTeardown) return;
 	if (!HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority()) return;
 	check(IsInGameThread());
 	if (UWorld* World = GetWorld())
@@ -800,7 +858,12 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 			const auto Boundary = It->TryPauseOwnedSimulation();
 			// Unstarted inline fixtures have no driver-owned execution lane.
 			if (Boundary == ESimulationQuiescence::AlreadyStopped && !It->HasActorBegunPlay()
-				&& !It->IsOwnedWorkerExecutionMode()) return;
+				&& !It->IsOwnedWorkerExecutionMode())
+			{
+				if (!RetireSpeedWorldAdapterBeforeTeardown())
+					UE_LOG(SpeedInputLog, Fatal, TEXT("Unstarted adapter removal was not acknowledged before storage teardown"));
+				return;
+			}
 			const auto View = It->ReadInputRegistryView();
 			auto* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>();
 			const uint64 Actor = Subsystem ? Subsystem->GetSimulationStableId(*this) : 0;
@@ -812,18 +875,56 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 			// A controller may already have retired this actor's session. The
 			// acknowledged pause then protects storage without killing its next run.
 			if (!HasLegacyRemoteInputAuthority() && !bStillBound
-				&& Boundary == ESimulationQuiescence::BoundaryAcknowledged) return;
+				&& Boundary == ESimulationQuiescence::BoundaryAcknowledged)
+			{
+				// Pause ACK does not park ServiceBoundary. Remove the unbound
+				// component under the exclusive service ACK before EndPlay frees
+				// wheel/sub-body storage or the replacement car is admitted.
+				if (!Subsystem || It->TrySuspendOwnedBoundaryService() != ESimulationQuiescence::BoundaryAcknowledged)
+					UE_LOG(SpeedInputLog, Fatal, TEXT("Cannot retire produced adapter without an exclusive worker boundary"));
+				if (!RetireSpeedWorldAdapterBeforeTeardown())
+					UE_LOG(SpeedInputLog, Fatal, TEXT("Produced adapter removal was not acknowledged before storage teardown"));
+				It->ResumeOwnedBoundaryService();
+				return;
+			}
 			// Orphan/scenario owners still bound to the actor must close on their
 			// worker. Resume then requires an explicit new controlled run.
 			if (!It->JoinOwnedSimulationForInputTeardown())
 				UE_LOG(SpeedInputLog, Fatal, TEXT("Input worker could not join before actor storage destruction"));
+			if (!RetireSpeedWorldAdapterBeforeTeardown())
+				UE_LOG(SpeedInputLog, Fatal, TEXT("Joined input owner did not retire its adapter before storage teardown"));
 			break;
 		}
 }
 
 void USpeedWheeledComponent::OnDestroyPhysicsState()
 {
-	JoinInputWorkerBeforeStorageDestruction();
+	bResumeAfterPhysicsRecreation = false;
+	if (!bWheeledEndPlayTeardown && HasBegunPlay()
+		&& (!GetOwner() || !GetOwner()->IsActorBeingDestroyed()))
+		if (UWorld* World = GetWorld())
+			for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+			{
+				bResumeAfterPhysicsRecreation = !It->IsOwnedSimulationPaused();
+				if (It->IsOwnedWorkerExecutionMode())
+				{
+					const auto Barrier = It->TrySuspendOwnedBoundaryService();
+					if (Barrier == ESimulationQuiescence::BoundaryAcknowledged)
+					{
+						bOwnedRecreationBoundary = true;
+						RecreationDriver = *It;
+					}
+					else if (Barrier != ESimulationQuiescence::AlreadyStopped)
+						UE_LOG(SpeedInputLog, Fatal, TEXT("Live physics recreation could not park the worker"));
+				}
+				break;
+			}
+	if (!bOwnedRecreationBoundary)
+	{
+		JoinInputWorkerBeforeStorageDestruction();
+		if (!RetireSpeedWorldAdapterBeforeTeardown())
+			UE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before physics-state teardown"));
+	}
 	// PVehicle owns the suspension storage; invalidate every sub-body alias
 	// before any physics-state teardown, even when the output handle was already
 	// released by the vehicle manager.
@@ -1087,6 +1188,7 @@ void USpeedWheeledComponent::DemoedBy(ASpeedCar* otherCar)
 
 void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	bWheeledEndPlayTeardown = true;
 	JoinInputWorkerBeforeStorageDestruction();
 	ASpeedSimulation* RetirementDriver = nullptr;
 	bool bResumeAfterRemoval = false;
@@ -1110,6 +1212,15 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		if (!bInputRetirementCompleted.load(std::memory_order_acquire) && !RetireInputProcessingOnWorker())
 			UE_LOG(SpeedInputLog, Fatal, TEXT("Remote input owner was not retired before component destruction"));
 	}
+	if (!RetireSpeedWorldAdapterBeforeTeardown())
+		UE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before EndPlay teardown"));
+	if (bOwnedRecreationBoundary)
+	{
+		if (ASpeedSimulation* Driver = RecreationDriver.Get()) Driver->ResumeOwnedBoundaryService();
+		bOwnedRecreationBoundary = false;
+		RecreationDriver.Reset();
+		bResumeAfterPhysicsRecreation = false;
+	}
 	// Make car sleeps else suspension will crash the game
 	if (VehicleSimulationPT)
 	{
@@ -1132,15 +1243,6 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	Super::EndPlay(EndPlayReason);
-	// Unregister from SpeedWorldSubsystem
-	if (UWorld* World = GetWorld())
-	{
-		if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
-		{
-			SpeedWorldSubsystem->UnregisterSpeedComponent(this);
-			if (RetirementDriver) SpeedWorldSubsystem->ApplyPendingOps();
-		}
-	}
 
 	if (RetirementDriver && bResumeAfterRemoval) RetirementDriver->ResumeOwnedSimulation();
 }
