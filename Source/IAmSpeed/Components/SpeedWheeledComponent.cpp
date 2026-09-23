@@ -808,8 +808,8 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	{
 		// RecreatePhysicsState is also used on a live component. Admit its new
 		// wheel storage only after the replacement physics state is complete.
-		if (UWorld* World = GetWorld())
-			if (USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>())
+		if (UWorld* CurrentWorld = GetWorld())
+			if (USpeedWorldSubsystem* Subsystem = CurrentWorld->GetSubsystem<USpeedWorldSubsystem>())
 			{
 				Subsystem->RegisterSpeedComponent(this);
 				Subsystem->ApplyPendingOps();
@@ -818,8 +818,8 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 				bSpeedWorldAdapterRetiredForTeardown = false;
 			}
 		if (bResumeAfterPhysicsRecreation)
-			if (UWorld* World = GetWorld())
-				for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+			if (UWorld* CurrentWorld = GetWorld())
+				for (TActorIterator<ASpeedSimulation> It(CurrentWorld); It; ++It)
 				{ It->ResumeOwnedSimulation(); break; }
 		bResumeAfterPhysicsRecreation = false;
 	}
