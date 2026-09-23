@@ -29,9 +29,12 @@ public:
         if (!Source)
         {
             Microsoft::WRL::ComPtr<GameInput::v3::IGameInput> Api;
-            if (FAILED(GameInput::v3::GameInputCreate(Api.GetAddressOf()))) return EAcquisitionPumpResult::Rejected;
+            const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
+            if (FAILED(Created))
+            { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
             auto Raw=Windows::FGameInputSelectedSource::CreateRaw(Api.Get(),Producer,Activity);
-            if (!Raw) return EAcquisitionPumpResult::Rejected;
+            if (!Raw)
+            { UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
             Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
         }
         return Source->Pump();
@@ -63,11 +66,19 @@ FStreamEpoch AllocateInputStreamEpoch()
 std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostConfig& Config)
 {
 #if PLATFORM_WINDOWS && !UE_SERVER
-	if (!Config.Contract || !FActionMapper::SupportsContract(*Config.Contract) || !FDeviceActivityPolicy::ValidConfig(Config.Activity)
-		|| Config.Cadence.count() <= 0 || Config.Cadence > std::chrono::seconds(1)
-		|| Config.StartupTimeout.count() <= 0 || FPresentationInputScope::IsActive()) return {};
+	if (!Config.Contract || !FActionMapper::SupportsContract(*Config.Contract))
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract")); return {}; }
+	if (!FDeviceActivityPolicy::ValidConfig(Config.Activity))
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: device_policy")); return {}; }
+	if (Config.Cadence.count() <= 0 || Config.Cadence > std::chrono::seconds(1))
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: cadence")); return {}; }
+	if (Config.StartupTimeout.count() <= 0)
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: startup_timeout")); return {}; }
+	if (FPresentationInputScope::IsActive())
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: presentation_scope")); return {}; }
 	const auto Epoch = AllocateInputStreamEpoch();
-	if (!Epoch.Value) return {};
+	if (!Epoch.Value)
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: epoch_exhausted")); return {}; }
 	const FProducerIdentity Identity{EProducerKind::Device, Epoch.Value};
 	auto Journal = std::make_shared<FRawAcquisitionJournal>(Epoch.Value, Config.FirstFrame);
 	FSessionDescriptor Binding;
@@ -76,20 +87,42 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	Binding.Contract = Config.Contract; Binding.Processing = Config.Processing;
 	// Producer construction is deferred to the physical registry worker.
 	auto Host = FInputHostSession::CreateDescriptor(std::move(Binding));
-	if (!Host) return {};
+	if (!Host)
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: descriptor")); return {}; }
 	Host->Journal = Journal;
 	if (!Config.Controls.empty())
 	{
 		Host->Controls = FControlActionReader::Create(Config.Contract, Journal, Identity, Epoch.Value, Config.Controls);
-		if (!Host->Controls) return {};
+		if (!Host->Controls)
+		{ UE_LOG(LogTemp, Error, TEXT("Independent input control reader rejected")); return {}; }
 	}
 	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal);
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
-	if (!Host->Acquisition->Start(Config.Cadence)
-		|| !Host->Acquisition->WaitForFirstPublication(Config.StartupTimeout)) return {};
+	if (!Host->Acquisition->Start(Config.Cadence))
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input acquisition worker start rejected")); return {}; }
+	if (!Host->Acquisition->WaitForFirstPublication(Config.StartupTimeout))
+	{
+		const auto Result = Host->Acquisition->LastResult();
+		const TCHAR* ResultName = TEXT("None");
+		if (Result)
+		{
+			switch (*Result)
+			{
+			case EAcquisitionPumpResult::Installed: ResultName = TEXT("Installed"); break;
+			case EAcquisitionPumpResult::NoChange: ResultName = TEXT("NoChange"); break;
+			case EAcquisitionPumpResult::Neutralized: ResultName = TEXT("Neutralized"); break;
+			case EAcquisitionPumpResult::Rejected: ResultName = TEXT("Rejected"); break;
+			case EAcquisitionPumpResult::Closed: ResultName = TEXT("Closed"); break;
+			}
+		}
+		UE_LOG(LogTemp, Error, TEXT("Independent input acquisition startup %s; last_result=%s"),
+			Host->Acquisition->HasFinished() ? TEXT("worker_terminated") : TEXT("first_publication_timeout"), ResultName);
+		return {};
+	}
 	return Host;
 #else
 	(void)Config;
+	UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: unsupported_platform"));
 	return {};
 #endif
 }

@@ -51,6 +51,8 @@ public:
 	}
 	std::optional<EAcquisitionPumpResult> LastResult() const
 	{ std::lock_guard<std::mutex> Lock(Gate); return Result; }
+	bool HasFinished() const
+	{ std::lock_guard<std::mutex> Lock(Gate); return Finished; }
 	bool IsStopRequested() const
 	{ std::lock_guard<std::mutex> Lock(Gate); return Stopping; }
 	bool Stop()
