@@ -73,11 +73,15 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		const auto* Action = Config.Contract->Find(Unsupported->Action);
 		const FString Name = Action ? UTF8_TO_TCHAR(Action->Name.c_str()) : TEXT("<unknown>");
 		if (Unsupported->Reason == FActionMapper::EUnsupportedContractReason::MouseButton)
+		{
 			UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract action=%u name=%s unsupported_kind=MouseButton device_host=keyboard_gamepad_only"),
 				unsigned(Unsupported->Action), *Name);
+		}
 		else
+		{
 			UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract action=%u name=%s unsupported_response_exponent=%.9g"),
 				unsigned(Unsupported->Action), *Name, double(Unsupported->Exponent));
+		}
 		return {};
 	}
 	if (!FDeviceActivityPolicy::ValidConfig(Config.Activity))
