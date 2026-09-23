@@ -17,6 +17,8 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include <exception>
+#include <stdexcept>
 
 namespace
 {
@@ -785,6 +787,7 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		bCanonicalPublicationTerminal.Store(true);
 		bOwnedWorkerTerminal.Store(true);
 	};
+	const TCHAR* ExceptionStage = TEXT("InputRegistryRead");
 	try
 	{
 		IAMSPEED_FRAME_SCOPE(Initialize);
@@ -792,18 +795,23 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		const bool bHasInputSessions = InputView && !InputView->Bindings.empty();
 		if (bHasInputSessions)
 		{
+			ExceptionStage = TEXT("ScenarioInputs");
 			if (!SpeedWorldSubsystem->StageCanonicalScenarioInputs(Context, *InputSessionRegistry))
 				throw std::runtime_error("canonical scenario authoring rejected");
+			ExceptionStage = TEXT("InputPrepareAndInstall");
 			if (!InputSessionRegistry->PrepareFrame(Context.NumFrame) || !InputSessionRegistry->InstallAll())
 				throw std::runtime_error("canonical input polling rejected");
+			ExceptionStage = TEXT("InputSnapshotInstall");
 			const auto Installed = InputSessionRegistry->ReadInstalled();
 			if (!Installed || !SpeedWorldSubsystem->InstallCanonicalInputs(*Installed) || !InputSessionRegistry->BeginAll())
 				throw std::runtime_error("canonical input installation rejected");
 		}
+		ExceptionStage = TEXT("StaticWorldAudit");
 		Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
 			Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
 			SpeedWorldSubsystem);
 		bAuditStarted = true;
+		ExceptionStage = TEXT("SimulationInputJournal");
 		if (InputJournal.IsSealed() &&
 			!SpeedWorldSubsystem->ApplySimulationInputs(Context.NumFrame, InputJournal))
 		{
@@ -819,6 +827,7 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			MarkTerminal();
 			return false;
 		}
+		ExceptionStage = TEXT("CanonicalInputPrepare");
 		if (!SpeedWorldSubsystem->PrepareCanonicalInputs(Context))
 		{
 			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
@@ -829,20 +838,25 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		}
 		bInputConsumptionErrorReported = false;
 		IAMSPEED_FRAME_PHASE(Prepare);
+		ExceptionStage = TEXT("WorldPrepare");
 		SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
 		IAMSPEED_FRAME_PHASE(Core);
+		ExceptionStage = TEXT("WorldStep");
 		SpeedWorldSubsystem->Step(
 			Context.PhysicalDeltaTime,
 			Context.SimTime,
 			static_cast<unsigned int>(Context.NumFrame));
 		IAMSPEED_FRAME_PHASE(Snapshot);
+		ExceptionStage = TEXT("SnapshotCapture");
 		FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
 			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
+		ExceptionStage = TEXT("PresentationProducerList");
 		TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
 		{
 			FScopeLock Lock(&PresentationProducerMutex);
 			Producers = PresentationProducers;
 		}
+		ExceptionStage = TEXT("PresentationProduce");
 		for (const auto& Producer : Producers)
 		{
 			FSimulationPresentationOutput Output;
@@ -854,9 +868,11 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			Output.PublicationSerial = 0;
 			Snapshot.PresentationOutputs.Add(MoveTemp(Output));
 		}
+		ExceptionStage = TEXT("InputValidateComplete");
 		if (bHasInputSessions && !InputSessionRegistry->ValidateComplete())
 			throw std::runtime_error("canonical input completion rejected");
 		IAMSPEED_FRAME_PHASE(Publish);
+		ExceptionStage = TEXT("CanonicalPublish");
 		const ECanonicalPublicationResult Publication = SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame, [&]()
 		{
 			// One simulation owner. Avoid serial wrap before touching the inactive slot.
@@ -873,6 +889,7 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		}
 		if (bHasInputSessions)
 		{
+			ExceptionStage = TEXT("InputComplete");
 			if (!InputSessionRegistry->CompleteAll())
 			{
 				MarkTerminal();
@@ -891,8 +908,10 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			}
 		}
 		// V2 authoritative commit is finished before any optional presentation work.
+		ExceptionStage = TEXT("PostCommitNotify");
 		SpeedWorldSubsystem->NotifyCanonicalFramePublished(Context.NumFrame);
 		FCameraCanonicalSample CameraSample;
+		ExceptionStage = TEXT("CameraSample");
 		if (BuildCanonicalCameraSample(Snapshot, CameraSample))
 		{
 			CameraSample.NumFrame = Snapshot.NumFrame;
@@ -902,17 +921,27 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			CameraSampleBuffer.Publish(CameraSample);
 		}
 		IAMSPEED_FRAME_PHASE(Journal);
+		ExceptionStage = TEXT("FrameHash");
 		FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
 		IAMSPEED_FRAME_PHASE(Finalize);
 		return true;
+	}
+	catch (const std::exception& Exception)
+	{
+		if (!bGlobalPublished && !bOutcomeHandled)
+			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+		MarkTerminal();
+		UE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d Stage=%s Type=std Message=%s"),
+			Context.NumFrame, bGlobalPublished ? 1 : 0, ExceptionStage, UTF8_TO_TCHAR(Exception.what()));
+		return false; // No exception escapes into the UE worker/callback boundary.
 	}
 	catch (...)
 	{
 		if (!bGlobalPublished && !bOutcomeHandled)
 			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 		MarkTerminal();
-		UE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d"),
-			Context.NumFrame, bGlobalPublished ? 1 : 0);
+		UE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d Stage=%s Type=unknown"),
+			Context.NumFrame, bGlobalPublished ? 1 : 0, ExceptionStage);
 		return false; // No exception escapes into the UE worker/callback boundary.
 	}
 }
