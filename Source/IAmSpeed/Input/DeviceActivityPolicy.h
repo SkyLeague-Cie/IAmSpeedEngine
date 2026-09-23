@@ -13,6 +13,9 @@ struct FActivityConfig
 	FFrameNumber MinimumResidenceFrames;
 	std::size_t MaximumDevices;
 	EDeviceKind HybridDeviceKind;
+	// Optional startup owner. A device must have supplied a real reading first.
+	// No fallback is made after an owner disconnects or while a lock is set.
+	std::optional<EDeviceKind> StartupPreferredKind;
 };
 struct FActivityState
 {
@@ -38,7 +41,9 @@ public:
 		};
 		return Valid(C.Stick) && Valid(C.Trigger) && C.MaximumDevices > 0
 			&& C.MaximumDevices <= FDeviceDiscovery::Capacity
-			&& (C.HybridDeviceKind == EDeviceKind::Keyboard || C.HybridDeviceKind == EDeviceKind::Gamepad);
+			&& (C.HybridDeviceKind == EDeviceKind::Keyboard || C.HybridDeviceKind == EDeviceKind::Gamepad)
+			&& (!C.StartupPreferredKind || *C.StartupPreferredKind == EDeviceKind::Keyboard
+				|| *C.StartupPreferredKind == EDeviceKind::Gamepad);
 	}
 	bool Sync(const std::vector<FDiscoveredDevice>& Devices)
 	{
@@ -115,6 +120,7 @@ public:
 		if (LastFrame && (Frame < *LastFrame || *LastFrame == std::numeric_limits<FFrameNumber>::max() || Frame != *LastFrame + 1))
 		{ Failed = true; return std::nullopt; }
 		std::optional<FDeviceId> Winner;
+		bool StartupChoice = false;
 		if (!Paused)
 		{
 			if (Locked) { if (Trackers.count(*Locked)) Winner = Locked; }
@@ -133,9 +139,22 @@ public:
 				}
 				if (Winner && Remembered && *Winner != *Remembered && Trackers.count(*Remembered)
 					&& LastSwitch && Frame - *LastSwitch < Config.MinimumResidenceFrames) Winner = Remembered;
+				if (!Winner && !Remembered && Config.StartupPreferredKind)
+				{
+					// Stable ID order within the preferred kind. A connected device with
+					// no readable OS state cannot acknowledge a fresh resume.
+					for (const auto Kind : {*Config.StartupPreferredKind,
+						*Config.StartupPreferredKind == EDeviceKind::Keyboard ? EDeviceKind::Gamepad : EDeviceKind::Keyboard})
+					{
+						for (const auto& Item : Trackers)
+							if (Item.second.Kind == Kind && Item.second.HasBaseline)
+							{ Winner = Item.first; StartupChoice = true; break; }
+						if (Winner) break;
+					}
+				}
 			}
 		}
-		if (Winner && (!Remembered || *Winner != *Remembered)) LastSwitch = Frame;
+		if (Winner && !StartupChoice && (!Remembered || *Winner != *Remembered)) LastSwitch = Frame;
 		if (Winner && Trackers.at(*Winner).Pending
 			&& (!LastClaimTimestamp || *Trackers.at(*Winner).Pending > *LastClaimTimestamp)) LastClaimTimestamp = Trackers.at(*Winner).Pending;
 		if (Winner) Remembered = Winner;

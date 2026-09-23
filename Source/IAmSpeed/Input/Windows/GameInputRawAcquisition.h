@@ -54,7 +54,8 @@ public:
 		{
 			if (!Batch.Ticket)
 			{
-				// Automatic selection has no owner until real device activity.
+				// Automatic selection can have no owner until activity or an
+				// explicitly configured startup device supplies a real reading.
 				// The first neutral baseline has no missing commands to invalidate.
 				if (Neutral) return true;
 				if (!LastTicket && !LastState)

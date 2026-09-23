@@ -12,6 +12,36 @@ static FActivityState Button(bool Held) { FActivityState S; S.Buttons[0] = Held;
 int main()
 {
 	Check(FDeviceActivityPolicy::ValidConfig(Config()), "explicit candidate config valid");
+	{
+		auto C = Config(30); C.StartupPreferredKind = EDeviceKind::Gamepad;
+		Check(FDeviceActivityPolicy::ValidConfig(C), "configured startup preference valid");
+		FDeviceActivityPolicy P(C); P.Sync(Devices());
+		Check(!P.Decide(0), "discovery without a real reading cannot select a startup owner");
+		P.Observe(Id(2),1,1,{}); P.Observe(Id(3),1,1,Button(true));
+		Check(P.Decide(1)->Id == Id(3), "first readable gamepad owns even if already held");
+		P.Observe(Id(1),1,2,{}); P.Observe(Id(2),1,2,Button(true));
+		Check(P.Decide(2)->Id == Id(2), "fresh keyboard activity switches immediately after startup owner");
+		auto D = Devices(); D[1].Connected = false; P.Sync(D);
+		Check(!P.Decide(3), "lost owner neutral without another startup fallback");
+		D[1].Connected = true; D[1].Revision = 2; P.Sync(D);
+		P.Observe(Id(2),2,3,Button(true));
+		Check(P.Decide(4)->Id == Id(2), "held owner resumes on real reconnect reading");
+		P.SetPaused(true); Check(!P.Decide(5), "startup owner pause neutral");
+		P.SetPaused(false); P.Observe(Id(2),2,4,Button(true));
+		Check(P.Decide(6)->Id == Id(2), "paused owner resumes from fresh held reading");
+		P.SetLock(Id(8)); Check(!P.Decide(7), "absent explicit lock blocks startup fallback");
+	}
+	{
+		auto C = Config(); C.StartupPreferredKind = EDeviceKind::Gamepad;
+		FDeviceActivityPolicy P(C); P.Sync(Devices()); P.Observe(Id(2),1,1,{});
+		Check(P.Decide(0)->Id == Id(2), "keyboard fallback when connected gamepads have no reading");
+		FDeviceActivityPolicy Empty(C); Empty.Sync({});
+		Check(!Empty.Decide(0), "no discovered device remains neutral");
+		FDeviceActivityPolicy Active(C); Active.Sync(Devices());
+		Active.Observe(Id(2),1,1,{}); Active.Observe(Id(1),1,1,{});
+		Active.Observe(Id(2),1,2,Button(true));
+		Check(Active.Decide(0)->Id == Id(2), "real activity wins over startup kind preference");
+	}
 	for (float Invalid : {0.f, -1.f, std::numeric_limits<float>::quiet_NaN(), 2.f})
 	{ auto C = Config(); C.Stick.Delta = Invalid; Check(!FDeviceActivityPolicy::ValidConfig(C), "invalid delta rejected"); }
 	for (bool Reverse : {false,true})

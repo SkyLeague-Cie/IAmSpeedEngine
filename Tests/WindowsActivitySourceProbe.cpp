@@ -1,5 +1,6 @@
 #include "WindowsDiscoveryFakes.h"
 #include "IAmSpeed/Input/Windows/GameInputSelectedSource.h"
+#include "IAmSpeed/Input/Windows/GameInputRawAcquisition.h"
 using Speed::Input::Windows::FGameInputSelectedSource;
 class HistoryApi final : public DiscoveryApi
 {
@@ -45,6 +46,55 @@ static std::unique_ptr<FGameInputSelectedSource> Source(HistoryApi* Api)
 }
 int main()
 {
+	{
+		using namespace Speed::Input::Windows;
+		using namespace Speed::Input::V2;
+		ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);
+		auto Policy=Config(); Policy.StartupPreferredKind=EDeviceKind::Gamepad;
+		auto S=FGameInputSelectedSource::CreateRaw(Api.Get(),700,Policy);
+		Check(bool(S),"raw startup source without devices");
+		auto Hub=std::make_shared<FRawAcquisitionJournal>(20);
+		FGameInputRawAcquisition Owner(std::move(S),Hub);
+		Check(Hub->SetLifecyclePaused(true)==ELifecycleResult::Applied && Hub->RequestFreshResume(),
+			"no-device startup requests fresh reading");
+		Check(Owner.Pump()==ERawPumpResult::NoChange && !Hub->IsResumeReady(),
+			"no-device startup never treats synthetic neutral as a fresh OS reading");
+		Check(Owner.Close(),"no-device raw startup source closes");
+	}
+	{
+		using namespace Speed::Input::Windows;
+		using namespace Speed::Input::V2;
+		ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);
+		auto Pad=MakeDevice(1); auto Keyboard=MakeDevice(2,GameInputKindKeyboard);
+		Api->Initial={{Pad,1,true},{Keyboard,1,true}};
+		Api->Sample(Pad.Get(),1,true); Api->Sample(Keyboard.Get(),1,false);
+		auto Policy=Config(); Policy.StartupPreferredKind=EDeviceKind::Gamepad;
+		auto S=FGameInputSelectedSource::CreateRaw(Api.Get(),701,Policy);
+		Check(bool(S),"raw startup source with explicit gamepad preference");
+		auto Hub=std::make_shared<FRawAcquisitionJournal>(21);
+		FGameInputRawAcquisition Owner(std::move(S),Hub);
+		Check(Hub->SetLifecyclePaused(true)==ELifecycleResult::Applied && Hub->RequestFreshResume(),
+			"startup physics waits for a real reading");
+		Check(Owner.Pump()==ERawPumpResult::Installed && Hub->IsResumeReady()
+			&& Hub->SetLifecyclePaused(false)==ELifecycleResult::Applied,
+			"initial held gamepad current reading wakes physical resume");
+		const auto First=Hub->Poll(0);
+		Check(First && First->FinalState[0].Value==1,"startup physical frame contains held gamepad button");
+		Check(Hub->SetLifecyclePaused(true)==ELifecycleResult::Applied && Hub->RequestFreshResume(),
+			"subsequent pause requests another real reading");
+		Api->Sample(Pad.Get(),2,true);
+		Check(Owner.Pump()==ERawPumpResult::Installed && Hub->IsResumeReady()
+			&& Hub->SetLifecyclePaused(false)==ELifecycleResult::Applied,
+			"held gamepad resumes from next fresh OS sample");
+		Check(Hub->Poll(1)->FinalState[0].Value==1,"post-pause frame retains held input");
+		Api->FireDevice(Pad.Get(),3,false);
+		Check(Owner.Pump()==ERawPumpResult::Neutralized && Hub->Poll(2)->FinalState[0].Value==0,
+			"disconnected owner neutralizes despite connected keyboard");
+		Api->FireDevice(Pad.Get(),4,true); Api->Sample(Pad.Get(),4,true);
+		Check(Owner.Pump()==ERawPumpResult::Installed && Hub->Poll(3)->FinalState[0].Value==1,
+			"same owner reconnects with held input on first fresh reading");
+		Check(Owner.Close(),"raw startup source closes");
+	}
 	for (bool Reverse : {false,true})
 	{
 		ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);
