@@ -210,6 +210,46 @@ namespace Speed
 			if (Body.Adapter) Body.Adapter->OnCanonicalFramePublished(NumFrame);
 	}
 
+	void FSimulationWorld::AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept
+	{
+		for (const FSimulationBodyRecord& Body : Bodies)
+			if (Body.Adapter) Body.Adapter->AbortCanonicalFrame(Frame, Reason);
+	}
+
+	ECanonicalPublicationResult FSimulationWorld::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
+	{
+		// Bodies is stable for the enclosing canonical frame. No registry lock is
+		// held across validation/publication; no GT registration enters this frame.
+		bool Valid = true;
+		try
+		{
+			for (const FSimulationBodyRecord& Body : Bodies)
+				if (Body.Adapter) Valid &= Body.Adapter->ValidateCanonicalFrameCommit(Frame);
+		}
+		catch (...) { Valid = false; }
+		if (!Valid)
+		{
+			AbortCanonicalFrame(Frame, ECanonicalFrameAbortReason::SnapshotPublicationFailed);
+			return ECanonicalPublicationResult::ValidationFailed;
+		}
+		bool Published = false;
+		try { Published = Publish(); }
+		catch (...) { Published = false; } // Publisher contract: no visible commit on throw/false.
+		if (!Published)
+		{
+			AbortCanonicalFrame(Frame, ECanonicalFrameAbortReason::SnapshotPublicationFailed);
+			return ECanonicalPublicationResult::PublicationFailed;
+		}
+		// No allocation, callbacks, or other potentially throwing work between the
+		// global commit and these prevalidated per-participant finalizations.
+		bool bAllCommitted = true;
+		for (const FSimulationBodyRecord& Body : Bodies)
+			if (Body.Adapter) bAllCommitted &= Body.Adapter->CommitCanonicalFrame(Frame);
+		// Complete every participant even if an earlier hook reports an invariant
+		// failure. Global publication is irreversible; never abort completed tokens.
+		return bAllCommitted ? ECanonicalPublicationResult::Completed : ECanonicalPublicationResult::CommitInvariantFailed;
+	}
+
 	FSimulationSnapshot FSimulationWorld::CaptureSnapshot(
 		const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation) const
 	{

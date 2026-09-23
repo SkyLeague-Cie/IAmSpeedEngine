@@ -3,9 +3,11 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
 #include "IAmSpeed/World/Analytic/AnalyticLandscapeAdapter.h"
@@ -71,6 +73,43 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedSolverEventTraceFrame(
 
 namespace
 {
+	// The ordinary pause ACK only excludes physical frames. Adapter access from
+	// the game thread needs the stronger ACK that also parks ServiceBoundary.
+	class FScopedGameThreadAdapterAccess
+	{
+	public:
+		explicit FScopedGameThreadAdapterAccess(UWorld* World)
+		{
+			if (!IsInGameThread() || !World) return;
+			for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+			{
+				Driver = *It;
+				break;
+			}
+			if (!Driver || !Driver->IsOwnedWorkerExecutionMode()) return;
+			bWasPaused = Driver->IsOwnedSimulationPaused();
+			const auto Result = Driver->TrySuspendOwnedBoundaryService(1000);
+			if (Result == ESimulationQuiescence::BoundaryAcknowledged)
+				bOwnsSuspension = true;
+			else if (Result != ESimulationQuiescence::AlreadyStopped)
+				bValid = false;
+		}
+		~FScopedGameThreadAdapterAccess()
+		{
+			if (bOwnsSuspension && Driver)
+			{
+				Driver->ResumeOwnedBoundaryService();
+				if (!bWasPaused) Driver->ResumeOwnedSimulation();
+			}
+		}
+		bool IsValid() const { return bValid; }
+	private:
+		ASpeedSimulation* Driver = nullptr;
+		bool bWasPaused = true;
+		bool bOwnsSuspension = false;
+		bool bValid = true;
+	};
+
 	FString AuthoredObjectPath(const UObject& Object)
 	{
 		return UWorld::RemovePIEPrefix(Object.GetPathName());
@@ -627,6 +666,12 @@ void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
 
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
+	FScopedGameThreadAdapterAccess Access(GetWorld());
+	if (!Access.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Adapter admission deferred: exclusive worker boundary not acknowledged"));
+		return;
+	}
 	// Registrations queued during a frame are admitted at the next boundary.
 	// Prepare/Step must never pick up an adapter that missed validation.
 	if (bCanonicalFrameActive) return;
@@ -679,6 +724,8 @@ void USpeedWorldSubsystem::AddComponent(ISpeedComponent& Comp)
 
 void USpeedWorldSubsystem::RemoveComponent(ISpeedComponent& Comp)
 {
+	if (!Comp.RetireInputProcessingOnWorker())
+	{ UE_LOG(LogTemp, Fatal, TEXT("Input processors must retire on the owning lane before adapter removal")); return; }
 	// Remove component from list
 	SimulationWorld.RemoveAdapter(Comp);
 
@@ -1355,6 +1402,75 @@ bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
 	return true;
 }
 
+bool USpeedWorldSubsystem::ServiceInputRetirementsAtBoundary()
+{
+	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
+		if (Component && !Component->ServiceInputRetirementAtBoundary()) return false;
+	return true;
+}
+
+bool USpeedWorldSubsystem::RetireInputProcessingOnWorker()
+{
+	bool Retired = true;
+	for (ISpeedComponent* Component : SimulationWorld.GetAdapters())
+		if (Component && !Component->RetireInputProcessingOnWorker()) Retired = false;
+	return Retired;
+}
+
+bool USpeedWorldSubsystem::NeutralizeCanonicalInputs(const Speed::Input::V2::FInputRegistryView& View)
+{
+	if (bCanonicalFrameActive) return false;
+	for (const auto& Session : View.Bindings)
+		for (const auto& Actor : Session.Actors)
+		{
+			ISpeedComponent* Match = nullptr;
+			for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+				if (Component && Component->GetPublishedSimulationStableId() == Actor.Id) { Match = Component; break; }
+			if (!Match || Actor.Generation != Actor.Id || !Match->NeutralizeCanonicalInputAtBoundary()) return false;
+		}
+	return true;
+}
+
+bool USpeedWorldSubsystem::InstallCanonicalInputs(const Speed::Input::V2::FRegistryFrame& Frame)
+{
+	if (!bCanonicalFrameActive || !Frame.Registry || Frame.Registry->Terminal) return false;
+	// Resolve every identity before the first install. Stable ids are monotonic
+	// for this world lifetime; generation equals that non-reused registration id.
+	TArray<TPair<ISpeedComponent*, std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>>> Installs;
+	for (const auto& Session : Frame.Inputs)
+	{
+		if (!Session.Snapshot || Session.Snapshot->Input.GetData().ConsumptionFrame != Frame.Frame) return false;
+		for (const auto& Actor : Session.Actors)
+		{
+			ISpeedComponent* Match = nullptr;
+			for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+				if (Component && Component->GetPublishedSimulationStableId() == Actor.Id) { Match = Component; break; }
+			if (!Match || Actor.Generation != Actor.Id) return false;
+			Installs.Emplace(Match, Session.Snapshot);
+		}
+	}
+	for (const auto& Install : Installs)
+		if (!Install.Key->InstallCanonicalInput(Frame.Frame, Install.Value)) return false;
+	return true;
+}
+
+bool USpeedWorldSubsystem::StageCanonicalScenarioInputs(const FCanonicalFrameContext& Context,
+	Speed::Input::V2::FInputSessionRegistry& Registry)
+{
+	if (!bCanonicalFrameActive) return false;
+	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+		if (Component && !Component->StageCanonicalScenarioInput(Context, Registry)) return false;
+	return true;
+}
+
+bool USpeedWorldSubsystem::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
+{
+	// BeginCanonicalFrame has already frozen/validated the active adapter view.
+	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+		if (Component && !Component->PrepareCanonicalInputs(Context)) return false;
+	return true;
+}
+
 void USpeedWorldSubsystem::PrepareCanonicalFrame(
 	const FCanonicalFrameContext& Context)
 {
@@ -1413,6 +1529,16 @@ void USpeedWorldSubsystem::NotifyCanonicalFramePublished(uint64 NumFrame)
 	SimulationWorld.NotifyCanonicalFramePublished(NumFrame);
 }
 
+ECanonicalPublicationResult USpeedWorldSubsystem::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
+{
+	return SimulationWorld.PublishCanonicalFrame(Frame, Publish);
+}
+
+void USpeedWorldSubsystem::AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept
+{
+	SimulationWorld.AbortCanonicalFrame(Frame, Reason);
+}
+
 FSimulationSnapshot USpeedWorldSubsystem::CaptureSimulationSnapshot(
 	const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation)
 {
@@ -1431,6 +1557,8 @@ bool USpeedWorldSubsystem::RestoreSimulationSnapshot(
 
 uint64 USpeedWorldSubsystem::GetSimulationStableId(const ISpeedComponent& Component)
 {
+	FScopedGameThreadAdapterAccess Access(GetWorld());
+	if (!Access.IsValid()) return 0;
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
 	return SimulationWorld.FindStableId(Component);
