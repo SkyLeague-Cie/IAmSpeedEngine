@@ -57,6 +57,17 @@ int main()
 {
 	{
 		using namespace Speed::Input::Windows;
+		SelectedFixture F({}, true); // No selected device is a rejected sink, not an SDK read failure.
+		auto Hub = std::make_shared<Speed::Input::V2::FRawAcquisitionJournal>(9);
+		FGameInputRawAcquisition Owner(std::move(F.Source), Hub);
+		Check(Owner.Pump() == ERawPumpResult::Neutralized, "unselected startup produces neutral baseline");
+		const auto Diagnostic = Owner.TakeNeutralizeDiagnostic();
+		Check(Diagnostic && Diagnostic->RawPollReject == FGameInputSelectedSource::ERawPollReject::Sink
+			&& Diagnostic->SinkReject == FGameInputRawAcquisition::ESinkReject::NoTicket,
+			"unselected startup names sink no-ticket instead of SDK failure");
+	}
+	{
+		using namespace Speed::Input::Windows;
 		using Speed::Input::V2::FRawAcquisitionJournal;
 		using Speed::Input::V2::ELifecycleResult;
 		SelectedFixture F({}, true); F.SelectPad();
@@ -84,6 +95,10 @@ int main()
 		Check(Resume && Resume->Changes.empty() && Resume->FinalState[0].Value == 1, "resume held without replay");
 		F.Api->BeforeReturn = [&] { F.Api->FireDevice(F.Pad.Get(), 2, false); };
 		Check(Owner.Pump() == ERawPumpResult::Neutralized, "hotplug invalidation reaches hub");
+		const auto HotplugDiagnostic = Owner.TakeNeutralizeDiagnostic();
+		Check(HotplugDiagnostic && HotplugDiagnostic->RawPollReject == FGameInputSelectedSource::ERawPollReject::CommitGate
+			&& HotplugDiagnostic->SinkReject == FGameInputRawAcquisition::ESinkReject::None,
+			"hotplug admission fence is distinguished from SDK reading and sink rejection");
 		const auto Neutral = Hub->Poll(3);
 		Check(Neutral && Neutral->Changes.empty() && Neutral->FinalState[0].Value == 0, "disconnect delivers neutral reset");
 		F.Api->FireDevice(F.Pad.Get(), 3, true); F.Api->Pad(F.Pad.Get(), 1, true, 7);
@@ -115,7 +130,9 @@ int main()
 			&& Canonical.Count == 20 && Canonical.Values[0].Value == 1 && Canonical.Values[19].Value == .5f, "standard gamepad canonical mapping");
 		const unsigned BeforeOverflow = Installs;
 		for (unsigned I = 0; I < 65; ++I) F.Api->Pad(F.Pad.Get(), 1, I % 2 == 0, 300 + I);
-		Check(!F.Source->PollRaw(6, Sink) && Installs == BeforeOverflow, "overflow installs no partial raw payload");
+		Check(!F.Source->PollRaw(6, Sink) && Installs == BeforeOverflow
+			&& F.Source->GetLastRawPollReject() == FGameInputSelectedSource::ERawPollReject::ReadBatch,
+			"SDK read overflow is distinguished from sink/commit rejection");
 		F.Api->Pad(F.Pad.Get(), 0, false, 400);
 		Check(F.Source->PollRaw(7, Sink) && Captured.Readings.Count == 1 && Captured.Readings.FreshBaseline, "overflow recovers only from fresh reading");
 		Check(F.Source->SetPaused(true) && !F.Source->PollRaw(8, Sink) && F.Source->SetPaused(false), "acquisition lifetime pause fences calls");

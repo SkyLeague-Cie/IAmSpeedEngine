@@ -19,10 +19,17 @@ class FGameInputRawAcquisition final : public V2::IInputAcquisition
 {
 public:
 	enum class ENeutralizeCause : std::uint8_t { FreshResumeReadRejected, PollRawRejected };
+	enum class ESinkReject : std::uint8_t
+	{
+		None, NoTicket, Disconnected, SequenceOverflow, GenerationOverflow,
+		DeviceIndexUnavailable, Canonicalization, JournalPublish
+	};
 	struct FNeutralizeDiagnostic
 	{
 		ENeutralizeCause Cause;
 		EPollStatus PollStatus;
+		FGameInputSelectedSource::ERawPollReject RawPollReject;
+		ESinkReject SinkReject;
 		std::uint64_t AcquisitionTick;
 		V2::FAcquisitionInvalidation Barrier;
 	};
@@ -40,19 +47,23 @@ public:
 		if (Tick == std::numeric_limits<std::uint64_t>::max()) return ERawPumpResult::Rejected;
 		const auto Ticket = Journal->BeginAcquisition();
 		if (Journal->NeedsFreshResume() && !Source->RequestFreshRawReading())
-			return Neutralize(Ticket, ENeutralizeCause::FreshResumeReadRejected);
+			return Neutralize(Ticket, ENeutralizeCause::FreshResumeReadRejected, ESinkReject::None);
 		bool HadData = false;
+		ESinkReject SinkReject = ESinkReject::None;
 		const bool Accepted = Source->PollRaw(++Tick, [&](const FGameInputSelectedSource::FSelectedRawBatch& Batch) noexcept
 		{
-			if (!Batch.Ticket || Batch.Status == EPollStatus::Disconnected) return false;
+			if (!Batch.Ticket) { SinkReject = ESinkReject::NoTicket; return false; }
+			if (Batch.Status == EPollStatus::Disconnected) { SinkReject = ESinkReject::Disconnected; return false; }
 			if (!Batch.Readings.Count) return true;
-			if (Sequence > std::numeric_limits<std::uint64_t>::max() - Batch.Readings.Count) return false;
+			if (Sequence > std::numeric_limits<std::uint64_t>::max() - Batch.Readings.Count)
+			{ SinkReject = ESinkReject::SequenceOverflow; return false; }
 			const bool Fresh = Batch.Readings.FreshBaseline || Neutral || !LastTicket
 				|| !SameTicket(*LastTicket, *Batch.Ticket);
-			if (Fresh && Generation == std::numeric_limits<std::uint64_t>::max()) return false;
+			if (Fresh && Generation == std::numeric_limits<std::uint64_t>::max())
+			{ SinkReject = ESinkReject::GenerationOverflow; return false; }
 			const auto NewGeneration = Generation + (Fresh ? 1 : 0);
 			const auto Id = DeviceIndex(Batch.Ticket->Device.Id);
-			if (!Id) return false;
+			if (!Id) { SinkReject = ESinkReject::DeviceIndexUnavailable; return false; }
 			Prepared.Count = Batch.Readings.Count;
 			for (std::size_t I = 0; I < Prepared.Count; ++I)
 			{
@@ -61,14 +72,16 @@ public:
 				R.Kind = Batch.Ticket->Kind == EDeviceKind::Keyboard ? V2::ERawDeviceKind::Keyboard : V2::ERawDeviceKind::Gamepad;
 				R.TimestampMicroseconds = Batch.Readings.States[I].TimestampMicroseconds;
 				R.FreshBaseline = Fresh && I == 0;
-				if (!Canonicalize(Batch.Readings.States[I], R.Kind, R.State)) return false;
+				if (!Canonicalize(Batch.Readings.States[I], R.Kind, R.State))
+				{ SinkReject = ESinkReject::Canonicalization; return false; }
 			}
-			if (!Journal->Publish(Ticket, Prepared)) return false;
+			if (!Journal->Publish(Ticket, Prepared))
+			{ SinkReject = ESinkReject::JournalPublish; return false; }
 			Sequence += Prepared.Count; Generation = NewGeneration; LastTicket = Batch.Ticket;
 			LastState = Prepared.Readings[Prepared.Count - 1]; Neutral = false; HadData = true;
 			return true;
 		});
-		if (!Accepted) return Neutralize(Ticket, ENeutralizeCause::PollRawRejected);
+		if (!Accepted) return Neutralize(Ticket, ENeutralizeCause::PollRawRejected, SinkReject);
 		return HadData ? ERawPumpResult::Installed : ERawPumpResult::NoChange;
 	}
 	std::optional<FNeutralizeDiagnostic> TakeNeutralizeDiagnostic()
@@ -86,10 +99,13 @@ public:
 		return !Source || Source->Shutdown();
 	}
 private:
-	ERawPumpResult Neutralize(V2::FAcquisitionTicket Ticket, ENeutralizeCause Cause)
+	ERawPumpResult Neutralize(V2::FAcquisitionTicket Ticket, ENeutralizeCause Cause, ESinkReject SinkReject)
 	{
 		if (Neutral && !Journal->NeedsFreshResume()) return ERawPumpResult::Neutralized;
-		LastNeutralizeDiagnostic = FNeutralizeDiagnostic{Cause, Source->GetLastPollStatus(), Tick,
+		LastNeutralizeDiagnostic = FNeutralizeDiagnostic{Cause, Source->GetLastPollStatus(),
+			Cause == ENeutralizeCause::PollRawRejected ? Source->GetLastRawPollReject()
+				: FGameInputSelectedSource::ERawPollReject::None,
+			SinkReject, Tick,
 			Journal->Invalidate()};
 		if (Sequence == std::numeric_limits<std::uint64_t>::max() || Generation == std::numeric_limits<std::uint64_t>::max())
 			return ERawPumpResult::Rejected;

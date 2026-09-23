@@ -40,8 +40,9 @@ public:
 		const auto Result = Source->Pump();
 		if (const auto Diagnostic = Source->TakeNeutralizeDiagnostic())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("Independent input acquisition neutralized; cause=%u poll_status=%u acquisition_tick=%llu session=%llu journal_serial=%llu barrier_before=%llu barrier_after=%llu"),
-				unsigned(Diagnostic->Cause), unsigned(Diagnostic->PollStatus), Diagnostic->AcquisitionTick,
+			UE_LOG(LogTemp, Warning, TEXT("Independent input acquisition neutralized; cause=%u poll_status=%u raw_reject=%u sink_reject=%u acquisition_tick=%llu session=%llu journal_serial=%llu barrier_before=%llu barrier_after=%llu"),
+				unsigned(Diagnostic->Cause), unsigned(Diagnostic->PollStatus),
+				unsigned(Diagnostic->RawPollReject), unsigned(Diagnostic->SinkReject), Diagnostic->AcquisitionTick,
 				Diagnostic->Barrier.Session, Diagnostic->Barrier.Serial,
 				Diagnostic->Barrier.BarrierBefore, Diagnostic->Barrier.BarrierAfter);
 		}

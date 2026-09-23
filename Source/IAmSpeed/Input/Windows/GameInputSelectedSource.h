@@ -14,6 +14,11 @@ class FGameInputSelectedSource final : public IInputProducer
 	using FLease = FGameInputDiscovery::FLease;
 	using FRequest = std::optional<std::pair<FDeviceId, EDeviceKind>>;
 public:
+	enum class ERawPollReject : std::uint8_t
+	{
+		None, AdmissionGate, Activity, Selection,
+		ReadBatch, CommitGate, Sink
+	};
 	struct FSelectedRawBatch
 	{
 		std::optional<FDeviceSelection> Ticket;
@@ -40,15 +45,21 @@ public:
 	template<class TSink> bool PollRaw(std::uint64_t AcquisitionTick, TSink&& Sink)
 	{
 		static_assert(std::is_nothrow_invocable_r_v<bool, TSink, const FSelectedRawBatch&>, "raw sink must return acceptance without throwing");
+		// Fail before entering Gate: a forbidden presentation callback must never
+		// wait for or reenter an in-progress acquisition. This path is not logged.
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
+		LastRawPollReject = ERawPollReject::None;
 		if (!RawMode || Stopping || bPaused || !AcquisitionTick
-			|| AcquisitionTick <= LastAcquisitionTick || FAILED(Discovery->GetLastError())) return false;
+			|| AcquisitionTick <= LastAcquisitionTick || FAILED(Discovery->GetLastError()))
+		{ LastRawPollReject = ERawPollReject::AdmissionGate; return false; }
 		LastAcquisitionTick = AcquisitionTick; PollAttempted = true;
-		if (Activity && !PollActivityLocked(AcquisitionTick)) return false;
+		if (Activity && !PollActivityLocked(AcquisitionTick))
+		{ LastRawPollReject = ERawPollReject::Activity; return false; }
 		if (HasPending)
 		{
-			if (!Discovery->Select(Pending)) { Discovery->FailAcquisition(E_FAIL); Status = EPollStatus::Failed; return false; }
+			if (!Discovery->Select(Pending))
+			{ Discovery->FailAcquisition(E_FAIL); Status = EPollStatus::Failed; LastRawPollReject = ERawPollReject::Selection; return false; }
 			HasPending = false;
 		}
 		const auto Lease = Discovery->AcquireSelected();
@@ -69,25 +80,37 @@ public:
 					|| Batch.Readings.Result.Status == EReadBatchStatus::Resynchronize)
 				{
 					if (FAILED(Error) && Error != GameInput::v3::GAMEINPUT_E_REFERENCE_READING_TOO_OLD && Error != GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED)
-					{ Discovery->FailAcquisition(Error); Status = EPollStatus::Failed; return false; }
+					{ Discovery->FailAcquisition(Error); Status = EPollStatus::Failed; LastRawPollReject = ERawPollReject::ReadBatch; return false; }
 					ResetReadingLocked(*Lease);
 					if (Error == GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED)
 						Disconnected = std::make_pair(Lease->Ticket.Device.Id, Lease->Ticket.Device.Revision);
 					// Resynchronization changes generation. Never relabel an old batch.
 					Status = Error == GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED ? EPollStatus::Disconnected : EPollStatus::Resynchronized;
+					LastRawPollReject = ERawPollReject::ReadBatch;
 					return false;
 				}
 				Batch.Status = Batch.Readings.Result.Status == EReadBatchStatus::Updated ? EPollStatus::Updated : EPollStatus::NoChange;
 			}
 		}
-		const bool Accepted = Discovery->CommitRaw(Lease, [&]() noexcept { return Sink(Batch); });
+		bool SinkCalled = false;
+		const bool Accepted = Discovery->CommitRaw(Lease, [&]() noexcept
+		{
+			SinkCalled = true;
+			return Sink(Batch);
+		});
 		if (!Accepted)
 		{
+			LastRawPollReject = SinkCalled ? ERawPollReject::Sink : ERawPollReject::CommitGate;
 			if (Lease) ResetReadingLocked(*Lease);
 			else { Cursor.Reset(); Active.reset(); }
 			Status = EPollStatus::Resynchronized; return false;
 		}
 		Status = Batch.Status; return true;
+	}
+	ERawPollReject GetLastRawPollReject() const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		return LastRawPollReject;
 	}
 	struct FPollObservation
 	{
@@ -355,6 +378,7 @@ private:
 	FRequest Pending;
 	bool HasPending = false, bPaused = false, Stopping = false;
 	EPollStatus Status = EPollStatus::NoChange;
+	ERawPollReject LastRawPollReject = ERawPollReject::None;
 	HRESULT Error = S_OK;
 };
 }
