@@ -172,6 +172,18 @@ struct FRegistryFrame
     std::shared_ptr<const FInputRegistryView> Registry;
     std::vector<FInstalledSessionInput> Inputs;
 };
+enum class ERegistryFrameFailure : std::uint8_t
+{ None, PrepareAdmission, SessionInactive, OwnerPoll, PrepareException, InstallAdmission, TokenInstall, SnapshotRead };
+struct FRegistryFrameFailure
+{
+    ERegistryFrameFailure Reason = ERegistryFrameFailure::None;
+    FFrameNumber Frame = 0;
+    std::uint64_t Session = 0, Epoch = 0, PollSerial = 0, RegistryVersion = 0;
+    EOwnerInputStatus OwnerStatus = EOwnerInputStatus::InvalidBinding;
+    EOwnerInputPhase OwnerPhase = EOwnerInputPhase::Quarantined;
+    EOwnerPollFailure PollFailure = EOwnerPollFailure::None;
+    bool OwnerPresent = false, OwnerStatusPresent = false;
+};
 
 // Portable owner endpoint. Its actor install/step hooks are explicit phases;
 // no claim of actual engine actor writes or world restoration is made here.
@@ -295,10 +307,14 @@ public:
     }
     bool PrepareFrame(FFrameNumber N)
     {
-        if (!IsWorker() || Terminal || Pending || Waiting || Replaying || Sessions.empty()) return false;
+        if (!IsWorker()) return false;
+        LastFrameFailure = {};
+        if (Terminal || Pending || Waiting || Replaying || Sessions.empty())
+        { RecordFrameFailure(ERegistryFrameFailure::PrepareAdmission, N); return false; }
         // Readiness is checked for ALL sessions before any source is touched.
         for (const auto& P : Sessions)
-            if (P.second.Phase != ESessionPhase::Active || !P.second.Owner) return false;
+            if (P.second.Phase != ESessionPhase::Active || !P.second.Owner)
+            { RecordFrameFailure(ERegistryFrameFailure::SessionInactive, N, &P.second); return false; }
         try
         {
             auto Frame = std::make_shared<FRegistryFrame>(); Frame->Frame = N; Frame->Registry = View;
@@ -306,30 +322,39 @@ public:
             for (auto& Pair : Sessions)
             {
                 auto& S = Pair.second;
-                if (S.Phase != ESessionPhase::Active || !S.Owner) { AbortFrame(); return false; }
+                if (S.Phase != ESessionPhase::Active || !S.Owner)
+                { RecordFrameFailure(ERegistryFrameFailure::SessionInactive, N, &S); AbortFrame(); return false; }
                 const bool Initial = S.Owner->HasInitialReceipt();
                 auto P = S.Owner->Poll(N);
-                if (!P.Token || P.Status != EOwnerInputStatus::Ready) { AbortFrame(); return false; }
+                if (!P.Token || P.Status != EOwnerInputStatus::Ready)
+                { RecordFrameFailure(ERegistryFrameFailure::OwnerPoll, N, &S, P.Status); AbortFrame(); return false; }
                 S.Token = std::move(P.Token);
                 Frame->Inputs.push_back({S.Description.Id, S.Description.Epoch, {}, S.Description.Actors, Initial, S.Owner->ReadPreparedFilterBefore()});
             }
             Pending = std::move(Frame); return true;
         }
-        catch (...) { AbortFrame(); return false; }
+        catch (...) { RecordFrameFailure(ERegistryFrameFailure::PrepareException, N); AbortFrame(); return false; }
     }
     bool InstallAll()
     {
-        if (!IsWorker() || !Pending || Installed || Begun) return false;
+        if (!IsWorker()) return false;
+        const auto N = Pending ? Pending->Frame : FFrameNumber{0};
+        LastFrameFailure = {};
+        if (!Pending || Installed || Begun)
+        { RecordFrameFailure(ERegistryFrameFailure::InstallAdmission, N); return false; }
         std::size_t I = 0;
         for (auto& Pair : Sessions)
         {
             auto& S = Pair.second;
-            if (!S.Token || !S.Owner->Install(*S.Token)) { AbortFrame(); return false; }
+            if (!S.Token || !S.Owner->Install(*S.Token))
+            { RecordFrameFailure(ERegistryFrameFailure::TokenInstall, N, &S); AbortFrame(); return false; }
             Pending->Inputs[I++].Snapshot = S.Owner->ReadInstalled(*S.Token);
-            if (!Pending->Inputs[I - 1].Snapshot) { AbortFrame(); return false; }
+            if (!Pending->Inputs[I - 1].Snapshot)
+            { RecordFrameFailure(ERegistryFrameFailure::SnapshotRead, N, &S); AbortFrame(); return false; }
         }
         Installed = true; return true;
     }
+    FRegistryFrameFailure ReadLastFrameFailure() const noexcept { return IsWorker() ? LastFrameFailure : FRegistryFrameFailure{}; }
     std::shared_ptr<const FRegistryFrame> ReadInstalled() const
     { return IsWorker() && Installed && !Terminal ? Pending : nullptr; }
     bool BeginAll()
@@ -456,6 +481,16 @@ private:
         std::uint64_t ResumeGeneration = 0;
         std::uint64_t AcquisitionFence = 0;
     };
+    void RecordFrameFailure(ERegistryFrameFailure Reason, FFrameNumber Frame,
+        const FSession* Session = nullptr, EOwnerInputStatus Status = EOwnerInputStatus::InvalidBinding) noexcept
+    {
+        const auto* Owner = Session ? Session->Owner.get() : nullptr;
+        LastFrameFailure = {Reason, Frame, Session ? Session->Description.Id : 0,
+            Session ? Session->Description.Epoch : 0, Owner ? Owner->GetPollSerial() : 0,
+            View ? View->Version : 0, Status, Owner ? Owner->GetPhase() : EOwnerInputPhase::Quarantined,
+            Owner ? Owner->GetLastPollFailure() : EOwnerPollFailure::None,
+            Owner != nullptr, Owner != nullptr && Reason == ERegistryFrameFailure::OwnerPoll};
+    }
     bool IsWorker() const noexcept { return std::this_thread::get_id() == Worker; }
     void PublishView(std::shared_ptr<FInputRegistryView> Next)
     {
@@ -642,6 +677,7 @@ private:
     std::size_t ReplayIndex = 0;
     std::optional<std::uint64_t> Waiting;
     bool Terminal = false, Installed = false, Begun = false, Replaying = false;
+    FRegistryFrameFailure LastFrameFailure{};
     std::uint64_t Constructed = 0, Destroyed = 0;
 };
 }

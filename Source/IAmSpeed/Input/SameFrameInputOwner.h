@@ -12,6 +12,11 @@ enum class EOwnerInputStatus : std::uint8_t
     ResyncRequired, Quarantined, Exhausted, InvalidToken, ReplayComplete
 };
 enum class EOwnerInputPhase : std::uint8_t { Idle, Prepared, Installed, Stepping, Paused, Quarantined };
+enum class EOwnerPollFailure : std::uint8_t
+{
+    None, ReplayHistory, MissingFence, FreezeCutoff, Produce, CutoffMismatch,
+    CloseCutoff, InvalidFrame, Continuity, ReplayMismatch, Exception
+};
 struct FInputProcessingPolicy
 {
     // Zero means direct. Nonzero means maximum quantized change in this step.
@@ -91,6 +96,7 @@ public:
     FPreparation Poll(FFrameNumber N)
     {
         if (!IsOwner()) return {EOwnerInputStatus::WrongOwner, {}};
+        LastPollFailure = EOwnerPollFailure::None;
         if (FPresentationInputScope::IsActive()) return {EOwnerInputStatus::Busy, {}};
         if (CallingSource) { Quarantine(); return {EOwnerInputStatus::Quarantined, {}}; }
         if (Phase == EOwnerInputPhase::Quarantined) return {EOwnerInputStatus::Quarantined, {}};
@@ -112,14 +118,14 @@ public:
             {
                 const auto& Saved = History[N % HistoryCapacity];
                 if (!Saved || Saved->Snapshot->Input.GetData().ConsumptionFrame != N)
-                    return Reject(EOwnerInputStatus::ResyncRequired);
+                { LastPollFailure = EOwnerPollFailure::ReplayHistory; return Reject(EOwnerInputStatus::ResyncRequired); }
                 Input = Saved->Snapshot->Input;
             }
             else
             {
                 CallingSource = true;
 			auto* Fence = Source->PollFence();
-			if (!Fence) { CallingSource = false; return Reject(EOwnerInputStatus::ResyncRequired); }
+			if (!Fence) { CallingSource = false; LastPollFailure = EOwnerPollFailure::MissingFence; return Reject(EOwnerInputStatus::ResyncRequired); }
                 std::optional<FInputPollCutoff> Cutoff;
                 bool ValidCutoff = false;
                 try
@@ -133,20 +139,28 @@ public:
                             && Input->GetData().DeviceGeneration.Value == Cutoff->Generation;
                     }
                 }
-                catch (...) { ValidCutoff = false; }
+                catch (...) { ValidCutoff = false; LastPollFailure = EOwnerPollFailure::Exception; }
                 const bool ClosedValid = Fence->CloseFrozenCutoff(Cutoff.value_or(FInputPollCutoff{}));
                 ValidCutoff = ValidCutoff && ClosedValid;
                 CallingSource = false;
                 if (Phase == EOwnerInputPhase::Quarantined) return {EOwnerInputStatus::Quarantined, {}};
-                if (!ValidCutoff) return Reject(EOwnerInputStatus::ResyncRequired);
+                if (!ValidCutoff)
+                {
+                    if (LastPollFailure == EOwnerPollFailure::None)
+                        LastPollFailure = !Cutoff || !Cutoff->Sequence || !Cutoff->Generation || !Cutoff->LifecycleFence
+                            ? EOwnerPollFailure::FreezeCutoff : !Input ? EOwnerPollFailure::Produce
+                            : !ClosedValid ? EOwnerPollFailure::CloseCutoff : EOwnerPollFailure::CutoffMismatch;
+                    return Reject(EOwnerInputStatus::ResyncRequired);
+                }
             }
             if (!Input || !Input->IsValidFor(*Binding.Contract) || !ValidateAddress(*Input, N))
-                return Reject(EOwnerInputStatus::ResyncRequired);
-            if (!Replay && !ValidateContinuity(*Input)) return Reject(EOwnerInputStatus::ResyncRequired);
+            { LastPollFailure = EOwnerPollFailure::InvalidFrame; return Reject(EOwnerInputStatus::ResyncRequired); }
+            if (!Replay && !ValidateContinuity(*Input))
+            { LastPollFailure = EOwnerPollFailure::Continuity; return Reject(EOwnerInputStatus::ResyncRequired); }
             const auto Before = Filter ? (Replay ? Filter->Replay : Filter->Applied) : FActionValues{};
             const auto Processed = Process(*Input, Before);
             if (Replay && Processed != History[N % HistoryCapacity]->Snapshot->Applied)
-                return Reject(EOwnerInputStatus::ResyncRequired);
+            { LastPollFailure = EOwnerPollFailure::ReplayMismatch; return Reject(EOwnerInputStatus::ResyncRequired); }
             auto Snapshot = std::make_shared<const FOwnerInputSnapshot>(FOwnerInputSnapshot{
                 *Input, Fingerprint, Input->GetData().Values, Processed, Input->GetData().SourceSequence});
             auto Receipt = std::make_shared<const FOwnerInputReceipt>(FOwnerInputReceipt{
@@ -157,7 +171,7 @@ public:
             Phase = EOwnerInputPhase::Prepared;
             return {EOwnerInputStatus::Ready, FToken(Pending->Identity)};
         }
-        catch (...) { CallingSource = false; return Reject(EOwnerInputStatus::ResyncRequired); }
+        catch (...) { CallingSource = false; LastPollFailure = EOwnerPollFailure::Exception; return Reject(EOwnerInputStatus::ResyncRequired); }
     }
 
     // All storage was reserved by Poll. Installed input is immutable, visible
@@ -343,6 +357,7 @@ public:
     EOwnerInputPhase GetPhase() const noexcept { return IsOwner() ? Phase : EOwnerInputPhase::Quarantined; }
     FFrameNumber GetNextFrame() const noexcept { return IsOwner() ? NextFrame : UINT64_MAX; }
     std::uint64_t GetPollSerial() const noexcept { return IsOwner() ? PollSerial : 0; }
+    EOwnerPollFailure GetLastPollFailure() const noexcept { return IsOwner() ? LastPollFailure : EOwnerPollFailure::None; }
     FContractFingerprint GetBindingFingerprint() const { return IsOwner() ? Fingerprint : FContractFingerprint{}; }
 
 private:
@@ -451,6 +466,7 @@ private:
     FFrameNumber NextFrame = 0;
     std::uint64_t PollSerial = 0;
     std::uint64_t FaultSerial = 0;
+    EOwnerPollFailure LastPollFailure = EOwnerPollFailure::None;
     static std::unique_ptr<FFilterState> MakeFilter(const IInputProducer* P)
     { return P->GetProducerContract() == EProducerContract::Device ? std::make_unique<FFilterState>() : nullptr; }
     std::unique_ptr<FFilterState> Filter;

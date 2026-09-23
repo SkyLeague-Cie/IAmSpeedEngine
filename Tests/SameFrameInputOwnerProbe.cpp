@@ -59,7 +59,7 @@ static std::vector<VFrame> Timeline(const std::shared_ptr<const FInputActionCont
 class FFencedFixture final : public VProducer, public IInputProducerPollFence
 {
 public:
-    IInputProducerPollFence* PollFence() noexcept override { return this; }
+    IInputProducerPollFence* PollFence() noexcept override { return FenceAvailable ? this : nullptr; }
     bool SupportsPollFence() const noexcept override { return true; }
     EProducerContract GetProducerContract() const noexcept override { return EProducerContract::Device; }
     FFencedFixture(std::shared_ptr<const FInputActionContract> C, std::vector<VFrame> F)
@@ -74,7 +74,7 @@ public:
     std::function<VFrame(VFrame)> Alter;
     unsigned Polls = 0, Freezes = 0;
     ELifecycleResult Lifecycle = ELifecycleResult::Unaffected;
-    bool Closed = false;
+    bool Closed = false, FenceAvailable = true, DropProduce = false;
     const std::shared_ptr<const FInputActionContract>& GetContract() const override
     { if (OnContract) OnContract(); return Contract; }
     std::optional<FInputPollCutoff> FreezeForOwner(FFrameNumber N) override
@@ -85,7 +85,7 @@ public:
         return {};
     }
     std::optional<VFrame> Produce(FFrameNumber N) override
-    { ++Polls; if (OnProduce) OnProduce(); auto F = Source->Produce(N); if (F && Alter) return Alter(*F); return F; }
+    { ++Polls; if (OnProduce) OnProduce(); if (DropProduce) return {}; auto F = Source->Produce(N); if (F && Alter) return Alter(*F); return F; }
     bool CloseFrozenCutoff(const FInputPollCutoff& C) noexcept override
     { if (OnClose) OnClose(); const bool Valid = Frozen && C.Sequence == Frozen->Sequence && !Closed; Frozen.reset(); return Valid; }
     ELifecycleResult SetLifecyclePaused(bool) override { return Lifecycle; }
@@ -180,6 +180,9 @@ static void FailuresAndLifecycle()
           if (Kind == 2) ++Data.Producer.Id; if (Kind == 3) ++Data.SourceSequence; if (Kind == 4) Data.Reset = false; return VFrame(C, Data); };
         auto A = FSameFrameInputOwner::Create(std::move(X), Bind(C), 10);
         Check(A->Poll(10).Status == EOwnerInputStatus::ResyncRequired && !A->ReadLatest(), "bad address epoch producer cutoff baseline fail closed");
+        const auto Expected = Kind == 3 ? EOwnerPollFailure::CutoffMismatch
+            : Kind == 4 ? EOwnerPollFailure::Continuity : EOwnerPollFailure::InvalidFrame;
+        Check(A->GetLastPollFailure() == Expected, "bad evidence reason captured before quarantine");
     }
     auto Policy = Bind(C); Policy.Processing.Step[Jump] = 1;
     Check(!FSameFrameInputOwner::Create(std::make_unique<FFencedFixture>(C, Timeline(C)), Policy, 10), "Boolean smoothing rejected");
@@ -205,6 +208,19 @@ static void ReentrancyAndRecovery()
     Check(O->RebindAtBoundary(std::move(BadClose),Bind(C,4),10), "replace bound producer");
     BC->OnClose = [BC] { BC->Closed = true; };
     Check(O->Poll(10).Status == EOwnerInputStatus::ResyncRequired, "lifecycle invalidation at atomic cutoff close rejects");
+    Check(O->GetLastPollFailure() == EOwnerPollFailure::CloseCutoff && !O->ReadLatest(), "close failure reason and no publication");
+    auto Missing = std::make_unique<FFencedFixture>(C, Timeline(C)); auto* MissingRaw = Missing.get();
+    auto MissingOwner = FSameFrameInputOwner::Create(std::move(Missing), Bind(C), 10);
+    MissingRaw->FenceAvailable = false;
+    Check(MissingOwner->Poll(10).Status == EOwnerInputStatus::ResyncRequired
+        && MissingOwner->GetLastPollFailure() == EOwnerPollFailure::MissingFence
+        && MissingRaw->Polls == 0 && !MissingOwner->ReadLatest(), "missing fence reason without producer poll");
+    auto Empty = std::make_unique<FFencedFixture>(C, Timeline(C)); auto* EmptyRaw = Empty.get();
+    auto EmptyOwner = FSameFrameInputOwner::Create(std::move(Empty), Bind(C), 10);
+    EmptyRaw->DropProduce = true;
+    Check(EmptyOwner->Poll(10).Status == EOwnerInputStatus::ResyncRequired
+        && EmptyOwner->GetLastPollFailure() == EOwnerPollFailure::Produce
+        && EmptyRaw->Polls == 1 && !EmptyOwner->ReadLatest(), "empty producer reason without publication");
 }
 
 // A source-local inbox with a real mutex-frozen evidence snapshot. Appending is
@@ -281,6 +297,7 @@ static void CutoffConcurrency()
     for (std::size_t I = 0; I <= MaxEdges; ++I) Inbox->Append(Jump,(I % 2)==0);
     const auto Polls = Inbox->Polls;
     Check(O->Poll(4).Status == EOwnerInputStatus::ResyncRequired && Inbox->Polls == Polls && !O->ReadLatest(), "overflow fail closed before producer poll");
+    Check(O->GetLastPollFailure() == EOwnerPollFailure::FreezeCutoff, "failed freeze reason captured before quarantine");
 }
 static void BoundariesAndMalformedEvidence()
 {
@@ -302,6 +319,7 @@ static void BoundariesAndMalformedEvidence()
     auto Q = FSameFrameInputOwner::Create(std::move(P),Bind(C),10); Step(*Q,10);
     Check(Q->PauseAtBoundary() && Q->ResumeAtBoundary(), "fresh required fixture boundary");
     Check(Q->Poll(11).Status == EOwnerInputStatus::ResyncRequired && Observe->Polls == 2, "ordinary nonbaseline after resume refused");
+    Check(Q->GetLastPollFailure() == EOwnerPollFailure::Continuity, "resume continuity reason captured");
     for (int Kind = 0; Kind < 4; ++Kind)
     {
         auto S = std::make_unique<FFencedFixture>(C,Timeline(C)); auto* Source = S.get();
@@ -316,12 +334,15 @@ static void BoundariesAndMalformedEvidence()
             return VFrame(C,D);
         };
         Check(T->Poll(11).Status == EOwnerInputStatus::ResyncRequired && !T->ReadCompleted(11), "ordinal value fingerprint generation invalid");
+        Check(T->GetLastPollFailure() == (Kind == 3 ? EOwnerPollFailure::CutoffMismatch : EOwnerPollFailure::InvalidFrame),
+            "malformed evidence reason and no completed frame");
     }
     auto AllocSource = std::make_unique<FFencedFixture>(C,Timeline(C)); auto* ObserveAlloc = AllocSource.get();
     auto A = FSameFrameInputOwner::Create(std::move(AllocSource),Bind(C),10);
     FailAllocations = true; auto Failed = A->Poll(10); FailAllocations = false;
     Check(Failed.Status == EOwnerInputStatus::ResyncRequired && ObserveAlloc->Polls == 1
         && !A->ReadLatest() && A->GetNextFrame() == 10, "allocation failure after poll quarantines no rewind or publish");
+    Check(A->GetLastPollFailure() == EOwnerPollFailure::Exception, "allocation failure reason captured");
     auto E = FSameFrameInputOwner::Create(std::make_unique<FFencedFixture>(C,Timeline(C)),Bind(C),10);
     auto Pending = E->Poll(10); FSameFrameInputOwner::FToken Forged;
     Check(!E->Install(Forged) && !E->PauseAtBoundary() && !E->BeginReplay(10,10), "forged capability and active boundary changes refused");

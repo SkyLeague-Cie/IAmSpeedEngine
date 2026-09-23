@@ -54,6 +54,7 @@ static std::shared_ptr<const FRegistryFrame> Step(FInputSessionRegistry& R, FFra
 {
     Check(R.PrepareFrame(N),"prepare once"); Check(!R.PrepareFrame(N),"cannot repoll pending");
     Check(!R.BeginAll(),"cannot begin before install"); Check(R.InstallAll(),"install all");
+    Check(R.ReadLastFrameFailure().Reason == ERegistryFrameFailure::None, "successful install resets prior admission diagnostic");
     const auto F=R.ReadInstalled(); Check(F && F->Frame==N,"same frame installed");
     Check(R.BeginAll() && R.ValidateComplete() && R.CompleteAll(),"group complete");
     return F;
@@ -100,6 +101,8 @@ int main()
         Check(Queue->Submit(Pause)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"AI pause clears pending decision");
         Check(Queue->Read(2)->Sessions[0].Phase==ESessionPhase::Paused,"AI PauseAll receipt reports genuinely paused owner");
         Check(!Registry.PrepareFrame(4),"paused AI cannot poll or step");
+        Check(Registry.ReadLastFrameFailure().Reason == ERegistryFrameFailure::SessionInactive,
+            "paused session reported before any source poll");
         auto ResumeAI=Command(3,1,EBoundaryOperation::Resume); ResumeAI.Session=ResumeAI.Epoch=ResumeAI.ResumeGeneration=1;
         Check(Queue->Submit(ResumeAI)==ECommandAdmission::Enqueued && Registry.ServiceBoundary(),"AI controller Resume command serviced");
         Check(Queue->Read(3)->Status==EBoundaryStatus::Applied,"AI Resume is applied rather than rejected");
@@ -243,6 +246,9 @@ int main()
     Check(!R.BeginRetainedReplay(0,2,{{10,2},{11,1}}),"replay refuses wrong actor generation");
     Check(R.BeginRetainedReplay(0,2,{{10,1},{11,1}}),"historical registry input replay admitted");
     Check(!R.PrepareFrame(3),"no live frame during replay");
+    Check(R.ReadLastFrameFailure().Reason == ERegistryFrameFailure::PrepareAdmission
+        && !R.ReadLastFrameFailure().OwnerPresent && !R.ReadLastFrameFailure().OwnerStatusPresent,
+        "replay admission reason has no invented owner status");
     for (unsigned N=0;N<3;++N) { const auto Replay=R.NextRetainedReplay(); Check(Replay && Replay->Frame==N,"replay frame order"); Check(Replay->Inputs[0].Snapshot->Applied==Replay->Inputs[0].Snapshot->Requested,"replay exact"); }
     Check(R.EndRetainedReplay() && R.PollCount(1)==Polls,"replay never polls live producer");
     {
@@ -282,6 +288,15 @@ int main()
         auto Other=Command(5,1); Other.Binding=Device(2);
         Check(Q2->Submit(Other)==ECommandAdmission::Enqueued && I.ServiceBoundary(),"duplicate journal command serviced");
         Check(Q2->Read(5)->Status==EBoundaryStatus::Rejected && I.ConstructionCount()==1,"one raw journal cannot feed two mutable producer cursors");
+        J->Invalidate();
+        Check(!I.PrepareFrame(2) && !I.ReadLatest() && I.ReadRegistry()->Terminal,
+            "invalidation before physical poll aborts without publishing frame two");
+        const auto Failure = I.ReadLastFrameFailure();
+        Check(Failure.Reason == ERegistryFrameFailure::OwnerPoll && Failure.Frame == 2
+            && Failure.Session == 1 && Failure.Epoch == 1 && Failure.OwnerPresent && Failure.OwnerStatusPresent
+            && Failure.OwnerStatus == EOwnerInputStatus::ResyncRequired
+            && Failure.PollFailure == EOwnerPollFailure::FreezeCutoff,
+            "owner-poll failure copied before abort/quarantine");
     }
     {
         auto Q2=std::make_shared<FInputSessionCommands>(); auto J=std::make_shared<FRawAcquisitionJournal>(7);
@@ -341,6 +356,9 @@ int main()
         Check(Receipt->Status==EBoundaryStatus::TerminalFailure && Receipt->Sessions.size()==2
             && Receipt->Sessions[0].Phase==ESessionPhase::Paused && Receipt->Sessions[1].Phase==ESessionPhase::CancelPending,"partial pause ledger records reached phases");
         Check(!I.PrepareFrame(1) && !I.ReadLatest() && I.ReadRegistry()->Terminal,"no old active registry or gameplay after failure");
+        Check(I.ReadLastFrameFailure().Reason == ERegistryFrameFailure::PrepareAdmission
+            && !I.ReadLastFrameFailure().OwnerPresent && !I.ReadLastFrameFailure().OwnerStatusPresent,
+            "preexisting terminal rejects admission without invented owner status");
     }
     {
         // Same next axes after different prior histories, no filter state or ramp.

@@ -798,9 +798,28 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			ExceptionStage = TEXT("ScenarioInputs");
 			if (!SpeedWorldSubsystem->StageCanonicalScenarioInputs(Context, *InputSessionRegistry))
 				throw std::runtime_error("canonical scenario authoring rejected");
-			ExceptionStage = TEXT("InputPrepareAndInstall");
-			if (!InputSessionRegistry->PrepareFrame(Context.NumFrame) || !InputSessionRegistry->InstallAll())
-				throw std::runtime_error("canonical input polling rejected");
+			ExceptionStage = TEXT("InputPrepareFrame");
+			if (!InputSessionRegistry->PrepareFrame(Context.NumFrame))
+			{
+				const auto Failure = InputSessionRegistry->ReadLastFrameFailure();
+                UE_LOG(LogTemp, Error, TEXT("[CanonicalInputPollRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
+                    Context.NumFrame, unsigned(Failure.Reason), Failure.Session, Failure.Epoch,
+                    unsigned(Failure.OwnerPresent), unsigned(Failure.OwnerStatusPresent),
+                    unsigned(Failure.OwnerStatus), unsigned(Failure.OwnerPhase), unsigned(Failure.PollFailure),
+					Failure.PollSerial, Failure.RegistryVersion);
+				throw std::runtime_error("canonical input preparation rejected");
+			}
+			ExceptionStage = TEXT("InputInstallAll");
+			if (!InputSessionRegistry->InstallAll())
+			{
+				const auto Failure = InputSessionRegistry->ReadLastFrameFailure();
+                UE_LOG(LogTemp, Error, TEXT("[CanonicalInputInstallRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
+                    Context.NumFrame, unsigned(Failure.Reason), Failure.Session, Failure.Epoch,
+                    unsigned(Failure.OwnerPresent), unsigned(Failure.OwnerStatusPresent),
+                    unsigned(Failure.OwnerStatus), unsigned(Failure.OwnerPhase), unsigned(Failure.PollFailure),
+					Failure.PollSerial, Failure.RegistryVersion);
+				throw std::runtime_error("canonical input installation rejected before world binding");
+			}
 			ExceptionStage = TEXT("InputSnapshotInstall");
 			const auto Installed = InputSessionRegistry->ReadInstalled();
 			if (!Installed || !SpeedWorldSubsystem->InstallCanonicalInputs(*Installed) || !InputSessionRegistry->BeginAll())
