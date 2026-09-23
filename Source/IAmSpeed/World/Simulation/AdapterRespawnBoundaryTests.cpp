@@ -33,6 +33,10 @@ bool FIAmSpeedAdapterRespawnBoundaryTest::RunTest(const FString&)
     auto* FirstComponent = Cast<USpeedWheeledComponent>(First->GetVehicleMovement());
     if (!TestNotNull(TEXT("first wheeled adapter"), FirstComponent)) return false;
     FirstComponent->SetOwner(First);
+    First->DispatchBeginPlay();
+    if (!TestTrue(TEXT("first actor began play before teardown"), First->HasActorBegunPlay())
+        || !TestTrue(TEXT("first adapter registered before teardown"), FirstComponent->IsRegistered())
+        || !TestTrue(TEXT("first adapter began play before teardown"), FirstComponent->HasBegunPlay())) return false;
     // The V2 authority flag follows the real controller path even when the
     // registry view is empty after its old Bind has been detached.
     if (!TestTrue(TEXT("first car claims neutral V2 authority"), First->SetFrameInputStreamV2(nullptr))) return false;
