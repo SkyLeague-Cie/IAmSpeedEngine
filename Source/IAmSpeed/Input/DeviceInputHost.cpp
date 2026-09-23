@@ -66,8 +66,20 @@ FStreamEpoch AllocateInputStreamEpoch()
 std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostConfig& Config)
 {
 #if PLATFORM_WINDOWS && !UE_SERVER
-	if (!Config.Contract || !FActionMapper::SupportsContract(*Config.Contract))
-	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract")); return {}; }
+	if (!Config.Contract)
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract missing")); return {}; }
+	if (const auto Unsupported = FActionMapper::UnsupportedContract(*Config.Contract))
+	{
+		const auto* Action = Config.Contract->Find(Unsupported->Action);
+		const FString Name = Action ? UTF8_TO_TCHAR(Action->Name.c_str()) : TEXT("<unknown>");
+		if (Unsupported->Reason == FActionMapper::EUnsupportedContractReason::MouseButton)
+			UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract action=%u name=%s unsupported_kind=MouseButton device_host=keyboard_gamepad_only"),
+				unsigned(Unsupported->Action), *Name);
+		else
+			UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract action=%u name=%s unsupported_response_exponent=%.9g"),
+				unsigned(Unsupported->Action), *Name, double(Unsupported->Exponent));
+		return {};
+	}
 	if (!FDeviceActivityPolicy::ValidConfig(Config.Activity))
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: device_policy")); return {}; }
 	if (Config.Cadence.count() <= 0 || Config.Cadence > std::chrono::seconds(1))

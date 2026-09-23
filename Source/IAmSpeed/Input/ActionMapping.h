@@ -22,18 +22,29 @@ struct FMappingResult
 class FActionMapper final
 {
 public:
+	enum class EUnsupportedContractReason : std::uint8_t { Exponent, MouseButton };
+	struct FUnsupportedContract
+	{
+		EUnsupportedContractReason Reason;
+		FActionId Action;
+		float Exponent = 0;
+	};
 	// A structurally valid A1 contract may describe a response this mapper
 	// deliberately does not implement. Do not silently approximate its curve.
-	static bool SupportsContract(const FInputActionContract& Candidate)
+	static std::optional<FUnsupportedContract> UnsupportedContract(const FInputActionContract& Candidate)
 	{
 		for (const auto& A : Candidate.GetDescription().Actions)
-			if (A.Exponent != 1.0f && A.Exponent != 2.0f) return false;
+			if (A.Exponent != 1.0f && A.Exponent != 2.0f)
+				return FUnsupportedContract{EUnsupportedContractReason::Exponent, A.Id, A.Exponent};
 		// Desktop metadata can be imported before its versioned contribution and
 		// lifecycle envelope is integrated. Never activate it by losing provenance.
 		for (const auto& B : Candidate.GetDescription().Mapping)
-			if (B.Control.Kind == ERawControlKind::MouseButton) return false;
-		return true;
+			if (B.Control.Kind == ERawControlKind::MouseButton)
+				return FUnsupportedContract{EUnsupportedContractReason::MouseButton, B.Action};
+		return std::nullopt;
 	}
+	static bool SupportsContract(const FInputActionContract& Candidate)
+	{ return !UnsupportedContract(Candidate); }
 	static std::unique_ptr<FActionMapper> Create(std::shared_ptr<const FInputActionContract> Candidate,
 		FStreamEpoch InEpoch, FProducerIdentity InProducer, FFrameNumber FirstFrame = 0)
 	{

@@ -69,6 +69,9 @@ int main()
 		auto D = Definition(); D.Mapping.push_back({{ERawControlKind::MouseButton, 1}, 3, 1});
 		const auto DesktopContract = FInputActionContract::Create(D);
 		Check(bool(DesktopContract), "mouse mapping metadata is structurally representable");
+		const auto MouseReason = FActionMapper::UnsupportedContract(*DesktopContract);
+		Check(MouseReason && MouseReason->Reason == FActionMapper::EUnsupportedContractReason::MouseButton
+			&& MouseReason->Action == 3, "mouse host refusal identifies the exact game action");
 		Check(!FActionMapper::Create(DesktopContract, {1}, {EProducerKind::Device, 9}),
 			"mouse contract cannot activate until action-aware Desktop lifecycle integration");
 		const auto KeyboardContract = FInputActionContract::Create(Definition());
@@ -236,6 +239,10 @@ int main()
 		Check(bool(Unsupported), "A1 structure accepts broader response domain");
 		Check(!FActionMapper::SupportsContract(*Unsupported)
 			&& !FActionMapper::Create(Unsupported, {1}, {EProducerKind::Device, 9}), "unsupported curve rejected before acquisition");
+		const auto CurveReason = FActionMapper::UnsupportedContract(*Unsupported);
+		Check(CurveReason && CurveReason->Reason == FActionMapper::EUnsupportedContractReason::Exponent
+			&& CurveReason->Action == 2 && CurveReason->Exponent == Exponent,
+			"unsupported response identifies its action and exact exponent");
 		FActionMapper Direct(Unsupported, {1}, {EProducerKind::Device, 9});
 		for (unsigned I = 0; I < 2; ++I)
 			Check(Direct.Map(A, 0).Status == EMappingStatus::InvalidConfiguration, "direct configuration remains invalid without consuming frame");
