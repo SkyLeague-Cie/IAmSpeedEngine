@@ -137,13 +137,20 @@ bool ASpeedController::ServiceInputSessionV2()
 				Session->Session, GFrameCounter, unsigned(Batch.HistoryStatus), unsigned(Batch.NeedsBaselineBeforeRead),
 				Batch.PreviousSerial, Batch.LatestSerial, static_cast<unsigned long long>(Speed::Input::V2::FRawAcquisitionJournal::Capacity),
 				Batch.ControlBarrier, Batch.BaselineSerial, unsigned(Batch.RingOverflow), unsigned(Batch.InvalidationBarrier));
+		const bool bPausedAtBatchStart = IsPaused();
 		for (const auto& Request : Batch.Requests)
 		{
 			if (InputSessionV2 != Session || Session->Closed) break;
 			if (Request.Session != Session->Session) { bInputLifecycleFault = true; return false; }
 			if (Request.State == Speed::Input::V2::EStateAction::Started)
 			{
-				const auto Result = ExecuteInputControlV2(Request);
+				// The menu owns input while UE is paused. A batch can contain both
+				// Pause and a gameplay command, so preserve the entry state as well
+				// as checking whether an earlier request paused this same batch.
+				const bool bGameplaySuppressed = Request.Command != Speed::Input::V2::EControlCommand::Pause
+					&& (bPausedAtBatchStart || IsPaused());
+				const auto Result = bGameplaySuppressed
+					? Speed::Input::V2::EControlApplication::Rejected : ExecuteInputControlV2(Request);
 				if (!ControlReceiptsV2.Record(Request, Result)) { bInputLifecycleFault = true; return false; }
 			}
 		}
