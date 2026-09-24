@@ -2,6 +2,7 @@
 #include "IAmSpeed/Input/Windows/GameInputCallbackReadings.h"
 #include "IAmSpeed/Input/Windows/GameInputSelectedSource.h"
 #include "IAmSpeed/Input/Windows/GameInputRawAcquisition.h"
+#include "IAmSpeed/Input/ActionMapping.h"
 
 using Speed::Input::Windows::FGameInputCallbackReadCursor;
 
@@ -139,6 +140,28 @@ int main()
 	Check(Physical && Physical->Changes.size() == 2 && Physical->Changes[0].State.Value == 1
 		&& Physical->Changes[1].State.Value == 0 && Physical->FinalState[0].Value == 0,
 		"brief press and release retain two exact physical transitions");
+	{
+		using namespace Speed::Input::V2;
+		FInputActionContractDescription Definition;
+		Definition.Revision = {1}; Definition.Actions = FInputActionContract::BaseActions();
+		FActionDefinition Jump; Jump.Id = 3; Jump.Owner = "Fixture"; Jump.Name = "Jump";
+		Jump.Wiring = EActionWiring::Wired; Definition.Actions.push_back(Jump);
+		Definition.Mapping = {{{ERawControlKind::PadButton, static_cast<std::uint16_t>(EPadButton::South)}, 3, 1}};
+		Definition.Physical = {{0, EPhysicalDestination::Throttle}, {1, EPhysicalDestination::Brake},
+			{2, EPhysicalDestination::Steering}};
+		auto Contract = FInputActionContract::Create(Definition);
+		Check(bool(Contract), "callback action contract");
+		auto Mapper = FActionMapper::Create(Contract, {1}, {Speed::Input::EProducerKind::Device, 7});
+		Check(bool(Mapper) && bool(Mapper->Map(*Baseline, 0).Frame), "callback baseline maps on physical frame");
+		const auto Mapped = Mapper->Map(*Physical, 1);
+		Check(Mapped.Frame && Mapped.Frame->GetData().Values[3] == 0
+			&& Mapped.Frame->GetData().Transitions.size() == 2
+			&& Mapped.Frame->GetData().Transitions[0].Action == 3
+			&& Mapped.Frame->GetData().Transitions[0].State == ETransition::Started
+			&& Mapped.Frame->GetData().Transitions[1].Action == 3
+			&& Mapped.Frame->GetData().Transitions[1].State == ETransition::Completed,
+			"callback short tap maps to Started and Completed in one physical frame");
+	}
 	Check(Owner.Close(), "callback registration closed with acquisition owner");
 	ComPtr<CallbackApi> RetryApi; RetryApi.Attach(new CallbackApi);
 	RetryApi->Push(false, 600);
