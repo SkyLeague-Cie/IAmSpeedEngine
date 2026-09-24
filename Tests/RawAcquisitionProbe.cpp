@@ -338,6 +338,8 @@ int main()
 		}
 		Check(!Source->Hub->Poll(0) && Source->Hub->ReadControlsSince({14, 0}).Status == EAcquisitionRead::Closed,
 			"held value cannot survive terminal acquisition failure");
+		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Failed,
+			"terminated worker cannot satisfy a previously successful startup");
 		Check(Worker.Stop(), "failed owner teardown joined");
 	}
 	{
