@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [Parameter(Mandatory = $true)][string]$Summarizer,
     [string]$GameInputIncludePath,
-    [ValidateSet('DeviceDiscoveryProbe', 'DeviceActivityProbe', 'WindowsDeviceDiscoveryProbe', 'WindowsSelectedSourceProbe', 'WindowsActivitySourceProbe')][string]$ProbeName = 'DeviceDiscoveryProbe',
+    [ValidateSet('DeviceDiscoveryProbe', 'DeviceActivityProbe', 'WindowsDeviceDiscoveryProbe', 'WindowsSelectedSourceProbe', 'WindowsActivitySourceProbe', 'WindowsCallbackReadingsProbe')][string]$ProbeName = 'DeviceDiscoveryProbe',
     [string]$Python = 'python'
 )
 $ErrorActionPreference = 'Stop'

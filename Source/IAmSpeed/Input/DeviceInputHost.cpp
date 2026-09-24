@@ -32,7 +32,7 @@ public:
             const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
             if (FAILED(Created))
             { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
-            auto Raw=Windows::FGameInputSelectedSource::CreateRaw(Api.Get(),Producer,Activity);
+            auto Raw=Windows::FGameInputSelectedSource::CreateRaw(Api.Get(),Producer,Activity,true);
             if (!Raw)
             { UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
             Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);

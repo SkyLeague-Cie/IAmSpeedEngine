@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameInputDiscovery.h"
+#include "GameInputCallbackReadings.h"
 #include "../DeviceActivityPolicy.h"
 
 namespace Speed::Input::Windows
@@ -60,7 +61,7 @@ public:
 	}
 	// Raw and legacy action ownership cannot be mixed on one cursor/session.
 	static std::unique_ptr<FGameInputSelectedSource> CreateRaw(FApi* Api, std::uint64_t ProducerId,
-		std::optional<FActivityConfig> Config = std::nullopt)
+		std::optional<FActivityConfig> Config = std::nullopt, bool CaptureCallbacks = false)
 	{
 		if (Config && !FDeviceActivityPolicy::ValidConfig(*Config)) return {};
 		auto Discovery = FGameInputDiscovery::Create(Api, ProducerId, {});
@@ -68,6 +69,7 @@ public:
 		auto Result = std::unique_ptr<FGameInputSelectedSource>(new FGameInputSelectedSource(Api,
 			std::move(Discovery), {}, {}));
 		Result->RawMode = true;
+		if (CaptureCallbacks) Result->CallbackCursor = std::make_unique<FGameInputCallbackReadCursor>();
 		if (Config) Result->Activity = std::make_unique<FDeviceActivityPolicy>(*Config);
 		return Result;
 	}
@@ -97,7 +99,7 @@ public:
 		}
 		const auto Lease = Discovery->AcquireSelected();
 		FSelectedRawBatch Batch; Batch.AcquisitionTick = AcquisitionTick;
-		if (!Lease) { Cursor.Reset(); Active.reset(); LastSuccessfulRawReadTick = 0; }
+		if (!Lease) { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; }
 		else
 		{
 			Batch.Ticket = Lease->Ticket;
@@ -106,11 +108,13 @@ public:
 			{
 				Disconnected.reset();
 				if (!Active || !Same(*Active, *Lease))
-				{ Cursor.Reset(); Active = Lease; LastSuccessfulRawReadTick = 0; }
+				{ if (!ResetCursorsLocked()) return false; Active = Lease; LastSuccessfulRawReadTick = 0; }
 				FTooOldReadDiagnostic TooOld;
-				Batch.Readings = Cursor.PollRaw(*Api.Get(), Lease->Device.Get(),
-					Lease->Ticket.Kind == EDeviceKind::Keyboard ? GameInput::v3::GameInputKindKeyboard : GameInput::v3::GameInputKindGamepad,
-					&TooOld);
+				const auto Kind = Lease->Ticket.Kind == EDeviceKind::Keyboard
+					? GameInput::v3::GameInputKindKeyboard : GameInput::v3::GameInputKindGamepad;
+				Batch.Readings = CallbackCursor
+					? CallbackCursor->PollRaw(*Api.Get(), Lease->Device.Get(), Kind)
+					: Cursor.PollRaw(*Api.Get(), Lease->Device.Get(), Kind, &TooOld);
 				Error = Batch.Readings.Result.Error;
 				if (Batch.Readings.Result.Status == EReadBatchStatus::Error
 					|| Batch.Readings.Result.Status == EReadBatchStatus::Resynchronize)
@@ -142,7 +146,7 @@ public:
 		{
 			LastRawPollReject = SinkCalled ? ERawPollReject::Sink : ERawPollReject::CommitGate;
 			if (Lease) ResetReadingLocked(*Lease);
-			else { Cursor.Reset(); Active.reset(); LastSuccessfulRawReadTick = 0; }
+			else { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; }
 			Status = EPollStatus::Resynchronized; return false;
 		}
 		// A lock acknowledgement requires a committed real reading from that
@@ -217,7 +221,7 @@ public:
 	bool Shutdown()
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
-		Stopping = true; Cursor.Reset(); Active.reset(); ActivityCursors.clear();
+		Stopping = true; if (!ResetCursorsLocked()) return false; Active.reset(); ActivityCursors.clear();
 		return Discovery->Shutdown(); // False retains discovery and its callback context.
 	}
 	// Latest explicit request applies only on a forward Produce/Skip boundary.
@@ -235,7 +239,7 @@ public:
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (Stopping || !Discovery->SetPaused(Paused)) return false;
-		bPaused = Paused; Cursor.Reset(); Active.reset(); Sequence = 0;
+		bPaused = Paused; if (!ResetCursorsLocked()) return false; Active.reset(); Sequence = 0;
 		if (Activity)
 		{
 			Activity->SetPaused(Paused);
@@ -250,7 +254,8 @@ public:
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (!RawMode || Stopping || bPaused || FAILED(Discovery->GetLastError())) return false;
-		Cursor.Reset(); Active.reset(); AppliedLock.reset(); LastSuccessfulRawReadTick = 0; return true;
+		if (!ResetCursorsLocked()) return false;
+		Active.reset(); AppliedLock.reset(); LastSuccessfulRawReadTick = 0; return true;
 	}
 	std::vector<FDiscoveredDevice> Snapshot() const { return Discovery->Snapshot(); }
 	std::optional<FInputFrame> Produce(FFrameNumber Frame) override
@@ -302,11 +307,18 @@ private:
 			&& A.Ticket.Device.Id == B.Ticket.Device.Id && A.Ticket.Device.Revision == B.Ticket.Device.Revision
 			&& A.Ticket.Kind == B.Ticket.Kind;
 	}
+	bool ResetCursorsLocked()
+	{
+		Cursor.Reset();
+		if (CallbackCursor && !CallbackCursor->Stop())
+		{ Discovery->FailAcquisition(E_FAIL); Status = EPollStatus::Failed; return false; }
+		return true;
+	}
 	void ResetReadingLocked(const FLease& Lease)
 	{
 		// A changed ticket already means the discovery callback purged old state.
 		Discovery->Resynchronize(Lease);
-		Cursor.Reset(); Active.reset(); Sequence = 0; LastSuccessfulRawReadTick = 0;
+		ResetCursorsLocked(); Active.reset(); Sequence = 0; LastSuccessfulRawReadTick = 0;
 		Status = EPollStatus::Resynchronized;
 	}
 	bool PollActivityLocked(FFrameNumber Frame)
@@ -430,6 +442,7 @@ private:
 	const FGameInputMapper Keyboard, Gamepad; // Pure/bounded/nonthrowing; no reentrant source calls.
 	mutable std::mutex Gate;
 	FGameInputReadCursor Cursor;
+	std::unique_ptr<FGameInputCallbackReadCursor> CallbackCursor;
 	std::unique_ptr<FPollObservation> Observations;
 	bool PollAttempted = false;
 	bool RawMode = false;
