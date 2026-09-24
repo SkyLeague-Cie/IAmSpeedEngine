@@ -123,27 +123,9 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	}
 	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal);
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
+	Host->AcquisitionStartupTimeout = Config.StartupTimeout;
 	if (!Host->Acquisition->Start(Config.Cadence))
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input acquisition worker start rejected")); return {}; }
-	if (!Host->Acquisition->WaitForFirstPublication(Config.StartupTimeout))
-	{
-		const auto Result = Host->Acquisition->LastResult();
-		const TCHAR* ResultName = TEXT("None");
-		if (Result)
-		{
-			switch (*Result)
-			{
-			case EAcquisitionPumpResult::Installed: ResultName = TEXT("Installed"); break;
-			case EAcquisitionPumpResult::NoChange: ResultName = TEXT("NoChange"); break;
-			case EAcquisitionPumpResult::Neutralized: ResultName = TEXT("Neutralized"); break;
-			case EAcquisitionPumpResult::Rejected: ResultName = TEXT("Rejected"); break;
-			case EAcquisitionPumpResult::Closed: ResultName = TEXT("Closed"); break;
-			}
-		}
-		UE_LOG(LogTemp, Error, TEXT("Independent input acquisition startup %s; last_result=%s"),
-			Host->Acquisition->HasFinished() ? TEXT("worker_terminated") : TEXT("first_publication_timeout"), ResultName);
-		return {};
-	}
 	return Host;
 #else
 	(void)Config;

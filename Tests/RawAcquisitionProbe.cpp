@@ -247,6 +247,42 @@ int main()
 			"ring overflow reports exact capacity cause without replay");
 	}
 	{
+		struct FDeferredSource final : IInputAcquisition
+		{
+			std::mutex Mutex; std::condition_variable Changed;
+			bool Entered = false, Release = false;
+			EAcquisitionPumpResult Pump() override
+			{
+				std::unique_lock<std::mutex> Lock(Mutex);
+				Entered = true; Changed.notify_all();
+				Changed.wait(Lock, [&] { return Release; });
+				return EAcquisitionPumpResult::Installed;
+			}
+			bool Close() override { return true; }
+		};
+		auto Source = std::make_shared<FDeferredSource>();
+		FInputAcquisitionWorker Worker(Source);
+		Check(Worker.Start(std::chrono::microseconds(1000)), "deferred acquisition starts without publication");
+		{
+			std::unique_lock<std::mutex> Lock(Source->Mutex);
+			Check(Source->Changed.wait_for(Lock, std::chrono::seconds(2), [&] { return Source->Entered; }),
+				"deferred acquisition enters OS pump independently");
+		}
+		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Waiting,
+			"host can service an unpublished acquisition without blocking");
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		Check(Worker.StartupState(std::chrono::milliseconds(1)) == EAcquisitionStartup::Failed,
+			"unpublished acquisition fails after configured deadline");
+		{ std::lock_guard<std::mutex> Lock(Source->Mutex); Source->Release = true; Source->Changed.notify_all(); }
+		Check(Worker.WaitForFirstPublication(std::chrono::seconds(2)), "deferred acquisition eventually publishes");
+		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Ready,
+			"fresh publication resumes within deadline");
+		Check(Worker.StartupState(std::chrono::milliseconds(1)) == EAcquisitionStartup::Failed,
+			"late publication cannot retroactively satisfy an expired deadline");
+		Check(Worker.Stop() && Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Failed,
+			"closed acquisition cannot resume gameplay");
+	}
+	{
 		struct FBlockingSource final : IInputAcquisition
 		{
 			std::mutex Mutex; std::condition_variable Changed;

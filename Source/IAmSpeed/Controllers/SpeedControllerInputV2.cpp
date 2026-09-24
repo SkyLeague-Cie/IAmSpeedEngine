@@ -132,6 +132,15 @@ bool ASpeedController::ServiceInputSessionV2()
 	check(IsInGameThread());
 	const auto Session = InputSessionV2;
 	if (!Session || Session->Closed) return false;
+	if (Session->Acquisition && Session->Acquisition->StartupState(Session->AcquisitionStartupTimeout)
+		== Speed::Input::V2::EAcquisitionStartup::Failed)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Independent input acquisition failed or timed out; session %llu remains neutral"),
+			Session->Session);
+		bInputLifecycleFault = true;
+		ReleaseInputSessionV2();
+		return false;
+	}
 	if (Session->Controls)
 	{
 		const auto Batch = Session->Controls->Read();
