@@ -125,7 +125,8 @@ public:
 							Lease->Ticket.Generation, AcquisitionTick, LastSuccessfulRawReadTick, TooOld};
 					if (FAILED(Error) && Error != GameInput::v3::GAMEINPUT_E_REFERENCE_READING_TOO_OLD && Error != GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED)
 					{ Discovery->FailAcquisition(Error); Status = EPollStatus::Failed; LastRawPollReject = ERawPollReject::ReadBatch; return false; }
-					ResetReadingLocked(*Lease);
+					if (!ResetReadingLocked(*Lease))
+					{ LastRawPollReject = ERawPollReject::ReadBatch; return false; }
 					if (Error == GameInput::v3::GAMEINPUT_E_DEVICE_DISCONNECTED)
 						Disconnected = std::make_pair(Lease->Ticket.Device.Id, Lease->Ticket.Device.Revision);
 					// Resynchronization changes generation. Never relabel an old batch.
@@ -145,7 +146,7 @@ public:
 		if (!Accepted)
 		{
 			LastRawPollReject = SinkCalled ? ERawPollReject::Sink : ERawPollReject::CommitGate;
-			if (Lease) ResetReadingLocked(*Lease);
+			if (Lease && !ResetReadingLocked(*Lease)) return false;
 			else { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; }
 			Status = EPollStatus::Resynchronized; return false;
 		}
@@ -314,12 +315,15 @@ private:
 		{ Discovery->FailAcquisition(E_FAIL); Status = EPollStatus::Failed; return false; }
 		return true;
 	}
-	void ResetReadingLocked(const FLease& Lease)
+	bool ResetReadingLocked(const FLease& Lease)
 	{
 		// A changed ticket already means the discovery callback purged old state.
-		Discovery->Resynchronize(Lease);
-		ResetCursorsLocked(); Active.reset(); Sequence = 0; LastSuccessfulRawReadTick = 0;
+		const bool Resynchronized = Discovery->Resynchronize(Lease);
+		if (!ResetCursorsLocked() || !Resynchronized)
+		{ Discovery->FailAcquisition(E_FAIL); Status = EPollStatus::Failed; return false; }
+		Active.reset(); Sequence = 0; LastSuccessfulRawReadTick = 0;
 		Status = EPollStatus::Resynchronized;
+		return true;
 	}
 	bool PollActivityLocked(FFrameNumber Frame)
 	{
@@ -416,10 +420,10 @@ private:
 		Error = Result.Error;
 		if (Result.Status == EReadBatchStatus::Error)
 		{
-			if (Error == GAMEINPUT_E_REFERENCE_READING_TOO_OLD) ResetReadingLocked(*Lease);
+			if (Error == GAMEINPUT_E_REFERENCE_READING_TOO_OLD) { if (!ResetReadingLocked(*Lease)) return; }
 			else if (Error == GAMEINPUT_E_DEVICE_DISCONNECTED)
 			{
-				ResetReadingLocked(*Lease);
+				if (!ResetReadingLocked(*Lease)) return;
 				Disconnected = std::make_pair(Lease->Ticket.Device.Id, Lease->Ticket.Device.Revision);
 				Status = EPollStatus::Disconnected;
 			}

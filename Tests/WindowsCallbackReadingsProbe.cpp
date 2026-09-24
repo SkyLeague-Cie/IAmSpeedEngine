@@ -15,6 +15,7 @@ public:
 	void* ReadingContext = nullptr;
 	std::function<void()> BeforeRegistration;
 	std::function<void()> AfterRegistration;
+	bool FailReadingUnregister = false;
 	std::mutex ReadingGate;
 	std::condition_variable ReadingFinished;
 	unsigned ReadingRunning = 0;
@@ -72,6 +73,7 @@ public:
 	bool STDMETHODCALLTYPE UnregisterCallback(GameInputCallbackToken Token) override
 	{
 		if (Token != 2) return FakeApi::UnregisterCallback(Token);
+		if (FailReadingUnregister) return false;
 		std::unique_lock<std::mutex> Lock(ReadingGate);
 		ReadingCallback = nullptr; ReadingContext = nullptr;
 		ReadingFinished.wait(Lock, [&] { return ReadingRunning == 0; });
@@ -138,5 +140,37 @@ int main()
 		&& Physical->Changes[1].State.Value == 0 && Physical->FinalState[0].Value == 0,
 		"brief press and release retain two exact physical transitions");
 	Check(Owner.Close(), "callback registration closed with acquisition owner");
+	ComPtr<CallbackApi> RetryApi; RetryApi.Attach(new CallbackApi);
+	RetryApi->Push(false, 600);
+	auto RetrySource = Speed::Input::Windows::FGameInputSelectedSource::CreateRaw(RetryApi.Get(), 777, {}, true);
+	Check(bool(RetrySource) && RetrySource->RequestSelection(std::make_pair(Key(1), EDeviceKind::Gamepad)),
+		"retry fixture selected");
+	auto RetryJournal = std::make_shared<Speed::Input::V2::FRawAcquisitionJournal>(8);
+	Speed::Input::Windows::FGameInputRawAcquisition RetryOwner(std::move(RetrySource), RetryJournal);
+	Check(RetryOwner.Pump() == Speed::Input::V2::EAcquisitionPumpResult::Installed,
+		"retry fixture has live callback");
+	RetryApi->FailReadingUnregister = true;
+	Check(!RetryOwner.Close(), "failed unregister retains callback context for retry");
+	RetryApi->Push(true, 601);
+	Check(RetryOwner.Pump() == Speed::Input::V2::EAcquisitionPumpResult::Closed,
+		"failed close never admits another input reading");
+	RetryApi->FailReadingUnregister = false;
+	Check(RetryOwner.Close(), "second close fences callback and releases owner");
+	ComPtr<CallbackApi> FailureApi; FailureApi.Attach(new CallbackApi);
+	FailureApi->Push(false, 700);
+	auto FailureSource = Speed::Input::Windows::FGameInputSelectedSource::CreateRaw(FailureApi.Get(), 778, {}, true);
+	Check(bool(FailureSource) && FailureSource->RequestSelection(std::make_pair(Key(1), EDeviceKind::Gamepad)),
+		"failed-reset fixture selected");
+	Check(FailureSource->PollRaw(1, [](const auto&) noexcept { return true; }),
+		"failed-reset fixture establishes callback baseline");
+	FailureApi->FailReadingUnregister = true;
+	FailureApi->Push(true, 701);
+	Check(!FailureSource->PollRaw(2, [](const auto&) noexcept { return false; })
+		&& FailureSource->GetLastPollStatus() == Speed::Input::Windows::EPollStatus::Failed
+		&& FAILED(FailureSource->GetLastError()),
+		"failed callback reset stays fatal instead of reporting resynchronized");
+	Check(!FailureSource->Shutdown(), "failed unregister retains selected-source context");
+	FailureApi->FailReadingUnregister = false;
+	Check(FailureSource->Shutdown(), "selected-source close retry fences callback");
 	std::cout << "PASS WindowsCallbackReadingsProbe checks=" << Checks << " hardware=none sdk=v3\n";
 }
