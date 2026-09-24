@@ -1,5 +1,6 @@
 #include "DeviceInputHost.h"
 #include <atomic>
+#include "HAL/PlatformTime.h"
 
 #if PLATFORM_WINDOWS && !UE_SERVER
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -28,14 +29,24 @@ public:
         if (Closed) return EAcquisitionPumpResult::Closed;
         if (!Source)
         {
+#if !UE_BUILD_SHIPPING
+            const double StartedAt = FPlatformTime::Seconds();
+#endif
             Microsoft::WRL::ComPtr<GameInput::v3::IGameInput> Api;
             const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
             if (FAILED(Created))
             { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
+#if !UE_BUILD_SHIPPING
+            const double CreatedAt = FPlatformTime::Seconds();
+#endif
             auto Raw=Windows::FGameInputSelectedSource::CreateRaw(Api.Get(),Producer,Activity,true);
             if (!Raw)
             { UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
             Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
+#if !UE_BUILD_SHIPPING
+            UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStartup] game_input_create_ms=%.3f discovery_ms=%.3f"),
+                1000.0 * (CreatedAt - StartedAt), 1000.0 * (FPlatformTime::Seconds() - CreatedAt));
+#endif
         }
 		const auto Result = Source->Pump();
 		if (const auto Diagnostic = Source->TakeNeutralizeDiagnostic())
