@@ -156,6 +156,24 @@ int main()
 		"failed close never admits another input reading");
 	RetryApi->FailReadingUnregister = false;
 	Check(RetryOwner.Close(), "second close fences callback and releases owner");
+	ComPtr<CallbackApi> SinkApi; SinkApi.Attach(new CallbackApi);
+	SinkApi->Push(false, 650);
+	auto SinkSource = Speed::Input::Windows::FGameInputSelectedSource::CreateRaw(SinkApi.Get(), 779, {}, true);
+	Check(bool(SinkSource) && SinkSource->RequestSelection(std::make_pair(Key(1), EDeviceKind::Gamepad)),
+		"successful-reset fixture selected");
+	Check(SinkSource->PollRaw(1, [](const auto&) noexcept { return true; }),
+		"successful-reset fixture establishes callback baseline");
+	SinkApi->Push(true, 651);
+	Check(!SinkSource->PollRaw(2, [](const auto&) noexcept { return false; })
+		&& SinkSource->GetLastPollStatus() == Speed::Input::Windows::EPollStatus::Resynchronized,
+		"valid lease sink rejection resets exactly once and remains recoverable");
+	SinkApi->Push(true, 652);
+	Speed::Input::Windows::FGameInputSelectedSource::FSelectedRawBatch Fresh;
+	Check(SinkSource->PollRaw(3, [&](const auto& Batch) noexcept { Fresh = Batch; return true; })
+		&& Fresh.Readings.FreshBaseline && Fresh.Readings.Count == 1
+		&& Fresh.Readings.States[0].GamepadButtons == GameInputGamepadA,
+		"new callback generation accepts first fresh held reading after sink rejection");
+	Check(SinkSource->Shutdown(), "successful-reset fixture closes");
 	ComPtr<CallbackApi> FailureApi; FailureApi.Attach(new CallbackApi);
 	FailureApi->Push(false, 700);
 	auto FailureSource = Speed::Input::Windows::FGameInputSelectedSource::CreateRaw(FailureApi.Get(), 778, {}, true);

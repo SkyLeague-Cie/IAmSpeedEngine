@@ -146,8 +146,12 @@ public:
 		if (!Accepted)
 		{
 			LastRawPollReject = SinkCalled ? ERawPollReject::Sink : ERawPollReject::CommitGate;
-			if (Lease && !ResetReadingLocked(*Lease)) return false;
-			else { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; }
+			if (Lease)
+			{
+				if (!ResetReadingLocked(*Lease)) return false;
+			}
+			else
+			{ if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; }
 			Status = EPollStatus::Resynchronized; return false;
 		}
 		// A lock acknowledgement requires a committed real reading from that
