@@ -146,12 +146,18 @@ public:
 		if (!Accepted)
 		{
 			LastRawPollReject = SinkCalled ? ERawPollReject::Sink : ERawPollReject::CommitGate;
-			if (Lease)
+			if (Lease && SinkCalled)
 			{
 				if (!ResetReadingLocked(*Lease)) return false;
 			}
 			else
-			{ if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; }
+			{
+				// A hotplug can invalidate Lease before CommitRaw invokes the sink.
+				// Resynchronizing that stale ticket would falsely fail acquisition
+				// and prevent the first fresh reading after reconnection.
+				if (!ResetCursorsLocked()) return false;
+				Active.reset(); Sequence = 0; LastSuccessfulRawReadTick = 0;
+			}
 			Status = EPollStatus::Resynchronized; return false;
 		}
 		// A lock acknowledgement requires a committed real reading from that
