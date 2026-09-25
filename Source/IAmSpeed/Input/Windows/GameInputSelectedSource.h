@@ -73,6 +73,22 @@ public:
 		if (Config) Result->Activity = std::make_unique<FDeviceActivityPolicy>(*Config);
 		return Result;
 	}
+	static std::unique_ptr<FGameInputSelectedSource> CreateRaw(
+		std::shared_ptr<FGameInputWarmCatalogue> Warm, std::uint64_t ProducerId,
+		std::optional<FActivityConfig> Config = std::nullopt, bool CaptureCallbacks = false)
+	{
+		if (!Warm || (Config && !FDeviceActivityPolicy::ValidConfig(*Config))) return {};
+		auto Api = Warm->GetApi();
+		if (!Api) return {};
+		auto Discovery = FGameInputDiscovery::Create(std::move(Warm), ProducerId, {});
+		if (!Discovery) return {};
+		auto Result = std::unique_ptr<FGameInputSelectedSource>(new FGameInputSelectedSource(Api.Get(),
+			std::move(Discovery), {}, {}));
+		Result->RawMode = true;
+		if (CaptureCallbacks) Result->CallbackCursor = std::make_unique<FGameInputCallbackReadCursor>();
+		if (Config) Result->Activity = std::make_unique<FDeviceActivityPolicy>(*Config);
+		return Result;
+	}
 	// AcquisitionTick is the acquisition owner's clock, never a physics frame.
 	// Sink installs a bounded value batch under the hotplug fence, without
 	// reentering this object. False means nothing was installed: discard all data.
