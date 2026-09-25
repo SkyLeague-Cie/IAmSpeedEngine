@@ -103,7 +103,7 @@ bool FDeviceInputWarmContext::Close()
     return true;
 }
 
-std::shared_ptr<FDeviceInputWarmContext> CreateDeviceInputWarmContext()
+std::shared_ptr<FDeviceInputWarmContext> FDeviceInputWarmContext::Create()
 {
 #if PLATFORM_WINDOWS && !UE_SERVER
     auto Result = std::shared_ptr<FDeviceInputWarmContext>(new FDeviceInputWarmContext());
@@ -112,6 +112,10 @@ std::shared_ptr<FDeviceInputWarmContext> CreateDeviceInputWarmContext()
 #else
     return {};
 #endif
+}
+std::shared_ptr<FDeviceInputWarmContext> CreateDeviceInputWarmContext()
+{
+    return FDeviceInputWarmContext::Create();
 }
 FStreamEpoch AllocateInputStreamEpoch()
 {
@@ -172,7 +176,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		{ UE_LOG(LogTemp, Error, TEXT("Independent input control reader rejected")); return {}; }
 	}
 	auto Warm = Config.WarmContext
-		? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->Native) : nullptr;
+		? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
 	if (Config.WarmContext && !Warm)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: warm context already closed")); return {}; }
 	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm));
