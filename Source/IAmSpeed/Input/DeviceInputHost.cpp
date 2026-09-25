@@ -164,6 +164,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	Binding.Id = Binding.Epoch = Binding.Controller = Binding.Producer = Binding.Journal = Epoch.Value;
 	Binding.First = Config.FirstFrame; Binding.Kind = EProducerContract::Device;
 	Binding.Contract = Config.Contract; Binding.Processing = Config.Processing;
+	Binding.ResumeRearmMask = Config.ResumeRearmMask;
 	// Producer construction is deferred to the physical registry worker.
 	auto Host = FInputHostSession::CreateDescriptor(std::move(Binding));
 	if (!Host)

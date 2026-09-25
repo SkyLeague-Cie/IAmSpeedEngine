@@ -35,6 +35,7 @@ struct FDeviceInputHostConfig
 	std::chrono::microseconds Cadence{0};
 	std::chrono::milliseconds StartupTimeout{0};
 	std::vector<FControlBinding> Controls;
+	std::uint32_t ResumeRearmMask = 0;
 	std::shared_ptr<FDeviceInputWarmContext> WarmContext;
 };
 IAMSPEED_API FStreamEpoch AllocateInputStreamEpoch();
