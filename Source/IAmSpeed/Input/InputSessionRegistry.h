@@ -24,6 +24,7 @@ struct FSessionDescriptor
     EProducerContract Kind = EProducerContract::Unknown;
     std::shared_ptr<const FInputActionContract> Contract;
     FInputProcessingPolicy Processing;
+    std::uint32_t ResumeRearmMask = 0; // Menu-consumed Boolean actions wait for release after pause.
     std::vector<FSessionActor> Actors;
     std::vector<FInputFrame> Scenario;
     bool AllowScenarioAppend = false; // Test owner only, never a GT producer callback.
@@ -123,12 +124,13 @@ private:
         if (C.Binding.Actors.size() > L.Actors || C.Binding.Scenario.size() > L.Frames) return {};
         std::vector<std::uint8_t> B;
         const auto Add = [&](std::uint64_t V) { if (B.size() > L.DescriptorBytes || L.DescriptorBytes - B.size() < 8) throw std::length_error("descriptor"); for (unsigned I = 0; I < 8; ++I) B.push_back(std::uint8_t(V >> (I * 8))); };
-        Add(2); Add(C.Id); Add(C.WorkerGeneration); Add(C.RegistryVersion); Add(C.Session); Add(C.Epoch); Add(C.ResumeGeneration); Add(std::uint64_t(C.Operation));
+        Add(3); Add(C.Id); Add(C.WorkerGeneration); Add(C.RegistryVersion); Add(C.Session); Add(C.Epoch); Add(C.ResumeGeneration); Add(std::uint64_t(C.Operation));
         const auto& D = C.Binding;
         Add(D.Id); Add(D.Epoch); Add(D.Controller); Add(D.Producer); Add(D.Journal); Add(D.First); Add(std::uint64_t(D.Kind));
         Add(D.Contract ? D.Contract->GetFingerprint().size() : 0);
         if (D.Contract) for (const auto V : D.Contract->GetFingerprint()) Add(V);
         for (const auto V : D.Processing.Step) Add(V);
+        Add(D.ResumeRearmMask);
         Add(D.Actors.size()); for (const auto& A : D.Actors) { Add(A.Id); Add(A.Generation); }
         Add(D.AllowScenarioAppend); Add(D.Scenario.size());
         for (const auto& F : D.Scenario)
@@ -603,6 +605,7 @@ private:
             || (LastEpoch.count(D.Id) && D.Epoch <= LastEpoch.at(D.Id))
             || (D.Kind != EProducerContract::Device && D.Kind != EProducerContract::ExactScenario && D.Kind != EProducerContract::AI)
             || (D.AllowScenarioAppend && D.Kind != EProducerContract::ExactScenario)
+            || (D.ResumeRearmMask && D.Kind != EProducerContract::Device)
             || ((D.Kind == EProducerContract::ExactScenario || D.Kind == EProducerContract::AI) && !FInputSessionCommands::ExactPolicy(D.Kind, D.Processing)))
         { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         std::sort(D.Actors.begin(), D.Actors.end());
@@ -649,7 +652,7 @@ private:
             Source = FTestInputProducer::Create(D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First, D.Scenario);
         else if (D.Kind == EProducerContract::AI)
             Source = FAIInputProducer::Create(AI, D.Contract, {D.Epoch}, {EProducerKind::AI,D.Producer}, D.First);
-        else Source = FDeviceInputProducer::Create(Journal, D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First);
+        else Source = FDeviceInputProducer::Create(Journal, D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First, D.ResumeRearmMask);
         if (!Source) { Sessions.erase(Slot); R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         ++Constructed;
         FOwnerInputBinding Binding{D.Id, {D.Kind == EProducerContract::AI ? EProducerKind::AI : EProducerKind::Device,D.Producer}, {D.Epoch}, D.Contract, D.Processing, D.Kind};

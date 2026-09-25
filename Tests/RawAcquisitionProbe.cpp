@@ -247,6 +247,42 @@ int main()
 			"ring overflow reports exact capacity cause without replay");
 	}
 	{
+		struct FDeferredSource final : IInputAcquisition
+		{
+			std::mutex Mutex; std::condition_variable Changed;
+			bool Entered = false, Release = false;
+			EAcquisitionPumpResult Pump() override
+			{
+				std::unique_lock<std::mutex> Lock(Mutex);
+				Entered = true; Changed.notify_all();
+				Changed.wait(Lock, [&] { return Release; });
+				return EAcquisitionPumpResult::Installed;
+			}
+			bool Close() override { return true; }
+		};
+		auto Source = std::make_shared<FDeferredSource>();
+		FInputAcquisitionWorker Worker(Source);
+		Check(Worker.Start(std::chrono::microseconds(1000)), "deferred acquisition starts without publication");
+		{
+			std::unique_lock<std::mutex> Lock(Source->Mutex);
+			Check(Source->Changed.wait_for(Lock, std::chrono::seconds(2), [&] { return Source->Entered; }),
+				"deferred acquisition enters OS pump independently");
+		}
+		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Waiting,
+			"host can service an unpublished acquisition without blocking");
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		Check(Worker.StartupState(std::chrono::milliseconds(1)) == EAcquisitionStartup::Failed,
+			"unpublished acquisition fails after configured deadline");
+		{ std::lock_guard<std::mutex> Lock(Source->Mutex); Source->Release = true; Source->Changed.notify_all(); }
+		Check(Worker.WaitForFirstPublication(std::chrono::seconds(2)), "deferred acquisition eventually publishes");
+		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Ready,
+			"fresh publication resumes within deadline");
+		Check(Worker.StartupState(std::chrono::milliseconds(1)) == EAcquisitionStartup::Failed,
+			"late publication cannot retroactively satisfy an expired deadline");
+		Check(Worker.Stop() && Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Failed,
+			"closed acquisition cannot resume gameplay");
+	}
+	{
 		struct FBlockingSource final : IInputAcquisition
 		{
 			std::mutex Mutex; std::condition_variable Changed;
@@ -302,7 +338,95 @@ int main()
 		}
 		Check(!Source->Hub->Poll(0) && Source->Hub->ReadControlsSince({14, 0}).Status == EAcquisitionRead::Closed,
 			"held value cannot survive terminal acquisition failure");
+		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Failed,
+			"terminated worker cannot satisfy a previously successful startup");
 		Check(Worker.Stop(), "failed owner teardown joined");
+	}
+	{
+		auto Hub = std::make_shared<FRawAcquisitionJournal>(90);
+		auto C = Contract(); Check(bool(C), "initial resume contract");
+		auto Device = FDeviceInputProducer::Create(Hub, C, {1},
+			{Speed::Input::EProducerKind::Device, 7}, 0, std::uint32_t{1} << 3);
+		Check(Device && Device->SetLifecyclePaused(true) == ELifecycleResult::Applied,
+			"initial registration pause has no prior gameplay");
+		Check(Hub->RequestFreshResume()
+			&& Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(1, true, true)}))
+			&& Device->SetLifecyclePaused(false) == ELifecycleResult::Applied,
+			"initial registration resumes from fresh held reading");
+		auto Initial = Device->Produce(0);
+		Check(Initial && Initial->GetData().Reset && Initial->GetData().Values[3] == 1
+			&& Initial->GetData().Transitions.empty(),
+			"initial held BackCam remains immediately available without a preceding menu");
+		Hub->Close();
+	}
+	{
+		auto Hub = std::make_shared<FRawAcquisitionJournal>(91);
+		auto C = Contract(); Check(bool(C), "resume rearm contract");
+		Check(!FDeviceInputProducer::Create(Hub, C, {1}, {Speed::Input::EProducerKind::Device, 7}, 0, std::uint32_t{1} << 2),
+			"resume rearm refuses an axis action");
+		auto Device = FDeviceInputProducer::Create(Hub, C, {1}, {Speed::Input::EProducerKind::Device, 7},
+			0, std::uint32_t{1} << 3);
+		Check(bool(Device), "resume rearm device created");
+		Check(Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(1, false, true)}))
+			&& bool(Device->Produce(0)), "neutral initial baseline");
+		Check(Device->SetLifecyclePaused(true) == ELifecycleResult::Applied, "menu pause acknowledged");
+		Check(Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(2, true)})), "menu key held during pause");
+		Check(Hub->RequestFreshResume()
+			&& Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(3, true, true)}))
+			&& Device->SetLifecyclePaused(false) == ELifecycleResult::Applied, "fresh resume acknowledged");
+		auto Held = Device->Produce(1);
+		Check(Held && Held->GetData().Reset && Held->GetData().Values[3] == 0
+			&& !(Held->GetData().ActiveMask & (std::uint32_t{1} << 3))
+			&& Held->GetData().Transitions.empty(), "held menu button cannot become gameplay BackCam");
+		Check(Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(4, true)})), "continued held reading");
+		auto StillHeld = Device->Produce(2);
+		Check(StillHeld && StillHeld->GetData().Values[3] == 0
+			&& StillHeld->GetData().Transitions.empty(), "held menu button stays suppressed without a timer");
+		Check(Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(5, false), Reading(6, true)})),
+			"release and fresh press retained within one physical poll");
+		auto Repressed = Device->Produce(3);
+		Check(Repressed && Repressed->GetData().Values[3] == 1
+			&& Repressed->GetData().Transitions.size() == 1
+			&& Repressed->GetData().Transitions[0].Action == 3
+			&& Repressed->GetData().Transitions[0].State == ETransition::Started,
+			"post-menu release rearms and same-poll press starts exactly once");
+		Check(Hub->Publish(Hub->BeginAcquisition(), Batch({Reading(7, false)})), "fresh press released");
+		auto Released = Device->Produce(4);
+		Check(Released && Released->GetData().Values[3] == 0
+			&& Released->GetData().Transitions.size() == 1
+			&& Released->GetData().Transitions[0].State == ETransition::Completed,
+			"normal gameplay release follows rearmed press");
+		Hub->Close();
+	}
+	{
+		auto Hub = std::make_shared<FRawAcquisitionJournal>(92);
+		auto D = Contract()->GetDescription();
+		FActionDefinition Other; Other.Id = 4; Other.Owner = "Fixture"; Other.Name = "OtherButton";
+		Other.Wiring = EActionWiring::Wired; D.Actions.push_back(Other);
+		D.Mapping.push_back({{ERawControlKind::KeyboardUsage, 5}, 4, 1});
+		auto C = FInputActionContract::Create(D);
+		Check(bool(C), "second gameplay button contract");
+		const auto Both = [](std::uint64_t Sequence, bool Back, bool OtherHeld, bool Fresh)
+		{
+			auto R = Reading(Sequence, Back, Fresh); R.State.Count = 2;
+			R.State.Values[1] = {{ERawControlKind::KeyboardUsage, 5}, OtherHeld ? 1.0f : 0.0f};
+			return R;
+		};
+		auto Device = FDeviceInputProducer::Create(Hub, C, {1},
+			{Speed::Input::EProducerKind::Device, 7}, 0, std::uint32_t{1} << 3);
+		Check(Device && Hub->Publish(Hub->BeginAcquisition(), Batch({Both(1, false, false, true)}))
+			&& bool(Device->Produce(0)), "two-button initial baseline");
+		Check(Device->SetLifecyclePaused(true) == ELifecycleResult::Applied
+			&& Hub->RequestFreshResume()
+			&& Hub->Publish(Hub->BeginAcquisition(), Batch({Both(2, true, true, true)}))
+			&& Device->SetLifecyclePaused(false) == ELifecycleResult::Applied, "two-button pause resume");
+		auto Resumed = Device->Produce(1);
+		Check(Resumed && Resumed->GetData().Values[3] == 0
+			&& Resumed->GetData().Values[4] == 1
+			&& (Resumed->GetData().ActiveMask & (std::uint32_t{1} << 4))
+			&& !(Resumed->GetData().ActiveMask & (std::uint32_t{1} << 3)),
+			"only menu-consumed BackCam is masked; other held gameplay button resumes");
+		Hub->Close();
 	}
 	{
 		auto Hub = std::make_shared<FRawAcquisitionJournal>(1);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameInputAcquisition.h"
+#include "GameInputWarmCatalogue.h"
 #include "../DeviceDiscovery.h"
 #include <cstring>
 #include <type_traits>
@@ -35,6 +36,18 @@ public:
 		Result->Registered = true;
 		return Result; // Enumeration failure is observable via GetLastError().
 	}
+	static std::unique_ptr<FGameInputDiscovery> Create(
+		std::shared_ptr<FGameInputWarmCatalogue> Warm, std::uint64_t ProducerId,
+		const std::array<bool, ActionCount>& Digital)
+	{
+		if (!Warm || !ProducerId || FPresentationInputScope::IsActive()) return nullptr;
+		auto Api = Warm->GetApi();
+		if (!Api) return nullptr;
+		auto Result = std::unique_ptr<FGameInputDiscovery>(new FGameInputDiscovery(Api.Get(), ProducerId, Digital));
+		Result->Warm = std::move(Warm);
+		Result->WarmSubscription = Result->Warm->Subscribe(Result.get(), &OnWarmDevice, &OnWarmFailure);
+		return Result->WarmSubscription ? std::move(Result) : nullptr;
+	}
 	~FGameInputDiscovery() override { if (!Shutdown()) std::terminate(); }
 	bool Shutdown()
 	{
@@ -44,6 +57,8 @@ public:
 			Stopping = true; Catalogue.Fail();
 		}
 		// Callback only takes Mailbox. Never unregister with Mailbox held.
+		if (WarmSubscription && !Warm->Unsubscribe(WarmSubscription)) return false;
+		WarmSubscription = 0;
 		if (Registered && !Api->UnregisterCallback(Token)) return false;
 		Registered = false;
 		std::lock_guard<std::mutex> Lock(Mailbox);
@@ -148,6 +163,24 @@ private:
 		try { Self.UpdateLocked(Device, Timestamp, Current); }
 		catch (...) { Self.FailLocked(E_OUTOFMEMORY); } // Never throw across SDK ABI.
 	}
+	static bool OnWarmDevice(void* Context, const FGameInputWarmCatalogue::FRecord& Record) noexcept
+	{
+		auto& Self = *static_cast<FGameInputDiscovery*>(Context);
+		std::lock_guard<std::mutex> Lock(Self.Mailbox);
+		if (Self.Stopping) return true;
+		if (FAILED(Self.Error)) return false;
+		try { Self.UpdateLocked(Record.Device.Get(), Record.Timestamp,
+			Record.Connected ? GameInput::v3::GameInputDeviceConnected
+				: static_cast<GameInput::v3::GameInputDeviceStatus>(0)); }
+		catch (...) { Self.FailLocked(E_OUTOFMEMORY); }
+		return SUCCEEDED(Self.Error);
+	}
+	static void OnWarmFailure(void* Context, HRESULT Reason) noexcept
+	{
+		auto& Self = *static_cast<FGameInputDiscovery*>(Context);
+		std::lock_guard<std::mutex> Lock(Self.Mailbox);
+		if (!Self.Stopping) Self.FailLocked(Reason);
+	}
 	void UpdateLocked(FDevice* Device, std::uint64_t Timestamp, GameInput::v3::GameInputDeviceStatus Current)
 	{
 		using namespace GameInput::v3;
@@ -180,6 +213,8 @@ private:
 		Records[Id] = FRecord{TComPtr<FDevice>(Device), Timestamp, Connected, Kinds};
 	}
 	TComPtr<FApi> Api;
+	std::shared_ptr<FGameInputWarmCatalogue> Warm;
+	std::uint64_t WarmSubscription = 0;
 	mutable std::mutex Mailbox;
 	std::mutex Control;
 	FDeviceDiscovery Catalogue;

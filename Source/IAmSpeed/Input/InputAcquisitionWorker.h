@@ -10,6 +10,7 @@
 namespace Speed::Input::V2
 {
 enum class EAcquisitionPumpResult { Installed, NoChange, Neutralized, Rejected, Closed };
+enum class EAcquisitionStartup { Waiting, Ready, Failed };
 class IInputAcquisition
 {
 public:
@@ -35,7 +36,7 @@ public:
 		std::lock_guard<std::mutex> Lifecycle(LifecycleGate);
 		std::lock_guard<std::mutex> Lock(Gate);
 		if (!Source || Started || Stopping || Cadence.count() <= 0 || Cadence > std::chrono::seconds(1)) return false;
-		Period = Cadence; Started = true;
+		Period = Cadence; StartedAt = std::chrono::steady_clock::now(); Started = true;
 		try { Thread = std::thread([this] { Run(); }); }
 		catch (...) { Started = false; return false; }
 		return true;
@@ -48,6 +49,17 @@ public:
 		if (!Started || Timeout.count() < 0) return false;
 		Changed.wait_for(Lock, Timeout, [&] { return Ready || Finished || Stopping; });
 		return Ready && !Stopping && !Finished;
+	}
+	// Polled by the host without blocking the game thread during pawn replacement.
+	// A late first publication is accepted only within the configured deadline.
+	EAcquisitionStartup StartupState(std::chrono::milliseconds Timeout) const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		if (!Started || Stopping || Finished || Timeout.count() <= 0) return EAcquisitionStartup::Failed;
+		if (Ready) return ReadyAt - StartedAt <= Timeout
+			? EAcquisitionStartup::Ready : EAcquisitionStartup::Failed;
+		return std::chrono::steady_clock::now() - StartedAt < Timeout
+			? EAcquisitionStartup::Waiting : EAcquisitionStartup::Failed;
 	}
 	std::optional<EAcquisitionPumpResult> LastResult() const
 	{ std::lock_guard<std::mutex> Lock(Gate); return Result; }
@@ -91,7 +103,8 @@ private:
 			try { Current = Source->Pump(); } catch (...) {}
 			std::unique_lock<std::mutex> Lock(Gate);
 			Result = Current;
-			if (Current == EAcquisitionPumpResult::Installed || Current == EAcquisitionPumpResult::Neutralized) Ready = true;
+			if (!Ready && (Current == EAcquisitionPumpResult::Installed || Current == EAcquisitionPumpResult::Neutralized))
+			{ ReadyAt = std::chrono::steady_clock::now(); Ready = true; }
 			Changed.notify_all();
 			if (Current == EAcquisitionPumpResult::Closed || Current == EAcquisitionPumpResult::Rejected) break;
 			Deadline += Period;
@@ -113,6 +126,8 @@ private:
 	std::thread Thread;
 	std::thread::id WorkerId;
 	std::chrono::microseconds Period{0};
+	std::chrono::steady_clock::time_point StartedAt{};
+	std::chrono::steady_clock::time_point ReadyAt{};
 	std::optional<EAcquisitionPumpResult> Result;
 	bool Started = false, Stopping = false, Finished = false, Ready = false, SourceClosed = false;
 };
