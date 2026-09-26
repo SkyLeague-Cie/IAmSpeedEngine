@@ -17,7 +17,13 @@ void ASpeedController::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	if (bInputSessionPendingV2 && !bInputLifecycleFault) RefreshInputSessionV2();
-	if (InputSessionV2) { ServiceInputSessionV2(); return; }
+	if (InputSessionV2)
+	{
+		ServiceInputSessionV2();
+		ResolveInputSessionRestartCompletionV2();
+		return;
+	}
+	ResolveInputSessionRestartCompletionV2();
 	if (InputSnapshots && !InputSnapshots->IsLifecyclePaused())
 	{
 		const auto Snapshot = InputSnapshots->ReadLatest();
@@ -117,6 +123,8 @@ void ASpeedController::OnPossess(APawn* InPawn)
 
 bool ASpeedController::ReleaseInputLifecycle()
 {
+	// A remap cannot be reported as applied after possession or world teardown.
+	FailInputSessionRestartCompletionV2();
 	if (InputSessionV2 && !ReleaseInputSessionV2()) return false;
 	// Mandatory close happens before ownership is released. Retained worker
 	// references cannot acquire/publish again; copied history stays immutable.

@@ -39,8 +39,47 @@ bool ASpeedController::CanRestartInputSessionAtBoundary() const
 	// activated later by ServiceInputSessionV2. Detached controllers own neither.
 	return bInputSessionRequiredV2 && IsValid(SpeedCar)
 		&& ((InputSessionV2 && !InputSessionV2->Closed) || bInputSessionPendingV2)
+		&& !InputSessionRestartCompletionV2
 		&& !bInputLifecycleFault
 		&& !Speed::Input::FPresentationInputScope::IsActive();
+}
+
+bool ASpeedController::RestartInputSessionAtBoundaryWithCompletion(TFunction<void(bool)> Completion)
+{
+	check(IsInGameThread());
+	if (!Completion || !RestartInputSessionAtBoundary()) return false;
+	InputSessionRestartCompletionV2 = MoveTemp(Completion);
+	return true;
+}
+
+void ASpeedController::FailInputSessionRestartCompletionV2()
+{
+	check(IsInGameThread());
+	if (InputSessionRestartCompletionV2)
+	{
+		auto Completion = MoveTemp(InputSessionRestartCompletionV2);
+		Completion(false);
+	}
+}
+
+void ASpeedController::ResolveInputSessionRestartCompletionV2()
+{
+	check(IsInGameThread());
+	if (!InputSessionRestartCompletionV2) return;
+	if (bInputLifecycleFault || (InputSessionV2 && InputSessionV2->Closed))
+	{
+		FailInputSessionRestartCompletionV2();
+		return;
+	}
+	const auto Session = InputSessionV2;
+	if (bInputSessionPendingV2 || !Session) return;
+	if (Session->Acquisition && Session->Acquisition->StartupState(Session->AcquisitionStartupTimeout)
+		!= Speed::Input::V2::EAcquisitionStartup::Ready) return;
+	if (Session->Descriptor ? (!Session->RegistryBound || Session->PendingCommand
+		|| (!IsPaused() && Session->RegistryPaused))
+		: (Session->ResumePending || (!IsPaused() && Session->Stream->IsLifecyclePaused()))) return;
+	auto Completion = MoveTemp(InputSessionRestartCompletionV2);
+	Completion(true);
 }
 
 bool ASpeedController::RestartInputSessionAtBoundary()

@@ -169,11 +169,59 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	Controller->bInputSessionPendingV2 = true;
 	TestTrue(TEXT("possessed controller with a pending session admits boundary restart"),
 		Controller->CanRestartInputSessionAtBoundary());
+	int32 CompletionCalls = 0;
+	bool bLateCompletionApplied = true;
+	TestTrue(TEXT("saved-control restart is admitted before worker activation"),
+		Controller->RestartInputSessionAtBoundaryWithCompletion(
+			[&](bool bApplied) { ++CompletionCalls; bLateCompletionApplied = bApplied; }));
+	TestFalse(TEXT("second saved-control restart is refused while the first is pending"),
+		Controller->CanRestartInputSessionAtBoundary());
+	TestEqual(TEXT("admission is not an activation acknowledgement"), CompletionCalls, 0);
 	Controller->bInputLifecycleFault = true;
+	Controller->ResolveInputSessionRestartCompletionV2();
+	Controller->ResolveInputSessionRestartCompletionV2();
+	TestEqual(TEXT("late worker fault reports one failed completion"), CompletionCalls, 1);
+	TestFalse(TEXT("late fault never reports applied mapping"), bLateCompletionApplied);
 	TestFalse(TEXT("faulted input lifecycle rejects a saved mapping restart"),
 		Controller->CanRestartInputSessionAtBoundary());
 	Controller->bInputSessionRequiredV2 = false;
 	Controller->bInputSessionPendingV2 = false;
+	Controller->bInputLifecycleFault = false;
+	// Exercise the controller completion gate using the states produced by
+	// Bind and Resume receipts. The worker receipt path is tested separately.
+	if (!TestFalse(TEXT("receipt-state fixture starts unpaused"), Controller->IsPaused())) return false;
+	Controller->InputSessionV2 = std::make_shared<Speed::Input::V2::FInputHostSession>();
+	Controller->InputSessionV2->Descriptor.emplace();
+	Controller->InputSessionV2->RegistryBound = true;
+	Controller->InputSessionV2->RegistryPaused = true;
+	Controller->InputSessionV2->PendingCommand = 7;
+	int32 AckCompletionCalls = 0;
+	bool bAckApplied = false;
+	Controller->InputSessionRestartCompletionV2 =
+		[&](bool bApplied) { ++AckCompletionCalls; bAckApplied = bApplied; };
+	Controller->ResolveInputSessionRestartCompletionV2();
+	TestEqual(TEXT("bound registry with Resume pending does not confirm remap"), AckCompletionCalls, 0);
+	Controller->InputSessionV2->PendingCommand = 0;
+	Controller->ResolveInputSessionRestartCompletionV2();
+	TestEqual(TEXT("registry still paused does not confirm unpaused remap"), AckCompletionCalls, 0);
+	Controller->InputSessionV2->RegistryPaused = false;
+	Controller->ResolveInputSessionRestartCompletionV2();
+	TestEqual(TEXT("resumed registry confirms remap once"), AckCompletionCalls, 1);
+	TestTrue(TEXT("resumed registry reports applied"), bAckApplied);
+	// A different admitted remap can fail while Resume is still pending; it
+	// must report rejection without ever first reporting Applied.
+	Controller->InputSessionV2->RegistryPaused = true;
+	Controller->InputSessionV2->PendingCommand = 8;
+	Controller->InputSessionRestartCompletionV2 =
+		[&](bool bApplied) { ++AckCompletionCalls; bAckApplied = bApplied; };
+	Controller->ResolveInputSessionRestartCompletionV2();
+	TestEqual(TEXT("second in-flight remap remains unconfirmed"), AckCompletionCalls, 1);
+	Controller->bInputLifecycleFault = true;
+	Controller->ResolveInputSessionRestartCompletionV2();
+	Controller->ResolveInputSessionRestartCompletionV2();
+	TestEqual(TEXT("rejected in-flight Resume reports one further completion"), AckCompletionCalls, 2);
+	TestFalse(TEXT("rejected in-flight Resume reports failure"), bAckApplied);
+	Controller->InputSessionV2.reset();
 	Controller->bInputLifecycleFault = false;
 	auto Stream = Controller->InputSnapshots;
 	if (!TestTrue(TEXT("controller owns stream"), bool(Stream))) return false;
@@ -339,7 +387,16 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("new lifecycle install after unpossession"), Controller->ConfigureInputProducer(EndSource));
 	Controller->Possess(Car);
 	auto EndStream = Controller->InputSnapshots;
+	Controller->bInputSessionRequiredV2 = true;
+	Controller->bInputSessionPendingV2 = true;
+	int32 CancelledCompletions = 0;
+	bool bCancelledApplied = true;
+	TestTrue(TEXT("pending remap admitted before controller teardown"),
+		Controller->RestartInputSessionAtBoundaryWithCompletion(
+			[&](bool bApplied) { ++CancelledCompletions; bCancelledApplied = bApplied; }));
 	Controller->EndPlay(EEndPlayReason::RemovedFromWorld);
+	TestEqual(TEXT("controller teardown reports one failed pending remap"), CancelledCompletions, 1);
+	TestFalse(TEXT("teardown never reports a physical mapping applied"), bCancelledApplied);
 	TestTrue(TEXT("EndPlay cancels source before releasing controller ownership"), EndSource->Cancellations > 0
 		&& !Controller->InputSnapshots && !Controller->InputProducer);
 	TestTrue(TEXT("retained EndPlay stream is closed"), EndStream && EndStream->IsLifecyclePaused());

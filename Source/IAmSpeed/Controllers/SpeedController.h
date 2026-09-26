@@ -29,6 +29,8 @@ public:
 	ASpeedController();
 	/** Pause, retire the old epoch and queue a fresh immutable mapping session. */
 	bool RestartInputSessionAtBoundary();
+	/** Admit a restart and report its eventual worker activation on the game thread. */
+	bool RestartInputSessionAtBoundaryWithCompletion(TFunction<void(bool)> Completion);
 	/** Read-only admission check for a saved control change before it touches disk or UI. */
 	bool CanRestartInputSessionAtBoundary() const;
 #if !UE_BUILD_SHIPPING
@@ -103,6 +105,8 @@ protected:
 	virtual std::shared_ptr<Speed::Input::V2::FInputHostSession> CreateInputSessionV2(uint64 FirstFrame) { return {}; }
 	virtual bool BindInputPresentationV2() { return true; }
 	bool RefreshInputSessionV2();
+	void ResolveInputSessionRestartCompletionV2();
+	void FailInputSessionRestartCompletionV2();
 	bool HasInputSessionV2() const { return InputSessionV2 != nullptr; }
 	virtual Speed::Input::V2::EControlApplication ExecuteInputControlV2(const Speed::Input::V2::FControlRequest& Request);
 	virtual void HandleInputs();
@@ -174,4 +178,5 @@ private:
 	bool bInputSessionRequiredV2 = false;
 	bool bInputSessionPendingV2 = false;
 	bool bInputLifecycleFault = false;
+	TFunction<void(bool)> InputSessionRestartCompletionV2;
 };
