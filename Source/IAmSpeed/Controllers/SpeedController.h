@@ -29,6 +29,8 @@ public:
 	ASpeedController();
 	/** Pause, retire the old epoch and queue a fresh immutable mapping session. */
 	bool RestartInputSessionAtBoundary();
+	/** Read-only admission check for a saved control change before it touches disk or UI. */
+	bool CanRestartInputSessionAtBoundary() const;
 #if !UE_BUILD_SHIPPING
 	/** Explicit test harness takes over through a separately bound exact producer. */
 	bool UseScenarioInputAuthorityAtBoundary();

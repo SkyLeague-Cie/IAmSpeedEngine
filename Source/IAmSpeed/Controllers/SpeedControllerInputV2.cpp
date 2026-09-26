@@ -32,10 +32,17 @@ bool ASpeedController::UseScenarioInputAuthorityAtBoundary()
 }
 #endif
 
+bool ASpeedController::CanRestartInputSessionAtBoundary() const
+{
+	check(IsInGameThread());
+	return bInputSessionRequiredV2 && !bInputLifecycleFault
+		&& !Speed::Input::FPresentationInputScope::IsActive();
+}
+
 bool ASpeedController::RestartInputSessionAtBoundary()
 {
 	check(IsInGameThread());
-	if (!bInputSessionRequiredV2 || bInputLifecycleFault || Speed::Input::FPresentationInputScope::IsActive())
+	if (!CanRestartInputSessionAtBoundary())
 	{
 		UE_LOG(LogTemp, Error, TEXT("[InputSessionRestartRejected] required=%d fault=%d presentation_scope=%d possessed=%d"),
 			int32(bInputSessionRequiredV2), int32(bInputLifecycleFault),

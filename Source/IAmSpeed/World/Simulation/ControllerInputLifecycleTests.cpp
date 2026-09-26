@@ -93,6 +93,16 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	if (!TestNotNull(TEXT("speed game mode"), GameMode)) return false;
 	auto* Controller = World->SpawnActor<ASpeedController>();
 	if (!TestNotNull(TEXT("controller"), Controller)) return false;
+	TestFalse(TEXT("unpossessed controller cannot accept a saved mapping restart"),
+		Controller->CanRestartInputSessionAtBoundary());
+	Controller->bInputSessionRequiredV2 = true;
+	TestTrue(TEXT("required healthy session admits a saved mapping restart"),
+		Controller->CanRestartInputSessionAtBoundary());
+	Controller->bInputLifecycleFault = true;
+	TestFalse(TEXT("faulted input lifecycle rejects a saved mapping restart"),
+		Controller->CanRestartInputSessionAtBoundary());
+	Controller->bInputSessionRequiredV2 = false;
+	Controller->bInputLifecycleFault = false;
 	if (!Controller->PlayerState) Controller->SetPlayerState(World->SpawnActor<APlayerState>());
 	if (!TestNotNull(TEXT("pause owner player state"), Controller->PlayerState.Get())) return false;
 	ASpeedCar* Car = World->SpawnActor<ASpeedCar>();
