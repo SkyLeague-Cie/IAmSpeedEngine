@@ -35,7 +35,11 @@ bool ASpeedController::UseScenarioInputAuthorityAtBoundary()
 bool ASpeedController::CanRestartInputSessionAtBoundary() const
 {
 	check(IsInGameThread());
-	return bInputSessionRequiredV2 && !bInputLifecycleFault
+	// A true result admits a boundary restart; a pending first session is still
+	// activated later by ServiceInputSessionV2. Detached controllers own neither.
+	return bInputSessionRequiredV2 && IsValid(SpeedCar)
+		&& ((InputSessionV2 && !InputSessionV2->Closed) || bInputSessionPendingV2)
+		&& !bInputLifecycleFault
 		&& !Speed::Input::FPresentationInputScope::IsActive();
 }
 

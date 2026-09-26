@@ -96,13 +96,9 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("unpossessed controller cannot accept a saved mapping restart"),
 		Controller->CanRestartInputSessionAtBoundary());
 	Controller->bInputSessionRequiredV2 = true;
-	TestTrue(TEXT("required healthy session admits a saved mapping restart"),
-		Controller->CanRestartInputSessionAtBoundary());
-	Controller->bInputLifecycleFault = true;
-	TestFalse(TEXT("faulted input lifecycle rejects a saved mapping restart"),
+	TestFalse(TEXT("required flag alone does not admit a detached mapping restart"),
 		Controller->CanRestartInputSessionAtBoundary());
 	Controller->bInputSessionRequiredV2 = false;
-	Controller->bInputLifecycleFault = false;
 	if (!Controller->PlayerState) Controller->SetPlayerState(World->SpawnActor<APlayerState>());
 	if (!TestNotNull(TEXT("pause owner player state"), Controller->PlayerState.Get())) return false;
 	ASpeedCar* Car = World->SpawnActor<ASpeedCar>();
@@ -169,6 +165,16 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	if (!TestTrue(TEXT("install lifecycle producer"), Controller->ConfigureInputProducer(Source))) return false;
 	Controller->Possess(Car);
 	if (!TestTrue(TEXT("real possession"), Controller->GetPawn() == Car)) return false;
+	Controller->bInputSessionRequiredV2 = true;
+	Controller->bInputSessionPendingV2 = true;
+	TestTrue(TEXT("possessed controller with a pending session admits boundary restart"),
+		Controller->CanRestartInputSessionAtBoundary());
+	Controller->bInputLifecycleFault = true;
+	TestFalse(TEXT("faulted input lifecycle rejects a saved mapping restart"),
+		Controller->CanRestartInputSessionAtBoundary());
+	Controller->bInputSessionRequiredV2 = false;
+	Controller->bInputSessionPendingV2 = false;
+	Controller->bInputLifecycleFault = false;
 	auto Stream = Controller->InputSnapshots;
 	if (!TestTrue(TEXT("controller owns stream"), bool(Stream))) return false;
 	TestTrue(TEXT("possession creates a fresh generation without poll"), Source->Token && BeforePossession
@@ -316,6 +322,10 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("stopped resume resets source without starting a frame"), Controller->SetPause(false));
 	TestEqual(TEXT("stopped resume never polls"), Source->Calls.load(), StoppedPolls);
 	Controller->UnPossess();
+	Controller->bInputSessionRequiredV2 = true; // Guard against a stale flag even if cleanup changes later.
+	TestFalse(TEXT("detached controller rejects remap despite its stale required flag"),
+		Controller->CanRestartInputSessionAtBoundary());
+	Controller->bInputSessionRequiredV2 = false;
 	TestTrue(TEXT("unpossession closes real source"), Source->Cancellations > 0);
 	TestFalse(TEXT("retained detached stream cannot acquire"), Stream->Consume(3).has_value());
 	TestFalse(TEXT("retained detached stream cannot publish"), Stream->PublishCompleted(2));
