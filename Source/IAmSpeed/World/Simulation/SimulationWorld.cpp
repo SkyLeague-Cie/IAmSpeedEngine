@@ -204,6 +204,12 @@ namespace Speed
 		return StableId ? *StableId : 0;
 	}
 
+	void FSimulationWorld::NotifyCanonicalFramePublished(uint64 NumFrame)
+	{
+		for (const FSimulationBodyRecord& Body : Bodies)
+			if (Body.Adapter) Body.Adapter->OnCanonicalFramePublished(NumFrame);
+	}
+
 	FSimulationSnapshot FSimulationWorld::CaptureSnapshot(
 		const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation) const
 	{

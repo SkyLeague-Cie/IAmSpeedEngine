@@ -115,6 +115,7 @@ namespace Speed
 		bool ApplyInputsForFrame(uint64 NumFrame, const SimulationBoundary::FInputJournal& Journal);
 		/** Builds a values-only immutable output snapshot for one completed frame. */
 		FSimulationSnapshot CaptureSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false) const;
+		void NotifyCanonicalFramePublished(uint64 NumFrame);
 		/** Atomically validates and restores a snapshot captured from this registry. */
 		bool RestoreSnapshot(const FSimulationSnapshot& Snapshot, uint64 ExpectedInputJournalHash);
 		int32 NumBodies() const { return Bodies.Num(); }

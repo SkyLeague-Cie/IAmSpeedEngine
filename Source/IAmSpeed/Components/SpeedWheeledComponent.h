@@ -8,6 +8,8 @@
 #include "Netcode/SpeedPhysicsComponent.h"
 #include "Netcode/SpeedWheeledPhysicsComponent.h"
 #include <atomic>
+#include <memory>
+#include "IAmSpeed/Input/InputStream.h"
 
 #include "SpeedWheeledComponent.generated.h"
 
@@ -144,6 +146,8 @@ public:
 	void SetPhysThrottleInput(const float& Throttle);
 	void SetPhysBrakeInput(const float& Brake);
 	void SetPhysSteeringInput(const float& Steering);
+	/** GameThread lifecycle boundary. The worker retains only a values producer. */
+	void SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream);
 	/** Opt-in generic camera input; SL keeps its independent legacy input adapter. */
 	void EnableGenericCameraInput(bool bEnabled);
 	bool SetHeldCameraBack(bool bBack);
@@ -151,6 +155,7 @@ public:
 	bool SetHeldCameraPitch(float Value);
 	void ClearHeldCameraInput();
 	void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const override;
+	void OnCanonicalFramePublished(uint64 NumFrame) override;
 
 	void RegisterWheelGroundContact(const SWheelGroundContact& Contact) override;
 
@@ -670,6 +675,12 @@ private:
 	void ClearWheelSimulationPointers();
 	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */
 	void ConsumePendingLiveWheeledInputs();
+	bool ConsumeProducedWheeledInputs(uint64 CanonicalFrame);
+	FCriticalSection FrameInputProducerMutex;
+	std::shared_ptr<Speed::Input::FInputStream> FrameInputStream;
+	// Simulation-lane handle latched for this frame, including in-flight detach.
+	std::shared_ptr<Speed::Input::FInputStream> ConsumedFrameInputStream;
+	bool bResetProducedWheeledInputs = false; // Protected by FrameInputProducerMutex.
 	void UpdateWheeledPhysicalInputFromUser(bool bForce = false);
 	void RestoreWheeledPhysicalInputFromState();
 	void SyncWheeledPhysicalInputToState();

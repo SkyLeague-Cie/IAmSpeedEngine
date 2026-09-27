@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "IAmSpeed/Input/InputStream.h"
+#include <memory>
 #include "SpeedController.generated.h"
 
 class ASpeedCar;
@@ -22,6 +24,15 @@ class IAMSPEED_API ASpeedController : public APlayerController
 	GENERATED_BODY()
 
 public:
+	void Tick(float DeltaSeconds) override;
+	/** Presentation only: callback receives const values, never a physical writer.
+	 * Name is explicitly associated with a slot; unknown slots/duplicate names fail. */
+	bool BindAction(const FString& Name, Speed::Input::FActionId Action,
+		Speed::Input::FInputPresentationBindings::FCallback Callback);
+	/** Optional values-only source installation before possession. This is a
+	 * lifecycle operation, never device acquisition or a GameThread input feed.
+	 * No source is installed by default; the real device backend is unresolved. */
+	bool ConfigureInputProducer(std::shared_ptr<Speed::Input::IInputProducer> Producer);
 	/** Binds the common IAmSpeed driving actions to this controller. */
 	virtual void SetupEnhancedInputComponent(UEnhancedInputComponent* EnhancedInputComponent);
 
@@ -52,6 +63,7 @@ public:
 	bool SetPause(bool bPause, FCanUnpause CanUnpauseDelegate = FCanUnpause()) override;
 
 protected:
+	void HandleInputs(const Speed::Input::FPublishedInputFrame& Snapshot);
 	void SetupInputComponent() override;
 	void OnPossess(APawn* InPawn) override;
 	void OnUnPossess() override;
@@ -96,6 +108,9 @@ protected:
 	UInputAction* CamPitchAction = nullptr;
 
 private:
+	std::shared_ptr<Speed::Input::IInputProducer> InputProducer = nullptr;
+	std::shared_ptr<Speed::Input::FInputStream> InputSnapshots;
+	Speed::Input::FInputPresentationBindings PresentationBindings;
 	/** Updates the worker owned by the authoritative IAmSpeed game mode. */
 	void SetStandaloneSimulationPaused(bool bPaused);
 };
