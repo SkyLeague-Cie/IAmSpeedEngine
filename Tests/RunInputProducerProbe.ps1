@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)][string]$VcVars64,
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [Parameter(Mandatory = $true)][string]$Summarizer,
-    [string]$Python = 'python'
+    [string]$Python = 'python',
+    [ValidateSet('InputProducerProbe', 'TestInputProducerProbe', 'WheeledTestProfileProbe', 'WheeledPhaseContractProbe')]
+    [string]$ProbeName = 'InputProducerProbe'
 )
 $ErrorActionPreference = 'Stop'
 $moduleRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -13,9 +15,9 @@ $batch = @"
 @echo off
 call "$VcVars64" -vcvars_ver=14.38
 if errorlevel 1 exit /b %errorlevel%
-cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /I"$moduleRoot\Source" "$PSScriptRoot\InputProducerProbe.cpp" "$moduleRoot\Source\IAmSpeed\Input\InputPresentationScope.cpp" /Fe:"$outputPath\InputProducerProbe.exe" /link /STACK:16777216
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /I"$moduleRoot\Source" "$PSScriptRoot\$ProbeName.cpp" "$moduleRoot\Source\IAmSpeed\Input\InputPresentationScope.cpp" /Fe:"$outputPath\$ProbeName.exe" /link /STACK:16777216
 if errorlevel 1 exit /b %errorlevel%
-"$outputPath\InputProducerProbe.exe"
+"$outputPath\$ProbeName.exe"
 exit /b %errorlevel%
 "@
 $commandFile = Join-Path $outputPath 'probe.cmd'
@@ -31,6 +33,7 @@ $metadata = @{
     status = $(if ($probeExit -eq 0) { 'passed' } else { 'failed' })
     total_seconds = $watch.Elapsed.TotalSeconds
     operation = 'standalone_input_contract_probe_not_unreal_build'
+    probe = $ProbeName
     exit_code = $probeExit
     compiler = 'MSVC 14.38 (vcvars_ver=14.38)'
     command_file = 'probe.cmd'

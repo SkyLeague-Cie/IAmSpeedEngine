@@ -8,6 +8,9 @@
 
 namespace Speed::Input
 {
+#if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS
+struct FControllerInputTestAccess;
+#endif
 struct FPublishedInputFrame
 {
 	FInputFrame Frame;
@@ -20,18 +23,23 @@ struct FPublishedInputFrame
  */
 class FInputStream final
 {
+#if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS
+	friend struct FControllerInputTestAccess;
+#endif
 public:
 	explicit FInputStream(std::shared_ptr<IInputProducer> Producer) : Source(std::move(Producer)) {}
 	std::optional<FInputFrame> Consume(FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive() || !Source) return std::nullopt;
 		std::lock_guard<std::mutex> Lock(Mutex);
-		if (!Active) return std::nullopt;
+		if (!Active || LifecyclePaused) return std::nullopt;
 		const auto& Recorded = History[Frame % HistoryCapacity];
-		if (Recorded && Recorded->GetConsumptionFrame() == Frame) return Recorded;
+		if (Recorded && Recorded->GetConsumptionFrame() == Frame)
+			return HistoryEpoch[Frame % HistoryCapacity] == ControlEpoch ? Recorded : std::nullopt;
 		auto Input = Source->Produce(Frame);
 		if (!Input || !Input->IsValid() || Input->GetConsumptionFrame() != Frame) return std::nullopt;
 		History[Frame % HistoryCapacity] = Input;
+		HistoryEpoch[Frame % HistoryCapacity] = ControlEpoch;
 		return Input;
 	}
 	// Suppressed live frames (sealed test owns input) must not be published as
@@ -40,22 +48,51 @@ public:
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Mutex);
-		return Active && Source && Source->Skip(Frame);
+		return Active && !LifecyclePaused && Source && Source->Skip(Frame);
 	}
 	// Mandatory lifecycle cleanup is allowed during presentation. Existing copies
 	// stay immutable; even a previously latched worker cannot consume/publish again.
-	void Deactivate()
+	EInputLifecycleResult Deactivate()
 	{
 		std::lock_guard<std::mutex> Lock(Mutex);
+		if (!Active) return CloseResult;
 		Active = false;
+		LifecyclePaused = true;
+		CloseResult = Source ? Source->CancelLifecycle() : EInputLifecycleResult::UnaffectedByPolicy;
+		return CloseResult;
+	}
+	// Owner must quiesce its worker first. The lock also prevents a retained
+	// in-flight stream reference from publishing an obsolete control epoch.
+	EInputLifecycleResult SetLifecyclePaused(bool Paused)
+	{
+		if (FPresentationInputScope::IsActive()) return EInputLifecycleResult::Rejected;
+		std::lock_guard<std::mutex> Lock(Mutex);
+		if (!Active || !Source) return EInputLifecycleResult::Rejected;
+		if (LifecycleInitialized && LifecyclePaused == Paused && LastControlResult != EInputLifecycleResult::Rejected) return LastControlResult;
+		LifecyclePaused = true; // Fail closed on every rejected transition.
+		LastControlResult = EInputLifecycleResult::Rejected;
+		if (ControlEpoch == std::numeric_limits<std::uint64_t>::max())
+			return EInputLifecycleResult::Rejected;
+		++ControlEpoch;
+		const auto Result = Source->ApplyLifecyclePause(Paused);
+		if (Result == EInputLifecycleResult::Rejected) return Result;
+		LifecycleInitialized = true;
+		LifecyclePaused = Paused;
+		LastControlResult = Result;
+		return Result;
+	}
+	bool IsLifecyclePaused() const
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		return LifecyclePaused || !Active;
 	}
 	bool PublishCompleted(FFrameNumber Frame)
 	{
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Mutex);
-		if (!Active) return false;
+		if (!Active || LifecyclePaused) return false;
 		const auto& Input = History[Frame % HistoryCapacity];
-		if (!Input || Input->GetConsumptionFrame() != Frame) return false;
+		if (!Input || Input->GetConsumptionFrame() != Frame || HistoryEpoch[Frame % HistoryCapacity] != ControlEpoch) return false;
 		if (Latest && Latest->Frame.GetConsumptionFrame() == Frame) return true;
 		if (Serial == std::numeric_limits<std::uint64_t>::max()) return false;
 		Latest = FPublishedInputFrame{*Input, ++Serial};
@@ -79,6 +116,12 @@ private:
 	std::optional<FPublishedInputFrame> Latest;
 	std::uint64_t Serial = 0;
 	bool Active = true;
+	bool LifecyclePaused = false;
+	bool LifecycleInitialized = false;
+	std::uint64_t ControlEpoch = 1;
+	std::array<std::uint64_t, HistoryCapacity> HistoryEpoch{};
+	EInputLifecycleResult LastControlResult = EInputLifecycleResult::UnaffectedByPolicy;
+	EInputLifecycleResult CloseResult = EInputLifecycleResult::UnaffectedByPolicy;
 };
 
 /** GT-only named bindings. Registration order is dispatch order. Names are
