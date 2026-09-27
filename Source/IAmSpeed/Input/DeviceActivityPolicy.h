@@ -16,6 +16,9 @@ struct FActivityConfig
 	// Optional startup owner. A device must have supplied a real reading first.
 	// No fallback is made after an owner disconnects or while a lock is set.
 	std::optional<EDeviceKind> StartupPreferredKind;
+	// One local player retains a healthy gamepad owner when an emulator
+	// mirrors its activity as another GameInput gamepad.
+	bool RetainSameKindOwner = false;
 };
 struct FActivityState
 {
@@ -139,6 +142,13 @@ public:
 				}
 				if (Winner && Remembered && *Winner != *Remembered && Trackers.count(*Remembered)
 					&& LastSwitch && Frame - *LastSwitch < Config.MinimumResidenceFrames) Winner = Remembered;
+				if (Winner && Remembered && *Winner != *Remembered && Config.RetainSameKindOwner)
+				{
+					const auto Owner = Trackers.find(*Remembered);
+					if (Owner != Trackers.end() && Owner->second.HasBaseline
+						&& Owner->second.Kind == EDeviceKind::Gamepad
+						&& Owner->second.Kind == Trackers.at(*Winner).Kind) Winner = Remembered;
+				}
 				if (!Winner && !Remembered && Config.StartupPreferredKind)
 				{
 					// Stable ID order within the preferred kind. A connected device with

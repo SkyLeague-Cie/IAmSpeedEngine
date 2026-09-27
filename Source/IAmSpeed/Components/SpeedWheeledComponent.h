@@ -834,6 +834,7 @@ private:
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedCameraInputBoundaryTest;
+	friend class FGenericCameraInputLifecycleTest;
 	friend class FIAmSpeedWheeledInertiaCovarianceTest;
 #endif
 	std::atomic<bool> bTestInputOverrideEnabled{false};

@@ -13,6 +13,45 @@ int main()
 {
 	Check(FDeviceActivityPolicy::ValidConfig(Config()), "explicit candidate config valid");
 	{
+		auto C=Config(3); C.RetainSameKindOwner=true;
+		FDeviceActivityPolicy P(C); P.Sync(Devices());
+		for (auto N : {1,2,3}) P.Observe(Id(static_cast<std::uint8_t>(N)),1,1,{});
+		P.Observe(Id(1),1,2,Button(true));
+		Check(P.Decide(0)->Id==Id(1), "first gamepad claims owner");
+		P.Observe(Id(3),1,3,Button(true));
+		Check(P.Decide(1)->Id==Id(1), "mirrored gamepad cannot steal during residence");
+		P.Observe(Id(3),1,4,Button(false)); P.Decide(2); P.Decide(3);
+		P.Observe(Id(3),1,5,Button(true));
+		Check(P.Decide(4)->Id==Id(1), "mirrored gamepad cannot steal after residence");
+		P.Observe(Id(2),1,5,Button(true));
+		Check(P.Decide(5)->Id==Id(2), "suppressed pad stamp does not block keyboard handoff");
+		P.Observe(Id(1),1,6,Button(false)); P.Decide(6);
+		P.Observe(Id(1),1,7,Button(true));
+		Check(P.Decide(7)->Id==Id(2), "kind change observes minimum residence");
+		P.Observe(Id(1),1,8,Button(false)); P.Decide(8);
+		P.Observe(Id(1),1,9,Button(true));
+		Check(P.Decide(9)->Id==Id(1), "gamepad activity reclaims from keyboard");
+		auto D=Devices(); D[0].Connected=false; P.Sync(D);
+		P.Observe(Id(3),1,10,Button(false)); Check(!P.Decide(10), "disconnected owner neutral");
+		P.Observe(Id(3),1,11,Button(true));
+		Check(P.Decide(11)->Id==Id(3), "other gamepad takes over after disconnect");
+		P.SetPaused(true); Check(!P.Decide(12), "pause neutralizes retained owner");
+		P.SetPaused(false); P.Observe(Id(3),1,12,Button(true));
+		Check(P.Decide(13)->Id==Id(3), "fresh held reading resumes owner");
+		P.SetLock(Id(1)); Check(!P.Decide(14), "absent explicit lock outranks policy");
+		D[0].Connected=true; D[0].Revision=2; P.Sync(D); P.Observe(Id(1),2,13,Button(true));
+		Check(P.Decide(15)->Id==Id(1), "lock selects reconnected owner on real reading");
+	}
+	{
+		auto C=Config(); C.RetainSameKindOwner=true;
+		FDeviceActivityPolicy P(C); P.Sync(Devices());
+		P.Observe(Id(1),1,1,{}); P.Observe(Id(3),1,1,{});
+		P.Observe(Id(1),1,2,Button(true)); Check(P.Decide(0)->Id==Id(1), "revision fixture owner");
+		auto D=Devices(); D[0].Revision=2; P.Sync(D);
+		P.Observe(Id(3),1,3,Button(true));
+		Check(P.Decide(1)->Id==Id(3), "unread new revision cannot retain owner");
+	}
+	{
 		auto C = Config(30); C.StartupPreferredKind = EDeviceKind::Gamepad;
 		Check(FDeviceActivityPolicy::ValidConfig(C), "configured startup preference valid");
 		FDeviceActivityPolicy P(C); P.Sync(Devices());

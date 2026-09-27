@@ -36,74 +36,41 @@ bool FGenericCameraInputLifecycleTest::RunTest(const FString& Parameters)
 	auto* SecondMovement = CastChecked<USpeedWheeledComponent>(Second->GetVehicleMovement());
 	FirstMovement->EnableGenericCameraInput(true);
 	SecondMovement->EnableGenericCameraInput(true);
-	TArray<UInputAction*> Actions;
-	for (const FName Name : { FName(TEXT("StartBackCameraAction")), FName(TEXT("CamYawAction")), FName(TEXT("CamPitchAction")) })
-	{
-		auto* Property = FindFProperty<FObjectPropertyBase>(ASpeedController::StaticClass(), Name);
-		if (!TestNotNull(TEXT("generic action property"), Property)) return false;
-		auto* Action = NewObject<UInputAction>(Controller);
-		Action->ValueType = EInputActionValueType::Axis1D;
-		Property->SetObjectPropertyValue_InContainer(Controller, Action);
-		Actions.Add(Action);
-	}
 	TStrongObjectPtr<UEnhancedInputComponent> Input(NewObject<UEnhancedInputComponent>(Controller));
 	Controller->SetupEnhancedInputComponent(Input.Get());
-	struct FAuthoredActionInstance : FInputActionInstance
-	{
-		FAuthoredActionInstance(const UInputAction* Action, float InValue) : FInputActionInstance(Action)
-		{
-			Value = FInputActionValue(InValue);
-			TriggerEvent = ETriggerEvent::Triggered;
-		}
-	};
-	auto Execute = [&](int32 ActionIndex, ETriggerEvent Event, float Value)
-	{
-		int32 Count = 0;
-		const FAuthoredActionInstance Instance(Actions[ActionIndex], Value);
-		for (const auto& Binding : Input->GetActionEventBindings())
-			if (Binding->GetAction() == Actions[ActionIndex] && Binding->GetTriggerEvent() == Event)
-			{
-				Binding->Execute(Instance);
-				++Count;
-			}
-		TestEqual(TEXT("one delegate executed per camera event"), Count, 1);
-	};
+	TestEqual(TEXT("no native UE physical bindings"), Input->GetActionEventBindings().Num(), 0);
 	int32 HistoryFrame = 0;
 	auto Capture = [&](USpeedWheeledComponent* Movement)
 	{
-		FNetworkWheeledSpeedInputState Packet;
-		Packet.LocalFrame = ++HistoryFrame;
-		Packet.BuildData(Movement);
-		return Packet.WheeledInput.Camera;
+		const int32 Frame = ++HistoryFrame;
+		return Movement->CaptureNetworkCameraInput(Frame, Frame);
 	};
 	Controller->Possess(First);
 	TestTrue(TEXT("first possession acknowledged"), Controller->GetPawn() == First);
-	Execute(0, ETriggerEvent::Started, 1);
-	Execute(1, ETriggerEvent::Triggered, 1);
-	Execute(2, ETriggerEvent::Triggered, -1);
+	First->SetCameraBackInput(true);
+	First->SetCameraYawInput(1);
+	First->SetCameraPitchInput(-1);
 	const auto Held = Capture(FirstMovement);
-	TestTrue(TEXT("six-binding press path reaches complete held input"), Held.IsBack() && Held.Yaw == 127 && Held.Pitch == -127);
+	TestTrue(TEXT("current owner retains complete camera axes"), Held.IsBack() && Held.Yaw == 127 && Held.Pitch == -127);
 	TestFalse(TEXT("other owner receives no camera input"), Capture(SecondMovement).IsPresent());
-	Execute(0, ETriggerEvent::Completed, 1);
-	Execute(1, ETriggerEvent::Completed, 1);
-	Execute(2, ETriggerEvent::Completed, -1);
+	First->SetCameraBackInput(false);
+	First->SetCameraYawInput(0);
+	First->SetCameraPitchInput(0);
 	const auto Released = Capture(FirstMovement);
-	TestTrue(TEXT("Completed delegates clear axes even with a nonzero supplied value"),
+	TestTrue(TEXT("explicit release clears every axis"),
 		!Released.IsBack() && Released.Yaw == 0 && Released.Pitch == 0);
-	Execute(0, ETriggerEvent::Started, 1);
-	Execute(1, ETriggerEvent::Triggered, 1);
+	First->SetCameraBackInput(true);
+	First->SetCameraYawInput(1);
 	Second->SetCameraPitchInput(-1); // Simulate input left on a previously controlled pawn.
 	Controller->Possess(Second);
 	TestTrue(TEXT("replacement possession acknowledged"), Controller->GetPawn() == Second);
 	TestFalse(TEXT("old pawn held input cleared by possession"), Capture(FirstMovement).IsPresent());
 	TestFalse(TEXT("new pawn old held input cleared by possession"), Capture(SecondMovement).IsPresent());
-	Execute(2, ETriggerEvent::Triggered, -1);
-	TestEqual(TEXT("delegates route to replacement pawn"), int32(Capture(SecondMovement).Pitch), -127);
+	Second->SetCameraPitchInput(-1);
+	TestEqual(TEXT("new owner accepts fresh camera input"), int32(Capture(SecondMovement).Pitch), -127);
 	Controller->UnPossess();
 	TestNull(TEXT("unpossessed controller"), Controller->GetPawn());
 	TestFalse(TEXT("unpossession clears last pawn mailbox"), Capture(SecondMovement).IsPresent());
-	Execute(0, ETriggerEvent::Started, 1);
-	TestFalse(TEXT("unpossessed callback cannot mutate old pawn"), Capture(SecondMovement).IsPresent());
 	return true;
 }
 #endif

@@ -1,11 +1,14 @@
 #include "DeviceInputHost.h"
 #include <atomic>
+#include <exception>
+#include "HAL/PlatformTime.h"
 
 #if PLATFORM_WINDOWS && !UE_SERVER
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "Windows/PreWindowsApi.h"
 THIRD_PARTY_INCLUDES_START
 #include "Windows/GameInputRawAcquisition.h"
+#include "Windows/GameInputWarmContext.h"
 THIRD_PARTY_INCLUDES_END
 #include "Windows/PostWindowsApi.h"
 #include "Windows/HideWindowsPlatformTypes.h"
@@ -21,21 +24,42 @@ namespace
 class FNativeGameInputAcquisition final : public IInputAcquisition
 {
 public:
-    FNativeGameInputAcquisition(uint64_t Id, FActivityConfig Config, std::shared_ptr<FRawAcquisitionJournal> J)
-        : Producer(Id), Activity(Config), Journal(std::move(J)) {}
+    FNativeGameInputAcquisition(uint64_t Id, FActivityConfig Config, std::shared_ptr<FRawAcquisitionJournal> J,
+        std::shared_ptr<Windows::FGameInputWarmContext> InWarm)
+        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)) {}
     EAcquisitionPumpResult Pump() override
     {
         if (Closed) return EAcquisitionPumpResult::Closed;
         if (!Source)
         {
+#if !UE_BUILD_SHIPPING
+            const double StartedAt = FPlatformTime::Seconds();
+#endif
+            if (Warm && IsInGameThread())
+            { UE_LOG(LogTemp, Error, TEXT("Warm GameInput catalogue creation rejected on GameThread")); return EAcquisitionPumpResult::Rejected; }
             Microsoft::WRL::ComPtr<GameInput::v3::IGameInput> Api;
-            const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
-            if (FAILED(Created))
-            { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
-            auto Raw=Windows::FGameInputSelectedSource::CreateRaw(Api.Get(),Producer,Activity);
+            auto Catalogue = Warm ? Warm->GetOrCreate(nullptr) : nullptr;
+            const bool Reused = bool(Catalogue);
+            if (!Catalogue)
+            {
+                const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
+                if (FAILED(Created))
+                { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
+            }
+#if !UE_BUILD_SHIPPING
+            const double CreatedAt = FPlatformTime::Seconds();
+#endif
+            if (Warm && !Catalogue) Catalogue = Warm->GetOrCreate(Api.Get());
+            auto Raw = Warm
+                ? Windows::FGameInputSelectedSource::CreateRaw(std::move(Catalogue), Producer, Activity, true)
+                : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Activity, true);
             if (!Raw)
             { UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
             Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
+#if !UE_BUILD_SHIPPING
+            UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStartup] game_input_create_ms=%.3f discovery_ms=%.3f catalogue_reused=%d"),
+                1000.0 * (CreatedAt - StartedAt), 1000.0 * (FPlatformTime::Seconds() - CreatedAt), int32(Reused));
+#endif
         }
 		const auto Result = Source->Pump();
 		if (const auto Diagnostic = Source->TakeNeutralizeDiagnostic())
@@ -58,11 +82,41 @@ private:
     uint64_t Producer;
     FActivityConfig Activity;
     std::shared_ptr<FRawAcquisitionJournal> Journal;
+    std::shared_ptr<Windows::FGameInputWarmContext> Warm;
     std::unique_ptr<Windows::FGameInputRawAcquisition> Source;
     bool Closed=false;
 };
 }
 #endif
+FDeviceInputWarmContext::~FDeviceInputWarmContext()
+{
+    if (!Close()) std::terminate();
+}
+
+bool FDeviceInputWarmContext::Close()
+{
+#if PLATFORM_WINDOWS && !UE_SERVER
+    auto Context = std::static_pointer_cast<Windows::FGameInputWarmContext>(Native);
+    if (Context && !Context->Close()) return false;
+#endif
+    Native.reset();
+    return true;
+}
+
+std::shared_ptr<FDeviceInputWarmContext> FDeviceInputWarmContext::Create()
+{
+#if PLATFORM_WINDOWS && !UE_SERVER
+    auto Result = std::shared_ptr<FDeviceInputWarmContext>(new FDeviceInputWarmContext());
+    Result->Native = std::make_shared<Windows::FGameInputWarmContext>();
+    return Result;
+#else
+    return {};
+#endif
+}
+std::shared_ptr<FDeviceInputWarmContext> CreateDeviceInputWarmContext()
+{
+    return FDeviceInputWarmContext::Create();
+}
 FStreamEpoch AllocateInputStreamEpoch()
 {
 	static std::atomic<std::uint64_t> Next{1};
@@ -110,6 +164,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	Binding.Id = Binding.Epoch = Binding.Controller = Binding.Producer = Binding.Journal = Epoch.Value;
 	Binding.First = Config.FirstFrame; Binding.Kind = EProducerContract::Device;
 	Binding.Contract = Config.Contract; Binding.Processing = Config.Processing;
+	Binding.ResumeRearmMask = Config.ResumeRearmMask;
 	// Producer construction is deferred to the physical registry worker.
 	auto Host = FInputHostSession::CreateDescriptor(std::move(Binding));
 	if (!Host)
@@ -121,29 +176,15 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		if (!Host->Controls)
 		{ UE_LOG(LogTemp, Error, TEXT("Independent input control reader rejected")); return {}; }
 	}
-	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal);
+	auto Warm = Config.WarmContext
+		? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
+	if (Config.WarmContext && !Warm)
+	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: warm context already closed")); return {}; }
+	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm));
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
+	Host->AcquisitionStartupTimeout = Config.StartupTimeout;
 	if (!Host->Acquisition->Start(Config.Cadence))
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input acquisition worker start rejected")); return {}; }
-	if (!Host->Acquisition->WaitForFirstPublication(Config.StartupTimeout))
-	{
-		const auto Result = Host->Acquisition->LastResult();
-		const TCHAR* ResultName = TEXT("None");
-		if (Result)
-		{
-			switch (*Result)
-			{
-			case EAcquisitionPumpResult::Installed: ResultName = TEXT("Installed"); break;
-			case EAcquisitionPumpResult::NoChange: ResultName = TEXT("NoChange"); break;
-			case EAcquisitionPumpResult::Neutralized: ResultName = TEXT("Neutralized"); break;
-			case EAcquisitionPumpResult::Rejected: ResultName = TEXT("Rejected"); break;
-			case EAcquisitionPumpResult::Closed: ResultName = TEXT("Closed"); break;
-			}
-		}
-		UE_LOG(LogTemp, Error, TEXT("Independent input acquisition startup %s; last_result=%s"),
-			Host->Acquisition->HasFinished() ? TEXT("worker_terminated") : TEXT("first_publication_timeout"), ResultName);
-		return {};
-	}
 	return Host;
 #else
 	(void)Config;

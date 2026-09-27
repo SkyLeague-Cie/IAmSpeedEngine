@@ -15,6 +15,7 @@ struct FInputHostSession final
 	std::shared_ptr<FInputStream> Stream;
 	std::shared_ptr<FRawAcquisitionJournal> Journal;
 	std::unique_ptr<FInputAcquisitionWorker> Acquisition;
+	std::chrono::milliseconds AcquisitionStartupTimeout{0};
 	std::unique_ptr<FControlActionReader> Controls;
 	std::unique_ptr<FInputPresentationBindings> Presentation;
 	std::optional<FSessionDescriptor> Descriptor;

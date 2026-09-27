@@ -225,6 +225,9 @@ int main()
     Check(Q->Submit(C)==ECommandAdmission::Duplicate,"same bytes duplicate");
     auto Alter=C; Alter.Binding.Epoch=2;
     Check(Q->Submit(Alter)==ECommandAdmission::Rejected,"same id altered rejected");
+    Alter=C; Alter.Binding.ResumeRearmMask=std::uint32_t{1} << 3;
+    Check(Q->Submit(Alter)==ECommandAdmission::Rejected,
+        "same id with altered menu rearm policy is not a duplicate");
     FInputSessionRegistry R(Q,42);
     Check(R.ServiceBoundary() && Q->Read(1)->Status==EBoundaryStatus::Applied,"worker creates session");
     Check(R.ConstructionCount()==1,"one construction across retries");
@@ -260,6 +263,14 @@ int main()
         Check(I.PollCount(1)==1,"initial plus step only one Produce");
     }
     {
+        auto Q2=std::make_shared<FInputSessionCommands>(); auto B=Command(1,0); B.Binding=Scenario();
+        B.Binding.ResumeRearmMask=std::uint32_t{1} << 3;
+        Check(Q2->Submit(B)==ECommandAdmission::Enqueued, "scenario rearm request reaches worker");
+        FInputSessionRegistry I(Q2,42); Check(I.ServiceBoundary()
+            && Q2->Read(1)->Status==EBoundaryStatus::Rejected,
+            "menu rearm policy is device-only");
+    }
+    {
         auto Q2=std::make_shared<FInputSessionCommands>(); auto B=Command(1,0); B.Binding=Scenario(); B.Binding.Processing.Step[Throttle]=16;
         Check(Q2->Submit(B)==ECommandAdmission::Enqueued,"policy rejected on worker admission"); FInputSessionRegistry I(Q2,42); I.ServiceBoundary();
         Check(Q2->Read(1)->Status==EBoundaryStatus::Rejected && I.ConstructionCount()==0,"Test cannot request Device filter");
@@ -267,8 +278,11 @@ int main()
     }
     {
         auto Q2=std::make_shared<FInputSessionCommands>(); auto J=std::make_shared<FRawAcquisitionJournal>(7);
-        auto B=Command(1,0); B.Binding=Device(); Check(Q2->Submit(B)==ECommandAdmission::Enqueued,"Device inert bind");
+        auto B=Command(1,0); B.Binding=Device(); B.Binding.ResumeRearmMask=std::uint32_t{1} << 3;
+        Check(Q2->Submit(B)==ECommandAdmission::Enqueued,"Device inert bind with menu rearm policy");
         FInputSessionRegistry I(Q2,42,{{7,J}}); Check(I.ServiceBoundary(),"Device bound paused");
+        Check(I.ReadRegistry()->Bindings[0].ResumeRearmMask==B.Binding.ResumeRearmMask,
+            "worker publishes exact device menu rearm policy");
         Check(!I.PrepareFrame(0) && !I.IsTerminal() && I.PollCount(1)==0,"empty acquisition cannot trigger premature poll");
         auto ResumeDevice=Command(2,1,EBoundaryOperation::Resume); ResumeDevice.Session=1; ResumeDevice.Epoch=1; ResumeDevice.ResumeGeneration=1;
         Check(Q2->Submit(ResumeDevice)==ECommandAdmission::Enqueued && !I.ServiceBoundary(),"Device waits baseline ACK");

@@ -32,10 +32,60 @@ bool ASpeedController::UseScenarioInputAuthorityAtBoundary()
 }
 #endif
 
+bool ASpeedController::CanRestartInputSessionAtBoundary() const
+{
+	check(IsInGameThread());
+	// A true result admits a boundary restart; a pending first session is still
+	// activated later by ServiceInputSessionV2. Detached controllers own neither.
+	return bInputSessionRequiredV2 && IsValid(SpeedCar)
+		&& ((InputSessionV2 && !InputSessionV2->Closed) || bInputSessionPendingV2)
+		&& !InputSessionRestartCompletionV2
+		&& !bInputLifecycleFault
+		&& !Speed::Input::FPresentationInputScope::IsActive();
+}
+
+bool ASpeedController::RestartInputSessionAtBoundaryWithCompletion(TFunction<void(bool)> Completion)
+{
+	check(IsInGameThread());
+	if (!Completion || !RestartInputSessionAtBoundary()) return false;
+	InputSessionRestartCompletionV2 = MoveTemp(Completion);
+	return true;
+}
+
+void ASpeedController::FailInputSessionRestartCompletionV2()
+{
+	check(IsInGameThread());
+	if (InputSessionRestartCompletionV2)
+	{
+		auto Completion = MoveTemp(InputSessionRestartCompletionV2);
+		Completion(false);
+	}
+}
+
+void ASpeedController::ResolveInputSessionRestartCompletionV2()
+{
+	check(IsInGameThread());
+	if (!InputSessionRestartCompletionV2) return;
+	if (bInputLifecycleFault || (InputSessionV2 && InputSessionV2->Closed))
+	{
+		FailInputSessionRestartCompletionV2();
+		return;
+	}
+	const auto Session = InputSessionV2;
+	if (bInputSessionPendingV2 || !Session) return;
+	if (Session->Acquisition && Session->Acquisition->StartupState(Session->AcquisitionStartupTimeout)
+		!= Speed::Input::V2::EAcquisitionStartup::Ready) return;
+	if (Session->Descriptor ? (!Session->RegistryBound || Session->PendingCommand
+		|| (!IsPaused() && Session->RegistryPaused))
+		: (Session->ResumePending || (!IsPaused() && Session->Stream->IsLifecyclePaused()))) return;
+	auto Completion = MoveTemp(InputSessionRestartCompletionV2);
+	Completion(true);
+}
+
 bool ASpeedController::RestartInputSessionAtBoundary()
 {
 	check(IsInGameThread());
-	if (!bInputSessionRequiredV2 || bInputLifecycleFault || Speed::Input::FPresentationInputScope::IsActive())
+	if (!CanRestartInputSessionAtBoundary())
 	{
 		UE_LOG(LogTemp, Error, TEXT("[InputSessionRestartRejected] required=%d fault=%d presentation_scope=%d possessed=%d"),
 			int32(bInputSessionRequiredV2), int32(bInputLifecycleFault),
@@ -132,6 +182,15 @@ bool ASpeedController::ServiceInputSessionV2()
 	check(IsInGameThread());
 	const auto Session = InputSessionV2;
 	if (!Session || Session->Closed) return false;
+	if (Session->Acquisition && Session->Acquisition->StartupState(Session->AcquisitionStartupTimeout)
+		== Speed::Input::V2::EAcquisitionStartup::Failed)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Independent input acquisition failed or timed out; session %llu remains neutral"),
+			Session->Session);
+		bInputLifecycleFault = true;
+		ReleaseInputSessionV2();
+		return false;
+	}
 	if (Session->Controls)
 	{
 		const auto Batch = Session->Controls->Read();
