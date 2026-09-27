@@ -6,6 +6,8 @@
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
 class ISpeedComponent;
+enum class ECanonicalFrameAbortReason : uint8;
+enum class ECanonicalPublicationResult : uint8 { Completed, ValidationFailed, PublicationFailed, CommitInvariantFailed };
 class USSubBody;
 class USphereSubBody;
 class UBoxSubBody;
@@ -116,6 +118,8 @@ namespace Speed
 		/** Builds a values-only immutable output snapshot for one completed frame. */
 		FSimulationSnapshot CaptureSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false) const;
 		void NotifyCanonicalFramePublished(uint64 NumFrame);
+		ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
+		void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;
 		/** Atomically validates and restores a snapshot captured from this registry. */
 		bool RestoreSnapshot(const FSimulationSnapshot& Snapshot, uint64 ExpectedInputJournalHash);
 		int32 NumBodies() const { return Bodies.Num(); }

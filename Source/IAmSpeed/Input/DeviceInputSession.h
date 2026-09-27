@@ -17,6 +17,18 @@ public:
 		const std::array<bool, ActionCount>& DigitalActions)
 		: Device(Identity), Digital(DigitalActions) {}
 
+	EInputLifecycleResult ApplyLifecyclePause(bool Paused) override
+	{
+		return SetPaused(Paused) ? EInputLifecycleResult::Applied : EInputLifecycleResult::Rejected;
+	}
+	EInputLifecycleResult CancelLifecycle() override
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		// Closing never enables acquisition, including when generation is exhausted.
+		bPaused = true;
+		return ResetLocked() ? EInputLifecycleResult::Applied : EInputLifecycleResult::Rejected;
+	}
+
 	// Each call starts a fresh generation, including a same-state reconnect.
 	// The caller must restart its reading cursor from a fresh current state.
 	std::optional<FGeneration> SetConnected(bool Connected)

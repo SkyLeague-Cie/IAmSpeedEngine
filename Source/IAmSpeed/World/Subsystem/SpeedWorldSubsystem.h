@@ -13,6 +13,7 @@
 class ISpeedComponent;
 class USolidSubBody;
 struct FCanonicalFrameContext;
+namespace Speed::Input::V2 { struct FRegistryFrame; struct FInputRegistryView; class FInputSessionRegistry; }
 
 enum class ECanonicalRunControlState : uint8
 {
@@ -61,6 +62,11 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedBoxEquilibriumWorldTest;
+	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FSkyProducedJumpPowerslideWorkerTest;
+	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FIAmSpeedProducedDeviceLifecycleTest;
+	friend class FIAmSpeedControllerInputLifecycleTest;
 #endif
 public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
@@ -85,6 +91,13 @@ public:
 	ERollingManifoldContactState GetRollingManifoldContactState(
 		const USolidSubBody& Body) const;
 
+	bool NeutralizeCanonicalInputs(const Speed::Input::V2::FInputRegistryView& View);
+	bool RetireInputProcessingOnWorker();
+	bool ServiceInputRetirementsAtBoundary();
+	bool InstallCanonicalInputs(const Speed::Input::V2::FRegistryFrame& Frame);
+	bool StageCanonicalScenarioInputs(const FCanonicalFrameContext& Context,
+		Speed::Input::V2::FInputSessionRegistry& Registry);
+	bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context);
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context);
 	/** Validates every registered adapter before any adapter may prepare a frame. */
 	bool ValidateSimulationBindings(FString& OutReason);
@@ -106,6 +119,8 @@ public:
 	}
 	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false);
 	void NotifyCanonicalFramePublished(uint64 NumFrame);
+	ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
+	void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;
 	/** Restores one validated canonical snapshot without advancing simulation time. */
 	bool RestoreSimulationSnapshot(
 		const FSimulationSnapshot& Snapshot,

@@ -1,0 +1,4 @@
+{
+  "schema": "skyleague.native-automation-inventory/v1",
+  "tests": ["IAmSpeed.Simulation.ProducedInputWorkerOrder"]
+}
