@@ -1,34 +1,10 @@
 #pragma once
 
-// Optional Windows leaf. No portable header includes this file. The host must
-// supply Microsoft GameInput v3 include/link dependencies before enabling it.
-// Source-only checkpoint: not included by the Unreal module yet.
 #include "../DeviceInputSession.h"
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-#include <GameInput.h>
-#include <wrl/client.h>
-#include <functional>
-#include <memory>
-#include <exception>
-
-#if GAMEINPUT_API_VERSION != 3
-#error This adapter targets the inspected GameInput v3 API.
-#endif
+#include "GameInputReadings.h"
 
 namespace Speed::Input::Windows
 {
-// Hardware mapping belongs to this platform leaf/host, never the portable core.
-struct FDeviceState
-{
-	std::array<bool, 256> VirtualKeys{};
-	std::uint32_t GamepadButtons = 0;
-	std::array<float, 6> Axes{}; // LT, RT, LX, LY, RX, RY (GameInput ranges).
-	std::uint64_t TimestampMicroseconds = 0;
-};
-
 enum class EPollStatus { NoChange, Updated, Disconnected, Paused, Resynchronized, Failed };
 
 /** One explicitly selected device/kind, no implicit keyboard/gamepad arbitration.
@@ -211,29 +187,6 @@ private:
 		if (!Connected || DisconnectedAtEpoch) LastStatus = EPollStatus::Disconnected;
 		return true;
 	}
-	bool MapReading(FReading& Reading, FActionValues& Values)
-	{
-		using namespace GameInput::v3;
-		FDeviceState State;
-		State.TimestampMicroseconds = Reading.GetTimestamp();
-		if (Kind == GameInputKindKeyboard)
-		{
-			std::array<GameInputKeyState, 256> Keys{};
-			const auto Count = Reading.GetKeyCount();
-			if (Count > Keys.size() || Reading.GetKeyState(static_cast<std::uint32_t>(Keys.size()), Keys.data()) != Count)
-				return false;
-			for (std::uint32_t I = 0; I < Count; ++I) State.VirtualKeys[Keys[I].virtualKey] = true;
-		}
-		else
-		{
-			GameInputGamepadState Pad{};
-			if (!Reading.GetGamepadState(&Pad)) return false;
-			State.GamepadButtons = static_cast<std::uint32_t>(Pad.buttons);
-			State.Axes = {Pad.leftTrigger, Pad.rightTrigger, Pad.leftThumbstickX,
-				Pad.leftThumbstickY, Pad.rightThumbstickX, Pad.rightThumbstickY};
-		}
-		return Mapper(State, Values);
-	}
 	EPollStatus PollLocked()
 	{
 		using namespace GameInput::v3;
@@ -246,39 +199,20 @@ private:
 			if (!Connected || DisconnectedAtEpoch) return EPollStatus::Disconnected;
 		}
 		if (bPaused) return EPollStatus::Paused;
-		bool Changed = false;
-		constexpr std::size_t MaxReadingsPerPoll = 64;
-		for (std::size_t I = 0; I <= MaxReadingsPerPoll; ++I)
-		{
-			TComPtr<FReading> Next;
-			const HRESULT Status = Cursor
-				? Api->GetNextReading(Cursor.Get(), Kind, Device.Get(), Next.GetAddressOf())
-				: Api->GetCurrentReading(Kind, Device.Get(), Next.GetAddressOf());
-			if (Status == GAMEINPUT_E_READING_NOT_FOUND)
-			{
-				LastError = S_OK;
-				return Changed ? EPollStatus::Updated : EPollStatus::NoChange;
-			}
-			if (FAILED(Status)) return HandleReadErrorLocked(Status);
-			LastError = S_OK;
-			if (!Next) return FailLocked(E_UNEXPECTED);
-			if (I == MaxReadingsPerPoll) return ResynchronizeLocked();
-			if (Cursor && Next->GetTimestamp() < Cursor->GetTimestamp()) return ResynchronizeLocked();
-			FActionValues Values{};
-			if (!MapReading(*Next.Get(), Values)) return ResynchronizeLocked();
-			// The callback may run while the SDK or mapper is reading. Recheck under
-			// the mailbox lock and retain it through commit, not just callback entry.
+		const auto Result = Cursor.Poll(*Api.Get(), Device.Get(), Kind, Mapper,
+			[&](const FActionValues& Values)
 			{
 				std::lock_guard<std::mutex> Lock(MailboxMutex);
-				if (EpochExhausted) return EPollStatus::Failed;
-				if (ConnectionEpoch != Epoch || !Connected) return ResynchronizeLocked();
-				if (ReadingSequence == std::numeric_limits<std::uint64_t>::max()
-					|| !Session.Submit(Generation, ReadingSequence + 1, Values)) return ResynchronizeLocked();
+				if (EpochExhausted || ConnectionEpoch != Epoch || !Connected
+					|| ReadingSequence == std::numeric_limits<std::uint64_t>::max()
+					|| !Session.Submit(Generation, ReadingSequence + 1, Values)) return false;
 				++ReadingSequence;
-			}
-			Cursor = std::move(Next); Changed = true;
-		}
-		return ResynchronizeLocked();
+				return true;
+			});
+		LastError = Result.Error;
+		if (Result.Status == EReadBatchStatus::Error) return HandleReadErrorLocked(Result.Error);
+		if (Result.Status == EReadBatchStatus::Resynchronize) return ResynchronizeLocked();
+		return Result.Status == EReadBatchStatus::Updated ? EPollStatus::Updated : EPollStatus::NoChange;
 	}
 
 	TComPtr<FApi> Api;
@@ -301,7 +235,7 @@ private:
 	std::optional<std::uint64_t> DisconnectedAtEpoch;
 	std::uint64_t Generation = 0;
 	std::uint64_t ReadingSequence = 0;
-	TComPtr<FReading> Cursor;
+	FGameInputReadCursor Cursor;
 	std::optional<FFrameNumber> LastFrame;
 	bool bPaused = false;
 	EPollStatus LastStatus = EPollStatus::NoChange;

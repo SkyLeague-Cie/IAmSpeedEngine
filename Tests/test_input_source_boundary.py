@@ -26,8 +26,14 @@ class InputSourceBoundary(unittest.TestCase):
     def test_legacy_conversion_and_exclusive_route(self):
         update = body("Components/SpeedWheeledComponent.cpp", "void USpeedWheeledComponent::UpdateInputs()")
         self.assertIn("FromLegacyLocalFrame(NumFrame())", update)
-        self.assertIn("if (!bProduced)", update)
-        self.assertIn("if (!bProduced || IsTestInputOverrideEnabled())", update)
+        self.assertIn("if (CanonicalInputSnapshot)", update)
+        self.assertIn("ValidateProducedInputFrameV2(S.Input)", update)
+        self.assertIn("ApplyProducedInputFrameV2(S.Input)", update)
+        self.assertIn("if (HasLegacyRemoteInputAuthority())", update)
+        self.assertIn("!PrepareLegacyWheeledInput(*CanonicalFrame)", update)
+        self.assertIn("bProducedInputFrameOwned = bProduced ||", update)
+        self.assertNotIn("IsTestInputOverrideEnabled()", update)
+        self.assertNotIn("UserInput", update)
         header = (ROOT / "Controllers/SpeedController.h").read_text()
         self.assertIn("InputProducer = nullptr;", header)
         configure = body("Controllers/SpeedController.cpp", "bool ASpeedController::ConfigureInputProducer(")
@@ -58,28 +64,46 @@ class InputSourceBoundary(unittest.TestCase):
         self.assertNotIn("SpeedCar", handler)
 
     def test_publication_follows_successful_physical_snapshot(self):
-        source = (ROOT / "World/Simulation/SpeedSimulation.cpp").read_text()
-        publish = source.index("if (!SnapshotBuffer.Publish(Snapshot))")
+        source = body("World/Simulation/SpeedSimulation.cpp", "bool ASpeedSimulation::StepCanonicalFrame(")
+        transaction = source.index("SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame")
+        publish = source.index("SnapshotBuffer.Publish(Snapshot)")
+        completed = source.index("if (Publication != ECanonicalPublicationResult::Completed)")
         notify = source.index("NotifyCanonicalFramePublished(Context.NumFrame)")
-        self.assertLess(publish, notify)
-        self.assertIn("return false;", source[publish:notify])
+        self.assertLess(transaction, publish)
+        self.assertLess(publish, completed)
+        self.assertLess(completed, notify)
+        self.assertIn("return false;", source[completed:notify])
+        world = body("World/Simulation/SimulationWorld.cpp", "FSimulationWorld::PublishCanonicalFrame(")
+        validate = world.index("ValidateCanonicalFrameCommit(Frame)")
+        invoke = world.index("Published = Publish();")
+        finalize = world.index("CommitCanonicalFrame(Frame)")
+        self.assertLess(validate, invoke)
+        self.assertLess(invoke, finalize)
+        self.assertIn("return ECanonicalPublicationResult::ValidationFailed;", world[validate:invoke])
+        self.assertIn("return ECanonicalPublicationResult::PublicationFailed;", world[invoke:finalize])
+        self.assertIn("ECanonicalPublicationResult::CommitInvariantFailed", world[finalize:])
         consume = body("Input/InputStream.h", "std::optional<FInputFrame> Consume(")
         self.assertNotIn("Latest =", consume)
 
-    def test_component_writer_guards_precede_mutation(self):
-        for name in ("SetPhysThrottleInput", "SetPhysBrakeInput", "SetPhysSteeringInput", "QueueWheeledInputCommand", "SetTestInputOverrideEnabled"):
+    def test_legacy_component_writers_cannot_mutate_physical_input(self):
+        for name in ("SetPhysThrottleInput", "SetPhysBrakeInput", "SetPhysSteeringInput"):
             writer = body("Components/SpeedWheeledComponent.cpp", f"void USpeedWheeledComponent::{name}(")
-            self.assertIn("if (Speed::Input::FPresentationInputScope::IsActive()) return;", writer)
-            prefix = writer[:writer.index("FPresentationInputScope::IsActive")]
-            self.assertNotIn(".store(", prefix)
-            self.assertNotIn("FScopeLock", prefix)
+            self.assertIn("ensureMsgf(false", writer)
+            for mutation in ("WheeledPhysicalInput.", ".store(", "FScopeLock", "SyncWheeledPhysicalInputToState("):
+                self.assertNotIn(mutation, writer)
+        writer = body("Components/SpeedWheeledComponent.cpp", "void USpeedWheeledComponent::SetTestInputOverrideEnabled(")
+        self.assertLess(writer.index("FPresentationInputScope::IsActive()"), writer.index(".store("))
 
     def test_teardown_bypasses_presentation_guard_and_disables_old_stream(self):
         setter = body("Components/SpeedWheeledComponent.cpp", "void USpeedWheeledComponent::SetFrameInputStream(")
         self.assertIn("if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return;", setter)
         self.assertLess(setter.index("FrameInputStream->Deactivate()"), setter.index("FrameInputStream = MoveTemp(Stream)"))
         detach = body("Controllers/SpeedController.cpp", "void ASpeedController::OnUnPossess(")
-        self.assertLess(detach.index("SetFrameInputStream(nullptr)"), detach.index("InputSnapshots.reset()"))
+        self.assertLess(detach.index("ReleaseInputLifecycle()"), detach.index("Super::OnUnPossess()"))
+        release = body("Controllers/SpeedController.cpp", "bool ASpeedController::ReleaseInputLifecycle(")
+        self.assertLess(release.index("ReleaseInputSessionV2()"), release.index("InputSnapshots->Deactivate()"))
+        self.assertLess(release.index("SetFrameInputStream(nullptr)"), release.index("InputSnapshots.reset()"))
+        self.assertIn("if (InputSessionV2) return;", detach)
 
     def test_override_observes_skip_failure(self):
         consumer = body("Components/SpeedWheeledComponent.cpp", "bool USpeedWheeledComponent::ConsumeProducedWheeledInputs")
@@ -96,6 +120,18 @@ class InputSourceBoundary(unittest.TestCase):
         self.assertIn("SpeedCar->SetFrameInputStream(nullptr)", controller)
         self.assertIn("InputSnapshots.reset()", controller)
 
+
+    def test_test_producer_uses_shared_player_target_boundary(self):
+        consumer = body("Components/SpeedWheeledComponent.cpp", "bool USpeedWheeledComponent::ConsumeProducedWheeledInputs")
+        self.assertIn("ReadDrivingInputTargets(Frame, CanonicalFrame)", consumer)
+        for field in ("ThrottleValue", "BrakeValue", "SteeringValue"):
+            self.assertIn("Targets." + field, consumer)
+        self.assertNotIn("GetActions()[", consumer)
+        producer = (ROOT / "Input/Testing/TestInputProducer.h").read_text()
+        self.assertIn("final : public IInputProducer", producer)
+        self.assertNotIn("EnhancedInput", producer)
+        self.assertNotIn("CoreMinimal.h", producer)
+        self.assertNotIn("Windows.h", producer)
 
 if __name__ == "__main__":
     unittest.main()
