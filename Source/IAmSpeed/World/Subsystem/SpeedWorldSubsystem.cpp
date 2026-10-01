@@ -28,6 +28,9 @@
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/PackageName.h"
+#if !UE_BUILD_SHIPPING
+#include "Misc/ScopeExit.h"
+#endif
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedPersistentDynamicPairs(
 	TEXT("p.IAmSpeed.Collision.PersistentDynamicPairs"),
@@ -1471,9 +1474,27 @@ bool USpeedWorldSubsystem::PrepareCanonicalInputs(const FCanonicalFrameContext& 
 	return true;
 }
 
+#if !UE_BUILD_SHIPPING
+bool USpeedWorldSubsystem::InspectBodyContactPairsForTesting(
+ const USolidSubBody& Body,uint64 ExpectedPreparingFrame,Speed::FBodyContactPairInspection& Out) const
+{
+ Out=Speed::FBodyContactPairInspection();Out.PreparingFrame=ExpectedPreparingFrame;
+ // Owned simulation lane only; no game-thread or completed-frame query contract.
+ if(!bCanonicalFrameActive || TestingPreparingFrame!=ExpectedPreparingFrame || StepSerial==0)
+ {Out.Failure=6;return false;}
+ const bool Complete=SimulationWorld.InspectBodyContactPairsForTesting(Body,ExpectedPreparingFrame,Out);
+ Out.WorldStepSerial=StepSerial;return Complete;
+}
+#endif
+
 void USpeedWorldSubsystem::PrepareCanonicalFrame(
 	const FCanonicalFrameContext& Context)
 {
+#if !UE_BUILD_SHIPPING
+    const uint64 PreviousTestingFrame=TestingPreparingFrame;
+    TestingPreparingFrame=Context.NumFrame;
+    ON_SCOPE_EXIT{TestingPreparingFrame=PreviousTestingFrame;};
+#endif
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
 

@@ -56,6 +56,9 @@ struct SComponentTOI
  * (e.g. a car body component that owns wheel sub-bodies or hitbox) and implement
  * the GetRadiusFromSubBody function to return the appropriate radius for each sub-body (e.g. wheel radius)
  */
+#if !UE_BUILD_SHIPPING
+namespace Speed { struct FCanonicalForeignStateForTesting; }
+#endif
 class IAMSPEED_API ISpeedComponent
 {
 public:
@@ -327,6 +330,9 @@ protected:
 	Speed::FSimulationSleepState SleepState;
 	Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
 private:
+#if !UE_BUILD_SHIPPING
+	friend struct Speed::FCanonicalForeignStateForTesting;
+#endif
 	friend class Speed::FSimulationWorld;
 	TAtomic<uint64> PublishedSimulationStableId = 0;
 	// Borrowed only during the world's canonical step; no historical/cache state.

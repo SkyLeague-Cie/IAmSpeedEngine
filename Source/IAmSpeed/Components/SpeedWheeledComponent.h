@@ -42,11 +42,19 @@ public:
 /**
  *
  */
+
+#if !UE_BUILD_SHIPPING
+namespace Speed { struct FCanonicalForeignStateForTesting; }
+#endif
 UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
 	GENERATED_BODY()
 
+#if !UE_BUILD_SHIPPING
+ friend struct Speed::FCanonicalForeignStateForTesting;
+#endif
+	
 	friend struct FNetworkBaseSpeedState;
 	friend struct FNetworkWheeledSpeedState;
 	friend struct FNetworkWheeledSpeedInputState;
