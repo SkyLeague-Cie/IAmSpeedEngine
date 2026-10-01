@@ -60,6 +60,14 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+#if !UE_BUILD_SHIPPING
+    /** Exact recorded-slot query for diagnostic fixtures; no state mutation. */
+    bool TryGetRecordedStatesForTesting(const int32& LocalFrame,
+        FBasePhysicsState& OutBase, FWheeledPhysicsState& OutWheeled) const
+    {
+        return GetBaseState(LocalFrame, OutBase) && GetWheeledState(LocalFrame, OutWheeled);
+    }
+#endif
 
 	USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer);
 
