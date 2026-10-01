@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Components/ShapeComponent.h"
 #include "IAmSpeed/Base/SUtils.h"
+#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SSubBody.generated.h"
 
 class ISpeedComponent;
@@ -32,6 +33,31 @@ class IAMSPEED_API USSubBody : public UShapeComponent
     GENERATED_UCLASS_BODY()
 	
 public:
+#if !UE_BUILD_SHIPPING
+    /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
+    virtual void AppendEpisodeStateForTesting(TArray<uint8>& Out) const
+    {
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,ParentComponent);
+        const FTransform RelativePose=GetRelativeTransform();B::Add(Out,RelativePose);
+        B::Add(Out,Kinematics);
+        B::Add(Out,SubBodyType);
+        B::Add(Out,CollisionChannel);
+        B::Add(Out,ResponseParams);
+        B::Add(Out,FutureHit);
+        B::Add(Out,CurrentHit);
+        B::Add(Out,GroundHit);
+        B::Add(Out,BoxHit);
+        B::Add(Out,SphereHit);
+        B::Add(Out,WheelHit);
+        B::Array(Out,AlwaysIgnoredComponents);
+        B::Array(Out,IgnoredComponents);
+        B::Array(Out,IgnoredSubBodyTypes);
+        B::Array(Out,ExternalBoxSubBodies);
+        B::Array(Out,ExternalSphereSubBodies);
+        B::Array(Out,ExternalWheelSubBodies);
+    }
+#endif
 
     enum class ESubBodyType
     {

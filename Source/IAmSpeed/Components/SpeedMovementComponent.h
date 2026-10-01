@@ -20,6 +20,7 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedOriginGetterTest;
 	friend class FSLBallEpisodeAdmissionOwnerTest;
+	friend class FSLBallEpisodeAdmissionOffTest;
 	friend class FIAmSpeedBoxRestingEquilibriumTest;
 	friend class FIAmSpeedBoxCanonicalRestTest;
 	friend class FIAmSpeedBoxApproachQuantizationTest;

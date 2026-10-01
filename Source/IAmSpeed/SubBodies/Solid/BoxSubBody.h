@@ -24,6 +24,55 @@ class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, publi
     GENERATED_UCLASS_BODY()
 	
 public:
+#if !UE_BUILD_SHIPPING
+    void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
+    {
+        USolidSubBody::AppendEpisodeStateForTesting(Out);
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,BoxExtent);
+        B::Add(Out,bEdgeSupportLatched);
+        B::Add(Out,EdgeSupportLatchFrame);
+        B::Add(Out,bRoofSurfaceTraversalLatched);
+        B::Add(Out,LastRoofSurfaceContactFrame);
+        B::Add(Out,RoofSurfaceComp);
+        B::Add(Out,CompositeGroundNormal);
+        B::Add(Out,MaxHitsPerComponentPerFrame);
+        B::Add(Out,bGroundContactStable);
+        B::Add(Out,LastResolvedGroundHitFrame);
+        B::Add(Out,bHasGroundContact);
+        B::Add(Out,bFreshEdgeRecoverCandidate);
+        B::Add(Out,StableTime);
+        B::Add(Out,bGroundHitFromSweep);
+        B::Add(Out,bGroundPlaneValid);
+        B::Add(Out,GroundPlanePointWS);
+        B::Add(Out,GroundPlaneN);
+        B::Add(Out,GroundPlaneD);
+        B::Add(Out,GroundComp);
+        B::Add(Out,EstablishedSupportSourceId);
+        B::Add(Out,EstablishedSupportSurfaceId);
+        B::Add(Out,FreshSupportClampUntilFrame);
+        B::Add(Out,FreshSupportClampN);
+        B::Add(Out,FreshSupportClampComp);
+        B::Add(Out,PrevGroundNormal);
+        B::Add(Out,bHadGroundContactPrevFrame);
+        B::Add(Out,PrevContactNormal);
+        B::Add(Out,bHadContactPrevFrame);
+        B::Add(Out,MinSlopCm);
+        B::Add(Out,LastWallOrGutterFrame);
+        B::Add(Out,LastWallOrGutterN);
+        B::Add(Out,LastWallOrGutterUpDot);
+        B::Add(Out,LastResolvedSphereHit);
+        B::Add(Out,LastResolvedSphereHitFrame);
+        B::Array(Out,CurrentGroundContactsWS);
+        B::Array(Out,PreviousFrameGroundContactsWS);
+        B::Array(Out,CurrentGroundNormalsWS);
+        B::Array(Out,PrevGroundContactsLS);
+        B::Array(Out,LatchedEdgeContactsLS);
+        B::Array(Out,PrevLambdaN);
+        B::Add(Out,HitCountThisFrame.Num());
+        for(const auto& Pair:HitCountThisFrame){B::Add(Out,Pair.Key);B::Add(Out,Pair.Value);}
+    }
+#endif
     virtual void Initialize(ISpeedComponent* InParentComponent) override;
 
     // --- USubBody overrides ---
