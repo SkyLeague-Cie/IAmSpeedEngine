@@ -70,7 +70,9 @@ public:
         B::Array(Out,LatchedEdgeContactsLS);
         B::Array(Out,PrevLambdaN);
         B::Add(Out,HitCountThisFrame.Num());
-        for(const auto& Pair:HitCountThisFrame){B::Add(Out,Pair.Key);B::Add(Out,Pair.Value);}
+        TArray<TWeakObjectPtr<UPrimitiveComponent>> Keys;HitCountThisFrame.GenerateKeyArray(Keys);
+        Keys.Sort([](const auto& A,const auto& Other){return reinterpret_cast<UPTRINT>(A.GetEvenIfUnreachable())<reinterpret_cast<UPTRINT>(Other.GetEvenIfUnreachable());});
+        for(const auto& Key:Keys){B::Add(Out,Key);B::Add(Out,HitCountThisFrame.FindChecked(Key));}
     }
 #endif
     virtual void Initialize(ISpeedComponent* InParentComponent) override;

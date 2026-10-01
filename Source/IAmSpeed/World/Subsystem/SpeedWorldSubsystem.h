@@ -67,6 +67,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
+	friend class FSLBallEpisodeAdmissionOwnerTest; // sole native floor certificate fixture
 #endif
 public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;

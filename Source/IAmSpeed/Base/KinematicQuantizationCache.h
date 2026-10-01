@@ -21,6 +21,11 @@ namespace Speed
 		}
 		/** Revoke eligibility at an explicit restore/reinitialization boundary. */
 		void Reset() { bValid = false; }
+#if !UE_BUILD_SHIPPING
+		template<class Writer> void AppendEpisodeFieldsForTesting(TArray<uint8>& O) const
+		{Writer::Add(O,NoOpInput.Location);Writer::Add(O,NoOpInput.Velocity);Writer::Add(O,NoOpInput.AngularVelocity);Writer::Add(O,NoOpInput.Rotation);Writer::Add(O,NoOpInput.PreviousRotation);Writer::Add(O,bValid);}
+#endif
+
 	private:
 		struct FInput
 		{

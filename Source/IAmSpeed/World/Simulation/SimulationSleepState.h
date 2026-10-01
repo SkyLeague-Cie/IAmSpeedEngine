@@ -33,6 +33,11 @@ namespace Speed
 				State.Velocity.IsZero() && State.AngularVelocity.IsZero() &&
 				State.Acceleration.IsZero() && State.AngularAcceleration.IsZero();
 		}
+#if !UE_BUILD_SHIPPING
+		template<class Writer> void AppendEpisodeFieldsForTesting(TArray<uint8>& O) const
+		{Writer::Add(O,Location);Writer::Add(O,Rotation);Writer::Add(O,bHasCompletedPose);}
+#endif
+
 	private:
 		FVector Location = FVector::ZeroVector;
 		FQuat Rotation = FQuat::Identity;

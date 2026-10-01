@@ -87,7 +87,7 @@ public:
         B::Add(Out,ForwardAxis);
         B::Add(Out,RightAxis);
         B::Add(Out,UpAxis);
-        B::Add(Out,RenderData);
+        B::Add(Out,RenderData.RollRotation);B::Add(Out,RenderData.SteerRotation);B::Add(Out,RenderData.WorldPosition);B::Add(Out,RenderData.RightAxis);B::Add(Out,RenderData.UpAxis);B::Add(Out,RenderData.ForwardAxis);B::Add(Out,RenderData.SpringOffset);
     }
 #endif
 

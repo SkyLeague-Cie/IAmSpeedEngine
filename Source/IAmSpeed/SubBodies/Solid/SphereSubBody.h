@@ -54,7 +54,7 @@ public:
         B::Add(Out,SphereBoxTangentialArmMinSphereAngularSpeed);
         B::Add(Out,SphereBoxTangentialArmMaxSphereAngularSpeed);
         B::Add(Out,SphereBoxTangentialArmMinBoxSpeed);
-        B::Add(Out,WorldStaticPenetrationDiagnostics);
+        B::Add(Out,WorldStaticPenetrationDiagnostics.bEnabled);B::Add(Out,WorldStaticPenetrationDiagnostics.StartFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.SweepInitialOverlapSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionInputSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionResidualSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualFrame);
     }
 #endif
 	virtual void Initialize(ISpeedComponent* InParentComponent) override;

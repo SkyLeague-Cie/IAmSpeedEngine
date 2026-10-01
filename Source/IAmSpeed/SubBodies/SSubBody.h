@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "Components/ShapeComponent.h"
 #include "IAmSpeed/Base/SUtils.h"
-#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
+#include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
 #include "SSubBody.generated.h"
 
 class ISpeedComponent;
@@ -43,7 +43,7 @@ public:
         B::Add(Out,Kinematics);
         B::Add(Out,SubBodyType);
         B::Add(Out,CollisionChannel);
-        B::Add(Out,ResponseParams);
+        for(int32 Channel=0;Channel<int32(ECC_MAX);++Channel)B::Add(Out,ResponseParams.CollisionResponse.GetResponse(ECollisionChannel(Channel)));
         B::Add(Out,FutureHit);
         B::Add(Out,CurrentHit);
         B::Add(Out,GroundHit);
