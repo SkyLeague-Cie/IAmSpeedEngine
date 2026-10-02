@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
 
+// Quiescence is an explicit result, never inferred from a pause flag.
+enum class ESimulationQuiescence : uint8 { BoundaryAcknowledged, AlreadyStopped, TimedOut, Failed };
+
 enum class ESimulationWorkerResult : uint8
 {
 	Advanced,
@@ -10,6 +13,10 @@ enum class ESimulationWorkerResult : uint8
 	Complete,
 	Failed,
 };
+
+// Waiting keeps the lane alive to service lifecycle commands, but forbids physics
+// and pause acknowledgment until the requested boundary has actually completed.
+enum class ESimulationBoundaryResult : uint8 { Ready, Waiting, Failed };
 
 enum class ESimulationWaitResult : uint8
 {
@@ -57,16 +64,32 @@ public:
 	using FWork = TFunction<ESimulationWorkerResult()>;
 	using FWaitBetweenFrames = TFunction<void(FSimulationWorkerWaitContext&)>;
 
-	FSimulationWorker(FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames);
+	using FServiceBoundary = TFunction<ESimulationBoundaryResult(bool bPauseRequested)>;
+	using FCloseOnWorker = TFunction<void()>;
+
+	FSimulationWorker(FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames,
+		FServiceBoundary InServiceBoundary = {}, FCloseOnWorker InCloseOnWorker = {});
 	~FSimulationWorker();
 
 	/** Starts the one worker thread; subsequent calls are rejected. */
-	bool Start();
+	bool Start(bool bStartPaused = false);
 	/** Prevents new work and waits until the worker reaches a frame boundary. */
+	void RequestPause();
 	void Pause();
 	/** Bounded boundary acknowledgment. Failure leaves the pause requested and
 	 * must not authorize mutation or automatic resume of a partially running frame. */
 	bool TryPause(uint32 TimeoutMilliseconds);
+	/** Parks the worker before ServiceBoundary as well as before physical work.
+	 * Only a successful acknowledgment permits game-thread structural access;
+	 * the ordinary pause acknowledgment intentionally keeps servicing commands. */
+	bool TrySuspendBoundaryService(uint32 TimeoutMilliseconds);
+	void ResumeBoundaryService();
+	bool IsBoundaryServiceSuspendRequested() const { return bBoundaryServiceSuspended.Load(); }
+	bool IsBoundaryServiceSuspended() const
+	{
+		return bBoundaryServiceSuspended.Load() && bRunning.Load() && !bStopRequested.Load()
+			&& BoundarySuspendAckSerial.Load() >= BoundarySuspendRequestSerial.Load();
+	}
 	/** Resumes work and resets the real-time deadline to now. */
 	void Resume();
 	/** Requests termination and blocks until the owned thread has joined. */
@@ -80,12 +103,18 @@ private:
 
 	FWork Work;
 	FWaitBetweenFrames WaitBetweenFrames;
+	FServiceBoundary ServiceBoundary;
+	FCloseOnWorker CloseOnWorker;
 	TAtomic<bool> bStopRequested = false;
 	TAtomic<bool> bPaused = false;
 	TAtomic<bool> bRunning = false;
 	TAtomic<uint64> PauseRequestSerial = 0;
 	TAtomic<uint64> PauseAckSerial = 0;
+	TAtomic<bool> bBoundaryServiceSuspended = false;
+	TAtomic<uint64> BoundarySuspendRequestSerial = 0;
+	TAtomic<uint64> BoundarySuspendAckSerial = 0;
 	FEvent* WakeEvent = nullptr;
 	FEvent* PauseAcknowledgedEvent = nullptr;
+	FEvent* BoundarySuspendedEvent = nullptr;
 	FRunnableThread* Thread = nullptr;
 };
