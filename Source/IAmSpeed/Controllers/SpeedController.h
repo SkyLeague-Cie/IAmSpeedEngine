@@ -108,6 +108,9 @@ protected:
 	void ResolveInputSessionRestartCompletionV2();
 	void FailInputSessionRestartCompletionV2();
 	bool HasInputSessionV2() const { return InputSessionV2 != nullptr; }
+	bool OwnsInputConfigurationV2() const { return bInputSessionRequiredV2 && SpeedCar != nullptr; }
+	/** Called after previous ownership is released, before the new immutable contract. */
+	virtual void PrepareInputConfigurationV2() {}
 	virtual Speed::Input::V2::EControlApplication ExecuteInputControlV2(const Speed::Input::V2::FControlRequest& Request);
 	virtual void HandleInputs();
 	void HandleInputs(const Speed::Input::FPublishedInputFrame& Snapshot);
@@ -165,6 +168,7 @@ private:
 #if defined(WITH_DEV_AUTOMATION_TESTS) && WITH_DEV_AUTOMATION_TESTS
 	friend struct Speed::Input::FControllerInputTestAccess;
 	friend class FIAmSpeedControllerInputLifecycleTest;
+	friend class FSkyControlSaveTransactionTest;
 #endif
 	std::shared_ptr<Speed::Input::IInputProducer> InputProducer = nullptr;
 	std::shared_ptr<Speed::Input::FInputStream> InputSnapshots;

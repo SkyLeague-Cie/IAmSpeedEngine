@@ -216,6 +216,30 @@ int main()
 		&& AR.Frame->GetData().Transitions.size() == 1 && AR.Frame->GetData().Transitions[0].ValueAtTransition == 4,
 		"hysteresis completes on intermediate response before final neutral");
 
+	// Saved deadzone1 keeps the contract valid and exactly neutralizes signed axes.
+	for (const float Deadzone : {0.17f, 0.05f, 1.0f})
+	{
+		auto D = Definition(); D.Actions.resize(3);
+		D.Mapping = {{{ERawControlKind::PadAxis, 0}, Steering, 1}};
+		D.Actions[Steering].Deadzone = Deadzone;
+		auto C = FInputActionContract::Create(D); Check(bool(C), "saved deadzone contract accepted");
+		for (const float Value : {-1.0f, -0.1f, 0.0f, 0.1f, 1.0f})
+		{
+			FRawInputSample S; S.DeviceId = 12; S.Generation = {1}; S.Kind = ERawDeviceKind::Gamepad;
+			S.Sequence = 1; S.Status = ERawSampleStatus::Resync;
+			S.FinalState = {{{ERawControlKind::PadAxis, 0}, Value}};
+			FActionMapper DeadzoneMapper(C, {1}, {EProducerKind::Device, 9});
+			const auto Result = DeadzoneMapper.Map(S, 0);
+			const float Response = Value > Deadzone ? (Value-Deadzone)/(1-Deadzone)
+				: Value < -Deadzone ? (Value+Deadzone)/(1-Deadzone) : 0;
+			const auto Expected = static_cast<int16_t>(std::floor(Response * 127 + 0.5f));
+			Check(Result.Frame && Result.Frame->GetData().Values[Steering] == Expected,
+				"immutable mapping preserves release16 inclusive deadzone response");
+			if (Deadzone == 1) Check(Result.Frame->GetData().ActiveMask == 0
+				&& Result.Frame->GetData().Transitions.empty(), "deadzone one produces no active state or events");
+		}
+	}
+
 	// Bool OR: release one of two held keys without completing the shared action.
 	FActionMapper Or(Contract, {1}, {EProducerKind::Device, 9});
 	Check(bool(Or.Map(Keys(1, ERawSampleStatus::Resync, 1, 1, 0, 0), 0).Frame), "OR baseline");

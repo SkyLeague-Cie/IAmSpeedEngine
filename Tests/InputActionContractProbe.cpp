@@ -54,6 +54,12 @@ int main()
 	Check(!V2::FInputActionContract::Create(D), "inverted hysteresis");
 	D = Description(); D.Actions[0].Type = static_cast<V2::EActionType>(2);
 	Check(!V2::FInputActionContract::Create(D), "unsupported action type");
+	D = Description(); D.Actions[Steering].Deadzone = 1;
+	Check(bool(V2::FInputActionContract::Create(D)), "inclusive deadzone upper bound is a valid neutral axis");
+	D.Actions[Steering].Deadzone = 1.01f;
+	Check(!V2::FInputActionContract::Create(D), "deadzone above one rejected");
+	D.Actions[Steering].Deadzone = -0.01f;
+	Check(!V2::FInputActionContract::Create(D), "negative deadzone rejected");
 	D = Description(); V2::FActionDefinition Extension;
 	Extension.Id = 3; Extension.Owner = "Example"; Extension.Name = "Fire";
 	D.Actions.push_back(Extension);

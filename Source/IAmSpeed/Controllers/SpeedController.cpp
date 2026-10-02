@@ -61,7 +61,7 @@ void ASpeedController::SetupInputComponent()
 void ASpeedController::OnPossess(APawn* InPawn)
 {
 	ESimulationQuiescence InputBoundary = ESimulationQuiescence::AlreadyStopped;
-	if (SpeedCar && InputSessionV2)
+	if (SpeedCar && (InputSessionV2 || InputSessionRestartCompletionV2))
 	{
 		if (!ReleaseInputLifecycle())
 		{
@@ -70,6 +70,7 @@ void ASpeedController::OnPossess(APawn* InPawn)
 			return;
 		}
 	}
+	if (!InputSessionV2) PrepareInputConfigurationV2();
 	bInputSessionRequiredV2 = !bScenarioOwnsInputAuthority && (InputSessionV2 != nullptr || RequiresInputSessionV2());
 	if (!bInputSessionRequiredV2) bInputSessionPendingV2 = false;
 	if (InputSessionV2)

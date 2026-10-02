@@ -41,6 +41,7 @@ struct FActionDefinition
 	// > ActivateAbove; active -> inactive when <= DeactivateAtOrBelow.
 	float ActivateAbove = 0;
 	float DeactivateAtOrBelow = 0;
+	// The inclusive upper bound disables this axis; mapping never divides by zero.
 	float Deadzone = 0;
 	float Exponent = 1;
 	float Sensitivity = 1;
@@ -141,7 +142,7 @@ private:
 				|| A.Accumulation > EActionAccumulation::HighestAbsolute || !ValidModifiers(A.Modifiers)
 				|| !std::isfinite(A.ActivateAbove) || !std::isfinite(A.DeactivateAtOrBelow)
 				|| A.DeactivateAtOrBelow < 0 || A.ActivateAbove < A.DeactivateAtOrBelow || A.ActivateAbove >= 1
-				|| !std::isfinite(A.Deadzone) || A.Deadzone < 0 || A.Deadzone >= 1
+				|| !std::isfinite(A.Deadzone) || A.Deadzone < 0 || A.Deadzone > 1
 				|| !std::isfinite(A.Exponent) || A.Exponent <= 0
 				|| !std::isfinite(A.Sensitivity) || A.Sensitivity <= 0) return false;
 			if (A.Type == EActionType::Bool && (A.Signed || A.Quantization != 1
