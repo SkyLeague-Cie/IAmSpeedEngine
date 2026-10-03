@@ -1,16 +1,37 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include <memory>
+namespace Speed::Input::V2 { struct FOwnerInputSnapshot; class FInputSessionRegistry; }
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/SHitResult.h"
 #include "IAmSpeed/Base/Kinematic.h"
 #include "IAmSpeed/Base/KinematicQuantizationCache.h"
 #include "IAmSpeed/World/Simulation/SimulationSleepState.h"
 
+#if !UE_BUILD_SHIPPING
+/** Native observation boundaries; excluded from published physics state. */
+enum class ESpeedPhysicsObservationPhase : uint8
+{
+	PreForce, PostForcePredictor, PostContact, PostQuantization
+};
+class ISpeedComponent;
+/** Fixture-owned observer; installation/removal and dispatch share the canonical lane.
+ * The fixture must remove it before its owner retires; no UObject or actor replacement. */
+class IAMSPEED_API ISpeedPhysicsPhaseObserver
+{
+public:
+	virtual ~ISpeedPhysicsPhaseObserver() = default;
+	virtual void Observe(const ISpeedComponent& Component,
+		ESpeedPhysicsObservationPhase Phase, float Delta) = 0;
+};
+#endif
+
 class USSubBody;
 class USolidSubBody;
 struct SubBodyConfig;
 struct FCanonicalFrameContext;
+enum class ECanonicalFrameAbortReason : uint8 { PreparationFailed, SnapshotPublicationFailed };
 namespace Speed { class IStaticCollisionWorld; class FSimulationWorld; }
 
 #if !UE_BUILD_SHIPPING
@@ -53,12 +74,58 @@ struct SComponentTOI
  * (e.g. a car body component that owns wheel sub-bodies or hitbox) and implement
  * the GetRadiusFromSubBody function to return the appropriate radius for each sub-body (e.g. wheel radius)
  */
+#if !UE_BUILD_SHIPPING
+namespace Speed { struct FCanonicalForeignStateForTesting; }
+#endif
 class IAMSPEED_API ISpeedComponent
 {
 public:
+#if !UE_BUILD_SHIPPING
+	/** Default-disabled read-only diagnostics. No sleep or force policy changes. */
+	virtual bool IsPhysicsPhaseObservationEnabled() const { return PhysicsPhaseObserver != nullptr; }
+	/** Receiver reads actual pose and wheel witnesses now, never history.
+	 * Repeated predictors in a frame are real transport/CCD stages.
+	 * Delta is the actual integration interval, not a reconstructed sample. */
+	virtual void ObservePhysicsPhase(ESpeedPhysicsObservationPhase Phase, float Delta)
+	{
+		if (PhysicsPhaseObserver) PhysicsPhaseObserver->Observe(*this, Phase, Delta);
+	}
+	/** Return false on a conflicting observer; never replace another fixture. */
+	bool TryInstallPhysicsPhaseObserver(ISpeedPhysicsPhaseObserver& Observer)
+	{
+		if (PhysicsPhaseObserver && PhysicsPhaseObserver != &Observer) return false;
+		PhysicsPhaseObserver = &Observer;
+		return true;
+	}
+	/** Remove only this fixture observer, after canonical simulation drains. */
+	bool RemovePhysicsPhaseObserver(ISpeedPhysicsPhaseObserver& Observer)
+	{
+		if (PhysicsPhaseObserver != &Observer) return false;
+		PhysicsPhaseObserver = nullptr;
+		return true;
+	}
+private:
+	ISpeedPhysicsPhaseObserver* PhysicsPhaseObserver = nullptr;
+public:
+#endif
 	/** Frame-boundary admission, before inputs, preparation or publication.
 	 * Implementations validate their live storage without mutating physics state. */
 	virtual bool ValidateSimulationBindings(FString& OutReason) const { return true; }
+	/** Input-only admission for every actor before any actor applies velocity,
+	 * gravity or gameplay. False rejects the whole canonical frame. */
+	/** Worker-only scenario authoring before producer polling. ExactScenario
+	 * sessions opt in explicitly; sealed frames cannot be replaced. This hook
+	 * must only append fixture input data, never apply physics or gameplay. */
+	virtual bool StageCanonicalScenarioInput(const FCanonicalFrameContext& Context,
+		Speed::Input::V2::FInputSessionRegistry& Registry) { return true; }
+	virtual bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context) { return true; }
+	virtual bool NeutralizeCanonicalInputAtBoundary() { return true; }
+	/** Retire input processors on their worker before actors can be destroyed. */
+	virtual bool RetireInputProcessingOnWorker() { return true; }
+	virtual bool ServiceInputRetirementAtBoundary() { return true; }
+	/** Retains immutable input for this actor; no gameplay or force application. */
+	virtual bool InstallCanonicalInput(uint64 Frame,
+		std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot) { return false; }
 	// Runs component-owned preparation/gameplay for one integer-addressed frame.
 	// This virtual dispatch also covers derived components declared by game modules.
 	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;
@@ -68,6 +135,15 @@ public:
 	virtual void AppendSimulationSnapshot(TArray<uint8>& OutPayload) const {}
 	/** Optional simulation-owned presentation extension; never part of canonical hashes. */
 	virtual void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const {}
+	/** Observation only, after canonical snapshot publication succeeds. */
+	virtual void OnCanonicalFramePublished(uint64 NumFrame) {}
+	/** Worker-only, side-effect-free validation of every pending reservation. */
+	virtual bool ValidateCanonicalFrameCommit(uint64 Frame) const { return true; }
+	/** After global publication: prevalidated, allocation-free and non-throwing.
+	 * False is an invariant violation; never a recoverable partial commit. */
+	virtual bool CommitCanonicalFrame(uint64 Frame) noexcept { return true; }
+	/** Terminal cancellation before global publication; must not throw or allocate. */
+	virtual void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
 	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
 	/** Validates component-specific bytes before an atomic world restore starts. */
@@ -300,6 +376,9 @@ protected:
 	Speed::FSimulationSleepState SleepState;
 	Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
 private:
+#if !UE_BUILD_SHIPPING
+	friend struct Speed::FCanonicalForeignStateForTesting;
+#endif
 	friend class Speed::FSimulationWorld;
 	TAtomic<uint64> PublishedSimulationStableId = 0;
 	// Borrowed only during the world's canonical step; no historical/cache state.

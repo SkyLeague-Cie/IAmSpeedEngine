@@ -10,6 +10,21 @@ the run ends.
 
 The repository workflow `.github/workflows/physical-contracts.yml` builds the
 Editor target and runs `IAmSpeed.AnalyticWorld` through `Scripts/RunContracts.ps1`.
+The runner requires an explicit physical UE 5.8.2 root at CL 55116800, stages
+the host project and all build/UBA/DDC/temp outputs under a fresh private run
+directory, and reports success only when the Editor exit code, queue count,
+and exported automation report agree on a non-empty, warning-free pass.
+`Scripts/TestRunContracts.ps1` exercises the runner's engine pin, bounded build
+arguments, and strict queue/report checks without starting Unreal.
+The runner first uses UBT `QueryTargets` from a separately pinned rules-seed
+slot to emit fresh HostProject/plugin rules under the private run root, then
+builds against the selected Engine with `-SkipRulesCompile`. This split is
+needed because UBT's skip option suppresses both Engine and project rules;
+the source-only preparation must not rewrite either installed Engine's rules
+assemblies. The seed assemblies are pinned and freshness-checked before use;
+both Engine roots' six rules files are snapshotted by size, SHA-256, and
+timestamp before and after the query and target build, with any change failing
+the run rather than silently restoring or rebaselining it.
 The next harness slice adds a repository-owned
 persistent test world per worker and executes sealed FastSimulation cases at a
 fixed `PhysicalDeltaTime = 1/300 s`. Workers remain single-lane; no per-case

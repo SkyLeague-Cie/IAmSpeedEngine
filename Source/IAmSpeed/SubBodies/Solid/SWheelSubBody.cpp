@@ -1288,13 +1288,22 @@ float USWheelSubBody::ContactSpringDisplacement() const
         return SpringDisplacement();
     }
 
+    return ContactSpringDisplacement(CurrentHit);
+}
+
+float USWheelSubBody::ContactSpringDisplacement(const SHitResult& ContactHit) const
+{
+    if (!PSuspension || !ParentComponent)
+    {
+        return SpringDisplacement();
+    }
     const FTransform ChassisTM(
         ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
     const FVector Up = ChassisTM.GetUnitAxis(EAxis::Z);
     const FVector SuspensionAnchor = ChassisTM.TransformPosition(
         GetLocalOffset() + PSuspension->Setup().MaxLength * FVector::UpVector);
     const float ProjectedCompression = FVector::DotProduct(
-        SuspensionAnchor - CurrentHit.Location, Up);
+        SuspensionAnchor - ContactHit.Location, Up);
     const float DisplacementInput = FMath::Max(
         0.0f, ProjectedCompression - PSuspension->Setup().RaycastSafetyMargin);
     return QuantizeSuspensionDisplacement(

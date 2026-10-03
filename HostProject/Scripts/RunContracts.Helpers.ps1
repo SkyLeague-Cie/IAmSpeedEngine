@@ -1,0 +1,873 @@
+if (-not (Get-Command -Name Get-FileHash -ErrorAction SilentlyContinue)) {
+    function Get-FileHash {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)] [string]$LiteralPath,
+            [ValidateSet('SHA256')] [string]$Algorithm = 'SHA256'
+        )
+
+        $stream = [IO.File]::OpenRead($LiteralPath)
+        try {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+                $hash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '')
+                [pscustomobject]@{ Algorithm=$Algorithm; Hash=$hash; Path=$LiteralPath }
+            }
+            finally { $sha.Dispose() }
+        }
+        finally { $stream.Dispose() }
+    }
+}
+
+$script:IAmSpeedExpectedTbbFallbackSha256 = 'af20d7ca563e542432b856f6628d9481247197d1853bd4057caaf6c449749d42'
+$script:IAmSpeedExpectedEmbreeFallbackSha256 = 'b21dcf93fed2b647dc662fe9720b28b32b3f13e1ddb9eac7c1b6e3950b95df63'
+$script:IAmSpeedDotNetSha256 = 'c1809e1f7fc603c2096efdfbc3f98c2123a398d3dff331096fdaebc3071ac32d'
+$script:IAmSpeedUbtSha256 = '0c3adf01933fd31497971cbcc3f66315fabe061bbb4c56ac143cd809192e208d'
+$script:IAmSpeedRulesSeedFiles = @(
+    @{ Name='UE5Rules.dll'; Bytes=964096; Sha256='a4a337f37541b8a8fdd53f96490de7b13e16e2978de41ac5ff18facc4fe2327c'; Manifest='UE5RulesManifest.json'; ManifestBytes=364846; ManifestSha256='ffd4524d047d2ce6ad5ac8b1abe77a3fd4f43ac61406cfe3a5c81888045e2cec' },
+    @{ Name='UE5ProgramRules.dll'; Bytes=123904; Sha256='08c8be5f5d77d7e6f50c36e5c3c0e58b0d3f6f72b5677e3fe5e8f60a369cef80'; Manifest='UE5ProgramRulesManifest.json'; ManifestBytes=29913; ManifestSha256='ff4fe1365b438c8b2c8de0efbe5ce03896042d1e9273a9e8b8099735a44d22bf' }
+)
+$script:IAmSpeedRulesSeedPdbs = @(
+    @{ Name='UE5Rules.pdb'; Bytes=475812; Sha256='1c4fbf0c19e866059d80819bda5237f9b5f628494bf69c1b2752e58cb7febe10' },
+    @{ Name='UE5ProgramRules.pdb'; Bytes=47436; Sha256='b3fef02dd82a98308d7a577963b090dbb605f7fc9b6056156a268a16923ce46e' }
+)
+
+function Assert-IAmSpeedRulesSeedRoot {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)] [string]$EngineRoot)
+
+    $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
+    $rulesDirectory = Join-Path $engine.Root 'Engine\Intermediate\Build\BuildRules'
+    $runtime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $engine.Root
+    if (Test-Path -LiteralPath (Join-Path $engine.Root 'Engine\Build\InstalledBuild.txt')) {
+        throw 'Rules seed must use the exact pinned non-installed slot1 rules source; installed-engine roots use a different UBT skip path.'
+    }
+    $ubtPath = $runtime.UbtPath
+    $ubtSha = $runtime.UbtSha256
+    $ubt = Get-Item -LiteralPath $ubtPath -Force
+    $assemblyProof = @()
+    foreach ($pin in $script:IAmSpeedRulesSeedFiles) {
+        $assemblyPath = Join-Path $rulesDirectory $pin.Name
+        $manifestPath = Join-Path $rulesDirectory $pin.Manifest
+        if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf) -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Rules seed assembly or manifest is missing: $($pin.Name)"
+        }
+        $assembly = Get-Item -LiteralPath $assemblyPath -Force
+        $assemblySha = (Get-FileHash -LiteralPath $assemblyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $manifest = Get-Item -LiteralPath $manifestPath -Force
+        $manifestSha = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($assembly.Length -ne $pin.Bytes -or $assemblySha -cne $pin.Sha256 -or
+            $manifest.Length -ne $pin.ManifestBytes -or $manifestSha -cne $pin.ManifestSha256) {
+            throw "Rules seed assembly/manifest differs from its qualified pin: $($pin.Name)"
+        }
+        try { [Reflection.AssemblyName]::GetAssemblyName($assemblyPath) | Out-Null }
+        catch { throw "Rules seed assembly metadata cannot be read: $assemblyPath" }
+        if ($ubt.LastWriteTimeUtc -gt $assembly.LastWriteTimeUtc) {
+            throw "Rules seed would rebuild $($pin.Name): UBT is newer than the assembly."
+        }
+        $manifestData = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($manifestData.EngineVersion -cne '5.8.2' -or @($manifestData.SourceFiles).Count -eq 0) {
+            throw "Rules seed manifest is invalid or belongs to another Engine version: $manifestPath"
+        }
+        $expectedSourceRoots = @('Source', 'Platforms', 'Plugins', 'Shaders') | ForEach-Object { Join-Path $engine.Root (Join-Path 'Engine' $_) }
+        foreach ($sourcePath in $manifestData.SourceFiles) {
+            $sourceFull = [IO.Path]::GetFullPath([string]$sourcePath)
+            $underExpectedRoot = $false
+            foreach ($expectedSourceRoot in $expectedSourceRoots) {
+                if ($sourceFull.StartsWith($expectedSourceRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { $underExpectedRoot = $true; break }
+            }
+            if (-not $underExpectedRoot) {
+                throw "Rules seed manifest source escapes its pinned Engine root: $sourceFull"
+            }
+            if (-not (Test-Path -LiteralPath $sourceFull -PathType Leaf)) { throw "Rules seed source is missing: $sourceFull" }
+            if ((Get-Item -LiteralPath $sourceFull -Force).LastWriteTimeUtc -gt $assembly.LastWriteTimeUtc) {
+                throw "Rules seed would rebuild $($pin.Name): source is newer than the assembly ($sourceFull)."
+            }
+        }
+        $assemblyProof += [pscustomobject]@{ path=$assemblyPath; bytes=$assembly.Length; sha256=$assemblySha; manifest=$manifestPath; manifestSha256=$manifestSha; sourceCount=@($manifestData.SourceFiles).Count; lastWriteTimeUtc=$assembly.LastWriteTimeUtc.ToString('o') }
+    }
+    foreach ($pin in $script:IAmSpeedRulesSeedPdbs) {
+        $path = Join-Path $rulesDirectory $pin.Name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Rules seed PDB is missing: $path" }
+        $item = Get-Item -LiteralPath $path -Force
+        $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($item.Length -ne $pin.Bytes -or $sha -cne $pin.Sha256) { throw "Rules seed PDB differs from its qualified pin: $($pin.Name)" }
+    }
+    $marketplaceRoot = Join-Path $engine.Root 'Engine\Plugins\Marketplace'
+    $marketplaceDescriptors = @()
+    if (Test-Path -LiteralPath $marketplaceRoot -PathType Container) {
+        $marketplaceDescriptors = @(Get-ChildItem -LiteralPath $marketplaceRoot -Filter '*.uplugin' -Recurse -File -ErrorAction SilentlyContinue)
+    }
+    if ($marketplaceDescriptors.Count -gt 0) {
+        throw 'Marketplace rules would add another Engine-side assembly; this bounded rules seed does not allow it.'
+    }
+    return [pscustomobject]@{
+        Root=$engine.Root; Build=$engine.Build; DotNetPath=$runtime.DotNetPath; DotNetDirectory=$runtime.DotNetDirectory
+        DotNetVersion=$runtime.DotNetVersion; DotNetArchitecture=$runtime.DotNetArchitecture; DotNetSha256=$runtime.DotNetSha256
+        UbtPath=$ubtPath; UbtSha256=$ubtSha; WorkingDirectory=$runtime.WorkingDirectory
+        RulesDirectory=$rulesDirectory; Assemblies=$assemblyProof
+    }
+}
+
+
+function Assert-IAmSpeedPrivateRulesRoot {
+    param([Parameter(Mandatory=$true)][psobject]$Runtime)
+    if (-not $Runtime.PrivateUbt) { throw 'Private Query requires a manifest-bound private UBT runtime.' }
+    $manifest = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $Runtime.Root
+    $engine = Assert-IAmSpeedEngineRoot -EngineRoot $Runtime.Root
+    if (Test-Path -LiteralPath (Join-Path $engine.Root 'Engine\Build\InstalledBuild.txt')) { throw 'Private Query requires the exact non-installed source Engine.' }
+    $policy = Get-Content -LiteralPath $manifest.policy_path -Raw | ConvertFrom-Json
+    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+        $profile = Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $Runtime.Root
+        $Runtime | Add-Member -NotePropertyName RulesDirectory -NotePropertyValue $profile.rules_root -Force
+        $Runtime | Add-Member -NotePropertyName Assemblies -NotePropertyValue $profile.files -Force
+        $Runtime | Add-Member -NotePropertyName Build -NotePropertyValue $engine.Build -Force
+        return $Runtime
+    }
+    $records = @($policy.engine_rules_records)
+    if ($records.Count -ne 6) { throw 'Private Query requires all six exact Engine Rules artifacts.' }
+    $rulesDirectory = Join-Path $engine.Root 'Engine\Intermediate\Build\BuildRules'
+    $expected = @{}
+    foreach ($pin in $script:IAmSpeedRulesSeedFiles) { $expected[$pin.Name]=$pin.Sha256; $expected[$pin.Manifest]=$pin.ManifestSha256 }
+    foreach ($pin in $script:IAmSpeedRulesSeedPdbs) { $expected[$pin.Name]=$pin.Sha256 }
+    $seen = @{}
+    foreach ($record in $records) {
+        $name = Split-Path -Leaf $record.path
+        $path = Join-Path $rulesDirectory $name
+        if (-not $expected.ContainsKey($name) -or $seen.ContainsKey($name) -or [IO.Path]::GetFullPath($record.path) -ine $path -or $record.sha256 -cne $expected[$name]) { throw 'Private Query Rules inventory or provenance differs.' }
+        Assert-IAmSpeedPhysicalFile $path
+        $item = Get-Item -LiteralPath $path
+        if ($item.Length -ne $record.bytes -or $item.LastWriteTimeUtc.Ticks -ne $record.mtime_ticks -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $record.sha256) { throw 'Private Query Rules artifact drift.' }
+        $seen[$name]=$true
+    }
+    $marketplace = Join-Path $engine.Root 'Engine\Plugins\Marketplace'
+    if ((Test-Path -LiteralPath $marketplace) -and @(Get-ChildItem -LiteralPath $marketplace -Recurse -File -Filter '*.uplugin').Count -gt 0) { throw 'Unpinned Marketplace Rules are forbidden.' }
+    # Absolute E1 source paths remain immutable provenance in the pinned manifests.
+    # Private UBT loads these exact DLLs and rejects every Engine compilation fallback.
+    $Runtime | Add-Member -NotePropertyName RulesDirectory -NotePropertyValue $rulesDirectory -Force
+    $Runtime | Add-Member -NotePropertyName Assemblies -NotePropertyValue $records -Force
+    $Runtime | Add-Member -NotePropertyName Build -NotePropertyValue $engine.Build -Force
+    return $Runtime
+}
+
+function Assert-IAmSpeedPhysicalFile {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $current = [IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        if (-not (Test-Path -LiteralPath $current)) { throw "Missing physical runtime input: $current" }
+        if ((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Runtime input alias: $current" }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+}
+
+function Assert-IAmSpeedPrivateUbtManifest {
+    param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][string]$Sha256, [Parameter(Mandatory=$true)][string]$EngineRoot)
+    Assert-IAmSpeedPhysicalFile $Path
+    if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Sha256) { throw 'Private UBT manifest SHA differs.' }
+    $manifest = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    if (@('sl.private-ubt-runtime/v1','sl.private-ubt-runtime/v2-qualified-rules') -cnotcontains $manifest.schema -or [IO.Path]::GetFullPath($manifest.engine_root).TrimEnd('\') -ine [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')) { throw 'Private UBT physical Engine binding differs.' }
+    $runtimeRoot = [IO.Path]::GetFullPath($manifest.runtime_root).TrimEnd('\')
+    $enginePrefix = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\') + '\'
+    if ($runtimeRoot.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Private UBT runtime must be outside Engine.' }
+    $seen = @{}
+    foreach ($entry in $manifest.files) {
+        $file = [IO.Path]::GetFullPath((Join-Path $runtimeRoot ([string]$entry.relative)))
+        if (-not $file.StartsWith($runtimeRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($file)) { throw 'Private UBT file scope or inventory differs.' }
+        Assert-IAmSpeedPhysicalFile $file
+        $item = Get-Item -LiteralPath $file
+        if ($item.Length -ne $entry.bytes -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256) { throw "Private UBT file drift: $file" }
+        $seen[$file] = $true
+    }
+    if (@(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File -Force).Count -ne $seen.Count) { throw 'Private UBT extra runtime file.' }
+    $ubt = Join-Path $runtimeRoot 'UnrealBuildTool.dll'
+    if ([IO.Path]::GetFullPath($manifest.ubt_path) -ine $ubt -or -not $seen.ContainsKey($ubt) -or (Get-FileHash -LiteralPath $ubt -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.ubt_sha256) { throw 'Private UBT entry assembly differs.' }
+    Assert-IAmSpeedPhysicalFile $manifest.policy_path
+    if ((Get-FileHash -LiteralPath $manifest.policy_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.policy_sha256) { throw 'Private Engine policy SHA differs.' }
+    $policy = Get-Content -LiteralPath $manifest.policy_path -Raw | ConvertFrom-Json
+    if ([IO.Path]::GetFullPath($policy.engine_root).TrimEnd('\') -ine (Join-Path $EngineRoot 'Engine') -or [IO.Path]::GetFullPath($policy.project_private_parent).TrimEnd('\') -ine [IO.Path]::GetFullPath($manifest.baseline_project_parent).TrimEnd('\')) { throw 'Private Engine policy binding differs.' }
+    $traceContract = 'Bound root Build only; private Trace required by real UBA non-detour executor. Query and recursive helper modes retain Session trace suppression.'
+    if ($manifest.private_root_trace_contract -cne $traceContract -or $policy.private_root_trace_contract -cne $traceContract) { throw 'Private root Build trace contract differs.' }
+    $copyContract = 'Exact 19 runtime DLL pairs use immutable D Engine sources and allowlisted private E targets; four exact pre-existing D runtime pairs (D3D12Core, d3d12SDKLayers, EOSSDK-Win64-Shipping, NNEEditorOnnxTools) are immutable inputs whose Engine copy actions are skipped; pinned Engine Natvis sources use private E copy/link outputs. No Engine action outputs or deletes.'
+    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') { $copyContract = 'Bound Engine exact 19 private runtime DLL pairs and four immutable pre-existing Engine inputs; pinned Natvis sources use private outputs. No Engine action outputs or deletes.' }
+    if ($manifest.private_copy_producer_contract -cne $copyContract -or $policy.private_copy_producer_contract -cne $copyContract) { throw 'Private copy producer contract differs.' }
+    if ($manifest.preserved_runtime_copy_count -ne 23 -or @($policy.preserved_runtime_copies).Count -ne 23 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
+    $privateEngineOutputRoot = [IO.Path]::GetFullPath((Join-Path ([string]$manifest.private_root) 'EnginePrivate')).TrimEnd('\') + '\'
+    # These exact D targets already exist and are byte-identical to their pinned
+    # Engine sources. The UBT hook verifies both files and returns true to
+    # suppress the generated copy/delete action; no write to Engine is allowed.
+    $approvedPreexistingEngineCopies = @{
+        ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\D3D12\x64\D3D12Core.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\ThirdParty\Windows\AgilitySDK\1.618.5\Binaries\x64\D3D12Core.dll'))
+        ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\D3D12\x64\d3d12SDKLayers.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\ThirdParty\Windows\AgilitySDK\1.618.5\Binaries\x64\d3d12SDKLayers.dll'))
+        ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\EOSSDK-Win64-Shipping.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\ThirdParty\EOSSDK\SDK\Bin\EOSSDK-Win64-Shipping.dll'))
+        ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\NNEEditorOnnxTools.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\Editor\NNEEditor\Bin\Win64\NNEEditorOnnxTools.dll'))
+    }
+    $targets = @{}
+    foreach ($copy in $policy.preserved_runtime_copies) {
+        $source = [IO.Path]::GetFullPath([string]$copy.source)
+        $target = [IO.Path]::GetFullPath([string]$copy.target)
+        if ($targets.ContainsKey($target) -or $copy.source_sha256 -cne $copy.target_sha256) { throw 'Private runtime copy identity differs.' }
+        if (-not $source.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($source) -ine '.dll') { throw 'Private runtime DLL source escapes the read-only Engine.' }
+        $isPrivateTarget = $target.StartsWith($privateEngineOutputRoot, [StringComparison]::OrdinalIgnoreCase)
+        $isPreexistingEngineInput = $approvedPreexistingEngineCopies.ContainsKey($target) -and $approvedPreexistingEngineCopies[$target] -ieq $source
+        if ((-not $isPrivateTarget -and -not $isPreexistingEngineInput) -or [IO.Path]::GetExtension($target) -ine '.dll') { throw 'Private runtime DLL target escapes the allowlisted E output root or exact pre-existing D input set.' }
+        $targets[$target] = $true
+        foreach ($record in @(@{path=$source;bytes=$copy.source_bytes;sha256=$copy.source_sha256;ticks=$copy.source_mtime_ticks},@{path=$target;bytes=$copy.target_bytes;sha256=$copy.target_sha256;ticks=$copy.target_mtime_ticks})) {
+            Assert-IAmSpeedPhysicalFile $record.path
+            $item = Get-Item -LiteralPath $record.path
+            if ($item.Length -ne $record.bytes -or $item.LastWriteTimeUtc.Ticks -ne $record.ticks -or (Get-FileHash -LiteralPath $record.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $record.sha256) { throw "Private runtime DLL copy drift: $($record.path)" }
+        }
+    }
+    $visualizerSources = @{}
+    foreach ($sourceRecord in $policy.private_debugger_visualizer_sources) {
+        $source = [IO.Path]::GetFullPath([string]$sourceRecord.source)
+        if ($visualizerSources.ContainsKey($source) -or -not $source.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($source) -ine '.natvis') { throw 'Private debugger visualizer source inventory escapes or duplicates the read-only Engine.' }
+        Assert-IAmSpeedPhysicalFile $source
+        $item = Get-Item -LiteralPath $source
+        if ($item.Length -ne $sourceRecord.source_bytes -or $item.LastWriteTimeUtc.Ticks -ne $sourceRecord.source_mtime_ticks -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceRecord.source_sha256) { throw "Private debugger visualizer source inventory drift: $source" }
+        $visualizerSources[$source] = [string]$sourceRecord.source_sha256
+    }
+    $visualizerTargets = @{}
+    foreach ($visualizer in $policy.private_debugger_visualizers) {
+        $source = [IO.Path]::GetFullPath([string]$visualizer.source)
+        $target = [IO.Path]::GetFullPath([string]$visualizer.target)
+        if (-not $visualizerSources.ContainsKey($source) -or $visualizerSources[$source] -cne $visualizer.source_sha256) { throw 'Private debugger visualizer source/target manifest identity differs.' }
+        if (-not $target.StartsWith($privateEngineOutputRoot, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($target) -ine '.natvis' -or $visualizerTargets.ContainsKey($target)) { throw 'Private debugger visualizer target escapes its allowlist or is duplicated.' }
+        $visualizerTargets[$target] = $true
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+            Assert-IAmSpeedPhysicalFile $target
+            $output = Get-Item -LiteralPath $target
+            if ($output.Length -ne $visualizer.source_bytes -or $output.LastWriteTimeUtc.Ticks -ne $visualizer.source_mtime_ticks -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne $visualizer.source_sha256) { throw "Private debugger visualizer output drift: $target" }
+        }
+    }
+    if ($visualizerTargets.Count -gt $visualizerSources.Count) { throw 'Private debugger visualizer output inventory exceeds its pinned source set.' }
+    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') { Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $EngineRoot | Out-Null }
+    return $manifest
+}
+
+function Assert-IAmSpeedPrivateCacheBinding {
+    param([Parameter(Mandatory=$true)][psobject]$Runtime,[Parameter(Mandatory=$true)][string]$ExpectedCacheRoot)
+    if (-not $Runtime.PrivateUbt -or [string]::IsNullOrWhiteSpace($Runtime.PrivateManifestPath)) {
+        throw 'Private cache binding requires the sealed private UBT runtime.'
+    }
+    $expected = [IO.Path]::GetFullPath($ExpectedCacheRoot).TrimEnd('\')
+    $manifest = Get-Content -LiteralPath $Runtime.PrivateManifestPath -Raw | ConvertFrom-Json
+    $policy = Get-Content -LiteralPath $Runtime.PrivateEnginePolicyPath -Raw | ConvertFrom-Json
+    $manifestParent = [IO.Path]::GetFullPath([string]$manifest.baseline_project_parent).TrimEnd('\')
+    $policyParent = [IO.Path]::GetFullPath([string]$policy.project_private_parent).TrimEnd('\')
+    $policyCache = [IO.Path]::GetFullPath([string]$policy.private_cache_root).TrimEnd('\')
+    if ($manifestParent -ine $policyParent -or $policyCache -ine $expected) {
+        throw "Private UBT cache binding differs from the current CI root: expected $expected; manifest parent $manifestParent; policy parent $policyParent; policy cache $policyCache"
+    }
+    return [pscustomobject]@{ ExpectedCacheRoot=$expected; ManifestParent=$manifestParent; PolicyParent=$policyParent; PolicyCacheRoot=$policyCache }
+}
+
+function Assert-IAmSpeedEditorTargetInfoFresh {
+    param([Parameter(Mandatory=$true)][string]$TargetInfoPath,[Parameter(Mandatory=$true)][string]$ProjectRoot)
+    if (-not (Test-Path -LiteralPath $TargetInfoPath -PathType Leaf)) { throw "Editor TargetInfo is missing: $TargetInfoPath" }
+    $targetInfo = Get-Content -LiteralPath $TargetInfoPath -Raw | ConvertFrom-Json
+    $targets = @($targetInfo.Targets)
+    if ($targets.Count -eq 0) { throw 'Editor TargetInfo has no target entries.' }
+    $targetNames = @($targets | ForEach-Object { [string]$_.Name })
+    if (@($targetNames | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0 -or
+        @($targets | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Path) -or [string]$_.Type -eq 'Unknown' }).Count -gt 0) {
+        throw 'Editor TargetInfo contains an invalid name, path, or type.'
+    }
+    $targetInfoItem = Get-Item -LiteralPath $TargetInfoPath
+    $targetInfoTime = $targetInfoItem.LastWriteTimeUtc
+    $resolvedTargetPaths = @()
+    foreach ($target in $targets) {
+        $targetPath = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $TargetInfoPath) ([string]$target.Path)))
+        if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) { throw "Editor TargetInfo target path is missing: $targetPath" }
+        $resolvedTargetPaths += $targetPath
+    }
+    $remainingNames = [Collections.Generic.List[string]]::new()
+    foreach ($name in $targetNames) { if (-not $remainingNames.Contains($name)) { $remainingNames.Add($name) } }
+    $originalNames = @($remainingNames.ToArray())
+    $targetFiles = @()
+    foreach ($directoryName in @('Source','Plugins','Platforms','Restricted')) {
+        $directory = Join-Path $ProjectRoot $directoryName
+        if (Test-Path -LiteralPath $directory -PathType Container) {
+            $targetFiles += @(Get-ChildItem -LiteralPath $directory -Recurse -File -Filter '*.Target.cs' -ErrorAction Stop)
+        }
+    }
+    foreach ($targetFile in $targetFiles) {
+        $targetName = $targetFile.Name.Substring(0, $targetFile.Name.Length - '.Target.cs'.Length)
+        $suffixParts = $targetName.Split(@('_'), 2, [StringSplitOptions]::None)
+        if ($suffixParts.Count -gt 1 -and $originalNames -ccontains $suffixParts[0]) { continue }
+        if ($targetFile.LastWriteTimeUtc -ge $targetInfoTime) { throw "Editor TargetInfo predates project target source: $($targetFile.FullName)" }
+        [void]$remainingNames.Remove($targetName)
+    }
+    if ($remainingNames.Count -gt 0) { throw "Editor TargetInfo is missing project targets: $($remainingNames -join ', ')" }
+    return [pscustomobject]@{
+        path=[IO.Path]::GetFullPath($TargetInfoPath)
+        sha256=(Get-FileHash -LiteralPath $TargetInfoPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        bytes=$targetInfoItem.Length
+        last_write_utc=$targetInfoTime.ToString('o')
+        target_count=$targets.Count
+        project_target_source_count=$targetFiles.Count
+        resolved_target_paths=$resolvedTargetPaths
+    }
+}
+
+function Invoke-IAmSpeedPrivateEnginePolicy {
+    param([Parameter(Mandatory=$true)][psobject]$Runtime,[Parameter(Mandatory=$true)][scriptblock]$Action)
+    $names = @('SL_PRIVATE_ENGINE_METADATA_POLICY','SL_PRIVATE_RULES_PROFILE','SL_PRIVATE_RULES_PROFILE_SHA256')
+    $original = @{}; $had = @{}; $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
+    foreach ($name in $names) { $had[$name]=$processEnvironment.Contains($name); $original[$name] = [Environment]::GetEnvironmentVariable($name,'Process') }
+    try {
+        foreach ($name in $names) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        if ($Runtime.PrivateUbt) {
+            [Environment]::SetEnvironmentVariable($names[0],[string]$Runtime.PrivateEnginePolicyPath,'Process')
+            $manifest = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $Runtime.Root
+            if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+                [Environment]::SetEnvironmentVariable($names[1],[string]$manifest.rules_profile_path,'Process')
+                [Environment]::SetEnvironmentVariable($names[2],[string]$manifest.rules_profile_sha256,'Process')
+            }
+        }
+        & $Action
+    }
+    finally { foreach ($name in $names) { if ($had[$name]) { [Environment]::SetEnvironmentVariable($name,$original[$name],'Process') } else { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue } } }
+}
+
+function Assert-IAmSpeedDirectUbtRuntime {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)] [string]$EngineRoot, [string]$PrivateManifestPath, [string]$PrivateManifestSha256)
+
+    $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
+    $dotnet = Join-Path $engine.Root 'Engine\Binaries\ThirdParty\DotNet\10.0\win-x64\dotnet.exe'
+    $ubt = Join-Path $engine.Root 'Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll'
+    $private = $null
+    if (-not [string]::IsNullOrWhiteSpace($PrivateManifestPath)) {
+        $private = Assert-IAmSpeedPrivateUbtManifest -Path $PrivateManifestPath -Sha256 $PrivateManifestSha256 -EngineRoot $engine.Root
+        $ubt = [string]$private.ubt_path
+    }
+    foreach ($path in @($dotnet, $ubt)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Pinned direct UBT runtime file is missing: $path" }
+        if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Pinned direct UBT runtime file is a reparse point: $path" }
+    }
+    $dotnetSha = (Get-FileHash -LiteralPath $dotnet -Algorithm SHA256).Hash.ToLowerInvariant()
+    $ubtSha = (Get-FileHash -LiteralPath $ubt -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($dotnetSha -cne $script:IAmSpeedDotNetSha256) { throw "Pinned .NET host SHA-256 differs: $dotnetSha" }
+    if ($null -eq $private -and $ubtSha -cne $script:IAmSpeedUbtSha256) { throw "Pinned UnrealBuildTool SHA-256 differs: $ubtSha" }
+    $workingDirectory = Join-Path $engine.Root 'Engine\Source'
+    if (-not (Test-Path -LiteralPath $workingDirectory -PathType Container)) { throw "Direct UBT working directory is missing: $workingDirectory" }
+    return [pscustomobject]@{ Root=$engine.Root; WorkingDirectory=$workingDirectory; DotNetPath=$dotnet; DotNetDirectory=(Split-Path -Parent $dotnet); DotNetVersion='10.0'; DotNetArchitecture='win-x64'; DotNetSha256=$dotnetSha; UbtPath=$ubt; UbtSha256=$ubtSha; PrivateUbt=($null -ne $private); PrivateManifestPath=$PrivateManifestPath; PrivateManifestSha256=$PrivateManifestSha256; PrivateEnginePolicyPath=$private.policy_path }
+}
+
+function New-IAmSpeedDirectUbtInvocation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [psobject]$Runtime,
+        [Parameter(Mandatory=$true)] [string[]]$Arguments
+    )
+    $root = [IO.Path]::GetFullPath([string]$Runtime.Root).TrimEnd('\')
+    $runtimePaths = @([string]$Runtime.DotNetPath)
+    if ($Runtime.PrivateUbt) {
+        $private = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $root
+        if ($Runtime.UbtPath -ine $private.ubt_path -or $Runtime.UbtSha256 -cne $private.ubt_sha256) { throw 'Private UBT invocation entry drift.' }
+        if ($Arguments -notcontains '-NoEngineChanges' -or $Arguments -notcontains '-UsePrecompiled' -or $Arguments -notcontains '-NoUBA') { throw 'Private UBT requires protected precompiled non-detour build flags.' }
+    } else { $runtimePaths += [string]$Runtime.UbtPath }
+    foreach ($path in $runtimePaths) {
+        $full = [IO.Path]::GetFullPath($path)
+        if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Direct UBT runtime path escapes its pinned Engine root: $full" }
+    }
+    $expectedDotNetDirectory = Split-Path -Parent ([string]$Runtime.DotNetPath)
+    if ([IO.Path]::GetFullPath([string]$Runtime.DotNetDirectory).TrimEnd('\') -ine [IO.Path]::GetFullPath($expectedDotNetDirectory).TrimEnd('\') -or
+        [string]$Runtime.DotNetVersion -cne '10.0' -or [string]$Runtime.DotNetArchitecture -cne 'win-x64' -or
+        [string]$Runtime.DotNetSha256 -cne $script:IAmSpeedDotNetSha256 -or (-not $Runtime.PrivateUbt -and [string]$Runtime.UbtSha256 -cne $script:IAmSpeedUbtSha256)) {
+        throw 'Direct UBT runtime metadata differs from the pinned bundled .NET and UBT pair.'
+    }
+    if (@($Arguments | Where-Object { $_ -cmatch '^-Session=' }).Count -gt 0) { throw 'Direct UBT caller cannot override or duplicate its private UBT session.' }
+    $expectedWorkingDirectory = Join-Path $root 'Engine\Source'
+    if ([IO.Path]::GetFullPath([string]$Runtime.WorkingDirectory).TrimEnd('\') -ine $expectedWorkingDirectory) { throw 'Direct UBT working directory must match Build.bat Engine\Source context.' }
+    $rootArguments = @()
+    if ($Runtime.PrivateUbt) {
+        if (@($Arguments | Where-Object { $_ -imatch '^-RootDirectory=' }).Count -gt 0) { throw 'Private UBT caller cannot override physical Engine root.' }
+        $rootArguments = @("-RootDirectory=$root")
+    }
+    $session = [guid]::NewGuid().ToString('B')
+    return [pscustomobject]@{
+        EngineRoot=$root
+        WorkingDirectory=$expectedWorkingDirectory
+        Executable=[string]$Runtime.DotNetPath
+        Arguments=[string[]](@([string]$Runtime.UbtPath) + @($Arguments) + $rootArguments + @("-Session=$session"))
+        SessionId=$session
+        DotNetDirectory=[string]$Runtime.DotNetDirectory
+        DotNetVersion=[string]$Runtime.DotNetVersion
+        DotNetArchitecture=[string]$Runtime.DotNetArchitecture
+        DotNetSha256=[string]$Runtime.DotNetSha256
+        UbtSha256=[string]$Runtime.UbtSha256
+    }
+}
+
+function Assert-IAmSpeedPrecompiledRules {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)] [string]$EngineRoot, [psobject]$Runtime)
+
+    $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
+    if ($null -ne $Runtime -and $Runtime.PrivateUbt) {
+        $manifest = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $EngineRoot
+        if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+            $profile = Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $EngineRoot
+            return [pscustomobject]@{ Root=$engine.Root; RulesDirectory=$profile.rules_root; Files=$profile.files }
+        }
+    }
+    $directory = Join-Path $engine.Root 'Engine\Intermediate\Build\BuildRules'
+    $files = @()
+    foreach ($pin in $script:IAmSpeedRulesSeedFiles) {
+        foreach ($name in @($pin.Name, $pin.Manifest)) {
+            $path = Join-Path $directory $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Precompiled Engine rules file is missing: $path" }
+            $item = Get-Item -LiteralPath $path -Force
+            $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expectedBytes = if ($name -eq $pin.Name) { $pin.Bytes } else { $pin.ManifestBytes }
+            $expectedSha = if ($name -eq $pin.Name) { $pin.Sha256 } else { $pin.ManifestSha256 }
+            if ($item.Length -ne $expectedBytes -or $sha -cne $expectedSha) { throw "Precompiled Engine rules file does not match the qualified assembly: $path" }
+            $files += [pscustomobject]@{ path=$path; bytes=$item.Length; sha256=$sha }
+        }
+    }
+    foreach ($pin in $script:IAmSpeedRulesSeedPdbs) {
+        $path = Join-Path $directory $pin.Name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Precompiled Engine rules PDB is missing: $path" }
+        $item = Get-Item -LiteralPath $path -Force
+        $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($item.Length -ne $pin.Bytes -or $sha -cne $pin.Sha256) { throw "Precompiled Engine rules PDB does not match the qualified assembly: $path" }
+        $files += [pscustomobject]@{ path=$path; bytes=$item.Length; sha256=$sha }
+    }
+    return [pscustomobject]@{ Root=$engine.Root; RulesDirectory=$directory; Files=$files }
+}
+
+function Get-IAmSpeedRulesSnapshot {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)] [string]$EngineRoot)
+
+    $root = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')
+    $directory = Join-Path $root 'Engine\Intermediate\Build\BuildRules'
+    $names = @('UE5Rules.dll', 'UE5Rules.pdb', 'UE5RulesManifest.json',
+        'UE5ProgramRules.dll', 'UE5ProgramRules.pdb', 'UE5ProgramRulesManifest.json')
+    $files = @()
+    foreach ($name in $names) {
+        $path = Join-Path $directory $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Engine rules snapshot file is missing: $path" }
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Engine rules snapshot file is a reparse point: $path" }
+        $files += [pscustomobject]@{
+            name = $name
+            path = $item.FullName
+            bytes = [long]$item.Length
+            sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            lastWriteUtcTicks = [long]$item.LastWriteTimeUtc.Ticks
+            lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString('o')
+        }
+    }
+    return [pscustomobject]@{ engineRoot=$root; rulesDirectory=$directory; files=$files; capturedUtc=[DateTime]::UtcNow.ToString('o') }
+}
+
+function Assert-IAmSpeedRulesSnapshotUnchanged {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [psobject]$Before,
+        [Parameter(Mandatory=$true)] [psobject]$After,
+        [Parameter(Mandatory=$true)] [string]$Label
+    )
+    if ($Before.engineRoot -ine $After.engineRoot -or @($Before.files).Count -ne 6 -or @($After.files).Count -ne 6) {
+        throw "$Label Engine-rules snapshot root or file count changed. No automatic rebaseline or restore is permitted."
+    }
+    foreach ($beforeFile in $Before.files) {
+        $afterFile = @($After.files | Where-Object { $_.name -ceq $beforeFile.name })
+        if ($afterFile.Count -ne 1) { throw "$Label Engine-rules snapshot lost or duplicated $($beforeFile.name). No automatic rebaseline or restore is permitted." }
+        $current = $afterFile[0]
+        if ($beforeFile.path -ine $current.path -or [long]$beforeFile.bytes -ne [long]$current.bytes -or
+            $beforeFile.sha256 -cne $current.sha256 -or [long]$beforeFile.lastWriteUtcTicks -ne [long]$current.lastWriteUtcTicks) {
+            throw "$Label Engine-rules file changed during the owned operation: $($beforeFile.path). No automatic rebaseline or restore is permitted."
+        }
+    }
+    return $true
+}
+
+function New-IAmSpeedProjectRulesQueryArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$ProjectFile,
+        [Parameter(Mandatory=$true)] [string]$OutputPath,
+        [Parameter(Mandatory=$true)] [string]$LogPath
+    )
+    return [string[]]@(
+        '-Mode=QueryTargets', "-Project=$ProjectFile", "-Output=$OutputPath",
+        '-UsePrecompiled', '-NoEngineChanges', '-NoUBA', '-SLPrivateProjectResources',
+        '-IncludeAllTargets', '-DontIncludeParentAssembly', '-DontIncludeProgramTargets', "-Log=$LogPath"
+    )
+}
+
+function Resolve-IAmSpeedTbbLoader {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$EngineRoot,
+        [string]$ExpectedFallbackSha256 = $script:IAmSpeedExpectedTbbFallbackSha256
+    )
+
+    $root = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')
+    $binaryPath = Join-Path $root 'Engine\Binaries\Win64\tbbmalloc.dll'
+    if (Test-Path -LiteralPath $binaryPath -PathType Leaf) {
+        $file = Get-Item -LiteralPath $binaryPath -Force
+        return [pscustomobject]@{
+            LoaderDirectory = Split-Path -Parent $binaryPath
+            DllPath = $binaryPath
+            Sha256 = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Source = 'EngineBinaries'
+            FallbackShaValidated = $false
+        }
+    }
+
+    $fallbackPath = Join-Path $root 'Engine\Source\ThirdParty\Intel\TBB\Deploy\oneTBB-2022.3.0\VS2015\x64\bin\tbbmalloc.dll'
+    if (-not (Test-Path -LiteralPath $fallbackPath -PathType Leaf)) {
+        throw "tbbmalloc.dll was not found in Engine Binaries or the pinned oneTBB fallback: $fallbackPath"
+    }
+    $fallback = Get-Item -LiteralPath $fallbackPath -Force
+    $fallbackSha = (Get-FileHash -LiteralPath $fallbackPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($fallbackSha -cne $ExpectedFallbackSha256.ToLowerInvariant()) {
+        throw "The oneTBB fallback tbbmalloc.dll SHA-256 is not the qualified payload: $fallbackSha"
+    }
+    return [pscustomobject]@{
+        LoaderDirectory = Split-Path -Parent $fallbackPath
+        DllPath = $fallbackPath
+        Sha256 = $fallbackSha
+        Source = 'PinnedThirdPartyFallback'
+        FallbackShaValidated = $true
+    }
+}
+
+function Resolve-IAmSpeedEmbreeLoader {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$EngineRoot,
+        [string]$ExpectedFallbackSha256 = $script:IAmSpeedExpectedEmbreeFallbackSha256
+    )
+
+    $root = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')
+    if ($ExpectedFallbackSha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'The pinned Embree runtime SHA-256 must contain exactly 64 hexadecimal characters.' }
+    $binaryPath = Join-Path $root 'Engine\Binaries\Win64\embree4.dll'
+    if (Test-Path -LiteralPath $binaryPath -PathType Leaf) {
+        $file = Get-Item -LiteralPath $binaryPath -Force
+        $binarySha = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($binarySha -cne $ExpectedFallbackSha256.ToLowerInvariant()) {
+            throw "The Engine Binaries embree4.dll SHA-256 is not the qualified payload: $binarySha"
+        }
+        return [pscustomobject]@{
+            LoaderDirectory = Split-Path -Parent $binaryPath
+            DllPath = $binaryPath
+            Bytes = $file.Length
+            Sha256 = $binarySha
+            Sha256Pinned = $true
+            Source = 'EngineBinaries'
+            FallbackShaValidated = $false
+        }
+    }
+
+    $fallbackPath = Join-Path $root 'Engine\Source\ThirdParty\Intel\Embree\Deploy\embree-4.3.3\VS2015\x64\bin\embree4.dll'
+    if (-not (Test-Path -LiteralPath $fallbackPath -PathType Leaf)) {
+        throw "embree4.dll was not found in Engine Binaries or the pinned Embree fallback: $fallbackPath"
+    }
+    $fallbackSha = (Get-FileHash -LiteralPath $fallbackPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($fallbackSha -cne $ExpectedFallbackSha256.ToLowerInvariant()) {
+        throw "The Embree fallback embree4.dll SHA-256 is not the qualified payload: $fallbackSha"
+    }
+    return [pscustomobject]@{
+        LoaderDirectory = Split-Path -Parent $fallbackPath
+        DllPath = $fallbackPath
+        Bytes = (Get-Item -LiteralPath $fallbackPath -Force).Length
+        Sha256 = $fallbackSha
+        Sha256Pinned = $true
+        Source = 'PinnedThirdPartyFallback'
+        FallbackShaValidated = $true
+    }
+}
+
+function Assert-IAmSpeedResolvedRuntimeDllUnchanged {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)] [pscustomobject]$Loader)
+
+    if (-not (Test-Path -LiteralPath $Loader.DllPath -PathType Leaf)) {
+        throw "Pinned runtime DLL disappeared: $($Loader.DllPath)"
+    }
+    $item = Get-Item -LiteralPath $Loader.DllPath -Force
+    $sha = (Get-FileHash -LiteralPath $Loader.DllPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($item.Length -ne $Loader.Bytes -or $sha -cne $Loader.Sha256) {
+        throw "Pinned runtime DLL changed during CI: $($Loader.DllPath)"
+    }
+    return [pscustomobject]@{ path=$Loader.DllPath; bytes=$item.Length; sha256=$sha }
+}
+
+function New-IAmSpeedProcessPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$LoaderDirectory,
+        [string[]]$AdditionalDirectories = @(),
+        [AllowNull()] [string]$ExistingPath
+    )
+    $directory = [IO.Path]::GetFullPath($LoaderDirectory).TrimEnd('\')
+    $directories = [System.Collections.Generic.List[string]]::new()
+    $directories.Add($directory)
+    foreach ($additional in $AdditionalDirectories) {
+        if (-not [string]::IsNullOrWhiteSpace($additional)) { $directories.Add([IO.Path]::GetFullPath($additional).TrimEnd('\')) }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExistingPath)) { $directories.Add($ExistingPath) }
+    return [string]::Join(';', $directories.ToArray())
+}
+
+function Invoke-IAmSpeedWithProcessTbbPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$LoaderDirectory,
+        [string]$DotNetDirectory,
+        [string[]]$AdditionalDirectories = @(),
+        [Parameter(Mandatory=$true)] [scriptblock]$Action
+    )
+    $environmentNames = @('PATH', 'UE_DOTNET_VERSION', 'UE_DOTNET_ARCH', 'UE_DOTNET_DIR', 'DOTNET_ROOT', 'DOTNET_MULTILEVEL_LOOKUP', 'DOTNET_ROLL_FORWARD')
+    $originalEnvironment = @{}
+    foreach ($name in $environmentNames) { $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+    try {
+        $processDirectories = @($AdditionalDirectories)
+        if (-not [string]::IsNullOrWhiteSpace($DotNetDirectory)) {
+            $dotnetDirectoryFull = [IO.Path]::GetFullPath($DotNetDirectory).TrimEnd('\')
+            $processDirectories += $dotnetDirectoryFull
+            [Environment]::SetEnvironmentVariable('UE_DOTNET_VERSION', '10.0', 'Process')
+            [Environment]::SetEnvironmentVariable('UE_DOTNET_ARCH', 'win-x64', 'Process')
+            [Environment]::SetEnvironmentVariable('UE_DOTNET_DIR', $dotnetDirectoryFull, 'Process')
+            [Environment]::SetEnvironmentVariable('DOTNET_ROOT', $dotnetDirectoryFull, 'Process')
+            [Environment]::SetEnvironmentVariable('DOTNET_MULTILEVEL_LOOKUP', '0', 'Process')
+            [Environment]::SetEnvironmentVariable('DOTNET_ROLL_FORWARD', 'LatestMajor', 'Process')
+        }
+        [Environment]::SetEnvironmentVariable('PATH', (New-IAmSpeedProcessPath -LoaderDirectory $LoaderDirectory -AdditionalDirectories $processDirectories -ExistingPath $originalEnvironment['PATH']), 'Process')
+        & $Action
+    }
+    finally {
+        foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process') }
+    }
+}
+
+function Assert-IAmSpeedPrivateRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [AllowNull()] [string]$PrivateRoot,
+        [Parameter(Mandatory=$true)] [string]$EngineRoot,
+        [Parameter(Mandatory=$true)] [string]$PluginRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PrivateRoot)) {
+        throw 'IAMSPEED_PRIVATE_ROOT is required; use a fresh RM-approved private output root.'
+    }
+    $privatePath = [IO.Path]::GetFullPath($PrivateRoot).TrimEnd('\')
+    $enginePath = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')
+    $pluginPath = [IO.Path]::GetFullPath($PluginRoot).TrimEnd('\')
+    if ($privatePath -ieq $enginePath -or $privatePath.StartsWith($enginePath + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Private output root must be outside the installed Engine.'
+    }
+    if ($privatePath -ieq $pluginPath -or $privatePath.StartsWith($pluginPath + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Private output root must be outside the entire plugin source checkout: $pluginPath"
+    }
+    return $privatePath
+}
+
+function Assert-IAmSpeedEngineRoot {
+    [CmdletBinding()]
+    param([AllowNull()] [string]$EngineRoot)
+
+    if ([string]::IsNullOrWhiteSpace($EngineRoot)) {
+        throw 'IAMSPEED_UE_ROOT is required; Unreal Engine fallback/bootstrap is disabled.'
+    }
+    if (-not (Test-Path -LiteralPath $EngineRoot -PathType Container)) {
+        throw "The requested Unreal Engine root does not exist: $EngineRoot"
+    }
+    $root = (Resolve-Path -LiteralPath $EngineRoot).Path.TrimEnd('\')
+    $rootItem = Get-Item -LiteralPath $root -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "The requested Unreal Engine root must be a physical directory: $root"
+    }
+
+    $versionPath = Join-Path $root 'Engine\Build\Build.version'
+    $build = Join-Path $root 'Engine\Build\BatchFiles\Build.bat'
+    $editor = Join-Path $root 'Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
+    if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $build -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $editor -PathType Leaf)) {
+        throw "The requested Unreal Engine root is incomplete: $root"
+    }
+    try { $version = Get-Content -Raw -LiteralPath $versionPath | ConvertFrom-Json }
+    catch { throw "The requested Unreal Engine Build.version is invalid: $versionPath" }
+    $actual = '{0}.{1}.{2}' -f $version.MajorVersion, $version.MinorVersion, $version.PatchVersion
+    if ($actual -cne '5.8.2' -or [int]$version.CompatibleChangelist -ne 55116800) {
+        throw "Expected Unreal Engine 5.8.2 CL 55116800; found $actual CL $($version.CompatibleChangelist)."
+    }
+
+    return [pscustomobject]@{
+        Root = $root
+        Version = $actual
+        CompatibleChangelist = [int]$version.CompatibleChangelist
+        Build = $build
+        Editor = $editor
+    }
+}
+
+function New-IAmSpeedBuildArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$ProjectFile,
+        [Parameter(Mandatory=$true)] [string]$LogPath,
+        [Parameter(Mandatory=$true)] [string]$UbaRoot,
+        [ValidateRange(1, 8)] [int]$MaxParallelActions = 4,
+        [ValidateRange(1, 8)] [int]$UbaMaxWorkers = 4,
+        [switch]$SkipRulesCompile
+    )
+    $arguments = [System.Collections.Generic.List[string]]::new()
+    $arguments.AddRange([string[]]@(
+        'IAmSpeedHostProjectEditor', 'Win64', 'Development', "-Project=$ProjectFile",
+        '-WaitMutex', '-NoHotReload', '-UsePrecompiled', '-NoEngineChanges',
+        '-NoXGE', '-NoFASTBuild', '-NoSNDBS', '-NoUBA', "-MaxParallelActions=$MaxParallelActions",
+        "-UBARootDir=$UbaRoot", '-UBAStoreCapacityGb=4', "-UBAMaxWorkers=$UbaMaxWorkers",
+        '-UBADisableRemote', '-UBADisableHorde', '-SLPrivateProjectResources', "-Log=$LogPath"
+    ))
+    if ($SkipRulesCompile) { $arguments.Add('-SkipRulesCompile') }
+    return [string[]]$arguments.ToArray()
+}
+
+function New-IAmSpeedEditorArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$ProjectFile,
+        [Parameter(Mandatory=$true)] [string]$TestFilter,
+        [Parameter(Mandatory=$true)] [string]$LogPath,
+        [Parameter(Mandatory=$true)] [string]$ReportPath
+    )
+    return [string[]]@(
+        $ProjectFile, '-unattended', '-nop4', '-nosplash', '-NullRHI', '-NoSound',
+        '-stdout', '-FullStdOutLogOutput', '-nosteam', '-NoEOS', '-Locale=en-US',
+        "-AbsLog=$LogPath", "-ReportExportPath=$ReportPath",
+        '-TestExit=Automation Test Queue Empty', "-ExecCmds=Automation RunTests $TestFilter"
+    )
+}
+
+function Assert-IAmSpeedAutomationResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [int]$ExitCode,
+        [Parameter(Mandatory=$true)] [AllowEmptyString()] [string]$StandardOutput,
+        [Parameter(Mandatory=$true)] [string]$ReportPath,
+        [Parameter(Mandatory=$true)] [string]$TestFilter
+    )
+    if ($ExitCode -ne 0) { throw "UnrealEditor-Cmd exited with code $ExitCode." }
+    $queueMatches = [regex]::Matches($StandardOutput, 'Automation Test Queue Empty (\d+) tests performed\.')
+    if ($queueMatches.Count -ne 1) {
+        throw 'Automation completion marker is missing or ambiguous.'
+    }
+    $queueCount = [int]$queueMatches[0].Groups[1].Value
+    if ($queueCount -le 0) { throw 'Automation completed without running any tests.' }
+    if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) {
+        throw "Automation report index is missing: $ReportPath"
+    }
+    try { $report = Get-Content -Raw -LiteralPath $ReportPath | ConvertFrom-Json }
+    catch { throw "Automation report index is invalid: $ReportPath" }
+    if ($report.PSObject.Properties.Name -notcontains 'tests') {
+        throw 'Automation report has no tests array.'
+    }
+    $tests = @($report.tests)
+    if ($tests.Count -ne $queueCount) {
+        throw "Automation queue/report count differs: queue=$queueCount report=$($tests.Count)."
+    }
+    if (@($tests | Where-Object { $_.state -cne 'Success' }).Count -ne 0) {
+        throw 'Automation report contains failed, warning, skipped, or incomplete tests.'
+    }
+    $paths = @($tests | ForEach-Object { [string]$_.fullTestPath })
+    if (@($paths | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -notlike "$TestFilter.*" }).Count -ne 0) {
+        throw "Automation report contains tests outside the requested filter '$TestFilter'."
+    }
+    if (@($paths | Group-Object | Where-Object { $_.Count -ne 1 }).Count -ne 0) {
+        throw 'Automation report contains duplicate test paths.'
+    }
+    foreach ($name in @('succeeded', 'succeededWithWarnings', 'failed', 'notRun', 'inProcess')) {
+        if ($report.PSObject.Properties.Name -notcontains $name) {
+            throw "Automation report is missing aggregate field '$name'."
+        }
+    }
+    if ([int]$report.succeeded -ne $queueCount -or [int]$report.succeededWithWarnings -ne 0 -or
+        [int]$report.failed -ne 0 -or [int]$report.notRun -ne 0 -or [int]$report.inProcess -ne 0) {
+        throw 'Automation aggregate counts do not describe a complete, warning-free pass.'
+    }
+    return [pscustomobject]@{ TestsPerformed=$queueCount; TestsSucceeded=[int]$report.succeeded }
+}
+
+function Assert-IAmSpeedProspectiveRules {
+    param([Parameter(Mandatory=$true)][psobject]$Manifest,[Parameter(Mandatory=$true)][string]$EngineRoot)
+    $engine = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine')).TrimEnd('\')
+    $read = {
+        param($Path,$Sha)
+        if ([string]::IsNullOrWhiteSpace($Path) -or $Sha -cnotmatch '^[0-9a-f]{64}$') { throw 'Missing exact prospective qualification reference.' }
+        Assert-IAmSpeedPhysicalFile $Path
+        if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Sha) { throw 'Prospective qualification reference drift.' }
+        Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    }
+    $profile = & $read $Manifest.rules_profile_path $Manifest.rules_profile_sha256
+    if ($profile.schema -cne 'sl.prospective-private-rules/v1' -or $profile.stage -cne 'SEALED_LOAD_ONLY' -or [IO.Path]::GetFullPath($profile.engine_root).TrimEnd('\') -ine $engine) { throw 'Unknown or incompatible sealed Rules profile.' }
+    $root = [IO.Path]::GetFullPath($profile.rules_root).TrimEnd('\')
+    Assert-IAmSpeedPhysicalFile $root
+    if ($root.StartsWith($engine+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Prospective Rules root is inside Engine.' }
+    $expected = @('UE5Rules.dll','UE5Rules.pdb','UE5RulesManifest.json','UE5ProgramRules.dll','UE5ProgramRules.pdb','UE5ProgramRulesManifest.json')
+    $seen = @{}
+    foreach ($f in $profile.files) {
+        $path=[IO.Path]::GetFullPath($f.path);$name=Split-Path -Leaf $path
+        if ($expected -cnotcontains $name -or $seen.ContainsKey($name) -or [IO.Path]::GetDirectoryName($path) -ine $root) { throw 'Unknown duplicate or escaped sealed Rules file.' }
+        Assert-IAmSpeedPhysicalFile $path
+        if ((Get-Item -LiteralPath $path).Length -ne $f.bytes -or (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $f.sha256) { throw 'Sealed Rules bytes drift.' }
+        $seen[$name]=$f
+    }
+    if ($seen.Count -ne 6) { throw 'Incomplete sealed Rules inventory.' }
+    foreach ($f in Get-ChildItem -LiteralPath $root -File -Force) { if ($expected -cnotcontains $f.Name -and $f.Name -cne 'loaded-assemblies.jsonl') { throw 'Unknown Rules root file.' } }
+    Assert-IAmSpeedPhysicalFile $profile.version_file
+    if ([IO.Path]::GetFullPath($profile.version_file) -ine (Join-Path $engine 'Build\Build.version') -or (Get-FileHash -LiteralPath $profile.version_file).Hash.ToLowerInvariant() -cne $profile.version_sha256) { throw 'Prospective Engine version drift.' }
+    $receipt = & $read $Manifest.rules_qualification_path $Manifest.rules_qualification_sha256
+    if ($receipt.schema -cne 'sl.private-rules-qualification/v1' -or $receipt.status -cne 'QUALIFIED' -or [IO.Path]::GetFullPath($receipt.engine_root).TrimEnd('\') -ine $engine -or $receipt.ubt_sha256 -cne $Manifest.ubt_sha256) { throw 'Unqualified Engine/UBT prospective profile.' }
+    $bootstrap = & $read $receipt.bootstrap_profile.path $receipt.bootstrap_profile.sha256
+    if ($bootstrap.schema -cne $profile.schema -or $bootstrap.stage -cne 'BOOTSTRAP_PRIVATE_ONLY' -or [IO.Path]::GetFullPath($bootstrap.engine_root).TrimEnd('\') -ine $engine -or $bootstrap.version_sha256 -cne $profile.version_sha256) { throw 'Bootstrap provenance differs.' }
+    $sources=@{}
+    foreach ($s in $bootstrap.sources) {
+        $key=$s.assembly+'|'+[IO.Path]::GetFullPath($s.path)
+        if ($sources.ContainsKey($key)) { throw 'Duplicate bootstrap source.' }; $sources[$key]=$s
+    }
+    $sourceSeen=@{}
+    foreach ($s in $profile.sources) {
+        $key=$s.assembly+'|'+[IO.Path]::GetFullPath($s.path)
+        if ($sourceSeen.ContainsKey($key) -or -not $sources.ContainsKey($key) -or $s.sha256 -cne $sources[$key].sha256 -or $s.bytes -ne $sources[$key].bytes) { throw 'Compile source inventory mismatch.' }
+        Assert-IAmSpeedPhysicalFile $s.path
+        if (-not ([IO.Path]::GetFullPath($s.path)).StartsWith($engine+'\',[StringComparison]::OrdinalIgnoreCase) -or (Get-Item -LiteralPath $s.path).Length -ne $s.bytes -or (Get-FileHash -LiteralPath $s.path).Hash.ToLowerInvariant() -cne $s.sha256) { throw 'Compile source bytes drift.' }
+        $sourceSeen[$key]=$true
+    }
+    if ($sources.Count -eq 0 -or $sourceSeen.Count -ne $sources.Count) { throw 'Incomplete compile source provenance.' }
+    $term=& $read $receipt.bootstrap_terminal.path $receipt.bootstrap_terminal.sha256
+    if ($term.status -cne 'PASS' -or $term.exit -ne 0 -or $term.timeout -or -not $term.Engine_and_source_unchanged -or $term.original_job_zero.assigned -ne 0 -or $term.original_job_zero.listed -ne 0) { throw 'Bootstrap execution is not qualified and drained.' }
+    Assert-IAmSpeedPhysicalFile $receipt.bootstrap_loaded.path
+    if ((Get-FileHash -LiteralPath $receipt.bootstrap_loaded.path).Hash.ToLowerInvariant() -cne $receipt.bootstrap_loaded.sha256) { throw 'Real compiled/loaded provenance drift.' }
+    $loaded=@(Get-Content -LiteralPath $receipt.bootstrap_loaded.path | ForEach-Object { $_ | ConvertFrom-Json })
+    $assemblyNames=@('UE5Rules.dll','UE5ProgramRules.dll');$actual=@{}
+    foreach ($l in $loaded) {
+        $name=Split-Path -Leaf $l.path
+        if ($assemblyNames -cnotcontains $name -or $actual.ContainsKey($name) -or $l.stage -cne 'BOOTSTRAP_PRIVATE_ONLY' -or -not $l.recompiled -or $l.sha256 -cne $seen[$name].sha256 -or [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($l.path)) -ine [IO.Path]::GetFullPath($bootstrap.rules_root).TrimEnd('\') -or [string]::IsNullOrWhiteSpace($l.mvid)) { throw 'Not a real private compile/load of the qualified assembly.' }
+        $actual[$name]=$l
+    }
+    if ($actual.Count -ne 2) { throw 'Incomplete real assembly load proof.' }
+    $negative=& $read $receipt.negative_terminal.path $receipt.negative_terminal.sha256
+    $cases=@('good_sealed','source_sha_drift','rules_sha_drift','missing_rules','alias_rules_root','unknown_stage','unknown_rules_file','profile_sha_drift','wrong_engine','missing_profile');$caseSeen=@{}
+    if ($negative.status -cne 'PASS' -or -not $negative.Engine_unchanged) { throw 'Prospective load negatives not qualified.' }
+    foreach ($c in $negative.cases) {
+        if ($cases -cnotcontains $c.case -or $caseSeen.ContainsKey($c.case) -or $c.status -cne 'PASS' -or $c.timeout -or -not $c.Engine_unchanged -or $c.Job0.assigned -ne 0 -or $c.Job0.listed -ne 0) { throw 'Incomplete failed or undrained negative scope.' }
+        $caseSeen[$c.case]=$true
+        if ($c.case -ceq 'good_sealed') {
+            if ($c.exit -ne 0 -or @($c.loaded).Count -ne 2) { throw 'Sealed actual load missing.' }
+            foreach ($l in $c.loaded) {
+                $name=Split-Path -Leaf $l.path
+                if (-not $actual.ContainsKey($name) -or $l.stage -cne 'SEALED_LOAD_ONLY' -or $l.recompiled -or $l.sha256 -cne $actual[$name].sha256 -or $l.mvid -cne $actual[$name].mvid) { throw 'Sealed load fallback/recompilation or assembly mismatch.' }
+            }
+        } elseif ($c.exit -eq 0 -or @($c.loaded).Count -ne 0) { throw 'Negative admitted load or fallback.' }
+    }
+    if ($caseSeen.Count -ne 10) { throw 'Missing required negative case.' }
+    return $profile
+}

@@ -19,6 +19,8 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 	friend struct FNetworkBaseSpeedState;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedOriginGetterTest;
+	friend class FSLBallEpisodeAdmissionOwnerTest;
+	friend class FSLBallEpisodeAdmissionOffTest;
 	friend class FIAmSpeedBoxRestingEquilibriumTest;
 	friend class FIAmSpeedBoxCanonicalRestTest;
 	friend class FIAmSpeedBoxApproachQuantizationTest;
@@ -27,6 +29,10 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 	
 public:
 	USpeedMovementComponent(const FObjectInitializer& ObjectInitializer);
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Fixture-only control for an owned physical worker; UE keeps the underlying setter protected. */
+	void DisableAsyncPhysicsTickForTesting() { SetAsyncPhysicsTickEnabled(false); }
+#endif
 
 	void InitNetwork();
 	/** Used to create any physics engine information for this component */
@@ -139,7 +145,14 @@ private:
 	void applyAccelerationConstraint(const float& delta);
 	void applyAngularAccelerationConstraint(const float& delta);
 protected:
-	virtual void RecordPhysicsState();
+#if !UE_BUILD_SHIPPING
+ // Called only by the canonical driver after assigning local N+1, before forces.
+ virtual void BeforeCanonicalPhysicsPreparationForTesting(const FCanonicalFrameContext&) {}
+ const FBasePhysicsState& BasePhysicsStateForEpisodeTesting()const{return BasePhysicsState;}
+ bool CanRebaseCanonicalEpisodeForTesting(const FCanonicalFrameContext&,const SKinematic&) const;
+ bool RebaseCanonicalEpisodeHistoryForTesting(const FCanonicalFrameContext&,const SKinematic&);
+#endif
+ virtual void RecordPhysicsState();
 	bool GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
 	int32 GetSinceCanMoveFrame() const;
 	unsigned int NbFramesSinceCanMove() const;
@@ -252,6 +265,9 @@ public:
 	TObjectPtr<UNetworkPhysicsSettingsComponent> SNetworkSettings = nullptr;
 private:
 	//=========== Internal state variables for the movement component ===========
+#if !UE_BUILD_SHIPPING
+	bool bEpisodeTestingBeforeForces=false;
+#endif
 	SBaseGameState BaseGameState; // current game state of the component
 	FBasePhysicsState BasePhysicsState; // current physics state of the component (replicated on network)
 

@@ -6,6 +6,8 @@
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
 class ISpeedComponent;
+enum class ECanonicalFrameAbortReason : uint8;
+enum class ECanonicalPublicationResult : uint8 { Completed, ValidationFailed, PublicationFailed, CommitInvariantFailed };
 class USSubBody;
 class USphereSubBody;
 class UBoxSubBody;
@@ -47,6 +49,35 @@ struct IAMSPEED_API FDynamicContactPair
 	bool bActiveContactLastSolve = false;
 };
 
+
+#if !UE_BUILD_SHIPPING
+namespace Speed
+{
+struct FBodyContactPairReadOnlyTestFixture;
+// Values-only diagnostic. Complete means both full collections were inspected;
+// it is not an accuracy, contact-history, or atomic-reset certificate.
+struct FBodyContactPairInspectionRow
+{
+ uint8 Collection=0; // 0 dynamic, 1 pending rolling
+ uint64 PairKey=0, BodyAStableId=0, BodyBStableId=0;
+ uint32 BodyAObjectId=0, BodyBObjectId=0;
+ uint32 FirstSeenFrame=0, LastSeenFrame=0, LastSolvedFrame=0;
+ bool bIncident=false;
+};
+struct FBodyContactPairInspection
+{
+ uint64 PreparingFrame=0, WorldStepSerial=0, QueryStableBodyId=0;
+ uint32 CompletedStepFrame=0, QueryObjectId=0;
+ int32 DynamicTotal=0, PendingTotal=0, DynamicScanned=0, PendingScanned=0;
+ int32 DynamicIncident=0, PendingIncident=0, Failure=0;
+ bool bComplete=false;
+ TArray<FBodyContactPairInspectionRow> Rows;
+ bool HasNoIncidentPairs() const
+ { return bComplete && DynamicIncident==0 && PendingIncident==0; }
+};
+}
+#endif
+
 namespace Speed
 {
 	/** Transitional adapter record. The stable id survives registry reordering. */
@@ -63,6 +94,9 @@ namespace Speed
 	class IAMSPEED_API FSimulationWorld final
 	{
 	public:
+#if !UE_BUILD_SHIPPING
+        bool InspectBodyContactPairsForTesting(const USolidSubBody& Body,uint64 PreparingFrame,FBodyContactPairInspection& Out) const;
+#endif
 		/** Registers one live adapter and assigns its stable id exactly once. */
 		bool AddAdapter(ISpeedComponent& Adapter);
 		/** Removes one live adapter while keeping already-issued ids monotonic. */
@@ -115,11 +149,17 @@ namespace Speed
 		bool ApplyInputsForFrame(uint64 NumFrame, const SimulationBoundary::FInputJournal& Journal);
 		/** Builds a values-only immutable output snapshot for one completed frame. */
 		FSimulationSnapshot CaptureSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false) const;
+		void NotifyCanonicalFramePublished(uint64 NumFrame);
+		ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
+		void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;
 		/** Atomically validates and restores a snapshot captured from this registry. */
 		bool RestoreSnapshot(const FSimulationSnapshot& Snapshot, uint64 ExpectedInputJournalHash);
 		int32 NumBodies() const { return Bodies.Num(); }
 
 	private:
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        friend struct FBodyContactPairReadOnlyTestFixture;
+#endif
 		TMap<ISpeedComponent*, uint64> StableIds;
 		TMap<uint64, ISpeedComponent*> AdaptersByStableId;
 		TMap<const USSubBody*, uint64> StableSubBodyIds;

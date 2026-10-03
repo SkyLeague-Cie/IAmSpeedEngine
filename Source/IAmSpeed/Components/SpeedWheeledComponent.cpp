@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Input/DrivingInputTargets.h"
 #include "IAmSpeed/Components/SpeedWheeledSteeringMath.h"
 #include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
@@ -17,11 +18,18 @@
 #include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
+#include "EngineUtils.h"
+#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
 #include "IAmSpeed/Camera/SpeedCarCameraPresentation.h"
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedHullContactContinuousAngularDrag(
+	TEXT("p.IAmSpeed.Suspension.HullContactContinuousAngularDrag"),
+	0,
+	TEXT("Experimental: preserve small real hull-contact angular response through continuous air drag."));
 
 static float SteeringInputCalibrationScale(const float Input)
 {
@@ -785,10 +793,147 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 			WheeledNetworkPhysicsComponent->CreateDataHistory<FPhysicsWheeledTraits>(this);
 		}
 	}
+	if (bOwnedRecreationBoundary)
+	{
+		// A live RecreatePhysicsState keeps the same adapter identity and input
+		// binding. The worker has been parked across the whole storage gap.
+		ASpeedSimulation* Driver = RecreationDriver.Get();
+		if (!Driver || !Driver->IsOwnedBoundaryServiceSuspended())
+			UE_LOG(SpeedInputLog, Fatal, TEXT("Physics recreation lost its exclusive worker boundary"));
+		FString Reason;
+		if (!ValidateSimulationBindings(Reason))
+			UE_LOG(SpeedInputLog, Fatal, TEXT("Recreated physics state rejected before worker resume: %s"), *Reason);
+		bOwnedRecreationBoundary = false;
+		RecreationDriver.Reset();
+		Driver->ResumeOwnedBoundaryService();
+		if (bResumeAfterPhysicsRecreation) Driver->ResumeOwnedSimulation();
+		bResumeAfterPhysicsRecreation = false;
+	}
+	else if (HasBegunPlay() && !bWheeledEndPlayTeardown && bSpeedWorldAdapterRetiredForTeardown)
+	{
+		// RecreatePhysicsState is also used on a live component. Admit its new
+		// wheel storage only after the replacement physics state is complete.
+		if (UWorld* CurrentWorld = GetWorld())
+			if (USpeedWorldSubsystem* Subsystem = CurrentWorld->GetSubsystem<USpeedWorldSubsystem>())
+			{
+				Subsystem->RegisterSpeedComponent(this);
+				Subsystem->ApplyPendingOps();
+				if (!Subsystem->GetSimulationStableId(*this))
+					UE_LOG(SpeedInputLog, Fatal, TEXT("Recreated wheeled adapter was not admitted"));
+				bSpeedWorldAdapterRetiredForTeardown = false;
+			}
+		if (bResumeAfterPhysicsRecreation)
+			if (UWorld* CurrentWorld = GetWorld())
+				for (TActorIterator<ASpeedSimulation> It(CurrentWorld); It; ++It)
+				{ It->ResumeOwnedSimulation(); break; }
+		bResumeAfterPhysicsRecreation = false;
+	}
+}
+
+void USpeedWheeledComponent::BeginPlay()
+{
+	bWheeledEndPlayTeardown = false;
+	bSpeedWorldAdapterRetiredForTeardown = false;
+	Super::BeginPlay();
+}
+
+bool USpeedWheeledComponent::RetireSpeedWorldAdapterBeforeTeardown()
+{
+	check(IsInGameThread());
+	if (bSpeedWorldAdapterRetiredForTeardown) return true;
+	if (UWorld* World = GetWorld())
+		if (USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>())
+		{
+			Subsystem->UnregisterSpeedComponent(this);
+			Subsystem->ApplyPendingOps();
+			if (Subsystem->GetSimulationStableId(*this) != 0) return false;
+		}
+	bSpeedWorldAdapterRetiredForTeardown = true;
+	return true;
+}
+
+void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
+{
+	if (bSpeedWorldAdapterRetiredForTeardown) return;
+	if (!HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority()) return;
+	check(IsInGameThread());
+	if (UWorld* World = GetWorld())
+		for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+		{
+			const bool bWasPausedBeforeRemoval = It->IsOwnedSimulationPaused();
+			const auto Boundary = It->TryPauseOwnedSimulation();
+			// Unstarted inline fixtures have no driver-owned execution lane.
+			if (Boundary == ESimulationQuiescence::AlreadyStopped && !It->HasActorBegunPlay()
+				&& !It->IsOwnedWorkerExecutionMode())
+			{
+				if (!RetireSpeedWorldAdapterBeforeTeardown())
+					UE_LOG(SpeedInputLog, Fatal, TEXT("Unstarted adapter removal was not acknowledged before storage teardown"));
+				return;
+			}
+			const auto View = It->ReadInputRegistryView();
+			auto* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>();
+			const uint64 Actor = Subsystem ? Subsystem->GetSimulationStableId(*this) : 0;
+			bool bStillBound = !View || !Actor;
+			if (View)
+				for (const auto& Binding : View->Bindings)
+					for (const auto& Target : Binding.Actors)
+						bStillBound |= Target.Id == Actor;
+			// A controller may already have retired this actor's session. The
+			// acknowledged pause then protects storage without killing its next run.
+			if (!HasLegacyRemoteInputAuthority() && !bStillBound
+				&& Boundary == ESimulationQuiescence::BoundaryAcknowledged)
+			{
+				// Pause ACK does not park ServiceBoundary. Remove the unbound
+				// component under the exclusive service ACK before EndPlay frees
+				// wheel/sub-body storage or the replacement car is admitted.
+				if (!Subsystem || It->TrySuspendOwnedBoundaryService() != ESimulationQuiescence::BoundaryAcknowledged)
+					UE_LOG(SpeedInputLog, Fatal, TEXT("Cannot retire produced adapter without an exclusive worker boundary"));
+				if (!RetireSpeedWorldAdapterBeforeTeardown())
+					UE_LOG(SpeedInputLog, Fatal, TEXT("Produced adapter removal was not acknowledged before storage teardown"));
+				It->ResumeOwnedBoundaryService();
+				// Resume survivors only after removal ACK; preserve an existing world pause.
+				if (!bWasPausedBeforeRemoval && !World->bIsTearingDown)
+					It->ResumeOwnedSimulation();
+				return;
+			}
+			// Orphan/scenario owners still bound to the actor must close on their
+			// worker. Resume then requires an explicit new controlled run.
+			if (!It->JoinOwnedSimulationForInputTeardown())
+				UE_LOG(SpeedInputLog, Fatal, TEXT("Input worker could not join before actor storage destruction"));
+			if (!RetireSpeedWorldAdapterBeforeTeardown())
+				UE_LOG(SpeedInputLog, Fatal, TEXT("Joined input owner did not retire its adapter before storage teardown"));
+			break;
+		}
 }
 
 void USpeedWheeledComponent::OnDestroyPhysicsState()
 {
+	bResumeAfterPhysicsRecreation = false;
+	if (!bWheeledEndPlayTeardown && HasBegunPlay()
+		&& (!GetOwner() || !GetOwner()->IsActorBeingDestroyed()))
+		if (UWorld* World = GetWorld())
+			for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+			{
+				bResumeAfterPhysicsRecreation = !It->IsOwnedSimulationPaused();
+				if (It->IsOwnedWorkerExecutionMode())
+				{
+					const auto Barrier = It->TrySuspendOwnedBoundaryService();
+					if (Barrier == ESimulationQuiescence::BoundaryAcknowledged)
+					{
+						bOwnedRecreationBoundary = true;
+						RecreationDriver = *It;
+					}
+					else if (Barrier != ESimulationQuiescence::AlreadyStopped)
+						UE_LOG(SpeedInputLog, Fatal, TEXT("Live physics recreation could not park the worker"));
+				}
+				break;
+			}
+	if (!bOwnedRecreationBoundary)
+	{
+		JoinInputWorkerBeforeStorageDestruction();
+		if (!RetireSpeedWorldAdapterBeforeTeardown())
+			UE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before physics-state teardown"));
+	}
 	// PVehicle owns the suspension storage; invalidate every sub-body alias
 	// before any physics-state teardown, even when the output handle was already
 	// released by the vehicle manager.
@@ -963,7 +1108,15 @@ void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 	ISpeedWheeledComponent::PostPhysicsUpdatePrv(delta);
 	ApplyNetworkCorrection(delta);
 	RegisterWheelState();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostContact, delta);
+#endif
 	QuantizePhysicalState();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostQuantization, delta);
+#endif
 	RecordPhysicsState();
 }
 
@@ -1052,6 +1205,39 @@ void USpeedWheeledComponent::DemoedBy(ASpeedCar* otherCar)
 
 void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	bWheeledEndPlayTeardown = true;
+	JoinInputWorkerBeforeStorageDestruction();
+	ASpeedSimulation* RetirementDriver = nullptr;
+	bool bResumeAfterRemoval = false;
+	if (HasLegacyRemoteInputAuthority() && !bInputRetirementCompleted.load(std::memory_order_acquire))
+	{
+		check(IsInGameThread());
+		bInputRetirementRequested.store(true, std::memory_order_release);
+		if (UWorld* World = GetWorld())
+			for (TActorIterator<ASpeedSimulation> It(World); It; ++It) { RetirementDriver = *It; break; }
+		if (RetirementDriver)
+		{
+			bResumeAfterRemoval = !RetirementDriver->IsOwnedSimulationPaused();
+			const auto Boundary = RetirementDriver->TryPauseOwnedSimulation(1000);
+			if (Boundary != ESimulationQuiescence::BoundaryAcknowledged)
+			{
+				RetirementDriver->JoinOwnedSimulationForInputTeardown();
+				bResumeAfterRemoval = false;
+			}
+		}
+		// If no source was ever polled, retirement has no affine object to free.
+		if (!bInputRetirementCompleted.load(std::memory_order_acquire) && !RetireInputProcessingOnWorker())
+			UE_LOG(SpeedInputLog, Fatal, TEXT("Remote input owner was not retired before component destruction"));
+	}
+	if (!RetireSpeedWorldAdapterBeforeTeardown())
+		UE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before EndPlay teardown"));
+	if (bOwnedRecreationBoundary)
+	{
+		if (ASpeedSimulation* Driver = RecreationDriver.Get()) Driver->ResumeOwnedBoundaryService();
+		bOwnedRecreationBoundary = false;
+		RecreationDriver.Reset();
+		bResumeAfterPhysicsRecreation = false;
+	}
 	// Make car sleeps else suspension will crash the game
 	if (VehicleSimulationPT)
 	{
@@ -1074,15 +1260,8 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	Super::EndPlay(EndPlayReason);
-	// Unregister from SpeedWorldSubsystem
-	if (UWorld* World = GetWorld())
-	{
-		if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
-		{
-			SpeedWorldSubsystem->UnregisterSpeedComponent(this);
-		}
-	}
 
+	if (RetirementDriver && bResumeAfterRemoval) RetirementDriver->ResumeOwnedSimulation();
 }
 
 bool USpeedWheeledComponent::IsFrozen() const
@@ -1153,7 +1332,43 @@ void USpeedWheeledComponent::PhysicsTick(const float& DeltaTime, const float& Si
 {
 	// Update NumFrame at the beginning of the tick so that it can be used in the rest of the tick functions
 	UpdateNumFrame(SimTime);
+	PreparedCanonicalInputFrame.Reset();
 	PreparePhysicsFrame(DeltaTime, SimTime);
+}
+
+bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
+{
+	if (bCanonicalInputPending || InputReservationV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
+	CanonicalInputSnapshot.reset(); PreparedCanonicalInputFrame.Reset();
+	std::atomic_store(&PublishedWheeledNetworkInput, std::shared_ptr<const FCompletedWheeledInput>{});
+	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
+	return PublishInputCancellationAtBoundary();
+}
+
+bool USpeedWheeledComponent::InstallCanonicalInput(uint64 Frame,
+	std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot> Snapshot)
+{
+	if (!Snapshot || bCanonicalInputPending || InputReservationV2 || FrameInputStream || FrameInputStreamV2
+		|| !HasProducedInputAuthority() || IsTestInputOverrideEnabled()
+		|| Snapshot->Input.GetData().ConsumptionFrame != Frame) return false;
+	CanonicalInputSnapshot = std::move(Snapshot);
+	bCanonicalInputPending = true;
+	bInputFrameRejectedV2 = false;
+	return true;
+}
+
+bool USpeedWheeledComponent::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
+{
+	PreparedCanonicalInputFrame.Reset();
+	if (Context.NumFrame >= TNumericLimits<uint32>::Max()) return false;
+	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
+	// Preserve countdown eligibility at this N before evaluating input edges.
+	HandleCountdownTimer();
+	UpdateInputs();
+	if (bInputFrameRejectedV2) return false;
+	PreparedCanonicalInputFrame = Context.NumFrame;
+	return true;
 }
 
 void USpeedWheeledComponent::PrepareCanonicalFrame(
@@ -1163,6 +1378,8 @@ void USpeedWheeledComponent::PrepareCanonicalFrame(
 		TEXT("Canonical frame exceeds the legacy local-frame range."));
 	// Network Physics local frames remain one-based during migration; the
 	// canonical simulation frame is zero-based and authoritative.
+	checkf(PreparedCanonicalInputFrame.IsSet() && PreparedCanonicalInputFrame.GetValue() == Context.NumFrame,
+		TEXT("Canonical gameplay requires successful input admission for this frame."));
 	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
 	PreparePhysicsFrame(Context.PhysicalDeltaTime, Context.SimTime);
 }
@@ -1173,6 +1390,10 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 	UpdateFrameState();
 	// A test's initial state must be visible from the first movable frame, before any gameplay force can modify it.
 	ApplyTestVelocity();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PreForce, DeltaTime);
+#endif
 	UpdateSupportForceSleepState();
 	// Handle forces that should be applied before the gameplay tick (e.g. gravity, damping, rest force)
 	if (!DisableGravityThisFrame())
@@ -1200,8 +1421,11 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 
 void USpeedWheeledComponent::UpdateFrameState()
 {
-	HandleCountdownTimer();
-	UpdateInputs();
+	if (!PreparedCanonicalInputFrame.IsSet())
+	{
+		HandleCountdownTimer();
+		UpdateInputs();
+	}
 	TagStateHistoryProxyRole();
 	RecoverWheelState();
 	if (CanMove() && !IsOnTheGround())
@@ -1317,59 +1541,255 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 	BaseGameState.NumFrame = CandidateFrame;
 }
 
-void USpeedWheeledComponent::ConsumeQueuedWheeledInputsForFrame(const int32 CurrentFrame)
-{
-	FScopeLock InputLock(&PendingWheeledInputMutex);
-	for (int32 i = PendingWheeledInputCommands.Num() - 1; i >= 0; --i)
-	{
-		const FPendingWheeledInputCommand& Cmd = PendingWheeledInputCommands[i];
 
-		if (Cmd.ActivationFrame <= CurrentFrame)
-		{
-			WheeledUserInput = Cmd.Input;
-			if (Cmd.bBypassSlew)
-			{
-				WheeledPhysicalInput = WheeledUserInput;
-				WheeledPhysicalInputBeforeSlew = WheeledPhysicalInput;
-				LastWheeledInputSlewFrame = CurrentFrame;
-				SyncWheeledPhysicalInputToState();
-			}
-			PendingWheeledInputCommands.RemoveAt(i);
-		}
-	}
-}
 
 void USpeedWheeledComponent::UpdateInputs()
 {
 	const int32 CurrentFrame = NumFrame();
+	if (CanonicalInputSnapshot)
+	{
+		using namespace Speed::Input;
+		bProducedInputFrameOwned = true;
+		const auto N = FromLegacyLocalFrame(NumFrame());
+		const auto& S = *CanonicalInputSnapshot;
+		if (!bCanonicalInputPending || !N || S.Input.GetData().ConsumptionFrame != *N
+			|| !ValidateProducedInputFrameV2(S.Input))
+		{ bInputFrameRejectedV2 = true; return; }
+		if (S.Input.GetData().Reset) ResetProducedInputState();
+		WheeledPhysicalInput.Throttle = static_cast<uint8>(S.Applied[Throttle]);
+		WheeledPhysicalInput.Brake = static_cast<uint8>(S.Applied[Brake]);
+		WheeledPhysicalInput.Steer = static_cast<int8>(S.Applied[Steering]);
+		SyncWheeledPhysicalInputToState();
+		bInputFrameRejectedV2 = !ApplyProducedInputFrameV2(S.Input);
+		return; // Registry already polled and processed once; no legacy queue/slew.
+	}
 
-	ConsumePendingLiveWheeledInputs();
-	ConsumeQueuedWheeledInputsForFrame(CurrentFrame);
+	const auto CanonicalFrame = Speed::Input::FromLegacyLocalFrame(NumFrame());
+	if (HasLegacyRemoteInputAuthority())
+	{
+		bProducedInputFrameOwned = true;
+		bInputFrameRejectedV2 = !CanonicalFrame || !PrepareLegacyWheeledInput(*CanonicalFrame);
+		return;
+	}
+	const bool bProduced = CanonicalFrame && ConsumeProducedWheeledInputs(*CanonicalFrame);
+	bProducedInputFrameOwned = bProduced || (!CanonicalFrame && HasProducedInputAuthority());
+	if (!CanonicalFrame && bProducedInputFrameOwned)
+	{
+		ConsumedFrameInputStream.reset();
+		WheeledPhysicalInput.Throttle = 0;
+		WheeledPhysicalInput.Brake = 0;
+		WheeledPhysicalInput.Steer = 0;
+		ResetProducedInputState();
+	}
+	if (!bProducedInputFrameOwned)
+	{
+		// No GameThread driving-input mailbox remains.
+	}
 
-	UpdateWheeledPhysicalInputFromUser(false);
+	WheeledPhysicalInput.bCanMove = CanMove();
+	SyncWheeledPhysicalInputToState();
 	ConsumeQueuedCameraInputsForFrame(CurrentFrame);
 }
 
-void USpeedWheeledComponent::ConsumePendingLiveWheeledInputs()
+void USpeedWheeledComponent::SetFrameInputStream(std::shared_ptr<Speed::Input::FInputStream> Stream)
 {
-	const uint8 DirtyMask = PendingLiveWheeledInputMask.exchange(
-		0, std::memory_order_acquire);
-	if ((DirtyMask & LiveThrottleDirty) != 0)
-	{
-		WheeledUserInput.Throttle = PendingLiveThrottle.load(
-			std::memory_order_relaxed);
-	}
-	if ((DirtyMask & LiveBrakeDirty) != 0)
-	{
-		WheeledUserInput.Brake = PendingLiveBrake.load(
-			std::memory_order_relaxed);
-	}
-	if ((DirtyMask & LiveSteeringDirty) != 0)
-	{
-		WheeledUserInput.Steer = PendingLiveSteering.load(
-			std::memory_order_relaxed);
-	}
+	check(IsInGameThread());
+	// Null is mandatory lifecycle teardown, including UnPossess during dispatch.
+	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return;
+	FScopeLock Lock(&FrameInputProducerMutex);
+	if (Stream && (FrameInputStreamV2 || HasLegacyRemoteInputAuthority())) return; // Never install a second authority.
+	if (FrameInputStream && FrameInputStream != Stream) FrameInputStream->Deactivate();
+	FrameInputStream = MoveTemp(Stream);
+	if (FrameInputStream) bProducedInputAuthority.store(true, std::memory_order_release);
+	bResetProducedWheeledInputs = true;
 }
+
+bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
+{
+	ConsumedFrameInputStream.reset();
+	std::shared_ptr<Speed::Input::FInputStream> Stream;
+	std::shared_ptr<Speed::Input::V2::FInputStream> StreamV2;
+	bool bReset = false;
+	{
+		FScopeLock Lock(&FrameInputProducerMutex);
+		Stream = FrameInputStream;
+		StreamV2 = FrameInputStreamV2;
+		bReset = bResetProducedWheeledInputs;
+		bResetProducedWheeledInputs = false;
+	}
+	if (bReset)
+	{
+		ResetProducedInputState();
+		if (!IsTestInputOverrideEnabled())
+		{
+			WheeledPhysicalInput.Throttle = 0;
+			WheeledPhysicalInput.Brake = 0;
+			WheeledPhysicalInput.Steer = 0;
+		}
+
+	}
+	// Detach cancels derived latches and cannot reapply an old queued/live value
+	// in the same frame as the cancellation.
+	if (StreamV2) return ConsumeProducedWheeledInputsV2(CanonicalFrame, StreamV2);
+	if (!Stream) return bReset || HasProducedInputAuthority();
+	if (IsTestInputOverrideEnabled())
+	{
+		const bool bSkipped = Stream->Skip(CanonicalFrame);
+		ensureMsgf(bSkipped, TEXT("Input producer cannot skip canonical frame %llu"), CanonicalFrame);
+		return true;
+	}
+	const auto Frame = Stream->Consume(CanonicalFrame);
+	const auto Targets = Speed::Input::ReadDrivingInputTargets(Frame, CanonicalFrame);
+	bool bValid = Targets.Valid && ValidateProducedInputFrame(*Frame);
+	ensureMsgf(bValid, TEXT("Input producer has no valid frame for canonical frame %llu"), CanonicalFrame);
+	// Fail closed instead of falling back to an unrelated live action/clock.
+	if (bValid)
+	{
+		WheeledPhysicalInput.Throttle = Targets.ThrottleValue;
+		WheeledPhysicalInput.Brake = Targets.BrakeValue;
+		WheeledPhysicalInput.Steer = Targets.SteeringValue;
+		bValid = ApplyProducedInputFrame(*Frame);
+	}
+	if (!bValid)
+	{
+		WheeledPhysicalInput.Throttle = 0;
+		WheeledPhysicalInput.Brake = 0;
+		WheeledPhysicalInput.Steer = 0;
+		ResetProducedInputState();
+		Stream->Deactivate();
+	}
+	if (bValid) ConsumedFrameInputStream = MoveTemp(Stream);
+	return true;
+}
+
+void USpeedWheeledComponent::OnCanonicalFramePublished(uint64 Frame)
+{
+	if (ConsumedFrameInputStream) ConsumedFrameInputStream->PublishCompleted(Frame);
+}
+
+bool USpeedWheeledComponent::SetFrameInputStreamV2(std::shared_ptr<Speed::Input::V2::FInputStream> Stream)
+{
+	check(IsInGameThread());
+	if (Stream && Speed::Input::FPresentationInputScope::IsActive()) return false;
+	FScopeLock Lock(&FrameInputProducerMutex);
+	if (HasLegacyRemoteInputAuthority() || InputReservationV2 || (Stream && (FrameInputStream || IsTestInputOverrideEnabled()))) return false;
+	if (FrameInputStreamV2 && FrameInputStreamV2 != Stream) FrameInputStreamV2->RequestStop();
+	FrameInputStreamV2 = MoveTemp(Stream);
+	bProducedInputAuthority.store(true, std::memory_order_release);
+	bInputFrameRejectedV2 = false; bResetProducedWheeledInputs = true;
+	return true;
+}
+
+bool USpeedWheeledComponent::NeutralizeProducedInputAtBoundary()
+{
+	check(IsInGameThread());
+	// This method requires an acknowledged live worker boundary, not merely a
+	// stopped or missing worker. The controller owns that distinction.
+	if (Speed::Input::FPresentationInputScope::IsActive() || InputReservationV2
+		|| ReservedInputFrameV2 || ConsumedFrameInputStreamV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
+	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+
+	std::atomic_store(&PublishedWheeledNetworkInput, std::shared_ptr<const FCompletedWheeledInput>{});
+	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
+	return PublishInputCancellationAtBoundary();
+}
+
+bool USpeedWheeledComponent::NeutralizeProducedInputAfterOwnerJoined()
+{
+	check(IsInGameThread());
+	// A joined thread must have finalized/aborted on its own lane. A leftover
+	// token or derived transaction is an invariant failure, never GT cleanup.
+	return NeutralizeProducedInputAtBoundary();
+}
+
+bool USpeedWheeledComponent::ConsumeProducedWheeledInputsV2(uint64 Frame,
+	const std::shared_ptr<Speed::Input::V2::FInputStream>& Stream)
+{
+	using namespace Speed::Input::V2;
+	// A forgotten token is an invariant failure, never silently overwritten.
+	if (InputReservationV2) { bInputFrameRejectedV2 = true; return true; }
+	bInputFrameRejectedV2 = false;
+	auto Input = Stream->Consume(Frame);
+	// Retain the capability before calling any game hook. If a hook throws,
+	// the world's abort path must still be able to close this reservation.
+	if (Input.Reservation)
+	{
+		ConsumedFrameInputStreamV2 = Stream;
+		InputReservationV2 = Input.Reservation; ReservedInputFrameV2 = Frame;
+	}
+	bool Valid = !IsTestInputOverrideEnabled() && Input.Status == EConsumeStatus::Ready
+		&& Input.Frame && Input.Reservation && Input.Targets.Valid && ValidateProducedInputFrameV2(*Input.Frame);
+	if (Valid)
+	{
+		if (Input.Frame->GetData().Reset) ResetProducedInputState();
+		WheeledPhysicalInput.Throttle = Input.Targets.ThrottleValue;
+		WheeledPhysicalInput.Brake = Input.Targets.BrakeValue;
+		WheeledPhysicalInput.Steer = Input.Targets.SteeringValue;
+		Valid = ApplyProducedInputFrameV2(*Input.Frame);
+	}
+	if (Valid) Valid = Stream->ConfirmPhysicalCommit(*Input.Reservation, true)
+		&& Stream->PreparePublication(*Input.Reservation);
+	if (!Valid)
+	{
+		if (Input.Reservation) Stream->Abort(*Input.Reservation, EAbortReason::ApplicationFailed);
+		InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
+		Stream->RequestStop(); bInputFrameRejectedV2 = true;
+		WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+		ResetProducedInputState(); return true;
+	}
+	return true;
+}
+
+bool USpeedWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
+{
+	if (bInputFrameRejectedV2 || (LegacyWheeledOwner && !LegacyWheeledOwner->CanComplete(Frame))
+		|| !PrepareWheeledNetworkInput(Frame)) return false;
+	if (CanonicalInputSnapshot) return bCanonicalInputPending && CanonicalInputSnapshot->Input.GetData().ConsumptionFrame == Frame;
+	if (!InputReservationV2) return !ConsumedFrameInputStreamV2;
+	return ReservedInputFrameV2 && *ReservedInputFrameV2 == Frame && ConsumedFrameInputStreamV2
+		&& ConsumedFrameInputStreamV2->PrepareFinalization(*InputReservationV2);
+}
+
+bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
+{
+	if (LegacyWheeledOwner && !LegacyWheeledOwner->Complete(Frame)) return false;
+	std::atomic_store(&PublishedWheeledNetworkInput, PreparedWheeledNetworkInput);
+	PreparedWheeledNetworkInput.reset();
+	if (CanonicalInputSnapshot)
+	{
+		if (bInputFrameRejectedV2 || !bCanonicalInputPending || CanonicalInputSnapshot->Input.GetData().ConsumptionFrame != Frame) return false;
+		bCanonicalInputPending = false;
+		return true;
+	}
+	if (!InputReservationV2) return !bInputFrameRejectedV2 && !ConsumedFrameInputStreamV2;
+	(void)Frame; // Validated and locked before the irreversible world publication.
+	ConsumedFrameInputStreamV2->FinalizePreparedPublication();
+	InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
+	return true;
+}
+
+void USpeedWheeledComponent::AbortCanonicalFrame(uint64, ECanonicalFrameAbortReason) noexcept
+{
+	PreparedCanonicalInputFrame.Reset();
+	if (LegacyWheeledOwner) LegacyWheeledOwner->Abort();
+	PreparedWheeledNetworkInput.reset();
+	std::atomic_store(&PublishedWheeledNetworkInput, std::shared_ptr<const FCompletedWheeledInput>{});
+	if (CanonicalInputSnapshot)
+	{
+		CanonicalInputSnapshot.reset(); bCanonicalInputPending = false; bInputFrameRejectedV2 = true;
+	}
+	if (!InputReservationV2) return;
+	try
+	{
+		if (ConsumedFrameInputStreamV2)
+			ConsumedFrameInputStreamV2->Abort(*InputReservationV2, Speed::Input::V2::EAbortReason::SnapshotPublicationFailed);
+	}
+	catch (...) {} // Terminal owner failure; never publish this reservation.
+	InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
+	bInputFrameRejectedV2 = true;
+}
+
+
 
 namespace SpeedCameraInputPacking
 {
@@ -1475,7 +1895,7 @@ void USpeedWheeledComponent::QueueCameraInputLocked(int32 ActivationFrame,
 	PendingCameraInputCommands.Add(Command);
 	PendingCameraInputCommands.Sort([](const FPendingCameraInputCommand& A, const FPendingCameraInputCommand& B)
 		{ return A.ActivationFrame < B.ActivationFrame; });
-	while (PendingCameraInputCommands.Num() > MaxPendingWheeledInputs) PendingCameraInputCommands.RemoveAt(0);
+	while (PendingCameraInputCommands.Num() > MaxPendingCameraInputs) PendingCameraInputCommands.RemoveAt(0);
 }
 
 void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFrame)
@@ -1492,7 +1912,6 @@ void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFram
 	// Whole held value, once, after wheel processing. Multiple overdue captures
 	// select the latest frame; no second GT read and no camera slew/state hash.
 	const auto Input = PendingCameraInputCommands[LastDue].Input;
-	WheeledUserInput.Camera = Input;
 	WheeledPhysicalInput.Camera = Input;
 	PendingCameraInputCommands.RemoveAt(0, LastDue + 1);
 #if WITH_DEV_AUTOMATION_TESTS
@@ -1511,46 +1930,14 @@ void USpeedWheeledComponent::AppendPresentationSnapshot(TArray<uint8>& OutPayloa
 	Snapshot.Write(OutPayload);
 }
 
-void USpeedWheeledComponent::UpdateWheeledPhysicalInputFromUser(bool bForce)
-{
-	const int32 CurrentFrame = NumFrame();
 
-	if (!bForce && LastWheeledInputSlewFrame == CurrentFrame)
-	{
-		return;
-	}
-
-	LastWheeledInputSlewFrame = CurrentFrame;
-
-	constexpr uint8 StepPerFrame = 16;
-
-	WheeledPhysicalInput.Throttle = Speed::MoveTowardUInt8(
-		WheeledPhysicalInput.Throttle,
-		WheeledUserInput.Throttle,
-		StepPerFrame
-	);
-
-	WheeledPhysicalInput.Brake = Speed::MoveTowardUInt8(
-		WheeledPhysicalInput.Brake,
-		WheeledUserInput.Brake,
-		StepPerFrame
-	);
-
-	WheeledPhysicalInput.Steer = Speed::MoveTowardInt8(
-		WheeledPhysicalInput.Steer,
-		WheeledUserInput.Steer,
-		StepPerFrame
-	);
-}
 
 void USpeedWheeledComponent::RestoreWheeledPhysicalInputFromState()
 {
-	WheeledPhysicalInput.bCanMove = WheeledUserInput.bCanMove;
+	WheeledPhysicalInput.bCanMove = CanMove();
 	WheeledPhysicalInput.Throttle = WheeledPhysicsState.PhysicalThrottleInput;
 	WheeledPhysicalInput.Brake = WheeledPhysicsState.PhysicalBrakeInput;
 	WheeledPhysicalInput.Steer = WheeledPhysicsState.PhysicalSteerInput;
-	WheeledPhysicalInputBeforeSlew = WheeledPhysicalInput;
-	LastWheeledInputSlewFrame = NumFrame();
 }
 
 void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
@@ -1560,70 +1947,23 @@ void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
 	WheeledPhysicsState.PhysicalSteerInput = WheeledPhysicalInput.Steer;
 }
 
-void USpeedWheeledComponent::QueueWheeledInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
-{
-	QueueWheeledInputCommand(ActivationFrame, Input, false, false);
-}
 
-void USpeedWheeledComponent::QueueNetworkWheeledInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
-{
-	QueueWheeledInputCommand(ActivationFrame, Input, false, true);
-}
+
+
 
 void USpeedWheeledComponent::SetTestInputOverrideEnabled(const bool bEnabled)
 {
-	FScopeLock InputLock(&PendingWheeledInputMutex);
+	if (Speed::Input::FPresentationInputScope::IsActive()) return;
 	bTestInputOverrideEnabled.store(bEnabled, std::memory_order_release);
-	if (bEnabled) PendingWheeledInputCommands.Reset();
 	FScopeLock CameraLock(&PendingCameraInputMutex);
 	PendingCameraInputCommands.Reset();
 	LastCameraCaptureHistoryFrame = INDEX_NONE;
 	LastCameraCaptureActivationFrame = INDEX_NONE;
 }
 
-void USpeedWheeledComponent::QueueTestWheeledPhysicalInputForFrame(const int32 ActivationFrame, const FWheeledInputState& Input)
-{
-	QueueWheeledInputCommand(ActivationFrame, Input, true, false);
-}
 
-void USpeedWheeledComponent::QueueWheeledInputCommand(const int32 ActivationFrame,
-	const FWheeledInputState& Input, const bool bBypassSlew, const bool bFromNetwork)
-{
-	if (!Input.Camera.IsValid()) return;
-	FScopeLock InputLock(&PendingWheeledInputMutex);
-	if (ActivationFrame == INDEX_NONE || (bFromNetwork && IsTestInputOverrideEnabled()))
-	{
-		return;
-	}
 
-	for (FPendingWheeledInputCommand& Cmd : PendingWheeledInputCommands)
-	{
-		if (Cmd.ActivationFrame == ActivationFrame)
-		{
-			Cmd.Input = Input;
-			Cmd.bBypassSlew = bBypassSlew;
-			return;
-		}
-	}
 
-	FPendingWheeledInputCommand NewCmd;
-	NewCmd.ActivationFrame = ActivationFrame;
-	NewCmd.Input = Input;
-	NewCmd.bBypassSlew = bBypassSlew;
-	PendingWheeledInputCommands.Add(NewCmd);
-
-	PendingWheeledInputCommands.Sort(
-		[](const FPendingWheeledInputCommand& A, const FPendingWheeledInputCommand& B)
-		{
-			return A.ActivationFrame < B.ActivationFrame;
-		}
-	);
-
-	while (PendingWheeledInputCommands.Num() > MaxPendingWheeledInputs)
-	{
-		PendingWheeledInputCommands.RemoveAt(0);
-	}
-}
 
 void USpeedWheeledComponent::UpdateState(float DeltaTime)
 {
@@ -2595,12 +2935,29 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 	const float pitch_drag = PitchDragCoeff;
 	const float yaw_drag = YawDragCoeff;
 
+	const UBoxSubBody* ContactHitbox = GetHitboxSubBodyForConfiguration();
+	const int32 ContactFrame = ContactHitbox ? ContactHitbox->GetLastResolvedGroundHitFrame() : INDEX_NONE;
+	const int32 CurrentFrame = static_cast<int32>(NumFrame());
+	const bool bContactDragRequested = CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+	const bool bFreshContactFrame = ContactFrame >= 0 && ContactFrame >= CurrentFrame - 1 && ContactFrame <= CurrentFrame;
+	const bool bContinuousContactDrag = bContactDragRequested && bFreshContactFrame &&
+		ContactHitbox && ContactHitbox->HasCurrentExactPlanarContact();
+#if !UE_BUILD_SHIPPING
+	// Observe the evaluated decision, never replay the native contact query.
+	static const auto* ContactDebug = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AutoRecoverContactDebug"));
+	if (bContactDragRequested && bFreshContactFrame && ContactDebug && ContactDebug->GetValueOnAnyThread() != 0)
+		UE_LOG(SpeedPhysicsLog, Display, TEXT("[HullContactAngularDrag] frame=%d resolved=%d admitted=%d cached=%d roll=%.17g pitch=%.17g yaw=%.17g dt=%.17g"),
+			CurrentFrame, ContactFrame, bContinuousContactDrag ? 1 : 0,
+			ContactHitbox && ContactHitbox->HasPhysicsTickGroundContact() ? 1 : 0,
+			double(RollVelocity), double(PitchVelocity), double(YawVelocity), double(delta));
+#endif
+
 	// compute new angular velocities along each axis
-	const float NewRollVelocity = FMath::Abs(RollVelocity) <= roll_drag * delta ? 0.0 :
+	const float NewRollVelocity = !bContinuousContactDrag && FMath::Abs(RollVelocity) <= roll_drag * delta ? 0.0 :
 		RollVelocity * (1.0 - roll_drag * delta);
-	const float NewPitchVelocity = FMath::Abs(PitchVelocity) <= pitch_drag * delta ? 0.0 :
+	const float NewPitchVelocity = !bContinuousContactDrag && FMath::Abs(PitchVelocity) <= pitch_drag * delta ? 0.0 :
 		PitchVelocity * (1.0 - pitch_drag * delta);
-	const float NewYawVelocity = FMath::Abs(YawVelocity) <= yaw_drag * delta ? 0.0 :
+	const float NewYawVelocity = !bContinuousContactDrag && FMath::Abs(YawVelocity) <= yaw_drag * delta ? 0.0 :
 		YawVelocity * (1.0 - yaw_drag * delta);
 
 	const FVector TargetAngularVelocity = NewRollVelocity * RollAxis + NewPitchVelocity * PitchAxis + NewYawVelocity * YawAxis;
@@ -2687,7 +3044,7 @@ void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& del
 }
 void USpeedWheeledComponent::PostGameplayTick(const float& DeltaTime, const float& SimTime)
 {
-	WheeledUserInput.bCanMove = CanMove();
+	WheeledPhysicalInput.bCanMove = CanMove();
 	/*// Print Kinematic state for debugging for the first 3 frames after can move
 	if (CanMove() && NumFrame() - GetSinceCanMoveFrame() < 3)
 	{
@@ -2969,32 +3326,23 @@ float USpeedWheeledComponent::GetPhysSteeringInput() const
 
 void USpeedWheeledComponent::SetPhysThrottleInput(const float& Throttle)
 {
-	const float ClampedThrottle = FMath::Clamp(Throttle, 0.0f, 1.0f);
-	PendingLiveThrottle.store(
-		static_cast<uint8>(FMath::RoundToInt(ClampedThrottle * 255)),
-		std::memory_order_relaxed);
-	PendingLiveWheeledInputMask.fetch_or(
-		LiveThrottleDirty, std::memory_order_release);
+	// Kept for ABI/Blueprint callers during migration. It cannot become a
+	// GameThread writer into the physical-frame input path.
+	ensureMsgf(false, TEXT("SetPhysThrottleInput: submit an InputProducer frame instead of a live component value"));
 }
 
 void USpeedWheeledComponent::SetPhysBrakeInput(const float& Brake)
 {
-	const float ClampedBrake = FMath::Clamp(Brake, 0.0f, 1.0f);
-	PendingLiveBrake.store(
-		static_cast<uint8>(FMath::RoundToInt(ClampedBrake * 255)),
-		std::memory_order_relaxed);
-	PendingLiveWheeledInputMask.fetch_or(
-		LiveBrakeDirty, std::memory_order_release);
+	// Kept for ABI/Blueprint callers during migration. It cannot become a
+	// GameThread writer into the physical-frame input path.
+	ensureMsgf(false, TEXT("SetPhysBrakeInput: submit an InputProducer frame instead of a live component value"));
 }
 
 void USpeedWheeledComponent::SetPhysSteeringInput(const float& Steering)
 {
-	const float ClampedSteering = FMath::Clamp(Steering, -1.0f, 1.0f);
-	PendingLiveSteering.store(
-		static_cast<int8>(FMath::RoundToInt(ClampedSteering * 127)),
-		std::memory_order_relaxed);
-	PendingLiveWheeledInputMask.fetch_or(
-		LiveSteeringDirty, std::memory_order_release);
+	// Kept for ABI/Blueprint callers during migration. It cannot become a
+	// GameThread writer into the physical-frame input path.
+	ensureMsgf(false, TEXT("SetPhysSteeringInput: submit an InputProducer frame instead of a live component value"));
 }
 
 TArray<SWheelGroundContact>& USpeedWheeledComponent::GetPendingWheelContacts()

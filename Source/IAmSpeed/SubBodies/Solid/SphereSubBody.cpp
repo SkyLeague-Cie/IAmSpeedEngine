@@ -11,6 +11,9 @@
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HAL/IConsoleManager.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#endif
 
 DEFINE_LOG_CATEGORY(SphereSubBodyLog);
 
@@ -32,6 +35,23 @@ namespace
     bool IAmSpeedUnilateralRollingPairsEnabled()
     {
         return USpeedWorldSubsystem::AreUnilateralRollingPairsEnabled();
+    }
+
+    FVector IAmSpeedSphereStaticResponsePoint(
+        const FVector& SphereCenter, const float Radius, const SHitResult& Hit)
+    {
+        if (Hit.SurfaceId != 0 && Hit.bSurfaceNormalMayVary &&
+            !Hit.bStartPenetrating)
+        {
+            // A certified curved provider retains its chord witness while
+            // reporting the authored smooth normal. Its positional witness
+            // therefore need not be radial to that normal. The sphere's own
+            // response arm is radial: using the chord point creates a spurious
+            // normal torque and lets unilateral point projection erase spin.
+            // Keep the provider witness and penetration certificate unchanged.
+            return SphereCenter - Radius * Hit.ImpactNormal.GetSafeNormal();
+        }
+        return Hit.ImpactPoint;
     }
 
     FVector IAmSpeedSphereVelocityAtPointFromKS(const SKinematic& KS, const FVector& Point)
@@ -199,7 +219,19 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
         return;
     }
 
-	RegisterCurrentHitAsConstraint();
+    if (CurrentHit.SurfaceId != 0 && CurrentHit.bSurfaceNormalMayVary &&
+        !CurrentHit.bStartPenetrating)
+    {
+        RegisterContactAsConstraint(
+            IAmSpeedSphereStaticResponsePoint(GetKinematicState().Location,
+                GetRadius(), CurrentHit),
+            CurrentHit.ImpactNormal, CurrentHit.Component.Get(), nullptr,
+            CurrentHit.PenetrationDepth, CurrentHit.TOI, false);
+    }
+    else
+    {
+        RegisterCurrentHitAsConstraint();
+    }
 
     UPrimitiveComponent* OtherComponent = CurrentHit.Component.Get();
     USSubBody* OtherSubBody = Cast<USSubBody>(OtherComponent);
@@ -228,7 +260,8 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
 void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime)
 {
     const FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
-    const FVector P = CurrentHit.ImpactPoint;
+    const FVector P = IAmSpeedSphereStaticResponsePoint(
+        GetKinematicState().Location, GetRadius(), CurrentHit);
 
     // Velocity at contact point
     const FVector Vp = ParentComponent->GetPhysVelocityAtPoint(P);
@@ -1323,3 +1356,52 @@ void USphereSubBody::SetRadius(const float& NewRadius)
 {
     Radius = NewRadius;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedSphereStaticResponseWitnessTest,
+    "IAmSpeed.Sphere.StaticResponseWitness",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedSphereStaticResponseWitnessTest::RunTest(const FString& Parameters)
+{
+    const FVector Center(0.0, 4480.0, 405.0);
+    const float Radius = 109.51f;
+    const FVector N = FVector(0.0, -0.9905936416030726,
+        0.13683653465198337).GetSafeNormal();
+    const FVector T(0.0, N.Z, -N.Y);
+    SHitResult Hit;
+    Hit.bBlockingHit = true;
+    Hit.SurfaceId = 1;
+    Hit.bSurfaceNormalMayVary = true;
+    Hit.ImpactNormal = N;
+    for (const double ChordOffset : {-0.02, 0.0, 0.02})
+    {
+        Hit.ImpactPoint = Center - Radius * N + ChordOffset * T;
+        const FVector OriginalWitness = Hit.ImpactPoint;
+        const FVector Response = IAmSpeedSphereStaticResponsePoint(Center, Radius, Hit);
+        const FVector Arm = Response - Center;
+        TestTrue(TEXT("normal impulse has no artificial sphere torque"),
+            FVector::CrossProduct(Arm, N).Size() < 1.0e-9);
+        TestTrue(TEXT("sphere response lies at the physical radius"),
+            FMath::Abs(Arm.Size() - Radius) < 1.0e-9);
+        const double FrictionImpulsePerMass = 0.4 * Radius * 1.5;
+        const FVector DeltaAngular = FVector::CrossProduct(Arm,
+            FrictionImpulsePerMass * T) / (0.4 * Radius * Radius);
+        TestTrue(TEXT("spin transfer is independent of chord witness offset"),
+            FMath::Abs(DeltaAngular.X - 1.5) < 1.0e-9);
+        TestTrue(TEXT("provider witness is preserved"), Hit.ImpactPoint == OriginalWitness);
+    }
+    Hit.bStartPenetrating = true;
+    TestTrue(TEXT("initial overlap keeps its measured MTD witness"),
+        IAmSpeedSphereStaticResponsePoint(Center, Radius, Hit) == Hit.ImpactPoint);
+    Hit.bStartPenetrating = false;
+    Hit.bSurfaceNormalMayVary = false;
+    TestTrue(TEXT("exact static primitive response remains unchanged"),
+        IAmSpeedSphereStaticResponsePoint(Center, Radius, Hit) == Hit.ImpactPoint);
+    Hit.bSurfaceNormalMayVary = true;
+    Hit.SurfaceId = 0;
+    TestTrue(TEXT("legacy and dynamic response remains unchanged"),
+        IAmSpeedSphereStaticResponsePoint(Center, Radius, Hit) == Hit.ImpactPoint);
+    return true;
+}
+#endif

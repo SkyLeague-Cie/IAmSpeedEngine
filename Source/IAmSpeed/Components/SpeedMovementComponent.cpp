@@ -2,6 +2,9 @@
 
 
 #include "SpeedMovementComponent.h"
+#include "IAmSpeed/World/Simulation/CanonicalEpisodeTestingScope.h"
+#include "Engine/World.h"
+#include "Misc/ScopeExit.h"
 #include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameDriver.h"
@@ -324,8 +327,16 @@ void USpeedMovementComponent::PrepareCanonicalFrame(
 		TEXT("Canonical frame exceeds the legacy local-frame range."));
 	// Network Physics local frames remain one-based during migration; the
 	// canonical simulation frame is zero-based and authoritative.
-	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
-	PreparePhysicsFrame(Context.PhysicalDeltaTime, Context.SimTime);
+    BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
+#if !UE_BUILD_SHIPPING
+    {
+      check(!bEpisodeTestingBeforeForces);
+      bEpisodeTestingBeforeForces=true;
+      ON_SCOPE_EXIT{bEpisodeTestingBeforeForces=false;};
+      BeforeCanonicalPhysicsPreparationForTesting(Context);
+    }
+#endif
+    PreparePhysicsFrame(Context.PhysicalDeltaTime, Context.SimTime);
 }
 
 void USpeedMovementComponent::PreparePhysicsFrame(
@@ -1069,3 +1080,48 @@ void USpeedMovementComponent::InitNetwork()
 	SNetworkSettings->SettingsDataAsset = NetDataAsset;
 	SNetworkSettings->bAutoRegister = false;
 }
+
+#if !UE_BUILD_SHIPPING
+namespace
+{
+thread_local uint64 TestingPrepareFrame=0;
+thread_local bool TestingPrepareActive=false,TestingPrepareResimulation=false;
+}
+Speed::FCanonicalEpisodeTestingScope::FCanonicalEpisodeTestingScope(const FCanonicalFrameContext& C)
+ :PreviousFrame(TestingPrepareFrame),PreviousActive(TestingPrepareActive),PreviousResimulation(TestingPrepareResimulation)
+{
+ TestingPrepareFrame=C.NumFrame;TestingPrepareResimulation=C.bResimulationForTesting;
+ TestingPrepareActive=!PreviousActive; // nested/re-entrant prepare never admits
+}
+Speed::FCanonicalEpisodeTestingScope::~FCanonicalEpisodeTestingScope()
+{TestingPrepareFrame=PreviousFrame;TestingPrepareActive=PreviousActive;TestingPrepareResimulation=PreviousResimulation;}
+bool Speed::FCanonicalEpisodeTestingScope::IsOrdinaryPreparation(uint64 F)
+{return TestingPrepareActive && !TestingPrepareResimulation && TestingPrepareFrame==F && F>0;}
+
+bool USpeedMovementComponent::CanRebaseCanonicalEpisodeForTesting(
+ const FCanonicalFrameContext& C,const SKinematic& K) const
+{
+ if(!bEpisodeTestingBeforeForces || !Speed::FCanonicalEpisodeTestingScope::IsOrdinaryPreparation(C.NumFrame) ||
+    C.NumFrame>=uint64(MAX_int32-1) || NumFrame()!=C.NumFrame+1 ||
+    C.PhysicalDeltaTime!=FCanonicalFrameContext::CanonicalPhysicalDeltaTime ||
+    !GetWorld() || GetWorld()->GetNetMode()!=NM_Standalone || !GetOwner() || !HasAuthority() ||
+    !bEnableSimulation || IsFrozen() || !CanMove() || bNetCorrHasTarget || BaseGameState.bHasTestVelocity ||
+    RecordedBaseFrames.Num()!=SpeedConstants::RecordedHistorySize ||
+    RecordedBaseStates.Num()!=SpeedConstants::RecordedHistorySize)return false;
+ if(K.Location.ContainsNaN() || K.Velocity.ContainsNaN() || K.Acceleration.ContainsNaN() ||
+    K.Rotation.ContainsNaN() || K.AngularVelocity.ContainsNaN() || K.AngularAcceleration.ContainsNaN())return false;
+ return FMath::Abs(K.Rotation.SizeSquared()-1.0)<=1.e-6; // validate, never normalize/project
+}
+bool USpeedMovementComponent::RebaseCanonicalEpisodeHistoryForTesting(
+ const FCanonicalFrameContext& C,const SKinematic& K)
+{
+ if(!CanRebaseCanonicalEpisodeForTesting(C,K))return false;
+ // First physical write. Preserve local epoch, countdown/control/frozen flags.
+ BasePhysicsState.Kinematic=K;
+ for(int32& F:RecordedBaseFrames)F=INDEX_NONE;
+ for(FBasePhysicsState& State:RecordedBaseStates)State=FBasePhysicsState();
+ KinematicQuantizationCache.Reset();SleepState.Reset();
+ USpeedMovementComponent::RecordPhysicsState(); // qualified dispatch: base record only
+ return true;
+}
+#endif
