@@ -85,6 +85,24 @@ public:
 		const USpeedWorldSubsystem* RuntimeBridge);
 	static FStaticWorldQueryCounters GetCurrentFrameCounters();
 	static void EndFrame();
+    /** Additive guard for an admitted private canonical run nested on this thread.
+     * Moves out and restores the ENTIRE frame, including transition/provider history.
+     * Does not select a backend, change authority or swallow an exception.
+     */
+    class IAMSPEED_API FScopedFrameIsolation final
+    {
+    public:
+        FScopedFrameIsolation();
+        ~FScopedFrameIsolation();
+        FScopedFrameIsolation(const FScopedFrameIsolation&) = delete;
+        FScopedFrameIsolation& operator=(const FScopedFrameIsolation&) = delete;
+    private:
+        struct FSavedFrame;
+        TUniquePtr<FSavedFrame> Saved;
+    };
+    static bool IsCurrentFrameContext(uint64 Frame, const FAnalyticWorldData* Data,
+        const USpeedWorldSubsystem* Bridge);
+
 	static void RecordLegacySweep();
 
 #if !UE_BUILD_SHIPPING

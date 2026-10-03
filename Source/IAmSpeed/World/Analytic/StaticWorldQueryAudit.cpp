@@ -1,4 +1,5 @@
 #include "StaticWorldQueryAudit.h"
+#include "HAL/PlatformTLS.h"
 
 #include "AnalyticWorldData.h"
 #include "AnalyticWorldQuery.h"
@@ -1319,3 +1320,31 @@ bool FIAmSpeedEmptySingleAccountingTest::RunTest(const FString& Parameters)
 }
 #endif
 } // namespace Speed::Analytic
+
+
+namespace Speed::Analytic
+{
+    struct FStaticWorldQueryAudit::FScopedFrameIsolation::FSavedFrame
+    {
+        FFrameState Frame;
+        uint32 ThreadId = 0;
+    };
+    FStaticWorldQueryAudit::FScopedFrameIsolation::FScopedFrameIsolation()
+        : Saved(MakeUnique<FSavedFrame>())
+    {
+        Saved->ThreadId=FPlatformTLS::GetCurrentThreadId();
+        Saved->Frame=MoveTemp(GStaticWorldAuditFrame);
+        GStaticWorldAuditFrame=FFrameState();
+    }
+    FStaticWorldQueryAudit::FScopedFrameIsolation::~FScopedFrameIsolation()
+    {
+        check(Saved && Saved->ThreadId==FPlatformTLS::GetCurrentThreadId());
+        GStaticWorldAuditFrame=MoveTemp(Saved->Frame);
+    }
+    bool FStaticWorldQueryAudit::IsCurrentFrameContext(uint64 Frame,
+        const FAnalyticWorldData* Data, const USpeedWorldSubsystem* Bridge)
+    {
+        return GStaticWorldAuditFrame.Frame==Frame && GStaticWorldAuditFrame.World==Data &&
+            GStaticWorldAuditFrame.RuntimeBridge==Bridge;
+    }
+}
