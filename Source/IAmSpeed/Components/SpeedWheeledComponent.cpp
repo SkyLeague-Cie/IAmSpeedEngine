@@ -1099,7 +1099,15 @@ void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 	ISpeedWheeledComponent::PostPhysicsUpdatePrv(delta);
 	ApplyNetworkCorrection(delta);
 	RegisterWheelState();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostContact, delta);
+#endif
 	QuantizePhysicalState();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostQuantization, delta);
+#endif
 	RecordPhysicsState();
 }
 
@@ -1373,6 +1381,10 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 	UpdateFrameState();
 	// A test's initial state must be visible from the first movable frame, before any gameplay force can modify it.
 	ApplyTestVelocity();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PreForce, DeltaTime);
+#endif
 	UpdateSupportForceSleepState();
 	// Handle forces that should be applied before the gameplay tick (e.g. gravity, damping, rest force)
 	if (!DisableGravityThisFrame())

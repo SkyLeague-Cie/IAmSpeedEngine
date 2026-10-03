@@ -9,6 +9,24 @@ namespace Speed::Input::V2 { struct FOwnerInputSnapshot; class FInputSessionRegi
 #include "IAmSpeed/Base/KinematicQuantizationCache.h"
 #include "IAmSpeed/World/Simulation/SimulationSleepState.h"
 
+#if !UE_BUILD_SHIPPING
+/** Native observation boundaries; excluded from published physics state. */
+enum class ESpeedPhysicsObservationPhase : uint8
+{
+	PreForce, PostForcePredictor, PostContact, PostQuantization
+};
+class ISpeedComponent;
+/** Fixture-owned observer; installation/removal and dispatch share the canonical lane.
+ * The fixture must remove it before its owner retires; no UObject or actor replacement. */
+class IAMSPEED_API ISpeedPhysicsPhaseObserver
+{
+public:
+	virtual ~ISpeedPhysicsPhaseObserver() = default;
+	virtual void Observe(const ISpeedComponent& Component,
+		ESpeedPhysicsObservationPhase Phase, float Delta) = 0;
+};
+#endif
+
 class USSubBody;
 class USolidSubBody;
 struct SubBodyConfig;
@@ -59,6 +77,34 @@ struct SComponentTOI
 class IAMSPEED_API ISpeedComponent
 {
 public:
+#if !UE_BUILD_SHIPPING
+	/** Default-disabled read-only diagnostics. No sleep or force policy changes. */
+	virtual bool IsPhysicsPhaseObservationEnabled() const { return PhysicsPhaseObserver != nullptr; }
+	/** Receiver reads actual pose and wheel witnesses now, never history.
+	 * Repeated predictors in a frame are real transport/CCD stages.
+	 * Delta is the actual integration interval, not a reconstructed sample. */
+	virtual void ObservePhysicsPhase(ESpeedPhysicsObservationPhase Phase, float Delta)
+	{
+		if (PhysicsPhaseObserver) PhysicsPhaseObserver->Observe(*this, Phase, Delta);
+	}
+	/** Return false on a conflicting observer; never replace another fixture. */
+	bool TryInstallPhysicsPhaseObserver(ISpeedPhysicsPhaseObserver& Observer)
+	{
+		if (PhysicsPhaseObserver && PhysicsPhaseObserver != &Observer) return false;
+		PhysicsPhaseObserver = &Observer;
+		return true;
+	}
+	/** Remove only this fixture observer, after canonical simulation drains. */
+	bool RemovePhysicsPhaseObserver(ISpeedPhysicsPhaseObserver& Observer)
+	{
+		if (PhysicsPhaseObserver != &Observer) return false;
+		PhysicsPhaseObserver = nullptr;
+		return true;
+	}
+private:
+	ISpeedPhysicsPhaseObserver* PhysicsPhaseObserver = nullptr;
+public:
+#endif
 	/** Frame-boundary admission, before inputs, preparation or publication.
 	 * Implementations validate their live storage without mutating physics state. */
 	virtual bool ValidateSimulationBindings(FString& OutReason) const { return true; }
