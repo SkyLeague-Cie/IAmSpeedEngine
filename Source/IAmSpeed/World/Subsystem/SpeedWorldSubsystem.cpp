@@ -2020,3 +2020,36 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			TimePassed, Dt, LastStepDiagnostics.TotalMilliseconds);
 	}
 }
+
+
+bool USpeedWorldSubsystem::CaptureIsolatedStaticWorldSeed(FIsolatedStaticWorldSeed& Out) const
+{
+    check(IsInGameThread());
+    if (!AnalyticWorldData || !Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() ||
+        AnalyticSourceComponents.Num() > 512) return false;
+    FIsolatedStaticWorldSeed Seed;
+    Seed.Geometry = AnalyticWorldData;
+    for (const auto& Pair : AnalyticSourceComponents)
+    {
+        UPrimitiveComponent* Component = Pair.Value.Get();
+        if (!Component) return false;
+        Seed.Sources.Add({Pair.Key, Component->GetComponentTransform(), uint8(Component->GetCollisionObjectType())});
+    }
+    Seed.Sources.Sort([](const FIsolatedStaticSource& A, const FIsolatedStaticSource& B) { return A.SourceId < B.SourceId; });
+    Out = MoveTemp(Seed);
+    return true;
+}
+
+bool USpeedWorldSubsystem::InstallIsolatedStaticWorldSeed(const FIsolatedStaticWorldSeed& Seed,
+    const TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>>& PrivateSources)
+{
+    check(IsInGameThread());
+    if (!GetWorld() || GetWorld()->WorldType != EWorldType::EditorPreview ||
+        !Seed.Geometry || bCanonicalFrameActive || !SimulationWorld.GetAdapters().IsEmpty()) return false;
+    for (const auto& Pair : PrivateSources)
+        if (!Pair.Value.IsValid() || Pair.Value->GetWorld() != GetWorld()) return false;
+    AnalyticWorldData = Seed.Geometry;
+    AnalyticSourceComponents = PrivateSources;
+    SimulationWorld.SetStaticCollisionWorld(MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*AnalyticWorldData));
+    return true;
+}

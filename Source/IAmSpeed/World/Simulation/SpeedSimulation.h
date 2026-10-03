@@ -54,6 +54,10 @@ public:
 	void Simulate(const float& DeltaTime, const float& SimTime);
 	/** Executes one complete canonical frame; false means no frame was committed. */
 	bool StepCanonicalFrame(const FCanonicalFrameContext& Context);
+    /** Private EditorPreview host only; no worker or BeginPlay may exist. */
+    bool InitializeIsolatedCanonicalHost();
+    bool ResetIsolatedSeedFrame(uint64 SourceFrame);
+
 	/** Frame-addressed boundary API; adapters seal inputs before FastSimulation. */
 	/** Queues an opaque input for one run-stable component id and target frame. */
 	bool QueueSimulationInput(uint64 ActivationFrame, uint64 TargetStableId, TConstArrayView<uint8> Payload);

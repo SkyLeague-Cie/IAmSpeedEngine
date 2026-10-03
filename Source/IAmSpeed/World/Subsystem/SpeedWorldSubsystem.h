@@ -8,6 +8,7 @@
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
+#include "IAmSpeed/World/Simulation/IsolatedSimulationContext.h"
 #include "SpeedWorldSubsystem.generated.h"
 
 class ISpeedComponent;
@@ -72,6 +73,11 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 #endif
 public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+    /** Capture only on an acknowledged GT boundary; never publishes live pointers. */
+    bool CaptureIsolatedStaticWorldSeed(FIsolatedStaticWorldSeed& Out) const;
+    bool InstallIsolatedStaticWorldSeed(const FIsolatedStaticWorldSeed& Seed,
+        const TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>>& PrivateSources);
+
 	static bool AreUnilateralRollingPairsEnabled();
 	static bool ShouldAcquireUnilateralRollingPair(float RelativeNormalSpeed);
     void RegisterSpeedComponent(ISpeedComponent* Comp);
