@@ -7,6 +7,8 @@
 #include "CanonicalFrameDriver.h"
 #include "SimulationFrameJournal.h"
 #include "SimulationWorker.h"
+#include "IAmSpeed/Input/InputSessionRegistry.h"
+#include "IAmSpeed/Input/InputObservationChannel.h"
 #include "SpeedSimulation.generated.h"
 
 class USpeedWorldSubsystem;
@@ -29,7 +31,16 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 {
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
+	friend class FSkyAIInputPauseRegistryTest;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
+	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FSkyProducedJumpPowerslideWorkerTest;
+	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FIAmSpeedProducedDeviceLifecycleTest;
+	friend class FIAmSpeedControllerInputLifecycleTest;
+	friend class FIAmSpeedAdapterRespawnBoundaryTest;
 #endif
 
 public:
@@ -85,17 +96,45 @@ public:
 	bool RequestRollbackAndResimulation(
 		const FSimulationSnapshot& Snapshot,
 		uint64 TargetFrameInclusive);
+	/** GT submits inert commands; only the worker constructs and owns producers. */
+	Speed::Input::V2::ECommandAdmission SubmitInputSessionCommand(
+		const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
+		std::shared_ptr<Speed::Input::V2::FRawAcquisitionJournal> Journal = {},
+		std::shared_ptr<Speed::Input::V2::FInputObservationChannel> Observation = {},
+		std::shared_ptr<Speed::Input::V2::FAIInputCommands> AI = {});
+	uint64 AllocateInputCommandId() { check(IsInGameThread()); return NextInputCommandId == MAX_uint64 ? 0 : NextInputCommandId++; }
+	std::optional<Speed::Input::V2::FBoundaryReceipt> ReadInputSessionReceipt(uint64 Id) const;
+	bool AcknowledgeInputSessionReceipt(uint64 Id) { return InputSessionCommands->Acknowledge(Id); }
+	std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ReadInputRegistryView() const;
+	std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ReadCompletedInputFrame() const;
+	uint64 GetInputWorkerGeneration() const { return InputWorkerGeneration; }
+	bool InputOwnersRetiredAfterJoin(uint64 Generation) const
+	{ return Generation == InputWorkerGeneration && bInputOwnerRetired.Load() && bInputOwnersClosedOnWorker.Load() && !SimulationWorker; }
 	/** Pauses the owned execution lane without changing the canonical frame. */
 	void PauseOwnedSimulation();
+	/** Bounded lifecycle boundary. Timeout retains pause request; never resume
+	 * automatically or access physical state after a non-acknowledged result. */
+	ESimulationQuiescence TryPauseOwnedSimulation(uint32 TimeoutMilliseconds = 1000);
+	/** Transfers exclusive adapter-registry access to the game thread. Unlike
+	 * TryPauseOwnedSimulation, this also parks lifecycle command service. */
+	ESimulationQuiescence TrySuspendOwnedBoundaryService(uint32 TimeoutMilliseconds = 1000);
+	void ResumeOwnedBoundaryService();
+	bool IsOwnedBoundaryServiceSuspended() const;
+	bool ReadInputFirstFrameAtPausedBoundary(uint64& OutFrame);
+	/** Teardown fallback: join the physical owner before releasing any input/actor lifetime. */
+	bool JoinOwnedSimulationForInputTeardown();
 	/** Resumes the owned lane from its current canonical frame. */
 	void ResumeOwnedSimulation();
 	/** GT-only: re-arms a paused controlled run after its actors/inputs were replaced. Keeps the world's canonical frame continuous. */
 	void RestartControlledRun();
+	/** After old actors/controllers are destroyed, before admitting replacement
+	 * scenario inputs. Joins the old lane and renews its command generation. */
+	bool PrepareControlledInputRun();
 	/** Thread-safe pause witness used by gameplay integration tests and diagnostics. */
 	bool IsOwnedSimulationPaused() const { return bOwnedSimulationPaused.Load(); }
-#if !UE_BUILD_SHIPPING
 	/** True when canonical frames are currently hosted by IAmSpeed's worker. */
 	bool IsOwnedWorkerExecutionMode() const;
+#if !UE_BUILD_SHIPPING
 	/**
 	 * Lets a simulation policy audit how many published frames a presentation
 	 * actor observed between two game-thread updates. The base policy is silent.
@@ -149,6 +188,8 @@ protected:
 	unsigned int _NumFrame = 0;
 	uint64 CanonicalNumFrame = 0;
 	bool bCanonicalFrameInitialized = false;
+	// Terminal publication failure cannot be cleared by pause/resume or replay.
+	TAtomic<bool> bCanonicalPublicationTerminal{false};
 	bool bStaticCollisionReadinessErrorReported = false;
 	bool bInputConsumptionErrorReported = false;
 	uint32 CanonicalReadyDelayPulsesObserved = 0;
@@ -188,12 +229,32 @@ private:
 	/** Applies at most one queued restore/replay transaction on the owning lane. */
 	bool ProcessPendingRollbackRequest();
 
+	ESimulationBoundaryResult ServiceInputSessionBoundary(bool bPauseRequested);
+	void CloseInputSessionsOnWorker();
+	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;
+	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;
+	std::shared_ptr<const Speed::Input::V2::FInputRegistryView> PublishedInputRegistry;
+	std::shared_ptr<const Speed::Input::V2::FRegistryFrame> PublishedInputFrame;
+	FCriticalSection InputSessionAdmissionMutex;
+	std::vector<Speed::Input::V2::FInputSessionRegistry::FJournalService> PendingInputJournals;
+	std::map<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>> InputObservations;
+	std::vector<std::pair<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>>> PendingInputObservations;
+	uint64 InputWorkerGeneration = 0, NextInputCommandId = 1;
+	TAtomic<bool> bInputSessionAdmissionRequested = false;
+	TAtomic<bool> bInputOwnersClosedOnWorker = false;
+	uint64 NeutralizedInputRegistryVersion = MAX_uint64;
+	bool bInputNeutralizedDuringPause = false;
 	TUniquePtr<FSimulationWorker> SimulationWorker;
+	// Game-thread lease count. A late worker ACK after timeout is not ownership;
+	// only a successful TrySuspend call increments this count.
+	uint32 OwnedBoundarySuspendDepth = 0;
 	FCriticalSection RollbackRequestMutex;
 	TOptional<FPendingRollbackRequest> PendingRollbackRequest;
 	TAtomic<uint8> ActiveExecutionModeValue =
 		static_cast<uint8>(ESimulationExecutionMode::UnrealAsyncCallback);
 	TAtomic<bool> bOwnedWorkerTerminal = false;
+	// Permanent for this driver instance after input-owner teardown.
+	TAtomic<bool> bInputOwnerRetired = false;
 	/** Gameplay-owned pause, independent from the global automation pause. */
 	TAtomic<bool> bOwnedSimulationPaused = false;
 	double GameThreadAccumulatorSeconds = 0.0;
