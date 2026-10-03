@@ -41,6 +41,7 @@ void FNetworkWheeledSpeedState::ApplyData(UActorComponent* NetworkComponent) con
 {
 	if (USpeedWheeledComponent* Mover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
+		if (!Mover->AllowsExternalNetworkStateRestore()) return;
 #if !(UE_BUILD_SHIPPING)
 		UE_LOG(WheelNetcodeLog, Warning, TEXT("[WheeledSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
 #endif
@@ -202,45 +203,31 @@ void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent
 	if (!WheeledInput.Camera.IsValid()) return;
 	if (USpeedWheeledComponent* Mover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
-		// A sealed local scenario is the sole input authority. The queue rechecks
-		// under lock so an already in-flight network producer cannot overwrite it.
-		if (Mover->IsTestInputOverrideEnabled()) return;
-		const int32 TimelineActivationFrame = ResolveActivationFrame(Mover->GetSinceCanMoveFrame(), false);
-
-		Mover->QueueNetworkWheeledInputForFrame(
-			TimelineActivationFrame,
-			WheeledInput
-		);
-		// Same camera-only admission as the local BuildData capture. Never read
-		// the live mailbox here: this method also runs for historical resimulation.
-		Mover->QueueCameraInputForFrame(TimelineActivationFrame, WheeledInput.Camera);
+		if (Mover->IsTestInputOverrideEnabled() || Mover->HasProducedInputAuthority()) return;
+		const int32 Activation = ResolveActivationFrame(Mover->GetPublishedInputTimelineOrigin(), false);
+		const auto Result = Mover->SubmitLegacyWheeledInput(ClientFrame, Activation, WheeledInput);
+		if (Result != Speed::Input::ELegacyRemoteAdmission::Accepted)
+			UE_LOG(SpeedInputLog, Verbose, TEXT("[LegacyRemotePreSlew] wheel packet rejected status=%u source=%u activation=%d"), uint32(Result), ClientFrame, Activation);
 	}
 }
 
 void FNetworkWheeledSpeedInputState::BuildData(const UActorComponent* NetworkComponent)
 {
-	if (NetworkComponent)
-	{
-		if (const USpeedWheeledComponent* Mover = Cast<const USpeedWheeledComponent>(NetworkComponent))
-		{
-			WheeledInput = Mover->WheeledUserInput;
-			ClientFrame = Mover->NumFrame();
-			const int32 SinceCanMoveFrame = Mover->GetSinceCanMoveFrame();
-			ClientFramesSinceCanMove = (SinceCanMoveFrame != INDEX_NONE && int32(ClientFrame) >= SinceCanMoveFrame)
-				? int32(ClientFrame) - SinceCanMoveFrame
-				: INDEX_NONE;
-			bIsAutonomousProxy = Mover->GetOwnerRole() == ROLE_AutonomousProxy;
-			// UE records this very packet after BuildData on the normal locally
-			// controlled path only. Stage exactly its camera value, not wheel inputs
-			// copied above (which have their own unchanged UpdateInputs phase).
-			WheeledInput.Camera = Mover->CaptureNetworkCameraInput(
-				LocalFrame, ResolveActivationFrame(SinceCanMoveFrame, true));
-		}
-	}
+	bInputProjectionValid = false;
+	const auto* Mover = Cast<const USpeedWheeledComponent>(NetworkComponent);
+	if (!Mover) return;
+	const auto Input = std::atomic_load(&Mover->PublishedWheeledNetworkInput);
+	if (!Input) return;
+	WheeledInput = Input->Requested; ClientFrame = Input->LocalFrame;
+	ClientFramesSinceCanMove = Input->SinceCanMove != INDEX_NONE && int64(ClientFrame) >= Input->SinceCanMove
+		? int32(int64(ClientFrame) - Input->SinceCanMove) : INDEX_NONE;
+	bIsAutonomousProxy = Mover->GetOwnerRole() == ROLE_AutonomousProxy;
+	bInputProjectionValid = true;
 }
 
 bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
+	if (Ar.IsSaving() && !bInputProjectionValid) { bOutSuccess = false; return false; }
 	// Decode the complete INPUT transactionally, including the new versioned
 	// camera tail. Old mechanical-state serializers remain byte-identical.
 	auto Value = *this;
@@ -253,7 +240,7 @@ bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map
 	Ar << Value.bIsAutonomousProxy;
 	Ar << Value.WheeledInput.bCanMove;
 	bOutSuccess = Value.WheeledInput.Camera.Serialize(Ar) && !Ar.IsError();
-	if (bOutSuccess && Ar.IsLoading()) *this = Value;
+	if (bOutSuccess && Ar.IsLoading()) { Value.bInputProjectionValid=true; *this = Value; }
 	return bOutSuccess;
 }
 

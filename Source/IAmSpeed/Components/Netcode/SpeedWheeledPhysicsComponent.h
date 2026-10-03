@@ -182,6 +182,8 @@ USTRUCT()
 struct FNetworkWheeledSpeedInputState : public FNetworkPhysicsData
 {
 	GENERATED_BODY()
+	bool bInputProjectionValid = true; // Local-only; never serialized.
+
 
 	UPROPERTY()
 	FWheeledInputState WheeledInput;

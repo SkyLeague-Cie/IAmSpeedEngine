@@ -22,6 +22,7 @@ void FNetworkBaseSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 	}
 	else if (USpeedWheeledComponent* WheeledMover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
+		if (!WheeledMover->AllowsExternalNetworkStateRestore()) return;
 #if !(UE_BUILD_SHIPPING)
 		UE_LOG(WheelNetcodeLog, Warning, TEXT("[BaseSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), WheeledMover->NumFrame());
 #endif
