@@ -736,6 +736,11 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
         return false;
 
     OutHit = BestHit;
+    // Geometric intersections do not carry the selected support component.
+    // UpdateSuspension needs it to clamp attraction on non-static supports.
+    OutHit.Component = BestSphere.Get();
+    OutHit.SubBody = BestSphere.Get();
+    OutHit.FrameTag = ParentComponent->NumFrame();
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     OutHit.Location = OutHit.ImpactPoint + Radius() * OutHit.ImpactNormal;
 
@@ -809,6 +814,10 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
         return false;
 
     OutHit = BestHit;
+    // Preserve the selected support for suspension and contact classification.
+    OutHit.Component = BestBox.Get();
+    OutHit.SubBody = BestBox.Get();
+    OutHit.FrameTag = ParentComponent->NumFrame();
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     OutHit.Location = OutHit.ImpactPoint + Radius() * OutHit.ImpactNormal;
 
@@ -1521,6 +1530,20 @@ bool USWheelSubBody::IsOnGround() const
 		return false;
 	}
     return PWheel->InContact();
+}
+
+bool USWheelSubBody::IsOnStaticObject() const
+{
+    const UPrimitiveComponent* Support = CurrentHit.Component.Get();
+    return IsOnGround() && CurrentHit.bHit && IsValid(Support)
+        && Support->GetMobility() == EComponentMobility::Static;
+}
+
+bool USWheelSubBody::IsOnDynamicObject() const
+{
+    const UPrimitiveComponent* Support = CurrentHit.Component.Get();
+    return IsOnGround() && CurrentHit.bHit && IsValid(Support)
+        && Support->GetMobility() == EComponentMobility::Movable;
 }
 
 void USWheelSubBody::SetOnGround(const bool& on_ground)
