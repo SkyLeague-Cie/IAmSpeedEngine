@@ -326,7 +326,8 @@ protected:
 
 	void SetGroundState();
 	void SetAirState();
-	virtual void SetGroundStatePrv();
+	/** bWasInAir is the pre-update air-to-ground edge; default behavior remains empty. */
+	virtual void SetGroundStatePrv(bool bWasInAir);
 	virtual void SetAirStatePrv();
 
 	// =========== Acceleration and steering functions ===========
@@ -756,6 +757,7 @@ private:
 
 	static constexpr int32 MaxPendingWheeledInputs = 256;
 #if WITH_DEV_AUTOMATION_TESTS
+	friend class FSkycarFlipResetEligibilityTest;
 	friend class FIAmSpeedWheeledInputQueueTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedCameraInputBoundaryTest;
