@@ -1,5 +1,6 @@
 #include "StaticWorldQueryAudit.h"
 #include "HAL/PlatformTLS.h"
+#include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
 
 #include "AnalyticWorldData.h"
 #include "AnalyticWorldQuery.h"
@@ -1328,18 +1329,28 @@ namespace Speed::Analytic
     {
         FFrameState Frame;
         uint32 ThreadId = 0;
+#if !UE_BUILD_SHIPPING
+        bool bActorDiagnosticsEnabled = false;
+#endif
     };
     FStaticWorldQueryAudit::FScopedFrameIsolation::FScopedFrameIsolation()
         : Saved(MakeUnique<FSavedFrame>())
     {
         Saved->ThreadId=FPlatformTLS::GetCurrentThreadId();
         Saved->Frame=MoveTemp(GStaticWorldAuditFrame);
+#if !UE_BUILD_SHIPPING
+        Saved->bActorDiagnosticsEnabled=Speed::ActorDiagnostics::bEnabled;
+        Speed::ActorDiagnostics::bEnabled=false; // private IDs never enter caller actor buckets
+#endif
         GStaticWorldAuditFrame=FFrameState();
     }
     FStaticWorldQueryAudit::FScopedFrameIsolation::~FScopedFrameIsolation()
     {
         check(Saved && Saved->ThreadId==FPlatformTLS::GetCurrentThreadId());
         GStaticWorldAuditFrame=MoveTemp(Saved->Frame);
+#if !UE_BUILD_SHIPPING
+        Speed::ActorDiagnostics::bEnabled=Saved->bActorDiagnosticsEnabled;
+#endif
     }
     bool FStaticWorldQueryAudit::IsCurrentFrameContext(uint64 Frame,
         const FAnalyticWorldData* Data, const USpeedWorldSubsystem* Bridge)

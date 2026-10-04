@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "StaticWorldQueryAudit.h"
 #include "AnalyticWorldData.h"
+#include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/AutomationTest.h"
@@ -11,6 +12,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FStaticWorldIsolationTest,
 bool FStaticWorldIsolationTest::RunTest(const FString&)
 {
     FStaticWorldQueryAudit::FScopedFrameIsolation PreserveCaller;
+#if !UE_BUILD_SHIPPING
+    Speed::ActorDiagnostics::bEnabled=true;
+#endif
     IConsoleVariable* Audit=IConsoleManager::Get().FindConsoleVariable(TEXT("p.IAmSpeed.StaticWorldQuery.Audit"));
     if (!Audit) { AddError(TEXT("audit variable missing")); return false; }
     const int32 Old=Audit->GetInt(); const auto Flags=Audit->GetFlags();
@@ -25,12 +29,18 @@ bool FStaticWorldIsolationTest::RunTest(const FString&)
         TestTrue(TEXT("live frame and provider restored"),
             FStaticWorldQueryAudit::IsCurrentFrameContext(123,&LiveData,nullptr));
         const auto After=FStaticWorldQueryAudit::GetCurrentFrameCounters();
+#if !UE_BUILD_SHIPPING
+        TestTrue(TEXT("live actor diagnostics restored"),Speed::ActorDiagnostics::bEnabled);
+#endif
         TestEqual(TEXT("live sweep count restored"),After.LegacySweepCount,Before.LegacySweepCount);
         TestEqual(TEXT("live query count restored"),After.QueryCount,Before.QueryCount);
         TestEqual(TEXT("live authority count restored"),After.AuthorityAttemptCount,Before.AuthorityAttemptCount);
     };
     {
         FStaticWorldQueryAudit::FScopedFrameIsolation Guard;
+#if !UE_BUILD_SHIPPING
+        TestFalse(TEXT("private actor diagnostics suppressed"),Speed::ActorDiagnostics::bEnabled);
+#endif
         FStaticWorldQueryAudit::BeginFrame(456,&PrivateData,nullptr);
         FStaticWorldQueryAudit::RecordLegacySweep();
         FStaticWorldQueryAudit::RecordLegacySweep();
@@ -46,6 +56,9 @@ bool FStaticWorldIsolationTest::RunTest(const FString&)
     const auto EarlyExit=[&]()
     {
         FStaticWorldQueryAudit::FScopedFrameIsolation Guard;
+#if !UE_BUILD_SHIPPING
+        TestFalse(TEXT("private actor diagnostics suppressed"),Speed::ActorDiagnostics::bEnabled);
+#endif
         FStaticWorldQueryAudit::BeginFrame(456,&PrivateData,nullptr);
         return; // cancellation/failure return
     };
@@ -53,6 +66,9 @@ bool FStaticWorldIsolationTest::RunTest(const FString&)
     try
     {
         FStaticWorldQueryAudit::FScopedFrameIsolation Guard;
+#if !UE_BUILD_SHIPPING
+        TestFalse(TEXT("private actor diagnostics suppressed"),Speed::ActorDiagnostics::bEnabled);
+#endif
         FStaticWorldQueryAudit::BeginFrame(456,&PrivateData,nullptr);
         throw 17;
     }
