@@ -1912,7 +1912,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 					const Speed::FKinematicState& HitboxState = PrincipalHitbox->GetKinematicState();
 					const FVector HitboxPoint = UBoxSubBody::ComputeBoxSupportPointWS(
 						HitboxState.Location, HitboxState.Rotation,
-						PrincipalHitbox->GetBoxExtent(), -HitboxNormal);
+						PrincipalHitbox->GetBoxExtent(), HitboxNormal);
 					const FVector WheelDirection = -N;
 					const FVector WheelAngular = FVector::CrossProduct(
 						SweepEnd - GetPhysCOM(), WheelDirection);
