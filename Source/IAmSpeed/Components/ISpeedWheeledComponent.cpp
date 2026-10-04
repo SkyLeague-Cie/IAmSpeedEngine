@@ -1850,11 +1850,17 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		FVector SweepStart = FVector::ZeroVector;
 		FVector SweepEnd = FVector::ZeroVector;
 		Wheel->GetSuspensionSweepSegment(Delta, SweepStart, SweepEnd);
+		// The final state is checked with the actual suspension sweep shape.
+		// A positive reach gap cannot count as retained support, even when it
+		// fits the coupled-pose separation budget.
+		const float SweepRadius = Wheel->GetCollisionShape().GetSphereRadius();
 		const float Gap = FVector::DotProduct(
-			SweepEnd - LocalPatchHit.ImpactPoint, N) - Wheel->Radius();
-		if (Gap > MaxWheelGap)
+			SweepEnd - LocalPatchHit.ImpactPoint, N) - SweepRadius;
+		if (Gap > 0.0f)
 		{
-			ApplyConstraint(-N, SweepEnd, Gap - MaxWheelGap,
+			const float ReachSkin = FMath::Max(0.0f,
+				CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+			ApplyConstraint(-N, SweepEnd, Gap + ReachSkin,
 				WheelConstraintRotationLength);
 		}
 
@@ -1868,7 +1874,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 
 		Wheel->GetSuspensionSweepSegment(Delta, SweepStart, SweepEnd);
 		const float FinalGap = FVector::DotProduct(
-			SweepEnd - LocalPatchHit.ImpactPoint, N) - Wheel->Radius();
+			SweepEnd - LocalPatchHit.ImpactPoint, N) - SweepRadius;
 		if (FinalGap > MaxWheelGap + 0.01f)
 		{
 			SetPhysCOMLocation(BeforeWheelCOM);
