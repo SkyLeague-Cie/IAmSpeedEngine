@@ -85,14 +85,13 @@ static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, cons
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedCertifiedExtrudedProjection(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionCertifiedExtruded"), 1,
-	TEXT("Admit bounded missed-wheel projection along a bounded continuous certified C2 extruded chord chain; zero preserves the gravity-alignment baseline."), ECVF_Default);
+	TEXT("Admit bounded missed-wheel projection on the same or adjacent certified C2 extruded chord; zero preserves the gravity-alignment baseline."), ECVF_Default);
 
-static bool HaveBoundedCertifiedExtrudedChordChain(UWorld* World,
+static bool HaveSameOrAdjacentCertifiedExtrudedChords(UWorld* World,
 	const uint64 SourceId, const uint64 SurfaceId, const uint64 FeatureId,
-	const uint64 PreviousPrimitiveId, const uint64 CurrentPrimitiveId, const float MaxPatchTravel)
+	const uint64 PreviousPrimitiveId, const uint64 CurrentPrimitiveId)
 {
 	if (!World || PreviousPrimitiveId == 0 || CurrentPrimitiveId == 0 ||
-		!FMath::IsFinite(MaxPatchTravel) || MaxPatchTravel < 0.0f ||
 		!Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()) return false;
 	const USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>();
 	const auto* Data = Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
@@ -102,7 +101,7 @@ static bool HaveBoundedCertifiedExtrudedChordChain(UWorld* World,
 		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId ||
 			Patch.FeatureId != FeatureId || !Patch.bAuthorityEligible ||
 			!Patch.bQueryCollisionEnabled || !Patch.bCanonicalC2ByConstruction) continue;
-		// Unknown or unbounded query representations keep the gravity-alignment rule.
+		// Unknown or unbounded query representations keep the strict face rule.
 		if (Patch.SectionPolyline.Num() < 3 || Patch.SectionPolyline.Num() > 32768 ||
 			!FMath::IsFinite(Patch.MinimumExtrusionCoordinate) ||
 			!FMath::IsFinite(Patch.MaximumExtrusionCoordinate) ||
@@ -116,39 +115,17 @@ static bool HaveBoundedCertifiedExtrudedChordChain(UWorld* World,
 			if (Id == PreviousPrimitiveId) { Previous = Segment; ++PreviousMatches; }
 			if (Id == CurrentPrimitiveId) { Current = Segment; ++CurrentMatches; }
 		}
-		if (PreviousMatches != 1 || CurrentMatches != 1) continue;
-		const int32 First = FMath::Min(Previous, Current);
-		const int32 Last = FMath::Max(Previous, Current);
-		double InterveningArc = 0.0;
-		FVector3d FirstNormal = FVector3d::ZeroVector;
-		FVector3d LastNormal = FVector3d::ZeroVector;
-		bool bContinuous = true;
-		for (int32 Segment = First; Segment <= Last; ++Segment)
-		{
-			const FVector3d& A = Patch.SectionPolyline[Segment];
-			const FVector3d& B = Patch.SectionPolyline[Segment + 1];
-			if (A.ContainsNaN() || B.ContainsNaN()) { bContinuous = false; break; }
-			const FVector3d Chord = B - A;
-			const double Length = Chord.Size();
-			const FVector3d Normal = FVector3d::CrossProduct(Chord, Patch.ExtrusionAxis).GetSafeNormal();
-			if (!FMath::IsFinite(Length) || Normal.ContainsNaN() || Normal.IsNearlyZero() ||
-				(Segment > First && FVector3d::DotProduct(LastNormal, Normal) < 0.995))
-			{
-				bContinuous = false;
-				break;
-			}
-			if (Segment == First) FirstNormal = Normal;
-			LastNormal = Normal;
-			// The endpoint chords may be traversed only partially. The real local
-			// sweep and tangential bound below still constrain their hit points.
-			if (Segment > First && Segment < Last) InterveningArc += Length;
-			if (!FMath::IsFinite(InterveningArc) || InterveningArc > MaxPatchTravel)
-			{
-				bContinuous = false;
-				break;
-			}
-		}
-		if (bContinuous && FVector3d::DotProduct(FirstNormal, LastNormal) >= 0.995) return true;
+		if (PreviousMatches != 1 || CurrentMatches != 1 || FMath::Abs(Previous - Current) > 1) continue;
+		const FVector3d& A0 = Patch.SectionPolyline[Previous];
+		const FVector3d& A1 = Patch.SectionPolyline[Previous + 1];
+		const FVector3d& B0 = Patch.SectionPolyline[Current];
+		const FVector3d& B1 = Patch.SectionPolyline[Current + 1];
+		if (A0.ContainsNaN() || A1.ContainsNaN() || B0.ContainsNaN() || B1.ContainsNaN()) continue;
+		// Same chord or consecutive chords of one certified C2 finite extrusion.
+		// The real local sweep below still owns contact, normal and reach evidence.
+		const FVector3d N0 = FVector3d::CrossProduct(A1 - A0, Patch.ExtrusionAxis).GetSafeNormal();
+		const FVector3d N1 = FVector3d::CrossProduct(B1 - B0, Patch.ExtrusionAxis).GetSafeNormal();
+		if (!N0.IsNearlyZero() && !N1.IsNearlyZero() && FVector3d::DotProduct(N0, N1) >= 0.995) return true;
 	}
 	return false;
 }
@@ -1179,13 +1156,6 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			SHitResult LocalPatchHit;
 			const bool bHasLocalPatch = Wheel->SweepSuspensionAlongNormal(
 				PreviousNormal, MaxGap, delta, LocalPatchHit);
-			const FVector LocalNormal = LocalPatchHit.ImpactNormal.GetSafeNormal();
-			const FVector PatchTravel = LocalPatchHit.ImpactPoint - Probe.PreviousHit.ImpactPoint;
-			const float TangentialPatchTravel = FVector::VectorPlaneProject(
-				PatchTravel, PreviousNormal).Size();
-			const float PredictedPatchTravel =
-				GetPhysVelocityAtPoint(Probe.PreviousHit.ImpactPoint).Size() * delta;
-			const float MaxPatchTravel = PredictedPatchTravel + PatchTravelSlack;
 			const bool bNeedsCertifiedSmoothSupport = PreviousNormal.Z < MinGravityAlignment &&
 				!bNativeVariableNormalSupport && !bNativeStaticWallSupport;
 			// A smooth gutter is not a gravity-aligned floor. Only an established,
@@ -1193,15 +1163,46 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			// Unknown geometry, creases and remote chords retain the original rule.
 			if (bNeedsCertifiedSmoothSupport &&
 				(!bHasLocalPatch || CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() == 0 ||
-				 !HaveBoundedCertifiedExtrudedChordChain(Wheel->GetWorld(),
+				 !HaveSameOrAdjacentCertifiedExtrudedChords(Wheel->GetWorld(),
 					Probe.PreviousHit.SourceId, Probe.PreviousHit.SurfaceId, Probe.PreviousHit.FeatureId,
-					Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId, MaxPatchTravel) ||
+					Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId) ||
 				 LocalPatchHit.SourceId != Probe.PreviousHit.SourceId ||
 				 LocalPatchHit.SurfaceId != Probe.PreviousHit.SurfaceId ||
 				 LocalPatchHit.FeatureId != Probe.PreviousHit.FeatureId))
 			{
+#if !(UE_BUILD_SHIPPING)
+				// Existing debug mode 2 identifies the rejected real local sweep.
+				// Published-domain logging is read-only and does not admit contact.
+				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 2 &&
+					CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() != 0)
+				{
+					UE_LOG(LogTemp, Log,
+						TEXT("[WheelSupportCertifiedProjectionRejected] Frame=%d Wheel=%d LocalHit=%d PreviousSource=%016llx LocalSource=%016llx PreviousSurface=%016llx LocalSurface=%016llx PreviousFeature=%016llx LocalFeature=%016llx PreviousPrimitive=%016llx LocalPrimitive=%016llx PreviousGroup=%016llx LocalGroup=%016llx PreviousPoint=%s LocalPoint=%s"),
+						NumFrame(), Index, bHasLocalPatch ? 1 : 0,
+						Probe.PreviousHit.SourceId, LocalPatchHit.SourceId,
+						Probe.PreviousHit.SurfaceId, LocalPatchHit.SurfaceId,
+						Probe.PreviousHit.FeatureId, LocalPatchHit.FeatureId,
+						Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId,
+						Probe.PreviousHit.CanonicalGroupId, LocalPatchHit.CanonicalGroupId,
+						*Probe.PreviousHit.ImpactPoint.ToString(), *LocalPatchHit.ImpactPoint.ToString());
+					if (bHasLocalPatch)
+					{
+						LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Index, TEXT("ProjectionPrevious"),
+							Probe.PreviousHit.SourceId, Probe.PreviousHit.SurfaceId, Probe.PreviousHit.FeatureId, Probe.PreviousHit.PrimitiveId);
+						LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Index, TEXT("ProjectionLocal"),
+							LocalPatchHit.SourceId, LocalPatchHit.SurfaceId, LocalPatchHit.FeatureId, LocalPatchHit.PrimitiveId);
+					}
+				}
+#endif
 				continue;
 			}
+			const FVector LocalNormal = LocalPatchHit.ImpactNormal.GetSafeNormal();
+			const FVector PatchTravel = LocalPatchHit.ImpactPoint - Probe.PreviousHit.ImpactPoint;
+			const float TangentialPatchTravel = FVector::VectorPlaneProject(
+				PatchTravel, PreviousNormal).Size();
+			const float PredictedPatchTravel =
+				GetPhysVelocityAtPoint(Probe.PreviousHit.ImpactPoint).Size() * delta;
+			const float MaxPatchTravel = PredictedPatchTravel + PatchTravelSlack;
 			const bool bSameWallIdentity = !bNativeStaticWallSupport ||
 				(LocalPatchHit.SourceId == Probe.PreviousHit.SourceId &&
 					LocalPatchHit.SurfaceId == Probe.PreviousHit.SurfaceId &&
