@@ -3,6 +3,85 @@
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "HAL/IConsoleManager.h"
+#include "Engine/World.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+
+#if !(UE_BUILD_SHIPPING)
+// Read-only diagnostics over the admitted world data. No contact decision uses this mapping.
+static FString CoupledPoseDiagnosticVector(const FVector3d& V)
+{
+	return FString::Printf(TEXT("(%.17g,%.17g,%.17g)"), V.X, V.Y, V.Z);
+}
+
+static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, const int32 Wheel,
+	const TCHAR* Role, const uint64 SourceId, const uint64 SurfaceId,
+	const uint64 FeatureId, const uint64 PrimitiveId)
+{
+	const USpeedWorldSubsystem* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+	const Speed::Analytic::FAnalyticWorldData* Data = Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
+	if (!Data || PrimitiveId == 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Unknown"), Frame, Wheel, Role, PrimitiveId);
+		return;
+	}
+	int32 Examined = 0;
+	bool bMatched = false;
+	constexpr int32 MaximumCandidates = 32768;
+	for (const auto& Patch : Data->ExtrudedQuinticPatches)
+	{
+		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId || Patch.FeatureId != FeatureId) continue;
+		for (int32 Segment = 0; Segment + 1 < Patch.SectionPolyline.Num(); ++Segment)
+		{
+			if (++Examined > MaximumCandidates) break;
+			if (Speed::Analytic::CombineStableIds(Patch.PrimitiveId, uint64(Segment + 1)) != PrimitiveId) continue;
+			bMatched = true;
+			const FVector3d A = Patch.SectionPolyline[Segment];
+			const FVector3d B = Patch.SectionPolyline[Segment + 1];
+			UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Mapped Provider=Extruded Parent=%016llx Group=%016llx Authority=%d C2=%d Segment=%d MinExtrusion=%.17g MaxExtrusion=%.17g Axis=%s A=%s B=%s ErrorCm=%.17g"),
+				Frame, Wheel, Role, PrimitiveId, Patch.PrimitiveId, Patch.CanonicalGroupId,
+				Patch.bAuthorityEligible ? 1 : 0, Patch.bCanonicalC2ByConstruction ? 1 : 0,
+				Segment, Patch.MinimumExtrusionCoordinate, Patch.MaximumExtrusionCoordinate,
+				*CoupledPoseDiagnosticVector(Patch.ExtrusionAxis), *CoupledPoseDiagnosticVector(A), *CoupledPoseDiagnosticVector(B), Patch.MaximumChordErrorCm);
+		}
+	}
+	const auto LogTensor = [&](const TCHAR* Provider, const uint64 Parent, const uint64 Group,
+		const bool Authority, const auto& Cells)
+	{
+		constexpr int32 Indices[2][3] = {{0,2,3},{0,3,1}};
+		for (int32 CellIndex = 0; CellIndex < Cells.Num(); ++CellIndex)
+		for (int32 Triangle = 0; Triangle < 2; ++Triangle)
+		{
+			if (++Examined > MaximumCandidates) return;
+			if (Speed::Analytic::CombineStableIds(Parent, uint64(2 * CellIndex + Triangle + 1)) != PrimitiveId) continue;
+			bMatched = true;
+			const auto& Cell = Cells[CellIndex];
+			UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Mapped Provider=%s Parent=%016llx Group=%016llx Authority=%d ApproxCell=%d Triangle=%d U0=%.17g U1=%.17g V0=%.17g V1=%.17g A=%s B=%s C=%s ErrorCm=%.17g"),
+				Frame, Wheel, Role, PrimitiveId, Provider, Parent, Group, Authority ? 1 : 0, CellIndex, Triangle,
+				Cell.MinimumU, Cell.MaximumU, Cell.MinimumV, Cell.MaximumV,
+				*CoupledPoseDiagnosticVector(Cell.Corners[Indices[Triangle][0]]),
+				*CoupledPoseDiagnosticVector(Cell.Corners[Indices[Triangle][1]]),
+				*CoupledPoseDiagnosticVector(Cell.Corners[Indices[Triangle][2]]), Cell.MaximumErrorCm);
+		}
+	};
+	for (const auto& Patch : Data->TensorBezierPatches)
+	{
+		if (Patch.SourceId == SourceId && Patch.SurfaceId == SurfaceId && Patch.FeatureId == FeatureId)
+			LogTensor(TEXT("Tensor"), Patch.PrimitiveId, Patch.CanonicalGroupId, Patch.bAuthorityEligible, Patch.ApproximationCells);
+	}
+	for (const auto& Patch : Data->PiecewiseTensorBezierPatches)
+	{
+		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId) continue;
+		for (const auto& Cell : Patch.Cells)
+		{
+			if (Cell.FeatureId == FeatureId)
+				LogTensor(TEXT("PiecewiseTensor"), Cell.PrimitiveId, Patch.CanonicalGroupId, Patch.bAuthorityEligible, Cell.ApproximationCells);
+		}
+	}
+	UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomainSummary] Frame=%d Wheel=%d Role=%s Primitive=%016llx Matched=%d Complete=%d Examined=%d WorldHash=%016llx"), Frame, Wheel, Role, PrimitiveId, bMatched ? 1 : 0, Examined <= MaximumCandidates ? 1 : 0, Examined, Data->SourceHash);
+}
+#endif
+
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactNormalVelTimeConstant(
 	TEXT("p.IAmSpeed.WheelContact.NormalVelTimeConstant"),
@@ -1892,6 +1971,10 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 					static_cast<unsigned long long>(LocalPatchHit.PrimitiveId),
 					*Contact.SurfacePoint.ToString(), *LocalPatchHit.ImpactPoint.ToString(),
 					*N.ToString(), *LocalPatchHit.ImpactNormal.ToString());
+				LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Wheel->Idx(), TEXT("Expected"),
+					Contact.SurfaceSourceId, Contact.SurfaceId, Contact.SurfaceFeatureId, Contact.DiagnosticPrimitiveId);
+				LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Wheel->Idx(), TEXT("Actual"),
+					LocalPatchHit.SourceId, LocalPatchHit.SurfaceId, LocalPatchHit.FeatureId, LocalPatchHit.PrimitiveId);
 			}
 #endif
 			continue;
