@@ -83,55 +83,6 @@ static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, cons
 #endif
 
 
-static TAutoConsoleVariable<int32> CVarIAmSpeedAdjacentExtrudedRetention(
-	TEXT("p.IAmSpeed.CoupledPose.AdjacentExtrudedRetention"), 1,
-	TEXT("Retain an established wheel across adjacent implementation chords of the same certified C2 extruded surface; zero permits a diagnostic baseline comparison."), ECVF_Default);
-
-static bool HaveAdjacentCertifiedExtrudedChords(UWorld* World,
-	const uint64 SourceId, const uint64 SurfaceId, const uint64 FeatureId,
-	const uint64 PreviousPrimitiveId, const uint64 CurrentPrimitiveId)
-{
-	if (!World || PreviousPrimitiveId == 0 || CurrentPrimitiveId == 0 ||
-		PreviousPrimitiveId == CurrentPrimitiveId ||
-		!Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()) return false;
-	const USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>();
-	const auto* Data = Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
-	if (!Data) return false;
-	for (const auto& Patch : Data->ExtrudedQuinticPatches)
-	{
-		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId ||
-			Patch.FeatureId != FeatureId || !Patch.bAuthorityEligible ||
-			!Patch.bQueryCollisionEnabled || !Patch.bCanonicalC2ByConstruction) continue;
-		// Unknown or unbounded query representations keep the strict face rule.
-		if (Patch.SectionPolyline.Num() < 3 || Patch.SectionPolyline.Num() > 32768 ||
-			!FMath::IsFinite(Patch.MinimumExtrusionCoordinate) ||
-			!FMath::IsFinite(Patch.MaximumExtrusionCoordinate) ||
-			Patch.MaximumExtrusionCoordinate <= Patch.MinimumExtrusionCoordinate ||
-			Patch.ExtrusionAxis.ContainsNaN() || Patch.ExtrusionAxis.IsNearlyZero()) continue;
-		int32 Previous = INDEX_NONE, Current = INDEX_NONE;
-		int32 PreviousMatches = 0, CurrentMatches = 0;
-		for (int32 Segment = 0; Segment + 1 < Patch.SectionPolyline.Num(); ++Segment)
-		{
-			const uint64 Id = Speed::Analytic::CombineStableIds(Patch.PrimitiveId, uint64(Segment + 1));
-			if (Id == PreviousPrimitiveId) { Previous = Segment; ++PreviousMatches; }
-			if (Id == CurrentPrimitiveId) { Current = Segment; ++CurrentMatches; }
-		}
-		if (PreviousMatches != 1 || CurrentMatches != 1 || FMath::Abs(Previous - Current) != 1) continue;
-		const int32 First = FMath::Min(Previous, Current);
-		const FVector3d& A = Patch.SectionPolyline[First];
-		const FVector3d& Shared = Patch.SectionPolyline[First + 1];
-		const FVector3d& B = Patch.SectionPolyline[First + 2];
-		if (A.ContainsNaN() || Shared.ContainsNaN() || B.ContainsNaN()) continue;
-		// Consecutive chords share the identical finite extrusion edge by construction.
-		// The authored C2 certificate excludes a crease; keep the existing local
-		// normal tolerance as a further guard on the implementation facets.
-		const FVector3d N0 = FVector3d::CrossProduct(Shared - A, Patch.ExtrusionAxis).GetSafeNormal();
-		const FVector3d N1 = FVector3d::CrossProduct(B - Shared, Patch.ExtrusionAxis).GetSafeNormal();
-		if (!N0.IsNearlyZero() && !N1.IsNearlyZero() && FVector3d::DotProduct(N0, N1) >= 0.995) return true;
-	}
-	return false;
-}
-
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactNormalVelTimeConstant(
 	TEXT("p.IAmSpeed.WheelContact.NormalVelTimeConstant"),
 	-1.0f,
@@ -1887,7 +1838,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		uint64 SurfaceSourceId = 0;
 		uint64 SurfaceId = 0;
 		uint64 SurfaceFeatureId = 0;
-		uint64 SurfacePrimitiveId = 0;
+		uint64 DiagnosticPrimitiveId = 0;
 	};
 	TArray<FWheelPatchConstraint, TInlineAllocator<4>> WheelConstraints;
 	for (USWheelSubBody* Wheel : GetWheelSubBodies())
@@ -1912,7 +1863,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		Constraint.SurfaceSourceId = Hit.SourceId;
 		Constraint.SurfaceId = Hit.SurfaceId;
 		Constraint.SurfaceFeatureId = Hit.FeatureId;
-		Constraint.SurfacePrimitiveId = Hit.PrimitiveId;
+		Constraint.DiagnosticPrimitiveId = Hit.PrimitiveId;
 	}
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
@@ -1949,7 +1900,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 				CachedHit.FeatureId == Contact.SurfaceFeatureId &&
 				CachedHit.ImpactPoint == Contact.SurfacePoint)
 			{
-				Constraint.SurfacePrimitiveId = CachedHit.PrimitiveId;
+				Constraint.DiagnosticPrimitiveId = CachedHit.PrimitiveId;
 			}
 		}
 	}
@@ -1990,15 +1941,9 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			Contact.SurfaceSourceId != 0 && Contact.SurfaceId != 0 &&
 			Contact.SurfaceFeatureId != 0 &&
 			(FMath::Abs(N.Z) <= 0.10f || N.Z <= -0.50f);
-		const bool bAdjacentCertifiedExtrudedChord = !bUseBoundedAnalyticIdentity && !bSameLocalFace && bHasLocalPatch &&
-			LocalPatchHit.Component == Contact.SurfaceComponent && bSameAnalyticSurface &&
-			CVarIAmSpeedAdjacentExtrudedRetention.GetValueOnAnyThread() != 0 &&
-			HaveAdjacentCertifiedExtrudedChords(Wheel->GetWorld(),
-				Contact.SurfaceSourceId, Contact.SurfaceId, Contact.SurfaceFeatureId,
-				Contact.SurfacePrimitiveId, LocalPatchHit.PrimitiveId);
 		const bool bSameSurfaceIdentity = bUseBoundedAnalyticIdentity
 			? bSameAnalyticSurface
-			: (bSameLocalFace || bAdjacentCertifiedExtrudedChord);
+			: bSameLocalFace;
 		const bool bSamePatch = bHasLocalPatch &&
 			LocalPatchHit.Component == Contact.SurfaceComponent &&
 			FVector::DotProduct(LocalPatchHit.ImpactNormal.GetSafeNormal(), N) >= 0.995f &&
@@ -2022,12 +1967,12 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 					static_cast<unsigned long long>(LocalPatchHit.SurfaceId),
 					static_cast<unsigned long long>(LocalPatchHit.FeatureId),
 					Contact.SurfaceFaceIndex, LocalPatchHit.FaceIndex,
-					static_cast<unsigned long long>(Contact.SurfacePrimitiveId),
+					static_cast<unsigned long long>(Contact.DiagnosticPrimitiveId),
 					static_cast<unsigned long long>(LocalPatchHit.PrimitiveId),
 					*Contact.SurfacePoint.ToString(), *LocalPatchHit.ImpactPoint.ToString(),
 					*N.ToString(), *LocalPatchHit.ImpactNormal.ToString());
 				LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Wheel->Idx(), TEXT("Expected"),
-					Contact.SurfaceSourceId, Contact.SurfaceId, Contact.SurfaceFeatureId, Contact.SurfacePrimitiveId);
+					Contact.SurfaceSourceId, Contact.SurfaceId, Contact.SurfaceFeatureId, Contact.DiagnosticPrimitiveId);
 				LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Wheel->Idx(), TEXT("Actual"),
 					LocalPatchHit.SourceId, LocalPatchHit.SurfaceId, LocalPatchHit.FeatureId, LocalPatchHit.PrimitiveId);
 			}
