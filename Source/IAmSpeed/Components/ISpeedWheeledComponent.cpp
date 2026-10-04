@@ -83,6 +83,54 @@ static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, cons
 #endif
 
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedCertifiedExtrudedProjection(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionCertifiedExtruded"), 1,
+	TEXT("Admit bounded missed-wheel projection on the same or adjacent certified C2 extruded chord; zero preserves the gravity-alignment baseline."), ECVF_Default);
+
+static bool HaveSameOrAdjacentCertifiedExtrudedChords(UWorld* World,
+	const uint64 SourceId, const uint64 SurfaceId, const uint64 FeatureId,
+	const uint64 PreviousPrimitiveId, const uint64 CurrentPrimitiveId)
+{
+	if (!World || PreviousPrimitiveId == 0 || CurrentPrimitiveId == 0 ||
+		!Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()) return false;
+	const USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>();
+	const auto* Data = Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
+	if (!Data) return false;
+	for (const auto& Patch : Data->ExtrudedQuinticPatches)
+	{
+		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId ||
+			Patch.FeatureId != FeatureId || !Patch.bAuthorityEligible ||
+			!Patch.bQueryCollisionEnabled || !Patch.bCanonicalC2ByConstruction) continue;
+		// Unknown or unbounded query representations keep the strict face rule.
+		if (Patch.SectionPolyline.Num() < 3 || Patch.SectionPolyline.Num() > 32768 ||
+			!FMath::IsFinite(Patch.MinimumExtrusionCoordinate) ||
+			!FMath::IsFinite(Patch.MaximumExtrusionCoordinate) ||
+			Patch.MaximumExtrusionCoordinate <= Patch.MinimumExtrusionCoordinate ||
+			Patch.ExtrusionAxis.ContainsNaN() || Patch.ExtrusionAxis.IsNearlyZero()) continue;
+		int32 Previous = INDEX_NONE, Current = INDEX_NONE;
+		int32 PreviousMatches = 0, CurrentMatches = 0;
+		for (int32 Segment = 0; Segment + 1 < Patch.SectionPolyline.Num(); ++Segment)
+		{
+			const uint64 Id = Speed::Analytic::CombineStableIds(Patch.PrimitiveId, uint64(Segment + 1));
+			if (Id == PreviousPrimitiveId) { Previous = Segment; ++PreviousMatches; }
+			if (Id == CurrentPrimitiveId) { Current = Segment; ++CurrentMatches; }
+		}
+		if (PreviousMatches != 1 || CurrentMatches != 1 || FMath::Abs(Previous - Current) > 1) continue;
+		const FVector3d& A0 = Patch.SectionPolyline[Previous];
+		const FVector3d& A1 = Patch.SectionPolyline[Previous + 1];
+		const FVector3d& B0 = Patch.SectionPolyline[Current];
+		const FVector3d& B1 = Patch.SectionPolyline[Current + 1];
+		if (A0.ContainsNaN() || A1.ContainsNaN() || B0.ContainsNaN() || B1.ContainsNaN()) continue;
+		// Same chord or consecutive chords of one certified C2 finite extrusion.
+		// The real local sweep below still owns contact, normal and reach evidence.
+		const FVector3d N0 = FVector3d::CrossProduct(A1 - A0, Patch.ExtrusionAxis).GetSafeNormal();
+		const FVector3d N1 = FVector3d::CrossProduct(B1 - B0, Patch.ExtrusionAxis).GetSafeNormal();
+		if (!N0.IsNearlyZero() && !N1.IsNearlyZero() && FVector3d::DotProduct(N0, N1) >= 0.995) return true;
+	}
+	return false;
+}
+
+
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactNormalVelTimeConstant(
 	TEXT("p.IAmSpeed.WheelContact.NormalVelTimeConstant"),
 	-1.0f,
@@ -1097,8 +1145,6 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			if (!Probe.bWasGrounded || Probe.bHasProbeHit || !PreviousSurface ||
 				PreviousSurface->Mobility != EComponentMobility::Static ||
 				PreviousNormal.IsNearlyZero() ||
-				(PreviousNormal.Z < MinGravityAlignment &&
-					!bNativeVariableNormalSupport && !bNativeStaticWallSupport) ||
 				Wheel->HasJumpUnilateralSupport())
 			{
 				continue;
@@ -1110,6 +1156,22 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			SHitResult LocalPatchHit;
 			const bool bHasLocalPatch = Wheel->SweepSuspensionAlongNormal(
 				PreviousNormal, MaxGap, delta, LocalPatchHit);
+			const bool bNeedsCertifiedSmoothSupport = PreviousNormal.Z < MinGravityAlignment &&
+				!bNativeVariableNormalSupport && !bNativeStaticWallSupport;
+			// A smooth gutter is not a gravity-aligned floor. Only an established,
+			// currently swept finite certified patch may bypass that admission gate.
+			// Unknown geometry, creases and remote chords retain the original rule.
+			if (bNeedsCertifiedSmoothSupport &&
+				(!bHasLocalPatch || CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() == 0 ||
+				 !HaveSameOrAdjacentCertifiedExtrudedChords(Wheel->GetWorld(),
+					Probe.PreviousHit.SourceId, Probe.PreviousHit.SurfaceId, Probe.PreviousHit.FeatureId,
+					Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId) ||
+				 LocalPatchHit.SourceId != Probe.PreviousHit.SourceId ||
+				 LocalPatchHit.SurfaceId != Probe.PreviousHit.SurfaceId ||
+				 LocalPatchHit.FeatureId != Probe.PreviousHit.FeatureId))
+			{
+				continue;
+			}
 			const FVector LocalNormal = LocalPatchHit.ImpactNormal.GetSafeNormal();
 			const FVector PatchTravel = LocalPatchHit.ImpactPoint - Probe.PreviousHit.ImpactPoint;
 			const float TangentialPatchTravel = FVector::VectorPlaneProject(
