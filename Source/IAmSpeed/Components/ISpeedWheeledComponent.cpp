@@ -1858,6 +1858,25 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			bSameSurfaceIdentity;
 		if (!bSamePatch)
 		{
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=LocalPatch HasPatch=%d SameComponent=%d NormalDot=%.6f AnalyticIdentity=%d SameAnalytic=%d SameFace=%d ExpectedSource=%016llx ExpectedSurface=%016llx ExpectedFeature=%016llx ActualSource=%016llx ActualSurface=%016llx ActualFeature=%016llx ExpectedFace=%d ActualFace=%d"),
+					NumFrame(), Wheel->Idx(), bHasLocalPatch ? 1 : 0,
+					LocalPatchHit.Component == Contact.SurfaceComponent ? 1 : 0,
+					FVector::DotProduct(LocalPatchHit.ImpactNormal.GetSafeNormal(), N),
+					bUseBoundedAnalyticIdentity ? 1 : 0, bSameAnalyticSurface ? 1 : 0,
+					bSameLocalFace ? 1 : 0,
+					static_cast<unsigned long long>(Contact.SurfaceSourceId),
+					static_cast<unsigned long long>(Contact.SurfaceId),
+					static_cast<unsigned long long>(Contact.SurfaceFeatureId),
+					static_cast<unsigned long long>(LocalPatchHit.SourceId),
+					static_cast<unsigned long long>(LocalPatchHit.SurfaceId),
+					static_cast<unsigned long long>(LocalPatchHit.FeatureId),
+					Contact.SurfaceFaceIndex, LocalPatchHit.FaceIndex);
+			}
+#endif
 			continue;
 		}
 
@@ -1880,6 +1899,14 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 
 		if (!SolveHitboxFeasibility(MaxPasses))
 		{
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=HitboxFeasibility GapCm=%.6f RadiusCm=%.6f"),
+					NumFrame(), Wheel->Idx(), Gap, SweepRadius);
+			}
+#endif
 			SetPhysCOMLocation(BeforeWheelCOM);
 			SetPhysRotation(BeforeWheelRotation);
 			UpdateSubBodiesKinematics();
@@ -1891,6 +1918,14 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			SweepEnd - LocalPatchHit.ImpactPoint, N) - SweepRadius;
 		if (FinalGap > MaxWheelGap + 0.01f)
 		{
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=FinalGap GapCm=%.6f FinalGapCm=%.6f MaxGapCm=%.6f RadiusCm=%.6f"),
+					NumFrame(), Wheel->Idx(), Gap, FinalGap, MaxWheelGap, SweepRadius);
+			}
+#endif
 			SetPhysCOMLocation(BeforeWheelCOM);
 			SetPhysRotation(BeforeWheelRotation);
 			UpdateSubBodiesKinematics();
