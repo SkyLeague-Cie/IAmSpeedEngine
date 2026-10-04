@@ -971,6 +971,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 		}
 
 		TArray<int32, TInlineAllocator<4>> EstablishedMisses;
+		bool bHasNativeWallProjection = false;
 		const float MaxGap = FMath::Max(
 			0.0f, CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread());
 		const float NormalDot = FMath::Clamp(
@@ -1091,6 +1092,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				if (ReachGap > 0.01f || (bNativeStaticWallSupport && ReachGap > 0.0f))
 				{
 					EstablishedMisses.Add(Index);
+					bHasNativeWallProjection |= bNativeStaticWallSupport;
 				}
 			}
 		}
@@ -1179,7 +1181,36 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const bool bWithinBounds =
 				(GetPhysCOM() - OriginalCOM).Size() <= MaxGap &&
 				RotationAngle <= MaxRotationRadians;
-			if (!bWithinBounds)
+			// A wall reach correction must not trade an existing real contact for
+			// the missed wheel. Validate the complete provisional pose with the
+			// same suspension queries before committing the transaction.
+			bool bPreservesExistingContacts = true;
+			if (bWithinBounds && bHasNativeWallProjection)
+			{
+				for (const FGroundProbe& Probe : Probes)
+				{
+					if (!Probe.bHasProbeHit)
+					{
+						continue;
+					}
+					SHitResult VerificationHit;
+					if (!Probe.Wheel->ProbeSuspensionOnGround(VerificationHit, delta))
+					{
+						bPreservesExistingContacts = false;
+#if !(UE_BUILD_SHIPPING)
+						if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+						{
+							UE_LOG(LogTemp, Log,
+								TEXT("[WheelSupportProjectionRejected] Frame=%d Wheel=%d Reason=ExistingContactLost"),
+								NumFrame(), Probe.Wheel->Idx());
+						}
+#endif
+						break;
+					}
+				}
+			}
+			const bool bProjectionAccepted = bWithinBounds && bPreservesExistingContacts;
+			if (!bProjectionAccepted)
 			{
 				SetPhysCOMLocation(OriginalCOM);
 				SetPhysRotation(OriginalRotation);
@@ -1191,7 +1222,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			{
 				UE_LOG(LogTemp, Log,
 					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f"),
-					NumFrame(), EstablishedMisses.Num(), bWithinBounds ? 1 : 0,
+					NumFrame(), EstablishedMisses.Num(), bProjectionAccepted ? 1 : 0,
 					(GetPhysCOM() - OriginalCOM).Size(),
 					FMath::RadiansToDegrees(RotationAngle));
 				for (const int32 Index : EstablishedMisses)
