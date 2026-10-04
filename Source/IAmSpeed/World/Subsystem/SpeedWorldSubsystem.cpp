@@ -119,6 +119,11 @@ namespace
 	}
 }
 
+bool USpeedWorldSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
+{
+    return Super::DoesSupportWorldType(WorldType) || WorldType == EWorldType::EditorPreview;
+}
+
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);

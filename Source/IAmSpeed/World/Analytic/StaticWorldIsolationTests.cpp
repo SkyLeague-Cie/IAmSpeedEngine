@@ -5,12 +5,35 @@
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/AutomationTest.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
 using namespace Speed::Analytic;
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FStaticWorldIsolationTest,
     "IAmSpeed.AnalyticWorld.PrivateFrameIsolation",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FStaticWorldIsolationTest::RunTest(const FString&)
 {
+    const auto* Policy=GetDefault<USpeedWorldSubsystem>();
+
+    for (const auto Type : {EWorldType::None,EWorldType::Game,EWorldType::Editor,EWorldType::PIE,
+        EWorldType::GamePreview,EWorldType::GameRPC,EWorldType::Inactive})
+        TestEqual(TEXT("existing world admission preserved"),Policy->DoesSupportWorldType(Type),Type==EWorldType::Game || Type==EWorldType::Editor || Type==EWorldType::PIE);
+    TestTrue(TEXT("private preview bridge supported"),Policy->DoesSupportWorldType(EWorldType::EditorPreview));
+    const auto Options=UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false)
+        .RequiresHitProxies(false).CreateNavigation(false).CreateAISystem(false)
+        .ShouldSimulatePhysics(false).SetTransactional(false);
+    UWorld* Preview=UWorld::CreateWorld(EWorldType::EditorPreview,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Options);
+    if (!TestNotNull(TEXT("ordinary preview world"),Preview)) return false;
+    ON_SCOPE_EXIT { Preview->DestroyWorld(false); Preview->RemoveFromRoot(); };
+    auto* Bridge=Preview->GetSubsystem<USpeedWorldSubsystem>();
+    if (!TestNotNull(TEXT("preview creates bridge"),Bridge)) return false;
+    TestTrue(TEXT("preview adapter registry remains empty"),Bridge->SimulationWorld.GetAdapters().IsEmpty());
+    TestFalse(TEXT("preview has no automatically started driver"),bool(TActorIterator<ASpeedSimulation>(Preview)));
+    TestFalse(TEXT("preview has not begun gameplay"),Preview->HasBegunPlay());
+    TestNull(TEXT("preview creates no physics scene"),Preview->GetPhysicsScene());
     FStaticWorldQueryAudit::FScopedFrameIsolation PreserveCaller;
 #if !UE_BUILD_SHIPPING
     Speed::ActorDiagnostics::bEnabled=true;
