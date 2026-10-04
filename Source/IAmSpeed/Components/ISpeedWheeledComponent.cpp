@@ -1177,6 +1177,21 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					PreviousNormal.Z, Wheel->IsContactVelocityLocked() ? 1 : 0,
 					Wheel->IsJumping() ? 1 : 0,
 					Wheel->HasJumpUnilateralSupport() ? 1 : 0);
+				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 2)
+				{
+					UE_LOG(LogTemp, Log,
+						TEXT("[WheelSupportProjectionIdentity] Frame=%d Wheel=%d Source=%016llx Surface=%016llx Feature=%016llx Primitive=%016llx Group=%016llx Component=%s Hit=%d HitFrame=%u Point=(%.17g,%.17g,%.17g) Normal=(%.17g,%.17g,%.17g)"),
+						NumFrame(), Index,
+						static_cast<unsigned long long>(Probe.PreviousHit.SourceId),
+						static_cast<unsigned long long>(Probe.PreviousHit.SurfaceId),
+						static_cast<unsigned long long>(Probe.PreviousHit.FeatureId),
+						static_cast<unsigned long long>(Probe.PreviousHit.PrimitiveId),
+						static_cast<unsigned long long>(Probe.PreviousHit.CanonicalGroupId),
+						PreviousSurface ? *PreviousSurface->GetPathName() : TEXT("None"),
+						Probe.PreviousHit.bHit ? 1 : 0, Probe.PreviousHit.FrameTag,
+						Probe.PreviousHit.ImpactPoint.X, Probe.PreviousHit.ImpactPoint.Y, Probe.PreviousHit.ImpactPoint.Z,
+						PreviousNormal.X, PreviousNormal.Y, PreviousNormal.Z);
+				}
 			}
 #endif
 			if (!Probe.bWasGrounded || Probe.bHasProbeHit || !PreviousSurface ||
