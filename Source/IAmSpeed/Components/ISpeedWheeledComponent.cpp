@@ -1759,6 +1759,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		uint64 SurfaceSourceId = 0;
 		uint64 SurfaceId = 0;
 		uint64 SurfaceFeatureId = 0;
+		uint64 DiagnosticPrimitiveId = 0;
 	};
 	TArray<FWheelPatchConstraint, TInlineAllocator<4>> WheelConstraints;
 	for (USWheelSubBody* Wheel : GetWheelSubBodies())
@@ -1783,6 +1784,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		Constraint.SurfaceSourceId = Hit.SourceId;
 		Constraint.SurfaceId = Hit.SurfaceId;
 		Constraint.SurfaceFeatureId = Hit.FeatureId;
+		Constraint.DiagnosticPrimitiveId = Hit.PrimitiveId;
 	}
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
@@ -1810,6 +1812,17 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			Constraint.SurfaceSourceId = Contact.SurfaceSourceId;
 			Constraint.SurfaceId = Contact.SurfaceId;
 			Constraint.SurfaceFeatureId = Contact.SurfaceFeatureId;
+			// Only report the cached primitive if it identifies this pending contact.
+			const SHitResult& CachedHit = Contact.Wheel->GetHit();
+			if (CachedHit.Component == Contact.SurfaceComponent &&
+				CachedHit.FaceIndex == Contact.SurfaceFaceIndex &&
+				CachedHit.SourceId == Contact.SurfaceSourceId &&
+				CachedHit.SurfaceId == Contact.SurfaceId &&
+				CachedHit.FeatureId == Contact.SurfaceFeatureId &&
+				CachedHit.ImpactPoint == Contact.SurfacePoint)
+			{
+				Constraint.DiagnosticPrimitiveId = CachedHit.PrimitiveId;
+			}
 		}
 	}
 	WheelConstraints.Sort([](const FWheelPatchConstraint& A, const FWheelPatchConstraint& B)
@@ -1862,7 +1875,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
 			{
 				UE_LOG(LogTemp, Log,
-					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=LocalPatch HasPatch=%d SameComponent=%d NormalDot=%.6f AnalyticIdentity=%d SameAnalytic=%d SameFace=%d ExpectedSource=%016llx ExpectedSurface=%016llx ExpectedFeature=%016llx ActualSource=%016llx ActualSurface=%016llx ActualFeature=%016llx ExpectedFace=%d ActualFace=%d"),
+					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=LocalPatch HasPatch=%d SameComponent=%d NormalDot=%.6f AnalyticIdentity=%d SameAnalytic=%d SameFace=%d ExpectedSource=%016llx ExpectedSurface=%016llx ExpectedFeature=%016llx ActualSource=%016llx ActualSurface=%016llx ActualFeature=%016llx ExpectedFace=%d ActualFace=%d ExpectedPrimitive=%016llx ActualPrimitive=%016llx ExpectedPoint=%s ActualPoint=%s ExpectedNormal=%s ActualNormal=%s"),
 					NumFrame(), Wheel->Idx(), bHasLocalPatch ? 1 : 0,
 					LocalPatchHit.Component == Contact.SurfaceComponent ? 1 : 0,
 					FVector::DotProduct(LocalPatchHit.ImpactNormal.GetSafeNormal(), N),
@@ -1874,7 +1887,11 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 					static_cast<unsigned long long>(LocalPatchHit.SourceId),
 					static_cast<unsigned long long>(LocalPatchHit.SurfaceId),
 					static_cast<unsigned long long>(LocalPatchHit.FeatureId),
-					Contact.SurfaceFaceIndex, LocalPatchHit.FaceIndex);
+					Contact.SurfaceFaceIndex, LocalPatchHit.FaceIndex,
+					static_cast<unsigned long long>(Contact.DiagnosticPrimitiveId),
+					static_cast<unsigned long long>(LocalPatchHit.PrimitiveId),
+					*Contact.SurfacePoint.ToString(), *LocalPatchHit.ImpactPoint.ToString(),
+					*N.ToString(), *LocalPatchHit.ImpactNormal.ToString());
 			}
 #endif
 			continue;
