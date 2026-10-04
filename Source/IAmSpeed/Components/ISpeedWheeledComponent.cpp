@@ -103,7 +103,7 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionNormalDot(
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionMinGravityAlignment(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionMinGravityAlignment"),
 	0.9f,
-	TEXT("Minimum support-normal alignment with world up. Near-vertical wall and gutter retention remains on the established sweep path."),
+	TEXT("Minimum support-normal alignment with world up. Established analytic vertical walls use bounded same-patch retention; gutters retain this alignment gate."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionPatchTravelSlack(
@@ -992,6 +992,16 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				Probe.PreviousHit.SurfaceId != 0 &&
 				Probe.PreviousHit.CanonicalGroupId != 0 &&
 				PreviousNormal.Z <= -0.995f;
+			// A wall contact can exhaust its ordinary suspension sweep while the
+			// same authored patch remains within the bounded correction budget.
+			// Admit only an established analytic wall identity, then reacquire it
+			// locally below; a shared stadium component alone is insufficient.
+			const bool bNativeStaticWallSupport =
+				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
+				Probe.PreviousHit.SourceId != 0 &&
+				Probe.PreviousHit.SurfaceId != 0 &&
+				Probe.PreviousHit.FeatureId != 0 &&
+				FMath::Abs(PreviousNormal.Z) <= 0.10f;
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0 &&
 				Probe.bWasGrounded && !Probe.bHasProbeHit)
@@ -1009,7 +1019,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				PreviousSurface->Mobility != EComponentMobility::Static ||
 				PreviousNormal.IsNearlyZero() ||
 				(PreviousNormal.Z < MinGravityAlignment &&
-					!bNativeVariableNormalSupport) ||
+					!bNativeVariableNormalSupport && !bNativeStaticWallSupport) ||
 				Wheel->HasJumpUnilateralSupport())
 			{
 				continue;
@@ -1028,7 +1038,11 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const float PredictedPatchTravel =
 				GetPhysVelocityAtPoint(Probe.PreviousHit.ImpactPoint).Size() * delta;
 			const float MaxPatchTravel = PredictedPatchTravel + PatchTravelSlack;
-			const bool bSameLocalPatch = bHasLocalPatch &&
+			const bool bSameWallIdentity = !bNativeStaticWallSupport ||
+				(LocalPatchHit.SourceId == Probe.PreviousHit.SourceId &&
+					LocalPatchHit.SurfaceId == Probe.PreviousHit.SurfaceId &&
+					LocalPatchHit.FeatureId == Probe.PreviousHit.FeatureId);
+			const bool bSameLocalPatch = bHasLocalPatch && bSameWallIdentity &&
 				LocalPatchHit.Component.Get() == PreviousSurface &&
 				!LocalNormal.IsNearlyZero() &&
 				FVector::DotProduct(LocalNormal, PreviousNormal) >= NormalDot &&
