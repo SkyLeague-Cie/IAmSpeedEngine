@@ -1086,9 +1086,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			{
 				EstablishedSupports.Emplace(Wheel, LocalPatchHit);
 				Probes[Index].PreviousHit = LocalPatchHit;
-				// A real wall sweep miss remains a miss even below one tenth
-				// of a millimeter. Close its positive gap before the real reprobe.
-				if (ReachGap > 0.01f || (bNativeStaticWallSupport && ReachGap > 0.0f))
+				if (ReachGap > 0.01f)
 				{
 					EstablishedMisses.Add(Index);
 				}
