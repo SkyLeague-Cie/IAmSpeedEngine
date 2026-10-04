@@ -85,49 +85,86 @@ static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, cons
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedCertifiedExtrudedProjection(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionCertifiedExtruded"), 1,
-	TEXT("Admit bounded missed-wheel projection on the same or adjacent certified C2 extruded chord; zero preserves the gravity-alignment baseline."), ECVF_Default);
+	TEXT("Admit bounded missed-wheel projection on same or adjacent certified C2 extruded chords, including exact duplicate profiles inside their common finite domain; zero preserves the gravity-alignment baseline."), ECVF_Default);
 
-static bool HaveSameOrAdjacentCertifiedExtrudedChords(UWorld* World,
+static bool HaveCertifiedExtrudedSupport(UWorld* World,
 	const uint64 SourceId, const uint64 SurfaceId, const uint64 FeatureId,
-	const uint64 PreviousPrimitiveId, const uint64 CurrentPrimitiveId)
+	const uint64 PreviousPrimitiveId, const uint64 CurrentPrimitiveId,
+	const FVector& PreviousPoint, const FVector& CurrentPoint, const float Radius)
 {
 	if (!World || PreviousPrimitiveId == 0 || CurrentPrimitiveId == 0 ||
 		!Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()) return false;
 	const USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>();
 	const auto* Data = Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
 	if (!Data) return false;
+	const Speed::Analytic::FExtrudedQuinticPatch* PreviousPatch = nullptr;
+	const Speed::Analytic::FExtrudedQuinticPatch* CurrentPatch = nullptr;
+	int32 Previous = INDEX_NONE, Current = INDEX_NONE;
+	int32 PreviousMatches = 0, CurrentMatches = 0, Examined = 0;
 	for (const auto& Patch : Data->ExtrudedQuinticPatches)
 	{
-		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId ||
-			Patch.FeatureId != FeatureId || !Patch.bAuthorityEligible ||
-			!Patch.bQueryCollisionEnabled || !Patch.bCanonicalC2ByConstruction) continue;
-		// Unknown or unbounded query representations keep the strict face rule.
-		if (Patch.SectionPolyline.Num() < 3 || Patch.SectionPolyline.Num() > 32768 ||
-			!FMath::IsFinite(Patch.MinimumExtrusionCoordinate) ||
-			!FMath::IsFinite(Patch.MaximumExtrusionCoordinate) ||
-			Patch.MaximumExtrusionCoordinate <= Patch.MinimumExtrusionCoordinate ||
-			Patch.ExtrusionAxis.ContainsNaN() || Patch.ExtrusionAxis.IsNearlyZero()) continue;
-		int32 Previous = INDEX_NONE, Current = INDEX_NONE;
-		int32 PreviousMatches = 0, CurrentMatches = 0;
+		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId || Patch.FeatureId != FeatureId) continue;
+		if (Patch.SectionPolyline.Num() < 2 || Patch.SectionPolyline.Num() > 32768) return false;
 		for (int32 Segment = 0; Segment + 1 < Patch.SectionPolyline.Num(); ++Segment)
 		{
+			if (++Examined > 32768) return false;
 			const uint64 Id = Speed::Analytic::CombineStableIds(Patch.PrimitiveId, uint64(Segment + 1));
-			if (Id == PreviousPrimitiveId) { Previous = Segment; ++PreviousMatches; }
-			if (Id == CurrentPrimitiveId) { Current = Segment; ++CurrentMatches; }
+			if (Id == PreviousPrimitiveId) { PreviousPatch = &Patch; Previous = Segment; ++PreviousMatches; }
+			if (Id == CurrentPrimitiveId) { CurrentPatch = &Patch; Current = Segment; ++CurrentMatches; }
 		}
-		if (PreviousMatches != 1 || CurrentMatches != 1 || FMath::Abs(Previous - Current) > 1) continue;
-		const FVector3d& A0 = Patch.SectionPolyline[Previous];
-		const FVector3d& A1 = Patch.SectionPolyline[Previous + 1];
-		const FVector3d& B0 = Patch.SectionPolyline[Current];
-		const FVector3d& B1 = Patch.SectionPolyline[Current + 1];
-		if (A0.ContainsNaN() || A1.ContainsNaN() || B0.ContainsNaN() || B1.ContainsNaN()) continue;
-		// Same chord or consecutive chords of one certified C2 finite extrusion.
-		// The real local sweep below still owns contact, normal and reach evidence.
-		const FVector3d N0 = FVector3d::CrossProduct(A1 - A0, Patch.ExtrusionAxis).GetSafeNormal();
-		const FVector3d N1 = FVector3d::CrossProduct(B1 - B0, Patch.ExtrusionAxis).GetSafeNormal();
-		if (!N0.IsNearlyZero() && !N1.IsNearlyZero() && FVector3d::DotProduct(N0, N1) >= 0.995) return true;
 	}
-	return false;
+	if (PreviousMatches != 1 || CurrentMatches != 1 || FMath::Abs(Previous - Current) > 1) return false;
+	if (!PreviousPatch->bAuthorityEligible || !CurrentPatch->bAuthorityEligible ||
+		!PreviousPatch->bQueryCollisionEnabled || !CurrentPatch->bQueryCollisionEnabled ||
+		!PreviousPatch->bCanonicalC2ByConstruction || !CurrentPatch->bCanonicalC2ByConstruction ||
+		!PreviousPatch->IsValid() || !CurrentPatch->IsValid()) return false;
+	const auto SamePoint = [](const FVector3d& A, const FVector3d& B)
+	{
+		return !A.ContainsNaN() && !B.ContainsNaN() && A.X == B.X && A.Y == B.Y && A.Z == B.Z;
+	};
+	if (PreviousPatch != CurrentPatch)
+	{
+		// Two admitted records may parameterize the same physical polynomial on
+		// overlapping finite extrusion domains. A shared group alone is insufficient.
+		if (PreviousPatch->CanonicalGroupId == 0 ||
+			PreviousPatch->CanonicalGroupId != CurrentPatch->CanonicalGroupId ||
+			PreviousPatch->MaterialId != CurrentPatch->MaterialId ||
+			PreviousPatch->ObjectType != CurrentPatch->ObjectType ||
+			PreviousPatch->BlockingChannels != CurrentPatch->BlockingChannels ||
+			PreviousPatch->CanonicalSymmetryAxisMask != CurrentPatch->CanonicalSymmetryAxisMask ||
+			PreviousPatch->AdditionalResidualAgreementAllowanceCm != CurrentPatch->AdditionalResidualAgreementAllowanceCm ||
+			!SamePoint(PreviousPatch->ExtrusionAxis, CurrentPatch->ExtrusionAxis) ||
+			PreviousPatch->SectionPolyline.Num() != CurrentPatch->SectionPolyline.Num() ||
+			PreviousPatch->SectionParameters.Num() != CurrentPatch->SectionParameters.Num() ||
+			PreviousPatch->MaximumChordErrorCm != CurrentPatch->MaximumChordErrorCm) return false;
+		for (int32 I = 0; I < 6; ++I)
+			if (!SamePoint(PreviousPatch->SectionControlPoints[I], CurrentPatch->SectionControlPoints[I])) return false;
+		for (int32 I = 0; I < 2; ++I)
+			if (!SamePoint(PreviousPatch->InteriorCorrectionControlPoints[I], CurrentPatch->InteriorCorrectionControlPoints[I])) return false;
+		for (int32 I = 0; I < PreviousPatch->SectionPolyline.Num(); ++I)
+			if (!SamePoint(PreviousPatch->SectionPolyline[I], CurrentPatch->SectionPolyline[I])) return false;
+		for (int32 I = 0; I < PreviousPatch->SectionParameters.Num(); ++I)
+			if (!FMath::IsFinite(PreviousPatch->SectionParameters[I]) ||
+				PreviousPatch->SectionParameters[I] != CurrentPatch->SectionParameters[I]) return false;
+		if (PreviousPoint.ContainsNaN() || CurrentPoint.ContainsNaN() || !FMath::IsFinite(Radius) || Radius < 0.0f) return false;
+		const double CommonMinimum = FMath::Max(PreviousPatch->MinimumExtrusionCoordinate, CurrentPatch->MinimumExtrusionCoordinate);
+		const double CommonMaximum = FMath::Min(PreviousPatch->MaximumExtrusionCoordinate, CurrentPatch->MaximumExtrusionCoordinate);
+		const double PreviousCoordinate = FVector3d::DotProduct(PreviousPoint, PreviousPatch->ExtrusionAxis);
+		const double CurrentCoordinate = FVector3d::DotProduct(CurrentPoint, CurrentPatch->ExtrusionAxis);
+		// The radius-expanded segment between the two real contact points must
+		// remain inside the common domain; no tolerance enlarges either boundary.
+		if (CommonMaximum <= CommonMinimum ||
+			FMath::Min(PreviousCoordinate, CurrentCoordinate) - Radius < CommonMinimum ||
+			FMath::Max(PreviousCoordinate, CurrentCoordinate) + Radius > CommonMaximum) return false;
+	}
+	const FVector3d& A0 = PreviousPatch->SectionPolyline[Previous];
+	const FVector3d& A1 = PreviousPatch->SectionPolyline[Previous + 1];
+	const FVector3d& B0 = CurrentPatch->SectionPolyline[Current];
+	const FVector3d& B1 = CurrentPatch->SectionPolyline[Current + 1];
+	if (A0.ContainsNaN() || A1.ContainsNaN() || B0.ContainsNaN() || B1.ContainsNaN()) return false;
+	const FVector3d N0 = FVector3d::CrossProduct(A1 - A0, PreviousPatch->ExtrusionAxis).GetSafeNormal();
+	const FVector3d N1 = FVector3d::CrossProduct(B1 - B0, CurrentPatch->ExtrusionAxis).GetSafeNormal();
+	return !N0.IsNearlyZero() && !N1.IsNearlyZero() && FVector3d::DotProduct(N0, N1) >= 0.995;
 }
 
 
@@ -1163,9 +1200,11 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			// Unknown geometry, creases and remote chords retain the original rule.
 			if (bNeedsCertifiedSmoothSupport &&
 				(!bHasLocalPatch || CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() == 0 ||
-				 !HaveSameOrAdjacentCertifiedExtrudedChords(Wheel->GetWorld(),
+				 !HaveCertifiedExtrudedSupport(Wheel->GetWorld(),
 					Probe.PreviousHit.SourceId, Probe.PreviousHit.SurfaceId, Probe.PreviousHit.FeatureId,
-					Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId) ||
+					Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId,
+					Probe.PreviousHit.ImpactPoint, LocalPatchHit.ImpactPoint,
+					Wheel->GetCollisionShape().GetSphereRadius()) ||
 				 LocalPatchHit.SourceId != Probe.PreviousHit.SourceId ||
 				 LocalPatchHit.SurfaceId != Probe.PreviousHit.SurfaceId ||
 				 LocalPatchHit.FeatureId != Probe.PreviousHit.FeatureId))
