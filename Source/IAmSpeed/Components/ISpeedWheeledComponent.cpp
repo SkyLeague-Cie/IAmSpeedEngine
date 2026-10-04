@@ -1893,8 +1893,83 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		{
 			const float ReachSkin = FMath::Max(0.0f,
 				CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
-			ApplyConstraint(-N, SweepEnd, Gap + ReachSkin,
-				WheelConstraintRotationLength);
+			bool bAppliedWallTangentProjection = false;
+			// Preserve the active hitbox plane while closing an established wheel
+			// reach gap. Independent inward/outward translations can undo each
+			// other; remove the hitbox-normal degree of freedom from this wheel
+			// correction using the same positional/angular mobility as above.
+			if (!bStrictHitboxGate && bSameAnalyticSurface &&
+				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
+				FMath::Abs(N.Z) <= 0.10f && HitboxConstraints.Num() == 1 &&
+				Wheel->IsContactVelocityLocked() && !Wheel->IsJumping() &&
+				!Wheel->HasJumpUnilateralSupport())
+			{
+				const FHitboxPlaneConstraint& HitboxContact = HitboxConstraints[0];
+				const FVector HitboxNormal = HitboxContact.Normal.GetSafeNormal();
+				if (HitboxContact.Component == Contact.SurfaceComponent &&
+					FVector::DotProduct(HitboxNormal, N) >= 0.995f)
+				{
+					const Speed::FKinematicState& HitboxState = PrincipalHitbox->GetKinematicState();
+					const FVector HitboxPoint = UBoxSubBody::ComputeBoxSupportPointWS(
+						HitboxState.Location, HitboxState.Rotation,
+						PrincipalHitbox->GetBoxExtent(), -HitboxNormal);
+					const FVector WheelDirection = -N;
+					const FVector WheelAngular = FVector::CrossProduct(
+						SweepEnd - GetPhysCOM(), WheelDirection);
+					const FVector HitboxAngular = FVector::CrossProduct(
+						HitboxPoint - GetPhysCOM(), HitboxNormal);
+					const float RotationLengthSquared =
+						WheelConstraintRotationLength * WheelConstraintRotationLength;
+					const float HitboxMobility = 1.0f +
+						HitboxAngular.SizeSquared() / RotationLengthSquared;
+					const float Coupling = (FVector::DotProduct(HitboxNormal, WheelDirection) +
+						FVector::DotProduct(HitboxAngular, WheelAngular) / RotationLengthSquared)
+						/ HitboxMobility;
+					const FVector TranslationMobility = WheelDirection - Coupling * HitboxNormal;
+					const FVector AngularMobility =
+						(WheelAngular - Coupling * HitboxAngular) / RotationLengthSquared;
+					const float WheelMobility = FVector::DotProduct(WheelDirection, TranslationMobility) +
+						FVector::DotProduct(WheelAngular, AngularMobility);
+					if (WheelMobility > SMALL_NUMBER)
+					{
+						const float Lambda = (Gap + ReachSkin) / WheelMobility;
+						const FVector Translation = Lambda * TranslationMobility;
+						const FVector DeltaAngular = Lambda * AngularMobility;
+						const float DeltaAngle = DeltaAngular.Size();
+						const float MaxTranslation = FMath::Max(0.0f,
+							CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread());
+						const float MaxRotation = FMath::DegreesToRadians(FMath::Max(0.0f,
+							CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread()));
+						if (!Translation.ContainsNaN() && !DeltaAngular.ContainsNaN() &&
+							Translation.Size() <= MaxTranslation && DeltaAngle <= MaxRotation)
+						{
+							SetPhysCOMLocation(GetPhysCOM() + Translation);
+							if (DeltaAngle > SMALL_NUMBER)
+							{
+								const FQuat WorldDelta(DeltaAngular / DeltaAngle, DeltaAngle);
+								SetPhysRotation((WorldDelta * GetPhysRotation()).GetNormalized());
+							}
+							UpdateSubBodiesKinematics();
+							bAppliedWallTangentProjection = true;
+						}
+					}
+				}
+			}
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseWallTangent] Frame=%d Wheel=%d Applied=%d GapCm=%.6f HitboxConstraints=%d Locked=%d Jump=%d Unilateral=%d"),
+					NumFrame(), Wheel->Idx(), bAppliedWallTangentProjection ? 1 : 0,
+					Gap, HitboxConstraints.Num(), Wheel->IsContactVelocityLocked() ? 1 : 0,
+					Wheel->IsJumping() ? 1 : 0, Wheel->HasJumpUnilateralSupport() ? 1 : 0);
+			}
+#endif
+			if (!bAppliedWallTangentProjection)
+			{
+				ApplyConstraint(-N, SweepEnd, Gap + ReachSkin,
+					WheelConstraintRotationLength);
+			}
 		}
 
 		if (!SolveHitboxFeasibility(MaxPasses))
