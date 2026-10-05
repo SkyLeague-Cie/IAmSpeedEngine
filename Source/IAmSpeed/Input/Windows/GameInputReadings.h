@@ -37,9 +37,17 @@ struct FDeviceState
 using FGameInputMapper = std::function<bool(const FDeviceState&, FActionValues&)>;
 enum class EReadBatchStatus { NoChange, Updated, Resynchronize, Error };
 struct FReadBatchResult { EReadBatchStatus Status; HRESULT Error; };
+// Diagnostic only: never changes admission, resynchronization or tape contents.
+enum class ERawReadReject : std::uint8_t
+{
+    None, HistoryApiError, HistoryNullReading, HistoryCapacity, QueueOverflow,
+    NullReading, IdentityQuery, TimestampRegression, StateCapacity, KeyboardDecode, GamepadDecode
+};
 struct FRawDeviceReadBatch
 {
 	FReadBatchResult Result{EReadBatchStatus::NoChange, S_OK};
+	ERawReadReject Reject = ERawReadReject::None;
+	HRESULT DiagnosticError = S_OK;
 	std::array<FDeviceState, 64> States{};
 	std::size_t Count = 0;
 	bool FreshBaseline = false;

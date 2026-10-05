@@ -16,6 +16,8 @@ public:
 	void* ReadingContext = nullptr;
 	std::function<void()> BeforeRegistration;
 	std::function<void()> AfterRegistration;
+	std::function<void()> DuringCurrent;
+	bool ForceOldHistory = false;
 	bool FailReadingUnregister = false;
 	std::mutex ReadingGate;
 	std::condition_variable ReadingFinished;
@@ -43,7 +45,9 @@ public:
 	}
 	HRESULT STDMETHODCALLTYPE GetCurrentReading(GameInputKind, IGameInputDevice*, IGameInputReading** Out) override
 	{
-		++CurrentCalls; std::lock_guard<std::mutex> Lock(ReadingGate);
+		++CurrentCalls;
+		if (DuringCurrent) { auto Hook = std::move(DuringCurrent); DuringCurrent = {}; Hook(); }
+		std::lock_guard<std::mutex> Lock(ReadingGate);
 		*Out = History.empty() ? nullptr : History.back().Get();
 		if (*Out) { (*Out)->AddRef(); return S_OK; }
 		return GAMEINPUT_E_READING_NOT_FOUND;
@@ -51,6 +55,7 @@ public:
 	HRESULT STDMETHODCALLTYPE GetNextReading(IGameInputReading* Previous, GameInputKind, IGameInputDevice*, IGameInputReading** Out) override
 	{
 		++NextCalls; std::lock_guard<std::mutex> Lock(ReadingGate); *Out = nullptr;
+		if (ForceOldHistory) return GAMEINPUT_E_REFERENCE_READING_TOO_OLD;
 		for (std::size_t I = 0; I < History.size(); ++I)
 			if (History[I].Get() == Previous)
 			{
@@ -90,9 +95,9 @@ int main()
 	Api->BeforeRegistration = [&] { Api->Push(true, 101); Api->Push(false, 101); };
 	auto First = Cursor.PollRaw(*Api.Get(), Api->Pad.Get(), GameInputKindGamepad);
 	Check(First.Result.Status == Speed::Input::Windows::EReadBatchStatus::Updated
-		&& First.FreshBaseline && First.Count == 3
-		&& !First.States[0].GamepadButtons && First.States[1].GamepadButtons
-		&& !First.States[2].GamepadButtons, "registration gap bridged; equal timestamps remain ordered");
+		&& First.FreshBaseline && First.Count == 1
+		&& !First.States[0].GamepadButtons && Api->NextCalls == 0,
+		"initial snapshot admits state, not pre-subscription history");
 	Api->HistoryLimit = 2;
 	Api->Push(true, 102); Api->Push(false, 102); Api->Push(true, 103);
 	auto Second = Cursor.PollRaw(*Api.Get(), Api->Pad.Get(), GameInputKindGamepad);
@@ -107,17 +112,38 @@ int main()
 	for (unsigned I = 0; I < 257; ++I) Api->Push((I & 1) != 0, 105 + I);
 	auto Overflow = Cursor.PollRaw(*Api.Get(), Api->Pad.Get(), GameInputKindGamepad);
 	Check(Overflow.Result.Status == Speed::Input::Windows::EReadBatchStatus::Resynchronize
-		&& Overflow.Count == 0, "bounded queue overflow is an explicit gap");
+		&& Overflow.Count == 0 && Overflow.Reject == Speed::Input::Windows::ERawReadReject::QueueOverflow, "bounded queue overflow is an explicit gap with exact reason");
 	Check(Cursor.Stop(), "overflow teardown is idempotent");
+    ComPtr<CallbackApi> Capacity; Capacity.Attach(new CallbackApi);
+    Capacity->Push(false, 1);
+    Capacity->AfterRegistration = [&] { for(unsigned I=0; I<65; ++I) Capacity->Push((I&1)!=0, 2+I); };
+    FGameInputCallbackReadCursor CapacityCursor;
+    const auto Full = CapacityCursor.PollRaw(*Capacity.Get(), Capacity->Pad.Get(), GameInputKindGamepad);
+    const auto Remainder = CapacityCursor.PollRaw(*Capacity.Get(), Capacity->Pad.Get(), GameInputKindGamepad);
+    Check(Full.Result.Status == Speed::Input::Windows::EReadBatchStatus::Updated
+        && Full.Count == 64 && Full.FreshBaseline && Remainder.Count == 1
+        && !Remainder.FreshBaseline && Remainder.States[0].TimestampMicroseconds == 66,
+        "initial callback queue is bounded per batch without dropping its remainder");
+    Check(CapacityCursor.Stop(), "capacity diagnostic teardown");
+    ComPtr<CallbackApi> InvalidPad; InvalidPad.Attach(new CallbackApi);
+    InvalidPad->Push(false, 1000); InvalidPad->History.back()->ValidPad = false;
+    FGameInputCallbackReadCursor DecodeCursor;
+    const auto Decode = DecodeCursor.PollRaw(*InvalidPad.Get(), InvalidPad->Pad.Get(), GameInputKindGamepad);
+    Check(Decode.Result.Status == Speed::Input::Windows::EReadBatchStatus::Resynchronize
+        && Decode.Count == 0 && Decode.Reject == Speed::Input::Windows::ERawReadReject::GamepadDecode,
+        "failed native gamepad conversion has distinct diagnostic and no partial state");
+    Check(DecodeCursor.Stop(), "decode diagnostic teardown");
+
+
 	ComPtr<CallbackApi> Duplicated; Duplicated.Attach(new CallbackApi);
 	Duplicated->Push(false, 400);
 	Duplicated->AfterRegistration = [&] { Duplicated->Push(true, 401); Duplicated->Push(false, 401); };
 	FGameInputCallbackReadCursor DuplicateCursor;
 	const auto Bridged = DuplicateCursor.PollRaw(*Duplicated.Get(), Duplicated->Pad.Get(), GameInputKindGamepad);
 	const auto Duplicates = DuplicateCursor.PollRaw(*Duplicated.Get(), Duplicated->Pad.Get(), GameInputKindGamepad);
-	Check(Bridged.Count == 3 && Duplicates.Count == 0
+	Check(Bridged.Count == 2 && Duplicates.Count == 0
 		&& Duplicates.Result.Status == Speed::Input::Windows::EReadBatchStatus::NoChange,
-		"bridge and callback expose each COM reading only once");
+		"earliest callback baseline retains equal timestamp order without double consumption");
 	std::thread Racing([&] { for (unsigned I = 0; I < 32; ++I) Duplicated->Push((I & 1) != 0, 402 + I); });
 	Check(DuplicateCursor.Stop(), "unregister waits for concurrent callback delivery");
 	Racing.join();
@@ -213,5 +239,54 @@ int main()
 	Check(!FailureSource->Shutdown(), "failed unregister retains selected-source context");
 	FailureApi->FailReadingUnregister = false;
 	Check(FailureSource->Shutdown(), "selected-source close retry fences callback");
+
+    ComPtr<CallbackApi> Idle; Idle.Attach(new CallbackApi);
+    Idle->Push(false, 10000); Idle->ForceOldHistory = true;
+    FGameInputCallbackReadCursor IdleCursor;
+    const auto IdleFirst = IdleCursor.PollRaw(*Idle.Get(), Idle->Pad.Get(), GameInputKindGamepad);
+    Check(IdleFirst.FreshBaseline && IdleFirst.Count == 1 && Idle->NextCalls == 0,
+        "valid idle current outside history initializes without treating history error as success");
+    Idle->DuringCurrent = {}; // Initialization has completed; subsequent reads use callbacks.
+    Idle->Push(true, 10001); Idle->Push(false, 10001);
+    const auto Tap = IdleCursor.PollRaw(*Idle.Get(), Idle->Pad.Get(), GameInputKindGamepad);
+    Check(Tap.Count == 2 && Tap.States[0].GamepadButtons && !Tap.States[1].GamepadButtons
+        && Idle->NextCalls == 0, "post-admission short tap preserved despite unavailable history");
+    auto RepeatIdentity = Idle->History.back();
+    Idle->ReadingCallback(2, Idle->ReadingContext, RepeatIdentity.Get());
+    Check(IdleCursor.PollRaw(*Idle.Get(), Idle->Pad.Get(), GameInputKindGamepad).Count == 0,
+        "same callback COM identity replay produces no duplicate state");
+    Idle->Push(true, 9999);
+    const auto Older = IdleCursor.PollRaw(*Idle.Get(), Idle->Pad.Get(), GameInputKindGamepad);
+    Check(Older.Result.Status == Speed::Input::Windows::EReadBatchStatus::Resynchronize
+        && Older.Count == 0 && Older.Reject == Speed::Input::Windows::ERawReadReject::TimestampRegression,
+        "distinct delayed older callback remains fail closed and never becomes an idle waiver");
+    Check(IdleCursor.Stop(), "idle recovery teardown fenced");
+    ComPtr<CallbackApi> During; During.Attach(new CallbackApi);
+    During->Push(false, 11000);
+    During->DuringCurrent = [&] { During->Push(false, 11001); During->Push(true, 11002); During->Push(false, 11002); };
+    FGameInputCallbackReadCursor DuringCursor;
+    const auto DuringBatch = DuringCursor.PollRaw(*During.Get(), During->Pad.Get(), GameInputKindGamepad);
+    Check(DuringBatch.FreshBaseline && DuringBatch.Count == 3 && !DuringBatch.States[0].GamepadButtons
+        && DuringBatch.States[1].GamepadButtons && !DuringBatch.States[2].GamepadButtons,
+        "earliest queued baseline preserves short tap during current snapshot acquisition");
+    Check(DuringCursor.Stop(), "snapshot race teardown fenced");
+    ComPtr<CallbackApi> InitialOverflow; InitialOverflow.Attach(new CallbackApi);
+    InitialOverflow->Push(false, 12000);
+    InitialOverflow->AfterRegistration = [&] { for(unsigned I=0; I<257; ++I) InitialOverflow->Push((I&1)!=0, 12001+I); };
+    FGameInputCallbackReadCursor InitialOverflowCursor;
+    const auto LostInitial = InitialOverflowCursor.PollRaw(*InitialOverflow.Get(), InitialOverflow->Pad.Get(), GameInputKindGamepad);
+    Check(LostInitial.Count == 0 && LostInitial.Reject == Speed::Input::Windows::ERawReadReject::QueueOverflow
+        && LostInitial.Result.Status == Speed::Input::Windows::EReadBatchStatus::Resynchronize,
+        "initial queue overflow never falls back to snapshot and hides loss");
+    Check(InitialOverflowCursor.Stop(), "initial overflow teardown fenced");
+    ComPtr<CallbackApi> Empty; Empty.Attach(new CallbackApi);
+    FGameInputCallbackReadCursor EmptyCursor;
+    const auto EmptyFirst = EmptyCursor.PollRaw(*Empty.Get(), Empty->Pad.Get(), GameInputKindGamepad);
+    Check(EmptyFirst.Count == 0 && EmptyFirst.Result.Status == Speed::Input::Windows::EReadBatchStatus::NoChange
+        && Empty->ReadingCallback == nullptr, "missing initial snapshot unregisters before retry");
+    Empty->Push(false, 13000);
+    const auto EmptyRetry = EmptyCursor.PollRaw(*Empty.Get(), Empty->Pad.Get(), GameInputKindGamepad);
+    Check(EmptyRetry.FreshBaseline && EmptyRetry.Count == 1, "snapshot absence retries with fresh subscription");
+    Check(EmptyCursor.Stop(), "snapshot retry teardown fenced");
 	std::cout << "PASS WindowsCallbackReadingsProbe checks=" << Checks << " hardware=none sdk=v3\n";
 }

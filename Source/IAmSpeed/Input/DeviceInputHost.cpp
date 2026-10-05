@@ -69,6 +69,10 @@ public:
 				unsigned(Diagnostic->RawPollReject), uint32(Diagnostic->RawError), unsigned(Diagnostic->SinkReject), Diagnostic->AcquisitionTick,
 				Diagnostic->Barrier.Session, Diagnostic->Barrier.Serial,
 				Diagnostic->Barrier.BarrierBefore, Diagnostic->Barrier.BarrierAfter);
+			if (Diagnostic->ReadReject)
+				UE_LOG(LogTemp, Warning, TEXT("[InputReadBatchDiagnostic] reason=%u diagnostic_error=0x%08X kind=%u acquisition_tick=%llu"),
+					unsigned(Diagnostic->ReadReject->Reason), uint32(Diagnostic->ReadReject->DiagnosticError),
+					unsigned(Diagnostic->ReadReject->Kind), Diagnostic->ReadReject->AcquisitionTick);
 		}
 		return Result;
     }
@@ -117,6 +121,26 @@ std::shared_ptr<FDeviceInputWarmContext> CreateDeviceInputWarmContext()
 {
     return FDeviceInputWarmContext::Create();
 }
+std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t ProducerId,
+    std::shared_ptr<FRawAcquisitionJournal> Journal, const FDeviceRawAcquisitionConfig& Config)
+{
+#if PLATFORM_WINDOWS && !UE_SERVER
+    if (!ProducerId || !Journal || Journal->BeginAcquisition().Session != ProducerId
+        || !FDeviceActivityPolicy::ValidConfig(Config.Activity)
+        || FPresentationInputScope::IsActive()) return {};
+    auto Warm = Config.WarmContext
+        ? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
+    if (Config.WarmContext && !Warm) return {};
+    // The concrete source defers GameInput creation and all native access to
+    // Pump on its acquisition worker, exactly as in the existing device host.
+    return std::make_shared<FNativeGameInputAcquisition>(ProducerId, Config.Activity,
+        std::move(Journal), std::move(Warm));
+#else
+    (void)ProducerId; (void)Journal; (void)Config;
+    return {};
+#endif
+}
+
 FStreamEpoch AllocateInputStreamEpoch()
 {
 	static std::atomic<std::uint64_t> Next{1};

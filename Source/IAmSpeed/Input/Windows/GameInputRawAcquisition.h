@@ -34,6 +34,7 @@ public:
 		std::uint64_t AcquisitionTick;
 		V2::FAcquisitionInvalidation Barrier;
 		std::optional<FGameInputSelectedSource::FRawReadGapDiagnostic> ReadGap;
+		std::optional<FGameInputSelectedSource::FRawReadRejectDiagnostic> ReadReject;
 	};
 	FGameInputRawAcquisition(std::unique_ptr<FGameInputSelectedSource> InSource,
 		std::shared_ptr<V2::FRawAcquisitionJournal> InJournal)
@@ -173,7 +174,9 @@ private:
 				: FGameInputSelectedSource::ERawPollReject::None,
 			Source->GetLastError(),
 			SinkReject, Tick,
-			Journal->Invalidate(), Source->TakeRawReadGapDiagnostic()};
+			Journal->Invalidate(), Source->TakeRawReadGapDiagnostic(),
+			Cause == ENeutralizeCause::PollRawRejected ? Source->TakeRawReadRejectDiagnostic()
+				: std::optional<FGameInputSelectedSource::FRawReadRejectDiagnostic>{}};
 		return InstallNeutral(Ticket) ? ERawPumpResult::Neutralized : ERawPumpResult::Rejected;
 	}
 	std::uint64_t DeviceIndex(const FDeviceId& Id) noexcept

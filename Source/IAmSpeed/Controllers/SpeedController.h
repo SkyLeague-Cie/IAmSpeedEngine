@@ -108,6 +108,10 @@ protected:
 	void ResolveInputSessionRestartCompletionV2();
 	void FailInputSessionRestartCompletionV2();
 	bool HasInputSessionV2() const { return InputSessionV2 != nullptr; }
+	// Read-only GT arbitration for an exclusive menu acquisition owner.
+	// Pending and legacy/test acquisitions count as ownership too.
+	bool HasAnyInputAcquisitionOwnershipV2() const
+	{ return InputSessionV2 || bInputSessionPendingV2 || InputProducer || InputSnapshots; }
 	bool OwnsInputConfigurationV2() const { return bInputSessionRequiredV2 && SpeedCar != nullptr; }
 	/** Called after previous ownership is released, before the new immutable contract. */
 	virtual void PrepareInputConfigurationV2() {}
