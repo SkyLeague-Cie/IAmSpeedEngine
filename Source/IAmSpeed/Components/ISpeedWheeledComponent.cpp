@@ -1437,6 +1437,22 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					const float Gap = FVector::DotProduct(
 						SweepEnd - Probe.PreviousHit.ImpactPoint, N) - Radius;
 					ApplyConstraint(-N, SweepEnd, Gap + ReachSkin);
+					if (bCoherentSpringState)
+					{
+						// A newly reacquired wheel participates in the same displacement and
+						// clearance solve as an initial hit. Use a real current query only.
+						SHitResult AcquiredHit;
+						if (Probe.Wheel->ProbeSuspensionOnGround(AcquiredHit, delta) &&
+							AcquiredHit.SourceId == Probe.PreviousHit.SourceId &&
+							AcquiredHit.SurfaceId == Probe.PreviousHit.SurfaceId &&
+							FVector::DotProduct(AcquiredHit.ImpactNormal.GetSafeNormal(), N) >= 0.9f)
+						{
+							RefreshContactDisplacement(Probe, AcquiredHit);
+							const float Clearance = FVector::DotProduct(
+								Probe.Wheel->WorldPos() - AcquiredHit.ImpactPoint, N) - Radius;
+							ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance);
+						}
+					}
 				}
 
 				for (const FGroundProbe& Probe : Probes)
@@ -1506,9 +1522,12 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			{
 				// Acceptance uses actual final queries, never a synthetic retained hit.
 				// Keep the entire pose transaction or restore the original pose.
-				for (const FGroundProbe& Probe : Probes)
+				for (int32 ProbeIndex = 0; ProbeIndex < Probes.Num(); ++ProbeIndex)
 				{
-					if (!Probe.bHasProbeHit)
+					const FGroundProbe& Probe = Probes[ProbeIndex];
+					const bool bAcquiredConstraint = bCoherentSpringState &&
+						EstablishedMisses.Contains(ProbeIndex);
+					if (!Probe.bHasProbeHit && !bAcquiredConstraint)
 					{
 						continue;
 					}
@@ -1516,7 +1535,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					if (!Probe.Wheel->ProbeSuspensionOnGround(VerificationHit, delta))
 					{
 #if !(UE_BUILD_SHIPPING)
-						if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+						if (Probe.bHasProbeHit && CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
 						{
 							// The already-executed actual query rejected this proposed pose.
 							// Record it before rollback; never publish the failed hit.
@@ -1549,7 +1568,48 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 						bPreservedProbeHits = false;
 						break;
 					}
+					if (bAcquiredConstraint &&
+						(VerificationHit.SourceId != Probe.PreviousHit.SourceId ||
+						 VerificationHit.SurfaceId != Probe.PreviousHit.SurfaceId ||
+						 FVector::DotProduct(VerificationHit.ImpactNormal.GetSafeNormal(),
+							 Probe.PreviousHit.ImpactNormal.GetSafeNormal()) < 0.9f))
+					{
+						bPreservedProbeHits = false;
+						break;
+					}
 					RefreshContactDisplacement(Probe, VerificationHit);
+				}
+			}
+			if (bCoherentSpringState && bWithinBounds && bPreservedProbeHits && bCoherentStateValid)
+			{
+				// Refreshing displacement is part of the transaction. Validate the final
+				// stored state, including reacquired wheels, before any support publication.
+				for (int32 ProbeIndex = 0; ProbeIndex < Probes.Num(); ++ProbeIndex)
+				{
+					const FGroundProbe& Probe = Probes[ProbeIndex];
+					if (!Probe.bHasProbeHit && !EstablishedMisses.Contains(ProbeIndex)) continue;
+					SHitResult FinalStateHit;
+					const SHitResult& ExpectedHit = Probe.bHasProbeHit ? Probe.ProbeHit : Probe.PreviousHit;
+					if (!Probe.Wheel->ProbeSuspensionOnGround(FinalStateHit, delta) ||
+						FinalStateHit.SourceId != ExpectedHit.SourceId ||
+						FinalStateHit.SurfaceId != ExpectedHit.SurfaceId ||
+						FinalStateHit.Location.ContainsNaN() || FinalStateHit.ImpactPoint.ContainsNaN() ||
+						FinalStateHit.ImpactNormal.ContainsNaN() ||
+						FVector::DotProduct(FinalStateHit.ImpactNormal.GetSafeNormal(),
+							ExpectedHit.ImpactNormal.GetSafeNormal()) < 0.9f)
+					{
+						bCoherentStateValid = false;
+						break;
+					}
+					const FVector N = FinalStateHit.ImpactNormal.GetSafeNormal();
+					const float Penetration = FVector::DotProduct(
+						FinalStateHit.ImpactPoint + Probe.Wheel->Radius() * N - Probe.Wheel->WorldPos(), N);
+					if (!FMath::IsFinite(Penetration) ||
+						(Probe.Wheel->IsAtSuspensionBumpStop() && Penetration > 0.01f))
+					{
+						bCoherentStateValid = false;
+						break;
+					}
 				}
 			}
 			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits && bCoherentStateValid;
