@@ -1438,6 +1438,25 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					SHitResult VerificationHit;
 					if (!Probe.Wheel->ProbeSuspensionOnGround(VerificationHit, delta))
 					{
+#if !(UE_BUILD_SHIPPING)
+						if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+						{
+							// The already-executed actual query rejected this proposed pose.
+							// Record it before rollback; never publish the failed hit.
+							FVector ProposedStart, ProposedEnd;
+							Probe.Wheel->GetSuspensionSweepSegment(delta, ProposedStart, ProposedEnd);
+							const FVector InitialNormal = Probe.ProbeHit.ImpactNormal.GetSafeNormal();
+							const double Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+							const double ProposedGap = FVector::DotProduct(ProposedEnd - Probe.ProbeHit.ImpactPoint, InitialNormal) - Radius;
+							UE_LOG(LogTemp, Log,
+								TEXT("[WheelSupportProjectionRejectedProbe] ComponentFrame=%u Wheel=%d InitialHit=1 ProposedActualHit=0 InitialSource=%016llx ProposedGapCm=%.17g RadiusCm=%.17g ProposedStart=%s ProposedEnd=%s InitialPlanePoint=%s InitialPlaneNormal=%s OriginalCOM=%s ProposedCOM=%s ProposedRotationDeg=%.17g"),
+								NumFrame(), Probe.Wheel->Idx(), static_cast<unsigned long long>(Probe.ProbeHit.SourceId),
+								ProposedGap, Radius, *CoupledPoseDiagnosticVector(ProposedStart), *CoupledPoseDiagnosticVector(ProposedEnd),
+								*CoupledPoseDiagnosticVector(Probe.ProbeHit.ImpactPoint), *CoupledPoseDiagnosticVector(InitialNormal),
+								*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()),
+								static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
+						}
+#endif
 						bPreservedProbeHits = false;
 						break;
 					}
@@ -1475,7 +1494,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 						const double BeforeGap = FVector::DotProduct(Probe.DiagnosticInitialEnd - Plane.ImpactPoint, N) - Radius;
 						const double AfterGap = FVector::DotProduct(AfterEnd - Plane.ImpactPoint, N) - Radius;
 						UE_LOG(LogTemp, Log,
-							TEXT("[WheelSupportProjectionTransaction] ComponentFrame=%u Wheel=%d WasGrounded=%d BeforeHit=%d AfterHit=%d WithinBounds=%d MissConstraints=%d BeforeSource=%016llx AfterSource=%016llx BeforeGapCm=%.17g AfterGapCm=%.17g RadiusCm=%.17g BeforeEnd=%s AfterEnd=%s PlanePoint=%s PlaneNormal=%s BeforeCOM=%s AfterCOM=%s RotationDeg=%.17g"),
+							TEXT("[WheelSupportProjectionTransaction] ComponentFrame=%u Wheel=%d WasGrounded=%d BeforeHit=%d AfterHit=%d WithinBounds=%d MissConstraints=%d BeforeSource=%016llx AfterSource=%016llx BeforeGapCm=%.17g AfterGapCm=%.17g RadiusCm=%.17g BeforeEnd=%s AfterEnd=%s PlanePoint=%s PlaneNormal=%s BeforeCOM=%s AfterCOM=%s RotationDeg=%.17g AcceptedPose=%d ProposedRotationDeg=%.17g"),
 							NumFrame(), Probe.Wheel->Idx(), Probe.bWasGrounded ? 1 : 0, Probe.bHasProbeHit ? 1 : 0,
 							bActualAfterHit ? 1 : 0, bWithinBounds ? 1 : 0, EstablishedMisses.Num(),
 							static_cast<unsigned long long>(Plane.SourceId),
@@ -1483,7 +1502,8 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 							*CoupledPoseDiagnosticVector(Probe.DiagnosticInitialEnd), *CoupledPoseDiagnosticVector(AfterEnd),
 							*CoupledPoseDiagnosticVector(Plane.ImpactPoint), *CoupledPoseDiagnosticVector(N),
 							*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()),
-							static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
+							static_cast<double>(bAcceptProjectedPose ? FMath::RadiansToDegrees(RotationAngle) : 0.0f),
+							bAcceptProjectedPose ? 1 : 0, static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
 					}
 				}
 				for (const int32 Index : EstablishedMisses)
