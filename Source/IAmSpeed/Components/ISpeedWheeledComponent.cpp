@@ -2274,8 +2274,31 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			{
 				continue;
 			}
+#if !(UE_BUILD_SHIPPING)
+			const bool bTraceFinalQuery = CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() >= 2;
+			const bool bPreviousGround = Wheel->IsOnGround();
+			const SHitResult PreviousQueryHit = Wheel->GetHit();
+#endif
 			SHitResult FinalHit;
 			const bool bOnGround = Wheel->ProbeSuspensionOnGround(FinalHit, Delta);
+#if !(UE_BUILD_SHIPPING)
+			if (bTraceFinalQuery)
+			{
+				FVector QueryStart, QueryEnd;
+				Wheel->GetSuspensionSweepSegment(Delta, QueryStart, QueryEnd);
+				const FVector PreviousQueryNormal = PreviousQueryHit.ImpactNormal.GetSafeNormal();
+				const float PreviousPlaneGap = FVector::DotProduct(QueryEnd - PreviousQueryHit.ImpactPoint, PreviousQueryNormal) - Wheel->GetCollisionShape().GetSphereRadius();
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseFinalQuery] ComponentFrame=%u Wheel=%d BeforeGround=%d ActualHit=%d StrictHitbox=%d RetainedConstraints=%d PreviousSource=%016llx FinalSource=%016llx PreviousGapCm=%.9g InwardSpeed=%.9g Start=(%.17g,%.17g,%.17g) End=(%.17g,%.17g,%.17g) PreviousNormal=(%.17g,%.17g,%.17g)"),
+					NumFrame(), Wheel->Idx(), bPreviousGround ? 1 : 0, bOnGround ? 1 : 0,
+					bStrictHitboxGate ? 1 : 0, RetainedWheels,
+					static_cast<unsigned long long>(PreviousQueryHit.SourceId),
+					static_cast<unsigned long long>(bOnGround ? FinalHit.SourceId : 0),
+					PreviousPlaneGap, FVector::DotProduct(GetPhysCOMVelocity(), PreviousQueryNormal),
+					QueryStart.X, QueryStart.Y, QueryStart.Z, QueryEnd.X, QueryEnd.Y, QueryEnd.Z,
+					PreviousQueryNormal.X, PreviousQueryNormal.Y, PreviousQueryNormal.Z);
+			}
+#endif
 			if (bOnGround)
 			{
 				Wheel->SetHit(FinalHit);
