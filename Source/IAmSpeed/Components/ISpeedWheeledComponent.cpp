@@ -348,6 +348,12 @@ static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseWheelGapCm(
 	TEXT("Maximum retained wheel-patch separation after hitbox-feasible projection."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseSharedWallPlaneRetention(
+	TEXT("p.IAmSpeed.CoupledPose.SharedWallPlaneRetention"),
+	0,
+	TEXT("Experimental final simultaneous retention on one real static wall plane. Disabled until matrix and player qualification."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseDebug(
 	TEXT("p.IAmSpeed.CoupledPose.Debug"),
 	0,
@@ -2247,6 +2253,91 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			continue;
 		}
 		++RetainedWheels;
+	}
+	// A later angular correction can undo an earlier wheel's reach constraint.
+	// On a single established wall plane, one bounded normal translation closes
+	// every remaining reach gap simultaneously, without changing wheel order.
+	// Admission uses real local patches; acceptance requires real final sweeps.
+	if (CVarIAmSpeedCoupledPoseSharedWallPlaneRetention.GetValueOnAnyThread() != 0 &&
+		!bStrictHitboxGate && WheelConstraints.Num() >= 2)
+	{
+		const FWheelPatchConstraint& First = WheelConstraints[0];
+		const FVector SharedNormal = First.Normal.GetSafeNormal();
+		bool bSharedPlane = First.SurfaceSourceId != 0 && First.SurfaceId != 0 &&
+			First.SurfaceFeatureId != 0 && FMath::Abs(SharedNormal.Z) <= 0.10f;
+		uint64 SharedPrimitive = 0;
+		double SharedPlaneD = 0.0;
+		float MaximumGap = 0.0f;
+		for (const FWheelPatchConstraint& Contact : WheelConstraints)
+		{
+			USWheelSubBody* Wheel = Contact.Wheel;
+			SHitResult Patch;
+			if (!bSharedPlane || !Wheel || Wheel->IsJumping() || Wheel->HasJumpUnilateralSupport() ||
+				Contact.SurfaceComponent != First.SurfaceComponent ||
+				Contact.SurfaceSourceId != First.SurfaceSourceId || Contact.SurfaceId != First.SurfaceId ||
+				Contact.SurfaceFeatureId != First.SurfaceFeatureId ||
+				Contact.Normal.GetSafeNormal() != SharedNormal ||
+				!Wheel->SweepSuspensionAlongNormal(SharedNormal, FMath::Max(5.0f, Wheel->SuspensionMaxDrop()), Delta, Patch) ||
+				Patch.Component != Contact.SurfaceComponent || Patch.SourceId != First.SurfaceSourceId ||
+				Patch.SurfaceId != First.SurfaceId || Patch.FeatureId != First.SurfaceFeatureId ||
+				Patch.ImpactNormal.GetSafeNormal() != SharedNormal || Patch.PrimitiveId == 0)
+			{
+				bSharedPlane = false;
+				break;
+			}
+			const double PlaneD = FVector::DotProduct(Patch.ImpactPoint, SharedNormal);
+			if (SharedPrimitive == 0)
+			{
+				SharedPrimitive = Patch.PrimitiveId;
+				SharedPlaneD = PlaneD;
+			}
+			else if (Patch.PrimitiveId != SharedPrimitive ||
+				!FMath::IsNearlyEqual(PlaneD, SharedPlaneD, UE_DOUBLE_SMALL_NUMBER))
+			{
+				bSharedPlane = false;
+				break;
+			}
+			FVector Start, End;
+			Wheel->GetSuspensionSweepSegment(Delta, Start, End);
+			MaximumGap = FMath::Max(MaximumGap, static_cast<float>(
+				FVector::DotProduct(End - Patch.ImpactPoint, SharedNormal) - Wheel->GetCollisionShape().GetSphereRadius()));
+		}
+		const float ReachSkin = FMath::Max(0.0f, CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+		const float Translation = MaximumGap + ReachSkin;
+		if (bSharedPlane && MaximumGap > 0.0f &&
+			Translation <= FMath::Max(0.0f, CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread()))
+		{
+			const FVector BeforeSharedCOM = GetPhysCOM();
+			const FQuat BeforeSharedRotation = GetPhysRotation();
+			SetPhysCOMLocation(BeforeSharedCOM - SharedNormal * Translation);
+			UpdateSubBodiesKinematics();
+			bool bAllRealSupport = SolveHitboxFeasibility(MaxPasses);
+			for (const FWheelPatchConstraint& Contact : WheelConstraints)
+			{
+				SHitResult ActualHit;
+				if (!bAllRealSupport || !Contact.Wheel->ProbeSuspensionOnGround(ActualHit, Delta) ||
+					ActualHit.Component != Contact.SurfaceComponent || ActualHit.SourceId != First.SurfaceSourceId ||
+					ActualHit.SurfaceId != First.SurfaceId || ActualHit.FeatureId != First.SurfaceFeatureId ||
+					ActualHit.PrimitiveId != SharedPrimitive || ActualHit.ImpactNormal.GetSafeNormal() != SharedNormal)
+				{
+					bAllRealSupport = false;
+					break;
+				}
+			}
+			if (!bAllRealSupport)
+			{
+				SetPhysCOMLocation(BeforeSharedCOM);
+				SetPhysRotation(BeforeSharedRotation);
+				UpdateSubBodiesKinematics();
+			}
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[CoupledPoseSharedWallPlane] Frame=%u Wheels=%d GapCm=%.9g TranslationCm=%.9g ActualAllSupport=%d"),
+					NumFrame(), WheelConstraints.Num(), MaximumGap, Translation, bAllRealSupport ? 1 : 0);
+			}
+#endif
+		}
 	}
 	ClampHitboxInwardVelocity();
 
