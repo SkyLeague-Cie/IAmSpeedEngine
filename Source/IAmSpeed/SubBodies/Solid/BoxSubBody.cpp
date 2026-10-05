@@ -1,4 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "BoxSubBody.h"
@@ -496,7 +496,7 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
     };
     if (!ParentComponent || LastResolvedGroundHitFrame < 0) return Decision(false, TEXT("no_owner_or_resolved_frame"));
     const int32 Frame = static_cast<int32>(ParentComponent->NumFrame());
-    if (LastResolvedGroundHitFrame < Frame - 1 || LastResolvedGroundHitFrame > Frame ||
+    if (LastResolvedGroundHitFrame > Frame ||
         GroundHit.SourceId == 0 || GroundHit.SurfaceId == 0 ||
         GroundHit.bSurfaceNormalMayVary || GroundHit.GeometricErrorBoundCm != 0 ||
         GroundHit.ContactFeatureOther != Speed::EContactFeatureKind::Face ||
