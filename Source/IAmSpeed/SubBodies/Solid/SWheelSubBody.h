@@ -87,6 +87,7 @@ public:
     void SetAngularVelocity(const float& InOmega);
     float SpringDisplacement() const; // current spring displacement (positive when compressed)
     float ContactSpringDisplacement() const;
+    float ContactSpringDisplacement(const SHitResult& ContactHit) const;
     float GetLastDisplacement() const;
     void SetLastDisplacement(const float& displacement);
     float SpringLength() const;

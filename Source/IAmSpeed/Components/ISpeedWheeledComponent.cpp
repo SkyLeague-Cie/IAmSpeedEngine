@@ -306,6 +306,12 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionPreservePro
 	TEXT("Experimental standalone projection: retain the existing inward reach margin for initial probe hits and reject actual support loss. Disabled until qualification."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionCoherentSpringState(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionCoherentSpringState"),
+	0,
+	TEXT("Experimental atomic projection/contact displacement transaction. Requires PreserveProbeHits; disabled until qualification."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionDebug(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionDebug"),
 	0,
@@ -1129,6 +1135,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			SHitResult PreviousHit;
 			bool bHasProbeHit = false;
 			SHitResult ProbeHit;
+			float OriginalDisplacement = 0.0f;
 #if !(UE_BUILD_SHIPPING)
 			FVector DiagnosticInitialEnd = FVector::ZeroVector;
 			SHitResult DiagnosticInitialPlane;
@@ -1147,6 +1154,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			Probe.Wheel = Wheel;
 			Probe.bWasGrounded = Wheel->IsOnGround();
 			Probe.PreviousHit = Wheel->GetHit();
+			Probe.OriginalDisplacement = Wheel->GetLastDisplacement();
 			Probe.bHasProbeHit = Wheel->ProbeSuspensionOnGround(Probe.ProbeHit, delta);
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
@@ -1347,6 +1355,32 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				0.0f, CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
 			const bool bPreserveProbeHits =
 				CVarIAmSpeedWheelSupportProjectionPreserveProbeHits.GetValueOnAnyThread() != 0;
+			bool bCoherentSpringState = bPreserveProbeHits &&
+				CVarIAmSpeedWheelSupportProjectionCoherentSpringState.GetValueOnAnyThread() != 0;
+			for (const FGroundProbe& Probe : Probes)
+			{
+				if (Probe.Wheel->HasJumpUnilateralSupport()) bCoherentSpringState = false;
+			}
+			bool bCoherentStateValid = true;
+			auto RefreshContactDisplacement = [bCoherentSpringState, MaxGap, &bCoherentStateValid](
+				const FGroundProbe& Probe, const SHitResult& Hit)
+			{
+				if (!bCoherentSpringState) return;
+				if (Hit.Location.ContainsNaN() || !FMath::IsFinite(Probe.OriginalDisplacement))
+				{
+					bCoherentStateValid = false;
+					return;
+				}
+				const float Displacement = Probe.Wheel->ContactSpringDisplacement(Hit);
+				if (!FMath::IsFinite(Displacement) || !FMath::IsFinite(Probe.OriginalDisplacement) ||
+					FMath::Abs(Displacement - Probe.OriginalDisplacement) > MaxGap)
+				{
+					bCoherentStateValid = false;
+					return;
+				}
+				// Provisional stored displacement only: no force simulation or support publication.
+				Probe.Wheel->SetLastDisplacement(Displacement);
+			};
 			const int32 Passes = FMath::Clamp(
 				CVarIAmSpeedWheelSupportProjectionPasses.GetValueOnAnyThread(), 1, 32);
 
@@ -1422,6 +1456,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					// A small positive solver residual must not strand an acquired wheel.
 					ApplyConstraint(-N, SweepEnd, ReachGap + (bPreserveProbeHits ? ReachSkin : 0.0f));
 
+					RefreshContactDisplacement(Probe, Probe.ProbeHit);
 					const float Clearance = FVector::DotProduct(
 						Probe.Wheel->WorldPos() - Probe.ProbeHit.ImpactPoint, N) - Radius;
 					ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance);
@@ -1514,13 +1549,19 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 						bPreservedProbeHits = false;
 						break;
 					}
+					RefreshContactDisplacement(Probe, VerificationHit);
 				}
 			}
-			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits;
+			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits && bCoherentStateValid;
 			if (!bAcceptProjectedPose)
 			{
 				SetPhysCOMLocation(OriginalCOM);
 				SetPhysRotation(OriginalRotation);
+				if (bCoherentSpringState)
+				{
+					for (const FGroundProbe& Probe : Probes)
+						Probe.Wheel->SetLastDisplacement(Probe.OriginalDisplacement);
+				}
 				UpdateSubBodiesKinematics();
 			}
 
@@ -1528,10 +1569,10 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
 			{
 				UE_LOG(LogTemp, Log,
-					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f"),
+					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f CoherentSpring=%d CoherentStateValid=%d"),
 					NumFrame(), EstablishedMisses.Num(), bAcceptProjectedPose ? 1 : 0,
 					(GetPhysCOM() - OriginalCOM).Size(),
-					FMath::RadiansToDegrees(RotationAngle));
+					FMath::RadiansToDegrees(RotationAngle), bCoherentSpringState ? 1 : 0, bCoherentStateValid ? 1 : 0);
 				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
 				{
 					// Read-only witnesses for all original probes, including initial hits.
