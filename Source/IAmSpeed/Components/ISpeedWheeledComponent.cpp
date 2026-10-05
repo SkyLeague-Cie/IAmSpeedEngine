@@ -1123,6 +1123,10 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			SHitResult PreviousHit;
 			bool bHasProbeHit = false;
 			SHitResult ProbeHit;
+#if !(UE_BUILD_SHIPPING)
+			FVector DiagnosticInitialEnd = FVector::ZeroVector;
+			SHitResult DiagnosticInitialPlane;
+#endif
 		};
 
 		TArray<FGroundProbe, TInlineAllocator<4>> Probes;
@@ -1138,6 +1142,14 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			Probe.bWasGrounded = Wheel->IsOnGround();
 			Probe.PreviousHit = Wheel->GetHit();
 			Probe.bHasProbeHit = Wheel->ProbeSuspensionOnGround(Probe.ProbeHit, delta);
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+			{
+				FVector DiagnosticStart;
+				Wheel->GetSuspensionSweepSegment(delta, DiagnosticStart, Probe.DiagnosticInitialEnd);
+				Probe.DiagnosticInitialPlane = Probe.bHasProbeHit ? Probe.ProbeHit : Probe.PreviousHit;
+			}
+#endif
 		}
 
 		TArray<int32, TInlineAllocator<4>> EstablishedMisses;
@@ -1417,6 +1429,33 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					NumFrame(), EstablishedMisses.Num(), bWithinBounds ? 1 : 0,
 					(GetPhysCOM() - OriginalCOM).Size(),
 					FMath::RadiansToDegrees(RotationAngle));
+				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+				{
+					// Read-only witnesses for all original probes, including initial hits.
+					// Do not publish these results or manufacture wheel support.
+					for (const FGroundProbe& Probe : Probes)
+					{
+						FVector AfterStart, AfterEnd;
+						Probe.Wheel->GetSuspensionSweepSegment(delta, AfterStart, AfterEnd);
+						SHitResult AfterHit;
+						const bool bActualAfterHit = Probe.Wheel->ProbeSuspensionOnGround(AfterHit, delta);
+						const SHitResult& Plane = Probe.DiagnosticInitialPlane;
+						const FVector N = Plane.ImpactNormal.GetSafeNormal();
+						const double Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+						const double BeforeGap = FVector::DotProduct(Probe.DiagnosticInitialEnd - Plane.ImpactPoint, N) - Radius;
+						const double AfterGap = FVector::DotProduct(AfterEnd - Plane.ImpactPoint, N) - Radius;
+						UE_LOG(LogTemp, Log,
+							TEXT("[WheelSupportProjectionTransaction] ComponentFrame=%u Wheel=%d WasGrounded=%d BeforeHit=%d AfterHit=%d WithinBounds=%d MissConstraints=%d BeforeSource=%016llx AfterSource=%016llx BeforeGapCm=%.17g AfterGapCm=%.17g RadiusCm=%.17g BeforeEnd=%s AfterEnd=%s PlanePoint=%s PlaneNormal=%s BeforeCOM=%s AfterCOM=%s RotationDeg=%.17g"),
+							NumFrame(), Probe.Wheel->Idx(), Probe.bWasGrounded ? 1 : 0, Probe.bHasProbeHit ? 1 : 0,
+							bActualAfterHit ? 1 : 0, bWithinBounds ? 1 : 0, EstablishedMisses.Num(),
+							static_cast<unsigned long long>(Plane.SourceId),
+							static_cast<unsigned long long>(bActualAfterHit ? AfterHit.SourceId : 0), BeforeGap, AfterGap, Radius,
+							*CoupledPoseDiagnosticVector(Probe.DiagnosticInitialEnd), *CoupledPoseDiagnosticVector(AfterEnd),
+							*CoupledPoseDiagnosticVector(Plane.ImpactPoint), *CoupledPoseDiagnosticVector(N),
+							*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()),
+							static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
+					}
+				}
 				for (const int32 Index : EstablishedMisses)
 				{
 					const FGroundProbe& Probe = Probes[Index];
