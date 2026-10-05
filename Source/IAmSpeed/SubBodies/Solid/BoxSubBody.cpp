@@ -477,6 +477,57 @@ bool UBoxSubBody::HasExactStaticRestingSupport(const Speed::IStaticCollisionWorl
     return HasToApplyRestForce() && EvaluateStaticBoxSupport(World, Load, Support, true);
 }
 
+bool UBoxSubBody::HasCurrentExactPlanarContact() const
+{
+    if (!ParentComponent || LastResolvedGroundHitFrame < 0) return false;
+    const int32 Frame = static_cast<int32>(ParentComponent->NumFrame());
+    if (LastResolvedGroundHitFrame < Frame - 1 || LastResolvedGroundHitFrame > Frame ||
+        GroundHit.SourceId == 0 || GroundHit.SurfaceId == 0 ||
+        GroundHit.bSurfaceNormalMayVary || GroundHit.GeometricErrorBoundCm != 0 ||
+        GroundHit.ContactFeatureOther != Speed::EContactFeatureKind::Face ||
+        !GroundHit.Component.IsValid() || GroundHit.Component->GetCollisionObjectType() != ECC_WorldStatic)
+        return false;
+    const auto* World = ParentComponent->GetStaticCollisionWorldForFrame();
+    if (!World) return false;
+    const auto Query = MakeSupportBoxQuery(ParentComponent->GetKinematicState());
+    const FVector N = GroundHit.ImpactNormal;
+    if (N.ContainsNaN() || GroundHit.ImpactPoint.ContainsNaN() ||
+        !FMath::IsNearlyEqual(N.SizeSquared(), 1.0, 32 * DBL_EPSILON)) return false;
+    const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + BoxExtent.GetMax());
+    const double Roundoff = 64.0 * DBL_EPSILON * Scale;
+    FVector Vertices[8];
+    double Gaps[8], MinimumGap = DBL_MAX;
+    for (int32 Corner = 0; Corner < 8; ++Corner)
+    {
+        Vertices[Corner] = Query.Start + Query.Rotation.RotateVector(FVector(
+            (Corner & 1) ? BoxExtent.X : -BoxExtent.X,
+            (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y,
+            (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z));
+        Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - GroundHit.ImpactPoint, N);
+        if (!FMath::IsFinite(Gaps[Corner])) return false;
+        MinimumGap = FMath::Min(MinimumGap, Gaps[Corner]);
+    }
+    // A cached event alone is not contact. Reject finite separation/penetration.
+    if (FMath::Abs(MinimumGap) > Roundoff) return false;
+    auto Probe = Query;
+    Probe.Shape = Speed::Analytic::EQueryShape::Ray;
+    Probe.RequiredSourceId = GroundHit.SourceId;
+    Probe.RequiredSurfaceId = GroundHit.SurfaceId;
+    for (int32 Corner = 0; Corner < 8; ++Corner)
+    {
+        if (Gaps[Corner] - MinimumGap > Roundoff) continue;
+        const double Span = FMath::Abs(Gaps[Corner]) + 0.01;
+        Probe.Start = Vertices[Corner] + Span * N;
+        Probe.End = Vertices[Corner] - Span * N;
+        const auto Witness = World->SweepSingle(Probe);
+        if (Witness.bHit && !Witness.bStartPenetrating && !Witness.bSurfaceNormalMayVary &&
+            Witness.GeometricErrorBoundCm == 0 && Witness.SurfaceFeatureKind == Speed::EContactFeatureKind::Face &&
+            Witness.SourceId == GroundHit.SourceId && Witness.SurfaceId == GroundHit.SurfaceId &&
+            Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return true;
+    }
+    return false;
+}
+
 bool UBoxSubBody::EvaluateStaticRestingSupport(const Speed::IStaticCollisionWorld& World,
     const FVector& ExternalAcceleration, Speed::FBoxRestingSupport& OutSupport) const
 {

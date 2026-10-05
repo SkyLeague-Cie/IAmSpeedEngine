@@ -2934,10 +2934,19 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 	const UBoxSubBody* ContactHitbox = GetHitboxSubBodyForConfiguration();
 	const int32 ContactFrame = ContactHitbox ? ContactHitbox->GetLastResolvedGroundHitFrame() : INDEX_NONE;
 	const int32 CurrentFrame = static_cast<int32>(NumFrame());
-	const bool bContinuousContactDrag =
-		CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0 &&
-		ContactHitbox && ContactHitbox->HasPhysicsTickGroundContact() &&
-		ContactFrame >= 0 && ContactFrame >= CurrentFrame - 1 && ContactFrame <= CurrentFrame;
+	const bool bContactDragRequested = CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+	const bool bFreshContactFrame = ContactFrame >= 0 && ContactFrame >= CurrentFrame - 1 && ContactFrame <= CurrentFrame;
+	const bool bContinuousContactDrag = bContactDragRequested && bFreshContactFrame &&
+		ContactHitbox && ContactHitbox->HasCurrentExactPlanarContact();
+#if !UE_BUILD_SHIPPING
+	// Observe the evaluated decision, never replay the native contact query.
+	static const auto* ContactDebug = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AutoRecoverContactDebug"));
+	if (bContactDragRequested && bFreshContactFrame && ContactDebug && ContactDebug->GetValueOnAnyThread() != 0)
+		UE_LOG(SpeedPhysicsLog, Display, TEXT("[HullContactAngularDrag] frame=%d resolved=%d admitted=%d cached=%d roll=%.17g pitch=%.17g yaw=%.17g dt=%.17g"),
+			CurrentFrame, ContactFrame, bContinuousContactDrag ? 1 : 0,
+			ContactHitbox && ContactHitbox->HasPhysicsTickGroundContact() ? 1 : 0,
+			double(RollVelocity), double(PitchVelocity), double(YawVelocity), double(delta));
+#endif
 
 	// compute new angular velocities along each axis
 	const float NewRollVelocity = !bContinuousContactDrag && FMath::Abs(RollVelocity) <= roll_drag * delta ? 0.0 :
