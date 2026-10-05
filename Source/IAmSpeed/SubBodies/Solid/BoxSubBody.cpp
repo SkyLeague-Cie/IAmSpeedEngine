@@ -479,20 +479,35 @@ bool UBoxSubBody::HasExactStaticRestingSupport(const Speed::IStaticCollisionWorl
 
 bool UBoxSubBody::HasCurrentExactPlanarContact() const
 {
-    if (!ParentComponent || LastResolvedGroundHitFrame < 0) return false;
+    // Observe only values already used by this contact decision; no query replay.
+    const auto Decision = [&](bool Accepted, const TCHAR* Reason, double Gap = 0.0, bool GapComputed = false, double Roundoff = 0.0)
+    {
+#if !UE_BUILD_SHIPPING
+        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+            UE_LOG(BoxSubBodyLog, Display, TEXT("[CurrentHullContactDecision] frame=%u resolved=%d admitted=%d reason=%s source=%016llX surface=%016llX varying=%d error=%.17g feature=%d component=%d componentType=%d normalNorm=%.17g gapComputed=%d gap=%.17g roundoff=%.17g"),
+                ParentComponent ? ParentComponent->NumFrame() : 0u, LastResolvedGroundHitFrame, Accepted ? 1 : 0, Reason,
+                static_cast<unsigned long long>(GroundHit.SourceId), static_cast<unsigned long long>(GroundHit.SurfaceId),
+                GroundHit.bSurfaceNormalMayVary ? 1 : 0, double(GroundHit.GeometricErrorBoundCm),
+                static_cast<int32>(GroundHit.ContactFeatureOther), GroundHit.Component.IsValid() ? 1 : 0,
+                GroundHit.Component.IsValid() ? static_cast<int32>(GroundHit.Component->GetCollisionObjectType()) : -1,
+                GroundHit.ImpactNormal.SizeSquared(), GapComputed ? 1 : 0, Gap, Roundoff);
+#endif
+        return Accepted;
+    };
+    if (!ParentComponent || LastResolvedGroundHitFrame < 0) return Decision(false, TEXT("no_owner_or_resolved_frame"));
     const int32 Frame = static_cast<int32>(ParentComponent->NumFrame());
     if (LastResolvedGroundHitFrame < Frame - 1 || LastResolvedGroundHitFrame > Frame ||
         GroundHit.SourceId == 0 || GroundHit.SurfaceId == 0 ||
         GroundHit.bSurfaceNormalMayVary || GroundHit.GeometricErrorBoundCm != 0 ||
         GroundHit.ContactFeatureOther != Speed::EContactFeatureKind::Face ||
         !GroundHit.Component.IsValid() || GroundHit.Component->GetCollisionObjectType() != ECC_WorldStatic)
-        return false;
+        return Decision(false, TEXT("frame_or_provider_metadata"));
     const auto* World = ParentComponent->GetStaticCollisionWorldForFrame();
-    if (!World) return false;
+    if (!World) return Decision(false, TEXT("no_static_world"));
     const auto Query = MakeSupportBoxQuery(ParentComponent->GetKinematicState());
     const FVector N = GroundHit.ImpactNormal;
     if (N.ContainsNaN() || GroundHit.ImpactPoint.ContainsNaN() ||
-        !FMath::IsNearlyEqual(N.SizeSquared(), 1.0, 32 * DBL_EPSILON)) return false;
+        !FMath::IsNearlyEqual(N.SizeSquared(), 1.0, 32 * DBL_EPSILON)) return Decision(false, TEXT("nonfinite_or_nonunit_plane"));
     const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + BoxExtent.GetMax());
     const double Roundoff = 64.0 * DBL_EPSILON * Scale;
     FVector Vertices[8];
@@ -504,11 +519,11 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
             (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y,
             (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z));
         Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - GroundHit.ImpactPoint, N);
-        if (!FMath::IsFinite(Gaps[Corner])) return false;
+        if (!FMath::IsFinite(Gaps[Corner])) return Decision(false, TEXT("nonfinite_corner_gap"));
         MinimumGap = FMath::Min(MinimumGap, Gaps[Corner]);
     }
     // A cached event alone is not contact. Reject finite separation/penetration.
-    if (FMath::Abs(MinimumGap) > Roundoff) return false;
+    if (FMath::Abs(MinimumGap) > Roundoff) return Decision(false, TEXT("finite_separation_or_penetration"), MinimumGap, true, Roundoff);
     auto Probe = Query;
     Probe.Shape = Speed::Analytic::EQueryShape::Ray;
     Probe.RequiredSourceId = GroundHit.SourceId;
@@ -523,9 +538,9 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
         if (Witness.bHit && !Witness.bStartPenetrating && !Witness.bSurfaceNormalMayVary &&
             Witness.GeometricErrorBoundCm == 0 && Witness.SurfaceFeatureKind == Speed::EContactFeatureKind::Face &&
             Witness.SourceId == GroundHit.SourceId && Witness.SurfaceId == GroundHit.SurfaceId &&
-            Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return true;
+            Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return Decision(true, TEXT("exact_current_provider_contact"), MinimumGap, true, Roundoff);
     }
-    return false;
+    return Decision(false, TEXT("finite_provider_witness_rejected"), MinimumGap, true, Roundoff);
 }
 
 bool UBoxSubBody::EvaluateStaticRestingSupport(const Speed::IStaticCollisionWorld& World,
