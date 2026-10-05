@@ -300,6 +300,12 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionReachSkin(
 	TEXT("Small inward reach margin, in cm, used to make the projected pose robust to sweep boundary tolerance."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionPreserveProbeHits(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionPreserveProbeHits"),
+	0,
+	TEXT("Experimental standalone projection: retain the existing inward reach margin for initial probe hits and reject actual support loss. Disabled until qualification."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionDebug(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionDebug"),
 	0,
@@ -1339,6 +1345,8 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const float RotationLengthSquared = RotationLength * RotationLength;
 			const float ReachSkin = FMath::Max(
 				0.0f, CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+			const bool bPreserveProbeHits =
+				CVarIAmSpeedWheelSupportProjectionPreserveProbeHits.GetValueOnAnyThread() != 0;
 			const int32 Passes = FMath::Clamp(
 				CVarIAmSpeedWheelSupportProjectionPasses.GetValueOnAnyThread(), 1, 32);
 
@@ -1395,7 +1403,9 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					Probe.Wheel->GetSuspensionSweepSegment(delta, SweepStart, SweepEnd);
 					const float ReachGap = FVector::DotProduct(
 						SweepEnd - Probe.ProbeHit.ImpactPoint, N) - Radius;
-					ApplyConstraint(-N, SweepEnd, ReachGap);
+					// Use the existing inward reach target for each initial real hit too.
+					// A small positive solver residual must not strand an acquired wheel.
+					ApplyConstraint(-N, SweepEnd, ReachGap + (bPreserveProbeHits ? ReachSkin : 0.0f));
 
 					const float Clearance = FVector::DotProduct(
 						Probe.Wheel->WorldPos() - Probe.ProbeHit.ImpactPoint, N) - Radius;
@@ -1414,7 +1424,27 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const bool bWithinBounds =
 				(GetPhysCOM() - OriginalCOM).Size() <= MaxGap &&
 				RotationAngle <= MaxRotationRadians;
-			if (!bWithinBounds)
+			bool bPreservedProbeHits = true;
+			if (bPreserveProbeHits && bWithinBounds)
+			{
+				// Acceptance uses actual final queries, never a synthetic retained hit.
+				// Keep the entire pose transaction or restore the original pose.
+				for (const FGroundProbe& Probe : Probes)
+				{
+					if (!Probe.bHasProbeHit)
+					{
+						continue;
+					}
+					SHitResult VerificationHit;
+					if (!Probe.Wheel->ProbeSuspensionOnGround(VerificationHit, delta))
+					{
+						bPreservedProbeHits = false;
+						break;
+					}
+				}
+			}
+			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits;
+			if (!bAcceptProjectedPose)
 			{
 				SetPhysCOMLocation(OriginalCOM);
 				SetPhysRotation(OriginalRotation);
@@ -1426,7 +1456,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			{
 				UE_LOG(LogTemp, Log,
 					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f"),
-					NumFrame(), EstablishedMisses.Num(), bWithinBounds ? 1 : 0,
+					NumFrame(), EstablishedMisses.Num(), bAcceptProjectedPose ? 1 : 0,
 					(GetPhysCOM() - OriginalCOM).Size(),
 					FMath::RadiansToDegrees(RotationAngle));
 				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
