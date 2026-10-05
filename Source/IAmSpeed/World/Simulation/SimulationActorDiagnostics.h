@@ -13,6 +13,28 @@ namespace Speed::ActorDiagnostics
 		SnapshotBodies, SnapshotPairs, SnapshotHash, Count };
 	struct FSample { double Milliseconds = 0; uint64 Queries = 0; uint64 Calls = 0; };
 	extern thread_local bool bEnabled;
+	struct FDiagnosticContext;
+	/** Same-thread, lexical capture. Caller buckets stay alive at their original addresses.
+	 * Construct inside analytic frame isolation when collecting private simulation phases.
+	 * Copy results before destruction; inclusive child phases must not be added to parents. */
+	class IAMSPEED_API FScopedCapture final
+	{
+	public:
+		explicit FScopedCapture(bool bCollect = true);
+		~FScopedCapture();
+		FScopedCapture(const FScopedCapture&) = delete;
+		FScopedCapture& operator=(const FScopedCapture&) = delete;
+		FScopedCapture(FScopedCapture&&) = delete;
+		FScopedCapture& operator=(FScopedCapture&&) = delete;
+		bool ReadFrameSample(EFramePhase Phase, FSample& Out) const;
+		bool ReadActorSample(uint64 Id, EPhase Phase, FSample& Out, int32& OutSubBodies) const;
+		uint64 GetOverflowScopes() const;
+	private:
+		TUniquePtr<FDiagnosticContext> Captured;
+		FDiagnosticContext* Previous = nullptr;
+		bool bPreviousEnabled = false;
+		uint32 ThreadId = 0;
+	};
 	/** Start an opt-in Fast-run diagnostic, with fixed storage for IDs 1..63. */
 	void BeginRun();
 	/** Emit aggregate per-actor phases once; overflow is explicitly reported. */
