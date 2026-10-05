@@ -26,6 +26,11 @@
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedHullContactContinuousAngularDrag(
+	TEXT("p.IAmSpeed.Suspension.HullContactContinuousAngularDrag"),
+	0,
+	TEXT("Experimental: preserve small real hull-contact angular response through continuous air drag."));
+
 static float SteeringInputCalibrationScale(const float Input)
 {
 	// RL steering capture calibration: preserve the signed input and apply the
@@ -2926,12 +2931,20 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 	const float pitch_drag = PitchDragCoeff;
 	const float yaw_drag = YawDragCoeff;
 
+	const UBoxSubBody* ContactHitbox = GetHitboxSubBodyForConfiguration();
+	const int32 ContactFrame = ContactHitbox ? ContactHitbox->GetLastResolvedGroundHitFrame() : INDEX_NONE;
+	const int32 CurrentFrame = static_cast<int32>(NumFrame());
+	const bool bContinuousContactDrag =
+		CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0 &&
+		ContactHitbox && ContactHitbox->HasPhysicsTickGroundContact() &&
+		ContactFrame >= 0 && ContactFrame >= CurrentFrame - 1 && ContactFrame <= CurrentFrame;
+
 	// compute new angular velocities along each axis
-	const float NewRollVelocity = FMath::Abs(RollVelocity) <= roll_drag * delta ? 0.0 :
+	const float NewRollVelocity = !bContinuousContactDrag && FMath::Abs(RollVelocity) <= roll_drag * delta ? 0.0 :
 		RollVelocity * (1.0 - roll_drag * delta);
-	const float NewPitchVelocity = FMath::Abs(PitchVelocity) <= pitch_drag * delta ? 0.0 :
+	const float NewPitchVelocity = !bContinuousContactDrag && FMath::Abs(PitchVelocity) <= pitch_drag * delta ? 0.0 :
 		PitchVelocity * (1.0 - pitch_drag * delta);
-	const float NewYawVelocity = FMath::Abs(YawVelocity) <= yaw_drag * delta ? 0.0 :
+	const float NewYawVelocity = !bContinuousContactDrag && FMath::Abs(YawVelocity) <= yaw_drag * delta ? 0.0 :
 		YawVelocity * (1.0 - yaw_drag * delta);
 
 	const FVector TargetAngularVelocity = NewRollVelocity * RollAxis + NewPitchVelocity * PitchAxis + NewYawVelocity * YawAxis;
