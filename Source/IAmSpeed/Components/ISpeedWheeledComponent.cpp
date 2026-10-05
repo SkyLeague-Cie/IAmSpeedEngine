@@ -1350,6 +1350,21 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const int32 Passes = FMath::Clamp(
 				CVarIAmSpeedWheelSupportProjectionPasses.GetValueOnAnyThread(), 1, 32);
 
+#if !(UE_BUILD_SHIPPING)
+			// Bounded read-only solver residuals; emit only when an existing final
+			// actual query rejects the proposed pose. No diagnostic contact queries.
+			struct FProjectionPassResidual
+			{
+				int32 Pass, Wheel;
+				bool bInitialHit;
+				double ReachGap, Clearance, ReachViolation;
+			};
+			TArray<FProjectionPassResidual, TInlineAllocator<128>> DiagnosticResiduals;
+			bool bDiagnosticResidualsTruncated = false;
+			const bool bRecordResiduals = bPreserveProbeHits &&
+				CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 4;
+#endif
+
 			auto ApplyConstraint = [this, RotationLengthSquared](
 				const FVector& Direction, const FVector& WorldPoint, const float Violation)
 			{
@@ -1411,6 +1426,33 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 						Probe.Wheel->WorldPos() - Probe.ProbeHit.ImpactPoint, N) - Radius;
 					ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance);
 				}
+#if !(UE_BUILD_SHIPPING)
+				if (bRecordResiduals)
+				{
+					for (int32 Index = 0; Index < Probes.Num(); ++Index)
+					{
+						const FGroundProbe& Probe = Probes[Index];
+						if (!Probe.bHasProbeHit && !EstablishedMisses.Contains(Index))
+						{
+							continue;
+						}
+						if (DiagnosticResiduals.Num() >= 128)
+						{
+							bDiagnosticResidualsTruncated = true;
+							continue;
+						}
+						const SHitResult& Plane = Probe.bHasProbeHit ? Probe.ProbeHit : Probe.PreviousHit;
+						const FVector N = Plane.ImpactNormal.GetSafeNormal();
+						FVector Start, End;
+						Probe.Wheel->GetSuspensionSweepSegment(delta, Start, End);
+						const double Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+						const double Gap = FVector::DotProduct(End - Plane.ImpactPoint, N) - Radius;
+						const double Clearance = FVector::DotProduct(Probe.Wheel->WorldPos() - Plane.ImpactPoint, N) - Radius;
+						DiagnosticResiduals.Add({Pass + 1, Probe.Wheel->Idx(), Probe.bHasProbeHit,
+							Gap, Clearance, Gap + static_cast<double>(ReachSkin)});
+					}
+				}
+#endif
 			}
 
 			FQuat RelativeRotation = (OriginalRotation.Inverse()
@@ -1455,6 +1497,18 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 								*CoupledPoseDiagnosticVector(Probe.ProbeHit.ImpactPoint), *CoupledPoseDiagnosticVector(InitialNormal),
 								*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()),
 								static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
+						}
+#endif
+#if !(UE_BUILD_SHIPPING)
+						if (bRecordResiduals)
+						{
+							for (const FProjectionPassResidual& Row : DiagnosticResiduals)
+							{
+								UE_LOG(LogTemp, Log,
+									TEXT("[WheelSupportProjectionPassResidual] ComponentFrame=%u RejectedWheel=%d Pass=%d Wheel=%d InitialHit=%d ReachGapCm=%.17g ClearanceCm=%.17g ReachViolationCm=%.17g Truncated=%d"),
+									NumFrame(), Probe.Wheel->Idx(), Row.Pass, Row.Wheel, Row.bInitialHit ? 1 : 0,
+									Row.ReachGap, Row.Clearance, Row.ReachViolation, bDiagnosticResidualsTruncated ? 1 : 0);
+							}
 						}
 #endif
 						bPreservedProbeHits = false;
