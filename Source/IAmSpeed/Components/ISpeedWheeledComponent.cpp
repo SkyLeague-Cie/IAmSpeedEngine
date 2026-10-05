@@ -1443,6 +1443,8 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 						// clearance solve as an initial hit. Use a real current query only.
 						SHitResult AcquiredHit;
 						if (Probe.Wheel->ProbeSuspensionOnGround(AcquiredHit, delta) &&
+							!AcquiredHit.Location.ContainsNaN() && !AcquiredHit.ImpactPoint.ContainsNaN() &&
+							!AcquiredHit.ImpactNormal.ContainsNaN() &&
 							AcquiredHit.SourceId == Probe.PreviousHit.SourceId &&
 							AcquiredHit.SurfaceId == Probe.PreviousHit.SurfaceId &&
 							FVector::DotProduct(AcquiredHit.ImpactNormal.GetSafeNormal(), N) >= 0.9f)
