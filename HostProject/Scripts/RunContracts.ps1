@@ -43,6 +43,9 @@ try {
     $ProjectRoot = Split-Path -Parent $PSScriptRoot
     $PluginRoot = Split-Path -Parent $ProjectRoot
     $PrivateParent = Assert-IAmSpeedPrivateRoot -PrivateRoot $PrivateRoot -EngineRoot $Engine.Root -PluginRoot $PluginRoot
+    $boundManifest = Assert-IAmSpeedPrivateUbtManifest -Path $DirectUbtRuntime.PrivateManifestPath -Sha256 $DirectUbtRuntime.PrivateManifestSha256 -EngineRoot $Engine.Root
+    $boundParent = [IO.Path]::GetFullPath($boundManifest.baseline_project_parent).TrimEnd('\')
+    if (-not $PrivateParent.StartsWith($boundParent + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Private CI output root must be a child of the manifest-bound parent.' }
     $TbbLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $Engine.Root
     $RulesSeedTbbLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $RulesSeedEngine.Root
     if (-not (Test-Path -LiteralPath $PrivateParent -PathType Container)) {
@@ -197,7 +200,7 @@ try {
         -ProjectFile $ProjectFile -TestFilter $TestFilter -LogPath $EditorLog `
         -ReportPath $AutomationReport
     $RulesEvidence.build_session = $BuildInvocation.SessionId
-    $RulesEvidence.build_trace_policy = 'explicit -Session argument suppresses UBT default Engine-side Trace.uba creation before environment parsing'
+    $RulesEvidence.build_trace_policy = 'bound root Build opens the manifest-qualified private trace required by the real UBA non-detour executor; Engine trace remains suppressed'
     $BuildExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -DotNetDirectory $BuildInvocation.DotNetDirectory -Action {
         Push-Location -LiteralPath $BuildInvocation.WorkingDirectory
         try {

@@ -156,6 +156,8 @@ function Assert-IAmSpeedPrivateUbtManifest {
     if ((Get-FileHash -LiteralPath $manifest.policy_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.policy_sha256) { throw 'Private Engine policy SHA differs.' }
     $policy = Get-Content -LiteralPath $manifest.policy_path -Raw | ConvertFrom-Json
     if ([IO.Path]::GetFullPath($policy.engine_root).TrimEnd('\') -ine (Join-Path $EngineRoot 'Engine') -or [IO.Path]::GetFullPath($policy.project_private_parent).TrimEnd('\') -ine [IO.Path]::GetFullPath($manifest.baseline_project_parent).TrimEnd('\')) { throw 'Private Engine policy binding differs.' }
+    $traceContract = 'Bound root Build only; private Trace required by real UBA non-detour executor. Query and recursive helper modes retain Session trace suppression.'
+    if ($manifest.private_root_trace_contract -cne $traceContract -or $policy.private_root_trace_contract -cne $traceContract) { throw 'Private root Build trace contract differs.' }
     return $manifest
 }
 
@@ -207,7 +209,7 @@ function New-IAmSpeedDirectUbtInvocation {
     if ($Runtime.PrivateUbt) {
         $private = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $root
         if ($Runtime.UbtPath -ine $private.ubt_path -or $Runtime.UbtSha256 -cne $private.ubt_sha256) { throw 'Private UBT invocation entry drift.' }
-        if ($Arguments -notcontains '-NoEngineChanges' -or $Arguments -notcontains '-UsePrecompiled' -or $Arguments -notcontains '-NoUBA') { throw 'Private UBT requires protected precompiled local build flags.' }
+        if ($Arguments -notcontains '-NoEngineChanges' -or $Arguments -notcontains '-UsePrecompiled' -or $Arguments -notcontains '-NoUBA') { throw 'Private UBT requires protected precompiled non-detour build flags.' }
     } else { $runtimePaths += [string]$Runtime.UbtPath }
     foreach ($path in $runtimePaths) {
         $full = [IO.Path]::GetFullPath($path)
@@ -219,7 +221,7 @@ function New-IAmSpeedDirectUbtInvocation {
         [string]$Runtime.DotNetSha256 -cne $script:IAmSpeedDotNetSha256 -or (-not $Runtime.PrivateUbt -and [string]$Runtime.UbtSha256 -cne $script:IAmSpeedUbtSha256)) {
         throw 'Direct UBT runtime metadata differs from the pinned bundled .NET and UBT pair.'
     }
-    if (@($Arguments | Where-Object { $_ -cmatch '^-Session=' }).Count -gt 0) { throw 'Direct UBT caller cannot override or duplicate its private trace-suppression session.' }
+    if (@($Arguments | Where-Object { $_ -cmatch '^-Session=' }).Count -gt 0) { throw 'Direct UBT caller cannot override or duplicate its private UBT session.' }
     $expectedWorkingDirectory = Join-Path $root 'Engine\Source'
     if ([IO.Path]::GetFullPath([string]$Runtime.WorkingDirectory).TrimEnd('\') -ine $expectedWorkingDirectory) { throw 'Direct UBT working directory must match Build.bat Engine\Source context.' }
     $rootArguments = @()

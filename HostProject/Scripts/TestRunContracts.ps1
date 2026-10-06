@@ -77,7 +77,7 @@ try {
         Assert-True ($privateRuntime.PrivateUbt -and $privateInvocation.Arguments[0] -ceq $privateRuntime.UbtPath -and $privateInvocation.Arguments -ccontains '-NoUBA' -and $privateInvocation.Arguments -ccontains "-RootDirectory=$targetExpectedRoot") 'private UBT preserves physical Engine root, NoUBA and exact private entry'
         Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $env:IAMSPEED_PRIVATE_UBT_MANIFEST -Sha256 ('0' * 64) -EngineRoot $targetEngineRoot } 'private runtime manifest digest drift'
         Assert-Throws { New-IAmSpeedDirectUbtInvocation -Runtime $privateRuntime -Arguments @($targetBuildArguments + '-RootDirectory=C:\Foreign') } 'private root override'
-        Assert-Throws { New-IAmSpeedDirectUbtInvocation -Runtime $privateRuntime -Arguments @($targetBuildArguments | Where-Object {$_ -cne '-NoUBA'}) } 'private route requires local executor'
+        Assert-Throws { New-IAmSpeedDirectUbtInvocation -Runtime $privateRuntime -Arguments @($targetBuildArguments | Where-Object {$_ -cne '-NoUBA'}) } 'private route requires non-detour UBA'
         $originalPolicy = [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process')
         $seenPolicy = Invoke-IAmSpeedPrivateEnginePolicy -Runtime $privateRuntime -Action { [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process') }
         Assert-True ($seenPolicy -ceq $privateRuntime.PrivateEnginePolicyPath) 'D build policy enabled in process scope'
@@ -184,8 +184,8 @@ try {
             '-UBARootDir=D:\Private\UBA')) {
         Assert-True ($buildArgs -ccontains $required) "build args contain $required"
     }
-    # UBA Init requires ITrace.GlobalTrace.Path; the protected -Session route suppresses that trace. Preserve the closed EC270 failure and require the local executor.
-    Assert-True ($buildArgs -ccontains '-NoUBA') 'protected session route uses local executor without Engine trace'
+    # UBA remains the actual executor with -NoUBA; the manifest-bound private runtime provides its root Build trace under -Session.
+    Assert-True ($buildArgs -ccontains '-NoUBA') 'protected session route requires UBA non-detour mode'
     Assert-True ($buildArgs -cnotcontains '-SkipRulesCompile') 'default build can compile fresh project rules'
     $skipBuildArgs = New-IAmSpeedBuildArguments -ProjectFile 'D:\Private\HostProject.uproject' `
         -LogPath 'D:\Private\Logs\build.log' -UbaRoot 'D:\Private\UBA' -SkipRulesCompile
@@ -201,7 +201,7 @@ try {
     Assert-True ($queryInvocation.Executable -ceq $expectedDotNet -and $queryInvocation.EngineRoot -ceq $expectedRulesSeedRoot -and $queryInvocation.Arguments[0] -ceq $expectedUbt) 'QueryTargets uses the exact private runtime and D Engine root'
     Assert-True ($queryInvocation.WorkingDirectory -ceq (Join-Path $expectedRulesSeedRoot 'Engine\Source')) 'QueryTargets retains Build.bat Engine\Source working directory'
     Assert-True (@($queryInvocation.Arguments | Where-Object { $_ -cmatch '^-Session=\{[0-9a-fA-F-]{36}\}$' }).Count -eq 1) 'QueryTargets supplies an explicit UBT session before trace initialization'
-    Assert-True ($queryInvocation.SessionId -cne $targetInvocation.SessionId) 'QueryTargets and target build have distinct trace-suppression sessions'
+    Assert-True ($queryInvocation.SessionId -cne $targetInvocation.SessionId) 'QueryTargets and target build have distinct private UBT sessions'
     Assert-True ($queryInvocation.Arguments -ccontains '-Mode=QueryTargets' -and $queryInvocation.Arguments -ccontains '-UsePrecompiled' -and $queryInvocation.Arguments -ccontains '-NoEngineChanges' -and $queryInvocation.Arguments -cnotcontains '-SkipRulesCompile') 'QueryTargets keeps private rules compilation while protecting Engine rules'
 
     $editorArgs = New-IAmSpeedEditorArguments -ProjectFile 'D:\Private\HostProject.uproject' `
