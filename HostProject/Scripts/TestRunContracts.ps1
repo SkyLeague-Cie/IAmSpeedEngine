@@ -36,6 +36,18 @@ try {
     $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineFixture
     Assert-True ($engine.Version -ceq '5.8.2' -and $engine.CompatibleChangelist -eq 55116800) 'exact UE 5.8.2 pin is accepted'
 
+    $rulesSeedRoot = $env:IAMSPEED_RULES_ENGINE_ROOT
+    if ([string]::IsNullOrWhiteSpace($rulesSeedRoot)) {
+        throw 'IAMSPEED_RULES_ENGINE_ROOT is required to validate the real pinned Rules seed returned to the runner.'
+    }
+    $rulesSeed = Assert-IAmSpeedRulesSeedRoot -EngineRoot $rulesSeedRoot
+    $expectedRulesSeedRoot = (Resolve-Path -LiteralPath $rulesSeedRoot).Path.TrimEnd('\')
+    $expectedRulesSeedBuild = Join-Path $expectedRulesSeedRoot 'Engine\Build\BatchFiles\Build.bat'
+    Assert-True ($rulesSeed.Root -ceq $expectedRulesSeedRoot) 'Rules seed object pins the resolved Engine root'
+    Assert-True ($rulesSeed.Build -ceq $expectedRulesSeedBuild) 'Rules seed object returns the Build.bat path used by QueryTargets'
+    $rulesSeedBuildCommand = Get-Command -Name $rulesSeed.Build -CommandType Application -ErrorAction Stop
+    Assert-True ($rulesSeedBuildCommand.Source -ceq $expectedRulesSeedBuild) 'Rules seed object Build path resolves as an invocable command'
+
     $PluginFixture = Join-Path $FixtureRoot 'PluginCheckout'
     $PluginProject = Join-Path $PluginFixture 'HostProject'
     New-Item -ItemType Directory -Path $PluginProject -Force | Out-Null
