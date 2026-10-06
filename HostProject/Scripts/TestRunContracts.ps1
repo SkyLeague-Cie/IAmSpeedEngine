@@ -73,6 +73,24 @@ try {
         UbtPath=$targetExpectedUbt; DotNetSha256=$script:IAmSpeedDotNetSha256; UbtSha256=$script:IAmSpeedUbtSha256
     }) -Arguments $targetBuildArguments } 'direct invocation rejects runtime paths outside the pinned Engine root'
 
+
+    if (-not [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST)) {
+        $privateRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $targetEngineRoot -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
+        $privateInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $privateRuntime -Arguments $targetBuildArguments
+        Assert-True ($privateRuntime.PrivateUbt -and $privateInvocation.Arguments[0] -ceq $privateRuntime.UbtPath -and $privateInvocation.Arguments -ccontains '-NoUBA' -and $privateInvocation.Arguments -ccontains "-RootDirectory=$targetExpectedRoot") 'private UBT preserves physical Engine root, NoUBA and exact private entry'
+        Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $env:IAMSPEED_PRIVATE_UBT_MANIFEST -Sha256 ('0' * 64) -EngineRoot $targetEngineRoot } 'private runtime manifest digest drift'
+        Assert-Throws { New-IAmSpeedDirectUbtInvocation -Runtime $privateRuntime -Arguments @($targetBuildArguments + '-RootDirectory=C:\Foreign') } 'private root override'
+        Assert-Throws { New-IAmSpeedDirectUbtInvocation -Runtime $privateRuntime -Arguments @($targetBuildArguments | Where-Object {$_ -cne '-NoUBA'}) } 'private route requires local executor'
+        $originalPolicy = [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process')
+        $seenPolicy = Invoke-IAmSpeedPrivateEnginePolicy -Runtime $privateRuntime -Action { [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process') }
+        Assert-True ($seenPolicy -ceq $privateRuntime.PrivateEnginePolicyPath) 'D build policy enabled in process scope'
+        Assert-True ([Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process') -ceq $originalPolicy) 'policy restored after success'
+        Assert-Throws { Invoke-IAmSpeedPrivateEnginePolicy -Runtime $privateRuntime -Action {throw 'fixture stop'} } 'policy action failure'
+        Assert-True ([Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process') -ceq $originalPolicy) 'policy restored after failure'
+        $seedPolicy = Invoke-IAmSpeedPrivateEnginePolicy -Runtime $rulesSeedRuntime -Action { [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process') }
+        Assert-True ([string]::IsNullOrEmpty($seedPolicy)) 'stock E1 seed does not inherit D private policy'
+    }
+
     $PluginFixture = Join-Path $FixtureRoot 'PluginCheckout'
     $PluginProject = Join-Path $PluginFixture 'HostProject'
     New-Item -ItemType Directory -Path $PluginProject -Force | Out-Null
@@ -169,7 +187,8 @@ try {
             '-UBARootDir=D:\Private\UBA')) {
         Assert-True ($buildArgs -ccontains $required) "build args contain $required"
     }
-    Assert-True ($buildArgs -cnotcontains '-NoUBA') 'private local UBA remains enabled'
+    # UBA Init requires ITrace.GlobalTrace.Path; the protected -Session route suppresses that trace. Preserve the closed EC270 failure and require the local executor.
+    Assert-True ($buildArgs -ccontains '-NoUBA') 'protected session route uses local executor without Engine trace'
     Assert-True ($buildArgs -cnotcontains '-SkipRulesCompile') 'default build can compile fresh project rules'
     $skipBuildArgs = New-IAmSpeedBuildArguments -ProjectFile 'D:\Private\HostProject.uproject' `
         -LogPath 'D:\Private\Logs\build.log' -UbaRoot 'D:\Private\UBA' -SkipRulesCompile

@@ -32,7 +32,7 @@ try {
         throw 'IAMSPEED_RULES_ENGINE_ROOT is required for isolated project-rules preparation.'
     }
     $RulesSeedEngine = Assert-IAmSpeedRulesSeedRoot -EngineRoot $RulesEngineRoot
-    $DirectUbtRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $Engine.Root
+    $DirectUbtRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $Engine.Root -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
     if ($RulesSeedEngine.Root -ieq $Engine.Root) {
         throw 'Rules seed root must be a separate qualified slot from the target Engine root.'
     }
@@ -190,6 +190,9 @@ try {
     $BuildInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $DirectUbtRuntime -Arguments $BuildArguments
     $BuildInvocationArguments = [string[]]$BuildInvocation.Arguments
     $RulesEvidence.build_invocation = $BuildInvocation
+    $RulesEvidence.private_ubt_manifest = $DirectUbtRuntime.PrivateManifestPath
+    $RulesEvidence.private_ubt_manifest_sha256 = $DirectUbtRuntime.PrivateManifestSha256
+    $RulesEvidence.private_engine_policy = $DirectUbtRuntime.PrivateEnginePolicyPath
     $EditorArguments = New-IAmSpeedEditorArguments `
         -ProjectFile $ProjectFile -TestFilter $TestFilter -LogPath $EditorLog `
         -ReportPath $AutomationReport
@@ -198,8 +201,10 @@ try {
     $BuildExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -DotNetDirectory $BuildInvocation.DotNetDirectory -Action {
         Push-Location -LiteralPath $BuildInvocation.WorkingDirectory
         try {
-            & $BuildInvocation.Executable @BuildInvocationArguments *> $BuildConsoleLog
-            [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+            Invoke-IAmSpeedPrivateEnginePolicy -Runtime $DirectUbtRuntime -Action {
+                & $BuildInvocation.Executable @BuildInvocationArguments *> $BuildConsoleLog
+                [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+            }
         }
         finally { Pop-Location }
     }

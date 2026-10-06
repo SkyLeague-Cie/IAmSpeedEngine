@@ -87,13 +87,69 @@ function Assert-IAmSpeedRulesSeedRoot {
     }
 }
 
+
+function Assert-IAmSpeedPhysicalFile {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $current = [IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        if (-not (Test-Path -LiteralPath $current)) { throw "Missing physical runtime input: $current" }
+        if ((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Runtime input alias: $current" }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+}
+
+function Assert-IAmSpeedPrivateUbtManifest {
+    param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][string]$Sha256, [Parameter(Mandatory=$true)][string]$EngineRoot)
+    Assert-IAmSpeedPhysicalFile $Path
+    if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Sha256) { throw 'Private UBT manifest SHA differs.' }
+    $manifest = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    if ($manifest.schema -cne 'sl.private-ubt-runtime/v1' -or [IO.Path]::GetFullPath($manifest.engine_root).TrimEnd('\') -ine [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')) { throw 'Private UBT physical Engine binding differs.' }
+    $runtimeRoot = [IO.Path]::GetFullPath($manifest.runtime_root).TrimEnd('\')
+    $enginePrefix = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\') + '\'
+    if ($runtimeRoot.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Private UBT runtime must be outside Engine.' }
+    $seen = @{}
+    foreach ($entry in $manifest.files) {
+        $file = [IO.Path]::GetFullPath((Join-Path $runtimeRoot ([string]$entry.relative)))
+        if (-not $file.StartsWith($runtimeRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or $seen.ContainsKey($file)) { throw 'Private UBT file scope or inventory differs.' }
+        Assert-IAmSpeedPhysicalFile $file
+        $item = Get-Item -LiteralPath $file
+        if ($item.Length -ne $entry.bytes -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256) { throw "Private UBT file drift: $file" }
+        $seen[$file] = $true
+    }
+    if (@(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File -Force).Count -ne $seen.Count) { throw 'Private UBT extra runtime file.' }
+    $ubt = Join-Path $runtimeRoot 'UnrealBuildTool.dll'
+    if ([IO.Path]::GetFullPath($manifest.ubt_path) -ine $ubt -or -not $seen.ContainsKey($ubt) -or (Get-FileHash -LiteralPath $ubt -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.ubt_sha256) { throw 'Private UBT entry assembly differs.' }
+    Assert-IAmSpeedPhysicalFile $manifest.policy_path
+    if ((Get-FileHash -LiteralPath $manifest.policy_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.policy_sha256) { throw 'Private Engine policy SHA differs.' }
+    $policy = Get-Content -LiteralPath $manifest.policy_path -Raw | ConvertFrom-Json
+    if ([IO.Path]::GetFullPath($policy.engine_root).TrimEnd('\') -ine (Join-Path $EngineRoot 'Engine') -or [IO.Path]::GetFullPath($policy.project_private_parent).TrimEnd('\') -ine [IO.Path]::GetFullPath($manifest.baseline_project_parent).TrimEnd('\')) { throw 'Private Engine policy binding differs.' }
+    return $manifest
+}
+
+function Invoke-IAmSpeedPrivateEnginePolicy {
+    param([Parameter(Mandatory=$true)][psobject]$Runtime,[Parameter(Mandatory=$true)][scriptblock]$Action)
+    $original = [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process')
+    try {
+        $policy = $null
+        if ($Runtime.PrivateUbt) { $policy = [string]$Runtime.PrivateEnginePolicyPath }
+        [Environment]::SetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY',$policy,'Process')
+        & $Action
+    }
+    finally { [Environment]::SetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY',$original,'Process') }
+}
+
 function Assert-IAmSpeedDirectUbtRuntime {
     [CmdletBinding()]
-    param([Parameter(Mandatory=$true)] [string]$EngineRoot)
+    param([Parameter(Mandatory=$true)] [string]$EngineRoot, [string]$PrivateManifestPath, [string]$PrivateManifestSha256)
 
     $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
     $dotnet = Join-Path $engine.Root 'Engine\Binaries\ThirdParty\DotNet\10.0\win-x64\dotnet.exe'
     $ubt = Join-Path $engine.Root 'Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll'
+    $private = $null
+    if (-not [string]::IsNullOrWhiteSpace($PrivateManifestPath)) {
+        $private = Assert-IAmSpeedPrivateUbtManifest -Path $PrivateManifestPath -Sha256 $PrivateManifestSha256 -EngineRoot $engine.Root
+        $ubt = [string]$private.ubt_path
+    }
     foreach ($path in @($dotnet, $ubt)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Pinned direct UBT runtime file is missing: $path" }
         if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Pinned direct UBT runtime file is a reparse point: $path" }
@@ -101,10 +157,10 @@ function Assert-IAmSpeedDirectUbtRuntime {
     $dotnetSha = (Get-FileHash -LiteralPath $dotnet -Algorithm SHA256).Hash.ToLowerInvariant()
     $ubtSha = (Get-FileHash -LiteralPath $ubt -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($dotnetSha -cne $script:IAmSpeedDotNetSha256) { throw "Pinned .NET host SHA-256 differs: $dotnetSha" }
-    if ($ubtSha -cne $script:IAmSpeedUbtSha256) { throw "Pinned UnrealBuildTool SHA-256 differs: $ubtSha" }
+    if ($null -eq $private -and $ubtSha -cne $script:IAmSpeedUbtSha256) { throw "Pinned UnrealBuildTool SHA-256 differs: $ubtSha" }
     $workingDirectory = Join-Path $engine.Root 'Engine\Source'
     if (-not (Test-Path -LiteralPath $workingDirectory -PathType Container)) { throw "Direct UBT working directory is missing: $workingDirectory" }
-    return [pscustomobject]@{ Root=$engine.Root; WorkingDirectory=$workingDirectory; DotNetPath=$dotnet; DotNetDirectory=(Split-Path -Parent $dotnet); DotNetVersion='10.0'; DotNetArchitecture='win-x64'; DotNetSha256=$dotnetSha; UbtPath=$ubt; UbtSha256=$ubtSha }
+    return [pscustomobject]@{ Root=$engine.Root; WorkingDirectory=$workingDirectory; DotNetPath=$dotnet; DotNetDirectory=(Split-Path -Parent $dotnet); DotNetVersion='10.0'; DotNetArchitecture='win-x64'; DotNetSha256=$dotnetSha; UbtPath=$ubt; UbtSha256=$ubtSha; PrivateUbt=($null -ne $private); PrivateManifestPath=$PrivateManifestPath; PrivateManifestSha256=$PrivateManifestSha256; PrivateEnginePolicyPath=$private.policy_path }
 }
 
 function New-IAmSpeedDirectUbtInvocation {
@@ -114,25 +170,36 @@ function New-IAmSpeedDirectUbtInvocation {
         [Parameter(Mandatory=$true)] [string[]]$Arguments
     )
     $root = [IO.Path]::GetFullPath([string]$Runtime.Root).TrimEnd('\')
-    foreach ($path in @([string]$Runtime.DotNetPath, [string]$Runtime.UbtPath)) {
+    $runtimePaths = @([string]$Runtime.DotNetPath)
+    if ($Runtime.PrivateUbt) {
+        $private = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $root
+        if ($Runtime.UbtPath -ine $private.ubt_path -or $Runtime.UbtSha256 -cne $private.ubt_sha256) { throw 'Private UBT invocation entry drift.' }
+        if ($Arguments -notcontains '-NoEngineChanges' -or $Arguments -notcontains '-UsePrecompiled' -or $Arguments -notcontains '-NoUBA') { throw 'Private UBT requires protected precompiled local build flags.' }
+    } else { $runtimePaths += [string]$Runtime.UbtPath }
+    foreach ($path in $runtimePaths) {
         $full = [IO.Path]::GetFullPath($path)
         if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Direct UBT runtime path escapes its pinned Engine root: $full" }
     }
     $expectedDotNetDirectory = Split-Path -Parent ([string]$Runtime.DotNetPath)
     if ([IO.Path]::GetFullPath([string]$Runtime.DotNetDirectory).TrimEnd('\') -ine [IO.Path]::GetFullPath($expectedDotNetDirectory).TrimEnd('\') -or
         [string]$Runtime.DotNetVersion -cne '10.0' -or [string]$Runtime.DotNetArchitecture -cne 'win-x64' -or
-        [string]$Runtime.DotNetSha256 -cne $script:IAmSpeedDotNetSha256 -or [string]$Runtime.UbtSha256 -cne $script:IAmSpeedUbtSha256) {
+        [string]$Runtime.DotNetSha256 -cne $script:IAmSpeedDotNetSha256 -or (-not $Runtime.PrivateUbt -and [string]$Runtime.UbtSha256 -cne $script:IAmSpeedUbtSha256)) {
         throw 'Direct UBT runtime metadata differs from the pinned bundled .NET and UBT pair.'
     }
     if (@($Arguments | Where-Object { $_ -cmatch '^-Session=' }).Count -gt 0) { throw 'Direct UBT caller cannot override or duplicate its private trace-suppression session.' }
     $expectedWorkingDirectory = Join-Path $root 'Engine\Source'
     if ([IO.Path]::GetFullPath([string]$Runtime.WorkingDirectory).TrimEnd('\') -ine $expectedWorkingDirectory) { throw 'Direct UBT working directory must match Build.bat Engine\Source context.' }
+    $rootArguments = @()
+    if ($Runtime.PrivateUbt) {
+        if (@($Arguments | Where-Object { $_ -imatch '^-RootDirectory=' }).Count -gt 0) { throw 'Private UBT caller cannot override physical Engine root.' }
+        $rootArguments = @("-RootDirectory=$root")
+    }
     $session = [guid]::NewGuid().ToString('B')
     return [pscustomobject]@{
         EngineRoot=$root
         WorkingDirectory=$expectedWorkingDirectory
         Executable=[string]$Runtime.DotNetPath
-        Arguments=[string[]](@([string]$Runtime.UbtPath) + @($Arguments) + @("-Session=$session"))
+        Arguments=[string[]](@([string]$Runtime.UbtPath) + @($Arguments) + $rootArguments + @("-Session=$session"))
         SessionId=$session
         DotNetDirectory=[string]$Runtime.DotNetDirectory
         DotNetVersion=[string]$Runtime.DotNetVersion
@@ -395,7 +462,7 @@ function New-IAmSpeedBuildArguments {
     $arguments.AddRange([string[]]@(
         'IAmSpeedHostProjectEditor', 'Win64', 'Development', "-Project=$ProjectFile",
         '-WaitMutex', '-NoHotReload', '-UsePrecompiled', '-NoEngineChanges',
-        '-NoXGE', '-NoFASTBuild', '-NoSNDBS', "-MaxParallelActions=$MaxParallelActions",
+        '-NoXGE', '-NoFASTBuild', '-NoSNDBS', '-NoUBA', "-MaxParallelActions=$MaxParallelActions",
         "-UBARootDir=$UbaRoot", '-UBAStoreCapacityGb=4', "-UBAMaxWorkers=$UbaMaxWorkers",
         '-UBADisableRemote', '-UBADisableHorde', '-SLPrivateProjectResources', "-Log=$LogPath"
     ))
