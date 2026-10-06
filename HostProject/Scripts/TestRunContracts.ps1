@@ -74,6 +74,28 @@ try {
     Assert-Throws { Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -Action { throw 'fixture action failure' } } 'TBB action exception is propagated'
     Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'process PATH is restored after failed action'
 
+    $SnapshotFixtureRoot = Join-Path $FixtureRoot 'RulesSnapshotEngine'
+    $SnapshotRulesDirectory = Join-Path $SnapshotFixtureRoot 'Engine\Intermediate\Build\BuildRules'
+    New-Item -ItemType Directory -Path $SnapshotRulesDirectory -Force | Out-Null
+    $SnapshotNames = @('UE5Rules.dll', 'UE5Rules.pdb', 'UE5RulesManifest.json',
+        'UE5ProgramRules.dll', 'UE5ProgramRules.pdb', 'UE5ProgramRulesManifest.json')
+    foreach ($name in $SnapshotNames) { [IO.File]::WriteAllText((Join-Path $SnapshotRulesDirectory $name), "before-$name") }
+    $snapshotBefore = Get-IAmSpeedRulesSnapshot -EngineRoot $SnapshotFixtureRoot
+    Assert-True (Assert-IAmSpeedRulesSnapshotUnchanged -Before $snapshotBefore -After (Get-IAmSpeedRulesSnapshot -EngineRoot $SnapshotFixtureRoot) -Label 'fixture') 'unchanged six-file rules snapshot is accepted'
+    $changedDll = Join-Path $SnapshotRulesDirectory 'UE5Rules.dll'
+    [IO.File]::WriteAllText($changedDll, 'changed-bytes')
+    $changedBytesSnapshot = Get-IAmSpeedRulesSnapshot -EngineRoot $SnapshotFixtureRoot
+    Assert-Throws { Assert-IAmSpeedRulesSnapshotUnchanged -Before $snapshotBefore -After $changedBytesSnapshot -Label 'fixture bytes' } 'Engine rules byte change is rejected without rebaseline'
+    [IO.File]::WriteAllText($changedDll, 'before-UE5Rules.dll')
+    $originalDllTime = [DateTime]::new([long]$snapshotBefore.files[0].lastWriteUtcTicks, [DateTimeKind]::Utc)
+    (Get-Item -LiteralPath $changedDll).LastWriteTimeUtc = $originalDllTime
+    (Get-Item -LiteralPath $changedDll).LastWriteTimeUtc = $originalDllTime.AddSeconds(1)
+    $changedTimeSnapshot = Get-IAmSpeedRulesSnapshot -EngineRoot $SnapshotFixtureRoot
+    Assert-Throws { Assert-IAmSpeedRulesSnapshotUnchanged -Before $snapshotBefore -After $changedTimeSnapshot -Label 'fixture timestamp' } 'Engine rules timestamp-only change is rejected'
+    (Get-Item -LiteralPath $changedDll).LastWriteTimeUtc = $originalDllTime
+    Remove-Item -LiteralPath (Join-Path $SnapshotRulesDirectory 'UE5Rules.pdb') -Force
+    Assert-Throws { Get-IAmSpeedRulesSnapshot -EngineRoot $SnapshotFixtureRoot } 'missing Engine rules file is rejected'
+
     $buildArgs = New-IAmSpeedBuildArguments -ProjectFile 'D:\Private\HostProject.uproject' `
         -LogPath 'D:\Private\Logs\build.log' -UbaRoot 'D:\Private\UBA' -MaxParallelActions 4 -UbaMaxWorkers 4
     foreach ($required in @('-WaitMutex', '-NoHotReload', '-UsePrecompiled', '-NoEngineChanges',
@@ -84,6 +106,17 @@ try {
         Assert-True ($buildArgs -ccontains $required) "build args contain $required"
     }
     Assert-True ($buildArgs -cnotcontains '-NoUBA') 'private local UBA remains enabled'
+    Assert-True ($buildArgs -cnotcontains '-SkipRulesCompile') 'default build can compile fresh project rules'
+    $skipBuildArgs = New-IAmSpeedBuildArguments -ProjectFile 'D:\Private\HostProject.uproject' `
+        -LogPath 'D:\Private\Logs\build.log' -UbaRoot 'D:\Private\UBA' -SkipRulesCompile
+    Assert-True ($skipBuildArgs -ccontains '-SkipRulesCompile') 'target build can load the already staged project rules without compiling Engine rules'
+
+    $rulesQueryArgs = New-IAmSpeedProjectRulesQueryArguments -ProjectFile 'D:\Private\HostProject\IAmSpeedHostProject.uproject' `
+        -OutputPath 'D:\Private\Automation\TargetInfo.json' -LogPath 'D:\Private\Logs\RulesQuery.log'
+    Assert-True ($rulesQueryArgs -ccontains '-Mode=QueryTargets') 'rules preparation uses UBT QueryTargets only'
+    Assert-True ($rulesQueryArgs -ccontains '-UsePrecompiled') 'rules preparation loads the pinned seed Engine rules'
+    Assert-True ($rulesQueryArgs -cnotcontains '-SkipRulesCompile') 'QueryTargets compiles the fresh private project rules'
+    Assert-True (@($rulesQueryArgs | Where-Object { $_ -match '^-Output=D:\\Private\\' }).Count -eq 1) 'QueryTargets output is private'
 
     $editorArgs = New-IAmSpeedEditorArguments -ProjectFile 'D:\Private\HostProject.uproject' `
         -TestFilter 'IAmSpeed.AnalyticWorld' -LogPath 'D:\Private\Logs\automation.log' `
@@ -133,7 +166,7 @@ try {
         [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors) | Out-Null
         Assert-True ($parseErrors.Count -eq 0) "PowerShell 5 parser accepts $path"
     }
-    Write-Output 'PASS engine and private-root pins, process-only qualified TBB loader, bounded/private build args, strict automation report, and PATH restoration'
+    Write-Output 'PASS split UBT rules preparation, six-file Engine-rule immutability, process-only TBB, bounded build, strict reports, and PATH restoration'
 }
 finally {
     $resolvedFixture = [IO.Path]::GetFullPath($FixtureRoot).TrimEnd('\')

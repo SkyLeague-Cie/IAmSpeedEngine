@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$EngineRoot = $env:IAMSPEED_UE_ROOT,
+    [string]$RulesEngineRoot = $env:IAMSPEED_RULES_ENGINE_ROOT,
     [string]$PrivateRoot = $env:IAMSPEED_PRIVATE_ROOT,
     [string]$TestFilter = 'IAmSpeed.AnalyticWorld',
     [ValidateRange(1, 8)] [int]$MaxParallelActions = 4,
@@ -18,12 +19,22 @@ $EnvironmentNames = @(
 )
 $OriginalEnvironment = @{}
 $TbbLoader = $null
+$RulesSeedTbbLoader = $null
+$RulesEvidence = $null
 foreach ($name in $EnvironmentNames) {
     $OriginalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
 try {
     $Engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
+    if ([string]::IsNullOrWhiteSpace($RulesEngineRoot)) {
+        throw 'IAMSPEED_RULES_ENGINE_ROOT is required for isolated project-rules preparation.'
+    }
+    $RulesSeedEngine = Assert-IAmSpeedRulesSeedRoot -EngineRoot $RulesEngineRoot
+    if ($RulesSeedEngine.Root -ieq $Engine.Root) {
+        throw 'Rules seed root must be a separate qualified slot from the target Engine root.'
+    }
+    $PrecompiledEngineRules = Assert-IAmSpeedPrecompiledRules -EngineRoot $Engine.Root
     if ([string]::IsNullOrWhiteSpace($TestFilter) -or
         $TestFilter -notmatch '^IAmSpeed\.AnalyticWorld(?:\.[A-Za-z0-9_.]+)?$') {
         throw "Unsupported physical-contract test filter: $TestFilter"
@@ -33,6 +44,7 @@ try {
     $PluginRoot = Split-Path -Parent $ProjectRoot
     $PrivateParent = Assert-IAmSpeedPrivateRoot -PrivateRoot $PrivateRoot -EngineRoot $Engine.Root -PluginRoot $PluginRoot
     $TbbLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $Engine.Root
+    $RulesSeedTbbLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $RulesSeedEngine.Root
     if (-not (Test-Path -LiteralPath $PrivateParent -PathType Container)) {
         New-Item -ItemType Directory -Path $PrivateParent -Force | Out-Null
     }
@@ -88,47 +100,127 @@ try {
     $EditorOutputLog = Join-Path $Logs 'Automation.stdout.log'
     $EditorErrorLog = Join-Path $Logs 'Automation.stderr.log'
     $ReportIndex = Join-Path $AutomationReport 'index.json'
+    $RulesQueryLog = Join-Path $Logs 'ProjectRules.QueryTargets.log'
+    $RulesQueryConsoleLog = Join-Path $Logs 'ProjectRules.QueryTargets.console.log'
+    $RulesTargetInfo = Join-Path $AutomationReport 'ProjectRules.TargetInfo.json'
+    $RulesAssemblyDirectory = Join-Path $PrivateProject 'Intermediate\Build\BuildRules'
+    $RulesAssemblyPath = Join-Path $RulesAssemblyDirectory 'IAmSpeedHostProjectModuleRules.dll'
+    $RulesPdbPath = Join-Path $RulesAssemblyDirectory 'IAmSpeedHostProjectModuleRules.pdb'
+    $RulesManifestPath = Join-Path $RulesAssemblyDirectory 'IAmSpeedHostProjectModuleRulesManifest.json'
+    $SeedRulesBeforeQuery = Get-IAmSpeedRulesSnapshot -EngineRoot $RulesSeedEngine.Root
+    $TargetRulesBeforeQuery = Get-IAmSpeedRulesSnapshot -EngineRoot $Engine.Root
+    $RulesEvidence = [ordered]@{
+        seed_engine_root = $RulesSeedEngine.Root
+        target_engine_root = $Engine.Root
+        seed_before_query = $SeedRulesBeforeQuery
+        target_before_query = $TargetRulesBeforeQuery
+    }
+
+    $RulesQueryArguments = New-IAmSpeedProjectRulesQueryArguments `
+        -ProjectFile $ProjectFile -OutputPath $RulesTargetInfo -LogPath $RulesQueryLog
+    $RulesQueryArguments += @('-NoXGE', '-NoFASTBuild', '-NoSNDBS', '-MaxParallelActions=1')
+    $RulesQueryExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $RulesSeedTbbLoader.LoaderDirectory -Action {
+        & $RulesSeedEngine.Build @RulesQueryArguments *> $RulesQueryConsoleLog
+        [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+    }
+    $SeedRulesAfterQuery = Get-IAmSpeedRulesSnapshot -EngineRoot $RulesSeedEngine.Root
+    $TargetRulesAfterQuery = Get-IAmSpeedRulesSnapshot -EngineRoot $Engine.Root
+    $RulesEvidence.seed_after_query = $SeedRulesAfterQuery
+    $RulesEvidence.target_after_query = $TargetRulesAfterQuery
+    Assert-IAmSpeedRulesSnapshotUnchanged -Before $SeedRulesBeforeQuery -After $SeedRulesAfterQuery -Label 'Rules-seed QueryTargets'
+    Assert-IAmSpeedRulesSnapshotUnchanged -Before $TargetRulesBeforeQuery -After $TargetRulesAfterQuery -Label 'Target Engine during QueryTargets'
+    $RulesQueryExitCode = $RulesQueryExecution.ExitCode
+    if ($RulesQueryExitCode -ne 0) {
+        throw "Private project-rules QueryTargets failed with exit code $RulesQueryExitCode. See $RulesQueryLog."
+    }
+    if (-not (Test-Path -LiteralPath $RulesTargetInfo -PathType Leaf) -or
+        -not (Select-String -LiteralPath $RulesTargetInfo -SimpleMatch 'IAmSpeedHostProjectEditor' -Quiet)) {
+        throw "QueryTargets did not report IAmSpeedHostProjectEditor: $RulesTargetInfo"
+    }
+    foreach ($path in @($RulesAssemblyPath, $RulesPdbPath, $RulesManifestPath)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path -Force).Length -le 0) {
+            throw "QueryTargets did not emit a private project-rules artifact: $path"
+        }
+    }
+    $RulesManifest = Get-Content -LiteralPath $RulesManifestPath -Raw | ConvertFrom-Json
+    if ($RulesManifest.EngineVersion -cne '5.8.2' -or @($RulesManifest.SourceFiles).Count -lt 2) {
+        throw "Private project-rules manifest is invalid: $RulesManifestPath"
+    }
+    $PrivateProjectPrefix = [IO.Path]::GetFullPath($PrivateProject).TrimEnd('\') + '\'
+    $PluginSourcePrefix = [IO.Path]::GetFullPath($PluginRoot).TrimEnd('\') + '\'
+    foreach ($source in $RulesManifest.SourceFiles) {
+        $fullSource = [IO.Path]::GetFullPath([string]$source)
+        $isPrivateProjectSource = $fullSource.StartsWith($PrivateProjectPrefix, [StringComparison]::OrdinalIgnoreCase)
+        $isAllowedPluginSource = $fullSource.StartsWith($PluginSourcePrefix, [StringComparison]::OrdinalIgnoreCase)
+        if ((-not $isPrivateProjectSource -and -not $isAllowedPluginSource) -or
+            -not (Test-Path -LiteralPath $fullSource -PathType Leaf)) {
+            throw "Project-rules manifest source escapes the private HostProject and its linked IAmSpeed plugin source: $fullSource"
+        }
+    }
+    $RulesAssemblyEvidence = [pscustomobject]@{
+        query_engine_root = $RulesSeedEngine.Root
+        query_ubt_sha256 = $RulesSeedEngine.UbtSha256
+        target_info = $RulesTargetInfo
+        rules_assembly = [pscustomobject]@{ path=$RulesAssemblyPath; bytes=(Get-Item $RulesAssemblyPath).Length; sha256=(Get-FileHash $RulesAssemblyPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+        rules_pdb = [pscustomobject]@{ path=$RulesPdbPath; bytes=(Get-Item $RulesPdbPath).Length; sha256=(Get-FileHash $RulesPdbPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+        rules_manifest = [pscustomobject]@{ path=$RulesManifestPath; sha256=(Get-FileHash $RulesManifestPath -Algorithm SHA256).Hash.ToLowerInvariant(); source_count=@($RulesManifest.SourceFiles).Count }
+        engine_rules_inputs = $PrecompiledEngineRules.Files
+    }
 
     $BuildArguments = New-IAmSpeedBuildArguments `
         -ProjectFile $ProjectFile -LogPath $BuildLog -UbaRoot $UbaRoot `
-        -MaxParallelActions $MaxParallelActions -UbaMaxWorkers $UBAMaxWorkers
+        -MaxParallelActions $MaxParallelActions -UbaMaxWorkers $UBAMaxWorkers -SkipRulesCompile
     $EditorArguments = New-IAmSpeedEditorArguments `
         -ProjectFile $ProjectFile -TestFilter $TestFilter -LogPath $EditorLog `
         -ReportPath $AutomationReport
-    $Execution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -Action {
+    $BuildExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -Action {
         & $Build @BuildArguments *> $BuildConsoleLog
-        $BuildExitCode = $LASTEXITCODE
-        if ($BuildExitCode -ne 0) {
-            throw "HostProject editor build failed with exit code $BuildExitCode. See $BuildLog."
-        }
+        [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+    }
+    $BuildExitCode = $BuildExecution.ExitCode
+    $SeedRulesAfterBuild = Get-IAmSpeedRulesSnapshot -EngineRoot $RulesSeedEngine.Root
+    $TargetRulesAfterBuild = Get-IAmSpeedRulesSnapshot -EngineRoot $Engine.Root
+    $RulesEvidence.seed_after_build = $SeedRulesAfterBuild
+    $RulesEvidence.target_after_build = $TargetRulesAfterBuild
+    Assert-IAmSpeedRulesSnapshotUnchanged -Before $SeedRulesBeforeQuery -After $SeedRulesAfterBuild -Label 'Rules seed during target build'
+    Assert-IAmSpeedRulesSnapshotUnchanged -Before $TargetRulesBeforeQuery -After $TargetRulesAfterBuild -Label 'Target Engine during target build'
+    if ($BuildExitCode -ne 0) {
+        throw "HostProject editor build failed with exit code $BuildExitCode. See $BuildLog."
+    }
 
+    $EditorExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -Action {
         $EditorOutput = & $Editor @EditorArguments 2> $EditorErrorLog
         $EditorExitCode = $LASTEXITCODE
         [IO.File]::WriteAllText($EditorOutputLog, (($EditorOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
-        $Automation = Assert-IAmSpeedAutomationResult `
-            -ExitCode $EditorExitCode -StandardOutput (Get-Content -Raw -LiteralPath $EditorOutputLog) `
-            -ReportPath $ReportIndex -TestFilter $TestFilter
-        [pscustomobject]@{
-            BuildExitCode = $BuildExitCode
-            EditorExitCode = $EditorExitCode
-            Automation = $Automation
-        }
+        [pscustomobject]@{ ExitCode=$EditorExitCode }
     }
-    $BuildExitCode = $Execution.BuildExitCode
-    $EditorExitCode = $Execution.EditorExitCode
-    $Automation = $Execution.Automation
+    $EditorExitCode = $EditorExecution.ExitCode
+    $SeedRulesAfterEditor = Get-IAmSpeedRulesSnapshot -EngineRoot $RulesSeedEngine.Root
+    $TargetRulesAfterEditor = Get-IAmSpeedRulesSnapshot -EngineRoot $Engine.Root
+    $RulesEvidence.seed_after_editor = $SeedRulesAfterEditor
+    $RulesEvidence.target_after_editor = $TargetRulesAfterEditor
+    Assert-IAmSpeedRulesSnapshotUnchanged -Before $SeedRulesBeforeQuery -After $SeedRulesAfterEditor -Label 'Rules seed during Automation'
+    Assert-IAmSpeedRulesSnapshotUnchanged -Before $TargetRulesBeforeQuery -After $TargetRulesAfterEditor -Label 'Target Engine during Automation'
+    $Automation = Assert-IAmSpeedAutomationResult `
+        -ExitCode $EditorExitCode -StandardOutput (Get-Content -Raw -LiteralPath $EditorOutputLog) `
+        -ReportPath $ReportIndex -TestFilter $TestFilter
 
     $Result = [pscustomobject]@{
         status = 'passed'
         engine_root = $Engine.Root
         engine_version = $Engine.Version
         compatible_changelist = $Engine.CompatibleChangelist
+        project_rules_precompile = $RulesAssemblyEvidence
+        engine_rule_write_guard = $RulesEvidence
         tbb_loader_dll = $TbbLoader.DllPath
         tbb_loader_directory = $TbbLoader.LoaderDirectory
         tbb_loader_source = $TbbLoader.Source
         tbb_loader_sha256 = $TbbLoader.Sha256
         tbb_fallback_sha_validated = $TbbLoader.FallbackShaValidated
         tbb_loader_path_scope = 'process-only; restored after build and automation'
+        rules_seed_engine_root = $RulesSeedEngine.Root
+        rules_seed_tbb_loader_dll = $RulesSeedTbbLoader.DllPath
+        rules_seed_tbb_loader_sha256 = $RulesSeedTbbLoader.Sha256
         private_run_root = $RunRoot
         host_project = $ProjectFile
         test_filter = $TestFilter
@@ -138,8 +230,8 @@ try {
         build_exit_code = $BuildExitCode
         editor_exit_code = $EditorExitCode
     }
-    $Result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Logs 'result.json') -Encoding UTF8
-    Write-Output ($Result | ConvertTo-Json -Depth 4 -Compress)
+    $Result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Logs 'result.json') -Encoding UTF8
+    Write-Output ($Result | ConvertTo-Json -Depth 12 -Compress)
 }
 catch {
     if ($RunRoot -and (Test-Path -LiteralPath (Join-Path $RunRoot 'Logs') -PathType Container)) {
@@ -153,8 +245,12 @@ catch {
             tbb_loader_sha256=if ($TbbLoader) { $TbbLoader.Sha256 } else { $null }
             tbb_fallback_sha_validated=if ($TbbLoader) { $TbbLoader.FallbackShaValidated } else { $false }
             tbb_loader_path_scope='process-only; restored by finally'
+            engine_rule_write_guard=$RulesEvidence
+            rules_seed_engine_root=if ($RulesSeedEngine) { $RulesSeedEngine.Root } else { $null }
+            rules_seed_tbb_loader_dll=if ($RulesSeedTbbLoader) { $RulesSeedTbbLoader.DllPath } else { $null }
+            rules_seed_tbb_loader_sha256=if ($RulesSeedTbbLoader) { $RulesSeedTbbLoader.Sha256 } else { $null }
         }
-        $failure | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $RunRoot 'Logs\result.json') -Encoding UTF8
+        $failure | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $RunRoot 'Logs\result.json') -Encoding UTF8
     }
     throw
 }
