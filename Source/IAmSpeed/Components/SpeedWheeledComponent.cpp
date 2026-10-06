@@ -855,6 +855,7 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 	if (UWorld* World = GetWorld())
 		for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
 		{
+			const bool bWasPausedBeforeRemoval = It->IsOwnedSimulationPaused();
 			const auto Boundary = It->TryPauseOwnedSimulation();
 			// Unstarted inline fixtures have no driver-owned execution lane.
 			if (Boundary == ESimulationQuiescence::AlreadyStopped && !It->HasActorBegunPlay()
@@ -885,6 +886,9 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 				if (!RetireSpeedWorldAdapterBeforeTeardown())
 					UE_LOG(SpeedInputLog, Fatal, TEXT("Produced adapter removal was not acknowledged before storage teardown"));
 				It->ResumeOwnedBoundaryService();
+				// Resume survivors only after removal ACK; preserve an existing world pause.
+				if (!bWasPausedBeforeRemoval && !World->bIsTearingDown)
+					It->ResumeOwnedSimulation();
 				return;
 			}
 			// Orphan/scenario owners still bound to the actor must close on their
