@@ -177,6 +177,71 @@ function Assert-IAmSpeedPrivateUbtManifest {
     return $manifest
 }
 
+function Assert-IAmSpeedPrivateCacheBinding {
+    param([Parameter(Mandatory=$true)][psobject]$Runtime,[Parameter(Mandatory=$true)][string]$ExpectedCacheRoot)
+    if (-not $Runtime.PrivateUbt -or [string]::IsNullOrWhiteSpace($Runtime.PrivateManifestPath)) {
+        throw 'Private cache binding requires the sealed private UBT runtime.'
+    }
+    $expected = [IO.Path]::GetFullPath($ExpectedCacheRoot).TrimEnd('\')
+    $manifest = Get-Content -LiteralPath $Runtime.PrivateManifestPath -Raw | ConvertFrom-Json
+    $policy = Get-Content -LiteralPath $Runtime.PrivateEnginePolicyPath -Raw | ConvertFrom-Json
+    $manifestParent = [IO.Path]::GetFullPath([string]$manifest.baseline_project_parent).TrimEnd('\')
+    $policyParent = [IO.Path]::GetFullPath([string]$policy.project_private_parent).TrimEnd('\')
+    $policyCache = [IO.Path]::GetFullPath([string]$policy.private_cache_root).TrimEnd('\')
+    if ($manifestParent -ine $policyParent -or $policyCache -ine $expected) {
+        throw "Private UBT cache binding differs from the current CI root: expected $expected; manifest parent $manifestParent; policy parent $policyParent; policy cache $policyCache"
+    }
+    return [pscustomobject]@{ ExpectedCacheRoot=$expected; ManifestParent=$manifestParent; PolicyParent=$policyParent; PolicyCacheRoot=$policyCache }
+}
+
+function Assert-IAmSpeedEditorTargetInfoFresh {
+    param([Parameter(Mandatory=$true)][string]$TargetInfoPath,[Parameter(Mandatory=$true)][string]$ProjectRoot)
+    if (-not (Test-Path -LiteralPath $TargetInfoPath -PathType Leaf)) { throw "Editor TargetInfo is missing: $TargetInfoPath" }
+    $targetInfo = Get-Content -LiteralPath $TargetInfoPath -Raw | ConvertFrom-Json
+    $targets = @($targetInfo.Targets)
+    if ($targets.Count -eq 0) { throw 'Editor TargetInfo has no target entries.' }
+    $targetNames = @($targets | ForEach-Object { [string]$_.Name })
+    if (@($targetNames | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0 -or
+        @($targets | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Path) -or [string]$_.Type -eq 'Unknown' }).Count -gt 0) {
+        throw 'Editor TargetInfo contains an invalid name, path, or type.'
+    }
+    $targetInfoItem = Get-Item -LiteralPath $TargetInfoPath
+    $targetInfoTime = $targetInfoItem.LastWriteTimeUtc
+    $resolvedTargetPaths = @()
+    foreach ($target in $targets) {
+        $targetPath = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $TargetInfoPath) ([string]$target.Path)))
+        if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) { throw "Editor TargetInfo target path is missing: $targetPath" }
+        $resolvedTargetPaths += $targetPath
+    }
+    $remainingNames = [Collections.Generic.List[string]]::new()
+    foreach ($name in $targetNames) { if (-not $remainingNames.Contains($name)) { $remainingNames.Add($name) } }
+    $originalNames = @($remainingNames.ToArray())
+    $targetFiles = @()
+    foreach ($directoryName in @('Source','Plugins','Platforms','Restricted')) {
+        $directory = Join-Path $ProjectRoot $directoryName
+        if (Test-Path -LiteralPath $directory -PathType Container) {
+            $targetFiles += @(Get-ChildItem -LiteralPath $directory -Recurse -File -Filter '*.Target.cs' -ErrorAction Stop)
+        }
+    }
+    foreach ($targetFile in $targetFiles) {
+        $targetName = $targetFile.Name.Substring(0, $targetFile.Name.Length - '.Target.cs'.Length)
+        $suffixParts = $targetName.Split(@('_'), 2, [StringSplitOptions]::None)
+        if ($suffixParts.Count -gt 1 -and $originalNames -ccontains $suffixParts[0]) { continue }
+        if ($targetFile.LastWriteTimeUtc -ge $targetInfoTime) { throw "Editor TargetInfo predates project target source: $($targetFile.FullName)" }
+        [void]$remainingNames.Remove($targetName)
+    }
+    if ($remainingNames.Count -gt 0) { throw "Editor TargetInfo is missing project targets: $($remainingNames -join ', ')" }
+    return [pscustomobject]@{
+        path=[IO.Path]::GetFullPath($TargetInfoPath)
+        sha256=(Get-FileHash -LiteralPath $TargetInfoPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        bytes=$targetInfoItem.Length
+        last_write_utc=$targetInfoTime.ToString('o')
+        target_count=$targets.Count
+        project_target_source_count=$targetFiles.Count
+        resolved_target_paths=$resolvedTargetPaths
+    }
+}
+
 function Invoke-IAmSpeedPrivateEnginePolicy {
     param([Parameter(Mandatory=$true)][psobject]$Runtime,[Parameter(Mandatory=$true)][scriptblock]$Action)
     $original = [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process')
@@ -347,7 +412,8 @@ function New-IAmSpeedProjectRulesQueryArguments {
     )
     return [string[]]@(
         '-Mode=QueryTargets', "-Project=$ProjectFile", "-Output=$OutputPath",
-        '-UsePrecompiled', '-NoEngineChanges', '-NoUBA', '-SLPrivateProjectResources', "-Log=$LogPath"
+        '-UsePrecompiled', '-NoEngineChanges', '-NoUBA', '-SLPrivateProjectResources',
+        '-IncludeAllTargets', '-DontIncludeParentAssembly', '-DontIncludeProgramTargets', "-Log=$LogPath"
     )
 }
 

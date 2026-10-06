@@ -73,6 +73,12 @@ try {
 
     if (-not [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST)) {
         $privateRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $targetEngineRoot -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
+        $privateManifest = Get-Content -LiteralPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -Raw | ConvertFrom-Json
+        $privatePolicy = Get-Content -LiteralPath $privateRuntime.PrivateEnginePolicyPath -Raw | ConvertFrom-Json
+        $expectedCache = $privatePolicy.private_cache_root
+        $privateCacheBinding = Assert-IAmSpeedPrivateCacheBinding -Runtime $privateRuntime -ExpectedCacheRoot $expectedCache
+        Assert-True ($privateCacheBinding.ManifestParent -ceq $privateCacheBinding.PolicyParent) 'private UBT manifest and policy bind the same private root'
+        Assert-Throws { Assert-IAmSpeedPrivateCacheBinding -Runtime $privateRuntime -ExpectedCacheRoot (Join-Path $env:TEMP 'wrong-private-cache') } 'stale private UBT cache root is rejected before execution'
         $privateInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $privateRuntime -Arguments $targetBuildArguments
         Assert-True ($privateRuntime.PrivateUbt -and $privateInvocation.Arguments[0] -ceq $privateRuntime.UbtPath -and $privateInvocation.Arguments -ccontains '-NoUBA' -and $privateInvocation.Arguments -ccontains "-RootDirectory=$targetExpectedRoot") 'private UBT preserves physical Engine root, NoUBA and exact private entry'
         Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $env:IAMSPEED_PRIVATE_UBT_MANIFEST -Sha256 ('0' * 64) -EngineRoot $targetEngineRoot } 'private runtime manifest digest drift'
@@ -192,17 +198,47 @@ try {
     Assert-True ($skipBuildArgs -ccontains '-SkipRulesCompile') 'target build can load the already staged project rules without compiling Engine rules'
 
     $rulesQueryArgs = New-IAmSpeedProjectRulesQueryArguments -ProjectFile 'D:\Private\HostProject\IAmSpeedHostProject.uproject' `
-        -OutputPath 'D:\Private\Automation\TargetInfo.json' -LogPath 'D:\Private\Logs\RulesQuery.log'
+        -OutputPath 'D:\Private\HostProject\Intermediate\TargetInfo.json' -LogPath 'D:\Private\Logs\RulesQuery.log'
     Assert-True ($rulesQueryArgs -ccontains '-Mode=QueryTargets') 'rules preparation uses UBT QueryTargets only'
     Assert-True ($rulesQueryArgs -ccontains '-UsePrecompiled') 'rules preparation loads the pinned seed Engine rules'
     Assert-True ($rulesQueryArgs -cnotcontains '-SkipRulesCompile') 'QueryTargets compiles the fresh private project rules'
-    Assert-True (@($rulesQueryArgs | Where-Object { $_ -match '^-Output=D:\\Private\\' }).Count -eq 1) 'QueryTargets output is private'
+    Assert-True ($rulesQueryArgs -ccontains '-IncludeAllTargets') 'rules query includes all project targets like the Editor fallback'
+    Assert-True ($rulesQueryArgs -ccontains '-DontIncludeParentAssembly') 'rules query excludes parent assembly like the Editor fallback'
+    Assert-True ($rulesQueryArgs -ccontains '-DontIncludeProgramTargets') 'rules query excludes programs like the Editor fallback'
+    Assert-True ($rulesQueryArgs -ccontains '-Output=D:\Private\HostProject\Intermediate\TargetInfo.json') 'QueryTargets writes directly to the Editor cache path'
     $queryInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $rulesSeed -Arguments $rulesQueryArgs
     Assert-True ($queryInvocation.Executable -ceq $expectedDotNet -and $queryInvocation.EngineRoot -ceq $expectedRulesSeedRoot -and $queryInvocation.Arguments[0] -ceq $expectedUbt) 'QueryTargets uses the exact private runtime and D Engine root'
     Assert-True ($queryInvocation.WorkingDirectory -ceq (Join-Path $expectedRulesSeedRoot 'Engine\Source')) 'QueryTargets retains Build.bat Engine\Source working directory'
     Assert-True (@($queryInvocation.Arguments | Where-Object { $_ -cmatch '^-Session=\{[0-9a-fA-F-]{36}\}$' }).Count -eq 1) 'QueryTargets supplies an explicit UBT session before trace initialization'
     Assert-True ($queryInvocation.SessionId -cne $targetInvocation.SessionId) 'QueryTargets and target build have distinct private UBT sessions'
     Assert-True ($queryInvocation.Arguments -ccontains '-Mode=QueryTargets' -and $queryInvocation.Arguments -ccontains '-UsePrecompiled' -and $queryInvocation.Arguments -ccontains '-NoEngineChanges' -and $queryInvocation.Arguments -cnotcontains '-SkipRulesCompile') 'QueryTargets keeps private rules compilation while protecting Engine rules'
+
+    $TargetInfoFixtureRoot = Join-Path $FixtureRoot 'TargetInfoProject'
+    $TargetInfoSource = Join-Path $TargetInfoFixtureRoot 'Source'
+    $TargetInfoIntermediate = Join-Path $TargetInfoFixtureRoot 'Intermediate'
+    New-Item -ItemType Directory -Path $TargetInfoSource,$TargetInfoIntermediate -Force | Out-Null
+    $TargetInfoGameSource = Join-Path $TargetInfoSource 'FixtureGame.Target.cs'
+    $TargetInfoEditorSource = Join-Path $TargetInfoSource 'FixtureGameEditor.Target.cs'
+    $TargetInfoFixturePath = Join-Path $TargetInfoIntermediate 'TargetInfo.json'
+    [IO.File]::WriteAllText($TargetInfoGameSource, '// fixture target')
+    [IO.File]::WriteAllText($TargetInfoEditorSource, '// fixture target')
+    [IO.File]::WriteAllText($TargetInfoFixturePath, (@{ Targets=@(
+        @{ Name='FixtureGame'; Path='..\Source\FixtureGame.Target.cs'; Type='Game' },
+        @{ Name='FixtureGameEditor'; Path='..\Source\FixtureGameEditor.Target.cs'; Type='Editor' }
+    ) } | ConvertTo-Json -Depth 5))
+    (Get-Item -LiteralPath $TargetInfoGameSource).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-2)
+    (Get-Item -LiteralPath $TargetInfoEditorSource).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-2)
+    (Get-Item -LiteralPath $TargetInfoFixturePath).LastWriteTimeUtc = [DateTime]::UtcNow
+    $targetInfoFresh = Assert-IAmSpeedEditorTargetInfoFresh -TargetInfoPath $TargetInfoFixturePath -ProjectRoot $TargetInfoFixtureRoot
+    Assert-True ($targetInfoFresh.target_count -eq 2 -and $targetInfoFresh.project_target_source_count -eq 2) 'fresh Editor TargetInfo resolves both project targets'
+    (Get-Item -LiteralPath $TargetInfoEditorSource).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(1)
+    Assert-Throws { Assert-IAmSpeedEditorTargetInfoFresh -TargetInfoPath $TargetInfoFixturePath -ProjectRoot $TargetInfoFixtureRoot } 'newer target source invalidates Editor TargetInfo'
+    (Get-Item -LiteralPath $TargetInfoEditorSource).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-2)
+    [IO.File]::WriteAllText($TargetInfoFixturePath, (@{ Targets=@(
+        @{ Name='MissingTarget'; Path='..\Source\FixtureGame.Target.cs'; Type='Game' }
+    ) } | ConvertTo-Json -Depth 5))
+    (Get-Item -LiteralPath $TargetInfoFixturePath).LastWriteTimeUtc = [DateTime]::UtcNow
+    Assert-Throws { Assert-IAmSpeedEditorTargetInfoFresh -TargetInfoPath $TargetInfoFixturePath -ProjectRoot $TargetInfoFixtureRoot } 'unknown Editor target invalidates TargetInfo'
 
     $editorArgs = New-IAmSpeedEditorArguments -ProjectFile 'D:\Private\HostProject.uproject' `
         -TestFilter 'IAmSpeed.AnalyticWorld' -LogPath 'D:\Private\Logs\automation.log' `
@@ -252,6 +288,9 @@ try {
         [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors) | Out-Null
         Assert-True ($parseErrors.Count -eq 0) "PowerShell 5 parser accepts $path"
     }
+    $runnerSource = Get-Content -LiteralPath $RunnerPath -Raw
+    Assert-True ($runnerSource.Contains('Intermediate\TargetInfo.json')) 'Editor QueryTargets output is primed at DesktopPlatform TargetInfo path'
+    Assert-True ($runnerSource.Contains('Editor ignored the fresh private TargetInfo.json')) 'Editor fallback to Engine Build.bat is rejected'
     Write-Output 'PASS split UBT rules preparation, six-file Engine-rule immutability, process-only TBB, bounded build, strict reports, and PATH restoration'
 }
 finally {

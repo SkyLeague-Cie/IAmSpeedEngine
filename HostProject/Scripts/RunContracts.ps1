@@ -32,6 +32,12 @@ try {
         throw 'IAMSPEED_RULES_ENGINE_ROOT is required for isolated project-rules preparation.'
     }
     $DirectUbtRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $Engine.Root -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
+    $PrivateCacheBinding = $null
+    if ($DirectUbtRuntime.PrivateUbt) {
+        if ([string]::IsNullOrWhiteSpace($PrivateRoot)) { throw 'PrivateRoot is required for the private UBT cache binding.' }
+        $ExpectedPrivateCacheRoot = Join-Path ([IO.Path]::GetFullPath($PrivateRoot).TrimEnd('\')) 'Cache\EngineCaches'
+        $PrivateCacheBinding = Assert-IAmSpeedPrivateCacheBinding -Runtime $DirectUbtRuntime -ExpectedCacheRoot $ExpectedPrivateCacheRoot
+    }
     if ([IO.Path]::GetFullPath($RulesEngineRoot).TrimEnd('\') -ine $Engine.Root) { throw 'Private Query must explicitly bind the same exact Engine as the native build.' }
     $RulesSeedEngine = Assert-IAmSpeedPrivateRulesRoot -Runtime $DirectUbtRuntime
     $PrecompiledEngineRules = Assert-IAmSpeedPrecompiledRules -EngineRoot $Engine.Root
@@ -99,6 +105,8 @@ try {
     [Environment]::SetEnvironmentVariable('DOTNET_SKIP_FIRST_TIME_EXPERIENCE', '1', 'Process')
 
     $ProjectFile = Join-Path $PrivateProject 'IAmSpeedHostProject.uproject'
+    $EditorTargetInfo = Join-Path $PrivateProject 'Intermediate\TargetInfo.json'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $EditorTargetInfo) -Force | Out-Null
     $Build = Join-Path $Engine.Root 'Engine\Build\BatchFiles\Build.bat'
     $Editor = Join-Path $Engine.Root 'Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
     $BuildLog = Join-Path $Logs 'Build.log'
@@ -109,7 +117,7 @@ try {
     $ReportIndex = Join-Path $AutomationReport 'index.json'
     $RulesQueryLog = Join-Path $Logs 'ProjectRules.QueryTargets.log'
     $RulesQueryConsoleLog = Join-Path $Logs 'ProjectRules.QueryTargets.console.log'
-    $RulesTargetInfo = Join-Path $AutomationReport 'ProjectRules.TargetInfo.json'
+    $RulesTargetInfo = $EditorTargetInfo
     $RulesAssemblyDirectory = Join-Path $PrivateProject 'Intermediate\Build\BuildRules'
     $RulesAssemblyPath = Join-Path $RulesAssemblyDirectory 'IAmSpeedHostProjectModuleRules.dll'
     $RulesPdbPath = Join-Path $RulesAssemblyDirectory 'IAmSpeedHostProjectModuleRules.pdb'
@@ -157,6 +165,10 @@ try {
         -not (Select-String -LiteralPath $RulesTargetInfo -SimpleMatch 'IAmSpeedHostProjectEditor' -Quiet)) {
         throw "QueryTargets did not report IAmSpeedHostProjectEditor: $RulesTargetInfo"
     }
+    $EditorTargetInfoEvidence = Assert-IAmSpeedEditorTargetInfoFresh -TargetInfoPath $EditorTargetInfo -ProjectRoot $PrivateProject
+    $EditorTargetInfoSha256 = $EditorTargetInfoEvidence.sha256
+    $EditorTargetInfoEvidence | Add-Member -NotePropertyName purpose -NotePropertyValue 'Private QueryTargets writes directly to DesktopPlatform target-info path with query flags matching the Editor fallback.' -Force
+    $RulesEvidence.editor_target_info = $EditorTargetInfoEvidence
     foreach ($path in @($RulesAssemblyPath, $RulesPdbPath, $RulesManifestPath)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path -Force).Length -le 0) {
             throw "QueryTargets did not emit a private project-rules artifact: $path"
@@ -196,6 +208,7 @@ try {
     $RulesEvidence.private_ubt_manifest = $DirectUbtRuntime.PrivateManifestPath
     $RulesEvidence.private_ubt_manifest_sha256 = $DirectUbtRuntime.PrivateManifestSha256
     $RulesEvidence.private_engine_policy = $DirectUbtRuntime.PrivateEnginePolicyPath
+    $RulesEvidence.private_cache_binding = $PrivateCacheBinding
     $EditorArguments = New-IAmSpeedEditorArguments `
         -ProjectFile $ProjectFile -TestFilter $TestFilter -LogPath $EditorLog `
         -ReportPath $AutomationReport
@@ -223,6 +236,11 @@ try {
     if ($BuildExitCode -ne 0) {
         throw "HostProject editor build failed with exit code $BuildExitCode. See $BuildLog."
     }
+    if (-not (Test-Path -LiteralPath $EditorTargetInfo -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $EditorTargetInfo -Algorithm SHA256).Hash.ToLowerInvariant() -cne $EditorTargetInfoSha256) {
+        throw 'Editor TargetInfo changed or disappeared before startup; refusing the implicit Engine QueryTargets fallback.'
+    }
+    [void](Assert-IAmSpeedEditorTargetInfoFresh -TargetInfoPath $EditorTargetInfo -ProjectRoot $PrivateProject)
 
     $EditorExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -Action {
         $EditorOutput = & $Editor @EditorArguments 2> $EditorErrorLog
@@ -237,6 +255,9 @@ try {
     $RulesEvidence.target_after_editor = $TargetRulesAfterEditor
     Assert-IAmSpeedRulesSnapshotUnchanged -Before $SeedRulesBeforeQuery -After $SeedRulesAfterEditor -Label 'Rules seed during Automation'
     Assert-IAmSpeedRulesSnapshotUnchanged -Before $TargetRulesBeforeQuery -After $TargetRulesAfterEditor -Label 'Target Engine during Automation'
+    if (Select-String -LiteralPath $EditorLog -SimpleMatch 'Launching UnrealBuildTool...' -Quiet) {
+        throw 'Editor ignored the fresh private TargetInfo.json and launched Engine Build.bat/UBT.'
+    }
     $Automation = Assert-IAmSpeedAutomationResult `
         -ExitCode $EditorExitCode -StandardOutput (Get-Content -Raw -LiteralPath $EditorOutputLog) `
         -ReportPath $ReportIndex -TestFilter $TestFilter
