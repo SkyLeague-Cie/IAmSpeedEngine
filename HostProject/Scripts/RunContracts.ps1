@@ -128,13 +128,14 @@ try {
         -ProjectFile $ProjectFile -OutputPath $RulesTargetInfo -LogPath $RulesQueryLog
     $RulesQueryArguments += @('-NoXGE', '-NoFASTBuild', '-NoSNDBS', '-MaxParallelActions=1')
     $RulesQueryInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $RulesSeedEngine -Arguments $RulesQueryArguments
+    $RulesQueryInvocationArguments = [string[]]$RulesQueryInvocation.Arguments
     $RulesEvidence.query_invocation = $RulesQueryInvocation
     $RulesEvidence.query_session = $RulesQueryInvocation.SessionId
     $RulesEvidence.query_trace_policy = 'explicit -Session argument suppresses UBT default Engine-side Trace.uba creation before environment parsing'
     $RulesQueryExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $RulesSeedTbbLoader.LoaderDirectory -DotNetDirectory $RulesQueryInvocation.DotNetDirectory -Action {
         Push-Location -LiteralPath $RulesQueryInvocation.WorkingDirectory
         try {
-            & $RulesQueryInvocation.Executable @($RulesQueryInvocation.Arguments) *> $RulesQueryConsoleLog
+            & $RulesQueryInvocation.Executable @RulesQueryInvocationArguments *> $RulesQueryConsoleLog
             [pscustomobject]@{ ExitCode=$LASTEXITCODE }
         }
         finally { Pop-Location }
@@ -187,6 +188,7 @@ try {
         -ProjectFile $ProjectFile -LogPath $BuildLog -UbaRoot $UbaRoot `
         -MaxParallelActions $MaxParallelActions -UbaMaxWorkers $UBAMaxWorkers -SkipRulesCompile
     $BuildInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $DirectUbtRuntime -Arguments $BuildArguments
+    $BuildInvocationArguments = [string[]]$BuildInvocation.Arguments
     $RulesEvidence.build_invocation = $BuildInvocation
     $EditorArguments = New-IAmSpeedEditorArguments `
         -ProjectFile $ProjectFile -TestFilter $TestFilter -LogPath $EditorLog `
@@ -196,7 +198,7 @@ try {
     $BuildExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -DotNetDirectory $BuildInvocation.DotNetDirectory -Action {
         Push-Location -LiteralPath $BuildInvocation.WorkingDirectory
         try {
-            & $BuildInvocation.Executable @($BuildInvocation.Arguments) *> $BuildConsoleLog
+            & $BuildInvocation.Executable @BuildInvocationArguments *> $BuildConsoleLog
             [pscustomobject]@{ ExitCode=$LASTEXITCODE }
         }
         finally { Pop-Location }
