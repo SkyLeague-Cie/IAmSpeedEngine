@@ -1,3 +1,24 @@
+if (-not (Get-Command -Name Get-FileHash -ErrorAction SilentlyContinue)) {
+    function Get-FileHash {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)] [string]$LiteralPath,
+            [ValidateSet('SHA256')] [string]$Algorithm = 'SHA256'
+        )
+
+        $stream = [IO.File]::OpenRead($LiteralPath)
+        try {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+                $hash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '')
+                [pscustomobject]@{ Algorithm=$Algorithm; Hash=$hash; Path=$LiteralPath }
+            }
+            finally { $sha.Dispose() }
+        }
+        finally { $stream.Dispose() }
+    }
+}
+
 $script:IAmSpeedExpectedTbbFallbackSha256 = 'af20d7ca563e542432b856f6628d9481247197d1853bd4057caaf6c449749d42'
 $script:IAmSpeedExpectedEmbreeFallbackSha256 = 'b21dcf93fed2b647dc662fe9720b28b32b3f13e1ddb9eac7c1b6e3950b95df63'
 $script:IAmSpeedDotNetSha256 = 'c1809e1f7fc603c2096efdfbc3f98c2123a398d3dff331096fdaebc3071ac32d'
