@@ -44,9 +44,34 @@ try {
     $expectedRulesSeedRoot = (Resolve-Path -LiteralPath $rulesSeedRoot).Path.TrimEnd('\')
     $expectedRulesSeedBuild = Join-Path $expectedRulesSeedRoot 'Engine\Build\BatchFiles\Build.bat'
     Assert-True ($rulesSeed.Root -ceq $expectedRulesSeedRoot) 'Rules seed object pins the resolved Engine root'
-    Assert-True ($rulesSeed.Build -ceq $expectedRulesSeedBuild) 'Rules seed object returns the Build.bat path used by QueryTargets'
-    $rulesSeedBuildCommand = Get-Command -Name $rulesSeed.Build -CommandType Application -ErrorAction Stop
-    Assert-True ($rulesSeedBuildCommand.Source -ceq $expectedRulesSeedBuild) 'Rules seed object Build path resolves as an invocable command'
+    Assert-True ($rulesSeed.Build -ceq $expectedRulesSeedBuild) 'Rules seed object retains the validated Build.bat metadata path'
+    $rulesSeedRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $rulesSeedRoot
+    $expectedDotNet = Join-Path $expectedRulesSeedRoot 'Engine\Binaries\ThirdParty\DotNet\10.0\win-x64\dotnet.exe'
+    $expectedUbt = Join-Path $expectedRulesSeedRoot 'Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll'
+    Assert-True ($rulesSeedRuntime.DotNetPath -ceq $expectedDotNet -and $rulesSeedRuntime.UbtPath -ceq $expectedUbt) 'Rules seed returns exact direct runtime paths beneath the pinned Engine root'
+    Assert-True ($rulesSeedRuntime.DotNetSha256 -ceq $script:IAmSpeedDotNetSha256 -and $rulesSeedRuntime.UbtSha256 -ceq $script:IAmSpeedUbtSha256) 'Rules seed runtime hashes match their pins'
+    $rulesSeedDotNetCommand = Get-Command -Name $rulesSeedRuntime.DotNetPath -CommandType Application -ErrorAction Stop
+    Assert-True ($rulesSeedDotNetCommand.Source -ceq $expectedDotNet) 'pinned dotnet host resolves without executing it'
+    Assert-Throws { Assert-IAmSpeedDirectUbtRuntime -EngineRoot $EngineFixture } 'unpinned fixture cannot masquerade as a real direct UBT runtime'
+
+    $targetEngineRoot = $env:IAMSPEED_UE_ROOT
+    if ([string]::IsNullOrWhiteSpace($targetEngineRoot)) {
+        throw 'IAMSPEED_UE_ROOT is required to validate the real target Engine direct UBT runtime.'
+    }
+    $targetRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $targetEngineRoot
+    $targetExpectedRoot = (Resolve-Path -LiteralPath $targetEngineRoot).Path.TrimEnd('\')
+    $targetExpectedUbt = Join-Path $targetExpectedRoot 'Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll'
+    $targetBuildArguments = New-IAmSpeedBuildArguments -ProjectFile 'D:\Private\HostProject.uproject' `
+        -LogPath 'D:\Private\Logs\build.log' -UbaRoot 'D:\Private\UBA' -SkipRulesCompile
+    $targetInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $targetRuntime -Arguments $targetBuildArguments
+    Assert-True ($targetInvocation.EngineRoot -ceq $targetExpectedRoot -and $targetInvocation.WorkingDirectory -ceq (Join-Path $targetExpectedRoot 'Engine\Source')) 'target UBT working directory matches Build.bat Engine\Source context'
+    Assert-True ($targetInvocation.Executable -ceq $targetRuntime.DotNetPath -and $targetInvocation.Arguments[0] -ceq $targetExpectedUbt) 'target invocation uses pinned dotnet with UBT DLL as its first argument'
+    Assert-True ($targetInvocation.Arguments -ccontains '-NoEngineChanges' -and $targetInvocation.Arguments -ccontains '-UsePrecompiled' -and $targetInvocation.Arguments -ccontains '-SkipRulesCompile') 'target invocation preserves protected Engine and precompiled project-rules flags'
+    Assert-True (@($targetInvocation.Arguments | Where-Object { $_ -cmatch '^-Session=\{[0-9a-fA-F-]{36}\}$' }).Count -eq 1) 'target invocation supplies an explicit UBT session before trace initialization'
+    Assert-Throws { New-IAmSpeedDirectUbtInvocation -Runtime ([pscustomobject]@{
+        Root=$targetExpectedRoot; WorkingDirectory=$targetExpectedRoot; DotNetPath='C:\fake\dotnet.exe';
+        UbtPath=$targetExpectedUbt; DotNetSha256=$script:IAmSpeedDotNetSha256; UbtSha256=$script:IAmSpeedUbtSha256
+    }) -Arguments $targetBuildArguments } 'direct invocation rejects runtime paths outside the pinned Engine root'
 
     $PluginFixture = Join-Path $FixtureRoot 'PluginCheckout'
     $PluginProject = Join-Path $PluginFixture 'HostProject'
@@ -78,6 +103,10 @@ try {
     Assert-Throws { Resolve-IAmSpeedTbbLoader -EngineRoot $EngineFixture } 'fallback TBB with a nonqualified SHA is rejected'
 
     $originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    $OriginalEnvironment = @{}
+    foreach ($variable in @('UE_DOTNET_VERSION', 'UE_DOTNET_ARCH', 'UE_DOTNET_DIR', 'DOTNET_ROOT', 'DOTNET_MULTILEVEL_LOOKUP', 'DOTNET_ROLL_FORWARD')) {
+        $OriginalEnvironment[$variable] = [Environment]::GetEnvironmentVariable($variable, 'Process')
+    }
     $pathResult = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -Action {
         [Environment]::GetEnvironmentVariable('PATH', 'Process')
     }
@@ -85,6 +114,29 @@ try {
     Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'process PATH is restored after successful action'
     Assert-Throws { Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -Action { throw 'fixture action failure' } } 'TBB action exception is propagated'
     Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'process PATH is restored after failed action'
+    $dotnetEnvironment = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -DotNetDirectory $TbbBinaryDirectory -Action {
+        [pscustomobject]@{
+            Path=[Environment]::GetEnvironmentVariable('PATH', 'Process')
+            Version=[Environment]::GetEnvironmentVariable('UE_DOTNET_VERSION', 'Process')
+            Architecture=[Environment]::GetEnvironmentVariable('UE_DOTNET_ARCH', 'Process')
+            Root=[Environment]::GetEnvironmentVariable('DOTNET_ROOT', 'Process')
+            Multilevel=[Environment]::GetEnvironmentVariable('DOTNET_MULTILEVEL_LOOKUP', 'Process')
+            RollForward=[Environment]::GetEnvironmentVariable('DOTNET_ROLL_FORWARD', 'Process')
+        }
+    }
+    Assert-True ($dotnetEnvironment.Path.StartsWith($TbbBinaryDirectory + ';' + $TbbBinaryDirectory + ';', [StringComparison]::OrdinalIgnoreCase)) 'direct UBT PATH preserves TBB-first and bundled .NET directory ordering'
+    Assert-True ($dotnetEnvironment.Version -ceq '10.0' -and $dotnetEnvironment.Architecture -ceq 'win-x64' -and
+        $dotnetEnvironment.Root -ceq $TbbBinaryDirectory -and $dotnetEnvironment.Multilevel -ceq '0' -and
+        $dotnetEnvironment.RollForward -ceq 'LatestMajor') 'direct UBT process reproduces Build.bat bundled .NET environment'
+    Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'PATH is restored after direct .NET environment action'
+    foreach ($variable in @('UE_DOTNET_VERSION', 'UE_DOTNET_ARCH', 'UE_DOTNET_DIR', 'DOTNET_ROOT', 'DOTNET_MULTILEVEL_LOOKUP', 'DOTNET_ROLL_FORWARD')) {
+        $beforeValue = $OriginalEnvironment[$variable]
+        $afterValue = [Environment]::GetEnvironmentVariable($variable, 'Process')
+        $sameValue = ($null -eq $beforeValue -and [string]::IsNullOrEmpty($afterValue)) -or
+            ($null -eq $afterValue -and [string]::IsNullOrEmpty($beforeValue)) -or
+            ([string]$afterValue -ceq [string]$beforeValue)
+        Assert-True $sameValue "direct .NET variable $variable is restored"
+    }
 
     $SnapshotFixtureRoot = Join-Path $FixtureRoot 'RulesSnapshotEngine'
     $SnapshotRulesDirectory = Join-Path $SnapshotFixtureRoot 'Engine\Intermediate\Build\BuildRules'
@@ -129,6 +181,12 @@ try {
     Assert-True ($rulesQueryArgs -ccontains '-UsePrecompiled') 'rules preparation loads the pinned seed Engine rules'
     Assert-True ($rulesQueryArgs -cnotcontains '-SkipRulesCompile') 'QueryTargets compiles the fresh private project rules'
     Assert-True (@($rulesQueryArgs | Where-Object { $_ -match '^-Output=D:\\Private\\' }).Count -eq 1) 'QueryTargets output is private'
+    $queryInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $rulesSeedRuntime -Arguments $rulesQueryArgs
+    Assert-True ($queryInvocation.Executable -ceq $expectedDotNet -and $queryInvocation.EngineRoot -ceq $expectedRulesSeedRoot -and $queryInvocation.Arguments[0] -ceq $expectedUbt) 'QueryTargets is constructed as a pinned direct dotnet/UBT invocation under the seed Engine root'
+    Assert-True ($queryInvocation.WorkingDirectory -ceq (Join-Path $expectedRulesSeedRoot 'Engine\Source')) 'QueryTargets retains Build.bat Engine\Source working directory'
+    Assert-True (@($queryInvocation.Arguments | Where-Object { $_ -cmatch '^-Session=\{[0-9a-fA-F-]{36}\}$' }).Count -eq 1) 'QueryTargets supplies an explicit UBT session before trace initialization'
+    Assert-True ($queryInvocation.SessionId -cne $targetInvocation.SessionId) 'QueryTargets and target build have distinct trace-suppression sessions'
+    Assert-True ($queryInvocation.Arguments -ccontains '-Mode=QueryTargets' -and $queryInvocation.Arguments -ccontains '-UsePrecompiled' -and $queryInvocation.Arguments -ccontains '-NoEngineChanges' -and $queryInvocation.Arguments -cnotcontains '-SkipRulesCompile') 'QueryTargets keeps private rules compilation while protecting Engine rules'
 
     $editorArgs = New-IAmSpeedEditorArguments -ProjectFile 'D:\Private\HostProject.uproject' `
         -TestFilter 'IAmSpeed.AnalyticWorld' -LogPath 'D:\Private\Logs\automation.log' `

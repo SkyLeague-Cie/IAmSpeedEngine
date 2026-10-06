@@ -1,4 +1,6 @@
 $script:IAmSpeedExpectedTbbFallbackSha256 = 'af20d7ca563e542432b856f6628d9481247197d1853bd4057caaf6c449749d42'
+$script:IAmSpeedDotNetSha256 = 'c1809e1f7fc603c2096efdfbc3f98c2123a398d3dff331096fdaebc3071ac32d'
+$script:IAmSpeedUbtSha256 = '0c3adf01933fd31497971cbcc3f66315fabe061bbb4c56ac143cd809192e208d'
 $script:IAmSpeedRulesSeedFiles = @(
     @{ Name='UE5Rules.dll'; Bytes=964096; Sha256='a4a337f37541b8a8fdd53f96490de7b13e16e2978de41ac5ff18facc4fe2327c'; Manifest='UE5RulesManifest.json'; ManifestBytes=364846; ManifestSha256='ffd4524d047d2ce6ad5ac8b1abe77a3fd4f43ac61406cfe3a5c81888045e2cec' },
     @{ Name='UE5ProgramRules.dll'; Bytes=123904; Sha256='08c8be5f5d77d7e6f50c36e5c3c0e58b0d3f6f72b5677e3fe5e8f60a369cef80'; Manifest='UE5ProgramRulesManifest.json'; ManifestBytes=29913; ManifestSha256='ff4fe1365b438c8b2c8de0efbe5ce03896042d1e9273a9e8b8099735a44d22bf' }
@@ -14,15 +16,12 @@ function Assert-IAmSpeedRulesSeedRoot {
 
     $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
     $rulesDirectory = Join-Path $engine.Root 'Engine\Intermediate\Build\BuildRules'
-    $ubtPath = Join-Path $engine.Root 'Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll'
+    $runtime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $engine.Root
     if (Test-Path -LiteralPath (Join-Path $engine.Root 'Engine\Build\InstalledBuild.txt')) {
         throw 'Rules seed must use the exact pinned non-installed slot1 rules source; installed-engine roots use a different UBT skip path.'
     }
-    if (-not (Test-Path -LiteralPath $ubtPath -PathType Leaf)) { throw "Rules seed UBT is missing: $ubtPath" }
-    $ubtSha = (Get-FileHash -LiteralPath $ubtPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($ubtSha -cne '0c3adf01933fd31497971cbcc3f66315fabe061bbb4c56ac143cd809192e208d') {
-        throw "Rules seed UBT SHA-256 is not the qualified 5.8.2 tool: $ubtSha"
-    }
+    $ubtPath = $runtime.UbtPath
+    $ubtSha = $runtime.UbtSha256
     $ubt = Get-Item -LiteralPath $ubtPath -Force
     $assemblyProof = @()
     foreach ($pin in $script:IAmSpeedRulesSeedFiles) {
@@ -80,7 +79,62 @@ function Assert-IAmSpeedRulesSeedRoot {
     if ($marketplaceDescriptors.Count -gt 0) {
         throw 'Marketplace rules would add another Engine-side assembly; this bounded rules seed does not allow it.'
     }
-    return [pscustomobject]@{ Root=$engine.Root; Build=$engine.Build; UbtPath=$ubtPath; UbtSha256=$ubtSha; RulesDirectory=$rulesDirectory; Assemblies=$assemblyProof }
+    return [pscustomobject]@{ Root=$engine.Root; Build=$engine.Build; DotNetPath=$runtime.DotNetPath; DotNetSha256=$runtime.DotNetSha256; UbtPath=$ubtPath; UbtSha256=$ubtSha; RulesDirectory=$rulesDirectory; Assemblies=$assemblyProof }
+}
+
+function Assert-IAmSpeedDirectUbtRuntime {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)] [string]$EngineRoot)
+
+    $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
+    $dotnet = Join-Path $engine.Root 'Engine\Binaries\ThirdParty\DotNet\10.0\win-x64\dotnet.exe'
+    $ubt = Join-Path $engine.Root 'Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll'
+    foreach ($path in @($dotnet, $ubt)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Pinned direct UBT runtime file is missing: $path" }
+        if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Pinned direct UBT runtime file is a reparse point: $path" }
+    }
+    $dotnetSha = (Get-FileHash -LiteralPath $dotnet -Algorithm SHA256).Hash.ToLowerInvariant()
+    $ubtSha = (Get-FileHash -LiteralPath $ubt -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($dotnetSha -cne $script:IAmSpeedDotNetSha256) { throw "Pinned .NET host SHA-256 differs: $dotnetSha" }
+    if ($ubtSha -cne $script:IAmSpeedUbtSha256) { throw "Pinned UnrealBuildTool SHA-256 differs: $ubtSha" }
+    $workingDirectory = Join-Path $engine.Root 'Engine\Source'
+    if (-not (Test-Path -LiteralPath $workingDirectory -PathType Container)) { throw "Direct UBT working directory is missing: $workingDirectory" }
+    return [pscustomobject]@{ Root=$engine.Root; WorkingDirectory=$workingDirectory; DotNetPath=$dotnet; DotNetDirectory=(Split-Path -Parent $dotnet); DotNetVersion='10.0'; DotNetArchitecture='win-x64'; DotNetSha256=$dotnetSha; UbtPath=$ubt; UbtSha256=$ubtSha }
+}
+
+function New-IAmSpeedDirectUbtInvocation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [psobject]$Runtime,
+        [Parameter(Mandatory=$true)] [string[]]$Arguments
+    )
+    $root = [IO.Path]::GetFullPath([string]$Runtime.Root).TrimEnd('\')
+    foreach ($path in @([string]$Runtime.DotNetPath, [string]$Runtime.UbtPath)) {
+        $full = [IO.Path]::GetFullPath($path)
+        if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Direct UBT runtime path escapes its pinned Engine root: $full" }
+    }
+    $expectedDotNetDirectory = Split-Path -Parent ([string]$Runtime.DotNetPath)
+    if ([IO.Path]::GetFullPath([string]$Runtime.DotNetDirectory).TrimEnd('\') -ine [IO.Path]::GetFullPath($expectedDotNetDirectory).TrimEnd('\') -or
+        [string]$Runtime.DotNetVersion -cne '10.0' -or [string]$Runtime.DotNetArchitecture -cne 'win-x64' -or
+        [string]$Runtime.DotNetSha256 -cne $script:IAmSpeedDotNetSha256 -or [string]$Runtime.UbtSha256 -cne $script:IAmSpeedUbtSha256) {
+        throw 'Direct UBT runtime metadata differs from the pinned bundled .NET and UBT pair.'
+    }
+    if (@($Arguments | Where-Object { $_ -cmatch '^-Session=' }).Count -gt 0) { throw 'Direct UBT caller cannot override or duplicate its private trace-suppression session.' }
+    $expectedWorkingDirectory = Join-Path $root 'Engine\Source'
+    if ([IO.Path]::GetFullPath([string]$Runtime.WorkingDirectory).TrimEnd('\') -ine $expectedWorkingDirectory) { throw 'Direct UBT working directory must match Build.bat Engine\Source context.' }
+    $session = [guid]::NewGuid().ToString('B')
+    return [pscustomobject]@{
+        EngineRoot=$root
+        WorkingDirectory=$expectedWorkingDirectory
+        Executable=[string]$Runtime.DotNetPath
+        Arguments=[string[]](@([string]$Runtime.UbtPath) + @($Arguments) + @("-Session=$session"))
+        SessionId=$session
+        DotNetDirectory=[string]$Runtime.DotNetDirectory
+        DotNetVersion=[string]$Runtime.DotNetVersion
+        DotNetArchitecture=[string]$Runtime.DotNetArchitecture
+        DotNetSha256=[string]$Runtime.DotNetSha256
+        UbtSha256=[string]$Runtime.UbtSha256
+    }
 }
 
 function Assert-IAmSpeedPrecompiledRules {
@@ -216,26 +270,46 @@ function New-IAmSpeedProcessPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)] [string]$LoaderDirectory,
+        [string[]]$AdditionalDirectories = @(),
         [AllowNull()] [string]$ExistingPath
     )
     $directory = [IO.Path]::GetFullPath($LoaderDirectory).TrimEnd('\')
-    if ([string]::IsNullOrWhiteSpace($ExistingPath)) { return $directory }
-    return $directory + ';' + $ExistingPath
+    $directories = [System.Collections.Generic.List[string]]::new()
+    $directories.Add($directory)
+    foreach ($additional in $AdditionalDirectories) {
+        if (-not [string]::IsNullOrWhiteSpace($additional)) { $directories.Add([IO.Path]::GetFullPath($additional).TrimEnd('\')) }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExistingPath)) { $directories.Add($ExistingPath) }
+    return [string]::Join(';', $directories.ToArray())
 }
 
 function Invoke-IAmSpeedWithProcessTbbPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)] [string]$LoaderDirectory,
+        [string]$DotNetDirectory,
         [Parameter(Mandatory=$true)] [scriptblock]$Action
     )
-    $originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    $environmentNames = @('PATH', 'UE_DOTNET_VERSION', 'UE_DOTNET_ARCH', 'UE_DOTNET_DIR', 'DOTNET_ROOT', 'DOTNET_MULTILEVEL_LOOKUP', 'DOTNET_ROLL_FORWARD')
+    $originalEnvironment = @{}
+    foreach ($name in $environmentNames) { $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     try {
-        [Environment]::SetEnvironmentVariable('PATH', (New-IAmSpeedProcessPath -LoaderDirectory $LoaderDirectory -ExistingPath $originalPath), 'Process')
+        $additionalDirectories = @()
+        if (-not [string]::IsNullOrWhiteSpace($DotNetDirectory)) {
+            $dotnetDirectoryFull = [IO.Path]::GetFullPath($DotNetDirectory).TrimEnd('\')
+            $additionalDirectories = @($dotnetDirectoryFull)
+            [Environment]::SetEnvironmentVariable('UE_DOTNET_VERSION', '10.0', 'Process')
+            [Environment]::SetEnvironmentVariable('UE_DOTNET_ARCH', 'win-x64', 'Process')
+            [Environment]::SetEnvironmentVariable('UE_DOTNET_DIR', $dotnetDirectoryFull, 'Process')
+            [Environment]::SetEnvironmentVariable('DOTNET_ROOT', $dotnetDirectoryFull, 'Process')
+            [Environment]::SetEnvironmentVariable('DOTNET_MULTILEVEL_LOOKUP', '0', 'Process')
+            [Environment]::SetEnvironmentVariable('DOTNET_ROLL_FORWARD', 'LatestMajor', 'Process')
+        }
+        [Environment]::SetEnvironmentVariable('PATH', (New-IAmSpeedProcessPath -LoaderDirectory $LoaderDirectory -AdditionalDirectories $additionalDirectories -ExistingPath $originalEnvironment['PATH']), 'Process')
         & $Action
     }
     finally {
-        [Environment]::SetEnvironmentVariable('PATH', $originalPath, 'Process')
+        foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process') }
     }
 }
 

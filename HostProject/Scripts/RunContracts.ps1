@@ -15,7 +15,8 @@ $RunRoot = $null
 $PluginLink = $null
 $EnvironmentNames = @(
     'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'PATH',
-    'UE-LocalDataCachePath', 'UE-SharedDataCachePath', 'UE_SKIP_UBT_SDK_SETUP'
+    'UE-LocalDataCachePath', 'UE-SharedDataCachePath', 'UE_SKIP_UBT_SDK_SETUP',
+    'DOTNET_CLI_HOME', 'DOTNET_CLI_TELEMETRY_OPTOUT', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE'
 )
 $OriginalEnvironment = @{}
 $TbbLoader = $null
@@ -31,6 +32,7 @@ try {
         throw 'IAMSPEED_RULES_ENGINE_ROOT is required for isolated project-rules preparation.'
     }
     $RulesSeedEngine = Assert-IAmSpeedRulesSeedRoot -EngineRoot $RulesEngineRoot
+    $DirectUbtRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $Engine.Root
     if ($RulesSeedEngine.Root -ieq $Engine.Root) {
         throw 'Rules seed root must be a separate qualified slot from the target Engine root.'
     }
@@ -79,7 +81,8 @@ try {
     $PrivateLocalAppData = Join-Path $RunRoot 'UserData\LocalAppData'
     $PrivateAppData = Join-Path $RunRoot 'UserData\Roaming'
     $PrivateTemp = Join-Path $RunRoot 'Temp'
-    foreach ($directory in @($Logs, $AutomationReport, $UbaRoot, $LocalDataCache, $PrivateLocalAppData, $PrivateAppData, $PrivateTemp)) {
+    $PrivateDotNetHome = Join-Path $RunRoot 'DotNetCliHome'
+    foreach ($directory in @($Logs, $AutomationReport, $UbaRoot, $LocalDataCache, $PrivateLocalAppData, $PrivateAppData, $PrivateTemp, $PrivateDotNetHome)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
 
@@ -90,6 +93,9 @@ try {
     [Environment]::SetEnvironmentVariable('UE-LocalDataCachePath', $LocalDataCache, 'Process')
     [Environment]::SetEnvironmentVariable('UE-SharedDataCachePath', 'None', 'Process')
     [Environment]::SetEnvironmentVariable('UE_SKIP_UBT_SDK_SETUP', '1', 'Process')
+    [Environment]::SetEnvironmentVariable('DOTNET_CLI_HOME', $PrivateDotNetHome, 'Process')
+    [Environment]::SetEnvironmentVariable('DOTNET_CLI_TELEMETRY_OPTOUT', '1', 'Process')
+    [Environment]::SetEnvironmentVariable('DOTNET_SKIP_FIRST_TIME_EXPERIENCE', '1', 'Process')
 
     $ProjectFile = Join-Path $PrivateProject 'IAmSpeedHostProject.uproject'
     $Build = Join-Path $Engine.Root 'Engine\Build\BatchFiles\Build.bat'
@@ -112,6 +118,8 @@ try {
     $RulesEvidence = [ordered]@{
         seed_engine_root = $RulesSeedEngine.Root
         target_engine_root = $Engine.Root
+        seed_direct_ubt_runtime = [pscustomobject]@{ dotnet=$RulesSeedEngine.DotNetPath; dotnet_directory=$RulesSeedEngine.DotNetDirectory; dotnet_sha256=$RulesSeedEngine.DotNetSha256; ubt=$RulesSeedEngine.UbtPath; ubt_sha256=$RulesSeedEngine.UbtSha256; working_directory=$RulesSeedEngine.WorkingDirectory }
+        target_direct_ubt_runtime = [pscustomobject]@{ dotnet=$DirectUbtRuntime.DotNetPath; dotnet_directory=$DirectUbtRuntime.DotNetDirectory; dotnet_sha256=$DirectUbtRuntime.DotNetSha256; ubt=$DirectUbtRuntime.UbtPath; ubt_sha256=$DirectUbtRuntime.UbtSha256; working_directory=$DirectUbtRuntime.WorkingDirectory }
         seed_before_query = $SeedRulesBeforeQuery
         target_before_query = $TargetRulesBeforeQuery
     }
@@ -119,9 +127,17 @@ try {
     $RulesQueryArguments = New-IAmSpeedProjectRulesQueryArguments `
         -ProjectFile $ProjectFile -OutputPath $RulesTargetInfo -LogPath $RulesQueryLog
     $RulesQueryArguments += @('-NoXGE', '-NoFASTBuild', '-NoSNDBS', '-MaxParallelActions=1')
-    $RulesQueryExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $RulesSeedTbbLoader.LoaderDirectory -Action {
-        & $RulesSeedEngine.Build @RulesQueryArguments *> $RulesQueryConsoleLog
-        [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+    $RulesQueryInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $RulesSeedEngine -Arguments $RulesQueryArguments
+    $RulesEvidence.query_invocation = $RulesQueryInvocation
+    $RulesEvidence.query_session = $RulesQueryInvocation.SessionId
+    $RulesEvidence.query_trace_policy = 'explicit -Session argument suppresses UBT default Engine-side Trace.uba creation before environment parsing'
+    $RulesQueryExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $RulesSeedTbbLoader.LoaderDirectory -DotNetDirectory $RulesQueryInvocation.DotNetDirectory -Action {
+        Push-Location -LiteralPath $RulesQueryInvocation.WorkingDirectory
+        try {
+            & $RulesQueryInvocation.Executable @($RulesQueryInvocation.Arguments) *> $RulesQueryConsoleLog
+            [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+        }
+        finally { Pop-Location }
     }
     $SeedRulesAfterQuery = Get-IAmSpeedRulesSnapshot -EngineRoot $RulesSeedEngine.Root
     $TargetRulesAfterQuery = Get-IAmSpeedRulesSnapshot -EngineRoot $Engine.Root
@@ -170,12 +186,20 @@ try {
     $BuildArguments = New-IAmSpeedBuildArguments `
         -ProjectFile $ProjectFile -LogPath $BuildLog -UbaRoot $UbaRoot `
         -MaxParallelActions $MaxParallelActions -UbaMaxWorkers $UBAMaxWorkers -SkipRulesCompile
+    $BuildInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $DirectUbtRuntime -Arguments $BuildArguments
+    $RulesEvidence.build_invocation = $BuildInvocation
     $EditorArguments = New-IAmSpeedEditorArguments `
         -ProjectFile $ProjectFile -TestFilter $TestFilter -LogPath $EditorLog `
         -ReportPath $AutomationReport
-    $BuildExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -Action {
-        & $Build @BuildArguments *> $BuildConsoleLog
-        [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+    $RulesEvidence.build_session = $BuildInvocation.SessionId
+    $RulesEvidence.build_trace_policy = 'explicit -Session argument suppresses UBT default Engine-side Trace.uba creation before environment parsing'
+    $BuildExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -DotNetDirectory $BuildInvocation.DotNetDirectory -Action {
+        Push-Location -LiteralPath $BuildInvocation.WorkingDirectory
+        try {
+            & $BuildInvocation.Executable @($BuildInvocation.Arguments) *> $BuildConsoleLog
+            [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+        }
+        finally { Pop-Location }
     }
     $BuildExitCode = $BuildExecution.ExitCode
     $SeedRulesAfterBuild = Get-IAmSpeedRulesSnapshot -EngineRoot $RulesSeedEngine.Root

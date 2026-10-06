@@ -32,6 +32,7 @@ jobs:
       - name: Validate HostProject contract runner
         shell: powershell
         env:
+          IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
           IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
         run: .\HostProject\Scripts\TestRunContracts.ps1
 
