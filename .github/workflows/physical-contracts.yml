@@ -29,14 +29,19 @@ jobs:
           clean: false
           persist-credentials: false
 
+      - name: Validate HostProject contract runner
+        shell: powershell
+        run: .\HostProject\Scripts\TestRunContracts.ps1
+
       - name: Build HostProject and run physical contracts
         shell: powershell
         env:
           IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
+          IAMSPEED_PRIVATE_ROOT: ${{ runner.temp }}/IAmSpeedPrivate
         run: |
           $engineRoot = $env:IAMSPEED_UE_ROOT
           if ([string]::IsNullOrWhiteSpace($engineRoot)) {
-            $engineRoot = 'D:\Programs\UnrealEngine\5.7.4'
+            throw 'Configure the IAMSPEED_UE_ROOT repository variable with the qualified physical Unreal Engine root before running IAmSpeed CI.'
           }
           .\HostProject\Scripts\RunContracts.ps1 -EngineRoot $engineRoot
 
@@ -45,5 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iamspeed-host-project-logs
-          path: HostProject/Saved/Logs
+          path: |
+            ${{ runner.temp }}/IAmSpeedPrivate/**/Logs/*
+            ${{ runner.temp }}/IAmSpeedPrivate/**/Automation/*
           if-no-files-found: ignore
