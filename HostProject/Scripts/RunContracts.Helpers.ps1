@@ -158,6 +158,22 @@ function Assert-IAmSpeedPrivateUbtManifest {
     if ([IO.Path]::GetFullPath($policy.engine_root).TrimEnd('\') -ine (Join-Path $EngineRoot 'Engine') -or [IO.Path]::GetFullPath($policy.project_private_parent).TrimEnd('\') -ine [IO.Path]::GetFullPath($manifest.baseline_project_parent).TrimEnd('\')) { throw 'Private Engine policy binding differs.' }
     $traceContract = 'Bound root Build only; private Trace required by real UBA non-detour executor. Query and recursive helper modes retain Session trace suppression.'
     if ($manifest.private_root_trace_contract -cne $traceContract -or $policy.private_root_trace_contract -cne $traceContract) { throw 'Private root Build trace contract differs.' }
+    $copyContract = 'Exact 19 preprovisioned runtime DLL pairs are immutable read-only dependencies; pinned Engine Natvis sources have private copy/link outputs. No Engine action outputs or deletes.'
+    if ($manifest.private_copy_producer_contract -cne $copyContract -or $policy.private_copy_producer_contract -cne $copyContract) { throw 'Private copy producer contract differs.' }
+    if ($manifest.preserved_runtime_copy_count -ne 19 -or @($policy.preserved_runtime_copies).Count -ne 19 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
+    $targets = @{}
+    foreach ($copy in $policy.preserved_runtime_copies) {
+        if ($targets.ContainsKey([string]$copy.target) -or $copy.source_sha256 -cne $copy.target_sha256) { throw 'Private runtime copy identity differs.' }
+        $targets[[string]$copy.target] = $true
+        foreach ($prefix in @('source','target')) {
+            $file = [string]$copy.$prefix
+            if (-not [IO.Path]::GetFullPath($file).StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($file) -ine '.dll') { throw 'Private runtime DLL input escapes Engine.' }
+            Assert-IAmSpeedPhysicalFile $file
+            $item = Get-Item -LiteralPath $file
+            $bytes = $copy.($prefix + '_bytes'); $digest = $copy.($prefix + '_sha256'); $ticks = $copy.($prefix + '_mtime_ticks')
+            if ($item.Length -ne $bytes -or $item.LastWriteTimeUtc.Ticks -ne $ticks -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $digest) { throw "Private runtime DLL input drift: $file" }
+        }
+    }
     return $manifest
 }
 

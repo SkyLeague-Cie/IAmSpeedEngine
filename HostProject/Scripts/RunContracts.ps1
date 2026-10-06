@@ -201,6 +201,8 @@ try {
         -ReportPath $AutomationReport
     $RulesEvidence.build_session = $BuildInvocation.SessionId
     $RulesEvidence.build_trace_policy = 'bound root Build opens the manifest-qualified private trace required by the real UBA non-detour executor; Engine trace remains suppressed'
+    $RulesEvidence.build_copy_policy = 'exact provisioned Engine DLLs are read-only inputs; Engine debugger visualizer copy/link outputs are private'
+    if (-not [string]::IsNullOrWhiteSpace($env:SL_PRIVATE_SOURCE_GRAPH_SNAPSHOT)) { throw 'Full CI cannot inherit a source graph diagnostic cutoff.' }
     $BuildExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -DotNetDirectory $BuildInvocation.DotNetDirectory -Action {
         Push-Location -LiteralPath $BuildInvocation.WorkingDirectory
         try {
