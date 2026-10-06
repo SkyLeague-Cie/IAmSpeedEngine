@@ -37,22 +37,19 @@ try {
     Assert-True ($engine.Version -ceq '5.8.2' -and $engine.CompatibleChangelist -eq 55116800) 'exact UE 5.8.2 pin is accepted'
 
     $rulesSeedRoot = $env:IAMSPEED_RULES_ENGINE_ROOT
-    if ([string]::IsNullOrWhiteSpace($rulesSeedRoot)) {
-        throw 'IAMSPEED_RULES_ENGINE_ROOT is required to validate the real pinned Rules seed returned to the runner.'
-    }
-    $rulesSeed = Assert-IAmSpeedRulesSeedRoot -EngineRoot $rulesSeedRoot
+    if ([string]::IsNullOrWhiteSpace($rulesSeedRoot)) { throw 'Explicit private Query Engine root required.' }
+    $rulesSeedRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $rulesSeedRoot -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
+    $rulesSeed = Assert-IAmSpeedPrivateRulesRoot -Runtime $rulesSeedRuntime
     $expectedRulesSeedRoot = (Resolve-Path -LiteralPath $rulesSeedRoot).Path.TrimEnd('\')
     $expectedRulesSeedBuild = Join-Path $expectedRulesSeedRoot 'Engine\Build\BatchFiles\Build.bat'
-    Assert-True ($rulesSeed.Root -ceq $expectedRulesSeedRoot) 'Rules seed object pins the resolved Engine root'
-    Assert-True ($rulesSeed.Build -ceq $expectedRulesSeedBuild) 'Rules seed object retains the validated Build.bat metadata path'
-    $rulesSeedRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $rulesSeedRoot
+    Assert-True ($rulesSeed.Root -ceq $expectedRulesSeedRoot -and $rulesSeed.Build -ceq $expectedRulesSeedBuild -and @($rulesSeed.Assemblies).Count -eq 6) 'Private same-root Query validates all six immutable Rules artifacts'
     $expectedDotNet = Join-Path $expectedRulesSeedRoot 'Engine\Binaries\ThirdParty\DotNet\10.0\win-x64\dotnet.exe'
-    $expectedUbt = Join-Path $expectedRulesSeedRoot 'Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll'
-    Assert-True ($rulesSeedRuntime.DotNetPath -ceq $expectedDotNet -and $rulesSeedRuntime.UbtPath -ceq $expectedUbt) 'Rules seed returns exact direct runtime paths beneath the pinned Engine root'
-    Assert-True ($rulesSeedRuntime.DotNetSha256 -ceq $script:IAmSpeedDotNetSha256 -and $rulesSeedRuntime.UbtSha256 -ceq $script:IAmSpeedUbtSha256) 'Rules seed runtime hashes match their pins'
-    $rulesSeedDotNetCommand = Get-Command -Name $rulesSeedRuntime.DotNetPath -CommandType Application -ErrorAction Stop
-    Assert-True ($rulesSeedDotNetCommand.Source -ceq $expectedDotNet) 'pinned dotnet host resolves without executing it'
-    Assert-Throws { Assert-IAmSpeedDirectUbtRuntime -EngineRoot $EngineFixture } 'unpinned fixture cannot masquerade as a real direct UBT runtime'
+    $expectedUbt = $rulesSeedRuntime.UbtPath
+    Assert-True ($rulesSeedRuntime.DotNetPath -ceq $expectedDotNet -and $rulesSeedRuntime.PrivateUbt) 'Private Query uses manifest-bound runtime'
+    Assert-Throws { Assert-IAmSpeedPrivateRulesRoot -Runtime (Assert-IAmSpeedDirectUbtRuntime -EngineRoot $rulesSeedRoot) } 'Stock Query cannot bypass private writer confinement'
+    $foreign = $rulesSeedRuntime | Select-Object *
+    $foreign.Root=$EngineFixture
+    Assert-Throws { Assert-IAmSpeedPrivateRulesRoot -Runtime $foreign } 'Foreign Engine cannot reuse D Rules policy'
 
     $targetEngineRoot = $env:IAMSPEED_UE_ROOT
     if ([string]::IsNullOrWhiteSpace($targetEngineRoot)) {
@@ -88,7 +85,7 @@ try {
         Assert-Throws { Invoke-IAmSpeedPrivateEnginePolicy -Runtime $privateRuntime -Action {throw 'fixture stop'} } 'policy action failure'
         Assert-True ([Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process') -ceq $originalPolicy) 'policy restored after failure'
         $seedPolicy = Invoke-IAmSpeedPrivateEnginePolicy -Runtime $rulesSeedRuntime -Action { [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process') }
-        Assert-True ([string]::IsNullOrEmpty($seedPolicy)) 'stock E1 seed does not inherit D private policy'
+        Assert-True ($seedPolicy -ceq $privateRuntime.PrivateEnginePolicyPath) 'private Query and build use the same exact D policy'
     }
 
     $PluginFixture = Join-Path $FixtureRoot 'PluginCheckout'
@@ -201,7 +198,7 @@ try {
     Assert-True ($rulesQueryArgs -cnotcontains '-SkipRulesCompile') 'QueryTargets compiles the fresh private project rules'
     Assert-True (@($rulesQueryArgs | Where-Object { $_ -match '^-Output=D:\\Private\\' }).Count -eq 1) 'QueryTargets output is private'
     $queryInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $rulesSeed -Arguments $rulesQueryArgs
-    Assert-True ($queryInvocation.Executable -ceq $expectedDotNet -and $queryInvocation.EngineRoot -ceq $expectedRulesSeedRoot -and $queryInvocation.Arguments[0] -ceq $expectedUbt) 'QueryTargets is constructed as a pinned direct dotnet/UBT invocation under the seed Engine root'
+    Assert-True ($queryInvocation.Executable -ceq $expectedDotNet -and $queryInvocation.EngineRoot -ceq $expectedRulesSeedRoot -and $queryInvocation.Arguments[0] -ceq $expectedUbt) 'QueryTargets uses the exact private runtime and D Engine root'
     Assert-True ($queryInvocation.WorkingDirectory -ceq (Join-Path $expectedRulesSeedRoot 'Engine\Source')) 'QueryTargets retains Build.bat Engine\Source working directory'
     Assert-True (@($queryInvocation.Arguments | Where-Object { $_ -cmatch '^-Session=\{[0-9a-fA-F-]{36}\}$' }).Count -eq 1) 'QueryTargets supplies an explicit UBT session before trace initialization'
     Assert-True ($queryInvocation.SessionId -cne $targetInvocation.SessionId) 'QueryTargets and target build have distinct trace-suppression sessions'

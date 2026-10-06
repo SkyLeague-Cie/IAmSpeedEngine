@@ -88,6 +88,39 @@ function Assert-IAmSpeedRulesSeedRoot {
 }
 
 
+function Assert-IAmSpeedPrivateRulesRoot {
+    param([Parameter(Mandatory=$true)][psobject]$Runtime)
+    if (-not $Runtime.PrivateUbt) { throw 'Private Query requires a manifest-bound private UBT runtime.' }
+    $manifest = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $Runtime.Root
+    $engine = Assert-IAmSpeedEngineRoot -EngineRoot $Runtime.Root
+    if (Test-Path -LiteralPath (Join-Path $engine.Root 'Engine\Build\InstalledBuild.txt')) { throw 'Private Query requires the exact non-installed source Engine.' }
+    $policy = Get-Content -LiteralPath $manifest.policy_path -Raw | ConvertFrom-Json
+    $records = @($policy.engine_rules_records)
+    if ($records.Count -ne 6) { throw 'Private Query requires all six exact Engine Rules artifacts.' }
+    $rulesDirectory = Join-Path $engine.Root 'Engine\Intermediate\Build\BuildRules'
+    $expected = @{}
+    foreach ($pin in $script:IAmSpeedRulesSeedFiles) { $expected[$pin.Name]=$pin.Sha256; $expected[$pin.Manifest]=$pin.ManifestSha256 }
+    foreach ($pin in $script:IAmSpeedRulesSeedPdbs) { $expected[$pin.Name]=$pin.Sha256 }
+    $seen = @{}
+    foreach ($record in $records) {
+        $name = Split-Path -Leaf $record.path
+        $path = Join-Path $rulesDirectory $name
+        if (-not $expected.ContainsKey($name) -or $seen.ContainsKey($name) -or [IO.Path]::GetFullPath($record.path) -ine $path -or $record.sha256 -cne $expected[$name]) { throw 'Private Query Rules inventory or provenance differs.' }
+        Assert-IAmSpeedPhysicalFile $path
+        $item = Get-Item -LiteralPath $path
+        if ($item.Length -ne $record.bytes -or $item.LastWriteTimeUtc.Ticks -ne $record.mtime_ticks -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $record.sha256) { throw 'Private Query Rules artifact drift.' }
+        $seen[$name]=$true
+    }
+    $marketplace = Join-Path $engine.Root 'Engine\Plugins\Marketplace'
+    if ((Test-Path -LiteralPath $marketplace) -and @(Get-ChildItem -LiteralPath $marketplace -Recurse -File -Filter '*.uplugin').Count -gt 0) { throw 'Unpinned Marketplace Rules are forbidden.' }
+    # Absolute E1 source paths remain immutable provenance in the pinned manifests.
+    # Private UBT loads these exact DLLs and rejects every Engine compilation fallback.
+    $Runtime | Add-Member -NotePropertyName RulesDirectory -NotePropertyValue $rulesDirectory -Force
+    $Runtime | Add-Member -NotePropertyName Assemblies -NotePropertyValue $records -Force
+    $Runtime | Add-Member -NotePropertyName Build -NotePropertyValue $engine.Build -Force
+    return $Runtime
+}
+
 function Assert-IAmSpeedPhysicalFile {
     param([Parameter(Mandatory=$true)][string]$Path)
     $current = [IO.Path]::GetFullPath($Path)
@@ -296,7 +329,7 @@ function New-IAmSpeedProjectRulesQueryArguments {
     )
     return [string[]]@(
         '-Mode=QueryTargets', "-Project=$ProjectFile", "-Output=$OutputPath",
-        '-UsePrecompiled', '-NoEngineChanges', '-SLPrivateProjectResources', "-Log=$LogPath"
+        '-UsePrecompiled', '-NoEngineChanges', '-NoUBA', '-SLPrivateProjectResources', "-Log=$LogPath"
     )
 }
 

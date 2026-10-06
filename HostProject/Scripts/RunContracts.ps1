@@ -31,11 +31,9 @@ try {
     if ([string]::IsNullOrWhiteSpace($RulesEngineRoot)) {
         throw 'IAMSPEED_RULES_ENGINE_ROOT is required for isolated project-rules preparation.'
     }
-    $RulesSeedEngine = Assert-IAmSpeedRulesSeedRoot -EngineRoot $RulesEngineRoot
     $DirectUbtRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $Engine.Root -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
-    if ($RulesSeedEngine.Root -ieq $Engine.Root) {
-        throw 'Rules seed root must be a separate qualified slot from the target Engine root.'
-    }
+    if ([IO.Path]::GetFullPath($RulesEngineRoot).TrimEnd('\') -ine $Engine.Root) { throw 'Private Query must explicitly bind the same exact Engine as the native build.' }
+    $RulesSeedEngine = Assert-IAmSpeedPrivateRulesRoot -Runtime $DirectUbtRuntime
     $PrecompiledEngineRules = Assert-IAmSpeedPrecompiledRules -EngineRoot $Engine.Root
     if ([string]::IsNullOrWhiteSpace($TestFilter) -or
         $TestFilter -notmatch '^IAmSpeed\.AnalyticWorld(?:\.[A-Za-z0-9_.]+)?$') {
@@ -135,8 +133,10 @@ try {
     $RulesQueryExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $RulesSeedTbbLoader.LoaderDirectory -DotNetDirectory $RulesQueryInvocation.DotNetDirectory -Action {
         Push-Location -LiteralPath $RulesQueryInvocation.WorkingDirectory
         try {
-            & $RulesQueryInvocation.Executable @RulesQueryInvocationArguments *> $RulesQueryConsoleLog
-            [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+            Invoke-IAmSpeedPrivateEnginePolicy -Runtime $RulesSeedEngine -Action {
+                & $RulesQueryInvocation.Executable @RulesQueryInvocationArguments *> $RulesQueryConsoleLog
+                [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+            }
         }
         finally { Pop-Location }
     }
