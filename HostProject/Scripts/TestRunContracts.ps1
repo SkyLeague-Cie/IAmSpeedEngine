@@ -47,6 +47,33 @@ try {
     Assert-Throws { Assert-IAmSpeedPrivateRoot -PrivateRoot (Join-Path $PluginFixture 'HostProject\ExternalPlugins\IAmSpeed\Private') `
         -EngineRoot $EngineFixture -PluginRoot $PluginFixture } 'private output under the project plugin-link path is rejected'
 
+    Assert-True ($script:IAmSpeedExpectedTbbFallbackSha256 -ceq 'af20d7ca563e542432b856f6628d9481247197d1853bd4057caaf6c449749d42') 'pinned TBB fallback SHA is exact'
+    $TbbBinaryDirectory = Join-Path $EngineFixture 'Engine\Binaries\Win64'
+    New-Item -ItemType Directory -Path $TbbBinaryDirectory -Force | Out-Null
+    $TbbBinary = Join-Path $TbbBinaryDirectory 'tbbmalloc.dll'
+    [IO.File]::WriteAllText($TbbBinary, 'engine-binary-tbb')
+    $binaryLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $EngineFixture
+    Assert-True ($binaryLoader.Source -ceq 'EngineBinaries' -and $binaryLoader.DllPath -eq $TbbBinary) 'engine binary TBB loader is preferred'
+
+    Remove-Item -LiteralPath $TbbBinary -Force
+    $TbbFallback = Join-Path $EngineFixture 'Engine\Source\ThirdParty\Intel\TBB\Deploy\oneTBB-2022.3.0\VS2015\x64\bin\tbbmalloc.dll'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $TbbFallback) -Force | Out-Null
+    [IO.File]::WriteAllText($TbbFallback, 'fixture-fallback-tbb')
+    $fixtureFallbackSha = (Get-FileHash -LiteralPath $TbbFallback -Algorithm SHA256).Hash.ToLowerInvariant()
+    $fallbackLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $EngineFixture -ExpectedFallbackSha256 $fixtureFallbackSha
+    Assert-True ($fallbackLoader.Source -ceq 'PinnedThirdPartyFallback' -and $fallbackLoader.FallbackShaValidated -and
+        $fallbackLoader.Sha256 -ceq $fixtureFallbackSha) 'fallback TBB loader requires and records its qualified SHA'
+    Assert-Throws { Resolve-IAmSpeedTbbLoader -EngineRoot $EngineFixture } 'fallback TBB with a nonqualified SHA is rejected'
+
+    $originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    $pathResult = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -Action {
+        [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    }
+    Assert-True ($pathResult.StartsWith($TbbBinaryDirectory + ';', [StringComparison]::OrdinalIgnoreCase)) 'private TBB directory is process-PATH prefixed'
+    Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'process PATH is restored after successful action'
+    Assert-Throws { Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -Action { throw 'fixture action failure' } } 'TBB action exception is propagated'
+    Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'process PATH is restored after failed action'
+
     $buildArgs = New-IAmSpeedBuildArguments -ProjectFile 'D:\Private\HostProject.uproject' `
         -LogPath 'D:\Private\Logs\build.log' -UbaRoot 'D:\Private\UBA' -MaxParallelActions 4 -UbaMaxWorkers 4
     foreach ($required in @('-WaitMutex', '-NoHotReload', '-UsePrecompiled', '-NoEngineChanges',
@@ -106,7 +133,7 @@ try {
         [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors) | Out-Null
         Assert-True ($parseErrors.Count -eq 0) "PowerShell 5 parser accepts $path"
     }
-    Write-Output 'PASS exact engine pin, whole-checkout private-root exclusion, bounded/private build arguments, queue/report rejection, and strict automation pass'
+    Write-Output 'PASS engine and private-root pins, process-only qualified TBB loader, bounded/private build args, strict automation report, and PATH restoration'
 }
 finally {
     $resolvedFixture = [IO.Path]::GetFullPath($FixtureRoot).TrimEnd('\')

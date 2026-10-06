@@ -1,3 +1,70 @@
+$script:IAmSpeedExpectedTbbFallbackSha256 = 'af20d7ca563e542432b856f6628d9481247197d1853bd4057caaf6c449749d42'
+
+function Resolve-IAmSpeedTbbLoader {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$EngineRoot,
+        [string]$ExpectedFallbackSha256 = $script:IAmSpeedExpectedTbbFallbackSha256
+    )
+
+    $root = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')
+    $binaryPath = Join-Path $root 'Engine\Binaries\Win64\tbbmalloc.dll'
+    if (Test-Path -LiteralPath $binaryPath -PathType Leaf) {
+        $file = Get-Item -LiteralPath $binaryPath -Force
+        return [pscustomobject]@{
+            LoaderDirectory = Split-Path -Parent $binaryPath
+            DllPath = $binaryPath
+            Sha256 = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Source = 'EngineBinaries'
+            FallbackShaValidated = $false
+        }
+    }
+
+    $fallbackPath = Join-Path $root 'Engine\Source\ThirdParty\Intel\TBB\Deploy\oneTBB-2022.3.0\VS2015\x64\bin\tbbmalloc.dll'
+    if (-not (Test-Path -LiteralPath $fallbackPath -PathType Leaf)) {
+        throw "tbbmalloc.dll was not found in Engine Binaries or the pinned oneTBB fallback: $fallbackPath"
+    }
+    $fallback = Get-Item -LiteralPath $fallbackPath -Force
+    $fallbackSha = (Get-FileHash -LiteralPath $fallbackPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($fallbackSha -cne $ExpectedFallbackSha256.ToLowerInvariant()) {
+        throw "The oneTBB fallback tbbmalloc.dll SHA-256 is not the qualified payload: $fallbackSha"
+    }
+    return [pscustomobject]@{
+        LoaderDirectory = Split-Path -Parent $fallbackPath
+        DllPath = $fallbackPath
+        Sha256 = $fallbackSha
+        Source = 'PinnedThirdPartyFallback'
+        FallbackShaValidated = $true
+    }
+}
+
+function New-IAmSpeedProcessPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$LoaderDirectory,
+        [AllowNull()] [string]$ExistingPath
+    )
+    $directory = [IO.Path]::GetFullPath($LoaderDirectory).TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($ExistingPath)) { return $directory }
+    return $directory + ';' + $ExistingPath
+}
+
+function Invoke-IAmSpeedWithProcessTbbPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$LoaderDirectory,
+        [Parameter(Mandatory=$true)] [scriptblock]$Action
+    )
+    $originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable('PATH', (New-IAmSpeedProcessPath -LoaderDirectory $LoaderDirectory -ExistingPath $originalPath), 'Process')
+        & $Action
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('PATH', $originalPath, 'Process')
+    }
+}
+
 function Assert-IAmSpeedPrivateRoot {
     [CmdletBinding()]
     param(

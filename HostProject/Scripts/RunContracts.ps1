@@ -13,10 +13,11 @@ $ErrorActionPreference = 'Stop'
 $RunRoot = $null
 $PluginLink = $null
 $EnvironmentNames = @(
-    'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA',
+    'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'PATH',
     'UE-LocalDataCachePath', 'UE-SharedDataCachePath', 'UE_SKIP_UBT_SDK_SETUP'
 )
 $OriginalEnvironment = @{}
+$TbbLoader = $null
 foreach ($name in $EnvironmentNames) {
     $OriginalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
@@ -31,6 +32,7 @@ try {
     $ProjectRoot = Split-Path -Parent $PSScriptRoot
     $PluginRoot = Split-Path -Parent $ProjectRoot
     $PrivateParent = Assert-IAmSpeedPrivateRoot -PrivateRoot $PrivateRoot -EngineRoot $Engine.Root -PluginRoot $PluginRoot
+    $TbbLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $Engine.Root
     if (-not (Test-Path -LiteralPath $PrivateParent -PathType Container)) {
         New-Item -ItemType Directory -Path $PrivateParent -Force | Out-Null
     }
@@ -90,27 +92,43 @@ try {
     $BuildArguments = New-IAmSpeedBuildArguments `
         -ProjectFile $ProjectFile -LogPath $BuildLog -UbaRoot $UbaRoot `
         -MaxParallelActions $MaxParallelActions -UbaMaxWorkers $UBAMaxWorkers
-    & $Build @BuildArguments *> $BuildConsoleLog
-    $BuildExitCode = $LASTEXITCODE
-    if ($BuildExitCode -ne 0) {
-        throw "HostProject editor build failed with exit code $BuildExitCode. See $BuildLog."
-    }
-
     $EditorArguments = New-IAmSpeedEditorArguments `
         -ProjectFile $ProjectFile -TestFilter $TestFilter -LogPath $EditorLog `
         -ReportPath $AutomationReport
-    $EditorOutput = & $Editor @EditorArguments 2> $EditorErrorLog
-    $EditorExitCode = $LASTEXITCODE
-    [IO.File]::WriteAllText($EditorOutputLog, (($EditorOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
-    $Automation = Assert-IAmSpeedAutomationResult `
-        -ExitCode $EditorExitCode -StandardOutput (Get-Content -Raw -LiteralPath $EditorOutputLog) `
-        -ReportPath $ReportIndex -TestFilter $TestFilter
+    $Execution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -Action {
+        & $Build @BuildArguments *> $BuildConsoleLog
+        $BuildExitCode = $LASTEXITCODE
+        if ($BuildExitCode -ne 0) {
+            throw "HostProject editor build failed with exit code $BuildExitCode. See $BuildLog."
+        }
+
+        $EditorOutput = & $Editor @EditorArguments 2> $EditorErrorLog
+        $EditorExitCode = $LASTEXITCODE
+        [IO.File]::WriteAllText($EditorOutputLog, (($EditorOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        $Automation = Assert-IAmSpeedAutomationResult `
+            -ExitCode $EditorExitCode -StandardOutput (Get-Content -Raw -LiteralPath $EditorOutputLog) `
+            -ReportPath $ReportIndex -TestFilter $TestFilter
+        [pscustomobject]@{
+            BuildExitCode = $BuildExitCode
+            EditorExitCode = $EditorExitCode
+            Automation = $Automation
+        }
+    }
+    $BuildExitCode = $Execution.BuildExitCode
+    $EditorExitCode = $Execution.EditorExitCode
+    $Automation = $Execution.Automation
 
     $Result = [pscustomobject]@{
         status = 'passed'
         engine_root = $Engine.Root
         engine_version = $Engine.Version
         compatible_changelist = $Engine.CompatibleChangelist
+        tbb_loader_dll = $TbbLoader.DllPath
+        tbb_loader_directory = $TbbLoader.LoaderDirectory
+        tbb_loader_source = $TbbLoader.Source
+        tbb_loader_sha256 = $TbbLoader.Sha256
+        tbb_fallback_sha_validated = $TbbLoader.FallbackShaValidated
+        tbb_loader_path_scope = 'process-only; restored after build and automation'
         private_run_root = $RunRoot
         host_project = $ProjectFile
         test_filter = $TestFilter
@@ -125,7 +143,17 @@ try {
 }
 catch {
     if ($RunRoot -and (Test-Path -LiteralPath (Join-Path $RunRoot 'Logs') -PathType Container)) {
-        $failure = [pscustomobject]@{ status='failed'; error=$_.Exception.Message; private_run_root=$RunRoot }
+        $failure = [pscustomobject]@{
+            status='failed'
+            error=$_.Exception.Message
+            private_run_root=$RunRoot
+            tbb_loader_dll=if ($TbbLoader) { $TbbLoader.DllPath } else { $null }
+            tbb_loader_directory=if ($TbbLoader) { $TbbLoader.LoaderDirectory } else { $null }
+            tbb_loader_source=if ($TbbLoader) { $TbbLoader.Source } else { $null }
+            tbb_loader_sha256=if ($TbbLoader) { $TbbLoader.Sha256 } else { $null }
+            tbb_fallback_sha_validated=if ($TbbLoader) { $TbbLoader.FallbackShaValidated } else { $false }
+            tbb_loader_path_scope='process-only; restored by finally'
+        }
         $failure | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $RunRoot 'Logs\result.json') -Encoding UTF8
     }
     throw
