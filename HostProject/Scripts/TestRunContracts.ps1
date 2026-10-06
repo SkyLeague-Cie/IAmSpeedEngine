@@ -181,7 +181,7 @@ try {
     Assert-True ($rulesQueryArgs -ccontains '-UsePrecompiled') 'rules preparation loads the pinned seed Engine rules'
     Assert-True ($rulesQueryArgs -cnotcontains '-SkipRulesCompile') 'QueryTargets compiles the fresh private project rules'
     Assert-True (@($rulesQueryArgs | Where-Object { $_ -match '^-Output=D:\\Private\\' }).Count -eq 1) 'QueryTargets output is private'
-    $queryInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $rulesSeedRuntime -Arguments $rulesQueryArgs
+    $queryInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $rulesSeed -Arguments $rulesQueryArgs
     Assert-True ($queryInvocation.Executable -ceq $expectedDotNet -and $queryInvocation.EngineRoot -ceq $expectedRulesSeedRoot -and $queryInvocation.Arguments[0] -ceq $expectedUbt) 'QueryTargets is constructed as a pinned direct dotnet/UBT invocation under the seed Engine root'
     Assert-True ($queryInvocation.WorkingDirectory -ceq (Join-Path $expectedRulesSeedRoot 'Engine\Source')) 'QueryTargets retains Build.bat Engine\Source working directory'
     Assert-True (@($queryInvocation.Arguments | Where-Object { $_ -cmatch '^-Session=\{[0-9a-fA-F-]{36}\}$' }).Count -eq 1) 'QueryTargets supplies an explicit UBT session before trace initialization'

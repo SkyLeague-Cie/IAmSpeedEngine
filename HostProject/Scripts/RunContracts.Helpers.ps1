@@ -79,7 +79,12 @@ function Assert-IAmSpeedRulesSeedRoot {
     if ($marketplaceDescriptors.Count -gt 0) {
         throw 'Marketplace rules would add another Engine-side assembly; this bounded rules seed does not allow it.'
     }
-    return [pscustomobject]@{ Root=$engine.Root; Build=$engine.Build; DotNetPath=$runtime.DotNetPath; DotNetSha256=$runtime.DotNetSha256; UbtPath=$ubtPath; UbtSha256=$ubtSha; RulesDirectory=$rulesDirectory; Assemblies=$assemblyProof }
+    return [pscustomobject]@{
+        Root=$engine.Root; Build=$engine.Build; DotNetPath=$runtime.DotNetPath; DotNetDirectory=$runtime.DotNetDirectory
+        DotNetVersion=$runtime.DotNetVersion; DotNetArchitecture=$runtime.DotNetArchitecture; DotNetSha256=$runtime.DotNetSha256
+        UbtPath=$ubtPath; UbtSha256=$ubtSha; WorkingDirectory=$runtime.WorkingDirectory
+        RulesDirectory=$rulesDirectory; Assemblies=$assemblyProof
+    }
 }
 
 function Assert-IAmSpeedDirectUbtRuntime {
