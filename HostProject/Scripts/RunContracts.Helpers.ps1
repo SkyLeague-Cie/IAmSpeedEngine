@@ -1,4 +1,5 @@
 $script:IAmSpeedExpectedTbbFallbackSha256 = 'af20d7ca563e542432b856f6628d9481247197d1853bd4057caaf6c449749d42'
+$script:IAmSpeedExpectedEmbreeFallbackSha256 = 'b21dcf93fed2b647dc662fe9720b28b32b3f13e1ddb9eac7c1b6e3950b95df63'
 $script:IAmSpeedDotNetSha256 = 'c1809e1f7fc603c2096efdfbc3f98c2123a398d3dff331096fdaebc3071ac32d'
 $script:IAmSpeedUbtSha256 = '0c3adf01933fd31497971cbcc3f66315fabe061bbb4c56ac143cd809192e208d'
 $script:IAmSpeedRulesSeedFiles = @(
@@ -455,6 +456,67 @@ function Resolve-IAmSpeedTbbLoader {
     }
 }
 
+function Resolve-IAmSpeedEmbreeLoader {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)] [string]$EngineRoot,
+        [string]$ExpectedFallbackSha256 = $script:IAmSpeedExpectedEmbreeFallbackSha256
+    )
+
+    $root = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')
+    if ($ExpectedFallbackSha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'The pinned Embree runtime SHA-256 must contain exactly 64 hexadecimal characters.' }
+    $binaryPath = Join-Path $root 'Engine\Binaries\Win64\embree4.dll'
+    if (Test-Path -LiteralPath $binaryPath -PathType Leaf) {
+        $file = Get-Item -LiteralPath $binaryPath -Force
+        $binarySha = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($binarySha -cne $ExpectedFallbackSha256.ToLowerInvariant()) {
+            throw "The Engine Binaries embree4.dll SHA-256 is not the qualified payload: $binarySha"
+        }
+        return [pscustomobject]@{
+            LoaderDirectory = Split-Path -Parent $binaryPath
+            DllPath = $binaryPath
+            Bytes = $file.Length
+            Sha256 = $binarySha
+            Sha256Pinned = $true
+            Source = 'EngineBinaries'
+            FallbackShaValidated = $false
+        }
+    }
+
+    $fallbackPath = Join-Path $root 'Engine\Source\ThirdParty\Intel\Embree\Deploy\embree-4.3.3\VS2015\x64\bin\embree4.dll'
+    if (-not (Test-Path -LiteralPath $fallbackPath -PathType Leaf)) {
+        throw "embree4.dll was not found in Engine Binaries or the pinned Embree fallback: $fallbackPath"
+    }
+    $fallbackSha = (Get-FileHash -LiteralPath $fallbackPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($fallbackSha -cne $ExpectedFallbackSha256.ToLowerInvariant()) {
+        throw "The Embree fallback embree4.dll SHA-256 is not the qualified payload: $fallbackSha"
+    }
+    return [pscustomobject]@{
+        LoaderDirectory = Split-Path -Parent $fallbackPath
+        DllPath = $fallbackPath
+        Bytes = (Get-Item -LiteralPath $fallbackPath -Force).Length
+        Sha256 = $fallbackSha
+        Sha256Pinned = $true
+        Source = 'PinnedThirdPartyFallback'
+        FallbackShaValidated = $true
+    }
+}
+
+function Assert-IAmSpeedResolvedRuntimeDllUnchanged {
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)] [pscustomobject]$Loader)
+
+    if (-not (Test-Path -LiteralPath $Loader.DllPath -PathType Leaf)) {
+        throw "Pinned runtime DLL disappeared: $($Loader.DllPath)"
+    }
+    $item = Get-Item -LiteralPath $Loader.DllPath -Force
+    $sha = (Get-FileHash -LiteralPath $Loader.DllPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($item.Length -ne $Loader.Bytes -or $sha -cne $Loader.Sha256) {
+        throw "Pinned runtime DLL changed during CI: $($Loader.DllPath)"
+    }
+    return [pscustomobject]@{ path=$Loader.DllPath; bytes=$item.Length; sha256=$sha }
+}
+
 function New-IAmSpeedProcessPath {
     [CmdletBinding()]
     param(
@@ -477,16 +539,17 @@ function Invoke-IAmSpeedWithProcessTbbPath {
     param(
         [Parameter(Mandatory=$true)] [string]$LoaderDirectory,
         [string]$DotNetDirectory,
+        [string[]]$AdditionalDirectories = @(),
         [Parameter(Mandatory=$true)] [scriptblock]$Action
     )
     $environmentNames = @('PATH', 'UE_DOTNET_VERSION', 'UE_DOTNET_ARCH', 'UE_DOTNET_DIR', 'DOTNET_ROOT', 'DOTNET_MULTILEVEL_LOOKUP', 'DOTNET_ROLL_FORWARD')
     $originalEnvironment = @{}
     foreach ($name in $environmentNames) { $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     try {
-        $additionalDirectories = @()
+        $processDirectories = @($AdditionalDirectories)
         if (-not [string]::IsNullOrWhiteSpace($DotNetDirectory)) {
             $dotnetDirectoryFull = [IO.Path]::GetFullPath($DotNetDirectory).TrimEnd('\')
-            $additionalDirectories = @($dotnetDirectoryFull)
+            $processDirectories += $dotnetDirectoryFull
             [Environment]::SetEnvironmentVariable('UE_DOTNET_VERSION', '10.0', 'Process')
             [Environment]::SetEnvironmentVariable('UE_DOTNET_ARCH', 'win-x64', 'Process')
             [Environment]::SetEnvironmentVariable('UE_DOTNET_DIR', $dotnetDirectoryFull, 'Process')
@@ -494,7 +557,7 @@ function Invoke-IAmSpeedWithProcessTbbPath {
             [Environment]::SetEnvironmentVariable('DOTNET_MULTILEVEL_LOOKUP', '0', 'Process')
             [Environment]::SetEnvironmentVariable('DOTNET_ROLL_FORWARD', 'LatestMajor', 'Process')
         }
-        [Environment]::SetEnvironmentVariable('PATH', (New-IAmSpeedProcessPath -LoaderDirectory $LoaderDirectory -AdditionalDirectories $additionalDirectories -ExistingPath $originalEnvironment['PATH']), 'Process')
+        [Environment]::SetEnvironmentVariable('PATH', (New-IAmSpeedProcessPath -LoaderDirectory $LoaderDirectory -AdditionalDirectories $processDirectories -ExistingPath $originalEnvironment['PATH']), 'Process')
         & $Action
     }
     finally {

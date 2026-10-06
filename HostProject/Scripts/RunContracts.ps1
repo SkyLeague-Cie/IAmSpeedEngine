@@ -20,6 +20,7 @@ $EnvironmentNames = @(
 )
 $OriginalEnvironment = @{}
 $TbbLoader = $null
+$EmbreeLoader = $null
 $RulesSeedTbbLoader = $null
 $RulesEvidence = $null
 foreach ($name in $EnvironmentNames) {
@@ -53,6 +54,7 @@ try {
     $boundParent = [IO.Path]::GetFullPath($boundManifest.baseline_project_parent).TrimEnd('\')
     if (-not $PrivateParent.StartsWith($boundParent + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Private CI output root must be a child of the manifest-bound parent.' }
     $TbbLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $Engine.Root
+    $EmbreeLoader = Resolve-IAmSpeedEmbreeLoader -EngineRoot $Engine.Root
     $RulesSeedTbbLoader = Resolve-IAmSpeedTbbLoader -EngineRoot $RulesSeedEngine.Root
     if (-not (Test-Path -LiteralPath $PrivateParent -PathType Container)) {
         New-Item -ItemType Directory -Path $PrivateParent -Force | Out-Null
@@ -241,14 +243,17 @@ try {
         throw 'Editor TargetInfo changed or disappeared before startup; refusing the implicit Engine QueryTargets fallback.'
     }
     [void](Assert-IAmSpeedEditorTargetInfoFresh -TargetInfoPath $EditorTargetInfo -ProjectRoot $PrivateProject)
+    $EmbreePreAutomation = Assert-IAmSpeedResolvedRuntimeDllUnchanged -Loader $EmbreeLoader
 
-    $EditorExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -Action {
+    $EditorExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory `
+        -AdditionalDirectories @($EmbreeLoader.LoaderDirectory) -Action {
         $EditorOutput = & $Editor @EditorArguments 2> $EditorErrorLog
         $EditorExitCode = $LASTEXITCODE
         [IO.File]::WriteAllText($EditorOutputLog, (($EditorOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
         [pscustomobject]@{ ExitCode=$EditorExitCode }
     }
     $EditorExitCode = $EditorExecution.ExitCode
+    $EmbreePostAutomation = Assert-IAmSpeedResolvedRuntimeDllUnchanged -Loader $EmbreeLoader
     $SeedRulesAfterEditor = Get-IAmSpeedRulesSnapshot -EngineRoot $RulesSeedEngine.Root
     $TargetRulesAfterEditor = Get-IAmSpeedRulesSnapshot -EngineRoot $Engine.Root
     $RulesEvidence.seed_after_editor = $SeedRulesAfterEditor
@@ -275,6 +280,16 @@ try {
         tbb_loader_sha256 = $TbbLoader.Sha256
         tbb_fallback_sha_validated = $TbbLoader.FallbackShaValidated
         tbb_loader_path_scope = 'process-only; restored after build and automation'
+        embree_loader_dll = $EmbreeLoader.DllPath
+        embree_loader_directory = $EmbreeLoader.LoaderDirectory
+        embree_loader_source = $EmbreeLoader.Source
+        embree_loader_bytes = $EmbreeLoader.Bytes
+        embree_loader_sha256 = $EmbreeLoader.Sha256
+        embree_loader_sha256_pinned = $EmbreeLoader.Sha256Pinned
+        embree_fallback_sha_validated = $EmbreeLoader.FallbackShaValidated
+        embree_loader_path_scope = 'process-only; restored after automation'
+        embree_pre_automation = $EmbreePreAutomation
+        embree_post_automation = $EmbreePostAutomation
         rules_seed_engine_root = $RulesSeedEngine.Root
         rules_seed_tbb_loader_dll = $RulesSeedTbbLoader.DllPath
         rules_seed_tbb_loader_sha256 = $RulesSeedTbbLoader.Sha256
@@ -302,6 +317,14 @@ catch {
             tbb_loader_sha256=if ($TbbLoader) { $TbbLoader.Sha256 } else { $null }
             tbb_fallback_sha_validated=if ($TbbLoader) { $TbbLoader.FallbackShaValidated } else { $false }
             tbb_loader_path_scope='process-only; restored by finally'
+            embree_loader_dll=if ($EmbreeLoader) { $EmbreeLoader.DllPath } else { $null }
+            embree_loader_directory=if ($EmbreeLoader) { $EmbreeLoader.LoaderDirectory } else { $null }
+            embree_loader_source=if ($EmbreeLoader) { $EmbreeLoader.Source } else { $null }
+            embree_loader_bytes=if ($EmbreeLoader) { $EmbreeLoader.Bytes } else { $null }
+            embree_loader_sha256=if ($EmbreeLoader) { $EmbreeLoader.Sha256 } else { $null }
+            embree_loader_sha256_pinned=if ($EmbreeLoader) { $EmbreeLoader.Sha256Pinned } else { $false }
+            embree_fallback_sha_validated=if ($EmbreeLoader) { $EmbreeLoader.FallbackShaValidated } else { $false }
+            embree_loader_path_scope='process-only; restored by finally'
             engine_rule_write_guard=$RulesEvidence
             rules_seed_engine_root=if ($RulesSeedEngine) { $RulesSeedEngine.Root } else { $null }
             rules_seed_tbb_loader_dll=if ($RulesSeedTbbLoader) { $RulesSeedTbbLoader.DllPath } else { $null }

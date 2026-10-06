@@ -123,6 +123,27 @@ try {
         $fallbackLoader.Sha256 -ceq $fixtureFallbackSha) 'fallback TBB loader requires and records its qualified SHA'
     Assert-Throws { Resolve-IAmSpeedTbbLoader -EngineRoot $EngineFixture } 'fallback TBB with a nonqualified SHA is rejected'
 
+    Assert-Throws { Resolve-IAmSpeedEmbreeLoader -EngineRoot $EngineFixture } 'missing Embree runtime is rejected'
+    $EmbreeBinary = Join-Path $TbbBinaryDirectory 'embree4.dll'
+    [IO.File]::WriteAllText($EmbreeBinary, 'engine-binary-embree')
+    $binaryEmbreeSha = (Get-FileHash -LiteralPath $EmbreeBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+    $binaryEmbree = Resolve-IAmSpeedEmbreeLoader -EngineRoot $EngineFixture -ExpectedFallbackSha256 $binaryEmbreeSha
+    Assert-True ($binaryEmbree.Source -ceq 'EngineBinaries' -and $binaryEmbree.DllPath -eq $EmbreeBinary -and
+        $binaryEmbree.Sha256Pinned -and $binaryEmbree.Bytes -eq [IO.FileInfo]::new($EmbreeBinary).Length) 'engine binary Embree runtime is hash-pinned'
+    [IO.File]::AppendAllText($EmbreeBinary, '-mutated')
+    Assert-Throws { Assert-IAmSpeedResolvedRuntimeDllUnchanged -Loader $binaryEmbree } 'Embree runtime drift before/after Editor is rejected'
+    [IO.File]::WriteAllText($EmbreeBinary, 'engine-binary-embree')
+    Remove-Item -LiteralPath $EmbreeBinary -Force
+    $EmbreeFallback = Join-Path $EngineFixture 'Engine\Source\ThirdParty\Intel\Embree\Deploy\embree-4.3.3\VS2015\x64\bin\embree4.dll'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $EmbreeFallback) -Force | Out-Null
+    [IO.File]::WriteAllText($EmbreeFallback, 'fixture-fallback-embree')
+    $fixtureEmbreeSha = (Get-FileHash -LiteralPath $EmbreeFallback -Algorithm SHA256).Hash.ToLowerInvariant()
+    $fallbackEmbree = Resolve-IAmSpeedEmbreeLoader -EngineRoot $EngineFixture -ExpectedFallbackSha256 $fixtureEmbreeSha
+    Assert-True ($fallbackEmbree.Source -ceq 'PinnedThirdPartyFallback' -and $fallbackEmbree.FallbackShaValidated -and
+        $fallbackEmbree.Sha256Pinned -and $fallbackEmbree.Sha256 -ceq $fixtureEmbreeSha) 'fallback Embree runtime requires and records its qualified SHA'
+    Assert-True ((Assert-IAmSpeedResolvedRuntimeDllUnchanged -Loader $fallbackEmbree).sha256 -ceq $fixtureEmbreeSha) 'pinned fallback Embree runtime is unchanged at load boundaries'
+    Assert-Throws { Resolve-IAmSpeedEmbreeLoader -EngineRoot $EngineFixture } 'fallback Embree runtime with a nonqualified SHA is rejected'
+
     $originalPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
     $OriginalEnvironment = @{}
     foreach ($variable in @('UE_DOTNET_VERSION', 'UE_DOTNET_ARCH', 'UE_DOTNET_DIR', 'DOTNET_ROOT', 'DOTNET_MULTILEVEL_LOOKUP', 'DOTNET_ROLL_FORWARD')) {
@@ -133,6 +154,11 @@ try {
     }
     Assert-True ($pathResult.StartsWith($TbbBinaryDirectory + ';', [StringComparison]::OrdinalIgnoreCase)) 'private TBB directory is process-PATH prefixed'
     Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'process PATH is restored after successful action'
+    $embreePathResult = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -AdditionalDirectories @((Split-Path -Parent $EmbreeFallback)) -Action {
+        [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    }
+    Assert-True ($embreePathResult.StartsWith($TbbBinaryDirectory + ';' + (Split-Path -Parent $EmbreeFallback) + ';', [StringComparison]::OrdinalIgnoreCase)) 'pinned Embree runtime directory is process-PATH scoped after TBB'
+    Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'process PATH is restored after Embree action'
     Assert-Throws { Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -Action { throw 'fixture action failure' } } 'TBB action exception is propagated'
     Assert-True ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $originalPath) 'process PATH is restored after failed action'
     $dotnetEnvironment = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbBinaryDirectory -DotNetDirectory $TbbBinaryDirectory -Action {
@@ -291,7 +317,7 @@ try {
     $runnerSource = Get-Content -LiteralPath $RunnerPath -Raw
     Assert-True ($runnerSource.Contains('Intermediate\TargetInfo.json')) 'Editor QueryTargets output is primed at DesktopPlatform TargetInfo path'
     Assert-True ($runnerSource.Contains('Editor ignored the fresh private TargetInfo.json')) 'Editor fallback to Engine Build.bat is rejected'
-    Write-Output 'PASS split UBT rules preparation, six-file Engine-rule immutability, process-only TBB, bounded build, strict reports, and PATH restoration'
+Write-Output 'PASS split UBT rules preparation, six-file Engine-rule immutability, process-only TBB and Embree runtime resolution, bounded build, strict reports, and PATH restoration'
 }
 finally {
     $resolvedFixture = [IO.Path]::GetFullPath($FixtureRoot).TrimEnd('\')
