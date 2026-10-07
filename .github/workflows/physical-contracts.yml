@@ -62,6 +62,10 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_RULES_ENGINE_ROOT)) {
             throw 'Configure the IAMSPEED_RULES_ENGINE_ROOT repository variable with the qualified E-slot rules seed root before running IAmSpeed CI.'
           }
+          if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST) -or
+              [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256)) {
+            throw 'Configure IAMSPEED_PRIVATE_UBT_MANIFEST and IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256 repository variables for the private Query runtime.'
+          }
           .\HostProject\Scripts\RunContracts.ps1 -EngineRoot $engineRoot
 
       - name: Upload HostProject logs
