@@ -180,9 +180,9 @@ function Assert-IAmSpeedPrivateUbtManifest {
     if ([IO.Path]::GetFullPath($policy.engine_root).TrimEnd('\') -ine (Join-Path $EngineRoot 'Engine') -or [IO.Path]::GetFullPath($policy.project_private_parent).TrimEnd('\') -ine [IO.Path]::GetFullPath($manifest.baseline_project_parent).TrimEnd('\')) { throw 'Private Engine policy binding differs.' }
     $traceContract = 'Bound root Build only; private Trace required by real UBA non-detour executor. Query and recursive helper modes retain Session trace suppression.'
     if ($manifest.private_root_trace_contract -cne $traceContract -or $policy.private_root_trace_contract -cne $traceContract) { throw 'Private root Build trace contract differs.' }
-    $copyContract = 'Exact 19 runtime DLL pairs use immutable D Engine sources and allowlisted private E targets; three exact pre-existing D runtime pairs (D3D12Core, d3d12SDKLayers, EOSSDK-Win64-Shipping) are immutable inputs whose Engine copy actions are skipped; pinned Engine Natvis sources use private E copy/link outputs. No Engine action outputs or deletes.'
+    $copyContract = 'Exact 19 runtime DLL pairs use immutable D Engine sources and allowlisted private E targets; four exact pre-existing D runtime pairs (D3D12Core, d3d12SDKLayers, EOSSDK-Win64-Shipping, NNEEditorOnnxTools) are immutable inputs whose Engine copy actions are skipped; pinned Engine Natvis sources use private E copy/link outputs. No Engine action outputs or deletes.'
     if ($manifest.private_copy_producer_contract -cne $copyContract -or $policy.private_copy_producer_contract -cne $copyContract) { throw 'Private copy producer contract differs.' }
-    if ($manifest.preserved_runtime_copy_count -ne 22 -or @($policy.preserved_runtime_copies).Count -ne 22 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
+    if ($manifest.preserved_runtime_copy_count -ne 23 -or @($policy.preserved_runtime_copies).Count -ne 23 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
     $privateEngineOutputRoot = [IO.Path]::GetFullPath((Join-Path ([string]$manifest.private_root) 'EnginePrivate')).TrimEnd('\') + '\'
     # These exact D targets already exist and are byte-identical to their pinned
     # Engine sources. The UBT hook verifies both files and returns true to
@@ -191,6 +191,7 @@ function Assert-IAmSpeedPrivateUbtManifest {
         ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\D3D12\x64\D3D12Core.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\ThirdParty\Windows\AgilitySDK\1.618.5\Binaries\x64\D3D12Core.dll'))
         ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\D3D12\x64\d3d12SDKLayers.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\ThirdParty\Windows\AgilitySDK\1.618.5\Binaries\x64\d3d12SDKLayers.dll'))
         ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\EOSSDK-Win64-Shipping.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\ThirdParty\EOSSDK\SDK\Bin\EOSSDK-Win64-Shipping.dll'))
+        ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\NNEEditorOnnxTools.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\Editor\NNEEditor\Bin\Win64\NNEEditorOnnxTools.dll'))
     }
     $targets = @{}
     foreach ($copy in $policy.preserved_runtime_copies) {

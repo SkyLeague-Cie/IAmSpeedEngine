@@ -99,6 +99,10 @@ try {
         $eosSource = Join-Path $targetEngineRoot 'Engine\Source\ThirdParty\EOSSDK\SDK\Bin\EOSSDK-Win64-Shipping.dll'
         $eosApprovedCopies = @($privatePolicy.preserved_runtime_copies | Where-Object { $_.target -ceq $eosTarget -and $_.source -ceq $eosSource })
         Assert-True ($eosApprovedCopies.Count -eq 1 -and $eosApprovedCopies[0].source_sha256 -ceq $eosApprovedCopies[0].target_sha256 -and $eosApprovedCopies[0].source_mtime_ticks -eq $eosApprovedCopies[0].target_mtime_ticks) 'EOS Engine copy is an exact immutable input already pinned to E'
+        $nneTarget = Join-Path $targetEngineRoot 'Engine\Binaries\Win64\NNEEditorOnnxTools.dll'
+        $nneSource = Join-Path $targetEngineRoot 'Engine\Source\Editor\NNEEditor\Bin\Win64\NNEEditorOnnxTools.dll'
+        $nneCopies = @($privatePolicy.preserved_runtime_copies | Where-Object { $_.target -ceq $nneTarget -and $_.source -ceq $nneSource })
+        Assert-True ($nneCopies.Count -eq 1 -and $nneCopies[0].source_sha256 -ceq $nneCopies[0].target_sha256 -and $nneCopies[0].source_mtime_ticks -eq $nneCopies[0].target_mtime_ticks) 'NNE editor tools D runtime pair is byte-identical and precisely scoped'
         $invalidPolicy.preserved_runtime_copies = @($privatePolicy.preserved_runtime_copies | ForEach-Object { $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json })
         $invalidPolicy.preserved_runtime_copies | Where-Object { $_.target -ceq $eosTarget } | ForEach-Object { $_.source = Join-Path $targetEngineRoot 'Engine\Binaries\Win64\AgentInterface.dll' }
         [IO.File]::WriteAllText($invalidPolicyPath, ($invalidPolicy | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
