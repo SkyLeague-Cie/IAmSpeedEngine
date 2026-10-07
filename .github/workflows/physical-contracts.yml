@@ -26,7 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          clean: true
+          path: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          clean: false
           persist-credentials: false
 
       - name: Validate HostProject contract runner
@@ -34,6 +35,7 @@ jobs:
         env:
           IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
           IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
+        working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: .\HostProject\Scripts\TestRunContracts.ps1
 
       - name: Build HostProject and run physical contracts
@@ -42,6 +44,7 @@ jobs:
           IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
           IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
           IAMSPEED_PRIVATE_ROOT: ${{ runner.temp }}/IAmSpeedPrivate
+        working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $engineRoot = $env:IAMSPEED_UE_ROOT
           if ([string]::IsNullOrWhiteSpace($engineRoot)) {
