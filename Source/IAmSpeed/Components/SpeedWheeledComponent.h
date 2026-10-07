@@ -830,6 +830,7 @@ private:
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FSkyWaveDashAirPitchRearmTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;

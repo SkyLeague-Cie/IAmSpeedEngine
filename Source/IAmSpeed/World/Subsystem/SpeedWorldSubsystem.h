@@ -65,6 +65,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FSkyWaveDashAirPitchRearmTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 #endif
