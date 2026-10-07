@@ -57,6 +57,8 @@ public:
     const TArray<FVector>& GetGroundContacts() const;
     const TArray<FVector>& GetPhysicsTickGroundContacts() const;
     int32 GetLastResolvedGroundHitFrame() const { return LastResolvedGroundHitFrame; }
+    /** Rechecks a resolved exact planar provider at the current pose, without publishing contact. */
+    bool HasCurrentExactPlanarContact() const;
     bool IsConcaveGroundContact() const;
     FVector GetGroundPlaneNormal() const;
     float GetGroundPlaneD() const;

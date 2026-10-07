@@ -268,7 +268,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 	if (!BakedAsset)
 	{
 		BakedAsset = LoadObject<USpeedAnalyticCollisionAsset>(
-			nullptr, *BakedObjectPath);
+			nullptr, *BakedObjectPath, nullptr, LOAD_NoWarn);
 	}
 	if (BakedAsset)
 	{

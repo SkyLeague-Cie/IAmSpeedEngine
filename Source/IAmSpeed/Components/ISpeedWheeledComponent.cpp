@@ -3,6 +3,170 @@
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "HAL/IConsoleManager.h"
+#include "Engine/World.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+
+#if !(UE_BUILD_SHIPPING)
+// Read-only diagnostics over the admitted world data. No contact decision uses this mapping.
+static FString CoupledPoseDiagnosticVector(const FVector3d& V)
+{
+	return FString::Printf(TEXT("(%.17g,%.17g,%.17g)"), V.X, V.Y, V.Z);
+}
+
+static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, const int32 Wheel,
+	const TCHAR* Role, const uint64 SourceId, const uint64 SurfaceId,
+	const uint64 FeatureId, const uint64 PrimitiveId)
+{
+	const USpeedWorldSubsystem* Subsystem = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+	const Speed::Analytic::FAnalyticWorldData* Data = Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
+	if (!Data || PrimitiveId == 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Unknown"), Frame, Wheel, Role, PrimitiveId);
+		return;
+	}
+	int32 Examined = 0;
+	bool bMatched = false;
+	constexpr int32 MaximumCandidates = 32768;
+	for (const auto& Patch : Data->ExtrudedQuinticPatches)
+	{
+		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId || Patch.FeatureId != FeatureId) continue;
+		for (int32 Segment = 0; Segment + 1 < Patch.SectionPolyline.Num(); ++Segment)
+		{
+			if (++Examined > MaximumCandidates) break;
+			if (Speed::Analytic::CombineStableIds(Patch.PrimitiveId, uint64(Segment + 1)) != PrimitiveId) continue;
+			bMatched = true;
+			const FVector3d A = Patch.SectionPolyline[Segment];
+			const FVector3d B = Patch.SectionPolyline[Segment + 1];
+			UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Mapped Provider=Extruded Parent=%016llx Group=%016llx Authority=%d C2=%d Segment=%d MinExtrusion=%.17g MaxExtrusion=%.17g Axis=%s A=%s B=%s ErrorCm=%.17g"),
+				Frame, Wheel, Role, PrimitiveId, Patch.PrimitiveId, Patch.CanonicalGroupId,
+				Patch.bAuthorityEligible ? 1 : 0, Patch.bCanonicalC2ByConstruction ? 1 : 0,
+				Segment, Patch.MinimumExtrusionCoordinate, Patch.MaximumExtrusionCoordinate,
+				*CoupledPoseDiagnosticVector(Patch.ExtrusionAxis), *CoupledPoseDiagnosticVector(A), *CoupledPoseDiagnosticVector(B), Patch.MaximumChordErrorCm);
+		}
+	}
+	const auto LogTensor = [&](const TCHAR* Provider, const uint64 Parent, const uint64 Group,
+		const bool Authority, const auto& Cells)
+	{
+		constexpr int32 Indices[2][3] = {{0,2,3},{0,3,1}};
+		for (int32 CellIndex = 0; CellIndex < Cells.Num(); ++CellIndex)
+		for (int32 Triangle = 0; Triangle < 2; ++Triangle)
+		{
+			if (++Examined > MaximumCandidates) return;
+			if (Speed::Analytic::CombineStableIds(Parent, uint64(2 * CellIndex + Triangle + 1)) != PrimitiveId) continue;
+			bMatched = true;
+			const auto& Cell = Cells[CellIndex];
+			UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Mapped Provider=%s Parent=%016llx Group=%016llx Authority=%d ApproxCell=%d Triangle=%d U0=%.17g U1=%.17g V0=%.17g V1=%.17g A=%s B=%s C=%s ErrorCm=%.17g"),
+				Frame, Wheel, Role, PrimitiveId, Provider, Parent, Group, Authority ? 1 : 0, CellIndex, Triangle,
+				Cell.MinimumU, Cell.MaximumU, Cell.MinimumV, Cell.MaximumV,
+				*CoupledPoseDiagnosticVector(Cell.Corners[Indices[Triangle][0]]),
+				*CoupledPoseDiagnosticVector(Cell.Corners[Indices[Triangle][1]]),
+				*CoupledPoseDiagnosticVector(Cell.Corners[Indices[Triangle][2]]), Cell.MaximumErrorCm);
+		}
+	};
+	for (const auto& Patch : Data->TensorBezierPatches)
+	{
+		if (Patch.SourceId == SourceId && Patch.SurfaceId == SurfaceId && Patch.FeatureId == FeatureId)
+			LogTensor(TEXT("Tensor"), Patch.PrimitiveId, Patch.CanonicalGroupId, Patch.bAuthorityEligible, Patch.ApproximationCells);
+	}
+	for (const auto& Patch : Data->PiecewiseTensorBezierPatches)
+	{
+		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId) continue;
+		for (const auto& Cell : Patch.Cells)
+		{
+			if (Cell.FeatureId == FeatureId)
+				LogTensor(TEXT("PiecewiseTensor"), Cell.PrimitiveId, Patch.CanonicalGroupId, Patch.bAuthorityEligible, Cell.ApproximationCells);
+		}
+	}
+	UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomainSummary] Frame=%d Wheel=%d Role=%s Primitive=%016llx Matched=%d Complete=%d Examined=%d WorldHash=%016llx"), Frame, Wheel, Role, PrimitiveId, bMatched ? 1 : 0, Examined <= MaximumCandidates ? 1 : 0, Examined, Data->SourceHash);
+}
+#endif
+
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCertifiedExtrudedProjection(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionCertifiedExtruded"), 1,
+	TEXT("Admit bounded missed-wheel projection on same or adjacent certified C2 extruded chords, including exact duplicate profiles inside their common finite domain; zero preserves the gravity-alignment baseline."), ECVF_Default);
+
+static bool HaveCertifiedExtrudedSupport(UWorld* World,
+	const uint64 SourceId, const uint64 SurfaceId, const uint64 FeatureId,
+	const uint64 PreviousPrimitiveId, const uint64 CurrentPrimitiveId,
+	const FVector& PreviousPoint, const FVector& CurrentPoint, const float Radius)
+{
+	if (!World || PreviousPrimitiveId == 0 || CurrentPrimitiveId == 0 ||
+		!Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()) return false;
+	const USpeedWorldSubsystem* Subsystem = World->GetSubsystem<USpeedWorldSubsystem>();
+	const auto* Data = Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
+	if (!Data) return false;
+	const Speed::Analytic::FExtrudedQuinticPatch* PreviousPatch = nullptr;
+	const Speed::Analytic::FExtrudedQuinticPatch* CurrentPatch = nullptr;
+	int32 Previous = INDEX_NONE, Current = INDEX_NONE;
+	int32 PreviousMatches = 0, CurrentMatches = 0, Examined = 0;
+	for (const auto& Patch : Data->ExtrudedQuinticPatches)
+	{
+		if (Patch.SourceId != SourceId || Patch.SurfaceId != SurfaceId || Patch.FeatureId != FeatureId) continue;
+		if (Patch.SectionPolyline.Num() < 2 || Patch.SectionPolyline.Num() > 32768) return false;
+		for (int32 Segment = 0; Segment + 1 < Patch.SectionPolyline.Num(); ++Segment)
+		{
+			if (++Examined > 32768) return false;
+			const uint64 Id = Speed::Analytic::CombineStableIds(Patch.PrimitiveId, uint64(Segment + 1));
+			if (Id == PreviousPrimitiveId) { PreviousPatch = &Patch; Previous = Segment; ++PreviousMatches; }
+			if (Id == CurrentPrimitiveId) { CurrentPatch = &Patch; Current = Segment; ++CurrentMatches; }
+		}
+	}
+	if (PreviousMatches != 1 || CurrentMatches != 1 || FMath::Abs(Previous - Current) > 1) return false;
+	if (!PreviousPatch->bAuthorityEligible || !CurrentPatch->bAuthorityEligible ||
+		!PreviousPatch->bQueryCollisionEnabled || !CurrentPatch->bQueryCollisionEnabled ||
+		!PreviousPatch->bCanonicalC2ByConstruction || !CurrentPatch->bCanonicalC2ByConstruction ||
+		!PreviousPatch->IsValid() || !CurrentPatch->IsValid()) return false;
+	const auto SamePoint = [](const FVector3d& A, const FVector3d& B)
+	{
+		return !A.ContainsNaN() && !B.ContainsNaN() && A.X == B.X && A.Y == B.Y && A.Z == B.Z;
+	};
+	if (PreviousPatch != CurrentPatch)
+	{
+		// Two admitted records may parameterize the same physical polynomial on
+		// overlapping finite extrusion domains. A shared group alone is insufficient.
+		if (PreviousPatch->CanonicalGroupId == 0 ||
+			PreviousPatch->CanonicalGroupId != CurrentPatch->CanonicalGroupId ||
+			PreviousPatch->MaterialId != CurrentPatch->MaterialId ||
+			PreviousPatch->ObjectType != CurrentPatch->ObjectType ||
+			PreviousPatch->BlockingChannels != CurrentPatch->BlockingChannels ||
+			PreviousPatch->CanonicalSymmetryAxisMask != CurrentPatch->CanonicalSymmetryAxisMask ||
+			PreviousPatch->AdditionalResidualAgreementAllowanceCm != CurrentPatch->AdditionalResidualAgreementAllowanceCm ||
+			!SamePoint(PreviousPatch->ExtrusionAxis, CurrentPatch->ExtrusionAxis) ||
+			PreviousPatch->SectionPolyline.Num() != CurrentPatch->SectionPolyline.Num() ||
+			PreviousPatch->SectionParameters.Num() != CurrentPatch->SectionParameters.Num() ||
+			PreviousPatch->MaximumChordErrorCm != CurrentPatch->MaximumChordErrorCm) return false;
+		for (int32 I = 0; I < 6; ++I)
+			if (!SamePoint(PreviousPatch->SectionControlPoints[I], CurrentPatch->SectionControlPoints[I])) return false;
+		for (int32 I = 0; I < 2; ++I)
+			if (!SamePoint(PreviousPatch->InteriorCorrectionControlPoints[I], CurrentPatch->InteriorCorrectionControlPoints[I])) return false;
+		for (int32 I = 0; I < PreviousPatch->SectionPolyline.Num(); ++I)
+			if (!SamePoint(PreviousPatch->SectionPolyline[I], CurrentPatch->SectionPolyline[I])) return false;
+		for (int32 I = 0; I < PreviousPatch->SectionParameters.Num(); ++I)
+			if (!FMath::IsFinite(PreviousPatch->SectionParameters[I]) ||
+				PreviousPatch->SectionParameters[I] != CurrentPatch->SectionParameters[I]) return false;
+		if (PreviousPoint.ContainsNaN() || CurrentPoint.ContainsNaN() || !FMath::IsFinite(Radius) || Radius < 0.0f) return false;
+		const double CommonMinimum = FMath::Max(PreviousPatch->MinimumExtrusionCoordinate, CurrentPatch->MinimumExtrusionCoordinate);
+		const double CommonMaximum = FMath::Min(PreviousPatch->MaximumExtrusionCoordinate, CurrentPatch->MaximumExtrusionCoordinate);
+		const double PreviousCoordinate = FVector3d::DotProduct(PreviousPoint, PreviousPatch->ExtrusionAxis);
+		const double CurrentCoordinate = FVector3d::DotProduct(CurrentPoint, CurrentPatch->ExtrusionAxis);
+		// The radius-expanded segment between the two real contact points must
+		// remain inside the common domain; no tolerance enlarges either boundary.
+		if (CommonMaximum <= CommonMinimum ||
+			FMath::Min(PreviousCoordinate, CurrentCoordinate) - Radius < CommonMinimum ||
+			FMath::Max(PreviousCoordinate, CurrentCoordinate) + Radius > CommonMaximum) return false;
+	}
+	const FVector3d& A0 = PreviousPatch->SectionPolyline[Previous];
+	const FVector3d& A1 = PreviousPatch->SectionPolyline[Previous + 1];
+	const FVector3d& B0 = CurrentPatch->SectionPolyline[Current];
+	const FVector3d& B1 = CurrentPatch->SectionPolyline[Current + 1];
+	if (A0.ContainsNaN() || A1.ContainsNaN() || B0.ContainsNaN() || B1.ContainsNaN()) return false;
+	const FVector3d N0 = FVector3d::CrossProduct(A1 - A0, PreviousPatch->ExtrusionAxis).GetSafeNormal();
+	const FVector3d N1 = FVector3d::CrossProduct(B1 - B0, CurrentPatch->ExtrusionAxis).GetSafeNormal();
+	return !N0.IsNearlyZero() && !N1.IsNearlyZero() && FVector3d::DotProduct(N0, N1) >= 0.995;
+}
+
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelContactNormalVelTimeConstant(
 	TEXT("p.IAmSpeed.WheelContact.NormalVelTimeConstant"),
@@ -103,7 +267,7 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionNormalDot(
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionMinGravityAlignment(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionMinGravityAlignment"),
 	0.9f,
-	TEXT("Minimum support-normal alignment with world up. Near-vertical wall and gutter retention remains on the established sweep path."),
+	TEXT("Minimum support-normal alignment with world up. Established analytic vertical walls use bounded same-patch retention; gutters retain this alignment gate."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionPatchTravelSlack(
@@ -134,6 +298,18 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelSupportProjectionReachSkin(
 	TEXT("p.IAmSpeed.WheelSupport.ProjectionReachSkin"),
 	0.05f,
 	TEXT("Small inward reach margin, in cm, used to make the projected pose robust to sweep boundary tolerance."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionPreserveProbeHits(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionPreserveProbeHits"),
+	0,
+	TEXT("Experimental standalone projection: retain the existing inward reach margin for initial probe hits and reject actual support loss. Disabled until qualification."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionCoherentSpringState(
+	TEXT("p.IAmSpeed.WheelSupport.ProjectionCoherentSpringState"),
+	0,
+	TEXT("Experimental atomic projection/contact displacement transaction. Requires PreserveProbeHits; disabled until qualification."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelSupportProjectionDebug(
@@ -182,6 +358,12 @@ static TAutoConsoleVariable<float> CVarIAmSpeedCoupledPoseWheelGapCm(
 	TEXT("p.IAmSpeed.CoupledPose.WheelGapCm"),
 	0.05f,
 	TEXT("Maximum retained wheel-patch separation after hitbox-feasible projection."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseSharedWallPlaneRetention(
+	TEXT("p.IAmSpeed.CoupledPose.SharedWallPlaneRetention"),
+	0,
+	TEXT("Experimental final simultaneous retention on one real static wall plane. Disabled until matrix and player qualification."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseDebug(
@@ -953,6 +1135,11 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			SHitResult PreviousHit;
 			bool bHasProbeHit = false;
 			SHitResult ProbeHit;
+			float OriginalDisplacement = 0.0f;
+#if !(UE_BUILD_SHIPPING)
+			FVector DiagnosticInitialEnd = FVector::ZeroVector;
+			SHitResult DiagnosticInitialPlane;
+#endif
 		};
 
 		TArray<FGroundProbe, TInlineAllocator<4>> Probes;
@@ -967,7 +1154,16 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			Probe.Wheel = Wheel;
 			Probe.bWasGrounded = Wheel->IsOnGround();
 			Probe.PreviousHit = Wheel->GetHit();
+			Probe.OriginalDisplacement = Wheel->GetLastDisplacement();
 			Probe.bHasProbeHit = Wheel->ProbeSuspensionOnGround(Probe.ProbeHit, delta);
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+			{
+				FVector DiagnosticStart;
+				Wheel->GetSuspensionSweepSegment(delta, DiagnosticStart, Probe.DiagnosticInitialEnd);
+				Probe.DiagnosticInitialPlane = Probe.bHasProbeHit ? Probe.ProbeHit : Probe.PreviousHit;
+			}
+#endif
 		}
 
 		TArray<int32, TInlineAllocator<4>> EstablishedMisses;
@@ -992,6 +1188,16 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				Probe.PreviousHit.SurfaceId != 0 &&
 				Probe.PreviousHit.CanonicalGroupId != 0 &&
 				PreviousNormal.Z <= -0.995f;
+			// A wall contact can exhaust its ordinary suspension sweep while the
+			// same authored patch remains within the bounded correction budget.
+			// Admit only an established analytic wall identity, then reacquire it
+			// locally below; a shared stadium component alone is insufficient.
+			const bool bNativeStaticWallSupport =
+				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
+				Probe.PreviousHit.SourceId != 0 &&
+				Probe.PreviousHit.SurfaceId != 0 &&
+				Probe.PreviousHit.FeatureId != 0 &&
+				FMath::Abs(PreviousNormal.Z) <= 0.10f;
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0 &&
 				Probe.bWasGrounded && !Probe.bHasProbeHit)
@@ -1003,13 +1209,26 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					PreviousNormal.Z, Wheel->IsContactVelocityLocked() ? 1 : 0,
 					Wheel->IsJumping() ? 1 : 0,
 					Wheel->HasJumpUnilateralSupport() ? 1 : 0);
+				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 2)
+				{
+					UE_LOG(LogTemp, Log,
+						TEXT("[WheelSupportProjectionIdentity] Frame=%d Wheel=%d Source=%016llx Surface=%016llx Feature=%016llx Primitive=%016llx Group=%016llx Component=%s Hit=%d HitFrame=%u Point=(%.17g,%.17g,%.17g) Normal=(%.17g,%.17g,%.17g)"),
+						NumFrame(), Index,
+						static_cast<unsigned long long>(Probe.PreviousHit.SourceId),
+						static_cast<unsigned long long>(Probe.PreviousHit.SurfaceId),
+						static_cast<unsigned long long>(Probe.PreviousHit.FeatureId),
+						static_cast<unsigned long long>(Probe.PreviousHit.PrimitiveId),
+						static_cast<unsigned long long>(Probe.PreviousHit.CanonicalGroupId),
+						PreviousSurface ? *PreviousSurface->GetPathName() : TEXT("None"),
+						Probe.PreviousHit.bHit ? 1 : 0, Probe.PreviousHit.FrameTag,
+						Probe.PreviousHit.ImpactPoint.X, Probe.PreviousHit.ImpactPoint.Y, Probe.PreviousHit.ImpactPoint.Z,
+						PreviousNormal.X, PreviousNormal.Y, PreviousNormal.Z);
+				}
 			}
 #endif
 			if (!Probe.bWasGrounded || Probe.bHasProbeHit || !PreviousSurface ||
 				PreviousSurface->Mobility != EComponentMobility::Static ||
 				PreviousNormal.IsNearlyZero() ||
-				(PreviousNormal.Z < MinGravityAlignment &&
-					!bNativeVariableNormalSupport) ||
 				Wheel->HasJumpUnilateralSupport())
 			{
 				continue;
@@ -1021,6 +1240,48 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			SHitResult LocalPatchHit;
 			const bool bHasLocalPatch = Wheel->SweepSuspensionAlongNormal(
 				PreviousNormal, MaxGap, delta, LocalPatchHit);
+			const bool bNeedsCertifiedSmoothSupport = PreviousNormal.Z < MinGravityAlignment &&
+				!bNativeVariableNormalSupport && !bNativeStaticWallSupport;
+			// A smooth gutter is not a gravity-aligned floor. Only an established,
+			// currently swept finite certified patch may bypass that admission gate.
+			// Unknown geometry, creases and remote chords retain the original rule.
+			if (bNeedsCertifiedSmoothSupport &&
+				(!bHasLocalPatch || CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() == 0 ||
+				 !HaveCertifiedExtrudedSupport(Wheel->GetWorld(),
+					Probe.PreviousHit.SourceId, Probe.PreviousHit.SurfaceId, Probe.PreviousHit.FeatureId,
+					Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId,
+					Probe.PreviousHit.ImpactPoint, LocalPatchHit.ImpactPoint,
+					Wheel->GetCollisionShape().GetSphereRadius()) ||
+				 LocalPatchHit.SourceId != Probe.PreviousHit.SourceId ||
+				 LocalPatchHit.SurfaceId != Probe.PreviousHit.SurfaceId ||
+				 LocalPatchHit.FeatureId != Probe.PreviousHit.FeatureId))
+			{
+#if !(UE_BUILD_SHIPPING)
+				// Existing debug mode 2 identifies the rejected real local sweep.
+				// Published-domain logging is read-only and does not admit contact.
+				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 2 &&
+					CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() != 0)
+				{
+					UE_LOG(LogTemp, Log,
+						TEXT("[WheelSupportCertifiedProjectionRejected] Frame=%d Wheel=%d LocalHit=%d PreviousSource=%016llx LocalSource=%016llx PreviousSurface=%016llx LocalSurface=%016llx PreviousFeature=%016llx LocalFeature=%016llx PreviousPrimitive=%016llx LocalPrimitive=%016llx PreviousGroup=%016llx LocalGroup=%016llx PreviousPoint=%s LocalPoint=%s"),
+						NumFrame(), Index, bHasLocalPatch ? 1 : 0,
+						Probe.PreviousHit.SourceId, LocalPatchHit.SourceId,
+						Probe.PreviousHit.SurfaceId, LocalPatchHit.SurfaceId,
+						Probe.PreviousHit.FeatureId, LocalPatchHit.FeatureId,
+						Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId,
+						Probe.PreviousHit.CanonicalGroupId, LocalPatchHit.CanonicalGroupId,
+						*Probe.PreviousHit.ImpactPoint.ToString(), *LocalPatchHit.ImpactPoint.ToString());
+					if (bHasLocalPatch)
+					{
+						LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Index, TEXT("ProjectionPrevious"),
+							Probe.PreviousHit.SourceId, Probe.PreviousHit.SurfaceId, Probe.PreviousHit.FeatureId, Probe.PreviousHit.PrimitiveId);
+						LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Index, TEXT("ProjectionLocal"),
+							LocalPatchHit.SourceId, LocalPatchHit.SurfaceId, LocalPatchHit.FeatureId, LocalPatchHit.PrimitiveId);
+					}
+				}
+#endif
+				continue;
+			}
 			const FVector LocalNormal = LocalPatchHit.ImpactNormal.GetSafeNormal();
 			const FVector PatchTravel = LocalPatchHit.ImpactPoint - Probe.PreviousHit.ImpactPoint;
 			const float TangentialPatchTravel = FVector::VectorPlaneProject(
@@ -1028,7 +1289,11 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const float PredictedPatchTravel =
 				GetPhysVelocityAtPoint(Probe.PreviousHit.ImpactPoint).Size() * delta;
 			const float MaxPatchTravel = PredictedPatchTravel + PatchTravelSlack;
-			const bool bSameLocalPatch = bHasLocalPatch &&
+			const bool bSameWallIdentity = !bNativeStaticWallSupport ||
+				(LocalPatchHit.SourceId == Probe.PreviousHit.SourceId &&
+					LocalPatchHit.SurfaceId == Probe.PreviousHit.SurfaceId &&
+					LocalPatchHit.FeatureId == Probe.PreviousHit.FeatureId);
+			const bool bSameLocalPatch = bHasLocalPatch && bSameWallIdentity &&
 				LocalPatchHit.Component.Get() == PreviousSurface &&
 				!LocalNormal.IsNearlyZero() &&
 				FVector::DotProduct(LocalNormal, PreviousNormal) >= NormalDot &&
@@ -1088,8 +1353,51 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const float RotationLengthSquared = RotationLength * RotationLength;
 			const float ReachSkin = FMath::Max(
 				0.0f, CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+			const bool bPreserveProbeHits =
+				CVarIAmSpeedWheelSupportProjectionPreserveProbeHits.GetValueOnAnyThread() != 0;
+			bool bCoherentSpringState = bPreserveProbeHits &&
+				CVarIAmSpeedWheelSupportProjectionCoherentSpringState.GetValueOnAnyThread() != 0;
+			for (const FGroundProbe& Probe : Probes)
+			{
+				if (Probe.Wheel->HasJumpUnilateralSupport()) bCoherentSpringState = false;
+			}
+			bool bCoherentStateValid = true;
+			auto RefreshContactDisplacement = [bCoherentSpringState, MaxGap, &bCoherentStateValid](
+				const FGroundProbe& Probe, const SHitResult& Hit)
+			{
+				if (!bCoherentSpringState) return;
+				if (Hit.Location.ContainsNaN() || !FMath::IsFinite(Probe.OriginalDisplacement))
+				{
+					bCoherentStateValid = false;
+					return;
+				}
+				const float Displacement = Probe.Wheel->ContactSpringDisplacement(Hit);
+				if (!FMath::IsFinite(Displacement) || !FMath::IsFinite(Probe.OriginalDisplacement) ||
+					FMath::Abs(Displacement - Probe.OriginalDisplacement) > MaxGap)
+				{
+					bCoherentStateValid = false;
+					return;
+				}
+				// Provisional stored displacement only: no force simulation or support publication.
+				Probe.Wheel->SetLastDisplacement(Displacement);
+			};
 			const int32 Passes = FMath::Clamp(
 				CVarIAmSpeedWheelSupportProjectionPasses.GetValueOnAnyThread(), 1, 32);
+
+#if !(UE_BUILD_SHIPPING)
+			// Bounded read-only solver residuals; emit only when an existing final
+			// actual query rejects the proposed pose. No diagnostic contact queries.
+			struct FProjectionPassResidual
+			{
+				int32 Pass, Wheel;
+				bool bInitialHit;
+				double ReachGap, Clearance, ReachViolation;
+			};
+			TArray<FProjectionPassResidual, TInlineAllocator<128>> DiagnosticResiduals;
+			bool bDiagnosticResidualsTruncated = false;
+			const bool bRecordResiduals = bPreserveProbeHits &&
+				CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 4;
+#endif
 
 			auto ApplyConstraint = [this, RotationLengthSquared](
 				const FVector& Direction, const FVector& WorldPoint, const float Violation)
@@ -1129,6 +1437,24 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					const float Gap = FVector::DotProduct(
 						SweepEnd - Probe.PreviousHit.ImpactPoint, N) - Radius;
 					ApplyConstraint(-N, SweepEnd, Gap + ReachSkin);
+					if (bCoherentSpringState)
+					{
+						// A newly reacquired wheel participates in the same displacement and
+						// clearance solve as an initial hit. Use a real current query only.
+						SHitResult AcquiredHit;
+						if (Probe.Wheel->ProbeSuspensionOnGround(AcquiredHit, delta) &&
+							!AcquiredHit.Location.ContainsNaN() && !AcquiredHit.ImpactPoint.ContainsNaN() &&
+							!AcquiredHit.ImpactNormal.ContainsNaN() &&
+							AcquiredHit.SourceId == Probe.PreviousHit.SourceId &&
+							AcquiredHit.SurfaceId == Probe.PreviousHit.SurfaceId &&
+							FVector::DotProduct(AcquiredHit.ImpactNormal.GetSafeNormal(), N) >= 0.9f)
+						{
+							RefreshContactDisplacement(Probe, AcquiredHit);
+							const float Clearance = FVector::DotProduct(
+								Probe.Wheel->WorldPos() - AcquiredHit.ImpactPoint, N) - Radius;
+							ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance);
+						}
+					}
 				}
 
 				for (const FGroundProbe& Probe : Probes)
@@ -1144,12 +1470,42 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					Probe.Wheel->GetSuspensionSweepSegment(delta, SweepStart, SweepEnd);
 					const float ReachGap = FVector::DotProduct(
 						SweepEnd - Probe.ProbeHit.ImpactPoint, N) - Radius;
-					ApplyConstraint(-N, SweepEnd, ReachGap);
+					// Use the existing inward reach target for each initial real hit too.
+					// A small positive solver residual must not strand an acquired wheel.
+					ApplyConstraint(-N, SweepEnd, ReachGap + (bPreserveProbeHits ? ReachSkin : 0.0f));
 
+					RefreshContactDisplacement(Probe, Probe.ProbeHit);
 					const float Clearance = FVector::DotProduct(
 						Probe.Wheel->WorldPos() - Probe.ProbeHit.ImpactPoint, N) - Radius;
 					ApplyConstraint(N, Probe.Wheel->WorldPos(), -Clearance);
 				}
+#if !(UE_BUILD_SHIPPING)
+				if (bRecordResiduals)
+				{
+					for (int32 Index = 0; Index < Probes.Num(); ++Index)
+					{
+						const FGroundProbe& Probe = Probes[Index];
+						if (!Probe.bHasProbeHit && !EstablishedMisses.Contains(Index))
+						{
+							continue;
+						}
+						if (DiagnosticResiduals.Num() >= 128)
+						{
+							bDiagnosticResidualsTruncated = true;
+							continue;
+						}
+						const SHitResult& Plane = Probe.bHasProbeHit ? Probe.ProbeHit : Probe.PreviousHit;
+						const FVector N = Plane.ImpactNormal.GetSafeNormal();
+						FVector Start, End;
+						Probe.Wheel->GetSuspensionSweepSegment(delta, Start, End);
+						const double Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+						const double Gap = FVector::DotProduct(End - Plane.ImpactPoint, N) - Radius;
+						const double Clearance = FVector::DotProduct(Probe.Wheel->WorldPos() - Plane.ImpactPoint, N) - Radius;
+						DiagnosticResiduals.Add({Pass + 1, Probe.Wheel->Idx(), Probe.bHasProbeHit,
+							Gap, Clearance, Gap + static_cast<double>(ReachSkin)});
+					}
+				}
+#endif
 			}
 
 			FQuat RelativeRotation = (OriginalRotation.Inverse()
@@ -1163,10 +1519,111 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const bool bWithinBounds =
 				(GetPhysCOM() - OriginalCOM).Size() <= MaxGap &&
 				RotationAngle <= MaxRotationRadians;
-			if (!bWithinBounds)
+			bool bPreservedProbeHits = true;
+			if (bPreserveProbeHits && bWithinBounds)
+			{
+				// Acceptance uses actual final queries, never a synthetic retained hit.
+				// Keep the entire pose transaction or restore the original pose.
+				for (int32 ProbeIndex = 0; ProbeIndex < Probes.Num(); ++ProbeIndex)
+				{
+					const FGroundProbe& Probe = Probes[ProbeIndex];
+					const bool bAcquiredConstraint = bCoherentSpringState &&
+						EstablishedMisses.Contains(ProbeIndex);
+					if (!Probe.bHasProbeHit && !bAcquiredConstraint)
+					{
+						continue;
+					}
+					SHitResult VerificationHit;
+					if (!Probe.Wheel->ProbeSuspensionOnGround(VerificationHit, delta))
+					{
+#if !(UE_BUILD_SHIPPING)
+						if (Probe.bHasProbeHit && CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+						{
+							// The already-executed actual query rejected this proposed pose.
+							// Record it before rollback; never publish the failed hit.
+							FVector ProposedStart, ProposedEnd;
+							Probe.Wheel->GetSuspensionSweepSegment(delta, ProposedStart, ProposedEnd);
+							const FVector InitialNormal = Probe.ProbeHit.ImpactNormal.GetSafeNormal();
+							const double Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+							const double ProposedGap = FVector::DotProduct(ProposedEnd - Probe.ProbeHit.ImpactPoint, InitialNormal) - Radius;
+							UE_LOG(LogTemp, Log,
+								TEXT("[WheelSupportProjectionRejectedProbe] ComponentFrame=%u Wheel=%d InitialHit=1 ProposedActualHit=0 InitialSource=%016llx ProposedGapCm=%.17g RadiusCm=%.17g ProposedStart=%s ProposedEnd=%s InitialPlanePoint=%s InitialPlaneNormal=%s OriginalCOM=%s ProposedCOM=%s ProposedRotationDeg=%.17g"),
+								NumFrame(), Probe.Wheel->Idx(), static_cast<unsigned long long>(Probe.ProbeHit.SourceId),
+								ProposedGap, Radius, *CoupledPoseDiagnosticVector(ProposedStart), *CoupledPoseDiagnosticVector(ProposedEnd),
+								*CoupledPoseDiagnosticVector(Probe.ProbeHit.ImpactPoint), *CoupledPoseDiagnosticVector(InitialNormal),
+								*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()),
+								static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
+						}
+#endif
+#if !(UE_BUILD_SHIPPING)
+						if (bRecordResiduals)
+						{
+							for (const FProjectionPassResidual& Row : DiagnosticResiduals)
+							{
+								UE_LOG(LogTemp, Log,
+									TEXT("[WheelSupportProjectionPassResidual] ComponentFrame=%u RejectedWheel=%d Pass=%d Wheel=%d InitialHit=%d ReachGapCm=%.17g ClearanceCm=%.17g ReachViolationCm=%.17g Truncated=%d"),
+									NumFrame(), Probe.Wheel->Idx(), Row.Pass, Row.Wheel, Row.bInitialHit ? 1 : 0,
+									Row.ReachGap, Row.Clearance, Row.ReachViolation, bDiagnosticResidualsTruncated ? 1 : 0);
+							}
+						}
+#endif
+						bPreservedProbeHits = false;
+						break;
+					}
+					if (bAcquiredConstraint &&
+						(VerificationHit.SourceId != Probe.PreviousHit.SourceId ||
+						 VerificationHit.SurfaceId != Probe.PreviousHit.SurfaceId ||
+						 FVector::DotProduct(VerificationHit.ImpactNormal.GetSafeNormal(),
+							 Probe.PreviousHit.ImpactNormal.GetSafeNormal()) < 0.9f))
+					{
+						bPreservedProbeHits = false;
+						break;
+					}
+					RefreshContactDisplacement(Probe, VerificationHit);
+				}
+			}
+			if (bCoherentSpringState && bWithinBounds && bPreservedProbeHits && bCoherentStateValid)
+			{
+				// Refreshing displacement is part of the transaction. Validate the final
+				// stored state, including reacquired wheels, before any support publication.
+				for (int32 ProbeIndex = 0; ProbeIndex < Probes.Num(); ++ProbeIndex)
+				{
+					const FGroundProbe& Probe = Probes[ProbeIndex];
+					if (!Probe.bHasProbeHit && !EstablishedMisses.Contains(ProbeIndex)) continue;
+					SHitResult FinalStateHit;
+					const SHitResult& ExpectedHit = Probe.bHasProbeHit ? Probe.ProbeHit : Probe.PreviousHit;
+					if (!Probe.Wheel->ProbeSuspensionOnGround(FinalStateHit, delta) ||
+						FinalStateHit.SourceId != ExpectedHit.SourceId ||
+						FinalStateHit.SurfaceId != ExpectedHit.SurfaceId ||
+						FinalStateHit.Location.ContainsNaN() || FinalStateHit.ImpactPoint.ContainsNaN() ||
+						FinalStateHit.ImpactNormal.ContainsNaN() ||
+						FVector::DotProduct(FinalStateHit.ImpactNormal.GetSafeNormal(),
+							ExpectedHit.ImpactNormal.GetSafeNormal()) < 0.9f)
+					{
+						bCoherentStateValid = false;
+						break;
+					}
+					const FVector N = FinalStateHit.ImpactNormal.GetSafeNormal();
+					const float Penetration = FVector::DotProduct(
+						FinalStateHit.ImpactPoint + Probe.Wheel->Radius() * N - Probe.Wheel->WorldPos(), N);
+					if (!FMath::IsFinite(Penetration) ||
+						(Probe.Wheel->IsAtSuspensionBumpStop() && Penetration > 0.01f))
+					{
+						bCoherentStateValid = false;
+						break;
+					}
+				}
+			}
+			const bool bAcceptProjectedPose = bWithinBounds && bPreservedProbeHits && bCoherentStateValid;
+			if (!bAcceptProjectedPose)
 			{
 				SetPhysCOMLocation(OriginalCOM);
 				SetPhysRotation(OriginalRotation);
+				if (bCoherentSpringState)
+				{
+					for (const FGroundProbe& Probe : Probes)
+						Probe.Wheel->SetLastDisplacement(Probe.OriginalDisplacement);
+				}
 				UpdateSubBodiesKinematics();
 			}
 
@@ -1174,10 +1631,38 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
 			{
 				UE_LOG(LogTemp, Log,
-					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f"),
-					NumFrame(), EstablishedMisses.Num(), bWithinBounds ? 1 : 0,
+					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f CoherentSpring=%d CoherentStateValid=%d"),
+					NumFrame(), EstablishedMisses.Num(), bAcceptProjectedPose ? 1 : 0,
 					(GetPhysCOM() - OriginalCOM).Size(),
-					FMath::RadiansToDegrees(RotationAngle));
+					FMath::RadiansToDegrees(RotationAngle), bCoherentSpringState ? 1 : 0, bCoherentStateValid ? 1 : 0);
+				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+				{
+					// Read-only witnesses for all original probes, including initial hits.
+					// Do not publish these results or manufacture wheel support.
+					for (const FGroundProbe& Probe : Probes)
+					{
+						FVector AfterStart, AfterEnd;
+						Probe.Wheel->GetSuspensionSweepSegment(delta, AfterStart, AfterEnd);
+						SHitResult AfterHit;
+						const bool bActualAfterHit = Probe.Wheel->ProbeSuspensionOnGround(AfterHit, delta);
+						const SHitResult& Plane = Probe.DiagnosticInitialPlane;
+						const FVector N = Plane.ImpactNormal.GetSafeNormal();
+						const double Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
+						const double BeforeGap = FVector::DotProduct(Probe.DiagnosticInitialEnd - Plane.ImpactPoint, N) - Radius;
+						const double AfterGap = FVector::DotProduct(AfterEnd - Plane.ImpactPoint, N) - Radius;
+						UE_LOG(LogTemp, Log,
+							TEXT("[WheelSupportProjectionTransaction] ComponentFrame=%u Wheel=%d WasGrounded=%d BeforeHit=%d AfterHit=%d WithinBounds=%d MissConstraints=%d BeforeSource=%016llx AfterSource=%016llx BeforeGapCm=%.17g AfterGapCm=%.17g RadiusCm=%.17g BeforeEnd=%s AfterEnd=%s PlanePoint=%s PlaneNormal=%s BeforeCOM=%s AfterCOM=%s RotationDeg=%.17g AcceptedPose=%d ProposedRotationDeg=%.17g"),
+							NumFrame(), Probe.Wheel->Idx(), Probe.bWasGrounded ? 1 : 0, Probe.bHasProbeHit ? 1 : 0,
+							bActualAfterHit ? 1 : 0, bWithinBounds ? 1 : 0, EstablishedMisses.Num(),
+							static_cast<unsigned long long>(Plane.SourceId),
+							static_cast<unsigned long long>(bActualAfterHit ? AfterHit.SourceId : 0), BeforeGap, AfterGap, Radius,
+							*CoupledPoseDiagnosticVector(Probe.DiagnosticInitialEnd), *CoupledPoseDiagnosticVector(AfterEnd),
+							*CoupledPoseDiagnosticVector(Plane.ImpactPoint), *CoupledPoseDiagnosticVector(N),
+							*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()),
+							static_cast<double>(bAcceptProjectedPose ? FMath::RadiansToDegrees(RotationAngle) : 0.0f),
+							bAcceptProjectedPose ? 1 : 0, static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
+					}
+				}
 				for (const int32 Index : EstablishedMisses)
 				{
 					const FGroundProbe& Probe = Probes[Index];
@@ -1745,6 +2230,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		uint64 SurfaceSourceId = 0;
 		uint64 SurfaceId = 0;
 		uint64 SurfaceFeatureId = 0;
+		uint64 DiagnosticPrimitiveId = 0;
 	};
 	TArray<FWheelPatchConstraint, TInlineAllocator<4>> WheelConstraints;
 	for (USWheelSubBody* Wheel : GetWheelSubBodies())
@@ -1769,6 +2255,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		Constraint.SurfaceSourceId = Hit.SourceId;
 		Constraint.SurfaceId = Hit.SurfaceId;
 		Constraint.SurfaceFeatureId = Hit.FeatureId;
+		Constraint.DiagnosticPrimitiveId = Hit.PrimitiveId;
 	}
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
@@ -1796,6 +2283,17 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			Constraint.SurfaceSourceId = Contact.SurfaceSourceId;
 			Constraint.SurfaceId = Contact.SurfaceId;
 			Constraint.SurfaceFeatureId = Contact.SurfaceFeatureId;
+			// Only report the cached primitive if it identifies this pending contact.
+			const SHitResult& CachedHit = Contact.Wheel->GetHit();
+			if (CachedHit.Component == Contact.SurfaceComponent &&
+				CachedHit.FaceIndex == Contact.SurfaceFaceIndex &&
+				CachedHit.SourceId == Contact.SurfaceSourceId &&
+				CachedHit.SurfaceId == Contact.SurfaceId &&
+				CachedHit.FeatureId == Contact.SurfaceFeatureId &&
+				CachedHit.ImpactPoint == Contact.SurfacePoint)
+			{
+				Constraint.DiagnosticPrimitiveId = CachedHit.PrimitiveId;
+			}
 		}
 	}
 	WheelConstraints.Sort([](const FWheelPatchConstraint& A, const FWheelPatchConstraint& B)
@@ -1844,22 +2342,138 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			bSameSurfaceIdentity;
 		if (!bSamePatch)
 		{
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=LocalPatch HasPatch=%d SameComponent=%d NormalDot=%.6f AnalyticIdentity=%d SameAnalytic=%d SameFace=%d ExpectedSource=%016llx ExpectedSurface=%016llx ExpectedFeature=%016llx ActualSource=%016llx ActualSurface=%016llx ActualFeature=%016llx ExpectedFace=%d ActualFace=%d ExpectedPrimitive=%016llx ActualPrimitive=%016llx ExpectedPoint=%s ActualPoint=%s ExpectedNormal=%s ActualNormal=%s"),
+					NumFrame(), Wheel->Idx(), bHasLocalPatch ? 1 : 0,
+					LocalPatchHit.Component == Contact.SurfaceComponent ? 1 : 0,
+					FVector::DotProduct(LocalPatchHit.ImpactNormal.GetSafeNormal(), N),
+					bUseBoundedAnalyticIdentity ? 1 : 0, bSameAnalyticSurface ? 1 : 0,
+					bSameLocalFace ? 1 : 0,
+					static_cast<unsigned long long>(Contact.SurfaceSourceId),
+					static_cast<unsigned long long>(Contact.SurfaceId),
+					static_cast<unsigned long long>(Contact.SurfaceFeatureId),
+					static_cast<unsigned long long>(LocalPatchHit.SourceId),
+					static_cast<unsigned long long>(LocalPatchHit.SurfaceId),
+					static_cast<unsigned long long>(LocalPatchHit.FeatureId),
+					Contact.SurfaceFaceIndex, LocalPatchHit.FaceIndex,
+					static_cast<unsigned long long>(Contact.DiagnosticPrimitiveId),
+					static_cast<unsigned long long>(LocalPatchHit.PrimitiveId),
+					*Contact.SurfacePoint.ToString(), *LocalPatchHit.ImpactPoint.ToString(),
+					*N.ToString(), *LocalPatchHit.ImpactNormal.ToString());
+				LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Wheel->Idx(), TEXT("Expected"),
+					Contact.SurfaceSourceId, Contact.SurfaceId, Contact.SurfaceFeatureId, Contact.DiagnosticPrimitiveId);
+				LogCoupledPosePrimitiveDomain(Wheel->GetWorld(), NumFrame(), Wheel->Idx(), TEXT("Actual"),
+					LocalPatchHit.SourceId, LocalPatchHit.SurfaceId, LocalPatchHit.FeatureId, LocalPatchHit.PrimitiveId);
+			}
+#endif
 			continue;
 		}
 
 		FVector SweepStart = FVector::ZeroVector;
 		FVector SweepEnd = FVector::ZeroVector;
 		Wheel->GetSuspensionSweepSegment(Delta, SweepStart, SweepEnd);
+		// The final state is checked with the actual suspension sweep shape.
+		// A positive reach gap cannot count as retained support, even when it
+		// fits the coupled-pose separation budget.
+		const float SweepRadius = Wheel->GetCollisionShape().GetSphereRadius();
 		const float Gap = FVector::DotProduct(
-			SweepEnd - LocalPatchHit.ImpactPoint, N) - Wheel->Radius();
-		if (Gap > MaxWheelGap)
+			SweepEnd - LocalPatchHit.ImpactPoint, N) - SweepRadius;
+		if (Gap > 0.0f)
 		{
-			ApplyConstraint(-N, SweepEnd, Gap - MaxWheelGap,
-				WheelConstraintRotationLength);
+			const float ReachSkin = FMath::Max(0.0f,
+				CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+			bool bAppliedWallTangentProjection = false;
+			// Preserve the active hitbox plane while closing an established wheel
+			// reach gap. Independent inward/outward translations can undo each
+			// other; remove the hitbox-normal degree of freedom from this wheel
+			// correction using the same positional/angular mobility as above.
+			if (!bStrictHitboxGate && bSameAnalyticSurface &&
+				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
+				FMath::Abs(N.Z) <= 0.10f && HitboxConstraints.Num() == 1 &&
+				Wheel->IsContactVelocityLocked() && !Wheel->IsJumping() &&
+				!Wheel->HasJumpUnilateralSupport())
+			{
+				const FHitboxPlaneConstraint& HitboxContact = HitboxConstraints[0];
+				const FVector HitboxNormal = HitboxContact.Normal.GetSafeNormal();
+				if (HitboxContact.Component == Contact.SurfaceComponent &&
+					FVector::DotProduct(HitboxNormal, N) >= 0.995f)
+				{
+					const Speed::FKinematicState& HitboxState = PrincipalHitbox->GetKinematicState();
+					const FVector HitboxPoint = UBoxSubBody::ComputeBoxSupportPointWS(
+						HitboxState.Location, HitboxState.Rotation,
+						PrincipalHitbox->GetBoxExtent(), HitboxNormal);
+					const FVector WheelDirection = -N;
+					const FVector WheelAngular = FVector::CrossProduct(
+						SweepEnd - GetPhysCOM(), WheelDirection);
+					const FVector HitboxAngular = FVector::CrossProduct(
+						HitboxPoint - GetPhysCOM(), HitboxNormal);
+					const float RotationLengthSquared =
+						WheelConstraintRotationLength * WheelConstraintRotationLength;
+					const float HitboxMobility = 1.0f +
+						HitboxAngular.SizeSquared() / RotationLengthSquared;
+					const float Coupling = (FVector::DotProduct(HitboxNormal, WheelDirection) +
+						FVector::DotProduct(HitboxAngular, WheelAngular) / RotationLengthSquared)
+						/ HitboxMobility;
+					const FVector TranslationMobility = WheelDirection - Coupling * HitboxNormal;
+					const FVector AngularMobility =
+						(WheelAngular - Coupling * HitboxAngular) / RotationLengthSquared;
+					const float WheelMobility = FVector::DotProduct(WheelDirection, TranslationMobility) +
+						FVector::DotProduct(WheelAngular, AngularMobility);
+					if (WheelMobility > SMALL_NUMBER)
+					{
+						const float Lambda = (Gap + ReachSkin) / WheelMobility;
+						const FVector Translation = Lambda * TranslationMobility;
+						const FVector DeltaAngular = Lambda * AngularMobility;
+						const float DeltaAngle = DeltaAngular.Size();
+						const float MaxTranslation = FMath::Max(0.0f,
+							CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread());
+						const float MaxRotation = FMath::DegreesToRadians(FMath::Max(0.0f,
+							CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread()));
+						if (!Translation.ContainsNaN() && !DeltaAngular.ContainsNaN() &&
+							Translation.Size() <= MaxTranslation && DeltaAngle <= MaxRotation)
+						{
+							SetPhysCOMLocation(GetPhysCOM() + Translation);
+							if (DeltaAngle > SMALL_NUMBER)
+							{
+								const FQuat WorldDelta(DeltaAngular / DeltaAngle, DeltaAngle);
+								SetPhysRotation((WorldDelta * GetPhysRotation()).GetNormalized());
+							}
+							UpdateSubBodiesKinematics();
+							bAppliedWallTangentProjection = true;
+						}
+					}
+				}
+			}
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseWallTangent] Frame=%d Wheel=%d Applied=%d GapCm=%.6f HitboxConstraints=%d Locked=%d Jump=%d Unilateral=%d"),
+					NumFrame(), Wheel->Idx(), bAppliedWallTangentProjection ? 1 : 0,
+					Gap, HitboxConstraints.Num(), Wheel->IsContactVelocityLocked() ? 1 : 0,
+					Wheel->IsJumping() ? 1 : 0, Wheel->HasJumpUnilateralSupport() ? 1 : 0);
+			}
+#endif
+			if (!bAppliedWallTangentProjection)
+			{
+				ApplyConstraint(-N, SweepEnd, Gap + ReachSkin,
+					WheelConstraintRotationLength);
+			}
 		}
 
 		if (!SolveHitboxFeasibility(MaxPasses))
 		{
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=HitboxFeasibility GapCm=%.6f RadiusCm=%.6f"),
+					NumFrame(), Wheel->Idx(), Gap, SweepRadius);
+			}
+#endif
 			SetPhysCOMLocation(BeforeWheelCOM);
 			SetPhysRotation(BeforeWheelRotation);
 			UpdateSubBodiesKinematics();
@@ -1868,15 +2482,108 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 
 		Wheel->GetSuspensionSweepSegment(Delta, SweepStart, SweepEnd);
 		const float FinalGap = FVector::DotProduct(
-			SweepEnd - LocalPatchHit.ImpactPoint, N) - Wheel->Radius();
+			SweepEnd - LocalPatchHit.ImpactPoint, N) - SweepRadius;
 		if (FinalGap > MaxWheelGap + 0.01f)
 		{
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=FinalGap GapCm=%.6f FinalGapCm=%.6f MaxGapCm=%.6f RadiusCm=%.6f"),
+					NumFrame(), Wheel->Idx(), Gap, FinalGap, MaxWheelGap, SweepRadius);
+			}
+#endif
 			SetPhysCOMLocation(BeforeWheelCOM);
 			SetPhysRotation(BeforeWheelRotation);
 			UpdateSubBodiesKinematics();
 			continue;
 		}
 		++RetainedWheels;
+	}
+	// A later angular correction can undo an earlier wheel's reach constraint.
+	// On a single established wall plane, one bounded normal translation closes
+	// every remaining reach gap simultaneously, without changing wheel order.
+	// Admission uses real local patches; acceptance requires real final sweeps.
+	if (CVarIAmSpeedCoupledPoseSharedWallPlaneRetention.GetValueOnAnyThread() != 0 &&
+		!bStrictHitboxGate && WheelConstraints.Num() >= 2)
+	{
+		const FWheelPatchConstraint& First = WheelConstraints[0];
+		const FVector SharedNormal = First.Normal.GetSafeNormal();
+		bool bSharedPlane = First.SurfaceSourceId != 0 && First.SurfaceId != 0 &&
+			First.SurfaceFeatureId != 0 && FMath::Abs(SharedNormal.Z) <= 0.10f;
+		uint64 SharedPrimitive = 0;
+		double SharedPlaneD = 0.0;
+		float MaximumGap = 0.0f;
+		for (const FWheelPatchConstraint& Contact : WheelConstraints)
+		{
+			USWheelSubBody* Wheel = Contact.Wheel;
+			SHitResult Patch;
+			if (!bSharedPlane || !Wheel || Wheel->IsJumping() || Wheel->HasJumpUnilateralSupport() ||
+				Contact.SurfaceComponent != First.SurfaceComponent ||
+				Contact.SurfaceSourceId != First.SurfaceSourceId || Contact.SurfaceId != First.SurfaceId ||
+				Contact.SurfaceFeatureId != First.SurfaceFeatureId ||
+				Contact.Normal.GetSafeNormal() != SharedNormal ||
+				!Wheel->SweepSuspensionAlongNormal(SharedNormal, FMath::Max(5.0f, Wheel->SuspensionMaxDrop()), Delta, Patch) ||
+				Patch.Component != Contact.SurfaceComponent || Patch.SourceId != First.SurfaceSourceId ||
+				Patch.SurfaceId != First.SurfaceId || Patch.FeatureId != First.SurfaceFeatureId ||
+				Patch.ImpactNormal.GetSafeNormal() != SharedNormal || Patch.PrimitiveId == 0)
+			{
+				bSharedPlane = false;
+				break;
+			}
+			const double PlaneD = FVector::DotProduct(Patch.ImpactPoint, SharedNormal);
+			if (SharedPrimitive == 0)
+			{
+				SharedPrimitive = Patch.PrimitiveId;
+				SharedPlaneD = PlaneD;
+			}
+			else if (Patch.PrimitiveId != SharedPrimitive ||
+				!FMath::IsNearlyEqual(PlaneD, SharedPlaneD, UE_DOUBLE_SMALL_NUMBER))
+			{
+				bSharedPlane = false;
+				break;
+			}
+			FVector Start, End;
+			Wheel->GetSuspensionSweepSegment(Delta, Start, End);
+			MaximumGap = FMath::Max(MaximumGap, static_cast<float>(
+				FVector::DotProduct(End - Patch.ImpactPoint, SharedNormal) - Wheel->GetCollisionShape().GetSphereRadius()));
+		}
+		const float ReachSkin = FMath::Max(0.0f, CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+		const float Translation = MaximumGap + ReachSkin;
+		if (bSharedPlane && MaximumGap > 0.0f &&
+			Translation <= FMath::Max(0.0f, CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread()))
+		{
+			const FVector BeforeSharedCOM = GetPhysCOM();
+			const FQuat BeforeSharedRotation = GetPhysRotation();
+			SetPhysCOMLocation(BeforeSharedCOM - SharedNormal * Translation);
+			UpdateSubBodiesKinematics();
+			bool bAllRealSupport = SolveHitboxFeasibility(MaxPasses);
+			for (const FWheelPatchConstraint& Contact : WheelConstraints)
+			{
+				SHitResult ActualHit;
+				if (!bAllRealSupport || !Contact.Wheel->ProbeSuspensionOnGround(ActualHit, Delta) ||
+					ActualHit.Component != Contact.SurfaceComponent || ActualHit.SourceId != First.SurfaceSourceId ||
+					ActualHit.SurfaceId != First.SurfaceId || ActualHit.FeatureId != First.SurfaceFeatureId ||
+					ActualHit.PrimitiveId != SharedPrimitive || ActualHit.ImpactNormal.GetSafeNormal() != SharedNormal)
+				{
+					bAllRealSupport = false;
+					break;
+				}
+			}
+			if (!bAllRealSupport)
+			{
+				SetPhysCOMLocation(BeforeSharedCOM);
+				SetPhysRotation(BeforeSharedRotation);
+				UpdateSubBodiesKinematics();
+			}
+#if !(UE_BUILD_SHIPPING)
+			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[CoupledPoseSharedWallPlane] Frame=%u Wheels=%d GapCm=%.9g TranslationCm=%.9g ActualAllSupport=%d"),
+					NumFrame(), WheelConstraints.Num(), MaximumGap, Translation, bAllRealSupport ? 1 : 0);
+			}
+#endif
+		}
 	}
 	ClampHitboxInwardVelocity();
 
@@ -1904,8 +2611,31 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			{
 				continue;
 			}
+#if !(UE_BUILD_SHIPPING)
+			const bool bTraceFinalQuery = CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() >= 2;
+			const bool bPreviousGround = Wheel->IsOnGround();
+			const SHitResult PreviousQueryHit = Wheel->GetHit();
+#endif
 			SHitResult FinalHit;
 			const bool bOnGround = Wheel->ProbeSuspensionOnGround(FinalHit, Delta);
+#if !(UE_BUILD_SHIPPING)
+			if (bTraceFinalQuery)
+			{
+				FVector QueryStart, QueryEnd;
+				Wheel->GetSuspensionSweepSegment(Delta, QueryStart, QueryEnd);
+				const FVector PreviousQueryNormal = PreviousQueryHit.ImpactNormal.GetSafeNormal();
+				const float PreviousPlaneGap = FVector::DotProduct(QueryEnd - PreviousQueryHit.ImpactPoint, PreviousQueryNormal) - Wheel->GetCollisionShape().GetSphereRadius();
+				UE_LOG(LogTemp, Log,
+					TEXT("[CoupledPoseFinalQuery] ComponentFrame=%u Wheel=%d BeforeGround=%d ActualHit=%d StrictHitbox=%d RetainedConstraints=%d PreviousSource=%016llx FinalSource=%016llx PreviousGapCm=%.9g InwardSpeed=%.9g Start=(%.17g,%.17g,%.17g) End=(%.17g,%.17g,%.17g) PreviousNormal=(%.17g,%.17g,%.17g)"),
+					NumFrame(), Wheel->Idx(), bPreviousGround ? 1 : 0, bOnGround ? 1 : 0,
+					bStrictHitboxGate ? 1 : 0, RetainedWheels,
+					static_cast<unsigned long long>(PreviousQueryHit.SourceId),
+					static_cast<unsigned long long>(bOnGround ? FinalHit.SourceId : 0),
+					PreviousPlaneGap, FVector::DotProduct(GetPhysCOMVelocity(), PreviousQueryNormal),
+					QueryStart.X, QueryStart.Y, QueryStart.Z, QueryEnd.X, QueryEnd.Y, QueryEnd.Z,
+					PreviousQueryNormal.X, PreviousQueryNormal.Y, PreviousQueryNormal.Z);
+			}
+#endif
 			if (bOnGround)
 			{
 				Wheel->SetHit(FinalHit);
