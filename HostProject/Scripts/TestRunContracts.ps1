@@ -95,6 +95,17 @@ try {
         foreach ($copy in $d3d12ApprovedCopies) {
             Assert-True ($copy.source_sha256 -ceq $copy.target_sha256 -and $copy.target -in $d3d12ApprovedTargets) 'D3D12 Engine copy pair is byte-identical and precisely scoped'
         }
+        $eosTarget = Join-Path $targetEngineRoot 'Engine\Binaries\Win64\EOSSDK-Win64-Shipping.dll'
+        $eosSource = Join-Path $targetEngineRoot 'Engine\Source\ThirdParty\EOSSDK\SDK\Bin\EOSSDK-Win64-Shipping.dll'
+        $eosApprovedCopies = @($privatePolicy.preserved_runtime_copies | Where-Object { $_.target -ceq $eosTarget -and $_.source -ceq $eosSource })
+        Assert-True ($eosApprovedCopies.Count -eq 1 -and $eosApprovedCopies[0].source_sha256 -ceq $eosApprovedCopies[0].target_sha256 -and $eosApprovedCopies[0].source_mtime_ticks -eq $eosApprovedCopies[0].target_mtime_ticks) 'EOS Engine copy is an exact immutable input already pinned to E'
+        $invalidPolicy.preserved_runtime_copies = @($privatePolicy.preserved_runtime_copies | ForEach-Object { $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json })
+        $invalidPolicy.preserved_runtime_copies | Where-Object { $_.target -ceq $eosTarget } | ForEach-Object { $_.source = Join-Path $targetEngineRoot 'Engine\Binaries\Win64\AgentInterface.dll' }
+        [IO.File]::WriteAllText($invalidPolicyPath, ($invalidPolicy | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+        $invalidManifest.policy_sha256 = (Get-FileHash -LiteralPath $invalidPolicyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        [IO.File]::WriteAllText($invalidManifestPath, ($invalidManifest | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+        $invalidManifestSha = (Get-FileHash -LiteralPath $invalidManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $invalidManifestPath -Sha256 $invalidManifestSha -EngineRoot $targetEngineRoot } 'EOS target with mismatched source is rejected'
         $invalidPolicy.preserved_runtime_copies = @($privatePolicy.preserved_runtime_copies | ForEach-Object { $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json })
         $invalidPolicy.preserved_runtime_copies | Where-Object { $_.target -ceq $d3d12ApprovedTargets[0] } | ForEach-Object { $_.source = Join-Path $targetEngineRoot 'Engine\Binaries\Win64\AgentInterface.dll' }
         [IO.File]::WriteAllText($invalidPolicyPath, ($invalidPolicy | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
