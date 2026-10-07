@@ -26,7 +26,7 @@ public:
     void Pause()
     {
         std::lock_guard<std::mutex> Lock(Gate);
-        Paused = true; Barrier = Serial;
+        Paused = true; Barrier = Serial; PauseSnapshot = Serial ? History[Serial % HistoryCapacity] : nullptr;
     }
     // Worker only, after the complete world/input transaction was published.
     bool Publish(std::shared_ptr<const FOwnerInputSnapshot> Snapshot)
@@ -57,14 +57,30 @@ public:
         std::lock_guard<std::mutex> Lock(Gate);
         if (!Started || Closed || Cursor.Epoch.Value != Epoch.Value) return {};
         const FPublicationCursor Next{Epoch, Serial};
-        if (Cursor.Serial > Serial) return {EReadStatus::InvalidCursor, Next, {}};
-        if (Paused) return {EReadStatus::NoChange, Cursor, {}};
-        if (Cursor.Serial < Barrier || Serial - Cursor.Serial > HistoryCapacity) return {EReadStatus::Overflow, Next, {}};
-        if (Cursor.Serial == Serial) return {EReadStatus::NoChange, Next, {}};
-        FPublishedBatch Out{EReadStatus::Batch, Next, {}};
-        for (auto I = Cursor.Serial; I != Serial;) { ++I; Out.Frames.push_back(Observe(*History[I % HistoryCapacity], I)); }
-        return Out;
+        auto Evidence = [&](FPublishedBatch Out) {
+            Out.BarrierSerial = Barrier;
+            Out.OldestRetainedSerial = Serial >= HistoryCapacity ? Serial - HistoryCapacity + 1 : (Serial ? 1 : 0);
+            return Out;
+        };
+        if (Cursor.Serial > Serial) return Evidence({EReadStatus::InvalidCursor, Next, {}});
+        if (Paused) return Evidence({EReadStatus::NoChange, Cursor, {}});
+        const bool Boundary = Cursor.Serial < Barrier;
+        const auto Start = Boundary ? Barrier : Cursor.Serial;
+        // A deliberate lifecycle cutoff is distinct from loss of retained resume frames.
+        if (Serial - Start > HistoryCapacity || (Boundary && !PauseSnapshot))
+            return Evidence({EReadStatus::Overflow, Next, {}});
+        if (Start == Serial) return Evidence({EReadStatus::NoChange, Cursor, {}});
+        FPublishedBatch Out{Boundary ? EReadStatus::LifecycleBoundary : EReadStatus::Batch, Next, {}};
+        if (Boundary) Out.LifecycleBaseline = Observe(*PauseSnapshot, Barrier);
+        for (auto I=Start; I!=Serial;) {
+            ++I;
+            const auto& Saved = History[I % HistoryCapacity];
+            if (!Saved) return Evidence({EReadStatus::Overflow, Next, {}});
+            Out.Frames.push_back(Observe(*Saved,I));
+        }
+        return Evidence(std::move(Out));
     }
+
 private:
     static FPublishedFrame Observe(const FOwnerInputSnapshot& Snapshot, std::uint64_t Serial)
     {
@@ -76,6 +92,7 @@ private:
     const FStreamEpoch Epoch;
     mutable std::mutex Gate;
     std::array<std::shared_ptr<const FOwnerInputSnapshot>, HistoryCapacity> History{};
+    std::shared_ptr<const FOwnerInputSnapshot> PauseSnapshot;
     std::optional<std::thread::id> Publisher;
     std::uint64_t Serial = 0, Barrier = 0;
     bool Started = false, Closed = false, Paused = true;

@@ -16,6 +16,14 @@ struct FActionEvent
 	const std::optional<FInputEdgeIdentity> Identity;
 };
 enum class EDispatchStatus : std::uint8_t { Dispatched, NoChange, ResyncRequired, Resynchronized, Detached, NotSealed, Reentrant };
+struct FPresentationReadEvidence
+{
+    EReadStatus Status = EReadStatus::NoChange;
+    FPublicationCursor Before{}, Next{};
+    std::uint64_t Barrier = 0, OldestRetained = 0;
+    std::size_t Frames = 0;
+    bool Valid = false;
+};
 
 // Presentation-lane facade only. A worker never owns or calls these bindings.
 // Register/seal before activating the stream. Receivers use weak lifetime;
@@ -89,6 +97,7 @@ public:
 		NeedsResync = false;
 		return EDispatchStatus::Resynchronized; // Explicit baseline; no invented edges/callbacks.
 	}
+	const FPresentationReadEvidence& GetLastReadEvidence() const { return LastReadEvidence; }
 	EDispatchStatus HandleInputs()
 	{
 		if (Dispatching || FPresentationInputScope::IsActive()) return EDispatchStatus::Reentrant;
@@ -97,9 +106,26 @@ public:
 		if (!Source || !Source->IsActive()) return Detach();
 		if (NeedsResync) return EDispatchStatus::ResyncRequired;
 		const auto Batch = Source->ReadPublishedSince(Cursor); // Coherent copy; lock released before callbacks.
+        LastReadEvidence = {Batch.Status, Cursor, Batch.Next, Batch.BarrierSerial, Batch.OldestRetainedSerial, Batch.Frames.size(), false};
 		if (Batch.Status == EReadStatus::Detached) return Detach();
 		if (Batch.Status == EReadStatus::NoChange) return EDispatchStatus::NoChange;
-		if (Batch.Status != EReadStatus::Batch || !ValidBatch(Batch, *Source))
+        const bool Boundary = Batch.Status == EReadStatus::LifecycleBoundary;
+        FPublicationCursor ReadCursor = Cursor;
+        auto Previous = LastPresented;
+        bool BoundaryValid = !Boundary;
+        if (Boundary && Source->GetContract() && Batch.LifecycleBaseline && Batch.LifecycleBaseline->Serial == Batch.BarrierSerial
+            && Batch.BarrierSerial > Cursor.Serial && Batch.BarrierSerial < Batch.Next.Serial
+            && Batch.LifecycleBaseline->Frame.GetData().StreamEpoch.Value == Cursor.Epoch.Value
+            && Batch.LifecycleBaseline->Frame.IsValidFor(*Source->GetContract()))
+        {
+            ReadCursor.Serial = Batch.BarrierSerial;
+            Previous = Batch.LifecycleBaseline->Frame;
+            BoundaryValid = true;
+        }
+        LastReadEvidence.Valid = (Batch.Status == EReadStatus::Batch || Boundary)
+            && BoundaryValid
+            && ValidBatch(Batch, *Source, ReadCursor, Previous);
+		if (!LastReadEvidence.Valid)
 		{ NeedsResync = true; return EDispatchStatus::ResyncRequired; }
 		const auto Snapshot = Bindings;
 		// Prepare continuity before the first callback. A post-callback allocation
@@ -175,11 +201,11 @@ private:
 		Bindings.push_back(std::move(Binding)); return true;
 	}
 	EDispatchStatus Detach() { Cursor = {}; LastPresented.reset(); NeedsResync = true; return EDispatchStatus::Detached; }
-	bool ValidBatch(const FPublishedBatch& Batch, const IInputPublicationSource& Source) const
+	bool ValidBatch(const FPublishedBatch& Batch, const IInputPublicationSource& Source,
+        FPublicationCursor ReadCursor, std::optional<FInputFrame> Previous) const
 	{
-		if (Batch.Frames.empty() || !Source.GetContract() || Batch.Next.Epoch.Value != Cursor.Epoch.Value) return false;
-		auto Previous = LastPresented;
-		std::uint64_t Serial = Cursor.Serial;
+		if (Batch.Frames.empty() || !Source.GetContract() || Batch.Next.Epoch.Value != ReadCursor.Epoch.Value) return false;
+		std::uint64_t Serial = ReadCursor.Serial;
 		for (const auto& P : Batch.Frames)
 		{
 			if (Serial == std::numeric_limits<std::uint64_t>::max() || P.Serial != ++Serial || !P.Frame.IsValidFor(*Source.GetContract())) return false;
@@ -195,6 +221,7 @@ private:
 		return Serial == Batch.Next.Serial;
 	}
 	const std::weak_ptr<IInputPublicationSource> Stream;
+	FPresentationReadEvidence LastReadEvidence;
 	FPublicationCursor Cursor;
 	std::optional<FInputFrame> LastPresented;
 	std::vector<FBinding> Bindings;

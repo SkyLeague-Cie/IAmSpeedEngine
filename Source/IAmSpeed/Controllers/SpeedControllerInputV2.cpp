@@ -169,10 +169,21 @@ void ASpeedController::HandleInputs()
 	const auto Session = InputSessionV2;
 	if (!Session || !Session->Presentation || Session->IsPaused()) return;
 	const auto Result = Session->Presentation->HandleInputs();
+    const auto& Evidence = Session->Presentation->GetLastReadEvidence();
+    if (Result == Speed::Input::V2::EDispatchStatus::Dispatched
+        && Evidence.Status == Speed::Input::V2::EReadStatus::LifecycleBoundary)
+        UE_LOG(LogTemp, Display, TEXT("[SLInputPresentation] lifecycle_boundary session=%llu epoch=%llu cursor=%llu latest=%llu barrier=%llu oldest_retained=%llu frames=%llu game_frame=%llu"),
+            Session->Session, Evidence.Before.Epoch.Value, Evidence.Before.Serial, Evidence.Next.Serial,
+            Evidence.Barrier, Evidence.OldestRetained, static_cast<uint64>(Evidence.Frames), GFrameCounter);
+
 	if (Result == Speed::Input::V2::EDispatchStatus::ResyncRequired)
 	{
 		// A gap is observable. Baseline recovery must not replay a delivered prefix.
-		UE_LOG(LogTemp, Error, TEXT("Input presentation history lost in session %llu"), Session->Session);
+        const auto& Read = Session->Presentation->GetLastReadEvidence();
+        UE_LOG(LogTemp, Error, TEXT("Input presentation history lost in session %llu; read=%u epoch=%llu cursor=%llu latest=%llu barrier=%llu oldest_retained=%llu capacity=%llu batch_frames=%llu valid=%u game_frame=%llu paused=%u"),
+            Session->Session, unsigned(Read.Status), Read.Before.Epoch.Value, Read.Before.Serial, Read.Next.Serial,
+            Read.Barrier, Read.OldestRetained, static_cast<uint64>(Speed::Input::HistoryCapacity),
+            static_cast<uint64>(Read.Frames), unsigned(Read.Valid), GFrameCounter, unsigned(Session->IsPaused()));
 		Session->Presentation->Resynchronize();
 	}
 }

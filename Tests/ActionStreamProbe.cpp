@@ -1,5 +1,6 @@
 #include "IAmSpeed/Input/ActionDispatch.h"
 #include "IAmSpeed/Input/Testing/TestInputProducerV2.h"
+#include "IAmSpeed/Input/InputObservationChannel.h"
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -160,6 +161,72 @@ struct FReceiver
 	}
 	void Reset(const FInputFrame& F) { Events.push_back("reset:" + std::to_string(F.GetData().ConsumptionFrame)); }
 };
+struct FEdges
+{
+    std::vector<std::pair<FFrameNumber,EStateAction>> Edges;
+    void Action(const FActionEvent& E) { Edges.push_back({E.Frame.GetData().ConsumptionFrame,E.State}); }
+};
+static void CheckStreamLifecycleBoundary()
+{
+    const auto C=Contract();
+    auto Source=TestStream(C,6);
+    FInputPresentationBindings B(Source);
+    auto Receiver=std::make_shared<FEdges>();
+    for(auto State:{EStateAction::Started,EStateAction::Completed,EStateAction::Triggered})
+        Check(B.BindAction("stream"+std::to_string(unsigned(State)),0,State,std::weak_ptr<FEdges>(Receiver),&FEdges::Action),"stream state binding");
+    Check(B.Seal() && Source->Activate(),"stream activation");
+    ConsumeAndCommit(*Source,0); Check(B.HandleInputs()==EDispatchStatus::Dispatched,"stream initial reset");
+    const auto PhysicalBefore=ConsumeAndCommit(*Source,1);
+    Check(Source->SetLifecyclePaused(true)==ELifecycleResult::Unaffected,"stream quiesced pause");
+    Check(Source->Consume(2).Status==EConsumeStatus::Paused && B.HandleInputs()==EDispatchStatus::NoChange,"pause forbids physical consume and presentation");
+    Check(Source->SetLifecyclePaused(false)==ELifecycleResult::Unaffected,"stream explicit resume");
+    ConsumeAndCommit(*Source,2); ConsumeAndCommit(*Source,3); ConsumeAndCommit(*Source,4);
+    Check(B.HandleInputs()==EDispatchStatus::Dispatched,"stream fresh resume dispatch");
+    Check(Receiver->Edges==std::vector<std::pair<FFrameNumber,EStateAction>>({{2,EStateAction::Completed},{2,EStateAction::Started},{4,EStateAction::Triggered}}),"stream first resume edges delivered and pre-pause edge suppressed");
+    Check(B.HandleInputs()==EDispatchStatus::NoChange && Receiver->Edges.size()==3,"stream no prefix replay");
+    const auto PhysicalAfter=Source->ReadRecorded(1);
+    Check(PhysicalAfter && PhysicalAfter->GetData().Values[0]==PhysicalBefore.ThrottleValue,"presentation rebase never changes retained physical targets");
+    ConsumeAndCommit(*Source,5); Check(B.HandleInputs()==EDispatchStatus::Dispatched && Receiver->Edges.back()==std::make_pair(FFrameNumber{5},EStateAction::Completed),"stream release delivered once");
+}
+
+static void CheckObservationLifecycleBoundary()
+{
+    auto C=Contract();
+    auto Source=std::make_shared<FInputObservationChannel>(C,FStreamEpoch{1});
+    FInputPresentationBindings B(Source);
+    auto Receiver=std::make_shared<FEdges>();
+    unsigned Snapshots=0;
+    for(auto State:{EStateAction::Started,EStateAction::Completed,EStateAction::Triggered})
+        Check(B.BindAction("action"+std::to_string(unsigned(State)),0,State,std::weak_ptr<FEdges>(Receiver),&FEdges::Action),"state binding");
+    Check(B.BindSnapshotAction("snapshot",0,[&](const FInputFrame&,Speed::Input::FActionId){++Snapshots;}) && B.Seal() && Source->Activate(),"activation");
+    const auto Frames=Scenario(C,Speed::Input::HistoryCapacity+16);
+    auto Publish=[&](unsigned N) {
+        Check(Source->Publish(std::make_shared<FOwnerInputSnapshot>(FOwnerInputSnapshot{Frames[N],{},{},Frames[N].GetData().Values,0})),"published frame");
+    };
+    Publish(0); Check(B.HandleInputs()==EDispatchStatus::Dispatched,"initial reset delivered");
+    Publish(1); Source->Pause();
+    Check(B.HandleInputs()==EDispatchStatus::NoChange,"paused no callbacks");
+    Publish(2); Publish(3); Publish(4);
+    Check(B.HandleInputs()==EDispatchStatus::Dispatched,"resume batch dispatched without resync");
+    const std::vector<std::pair<FFrameNumber,EStateAction>> Expected{{2,EStateAction::Completed},{2,EStateAction::Started},{4,EStateAction::Triggered}};
+    Check(Receiver->Edges==Expected,"pre-pause start suppressed; first resumed completed/start delivered; held latest once");
+    Check(Snapshots==2,"resume snapshot latest once");
+    Check(B.GetLastReadEvidence().Status==EReadStatus::LifecycleBoundary && B.GetLastReadEvidence().Before.Serial==1
+        && B.GetLastReadEvidence().Barrier==2 && B.GetLastReadEvidence().Next.Serial==5 && B.GetLastReadEvidence().Frames==3
+        && B.GetLastReadEvidence().Valid,"boundary cursor retention evidence exact");
+    Check(B.HandleInputs()==EDispatchStatus::NoChange && Receiver->Edges==Expected,"no repeated delivered prefix");
+    Publish(5); Check(B.HandleInputs()==EDispatchStatus::Dispatched,"release delivered after resume");
+    Check(Receiver->Edges.back()==std::make_pair(FFrameNumber{5},EStateAction::Completed) && Receiver->Edges.size()==4,"release exactly once");
+    Publish(6); Source->Pause(); Publish(7);
+    Check(B.HandleInputs()==EDispatchStatus::Dispatched && Receiver->Edges.size()==4,"second pause neutral resume no invented edges");
+    Publish(8); Source->Pause();
+    const auto EdgesBefore=Receiver->Edges;
+    for(unsigned N=9;N<9+Speed::Input::HistoryCapacity+1;++N) Publish(N);
+    Check(B.HandleInputs()==EDispatchStatus::ResyncRequired && Receiver->Edges==EdgesBefore,"real resume ring overflow remains fail closed without partial callbacks");
+    Check(B.GetLastReadEvidence().Status==EReadStatus::Overflow && B.GetLastReadEvidence().Before.Serial==8
+        && B.GetLastReadEvidence().Barrier==9 && B.GetLastReadEvidence().OldestRetained>10,"real capacity overflow distinct evidence");
+}
+
 int main()
 {
 	const auto C = Contract(); Check(bool(C), "contract");
@@ -294,5 +361,7 @@ int main()
 		Check(!S->IsActive() && !S->ReadRecorded(0) && !S->ReadLatest() && !S->PublishCompleted(FReservationToken{})
 			&& S->Consume(0).Status == EConsumeStatus::Detached && !S->Activate(), "reentry no deadlock/history/publication/retry");
 	}
+	CheckStreamLifecycleBoundary();
+	CheckObservationLifecycleBoundary();
 	std::cout << "PASS ActionStreamProbe checks=" << Checks << '\n';
 }

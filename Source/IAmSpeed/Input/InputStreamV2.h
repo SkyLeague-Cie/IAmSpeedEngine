@@ -93,6 +93,7 @@ public:
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
 		if (CallingSource || Pending || Terminated || !Source) return ELifecycleResult::Rejected;
 		ELifecycleResult Result = ELifecycleResult::Rejected;
+		auto PauseBaseline = Paused && Serial ? Published[Serial % HistoryCapacity] : std::optional<FPublishedFrame>{};
 		CallingSource = true;
 		try { Result = Source->SetLifecyclePaused(Paused); }
 		catch (...) { Result = ELifecycleResult::Rejected; }
@@ -100,7 +101,7 @@ public:
 		if (Terminated || (Result != ELifecycleResult::Applied && Result != ELifecycleResult::Unaffected))
 		{ Fault(); return ELifecycleResult::Rejected; }
 		LifecyclePaused = Paused;
-		if (Paused) { PresentationBarrier = Serial; AwaitingFreshPublication = true; }
+		if (Paused) { PresentationBarrier = Serial; PausePresentationBaseline.swap(PauseBaseline); AwaitingFreshPublication = true; }
 		return Result;
 	}
 	// Cancellation can call platform code and therefore cannot run inside the
@@ -275,25 +276,33 @@ public:
 	std::optional<FTransactionOutcome> ReadOutcome() const
 	{ std::lock_guard<std::recursive_mutex> Lock(Gate); return Outcome; }
 	FPublishedBatch ReadPublishedSince(FPublicationCursor Cursor) const
-	{
-		std::lock_guard<std::recursive_mutex> Lock(Gate);
-		if (!Active || Cursor.Epoch.Value != Epoch.Value) return {};
-		const FPublicationCursor Next{Epoch, Serial};
-		if (Cursor.Serial > Serial) return {EReadStatus::InvalidCursor, Next, {}};
-		if (LifecyclePaused || AwaitingFreshPublication) return {EReadStatus::NoChange, Cursor, {}};
-		if (Cursor.Serial < PresentationBarrier) return {EReadStatus::Overflow, Next, {}};
-		if (Cursor.Serial == Serial) return {EReadStatus::NoChange, Next, {}};
-		if (Serial - Cursor.Serial > HistoryCapacity) return {EReadStatus::Overflow, Next, {}};
-		std::vector<FPublishedFrame> Copies;
-		for (std::uint64_t I = Cursor.Serial; I != Serial;)
-		{
-			++I;
-			const auto& Slot = Published[I % HistoryCapacity];
-			if (!Slot || Slot->Serial != I) return {EReadStatus::Overflow, Next, {}};
-			Copies.push_back(*Slot);
-		}
-		return {EReadStatus::Batch, Next, std::move(Copies)};
-	}
+    {
+        std::lock_guard<std::recursive_mutex> Lock(Gate);
+        if (!Active || Cursor.Epoch.Value != Epoch.Value) return {};
+        const FPublicationCursor Next{Epoch, Serial};
+        auto Evidence = [&](FPublishedBatch Out) {
+            Out.BarrierSerial = PresentationBarrier;
+            Out.OldestRetainedSerial = Serial >= HistoryCapacity ? Serial - HistoryCapacity + 1 : (Serial ? 1 : 0);
+            return Out;
+        };
+        if (Cursor.Serial > Serial) return Evidence({EReadStatus::InvalidCursor, Next, {}});
+        if (LifecyclePaused || AwaitingFreshPublication) return Evidence({EReadStatus::NoChange, Cursor, {}});
+        const bool Boundary = Cursor.Serial < PresentationBarrier;
+        const auto Start = Boundary ? PresentationBarrier : Cursor.Serial;
+        if (Serial - Start > HistoryCapacity || (Boundary && !PausePresentationBaseline))
+            return Evidence({EReadStatus::Overflow, Next, {}});
+        if (Start == Serial) return Evidence({EReadStatus::NoChange, Cursor, {}});
+        FPublishedBatch Out{Boundary ? EReadStatus::LifecycleBoundary : EReadStatus::Batch, Next, {}};
+        if (Boundary) Out.LifecycleBaseline = PausePresentationBaseline;
+        for (auto I=Start; I!=Serial;) {
+            ++I;
+            const auto& Saved=Published[I % HistoryCapacity];
+            if (!Saved || Saved->Serial!=I) return Evidence({EReadStatus::Overflow, Next, {}});
+            Out.Frames.push_back(*Saved);
+        }
+        return Evidence(std::move(Out));
+    }
+
 	std::optional<FPublishedFrame> ReadLatest() const
 	{
 		std::lock_guard<std::recursive_mutex> Lock(Gate);
@@ -360,6 +369,7 @@ private:
 	bool SourceCancelled = false;
 	ELifecycleResult CancellationResult = ELifecycleResult::Rejected;
 	bool AwaitingFreshPublication = false;
+	std::optional<FPublishedFrame> PausePresentationBaseline;
 	std::uint64_t PresentationBarrier = 0;
 	bool Started = false, Active = false, Terminated = false, Exhausted = false, StopRequested = false;
 	FFrameNumber NextFrame;
