@@ -42,7 +42,7 @@ jobs:
         run: |
           if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST) -or
               [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256)) {
-            throw 'The workflow's pinned private UBT manifest path and SHA-256 are required.'
+            throw "The workflow's pinned private UBT manifest path and SHA-256 are required."
           }
           if (-not (Test-Path -LiteralPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PathType Leaf)) {
             throw "The runner's pinned private UBT manifest is missing: $env:IAMSPEED_PRIVATE_UBT_MANIFEST"
@@ -72,7 +72,7 @@ jobs:
           }
           if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST) -or
               [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256)) {
-            throw 'Configure IAMSPEED_PRIVATE_UBT_MANIFEST and IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256 repository variables for the private Query runtime.'
+            throw 'The workflow's pinned private UBT manifest path and SHA-256 are required.'
           }
           .\HostProject\Scripts\RunContracts.ps1 -EngineRoot $engineRoot
 
@@ -82,6 +82,6 @@ jobs:
         with:
           name: iamspeed-host-project-logs
           path: |
-            ${{ runner.temp }}/IAmSpeedPrivate/**/Logs/*
-            ${{ runner.temp }}/IAmSpeedPrivate/**/Automation/*
+            E:\UEQualification\ias-ci21\CI-v30\Runtime-GitHubCI\IAmSpeed-*\Logs\*
+            E:\UEQualification\ias-ci21\CI-v30\Runtime-GitHubCI\IAmSpeed-*\Automation\*
           if-no-files-found: ignore
