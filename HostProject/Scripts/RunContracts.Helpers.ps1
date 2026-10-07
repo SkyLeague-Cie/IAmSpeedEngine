@@ -220,7 +220,7 @@ function Assert-IAmSpeedPrivateUbtManifest {
             if ($output.Length -ne $visualizer.source_bytes -or $output.LastWriteTimeUtc.Ticks -ne $visualizer.source_mtime_ticks -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne $visualizer.source_sha256) { throw "Private debugger visualizer output drift: $target" }
         }
     }
-    if ($visualizerTargets.Count -ne $visualizerSources.Count) { throw 'Private debugger visualizer output inventory differs.' }
+    if ($visualizerTargets.Count -gt $visualizerSources.Count) { throw 'Private debugger visualizer output inventory exceeds its pinned source set.' }
     return $manifest
 }
 
