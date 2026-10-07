@@ -180,17 +180,26 @@ function Assert-IAmSpeedPrivateUbtManifest {
     if ([IO.Path]::GetFullPath($policy.engine_root).TrimEnd('\') -ine (Join-Path $EngineRoot 'Engine') -or [IO.Path]::GetFullPath($policy.project_private_parent).TrimEnd('\') -ine [IO.Path]::GetFullPath($manifest.baseline_project_parent).TrimEnd('\')) { throw 'Private Engine policy binding differs.' }
     $traceContract = 'Bound root Build only; private Trace required by real UBA non-detour executor. Query and recursive helper modes retain Session trace suppression.'
     if ($manifest.private_root_trace_contract -cne $traceContract -or $policy.private_root_trace_contract -cne $traceContract) { throw 'Private root Build trace contract differs.' }
-    $copyContract = 'Exact 19 runtime DLL pairs use immutable D Engine sources and allowlisted private E targets; pinned Engine Natvis sources use private E copy/link outputs. No Engine action outputs or deletes.'
+    $copyContract = 'Exact 19 runtime DLL pairs use immutable D Engine sources and allowlisted private E targets; two exact pre-existing D AgilitySDK runtime pairs are immutable inputs whose Engine copy actions are skipped; pinned Engine Natvis sources use private E copy/link outputs. No Engine action outputs or deletes.'
     if ($manifest.private_copy_producer_contract -cne $copyContract -or $policy.private_copy_producer_contract -cne $copyContract) { throw 'Private copy producer contract differs.' }
-    if ($manifest.preserved_runtime_copy_count -ne 19 -or @($policy.preserved_runtime_copies).Count -ne 19 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
+    if ($manifest.preserved_runtime_copy_count -ne 21 -or @($policy.preserved_runtime_copies).Count -ne 21 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
     $privateEngineOutputRoot = [IO.Path]::GetFullPath((Join-Path ([string]$manifest.private_root) 'EnginePrivate')).TrimEnd('\') + '\'
+    # These exact D targets already exist and are byte-identical to their pinned
+    # AgilitySDK sources. The UBT hook verifies both files and returns true to
+    # suppress the generated copy/delete action; no write to Engine is allowed.
+    $approvedPreexistingEngineCopies = @{
+        ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\D3D12\x64\D3D12Core.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\ThirdParty\Windows\AgilitySDK\1.618.5\Binaries\x64\D3D12Core.dll'))
+        ([IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Binaries\Win64\D3D12\x64\d3d12SDKLayers.dll'))) = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine\Source\ThirdParty\Windows\AgilitySDK\1.618.5\Binaries\x64\d3d12SDKLayers.dll'))
+    }
     $targets = @{}
     foreach ($copy in $policy.preserved_runtime_copies) {
         $source = [IO.Path]::GetFullPath([string]$copy.source)
         $target = [IO.Path]::GetFullPath([string]$copy.target)
         if ($targets.ContainsKey($target) -or $copy.source_sha256 -cne $copy.target_sha256) { throw 'Private runtime copy identity differs.' }
         if (-not $source.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($source) -ine '.dll') { throw 'Private runtime DLL source escapes the read-only Engine.' }
-        if (-not $target.StartsWith($privateEngineOutputRoot, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($target) -ine '.dll') { throw 'Private runtime DLL target escapes the allowlisted E output root.' }
+        $isPrivateTarget = $target.StartsWith($privateEngineOutputRoot, [StringComparison]::OrdinalIgnoreCase)
+        $isPreexistingEngineInput = $approvedPreexistingEngineCopies.ContainsKey($target) -and $approvedPreexistingEngineCopies[$target] -ieq $source
+        if ((-not $isPrivateTarget -and -not $isPreexistingEngineInput) -or [IO.Path]::GetExtension($target) -ine '.dll') { throw 'Private runtime DLL target escapes the allowlisted E output root or exact pre-existing D input set.' }
         $targets[$target] = $true
         foreach ($record in @(@{path=$source;bytes=$copy.source_bytes;sha256=$copy.source_sha256;ticks=$copy.source_mtime_ticks},@{path=$target;bytes=$copy.target_bytes;sha256=$copy.target_sha256;ticks=$copy.target_mtime_ticks})) {
             Assert-IAmSpeedPhysicalFile $record.path

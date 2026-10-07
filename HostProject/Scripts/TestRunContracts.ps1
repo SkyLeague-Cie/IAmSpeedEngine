@@ -86,6 +86,22 @@ try {
         [IO.File]::WriteAllText($invalidManifestPath, ($invalidManifest | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
         $invalidManifestSha = (Get-FileHash -LiteralPath $invalidManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
         Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $invalidManifestPath -Sha256 $invalidManifestSha -EngineRoot $targetEngineRoot } 'private runtime DLL target on D is rejected'
+        $d3d12ApprovedTargets = @(
+            (Join-Path $targetEngineRoot 'Engine\Binaries\Win64\D3D12\x64\D3D12Core.dll'),
+            (Join-Path $targetEngineRoot 'Engine\Binaries\Win64\D3D12\x64\d3d12SDKLayers.dll')
+        )
+        $d3d12ApprovedCopies = @($privatePolicy.preserved_runtime_copies | Where-Object { $_.target -in $d3d12ApprovedTargets })
+        Assert-True ($d3d12ApprovedCopies.Count -eq 2) 'private policy pins exactly the two pre-existing D3D12 Engine inputs'
+        foreach ($copy in $d3d12ApprovedCopies) {
+            Assert-True ($copy.source_sha256 -ceq $copy.target_sha256 -and $copy.target -in $d3d12ApprovedTargets) 'D3D12 Engine copy pair is byte-identical and precisely scoped'
+        }
+        $invalidPolicy.preserved_runtime_copies = @($privatePolicy.preserved_runtime_copies | ForEach-Object { $_ | ConvertTo-Json -Depth 20 | ConvertFrom-Json })
+        $invalidPolicy.preserved_runtime_copies | Where-Object { $_.target -ceq $d3d12ApprovedTargets[0] } | ForEach-Object { $_.source = Join-Path $targetEngineRoot 'Engine\Binaries\Win64\AgentInterface.dll' }
+        [IO.File]::WriteAllText($invalidPolicyPath, ($invalidPolicy | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+        $invalidManifest.policy_sha256 = (Get-FileHash -LiteralPath $invalidPolicyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        [IO.File]::WriteAllText($invalidManifestPath, ($invalidManifest | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+        $invalidManifestSha = (Get-FileHash -LiteralPath $invalidManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $invalidManifestPath -Sha256 $invalidManifestSha -EngineRoot $targetEngineRoot } 'D3D12 Engine target with a mismatched source is rejected'
         $invalidPolicy.preserved_runtime_copies[0].target = Join-Path ([string]$privateManifest.private_root) 'Foreign\AgentInterface.dll'
         [IO.File]::WriteAllText($invalidPolicyPath, ($invalidPolicy | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
         $invalidManifest.policy_sha256 = (Get-FileHash -LiteralPath $invalidPolicyPath -Algorithm SHA256).Hash.ToLowerInvariant()
