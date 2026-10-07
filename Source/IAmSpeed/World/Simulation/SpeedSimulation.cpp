@@ -474,6 +474,17 @@ bool ASpeedSimulation::JoinOwnedSimulationForInputTeardown()
 void ASpeedSimulation::ResumeOwnedSimulation()
 {
 	if (bInputOwnerRetired.Load()) return;
+    // A resumed device does not prove the other owners (bots included) have
+    // acknowledged Resume. Keep servicing boundaries, but do not step a
+    // partially paused registry: PrepareFrame correctly rejects that state.
+    const auto View = ReadInputRegistryView();
+    if (View)
+    {
+        if (View->Terminal || View->Phases.size() != View->Bindings.size()) return;
+        for (const auto& InputOwnerPhase : View->Phases)
+            if (InputOwnerPhase.Phase != Speed::Input::V2::ESessionPhase::Active) return;
+    }
+
 	// A timed-out structural request remains fail-closed until a later caller
 	// claims its ACK or joins the worker. Do not publish a false resumed state.
 	if (SimulationWorker && SimulationWorker->IsBoundaryServiceSuspendRequested()) return;

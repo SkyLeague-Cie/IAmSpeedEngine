@@ -6,6 +6,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 
@@ -23,6 +24,9 @@ bool FIAmSpeedAdapterRespawnBoundaryTest::RunTest(const FString&)
     if (!TestNotNull(TEXT("respawn fixture world"), World)) return false;
     GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
     ON_SCOPE_EXIT { World->DestroyWorld(false); GEngine->DestroyWorldContext(World); };
+    // RouteEndPlay requires initialized actors as well as dispatched BeginPlay.
+    World->InitializeActorsForPlay(FURL());
+    if (!TestTrue(TEXT("fixture world actors initialized"), World->AreActorsInitialized())) return false;
     auto* Driver = World->SpawnActor<ARealTimeSimulation>();
     auto* Bridge = World->GetSubsystem<USpeedWorldSubsystem>();
     auto* First = World->SpawnActor<ASpeedCar>();
@@ -32,6 +36,7 @@ bool FIAmSpeedAdapterRespawnBoundaryTest::RunTest(const FString&)
     Driver->ActiveExecutionModeValue.Store(static_cast<uint8>(ESimulationExecutionMode::IAmSpeedThread));
     auto* FirstComponent = Cast<USpeedWheeledComponent>(First->GetVehicleMovement());
     if (!TestNotNull(TEXT("first wheeled adapter"), FirstComponent)) return false;
+    if (!TestTrue(TEXT("first actor initialized before BeginPlay"), First->IsActorInitialized())) return false;
     FirstComponent->SetOwner(First);
     First->DispatchBeginPlay();
     if (!TestTrue(TEXT("first actor began play before teardown"), First->HasActorBegunPlay())
@@ -43,9 +48,10 @@ bool FIAmSpeedAdapterRespawnBoundaryTest::RunTest(const FString&)
     std::atomic_store(&Driver->PublishedInputRegistry,
         std::make_shared<const Speed::Input::V2::FInputRegistryView>());
     TAtomic<int32> BoundaryServices = 0;
+    std::atomic<uint64> SurvivorSteps{0};
     Driver->SimulationWorker = MakeUnique<FSimulationWorker>(
-        []() { return ESimulationWorkerResult::Idle; },
-        [](FSimulationWorkerWaitContext&) {},
+        [&]() { ++SurvivorSteps; return ESimulationWorkerResult::Advanced; },
+        [](FSimulationWorkerWaitContext& Wait) { Wait.WaitUntil(FPlatformTime::Seconds()+.001); },
         [&](bool)
         {
             ++BoundaryServices;
@@ -62,19 +68,40 @@ bool FIAmSpeedAdapterRespawnBoundaryTest::RunTest(const FString&)
 
     // EndPlay must detach exactly once and receive removal ACK before any
     // sub-body storage can be released. Base EndPlay must not enqueue again.
-    FirstComponent->EndPlay(EEndPlayReason::Destroyed);
+    Driver->ResumeOwnedSimulation();
+    const double RunningDeadline=FPlatformTime::Seconds()+2.0;
+    while (SurvivorSteps.load()==0 && FPlatformTime::Seconds()<RunningDeadline) FPlatformProcess::SleepNoStats(.001f);
+    if (!TestTrue(TEXT("shared worker really advances before pawn destruction"), SurvivorSteps.load()>0)) return false;
+    if (!TestTrue(TEXT("real pawn destruction succeeds"), First->Destroy())) return false;
+    if (!TestFalse(TEXT("real Destroy routed actor EndPlay"), First->HasActorBegunPlay())
+        || !TestFalse(TEXT("real Destroy routed adapter EndPlay"), FirstComponent->HasBegunPlay())) return false;
+    const uint64 AfterDestruction=SurvivorSteps.load();
+    TestFalse(TEXT("produced adapter destruction restores prior running state"), Driver->IsOwnedSimulationPaused());
+    const double SurvivorDeadline=FPlatformTime::Seconds()+2.0;
+    while (SurvivorSteps.load()<=AfterDestruction && FPlatformTime::Seconds()<SurvivorDeadline) FPlatformProcess::SleepNoStats(.001f);
+    TestTrue(TEXT("survivor scheduling continues after real EndPlay"), SurvivorSteps.load()>AfterDestruction);
     TestEqual(TEXT("old adapter removed before teardown"), Bridge->GetSimulationStableId(*FirstComponent), uint64(0));
 
     auto* Replacement = World->SpawnActor<ASpeedCar>();
     auto* ReplacementComponent = Replacement
         ? Cast<USpeedWheeledComponent>(Replacement->GetVehicleMovement()) : nullptr;
     if (!TestNotNull(TEXT("replacement wheeled adapter"), ReplacementComponent)) return false;
+    if (!TestTrue(TEXT("replacement actor initialized"), Replacement->IsActorInitialized())) return false;
     ReplacementComponent->SetOwner(Replacement);
     const uint64 ReplacementId = Bridge->GetSimulationStableId(*ReplacementComponent);
     TestTrue(TEXT("replacement admitted with distinct stable identity"),
         ReplacementId != 0 && ReplacementId != FirstId);
-    TestTrue(TEXT("paused worker still alive after replacement"),
+    TestTrue(TEXT("shared worker still alive after replacement"),
         Driver->SimulationWorker && Driver->SimulationWorker->IsRunning());
+    Driver->TryPauseOwnedSimulation();
+    if (!TestTrue(TEXT("replacement claims produced authority"), Replacement->SetFrameInputStreamV2(nullptr))) return false;
+    Replacement->DispatchBeginPlay();
+    if (!TestTrue(TEXT("paused replacement destruction succeeds"), Replacement->Destroy())) return false;
+    if (!TestFalse(TEXT("paused replacement routes actor EndPlay"), Replacement->HasActorBegunPlay())
+        || !TestFalse(TEXT("paused replacement routes adapter EndPlay"), ReplacementComponent->HasBegunPlay())) return false;
+    TestEqual(TEXT("paused replacement adapter removed before teardown"), Bridge->GetSimulationStableId(*ReplacementComponent), uint64(0));
+    TestTrue(TEXT("preexisting world pause remains paused after destruction"), Driver->IsOwnedSimulationPaused());
+    TestTrue(TEXT("paused destruction does not retire shared worker"), Driver->SimulationWorker && Driver->SimulationWorker->IsRunning());
     Driver->StopOwnedWorker();
     return true;
 }
