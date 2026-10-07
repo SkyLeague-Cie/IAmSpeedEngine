@@ -302,14 +302,23 @@ function Assert-IAmSpeedEditorTargetInfoFresh {
 
 function Invoke-IAmSpeedPrivateEnginePolicy {
     param([Parameter(Mandatory=$true)][psobject]$Runtime,[Parameter(Mandatory=$true)][scriptblock]$Action)
-    $original = [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process')
+    $name = 'SL_PRIVATE_ENGINE_METADATA_POLICY'
+    $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
+    $hadOriginal = $processEnvironment.Contains($name)
+    $original = [Environment]::GetEnvironmentVariable($name,'Process')
     try {
         $policy = $null
         if ($Runtime.PrivateUbt) { $policy = [string]$Runtime.PrivateEnginePolicyPath }
-        [Environment]::SetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY',$policy,'Process')
+        [Environment]::SetEnvironmentVariable($name,$policy,'Process')
         & $Action
     }
-    finally { [Environment]::SetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY',$original,'Process') }
+    finally {
+        if ($hadOriginal) {
+            [Environment]::SetEnvironmentVariable($name,$original,'Process')
+        } else {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Assert-IAmSpeedDirectUbtRuntime {
