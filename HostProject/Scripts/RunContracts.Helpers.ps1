@@ -180,22 +180,47 @@ function Assert-IAmSpeedPrivateUbtManifest {
     if ([IO.Path]::GetFullPath($policy.engine_root).TrimEnd('\') -ine (Join-Path $EngineRoot 'Engine') -or [IO.Path]::GetFullPath($policy.project_private_parent).TrimEnd('\') -ine [IO.Path]::GetFullPath($manifest.baseline_project_parent).TrimEnd('\')) { throw 'Private Engine policy binding differs.' }
     $traceContract = 'Bound root Build only; private Trace required by real UBA non-detour executor. Query and recursive helper modes retain Session trace suppression.'
     if ($manifest.private_root_trace_contract -cne $traceContract -or $policy.private_root_trace_contract -cne $traceContract) { throw 'Private root Build trace contract differs.' }
-    $copyContract = 'Exact 19 preprovisioned runtime DLL pairs are immutable read-only dependencies; pinned Engine Natvis sources have private copy/link outputs. No Engine action outputs or deletes.'
+    $copyContract = 'Exact 19 runtime DLL pairs use immutable D Engine sources and allowlisted private E targets; pinned Engine Natvis sources use private E copy/link outputs. No Engine action outputs or deletes.'
     if ($manifest.private_copy_producer_contract -cne $copyContract -or $policy.private_copy_producer_contract -cne $copyContract) { throw 'Private copy producer contract differs.' }
     if ($manifest.preserved_runtime_copy_count -ne 19 -or @($policy.preserved_runtime_copies).Count -ne 19 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
+    $privateEngineOutputRoot = [IO.Path]::GetFullPath((Join-Path ([string]$manifest.private_root) 'EnginePrivate')).TrimEnd('\') + '\'
     $targets = @{}
     foreach ($copy in $policy.preserved_runtime_copies) {
-        if ($targets.ContainsKey([string]$copy.target) -or $copy.source_sha256 -cne $copy.target_sha256) { throw 'Private runtime copy identity differs.' }
-        $targets[[string]$copy.target] = $true
-        foreach ($prefix in @('source','target')) {
-            $file = [string]$copy.$prefix
-            if (-not [IO.Path]::GetFullPath($file).StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($file) -ine '.dll') { throw 'Private runtime DLL input escapes Engine.' }
-            Assert-IAmSpeedPhysicalFile $file
-            $item = Get-Item -LiteralPath $file
-            $bytes = $copy.($prefix + '_bytes'); $digest = $copy.($prefix + '_sha256'); $ticks = $copy.($prefix + '_mtime_ticks')
-            if ($item.Length -ne $bytes -or $item.LastWriteTimeUtc.Ticks -ne $ticks -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $digest) { throw "Private runtime DLL input drift: $file" }
+        $source = [IO.Path]::GetFullPath([string]$copy.source)
+        $target = [IO.Path]::GetFullPath([string]$copy.target)
+        if ($targets.ContainsKey($target) -or $copy.source_sha256 -cne $copy.target_sha256) { throw 'Private runtime copy identity differs.' }
+        if (-not $source.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($source) -ine '.dll') { throw 'Private runtime DLL source escapes the read-only Engine.' }
+        if (-not $target.StartsWith($privateEngineOutputRoot, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($target) -ine '.dll') { throw 'Private runtime DLL target escapes the allowlisted E output root.' }
+        $targets[$target] = $true
+        foreach ($record in @(@{path=$source;bytes=$copy.source_bytes;sha256=$copy.source_sha256;ticks=$copy.source_mtime_ticks},@{path=$target;bytes=$copy.target_bytes;sha256=$copy.target_sha256;ticks=$copy.target_mtime_ticks})) {
+            Assert-IAmSpeedPhysicalFile $record.path
+            $item = Get-Item -LiteralPath $record.path
+            if ($item.Length -ne $record.bytes -or $item.LastWriteTimeUtc.Ticks -ne $record.ticks -or (Get-FileHash -LiteralPath $record.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $record.sha256) { throw "Private runtime DLL copy drift: $($record.path)" }
         }
     }
+    $visualizerSources = @{}
+    foreach ($sourceRecord in $policy.private_debugger_visualizer_sources) {
+        $source = [IO.Path]::GetFullPath([string]$sourceRecord.source)
+        if ($visualizerSources.ContainsKey($source) -or -not $source.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($source) -ine '.natvis') { throw 'Private debugger visualizer source inventory escapes or duplicates the read-only Engine.' }
+        Assert-IAmSpeedPhysicalFile $source
+        $item = Get-Item -LiteralPath $source
+        if ($item.Length -ne $sourceRecord.source_bytes -or $item.LastWriteTimeUtc.Ticks -ne $sourceRecord.source_mtime_ticks -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceRecord.source_sha256) { throw "Private debugger visualizer source inventory drift: $source" }
+        $visualizerSources[$source] = [string]$sourceRecord.source_sha256
+    }
+    $visualizerTargets = @{}
+    foreach ($visualizer in $policy.private_debugger_visualizers) {
+        $source = [IO.Path]::GetFullPath([string]$visualizer.source)
+        $target = [IO.Path]::GetFullPath([string]$visualizer.target)
+        if (-not $visualizerSources.ContainsKey($source) -or $visualizerSources[$source] -cne $visualizer.source_sha256) { throw 'Private debugger visualizer source/target manifest identity differs.' }
+        if (-not $target.StartsWith($privateEngineOutputRoot, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetExtension($target) -ine '.natvis' -or $visualizerTargets.ContainsKey($target)) { throw 'Private debugger visualizer target escapes its allowlist or is duplicated.' }
+        $visualizerTargets[$target] = $true
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+            Assert-IAmSpeedPhysicalFile $target
+            $output = Get-Item -LiteralPath $target
+            if ($output.Length -ne $visualizer.source_bytes -or $output.LastWriteTimeUtc.Ticks -ne $visualizer.source_mtime_ticks -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne $visualizer.source_sha256) { throw "Private debugger visualizer output drift: $target" }
+        }
+    }
+    if ($visualizerTargets.Count -ne $visualizerSources.Count) { throw 'Private debugger visualizer output inventory differs.' }
     return $manifest
 }
 

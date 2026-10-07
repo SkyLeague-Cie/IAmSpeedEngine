@@ -75,6 +75,23 @@ try {
         $privateRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $targetEngineRoot -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
         $privateManifest = Get-Content -LiteralPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -Raw | ConvertFrom-Json
         $privatePolicy = Get-Content -LiteralPath $privateRuntime.PrivateEnginePolicyPath -Raw | ConvertFrom-Json
+        $invalidPolicy = $privatePolicy | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $invalidPolicy.preserved_runtime_copies[0].target = Join-Path $targetEngineRoot 'Engine\Binaries\Win64\AgentInterface.dll'
+        $invalidPolicyPath = Join-Path $FixtureRoot 'policy-engine-target.json'
+        [IO.File]::WriteAllText($invalidPolicyPath, ($invalidPolicy | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+        $invalidManifest = $privateManifest | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+        $invalidManifest.policy_path = $invalidPolicyPath
+        $invalidManifest.policy_sha256 = (Get-FileHash -LiteralPath $invalidPolicyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $invalidManifestPath = Join-Path $FixtureRoot 'manifest-engine-target.json'
+        [IO.File]::WriteAllText($invalidManifestPath, ($invalidManifest | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+        $invalidManifestSha = (Get-FileHash -LiteralPath $invalidManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $invalidManifestPath -Sha256 $invalidManifestSha -EngineRoot $targetEngineRoot } 'private runtime DLL target on D is rejected'
+        $invalidPolicy.preserved_runtime_copies[0].target = Join-Path ([string]$privateManifest.private_root) 'Foreign\AgentInterface.dll'
+        [IO.File]::WriteAllText($invalidPolicyPath, ($invalidPolicy | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+        $invalidManifest.policy_sha256 = (Get-FileHash -LiteralPath $invalidPolicyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        [IO.File]::WriteAllText($invalidManifestPath, ($invalidManifest | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+        $invalidManifestSha = (Get-FileHash -LiteralPath $invalidManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $invalidManifestPath -Sha256 $invalidManifestSha -EngineRoot $targetEngineRoot } 'private runtime DLL target outside EnginePrivate is rejected'
         $expectedCache = $privatePolicy.private_cache_root
         $privateCacheBinding = Assert-IAmSpeedPrivateCacheBinding -Runtime $privateRuntime -ExpectedCacheRoot $expectedCache
         Assert-True ($privateCacheBinding.ManifestParent -ceq $privateCacheBinding.PolicyParent) 'private UBT manifest and policy bind the same private root'
