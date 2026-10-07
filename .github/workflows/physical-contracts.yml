@@ -35,13 +35,21 @@ jobs:
         env:
           IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
           IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
-          IAMSPEED_PRIVATE_UBT_MANIFEST: ${{ vars.IAMSPEED_PRIVATE_UBT_MANIFEST }}
-          IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256: ${{ vars.IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256 }}
+          IAMSPEED_PRIVATE_UBT_MANIFEST: 'E:\UEQualification\ias-ci21\CI-v30\mission\ci30-private-ubt-runtime-manifest-GitHubCI.json'
+          IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256: '01f26712509605e66338255c65feeef99ef4dcbbfaf33ae59a9ee5b28c0ee8cc'
+          IAMSPEED_PRIVATE_ROOT: 'E:\UEQualification\ias-ci21\CI-v30\Runtime-GitHubCI'
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST) -or
               [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256)) {
-            throw 'Configure IAMSPEED_PRIVATE_UBT_MANIFEST and IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256 repository variables for the private Query runtime.'
+            throw 'The workflow's pinned private UBT manifest path and SHA-256 are required.'
+          }
+          if (-not (Test-Path -LiteralPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PathType Leaf)) {
+            throw "The runner's pinned private UBT manifest is missing: $env:IAMSPEED_PRIVATE_UBT_MANIFEST"
+          }
+          $manifestSha = (Get-FileHash -LiteralPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($manifestSha -cne $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256) {
+            throw 'The runner private UBT manifest SHA-256 differs from the workflow pin.'
           }
           .\HostProject\Scripts\TestRunContracts.ps1
 
@@ -50,9 +58,9 @@ jobs:
         env:
           IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
           IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
-          IAMSPEED_PRIVATE_UBT_MANIFEST: ${{ vars.IAMSPEED_PRIVATE_UBT_MANIFEST }}
-          IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256: ${{ vars.IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256 }}
-          IAMSPEED_PRIVATE_ROOT: ${{ runner.temp }}/IAmSpeedPrivate
+          IAMSPEED_PRIVATE_UBT_MANIFEST: 'E:\UEQualification\ias-ci21\CI-v30\mission\ci30-private-ubt-runtime-manifest-GitHubCI.json'
+          IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256: '01f26712509605e66338255c65feeef99ef4dcbbfaf33ae59a9ee5b28c0ee8cc'
+          IAMSPEED_PRIVATE_ROOT: 'E:\UEQualification\ias-ci21\CI-v30\Runtime-GitHubCI'
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $engineRoot = $env:IAMSPEED_UE_ROOT
