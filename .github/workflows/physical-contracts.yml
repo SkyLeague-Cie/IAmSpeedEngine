@@ -35,14 +35,23 @@ jobs:
         env:
           IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
           IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
+          IAMSPEED_PRIVATE_UBT_MANIFEST: ${{ vars.IAMSPEED_PRIVATE_UBT_MANIFEST }}
+          IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256: ${{ vars.IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256 }}
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
-        run: .\HostProject\Scripts\TestRunContracts.ps1
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST) -or
+              [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256)) {
+            throw 'Configure IAMSPEED_PRIVATE_UBT_MANIFEST and IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256 repository variables for the private Query runtime.'
+          }
+          .\HostProject\Scripts\TestRunContracts.ps1
 
       - name: Build HostProject and run physical contracts
         shell: powershell
         env:
           IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
           IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
+          IAMSPEED_PRIVATE_UBT_MANIFEST: ${{ vars.IAMSPEED_PRIVATE_UBT_MANIFEST }}
+          IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256: ${{ vars.IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256 }}
           IAMSPEED_PRIVATE_ROOT: ${{ runner.temp }}/IAmSpeedPrivate
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
