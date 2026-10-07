@@ -72,7 +72,7 @@ jobs:
           }
           if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST) -or
               [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256)) {
-            throw 'The workflow's pinned private UBT manifest path and SHA-256 are required.'
+            throw "The workflow's pinned private UBT manifest path and SHA-256 are required."
           }
           .\HostProject\Scripts\RunContracts.ps1 -EngineRoot $engineRoot
 
