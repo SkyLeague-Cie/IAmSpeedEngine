@@ -100,6 +100,10 @@ void ISpeedComponent::IntegrateKinematicsPrv(const float& SubDelta)
     // BasePhysicsState is the rigid body's COM state. No origin compensation
     // belongs in the integrator; origin data is derived at the geometry boundary.
     SetKinematicState(GetKinematicState().Integrate(SubDelta));
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostForcePredictor, SubDelta);
+#endif
 }
 
 bool ISpeedComponent::IsPhysicsSleeping() const
@@ -252,6 +256,10 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 		State.Location += State.Velocity * (0.5 * StopAfterSeconds);
 		State.Velocity = FVector::ZeroVector;
 		SetKinematicState(State);
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostForcePredictor, SubDelta);
+#endif
 		UpdateSubBodiesKinematics();
 		ProjectEstablishedStaticContacts(SubDelta);
 		PostIntegrateKinematics(SubDelta);
@@ -262,6 +270,10 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 	{
 #if !UE_BUILD_SHIPPING
 		++Speed::FSimulationSleepState::ThreadIntegrationSkips();
+#endif
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostForcePredictor, SubDelta);
 #endif
 		// Keep support bookkeeping and all collision detection alive. Only the
 		// unchanged rigid pose and its redundant transport/projection are skipped.

@@ -7,6 +7,7 @@
 #include "IAmSpeed/SubBodies/Common/ISphereSweeper.h"
 #include "IAmSpeed/SubBodies/Common/ISolidSweeper.h"
 #include "UObject/ObjectMacros.h"
+#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SphereSubBody.generated.h"
 
 class UBoxSubBody;
@@ -37,6 +38,25 @@ class IAMSPEED_API USphereSubBody : public USolidSubBody, public ISphereSweeper,
     GENERATED_UCLASS_BODY()
 	
 public:
+#if !UE_BUILD_SHIPPING
+    /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
+    void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
+    {
+        USolidSubBody::AppendEpisodeStateForTesting(Out);
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,Radius);
+        B::Add(Out,MinSlopCm);
+        B::Add(Out,SphereBoxTangentialContactArmScale);
+        B::Add(Out,SphereBoxTangentialContactArmStartSpeed);
+        B::Add(Out,SphereBoxTangentialContactArmFullSpeed);
+        B::Add(Out,SphereBoxTangentialArmMinSphereSpeed);
+        B::Add(Out,SphereBoxTangentialArmMaxSphereSpeed);
+        B::Add(Out,SphereBoxTangentialArmMinSphereAngularSpeed);
+        B::Add(Out,SphereBoxTangentialArmMaxSphereAngularSpeed);
+        B::Add(Out,SphereBoxTangentialArmMinBoxSpeed);
+        B::Add(Out,WorldStaticPenetrationDiagnostics.bEnabled);B::Add(Out,WorldStaticPenetrationDiagnostics.StartFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.SweepInitialOverlapSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionInputSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.ProjectionResidualSamples);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualDepthCm);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumSweepInitialOverlapFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionInputFrame);B::Add(Out,WorldStaticPenetrationDiagnostics.MaximumProjectionResidualFrame);
+    }
+#endif
 	virtual void Initialize(ISpeedComponent* InParentComponent) override;
 	void ResetForFrame(const float& Delta) override;
 	void PostPhysicsUpdate() override;

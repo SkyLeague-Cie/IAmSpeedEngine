@@ -47,13 +47,14 @@ public:
 		{ Batch.Result = {EReadBatchStatus::Error, E_INVALIDARG}; return Batch; }
 		if (Registered && (Api.Get() != &InApi || Device.Get() != InDevice || Kind != InKind))
 		{ Batch.Result = {EReadBatchStatus::Error, E_INVALIDARG}; return Batch; }
-		if (!Started)
+		FRef Baseline;
+		const bool Initializing = !Started;
+		if (Initializing)
 		{
-			FRef Baseline;
-			const auto Current = InApi.GetCurrentReading(InKind, InDevice, Baseline.GetAddressOf());
-			if (Current == GAMEINPUT_E_READING_NOT_FOUND) return Batch;
-			if (FAILED(Current) || !Baseline)
-			{ Batch.Result = {EReadBatchStatus::Error, FAILED(Current) ? Current : E_UNEXPECTED}; return Batch; }
+			// Subscribe before taking the initial snapshot. Current readings may be
+			// valid snapshots even when absent from GameInput's history buffer.
+			// Retained callbacks, rather than history traversal, own all changes
+			// after subscription. No pre-subscription transitions are admitted.
 			Api = &InApi; Device = InDevice; Kind = InKind;
 			const auto Registration = Api->RegisterReadingCallback(Device.Get(), Kind, this, &OnReading, &Token);
 			if (FAILED(Registration))
@@ -61,22 +62,18 @@ public:
 				Api.Reset(); Device.Reset();
 				Batch.Result = {EReadBatchStatus::Error, Registration}; return Batch;
 			}
-			Registered = Started = true;
-			Batch.FreshBaseline = true;
-			if (!Append(Baseline.Get(), Batch)) return Gap(Batch);
-			// The baseline precedes registration. Bridge that race through GameInput
-			// history, then discard matching callback references by identity.
-			FRef Previous = Baseline;
-			for (std::size_t I = 1; I <= Batch.States.size(); ++I)
+			Registered = true;
+			const auto Current = Api->GetCurrentReading(Kind, Device.Get(), Baseline.GetAddressOf());
+			if (FAILED(Current) || !Baseline)
 			{
-				FRef Next;
-				const auto Status = Api->GetNextReading(Previous.Get(), Kind, Device.Get(), Next.GetAddressOf());
-				if (Status == GAMEINPUT_E_READING_NOT_FOUND) return Batch;
-				if (FAILED(Status) || !Next || I == Batch.States.size()) return Gap(Batch);
-				if (!Append(Next.Get(), Batch)) return Gap(Batch);
-				Previous = std::move(Next);
+				const bool Fenced = Stop();
+				if (!Fenced) Batch.Result = {EReadBatchStatus::Error, E_FAIL};
+				else if (Current != GAMEINPUT_E_READING_NOT_FOUND)
+					Batch.Result = {EReadBatchStatus::Error, FAILED(Current) ? Current : E_UNEXPECTED};
+				return Batch;
 			}
-			return Gap(Batch);
+			Started = true;
+			Batch.FreshBaseline = true;
 		}
 		std::deque<FRef> Drained;
 		bool Lost = false;
@@ -86,9 +83,16 @@ public:
 			while (!Lost && !Pending.empty() && Drained.size() < Batch.States.size())
 			{ Drained.push_back(std::move(Pending.front())); Pending.pop_front(); }
 		}
-		if (Lost) return Gap(Batch);
+		if (Lost) return Gap(Batch, ERawReadReject::QueueOverflow);
+		// If callbacks arrived during snapshot acquisition, their earliest
+		// retained state establishes the baseline. Using the later snapshot
+		// first would discard a short tap or falsely reject earlier callbacks.
+		// With an empty queue the snapshot is the baseline; a delayed distinct
+		// older callback still fails closed through Append's ordering check.
+		if (Initializing && Drained.empty() && !Append(Baseline.Get(), Batch))
+			return Gap(Batch, LastAppendReject);
 		for (const auto& Reading : Drained)
-			if (!Append(Reading.Get(), Batch)) return Gap(Batch);
+			if (!Append(Reading.Get(), Batch)) return Gap(Batch, LastAppendReject);
 		if (Batch.Count) Batch.Result.Status = EReadBatchStatus::Updated;
 		return Batch;
 	}
@@ -103,29 +107,32 @@ private:
 		try { Self.Pending.emplace_back(Reading); }
 		catch (...) { Self.Overflow = true; }
 	}
-	FRawDeviceReadBatch Gap(FRawDeviceReadBatch& Batch)
+	FRawDeviceReadBatch Gap(FRawDeviceReadBatch& Batch, ERawReadReject Reason, HRESULT Error = S_OK)
 	{
 		Batch = {};
+		Batch.Reject = Reason; Batch.DiagnosticError = Error;
 		Batch.Result = {EReadBatchStatus::Resynchronize, S_OK};
 		if (!Stop()) Batch.Result = {EReadBatchStatus::Error, E_FAIL};
 		return Batch;
 	}
 	bool Append(FReading* Reading, FRawDeviceReadBatch& Batch)
 	{
-		if (!Reading) return false;
+		LastAppendReject = ERawReadReject::None;
+		if (!Reading) { LastAppendReject = ERawReadReject::NullReading; return false; }
 		Microsoft::WRL::ComPtr<IUnknown> Identity;
 		if (FAILED(Reading->QueryInterface(__uuidof(IUnknown),
-			reinterpret_cast<void**>(Identity.GetAddressOf()))) || !Identity) return false;
+			reinterpret_cast<void**>(Identity.GetAddressOf()))) || !Identity) { LastAppendReject = ERawReadReject::IdentityQuery; return false; }
 		for (const auto& Item : Seen) if (Item.Get() == Identity.Get()) return true;
 		const auto Timestamp = Reading->GetTimestamp();
-		if (Timestamp < LastTimestamp || Batch.Count == Batch.States.size()) return false;
+		if (Timestamp < LastTimestamp) { LastAppendReject = ERawReadReject::TimestampRegression; return false; }
+		if (Batch.Count == Batch.States.size()) { LastAppendReject = ERawReadReject::StateCapacity; return false; }
 		FDeviceState State{}; State.TimestampMicroseconds = Timestamp;
 		if (Kind == GameInput::v3::GameInputKindKeyboard)
 		{
 			std::array<GameInput::v3::GameInputKeyState, 256> Keys{};
 			const auto Count = Reading->GetKeyCount();
 			if (Count > Keys.size() || Reading->GetKeyState(static_cast<std::uint32_t>(Keys.size()), Keys.data()) != Count)
-				return false;
+			{ LastAppendReject = ERawReadReject::KeyboardDecode; return false; }
 			State.KeyCount = Count;
 			for (std::uint32_t I = 0; I < Count; ++I)
 			{ State.VirtualKeys[Keys[I].virtualKey] = true; State.ScanCodes[I] = Keys[I].scanCode; }
@@ -133,7 +140,7 @@ private:
 		else
 		{
 			GameInput::v3::GameInputGamepadState Pad{};
-			if (!Reading->GetGamepadState(&Pad)) return false;
+			if (!Reading->GetGamepadState(&Pad)) { LastAppendReject = ERawReadReject::GamepadDecode; return false; }
 			State.GamepadButtons = static_cast<std::uint32_t>(Pad.buttons);
 			State.Axes = {Pad.leftTrigger, Pad.rightTrigger, Pad.leftThumbstickX,
 				Pad.leftThumbstickY, Pad.rightThumbstickX, Pad.rightThumbstickY};
@@ -145,6 +152,7 @@ private:
 		Batch.Result.Status = EReadBatchStatus::Updated;
 		return true;
 	}
+	ERawReadReject LastAppendReject = ERawReadReject::None;
 	mutable std::mutex Gate;
 	Microsoft::WRL::ComPtr<FApi> Api;
 	Microsoft::WRL::ComPtr<FDevice> Device;

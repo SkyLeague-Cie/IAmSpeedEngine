@@ -106,6 +106,58 @@ namespace
 
 namespace Speed
 {
+
+#if !UE_BUILD_SHIPPING
+ bool FSimulationWorld::InspectBodyContactPairsForTesting(
+  const USolidSubBody& Body,uint64 PreparingFrame,FBodyContactPairInspection& Out) const
+ {
+  Out=FBodyContactPairInspection();Out.PreparingFrame=PreparingFrame;
+  Out.CompletedStepFrame=CurrentStepFrame;Out.QueryObjectId=Body.GetUniqueID();
+  Out.DynamicTotal=DynamicContactPairs.Num();Out.PendingTotal=PendingRollingContactPairs.Num();
+  // This test query is only useful after at least one completed core step.
+  if(bOrderDirty || PreparingFrame==0 || PreparingFrame>=MAX_uint32 ||
+     CurrentStepFrame!=PreparingFrame-1){Out.Failure=1;return false;}
+  constexpr int32 MaxInspectionRows=4096; // operational cap, never partial-clear
+  if(int64(Out.DynamicTotal)+Out.PendingTotal>MaxInspectionRows){Out.Failure=2;return false;}
+  Out.QueryStableBodyId=FindStableSubBodyId(&Body);
+  auto Registered=[this](const USolidSubBody* B,uint64 StableId)
+  {
+   if(!B || !StableId || !B->GetParentComponent())return false;
+   USolidSubBody* const* Reverse=SolidSubBodiesByStableId.Find(StableId);
+   return Reverse && *Reverse==B && FindStableId(*B->GetParentComponent())==(StableId>>16);
+  };
+  if(!Registered(&Body,Out.QueryStableBodyId)){Out.Failure=3;return false;}
+  TSet<uint64> SeenKeys;
+  auto Inspect=[this,&Out,&Registered,&SeenKeys](const TArray<FDynamicContactPair>& Pairs,uint8 Collection)
+  {
+   for(const FDynamicContactPair& P:Pairs)
+   {
+    const USolidSubBody* A=P.BodyA.Get();const USolidSubBody* B=P.BodyB.Get();
+    const uint64 AS=FindStableSubBodyId(A),BS=FindStableSubBodyId(B);
+    if(!Registered(A,AS) || !Registered(B,BS) || A==B || AS==BS || A->GetUniqueID()==B->GetUniqueID())
+    {Out.Failure=4;return false;} // even unrelated stale identities make absence unprovable
+    const uint64 Key=(uint64(FMath::Min(A->GetUniqueID(),B->GetUniqueID()))<<32)|FMath::Max(A->GetUniqueID(),B->GetUniqueID());
+    if(P.PairKey!=Key || SeenKeys.Contains(Key)){Out.Failure=5;return false;}
+    SeenKeys.Add(Key);
+    FBodyContactPairInspectionRow R;
+    R.Collection=Collection;R.PairKey=P.PairKey;R.BodyAStableId=AS;R.BodyBStableId=BS;
+    R.BodyAObjectId=A->GetUniqueID();R.BodyBObjectId=B->GetUniqueID();
+    R.FirstSeenFrame=P.FirstSeenFrame;R.LastSeenFrame=P.LastSeenFrame;R.LastSolvedFrame=P.LastSolvedFrame;
+    R.bIncident=AS==Out.QueryStableBodyId || BS==Out.QueryStableBodyId;
+    Out.Rows.Add(R);
+    if(Collection==0){++Out.DynamicScanned;if(R.bIncident)++Out.DynamicIncident;}
+    else {++Out.PendingScanned;if(R.bIncident)++Out.PendingIncident;}
+   }
+   return true;
+  };
+  // Never use active-body adjacency as a substitute for the pending collection.
+  if(!Inspect(DynamicContactPairs,0) || !Inspect(PendingRollingContactPairs,1))return false;
+  Out.Rows.Sort([](const auto& A,const auto& B){return A.Collection!=B.Collection?A.Collection<B.Collection:A.PairKey<B.PairKey;});
+  Out.bComplete=Out.DynamicScanned==Out.DynamicTotal && Out.PendingScanned==Out.PendingTotal;
+  return Out.bComplete;
+ }
+#endif
+
 	bool FSimulationWorld::AddAdapter(ISpeedComponent& Adapter)
 	{
 		if (StableIds.Contains(&Adapter)) return false;

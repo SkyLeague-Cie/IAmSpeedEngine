@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "5.7",
+	"EngineAssociation": "5.8",
 	"Category": "Tests",
 	"Description": "Minimal repository-owned host for IAmSpeed contract tests.",
 	"AdditionalPluginDirectories": [

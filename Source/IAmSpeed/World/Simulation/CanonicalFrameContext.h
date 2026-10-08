@@ -18,4 +18,7 @@ struct IAMSPEED_API FCanonicalFrameContext
 	uint64 NumFrame = 0;
 	float PhysicalDeltaTime = CanonicalPhysicalDeltaTime;
 	float SimTime = 0.0f;
+#if !UE_BUILD_SHIPPING
+	bool bResimulationForTesting = false; // observation/admission metadata only
+#endif
 };

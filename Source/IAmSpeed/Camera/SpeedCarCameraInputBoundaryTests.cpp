@@ -227,9 +227,21 @@ bool FIAmSpeedCameraInputBoundaryTest::RunTest(const FString& Parameters)
 	Live->SetHeldCameraYaw(0);
 	Live->SetHeldCameraPitch(0);
 	Live->SetHeldCameraBack(false);
-	Live->BaseGameState.NumFrame = 6000;
+	TestFalse(TEXT("skipped release frame cannot publish"), Live->ValidateCanonicalFrameCommit(5999));
+	Live->BaseGameState.NumFrame = 5220;
 	Packet.LocalFrame = 20000;
 	Packet.BuildData(Live);
+	TestTrue(TEXT("GT release cannot rewrite the previous completed snapshot"),
+		Packet.WheeledInput.Camera.Equals(LastPackets.Last().WheeledInput.Camera));
+	FWheeledInputState Released = Live->WheeledPhysicalInput;
+	Released.Camera = FSpeedCarCameraPhysicalInput();
+	TestTrue(TEXT("immutable release packet admitted"), Live->SubmitLegacyWheeledInput(5220, 5220, Released)
+		== Speed::Input::ELegacyRemoteAdmission::Accepted);
+	Live->UpdateInputs();
+	TestTrue(TEXT("release projection prepared"), Live->ValidateCanonicalFrameCommit(5219));
+	TestTrue(TEXT("release projection committed"), Live->CommitCanonicalFrame(5219));
+	Packet.BuildData(Live);
+	TestEqual(TEXT("release export never polls the live mailbox"), Live->CameraMailboxReadCount, uint64(0));
 	TestTrue(TEXT("Completed endpoints release to exact zero"), !Packet.WheeledInput.Camera.IsBack() &&
 		Packet.WheeledInput.Camera.Yaw == 0 && Packet.WheeledInput.Camera.Pitch == 0);
 	return true;

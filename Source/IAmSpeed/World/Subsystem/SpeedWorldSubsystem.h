@@ -65,8 +65,10 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FSkyWaveDashAirPitchRearmTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
+	friend class FSLBallEpisodeAdmissionOwnerTest; // sole native floor certificate fixture
 #endif
 public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
@@ -98,6 +100,9 @@ public:
 	bool StageCanonicalScenarioInputs(const FCanonicalFrameContext& Context,
 		Speed::Input::V2::FInputSessionRegistry& Registry);
 	bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context);
+#if !UE_BUILD_SHIPPING
+    bool InspectBodyContactPairsForTesting(const USolidSubBody& Body,uint64 ExpectedPreparingFrame,Speed::FBodyContactPairInspection& Out) const;
+#endif
 	void PrepareCanonicalFrame(const FCanonicalFrameContext& Context);
 	/** Validates every registered adapter before any adapter may prepare a frame. */
 	bool ValidateSimulationBindings(FString& OutReason);
@@ -133,6 +138,12 @@ public:
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
+#if !UE_BUILD_SHIPPING
+    uint64 TestingPreparingFrame=MAX_uint64;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    friend struct Speed::FBodyContactPairReadOnlyTestFixture;
+#endif
 	bool bCanonicalFrameActive = false; // owned by the simulation lane
 	Speed::FSimulationWorld SimulationWorld;
 	uint64 StepSerial = 0;

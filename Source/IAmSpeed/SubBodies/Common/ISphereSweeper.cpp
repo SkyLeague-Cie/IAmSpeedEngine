@@ -7,12 +7,13 @@
 
 namespace
 {
-    constexpr float SphereBoxContactPointQuantizationCm = 0.1f; // 1 mm
+    // #TODO see if it is still useful for netcode with new architecture
+    // constexpr float SphereBoxContactPointQuantizationCm = 0.1f; // 1 mm
 
     void QuantizeSphereBoxContactHit(SHitResult& Hit)
     {
-        Hit.ImpactNormal = Speed::QuantizeUnitNormal(Hit.ImpactNormal);
-        Hit.ImpactPoint = Speed::QuantizeVectorCm(Hit.ImpactPoint, SphereBoxContactPointQuantizationCm);
+        // Hit.ImpactNormal = Speed::QuantizeUnitNormal(Hit.ImpactNormal);
+        // Hit.ImpactPoint = Speed::QuantizeVectorCm(Hit.ImpactPoint, SphereBoxContactPointQuantizationCm);
     }
 }
 

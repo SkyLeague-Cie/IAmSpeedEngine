@@ -26,6 +26,11 @@
 DEFINE_LOG_CATEGORY(WheelNetcodeLog);
 DEFINE_LOG_CATEGORY(SpeedInputLog);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedHullContactContinuousAngularDrag(
+	TEXT("p.IAmSpeed.Suspension.HullContactContinuousAngularDrag"),
+	0,
+	TEXT("Experimental: preserve small real hull-contact angular response through continuous air drag."));
+
 static float SteeringInputCalibrationScale(const float Input)
 {
 	// RL steering capture calibration: preserve the signed input and apply the
@@ -855,6 +860,7 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 	if (UWorld* World = GetWorld())
 		for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
 		{
+			const bool bWasPausedBeforeRemoval = It->IsOwnedSimulationPaused();
 			const auto Boundary = It->TryPauseOwnedSimulation();
 			// Unstarted inline fixtures have no driver-owned execution lane.
 			if (Boundary == ESimulationQuiescence::AlreadyStopped && !It->HasActorBegunPlay()
@@ -885,6 +891,9 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 				if (!RetireSpeedWorldAdapterBeforeTeardown())
 					UE_LOG(SpeedInputLog, Fatal, TEXT("Produced adapter removal was not acknowledged before storage teardown"));
 				It->ResumeOwnedBoundaryService();
+				// Resume survivors only after removal ACK; preserve an existing world pause.
+				if (!bWasPausedBeforeRemoval && !World->bIsTearingDown)
+					It->ResumeOwnedSimulation();
 				return;
 			}
 			// Orphan/scenario owners still bound to the actor must close on their
@@ -1099,7 +1108,15 @@ void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 	ISpeedWheeledComponent::PostPhysicsUpdatePrv(delta);
 	ApplyNetworkCorrection(delta);
 	RegisterWheelState();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostContact, delta);
+#endif
 	QuantizePhysicalState();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostQuantization, delta);
+#endif
 	RecordPhysicsState();
 }
 
@@ -1373,6 +1390,10 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 	UpdateFrameState();
 	// A test's initial state must be visible from the first movable frame, before any gameplay force can modify it.
 	ApplyTestVelocity();
+#if !UE_BUILD_SHIPPING
+	if (IsPhysicsPhaseObservationEnabled())
+		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PreForce, DeltaTime);
+#endif
 	UpdateSupportForceSleepState();
 	// Handle forces that should be applied before the gameplay tick (e.g. gravity, damping, rest force)
 	if (!DisableGravityThisFrame())
@@ -2914,12 +2935,29 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 	const float pitch_drag = PitchDragCoeff;
 	const float yaw_drag = YawDragCoeff;
 
+	const UBoxSubBody* ContactHitbox = GetHitboxSubBodyForConfiguration();
+	const int32 ContactFrame = ContactHitbox ? ContactHitbox->GetLastResolvedGroundHitFrame() : INDEX_NONE;
+	const int32 CurrentFrame = static_cast<int32>(NumFrame());
+	const bool bContactDragRequested = CVarIAmSpeedHullContactContinuousAngularDrag.GetValueOnAnyThread() != 0;
+	const bool bFreshContactFrame = ContactFrame >= 0 && ContactFrame >= CurrentFrame - 1 && ContactFrame <= CurrentFrame;
+	const bool bContinuousContactDrag = bContactDragRequested && bFreshContactFrame &&
+		ContactHitbox && ContactHitbox->HasCurrentExactPlanarContact();
+#if !UE_BUILD_SHIPPING
+	// Observe the evaluated decision, never replay the native contact query.
+	static const auto* ContactDebug = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AutoRecoverContactDebug"));
+	if (bContactDragRequested && bFreshContactFrame && ContactDebug && ContactDebug->GetValueOnAnyThread() != 0)
+		UE_LOG(SpeedPhysicsLog, Display, TEXT("[HullContactAngularDrag] frame=%d resolved=%d admitted=%d cached=%d roll=%.17g pitch=%.17g yaw=%.17g dt=%.17g"),
+			CurrentFrame, ContactFrame, bContinuousContactDrag ? 1 : 0,
+			ContactHitbox && ContactHitbox->HasPhysicsTickGroundContact() ? 1 : 0,
+			double(RollVelocity), double(PitchVelocity), double(YawVelocity), double(delta));
+#endif
+
 	// compute new angular velocities along each axis
-	const float NewRollVelocity = FMath::Abs(RollVelocity) <= roll_drag * delta ? 0.0 :
+	const float NewRollVelocity = !bContinuousContactDrag && FMath::Abs(RollVelocity) <= roll_drag * delta ? 0.0 :
 		RollVelocity * (1.0 - roll_drag * delta);
-	const float NewPitchVelocity = FMath::Abs(PitchVelocity) <= pitch_drag * delta ? 0.0 :
+	const float NewPitchVelocity = !bContinuousContactDrag && FMath::Abs(PitchVelocity) <= pitch_drag * delta ? 0.0 :
 		PitchVelocity * (1.0 - pitch_drag * delta);
-	const float NewYawVelocity = FMath::Abs(YawVelocity) <= yaw_drag * delta ? 0.0 :
+	const float NewYawVelocity = !bContinuousContactDrag && FMath::Abs(YawVelocity) <= yaw_drag * delta ? 0.0 :
 		YawVelocity * (1.0 - yaw_drag * delta);
 
 	const FVector TargetAngularVelocity = NewRollVelocity * RollAxis + NewPitchVelocity * PitchAxis + NewYawVelocity * YawAxis;

@@ -41,6 +41,20 @@ public:
 		std::uint64_t AcquisitionTick = 0, LastSuccessfulReadTick = 0;
 		FTooOldReadDiagnostic Reading;
 	};
+	// Captured before cursor reset; values-only evidence, no admission changes.
+	struct FRawReadRejectDiagnostic
+	{
+		ERawReadReject Reason = ERawReadReject::None;
+		HRESULT DiagnosticError = S_OK;
+		EDeviceKind Kind = EDeviceKind::Keyboard;
+		std::uint64_t AcquisitionTick = 0;
+	};
+	std::optional<FRawReadRejectDiagnostic> TakeRawReadRejectDiagnostic()
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		auto Result = LastRawReadReject;
+		LastRawReadReject.reset(); return Result;
+	}
 	std::optional<FRawReadGapDiagnostic> TakeRawReadGapDiagnostic()
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
@@ -100,7 +114,7 @@ public:
 		if (FPresentationInputScope::IsActive()) return false;
 		std::lock_guard<std::mutex> Lock(Gate);
 		LastRawPollReject = ERawPollReject::None;
-		LastRawReadGap.reset();
+		LastRawReadGap.reset(); LastRawReadReject.reset();
 		if (!RawMode || Stopping || bPaused || !AcquisitionTick
 			|| AcquisitionTick <= LastAcquisitionTick || FAILED(Discovery->GetLastError()))
 		{ LastRawPollReject = ERawPollReject::AdmissionGate; return false; }
@@ -135,6 +149,8 @@ public:
 				if (Batch.Readings.Result.Status == EReadBatchStatus::Error
 					|| Batch.Readings.Result.Status == EReadBatchStatus::Resynchronize)
 				{
+					LastRawReadReject = FRawReadRejectDiagnostic{Batch.Readings.Reject,
+						Batch.Readings.DiagnosticError, Lease->Ticket.Kind, AcquisitionTick};
 					if (TooOld.Observed)
 						LastRawReadGap = FRawReadGapDiagnostic{Lease->Ticket.Device.Id,
 							Lease->Ticket.Kind, Lease->Ticket.Device.Revision,
@@ -466,6 +482,7 @@ private:
 	std::optional<FDeviceId> PendingLock;
 	std::optional<FDeviceId> AppliedLock;
 	std::optional<FRawReadGapDiagnostic> LastRawReadGap;
+	std::optional<FRawReadRejectDiagnostic> LastRawReadReject;
 	std::uint64_t LastSuccessfulRawReadTick = 0;
 	bool HasPendingLock = false;
 	std::unique_ptr<FGameInputDiscovery> Discovery;

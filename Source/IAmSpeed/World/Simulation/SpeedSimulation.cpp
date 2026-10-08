@@ -3,6 +3,7 @@
 
 #include "SpeedSimulation.h"
 #include "CanonicalFrameContext.h"
+#include "CanonicalEpisodeTestingScope.h"
 #include "SimulationActorDiagnostics.h"
 #include "CanonicalFrameDriver.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
@@ -474,6 +475,17 @@ bool ASpeedSimulation::JoinOwnedSimulationForInputTeardown()
 void ASpeedSimulation::ResumeOwnedSimulation()
 {
 	if (bInputOwnerRetired.Load()) return;
+    // A resumed device does not prove the other owners (bots included) have
+    // acknowledged Resume. Keep servicing boundaries, but do not step a
+    // partially paused registry: PrepareFrame correctly rejects that state.
+    const auto View = ReadInputRegistryView();
+    if (View)
+    {
+        if (View->Terminal || View->Phases.size() != View->Bindings.size()) return;
+        for (const auto& InputOwnerPhase : View->Phases)
+            if (InputOwnerPhase.Phase != Speed::Input::V2::ESessionPhase::Active) return;
+    }
+
 	// A timed-out structural request remains fail-closed until a later caller
 	// claims its ACK or joins the worker. Do not publish a false resumed state.
 	if (SimulationWorker && SimulationWorker->IsBoundaryServiceSuspendRequested()) return;
@@ -858,7 +870,14 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		bInputConsumptionErrorReported = false;
 		IAMSPEED_FRAME_PHASE(Prepare);
 		ExceptionStage = TEXT("WorldPrepare");
-		SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+#if !UE_BUILD_SHIPPING
+        {
+            Speed::FCanonicalEpisodeTestingScope PrepareOwnerScope(Context);
+            SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+        }
+#else
+        SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+#endif
 		IAMSPEED_FRAME_PHASE(Core);
 		ExceptionStage = TEXT("WorldStep");
 		SpeedWorldSubsystem->Step(
@@ -1059,7 +1078,11 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 	for (uint64 ReplayIndex = 0; ReplayIndex < ReplayFrameCount; ++ReplayIndex)
 	{
 		const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
-		if (!StepCanonicalFrame(FCanonicalFrameContext(CanonicalNumFrame)))
+        FCanonicalFrameContext ReplayContext(CanonicalNumFrame);
+#if !UE_BUILD_SHIPPING
+        ReplayContext.bResimulationForTesting=true;
+#endif
+        if (!StepCanonicalFrame(ReplayContext))
 		{
 			UE_LOG(LogTemp, Error,
 				TEXT("[SimulationResimulationFailed] Frame=%llu TargetFrame=%llu"),

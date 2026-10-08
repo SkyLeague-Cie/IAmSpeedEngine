@@ -42,16 +42,32 @@ public:
 /**
  *
  */
+
+#if !UE_BUILD_SHIPPING
+namespace Speed { struct FCanonicalForeignStateForTesting; }
+#endif
 UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
 	GENERATED_BODY()
 
+#if !UE_BUILD_SHIPPING
+ friend struct Speed::FCanonicalForeignStateForTesting;
+#endif
+	
 	friend struct FNetworkBaseSpeedState;
 	friend struct FNetworkWheeledSpeedState;
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+#if !UE_BUILD_SHIPPING
+    /** Exact recorded-slot query for diagnostic fixtures; no state mutation. */
+    bool TryGetRecordedStatesForTesting(const int32& LocalFrame,
+        FBasePhysicsState& OutBase, FWheeledPhysicsState& OutWheeled) const
+    {
+        return GetBaseState(LocalFrame, OutBase) && GetWheeledState(LocalFrame, OutWheeled);
+    }
+#endif
 
 	USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer);
 
@@ -830,6 +846,7 @@ private:
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FSkyWaveDashAirPitchRearmTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FIAmSpeedWheelSimulationAdmissionTest;

@@ -38,6 +38,19 @@ struct FDeviceInputHostConfig
 	std::uint32_t ResumeRearmMask = 0;
 	std::shared_ptr<FDeviceInputWarmContext> WarmContext;
 };
+// Acquisition-only construction for a menu-owned journal. This does not
+// create a physical descriptor/registry/mapper, start a worker, poll a device,
+// allocate a session identity or advance a physical frame. The menu owner must
+// reuse a live gameplay journal instead when that controller already has one.
+// Its eventual owner supplies worker cadence/startup/fencing explicitly.
+struct FDeviceRawAcquisitionConfig
+{
+    FActivityConfig Activity{};
+    std::shared_ptr<FDeviceInputWarmContext> WarmContext;
+};
+IAMSPEED_API std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(
+    std::uint64_t ProducerId, std::shared_ptr<FRawAcquisitionJournal> Journal,
+    const FDeviceRawAcquisitionConfig& Config);
 IAMSPEED_API FStreamEpoch AllocateInputStreamEpoch();
 // Unsupported targets return null. A future platform adapter implements this
 // factory without changing the producer, mapper, simulation or controller.
