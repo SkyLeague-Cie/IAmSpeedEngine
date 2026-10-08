@@ -90,6 +90,7 @@ bool ASpeedController::ServiceRegistryInputSession()
             return true;
         }
         if (Receipt->Status == EBoundaryStatus::Rejected
+            && Receipt->RejectionReason == EBoundaryRejectionReason::RegistryVersionMismatch
             && Session->PendingOperation == EBoundaryOperation::Resume && Session->RegistryBound)
         {
             const auto View = Driver->ReadInputRegistryView();
