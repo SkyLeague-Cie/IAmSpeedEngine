@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "SphereSubBody.h"
+#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SWheelSubBody.generated.h"
 
 class ISpeedWheeledComponent;
@@ -34,8 +35,61 @@ UCLASS()
 class IAMSPEED_API USWheelSubBody : public USphereSubBody
 {
     GENERATED_UCLASS_BODY()
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    friend class FSLBallEpisodeAdmissionOwnerTest; // sole native fixture mutates omitted-field categories
+#endif
 	
 public:
+#if !UE_BUILD_SHIPPING
+    /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
+    void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
+    {
+        USphereSubBody::AppendEpisodeStateForTesting(Out);
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,WheelComponent);
+        B::Add(Out,ChaosWheel);
+        B::Add(Out,PWheel);
+        B::Add(Out,PSuspension);
+        B::Add(Out,WheelMass);
+        B::Add(Out,SuspensionSpringRate);
+        B::Add(Out,SuspensionDampingCompressionRatio);
+        B::Add(Out,SuspensionDampingReboundRatio);
+        B::Add(Out,bUseSuspensionForceModelOverride);
+        B::Add(Out,bClampSuspensionForceToPositive);
+        B::Add(Out,bClampPositiveUntilFirstCompression);
+        B::Add(Out,bUseEffectiveSuspensionSweepRadius);
+        B::Add(Out,bUseIncreasingDisplacementAsCompression);
+        B::Add(Out,bUseCompressionCrossingContactImpulse);
+        B::Add(Out,GroundForceApplicationMode);
+        B::Add(Out,ContactImpulseApplicationMode);
+        B::Add(Out,SuspensionStiffnessForceScale);
+        B::Add(Out,SuspensionStiffnessReferenceDisplacement);
+        B::Add(Out,SuspensionPreRestCompressionDampingScale);
+        B::Add(Out,bClampNegativeSuspensionDisplacement);
+        B::Add(Out,bDisableSuspensionBumpStopForce);
+        B::Add(Out,SuspensionSpringRateCmOverride);
+        B::Add(Out,SuspensionCompressionDampingOverride);
+        B::Add(Out,SuspensionReboundDampingOverride);
+        B::Add(Out,SuspensionMaxRaiseOverride);
+        B::Add(Out,SuspensionMaxDropOverride);
+        B::Add(Out,ConfiguredStaticSpringCompression);
+        B::Add(Out,SuspensionForce);
+        B::Add(Out,bIsJumping);
+        B::Add(Out,bJumpUnilateralSupport);
+        B::Add(Out,ConsecutiveGroundFrames);
+        B::Add(Out,SteeringAngle);
+        B::Add(Out,Omega);
+        B::Add(Out,RollAngle);
+        B::Add(Out,bWasOnGroundPrevFrame);
+        B::Add(Out,bCountedGroundFrame);
+        B::Add(Out,bContactVelocityLocked);
+        B::Add(Out,bCrossedIntoCompressionThisFrame);
+        B::Add(Out,ForwardAxis);
+        B::Add(Out,RightAxis);
+        B::Add(Out,UpAxis);
+        B::Add(Out,RenderData.RollRotation);B::Add(Out,RenderData.SteerRotation);B::Add(Out,RenderData.WorldPosition);B::Add(Out,RenderData.RightAxis);B::Add(Out,RenderData.UpAxis);B::Add(Out,RenderData.ForwardAxis);B::Add(Out,RenderData.SpringOffset);
+    }
+#endif
 
     // initializer methods
     virtual void Initialize(ISpeedComponent* InParentComponent) override;

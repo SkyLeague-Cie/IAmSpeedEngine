@@ -5,6 +5,23 @@
 
 using namespace Speed;
 
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting(
+	TEXT("p.IAmSpeed.Collision.SphereBoxNonpenetratingV2ForTesting"), 0,
+	TEXT("Private test selector for signed sphere/box gap precision and a nonpenetrating CCD root. Default off."),
+	ECVF_Default);
+#endif
+
+static bool UseSphereBoxNonpenetratingV2ForTesting()
+{
+#if !UE_BUILD_SHIPPING
+	return CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1;
+#else
+	return false;
+#endif
+}
+
+
 static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledContactImpulse(
 	TEXT("p.IAmSpeed.Collision.CoupledContactImpulse"),
 	0,
@@ -649,6 +666,7 @@ bool Speed::SBox::TryIntersectNextFrame(const SSphere& Sphere, const float delta
 	const FVector Vs0 = Sphere.Vel;
 	const FVector As0 = Sphere.Accel;
 	const float Rs = Sphere.Radius;
+	const bool bUseNonpenetratingRoot = UseSphereBoxNonpenetratingV2ForTesting();
 
 	// -------- - EARLY OUT -------------
 	// Distant-pair rejection needs only distance, not a transformed world witness.
@@ -714,6 +732,44 @@ bool Speed::SBox::TryIntersectNextFrame(const SSphere& Sphere, const float delta
 
 		if (Sep <= 0.f)
 		{
+			if (bUseNonpenetratingRoot)
+			{
+				constexpr int32 MaxNonpenetratingRootIterations = 32;
+				// Keep an evaluated, nonpenetrating lower endpoint. An inside
+				// midpoint within tolerance is not an admissible contact pose.
+				float LowT = PrevT;
+				float HighT = T;
+				for (int32 Iter = 0; Iter < MaxNonpenetratingRootIterations; ++Iter)
+				{
+					const float MidT = 0.5f * (LowT + HighT);
+					if (MidT <= LowT || MidT >= HighT) break;
+					FVector MidContactPoint;
+					FVector MidNormal;
+					const float MidSep = EvalSeparation(MidT, MidContactPoint, MidNormal);
+					if (MidSep >= 0.f)
+					{
+						LowT = MidT;
+						if (MidSep <= SeparationToleranceCm) break;
+					}
+					else
+					{
+						HighT = MidT;
+					}
+				}
+
+				FVector FinalContactPoint;
+				FVector FinalNormal;
+				const float FinalSeparation = EvalSeparation(LowT, FinalContactPoint, FinalNormal);
+				SHitResult Hit(true, FinalContactPoint, FinalNormal, LowT);
+				Hit.Location = SphereC(LowT);
+				// Preserve the measured signed separation; never mask a negative gap.
+				Hit.PenetrationDepth = FMath::Max(0.f, -FinalSeparation);
+				Hit.ContactPointThis = FinalContactPoint;
+				Hit.ContactPointOther = Hit.Location + FinalNormal * Rs;
+				OutHit = Hit;
+				return true;
+			}
+
 			float LowT = PrevT;
 			float HighT = T;
 			FVector BestContactPoint = ContactPoint;
@@ -1264,7 +1320,7 @@ float Speed::SBox::SphereOBBSeparation(const FQuat& Q, const FVector& X, const F
 		SphereLocal.Y >= Min.Y && SphereLocal.Y <= Max.Y &&
 		SphereLocal.Z >= Min.Z && SphereLocal.Z <= Max.Z;
 
-	float SignedPointDistance = 0.f;
+	double SignedPointDistance = 0.0;
 	if (bCenterInside)
 	{
 		// A clamped closest point equals the query point inside an OBB, which
@@ -1303,7 +1359,12 @@ float Speed::SBox::SphereOBBSeparation(const FQuat& Q, const FVector& X, const F
 		*OutContactPointWorld = Q.RotateVector(ClosestLocal) + X;
 	}
 
-	return SignedPointDistance - R;
+	if (!UseSphereBoxNonpenetratingV2ForTesting())
+	{
+		// Keep the original float-distance subtraction when the test selector is off.
+		return static_cast<float>(SignedPointDistance) - R;
+	}
+	return static_cast<float>(SignedPointDistance - static_cast<double>(R));
 }
 
 float Speed::SBox::ProjectedRadiusOnNormal(const SBox& Box, const FVector& N)

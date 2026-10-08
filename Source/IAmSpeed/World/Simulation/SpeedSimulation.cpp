@@ -3,6 +3,7 @@
 
 #include "SpeedSimulation.h"
 #include "CanonicalFrameContext.h"
+#include "CanonicalEpisodeTestingScope.h"
 #include "SimulationActorDiagnostics.h"
 #include "CanonicalFrameDriver.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
@@ -869,7 +870,14 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		bInputConsumptionErrorReported = false;
 		IAMSPEED_FRAME_PHASE(Prepare);
 		ExceptionStage = TEXT("WorldPrepare");
-		SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+#if !UE_BUILD_SHIPPING
+        {
+            Speed::FCanonicalEpisodeTestingScope PrepareOwnerScope(Context);
+            SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+        }
+#else
+        SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+#endif
 		IAMSPEED_FRAME_PHASE(Core);
 		ExceptionStage = TEXT("WorldStep");
 		SpeedWorldSubsystem->Step(
@@ -1070,7 +1078,11 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 	for (uint64 ReplayIndex = 0; ReplayIndex < ReplayFrameCount; ++ReplayIndex)
 	{
 		const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
-		if (!StepCanonicalFrame(FCanonicalFrameContext(CanonicalNumFrame)))
+        FCanonicalFrameContext ReplayContext(CanonicalNumFrame);
+#if !UE_BUILD_SHIPPING
+        ReplayContext.bResimulationForTesting=true;
+#endif
+        if (!StepCanonicalFrame(ReplayContext))
 		{
 			UE_LOG(LogTemp, Error,
 				TEXT("[SimulationResimulationFailed] Frame=%llu TargetFrame=%llu"),

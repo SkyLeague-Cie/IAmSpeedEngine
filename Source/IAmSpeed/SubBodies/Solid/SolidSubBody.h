@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "IAmSpeed/SubBodies/SSubBody.h"
+#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SolidSubBody.generated.h"
 
 UENUM()
@@ -64,6 +65,35 @@ class IAMSPEED_API USolidSubBody : public USSubBody
 	GENERATED_BODY()
 	
 public:
+#if !UE_BUILD_SHIPPING
+    /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
+    void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
+    {
+        USSubBody::AppendEpisodeStateForTesting(Out);
+        using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,Mass);
+        B::Add(Out,bIsMainSubBody);
+        B::Add(Out,bApplyRestForce);
+        B::Add(Out,EnableFakePhysics);
+        B::Add(Out,bEnableConstraintOnSubBodyHit);
+        B::Add(Out,Restitution);
+        B::Add(Out,SphereBoxRestitutionOverride);
+        B::Add(Out,SphereBoxFrictionOverride);
+        B::Add(Out,SphereBoxManifoldFrictionOverride);
+        B::Add(Out,bUseCoupledContactImpulse);
+        B::Add(Out,bUsePostNormalFrictionImpulse);
+        B::Add(Out,bUsePersistentBilateralContact);
+        B::Add(Out,CoupledContactMaxLinearSpeed);
+        B::Add(Out,CoupledContactMaxAngularSpeed);
+        B::Add(Out,CoupledContactMaxAbsLocalNormalY);
+        B::Add(Out,StaticFriction);
+        B::Add(Out,DynamicFriction);
+        B::Add(Out,ImpactThreshold);
+        B::Add(Out,HitDamping);
+        B::Add(Out,InvInertiaLocal);
+        B::Add(Out,idx);
+    }
+#endif
 	virtual void Initialize(ISpeedComponent* InParentComponent) override;
 
 	float GetMass() const { return Mass; }

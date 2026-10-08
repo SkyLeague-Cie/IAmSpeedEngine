@@ -1286,7 +1286,8 @@ bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const
 
     constexpr float PersistentSphereMaxSepCm = 0.35f;
     constexpr float PersistentSphereSeparatingSpeedCmS = 1.0f;
-    constexpr float ContactPointQuantizationCm = 0.1f;
+    // #TODO see if it is still useful for netcode with new architecture
+    // constexpr float ContactPointQuantizationCm = 0.1f;
 
     const SSBox ThisBox = MakeBox();
     const SSphere OtherSphereShape = OtherSphere->MakeSphere();
@@ -1324,8 +1325,11 @@ bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const
 
     OutHit = SHitResult(
         true,
-        Speed::QuantizeVectorCm(ContactPoint, ContactPointQuantizationCm),
-        Speed::QuantizeUnitNormal(N),
+        // #TODO see if it is still useful for netcode with new architecture
+        // Speed::QuantizeVectorCm(ContactPoint, ContactPointQuantizationCm),
+        // Speed::QuantizeUnitNormal(N),
+        ContactPoint,
+        N,
         0.0f);
     OutHit.bBlockingHit = true;
     OutHit.Component = OtherSphere;
