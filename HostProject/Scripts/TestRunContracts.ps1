@@ -55,9 +55,9 @@ try {
     if ([string]::IsNullOrWhiteSpace($targetEngineRoot)) {
         throw 'IAMSPEED_UE_ROOT is required to validate the real target Engine direct UBT runtime.'
     }
-    $targetRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $targetEngineRoot
+    $targetRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $targetEngineRoot -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
     $targetExpectedRoot = (Resolve-Path -LiteralPath $targetEngineRoot).Path.TrimEnd('\')
-    $targetExpectedUbt = Join-Path $targetExpectedRoot 'Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll'
+    $targetExpectedUbt = $targetRuntime.UbtPath
     $targetBuildArguments = New-IAmSpeedBuildArguments -ProjectFile 'D:\Private\HostProject.uproject' `
         -LogPath 'D:\Private\Logs\build.log' -UbaRoot 'D:\Private\UBA' -SkipRulesCompile
     $targetInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $targetRuntime -Arguments $targetBuildArguments
