@@ -173,6 +173,7 @@ private:
 	friend struct Speed::Input::FControllerInputTestAccess;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FSkyControlSaveTransactionTest;
+	friend class FSkyAIInputPauseRegistryTest;
 #endif
 	std::shared_ptr<Speed::Input::IInputProducer> InputProducer = nullptr;
 	std::shared_ptr<Speed::Input::FInputStream> InputSnapshots;
