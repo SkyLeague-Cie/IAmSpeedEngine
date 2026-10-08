@@ -23,6 +23,12 @@ bool FIAmSpeedLandscapeSourceIdentityTest::RunTest(const FString& Parameters)
 	Backend->Set(2, ECVF_SetByCode);
 	ON_SCOPE_EXIT { Backend->Set(PreviousBackend, ECVF_SetByCode); };
 	const uint64 ExpectedSource = StableStringId(TEXT("/Temp/IAmSpeedLandscapeIdentity.IAmSpeedLandscapeIdentity:PersistentLevel.Landscape_0"));
+	// This transient fixture has no baked collision asset. Expect only that
+	// exact missing-asset warning while the real runtime fallback imports the
+	// Landscape provider; all other warnings remain unexpected.
+	AddExpectedMessagePlain(
+		TEXT("/Game/Generated/Analytic/IAmSpeedLandscapeIdentity_AnalyticWorld.IAmSpeedLandscapeIdentity_AnalyticWorld"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
 	uint64 ReferencePrimitive = 0;
 	for (const int32 Instance : { -1, 0, 7 })
 	{
