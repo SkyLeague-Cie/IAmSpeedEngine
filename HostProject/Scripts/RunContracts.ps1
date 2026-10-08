@@ -41,7 +41,7 @@ try {
     }
     if ([IO.Path]::GetFullPath($RulesEngineRoot).TrimEnd('\') -ine $Engine.Root) { throw 'Private Query must explicitly bind the same exact Engine as the native build.' }
     $RulesSeedEngine = Assert-IAmSpeedPrivateRulesRoot -Runtime $DirectUbtRuntime
-    $PrecompiledEngineRules = Assert-IAmSpeedPrecompiledRules -EngineRoot $Engine.Root
+    $PrecompiledEngineRules = Assert-IAmSpeedPrecompiledRules -EngineRoot $Engine.Root -Runtime $DirectUbtRuntime
     if ([string]::IsNullOrWhiteSpace($TestFilter) -or
         $TestFilter -notmatch '^IAmSpeed\.AnalyticWorld(?:\.[A-Za-z0-9_.]+)?$') {
         throw "Unsupported physical-contract test filter: $TestFilter"

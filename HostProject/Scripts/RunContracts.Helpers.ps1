@@ -117,6 +117,13 @@ function Assert-IAmSpeedPrivateRulesRoot {
     $engine = Assert-IAmSpeedEngineRoot -EngineRoot $Runtime.Root
     if (Test-Path -LiteralPath (Join-Path $engine.Root 'Engine\Build\InstalledBuild.txt')) { throw 'Private Query requires the exact non-installed source Engine.' }
     $policy = Get-Content -LiteralPath $manifest.policy_path -Raw | ConvertFrom-Json
+    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+        $profile = Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $Runtime.Root
+        $Runtime | Add-Member -NotePropertyName RulesDirectory -NotePropertyValue $profile.rules_root -Force
+        $Runtime | Add-Member -NotePropertyName Assemblies -NotePropertyValue $profile.files -Force
+        $Runtime | Add-Member -NotePropertyName Build -NotePropertyValue $engine.Build -Force
+        return $Runtime
+    }
     $records = @($policy.engine_rules_records)
     if ($records.Count -ne 6) { throw 'Private Query requires all six exact Engine Rules artifacts.' }
     $rulesDirectory = Join-Path $engine.Root 'Engine\Intermediate\Build\BuildRules'
@@ -158,7 +165,7 @@ function Assert-IAmSpeedPrivateUbtManifest {
     Assert-IAmSpeedPhysicalFile $Path
     if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Sha256) { throw 'Private UBT manifest SHA differs.' }
     $manifest = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-    if ($manifest.schema -cne 'sl.private-ubt-runtime/v1' -or [IO.Path]::GetFullPath($manifest.engine_root).TrimEnd('\') -ine [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')) { throw 'Private UBT physical Engine binding differs.' }
+    if (@('sl.private-ubt-runtime/v1','sl.private-ubt-runtime/v2-qualified-rules') -cnotcontains $manifest.schema -or [IO.Path]::GetFullPath($manifest.engine_root).TrimEnd('\') -ine [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')) { throw 'Private UBT physical Engine binding differs.' }
     $runtimeRoot = [IO.Path]::GetFullPath($manifest.runtime_root).TrimEnd('\')
     $enginePrefix = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\') + '\'
     if ($runtimeRoot.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Private UBT runtime must be outside Engine.' }
@@ -181,6 +188,7 @@ function Assert-IAmSpeedPrivateUbtManifest {
     $traceContract = 'Bound root Build only; private Trace required by real UBA non-detour executor. Query and recursive helper modes retain Session trace suppression.'
     if ($manifest.private_root_trace_contract -cne $traceContract -or $policy.private_root_trace_contract -cne $traceContract) { throw 'Private root Build trace contract differs.' }
     $copyContract = 'Exact 19 runtime DLL pairs use immutable D Engine sources and allowlisted private E targets; four exact pre-existing D runtime pairs (D3D12Core, d3d12SDKLayers, EOSSDK-Win64-Shipping, NNEEditorOnnxTools) are immutable inputs whose Engine copy actions are skipped; pinned Engine Natvis sources use private E copy/link outputs. No Engine action outputs or deletes.'
+    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') { $copyContract = 'Bound Engine exact 19 private runtime DLL pairs and four immutable pre-existing Engine inputs; pinned Natvis sources use private outputs. No Engine action outputs or deletes.' }
     if ($manifest.private_copy_producer_contract -cne $copyContract -or $policy.private_copy_producer_contract -cne $copyContract) { throw 'Private copy producer contract differs.' }
     if ($manifest.preserved_runtime_copy_count -ne 23 -or @($policy.preserved_runtime_copies).Count -ne 23 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
     $privateEngineOutputRoot = [IO.Path]::GetFullPath((Join-Path ([string]$manifest.private_root) 'EnginePrivate')).TrimEnd('\') + '\'
@@ -232,6 +240,7 @@ function Assert-IAmSpeedPrivateUbtManifest {
         }
     }
     if ($visualizerTargets.Count -gt $visualizerSources.Count) { throw 'Private debugger visualizer output inventory exceeds its pinned source set.' }
+    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') { Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $EngineRoot | Out-Null }
     return $manifest
 }
 
@@ -302,23 +311,22 @@ function Assert-IAmSpeedEditorTargetInfoFresh {
 
 function Invoke-IAmSpeedPrivateEnginePolicy {
     param([Parameter(Mandatory=$true)][psobject]$Runtime,[Parameter(Mandatory=$true)][scriptblock]$Action)
-    $name = 'SL_PRIVATE_ENGINE_METADATA_POLICY'
-    $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
-    $hadOriginal = $processEnvironment.Contains($name)
-    $original = [Environment]::GetEnvironmentVariable($name,'Process')
+    $names = @('SL_PRIVATE_ENGINE_METADATA_POLICY','SL_PRIVATE_RULES_PROFILE','SL_PRIVATE_RULES_PROFILE_SHA256')
+    $original = @{}; $had = @{}; $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
+    foreach ($name in $names) { $had[$name]=$processEnvironment.Contains($name); $original[$name] = [Environment]::GetEnvironmentVariable($name,'Process') }
     try {
-        $policy = $null
-        if ($Runtime.PrivateUbt) { $policy = [string]$Runtime.PrivateEnginePolicyPath }
-        [Environment]::SetEnvironmentVariable($name,$policy,'Process')
+        foreach ($name in $names) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        if ($Runtime.PrivateUbt) {
+            [Environment]::SetEnvironmentVariable($names[0],[string]$Runtime.PrivateEnginePolicyPath,'Process')
+            $manifest = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $Runtime.Root
+            if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+                [Environment]::SetEnvironmentVariable($names[1],[string]$manifest.rules_profile_path,'Process')
+                [Environment]::SetEnvironmentVariable($names[2],[string]$manifest.rules_profile_sha256,'Process')
+            }
+        }
         & $Action
     }
-    finally {
-        if ($hadOriginal) {
-            [Environment]::SetEnvironmentVariable($name,$original,'Process')
-        } else {
-            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
-        }
-    }
+    finally { foreach ($name in $names) { if ($had[$name]) { [Environment]::SetEnvironmentVariable($name,$original[$name],'Process') } else { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue } } }
 }
 
 function Assert-IAmSpeedDirectUbtRuntime {
@@ -394,9 +402,16 @@ function New-IAmSpeedDirectUbtInvocation {
 
 function Assert-IAmSpeedPrecompiledRules {
     [CmdletBinding()]
-    param([Parameter(Mandatory=$true)] [string]$EngineRoot)
+    param([Parameter(Mandatory=$true)] [string]$EngineRoot, [psobject]$Runtime)
 
     $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
+    if ($null -ne $Runtime -and $Runtime.PrivateUbt) {
+        $manifest = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $EngineRoot
+        if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+            $profile = Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $EngineRoot
+            return [pscustomobject]@{ Root=$engine.Root; RulesDirectory=$profile.rules_root; Files=$profile.files }
+        }
+    }
     $directory = Join-Path $engine.Root 'Engine\Intermediate\Build\BuildRules'
     $files = @()
     foreach ($pin in $script:IAmSpeedRulesSeedFiles) {
@@ -779,4 +794,80 @@ function Assert-IAmSpeedAutomationResult {
         throw 'Automation aggregate counts do not describe a complete, warning-free pass.'
     }
     return [pscustomobject]@{ TestsPerformed=$queueCount; TestsSucceeded=[int]$report.succeeded }
+}
+
+function Assert-IAmSpeedProspectiveRules {
+    param([Parameter(Mandatory=$true)][psobject]$Manifest,[Parameter(Mandatory=$true)][string]$EngineRoot)
+    $engine = [IO.Path]::GetFullPath((Join-Path $EngineRoot 'Engine')).TrimEnd('\')
+    $read = {
+        param($Path,$Sha)
+        if ([string]::IsNullOrWhiteSpace($Path) -or $Sha -cnotmatch '^[0-9a-f]{64}$') { throw 'Missing exact prospective qualification reference.' }
+        Assert-IAmSpeedPhysicalFile $Path
+        if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Sha) { throw 'Prospective qualification reference drift.' }
+        Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    }
+    $profile = & $read $Manifest.rules_profile_path $Manifest.rules_profile_sha256
+    if ($profile.schema -cne 'sl.prospective-private-rules/v1' -or $profile.stage -cne 'SEALED_LOAD_ONLY' -or [IO.Path]::GetFullPath($profile.engine_root).TrimEnd('\') -ine $engine) { throw 'Unknown or incompatible sealed Rules profile.' }
+    $root = [IO.Path]::GetFullPath($profile.rules_root).TrimEnd('\')
+    Assert-IAmSpeedPhysicalFile $root
+    if ($root.StartsWith($engine+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Prospective Rules root is inside Engine.' }
+    $expected = @('UE5Rules.dll','UE5Rules.pdb','UE5RulesManifest.json','UE5ProgramRules.dll','UE5ProgramRules.pdb','UE5ProgramRulesManifest.json')
+    $seen = @{}
+    foreach ($f in $profile.files) {
+        $path=[IO.Path]::GetFullPath($f.path);$name=Split-Path -Leaf $path
+        if ($expected -cnotcontains $name -or $seen.ContainsKey($name) -or [IO.Path]::GetDirectoryName($path) -ine $root) { throw 'Unknown duplicate or escaped sealed Rules file.' }
+        Assert-IAmSpeedPhysicalFile $path
+        if ((Get-Item -LiteralPath $path).Length -ne $f.bytes -or (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $f.sha256) { throw 'Sealed Rules bytes drift.' }
+        $seen[$name]=$f
+    }
+    if ($seen.Count -ne 6) { throw 'Incomplete sealed Rules inventory.' }
+    foreach ($f in Get-ChildItem -LiteralPath $root -File -Force) { if ($expected -cnotcontains $f.Name -and $f.Name -cne 'loaded-assemblies.jsonl') { throw 'Unknown Rules root file.' } }
+    Assert-IAmSpeedPhysicalFile $profile.version_file
+    if ([IO.Path]::GetFullPath($profile.version_file) -ine (Join-Path $engine 'Build\Build.version') -or (Get-FileHash -LiteralPath $profile.version_file).Hash.ToLowerInvariant() -cne $profile.version_sha256) { throw 'Prospective Engine version drift.' }
+    $receipt = & $read $Manifest.rules_qualification_path $Manifest.rules_qualification_sha256
+    if ($receipt.schema -cne 'sl.private-rules-qualification/v1' -or $receipt.status -cne 'QUALIFIED' -or [IO.Path]::GetFullPath($receipt.engine_root).TrimEnd('\') -ine $engine -or $receipt.ubt_sha256 -cne $Manifest.ubt_sha256) { throw 'Unqualified Engine/UBT prospective profile.' }
+    $bootstrap = & $read $receipt.bootstrap_profile.path $receipt.bootstrap_profile.sha256
+    if ($bootstrap.schema -cne $profile.schema -or $bootstrap.stage -cne 'BOOTSTRAP_PRIVATE_ONLY' -or [IO.Path]::GetFullPath($bootstrap.engine_root).TrimEnd('\') -ine $engine -or $bootstrap.version_sha256 -cne $profile.version_sha256) { throw 'Bootstrap provenance differs.' }
+    $sources=@{}
+    foreach ($s in $bootstrap.sources) {
+        $key=$s.assembly+'|'+[IO.Path]::GetFullPath($s.path)
+        if ($sources.ContainsKey($key)) { throw 'Duplicate bootstrap source.' }; $sources[$key]=$s
+    }
+    $sourceSeen=@{}
+    foreach ($s in $profile.sources) {
+        $key=$s.assembly+'|'+[IO.Path]::GetFullPath($s.path)
+        if ($sourceSeen.ContainsKey($key) -or -not $sources.ContainsKey($key) -or $s.sha256 -cne $sources[$key].sha256 -or $s.bytes -ne $sources[$key].bytes) { throw 'Compile source inventory mismatch.' }
+        Assert-IAmSpeedPhysicalFile $s.path
+        if (-not ([IO.Path]::GetFullPath($s.path)).StartsWith($engine+'\',[StringComparison]::OrdinalIgnoreCase) -or (Get-Item -LiteralPath $s.path).Length -ne $s.bytes -or (Get-FileHash -LiteralPath $s.path).Hash.ToLowerInvariant() -cne $s.sha256) { throw 'Compile source bytes drift.' }
+        $sourceSeen[$key]=$true
+    }
+    if ($sources.Count -eq 0 -or $sourceSeen.Count -ne $sources.Count) { throw 'Incomplete compile source provenance.' }
+    $term=& $read $receipt.bootstrap_terminal.path $receipt.bootstrap_terminal.sha256
+    if ($term.status -cne 'PASS' -or $term.exit -ne 0 -or $term.timeout -or -not $term.Engine_and_source_unchanged -or $term.original_job_zero.assigned -ne 0 -or $term.original_job_zero.listed -ne 0) { throw 'Bootstrap execution is not qualified and drained.' }
+    Assert-IAmSpeedPhysicalFile $receipt.bootstrap_loaded.path
+    if ((Get-FileHash -LiteralPath $receipt.bootstrap_loaded.path).Hash.ToLowerInvariant() -cne $receipt.bootstrap_loaded.sha256) { throw 'Real compiled/loaded provenance drift.' }
+    $loaded=@(Get-Content -LiteralPath $receipt.bootstrap_loaded.path | ForEach-Object { $_ | ConvertFrom-Json })
+    $assemblyNames=@('UE5Rules.dll','UE5ProgramRules.dll');$actual=@{}
+    foreach ($l in $loaded) {
+        $name=Split-Path -Leaf $l.path
+        if ($assemblyNames -cnotcontains $name -or $actual.ContainsKey($name) -or $l.stage -cne 'BOOTSTRAP_PRIVATE_ONLY' -or -not $l.recompiled -or $l.sha256 -cne $seen[$name].sha256 -or [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($l.path)) -ine [IO.Path]::GetFullPath($bootstrap.rules_root).TrimEnd('\') -or [string]::IsNullOrWhiteSpace($l.mvid)) { throw 'Not a real private compile/load of the qualified assembly.' }
+        $actual[$name]=$l
+    }
+    if ($actual.Count -ne 2) { throw 'Incomplete real assembly load proof.' }
+    $negative=& $read $receipt.negative_terminal.path $receipt.negative_terminal.sha256
+    $cases=@('good_sealed','source_sha_drift','rules_sha_drift','missing_rules','alias_rules_root','unknown_stage','unknown_rules_file','profile_sha_drift','wrong_engine','missing_profile');$caseSeen=@{}
+    if ($negative.status -cne 'PASS' -or -not $negative.Engine_unchanged) { throw 'Prospective load negatives not qualified.' }
+    foreach ($c in $negative.cases) {
+        if ($cases -cnotcontains $c.case -or $caseSeen.ContainsKey($c.case) -or $c.status -cne 'PASS' -or $c.timeout -or -not $c.Engine_unchanged -or $c.Job0.assigned -ne 0 -or $c.Job0.listed -ne 0) { throw 'Incomplete failed or undrained negative scope.' }
+        $caseSeen[$c.case]=$true
+        if ($c.case -ceq 'good_sealed') {
+            if ($c.exit -ne 0 -or @($c.loaded).Count -ne 2) { throw 'Sealed actual load missing.' }
+            foreach ($l in $c.loaded) {
+                $name=Split-Path -Leaf $l.path
+                if (-not $actual.ContainsKey($name) -or $l.stage -cne 'SEALED_LOAD_ONLY' -or $l.recompiled -or $l.sha256 -cne $actual[$name].sha256 -or $l.mvid -cne $actual[$name].mvid) { throw 'Sealed load fallback/recompilation or assembly mismatch.' }
+            }
+        } elseif ($c.exit -eq 0 -or @($c.loaded).Count -ne 0) { throw 'Negative admitted load or fallback.' }
+    }
+    if ($caseSeen.Count -ne 10) { throw 'Missing required negative case.' }
+    return $profile
 }
