@@ -37,6 +37,8 @@ struct FBoundaryCommandDescriptor
     FSessionDescriptor Binding;
 };
 enum class EBoundaryStatus : std::uint8_t { Pending, WaitingForBaseline, Applied, Rejected, TerminalFailure };
+// Only an explicit optimistic-version conflict is eligible for controller retry.
+enum class EBoundaryRejectionReason : std::uint8_t { Unspecified, RegistryVersionMismatch };
 enum class ESessionPhase : std::uint8_t { Active, Paused, WaitingBaseline, CancelPending, Retired };
 struct FSessionOutcome { std::uint64_t Session = 0, Epoch = 0; ESessionPhase Phase = ESessionPhase::Active; };
 struct FBoundaryReceipt
@@ -44,6 +46,7 @@ struct FBoundaryReceipt
     std::uint64_t Id = 0, WorkerGeneration = 0, RegistryVersion = 0, ResumeGeneration = 0;
     EBoundaryStatus Status = EBoundaryStatus::Pending;
     std::vector<FSessionOutcome> Sessions;
+    EBoundaryRejectionReason RejectionReason = EBoundaryRejectionReason::Unspecified;
 };
 enum class ECommandAdmission : std::uint8_t { Enqueued, Duplicate, Rejected };
 struct FRegistryLimits
@@ -283,8 +286,14 @@ public:
             const auto Id = Commands->Queue.front(); Commands->Queue.pop_front();
             auto& R = Commands->Records.at(Id);
             if (Terminal && R.Command.Operation != EBoundaryOperation::RetireAll) { R.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(R); ReleaseRejectedBindJournal(R); continue; }
-            if (R.Command.WorkerGeneration != WorkerGeneration || R.Command.RegistryVersion != View->Version)
+            if (R.Command.WorkerGeneration != WorkerGeneration)
             { R.Receipt.Status = EBoundaryStatus::Rejected; ReleaseRejectedBindJournal(R); continue; }
+            if (R.Command.RegistryVersion != View->Version)
+            {
+                R.Receipt.Status = EBoundaryStatus::Rejected;
+                R.Receipt.RejectionReason = EBoundaryRejectionReason::RegistryVersionMismatch;
+                ReleaseRejectedBindJournal(R); continue;
+            }
             if (Waiting)
             {
                 const auto Op = R.Command.Operation;

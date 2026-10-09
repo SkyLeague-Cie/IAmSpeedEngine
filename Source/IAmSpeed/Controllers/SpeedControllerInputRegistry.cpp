@@ -89,6 +89,37 @@ bool ASpeedController::ServiceRegistryInputSession()
             }
             return true;
         }
+        if (Receipt->Status == EBoundaryStatus::Rejected
+            && Receipt->RejectionReason == EBoundaryRejectionReason::RegistryVersionMismatch
+            && Session->PendingOperation == EBoundaryOperation::Resume && Session->RegistryBound)
+        {
+            const auto View = Driver->ReadInputRegistryView();
+            const auto& Bound = *Session->Descriptor;
+            const bool SameWorker = View && !View->Terminal
+                && Receipt->WorkerGeneration == Session->WorkerGeneration
+                && View->WorkerGeneration == Session->WorkerGeneration
+                && Driver->GetInputWorkerGeneration() == Session->WorkerGeneration;
+            const bool SameOwner = SameWorker && std::any_of(View->Bindings.begin(), View->Bindings.end(),
+                [&Bound](const auto& B)
+                {
+                    return B.Id == Bound.Id && B.Epoch == Bound.Epoch && B.Controller == Bound.Controller
+                        && B.Producer == Bound.Producer && B.Journal == Bound.Journal
+                        && B.Kind == Bound.Kind && B.Actors == Bound.Actors;
+                });
+            const bool StillPaused = SameOwner && std::any_of(View->Phases.begin(), View->Phases.end(),
+                [&Bound](const auto& Phase)
+                { return Phase.Session == Bound.Id && Phase.Epoch == Bound.Epoch && Phase.Phase == ESessionPhase::Paused; });
+            // A peer Bind/Detach can advance the optimistic version after Resume
+            // was submitted. Retry only this pre-admission refusal for the same
+            // live, paused owner. Invalid epochs, workers and terminal views fail closed.
+            if (StillPaused && View->Version > Receipt->RegistryVersion
+                && Driver->AcknowledgeInputSessionReceipt(Session->PendingCommand))
+            {
+                Session->RegistryVersion = View->Version;
+                Session->PendingCommand = 0; Session->ResumePending = false;
+                return true; // Retry from the fresh view next service; never wake physics here.
+            }
+        }
         if (Receipt->Status != EBoundaryStatus::Applied) { bInputLifecycleFault = true; return false; }
         Session->RegistryVersion = Receipt->RegistryVersion;
         if (Session->PendingOperation == EBoundaryOperation::Bind)
