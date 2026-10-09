@@ -29,6 +29,7 @@ public:
     {
         USolidSubBody::AppendEpisodeStateForTesting(Out);
         using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,bProductionNonpenetratingSphereContacts);
         B::Add(Out,BoxExtent);
         B::Add(Out,bEdgeSupportLatched);
         B::Add(Out,EdgeSupportLatchFrame);
@@ -84,6 +85,10 @@ public:
     SKinematic GetKinematicsFromOwner(const unsigned int& NumFrame) const;
     SKinematic GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const;
     SSBox MakeBox() const;
+    // Construction-time physical policy; not driven by a test ID or diagnostic.
+    void SetProductionNonpenetratingSphereContacts(bool bEnabled) { bProductionNonpenetratingSphereContacts = bEnabled; }
+    bool UsesProductionNonpenetratingSphereContacts() const { return bProductionNonpenetratingSphereContacts; }
+
     SSBox MakeBoxFromKS(const SKinematic& CarKinematicState) const;
     void ResetForFrame(const float& Delta) override;
 	/** Publishes independently certified passive support, without an impact callback or pose change. */
@@ -140,6 +145,7 @@ public:
     FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
     void UpdateBodySetup();
 protected:
+    bool bProductionNonpenetratingSphereContacts = false;
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const override;
     FMatrix InitInvInertiaTensor() const override;
 #if WITH_EDITOR

@@ -1298,7 +1298,8 @@ bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const
         ThisBox.AbsoluteCenter(),
         OtherSphereShape.Center,
         OtherSphereShape.Radius,
-        &ContactPoint);
+        &ContactPoint,
+        OtherSphereShape.bProductionNonpenetratingBoxContacts);
 
     if (Sep0 > PersistentSphereMaxSepCm)
     {
@@ -4558,7 +4559,7 @@ SKinematic UBoxSubBody::GetKinematicsFromOwnerKS(const SKinematic& CarKinematicS
 SSBox UBoxSubBody::MakeBox() const
 {
     const auto& CrtKinematics = Kinematics;
-    return SSBox(
+    SSBox BoxShape(
         CrtKinematics.Location,
         BoxExtent,
         CrtKinematics.Rotation,
@@ -4567,12 +4568,14 @@ SSBox UBoxSubBody::MakeBox() const
         CrtKinematics.AngularVelocity,
         CrtKinematics.AngularAcceleration
     );
+    BoxShape.bProductionNonpenetratingSphereContacts = bProductionNonpenetratingSphereContacts;
+    return BoxShape;
 }
 
 SSBox UBoxSubBody::MakeBoxFromKS(const SKinematic& BoxKinematicState) const
 {
     auto CrtKinematics = GetKinematicsFromOwnerKS(BoxKinematicState);
-    return SSBox(
+    SSBox BoxShape(
         CrtKinematics.Location,
         BoxExtent,
         CrtKinematics.Rotation,
@@ -4581,6 +4584,8 @@ SSBox UBoxSubBody::MakeBoxFromKS(const SKinematic& BoxKinematicState) const
         CrtKinematics.AngularVelocity,
         CrtKinematics.AngularAcceleration
     );
+    BoxShape.bProductionNonpenetratingSphereContacts = bProductionNonpenetratingSphereContacts;
+    return BoxShape;
 }
 
 void UBoxSubBody::GetBoxVertices(const FVector& Center, const FQuat& Rot, const FVector& Ext, TArray<FVector>& OutVerts)
@@ -4934,7 +4939,7 @@ float UBoxSubBody::GetSphereSeparation(
 		BoxShape.Rot,
 		BoxShape.AbsoluteCenter(),
 		SphereCenter,
-		SphereRadius);
+		SphereRadius, nullptr, bProductionNonpenetratingSphereContacts);
 }
 
 void UBoxSubBody::SetBoxExtent(const FVector& InBoxExtent)
