@@ -95,6 +95,11 @@ public:
     virtual void Initialize(ISpeedComponent* InParentComponent) override;
 
     bool IsOnGround() const; // true if the wheel IS currently on the ground
+    // Classify the current stored contact only when it has a live Component.
+    // Missing identity/Stationary mobility is unknown: both helpers return false.
+    // These queries do not certify contact freshness or a restored support's origin.
+    bool IsOnStaticObject() const;
+    bool IsOnDynamicObject() const;
     void SetOnGround(const bool& on_ground);
     void SetIsJumping(const uint8 NbFrames);
     uint8 IsJumping() const;

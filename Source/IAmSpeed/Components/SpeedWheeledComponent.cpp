@@ -3452,7 +3452,7 @@ void USpeedWheeledComponent::SetGroundState()
 	WheeledPhysicsState.NbFramesSinceGroundContact = 0;
 	WheeledGameState.NbFrameSinceInAir = 0;
 
-	SetGroundStatePrv();
+	SetGroundStatePrv(WasInAir);
 }
 
 void USpeedWheeledComponent::SetAirState()
@@ -3474,7 +3474,7 @@ void USpeedWheeledComponent::SetAirState()
 	SetAirStatePrv();
 }
 
-void USpeedWheeledComponent::SetGroundStatePrv()
+void USpeedWheeledComponent::SetGroundStatePrv(bool bWasInAir)
 {
 }
 
