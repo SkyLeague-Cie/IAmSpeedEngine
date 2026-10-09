@@ -46,12 +46,14 @@ bool ISphereSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float
 	if (OtherBoxes.IsEmpty()) return false;
 
     const Speed::FKinematicState& KS = GetKinematicState();
-    const SSphere ThisSphere(
+    SSphere ThisSphere(
         KS.Location,
         GetRadiusWithMargin(),
         KS.Velocity,
         KS.Acceleration
     );
+    // Preserve this sweep geometry and propagate only the subtype contact policy.
+    ThisSphere.bProductionNonpenetratingBoxContacts = MakeSphere().bProductionNonpenetratingBoxContacts;
 
     const uint8 NbSteps = SpeedConstants::NbCCDSubsteps;
 
