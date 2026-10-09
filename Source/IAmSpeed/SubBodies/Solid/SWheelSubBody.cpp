@@ -9,8 +9,97 @@
 #include "ChaosVehicleWheel.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "HAL/IConsoleManager.h"
+#if !UE_BUILD_SHIPPING
+#include <atomic>
+#include "Misc/ScopeExit.h"
+#include "GameFramework/Actor.h"
+#endif
 
 DEFINE_LOG_CATEGORY(WheelSubBodyLog);
+
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarRecoveryAcquisitionEnabled(
+ TEXT("p.SkyLeague.Suspension.AcquisitionDebug"), 0,
+ TEXT("Read-only bounded wheel acquisition phase diagnostic. Default off."));
+static TAutoConsoleVariable<int32> CVarRecoveryAcquisitionFirstFrame(
+ TEXT("p.SkyLeague.Suspension.AcquisitionDebug.FirstFrame"), 0,
+ TEXT("First included parent local frame; keep AIR and reset/warm-up records in the declared window."));
+static TAutoConsoleVariable<int32> CVarRecoveryAcquisitionLastFrame(
+ TEXT("p.SkyLeague.Suspension.AcquisitionDebug.LastFrame"), 63,
+ TEXT("Last included parent local frame; windows are bounded to256 frames."));
+
+namespace
+{
+ std::atomic<uint64> RecoveryAcquisitionOrdinal{0};
+ constexpr uint64 RecoveryAcquisitionMaxRecords = 32768;
+
+ FString RecoveryAcquisitionVector(const FVector& V)
+ {
+  return FString::Printf(TEXT("[%.17g,%.17g,%.17g]"), V.X, V.Y, V.Z);
+ }
+
+ FString RecoveryAcquisitionQuat(const FQuat& Q)
+ {
+  return FString::Printf(TEXT("[%.17g,%.17g,%.17g,%.17g]"), Q.X, Q.Y, Q.Z, Q.W);
+ }
+
+ bool RecoveryAcquisitionIncludes(const USWheelSubBody& Wheel)
+ {
+  if (CVarRecoveryAcquisitionEnabled.GetValueOnAnyThread() == 0
+   || !Wheel.GetParentComponent() || !Wheel.HasSuspensionSim()) return false;
+  const int32 First = CVarRecoveryAcquisitionFirstFrame.GetValueOnAnyThread();
+  const int32 Last = CVarRecoveryAcquisitionLastFrame.GetValueOnAnyThread();
+  if (First < 0 || Last < First || int64(Last) - First >= 256) return false;
+  const uint32 Frame = Wheel.GetParentComponent()->NumFrame();
+  return Frame >= uint32(First) && Frame <= uint32(Last);
+ }
+
+ void RecoveryAcquisitionSnapshot(const USWheelSubBody& Wheel,
+  const TCHAR* Phase, const float Delta)
+ {
+  const uint64 Ordinal = RecoveryAcquisitionOrdinal.fetch_add(1, std::memory_order_relaxed);
+  if (Ordinal >= RecoveryAcquisitionMaxRecords)
+  {
+   if (Ordinal == RecoveryAcquisitionMaxRecords)
+    UE_LOG(WheelSubBodyLog, Warning, TEXT("[RecoveryWheelAcquisitionOverflow] Limit=%llu Coverage=UNAVAILABLE"),
+     static_cast<unsigned long long>(RecoveryAcquisitionMaxRecords));
+   return;
+  }
+  const ISpeedComponent& Parent = *Wheel.GetParentComponent();
+  const SHitResult& Hit = Wheel.GetHit();
+  const SKinematic& Cached = Wheel.GetKinematicState();
+  FVector Start, End;
+  // Arithmetic only: no probe, sweep, accessor relocation, or physics mutation.
+  Wheel.GetSuspensionSweepSegment(Delta, Start, End);
+  UE_LOG(WheelSubBodyLog, Log,
+   TEXT("[RecoveryWheelAcquisition] Phase=%s Ordinal=%llu Actor=%s ActorIdentity=%p ParentIdentity=%p ParentFrame=%u Wheel=%d GetterGrounded=%d PreviousGrounded=%d JumpUnilateral=%d SpringDisp=%.17g LastDisp=%.17g SpringLength=%.17g SuspensionForce=%.17g Radius=%.17g Dt=%.17g OwnerOrigin=%s OwnerCOM=%s OwnerCOMV=%s OwnerRotation=%s OwnerOmega=%s WorldPos=%s CachedCenter=%s CachedV=%s SweepStart=%s SweepEnd=%s CurrentHit=%d Blocking=%d HitFrame=%u Source=%016llX Surface=%016llX Primitive=%016llX Group=%016llX HitCenter=%s HitPoint=%s HitNormal=%s StartPenetrating=%d HitPenetrationCm=%.17g"),
+   Phase, static_cast<unsigned long long>(Ordinal), *GetNameSafe(Wheel.GetOwner()),
+   static_cast<const void*>(Wheel.GetOwner()), static_cast<const void*>(&Parent), Parent.NumFrame(), Wheel.Idx(),
+   Wheel.IsOnGround() ? 1 : 0, Wheel.WasOnGroundPreviousFrame() ? 1 : 0,
+   Wheel.HasJumpUnilateralSupport() ? 1 : 0,
+   static_cast<double>(Wheel.SpringDisplacement()), static_cast<double>(Wheel.GetLastDisplacement()),
+   static_cast<double>(Wheel.SpringLength()), static_cast<double>(Wheel.GetSuspensionForce()),
+   static_cast<double>(Wheel.Radius()), static_cast<double>(Delta),
+   *RecoveryAcquisitionVector(Parent.GetPhysLocation()),
+   *RecoveryAcquisitionVector(Parent.GetPhysCOM()),
+   *RecoveryAcquisitionVector(Parent.GetPhysCOMVelocity()),
+   *RecoveryAcquisitionQuat(Parent.GetPhysRotation()),
+   *RecoveryAcquisitionVector(Parent.GetPhysAngularVelocity()),
+   *RecoveryAcquisitionVector(Wheel.WorldPos()),
+   *RecoveryAcquisitionVector(Cached.Location), *RecoveryAcquisitionVector(Cached.Velocity),
+   *RecoveryAcquisitionVector(Start), *RecoveryAcquisitionVector(End),
+   Hit.bHit ? 1 : 0, Hit.bBlockingHit ? 1 : 0, Hit.FrameTag,
+   static_cast<unsigned long long>(Hit.SourceId), static_cast<unsigned long long>(Hit.SurfaceId),
+   static_cast<unsigned long long>(Hit.PrimitiveId), static_cast<unsigned long long>(Hit.CanonicalGroupId),
+   *RecoveryAcquisitionVector(Hit.Location), *RecoveryAcquisitionVector(Hit.ImpactPoint),
+   *RecoveryAcquisitionVector(Hit.ImpactNormal), Hit.bStartPenetrating ? 1 : 0,
+   static_cast<double>(Hit.PenetrationDepth));
+ }
+}
+
+
+#endif
+
 
 static TAutoConsoleVariable<float> CVarSkyLeagueSuspensionCompressionDampingScale(
 	TEXT("p.SkyLeague.Suspension.CompressionDampingScale"),
@@ -414,6 +503,14 @@ bool USWheelSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 
 void USWheelSubBody::SweepSuspension(const float& delta)
 {
+#if !UE_BUILD_SHIPPING
+    const bool bRecoveryAcquisition = RecoveryAcquisitionIncludes(*this);
+    if (bRecoveryAcquisition) RecoveryAcquisitionSnapshot(*this, TEXT("BeforeSweep"), delta);
+    ON_SCOPE_EXIT
+    {
+        if (bRecoveryAcquisition) RecoveryAcquisitionSnapshot(*this, TEXT("AfterSweep"), delta);
+    };
+#endif
     bool bHitSphere = SweepSuspensionOnSpheres(CurrentHit, delta);
     if (bHitSphere)
     {
@@ -824,6 +921,14 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
 
 void USWheelSubBody::UpdateSuspension(const float& delta)
 {
+#if !UE_BUILD_SHIPPING
+    const bool bRecoveryAcquisition = RecoveryAcquisitionIncludes(*this);
+    if (bRecoveryAcquisition) RecoveryAcquisitionSnapshot(*this, TEXT("BeforeUpdate"), delta);
+    ON_SCOPE_EXIT
+    {
+        if (bRecoveryAcquisition) RecoveryAcquisitionSnapshot(*this, TEXT("AfterUpdate"), delta);
+    };
+#endif
     if (delta <= KINDA_SMALL_NUMBER)
         return;
 
