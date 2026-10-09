@@ -5,20 +5,25 @@
 
 using namespace Speed;
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxNonpenetratingV2(
+	TEXT("p.IAmSpeed.Collision.SphereBoxNonpenetratingV2"), 1,
+	TEXT("Signed sphere/box gap precision and nonpenetrating CCD root. Default on in player and server builds; 0 retains the previous root."),
+	ECVF_Default);
+
 #if !UE_BUILD_SHIPPING
 static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting(
 	TEXT("p.IAmSpeed.Collision.SphereBoxNonpenetratingV2ForTesting"), 0,
-	TEXT("Private test selector for signed sphere/box gap precision and a nonpenetrating CCD root. Default off."),
+	TEXT("Non-shipping legacy test opt-in for the nonpenetrating root when the production selector is off."),
 	ECVF_Default);
 #endif
 
-static bool UseSphereBoxNonpenetratingV2ForTesting()
+static bool UseSphereBoxNonpenetratingV2()
 {
+	return CVarIAmSpeedSphereBoxNonpenetratingV2.GetValueOnAnyThread() == 1
 #if !UE_BUILD_SHIPPING
-	return CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1;
-#else
-	return false;
+		|| CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1
 #endif
+		;
 }
 
 
@@ -666,7 +671,7 @@ bool Speed::SBox::TryIntersectNextFrame(const SSphere& Sphere, const float delta
 	const FVector Vs0 = Sphere.Vel;
 	const FVector As0 = Sphere.Accel;
 	const float Rs = Sphere.Radius;
-	const bool bUseNonpenetratingRoot = UseSphereBoxNonpenetratingV2ForTesting();
+	const bool bUseNonpenetratingRoot = UseSphereBoxNonpenetratingV2();
 
 	// -------- - EARLY OUT -------------
 	// Distant-pair rejection needs only distance, not a transformed world witness.
@@ -1359,7 +1364,7 @@ float Speed::SBox::SphereOBBSeparation(const FQuat& Q, const FVector& X, const F
 		*OutContactPointWorld = Q.RotateVector(ClosestLocal) + X;
 	}
 
-	if (!UseSphereBoxNonpenetratingV2ForTesting())
+	if (!UseSphereBoxNonpenetratingV2())
 	{
 		// Keep the original float-distance subtraction when the test selector is off.
 		return static_cast<float>(SignedPointDistance) - R;
