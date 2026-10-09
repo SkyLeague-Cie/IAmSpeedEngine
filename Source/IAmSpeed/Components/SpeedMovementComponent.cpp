@@ -1125,3 +1125,60 @@ bool USpeedMovementComponent::RebaseCanonicalEpisodeHistoryForTesting(
  return true;
 }
 #endif
+
+bool USpeedMovementComponent::CaptureIsolatedMovementState(FIsolatedMovementState& Out) const
+{
+    FIsolatedMovementState State;
+    State.Game = BaseGameState;
+    State.Physical = BasePhysicsState;
+    State.MinimumCountdown = MinNbFramesBeforeCanMove;
+    State.SinceCanMove = SinceCanMoveFrame;
+    State.EngineFPS = EngineFPS;
+    State.bEnableSimulation = bEnableSimulation;
+    State.bEnableGravity = bEnableGravity;
+    State.Mass = PhysMass; State.GravityZ = GravityZ;
+    State.MaxSpeed = PhysMaxSpeed; State.MaxAngularSpeed = PhysMaxAngularSpeed;
+    State.Damping = PhysDamping; State.CenterOfMass = CenterOfMass;
+    if (!State.IsValid()) return false;
+    Out = State;
+    return true;
+}
+
+bool USpeedMovementComponent::InitializeIsolatedMovementAdapter()
+{
+    check(IsInGameThread());
+    if (!IsIsolatedSimulationAdapter() || !GetOwner() || !GetWorld() ||
+        GetWorld()->WorldType!=EWorldType::EditorPreview || GetOwner()->HasActorBegunPlay()) return false;
+    SetAsyncPhysicsTickEnabled(false);
+    SetOwner(GetOwner());
+    EngineFPS = 300;
+    return true;
+}
+
+bool USpeedMovementComponent::RestoreIsolatedMovementState(const FIsolatedMovementState& State)
+{
+    if (!IsIsolatedSimulationAdapter() || !State.IsValid() || !GetOwner() || !GetWorld() ||
+        GetWorld()->WorldType!=EWorldType::EditorPreview || GetOwner()->HasActorBegunPlay()) return false;
+    BaseGameState = State.Game; BasePhysicsState = State.Physical;
+    MinNbFramesBeforeCanMove = State.MinimumCountdown; SinceCanMoveFrame = State.SinceCanMove;
+    EngineFPS = State.EngineFPS;
+    bEnableSimulation = State.bEnableSimulation; bEnableGravity = State.bEnableGravity;
+    PhysMass = State.Mass; GravityZ = State.GravityZ; PhysMaxSpeed = State.MaxSpeed;
+    PhysMaxAngularSpeed = State.MaxAngularSpeed; PhysDamping = State.Damping;
+    CenterOfMass = State.CenterOfMass;
+    PhysicalConstraints.Reset(); SleepState.Reset(); KinematicQuantizationCache.Reset();
+    SetStaticCollisionWorldForFrame(nullptr);
+    UpdateSubBodiesKinematics();
+    return true;
+}
+
+bool USpeedMovementComponent::RestoreIsolatedStaticConstraints(
+    TConstArrayView<FPhysicalContactConstraint> Constraints)
+{
+    if (!IsIsolatedSimulationAdapter() || Constraints.Num() > 32) return false;
+    for (const auto& C : Constraints)
+        if (!C.IsValid() || C.SourceSubBody.IsValid() == false) return false;
+    PhysicalConstraints.Reset(Constraints.Num());
+    PhysicalConstraints.Append(Constraints.GetData(), Constraints.Num());
+    return true;
+}
