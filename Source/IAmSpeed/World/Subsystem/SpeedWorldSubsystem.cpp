@@ -1053,7 +1053,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				BoxShape.AbsoluteCenter(),
 				SphereShape.Center,
 				SphereShape.Radius,
-				&ClosestPoint);
+				&ClosestPoint,
+				SphereShape.bProductionNonpenetratingBoxContacts);
 			const FVector CurrentBoxToSphereNormal =
 				(SphereShape.Center - ClosestPoint).GetSafeNormal();
 			const FVector StoredBoxToSphereNormal = Sphere == BodyA ? N : -N;

@@ -777,7 +777,8 @@ bool USphereSubBody::ProjectOutOfBox(UBoxSubBody& OtherBox)
         BoxShape.AbsoluteCenter(),
         SphereCenter,
         GetRadius(),
-        &ClosestPoint);
+        &ClosestPoint,
+        bProductionNonpenetratingBoxContacts);
     // Project every negative signed separation. The blocker still carries a
     // measured numerical allowance, but production should minimize the state
     // before that allowance is evaluated.
@@ -1051,12 +1052,14 @@ FCollisionShape USphereSubBody::GetCollisionShape(float Inflation) const
 SSphere USphereSubBody::MakeSphere() const
 {
     const SKinematic& KS = Kinematics;
-    return SSphere(
+    SSphere SphereShape(
         KS.Location,
         GetRadiusWithMargin(),
         KS.Velocity,
         KS.Acceleration
     );
+    SphereShape.bProductionNonpenetratingBoxContacts = bProductionNonpenetratingBoxContacts;
+    return SphereShape;
 }
 
 SKinematic USphereSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) const

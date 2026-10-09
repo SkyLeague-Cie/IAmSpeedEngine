@@ -51,6 +51,8 @@ namespace Speed
 		// Attributes
 		FVector Center = FVector::ZeroVector;
 		float Radius = 0.0;
+		// Physical body policy copied by MakeSphere; wheels and generic spheres stay false.
+		bool bProductionNonpenetratingBoxContacts = false;
 
 		// Kinematics
 		FVector Vel = FVector::ZeroVector; // velocity in absolute space
@@ -104,6 +106,8 @@ namespace Speed
 		FVector Min = FVector::ZeroVector; // "minimum" vector in local space
 		FVector Max = FVector::ZeroVector; // "maximum" vector in local space
 		FQuat Rot = FQuat::Identity;
+		// Only the game vehicle hitbox opts in; world and generic boxes stay false.
+		bool bProductionNonpenetratingSphereContacts = false;
 
 		// Kinematics
 		FVector Vel = FVector::ZeroVector; // velocity in absolute space
@@ -116,7 +120,7 @@ namespace Speed
 		// Signed "separation" between sphere and OBB at pose (Q, X) for a given sphere center CS and radius R.
 		// Negative => penetration; Zero => touching; Positive => separated.
 		// Omitting the optional witness avoids its local-to-world transformation.
-		float SphereOBBSeparation(const FQuat& Q, const FVector& X, const FVector& CS, float R, FVector* OutContactPointWorld = nullptr) const;
+		float SphereOBBSeparation(const FQuat& Q, const FVector& X, const FVector& CS, float R, FVector* OutContactPointWorld = nullptr, bool bProductionSphereQuery = false) const;
 
 		// Helpers
 		// compute new position after time t with constant velocity Vel and constant acceleration Accel.

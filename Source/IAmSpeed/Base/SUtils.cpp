@@ -5,20 +5,25 @@
 
 using namespace Speed;
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxNonpenetratingV2(
+	TEXT("p.IAmSpeed.Collision.SphereBoxNonpenetratingV2"), 1,
+	TEXT("Accepted ball/vehicle-hitbox gap precision and nonpenetrating CCD root. Other bodies retain their published route; 0 disables the ball/vehicle policy."),
+	ECVF_Default);
+
 #if !UE_BUILD_SHIPPING
 static TAutoConsoleVariable<int32> CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting(
 	TEXT("p.IAmSpeed.Collision.SphereBoxNonpenetratingV2ForTesting"), 0,
-	TEXT("Private test selector for signed sphere/box gap precision and a nonpenetrating CCD root. Default off."),
+	TEXT("Non-shipping legacy test opt-in for the nonpenetrating root when the production selector is off."),
 	ECVF_Default);
 #endif
 
-static bool UseSphereBoxNonpenetratingV2ForTesting()
+static bool UseSphereBoxNonpenetratingV2(const bool bProductionPair)
 {
+	return (bProductionPair && CVarIAmSpeedSphereBoxNonpenetratingV2.GetValueOnAnyThread() == 1)
 #if !UE_BUILD_SHIPPING
-	return CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1;
-#else
-	return false;
+		|| CVarIAmSpeedSphereBoxNonpenetratingV2ForTesting.GetValueOnAnyThread() == 1
 #endif
+		;
 }
 
 
@@ -372,7 +377,7 @@ SHitResult SSphere::IntersectDuringMovement(const SBox& StaticBox,
 		StaticBox.WorldCenter,
 		C0,
 		R,
-		&ContactPoint0
+		&ContactPoint0, bProductionNonpenetratingBoxContacts
 	);
 	const float MaxTravel = (C1 - C0).Size();
 	if (Sep0 > MaxTravel)
@@ -455,7 +460,7 @@ SHitResult SSphere::IntersectDuringMovement(const SBox& StaticBox,
 			StaticBox.WorldCenter,
 			Ct,
 			R,
-			&ContactPoint
+			&ContactPoint, bProductionNonpenetratingBoxContacts
 		);
 
 		if (t >= MaxTime)
@@ -666,11 +671,12 @@ bool Speed::SBox::TryIntersectNextFrame(const SSphere& Sphere, const float delta
 	const FVector Vs0 = Sphere.Vel;
 	const FVector As0 = Sphere.Accel;
 	const float Rs = Sphere.Radius;
-	const bool bUseNonpenetratingRoot = UseSphereBoxNonpenetratingV2ForTesting();
+	const bool bUseNonpenetratingRoot = UseSphereBoxNonpenetratingV2(
+		Sphere.bProductionNonpenetratingBoxContacts && bProductionNonpenetratingSphereContacts);
 
 	// -------- - EARLY OUT -------------
 	// Distant-pair rejection needs only distance, not a transformed world witness.
-	const float Sep0 = SphereOBBSeparation(Qb0, Xb0, Xs0, Rs);
+	const float Sep0 = SphereOBBSeparation(Qb0, Xb0, Xs0, Rs, nullptr, Sphere.bProductionNonpenetratingBoxContacts);
 	if (Sep0 > 0.f)
 	{
 		const float MaxLinearClosing = SEarlyOut::MaxRelativeTravel(Vb0, Ab0, Vs0, As0, deltaTime);
@@ -692,7 +698,7 @@ bool Speed::SBox::TryIntersectNextFrame(const SSphere& Sphere, const float delta
 			const FQuat BoxRot = BoxQ(t);
 			const FVector SpherePos = SphereC(t);
 
-			const float Sep = SphereOBBSeparation(BoxRot, BoxPos, SpherePos, Rs, &OutClosestPoint);
+			const float Sep = SphereOBBSeparation(BoxRot, BoxPos, SpherePos, Rs, &OutClosestPoint, Sphere.bProductionNonpenetratingBoxContacts);
 			OutNormal = (OutClosestPoint - SpherePos).GetSafeNormal();
 			if (OutNormal.IsNearlyZero())
 			{
@@ -1048,7 +1054,7 @@ SHitResult Speed::SBox::IntersectDuringMovement(
 		Start,
 		StaticSphere.Center,
 		StaticSphere.Radius,
-		&ContactPoint0
+		&ContactPoint0, StaticSphere.bProductionNonpenetratingBoxContacts
 	);
 
 	// Already intersecting at start
@@ -1070,7 +1076,7 @@ SHitResult Speed::SBox::IntersectDuringMovement(
 		End,
 		StaticSphere.Center,
 		StaticSphere.Radius,
-		&ContactPoint1
+		&ContactPoint1, StaticSphere.bProductionNonpenetratingBoxContacts
 	);
 
 	// No collision during sweep
@@ -1093,7 +1099,7 @@ SHitResult Speed::SBox::IntersectDuringMovement(
 			X,
 			StaticSphere.Center,
 			StaticSphere.Radius,
-			&ContactMid
+			&ContactMid, StaticSphere.bProductionNonpenetratingBoxContacts
 		);
 
 		if (FMath::Abs(fMid) < Eps)
@@ -1308,7 +1314,7 @@ void Speed::SBox::ClosestPointOnOBB(const FQuat& Q, const FVector& X, const FVec
 	OutDistSq = FVector::DistSquared(OutClosestWorld, P);
 }
 
-float Speed::SBox::SphereOBBSeparation(const FQuat& Q, const FVector& X, const FVector& CS, float R, FVector* OutContactPointWorld) const
+float Speed::SBox::SphereOBBSeparation(const FQuat& Q, const FVector& X, const FVector& CS, float R, FVector* OutContactPointWorld, const bool bProductionSphereQuery) const
 {
 	const FVector SphereLocal = Q.UnrotateVector(CS - X);
 	FVector ClosestLocal(
@@ -1359,7 +1365,7 @@ float Speed::SBox::SphereOBBSeparation(const FQuat& Q, const FVector& X, const F
 		*OutContactPointWorld = Q.RotateVector(ClosestLocal) + X;
 	}
 
-	if (!UseSphereBoxNonpenetratingV2ForTesting())
+	if (!UseSphereBoxNonpenetratingV2(bProductionSphereQuery && bProductionNonpenetratingSphereContacts))
 	{
 		// Keep the original float-distance subtraction when the test selector is off.
 		return static_cast<float>(SignedPointDistance) - R;

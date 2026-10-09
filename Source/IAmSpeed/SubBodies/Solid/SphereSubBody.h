@@ -44,6 +44,7 @@ public:
     {
         USolidSubBody::AppendEpisodeStateForTesting(Out);
         using B=Speed::FEpisodeStateBytesForTesting;
+        B::Add(Out,bProductionNonpenetratingBoxContacts);
         B::Add(Out,Radius);
         B::Add(Out,MinSlopCm);
         B::Add(Out,SphereBoxTangentialContactArmScale);
@@ -67,6 +68,10 @@ public:
     const Speed::FKinematicState& GetKinematicState() const { return USolidSubBody::GetKinematicState(); }
     SKinematic GetKinematicsFromOwner(const unsigned int& NumFrame) const;
     virtual SSphere MakeSphere() const;
+    // Construction-time physical policy; not driven by a test ID or diagnostic.
+    void SetProductionNonpenetratingBoxContacts(bool bEnabled) { bProductionNonpenetratingBoxContacts = bEnabled; }
+    bool UsesProductionNonpenetratingBoxContacts() const { return bProductionNonpenetratingBoxContacts; }
+
     FMatrix ComputeWorldInvInertiaTensor() const override;
 
     FPrimitiveSceneProxy* CreateSceneProxy() override;
@@ -124,6 +129,7 @@ public:
 		const SKinematic& SphereState,
 		const SKinematic& BoxState) const;
 protected:
+    bool bProductionNonpenetratingBoxContacts = false;
 	bool IsTangentialContactArmEligible(
 		const SKinematic& SphereState,
 		const SKinematic& BoxState) const;
