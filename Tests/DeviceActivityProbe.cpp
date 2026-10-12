@@ -11,6 +11,32 @@ static std::vector<FDiscoveredDevice> Devices() { return {{Id(1),1,2,true},{Id(2
 static FActivityState Button(bool Held) { FActivityState S; S.Buttons[0] = Held; return S; }
 int main()
 {
+	// A respawn constructs a new activity policy, while the warm catalogue
+	// still exposes both a physical controller and its virtual gamepad.
+	for (unsigned Session = 0; Session < 2; ++Session)
+	{
+		auto C = Config(); C.StartupPreferredKind = EDeviceKind::Gamepad;
+		C.RetainSameKindOwner = true;
+		FDeviceActivityPolicy P(C); P.Sync(Devices());
+		P.Observe(Id(1),1,100,{}); P.Observe(Id(2),1,100,{}); P.Observe(Id(3),1,100,{});
+		Check(P.Decide(0)->Id == Id(1), "fresh session selects a readable startup pad");
+		FActivityState AcceleratorState; AcceleratorState.Axes[1] = 1;
+		P.Observe(Id(3),1,101,AcceleratorState);
+		Check(P.Decide(1)->Id == Id(3), "actual throttle can replace an idle startup pad after respawn");
+		P.Observe(Id(1),1,102,AcceleratorState);
+		Check(P.Decide(2)->Id == Id(3), "mirror cannot steal after the real activity claim");
+		P.Observe(Id(2),1,103,Button(true));
+		Check(P.Decide(3)->Id == Id(2), "keyboard still reclaims after respawn");
+		P.Observe(Id(3),1,104,{}); P.Decide(4);
+		P.Observe(Id(3),1,105,AcceleratorState);
+		Check(P.Decide(5)->Id == Id(3), "gamepad reclaims from keyboard on fresh throttle");
+		P.SetPaused(true); Check(!P.Decide(6), "claimed pad neutral while paused");
+		P.SetPaused(false); P.Observe(Id(3),1,106,AcceleratorState);
+		Check(P.Decide(7)->Id == Id(3), "held owner resumes on real baseline");
+		P.SetLock(Id(1));
+		Check(P.Decide(8)->Id == Id(1), "explicit same-kind lock remains authoritative");
+	}
+
 	Check(FDeviceActivityPolicy::ValidConfig(Config()), "explicit candidate config valid");
 	{
 		auto C=Config(3); C.RetainSameKindOwner=true;

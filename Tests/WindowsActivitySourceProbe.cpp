@@ -1,4 +1,5 @@
 #include "WindowsDiscoveryFakes.h"
+#include "IAmSpeed/Input/Windows/GameInputWarmContext.h"
 #include "IAmSpeed/Input/Windows/GameInputSelectedSource.h"
 #include "IAmSpeed/Input/Windows/GameInputRawAcquisition.h"
 using Speed::Input::Windows::FGameInputSelectedSource;
@@ -46,6 +47,45 @@ static std::unique_ptr<FGameInputSelectedSource> Source(HistoryApi* Api)
 }
 int main()
 {
+    {
+    using namespace Speed::Input::Windows;
+    using namespace Speed::Input::V2;
+    ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);
+    auto IdlePad=MakeDevice(1); auto Keyboard=MakeDevice(2,GameInputKindKeyboard); auto PlayerPad=MakeDevice(3);
+    Api->Initial={{IdlePad,1,true},{Keyboard,1,true},{PlayerPad,1,true}};
+    FGameInputWarmContext Warm;
+    auto Catalogue=Warm.GetOrCreate(Api.Get());
+    Check(bool(Catalogue),"persistent controller catalogue created once");
+    for (unsigned Cycle=0;Cycle<20;++Cycle)
+    {
+        const auto Stamp=1000+Cycle*10;
+        Api->Sample(IdlePad.Get(),Stamp,false); Api->Sample(Keyboard.Get(),Stamp,false); Api->Sample(PlayerPad.Get(),Stamp,false);
+        FActivityConfig Policy{{.15f,.08f,.02f},{.05f,.02f,.01f},30,16,EDeviceKind::Gamepad};
+        Policy.StartupPreferredKind=EDeviceKind::Gamepad; Policy.RetainSameKindOwner=true;
+        auto Raw=FGameInputSelectedSource::CreateRaw(Catalogue,800+Cycle,Policy);
+        Check(bool(Raw) && Catalogue->SubscriberCount()==1,"each respawn installs one fresh catalogue view");
+        auto Hub=std::make_shared<FRawAcquisitionJournal>(100+Cycle);
+        FGameInputRawAcquisition Owner(std::move(Raw),Hub);
+        Check(Owner.Pump()==ERawPumpResult::Installed,"fresh session baseline installed");
+        auto First=Hub->Poll(0);
+        Check(First && First->Changes.empty() && First->FinalState[19].Value==0,"startup idle pad baseline is neutral without edges");
+        Api->Sample(PlayerPad.Get(),Stamp+1,true);
+        Check(Owner.Pump()==ERawPumpResult::Installed,"actual player pad command installed");
+        const auto Selected=Owner.ReadSelectedRawDeviceDiagnostic();
+        Check(Selected && Selected->Id==Key(3),"actual gamepad displaces provisional startup after respawn");
+        auto ThrottleFrame=Hub->Poll(1);
+        Check(ThrottleFrame && ThrottleFrame->FinalState[19].Value==1 && ThrottleFrame->Changes.empty(),
+            "fresh selected baseline carries throttle without synthetic button edge");
+        Api->Sample(IdlePad.Get(),Stamp+2,true);
+        Owner.Pump();
+        Check(Owner.ReadSelectedRawDeviceDiagnostic()->Id==Key(3),"mirror does not steal actual owner");
+        Check(Owner.Close(),"retired respawn source closes");
+        Check(Catalogue->SubscriberCount()==0 && Api->UnregisterCalls==0,"retired view leaves only controller catalogue alive");
+    }
+    Catalogue.reset();
+    Check(Warm.Close() && Api->UnregisterCalls==1,"controller finally fences its single persistent callback");
+    }
+
 	{
 		using namespace Speed::Input::Windows;
 		using namespace Speed::Input::V2;
