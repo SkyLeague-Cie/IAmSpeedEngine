@@ -21,6 +21,17 @@
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+// Recovery1568: the two physical paths accepted in Freeplay1776 are
+// available with the same defaults in Development and Shipping. Diagnostic
+// frame/camera captures remain outside this production response path.
+static TAutoConsoleVariable<int32> CVarSinglePointGroundCoupled(
+    TEXT("p.IAmSpeed.Collision.SinglePointGroundCoupled"), 1,
+    TEXT("Couple normal and Coulomb friction response at an actual single ground point."), ECVF_Default);
+static TAutoConsoleVariable<int32> CVarRetireSeparatingOwnGroundConstraints(
+    TEXT("p.IAmSpeed.Collision.RetireSeparatingOwnGroundConstraints"), 1,
+    TEXT("Retire certified fresh own ground constraints that remain nonclosing after the complete inertial impulse."), ECVF_Default);
+
+
 
 bool UBoxSubBody::ShouldSkipSphereSweep(const USphereSubBody& Sphere) const
 {
@@ -3140,7 +3151,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             LambdaN[i] = lambdaNew;
 
             FVector J = applied * N;
-            const FVector NormalImpulse = J;
+            FVector NormalImpulse = J;
             const float appliedRaw = applied;
             const float BudgetBefore = RemainingFreshSupportImpulse;
 
@@ -3164,9 +3175,97 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                     }
                 }
             }
+            if (CVarSinglePointGroundCoupled.GetValueOnAnyThread() != 0 && NumC == 1)
+            {
+                // One actual contact and the existing material/restitution policy.
+                // Friction at an off-centre point alters normal velocity; solve
+                // the two responses together without a second friction budget.
+                const FVector SinglePoint[1] = { P };
+                const auto Coupled = Speed::SolvePlanarCoulombImpulse(
+                    MakeArrayView(SinglePoint, 1), N, COM,
+                    ParentComponent->GetPhysCOMVelocity(),
+                    ParentComponent->GetPhysAngularVelocity(),
+                    double(InvMass), InvI, double(Rest), double(mu));
+                if (Coupled.bSolved)
+                {
+                    // Use the returned contact impulses themselves, rather
+                    // than reconstructing J from rounded inverse mass * mass.
+                    J = Coupled.Impulses[0] * N + Coupled.TangentImpulses[0];
+                    applied = FVector::DotProduct(J, N);
+                    NormalImpulse = applied * N;
+                    LambdaN[i] = lambdaPrev + applied;
+                }
+            }
+
+            if (CVarRetireSeparatingOwnGroundConstraints.GetValueOnAnyThread() != 0 && NumC >= 3)
+            {
+                // The owner projects impulse increments against cached point
+                // constraints. A separating point does not require that extra
+                // reaction when the complete inertial response stays nonclosing.
+                // Preserve every collision query and all manifold points. This
+                // narrow path only handles fresh constraints of this same box
+                // and plane; mixed/persistent constraints keep the existing solve.
+                const auto& OriginalConstraints = ParentComponent->GetPhysicalConstraints();
+                const int32 OriginalCount = OriginalConstraints.Num();
+                // RegisterPhysicalConstraint stores GetSafeNormal(N). Compare
+                // the exact registered representation, with no new tolerance.
+                const FVector RegisteredGroundNormal = N.GetSafeNormal();
+                const double ParentMass = ParentComponent->GetPhysMass();
+                const FVector ExpectedDV = ParentMass > 0 ? J / ParentMass : FVector::ZeroVector;
+                const FVector ExpectedDW = InvI.TransformVector(FVector::CrossProduct(P - COM, J));
+                const FVector ExpectedV = ParentComponent->GetPhysCOMVelocity() + ExpectedDV;
+                const FVector ExpectedW = ParentComponent->GetPhysAngularVelocity() + ExpectedDW;
+                bool bCertifiedScope = ParentMass > 0 && ParentMass == double(GetMass()) &&
+                    ExpectedV.SizeSquared() <= FMath::Square(double(ParentComponent->GetPhysMaxSpeed())) &&
+                    ExpectedW.SizeSquared() <= FMath::Square(double(ParentComponent->GetPhysMaxAngularSpeed())) &&
+                    FVector::DotProduct(ExpectedDV, N) >= 0;
+                int32 Retired = 0;
+                TArray<FPhysicalContactConstraint> Retained;
+                Retained.Reserve(OriginalCount);
+                for (const auto& Constraint : OriginalConstraints)
+                {
+                    if (!Constraint.IsValid() || Constraint.FramesSinceSeen != 0 || Constraint.bPersistent ||
+                        Constraint.SourceSubBody.Get() != this || Constraint.OtherComponent != CurrentHit.Component ||
+                        Constraint.Normal != RegisteredGroundNormal)
+                    {
+                        bCertifiedScope = false;
+                        break;
+                    }
+                    const FVector ConstraintN = Constraint.Normal.GetSafeNormal();
+                    const FVector Arm = Constraint.ContactPoint - COM;
+                    const double BeforeNormalSpeed = FVector::DotProduct(
+                        ParentComponent->GetPhysVelocityAtPoint(Constraint.ContactPoint), ConstraintN);
+                    // Match the existing owner's float delta predicate exactly.
+                    const float DeltaNormalSpeed = FVector::DotProduct(
+                        ExpectedDV + FVector::CrossProduct(ExpectedDW, Arm), ConstraintN);
+                    if (DeltaNormalSpeed < 0)
+                    {
+                        if (BeforeNormalSpeed > 0 && BeforeNormalSpeed + double(DeltaNormalSpeed) >= 0)
+                        {
+                            ++Retired;
+                            continue;
+                        }
+                        // A retained point would still project this increment;
+                        // do not silently change a coupled/ambiguous response.
+                        bCertifiedScope = false;
+                        break;
+                    }
+                    Retained.Add(Constraint);
+                }
+                if (bCertifiedScope && Retired > 0)
+                {
+                    ParentComponent->ClearPhysicalConstraints();
+                    for (const auto& Constraint : Retained)
+                        ParentComponent->RegisterPhysicalConstraint(Constraint);
+                }
+            }
+
+
             const float BudgetAfter = RemainingFreshSupportImpulse;
 
             ApplyImpulse(J, P);
+
+
             TotalNormalImpulse += NormalImpulse;
             TotalTangentialImpulse += J - NormalImpulse;
             /*(BoxSubBodyLog, Log,
@@ -4363,6 +4462,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
             *Response.DeltaVelocity.ToString(), *Response.DeltaAngularVelocity.ToString(), double(CurrentHit.TOI),
             State.Velocity.Size(), State.AngularVelocity.Size(), (State.AngularVelocity + Response.DeltaAngularVelocity).Size());
 #endif
+
     if (!Response.bSolved)
     {
 #if !UE_BUILD_SHIPPING

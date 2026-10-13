@@ -418,6 +418,18 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 			UpdateSubBodiesKinematics();
 		}
 	};
+    // The hit names the other shape relative to Sweeper. Reorient all
+    // body-owned fields if PickResolver selects that other shape.
+    const auto ReorientForResolver = [](SHitResult& Hit, USSubBody* Sweeper, USSubBody* Resolver)
+    {
+        if (!Resolver || Resolver == Sweeper) return;
+        Hit.ImpactNormal *= -1.f;
+        Swap(Hit.ContactPointThis, Hit.ContactPointOther);
+        Swap(Hit.ContactFeatureThis, Hit.ContactFeatureOther);
+        Swap(Hit.ContactFeatureIndexThis, Hit.ContactFeatureIndexOther);
+        Hit.Component = Sweeper;
+        Hit.SubBody = Sweeper;
+    };
     SComponentTOI Best;
     Best.bHit = false;
     Best.TOI = RemainingDelta;
@@ -461,10 +473,7 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 			Diagnostic.Sweeper = Sweeper;
 			Diagnostic.Resolver = DiagnosticResolver;
 			Diagnostic.Hit = DiagnosticHit;
-			if (DiagnosticResolver && DiagnosticResolver != Sweeper)
-			{
-				Diagnostic.Hit.ImpactNormal *= -1.f;
-			}
+			ReorientForResolver(Diagnostic.Hit, Sweeper, DiagnosticResolver);
 		}
 #endif
 
@@ -477,10 +486,7 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 
         SHitResult HR = H;
 
-        if (Resolver && Resolver != Sweeper)
-        {
-            HR.ImpactNormal *= -1.f;
-        }
+        ReorientForResolver(HR, Sweeper, Resolver);
 
         Best.bHit = true;
         Best.TOI = TOI;
