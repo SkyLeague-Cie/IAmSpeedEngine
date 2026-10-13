@@ -21,9 +21,9 @@
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
-// Recovery1568: the two physical paths accepted in Freeplay1776 are
-// available with the same defaults in Development and Shipping. Diagnostic
-// frame/camera captures remain outside this production response path.
+// Couple the single-point normal/friction impulse and retire only certified
+// fresh separating constraints before owner projection. Both policies have
+// identical defaults in Development and Shipping; diagnostic captures are separate.
 static TAutoConsoleVariable<int32> CVarSinglePointGroundCoupled(
     TEXT("p.IAmSpeed.Collision.SinglePointGroundCoupled"), 1,
     TEXT("Couple normal and Coulomb friction response at an actual single ground point."), ECVF_Default);
