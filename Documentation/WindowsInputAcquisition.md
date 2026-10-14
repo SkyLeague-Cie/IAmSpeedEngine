@@ -127,3 +127,32 @@ leaf without introducing platform handles into the portable session.
 - [Ordered reading traversal and bounded history](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/input/gameinput/interfaces/igameinput/methods/igameinput_getnextreading)
 - Local UE 5.8.2 GameInputWindowsLibrary.Build.cs, ThirdParty/GameInput.h and
   GameInputBaseIncludes.h. API signatures checked by inspection only.
+
+## Q419 private respawn correction — 12 October 2026
+
+The current host retains a controller-owned warm catalogue while every new car
+session constructs a fresh activity policy. A readable startup-preferred pad is
+provisional: it has no real activity claim. Same-kind mirror retention now requires
+the existing LastClaimTimestamp before refusing another pad's actual command.
+Explicit locks, fresh baselines without synthetic edges, pause neutrality and
+keyboard handoff retain their existing contracts. No global flag or forced device
+selection is added. A first held baseline still does not fabricate activity.
+
+DeviceActivityProbe reproduces two fresh sessions with two readable pads, actual
+throttle reclamation, later mirror suppression, keyboard, pause and explicit lock.
+WindowsActivitySourceProbe additionally exercises twenty real source/journal
+recreations over the same fake v3 catalogue, using the product thresholds. It checks
+that the fresh chosen pad's throttle reaches the raw journal without synthetic
+button edges, old views retire and only one persistent callback remains.
+
+Non-shipping native hosts emit InputSelectedDevice only when an installed source
+changes its opaque device ID. The receipt includes acquisition session, kind and
+vendor/product; it only reads the existing diagnostic accessor. It performs no
+additional device poll, action injection, selection or focus mutation.
+
+Evidence is private under AudioVfx-Q419-Central and the replacement Son chat.
+The original portable baseline failed the new throttle assertion; the corrected
+portable suite passed138 checks, preexisting Windows source90 and catalogue55.
+These are software/fake-API witnesses. Candidate05 lacked selected-device IDs,
+so attribution to its hardware symptom remains pending an authorized human retest.
+No whole-candidate, full-CI, network, runtime hardware or publication claim follows.
