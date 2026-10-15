@@ -31,6 +31,9 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 {
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
+	friend struct FLocalNormalCameraFixtureAccess;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS
 	friend class FSkyAIInputPauseRegistryTest;
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
@@ -38,6 +41,8 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;
+	friend class FSkyCameraPacedPhysicalFrameCounterbalancedTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FIAmSpeedAdapterRespawnBoundaryTest;
@@ -67,6 +72,13 @@ public:
 	 * then calls values-only producers without holding the registry lock. */
 	bool RegisterPresentationProducer(TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe> Producer);
 	void UnregisterPresentationProducer(const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer);
+	/** Simulation policy, independent of pacing and rollback/resimulation. */
+	virtual bool AllowsCameraPresentation() const { return true; }
+	TSharedPtr<const TAtomic<bool>, ESPMode::ThreadSafe> GetPresentationRetirementWitness() const { return PresentationRetiredAfterJoin; }
+	/** GT lifecycle removal and adapter release inside the acknowledged join. */
+	bool UnbindPresentationAtFrameBoundary(
+		const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer,
+		TFunctionRef<void()> ReleaseAtBoundary);
 	/** GT lifecycle transaction: pause/acknowledge the owned lane, resolve stable
 	 * identities and register before FirstFrame, then preserve the prior pause state.
 	 * Legacy Unreal-async hosting is rejected because it has no owned-lane join. */
@@ -74,14 +86,16 @@ public:
 		ISpeedComponent& OwnerComponent, ISpeedComponent& TargetComponent,
 		TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
 			const FSimulationPresentationBinding&)> Factory,
-		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr);
+		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr,
+		ISimulationPresentationAdapterCommit* AdapterCommit = nullptr);
 	/** Same transaction; nullptr explicitly binds only the owner (target id zero).
 	 * A non-null target still requires a registered, distinct identity. */
 	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> BindPresentationAtFrameBoundary(
 		ISpeedComponent& OwnerComponent, ISpeedComponent* TargetComponent,
 		TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
 			const FSimulationPresentationBinding&)> Factory,
-		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr);
+		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr,
+		ISimulationPresentationAdapterCommit* AdapterCommit = nullptr);
 	/** Reads an exact physics-side camera sample; never interpolates. */
 	bool ReadCanonicalCameraSample(uint64 NumFrame, FCameraCanonicalSample& Out) const;
 	/** Reads a contiguous exact-frame camera range; never interpolates. */
@@ -210,6 +224,7 @@ protected:
 
 private:
 	bool bPublishPresentation = false;
+	TSharedRef<TAtomic<bool>, ESPMode::ThreadSafe> PresentationRetiredAfterJoin = MakeShared<TAtomic<bool>, ESPMode::ThreadSafe>(false);
 	bool bPresentationBindingClosed = false;
 	FCriticalSection PresentationProducerMutex;
 	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> PresentationProducers;

@@ -46,7 +46,7 @@ struct IAMSPEED_API FSpeedCarCameraFrameResult
 
 /** Host specialization inside one outer frame, never another arm/aim update.
  * The caller retains its complete state. Hooks may extend that state, but must
- * not retain a second shared arm or call Step recursively. No object references
+ * not advance the same arm twice or call Step recursively. No object references
  * from the game thread may cross into the physical producer through this seam. */
 class IAMSPEED_API ISpeedCarCameraFramePolicy
 {
@@ -74,11 +74,38 @@ public:
 };
 
 /** One fixed physical-frame writer over caller-owned state, shared by all hosts. */
+/** Pure nominal result: bInputsAndNominalReady is NOT physical admission.
+ * No collision history/certificate is consumed or committed by AdvanceNominal.
+ * A nominal result must be passed through the CURRENT final physical query
+ * before it can become a published camera pose. */
+struct IAMSPEED_API FSpeedCarCameraNominalFrame
+{
+    FSpeedCarCameraFrameResult Result;
+    FVector ArmOrigin = FVector::ZeroVector;
+    FVector DesiredEye = FVector::ZeroVector;
+    FQuat ViewRotation = FQuat::Identity;
+    bool bInputsAndNominalReady = false;
+};
+
 class IAMSPEED_API FSpeedCarCameraArm
 {
 public:
     static FSpeedCarCameraArmState DefaultState();
     static FSpeedCarCameraFrameResult Step(FSpeedCarCameraArmState& State,
+        const FSpeedCarCameraArmParameters& Parameters, uint64 Frame,
+        const FSimulationPresentationBody& Car, const FSpeedCarCameraFrameInput& Input,
+        ISpeedCarCameraFramePolicy& Policy);
+    /** Advance ONE independent mode trajectory; never recursively Step shared state. */
+    static FSpeedCarCameraNominalFrame AdvanceNominal(FSpeedCarCameraArmState& State,
+        const FSpeedCarCameraArmParameters& Parameters, uint64 Frame,
+        const FSimulationPresentationBody& Car, const FSpeedCarCameraFrameInput& Input,
+        ISpeedCarCameraFramePolicy& Policy);
+    /** Query/commit the CURRENT final nominal pose exactly once; no nominal advance. */
+    static FSpeedCarCameraFrameResult ResolveNominalCurrent(FSpeedCarCameraArmState& State,
+        uint64 Frame, const FSimulationPresentationBody& Car,
+        const FSpeedCarCameraNominalFrame& Nominal, ISpeedCarCameraFramePolicy& Policy);
+private:
+    static FSpeedCarCameraNominalFrame AdvanceNominalPrepared(FSpeedCarCameraArmState& State,
         const FSpeedCarCameraArmParameters& Parameters, uint64 Frame,
         const FSimulationPresentationBody& Car, const FSpeedCarCameraFrameInput& Input,
         ISpeedCarCameraFramePolicy& Policy);

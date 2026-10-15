@@ -17,6 +17,9 @@ class IAMSPEED_API ASpeedGameMode : public AGameMode
 {
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
+	friend struct FLocalNormalCameraFixtureAccess;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS
 	friend class FSkyAIInputPauseRegistryTest;
 #endif
 #if WITH_DEV_AUTOMATION_TESTS

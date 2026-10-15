@@ -9,6 +9,9 @@ class IAMSPEED_API AFastSimulation final : public ASpeedSimulation
 {
 	GENERATED_BODY()
 
+public:
+	bool AllowsCameraPresentation() const override { return false; }
+
 protected:
 	ESimulationWorkerResult DriveSimulation(float DeltaTime, float SimTime) override;
 	ESimulationWorkerResult DriveOwnedWorkerPulse(float DeltaTime, float SimTime) override;
