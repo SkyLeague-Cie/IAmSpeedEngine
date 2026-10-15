@@ -43,6 +43,7 @@ struct IAMSPEED_API FSpeedCarCameraPose
 class IAMSPEED_API FSpeedCarCameraEndpoint : public ISimulationPresentationProducer
 {
 public:
+    bool IsCameraPresentation() const final { return true; }
     void Produce(const FSimulationSnapshot& Bodies, FSimulationPresentationOutput& Out) final
     {
         ProduceCameraFrame(Bodies, Out);

@@ -29,6 +29,24 @@ void ASpeedCar::BeginPlay()
 	CameraArm->InitializeForCar(*this, *SpeedWheeledComponent);
 }
 
+void ASpeedCar::NotifyControllerChanged()
+{
+	Super::NotifyControllerChanged();
+	if (HasActorBegunPlay()) CameraArm->RefreshLocalCameraBinding();
+}
+
+void ASpeedCar::OnRep_Controller()
+{
+	Super::OnRep_Controller();
+	if (HasActorBegunPlay()) CameraArm->RefreshLocalCameraBinding();
+}
+
+void ASpeedCar::PawnClientRestart()
+{
+	Super::PawnClientRestart();
+	if (HasActorBegunPlay()) CameraArm->RefreshLocalCameraBinding();
+}
+
 void ASpeedCar::Tick(float Delta)
 {
 	Super::Tick(Delta);
@@ -117,6 +135,12 @@ void ASpeedCar::HandleKinematics()
 
 void ASpeedCar::HandleCameraPresentation(float Delta)
 {
+	if (!CameraArm->ShouldComputeLocalCamera())
+	{
+		if (!CameraArm->ReleaseCameraEndpointAtLifecycle())
+			UE_LOG(LogTemp, Warning, TEXT("[CameraPolicyTickReleasePending] No acknowledged owner boundary."));
+		return;
+	}
 	CameraArm->ApplyGenericCameraSnapshot(GenericOwnerConsumption);
 }
 

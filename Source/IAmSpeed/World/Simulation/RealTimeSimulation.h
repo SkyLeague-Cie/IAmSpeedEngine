@@ -61,6 +61,9 @@ UCLASS()
 class IAMSPEED_API ARealTimeSimulation : public ASpeedSimulation
 {
 	GENERATED_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FSkyCameraPacedPhysicalFrameCounterbalancedTest;
+#endif
 
 public:
 #if !UE_BUILD_SHIPPING

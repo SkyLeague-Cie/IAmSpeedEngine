@@ -33,6 +33,9 @@ public:
 
 	void BeginPlay() override;
 	void Tick(float Delta) override;
+	void NotifyControllerChanged() override;
+	void OnRep_Controller() override;
+	void PawnClientRestart() override;
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	/** Lets the possessed SpeedController bind common and specialized actions. */
 	void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;

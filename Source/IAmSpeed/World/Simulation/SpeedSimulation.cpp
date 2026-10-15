@@ -5,6 +5,8 @@
 #include "CanonicalFrameContext.h"
 #include "CanonicalEpisodeTestingScope.h"
 #include "SimulationActorDiagnostics.h"
+#include "OwnedFrameAudit.h"
+#include "RealTimeSimulation.h"
 #include "CanonicalFrameDriver.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SUtils.h"
@@ -39,6 +41,44 @@ namespace
 unsigned int ASpeedSimulation::EngineFPS = 120; // Default value, can be overridden by config or in-game
 
 // Sets default values
+
+#if WITH_DEV_AUTOMATION_TESTS
+namespace Speed::Testing
+{
+namespace
+{
+thread_local FPresentationDispatchObserver PresentationDispatchObserver = nullptr;
+thread_local void* PresentationDispatchContext = nullptr;
+}
+bool SetPresentationDispatchObserverForCurrentThread(FPresentationDispatchObserver Observer, void* Context) noexcept
+{
+    if (!Observer || !Context || PresentationDispatchObserver) return false;
+    PresentationDispatchObserver = Observer; PresentationDispatchContext = Context; return true;
+}
+bool ClearPresentationDispatchObserverForCurrentThread(FPresentationDispatchObserver Observer, void* Context) noexcept
+{
+    if (PresentationDispatchObserver != Observer || PresentationDispatchContext != Context) return false;
+    PresentationDispatchObserver = nullptr; PresentationDispatchContext = nullptr; return true;
+}
+bool HasPresentationDispatchObserverForCurrentThread(FPresentationDispatchObserver Observer, const void* Context) noexcept
+{
+    return PresentationDispatchObserver == Observer && PresentationDispatchContext == Context;
+}
+static void ObservePresentationDispatch(const ISimulationPresentationProducer* Producer,
+    uint64 Frame) noexcept
+{
+    if (PresentationDispatchObserver)
+        PresentationDispatchObserver(PresentationDispatchContext, EPresentationAuditEvent::ProducerDispatch, Producer, Producer->OwnerStableId(),
+            Producer->Channel(), Producer->IsCameraPresentation(), Frame);
+}
+static void ObserveCanonicalCameraSample(uint64 Frame) noexcept
+{
+    if (PresentationDispatchObserver)
+        PresentationDispatchObserver(PresentationDispatchContext, EPresentationAuditEvent::CanonicalCameraSample,
+            nullptr, 0, 0, true, Frame);
+}
+}
+#endif
 ASpeedSimulation::ASpeedSimulation()
 {
     bReplicates = true;
@@ -92,7 +132,8 @@ bool ASpeedSimulation::RegisterPresentationProducer(
 {
 	check(IsInGameThread());
 	FScopeLock Lock(&PresentationProducerMutex);
-	if (bPresentationBindingClosed || !Producer->OwnerStableId() || !Producer->Channel() || PresentationProducers.Num() >= 64) return false;
+	if (bPresentationBindingClosed || !Producer->OwnerStableId() || !Producer->Channel() || PresentationProducers.Num() >= 64 ||
+		(Producer->IsCameraPresentation() && !AllowsCameraPresentation())) return false;
 	for (const auto& Existing : PresentationProducers)
 		if (Existing->OwnerStableId() == Producer->OwnerStableId() && Existing->Channel() == Producer->Channel()) return false;
 	PresentationProducers.Add(Producer);
@@ -107,33 +148,59 @@ void ASpeedSimulation::UnregisterPresentationProducer(
 	PresentationProducers.Remove(Producer);
 }
 
+bool ASpeedSimulation::UnbindPresentationAtFrameBoundary(
+	const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer,
+	TFunctionRef<void()> ReleaseAtBoundary)
+{
+	check(IsInGameThread());
+	if (GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback) return false;
+	const bool bWasPaused = IsOwnedSimulationPaused();
+	const bool bOwnedLane = GetActiveExecutionMode() == ESimulationExecutionMode::IAmSpeedThread;
+	const ESimulationQuiescence Boundary = bOwnedLane ? TrySuspendOwnedBoundaryService() : TryPauseOwnedSimulation();
+	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PresentationUnbindingPauseUnacknowledged] Removal rejected; simulation remains pause-requested."));
+		return false;
+	}
+	const bool bSuspensionLease = bOwnedLane && Boundary == ESimulationQuiescence::BoundaryAcknowledged;
+	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused) ResumeOwnedSimulation(); };
+	FScopeLock Lock(&PresentationProducerMutex);
+	const int32 Index = PresentationProducers.IndexOfByKey(Producer);
+	ReleaseAtBoundary();
+	if (Index != INDEX_NONE) PresentationProducers.RemoveAt(Index);
+	return true;
+}
+
 TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulation::BindPresentationAtFrameBoundary(
 	ISpeedComponent& OwnerComponent, ISpeedComponent& TargetComponent,
 	TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
 		const FSimulationPresentationBinding&)> Factory,
-	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous)
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous,
+	ISimulationPresentationAdapterCommit* AdapterCommit)
 {
-	return BindPresentationAtFrameBoundary(OwnerComponent, &TargetComponent, Factory, Previous);
+	return BindPresentationAtFrameBoundary(OwnerComponent, &TargetComponent, Factory, Previous, AdapterCommit);
 }
 
 TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulation::BindPresentationAtFrameBoundary(
 	ISpeedComponent& OwnerComponent, ISpeedComponent* TargetComponent,
 	TFunctionRef<TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>(
 		const FSimulationPresentationBinding&)> Factory,
-	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous)
+	TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous,
+	ISimulationPresentationAdapterCommit* AdapterCommit)
 {
 	check(IsInGameThread());
 	if (bPresentationBindingClosed || GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback ||
 		bOwnedWorkerTerminal.Load() || !EnsureSimulationWorldReady()) return nullptr;
 	const bool bWasPaused = IsOwnedSimulationPaused();
-	bOwnedSimulationPaused.Store(true);
-	if (SimulationWorker && !SimulationWorker->TryPause(1000))
+	const bool bOwnedLane = GetActiveExecutionMode() == ESimulationExecutionMode::IAmSpeedThread;
+	const ESimulationQuiescence Boundary = bOwnedLane ? TrySuspendOwnedBoundaryService() : TryPauseOwnedSimulation();
+	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[PresentationBindingPauseUnacknowledged] Registration rejected; simulation remains pause-requested."));
 		return nullptr;
 	}
-	if (!bWasPaused) OnOwnedSimulationPaused();
-	ON_SCOPE_EXIT { if (!bWasPaused) ResumeOwnedSimulation(); };
+	const bool bSuspensionLease = bOwnedLane && Boundary == ESimulationQuiescence::BoundaryAcknowledged;
+	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused) ResumeOwnedSimulation(); };
 	InitializeCanonicalFrame(0);
 	FSimulationPresentationBinding Binding;
 	Binding.OwnerStableId = SpeedWorldSubsystem->GetSimulationStableId(OwnerComponent);
@@ -142,8 +209,10 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulatio
 	if (!Binding.OwnerStableId || (TargetComponent && !Binding.TargetStableId) || Binding.OwnerStableId == Binding.TargetStableId)
 		return nullptr;
 	auto Producer = Factory(Binding);
-	if (!Producer || Producer->OwnerStableId() != Binding.OwnerStableId || !Producer->Channel())
+	if (!Producer || Producer->OwnerStableId() != Binding.OwnerStableId || !Producer->Channel() ||
+		(Producer->IsCameraPresentation() && !AllowsCameraPresentation()))
 		return nullptr;
+	if (AdapterCommit && !AdapterCommit->Prepare(Producer)) return nullptr;
 	if (Previous)
 	{
 		FScopeLock Lock(&PresentationProducerMutex);
@@ -157,6 +226,7 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedSimulatio
 	// Successful binding opts into its body/output sidecars. The owned worker
 	// is pause-acknowledged above and resumes only after this boundary returns.
 	// Failed factories/registration must leave publication policy unchanged.
+	if (AdapterCommit) AdapterCommit->Finalize(Producer);
 	bPublishPresentation = true;
 	return Producer;
 }
@@ -171,11 +241,15 @@ bool ASpeedSimulation::ReadCanonicalCameraSamples(const uint64 FirstFrame,
 void ASpeedSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	bPresentationBindingClosed = true;
+#if WITH_DEV_AUTOMATION_TESTS
+	Speed::OwnedFrameAudit::TryExportForHostOnGameThread(this);
+#endif
 	StopOwnedWorker();
 	{
 		FScopeLock Lock(&PresentationProducerMutex);
 		PresentationProducers.Reset();
 	}
+	if (GetActiveExecutionMode() != ESimulationExecutionMode::UnrealAsyncCallback) PresentationRetiredAfterJoin->Store(true);
 	bAsyncPhysicsTickEnabled = false;
 	Super::EndPlay(EndPlayReason);
 }
@@ -183,6 +257,9 @@ void ASpeedSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void ASpeedSimulation::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+#if WITH_DEV_AUTOMATION_TESTS
+	Speed::OwnedFrameAudit::TryExportForHostOnGameThread(this);
+#endif
 	RefreshExecutionMode();
 	if (HostTransitionDelayTicks > 0)
 	{
@@ -291,12 +368,29 @@ void ASpeedSimulation::StartOwnedWorkerIfReady()
 	}
 	InitializeCanonicalFrame(0.0f);
 	OnOwnedWorkerStarting();
+#if WITH_DEV_AUTOMATION_TESTS
+	// Admission is checked from the class that owns the private execution mode.
+	const auto OwnedAudit = Speed::OwnedFrameAudit::CreateForHost(this,
+		GetActiveExecutionMode() == ESimulationExecutionMode::IAmSpeedThread &&
+		IsA<ARealTimeSimulation>() && CVarSimulationPerformanceAudit.GetValueOnGameThread() != 0,
+		FCommandLine::Get());
+#endif
 	SimulationWorker = MakeUnique<FSimulationWorker>(
-		[this]()
+		[this
+#if WITH_DEV_AUTOMATION_TESTS
+		, OwnedAudit
+#endif
+		]()
 		{
+#if WITH_DEV_AUTOMATION_TESTS
+			Speed::OwnedFrameAudit::BeginWork(OwnedAudit, CanonicalNumFrame);
+#endif
 			const ESimulationWorkerResult Result = DriveOwnedWorkerPulse(
 				FCanonicalFrameContext::CanonicalPhysicalDeltaTime,
 				GetCanonicalPulseSimTime());
+#if WITH_DEV_AUTOMATION_TESTS
+			Speed::OwnedFrameAudit::EndWork(OwnedAudit, Result);
+#endif
 			if (Result == ESimulationWorkerResult::Complete ||
 				Result == ESimulationWorkerResult::Failed)
 			{
@@ -304,12 +398,49 @@ void ASpeedSimulation::StartOwnedWorkerIfReady()
 			}
 			return Result;
 		},
-		[this](FSimulationWorkerWaitContext& WaitContext)
+		[this
+#if WITH_DEV_AUTOMATION_TESTS
+		, OwnedAudit
+#endif
+		](FSimulationWorkerWaitContext& WaitContext)
 		{
+#if WITH_DEV_AUTOMATION_TESTS
+			Speed::OwnedFrameAudit::BeginWait(OwnedAudit);
+#endif
 			WaitBetweenFrames(WaitContext);
+#if WITH_DEV_AUTOMATION_TESTS
+			Speed::OwnedFrameAudit::EndWait(OwnedAudit);
+#endif
 		},
-		[this](bool bPauseRequested) { return ServiceInputSessionBoundary(bPauseRequested); },
-		[this]() { CloseInputSessionsOnWorker(); });
+		[this
+#if WITH_DEV_AUTOMATION_TESTS
+		, OwnedAudit
+#endif
+		](bool bPauseRequested)
+		{
+#if WITH_DEV_AUTOMATION_TESTS
+			if (OwnedAudit) Speed::OwnedFrameAudit::OwnerBoundary(OwnedAudit,
+				CVarSimulationPerformanceAudit.GetValueOnAnyThread() != 0);
+			Speed::OwnedFrameAudit::BeginService(OwnedAudit, bPauseRequested, CanonicalNumFrame);
+#endif
+			const auto Result = ServiceInputSessionBoundary(bPauseRequested);
+#if WITH_DEV_AUTOMATION_TESTS
+			Speed::OwnedFrameAudit::EndService(OwnedAudit, Result);
+#endif
+			return Result;
+		},
+		[this
+#if WITH_DEV_AUTOMATION_TESTS
+		, OwnedAudit
+#endif
+		]()
+		{
+#if WITH_DEV_AUTOMATION_TESTS
+			Speed::OwnedFrameAudit::FreezeOnOwner(OwnedAudit, Speed::OwnedFrameAudit::EFreezeReason::WorkerClose);
+			Speed::OwnedFrameAudit::TryExportFrozen(OwnedAudit);
+#endif
+			CloseInputSessionsOnWorker();
+		});
 	if (!SimulationWorker->Start(bOwnedSimulationPaused.Load() || Speed::CanonicalFrameDriver::IsOwnedThreadPaused()))
 	{
 		SimulationWorker.Reset();
@@ -681,7 +812,14 @@ bool ASpeedSimulation::RunCanonicalFrames(const uint32 FrameCount)
 	for (uint32 FrameIndex = 0; FrameIndex < FrameCount; ++FrameIndex)
 	{
 		const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
-		if (!StepCanonicalFrame(FCanonicalFrameContext(CanonicalNumFrame)))
+#if WITH_DEV_AUTOMATION_TESTS
+		const auto OwnedStep = Speed::OwnedFrameAudit::BeginStep(CanonicalNumFrame, false);
+#endif
+		const bool StepSucceeded = StepCanonicalFrame(FCanonicalFrameContext(CanonicalNumFrame));
+#if WITH_DEV_AUTOMATION_TESTS
+		Speed::OwnedFrameAudit::EndStep(OwnedStep, true, StepSucceeded);
+#endif
+		if (!StepSucceeded)
 		{
 			return false;
 		}
@@ -756,6 +894,9 @@ float ASpeedSimulation::GetWarningFrameFraction() const
 
 bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 {
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::OwnedFrameAudit::FCanonicalPhaseScope OwnedPhases(Context.NumFrame);
+#endif
 	if (bCanonicalPublicationTerminal.Load()) return false;
 	if (!SpeedWorldSubsystem)
 	{
@@ -784,6 +925,9 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		// exits at this boundary without advancing time or publishing a pose.
 		return false;
 	}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Admission);
+#endif
 	bool bAuditStarted = false;
 	bool bGlobalPublished = false;
 	bool bOutcomeHandled = false;
@@ -804,12 +948,18 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 	{
 		IAMSPEED_FRAME_SCOPE(Initialize);
 		const auto InputView = InputSessionRegistry ? InputSessionRegistry->ReadRegistry() : nullptr;
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Registry);
+#endif
 		const bool bHasInputSessions = InputView && !InputView->Bindings.empty();
 		if (bHasInputSessions)
 		{
 			ExceptionStage = TEXT("ScenarioInputs");
 			if (!SpeedWorldSubsystem->StageCanonicalScenarioInputs(Context, *InputSessionRegistry))
 				throw std::runtime_error("canonical scenario authoring rejected");
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::ScenarioInputs);
+#endif
 			ExceptionStage = TEXT("InputPrepareFrame");
 			if (!InputSessionRegistry->PrepareFrame(Context.NumFrame))
 			{
@@ -821,6 +971,9 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 					Failure.PollSerial, Failure.RegistryVersion);
 				throw std::runtime_error("canonical input preparation rejected");
 			}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputPrepare);
+#endif
 			ExceptionStage = TEXT("InputInstallAll");
 			if (!InputSessionRegistry->InstallAll())
 			{
@@ -832,16 +985,25 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 					Failure.PollSerial, Failure.RegistryVersion);
 				throw std::runtime_error("canonical input installation rejected before world binding");
 			}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputInstall);
+#endif
 			ExceptionStage = TEXT("InputSnapshotInstall");
 			const auto Installed = InputSessionRegistry->ReadInstalled();
 			if (!Installed || !SpeedWorldSubsystem->InstallCanonicalInputs(*Installed) || !InputSessionRegistry->BeginAll())
 				throw std::runtime_error("canonical input installation rejected");
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputSnapshot);
+#endif
 		ExceptionStage = TEXT("StaticWorldAudit");
 		Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
 			Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
 			SpeedWorldSubsystem);
 		bAuditStarted = true;
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::StaticAudit);
+#endif
 		ExceptionStage = TEXT("SimulationInputJournal");
 		if (InputJournal.IsSealed() &&
 			!SpeedWorldSubsystem->ApplySimulationInputs(Context.NumFrame, InputJournal))
@@ -858,6 +1020,9 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			MarkTerminal();
 			return false;
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputJournal);
+#endif
 		ExceptionStage = TEXT("CanonicalInputPrepare");
 		if (!SpeedWorldSubsystem->PrepareCanonicalInputs(Context))
 		{
@@ -867,6 +1032,9 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			UE_LOG(LogTemp, Error, TEXT("[CanonicalInputPreparationRejected] Frame=%llu"), Context.NumFrame);
 			return false;
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CanonicalInputs);
+#endif
 		bInputConsumptionErrorReported = false;
 		IAMSPEED_FRAME_PHASE(Prepare);
 		ExceptionStage = TEXT("WorldPrepare");
@@ -878,27 +1046,58 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 #else
         SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
 #endif
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldPrepare);
+#endif
 		IAMSPEED_FRAME_PHASE(Core);
 		ExceptionStage = TEXT("WorldStep");
+#if WITH_DEV_AUTOMATION_TESTS
+    const uint64 OwnedDiagnosticSerialBefore = OwnedPhases.CapturesPhysicalDetail()
+        ? SpeedWorldSubsystem->GetLastStepDiagnostics().Serial : 0;
+#endif
 		SpeedWorldSubsystem->Step(
 			Context.PhysicalDeltaTime,
 			Context.SimTime,
 			static_cast<unsigned int>(Context.NumFrame));
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldStep);
+    if (OwnedPhases.CapturesPhysicalDetail())
+        OwnedPhases.CopyPhysicalDetail(SpeedWorldSubsystem->GetLastStepDiagnostics(), OwnedDiagnosticSerialBefore);
+#endif
 		IAMSPEED_FRAME_PHASE(Snapshot);
 		ExceptionStage = TEXT("SnapshotCapture");
 		FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
 			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Snapshot);
+#endif
 		ExceptionStage = TEXT("PresentationProducerList");
 		TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
 		{
 			FScopeLock Lock(&PresentationProducerMutex);
 			Producers = PresentationProducers;
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::ProducerList);
+#endif
 		ExceptionStage = TEXT("PresentationProduce");
 		for (const auto& Producer : Producers)
 		{
+			const bool bCameraProducer = Producer->IsCameraPresentation();
+			if (bCameraProducer && !AllowsCameraPresentation()) continue;
 			FSimulationPresentationOutput Output;
-			Producer->Produce(Snapshot, Output);
+#if WITH_DEV_AUTOMATION_TESTS
+            Speed::Testing::ObservePresentationDispatch(&Producer.Get(), Snapshot.NumFrame);
+#endif
+			{
+#if WITH_DEV_AUTOMATION_TESTS
+				Speed::OwnedFrameAudit::FCameraScope OwnedCamera(Snapshot.NumFrame, bCameraProducer);
+#endif
+				Producer->Produce(Snapshot, Output);
+#if WITH_DEV_AUTOMATION_TESTS
+				OwnedCamera.MarkReturned();
+#endif
+			}
 			// Producer cannot forge the envelope address or publication serial.
 			Output.OwnerStableId = Producer->OwnerStableId();
 			Output.Channel = Producer->Channel();
@@ -906,9 +1105,15 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			Output.PublicationSerial = 0;
 			Snapshot.PresentationOutputs.Add(MoveTemp(Output));
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Presentation);
+#endif
 		ExceptionStage = TEXT("InputValidateComplete");
 		if (bHasInputSessions && !InputSessionRegistry->ValidateComplete())
 			throw std::runtime_error("canonical input completion rejected");
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputValidate);
+#endif
 		IAMSPEED_FRAME_PHASE(Publish);
 		ExceptionStage = TEXT("CanonicalPublish");
 		const ECanonicalPublicationResult Publication = SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame, [&]()
@@ -916,6 +1121,9 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			// One simulation owner. Avoid serial wrap before touching the inactive slot.
 			return SnapshotBuffer.PublishedSerial() != MAX_uint64 && SnapshotBuffer.Publish(Snapshot);
 		});
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Publication);
+#endif
 		bOutcomeHandled = true;
 		bGlobalPublished = Publication == ECanonicalPublicationResult::Completed || Publication == ECanonicalPublicationResult::CommitInvariantFailed;
 		if (Publication != ECanonicalPublicationResult::Completed)
@@ -945,12 +1153,23 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 				}
 			}
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputComplete);
+#endif
 		// V2 authoritative commit is finished before any optional presentation work.
 		ExceptionStage = TEXT("PostCommitNotify");
 		SpeedWorldSubsystem->NotifyCanonicalFramePublished(Context.NumFrame);
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::PostCommit);
+#endif
 		FCameraCanonicalSample CameraSample;
 		ExceptionStage = TEXT("CameraSample");
-		if (BuildCanonicalCameraSample(Snapshot, CameraSample))
+#if WITH_DEV_AUTOMATION_TESTS
+        if (AllowsCameraPresentation() &&
+            (Speed::Testing::ObserveCanonicalCameraSample(Snapshot.NumFrame), BuildCanonicalCameraSample(Snapshot, CameraSample)))
+#else
+		if (AllowsCameraPresentation() && BuildCanonicalCameraSample(Snapshot, CameraSample))
+#endif
 		{
 			CameraSample.NumFrame = Snapshot.NumFrame;
 			CameraSample.PublicationSerial = SnapshotBuffer.PublishedSerial();
@@ -958,9 +1177,15 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 			CameraSample.InputJournalHash = Snapshot.InputJournalHash;
 			CameraSampleBuffer.Publish(CameraSample);
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CameraSample);
+#endif
 		IAMSPEED_FRAME_PHASE(Journal);
 		ExceptionStage = TEXT("FrameHash");
 		FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
+#if WITH_DEV_AUTOMATION_TESTS
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::FrameHash);
+#endif
 		IAMSPEED_FRAME_PHASE(Finalize);
 		return true;
 	}
@@ -1082,7 +1307,14 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 #if !UE_BUILD_SHIPPING
         ReplayContext.bResimulationForTesting=true;
 #endif
-        if (!StepCanonicalFrame(ReplayContext))
+#if WITH_DEV_AUTOMATION_TESTS
+        const auto OwnedReplayStep = Speed::OwnedFrameAudit::BeginStep(ReplayContext.NumFrame, true);
+#endif
+        const bool ReplayStepSucceeded = StepCanonicalFrame(ReplayContext);
+#if WITH_DEV_AUTOMATION_TESTS
+        Speed::OwnedFrameAudit::EndStep(OwnedReplayStep, true, ReplayStepSucceeded);
+#endif
+        if (!ReplayStepSucceeded)
 		{
 			UE_LOG(LogTemp, Error,
 				TEXT("[SimulationResimulationFailed] Frame=%llu TargetFrame=%llu"),

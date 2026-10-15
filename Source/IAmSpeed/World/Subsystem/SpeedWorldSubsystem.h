@@ -61,10 +61,15 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
+	friend struct FLocalNormalCameraFixtureAccess;
+#endif
+#if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedBoxEquilibriumWorldTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;
+	friend class FSkyCameraPacedPhysicalFrameCounterbalancedTest;
 	friend class FSkyWaveDashAirPitchRearmTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;

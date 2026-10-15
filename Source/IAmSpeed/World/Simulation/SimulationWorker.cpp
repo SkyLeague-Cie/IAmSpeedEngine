@@ -1,8 +1,48 @@
 #include "SimulationWorker.h"
+#include "OwnedFrameAudit.h"
 
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/RunnableThread.h"
+
+#if WITH_DEV_AUTOMATION_TESTS
+namespace Speed::Testing
+{
+namespace
+{
+thread_local FSimulationWaitAuditObserver WaitAuditObserver = nullptr;
+thread_local void* WaitAuditContext = nullptr;
+}
+bool SetSimulationWaitAuditObserverForCurrentThread(
+    FSimulationWaitAuditObserver Observer, void* Context) noexcept
+{
+    if (!Observer || !Context || WaitAuditObserver) return false;
+    WaitAuditObserver = Observer; WaitAuditContext = Context; return true;
+}
+bool ClearSimulationWaitAuditObserverForCurrentThread(
+    FSimulationWaitAuditObserver Observer, void* Context) noexcept
+{
+    if (WaitAuditObserver != Observer || WaitAuditContext != Context) return false;
+    WaitAuditObserver = nullptr; WaitAuditContext = nullptr; return true;
+}
+static void ObserveSimulationWait(ESimulationWaitAuditEvent Event,
+    double Deadline, double Precision, double Remaining,
+    uint32 RequestedMilliseconds = 0, int32 Outcome = -1) noexcept
+{
+    auto* const OwnedAtEntry = Speed::OwnedFrameAudit::ActiveForCurrentThread();
+    if (!WaitAuditObserver && !OwnedAtEntry) return;
+    FSimulationWaitAuditSample Sample;
+    Sample.Event = Event;
+    Sample.WallTicks = FPlatformTime::Cycles64();
+    FMemory::Memcpy(&Sample.DeadlineBits, &Deadline, sizeof(Deadline));
+    FMemory::Memcpy(&Sample.PrecisionBits, &Precision, sizeof(Precision));
+    FMemory::Memcpy(&Sample.RemainingBits, &Remaining, sizeof(Remaining));
+    Sample.RequestedMilliseconds = RequestedMilliseconds; Sample.Outcome = Outcome;
+    if (WaitAuditObserver) WaitAuditObserver(WaitAuditContext, Sample);
+    Speed::OwnedFrameAudit::RecordWaitSample(OwnedAtEntry, Sample);
+}
+}
+#endif
 
 FSimulationWorker::FSimulationWorker(
 	FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames,
@@ -23,11 +63,23 @@ ESimulationWaitResult FSimulationWorkerWaitContext::WaitUntil(
 {
 	const double ClampedPrecisionWindowSeconds = FMath::Clamp(
 		PrecisionWindowSeconds, 0.0, 0.005);
+#if WITH_DEV_AUTOMATION_TESTS
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::Entry,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, 0.0, 0, -1);
+#endif
 	while (!StopRequested.Load() && !Paused.Load())
 	{
 		const double RemainingSeconds = DeadlineSeconds - FPlatformTime::Seconds();
+#if WITH_DEV_AUTOMATION_TESTS
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::RemainingClockSample,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, RemainingSeconds, 0, -1);
+#endif
 		if (RemainingSeconds <= 0.0)
 		{
+#if WITH_DEV_AUTOMATION_TESTS
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::Return,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, RemainingSeconds, 0, int32(ESimulationWaitResult::DeadlineReached));
+#endif
 			return ESimulationWaitResult::DeadlineReached;
 		}
 		const double CoarseWaitSeconds =
@@ -36,20 +88,59 @@ ESimulationWaitResult FSimulationWorkerWaitContext::WaitUntil(
 			CoarseWaitSeconds * 1000.0);
 		if (CoarseWaitMilliseconds > 0)
 		{
+#if WITH_DEV_AUTOMATION_TESTS
+            const uint32 RequestedMilliseconds = static_cast<uint32>(FMath::Min(CoarseWaitMilliseconds, 100));
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::EventWaitEntry,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, RemainingSeconds, RequestedMilliseconds, -1);
+            const bool SignalObserved = WakeEvent.Wait(RequestedMilliseconds);
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::EventWaitExit,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, RemainingSeconds, RequestedMilliseconds, int32(SignalObserved));
+#else
 			WakeEvent.Wait(static_cast<uint32>(FMath::Min(
 				CoarseWaitMilliseconds, 100)));
+#endif
 		}
 		else if (ClampedPrecisionWindowSeconds > 0.0)
 		{
 			// Yielding keeps the short precision tail interruptible and avoids the
 			// systematic oversleep caused by rounding a sub-millisecond tail up.
-			FPlatformProcess::YieldThread();
+#if WITH_DEV_AUTOMATION_TESTS
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::YieldEntry,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, RemainingSeconds, 0, -1);
+#endif
+			// Processor pause is confined to the existing precision window.
+			// The sub-millisecond coarse remainder still yields the thread.
+			if (RemainingSeconds <= ClampedPrecisionWindowSeconds)
+			{
+				FPlatformProcess::Yield();
+			}
+			else
+			{
+				FPlatformProcess::YieldThread();
+			}
+#if WITH_DEV_AUTOMATION_TESTS
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::YieldExit,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, RemainingSeconds, 0, -1);
+#endif
+
 		}
 		else
 		{
+#if WITH_DEV_AUTOMATION_TESTS
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::EventWaitEntry,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, RemainingSeconds, 1, -1);
+            const bool SignalObserved = WakeEvent.Wait(1);
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::EventWaitExit,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, RemainingSeconds, 1, int32(SignalObserved));
+#else
 			WakeEvent.Wait(1);
+#endif
 		}
 	}
+#if WITH_DEV_AUTOMATION_TESTS
+        Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::Return,
+            DeadlineSeconds, ClampedPrecisionWindowSeconds, 0.0, 0, int32(ESimulationWaitResult::Interrupted));
+#endif
 	return ESimulationWaitResult::Interrupted;
 }
 
@@ -223,7 +314,11 @@ uint32 FSimulationWorker::Run()
 					PauseAckSerial.Store(PauseRequestSerial.Load());
 					PauseAcknowledgedEvent->Trigger();
 				}
+#if WITH_DEV_AUTOMATION_TESTS
+				Speed::OwnedFrameAudit::ParkWait(*WakeEvent, 1);
+#else
 				WakeEvent->Wait(1);
+#endif
 				continue;
 			}
 			// Capture the request before servicing it. A newer pause cannot borrow
@@ -240,7 +335,11 @@ uint32 FSimulationWorker::Run()
 			if (bStopRequested.Load()) break;
 			if (Boundary == ESimulationBoundaryResult::Waiting)
 			{
+#if WITH_DEV_AUTOMATION_TESTS
+				Speed::OwnedFrameAudit::ParkWait(*WakeEvent, 1);
+#else
 				WakeEvent->Wait(1);
+#endif
 				continue;
 			}
 			if (bPaused.Load())
@@ -252,7 +351,11 @@ uint32 FSimulationWorker::Run()
 				}
 				// Continue servicing commands while paused; no producer polling or
 				// physical frame runs from this branch.
+#if WITH_DEV_AUTOMATION_TESTS
+				Speed::OwnedFrameAudit::ParkWait(*WakeEvent, 1);
+#else
 				WakeEvent->Wait(1);
+#endif
 				continue;
 			}
 			PauseAcknowledgedEvent->Reset();
@@ -264,7 +367,11 @@ uint32 FSimulationWorker::Run()
 			}
 			if (Result == ESimulationWorkerResult::Idle)
 			{
+#if WITH_DEV_AUTOMATION_TESTS
+				Speed::OwnedFrameAudit::ParkWait(*WakeEvent, 1);
+#else
 				WakeEvent->Wait(1);
+#endif
 				continue;
 			}
 			WaitBetweenFrames(WaitContext);
