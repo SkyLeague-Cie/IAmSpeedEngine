@@ -18,6 +18,7 @@ class IAMSPEED_API ASpeedGameMode : public AGameMode
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
+	friend class FSkyCameraAbsoluteParentTest; // Test fixture declaration, no runtime fields or bypass.
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FSkyAIInputPauseRegistryTest;
