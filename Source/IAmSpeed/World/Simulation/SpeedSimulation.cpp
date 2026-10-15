@@ -1097,3 +1097,34 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 	OnCanonicalTimelineRestored();
 	return true;
 }
+
+
+bool ASpeedSimulation::InitializeIsolatedCanonicalHost()
+{
+    check(IsInGameThread());
+    if (!GetWorld() || GetWorld()->WorldType != EWorldType::EditorPreview ||
+        HasActorBegunPlay() || SimulationWorker || !PresentationProducers.IsEmpty()) return false;
+    bAsyncPhysicsTickEnabled = false;
+    SetActorTickEnabled(false);
+    SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());
+    if (!SpeedWorldSubsystem) return false;
+    ActiveExecutionModeValue.Store(uint8(ESimulationExecutionMode::IAmSpeedThread));
+    bOwnedSimulationPaused.Store(true);
+    bPublishPresentation = false;
+    InputJournal.Seal(); // closed empty journal: no input/session authority
+    FrameHashes = Speed::SimulationBoundary::FFrameHashJournal(2048);
+    return true;
+}
+
+bool ASpeedSimulation::ResetIsolatedSeedFrame(uint64 SourceFrame)
+{
+    if (!GetWorld() || GetWorld()->WorldType != EWorldType::EditorPreview ||
+        HasActorBegunPlay() || SimulationWorker || bCanonicalPublicationTerminal.Load() ||
+        SourceFrame >= MAX_uint32) return false;
+    CanonicalNumFrame = SourceFrame + 1;
+    _NumFrame = uint32(CanonicalNumFrame);
+    bCanonicalFrameInitialized = true;
+    FrameHashes.Reset();
+    CameraSampleBuffer.Reset();
+    return true;
+}

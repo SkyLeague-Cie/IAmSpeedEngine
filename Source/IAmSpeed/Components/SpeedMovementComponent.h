@@ -6,6 +6,7 @@
 #include "GameFramework/MovementComponent.h"
 #include "ISpeedComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
+#include "IAmSpeed/World/Simulation/IsolatedMovementState.h"
 #include "SpeedMovementComponent.generated.h"
 
 /**
@@ -35,6 +36,13 @@ public:
 #endif
 
 	void InitNetwork();
+    /** Explicit specialization: the default live mover never accepts private restore. */
+    virtual bool IsIsolatedSimulationAdapter() const { return false; }
+    bool CaptureIsolatedMovementState(FIsolatedMovementState& Out) const;
+    bool RestoreIsolatedMovementState(const FIsolatedMovementState& State);
+    bool InitializeIsolatedMovementAdapter();
+    bool RestoreIsolatedStaticConstraints(TConstArrayView<FPhysicalContactConstraint> Constraints);
+
 	/** Used to create any physics engine information for this component */
 	virtual void OnCreatePhysicsState() override;
 	bool ShouldCreatePhysicsState() const override;

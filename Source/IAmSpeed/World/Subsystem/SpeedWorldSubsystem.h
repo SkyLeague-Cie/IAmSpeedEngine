@@ -8,6 +8,7 @@
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
+#include "IAmSpeed/World/Simulation/IsolatedSimulationContext.h"
 #include "SpeedWorldSubsystem.generated.h"
 
 class ISpeedComponent;
@@ -61,6 +62,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
+	friend class FStaticWorldIsolationTest;
 	friend class FIAmSpeedBoxEquilibriumWorldTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
@@ -71,7 +73,14 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 	friend class FSLBallEpisodeAdmissionOwnerTest; // sole native floor certificate fixture
 #endif
 public:
-	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+	// EditorPreview permits a private canonical host; creation starts no simulation.
+    virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
+    virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+    /** Capture only on an acknowledged GT boundary; never publishes live pointers. */
+    bool CaptureIsolatedStaticWorldSeed(FIsolatedStaticWorldSeed& Out) const;
+    bool InstallIsolatedStaticWorldSeed(const FIsolatedStaticWorldSeed& Seed,
+        const TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>>& PrivateSources);
+
 	static bool AreUnilateralRollingPairsEnabled();
 	static bool ShouldAcquireUnilateralRollingPair(float RelativeNormalSpeed);
     void RegisterSpeedComponent(ISpeedComponent* Comp);
