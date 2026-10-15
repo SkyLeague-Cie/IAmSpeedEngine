@@ -142,7 +142,9 @@ public:
 				}
 				if (Winner && Remembered && *Winner != *Remembered && Trackers.count(*Remembered)
 					&& LastSwitch && Frame - *LastSwitch < Config.MinimumResidenceFrames) Winner = Remembered;
-				if (Winner && Remembered && *Winner != *Remembered && Config.RetainSameKindOwner)
+				// A startup fallback is readable, but has not earned ownership through activity.
+				// Let the first real pad command replace it before suppressing mirrored pads.
+				if (Winner && Remembered && *Winner != *Remembered && LastClaimTimestamp && Config.RetainSameKindOwner)
 				{
 					const auto Owner = Trackers.find(*Remembered);
 					if (Owner != Trackers.end() && Owner->second.HasBaseline

@@ -74,6 +74,22 @@ public:
 					unsigned(Diagnostic->ReadReject->Reason), uint32(Diagnostic->ReadReject->DiagnosticError),
 					unsigned(Diagnostic->ReadReject->Kind), Diagnostic->ReadReject->AcquisitionTick);
 		}
+#if !UE_BUILD_SHIPPING
+        // Observe the installed source only on selection changes. Never poll,
+        // select, alter focus or inject a value for this diagnostic.
+        if (Result == EAcquisitionPumpResult::Installed)
+        {
+            const auto Selected = Source->ReadSelectedRawDeviceDiagnostic();
+            if (Selected && (!LastReportedDevice || *LastReportedDevice != Selected->Id))
+            {
+                FString DeviceId;
+                for (const auto Byte : Selected->Id) DeviceId.Appendf(TEXT("%02X"), unsigned(Byte));
+                UE_LOG(LogTemp, Display, TEXT("[InputSelectedDevice] Session=%llu Kind=%u Vendor=%04X Product=%04X Device=%s"),
+                    Producer, unsigned(Selected->Kind), unsigned(Selected->VendorId), unsigned(Selected->ProductId), *DeviceId);
+                LastReportedDevice = Selected->Id;
+            }
+        }
+#endif
 		return Result;
     }
     bool Close() override
@@ -88,6 +104,9 @@ private:
     std::shared_ptr<FRawAcquisitionJournal> Journal;
     std::shared_ptr<Windows::FGameInputWarmContext> Warm;
     std::unique_ptr<Windows::FGameInputRawAcquisition> Source;
+#if !UE_BUILD_SHIPPING
+    std::optional<FDeviceId> LastReportedDevice;
+#endif
     bool Closed=false;
 };
 }
