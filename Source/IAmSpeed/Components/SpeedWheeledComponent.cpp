@@ -110,6 +110,12 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameUnsteeredAligningYawMin
 	TEXT("Diagnostic lateral speed in cm/s below which unsteered aligning yaw is disabled."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameUnsteeredAligningYawResidualDamping(
+	TEXT("p.IAmSpeed.WheelFrame.UnsteeredAligningYawResidualDamping"),
+	0,
+	TEXT("Diagnostic A/B: 0 retains scaled correction; 1 preserves residual yaw damping with the slip-scaled target. Set before the run."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameUnsteeredAligningYawTimeConstant(
 	TEXT("p.IAmSpeed.WheelFrame.UnsteeredAligningYawTimeConstant"),
 	-1.0f,
@@ -120,6 +126,14 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameSteeringRearLateralFric
 	TEXT("p.IAmSpeed.WheelFrame.SteeringRearLateralFrictionScale"),
 	-1.0f,
 	TEXT("Overrides WheelFrameSteeringRearLateralFrictionScale when >= 0. Negative values keep the Blueprint/component value."),
+	ECVF_Default);
+
+// Experimental normal-turn calibration; negative preserves the existing law.
+// No handbrake change and no additional rollback-persistent state.
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameSteeringRearLateralFrictionReverseScale(
+	TEXT("p.IAmSpeed.WheelFrame.SteeringRearLateralFrictionReverseScale"),
+	-1.0f,
+	TEXT("Overrides only the normal rear steering scale while body-forward speed is negative. Negative preserves the shared forward/reverse scale. Handbrake is unchanged."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameClampLateralImpulse(
@@ -150,6 +164,14 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeRearLateralFri
 	-1.0f,
 	TEXT("Overrides the handbrake rear lateral-friction curve when >= 0. Negative values keep the component curve."),
 	ECVF_Default);
+// Experimental normal-only input map. Freeze this CVar before physics admission.
+// Negative or non-finite values preserve the inherited calibration exactly.
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameNormalInputFullFraction(
+	TEXT("p.IAmSpeed.WheelFrame.NormalInputFullFraction"),
+	-1.0f,
+	TEXT("Experimental normal wheel-angle fraction at full input. Negative keeps the current path. Nonnegative endpoints clamp between the inherited three-quarter-input fraction and 1. Active and residual handbrake bypass this option. Set only at a quiescent physics boundary."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameSteeringCurvatureScale(
 	TEXT("p.IAmSpeed.WheelFrame.SteeringCurvatureScale"),
 	-1.0f,
@@ -2186,6 +2208,10 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 
 	const float ForwardSpeed = GetPhysForwardSpeed();
 	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
+	const float SteeringRearReverseScaleOverride = CVarIAmSpeedWheelFrameSteeringRearLateralFrictionReverseScale.GetValueOnAnyThread();
+	const bool bUseSteeringRearReverseScale = ForwardSpeed < -KINDA_SMALL_NUMBER && SteeringRearReverseScaleOverride >= 0.0f;
+	float DebugNormalRearAppliedScale = 1.0f;
+
 	const float PlanarGroundSpeed = GetPhysCOMVelocity().Size2D();
 	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
 	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
@@ -2210,8 +2236,12 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		}
 	}
 	const float MaxSteerAngle = ComputeWheelFrameSteerAngle(AbsForwardSpeed, TargetRadius, Wheelbase);
-	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
-		* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
+	float NormalSteerFraction = 0.0f;
+	const bool bUseNormalSteerFraction = TryComputeWheelFrameNormalSteeringInputFraction(NormalSteerFraction);
+	const float SteerAngle = bUseNormalSteerFraction
+		? NormalSteerFraction * MaxSteerAngle
+		: FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
+			* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
 	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
 	const float GroundedWheelCountForFriction = FMath::Max(1.0f, static_cast<float>(NumWheelsOnGround()));
@@ -2421,13 +2451,20 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float SteeringRearLateralScaleOverride = CVarIAmSpeedWheelFrameSteeringRearLateralFrictionScale.GetValueOnAnyThread();
 			const float SteeringRearLateralFullScale = FMath::Max(
 				0.0f,
-				SteeringRearLateralScaleOverride >= 0.0f
-					? SteeringRearLateralScaleOverride
-					: WheelFrameSteeringRearLateralFrictionScale
+				bUseSteeringRearReverseScale
+					? SteeringRearReverseScaleOverride
+					: (SteeringRearLateralScaleOverride >= 0.0f
+						? SteeringRearLateralScaleOverride
+						: WheelFrameSteeringRearLateralFrictionScale)
 			);
 			const float SteeringRearLateralScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER || bFrontWheel
 				? 1.0f
 				: FMath::Lerp(1.0f, SteeringRearLateralFullScale, AbsSteeringInput);
+			if (!bFrontWheel)
+			{
+				DebugNormalRearAppliedScale = SteeringRearLateralScale;
+			}
+
 			const float ScrubScaleOverride = CVarIAmSpeedWheelFrameLongitudinalScrubScale.GetValueOnAnyThread();
 			const float ScrubScale = ScrubScaleOverride >= 0.0f ? ScrubScaleOverride : WheelFrameLongitudinalScrubScale;
 			const float HandbrakeImpulseScaleOverride = CVarIAmSpeedWheelFrameHandbrakeLateralImpulseScale.GetValueOnAnyThread();
@@ -2594,12 +2631,13 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstant);
 			const float CurrentYawRate = FVector::DotProduct(
 				GetPhysAngularVelocity(), SurfaceNormal);
-			// Scale the whole correction so the high-slip controller enters
-			// continuously. At zero authority wheel friction alone owns yaw
-			// settling; full authority preserves the published response.
+			// Default mode scales the whole correction by slip authority.
+			// The diagnostic candidate preserves residual damping while the
+			// target remains slip-scaled; full authority agrees in both modes.
 			const float AligningYawAcceleration =
 				IAmSpeedSteering::ComputeUnsteeredAligningYawAcceleration(
-					TargetYawRate, CurrentYawRate, TimeConstant, SlipAuthority);
+					TargetYawRate, CurrentYawRate, TimeConstant, SlipAuthority,
+					CVarIAmSpeedWheelFrameUnsteeredAligningYawResidualDamping.GetValueOnAnyThread() == 1);
 			AddPhysAngularAcceleration(SurfaceNormal * AligningYawAcceleration);
 		}
 	}
@@ -2660,11 +2698,11 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		if (NumFrame() % DebugIntervalFrames == 0)
 			UE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][WheelFrameFriction] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f MaxAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgFrictionScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrontAbsLat=%.1f RearAbsLat=%.1f FrontYawTorque=%.1f RearYawTorque=%.1f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f"
-				"BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s AvgApplicationPoint=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f TurnTime=%.3f SmishTargetSpeed=%.1f"),
+				"BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s AvgApplicationPoint=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f TurnTime=%.3f SmishTargetSpeed=%.1f SignedForwardSpeed=%.6f NormalRearScale=%.6f NormalRearReverseActive=%d"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(), GetPhysForwardSpeed(), GroundSpeed, SideSpeed, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugGroundedWheels,
 			DebugAbsLatSpeedSum / DebugGroundedWheels, DebugMaxAbsLatSpeed, DebugAbsLongSpeedSum / DebugGroundedWheels,
 			DebugFrictionInputSum / DebugGroundedWheels, DebugFrictionScaleSum / DebugGroundedWheels, DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels, DebugAvgFrontAbsLatSpeed, DebugAvgRearAbsLatSpeed, DebugFrontYawTorque, DebugRearYawTorque,
-			ForwardAccel, SideAccel, AppliedForwardAccel, AppliedSideAccel, BasisForwardRate, TotalForwardRateNow, *DebugTotalForce.ToString(), *DebugAverageApplicationPoint.ToString(), DebugYawTorque, YawRate, Radius, TurnTime, SmishTargetSpeed);
+			ForwardAccel, SideAccel, AppliedForwardAccel, AppliedSideAccel, BasisForwardRate, TotalForwardRateNow, *DebugTotalForce.ToString(), *DebugAverageApplicationPoint.ToString(), DebugYawTorque, YawRate, Radius, TurnTime, SmishTargetSpeed, ForwardSpeed, DebugNormalRearAppliedScale, bUseSteeringRearReverseScale ? 1 : 0);
 	}
 }
 
@@ -3537,6 +3575,33 @@ void USpeedWheeledComponent::UpdateWheelFrameHandbrakeValue(const float& Delta)
 		1.0f);
 }
 
+bool USpeedWheeledComponent::TryComputeWheelFrameNormalSteeringInputFraction(float& OutFraction) const
+{
+	const float FullFractionOverride = CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread();
+	if (!FMath::IsFinite(FullFractionOverride) || FullFractionOverride < 0.0f)
+		return false;
+
+	// Use the same handbrake phase as the wheel-angle law. The raw request also
+	// bypasses the option before its first smoothed handbrake update.
+	if (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValue > KINDA_SMALL_NUMBER)
+		return false;
+
+	const float Input = GetPhysSteeringInput();
+	if (!FMath::IsFinite(Input))
+		return false;
+	const float A = FMath::Abs(FMath::Clamp(Input, -1.0f, 1.0f));
+	if (A <= 0.75f)
+		return false; // Keep the inherited expression through three-quarter input.
+
+	const float ThreeQuarterFraction = 0.75f * SteeringInputCalibrationScale(0.75f);
+	const float FullFraction = FMath::Clamp(FullFractionOverride, ThreeQuarterFraction, 1.0f);
+	// Interpolate commanded fraction, not scale: every admitted endpoint is
+	// monotone without dividing by input and multiplying it back in each caller.
+	const float Fraction = FMath::Lerp(ThreeQuarterFraction, FullFraction, (A - 0.75f) * 4.0f);
+	OutFraction = Input < 0.0f ? -Fraction : Fraction;
+	return true;
+}
+
 float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwardSpeed, const float& TargetRadius, const float& Wheelbase) const
 {
 	const float NormalSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurve, AbsForwardSpeed, 0.0f);
@@ -3608,8 +3673,12 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		}
 	}
 	const float MaxSteerAngle = ComputeWheelFrameSteerAngle(AbsForwardSpeed, TargetRadius, Wheelbase);
-	const float SteerAngle = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
-		* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
+	float NormalSteerFraction = 0.0f;
+	const bool bUseNormalSteerFraction = TryComputeWheelFrameNormalSteeringInputFraction(NormalSteerFraction);
+	const float SteerAngle = bUseNormalSteerFraction
+		? NormalSteerFraction * MaxSteerAngle
+		: FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f)
+			* SteeringInputCalibrationScale(GetPhysSteeringInput()) * MaxSteerAngle;
 	const float SlipThreshold = FMath::Max(0.0f, LateralFrictionSlipThreshold);
 	const float AccelPerWheel = Accel / static_cast<float>(GroundedWheelCount);
 	const bool bIsAccelerating = IsAcceleratingForWheelFriction();
