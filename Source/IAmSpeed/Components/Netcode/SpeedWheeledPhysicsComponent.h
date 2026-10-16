@@ -8,6 +8,8 @@
 #include "SpeedWheeledPhysicsComponent.generated.h"
 
 
+class USpeedWheeledComponent;
+
 USTRUCT()
 struct FWheeledGameState
 {
@@ -45,6 +47,13 @@ struct FWheeledPhysicsState
 	// number of frames since last impact
 	UPROPERTY()
 	uint8 FramesSinceLastImpact = 0;
+
+    // Per attacker, last victim only (RocketSim semantics), restored with the
+    // same predicted/replicated state as the other wheeled mechanics.
+    UPROPERTY()
+    TWeakObjectPtr<USpeedWheeledComponent> LastCarBumpVictim;
+    UPROPERTY()
+    uint16 CarBumpCooldownFrames = 0;
 
 	// allowed side velocity for steering
 	UPROPERTY()

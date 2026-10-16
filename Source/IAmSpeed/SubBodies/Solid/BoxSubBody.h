@@ -135,6 +135,7 @@ public:
     void ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint) override;
     FVector GetCOM() const;
 	FVector GetBoxExtent() const;
+    virtual bool UsesNonclosingBoxBumpResponse() const { return false; }
 	float GetSphereSeparation(const FVector& SphereCenter, float SphereRadius) const;
 	bool GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const;
 	void SetBoxExtent(const FVector& InBoxExtent);

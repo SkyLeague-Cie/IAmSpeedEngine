@@ -145,6 +145,11 @@ namespace Speed
 		unsigned int GetCurrentStepFrame() const { return CurrentStepFrame; }
 		/** Returns the run-stable id used to address inputs and snapshot records. */
 		uint64 FindStableId(const ISpeedComponent& Adapter) const;
+        ISpeedComponent* FindAdapterByStableId(uint64 StableId) const
+        {
+            ISpeedComponent* const* Found=AdaptersByStableId.Find(StableId);
+            return Found?*Found:nullptr;
+        }
 		/** Latches every sealed command addressed to this exact canonical frame. */
 		bool ApplyInputsForFrame(uint64 NumFrame, const SimulationBoundary::FInputJournal& Journal);
 		/** Builds a values-only immutable output snapshot for one completed frame. */

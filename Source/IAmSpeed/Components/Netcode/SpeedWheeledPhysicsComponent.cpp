@@ -4,6 +4,7 @@
 #include "IAmSpeed/Components/Netcode/SpeedWheeledPhysicsComponent.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
+#include "UObject/CoreNet.h"
 
 bool FSpeedCarCameraPhysicalInput::IsValid() const
 {
@@ -104,6 +105,26 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 	Ar << WheeledState.AllowedAngularVelocity;
 	Ar << WheeledState.NbFramesSinceGroundContact;
 	Ar << WheeledState.FramesSinceLastImpact;
+    uint16 BumpFrames=Ar.IsSaving() && !WheeledState.LastCarBumpVictim.IsValid()
+        ?0:WheeledState.CarBumpCooldownFrames;
+    Ar << BumpFrames;
+    if(Ar.IsLoading()) WheeledState.CarBumpCooldownFrames=BumpFrames;
+    UObject* BumpVictim=Ar.IsSaving() && BumpFrames?WheeledState.LastCarBumpVictim.Get():nullptr;
+    uint8 HasBumpVictim=Ar.IsSaving() && BumpVictim?1:0;
+    Ar << HasBumpVictim;
+    bool bBumpVictimMapped=true;
+    if(HasBumpVictim>1) { Ar.SetError(); bOutSuccess=false; return false; }
+    if(HasBumpVictim)
+    {
+        if(!Map) { Ar.SetError(); bOutSuccess=false; return false; }
+        bBumpVictimMapped=Map->SerializeObject(Ar,USpeedWheeledComponent::StaticClass(),BumpVictim);
+    }
+    if(Ar.IsLoading())
+    {
+        WheeledState.LastCarBumpVictim=Cast<USpeedWheeledComponent>(BumpVictim);
+        if(bBumpVictimMapped && ((WheeledState.CarBumpCooldownFrames==0)!=(BumpVictim==nullptr)))
+        { Ar.SetError(); bOutSuccess=false; return false; }
+    }
 	Ar << WheeledState.PhysicalThrottleInput;
 	Ar << WheeledState.PhysicalBrakeInput;
 	Ar << WheeledState.PhysicalSteerInput;
@@ -134,7 +155,7 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 		}
 	}
 
-	bOutSuccess = true;
+	bOutSuccess = bBumpVictimMapped && !Ar.IsError();
 	return true;
 }
 
@@ -169,8 +190,8 @@ void FNetworkWheeledSpeedState::InterpolateData(const FNetworkPhysicsData& MinDa
 bool FNetworkWheeledSpeedState::CompareData(const FNetworkPhysicsData& PredictedData)
 {
 	const FNetworkWheeledSpeedState& PredictedState = static_cast<const FNetworkWheeledSpeedState&>(PredictedData);
-
-	return true;
+    return WheeledState.CarBumpCooldownFrames==PredictedState.WheeledState.CarBumpCooldownFrames &&
+        WheeledState.LastCarBumpVictim==PredictedState.WheeledState.LastCarBumpVictim;
 }
 
 void FNetworkWheeledSpeedState::MergeData(const FNetworkPhysicsData& FromData)

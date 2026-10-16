@@ -2270,18 +2270,36 @@ void UBoxSubBody::ResolveHitVsBox(
     const SHitResult InverseHit = Speed::Collision::MakeReciprocalBoxContact(
         CurrentHit, this, this);
 
+    const auto EnforceNonclosingContact = [&]()
+    {
+        ISpeedComponent* OtherParent=OtherBox.GetParentComponent();
+        if (!UsesNonclosingBoxBumpResponse() || !OtherBox.UsesNonclosingBoxBumpResponse() ||
+            !ParentComponent || !OtherParent) return;
+        FVector CorrectA, CorrectB;
+        if (Speed::SImpulseSolver::ComputeCollisionImpulse(P,N,
+            ParentComponent->GetKinematicState(),GetMass(),ComputeWorldInvInertiaTensor(),
+            OtherParent->GetKinematicState(),OtherBox.GetMass(),OtherBox.ComputeWorldInvInertiaTensor(),
+            0.f,0.f,CorrectA,CorrectB,0.f))
+        {
+            ApplyImpulse(CorrectA,P);
+            OtherBox.ApplyImpulse(CorrectB,P);
+        }
+    };
+
     // -------- Overlap branch (Box - Box) --------
     // EstimateOBBOverlapAlongNormal + SolveOverlap
     {
         SSBox A = MakeBox();
         SSBox B = OtherBox.MakeBox();
         const float pen = SSBox::EstimateOBBOverlapAlongNormal(A, B, N);
-        if (pen > MinSlopCm)
+        const bool bCarPair=UsesNonclosingBoxBumpResponse() && OtherBox.UsesNonclosingBoxBumpResponse();
+        const float Slop=bCarPair?0.f:MinSlopCm;
+        if (pen > Slop)
         {
             ISpeedComponent* OtherComp = OtherBox.GetParentComponent();
             SolveOverlap(*ParentComponent, GetMass(), ComputeWorldInvInertiaTensor(), KA,
                 OtherComp, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(), KB,
-                P, N, pen, MinSlopCm, 0.8f, GetImpactThreshold());
+                P, N, pen, Slop, bCarPair?1.f:0.8f, bCarPair?0.f:GetImpactThreshold());
             if (IsFakePhysicsEnabled())
             {
                 ApplyFakePhysicsOn(OtherBox, CurrentHit, delta, &FakePhysicsContext);
@@ -2290,13 +2308,16 @@ void UBoxSubBody::ResolveHitVsBox(
             {
                 OtherBox.ApplyFakePhysicsOn(*this, InverseHit, delta, &InverseContext);
             }
+            EnforceNonclosingContact();
             return;
         }
     }
 
     FVector ImpA, ImpB;
-    const float e = MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max);
-    const float mu = MixFriction(GetDynamicFriction(), OtherBox.GetDynamicFriction(), EMixMode::E_Max);
+    const bool bRocketSimCarPair=UsesNonclosingBoxBumpResponse() && OtherBox.UsesNonclosingBoxBumpResponse();
+    // RocketSim overrides only the car/car contact manifold material.
+    const float e = bRocketSimCarPair?0.1f:MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max);
+    const float mu = bRocketSimCarPair?0.09f:MixFriction(GetDynamicFriction(), OtherBox.GetDynamicFriction(), EMixMode::E_Max);
 
     if (!Speed::SImpulseSolver::ComputeCollisionImpulse(
         P, N,
@@ -2306,7 +2327,8 @@ void UBoxSubBody::ResolveHitVsBox(
         ImpA, ImpB,
         GetImpactThreshold()))
     {
-        return;
+        if (!bRocketSimCarPair) return;
+        ImpA=ImpB=FVector::ZeroVector;
     }
 
     ApplyImpulse(ImpA, P);
@@ -2325,6 +2347,7 @@ void UBoxSubBody::ResolveHitVsBox(
 		// OtherBox.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
         OtherBox.ApplyFakePhysicsOn(*this, InverseHit, delta, &InverseContext);
     }
+    EnforceNonclosingContact();
 }
 
 // ============================================================================

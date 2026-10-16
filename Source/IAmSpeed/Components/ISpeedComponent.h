@@ -8,6 +8,7 @@ namespace Speed::Input::V2 { struct FOwnerInputSnapshot; class FInputSessionRegi
 #include "IAmSpeed/Base/Kinematic.h"
 #include "IAmSpeed/Base/KinematicQuantizationCache.h"
 #include "IAmSpeed/World/Simulation/SimulationSleepState.h"
+class USpeedWheeledComponent;
 
 #if !UE_BUILD_SHIPPING
 /** Native observation boundaries; excluded from published physics state. */
@@ -336,6 +337,8 @@ public:
 	virtual bool HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const;
 
 	virtual ~ISpeedComponent() = default;
+    // Lifetime-invariant adapter type, used by values-only snapshot references.
+    virtual USpeedWheeledComponent* AsWheeledPhysicsComponent() { return nullptr; }
 protected:
 #if !UE_BUILD_SHIPPING
 	/** Opt-in observer of actual reaction evaluations; no diagnostic dispatch in normal runtime. */

@@ -153,6 +153,13 @@ public:
 	virtual void RcvImpactOnSubBody(const USSubBody& SubBody, const FVector& Location);
 
 	virtual void SetKinematicState(const SKinematic& NewKinematicState);
+    USpeedWheeledComponent* AsWheeledPhysicsComponent() override { return this; }
+    bool IsCarBumpInCooldown(const USpeedWheeledComponent& Victim) const;
+    bool TryBeginCarBump(USpeedWheeledComponent& Victim);
+    void ResetCarBumpCooldown();
+    void AppendSimulationSnapshot(TArray<uint8>& OutPayload) const override;
+    bool CanRestoreSimulationSnapshot(TConstArrayView<uint8> Payload) const override;
+    void RestoreSimulationSnapshotPayload(TConstArrayView<uint8> Payload) override;
 
 	void RegisterTestVelocity(const FVector& InitialVelocity);
 	void RegisterTestVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity);

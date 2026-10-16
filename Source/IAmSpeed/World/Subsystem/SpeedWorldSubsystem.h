@@ -137,6 +137,10 @@ public:
 		uint64 ExpectedInputJournalHash);
 	/** Resolves the address assigned to a registered simulation component. */
 	uint64 GetSimulationStableId(const ISpeedComponent& Component);
+    ISpeedComponent* FindSimulationAdapter(uint64 StableId) const
+    {
+        return SimulationWorld.FindAdapterByStableId(StableId);
+    }
 	/** Applies the sealed input commands for a frame before component preparation. */
 	bool ApplySimulationInputs(uint64 NumFrame, const Speed::SimulationBoundary::FInputJournal& Journal);
 	TWeakObjectPtr<UPrimitiveComponent> FindAnalyticSourceComponent(

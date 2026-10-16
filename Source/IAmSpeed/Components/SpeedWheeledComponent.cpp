@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Base/CarBumpCooldown.h"
 #include "IAmSpeed/Input/DrivingInputTargets.h"
 #include "IAmSpeed/Components/SpeedWheeledSteeringMath.h"
 #include "IAmSpeed/IAmSpeed.h"
@@ -1388,6 +1389,11 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 	const float& DeltaTime, const float& SimTime)
 {
 	UpdateFrameState();
+    // RecoverWheelState in UpdateFrameState may restore a predicted frame.
+    // Advance the restored cooldown once, rather than decrementing stale state.
+    if (!WheeledPhysicsState.LastCarBumpVictim.IsValid()) ResetCarBumpCooldown();
+    Speed::Collision::AdvanceCarBumpCooldown(
+        WheeledPhysicsState.LastCarBumpVictim, WheeledPhysicsState.CarBumpCooldownFrames);
 	// A test's initial state must be visible from the first movable frame, before any gameplay force can modify it.
 	ApplyTestVelocity();
 #if !UE_BUILD_SHIPPING
