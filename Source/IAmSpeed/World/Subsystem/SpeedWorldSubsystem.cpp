@@ -16,6 +16,7 @@
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/RingSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
@@ -542,6 +543,31 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			Imported->Planes.Append(MoveTemp(AdditionalLandscapePlanes));
 		}
 	}
+    TArray<Speed::Analytic::FTorusSurface> AuthoredTori;
+    for (TActorIterator<AActor> It(World);It;++It)
+    {
+        TArray<URingSubBody*> Rings;It->GetComponents<URingSubBody>(Rings);
+        for (URingSubBody* Ring:Rings)
+        {
+            const FString Identity=Ring->AnalyticIdentity.IsNone() ? AuthoredObjectPath(*Ring) : Ring->AnalyticIdentity.ToString();
+            const uint64 Id=Speed::Analytic::StableStringId(TEXT("AuthoredTorus|")+Identity);
+            Speed::Analytic::FTorusSurface Torus;FString Error;
+            if (!Ring->BuildStaticTorus(Id,Torus,Error))
+            { UE_LOG(LogTemp,Error,TEXT("[AnalyticTorusRejected] %s: %s"),*Ring->GetPathName(),*Error); return; }
+            AuthoredTori.Add(Torus);AnalyticSourceComponents.Add(Id,Ring);
+        }
+    }
+    if (!AuthoredTori.IsEmpty())
+    {
+        if (BakedRuntimeWorld && !bRuntimeWorldMutated)
+            Imported=MakeShared<Speed::Analytic::FAnalyticWorldData>(*BakedRuntimeWorld);
+        AuthoredTori.Sort([](const auto& A,const auto& B){return A.PrimitiveId<B.PrimitiveId;});
+        for (const auto& Torus:AuthoredTori)
+            CombinedSourceHash=Speed::Analytic::CombineStableIds(CombinedSourceHash,Torus.SourceId);
+        Imported->Tori.Append(MoveTemp(AuthoredTori));
+        bRuntimeWorldMutated=true;bRuntimeWorldIncrementallyFinalized=false;
+        UE_LOG(LogTemp,Display,TEXT("[AnalyticTorusAdmission] Count=%d"),Imported->Tori.Num());
+    }
 	TSharedPtr<const Speed::Analytic::FAnalyticWorldData> FinalizedWorld;
 	if (BakedRuntimeWorld && !bRuntimeWorldMutated)
 	{

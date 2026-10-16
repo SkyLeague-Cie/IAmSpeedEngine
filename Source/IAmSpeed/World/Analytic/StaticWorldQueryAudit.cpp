@@ -1,4 +1,7 @@
 #include "StaticWorldQueryAudit.h"
+#include "TorusWorldQuery.h"
+#include "IAmSpeed/SubBodies/Solid/TorusSphereSweep.h"
+#include <stdexcept>
 
 #include "AnalyticWorldData.h"
 #include "AnalyticWorldQuery.h"
@@ -409,8 +412,8 @@ namespace
 			return;
 		}
 		UE_LOG(LogTemp, Display,
-			TEXT("[AnalyticStrictQuery] Frame=%llu Attempt=%u Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX Hit=%d StartPenetrating=%d PenetrationDepth=%.17g ErrorCm=%.17g Time=%.17g Point=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
-			GStaticWorldAuditFrame.Frame, AuthorityAttempt, static_cast<uint8>(Query.Shape),
+			TEXT("[AnalyticStrictQuery] Frame=%llu Attempt=%u TorusTrajectory=%d Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX Hit=%d StartPenetrating=%d PenetrationDepth=%.17g ErrorCm=%.17g Time=%.17g Point=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
+			GStaticWorldAuditFrame.Frame, AuthorityAttempt, Query.bExcludeTori ? 1 : 0, static_cast<uint8>(Query.Shape),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
 			*FQuat(Query.Rotation).ToString(), *FVector(Query.HalfExtent).ToString(),
 			Query.Radius, Query.RequiredSourceId, Query.RequiredSurfaceId,
@@ -810,7 +813,7 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	const uint64 RequiredCanonicalGroupId,
 	const FVector& ReferenceNormal,
 	const float MinimumReferenceNormalDot,
-	const bool bAllowEstablishedFaceContactAtBoundary)
+	const bool bAllowEstablishedFaceContactAtBoundary,const FTorusSweepTrajectory* TorusTrajectory)
 {
 	const double AuthorityStartSeconds = FPlatformTime::Seconds();
 	ON_SCOPE_EXIT
@@ -853,6 +856,7 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	Query.MinimumReferenceNormalDot = MinimumReferenceNormalDot;
 	Query.bAllowEstablishedFaceContactAtBoundary =
 		bAllowEstablishedFaceContactAtBoundary;
+    Query.bExcludeTori=TorusTrajectory!=nullptr;
 	Query.bAuthorityOnly = true;
 	Query.bIncludeCompactPatches = true;
 	// Hybrid retains the certified indexed-face safety net.  Strict authority
@@ -871,13 +875,40 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	else
 	{
 		Analytic = StaticWorld->SweepSingle(Query);
-		LogStrictQueryDetail(Query, Analytic, GStaticWorldAuditFrame.AuthorityAttemptCount,
-			*StaticWorld);
+
 	}
 	if (bStrict)
 	{
 		AuditResidualSelection(Query, Analytic, *StaticWorld);
 	}
+    if (TorusTrajectory)
+    {
+        const auto& Motion=*TorusTrajectory;
+        const double Dt=Motion.DeltaSeconds;
+        if (!Shape.IsBox() && !Shape.IsSphere()) throw std::runtime_error("Unsupported torus query shape");
+        const double ShapeRadius=Shape.IsBox() ? Query.HalfExtent.Size() : Query.Radius;
+        const double MotionBound=Dt*(Motion.Owner.Velocity.Size()+Motion.Owner.Acceleration.Size()*Dt+
+            (Motion.Owner.AngularVelocity.Size()+Motion.Owner.AngularAcceleration.Size()*Dt)*(Motion.LocalOffset.Size()+ShapeRadius));
+        auto Filter=Query;Filter.bExcludeTori=false;
+        auto Broad=Filter;Broad.Shape=EQueryShape::Sphere;
+        Broad.Start=Motion.Owner.Location;Broad.End=Motion.Owner.Integrate(Motion.DeltaSeconds).Location;
+        // A circumsphere encloses all rotations/offsets; acceleration-to-chord
+        // deviation is bounded over the whole frame. Inflation is broad-phase only.
+        Broad.Radius=ShapeRadius+Motion.LocalOffset.Size()+Motion.Owner.Acceleration.Size()*(0.125*Dt*Dt)+.001;
+        StaticWorld->VisitTorusCandidates(Broad,[&](const FTorusSurface& Torus)
+        {
+            if (!bStrict) throw std::runtime_error("Authored tori require SurfaceAnalytic collision");
+            const auto Enclosure=Speed::Geometry::SweepTorusSphere(Torus.Geometry,
+                Torus.Pose.InverseTransformPosition(Broad.Start),Torus.Pose.InverseTransformPosition(Broad.End),Broad.Radius,0.);
+            if (Enclosure.Result==Speed::Geometry::ETorusSweepResult::Miss) return;
+            const auto PoseAt=[&Motion](double Time){return Motion.PoseAt(Time);};
+            const FWorldHit Candidate=SweepTorusTrajectory(Filter,Torus,PoseAt,MotionBound);
+            if (Candidate.bHit && (!Analytic.bHit || Candidate.Time<Analytic.Time ||
+                (Candidate.Time==Analytic.Time && Candidate.PrimitiveId<Analytic.PrimitiveId))) Analytic=Candidate;
+        });
+    }
+    if (bStrict)
+        LogStrictQueryDetail(Query,Analytic,GStaticWorldAuditFrame.AuthorityAttemptCount,*StaticWorld);
 	++GStaticWorldAuditFrame.AuthorityCoveredCount;
 	if (OutAnalyticHit) *OutAnalyticHit = Analytic;
 	OutHit = ToUnrealHit(Query, Analytic, RuntimeBridge);

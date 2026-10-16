@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "TorusSurface.h"
 
 namespace Speed::Analytic
 {
@@ -1490,6 +1491,8 @@ struct IAMSPEED_API FAnalyticWorldData
 	uint32 SchemaVersion = AnalyticWorldSchemaVersion;
 	uint64 SourceHash = 0;
 	TArray<FBoundedPlane> Planes;
+	// Authored primitive extension v1, collected before world sealing (not bake assets).
+	TArray<FTorusSurface> Tori;
 	TArray<FExtrudedQuinticPatch> ExtrudedQuinticPatches;
 	TArray<FTensorBezierPatch> TensorBezierPatches;
 	TArray<FPiecewiseTensorBezierPatch> PiecewiseTensorBezierPatches;

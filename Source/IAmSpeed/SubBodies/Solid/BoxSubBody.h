@@ -24,6 +24,7 @@ class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, publi
     GENERATED_UCLASS_BODY()
 	
 public:
+    const USolidSubBody* GetSolidSweepBody() const override { return this; }
 #if !UE_BUILD_SHIPPING
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
     {
