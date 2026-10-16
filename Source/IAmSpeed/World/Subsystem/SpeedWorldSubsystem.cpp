@@ -3,6 +3,7 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -1593,6 +1594,28 @@ bool USpeedWorldSubsystem::ApplySimulationInputs(
 	return SimulationWorld.ApplyInputsForFrame(NumFrame, Journal);
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+namespace Speed::Testing
+{
+namespace { thread_local FCcdPoseAuditObserver CcdObserver=nullptr; thread_local void* CcdContext=nullptr; }
+bool SetCcdPoseAuditObserverForCurrentThread(FCcdPoseAuditObserver Observer, void* Context) noexcept
+{
+    if(!Observer || !Context || CcdObserver) return false;
+    CcdObserver=Observer; CcdContext=Context; return true;
+}
+bool ClearCcdPoseAuditObserverForCurrentThread(FCcdPoseAuditObserver Observer, void* Context) noexcept
+{
+    if(CcdObserver!=Observer || CcdContext!=Context) return false;
+    CcdObserver=nullptr; CcdContext=nullptr; return true;
+}
+static void ObserveCcdPose(const USpeedWorldSubsystem* World, uint32 Frame, ECcdPoseAuditStage Stage,
+    float TimePassed, float SubDelta) noexcept
+{
+    if(CcdObserver) CcdObserver(CcdContext,{World,Frame,Stage,TimePassed,SubDelta});
+}
+}
+#endif
+
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
 	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
@@ -1604,6 +1627,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		static_cast<double>(Dt) * 1000.0;
 	constexpr int32 MaxIter = 24;
 	LastStepDiagnostics.MaximumIterationCount = MaxIter;
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::FrameBegin,0.f,0.f);
+#endif
+
 #if !UE_BUILD_SHIPPING
 	const bool bCaptureSolverEventTrace =
 		CVarIAmSpeedSolverEventTraceFrame.GetValueOnAnyThread() == static_cast<int32>(Frame);
@@ -1688,6 +1715,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		LastStepDiagnostics.IntegrateMilliseconds +=
 			(FPlatformTime::Seconds() - IntegrateStartSeconds) * 1000.0;
 		TimePassed += SubDelta;
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterIntegrate,TimePassed,SubDelta);
+#endif
+
 	};
 
     int32 Iter = 0;
@@ -1916,7 +1947,15 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 				Cast<USolidSubBody>(Resolver->GetHit().SubBody.Get());
 
 			const double ResolveStartSeconds = FPlatformTime::Seconds();
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::BeforeResolve,TimePassed,SubDelta);
+#endif
+
 			Resolver->ResolveCurrentHit(SubDelta, SimTime);
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterResolve,TimePassed,SubDelta);
+#endif
+
 			LastStepDiagnostics.ResolveMilliseconds +=
 				(FPlatformTime::Seconds() - ResolveStartSeconds) * 1000.0;
 			++LastStepDiagnostics.ResolvedEventCount;
@@ -1973,6 +2012,9 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     // Make persistent finite-mass contacts geometrically feasible before any
     // PostPhysics observer samples them.
 	ProjectDynamicContactPairs();
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterProjection,TimePassed,0.f);
+#endif
 	LastStepDiagnostics.ProjectionMilliseconds =
 		(FPlatformTime::Seconds() - ProjectionStartSeconds) * 1000.0;
 
@@ -1994,6 +2036,9 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 
 	SolveDynamicContactPairs(Dt);
 	ProjectDynamicContactPairs();
+#if WITH_DEV_AUTOMATION_TESTS
+    Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterPost,TimePassed,0.f);
+#endif
 	LastStepDiagnostics.PostMilliseconds =
 		(FPlatformTime::Seconds() - PostStartSeconds) * 1000.0;
 	LastStepDiagnostics.TotalMilliseconds =
