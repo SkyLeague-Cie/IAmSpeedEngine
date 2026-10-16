@@ -4,6 +4,7 @@
 #include "BoxSubBody.h"
 #include "IAmSpeed/World/Collision/BoxRestingSupport.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
+#include "IAmSpeed/World/Collision/ReciprocalBoxContact.h"
 #include "IAmSpeed/World/Collision/PlanarContactImpulse.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -2257,13 +2258,8 @@ void UBoxSubBody::ResolveHitVsBox(
 
     // Both callbacks describe this one contact, even when the reciprocal
     // body's cached hit is empty or belongs to another pair/frame.
-    SHitResult InverseHit = CurrentHit;
-    InverseHit.ImpactNormal = -CurrentHit.ImpactNormal;
-    InverseHit.Component = this;
-    InverseHit.SubBody = this;
-    Swap(InverseHit.ContactPointThis, InverseHit.ContactPointOther);
-    Swap(InverseHit.ContactFeatureThis, InverseHit.ContactFeatureOther);
-    Swap(InverseHit.ContactFeatureIndexThis, InverseHit.ContactFeatureIndexOther);
+    const SHitResult InverseHit = Speed::Collision::MakeReciprocalBoxContact(
+        CurrentHit, this, this);
 
     // -------- Overlap branch (Box - Box) --------
     // EstimateOBBOverlapAlongNormal + SolveOverlap
