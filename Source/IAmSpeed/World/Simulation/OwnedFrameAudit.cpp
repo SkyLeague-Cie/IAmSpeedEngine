@@ -44,8 +44,20 @@ bool ValidateMainOutputScope(FString Root,FString Log,FString User,FString Saved
     if(!FPaths::CollapseRelativeDirectories(Log))return false;
     const FString StageParent=FPaths::ConvertRelativePathToFull(FPaths::Combine(Project,TEXT("Saved/Release19Execution")));
     const FString Name=FPaths::GetCleanFilename(Root),Prefix=TEXT("CIRepairNative");
-    if(!FPaths::IsUnderDirectory(Root,StageParent)||!Name.StartsWith(Prefix,ESearchCase::CaseSensitive)||Name.Len()==Prefix.Len())return false;
-    for(int32 Index=Prefix.Len();Index<Name.Len();++Index)if(!FChar::IsDigit(Name[Index]))return false;
+    bool MainRoute=FPaths::IsUnderDirectory(Root,StageParent)&&Name.StartsWith(Prefix,ESearchCase::CaseSensitive)&&Name.Len()>Prefix.Len();
+    for(int32 Index=Prefix.Len();MainRoute&&Index<Name.Len();++Index)MainRoute=FChar::IsDigit(Name[Index]);
+    // Immutable-image Full has one output bind at Project/Artifacts. Admit only
+    // the two exact current-camera cohorts within its UUID-scoped Native output.
+    // The same explicit log/UserDir/actual Saved binding below remains mandatory.
+    const FString NativeParent=FPaths::GetPath(Root),RunParent=FPaths::GetPath(NativeParent);
+    const FString RunId=FPaths::GetCleanFilename(RunParent);
+    const FString PortableParent=FPaths::ConvertRelativePathToFull(FPaths::Combine(Project,TEXT("Artifacts/PortableCI")));
+    bool PortableRoute=(Name==TEXT("camera97")||Name==TEXT("camera-world1"))&&
+        FPaths::GetCleanFilename(NativeParent)==TEXT("Native")&&RunId.Len()==32&&
+        FPaths::IsSamePath(FPaths::GetPath(RunParent),PortableParent);
+    for(int32 Index=0;PortableRoute&&Index<RunId.Len();++Index)
+        PortableRoute=(RunId[Index]>=TEXT('0')&&RunId[Index]<=TEXT('9'))||(RunId[Index]>=TEXT('a')&&RunId[Index]<=TEXT('f'));
+    if(!MainRoute&&!PortableRoute)return false;
     if(!FPaths::IsSamePath(Log,FPaths::Combine(Root,TEXT("Editor.raw.log")))||
        !FPaths::IsSamePath(User,FPaths::Combine(Root,TEXT("RuntimeEnv/user")))||
        !FPaths::IsSamePath(Saved,FPaths::Combine(User,TEXT("Saved"))))return false;
@@ -1269,6 +1281,27 @@ bool FSpeedMainNativeOutputScopeTest::RunTest(const FString&)
         OutRoot=TEXT("sentinel-root");OutSaved=TEXT("sentinel-saved");
         if(!TestFalse(TEXT("invalid declaration cannot authorize a diagnostic root"),ValidateMainOutputScope(B.R,B.L,B.U,B.S,B.P,OutRoot,OutSaved)))return false;
         if(!TestTrue(TEXT("refusal preserves caller outputs"),OutRoot==TEXT("sentinel-root")&&OutSaved==TEXT("sentinel-saved")))return false;
+    }
+    const FString PortableParent=FPaths::Combine(Project,TEXT("Artifacts/PortableCI/0123456789abcdef0123456789abcdef/Native"));
+    for(const TCHAR* Cohort:{TEXT("camera97"),TEXT("camera-world1")})
+    {
+        const FString R=FPaths::ConvertRelativePathToFull(FPaths::Combine(PortableParent,Cohort));
+        const FString U=FPaths::Combine(R,TEXT("RuntimeEnv/user")),S=FPaths::Combine(U,TEXT("Saved")),L=FPaths::Combine(R,TEXT("Editor.raw.log"));
+        if(!TestTrue(TEXT("image camera output accepts only its bound log UserDir and actual Saved"),ValidateMainOutputScope(R,L,U,S,Project,OutRoot,OutSaved)))return false;
+        TestTrue(TEXT("portable output returns exact caller scope"),FPaths::IsSamePath(OutRoot,R)&&FPaths::IsSamePath(OutSaved,S));
+        const FBad PortableBad[]={
+            {FPaths::Combine(PortableParent,TEXT("camera98")),L,U,S,Project},
+            {R,L,U,S,FPaths::Combine(Project,TEXT("UnrelatedProject"))},
+            {R,FPaths::Combine(R,TEXT("other.log")),U,S,Project},
+            {R,L,U,S+TEXT("-sibling"),Project},
+            {R.Replace(TEXT("0123456789abcdef0123456789abcdef"),TEXT("not-a-full-run-id")),L,U,S,Project},
+            {R.Replace(TEXT("/Native/"),TEXT("/Other/")),L,U,S,Project}};
+        for(const auto& B:PortableBad)
+        {
+            OutRoot=TEXT("sentinel-root");OutSaved=TEXT("sentinel-saved");
+            if(!TestFalse(TEXT("portable output rejects foreign scope and mismatched runtime paths"),ValidateMainOutputScope(B.R,B.L,B.U,B.S,B.P,OutRoot,OutSaved)))return false;
+            if(!TestTrue(TEXT("portable refusal preserves outputs"),OutRoot==TEXT("sentinel-root")&&OutSaved==TEXT("sentinel-saved")))return false;
+        }
     }
     return !HasAnyErrors();
 }
