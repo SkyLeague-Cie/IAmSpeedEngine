@@ -46,6 +46,8 @@ bool FTorusWorldProviderTest::RunTest(const FString&)
     auto Arc=[&](double T){return WheelMotion.PoseAt(T);};
     Hit=SweepTorusTrajectory(Query,Torus,Arc,110.*PI*.5);
     TestTrue(TEXT("Captured owner rotation carries wheel into true tube"),Hit.bHit && Hit.Time>0. && Hit.Time<1.);
+    Hit=SweepTorusBoundedTrajectory(Query,Torus,Arc,115.*PI*.5,115.*FMath::Square(PI*.5),2.e-5);
+    TestTrue(TEXT("Certified curved wheel still reaches the exact torus"),Hit.bHit && Hit.Time>0. && Hit.Time<1.);
     Torus.Pose=FTransform(FQuat(FVector::UpVector,PI*.5),FVector(200.,300.,400.));
     TestTrue(TEXT("Rotated provider admitted"),Torus.Finalize(&Error));
     Query.Shape=EQueryShape::Sphere;Query.Radius=5.;

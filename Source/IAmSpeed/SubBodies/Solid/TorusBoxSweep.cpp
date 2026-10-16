@@ -1,22 +1,27 @@
 #include "TorusBoxSweep.h"
+#include <limits>
 
 namespace Speed::Geometry
 {
-FTorusBoxSweep SweepTorusShapeTrajectory(const FTorusGeometry& Torus,
+FTorusBoxSweep SweepTorusShapeBoundedTrajectory(const FTorusGeometry& Torus,
     bool bSphere,double Radius,const FVector3d& HalfExtent,TFunctionRef<FTransform(double)> PoseAt,
-    double MotionBoundCm,double InitialOverlapTolerance)
+    double MotionBoundCm,double InitialOverlapTolerance,double AccelerationBoundCm,
+    double PoseErrorCm,int32* PoseEvaluations)
 {
     FTorusBoxSweep Out;
+    if (PoseEvaluations) *PoseEvaluations=0;
     constexpr double ToleranceCm=1.e-4;
     constexpr int32 MaximumPoseEvaluations=4096;
     if (!Torus.IsValid() || (!bSphere && (HalfExtent.ContainsNaN() || HalfExtent.GetMin()<=0.)) ||
         (bSphere && (!FMath::IsFinite(Radius) || Radius<0.)) ||
         !FMath::IsFinite(MotionBoundCm) || MotionBoundCm<0. ||
-        !FMath::IsFinite(InitialOverlapTolerance) || InitialOverlapTolerance<0.) return Out;
+        !FMath::IsFinite(InitialOverlapTolerance) || InitialOverlapTolerance<0. ||
+        !FMath::IsFinite(AccelerationBoundCm) || !FMath::IsFinite(PoseErrorCm) || PoseErrorCm<0.) return Out;
     struct FSample { FTransform Pose; FTorusBoxDistance Distance; FVector3d Normal=FVector3d::ZeroVector; FVector3d Surface=FVector3d::ZeroVector; };
     int32 Evaluations=0;
     const auto Sample=[&](double Time,FSample& S)
     {
+        if (PoseEvaluations) *PoseEvaluations=Evaluations+1;
         if (++Evaluations>MaximumPoseEvaluations) return false;
         S.Pose=PoseAt(Time);
         if (S.Pose.ContainsNaN() || !S.Pose.GetScale3D().Equals(FVector::OneVector,1.e-9)) return false;
@@ -68,7 +73,35 @@ FTorusBoxSweep SweepTorusShapeTrajectory(const FTorusGeometry& Torus,
         const double Width=Node.B-Node.A;
         // Distance to a fixed set is 1-Lipschitz under point motion. This
         // excludes a WHOLE time interval, not just its sampled endpoints.
-        const double Lower=FMath::Max(Node.SA.Distance.LowerSeparation,Node.SB.Distance.LowerSeparation)-MotionBoundCm*Width;
+        // Intersect BOTH endpoint Lipschitz cones. Their intersection is the
+        // minimum possible clearance anywhere in this interval. The previous
+        // max(endpoint)-L*width discarded the opposite cone and needlessly
+        // exhausted the pose budget on near-tangent, separating contacts.
+        const double DA=Node.SA.Distance.LowerSeparation,DB=Node.SB.Distance.LowerSeparation;
+        double Lower=FMath::Min(FMath::Min(DA,DB),.5*(DA+DB-MotionBoundCm*Width))-2.*PoseErrorCm;
+        if (AccelerationBoundCm>=0.)
+        {
+            const double ShapeRadius=bSphere ? Radius : HalfExtent.Size();
+            const auto RadialLower=[&](const FSample& S)
+            {
+                const auto P=S.Pose.GetTranslation();
+                return FMath::Sqrt(P.Y*P.Y+P.Z*P.Z)-ShapeRadius;
+            };
+            const double Rho=FMath::Max(RadialLower(Node.SA),RadialLower(Node.SB))-MotionBoundCm*Width-2.*PoseErrorCm;
+            const double CircleDistance=Torus.TubeRadius+FMath::Max(DA,DB)-MotionBoundCm*Width-2.*PoseErrorCm;
+            if (Rho>0. && CircleDistance>0.)
+            {
+                // Distance to a circular centreline has Hessian upper norm
+                // <=1/rho+1/d away from its axis/centreline. Compose with the
+                // point trajectory: f'' <= A+L^2*(1/rho+1/d). The minimum over
+                // ALL material points keeps the endpoint chord lower bound,
+                // including box feature changes (no witness-normal assumption).
+                const double Curvature=AccelerationBoundCm+MotionBoundCm*MotionBoundCm*(1./Rho+1./CircleDistance);
+                if (FMath::IsFinite(Curvature))
+                    Lower=FMath::Max(Lower,FMath::Min(DA,DB)-Curvature*Width*Width*.125-2.*PoseErrorCm);
+            }
+        }
+        Lower-=64.*std::numeric_limits<double>::epsilon()*(1.+FMath::Abs(DA)+FMath::Abs(DB)+MotionBoundCm*Width);
         if (Lower>0.) continue;
         if (MotionBoundCm*Width<=ToleranceCm)
         {
@@ -92,6 +125,13 @@ FTorusBoxSweep SweepTorusShapeTrajectory(const FTorusGeometry& Torus,
         Stack.Add({Node.A,Mid,Node.SA,Middle});
     }
     return Out;
+}
+FTorusBoxSweep SweepTorusShapeTrajectory(const FTorusGeometry& Torus,
+    bool bSphere,double Radius,const FVector3d& HalfExtent,TFunctionRef<FTransform(double)> PoseAt,
+    double MotionBoundCm,double InitialOverlapTolerance)
+{
+    return SweepTorusShapeBoundedTrajectory(Torus,bSphere,Radius,HalfExtent,PoseAt,
+        MotionBoundCm,InitialOverlapTolerance,-1.);
 }
 FTorusBoxSweep SweepTorusBoxTrajectory(const FTorusGeometry& Torus,
     const FVector3d& HalfExtent,TFunctionRef<FTransform(double)> PoseAt,

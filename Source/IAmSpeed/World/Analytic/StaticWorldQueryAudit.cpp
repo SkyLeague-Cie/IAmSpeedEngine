@@ -1,4 +1,5 @@
 #include "StaticWorldQueryAudit.h"
+#include <limits>
 #include "TorusWorldQuery.h"
 #include "IAmSpeed/SubBodies/Solid/TorusSphereSweep.h"
 #include <stdexcept>
@@ -902,7 +903,20 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
                 Torus.Pose.InverseTransformPosition(Broad.Start),Torus.Pose.InverseTransformPosition(Broad.End),Broad.Radius,0.);
             if (Enclosure.Result==Speed::Geometry::ETorusSweepResult::Miss) return;
             const auto PoseAt=[&Motion](double Time){return Motion.PoseAt(Time);};
-            const FWorldHit Candidate=SweepTorusTrajectory(Filter,Torus,PoseAt,MotionBound);
+            // For exp(w*t+.5*alpha*t^2), the matrix-exponential derivative
+            // enclosure gives |point''| <= |a|+(|alpha|+W^2)*span.
+            // SKinematic samples float time/t^2 (<=.75*float-epsilon*L
+            // for these operations);8*epsilon*(1+L) also encloses their
+            // composition. Enclose the rigid double transform separately.
+            // Preserve those operations and
+            // the rigid double transform rather than assuming exact samples.
+            const double Span=Motion.LocalOffset.Size()+ShapeRadius;
+            const double W=Motion.Owner.AngularVelocity.Size()+Motion.Owner.AngularAcceleration.Size()*Dt;
+            const double AccelerationBound=Dt*Dt*(Motion.Owner.Acceleration.Size()+
+                (Motion.Owner.AngularAcceleration.Size()+W*W)*Span);
+            const double PoseError=8.*double(std::numeric_limits<float>::epsilon())*(1.+MotionBound)+
+                64.*std::numeric_limits<double>::epsilon()*(1.+Motion.Owner.Location.Size()+Torus.Pose.GetTranslation().Size()+Span+Torus.Geometry.MajorRadius);
+            const FWorldHit Candidate=SweepTorusBoundedTrajectory(Filter,Torus,PoseAt,MotionBound,AccelerationBound,PoseError);
             if (Candidate.bHit && (!Analytic.bHit || Candidate.Time<Analytic.Time ||
                 (Candidate.Time==Analytic.Time && Candidate.PrimitiveId<Analytic.PrimitiveId))) Analytic=Candidate;
         });

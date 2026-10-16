@@ -37,8 +37,8 @@ FWorldHit MakeHit(const FWorldQuery& Query,const FTorusSurface& Torus,double Tim
     return Hit;
 }
 }
-FWorldHit SweepTorusTrajectory(const FWorldQuery& Query,const FTorusSurface& Torus,
-    TFunctionRef<FTransform(double)> WorldPoseAt,double MotionBoundCm)
+FWorldHit SweepTorusBoundedTrajectory(const FWorldQuery& Query,const FTorusSurface& Torus,
+    TFunctionRef<FTransform(double)> WorldPoseAt,double MotionBoundCm,double AccelerationBoundCm,double PoseErrorCm)
 {
     if (!TorusPassesFilter(Query,Torus)) return {};
     const auto LocalPoseAt=[&](double Time)
@@ -47,9 +47,9 @@ FWorldHit SweepTorusTrajectory(const FWorldQuery& Query,const FTorusSurface& Tor
         return FTransform(Torus.Pose.GetRotation().Inverse()*Pose.GetRotation(),
             Torus.Pose.InverseTransformPosition(Pose.GetTranslation()));
     };
-    const auto Contact=Geometry::SweepTorusShapeTrajectory(Torus.Geometry,Query.Shape!=EQueryShape::Box,
+    const auto Contact=Geometry::SweepTorusShapeBoundedTrajectory(Torus.Geometry,Query.Shape!=EQueryShape::Box,
         Query.Shape==EQueryShape::Ray ? 0. : Query.Radius,Query.HalfExtent,
-        LocalPoseAt,MotionBoundCm,Query.InitialOverlapTolerance);
+        LocalPoseAt,MotionBoundCm,Query.InitialOverlapTolerance,AccelerationBoundCm,PoseErrorCm);
     if (Contact.Result==Geometry::ETorusSweepResult::Miss) return {};
     if (Contact.Result!=Geometry::ETorusSweepResult::Hit)
     {
@@ -90,13 +90,18 @@ FWorldHit SweepTorusTrajectory(const FWorldQuery& Query,const FTorusSurface& Tor
     Hit.Location=WorldPoseAt(Contact.Time).GetTranslation();
     return Hit;
 }
+FWorldHit SweepTorusTrajectory(const FWorldQuery& Query,const FTorusSurface& Torus,
+    TFunctionRef<FTransform(double)> WorldPoseAt,double MotionBoundCm)
+{
+    return SweepTorusBoundedTrajectory(Query,Torus,WorldPoseAt,MotionBoundCm,-1.,0.);
+}
 FWorldHit SweepTorusSurface(const FWorldQuery& Query,const FTorusSurface& Torus)
 {
     if (!TorusPassesFilter(Query,Torus)) return {};
     if (Query.Shape==EQueryShape::Box)
     {
         const auto PoseAt=[&](double Time){return FTransform(Query.Rotation,FMath::Lerp(Query.Start,Query.End,Time));};
-        return SweepTorusTrajectory(Query,Torus,PoseAt,(Query.End-Query.Start).Size());
+        return SweepTorusBoundedTrajectory(Query,Torus,PoseAt,(Query.End-Query.Start).Size(),0.,0.);
     }
     const FVector3d Start=Torus.Pose.InverseTransformPosition(Query.Start),End=Torus.Pose.InverseTransformPosition(Query.End);
     const double Radius=Query.Shape==EQueryShape::Ray ? 0. : Query.Radius;

@@ -26,4 +26,14 @@ IAMSPEED_API FTorusBoxSweep SweepTorusBoxTrajectory(const FTorusGeometry& Torus,
 IAMSPEED_API FTorusBoxSweep SweepTorusShapeTrajectory(const FTorusGeometry& Torus,
     bool bSphere,double Radius,const FVector3d& HalfExtent,TFunctionRef<FTransform(double)> PoseAt,
     double MotionBoundCm,double InitialOverlapTolerance=0.05);
+/** Optional smooth-trajectory certificate. Acceleration bounds the second
+ * derivative of EVERY shape point in normalized time. A negative bound keeps
+ * the generic Lipschitz path. PoseError bounds sampling vs the smooth curve.
+ * These bounds prune certified empty intervals only; contact/MTD tolerances
+ * and budgets are unchanged. Existing exported entry points retain their ABI.
+ */
+IAMSPEED_API FTorusBoxSweep SweepTorusShapeBoundedTrajectory(const FTorusGeometry& Torus,
+    bool bSphere,double Radius,const FVector3d& HalfExtent,TFunctionRef<FTransform(double)> PoseAt,
+    double MotionBoundCm,double InitialOverlapTolerance,double AccelerationBoundCm,
+    double PoseErrorCm=0.,int32* PoseEvaluations=nullptr);
 }
