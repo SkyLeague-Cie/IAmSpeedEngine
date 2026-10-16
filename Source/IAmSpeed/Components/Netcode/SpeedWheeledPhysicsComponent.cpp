@@ -155,8 +155,10 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 		}
 	}
 
-	bOutSuccess = bBumpVictimMapped && !Ar.IsError();
-	return true;
+	// Mapping is a retry condition, distinct from malformed archive data.
+	// Engine NetSerialization.h requires unmapped object properties to stay dirty.
+	bOutSuccess = !Ar.IsError();
+	return bBumpVictimMapped;
 }
 
 int32 FNetworkWheeledSpeedState::GetSourceLocalFrame() const
