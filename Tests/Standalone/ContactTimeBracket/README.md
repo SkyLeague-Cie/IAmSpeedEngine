@@ -9,8 +9,11 @@ old sampled-time maximum penetration is1.26500003cm; the selected lower endpoint
 has no penetration in this unit fixture. This is NOT a native geometry result.
 
 The nonmonotonic callback explicitly demonstrates that refinement does not
-certify missed earlier overlap islands. The outer sampled SAT scan can still
-miss brief grazing contacts. SAT epsilon, rotating geometry, actual resolver
+certify missed earlier overlap islands. The outer sampled SAT scan can miss brief grazing contacts. The added
+[linear interval completion](../LinearContactWindow/README.md) supplies an
+interior witness after a sampled miss for exactly fixed orientations and equal
+accelerations; rotating trajectories and zero-duration tangencies retain this
+limitation. SAT epsilon, rotating geometry, actual resolver
 ordering and complete frame nonpenetration remain native-unqualified.
 
 Native authored test: IAmSpeed.Collision.BoxBox.FirstContactBracket (60 cells,

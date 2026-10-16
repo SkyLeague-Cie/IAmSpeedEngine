@@ -1,0 +1,4 @@
+# Fixed-orientation contact window
+Production helper clips linear SAT projection intervals and supplies one interior probe after the sampled box/box scan misses. The existing SAT validates that probe, then the existing bracket refines from the proved separated frame start. Only exactly fixed orientations and equal linear accelerations are eligible. Rotating contacts and zero-duration tangencies retain the sampled path limitations.
+
+The standalone test includes the actual production scalar helper:72 brief axis-aligned corner crossings have no overlapping original sample but do have an interior interval witness, plus rejection/finite guards. It does not compile SBox or certify geometry, solver, performance or complete CCD. Native test IAmSpeed.Collision.BoxBox.BriefCornerContact authors36 actual SBox cases in both role orders; UNCOMPILED/UNRUN until a qualified engine is available.

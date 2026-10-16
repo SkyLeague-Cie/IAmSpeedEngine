@@ -42,4 +42,28 @@ bool FBoxBoxContactTimeTest::RunTest(const FString& Parameters)
     }
     return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBoxBoxBriefCornerContactTest,
+    "IAmSpeed.Collision.BoxBox.BriefCornerContact",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FBoxBoxBriefCornerContactTest::RunTest(const FString& Parameters)
+{
+    constexpr float Delta=1.f/300.f, Step=Delta/12.f;
+    for(float Closing:{300.f,1200.f,4600.f}) for(int32 Phase=0;Phase<12;++Phase)
+    {
+        const float Enter=(Phase+.35f)*Step, Exit=(Phase+.4f)*Step;
+        const FVector Extent(78,52,18);
+        Speed::SBox A(FVector::ZeroVector,Extent,FQuat::Identity,FVector::ZeroVector,FVector::ZeroVector,FVector::ZeroVector,FVector::ZeroVector);
+        Speed::SBox B(FVector(156-Closing*Exit,104+Closing*Enter,0),Extent,FQuat::Identity,FVector(Closing,-Closing,0),FVector::ZeroVector,FVector::ZeroVector,FVector::ZeroVector);
+        const auto Hit=A.IntersectNextFrame(B,Delta,12), Reverse=B.IntersectNextFrame(A,Delta,12);
+        TestTrue(TEXT("brief corner contact found in both role orders"),Hit.bHit&&Reverse.bHit);
+        if(!Hit.bHit||!Reverse.bHit)continue;
+        const FVector Relative=B.WorldCenter+B.Vel*Hit.TOI;
+        const double Separation=FMath::Max(FMath::Abs(Relative.X)-156.,FMath::Abs(Relative.Y)-104.);
+        TestTrue(TEXT("corner TOI separated or touching independently"),Separation>=-1.e-4&&Separation<.002);
+        TestTrue(TEXT("corner TOI within frame"),Hit.TOI>=0&&Hit.TOI<=Delta);
+        TestTrue(TEXT("corner reciprocal TOI agrees"),FMath::Abs(Hit.TOI-Reverse.TOI)<1.e-7);
+        AddInfo(FString::Printf(TEXT("[BoxBoxBriefCorner] speed=%.0f phase=%d toi=%.9g gapCm=%.9g"),Closing,Phase,Hit.TOI,Separation));
+    }
+    return true;
+}
 #endif

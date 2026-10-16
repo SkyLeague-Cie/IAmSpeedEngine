@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Collision/LinearContactWindow.h"
 #include "IAmSpeed/World/Collision/ContactTimeBracket.h"
 #include "SUtils.h"
 #include "QuaternionQuantizationCache.h"
@@ -992,10 +993,39 @@ SHitResult Speed::SBox::IntersectNextFrame(const SBox& Other, const float& delta
 			return true; // no separating axis => overlap
 		};
 
-	// Substep scan
-	for (uint8 step = 0; step <= NbSubsteps; ++step)
+	// A brief corner crossing can begin and end between all sampled poses.
+	// After a sampled miss, seek an interior witness using the intersection
+	// of all fixed-orientation SAT time intervals. No rotating/accelerating
+	// relative trajectory is admitted to this linear-only completion path.
+	auto FixedOrientationProbe = [&]() -> float
 	{
-		float t = step * dt;
+		if (AngVel != FVector::ZeroVector || AngAccel != FVector::ZeroVector ||
+			Other.AngVel != FVector::ZeroVector || Other.AngAccel != FVector::ZeroVector || Accel != Other.Accel)
+			return -1.f;
+		Collision::FLinearContactWindow Window(deltaTime);
+		const FVector A[3]={Rot.GetAxisX(),Rot.GetAxisY(),Rot.GetAxisZ()};
+		const FVector B[3]={Other.Rot.GetAxisX(),Other.Rot.GetAxisY(),Other.Rot.GetAxisZ()};
+		const FVector EA=Extent(), EB=Other.Extent(), RelativeVelocity=Other.Vel-Vel;
+		auto ClipAxis = [&](const FVector& Axis)
+		{
+			if(Axis.SizeSquared()<1.e-8) return true; // same degenerate-axis exclusion as SAT
+			double Radius=0;
+			for(int32 I=0;I<3;++I)
+				Radius+=EA[I]*FMath::Abs(FVector::DotProduct(A[I],Axis))+EB[I]*FMath::Abs(FVector::DotProduct(B[I],Axis));
+			return Window.Clip(FVector::DotProduct(Delta0,Axis),FVector::DotProduct(RelativeVelocity,Axis),Radius);
+		};
+		for(int32 I=0;I<3;++I) if(!ClipAxis(A[I])||!ClipAxis(B[I])) return -1.f;
+		for(int32 I=0;I<3;++I) for(int32 J=0;J<3;++J)
+			if(!ClipAxis(FVector::CrossProduct(A[I],B[J]))) return -1.f;
+		if(!(Window.Exit>Window.Enter)) return -1.f; // zero-duration tangency has no interior witness
+		return static_cast<float>(Window.Enter+(Window.Exit-Window.Enter)*.5);
+	};
+	// int32 also avoids wrapping at the uint8 input's maximum subdivision count.
+	for (int32 step = 0; step <= static_cast<int32>(NbSubsteps)+1; ++step)
+	{
+		const bool bInteriorProbe=step>static_cast<int32>(NbSubsteps);
+		float t = bInteriorProbe ? FixedOrientationProbe() : step * dt;
+		if(bInteriorProbe && !(t>0.f && t<=deltaTime)) continue;
 
 		FVector CA, CB, WA, WB;
 		FQuat QA, QB;
@@ -1010,7 +1040,7 @@ SHitResult Speed::SBox::IntersectNextFrame(const SBox& Other, const float& delta
 
 		if (step > 0)
 		{
-			const auto Bracket = Collision::RefineFirstOverlap((step - 1) * dt, t,
+			const auto Bracket = Collision::RefineFirstOverlap(bInteriorProbe ? 0.f : (step - 1) * dt, t,
 				[&](float ProbeTime)
 				{
 					FVector ProbeCA, ProbeCB, ProbeWA, ProbeWB, ProbeNormal;
