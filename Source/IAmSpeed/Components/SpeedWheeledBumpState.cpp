@@ -47,6 +47,7 @@ void USpeedWheeledComponent::AppendSimulationSnapshot(TArray<uint8>& Out) const
 }
 bool USpeedWheeledComponent::CanRestoreSimulationSnapshot(TConstArrayView<uint8> Payload) const
 {
+    if(!AllowsExternalNetworkStateRestore()) return false;
     uint16 Frames=0;uint64 Id=0;
     if(!ReadBumpPayload(Payload,Frames,Id)) return false;
     if(Id==0) return true;

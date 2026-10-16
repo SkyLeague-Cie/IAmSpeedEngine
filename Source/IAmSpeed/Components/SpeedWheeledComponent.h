@@ -83,8 +83,6 @@ public:
 	bool ServiceInputRetirementAtBoundary() override;
 	// Transitional network input is forward-only. State restore cannot leave
 	// its separate filter running against a corrected/replayed component state.
-	bool CanRestoreSimulationSnapshot(TConstArrayView<uint8> Payload) const override
-	{ return AllowsExternalNetworkStateRestore() && ISpeedComponent::CanRestoreSimulationSnapshot(Payload); }
 	bool AllowsExternalNetworkStateRestore() const { return !HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority(); }
 protected:
 	// Shared arbitration for both native wire payloads. No live input mailbox.
