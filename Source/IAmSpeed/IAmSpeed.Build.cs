@@ -24,6 +24,11 @@ public class IAmSpeed : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore",
 			"EnhancedInput", "ChaosVehicles", "PhysicsCore", "Chaos", "ChaosVehiclesCore", "Landscape"});
+		// Connected PackageMap contract fixture uses only editor test worlds.
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.Add("EngineSettings");
+		}
         PublicIncludePaths.AddRange(new string[] { Path.Combine(ModuleDirectory, "Actors") });
         PublicIncludePaths.AddRange(new string[] { Path.Combine(ModuleDirectory, "Base") });
         PublicIncludePaths.AddRange(new string[] { Path.Combine(ModuleDirectory, "Components") });
