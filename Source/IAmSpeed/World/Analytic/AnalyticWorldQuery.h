@@ -72,6 +72,8 @@ struct IAMSPEED_API FWorldQuery
 	// evaluated by the authority pass. TrySweepAuthority preserves the certified
 	// residual-triangle winner separately and merges it into the draft result.
 	bool bExcludeAuthorityEligible = false;
+	// Solid sweep evaluates tori on its actual accelerated/rotating trajectory.
+	bool bExcludeTori = false;
 	bool bIncludeCompactPatches = false;
 	bool bIncludeTriangles = false;
 	/** True only when the query-side filter alone excludes every possible provider. */
@@ -133,6 +135,7 @@ public:
 	bool TrySweepAuthority(
 		const FWorldQuery& Query, FWorldHit& OutAuthorityHit) const;
 	FWorldHit Sweep(const FWorldQuery& Query) const;
+    void VisitTorusCandidates(const FWorldQuery& Query,TFunctionRef<void(const FTorusSurface&)> Visitor) const;
 	/** Pose-only maximum overlap, using finite geometry and no CCD release shell.
 	 * Returns false for moving/unsupported queries, separately from a clear pose.
 	 * Maximum single-constraint depth is not the compound world's global MTD. */
