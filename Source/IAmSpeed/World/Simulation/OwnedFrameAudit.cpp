@@ -47,12 +47,12 @@ bool ValidateMainOutputScope(FString Root,FString Log,FString User,FString Saved
     bool MainRoute=FPaths::IsUnderDirectory(Root,StageParent)&&Name.StartsWith(Prefix,ESearchCase::CaseSensitive)&&Name.Len()>Prefix.Len();
     for(int32 Index=Prefix.Len();MainRoute&&Index<Name.Len();++Index)MainRoute=FChar::IsDigit(Name[Index]);
     // Immutable-image Full has one output bind at Project/Artifacts. Admit only
-    // the two exact current-camera cohorts within its UUID-scoped Native output.
+    // the declared camera cohorts and prior97 route within UUID-scoped Native output.
     // The same explicit log/UserDir/actual Saved binding below remains mandatory.
     const FString NativeParent=FPaths::GetPath(Root),RunParent=FPaths::GetPath(NativeParent);
     const FString RunId=FPaths::GetCleanFilename(RunParent);
     const FString PortableParent=FPaths::ConvertRelativePathToFull(FPaths::Combine(Project,TEXT("Artifacts/PortableCI")));
-    bool PortableRoute=(Name==TEXT("camera97")||Name==TEXT("camera-world1"))&&
+    bool PortableRoute=(Name==TEXT("camera85")||Name==TEXT("camera97")||Name==TEXT("camera-world1"))&&
         FPaths::GetCleanFilename(NativeParent)==TEXT("Native")&&RunId.Len()==32&&
         FPaths::IsSamePath(FPaths::GetPath(RunParent),PortableParent);
     for(int32 Index=0;PortableRoute&&Index<RunId.Len();++Index)
@@ -1283,7 +1283,7 @@ bool FSpeedMainNativeOutputScopeTest::RunTest(const FString&)
         if(!TestTrue(TEXT("refusal preserves caller outputs"),OutRoot==TEXT("sentinel-root")&&OutSaved==TEXT("sentinel-saved")))return false;
     }
     const FString PortableParent=FPaths::Combine(Project,TEXT("Artifacts/PortableCI/0123456789abcdef0123456789abcdef/Native"));
-    for(const TCHAR* Cohort:{TEXT("camera97"),TEXT("camera-world1")})
+    for(const TCHAR* Cohort:{TEXT("camera85"),TEXT("camera97"),TEXT("camera-world1")})
     {
         const FString R=FPaths::ConvertRelativePathToFull(FPaths::Combine(PortableParent,Cohort));
         const FString U=FPaths::Combine(R,TEXT("RuntimeEnv/user")),S=FPaths::Combine(U,TEXT("Saved")),L=FPaths::Combine(R,TEXT("Editor.raw.log"));
