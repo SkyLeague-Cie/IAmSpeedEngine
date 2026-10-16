@@ -42,6 +42,7 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;
+	friend class FSkyBumpWholePhysicalFrameDiagnosticTest;
 	friend class FSkyCameraPacedPhysicalFrameCounterbalancedTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;

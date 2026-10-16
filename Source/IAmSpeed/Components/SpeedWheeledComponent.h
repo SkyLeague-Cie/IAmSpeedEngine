@@ -857,6 +857,7 @@ private:
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;
+	friend class FSkyBumpWholePhysicalFrameDiagnosticTest;
 	friend class FSkyCameraPacedPhysicalFrameCounterbalancedTest;
 	friend class FSkyWaveDashAirPitchRearmTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;

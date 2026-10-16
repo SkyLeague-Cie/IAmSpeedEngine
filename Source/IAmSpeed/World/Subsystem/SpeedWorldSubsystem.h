@@ -69,6 +69,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;
+	friend class FSkyBumpWholePhysicalFrameDiagnosticTest;
 	friend class FSkyCameraPacedPhysicalFrameCounterbalancedTest;
 	friend class FSkyWaveDashAirPitchRearmTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
