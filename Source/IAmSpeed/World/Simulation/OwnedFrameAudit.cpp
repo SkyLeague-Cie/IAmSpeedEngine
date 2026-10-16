@@ -9,6 +9,7 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/FileManager.h"
 #include "Misc/Parse.h"
+#include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Serialization/Archive.h"
 #include <atomic>
@@ -28,13 +29,37 @@ thread_local FSession* ActiveSession = nullptr;
 struct FHostCapture { FSessionPtr Current; uint64 Generation = 0; };
 TMap<const void*, FHostCapture> HostSessions; // GT only; never read by an owner worker.
 
+bool ValidateMainOutputScope(FString Root,FString Log,FString User,FString Saved,
+    const FString& Project,FString& OutRoot,FString& OutSaved)
+{
+    auto Directory=[](FString& Value)
+    {
+        if(Value.IsEmpty()||FPaths::IsRelative(Value))return false;
+        Value=FPaths::ConvertRelativePathToFull(Value);
+        if(!FPaths::CollapseRelativeDirectories(Value))return false;
+        FPaths::NormalizeDirectoryName(Value);return !Value.IsEmpty();
+    };
+    if(!Directory(Root)||!Directory(User)||!Directory(Saved)||Log.IsEmpty()||FPaths::IsRelative(Log))return false;
+    Log=FPaths::ConvertRelativePathToFull(Log);FPaths::NormalizeFilename(Log);
+    if(!FPaths::CollapseRelativeDirectories(Log))return false;
+    const FString StageParent=FPaths::ConvertRelativePathToFull(FPaths::Combine(Project,TEXT("Saved/Release19Execution")));
+    const FString Name=FPaths::GetCleanFilename(Root),Prefix=TEXT("CIRepairNative");
+    if(!FPaths::IsUnderDirectory(Root,StageParent)||!Name.StartsWith(Prefix,ESearchCase::CaseSensitive)||Name.Len()==Prefix.Len())return false;
+    for(int32 Index=Prefix.Len();Index<Name.Len();++Index)if(!FChar::IsDigit(Name[Index]))return false;
+    if(!FPaths::IsSamePath(Log,FPaths::Combine(Root,TEXT("Editor.raw.log")))||
+       !FPaths::IsSamePath(User,FPaths::Combine(Root,TEXT("RuntimeEnv/user")))||
+       !FPaths::IsSamePath(Saved,FPaths::Combine(User,TEXT("Saved"))))return false;
+    OutRoot=MoveTemp(Root);OutSaved=MoveTemp(Saved);return true;
+}
 bool PrivatePath(const FString& Path)
 {
     if (Path.IsEmpty() || FPaths::IsRelative(Path)) return false;
     FString Full = FPaths::ConvertRelativePathToFull(Path);
     FPaths::NormalizeFilename(Full);
     if (!FPaths::CollapseRelativeDirectories(Full)) return false;
-    return Full.StartsWith(TEXT("E:/UELeadPrivate/"), ESearchCase::IgnoreCase);
+    if(Full.StartsWith(TEXT("E:/UELeadPrivate/"),ESearchCase::IgnoreCase))return true;
+    FString Root,Saved;
+    return GetDeclaredMainNativeOutputRoot(Root,Saved)&&FPaths::IsUnderDirectory(Full,Saved);
 }
 struct FBinaryHeader
 {
@@ -81,6 +106,16 @@ static_assert(sizeof(FBinaryHeader) == 216, "Owned audit header layout mismatch"
 constexpr uint64 BoundedArrayBytes = MaxFrames * sizeof(FFrameRecord) + MaxAux * sizeof(FAuxRecord);
 static_assert(BoundedArrayBytes == 1092960000ull, "Owned audit allocation budget mismatch");
 #endif
+}
+
+bool GetDeclaredMainNativeOutputRoot(FString& OutRoot,FString& OutSavedDir)
+{
+    FString Root,Log,User;
+    if(!FParse::Value(FCommandLine::Get(),TEXT("SLPrivateNativeOutputRoot="),Root)||
+       !FParse::Value(FCommandLine::Get(),TEXT("AbsLog="),Log)||
+       !FParse::Value(FCommandLine::Get(),TEXT("UserDir="),User))return false;
+    return ValidateMainOutputScope(Root,Log,User,FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()),
+        FPaths::ProjectDir(),OutRoot,OutSavedDir);
 }
 
 class FSession
@@ -1204,4 +1239,38 @@ bool FSpeedOwnedPhysicalDetailWrongOwnerTest::RunTest(const FString&)
     TestEqual(TEXT("owner's validity retained separately from session failure"),D.ValidMask,uint32(31));
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpeedMainNativeOutputScopeTest,
+    "IAmSpeed.Diagnostics.MainNativeOutputScope",EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
+bool FSpeedMainNativeOutputScopeTest::RunTest(const FString&)
+{
+    using namespace Speed::OwnedFrameAudit;
+    FString Root,Saved;
+    if(!TestTrue(TEXT("actual declared stage and isolated Saved are validated"),GetDeclaredMainNativeOutputRoot(Root,Saved)))return false;
+    const FString User=FPaths::GetPath(Saved),Log=FPaths::Combine(Root,TEXT("Editor.raw.log")),Project=FPaths::ProjectDir();
+    FString OutRoot=TEXT("sentinel-root"),OutSaved=TEXT("sentinel-saved");
+    TestTrue(TEXT("directory separators do not change exact scope"),ValidateMainOutputScope(Root+TEXT("/"),Log,User+TEXT("/"),Saved+TEXT("/"),Project,OutRoot,OutSaved));
+    TestTrue(TEXT("main capture binary confined to actual Saved"),PrivatePath(FPaths::Combine(Saved,TEXT("scope-test.bin"))));
+    TestFalse(TEXT("relative output refused"),PrivatePath(TEXT("scope-test.bin")));
+    TestFalse(TEXT("Saved sibling refused"),PrivatePath(FPaths::Combine(Saved+TEXT("-sibling"),TEXT("scope-test.bin"))));
+    TestFalse(TEXT("parent escape refused"),PrivatePath(FPaths::Combine(Saved,TEXT("../scope-test.bin"))));
+    TestTrue(TEXT("legacy private native transport preserved"),PrivatePath(TEXT("E:/UELeadPrivate/LegacyAudit/scope-test.bin")));
+    struct FBad{FString R,L,U,S,P;};
+    const FBad Bad[]={
+        {TEXT("relative"),Log,User,Saved,Project},
+        {Root,FPaths::Combine(Root,TEXT("other.log")),User,Saved,Project},
+        {Root,Log,User+TEXT("-sibling"),Saved,Project},
+        {Root,Log,User,Saved+TEXT("-sibling"),Project},
+        {FPaths::GetPath(Root),Log,User,Saved,Project},
+        {Root,Log,User,Saved,FPaths::Combine(Project,TEXT("UnrelatedProject"))},
+        {Root+TEXT("-other"),Log,User,Saved,Project}};
+    for(const auto& B:Bad)
+    {
+        OutRoot=TEXT("sentinel-root");OutSaved=TEXT("sentinel-saved");
+        if(!TestFalse(TEXT("invalid declaration cannot authorize a diagnostic root"),ValidateMainOutputScope(B.R,B.L,B.U,B.S,B.P,OutRoot,OutSaved)))return false;
+        if(!TestTrue(TEXT("refusal preserves caller outputs"),OutRoot==TEXT("sentinel-root")&&OutSaved==TEXT("sentinel-saved")))return false;
+    }
+    return !HasAnyErrors();
+}
+
 #endif

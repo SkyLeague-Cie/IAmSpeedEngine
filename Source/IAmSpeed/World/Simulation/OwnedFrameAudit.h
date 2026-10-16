@@ -9,6 +9,10 @@ struct FSpeedStepDiagnostics;
 #if WITH_DEV_AUTOMATION_TESTS
 namespace Speed::OwnedFrameAudit
 {
+// Explicit native-test transport scope. No simulation/diagnostic record ABI
+// changes; false leaves both outputs unchanged. Used only at capture admission
+// and frozen export, never by physical Step/Work/Wait.
+IAMSPEED_API bool GetDeclaredMainNativeOutputRoot(FString& OutRoot,FString& OutSavedDir);
 enum class EFreezeReason : uint32 { ControlledCutoff = 1, WorkerClose = 2 };
 enum class EAuxKind : uint32 { Service = 1, Work, Wait, EventWait, ParkWait };
 enum EClockFlags : uint32 { QpcValid = 1, ThreadCyclesValid = 2, ThreadCpuValid = 4 };
