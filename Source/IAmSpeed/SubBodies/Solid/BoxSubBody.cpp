@@ -2255,6 +2255,16 @@ void UBoxSubBody::ResolveHitVsBox(
     const FVector P = CurrentHit.ImpactPoint;
     const FVector N = CurrentHit.ImpactNormal.GetSafeNormal(); // Other -> This (entrant dans This)
 
+    // Both callbacks describe this one contact, even when the reciprocal
+    // body's cached hit is empty or belongs to another pair/frame.
+    SHitResult InverseHit = CurrentHit;
+    InverseHit.ImpactNormal = -CurrentHit.ImpactNormal;
+    InverseHit.Component = this;
+    InverseHit.SubBody = this;
+    Swap(InverseHit.ContactPointThis, InverseHit.ContactPointOther);
+    Swap(InverseHit.ContactFeatureThis, InverseHit.ContactFeatureOther);
+    Swap(InverseHit.ContactFeatureIndexThis, InverseHit.ContactFeatureIndexOther);
+
     // -------- Overlap branch (Box - Box) --------
     // EstimateOBBOverlapAlongNormal + SolveOverlap
     {
@@ -2273,7 +2283,7 @@ void UBoxSubBody::ResolveHitVsBox(
             }
             if (OtherBox.IsFakePhysicsEnabled())
             {
-                OtherBox.ApplyFakePhysicsOn(*this, OtherBox.GetHit(), delta);
+                OtherBox.ApplyFakePhysicsOn(*this, InverseHit, delta);
             }
             return;
         }
@@ -2306,8 +2316,6 @@ void UBoxSubBody::ResolveHitVsBox(
     }
     if (OtherBox.IsFakePhysicsEnabled())
     {
-        SHitResult InverseHit = CurrentHit;
-        InverseHit.ImpactNormal *= -1.f; // invert normal for other box's perspective
 		// UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
 		// OtherBox.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
         OtherBox.ApplyFakePhysicsOn(*this, InverseHit, delta);
