@@ -406,6 +406,7 @@ protected:
 	virtual float ComputeSteeringRadius(const float& ForwardVelocity, const float& AbsSteeringInput) const;
 	void UpdateWheelFrameHandbrakeValue(const float& Delta);
 	float ComputeWheelFrameSteerAngle(const float& AbsForwardSpeed, const float& TargetRadius, const float& Wheelbase) const;
+	bool TryComputeWheelFrameNormalSteeringInputFraction(float& OutFraction) const;
 	FVector ComputeTurningForce(const float& SteeringInput, const float& UpDot,
 		const float& ForwardVelocity, const float& DesiredRadius, const FVector& WheelRight) const;
 	virtual void DampenAngularVelocity(const float& DampingFactor, const FVector& VelocityToDampen, const float& delta);
