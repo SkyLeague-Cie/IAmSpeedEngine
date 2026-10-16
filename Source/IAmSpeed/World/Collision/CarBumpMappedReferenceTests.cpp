@@ -101,7 +101,7 @@ bool FCarBumpMappedReferenceTest::RunTest(const FString& Parameters)
     Saved.SourceLocalFrame = 421;
     Saved.WheeledState.LastCarBumpVictim = ServerVictim.Get();
     Saved.WheeledState.CarBumpCooldownFrames = 75;
-    Saved.WheeledState.PhysicalSteerInput = 0.375f;
+    Saved.WheeledState.PhysicalSteerInput = -37;
     bool bSuccess = false;
     FNetBitWriter Writer(ServerMap, 32768);
     if (!TestTrue(TEXT("Active state writes through the authority package map"),
@@ -119,7 +119,7 @@ bool FCarBumpMappedReferenceTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Unresolved decode consumes full state"), Pending.GetPosBits(), Writer.GetNumBits());
     TestFalse(TEXT("Unresolved victim clears stale pointer"), Loaded.WheeledState.LastCarBumpVictim.IsValid());
     TestEqual(TEXT("Pending cooldown survives decoding"), Loaded.WheeledState.CarBumpCooldownFrames, uint16(75));
-    TestEqual(TEXT("Fields after reference are read while pending"), Loaded.WheeledState.PhysicalSteerInput, 0.375f);
+    TestEqual(TEXT("Fields after reference are read while pending"), int32(Loaded.WheeledState.PhysicalSteerInput), int32(-37));
 
     // Deliberate controlled resolution using the real client's cache, as actor
     // channel spawning would do. No local raw pointer is put on the wire.
