@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Collision/ContactTimeBracket.h"
 #include "SUtils.h"
 #include "QuaternionQuantizationCache.h"
 #include "Engine/World.h"
@@ -994,7 +995,7 @@ SHitResult Speed::SBox::IntersectNextFrame(const SBox& Other, const float& delta
 	// Substep scan
 	for (uint8 step = 0; step <= NbSubsteps; ++step)
 	{
-		const float t = step * dt;
+		float t = step * dt;
 
 		FVector CA, CB, WA, WB;
 		FQuat QA, QB;
@@ -1006,6 +1007,28 @@ SHitResult Speed::SBox::IntersectNextFrame(const SBox& Other, const float& delta
 
 		if (!SAT_Overlap(CA, QA, CB, QB, Normal, MinPen))
 			continue;
+
+		if (step > 0)
+		{
+			const auto Bracket = Collision::RefineFirstOverlap((step - 1) * dt, t,
+				[&](float ProbeTime)
+				{
+					FVector ProbeCA, ProbeCB, ProbeWA, ProbeWB, ProbeNormal;
+					FQuat ProbeQA, ProbeQB;
+					float ProbePen = 0;
+					PoseAt(*this, ProbeTime, ProbeCA, ProbeQA, ProbeWA);
+					PoseAt(Other, ProbeTime, ProbeCB, ProbeQB, ProbeWB);
+					return SAT_Overlap(ProbeCA, ProbeQA, ProbeCB, ProbeQB, ProbeNormal, ProbePen);
+				});
+			// Acquire the collision normal from the touching/overlap endpoint,
+			// then evaluate witnesses at the last proved nonoverlapping pose.
+			PoseAt(*this, Bracket.OverlapTime, CA, QA, WA);
+			PoseAt(Other, Bracket.OverlapTime, CB, QB, WB);
+			SAT_Overlap(CA, QA, CB, QB, Normal, MinPen);
+			t = Bracket.SeparatedTime;
+			PoseAt(*this, t, CA, QA, WA);
+			PoseAt(Other, t, CB, QB, WB);
+		}
 
 		// Contact point heuristic:
 		// closest point on A to B center and on B to A center, then average

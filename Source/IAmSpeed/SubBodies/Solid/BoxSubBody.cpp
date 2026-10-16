@@ -2256,6 +2256,15 @@ void UBoxSubBody::ResolveHitVsBox(
     const FVector P = CurrentHit.ImpactPoint;
     const FVector N = CurrentHit.ImpactNormal.GetSafeNormal(); // Other -> This (entrant dans This)
 
+    // Snapshot both chassis before rigid/overlap impulses and either fake
+    // callback. Role exchange must not sample a state modified by callback1.
+    FFakePhysicsImpactContext FakePhysicsContext;
+    FakePhysicsContext.SelfParentKinematics = ParentComponent
+        ? ParentComponent->GetKinematicState() : KA;
+    FakePhysicsContext.OtherParentKinematics = OtherBox.GetParentComponent()
+        ? OtherBox.GetParentComponent()->GetKinematicState() : KB;
+    const FFakePhysicsImpactContext InverseContext = FakePhysicsContext.Inverted();
+
     // Both callbacks describe this one contact, even when the reciprocal
     // body's cached hit is empty or belongs to another pair/frame.
     const SHitResult InverseHit = Speed::Collision::MakeReciprocalBoxContact(
@@ -2275,11 +2284,11 @@ void UBoxSubBody::ResolveHitVsBox(
                 P, N, pen, MinSlopCm, 0.8f, GetImpactThreshold());
             if (IsFakePhysicsEnabled())
             {
-                ApplyFakePhysicsOn(OtherBox, CurrentHit, delta);
+                ApplyFakePhysicsOn(OtherBox, CurrentHit, delta, &FakePhysicsContext);
             }
             if (OtherBox.IsFakePhysicsEnabled())
             {
-                OtherBox.ApplyFakePhysicsOn(*this, InverseHit, delta);
+                OtherBox.ApplyFakePhysicsOn(*this, InverseHit, delta, &InverseContext);
             }
             return;
         }
@@ -2308,13 +2317,13 @@ void UBoxSubBody::ResolveHitVsBox(
     {
         // UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
 		// OtherBox.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        ApplyFakePhysicsOn(OtherBox, CurrentHit, delta);
+        ApplyFakePhysicsOn(OtherBox, CurrentHit, delta, &FakePhysicsContext);
     }
     if (OtherBox.IsFakePhysicsEnabled())
     {
 		// UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
 		// OtherBox.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        OtherBox.ApplyFakePhysicsOn(*this, InverseHit, delta);
+        OtherBox.ApplyFakePhysicsOn(*this, InverseHit, delta, &InverseContext);
     }
 }
 
