@@ -18,10 +18,21 @@ UCLASS()
 class IAMSPEED_API USpeedArmComponent : public USpringArmComponent
 {
 	GENERATED_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+	friend struct FLocalNormalCameraFixtureAccess;
+#endif
 public:
 	USpeedArmComponent(const FObjectInitializer& ObjectInitializer);
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void InitializeForCar(ASpeedCar& Owner, USpeedWheeledComponent& Movement);
+	/** CURRENT possession and simulation policy, evaluated only on GT. */
+	bool HasLocalHumanCameraOwner() const;
+	bool ShouldComputeLocalCamera() const;
+	ASpeedSimulation* GetCurrentCameraSimulation() const;
+	virtual void RefreshLocalCameraBinding();
+	bool ReleaseCameraEndpointAtLifecycle();
+	bool ReleaseCameraEndpointForEndPlay();
+	void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* TickFunction) override;
 	bool UsesGenericOwnerSnapshot() const { return bGenericSnapshotInitialized; }
 	bool ReadGenericOwnerSnapshot(FSimulationPoseConsumption& Out) const;
 	bool ApplyGenericCameraSnapshot(const FSimulationPoseConsumption& Owner);
@@ -42,12 +53,18 @@ protected:
 	/** Called only inside the acknowledged physical binding boundary. The game
 	 * override supplies its endpoint; the generic implementation is not also run. */
 	virtual FEndpointPtr CreateCameraEndpoint(const FSimulationPresentationBinding& Binding);
+	/** Runs only with the owning simulation pause acknowledged. */
+	virtual void ReleaseCameraAdapterAtBoundary() noexcept {}
+	virtual bool CanBindCameraAdapterAtBoundary(const FEndpointPtr&) const { return true; }
+	virtual void BindCameraAdapterAtBoundary() noexcept {}
 	FEndpointPtr BindEndpointAtLifecycle(ASpeedSimulation& Simulation, ISpeedComponent& Owner, ISpeedComponent* Target);
 	const FEndpointPtr& GetBoundEndpoint() const { return BoundEndpoint; }
 	ASpeedSimulation* GetBoundSimulation() const;
 	void UpdateDesiredArmLocation(bool bTrace, bool bLocationLag, bool bRotationLag, float Delta) override;
 
 private:
+	friend class FSpeedArmCameraBindingCommit;
+	TSharedPtr<const TAtomic<bool>, ESPMode::ThreadSafe> RetirementWitness;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FGenericCameraPhysicalAdapterTest;
 #endif

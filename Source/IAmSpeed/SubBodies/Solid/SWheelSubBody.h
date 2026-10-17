@@ -93,6 +93,7 @@ public:
 
     // initializer methods
     virtual void Initialize(ISpeedComponent* InParentComponent) override;
+    bool TryGetPrescribedSupportVelocity(const FVector& Point,FVector& Velocity) const;
 
     bool IsOnGround() const; // true if the wheel IS currently on the ground
     // Classify the current stored contact only when it has a live Component.
@@ -208,6 +209,7 @@ protected:
     virtual bool SweepSuspensionOnGround(SHitResult& OutHit, const float& delta);
     virtual bool SweepSuspensionOnSpheres(SHitResult& OutHit, const float& delta);
     virtual bool SweepSuspensionOnBoxes(SHitResult& OutHit, const float& delta);
+    virtual bool SweepSuspensionOnCylinders(SHitResult& OutHit,const float& Delta);
 
     // Predicts spring displacement / wheel travel
     float PredictNextDisplacement(const float& Delta) const;

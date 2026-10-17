@@ -3,6 +3,32 @@
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
 
+#if WITH_DEV_AUTOMATION_TESTS
+namespace Speed::Testing
+{
+enum class ESimulationWaitAuditEvent : uint8
+{
+    Entry, RemainingClockSample, EventWaitEntry, EventWaitExit,
+    YieldEntry, YieldExit, Return,
+};
+// A development-only diagnostic envelope, never canonical/persistent state.
+// WallTicks are integer QPC ticks on Windows, not active CPU cycles.
+struct FSimulationWaitAuditSample
+{
+    ESimulationWaitAuditEvent Event;
+    uint64 WallTicks = 0;
+    uint64 DeadlineBits = 0, PrecisionBits = 0, RemainingBits = 0;
+    uint32 RequestedMilliseconds = 0;
+    int32 Outcome = -1; // EventWaitExit: bool signal; Return: actual wait enum.
+};
+using FSimulationWaitAuditObserver = void (*)(void*, const FSimulationWaitAuditSample&) noexcept;
+IAMSPEED_API bool SetSimulationWaitAuditObserverForCurrentThread(
+    FSimulationWaitAuditObserver Observer, void* Context) noexcept;
+IAMSPEED_API bool ClearSimulationWaitAuditObserverForCurrentThread(
+    FSimulationWaitAuditObserver Observer, void* Context) noexcept;
+}
+#endif
+
 // Quiescence is an explicit result, never inferred from a pause flag.
 enum class ESimulationQuiescence : uint8 { BoundaryAcknowledged, AlreadyStopped, TimedOut, Failed };
 

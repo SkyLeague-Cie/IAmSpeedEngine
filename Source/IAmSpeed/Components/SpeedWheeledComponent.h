@@ -50,6 +50,9 @@ UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
 	GENERATED_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+	friend struct FLocalNormalCameraFixtureAccess;
+#endif
 
 #if !UE_BUILD_SHIPPING
  friend struct Speed::FCanonicalForeignStateForTesting;
@@ -848,6 +851,8 @@ private:
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
+	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;
+	friend class FSkyCameraPacedPhysicalFrameCounterbalancedTest;
 	friend class FSkyWaveDashAirPitchRearmTest;
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;

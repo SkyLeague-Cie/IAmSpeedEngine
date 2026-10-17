@@ -2400,6 +2400,15 @@ bool FAnalyticWorldData::FinalizeAndValidate(
 		return false;
 	}
 
+    if (Tori.Num()>4096)
+    { if (OutReason) *OutReason=TEXT("At most 4096 authored tori are supported."); return false; }
+    Tori.Sort([](const FTorusSurface& A,const FTorusSurface& B){return A.PrimitiveId<B.PrimitiveId;});
+    uint64 PreviousTorus=0;
+    for (FTorusSurface& Torus:Tori)
+    {
+        if (Torus.PrimitiveId==PreviousTorus || !Torus.Finalize(OutReason)) return false;
+        PreviousTorus=Torus.PrimitiveId;
+    }
 	Algo::Sort(Planes, [](const FBoundedPlane& A, const FBoundedPlane& B)
 	{
 		if (A.SurfaceId != B.SurfaceId) return A.SurfaceId < B.SurfaceId;
@@ -22261,6 +22270,23 @@ uint64 FAnalyticWorldData::StableHash() const
 	uint64 Hash = FnvOffset;
 	HashValue(Hash, SchemaVersion);
 	HashValue(Hash, SourceHash);
+    // Preserve every legacy world hash byte when this additive primitive set is absent.
+    if (!Tori.IsEmpty())
+    {
+        HashValue(Hash,StableStringId(TEXT("AuthoredTorusPrimitives/v1")));
+        HashValue(Hash,Tori.Num());
+        for (const auto& Torus:Tori)
+        {
+            HashValue(Hash,Torus.SourceId);HashValue(Hash,Torus.SurfaceId);
+            HashValue(Hash,Torus.FeatureId);HashValue(Hash,Torus.PrimitiveId);
+            HashValue(Hash,Torus.MaterialId);HashValue(Hash,Torus.ObjectType);HashValue(Hash,Torus.BlockingChannels);
+            const FVector P=Torus.Pose.GetTranslation(); const FQuat Q=Torus.Pose.GetRotation();
+            HashValue(Hash,P.X);HashValue(Hash,P.Y);HashValue(Hash,P.Z);
+            HashValue(Hash,Q.X);HashValue(Hash,Q.Y);HashValue(Hash,Q.Z);HashValue(Hash,Q.W);
+            HashValue(Hash,Torus.Geometry.MajorRadius);HashValue(Hash,Torus.Geometry.TubeRadius);
+            HashValue(Hash,Torus.bQueryCollisionEnabled);HashValue(Hash,Torus.bAuthorityEligible);
+        }
+    }
 	const int32 PlaneCount = Planes.Num();
 	HashValue(Hash, PlaneCount);
 	for (const FBoundedPlane& Plane : Planes)
@@ -23523,10 +23549,11 @@ uint64 FAnalyticWorldData::RecognitionDiagnosticsHash() const
 
 bool FAnalyticWorldData::IsAuthorityEligible() const
 {
-	return (!Planes.IsEmpty() || !ExtrudedQuinticPatches.IsEmpty() ||
+	return (!Tori.IsEmpty() || !Planes.IsEmpty() || !ExtrudedQuinticPatches.IsEmpty() ||
 		!TensorBezierPatches.IsEmpty() ||
 		!PiecewiseTensorBezierPatches.IsEmpty() ||
 		!Triangles.IsEmpty()) &&
+		Algo::AllOf(Tori,[](const FTorusSurface& T){return T.bAuthorityEligible;}) &&
 		Algo::AllOf(Planes,
 			[](const FBoundedPlane& Plane) { return Plane.bAuthorityEligible; }) &&
 		Algo::AllOf(ExtrudedQuinticPatches,

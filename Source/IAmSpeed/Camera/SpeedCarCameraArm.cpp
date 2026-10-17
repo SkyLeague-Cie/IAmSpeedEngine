@@ -14,18 +14,17 @@ FSpeedCarCameraArmState FSpeedCarCameraArm::DefaultState()
     return S;
 }
 
-FSpeedCarCameraFrameResult FSpeedCarCameraArm::Step(FSpeedCarCameraArmState& S,
+FSpeedCarCameraNominalFrame FSpeedCarCameraArm::AdvanceNominalPrepared(FSpeedCarCameraArmState& S,
     const FSpeedCarCameraArmParameters& P, uint64 Frame, const FSimulationPresentationBody& Car,
     const FSpeedCarCameraFrameInput& Input, ISpeedCarCameraFramePolicy& Policy)
 {
-    Policy.BeginFrame();
-    ON_SCOPE_EXIT { Policy.EndFrame(); };
-    FSpeedCarCameraFrameResult Out;
+    FSpeedCarCameraNominalFrame Nominal;
+    auto& Out = Nominal.Result;
     Out.bTargetMode = Policy.IsTargetMode();
     auto Reject = [&](ESpeedCarCameraStatus Status, ESpeedCarCameraReason Reason)
     {
         Out.Status = Status; Out.Reason = Reason;
-        return Out;
+        return Nominal;
     };
     if (S.bTimelineInvalid || (S.LastFrame != MAX_uint64 && Frame != S.LastFrame + 1))
     {
@@ -94,6 +93,59 @@ FSpeedCarCameraFrameResult FSpeedCarCameraArm::Step(FSpeedCarCameraArmState& S,
     const FVector End = ArmOrigin - FinalArm.Vector() * S.TargetArmLength + FinalArm.RotateVector(S.SocketOffset);
     const FQuat FinalRotation = FinalArm.Quaternion() * P.LocalCameraRotation.Quaternion();
     const FVector RequestedEye = End + FinalArm.RotateVector(P.LocalCameraPosition);
+    Nominal.ArmOrigin = ArmOrigin;
+    Nominal.DesiredEye = RequestedEye;
+    Nominal.ViewRotation = FinalRotation;
+    Nominal.bInputsAndNominalReady = true;
+    return Nominal;
+}
+
+FSpeedCarCameraNominalFrame FSpeedCarCameraArm::AdvanceNominal(FSpeedCarCameraArmState& S,
+    const FSpeedCarCameraArmParameters& P, uint64 Frame, const FSimulationPresentationBody& Car,
+    const FSpeedCarCameraFrameInput& Input, ISpeedCarCameraFramePolicy& Policy)
+{
+    Policy.BeginFrame();
+    ON_SCOPE_EXIT { Policy.EndFrame(); };
+    return AdvanceNominalPrepared(S, P, Frame, Car, Input, Policy);
+}
+
+FSpeedCarCameraFrameResult FSpeedCarCameraArm::Step(FSpeedCarCameraArmState& S,
+    const FSpeedCarCameraArmParameters& P, uint64 Frame, const FSimulationPresentationBody& Car,
+    const FSpeedCarCameraFrameInput& Input, ISpeedCarCameraFramePolicy& Policy)
+{
+    Policy.BeginFrame();
+    ON_SCOPE_EXIT { Policy.EndFrame(); };
+    auto Nominal = AdvanceNominalPrepared(S, P, Frame, Car, Input, Policy);
+    if (!Nominal.bInputsAndNominalReady) return Nominal.Result;
+    return ResolveNominalCurrent(S, Frame, Car, Nominal, Policy);
+}
+
+FSpeedCarCameraFrameResult FSpeedCarCameraArm::ResolveNominalCurrent(FSpeedCarCameraArmState& S,
+    uint64 Frame, const FSimulationPresentationBody& Car,
+    const FSpeedCarCameraNominalFrame& Nominal, ISpeedCarCameraFramePolicy& Policy)
+{
+    // The caller already entered this one physical frame. Nominal endpoints
+    // contain no certificate; only this CURRENT query can publish Valid.
+    if (!Nominal.bInputsAndNominalReady) return Nominal.Result;
+    if (S.bTimelineInvalid || S.LastFrame != Frame || !Car.StableId ||
+        Nominal.ArmOrigin.ContainsNaN() || Nominal.DesiredEye.ContainsNaN() ||
+        !Nominal.ViewRotation.IsNormalized())
+    {
+        S.bTimelineInvalid = true;
+        auto Out = Nominal.Result;
+        Out.Status = ESpeedCarCameraStatus::InvalidInput;
+        Out.Reason = ESpeedCarCameraReason::InvalidInput;
+        return Out;
+    }
+    auto Out = Nominal.Result;
+    const FVector& ArmOrigin = Nominal.ArmOrigin;
+    const FVector& RequestedEye = Nominal.DesiredEye;
+    const FQuat& FinalRotation = Nominal.ViewRotation;
+    auto Reject = [&](ESpeedCarCameraStatus Status, ESpeedCarCameraReason Reason)
+    {
+        Out.Status = Status; Out.Reason = Reason;
+        return Out;
+    };
     FVector FinalLocation;
     const auto Reason = Policy.ResolveConstraint(Frame, ArmOrigin, RequestedEye, FinalRotation, FinalLocation);
     if (Reason != ESpeedCarCameraReason::None)

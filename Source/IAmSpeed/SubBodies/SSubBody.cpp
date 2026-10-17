@@ -2,6 +2,7 @@
 
 
 #include "SSubBody.h"
+#include "Solid/CylinderSubBody.h"
 #include "IAmSpeed/Base/ExactRotatorQuaternionCache.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
@@ -72,10 +73,14 @@ void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
     for (USSubBody* SubBody : SubBodies)
     {
         if (SubBody && SubBody->GetParentComponent() != ParentComponent &&
-            !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor())
+            !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor() &&
+            !(ParentComponent && ParentComponent->IsPrescribedMotion() && SubBody->GetParentComponent() && SubBody->GetParentComponent()->IsPrescribedMotion()))
         {
             switch (SubBody->GetSubBodyType())
             {
+            case ESubBodyType::Cylinder:
+                if(!IgnoredSubBodyTypes.Contains(ESubBodyType::Cylinder))ExternalCylinderSubBodies.AddUnique(Cast<UCylinderSubBody>(SubBody));
+                break;
 			case ESubBodyType::Hitbox:
 				if (!IgnoredSubBodyTypes.Contains(ESubBodyType::Hitbox))
 				    ExternalBoxSubBodies.AddUnique(Cast<UBoxSubBody>(SubBody));
@@ -101,6 +106,8 @@ void USSubBody::RemoveExternalSubBodies(const TArray<USSubBody*>& SubBodies)
         {
             switch (SubBody->GetSubBodyType())
             {
+            case ESubBodyType::Cylinder:
+                ExternalCylinderSubBodies.Remove(Cast<UCylinderSubBody>(SubBody));break;
             case ESubBodyType::Hitbox:
                 ExternalBoxSubBodies.Remove(Cast<UBoxSubBody>(SubBody));
                 break;
@@ -272,6 +279,7 @@ int32 USSubBody::SubBodyPriority(USSubBody::ESubBodyType T)
 {
     switch (T)
     {
+    case USSubBody::ESubBodyType::Cylinder:return 400;
     case USSubBody::ESubBodyType::Hitbox: return 300;
     case USSubBody::ESubBodyType::Sphere: return 200;
     case USSubBody::ESubBodyType::Wheel:  return 100;
