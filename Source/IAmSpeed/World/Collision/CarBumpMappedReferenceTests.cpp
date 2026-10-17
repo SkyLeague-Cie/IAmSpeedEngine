@@ -11,6 +11,8 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Misc/ScopeExit.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 #include "Tests/NetTestHelpers.h"
 #include "UObject/CoreNet.h"
 #include "UObject/StrongObjectPtr.h"
@@ -109,6 +111,16 @@ bool FCarBumpMappedReferenceTest::RunTest(const FString& Parameters)
         !TestTrue(TEXT("Actual encoded bits are nonempty"), Writer.GetNumBits() > 0)) return false;
 
     FNetworkWheeledSpeedState Loaded;
+    TStrongObjectPtr<USpeedWheeledComponent> Receiver(NewObject<USpeedWheeledComponent>(ClientOwner));
+    FNetworkWheeledSpeedState Prior;
+    Prior.SourceLocalFrame = 17;
+    Prior.WheeledState.LastCarBumpVictim = ClientVictim.Get();
+    Prior.WheeledState.CarBumpCooldownFrames = 37;
+    Prior.WheeledState.PhysicalSteerInput = 21;
+    AddExpectedMessagePlain(TEXT("[WheeledSpeed] ApplyData (RESIMULATION?) Triggered for frame = 0"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2);
+    Prior.ApplyData(Receiver.Get());
+    if (!TestTrue(TEXT("Seed receiver holds an actual valid cooldown"),
+        Receiver->IsCarBumpInCooldown(*ClientVictim.Get()))) return false;
     // A stale pointer must be cleared rather than used while the GUID is absent.
     Loaded.WheeledState.LastCarBumpVictim = ServerVictim.Get();
     FNetBitReader Pending(ClientMap, Writer.GetData(), Writer.GetNumBits());
@@ -120,6 +132,25 @@ bool FCarBumpMappedReferenceTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Unresolved victim clears stale pointer"), Loaded.WheeledState.LastCarBumpVictim.IsValid());
     TestEqual(TEXT("Pending cooldown survives decoding"), Loaded.WheeledState.CarBumpCooldownFrames, uint16(75));
     TestEqual(TEXT("Fields after reference are read while pending"), int32(Loaded.WheeledState.PhysicalSteerInput), int32(-37));
+
+    TestFalse(TEXT("Pending GUID cannot be applied as a valid physical state"), Loaded.bStateProjectionValid);
+    Loaded.ApplyData(Receiver.Get());
+    TestTrue(TEXT("Pending decode preserves receiver's prior victim and cooldown"),
+        Receiver->IsCarBumpInCooldown(*ClientVictim.Get()));
+    TestFalse(TEXT("Pending projection cannot compare equal to itself"), Loaded.CompareData(Loaded));
+    FNetworkWheeledSpeedState PendingInterpolation;
+    PendingInterpolation.LocalFrame = Loaded.LocalFrame;
+    PendingInterpolation.InterpolateData(Loaded, Loaded);
+    TestFalse(TEXT("Interpolation preserves pending admission"), PendingInterpolation.bStateProjectionValid);
+
+    TArray<uint8> PendingBytes;
+    FMemoryWriter PendingWriter(PendingBytes);
+    bool bPendingWritten = true;
+    TestFalse(TEXT("Pending state cannot be forwarded as an invented neutral state"),
+        Loaded.NetSerialize(PendingWriter, nullptr, bPendingWritten));
+    TestFalse(TEXT("Pending save reports failure"), bPendingWritten);
+    TestTrue(TEXT("Pending save marks archive error"), PendingWriter.IsError());
+    TestEqual(TEXT("Pending save authors no archive bytes"), PendingBytes.Num(), 0);
 
     // Deliberate controlled resolution using the real client's cache, as actor
     // channel spawning would do. No local raw pointer is put on the wire.
@@ -136,6 +167,37 @@ bool FCarBumpMappedReferenceTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Resolved cooldown remains exactly 75 ticks"), Loaded.WheeledState.CarBumpCooldownFrames, uint16(75));
     TestEqual(TEXT("Source frame survives retry"), Loaded.SourceLocalFrame, 421);
 
+    TestTrue(TEXT("Resolved retry becomes eligible for physical application"), Loaded.bStateProjectionValid);
+    Loaded.ApplyData(Receiver.Get());
+    TestTrue(TEXT("Mapped retry applies the client victim"), Receiver->IsCarBumpInCooldown(*ClientVictim.Get()));
+
+    // Exercise the production decoder with an actually truncated byte archive.
+    // This archive check is separate from real PackageMap bit framing above.
+    auto ArchiveSource = Saved;
+    ArchiveSource.WheeledState.LastCarBumpVictim.Reset();
+    ArchiveSource.WheeledState.CarBumpCooldownFrames = 0;
+    TArray<uint8> ArchiveBytes;
+    FMemoryWriter ByteWriter(ArchiveBytes);
+    bool bWritten = false;
+    ArchiveSource.NetSerialize(ByteWriter, nullptr, bWritten);
+    if (!TestTrue(TEXT("Production state writes a complete byte archive"), bWritten && !ByteWriter.IsError())) return false;
+    for (const int32 Cut : {0, 1, ArchiveBytes.Num() / 2, ArchiveBytes.Num() - 1})
+    {
+        auto Destination = Prior;
+        TArray<uint8> ShortBytes;
+        ShortBytes.Append(ArchiveBytes.GetData(), Cut);
+        FMemoryReader Truncated(ShortBytes);
+        bool bDecoded = true;
+        Destination.NetSerialize(Truncated, nullptr, bDecoded);
+        TestFalse(TEXT("Truncated state fails archive decode"), bDecoded);
+        TestTrue(TEXT("Truncated state marks archive error"), Truncated.IsError());
+        TestEqual(TEXT("Rejected archive preserves source frame"), Destination.SourceLocalFrame, Prior.SourceLocalFrame);
+        TestEqual(TEXT("Rejected archive preserves cooldown"), Destination.WheeledState.CarBumpCooldownFrames, Prior.WheeledState.CarBumpCooldownFrames);
+        TestEqual(TEXT("Rejected archive preserves later physical input"), int32(Destination.WheeledState.PhysicalSteerInput), int32(Prior.WheeledState.PhysicalSteerInput));
+        TestTrue(TEXT("Rejected archive preserves victim identity"), Destination.WheeledState.LastCarBumpVictim == Prior.WheeledState.LastCarBumpVictim);
+        TestTrue(TEXT("Rejected archive preserves prior admission"), Destination.bStateProjectionValid == Prior.bStateProjectionValid);
+    }
+
     Saved.WheeledState.LastCarBumpVictim.Reset();
     Saved.WheeledState.CarBumpCooldownFrames = 0;
     FNetBitWriter NeutralWriter(ServerMap, 32768);
@@ -145,6 +207,7 @@ bool FCarBumpMappedReferenceTest::RunTest(const FString& Parameters)
     bSuccess = false;
     TestTrue(TEXT("Neutral state replaces resolved active state"),
         Loaded.NetSerialize(NeutralReader, ClientMap, bSuccess) && bSuccess && !NeutralReader.IsError());
+    TestTrue(TEXT("Neutral complete decode is eligible"), Loaded.bStateProjectionValid);
     TestFalse(TEXT("Neutral state clears resolved victim"), Loaded.WheeledState.LastCarBumpVictim.IsValid());
     TestEqual(TEXT("Neutral state clears timer"), Loaded.WheeledState.CarBumpCooldownFrames, uint16(0));
 

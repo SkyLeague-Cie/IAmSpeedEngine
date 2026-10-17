@@ -45,6 +45,8 @@ bool FSpeedCarCameraPhysicalInput::Serialize(FArchive& Ar)
 
 void FNetworkWheeledSpeedState::ApplyData(UActorComponent* NetworkComponent) const
 {
+	if (!bStateProjectionValid ||
+		((WheeledState.CarBumpCooldownFrames == 0) != !WheeledState.LastCarBumpVictim.IsValid())) return;
 	if (USpeedWheeledComponent* Mover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
 		if (!Mover->AllowsExternalNetworkStateRestore()) return;
@@ -66,6 +68,7 @@ void FNetworkWheeledSpeedState::BuildData(const UActorComponent* NetworkComponen
 	{
 		if (const USpeedWheeledComponent* Mover = Cast<const USpeedWheeledComponent>(NetworkComponent))
 		{
+			bStateProjectionValid = true;
 			const int32 CurrentRecordedFrame = FMath::Max(int32(LocalFrame), 0);
 			const int32 PreviousRecordedFrame = Speed::SimUtils::GetRecordedFrameFromNetworkLocalFrame(LocalFrame);
 			const int32 ComponentFrame = FMath::Max(int32(Mover->NumFrame()), 0);
@@ -159,19 +162,24 @@ void TracePrivateBumpWire(FArchive& Ar, UPackageMap* Map, UActorComponent* Owner
 
 bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
-	FNetworkPhysicsData::SerializeFrames(Ar);
-	Ar << SourceLocalFrame;
-	Ar << SourceFramesSinceCanMove;
-	Ar << WheeledState.nbFramesbeforeCanMove;
-	Ar << WheeledState.AllowedSideVelocity;
-	Ar << WheeledState.AllowedAngularVelocity;
-	Ar << WheeledState.NbFramesSinceGroundContact;
-	Ar << WheeledState.FramesSinceLastImpact;
-    uint16 BumpFrames=Ar.IsSaving() && !WheeledState.LastCarBumpVictim.IsValid()
-        ?0:WheeledState.CarBumpCooldownFrames;
+	if (Ar.IsSaving() && !bStateProjectionValid)
+	{ Ar.SetError(); bOutSuccess = false; return false; }
+	// Commit the complete decode only after archive validation. Mapping remains
+	// a retry condition and is carried separately from archive success.
+	auto Value = *this;
+	Value.FNetworkPhysicsData::SerializeFrames(Ar);
+	Ar << Value.SourceLocalFrame;
+	Ar << Value.SourceFramesSinceCanMove;
+	Ar << Value.WheeledState.nbFramesbeforeCanMove;
+	Ar << Value.WheeledState.AllowedSideVelocity;
+	Ar << Value.WheeledState.AllowedAngularVelocity;
+	Ar << Value.WheeledState.NbFramesSinceGroundContact;
+	Ar << Value.WheeledState.FramesSinceLastImpact;
+    uint16 BumpFrames=Ar.IsSaving() && !Value.WheeledState.LastCarBumpVictim.IsValid()
+        ?0:Value.WheeledState.CarBumpCooldownFrames;
     Ar << BumpFrames;
-    if(Ar.IsLoading()) WheeledState.CarBumpCooldownFrames=BumpFrames;
-    UObject* BumpVictim=Ar.IsSaving() && BumpFrames?WheeledState.LastCarBumpVictim.Get():nullptr;
+    if(Ar.IsLoading()) Value.WheeledState.CarBumpCooldownFrames=BumpFrames;
+    UObject* BumpVictim=Ar.IsSaving() && BumpFrames?Value.WheeledState.LastCarBumpVictim.Get():nullptr;
     uint8 HasBumpVictim=Ar.IsSaving() && BumpVictim?1:0;
     Ar << HasBumpVictim;
     bool bBumpVictimMapped=true;
@@ -183,23 +191,23 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
     }
     if(Ar.IsLoading())
     {
-        WheeledState.LastCarBumpVictim=Cast<USpeedWheeledComponent>(BumpVictim);
-        if(bBumpVictimMapped && ((WheeledState.CarBumpCooldownFrames==0)!=(BumpVictim==nullptr)))
+        Value.WheeledState.LastCarBumpVictim=Cast<USpeedWheeledComponent>(BumpVictim);
+        if(bBumpVictimMapped && ((Value.WheeledState.CarBumpCooldownFrames==0)!=(BumpVictim==nullptr)))
         { Ar.SetError(); bOutSuccess=false; return false; }
     }
-	Ar << WheeledState.PhysicalThrottleInput;
-	Ar << WheeledState.PhysicalBrakeInput;
-	Ar << WheeledState.PhysicalSteerInput;
+	Ar << Value.WheeledState.PhysicalThrottleInput;
+	Ar << Value.WheeledState.PhysicalBrakeInput;
+	Ar << Value.WheeledState.PhysicalSteerInput;
 
 	uint8 Flags = 0;
 	if (Ar.IsSaving())
 	{
-		Flags |= (WheeledState.bStartCountdown ? 1 << 0 : 0);
+		Flags |= (Value.WheeledState.bStartCountdown ? 1 << 0 : 0);
 	}
 	Ar << Flags;
 	if (Ar.IsLoading())
 	{
-		WheeledState.bStartCountdown = (Flags & (1 << 0)) != 0;
+		Value.WheeledState.bStartCountdown = (Flags & (1 << 0)) != 0;
 	}
 
 	for (int32 i = 0; i < 4; ++i)
@@ -207,13 +215,13 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 		// Suspension displacement (gameplay)
 		if (Ar.IsSaving())
 		{
-			int16 qSusp = WheeledState.QuantizeLastSuspensionDisplacement(i);
+			int16 qSusp = Value.WheeledState.QuantizeLastSuspensionDisplacement(i);
 			Ar << qSusp;
 		}
 		else
 		{
-			int16 qSusp; Ar << qSusp;
-			WheeledState.SuspensionLastDisplacement[i] = WheeledState.DequantizeLastSuspensionDisplacement(qSusp);
+			int16 qSusp = 0; Ar << qSusp;
+			Value.WheeledState.SuspensionLastDisplacement[i] = Value.WheeledState.DequantizeLastSuspensionDisplacement(qSusp);
 		}
 	}
 
@@ -222,8 +230,13 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 	bOutSuccess = !Ar.IsError();
 #if !UE_BUILD_SHIPPING
     TracePrivateBumpWire(Ar,Map,ImplementationComponent.Get(),BumpVictim,
-        SourceLocalFrame,BumpFrames,bBumpVictimMapped,bOutSuccess);
+        Value.SourceLocalFrame,BumpFrames,bBumpVictimMapped,bOutSuccess);
 #endif
+	if (bOutSuccess && Ar.IsLoading())
+	{
+		Value.bStateProjectionValid = bBumpVictimMapped;
+		*this = Value;
+	}
 	return bBumpVictimMapped;
 }
 
@@ -251,6 +264,7 @@ void FNetworkWheeledSpeedState::InterpolateData(const FNetworkPhysicsData& MinDa
 	const FNetworkWheeledSpeedState& SourceState = bUseMaxState ? MaxState : MinState;
 
 	WheeledState = SourceState.WheeledState;
+	bStateProjectionValid = SourceState.bStateProjectionValid;
 	SourceLocalFrame = SourceState.SourceLocalFrame;
 	SourceFramesSinceCanMove = SourceState.SourceFramesSinceCanMove;
 }
@@ -258,7 +272,8 @@ void FNetworkWheeledSpeedState::InterpolateData(const FNetworkPhysicsData& MinDa
 bool FNetworkWheeledSpeedState::CompareData(const FNetworkPhysicsData& PredictedData)
 {
 	const FNetworkWheeledSpeedState& PredictedState = static_cast<const FNetworkWheeledSpeedState&>(PredictedData);
-    return WheeledState.CarBumpCooldownFrames==PredictedState.WheeledState.CarBumpCooldownFrames &&
+    return bStateProjectionValid && PredictedState.bStateProjectionValid &&
+        WheeledState.CarBumpCooldownFrames==PredictedState.WheeledState.CarBumpCooldownFrames &&
         WheeledState.LastCarBumpVictim==PredictedState.WheeledState.LastCarBumpVictim;
 }
 

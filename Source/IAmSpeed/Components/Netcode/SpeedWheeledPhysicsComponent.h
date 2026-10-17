@@ -153,6 +153,11 @@ struct FNetworkWheeledSpeedState : public FNetworkPhysicsData
 	// true iff this state is corresponding to an autonomous proxy on this simulation
 	bool bIsAutonomousProxy = false;
 
+	// Local decode admission, never a wire field. An unresolved victim keeps
+	// the state pending and cannot overwrite live mechanics during retry.
+	UPROPERTY(Transient)
+	bool bStateProjectionValid = true;
+
 	/**  Apply the data onto the network physics component */
 	virtual void ApplyData(UActorComponent* NetworkComponent) const override;
 
