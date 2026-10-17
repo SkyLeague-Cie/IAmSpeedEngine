@@ -209,3 +209,23 @@ Superseded checkpoint `f8ab01b` was rejected because its controller callbacks
 fed DeviceInputProducer from Enhanced Input/GFrameCounter. Its native test pass
 did not qualify that Unreal coupling. The corrected checkpoint removes that
 entire source path; only deterministic synthetic injection is qualified here.
+
+## Private Bump input availability envelope (17 October 2026)
+
+Private matching-peer codec only; not public multiplayer or rollback acceptance.
+Both wheeled and native Skycar input slots explicitly encode uint8 version1,
+uint8 availability0/1, genuine UE physics frames, then the existing input payload
+only when available. No committed projection means no command, never invented
+neutral axes or edges. Decode is transactional; malformed/unknown envelopes
+remain archive errors. Absent records cannot acquire input authority or enter
+ApplyData. Interpolation requires both endpoints; merge never fills a missing
+newer input from older data. Existing authority/epoch/registry guards remain.
+
+This input framing is incompatible with older private wire1 packets. Both
+private endpoints require matching rebuilt modules; no release is authorized.
+Mechanical state/bump snapshots, fixed delta and physical coefficients are
+unchanged. Real Pair17 failed both streams before this correction; raw failures
+and the former whole-archive rejection test are retained in the mission root.
+New real UE present/absent/present history tests cover both types, invalid tags,
+truncation and no authority claim. Source is uncompiled/unrun at this stamp;
+local framing tests never stand in for live transport or active-world rollback.

@@ -191,7 +191,7 @@ USTRUCT()
 struct FNetworkWheeledSpeedInputState : public FNetworkPhysicsData
 {
 	GENERATED_BODY()
-	bool bInputProjectionValid = true; // Local-only; never serialized.
+	bool bInputProjectionValid = true; // Availability is encoded explicitly in the input wire envelope.
 
 
 	UPROPERTY()

@@ -5,6 +5,7 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "UObject/CoreNet.h"
+#include "IAmSpeed/Base/InputProjectionWire.h"
 
 bool FSpeedCarCameraPhysicalInput::IsValid() const
 {
@@ -223,7 +224,7 @@ int32 FNetworkWheeledSpeedInputState::ResolveActivationFrame(int32 SinceCanMoveF
 
 void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent) const
 {
-	if (!WheeledInput.Camera.IsValid()) return;
+	if (!bInputProjectionValid || !WheeledInput.Camera.IsValid()) return;
 	if (USpeedWheeledComponent* Mover = Cast<USpeedWheeledComponent>(NetworkComponent))
 	{
 		if (Mover->IsTestInputOverrideEnabled() || Mover->HasProducedInputAuthority()) return;
@@ -250,29 +251,26 @@ void FNetworkWheeledSpeedInputState::BuildData(const UActorComponent* NetworkCom
 
 bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
-	if (Ar.IsSaving() && !bInputProjectionValid)
-	{
-		// UE's rewind-history container ignores the per-entry return value.
-		// Fail the containing archive so an absent projection cannot emit a
-		// successful history header with no input/frame payload.
-		Ar.SetError();
-		bOutSuccess = false;
-		return false;
-	}
-	// Decode the complete INPUT transactionally, including the new versioned
-	// camera tail. Old mechanical-state serializers remain byte-identical.
-	auto Value = *this;
-	Value.FNetworkPhysicsData::SerializeFrames(Ar);
-	Ar << Value.WheeledInput.Throttle;
-	Ar << Value.WheeledInput.Brake;
-	Ar << Value.WheeledInput.Steer;
-	Ar << Value.ClientFrame;
-	Ar << Value.ClientFramesSinceCanMove;
-	Ar << Value.bIsAutonomousProxy;
-	Ar << Value.WheeledInput.bCanMove;
-	bOutSuccess = Value.WheeledInput.Camera.Serialize(Ar) && !Ar.IsError();
-	if (bOutSuccess && Ar.IsLoading()) { Value.bInputProjectionValid=true; *this = Value; }
-	return bOutSuccess;
+    auto Value=*this;
+    if(!Speed::Input::SerializeInputProjectionAvailability(Ar,Value.bInputProjectionValid))
+    { bOutSuccess=false; return false; }
+    Value.FNetworkPhysicsData::SerializeFrames(Ar);
+    if(!Value.bInputProjectionValid)
+    {
+        bOutSuccess=!Ar.IsError();
+        if(bOutSuccess && Ar.IsLoading()) *this=Value;
+        return bOutSuccess;
+    }
+    Ar << Value.WheeledInput.Throttle;
+    Ar << Value.WheeledInput.Brake;
+    Ar << Value.WheeledInput.Steer;
+    Ar << Value.ClientFrame;
+    Ar << Value.ClientFramesSinceCanMove;
+    Ar << Value.bIsAutonomousProxy;
+    Ar << Value.WheeledInput.bCanMove;
+    bOutSuccess=Value.WheeledInput.Camera.Serialize(Ar) && !Ar.IsError();
+    if(bOutSuccess && Ar.IsLoading()) *this=Value;
+    return bOutSuccess;
 }
 
 void FNetworkWheeledSpeedInputState::InterpolateData(const FNetworkPhysicsData& MinData, const FNetworkPhysicsData& MaxData)
@@ -283,6 +281,8 @@ void FNetworkWheeledSpeedInputState::InterpolateData(const FNetworkPhysicsData& 
 	const FNetworkWheeledSpeedInputState& MaxState =
 		static_cast<const FNetworkWheeledSpeedInputState&>(MaxData);
 
+	bInputProjectionValid=MinState.bInputProjectionValid && MaxState.bInputProjectionValid;
+	if(!bInputProjectionValid) return;
 	const int32 MinFrame = int32(MinState.LocalFrame);
 	const int32 MaxFrame = int32(MaxState.LocalFrame);
 	const int32 ThisFrame = int32(LocalFrame);
@@ -311,6 +311,8 @@ bool FNetworkWheeledSpeedInputState::CompareData(const FNetworkPhysicsData& Pred
 	const FNetworkWheeledSpeedInputState& C = static_cast<const FNetworkWheeledSpeedInputState&>(PredictedData); // Client predicted
 	const FNetworkWheeledSpeedInputState& S = *this;                                                  // Server (authoritative for that frame)
 
+	if(!S.bInputProjectionValid || !C.bInputProjectionValid)
+		return S.bInputProjectionValid==C.bInputProjectionValid;
 	if (!S.WheeledInput.Camera.IsValid() || !C.WheeledInput.Camera.IsValid() ||
 		!S.WheeledInput.Camera.Equals(C.WheeledInput.Camera)) return false;
 	if (!C.WheeledInput.bCanMove)
@@ -344,6 +346,7 @@ void FNetworkWheeledSpeedInputState::DecayData(float DecayAmount)
 void FNetworkWheeledSpeedInputState::MergeData(const FNetworkPhysicsData& FromData)
 {
 	const FNetworkWheeledSpeedInputState& FromState = static_cast<const FNetworkWheeledSpeedInputState&>(FromData);
+	if(!bInputProjectionValid || !FromState.bInputProjectionValid) return;
 	// Perform merge through InterpolateData
 	InterpolateData(FromState, *this);
 }
