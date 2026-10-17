@@ -271,8 +271,16 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 	const USpeedAnalyticCollisionAsset* BakedAsset = ExplicitBakedAsset;
 	if (!BakedAsset)
 	{
-		BakedAsset = LoadObject<USpeedAnalyticCollisionAsset>(
+		// The convention-based bake is optional: worlds without a generated
+		// package still build from their loaded analytic sources below. Preserve
+		// in-memory assets, and only load from disk when the package exists.
+		BakedAsset = FindObject<USpeedAnalyticCollisionAsset>(
 			nullptr, *BakedObjectPath);
+		if (!BakedAsset && FPackageName::DoesPackageExist(BakedPackagePath))
+		{
+			BakedAsset = LoadObject<USpeedAnalyticCollisionAsset>(
+				nullptr, *BakedObjectPath);
+		}
 	}
 	if (BakedAsset)
 	{
