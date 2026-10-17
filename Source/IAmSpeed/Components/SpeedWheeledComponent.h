@@ -297,6 +297,7 @@ protected:
 	void SetEngineFPS(const unsigned int& FPS);
 	float GetEngineFPS() const;
 	int32 GetSinceCanMoveFrame() const;
+	bool TryProjectCanonicalWheelSupportPose() override;
 	bool CanBypassCanonicalSupportContactWarmup() const override;
 	bool CanPreserveCanonicalSupportNormalRotation() const override;
 	unsigned int NbFramesSinceCanMove() const;
@@ -392,6 +393,9 @@ protected:
 	// return the acceleration to apply in cm/s^2 based on the throttle/brake input and whether we want to move forward or backward
 	virtual float ComputeAccel(const float& InputValue, bool wantToMoveForward) const;
 	virtual float ComputeAccelFromSignedThrottle(float SignedThrottle) const;
+	// Explicit four-wheel HB+boost experiment; ordinary virtual drive API is unchanged.
+	bool UsesRetainedHandbrakeDriveModel() const;
+	float ComputeFullHandbrakeGroundEngineAccel() const;
 	// return the maximum speed in cm/s that the component can reach based on steering input with the given input (value between -1 and 1)
 	virtual float GetSteeringSpeedCap() const;
 	// return the maximum throttle speed in cm/s that the component can reach based on whether it is on the ground or not

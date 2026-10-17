@@ -147,6 +147,35 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameLongitudinalScrubScale(
 	TEXT("Overrides WheelFrameLongitudinalScrubScale when >= 0. Negative values keep the Blueprint/component value."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameHandbrakeDriveModel(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeDriveModel"),
+	0,
+	TEXT("Experimental: retain signed engine throttle without opposition/coasting brake while raw handbrake is held in the wheel-frame model. 0 keeps inherited behavior."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeDriveForceScale(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeDriveForceScale"),
+	-1.0f,
+	TEXT("Experimental ground-engine traction multiplier at full handbrake, blended by the tire handbrake value while HandbrakeDriveModel is active. Negative keeps inherited force."),
+	ECVF_Default);
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameHandbrakeDriveForceBlendModel(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeDriveForceBlendModel"),
+	0,
+	TEXT("Experimental drive-force scale onset: 0 blends by tire handbrake value; 1 applies the configured scale immediately while the raw-handbrake drive branch is selected."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameHandbrakeSupportProjectionGuard(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeSupportProjectionGuard"),
+	0,
+	TEXT("Experimental stricter support eligibility: reject canonical projection during raw/residual handbrake if an unconfirmed startup support would erase nonzero normal-axis angular motion. 0 keeps inherited eligibility."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameHandbrakeSteeringBlendModel(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeSteeringBlendModel"),
+	0,
+	TEXT("Experimental: blend the accepted normal commanded wheel angle into the handbrake wheel angle, without reconstructing normal curvature. 0 keeps inherited handbrake steering."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeLateralImpulseScale(
 	TEXT("p.IAmSpeed.WheelFrame.HandbrakeLateralImpulseScale"),
 	-1.0f,
@@ -1309,6 +1338,26 @@ float USpeedWheeledComponent::GetEngineFPS() const
 int32 USpeedWheeledComponent::GetSinceCanMoveFrame() const
 {
 	return SinceCanMoveFrame;
+}
+
+bool USpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
+{
+	if (CVarIAmSpeedWheelFrameHandbrakeSupportProjectionGuard.GetValueOnAnyThread() != 0
+		&& bUseWheelFrameLateralFriction && !bUseLegacySteeringVelocityState
+		&& (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValue > KINDA_SMALL_NUMBER)
+		&& !CanPreserveCanonicalSupportNormalRotation())
+	{
+		const FVector SupportNormal = GetNormalFromWheels().GetSafeNormal();
+		const double NormalSpin = FVector::DotProduct(GetPhysAngularVelocity(), SupportNormal);
+		if (!SupportNormal.IsNearlyZero() && NormalSpin != 0.0)
+		{
+			// The support point-fix must not repeatedly erase the small yaw that
+			// ordinary wheel forces just integrated. Veto this projection; do not
+			// grant startup confirmation or widen any contact/pose/speed gate.
+			return false;
+		}
+	}
+	return ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose();
 }
 
 bool USpeedWheeledComponent::CanBypassCanonicalSupportContactWarmup() const
@@ -3606,6 +3655,32 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 {
 	const float NormalSteerAngle = EvaluateLinearFloatCurve(SteerAngleFromSpeedCurve, AbsForwardSpeed, 0.0f);
 
+	if (CVarIAmSpeedWheelFrameHandbrakeSteeringBlendModel.GetValueOnAnyThread() != 0
+		&& !bUseLegacySteeringVelocityState
+		&& (IsHandbrakingForWheelFriction() || WheelFrameHandbrakeValue > KINDA_SMALL_NUMBER)
+		&& HandbrakeSteerAngleFromSpeedCurve.Num() > 0)
+	{
+		const float Input = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f);
+		const float RawFraction = Input * SteeringInputCalibrationScale(GetPhysSteeringInput());
+		float NormalFraction = RawFraction;
+		const float FullFractionOverride = CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread();
+		if (FMath::IsFinite(FullFractionOverride) && FullFractionOverride >= 0.0f && FMath::Abs(Input) > 0.75f)
+		{
+			// Use the accepted normal input endpoints at either end of the blend.
+			// The normal-only call path below remains unchanged.
+			const float ThreeQuarterFraction = 0.75f * SteeringInputCalibrationScale(0.75f);
+			const float FullFraction = FMath::Clamp(FullFractionOverride, ThreeQuarterFraction, 1.0f);
+			const float Fraction = FMath::Lerp(ThreeQuarterFraction, FullFraction, (FMath::Abs(Input) - 0.75f) * 4.0f);
+			NormalFraction = Input < 0.0f ? -Fraction : Fraction;
+		}
+		const float NormalInputScale = FMath::Abs(RawFraction) > KINDA_SMALL_NUMBER
+			? NormalFraction / RawFraction : 1.0f;
+		const float HandbrakeAngle = EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurve, AbsForwardSpeed, NormalSteerAngle);
+		// Callers apply RawFraction during handbrake. Interpolate commanded
+		// wheel angles using the existing tire-friction state, without a timer.
+		return FMath::Lerp(NormalSteerAngle * NormalInputScale, HandbrakeAngle, WheelFrameHandbrakeValue);
+	}
+
 	// Normal steering follows the explicit vehicle curve, matching RocketSim's
 	// wheel model. TargetRadius remains a diagnostic target, not an input that
 	// silently replaces the configured steering curve.
@@ -3815,6 +3890,24 @@ float USpeedWheeledComponent::ComputeAccel(const float& InputValue, bool wantToM
 	return ComputeAccelFromSignedThrottle(FMath::Clamp(signedThrottle, -1.0f, 1.0f));
 }
 
+bool USpeedWheeledComponent::UsesRetainedHandbrakeDriveModel() const
+{
+	return bUseWheelFrameLateralFriction && !bUseLegacySteeringVelocityState
+		&& IsHandbrakingForWheelFriction()
+		&& CVarIAmSpeedWheelFrameHandbrakeDriveModel.GetValueOnAnyThread() != 0;
+}
+
+float USpeedWheeledComponent::ComputeFullHandbrakeGroundEngineAccel() const
+{
+	// The caller admits only four grounded wheels and raw retained-throttle HB.
+	// Keep the accepted virtual ComputeAccel paths byte-for-byte unchanged.
+	if (NumWheelsOnGround() != 4 || !UsesRetainedHandbrakeDriveModel()) return 0.0f;
+	const float AbsSpeed = FMath::Abs(GetPhysForwardSpeed());
+	const float DriveScale = EvaluateLinearFloatCurve(DriveSpeedAccelScaleCurve,
+		AbsSpeed, FMath::Clamp(1.0f - AbsSpeed / FMath::Max(MaxThrottleSpeed, 1.0f), 0.0f, 1.0f));
+	return ThrottleAccel * DriveScale;
+}
+
 float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottle) const
 {
 	const uint8 nbWheelsOnGround = NumWheelsOnGround();
@@ -3827,7 +3920,15 @@ float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottl
 	float engineThrottle = SignedThrottle;
 	float realBrake = 0.0f;
 
-	if (absThrottle >= ThrottleDeadzone)
+	// The raw handbrake request selects drive behavior independently of its
+	// smoothed tire-friction state. In particular, chassis rotation can make
+	// forward speed oppose the throttle without requesting the service brake.
+	const bool bRetainHandbrakeThrottle = bUseWheelFrameLateralFriction
+		&& !bUseLegacySteeringVelocityState
+		&& IsHandbrakingForWheelFriction()
+		&& CVarIAmSpeedWheelFrameHandbrakeDriveModel.GetValueOnAnyThread() != 0;
+
+	if (!bRetainHandbrakeThrottle && absThrottle >= ThrottleDeadzone)
 	{
 		if (absForwardSpeed > StoppingForwardSpeed && FMath::Sign(SignedThrottle) != FMath::Sign(forwardSpeed))
 		{
@@ -3838,7 +3939,7 @@ float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottl
 			}
 		}
 	}
-	else
+	else if (!bRetainHandbrakeThrottle)
 	{
 		engineThrottle = 0.0f;
 		realBrake = CoastingBrakeFactor;
@@ -3854,7 +3955,15 @@ float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottl
 		driveSpeedScale *= 0.25f;
 	}
 
-	const float groundEngineAccel = engineThrottle * ThrottleAccel * driveSpeedScale * groundRatio;
+	float groundEngineAccel = engineThrottle * ThrottleAccel * driveSpeedScale * groundRatio;
+	const float HandbrakeDriveScale = CVarIAmSpeedWheelFrameHandbrakeDriveForceScale.GetValueOnAnyThread();
+	if (bRetainHandbrakeThrottle && FMath::IsFinite(HandbrakeDriveScale) && HandbrakeDriveScale >= 0.0f)
+	{
+		const float EffectiveScale = CVarIAmSpeedWheelFrameHandbrakeDriveForceBlendModel.GetValueOnAnyThread() != 0
+			? HandbrakeDriveScale
+			: FMath::Lerp(1.0f, HandbrakeDriveScale, WheelFrameHandbrakeValue);
+		groundEngineAccel *= EffectiveScale;
+	}
 	float groundBrakeAccel = 0.0f;
 	if (realBrake > 0.0f && absForwardSpeed > KINDA_SMALL_NUMBER)
 	{
