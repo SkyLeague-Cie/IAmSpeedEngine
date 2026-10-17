@@ -5,6 +5,10 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "UObject/CoreNet.h"
+#include "Engine/PackageMapClient.h"
+#include "GameFramework/Actor.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "IAmSpeed/Base/InputProjectionWire.h"
 
 bool FSpeedCarCameraPhysicalInput::IsValid() const
@@ -96,6 +100,63 @@ void FNetworkWheeledSpeedState::BuildData(const UActorComponent* NetworkComponen
 	}
 }
 
+#if !UE_BUILD_SHIPPING
+namespace
+{
+void TracePrivateBumpWire(FArchive& Ar, UPackageMap* Map, UActorComponent* Owner,
+    UObject* Victim, int32 SourceFrame, uint16 Frames, bool bMapped, bool bArchiveSuccess)
+{
+    static const bool bEnabled=FParse::Param(FCommandLine::Get(),TEXT("SLBumpPrivateWireTrace"));
+    if(!bEnabled) return;
+    // Observe only on the genuine serialization lane supported by this probe.
+    // No archive byte, physical state or package-map assignment is authored.
+    if(!IsInGameThread())
+    {
+        UE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=unsupported-serialization-lane"));
+        return;
+    }
+    auto* ClientMap=Cast<UPackageMapClient>(Map);
+    const AActor* OwnerActor=Owner?Owner->GetOwner():nullptr;
+    const uint64 OwnerGuid=ClientMap && OwnerActor ? ClientMap->GetNetGUIDFromObject(OwnerActor).ObjectId : 0;
+    const uint64 OwnerComponentGuid=ClientMap && Owner ? ClientMap->GetNetGUIDFromObject(Owner).ObjectId : 0;
+    const uint64 TraceKey=OwnerGuid;
+    static TMap<uint64,uint16> LastPositiveByDirection[2];
+    auto& LastPositive=LastPositiveByDirection[Ar.IsSaving()?1:0];
+    const uint16 Previous=LastPositive.FindRef(TraceKey);
+    if(Frames==0 && Previous==0) return;
+    static uint32 Rows=0;
+    if(Rows>=32768 || (Frames && !LastPositive.Contains(TraceKey) && LastPositiveByDirection[0].Num()+LastPositiveByDirection[1].Num()>=16))
+    {
+        static bool bLimitReported=false;
+        if(!bLimitReported) UE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=diagnostic-budget-exceeded"));
+        bLimitReported=true;
+        return;
+    }
+    ++Rows;
+    TInlineComponentArray<USpeedWheeledComponent*> Movers;
+    if(OwnerActor) OwnerActor->GetComponents(Movers);
+    if(Movers.Num()!=1 || Movers[0]!=Owner)
+    {
+        static bool bAmbiguousReported=false;
+        if(!bAmbiguousReported) UE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=ambiguous-owner-component count=%d"),Movers.Num());
+        bAmbiguousReported=true;
+        return;
+    }
+    const uint64 VictimGuid=ClientMap && Victim ? ClientMap->GetNetGUIDFromObject(Victim).ObjectId : 0;
+    const auto* VictimMover=Cast<USpeedWheeledComponent>(Victim);
+    const AActor* VictimActor=VictimMover?VictimMover->GetOwner():nullptr;
+    const uint64 VictimActorGuid=ClientMap && VictimActor ? ClientMap->GetNetGUIDFromObject(VictimActor).ObjectId : 0;
+    UE_LOG(WheelNetcodeLog,Display,
+        TEXT("[BumpWire] direction=%s source_frame=%d owner_actor_guid=%llu owner_components=1 owner_component_guid=%llu victim_component_guid=%llu victim_actor_guid=%llu remaining=%u mapped=%d archive_success=%d"),
+        Ar.IsSaving()?TEXT("save"):TEXT("load"),SourceFrame,static_cast<unsigned long long>(OwnerGuid),static_cast<unsigned long long>(OwnerComponentGuid),
+        static_cast<unsigned long long>(VictimGuid),static_cast<unsigned long long>(VictimActorGuid),
+        uint32(Frames),int32(bMapped),int32(bArchiveSuccess));
+    if(Frames) LastPositive.Add(TraceKey,Frames);
+    else LastPositive.Remove(TraceKey);
+}
+}
+#endif
+
 bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
 	FNetworkPhysicsData::SerializeFrames(Ar);
@@ -159,6 +220,10 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 	// Mapping is a retry condition, distinct from malformed archive data.
 	// Engine NetSerialization.h requires unmapped object properties to stay dirty.
 	bOutSuccess = !Ar.IsError();
+#if !UE_BUILD_SHIPPING
+    TracePrivateBumpWire(Ar,Map,ImplementationComponent.Get(),BumpVictim,
+        SourceLocalFrame,BumpFrames,bBumpVictimMapped,bOutSuccess);
+#endif
 	return bBumpVictimMapped;
 }
 
