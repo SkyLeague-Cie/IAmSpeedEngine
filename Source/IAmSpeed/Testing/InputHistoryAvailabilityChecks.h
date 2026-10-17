@@ -32,10 +32,18 @@ bool RunInputHistoryAvailabilityChecks(FAutomationTestBase& Test,SetInput Set,Ch
         Loaded.NetSerialize(Reader,nullptr,nullptr);
         if(!Test.TestFalse(TEXT("History with absent middle slot decodes"),Reader.IsError())) return false;
         Test.TestEqual(TEXT("No leftover or missing bits"),Reader.GetBitsLeft(),int64(0));
+        // The decoded collection is chronological, not the modulo-indexed
+        // simulation history. Use the actual receive path before extraction.
+        constexpr int32 FrameOffset=7;
+        TNetRewindHistory<DataType,true> Received(8,true);
+        Received.ReceiveNewData(Loaded,FrameOffset,false,false);
         for(int32 Frame=100;Frame<=102;++Frame)
         {
             DataType Input;
-            if(!Test.TestTrue(TEXT("Extract actual received slot"),Loaded.ExtractData(Frame,true,&Input,true))) return false;
+            if(!Test.TestTrue(TEXT("Extract actual received slot"),Received.ExtractData(Frame-FrameOffset,true,&Input,true))) return false;
+            Test.TestEqual(TEXT("Receive path maps the real local frame"),int32(Input.LocalFrame),Frame-FrameOffset);
+            Test.TestEqual(TEXT("Receive path preserves server frame"),int32(Input.ServerFrame),Frame);
+            Test.TestTrue(TEXT("Actual receive path marks every slot received"),Input.bReceivedData);
             const bool bExpected=!(bIncludeAbsent && Frame==101);
             Test.TestEqual(TEXT("Availability survives history serialization"),Input.bInputProjectionValid,bExpected);
             if(bExpected)
