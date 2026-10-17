@@ -1,4 +1,7 @@
 #pragma once
+#if !UE_BUILD_SHIPPING
+#include "PublicationCadenceAudit.h"
+#endif
 
 #include "CoreMinimal.h"
 #include "HAL/CriticalSection.h"
@@ -195,8 +198,21 @@ namespace Speed::SimulationBoundary
 		bool ReadLatest(FSimulationSnapshot& OutSnapshot) const;
 		uint64 PublishedFrame() const;
 		uint64 PublishedSerial() const;
+#if !UE_BUILD_SHIPPING
+        bool PublishWithCadenceTiming(const FSimulationSnapshot& Snapshot,
+            Speed::PublicationCadence::FTiming Timing);
+        bool CompleteCadenceTiming(uint64 Frame, double StartSeconds,
+            const Speed::PublicationCadence::FStartOutcome& Outcome);
+        Speed::PublicationCadence::FObservation ReadCadenceObservation(
+            Speed::PublicationCadence::FObserver& Observer, double ToleranceSeconds) const;
+#endif
 
 	private:
+#if !UE_BUILD_SHIPPING
+        bool PublishImpl(const FSimulationSnapshot& Snapshot,
+            Speed::PublicationCadence::FTiming Timing);
+        Speed::PublicationCadence::FHistory CadenceHistory;
+#endif
 		uint32 MaxPayloadBytes = 0;
 		mutable FCriticalSection Mutex;
 		FSimulationSnapshot Slots[2];

@@ -1119,7 +1119,14 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		const ECanonicalPublicationResult Publication = SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame, [&]()
 		{
 			// One simulation owner. Avoid serial wrap before touching the inactive slot.
-			return SnapshotBuffer.PublishedSerial() != MAX_uint64 && SnapshotBuffer.Publish(Snapshot);
+			if (SnapshotBuffer.PublishedSerial() == MAX_uint64) return false;
+#if !UE_BUILD_SHIPPING
+            // Replay publications do not represent paced real-time starts.
+            return Context.bResimulationForTesting ? SnapshotBuffer.Publish(Snapshot) :
+                SnapshotBuffer.PublishWithCadenceTiming(Snapshot, GetCanonicalPublicationTiming(Context));
+#else
+            return SnapshotBuffer.Publish(Snapshot);
+#endif
 		});
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Publication);

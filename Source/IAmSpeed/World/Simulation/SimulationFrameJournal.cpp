@@ -1,6 +1,9 @@
 #include "SimulationFrameJournal.h"
 
 #include "Algo/BinarySearch.h"
+#if !UE_BUILD_SHIPPING
+#include "HAL/PlatformTime.h"
+#endif
 
 namespace Speed::SimulationBoundary
 {
@@ -136,8 +139,33 @@ namespace Speed::SimulationBoundary
 	{
 	}
 
-	bool FSnapshotBuffer::Publish(const FSimulationSnapshot& Snapshot)
-	{
+    bool FSnapshotBuffer::Publish(const FSimulationSnapshot& Snapshot)
+    {
+#if !UE_BUILD_SHIPPING
+        return PublishImpl(Snapshot, {});
+    }
+    bool FSnapshotBuffer::PublishWithCadenceTiming(const FSimulationSnapshot& Snapshot,
+        Speed::PublicationCadence::FTiming Timing)
+    {
+        return PublishImpl(Snapshot, Timing);
+    }
+    bool FSnapshotBuffer::CompleteCadenceTiming(const uint64 Frame, const double StartSeconds,
+        const Speed::PublicationCadence::FStartOutcome& Outcome)
+    {
+        FScopeLock Lock(&Mutex);
+        if (PublishedSlot == INDEX_NONE || Slots[PublishedSlot].NumFrame != Frame) return false;
+        return CadenceHistory.Complete(PublicationSerial, StartSeconds, Outcome);
+    }
+    Speed::PublicationCadence::FObservation FSnapshotBuffer::ReadCadenceObservation(
+        Speed::PublicationCadence::FObserver& Observer, const double ToleranceSeconds) const
+    {
+        FScopeLock Lock(&Mutex);
+        return CadenceHistory.Observe(Observer, FPlatformTime::Seconds(), ToleranceSeconds);
+    }
+    bool FSnapshotBuffer::PublishImpl(const FSimulationSnapshot& Snapshot,
+        const Speed::PublicationCadence::FTiming Timing)
+    {
+#endif
 		if (Snapshot.Payload.Num() > static_cast<int32>(MaxPayloadBytes))
 		{
 			return false;
@@ -160,6 +188,12 @@ namespace Speed::SimulationBoundary
 		Slots[NextSlot].PublicationSerial = ++PublicationSerial;
 		for (FSimulationPresentationOutput& Output : Slots[NextSlot].PresentationOutputs)
 			Output.PublicationSerial = PublicationSerial;
+#if !UE_BUILD_SHIPPING
+        // This local receipt becomes visible under the packet's existing lock.
+        // It is outside snapshots, hashes, codecs and rollback checkpoints.
+        CadenceHistory.Publish(Snapshot.NumFrame, PublicationSerial,
+            FPlatformTime::Seconds(), Timing);
+#endif
 		PublishedSlot = NextSlot;
 		return true;
 	}

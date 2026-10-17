@@ -8,6 +8,9 @@
 #include "IAmSpeed/Input/InputStream.h"
 #include "IAmSpeed/Input/InputStreamV2.h"
 #include <memory>
+#if !UE_BUILD_SHIPPING
+#include "IAmSpeed/World/Simulation/PublicationCadenceAudit.h"
+#endif
 #include "SpeedCar.generated.h"
 
 class USpeedWheeledComponent;
@@ -99,6 +102,6 @@ private:
 	FTimerHandle SparkleTimerHandler;
 #if !UE_BUILD_SHIPPING
 	TWeakObjectPtr<ASpeedSimulation> PresentationSimulation;
-	uint64 LastObservedSimulationFrame = MAX_uint64;
+	Speed::PublicationCadence::FObserver PublicationCadenceObservation;
 #endif
 };

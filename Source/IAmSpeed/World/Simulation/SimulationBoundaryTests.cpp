@@ -204,6 +204,11 @@ bool FIAmSpeedSnapshotBufferTest::RunTest(const FString& Parameters)
 	Source.Payload.Add(0);
 	TestFalse(TEXT("oversized payload is rejected"), Buffer.Publish(Source));
 	TestEqual(TEXT("failed publication preserves previous frame"), Buffer.PublishedFrame(), uint64(7));
+    Speed::PublicationCadence::FObserver PublicationObserver;
+    const auto Receipt = Buffer.ReadCadenceObservation(PublicationObserver, 0.00025);
+    TestTrue(TEXT("accepted publication has a receipt"), Receipt.Available);
+    TestEqual(TEXT("rejected publication preserves receipt frame"), uint64(Receipt.Latest.Frame), uint64(7));
+    TestEqual(TEXT("rejected publication has no extra serial"), uint64(Receipt.Latest.Serial), uint64(1));
 	return true;
 }
 
@@ -532,6 +537,18 @@ bool FIAmSpeedSimulationWorkerLifecycleTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+    Speed::PublicationCadence::FStartOutcome MakePublicationCadenceOutcome(double Interval = 1.0 / 300.0)
+    {
+        Speed::PublicationCadence::FStartOutcome Outcome;
+        Outcome.ActualIntervalSeconds = Outcome.TargetIntervalSeconds = Interval;
+        Outcome.BaseIntervalSeconds = 1.0 / 300.0;
+        Outcome.HasPreviousStart = true;
+        return Outcome;
+    }
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FIAmSpeedRealTimeFramePacerTest,
 	"IAmSpeed.Simulation.RealTimeFramePacer",
@@ -588,6 +605,35 @@ bool FIAmSpeedRealTimeFramePacerTest::RunTest(const FString& Parameters)
 		TenMillisecondTick.MinimumFrames, uint64(3));
 	TestEqual(TEXT("clock phase allows a fourth physical frame"),
 		TenMillisecondTick.MaximumFrames, uint64(4));
+
+    // Independent counterexamples preserve lawful recovery/commit latency while
+    // actual early starts, limited late starts and incomplete evidence stay red.
+    {
+        using namespace Speed::PublicationCadence;
+        constexpr double Dt = 1.0 / 300.0;
+        const auto Put = [this](FHistory& H, unsigned F, unsigned Serial, double Start,
+            double Commit, FStartOutcome Outcome = MakePublicationCadenceOutcome(), unsigned Epoch = 1)
+        {
+            H.Publish(F, Serial, Commit, {Epoch, Start, true});
+            TestTrue(TEXT("publication timing completes exact serial/start"), H.Complete(Serial, Start, Outcome));
+        };
+ {FHistory H;FObserver O;TestTrue(TEXT("publication cadence contract cell 1"), !H.Observe(O,0,.00025).Available);}
+ {FHistory H;FObserver O;Put(H,0,1,0,.0001);H.Observe(O,.0002,.00025);for(unsigned i=1;i<=3;++i)Put(H,i,i+1,i*Dt,i*Dt+.0001);auto R=H.Observe(O,.0102,.00025);TestTrue(TEXT("publication cadence contract cell 2"), R.Publications==3&&!R.EarlyStart&&!R.LateStart&&R.HistoryComplete);}
+ // Unequal actor-tick phase does not fabricate a frame-start violation.
+ {FHistory H;FObserver O;Put(H,0,1,-.004333333,-.0042);H.Observe(O,-.0011,.00025);for(unsigned i=1;i<=4;++i)Put(H,i,i+1,-.004333333+i*Dt,-.004233333+i*Dt);auto R=H.Observe(O,.0092,.00025);TestTrue(TEXT("publication cadence contract cell 3"), R.Publications==4&&!R.EarlyStart&&!R.LateStart);}
+ // Four lawful recovery starts fit into 8.67ms; there is no global 400Hz band.
+ {FHistory H;FObserver O;Put(H,0,1,-.003333333,-.0032);H.Observe(O,-.00001,.00025);for(unsigned i=1;i<=4;++i)Put(H,i,i+1,(i-1)*.0025,(i-1)*.0025+.0001,MakePublicationCadenceOutcome(.0025));auto R=H.Observe(O,.008661721,.00025);TestTrue(TEXT("publication cadence contract cell 4"), R.Publications==4&&!R.EarlyStart&&!R.LateStart);}
+ // Variable start-to-commit latency cannot turn regular starts into fast physics.
+ {FHistory H;FObserver O;Put(H,0,1,-Dt,-.0032);H.Observe(O,.0028,.00025);Put(H,1,2,0,.0029);Put(H,2,3,Dt,.0034);Put(H,3,4,2*Dt,.0067);Put(H,4,5,3*Dt,.0101);auto R=H.Observe(O,.0102,.00025);TestTrue(TEXT("publication cadence contract cell 5"), R.Publications==4&&!R.EarlyStart&&!R.LateStart);}
+ {FHistory H;FObserver O;Put(H,0,1,0,.0001);H.Observe(O,.0002,.00025);auto S=MakePublicationCadenceOutcome();S.ActualIntervalSeconds=Dt-.0003;Put(H,1,2,.003,.0031,S);TestTrue(TEXT("publication cadence contract cell 6"), H.Observe(O,.0032,.00025).EarlyStart);}
+ {FHistory H;FObserver O;Put(H,0,1,0,.0001);H.Observe(O,.0002,.00025);auto S=MakePublicationCadenceOutcome();S.ActualIntervalSeconds=.008608771;S.RecoveryLimited=true;Put(H,1,2,.008608771,.0088,S);TestTrue(TEXT("publication cadence contract cell 7"), H.Observe(O,.009,.00025).LateStart);}
+ {FHistory H;FObserver O;Put(H,10,1,0,.0001);H.Observe(O,.0002,.00025);Put(H,2,2,.003,.0031,MakePublicationCadenceOutcome(),2);auto R=H.Observe(O,.004,.00025);TestTrue(TEXT("publication cadence contract cell 8"), R.Rebased&&!R.FrameAccountingMismatch);}
+ {FHistory H;FObserver O;Put(H,0,1,0,.0001);H.Observe(O,.0002,.00025);H.Publish(1,2,.0034,{1,Dt,true});auto R=H.Observe(O,.0035,.00025);TestTrue(TEXT("publication cadence contract cell 9"), R.Publications==0);TestTrue(TEXT("publication cadence contract cell 10"), H.Complete(2,Dt,MakePublicationCadenceOutcome()));TestTrue(TEXT("publication cadence contract cell 11"), H.Observe(O,.0036,.00025).Publications==1);TestTrue(TEXT("publication cadence contract cell 12"), !H.Complete(2,Dt,MakePublicationCadenceOutcome()));}
+ {FHistory H;FObserver O;Put(H,0,1,0,.0001);H.Observe(O,.0002,.00025);for(unsigned i=1;i<=257;++i)Put(H,i,i+1,i*Dt,i*Dt+.0001);TestTrue(TEXT("publication cadence contract cell 13"), !H.Observe(O,1,.00025).HistoryComplete);}
+ {FHistory H;FObserver O;Put(H,0,1,0,.0001);H.Observe(O,.0002,.00025);Put(H,2,2,Dt,Dt+.0001);TestTrue(TEXT("publication cadence contract cell 14"), H.Observe(O,.004,.00025).FrameAccountingMismatch);}
+ {FHistory H;FObserver O;Put(H,0,1,0,.0001);TestTrue(TEXT("publication cadence contract cell 15"), !H.Observe(O,0,.00025).HistoryComplete);}
+
+    }
 
 	Pacer.Reset();
 	TestFalse(TEXT("reset starts a new pacing sequence"),

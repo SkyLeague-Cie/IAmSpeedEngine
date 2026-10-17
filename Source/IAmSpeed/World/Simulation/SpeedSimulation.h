@@ -156,11 +156,15 @@ public:
 	virtual void AuditPresentationFrameCadence(
 		const AActor& Observer,
 		float GameDeltaSeconds,
-		uint64& InOutLastObservedFrame) {}
+		Speed::PublicationCadence::FObserver& Observation) {}
 #endif
 	bool ShouldTickIfViewportsOnly() const override { return true; }
 	static unsigned int GetEngineFPS() { return EngineFPS; }
 protected:
+#if !UE_BUILD_SHIPPING
+    virtual Speed::PublicationCadence::FTiming GetCanonicalPublicationTiming(
+        const FCanonicalFrameContext& Context) const { return {}; }
+#endif
 	/** Executes one driver pulse on whichever thread currently owns simulation. */
 	virtual ESimulationWorkerResult DriveSimulation(float DeltaTime, float SimTime)
 		PURE_VIRTUAL(ASpeedSimulation::DriveSimulation, return ESimulationWorkerResult::Failed;);

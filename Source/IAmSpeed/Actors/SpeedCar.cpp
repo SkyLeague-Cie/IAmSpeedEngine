@@ -63,6 +63,7 @@ void ASpeedCar::AuditPresentationFrameCadence(const float GameDeltaSeconds)
 {
 	if (!PresentationSimulation.IsValid())
 	{
+        PublicationCadenceObservation = {};
 		const UWorld* World = GetWorld();
 		const ASpeedGameMode* SpeedGameMode = World
 			? Cast<ASpeedGameMode>(World->GetAuthGameMode())
@@ -74,10 +75,10 @@ void ASpeedCar::AuditPresentationFrameCadence(const float GameDeltaSeconds)
 
 	if (ASpeedSimulation* Simulation = PresentationSimulation.Get())
 	{
-		// The virtual policy is deliberately invoked immediately before the
-		// actor consumes the newest physical state in HandleKinematics().
+		// Audit latest availability before kinematics. A presentation latch may
+		// already have frozen a different publication for this game frame.
 		Simulation->AuditPresentationFrameCadence(
-			*this, GameDeltaSeconds, LastObservedSimulationFrame);
+			*this, GameDeltaSeconds, PublicationCadenceObservation);
 	}
 }
 #endif

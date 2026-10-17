@@ -1,11 +1,13 @@
 #include "RealTimeSimulation.h"
 
 #include "CanonicalFrameDriver.h"
+#include "CanonicalFrameContext.h"
 #if !UE_BUILD_SHIPPING
 #include "IAmSpeed/IAmSpeed.h"
 #endif
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/ScopeExit.h"
 
 namespace
 {
@@ -165,6 +167,10 @@ ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(
 	const float DeltaTime, const float SimTime)
 {
 	const double FrameStartSeconds = FPlatformTime::Seconds();
+#if !UE_BUILD_SHIPPING
+    ActivePublicationTiming = {PacingEpoch.load(std::memory_order_relaxed), FrameStartSeconds, true};
+    ON_SCOPE_EXIT { ActivePublicationTiming = {}; };
+#endif
 	const ESimulationWorkerResult Result = DriveSimulation(DeltaTime, SimTime);
 	if (Result == ESimulationWorkerResult::Advanced)
 	{
@@ -175,6 +181,18 @@ ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(
 		const FRealTimeFramePacer::FFrameStartSample Sample = FramePacer.BeginFrame(
 			FrameStartSeconds, static_cast<double>(RealDeltaTime), RecoveryWindowSeconds);
 		AuditPhysicalFrameStart(Sample);
+        if (Speed::CanonicalFrameDriver::IsEnabled())
+        {
+            Speed::PublicationCadence::FStartOutcome Outcome;
+            Outcome.ActualIntervalSeconds = Sample.IntervalSeconds;
+            Outcome.TargetIntervalSeconds = Sample.TargetIntervalSeconds;
+            Outcome.BaseIntervalSeconds = static_cast<double>(RealDeltaTime);
+            Outcome.RecoveryDebtSeconds = Sample.RecoveryDebtSeconds;
+            Outcome.HasPreviousStart = Sample.bHasPreviousStart;
+            Outcome.RecoveryLimited = Sample.bRecoveryLimited;
+            if (!SnapshotBuffer.CompleteCadenceTiming(CanonicalNumFrame - 1u, FrameStartSeconds, Outcome))
+                UE_LOG(SpeedPhysicsLog, Error, TEXT("[RealTimePublicationCadenceIncomplete] Frame=%llu"), CanonicalNumFrame - 1u);
+        }
 #else
 		FramePacer.BeginFrame(
 			FrameStartSeconds, static_cast<double>(RealDeltaTime), RecoveryWindowSeconds);
@@ -248,74 +266,77 @@ void ARealTimeSimulation::AuditPhysicalFrameStart(
 #endif
 
 #if !UE_BUILD_SHIPPING
-void ARealTimeSimulation::AuditPresentationFrameCadence(
-	const AActor& Observer,
-	const float GameDeltaSeconds,
-	uint64& InOutLastObservedFrame)
+Speed::PublicationCadence::FTiming ARealTimeSimulation::GetCanonicalPublicationTiming(
+    const FCanonicalFrameContext& Context) const
 {
-	if (!IsOwnedWorkerExecutionMode() || GameDeltaSeconds <= 0.0f)
-	{
-		InOutLastObservedFrame = MAX_uint64;
-		return;
-	}
-
-	const uint64 CurrentFrame = SnapshotBuffer.PublishedFrame();
-	if (CurrentFrame == MAX_uint64)
-	{
-		return;
-	}
-	if (InOutLastObservedFrame == MAX_uint64 ||
-		CurrentFrame < InOutLastObservedFrame ||
-		IsOwnedSimulationPaused() ||
-		Speed::CanonicalFrameDriver::IsOwnedThreadPaused())
-	{
-		InOutLastObservedFrame = CurrentFrame;
-		return;
-	}
-
-	const uint64 ExecutedFrames = CurrentFrame - InOutLastObservedFrame;
-	InOutLastObservedFrame = CurrentFrame;
-	const FRealTimeFramePacer::FFrameCountExpectation Expectation =
-		FRealTimeFramePacer::BuildFrameCountExpectation(
-			static_cast<double>(GameDeltaSeconds),
-			static_cast<double>(RealDeltaTime));
-	// The game and worker clocks have an arbitrary phase offset. Over one game
-	// interval, either floor(expected) or the following physical frame is valid.
-	const double NowSeconds = FPlatformTime::Seconds();
-	if (NowSeconds < SuppressPresentationWarningsUntilSeconds ||
-		CVarRealTimeCadenceWarnings.GetValueOnGameThread() == 0)
-	{
-		return;
-	}
-
-	const double CooldownSeconds = FMath::Max(0.0,
-		static_cast<double>(CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnGameThread()));
-	if (ExecutedFrames < Expectation.MinimumFrames &&
-		NowSeconds - LastPresentationSlowWarningSeconds >= CooldownSeconds)
-	{
-		LastPresentationSlowWarningSeconds = NowSeconds;
-		UE_LOG(SpeedPhysicsLog, Warning,
-			TEXT("[RealTimePresentationCadence] Physics Thread is too slow: Observer=%s ExecutedFrames=%llu ExpectedFrames=%.3f ExpectedRange=[%llu,%llu] GameDeltaMs=%.6f LatestSnapshotFrame=%llu"),
-			*Observer.GetName(), ExecutedFrames, Expectation.ExactFrames,
-			Expectation.MinimumFrames, Expectation.MaximumFrames,
-			static_cast<double>(GameDeltaSeconds) * 1000.0, CurrentFrame);
-	}
-	else if (ExecutedFrames > Expectation.MaximumFrames &&
-		NowSeconds - LastPresentationFastWarningSeconds >= CooldownSeconds)
-	{
-		LastPresentationFastWarningSeconds = NowSeconds;
-		UE_LOG(SpeedPhysicsLog, Warning,
-			TEXT("[RealTimePresentationCadence] Physics Thread is too fast: Observer=%s ExecutedFrames=%llu ExpectedFrames=%.3f ExpectedRange=[%llu,%llu] GameDeltaMs=%.6f LatestSnapshotFrame=%llu"),
-			*Observer.GetName(), ExecutedFrames, Expectation.ExactFrames,
-			Expectation.MinimumFrames, Expectation.MaximumFrames,
-			static_cast<double>(GameDeltaSeconds) * 1000.0, CurrentFrame);
-	}
+    if (!ActivePublicationTiming.Present || Context.bResimulationForTesting) return {};
+    auto Timing = ActivePublicationTiming;
+    Timing.Epoch = PacingEpoch.load(std::memory_order_relaxed);
+    return Timing;
 }
+
+void ARealTimeSimulation::AuditPresentationFrameCadence(
+    const AActor& Observer, const float GameDeltaSeconds,
+    Speed::PublicationCadence::FObserver& Observation)
+{
+    if (!IsOwnedWorkerExecutionMode() || GameDeltaSeconds <= 0.0f ||
+        IsOwnedSimulationPaused() || Speed::CanonicalFrameDriver::IsOwnedThreadPaused())
+    {
+        Observation = {};
+        return;
+    }
+    const double ToleranceSeconds = FMath::Max(0.0,
+        static_cast<double>(CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread()) / 1000.0);
+    // Availability at this read, not the packet previously frozen by an actor latch.
+    // The unchanged pacer supplies actual starts/deadlines; visibility has its own
+    // monotone clock. GameDelta cannot define the interval between these reads.
+    const auto Result = SnapshotBuffer.ReadCadenceObservation(Observation, ToleranceSeconds);
+    if (!Result.Available) return;
+    // A missing receipt/clock/history is a diagnostic failure, never a green gap.
+    if (!Result.HistoryComplete || Result.FrameAccountingMismatch)
+    {
+        UE_LOG(SpeedPhysicsLog, Error,
+            TEXT("[RealTimePresentationCadence] Incomplete publication observation: Observer=%s HistoryComplete=%u FrameAccountingMismatch=%u Frame=%llu Serial=%llu"),
+            *Observer.GetName(), uint32(Result.HistoryComplete), uint32(Result.FrameAccountingMismatch),
+            uint64(Result.Latest.Frame), uint64(Result.Latest.Serial));
+        return;
+    }
+    const double NowSeconds = Observation.ObservationSeconds;
+    if (NowSeconds < SuppressPresentationWarningsUntilSeconds ||
+        CVarRealTimeCadenceWarnings.GetValueOnGameThread() == 0) return;
+    const double CooldownSeconds = FMath::Max(0.0,
+        static_cast<double>(CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnGameThread()));
+    if (Result.Rebased) return;
+    const auto& Early = Result.FirstEarlyStart;
+    const auto& Late = Result.FirstLateStart;
+    if (Result.EarlyStart && NowSeconds - LastPresentationFastWarningSeconds >= CooldownSeconds)
+    {
+        LastPresentationFastWarningSeconds = NowSeconds;
+        UE_LOG(SpeedPhysicsLog, Warning,
+            TEXT("[RealTimePresentationCadence] Physics Thread is too fast: Observer=%s Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f Publications=%llu ObservationIntervalMs=%.6f"),
+            *Observer.GetName(), uint64(Early.Frame), Early.Start.ActualIntervalSeconds * 1000.0,
+            Early.Start.TargetIntervalSeconds * 1000.0, uint64(Result.Publications),
+            Result.ObservationIntervalSeconds * 1000.0);
+    }
+    if (Result.LateStart && NowSeconds - LastPresentationSlowWarningSeconds >= CooldownSeconds)
+    {
+        LastPresentationSlowWarningSeconds = NowSeconds;
+        UE_LOG(SpeedPhysicsLog, Warning,
+            TEXT("[RealTimePresentationCadence] Physics Thread is too slow: Observer=%s Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f Publications=%llu ObservationIntervalMs=%.6f"),
+            *Observer.GetName(), uint64(Late.Frame), Late.Start.ActualIntervalSeconds * 1000.0,
+            Late.Start.TargetIntervalSeconds * 1000.0, uint64(Result.Publications),
+            Result.ObservationIntervalSeconds * 1000.0);
+    }
+}
+
 #endif
 
 void ARealTimeSimulation::ResetFramePacing()
 {
 	FramePacer.Reset();
+#if !UE_BUILD_SHIPPING
+    PacingEpoch.fetch_add(1, std::memory_order_relaxed);
+#endif
 }
 
 void ARealTimeSimulation::OnCanonicalTimelineRestored()

@@ -1,6 +1,9 @@
 #pragma once
 
 #include "SpeedSimulation.h"
+#if !UE_BUILD_SHIPPING
+#include <atomic>
+#endif
 #include "RealTimeSimulation.generated.h"
 
 /** Pure wall-clock state used to keep frame starts phase-locked without bursts. */
@@ -37,7 +40,7 @@ public:
 		double FrameIntervalSeconds,
 		double RecoveryWindowSeconds = 0.010);
 #if !UE_BUILD_SHIPPING
-	/** Builds the valid published-frame count for two asynchronously phased clocks. */
+	/** Builds a count for ideal equally spaced, instantaneous publications only. */
 	static FFrameCountExpectation BuildFrameCountExpectation(
 		double ObservationSeconds,
 		double FrameIntervalSeconds);
@@ -67,14 +70,18 @@ class IAMSPEED_API ARealTimeSimulation : public ASpeedSimulation
 
 public:
 #if !UE_BUILD_SHIPPING
-	/** Compares game-thread snapshot consumption with this real-time policy. */
+	/** Audits available publications using their actual paced starts and read clock. */
 	void AuditPresentationFrameCadence(
 		const AActor& Observer,
 		float GameDeltaSeconds,
-		uint64& InOutLastObservedFrame) override;
+		Speed::PublicationCadence::FObserver& Observation) override;
 #endif
 
 protected:
+#if !UE_BUILD_SHIPPING
+    Speed::PublicationCadence::FTiming GetCanonicalPublicationTiming(
+        const FCanonicalFrameContext& Context) const override;
+#endif
 	ESimulationWorkerResult DriveSimulation(float DeltaTime, float SimTime) override;
 	/** Records the actual worker-frame start before entering the common frame body. */
 	ESimulationWorkerResult DriveOwnedWorkerPulse(float DeltaTime, float SimTime) override;
@@ -94,6 +101,8 @@ private:
 
 	FRealTimeFramePacer FramePacer;
 #if !UE_BUILD_SHIPPING
+	Speed::PublicationCadence::FTiming ActivePublicationTiming;
+    std::atomic<uint64> PacingEpoch{1};
 	double LastPhysicalSlowWarningSeconds = -DBL_MAX;
 	double LastPhysicalFastWarningSeconds = -DBL_MAX;
 	double LastPresentationSlowWarningSeconds = -DBL_MAX;
