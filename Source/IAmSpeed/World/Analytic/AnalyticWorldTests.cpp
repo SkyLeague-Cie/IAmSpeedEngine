@@ -7,6 +7,45 @@
 
 #include "Misc/AutomationTest.h"
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedLargeSweepParityTest,
+    "IAmSpeed.AnalyticWorld.LargeSweepParity", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FIAmSpeedLargeSweepParityTest::RunTest(const FString&)
+{
+    using namespace Speed::Analytic;
+    FAnalyticWorldData Small;
+    for(int32 I=0;I<4;++I)
+    {
+        FBoundedPlane P;P.SourceId=I+1;P.SurfaceId=I+10;P.FeatureId=I+20;P.PrimitiveId=I+30;
+        P.Origin=FVector3d(I*200.,0.,0.);P.HalfExtents=FVector2d(80.,80.);P.BlockingChannels=MAX_uint64;
+        Small.Planes.Add(P);
+    }
+    TestTrue(TEXT("Local reference geometry valid"),Small.FinalizeAndValidate());
+    FAnalyticWorldData Large=Small;
+    for(int32 I=0;I<8192;++I)
+    {
+        FBoundedPlane P=Small.Planes[0];P.SourceId=100+I;P.SurfaceId=10000+I;P.FeatureId=20000+I;P.PrimitiveId=30000+I;
+        P.Origin=FVector3d(10000.+(I%128)*200.,10000.+(I/128)*200.,0.);Large.Planes.Add(P);
+    }
+    TestTrue(TEXT("Large indexed geometry valid"),Large.FinalizeAndValidate());
+    FWorldQueryService A(Small),B(Large);
+    for(EQueryShape Shape:{EQueryShape::Ray,EQueryShape::Sphere,EQueryShape::Box})
+    for(double X:{-81.,-80.,-79.,0.,79.,80.,81.,199.,400.,600.,900.})
+    for(double Z:{-2.,0.,2.,20.})
+    {
+        FWorldQuery Q;Q.Shape=Shape;Q.Start={X,0.,Z};Q.End={X+3.,0.,-20.};Q.Radius=2.;Q.HalfExtent=FVector3d(2.);
+        const auto L=A.Sweep(Q),R=B.Sweep(Q);
+        TestEqual(TEXT("Indexed sweep hit parity"),R.bHit,L.bHit);
+        if(L.bHit)
+        {
+            TestEqual(TEXT("Provider order and semantic identity retained"),R.PrimitiveId,L.PrimitiveId);
+            TestEqual(TEXT("Exact contact time retained"),R.Time,L.Time);
+            TestEqual(TEXT("Initial-overlap flag retained"),R.bStartPenetrating,L.bStartPenetrating);
+            TestTrue(TEXT("Contact witnesses retained"),R.Point.Equals(L.Point,0.)&&R.Normal.Equals(L.Normal,0.));
+        }
+    }
+    return !HasAnyErrors();
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FIAmSpeedEmptyCollisionFilterTest,
 	"IAmSpeed.AnalyticWorld.EmptyCollisionFilter",

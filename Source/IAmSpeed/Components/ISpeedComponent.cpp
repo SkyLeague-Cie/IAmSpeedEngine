@@ -48,6 +48,9 @@ void ISpeedComponent::RestoreSimulationSnapshot(
 
 void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& PreviousRotation)
 {
+    // Prescribed bodies publish their immutable track sample, not a free-body
+    // network quantization grid. Contact response remains owned by the peer.
+    if(IsPrescribedMotion())return;
 	// IAMSPEED.PHYS.BOX_STANDING_STILL/BOX_EQUILIBRIUM.V1: independent world
 	// and actor grids need not intersect at a valid contact pose. Preserve the
 	// pose of an ALREADY geometrically certified, non-rotating face (including
@@ -130,6 +133,7 @@ bool ISpeedComponent::HasExactStaticFaceSupport() const
 
 float ISpeedComponent::GetMaximumCanonicalSupportInterval(float Remaining) const
 {
+    if(IsPrescribedMotion())return Remaining;
 	if (!StaticRestingWorld || IsFrozen()) return Remaining;
 	double Candidate = TNumericLimits<double>::Max();
 	for (const USSubBody* Body : GetSubBodies())
@@ -229,6 +233,15 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 	if (SubDelta <= 0.f)
 		return;
 
+    // A mechanical track is kinematically imposed. Static support, friction
+    // stop events, transport and depenetration cannot deflect it; evaluating
+    // those free-body routines on large authored movers was pure overhead.
+    if(IsPrescribedMotion())
+    {
+        PostIntegrateKinematics(SubDelta);
+        return;
+    }
+
 	// Apply only during this segment. Restoring the external load afterwards
 	// lets a later TOI impulse/torque release support immediately in this frame.
 	double StopAfterSeconds = TNumericLimits<double>::Max();
@@ -324,6 +337,7 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 
 bool ISpeedComponent::ProjectEstablishedStaticContacts(const float& Delta)
 {
+    if(IsPrescribedMotion())return false;
 	bool bProjected = false;
 	for (USSubBody* SubBody : GetSubBodies())
 	{

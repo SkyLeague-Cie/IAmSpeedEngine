@@ -1,10 +1,24 @@
 #include "SpeedPrescribedComponent.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "UObject/StrongObjectPtr.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+namespace
+{
+struct FPrescribedCountingStaticWorld final:Speed::IStaticCollisionWorld
+{
+    mutable int32 Calls=0;
+    Speed::Analytic::FWorldHit SweepSingle(const Speed::Analytic::FWorldQuery&)const override{++Calls;return {};}
+    bool TryFindDeepestOverlap(const Speed::Analytic::FWorldQuery&,Speed::Analytic::FWorldHit& Hit)const override{++Calls;Hit={};return true;}
+    bool HasAuthorityCoverage(const Speed::Analytic::FWorldQuery&)const override{++Calls;return true;}
+    bool TrySweepAuthority(const Speed::Analytic::FWorldQuery&,Speed::Analytic::FWorldHit& Hit)const override{++Calls;Hit={};return false;}
+    Speed::EStaticCollisionBackend GetBackend()const override{return Speed::EStaticCollisionBackend::SurfaceAnalytic;}
+    void VisitPlanarCandidates(const Speed::Analytic::FWorldQuery&,TFunctionRef<void(const Speed::Analytic::FWorldHit&)>)const override{++Calls;}
+};
+}
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPrescribedPhysicalComponentTest,"IAmSpeed.Motion.PhysicalComponent",EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
 bool FPrescribedPhysicalComponentTest::RunTest(const FString&)
 {
@@ -48,7 +62,22 @@ bool FPrescribedPhysicalComponentTest::RunTest(const FString&)
     TestTrue(TEXT("Prescribed contact response admitted"),USolidSubBody::ResolvePrescribedContact(*Box,*Sphere,Hit,0.));
     TestTrue(TEXT("Physical sphere receives finite wall-relative rebound"),FVector(Peer->GetPhysCOMVelocity()).Equals({100.,0.,0.},1.e-4));
     TestTrue(TEXT("Wall velocity retained after real response"),M->GetPhysCOMVelocity()==WallVelocityBeforeContact);
-    Gate->bInside=false;++Gate->Episode;Step(5);
+    FPrescribedCountingStaticWorld StaticWorld;
+    M->SetStaticCollisionWorldForFrame(&StaticWorld,1.f/300.f);
+    Gate->bInside=true;Step(5);
+    const SKinematic ExactTrack=M->GetKinematicState();
+    TestFalse(TEXT("Mechanical track never projects onto static road geometry"),M->ProjectEstablishedStaticContacts(1.f/300.f));
+    TestEqual(TEXT("Static material stop events cannot split the prescribed clock"),M->GetMaximumCanonicalSupportInterval(1.f/300.f),1.f/300.f);
+    M->QuantizePhysicalState();
+    TestTrue(TEXT("Track sample survives ordinary quantization entry exactly"),M->GetPhysCOM()==ExactTrack.Location&&M->GetPhysCOMVelocity()==ExactTrack.Velocity&&M->GetPhysRotation()==ExactTrack.Rotation);
+    TestEqual(TEXT("Prescribed integration/projection/quantization makes zero static-support queries"),StaticWorld.Calls,0);
+    // Independent negative witness: an ordinary physical box still invokes
+    // the same static feasibility path. Only the prescribed subtype bypasses it.
+    Box->SetMass(100.f);Box->Initialize(Peer.Get());Peer->SetStaticCollisionWorldForFrame(&StaticWorld,1.f/300.f);
+    Box->CanApplyQuantizedPose(StaticWorld,Peer->GetKinematicState());
+    TestTrue(TEXT("Ordinary finite-mass body keeps static pose feasibility queries"),StaticWorld.Calls>0);
+    Box->Initialize(M.Get());M->SetStaticCollisionWorldForFrame(nullptr);
+    Gate->bInside=false;++Gate->Episode;Step(6);
     TestTrue(TEXT("Explicit stopped episode reset restores initial obstacle phase"),M->GetPhysCOM().IsZero()&&M->GetPhysCOMVelocity().IsZero());
     return !HasAnyErrors();
 }

@@ -3060,8 +3060,10 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		? FPlatformTime::Seconds()
 		: 0.0;
 #endif
-	for (const FBoundedPlane& Plane : World.Planes)
+	Speed::Collision::FOrderedBoundsScratch PlaneScratch;
+	for (int32 PlaneIndex : PlaneProviderIndex->FindCandidates(QueryBounds, PlaneScratch))
 	{
+		const FBoundedPlane& Plane = World.Planes[PlaneIndex];
 		if (Plane.bRequiresCompactOptIn) continue;
 		if (Query.bAuthorityOnly && !Plane.bAuthorityEligible) continue;
 		if (Query.bExcludeAuthorityEligible && Plane.bAuthorityEligible) continue;
