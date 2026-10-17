@@ -96,6 +96,8 @@ public:
 #endif
 	virtual void Initialize(ISpeedComponent* InParentComponent) override;
 
+	/** New mechanical obstacle path only; false preserves ordinary response. */
+	static bool ResolvePrescribedContact(USolidSubBody& A,USolidSubBody& B,const SHitResult& Hit,double Penetration);
 	float GetMass() const { return Mass; }
 	void SetMass(float InMass) { Mass = InMass; }
 	virtual FMatrix ComputeWorldInvInertiaTensor() const;

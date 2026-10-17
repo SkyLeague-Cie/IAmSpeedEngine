@@ -1525,9 +1525,10 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
 	ApplyPendingOps();
 	RebuildSortedIfNeeded();
 
+	for (bool bPrescribed : {true, false})
 	for (ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
 	{
-		if (Component)
+		if (Component && Component->IsPrescribedMotion()==bPrescribed)
 		{
 			IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Component, Prepare);
 			Component->SetStaticCollisionWorldForFrame(

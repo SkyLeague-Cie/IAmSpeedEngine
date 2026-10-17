@@ -1382,7 +1382,7 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
     SHitResult BoxHitresult;
     SHitResult SphereHitresult;
 	SHitResult WheelHitresult;
-    bool bHitGround = SweepVsGround(GetWorld(), GroundHitresult, RemainingDelta, TOI_ground);
+    bool bHitGround = !ParentComponent->IsPrescribedMotion() && SweepVsGround(GetWorld(), GroundHitresult, RemainingDelta, TOI_ground);
     bool bHitBox = SweepVsBoxes(GetWorld(), BoxHitresult, RemainingDelta, TOI_Box);
     bool bHitSphere = SweepVsSpheres(GetWorld(), SphereHitresult, RemainingDelta, TOI_Sphere);
     bool bHitWheel = SweepVsWheels(GetWorld(), WheelHitresult, RemainingDelta, TOI_Wheel);
@@ -1592,6 +1592,8 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
     if (!CurrentHit.bBlockingHit || !ParentComponent)
         return;
 
+    if(auto* Other=Cast<USolidSubBody>(CurrentHit.SubBody.Get()))
+        if(ResolvePrescribedContact(*this,*Other,CurrentHit,CurrentHit.PenetrationDepth))return;
     if (TryResolveExactFaceImpact()) return;
     if (TryResolveExactPlanarImpact()) return;
 
@@ -5436,6 +5438,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
 
 FMatrix UBoxSubBody::InitInvInertiaTensor() const
 {
+    if(ParentComponent && ParentComponent->IsPrescribedMotion())return FMatrix(ForceInitToZero);
     if (!ParentComponent)
     {
         return FMatrix::Identity;

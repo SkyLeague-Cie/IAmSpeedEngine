@@ -129,6 +129,8 @@ public:
 	// Runs component-owned preparation/gameplay for one integer-addressed frame.
 	// This virtual dispatch also covers derived components declared by game modules.
 	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;
+	/** Explicit prescribed solids are prepared before ordinary force owners. */
+	virtual bool IsPrescribedMotion() const { return false; }
 	/** Applies an opaque, frame-latched input payload addressed by FSimulationWorld. */
 	virtual bool ApplySimulationInput(TConstArrayView<uint8> Payload) { return false; }
 	/** Appends deterministic mechanic state not covered by the common kinematic snapshot. */
