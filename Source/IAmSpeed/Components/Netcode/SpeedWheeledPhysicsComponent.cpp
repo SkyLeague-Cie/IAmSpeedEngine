@@ -250,7 +250,15 @@ void FNetworkWheeledSpeedInputState::BuildData(const UActorComponent* NetworkCom
 
 bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
-	if (Ar.IsSaving() && !bInputProjectionValid) { bOutSuccess = false; return false; }
+	if (Ar.IsSaving() && !bInputProjectionValid)
+	{
+		// UE's rewind-history container ignores the per-entry return value.
+		// Fail the containing archive so an absent projection cannot emit a
+		// successful history header with no input/frame payload.
+		Ar.SetError();
+		bOutSuccess = false;
+		return false;
+	}
 	// Decode the complete INPUT transactionally, including the new versioned
 	// camera tail. Old mechanical-state serializers remain byte-identical.
 	auto Value = *this;
