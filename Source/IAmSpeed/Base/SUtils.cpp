@@ -1,6 +1,6 @@
+#include "SUtils.h"
 #include "IAmSpeed/World/Collision/LinearContactWindow.h"
 #include "IAmSpeed/World/Collision/ContactTimeBracket.h"
-#include "SUtils.h"
 #include "QuaternionQuantizationCache.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
