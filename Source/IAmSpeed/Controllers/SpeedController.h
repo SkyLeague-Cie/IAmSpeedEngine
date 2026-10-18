@@ -191,6 +191,8 @@ private:
 	bool ObservePrivateInputAdmission(bool Result, const TCHAR* Site);
 	void TracePrivateInputState(const TCHAR* Site, const Speed::Input::V2::FBoundaryReceipt* Receipt = nullptr, bool FirstFault = false);
 #if !UE_BUILD_SHIPPING
+	void TracePrivateCompletedInputFrame();
+	bool PrivateInputCompletedTraceDone = false;
 	uint32 PrivateInputTraceLines = 0;
 	uint64 PrivateInputTraceReceiptCommand = MAX_uint64;
 	int32 PrivateInputTraceReceiptStatus = -2;

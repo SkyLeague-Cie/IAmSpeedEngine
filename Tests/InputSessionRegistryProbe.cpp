@@ -61,6 +61,63 @@ static std::shared_ptr<const FRegistryFrame> Step(FInputSessionRegistry& R, FFra
 }
 int main()
 {
+    // Real journal APIs before/after first valid reports, both queue orders.
+    for (const bool DeviceFirst : {false, true}) for (const bool Reports : {false, true})
+    {
+        auto Q=std::make_shared<FInputSessionCommands>(); auto J=std::make_shared<FRawAcquisitionJournal>(3,0);
+        if (Reports) Check(Publish(J,1,false,true),"initial acquisition report accepted");
+        const auto Before=J->ReadInitialOwnerAdmission(), Again=J->ReadInitialOwnerAdmission();
+        Check(Before.CanAdmit(3,0) && Before.RequiresFresh==!Reports,"virgin before and after first raw report");
+        Check(Before.NextFrame==Again.NextFrame && Before.DeliverySequence==Again.DeliverySequence
+            && Before.PhysicalFence==Again.PhysicalFence && Before.Serial==Again.Serial
+            && Before.PhysicalChanges==Again.PhysicalChanges && Before.HasPhysicalLatest==Again.HasPhysicalLatest,"snapshot does not poll or mutate journal");
+        auto Bot=Scenario(2); Bot.Kind=EProducerContract::AI;Bot.Journal=8;Bot.Scenario.clear();
+        auto Inbox=std::make_shared<FAIInputCommands>(Bot.Contract);FInputSessionRegistry Registry(Q,42,{{7,J,{}},{8,{},Inbox}});
+        auto Player=Command(DeviceFirst?1:2,0);Player.Binding=Device();Player.Binding.Epoch=3;
+        auto AI=Command(DeviceFirst?2:1,0);AI.Binding=Bot;
+        Check(Q->Submit(DeviceFirst?Player:AI)==ECommandAdmission::Enqueued && Q->Submit(DeviceFirst?AI:Player)==ECommandAdmission::Enqueued,"initial immutable commands queued");
+        Check(Registry.ServiceBoundary(0) && Q->Read(1)->Status==EBoundaryStatus::Applied && Q->Read(2)->Status==EBoundaryStatus::Applied,"same captured initial lot serialized both orders");
+        const auto Seen=J->ReadInitialOwnerAdmission();
+        Check(Registry.ReadRegistry()->Version==2 && Registry.ReadRegistry()->Bindings.size()==2 && Seen.NextFrame==0 && Seen.DeliverySequence==0 && Registry.PollCount(1)==0 && Registry.PollCount(2)==0,"admission consumes no physical frame");
+        Check(Q->Submit(Player)==ECommandAdmission::Duplicate,"original DTO digest remains immutable");
+        const auto BoundView=Registry.ReadRegistry();
+        Check(std::any_of(BoundView->Phases.begin(),BoundView->Phases.end(),[](const auto& P){return P.Session==1 && P.Phase==ESessionPhase::Paused;}),"device remains paused after Bind");
+        auto Resume=Command(4,2,EBoundaryOperation::Resume);Resume.Session=1;Resume.Epoch=3;Resume.ResumeGeneration=1;
+        Check(Q->Submit(Resume)==ECommandAdmission::Enqueued && !Registry.ServiceBoundary(0) && Q->Read(4)->Status==EBoundaryStatus::WaitingForBaseline,"fresh Resume baseline still mandatory");
+        Check(Publish(J,Reports?2:1,false,true) && Registry.ServiceBoundary(0) && Q->Read(4)->Status==EBoundaryStatus::Applied,"new fresh baseline completes Resume");
+        FActionValues Values{};Check(Inbox->Publish(Values),"AI actual command fixture");const auto Frame=Step(Registry,0);
+        const auto After=J->ReadInitialOwnerAdmission();Check(Frame->Inputs.size()==2 && After.NextFrame==1 && After.DeliverySequence==1,"original frame consumed exactly once after readiness");
+    }
+    for (unsigned V=0;V<18;++V)
+    {
+        auto Q=std::make_shared<FInputSessionCommands>();auto J=std::make_shared<FRawAcquisitionJournal>(3,0);
+        auto Bot=Scenario(2);Bot.Kind=EProducerContract::AI;Bot.Journal=8;Bot.Scenario.clear();auto Inbox=std::make_shared<FAIInputCommands>(Bot.Contract);
+        FInputSessionRegistry Registry(Q,42,{{7,J,{}},{8,{},Inbox}});auto AI=Command(1,0);AI.Binding=Bot;
+        auto Player=Command(2,0);Player.Binding=Device();Player.Binding.Epoch=3;
+        if(V==3)Player.WorkerGeneration=41;if(V==4)Player.Binding.Actors=Bot.Actors;if(V==5)Player.Binding.Producer=Bot.Producer;
+        if(V==6)Player.Binding.Id=Bot.Id;if(V==7)Player.Binding.Journal=Bot.Journal;if(V==8)Player.Binding.First=1;
+        if(V==9)Check(Publish(J,1,false,true) && bool(J->Poll(0)),"previously consumed journal");
+        if(V==10)J->CancelLifecycle();if(V==11)Player.Binding.Epoch=4;if(V==12)J->Invalidate();
+        if(V==13){J->Invalidate();Check(Publish(J,1,false,true),"valid baseline after invalidation");Check(!J->ReadInitialOwnerAdmission().RequiresFresh,"RequiresFresh false does not erase invalidation");}
+        if(V==14){FRawAcquisitionBatch Bad;Check(!J->Publish(J->BeginAcquisition(),Bad),"invalid publication rejected");}
+        if(V==15)J->SetLifecyclePaused(true);if(V==16)J->Close();
+        std::optional<FInputPollCutoff> Frozen;
+        if(V==17){Check(Publish(J,1,false,true),"freeze fixture report");Frozen=J->FreezeForOwner(0);Check(bool(Frozen) && J->ReadInitialOwnerAdmission().HasFrozenCutoff && !J->ReadInitialOwnerAdmission().CanAdmit(3,0),"real frozen cutoff cannot admit initial owner");Check(bool(J->Poll(0)) && J->CloseFrozenCutoff(*Frozen),"close actual cutoff before boundary service");}
+        Check(Q->Submit(AI)==ECommandAdmission::Enqueued,"negative AI queued");if(V==2)Check(Registry.ServiceBoundary(0),"earlier lot retains strict version");
+        Check(Q->Submit(Player)==ECommandAdmission::Enqueued,"negative player queued");Check(V==0?Registry.ServiceBoundary():Registry.ServiceBoundary(V==1?1:0),"negative boundary remains nonterminal");
+        Check(Q->Read(2)->Status==EBoundaryStatus::Rejected && Registry.ReadRegistry()->Bindings.size()==1 && Registry.ReadRegistry()->Version==1,"unsafe or out of lot Bind remains rejected");
+    }
+    {
+        auto Q=std::make_shared<FInputSessionCommands>();auto J=std::make_shared<FRawAcquisitionJournal>(3,0);
+        auto Bot=Scenario(2);Bot.Kind=EProducerContract::AI;Bot.Journal=8;Bot.Scenario.clear();auto Inbox=std::make_shared<FAIInputCommands>(Bot.Contract);
+        FInputSessionRegistry Registry(Q,42,{{7,J,{}},{8,{},Inbox}});auto A=Command(1,0);A.Binding=Bot;
+        auto Alias=Command(2,0);Alias.Binding=Device();Alias.Binding.Epoch=3;Alias.Binding.Actors=Bot.Actors;
+        auto Player=Command(3,0);Player.Binding=Device();Player.Binding.Epoch=3;
+        Check(Q->Submit(A)==ECommandAdmission::Enqueued && Q->Submit(Alias)==ECommandAdmission::Enqueued && Q->Submit(Player)==ECommandAdmission::Enqueued,"mixed initial lot");
+        Check(Registry.ServiceBoundary(0) && Q->Read(2)->Status==EBoundaryStatus::Rejected && Q->Read(2)->RejectionReason==EBoundaryRejectionReason::Unspecified,"alias still reaches original identity validation");
+        Check(Q->Read(3)->Status==EBoundaryStatus::Rejected && Q->Read(3)->RejectionReason==EBoundaryRejectionReason::RegistryVersionMismatch,"failed Bind closes cohort for following stale command");
+    }
+
     // Discriminate same-lot vs earlier-lot stale Bind without changing either
     // rejection. Receipt snapshots stay immutable after later service calls.
     for (const bool SameLot : {false, true})

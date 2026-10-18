@@ -43,6 +43,25 @@ struct FAcquisitionInvalidation
 // reads independently, including during physical pause. No OS/UObject calls.
 // The host must quiesce physical reservations BEFORE lifecycle operations here.
 // A separate acquisition lifetime fence joins the pump before Close/destruction.
+// Read-only admission snapshot. Raw acquisition reports may already exist;
+// only PHYSICAL consumption/lifecycle history makes an initial owner stale.
+struct FRawInitialOwnerAdmission
+{
+    std::uint64_t Session = 0, DeliverySequence = 0, PhysicalFence = 0, Serial = 0, ControlBarrier = 0, PhysicalChanges = 0;
+    FFrameNumber NextFrame = 0;
+    bool Closed = false, PhysicalClosed = false, Paused = false, ResumeRequested = false, ResumeReady = false,
+        Exhausted = false, HasFrozenCutoff = false, FrozenInvalid = false, RequiresFresh = false,
+        HasAcquired = false, HasPhysicalBaseline = false, HasPhysicalLatest = false;
+    bool CanAdmit(std::uint64_t Epoch, FFrameNumber First) const noexcept
+    {
+        // RequiresFresh=true is the legitimate pre-first-report initial state.
+        // Invalidation is independently fenced by FrozenInvalid/ControlBarrier.
+        const bool FirstReportPending = !HasAcquired && !HasPhysicalBaseline && !HasPhysicalLatest && PhysicalChanges == 0;
+        return Session == Epoch && NextFrame == First && DeliverySequence == 0 && PhysicalFence == 1
+            && !Closed && !PhysicalClosed && !Paused && !ResumeRequested && !ResumeReady && !Exhausted
+            && !HasFrozenCutoff && !FrozenInvalid && ControlBarrier == 0 && (!RequiresFresh || FirstReportPending);
+    }
+};
 class FRawAcquisitionJournal final : public IRawInputSource, public IInputProducerPollFence
 {
 public:
@@ -55,6 +74,20 @@ public:
 		// A live physical reservation cannot be released on a destructor's
 		// foreign thread. Teardown must join the physical owner first.
 		if (FrozenLease.owns_lock()) std::terminate();
+	}
+
+	FRawInitialOwnerAdmission ReadInitialOwnerAdmission() const
+	{
+		std::lock_guard<std::mutex> Lock(Gate);
+		FRawInitialOwnerAdmission S;
+		S.Session = SessionId; S.NextFrame = NextFrame; S.DeliverySequence = DeliverySequence;
+		S.PhysicalFence = PhysicalFence; S.Serial = Serial; S.ControlBarrier = ControlBarrier;
+		S.Closed = Closed; S.PhysicalClosed = PhysicalClosed; S.Paused = Paused;
+		S.ResumeRequested = ResumeRequested; S.ResumeReady = ResumeReady; S.Exhausted = Exhausted;
+		S.HasFrozenCutoff = bool(Frozen); S.FrozenInvalid = FrozenInvalid; S.RequiresFresh = RequiresFresh;
+		S.HasAcquired = bool(LastAcquired); S.HasPhysicalBaseline = bool(Physical.Baseline);
+		S.HasPhysicalLatest = bool(Physical.Latest); S.PhysicalChanges = Physical.ChangeCount;
+		return S; // Gate is released BEFORE Bind/Pause reacquires journal locks.
 	}
 
 	// Atomic bounded install, suitable as a selected-device admission sink.

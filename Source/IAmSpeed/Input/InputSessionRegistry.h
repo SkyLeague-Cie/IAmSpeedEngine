@@ -45,7 +45,8 @@ struct FSessionOutcome { std::uint64_t Session = 0, Epoch = 0; ESessionPhase Pha
 // admission decisions, frame hashes or replay. Bounded by the receipt limit.
 struct FBoundaryBatchObservation
 {
-    bool Captured = false, HasWorkerFrame = false, PristineRegistry = false;
+    bool Captured = false, HasWorkerFrame = false, PristineRegistry = false, InitialBindEligible = false;
+    std::optional<FRawInitialOwnerAdmission> InitialJournal;
     FFrameNumber WorkerFrame = 0;
     std::uint64_t Ordinal = 0, Count = 0, Index = 0, InitialVersion = 0,
         VersionBefore = 0, PriorAppliedBinds = 0, SessionsBefore = 0;
@@ -301,6 +302,9 @@ public:
         // Ordinal identifies nonempty service lots; no unbounded trace buffer.
         if (Count && BoundaryObservationOrdinal != std::numeric_limits<std::uint64_t>::max()) ++BoundaryObservationOrdinal;
         std::uint64_t PriorAppliedBinds = 0;
+        // Serialize only disjoint initial Device/AI Binds captured in THIS lot.
+        // No DTO/digest/version/epoch/First rewrite and no command requeue.
+        bool InitialBindLot = ActualWorkerFrame.has_value() && Pristine;
         for (std::size_t I = 0; I < Count; ++I)
         {
             const auto Id = Commands->Queue.front(); Commands->Queue.pop_front();
@@ -310,10 +314,26 @@ public:
             O.PristineRegistry = Pristine; O.Ordinal = BoundaryObservationOrdinal; O.Count = Count; O.Index = I;
             O.InitialVersion = InitialVersion; O.VersionBefore = View->Version;
             O.PriorAppliedBinds = PriorAppliedBinds; O.SessionsBefore = Sessions.size();
+            bool InitialBind = InitialBindLot && R.Command.Operation == EBoundaryOperation::Bind
+                && R.Command.RegistryVersion == InitialVersion && R.Command.WorkerGeneration == WorkerGeneration
+                && (R.Command.Binding.Kind == EProducerContract::Device || R.Command.Binding.Kind == EProducerContract::AI)
+                && R.Command.Binding.First == *ActualWorkerFrame;
+            if (InitialBind && R.Command.Binding.Kind == EProducerContract::Device)
+            {
+                const auto& D = R.Command.Binding;
+                const auto J = std::find_if(Journals.begin(), Journals.end(),
+                    [&](const auto& Service) { return Service.Id == D.Journal && Service.Journal; });
+                if (J == Journals.end()) InitialBind = false;
+                else { O.InitialJournal = J->Journal->ReadInitialOwnerAdmission(); InitialBind = O.InitialJournal->CanAdmit(D.Epoch, D.First); }
+            }
+            O.InitialBindEligible = InitialBind;
+            if (!InitialBind) InitialBindLot = false;
             if (Terminal && R.Command.Operation != EBoundaryOperation::RetireAll) { R.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(R); ReleaseRejectedBindJournal(R); continue; }
             if (R.Command.WorkerGeneration != WorkerGeneration)
             { R.Receipt.Status = EBoundaryStatus::Rejected; ReleaseRejectedBindJournal(R); continue; }
-            if (R.Command.RegistryVersion != View->Version)
+            // Only prior successful initial Binds in this captured lot may
+            // advance the version; Apply/Bind retains every identity check.
+            if (R.Command.RegistryVersion != View->Version && !InitialBind)
             {
                 R.Receipt.Status = EBoundaryStatus::Rejected;
                 R.Receipt.RejectionReason = EBoundaryRejectionReason::RegistryVersionMismatch;
@@ -333,6 +353,7 @@ public:
             catch (...) { MakeTerminal(); R.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(R); }
             if (R.Command.Operation == EBoundaryOperation::Bind && R.Receipt.Status == EBoundaryStatus::Applied) ++PriorAppliedBinds;
             ReleaseRejectedBindJournal(R);
+            if (R.Receipt.Status != EBoundaryStatus::Applied) InitialBindLot = false;
         }
         if (Waiting)
         {
