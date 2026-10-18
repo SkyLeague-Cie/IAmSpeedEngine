@@ -57,7 +57,7 @@ void ASpeedController::TracePrivateInputState(const TCHAR* Site,
     if (View && Descriptor)
         for (const auto& Phase : View->Phases)
             if (Phase.Session == Descriptor->Id && Phase.Epoch == Descriptor->Epoch) OwnerPhase = int32(Phase.Phase);
-    UE_LOG(LogTemp, Display, TEXT("[BumpPrivateLocalInput] site=%s first_fault=%d first_cause_captured=%d controller=%u pawn=%s stable_actor=%llu fault=%d required=%d pending_factory=%d session_present=%d descriptor=%d session=%llu owner=%llu epoch=%llu first_frame=%llu bound=%d registry_paused=%d closed=%d command=%llu op=%d submitted_worker=%llu current_worker=%llu submitted_version=%llu receipt_checked=%d receipt_present=%d receipt_id=%llu receipt_worker=%llu receipt_status=%d receipt_reason=%d receipt_version=%llu view_present=%d view_version=%llu view_terminal=%d owner_phase=%d driver_present=%d paused=%d"),
+    UE_LOG(LogTemp, Display, TEXT("[BumpPrivateLocalInput] site=%s first_fault=%d first_cause_captured=%d controller=%u pawn=%s stable_actor=%llu fault=%d required=%d pending_factory=%d session_present=%d descriptor=%d session=%llu owner=%llu epoch=%llu first_frame=%llu bound=%d registry_paused=%d closed=%d command=%llu op=%d submitted_worker=%llu current_worker=%llu submitted_version=%llu receipt_checked=%d receipt_present=%d receipt_id=%llu receipt_worker=%llu receipt_status=%d receipt_reason=%d receipt_version=%llu view_present=%d view_version=%llu view_terminal=%d owner_phase=%d driver_present=%d paused=%d batch_captured=%d batch_frame_present=%d batch_worker_frame=%llu batch_ordinal=%llu batch_count=%llu batch_index=%llu batch_initial_version=%llu batch_version_before=%llu batch_prior_applied_binds=%llu batch_sessions_before=%llu batch_pristine=%d"),
         Site, int32(FirstFault), int32(FirstFault), GetUniqueID(), *GetNameSafe(SpeedCar),
         Component ? Component->GetPublishedSimulationStableId() : 0,
         int32(bInputLifecycleFault), int32(bInputSessionRequiredV2), int32(bInputSessionPendingV2), int32(bool(Session)), int32(Descriptor != nullptr),
@@ -69,6 +69,12 @@ void ASpeedController::TracePrivateInputState(const TCHAR* Site,
         Receipt ? Receipt->Id : 0, Receipt ? Receipt->WorkerGeneration : 0, Receipt ? int32(Receipt->Status) : -1,
         Receipt ? int32(Receipt->RejectionReason) : -1, Receipt ? Receipt->RegistryVersion : 0,
         int32(bool(View)), View ? View->Version : 0, int32(View && View->Terminal), OwnerPhase,
-        int32(Driver != nullptr), int32(IsPaused()));
+        int32(Driver != nullptr), int32(IsPaused()),
+        int32(Receipt && Receipt->Boundary.Captured), int32(Receipt && Receipt->Boundary.HasWorkerFrame),
+        Receipt ? Receipt->Boundary.WorkerFrame : 0, Receipt ? Receipt->Boundary.Ordinal : 0,
+        Receipt ? Receipt->Boundary.Count : 0, Receipt ? Receipt->Boundary.Index : 0,
+        Receipt ? Receipt->Boundary.InitialVersion : 0, Receipt ? Receipt->Boundary.VersionBefore : 0,
+        Receipt ? Receipt->Boundary.PriorAppliedBinds : 0, Receipt ? Receipt->Boundary.SessionsBefore : 0,
+        int32(Receipt && Receipt->Boundary.PristineRegistry));
 #endif
 }

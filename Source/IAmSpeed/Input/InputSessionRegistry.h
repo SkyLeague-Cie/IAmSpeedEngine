@@ -41,12 +41,22 @@ enum class EBoundaryStatus : std::uint8_t { Pending, WaitingForBaseline, Applied
 enum class EBoundaryRejectionReason : std::uint8_t { Unspecified, RegistryVersionMismatch };
 enum class ESessionPhase : std::uint8_t { Active, Paused, WaitingBaseline, CancelPending, Retired };
 struct FSessionOutcome { std::uint64_t Session = 0, Epoch = 0; ESessionPhase Phase = ESessionPhase::Active; };
+// Worker-captured receipt metadata only; never part of command identity,
+// admission decisions, frame hashes or replay. Bounded by the receipt limit.
+struct FBoundaryBatchObservation
+{
+    bool Captured = false, HasWorkerFrame = false, PristineRegistry = false;
+    FFrameNumber WorkerFrame = 0;
+    std::uint64_t Ordinal = 0, Count = 0, Index = 0, InitialVersion = 0,
+        VersionBefore = 0, PriorAppliedBinds = 0, SessionsBefore = 0;
+};
 struct FBoundaryReceipt
 {
     std::uint64_t Id = 0, WorkerGeneration = 0, RegistryVersion = 0, ResumeGeneration = 0;
     EBoundaryStatus Status = EBoundaryStatus::Pending;
     std::vector<FSessionOutcome> Sessions;
     EBoundaryRejectionReason RejectionReason = EBoundaryRejectionReason::Unspecified;
+    FBoundaryBatchObservation Boundary;
 };
 enum class ECommandAdmission : std::uint8_t { Enqueued, Duplicate, Rejected };
 struct FRegistryLimits
@@ -264,8 +274,12 @@ public:
     std::uint64_t DestructionCount() const noexcept { return IsWorker() ? Destroyed : 0; }
     bool IsTerminal() const noexcept { return !IsWorker() || Terminal; }
 
+private:
+    std::uint64_t BoundaryObservationOrdinal = 0;
+public:
+
     // Called between transactions, including while the simulation is paused.
-    bool ServiceBoundary()
+    bool ServiceBoundary(std::optional<FFrameNumber> ActualWorkerFrame = std::nullopt)
     {
         if (!IsWorker() || Pending) return false;
         std::lock_guard<std::mutex> Lock(Commands->Gate);
@@ -281,10 +295,21 @@ public:
         }
         if (Replaying) return false;
         const auto Count = Commands->Queue.size();
+        const auto InitialVersion = View->Version;
+        const bool Pristine = InitialVersion == 0 && Sessions.empty() && LastEpoch.empty()
+            && !Latest && !InitialReceipt && !HistoricalInitial && !Waiting && !Terminal;
+        // Ordinal identifies nonempty service lots; no unbounded trace buffer.
+        if (Count && BoundaryObservationOrdinal != std::numeric_limits<std::uint64_t>::max()) ++BoundaryObservationOrdinal;
+        std::uint64_t PriorAppliedBinds = 0;
         for (std::size_t I = 0; I < Count; ++I)
         {
             const auto Id = Commands->Queue.front(); Commands->Queue.pop_front();
             auto& R = Commands->Records.at(Id);
+            auto& O = R.Receipt.Boundary;
+            O.Captured = true; O.HasWorkerFrame = ActualWorkerFrame.has_value(); O.WorkerFrame = ActualWorkerFrame.value_or(0);
+            O.PristineRegistry = Pristine; O.Ordinal = BoundaryObservationOrdinal; O.Count = Count; O.Index = I;
+            O.InitialVersion = InitialVersion; O.VersionBefore = View->Version;
+            O.PriorAppliedBinds = PriorAppliedBinds; O.SessionsBefore = Sessions.size();
             if (Terminal && R.Command.Operation != EBoundaryOperation::RetireAll) { R.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(R); ReleaseRejectedBindJournal(R); continue; }
             if (R.Command.WorkerGeneration != WorkerGeneration)
             { R.Receipt.Status = EBoundaryStatus::Rejected; ReleaseRejectedBindJournal(R); continue; }
@@ -306,6 +331,7 @@ public:
             }
             try { Apply(R); }
             catch (...) { MakeTerminal(); R.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(R); }
+            if (R.Command.Operation == EBoundaryOperation::Bind && R.Receipt.Status == EBoundaryStatus::Applied) ++PriorAppliedBinds;
             ReleaseRejectedBindJournal(R);
         }
         if (Waiting)

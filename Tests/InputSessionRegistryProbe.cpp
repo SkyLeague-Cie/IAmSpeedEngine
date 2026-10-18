@@ -61,6 +61,25 @@ static std::shared_ptr<const FRegistryFrame> Step(FInputSessionRegistry& R, FFra
 }
 int main()
 {
+    // Discriminate same-lot vs earlier-lot stale Bind without changing either
+    // rejection. Receipt snapshots stay immutable after later service calls.
+    for (const bool SameLot : {false, true})
+    {
+        auto Q=std::make_shared<FInputSessionCommands>(); FInputSessionRegistry R(Q,42);
+        auto A=Command(1,0); A.Binding=Scenario(1);
+        auto B=Command(2,0); B.Binding=Scenario(2);
+        Check(Q->Submit(A)==ECommandAdmission::Enqueued,"batch trace first enqueue");
+        if (!SameLot) Check(R.ServiceBoundary(17),"batch trace earlier service");
+        Check(Q->Submit(B)==ECommandAdmission::Enqueued && R.ServiceBoundary(17),"batch trace second service");
+        const auto X=Q->Read(2); const auto O=X->Boundary;
+        Check(X->Status==EBoundaryStatus::Rejected && X->RejectionReason==EBoundaryRejectionReason::RegistryVersionMismatch,"trace never relaxes stale admission");
+        Check(O.Captured && O.HasWorkerFrame && O.WorkerFrame==17 && O.VersionBefore==1,"actual worker snapshot");
+        Check(O.InitialVersion==(SameLot?0u:1u) && O.Count==(SameLot?2u:1u) && O.Index==(SameLot?1u:0u)
+            && O.PriorAppliedBinds==(SameLot?1u:0u) && O.Ordinal==(SameLot?1u:2u) && O.PristineRegistry==SameLot,"same and earlier lot distinguished");
+        Check(R.ServiceBoundary(18) && Q->Read(2)->Boundary.WorkerFrame==17,"receipt metadata not overwritten by next lot");
+        Check(Q->Submit(B)==ECommandAdmission::Duplicate,"trace excluded from immutable command identity");
+    }
+
     {
         FRegistryLimits Limits; Limits.Receipts=1;
         auto Q=std::make_shared<FInputSessionCommands>(Limits);

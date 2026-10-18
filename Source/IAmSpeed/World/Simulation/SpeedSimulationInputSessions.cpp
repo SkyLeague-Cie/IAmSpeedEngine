@@ -88,7 +88,7 @@ ESimulationBoundaryResult ASpeedSimulation::ServiceInputSessionBoundary(bool bPa
                 InputObservations[Observation.first] = Observation.second;
             }
             PendingInputObservations.clear();
-            Ready = InputSessionRegistry->ServiceBoundary();
+            Ready = InputSessionRegistry->ServiceBoundary(CanonicalNumFrame);
         }
         const auto View = InputSessionRegistry->ReadRegistry();
         std::atomic_store(&PublishedInputRegistry, View);
