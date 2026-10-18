@@ -144,7 +144,9 @@ bool ASpeedController::ServiceRegistryInputSession()
         if (!QueueRegistryInputCommand(EBoundaryOperation::Resume)) { MarkInputLifecycleFault(TEXT("SpeedControllerInputRegistry.cpp:142")); return false; }
     }
     else if (!IsPaused() && !Session->RegistryPaused) SetStandaloneSimulationPaused(false);
+#if !UE_BUILD_SHIPPING
     TracePrivateCompletedInputFrame();
+#endif
     return true;
 }
 

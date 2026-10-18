@@ -89,9 +89,9 @@ void ASpeedController::TracePrivateInputState(const TCHAR* Site,
 #endif
 }
 
+#if !UE_BUILD_SHIPPING
 void ASpeedController::TracePrivateCompletedInputFrame()
 {
-#if !UE_BUILD_SHIPPING
     static const bool Enabled = FParse::Param(FCommandLine::Get(), TEXT("SLBumpPrivateLocalInputTrace"));
     static uint32 CompletedLines = 0;
     if (!Enabled || !IsInGameThread() || PrivateInputCompletedTraceDone || CompletedLines >= 16
@@ -123,5 +123,5 @@ void ASpeedController::TracePrivateCompletedInputFrame()
             int32(I.Snapshot->Requested[2]), int32(I.Snapshot->Applied[2]));
         break;
     }
-#endif
 }
+#endif
