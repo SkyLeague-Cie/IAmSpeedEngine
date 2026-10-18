@@ -109,7 +109,7 @@ public:
         {
             if (Initial && !Replay)
             {
-                auto Identity = std::make_shared<const std::uint8_t>(0);
+                auto Identity = std::make_shared<const std::uint8_t>(std::uint8_t{0});
                 Pending = FPending{std::move(Identity), Initial}; Phase = EOwnerInputPhase::Prepared;
                 return {EOwnerInputStatus::Ready, FToken(Pending->Identity)};
             }
@@ -166,7 +166,7 @@ public:
             auto Receipt = std::make_shared<const FOwnerInputReceipt>(FOwnerInputReceipt{
                 Snapshot, N, N, Binding.Epoch.Value, Replay ? ReplayPass : 0, Replay});
             auto Entry = std::make_shared<const FHistoryEntry>(FHistoryEntry{Snapshot, Receipt, Filter ? std::optional<FActionValues>(Before) : std::nullopt});
-            auto Identity = std::make_shared<const std::uint8_t>(0);
+            auto Identity = std::make_shared<const std::uint8_t>(std::uint8_t{0});
             Pending = FPending{std::move(Identity), std::move(Entry)};
             Phase = EOwnerInputPhase::Prepared;
             return {EOwnerInputStatus::Ready, FToken(Pending->Identity)};
