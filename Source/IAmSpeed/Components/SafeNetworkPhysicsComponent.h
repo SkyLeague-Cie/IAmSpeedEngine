@@ -15,6 +15,7 @@ public:
 	virtual void InitializeComponent() override;
 	virtual void UninitializeComponent() override;
 	virtual void BeginDestroy() override;
+	virtual bool CallRemoteFunction(UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack) override;
 
 private:
 	bool ShouldBypassNetworkPhysicsLifecycle() const;
@@ -23,4 +24,9 @@ private:
 	void PrepareAsyncShutdown(const TCHAR* Stage);
 
 	bool bInitializedNetworkPhysicsLifecycle = false;
+#if !(UE_BUILD_SHIPPING)
+	uint32 PrivateRPCTraceCallSerial = 0;
+	uint32 PrivateRPCTraceLines = 0;
+	int32 PrivateRPCTraceLastCount = INDEX_NONE;
+#endif
 };
