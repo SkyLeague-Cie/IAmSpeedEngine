@@ -23,16 +23,16 @@ bool ASpeedController::BeginRegistryInputSession()
     auto* Driver = InputDriver(GetWorld());
     auto* Component = IsValid(SpeedCar) ? Cast<USpeedWheeledComponent>(SpeedCar->GetVehicleMovement()) : nullptr;
     auto* World = GetWorld() ? GetWorld()->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
-    if (!Session || !Session->Descriptor || !Driver || !Component || !World || Session->PendingCommand) return false;
+    if (!Session || !Session->Descriptor || !Driver || !Component || !World || Session->PendingCommand) return ObservePrivateInputAdmission(false, TEXT("Registry.BeginGate7"));
     const auto Boundary = Driver->TryPauseOwnedSimulation();
-    if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped) return false;
+    if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped) return ObservePrivateInputAdmission(false, TEXT("Registry.BeginGate9"));
     const uint64 Id = World->GetSimulationStableId(*Component);
-    if (!Id || !SpeedCar->SetFrameInputStreamV2(nullptr)) return false;
+    if (!Id || !SpeedCar->SetFrameInputStreamV2(nullptr)) return ObservePrivateInputAdmission(false, TEXT("Registry.BeginGate11"));
     Session->Descriptor->Actors = {{Id, Id}};
     Session->Descriptor->Id = uint64(GetUniqueID()) + 1;
     Session->Descriptor->Controller = Session->Descriptor->Id;
     Session->WorkerGeneration = Driver->GetInputWorkerGeneration();
-    return QueueRegistryInputCommand(Speed::Input::V2::EBoundaryOperation::Bind);
+    return ObservePrivateInputAdmission(QueueRegistryInputCommand(Speed::Input::V2::EBoundaryOperation::Bind), TEXT("Registry.BindSubmit"));
 }
 
 bool ASpeedController::QueueRegistryInputCommand(Speed::Input::V2::EBoundaryOperation Operation)
@@ -60,6 +60,7 @@ bool ASpeedController::QueueRegistryInputCommand(Speed::Input::V2::EBoundaryOper
     if (Session->PendingCommand) Session->SupersededCommands.push_back(Session->PendingCommand);
     Session->PendingCommand = Command.Id; Session->PendingOperation = Operation;
     Session->ResumePending = Operation == EBoundaryOperation::Resume;
+    TracePrivateInputState(TEXT("Registry.Enqueued"));
     return true;
 }
 
@@ -78,14 +79,15 @@ bool ASpeedController::ServiceRegistryInputSession()
     if (Session->PendingCommand)
     {
         const auto Receipt = Driver->ReadInputSessionReceipt(Session->PendingCommand);
-        if (!Receipt) { bInputLifecycleFault = true; return false; }
+        TracePrivateInputState(TEXT("Registry.ReceiptBeforeAck"), Receipt ? &*Receipt : nullptr);
+        if (!Receipt) { MarkInputLifecycleFault(TEXT("SpeedControllerInputRegistry.cpp:81")); return false; }
         if (Receipt->Status == EBoundaryStatus::Pending || Receipt->Status == EBoundaryStatus::WaitingForBaseline)
         {
             // Pause supersedes a resume waiting on an unplugged device; it
             // never waits for that device to return merely to neutralize.
             if (IsPaused() && Session->PendingOperation == EBoundaryOperation::Resume)
             {
-                if (!QueueRegistryInputCommand(EBoundaryOperation::PauseAll)) { bInputLifecycleFault = true; return false; }
+                if (!QueueRegistryInputCommand(EBoundaryOperation::PauseAll)) { MarkInputLifecycleFault(TEXT("SpeedControllerInputRegistry.cpp:88")); return false; }
             }
             return true;
         }
@@ -120,7 +122,7 @@ bool ASpeedController::ServiceRegistryInputSession()
                 return true; // Retry from the fresh view next service; never wake physics here.
             }
         }
-        if (Receipt->Status != EBoundaryStatus::Applied) { bInputLifecycleFault = true; return false; }
+        if (Receipt->Status != EBoundaryStatus::Applied) { MarkInputLifecycleFault(TEXT("Registry.ReceiptNotApplied"), &*Receipt); return false; }
         Session->RegistryVersion = Receipt->RegistryVersion;
         if (Session->PendingOperation == EBoundaryOperation::Bind)
         {
@@ -135,11 +137,11 @@ bool ASpeedController::ServiceRegistryInputSession()
     if (!Session->RegistryBound) return true;
     if (IsPaused() && !Session->RegistryPaused)
     {
-        if (!QueueRegistryInputCommand(EBoundaryOperation::PauseAll)) { bInputLifecycleFault = true; return false; }
+        if (!QueueRegistryInputCommand(EBoundaryOperation::PauseAll)) { MarkInputLifecycleFault(TEXT("SpeedControllerInputRegistry.cpp:138")); return false; }
     }
     else if (!IsPaused() && Session->RegistryPaused)
     {
-        if (!QueueRegistryInputCommand(EBoundaryOperation::Resume)) { bInputLifecycleFault = true; return false; }
+        if (!QueueRegistryInputCommand(EBoundaryOperation::Resume)) { MarkInputLifecycleFault(TEXT("SpeedControllerInputRegistry.cpp:142")); return false; }
     }
     else if (!IsPaused() && !Session->RegistryPaused) SetStandaloneSimulationPaused(false);
     return true;

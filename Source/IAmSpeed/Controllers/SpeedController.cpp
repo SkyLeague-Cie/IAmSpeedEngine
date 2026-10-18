@@ -77,7 +77,7 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	{
 		InputBoundary = QuiesceStandaloneInputOwner();
 		if (InputBoundary != ESimulationQuiescence::BoundaryAcknowledged && InputBoundary != ESimulationQuiescence::AlreadyStopped)
-		{ bInputLifecycleFault = true; return; }
+		{ MarkInputLifecycleFault(TEXT("SpeedController.cpp:80")); return; }
 	}
 	if (InputSnapshots) InputSnapshots->Deactivate();
 	if (SpeedCar && InputSnapshots) SpeedCar->SetFrameInputStream(nullptr);
@@ -92,7 +92,7 @@ void ASpeedController::OnPossess(APawn* InPawn)
 		SpeedCar->SetFrameInputStreamV2(nullptr);
 		if (InputProducer)
 		{
-			QuiesceStandaloneInputOwner(); bInputLifecycleFault = true;
+			QuiesceStandaloneInputOwner(); MarkInputLifecycleFault(TEXT("SpeedController.cpp:95"));
 			UE_LOG(LogTemp, Error, TEXT("Legacy test producer must be migrated to a V2 session; no device factory fallback"));
 			return;
 		}
@@ -102,12 +102,12 @@ void ASpeedController::OnPossess(APawn* InPawn)
 	{
 		if (InputSessionV2->Descriptor)
 		{
-			if (!BindInputPresentationV2() || !InputSessionV2->Activate() || !BeginRegistryInputSession()) bInputLifecycleFault = true;
+			if (!ObservePrivateInputAdmission(BindInputPresentationV2(), TEXT("Presentation.Bind")) || !ObservePrivateInputAdmission(InputSessionV2->Activate(), TEXT("Session.Activate")) || !ObservePrivateInputAdmission(BeginRegistryInputSession(), TEXT("Registry.Begin"))) MarkInputLifecycleFault(TEXT("SpeedController.cpp:105"));
 			return;
 		}
-		if (!InputSessionV2->Activate() || (IsPaused() && !InputSessionV2->PauseAtBoundary())
+		if (!ObservePrivateInputAdmission(InputSessionV2->Activate(), TEXT("Session.Activate")) || (IsPaused() && !InputSessionV2->PauseAtBoundary())
 			|| !SpeedCar->SetFrameInputStreamV2(InputSessionV2->Stream))
-		{ InputSessionV2->CloseAtBoundary(); bInputLifecycleFault = true; return; }
+		{ InputSessionV2->CloseAtBoundary(); MarkInputLifecycleFault(TEXT("SpeedController.cpp:110")); return; }
 		bInputLifecycleFault = false;
 		if (!IsPaused()) SetStandaloneSimulationPaused(false);
 		return;
@@ -131,7 +131,7 @@ bool ASpeedController::ReleaseInputLifecycle()
 	// references cannot acquire/publish again; copied history stays immutable.
 	const auto Closed = InputSnapshots ? InputSnapshots->Deactivate()
 		: (InputProducer ? InputProducer->CancelLifecycle() : Speed::Input::EInputLifecycleResult::UnaffectedByPolicy);
-	if (Closed == Speed::Input::EInputLifecycleResult::Rejected) bInputLifecycleFault = true;
+	if (Closed == Speed::Input::EInputLifecycleResult::Rejected) MarkInputLifecycleFault(TEXT("SpeedController.cpp:134"));
 	if (IsValid(SpeedCar))
 	{
 		SpeedCar->SetFrameInputStream(nullptr);
@@ -275,7 +275,7 @@ bool ASpeedController::ApplyInputLifecyclePause(const bool bPaused)
 	const auto Result = InputSnapshots->SetLifecyclePaused(bPaused);
 	if (Result == Speed::Input::EInputLifecycleResult::Rejected)
 	{
-		bInputLifecycleFault = true;
+		MarkInputLifecycleFault(TEXT("SpeedController.cpp:278"));
 		return false;
 	}
 	// A successful source call alone cannot discharge a failed worker acknowledgement.
@@ -319,7 +319,7 @@ bool ASpeedController::SetPause(const bool bPause, FCanUnpause CanUnpauseDelegat
 		const auto Boundary = QuiesceStandaloneInputOwner();
 		if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
 		{
-			bInputLifecycleFault = true;
+			MarkInputLifecycleFault(TEXT("SpeedController.cpp:322"));
 			return false; // Pending pause remains; no source mutation or automatic resume.
 		}
 		// AlreadyStopped only permits source cancellation. No physical state write.
@@ -393,7 +393,7 @@ void ASpeedController::SynchronizeOwnedSimulationPauseWithWorld()
 		const auto Boundary = QuiesceStandaloneInputOwner();
 		if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
 		{
-			bInputLifecycleFault = true;
+			MarkInputLifecycleFault(TEXT("SpeedController.cpp:396"));
 			return;
 		}
 		if (ApplyInputLifecyclePause(true)) bInputLifecycleFault = false;
