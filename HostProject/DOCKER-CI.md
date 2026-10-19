@@ -41,6 +41,11 @@ required sensor Box/Sphere/Wheel and prescribed Cylinder Box/Sphere/Wheel tests,
 SweeperCandidates, MovingCCD and Torus.WorldProvider. This is the IAmSpeed physical
 contract suite; it does not qualify the complete SkyLeague CI or gameplay FPS.
 
+Editor usage analytics are disabled for the isolated NullRHI process. UE 5.8.2
+otherwise queries missing shader compiler statistics during editor analytics
+startup when shader compilation is disabled. This does not alter test selection,
+physics, report validation or the host user's preferences.
+
 `python -B HostProject/Scripts/TestDockerContracts.py` tests report rejection,
 archive containment and launch isolation without starting Unreal or Docker.
 The legacy Windows RunContracts.ps1 remains available for historical diagnostics;

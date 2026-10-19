@@ -156,7 +156,7 @@ def inside():
         result['build_exit'] = code
         if code:
             raise RuntimeError('HostProject compilation failed; original log preserved')
-        command = [str(editor), str(project_file), '-NullRHI', '-unattended', '-nosound', '-nop4', '-nosplash', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoShaderCompile', '-notraceserver', '-NoTrace', '-stdout', '-FullStdOutLogOutput', '-UserDir=' + str(output / 'user'), '-abslog=' + str(logs / 'editor.log'), '-ReportExportPath=' + str(report), '-ExecCmds=Automation RunTests ' + FILTER, '-TestExit=Automation Test Queue Empty']
+        command = [str(editor), str(project_file), '-NullRHI', '-unattended', '-nosound', '-nop4', '-nosplash', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoShaderCompile', '-notraceserver', '-NoTrace', '-ini:EditorSettings:[/Script/UnrealEd.AnalyticsPrivacySettings]:bSendUsageData=False', '-stdout', '-FullStdOutLogOutput', '-UserDir=' + str(output / 'user'), '-abslog=' + str(logs / 'editor.log'), '-ReportExportPath=' + str(report), '-ExecCmds=Automation RunTests ' + FILTER, '-TestExit=Automation Test Queue Empty']
         save(output / 'test-command.json', command)
         code = run_logged(command, logs / 'tests.stdout.log', 1800, project, env)
         result['editor_exit'] = code
