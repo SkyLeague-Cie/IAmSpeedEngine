@@ -8,7 +8,10 @@ namespace
 {
 bool ReadBumpPayload(TConstArrayView<uint8> Bytes,uint16& Frames,uint64& VictimId)
 {
-    return Speed::Collision::DecodeCarBumpSnapshot(Bytes.GetData(),Bytes.Num(),Frames,VictimId);
+    std::uint16_t DecodedFrames=0;std::uint64_t DecodedVictimId=0;
+    if(!Speed::Collision::DecodeCarBumpSnapshot(Bytes.GetData(),Bytes.Num(),DecodedFrames,DecodedVictimId)) return false;
+    Frames=static_cast<uint16>(DecodedFrames);VictimId=static_cast<uint64>(DecodedVictimId);
+    return true;
 }
 USpeedWheeledComponent* ResolveBumpVictim(const UWorld* World,uint64 Id)
 {

@@ -100,11 +100,11 @@ bool FCarBumpCanonicalActiveRestoreTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Active target admitted before capture"),A->TryBeginCarBump(*B));
     TArray<uint8> Active;
     A->AppendSimulationSnapshot(Active);
-    uint16 Frames=0;uint64 SerializedVictim=0;
+    std::uint16_t Frames=0;std::uint64_t SerializedVictim=0;
     TestTrue(TEXT("Actual active component payload decodes"),Speed::Collision::DecodeCarBumpSnapshot(
         Active.GetData(),Active.Num(),Frames,SerializedVictim));
     TestTrue(TEXT("Active timer is positive"),Frames>0);
-    TestEqual(TEXT("Payload carries actual registry victim identity"),SerializedVictim,VictimId);
+    TestEqual(TEXT("Payload carries actual registry victim identity"),static_cast<uint64>(SerializedVictim),VictimId);
     TestTrue(TEXT("Actual active target resolves before restore"),A->CanRestoreSimulationSnapshot(Active));
     const auto Self=Speed::Collision::EncodeCarBumpSnapshot(Frames,AttackerId);
     TestFalse(TEXT("A registered self target still rejects"),A->CanRestoreSimulationSnapshot(
