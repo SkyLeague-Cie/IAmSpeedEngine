@@ -72,6 +72,34 @@ def source_test_manifest(root):
     pattern = r'IMPLEMENT_SIMPLE_AUTOMATION_TEST\s*\(\s*\w+\s*,\s*"([^"]+)"'
     for path in Path(root).rglob('*.cpp'):
         code = path.read_text(encoding='utf-8-sig')
+        # The Docker target is Linux. OwnedFrameAudit's eight Windows-only
+        # native sidecar tests are not compiled there. Track the exact guarded
+        # regions; never remove a report failure or infer eligibility from the
+        # runtime result. Unknown platform guards around tests fail closed.
+        frames, filtered = [], []
+        for line in code.splitlines(keepends=True):
+            directive = re.match(r'^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)', line)
+            if directive:
+                op, expression = directive.groups()
+                if op in ('if', 'ifdef', 'ifndef'):
+                    windows = expression.strip() == 'WITH_DEV_AUTOMATION_TESTS && PLATFORM_WINDOWS'
+                    frames.append(dict(skip=windows, windows=windows,
+                                       unknown_platform='PLATFORM_' in expression and not windows))
+                elif op in ('else', 'elif') and frames:
+                    frame = frames[-1]
+                    if frame['windows']:
+                        if op == 'elif':
+                            raise ValueError('Windows test guard needs explicit Linux elif handling: ' + str(path))
+                        frame['skip'] = not frame['skip']
+                    elif 'PLATFORM_' in expression:
+                        frame['unknown_platform'] = True
+                elif op == 'endif' and frames:
+                    frames.pop()
+            skipped = any(frame['skip'] for frame in frames)
+            if not skipped and 'IMPLEMENT_SIMPLE_AUTOMATION_TEST' in line and any(frame['unknown_platform'] for frame in frames):
+                raise ValueError('Platform test registration needs explicit Linux enumeration: ' + str(path))
+            filtered.append('\n' if skipped else line)
+        code = ''.join(filtered)
         if re.search(r'\b(?:IMPLEMENT_COMPLEX_AUTOMATION_TEST|IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST|BEGIN_DEFINE_SPEC|DEFINE_SPEC)\s*\(', code):
             raise ValueError('Dynamic test registration needs explicit enumeration: ' + str(path))
         matches = re.findall(pattern, code)

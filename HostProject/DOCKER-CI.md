@@ -30,7 +30,7 @@ RAM/swap and finite build/test deadlines. A timed-out owned container is stopped
 only after its full ID, owner label and image ID match; a stopped run never passes.
 Containers and diagnostics are preserved for inspection; no prune is performed.
 
-The suite runs every static test declared in the plugin checkout: the `IAmSpeed.`
+The suite runs every Linux-eligible static test declared in the plugin checkout: the `IAmSpeed.`
 namespace, including AnalyticWorld, Collision, ContactDetection, Motion and
 Simulation, plus its retained `SkyLeague.Camera.GenericInputLifecycle` identity.
 Success requires editor exit
@@ -45,6 +45,11 @@ Editor usage analytics are disabled for the isolated NullRHI process. UE 5.8.2
 otherwise queries missing shader compiler statistics during editor analytics
 startup when shader compilation is disabled. This does not alter test selection,
 physics, report validation or the host user's preferences.
+
+The source manifest explicitly respects `WITH_DEV_AUTOMATION_TESTS &&
+PLATFORM_WINDOWS` guards. Eight native Windows sidecar tests are absent from
+the Linux build by design; the current Linux manifest has 124 tests. This
+platform distinction does not waive warnings or failures in executed tests.
 
 `python -B HostProject/Scripts/TestDockerContracts.py` tests report rejection,
 archive containment and launch isolation without starting Unreal or Docker.

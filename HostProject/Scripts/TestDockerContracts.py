@@ -48,6 +48,8 @@ class Contracts(unittest.TestCase):
             p = Path(tmp) / 'Tests.cpp'
             p.write_text('\n'.join('IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTest%d, "%s", EAutomationTestFlags::EditorContext)' % (i, name) for i, name in enumerate(self.paths)))
             self.assertEqual(ci.source_test_manifest(tmp), self.paths)
+            p.write_text(p.read_text() + '\n#if WITH_DEV_AUTOMATION_TESTS && PLATFORM_WINDOWS\nIMPLEMENT_SIMPLE_AUTOMATION_TEST(FWindows, "IAmSpeed.WindowsOnly", 0)\n#endif\n')
+            self.assertEqual(ci.source_test_manifest(tmp), self.paths)
             p.write_text(p.read_text() + '\nIMPLEMENT_COMPLEX_AUTOMATION_TEST(FDynamic, "IAmSpeed.Dynamic", 0)')
             with self.assertRaises(ValueError):
                 ci.source_test_manifest(tmp)
