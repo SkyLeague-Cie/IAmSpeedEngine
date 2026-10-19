@@ -1,3 +1,15 @@
+# Current Docker CI — Human512
+
+The repository workflow now runs the exact committed checkout inside an existing
+UE5.8.2 Linux Docker image. Configure only IAMSPEED_UE_IMAGE; no host Unreal
+installation, physical slot, private UBT manifest or host rules seed is required.
+See [Docker CI](DOCKER-CI.md) for invocation, image requirements and strict reports.
+
+The legacy Windows runner description below is historical and does not describe
+the current GitHub Actions entry point. Its diagnostic scripts remain preserved.
+
+## Historical Windows runner
+
 # IAmSpeed HostProject
 
 This minimal project belongs to the IAmSpeed repository. It exists only to

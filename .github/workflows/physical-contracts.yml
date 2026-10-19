@@ -2,11 +2,9 @@ name: IAmSpeed Physical Contracts
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,15 +12,14 @@ permissions:
 
 concurrency:
   group: iamspeed-physical-contracts-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  host-project:
-    # Never dispatch untrusted fork pull requests to the self-hosted runner.
+  docker-contracts:
+    # Fork PR code must never run on a self-hosted Docker runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 30
-
+    runs-on: [self-hosted]
+    timeout-minutes: 140
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,58 +27,35 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Validate HostProject contract runner
-        shell: powershell
-        env:
-          IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
-          IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
-          IAMSPEED_PRIVATE_UBT_MANIFEST: 'E:\UEQualification\ias-ci21\CI-v30\mission\ci30-private-ubt-runtime-manifest-GitHubCI.json'
-          IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256: '01f26712509605e66338255c65feeef99ef4dcbbfaf33ae59a9ee5b28c0ee8cc'
-          IAMSPEED_PRIVATE_ROOT: 'E:\UEQualification\ias-ci21\CI-v30\Runtime-GitHubCI'
+      - name: Check portable Docker launcher
+        shell: python {0}
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST) -or
-              [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256)) {
-            throw "The workflow's pinned private UBT manifest path and SHA-256 are required."
-          }
-          if (-not (Test-Path -LiteralPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PathType Leaf)) {
-            throw "The runner's pinned private UBT manifest is missing: $env:IAMSPEED_PRIVATE_UBT_MANIFEST"
-          }
-          $manifestSha = (Get-FileHash -LiteralPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($manifestSha -cne $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256) {
-            throw 'The runner private UBT manifest SHA-256 differs from the workflow pin.'
-          }
-          .\HostProject\Scripts\TestRunContracts.ps1
+          import subprocess, sys
+          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/TestDockerContracts.py'], check=True)
 
-      - name: Build HostProject and run physical contracts
-        shell: powershell
+      - name: Build and test exact checkout in UE 5.8.2 image
+        id: contracts
+        shell: python {0}
         env:
-          IAMSPEED_UE_ROOT: ${{ vars.IAMSPEED_UE_ROOT }}
-          IAMSPEED_RULES_ENGINE_ROOT: ${{ vars.IAMSPEED_RULES_ENGINE_ROOT }}
-          IAMSPEED_PRIVATE_UBT_MANIFEST: 'E:\UEQualification\ias-ci21\CI-v30\mission\ci30-private-ubt-runtime-manifest-GitHubCI.json'
-          IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256: '01f26712509605e66338255c65feeef99ef4dcbbfaf33ae59a9ee5b28c0ee8cc'
-          IAMSPEED_PRIVATE_ROOT: 'E:\UEQualification\ias-ci21\CI-v30\Runtime-GitHubCI'
+          IAMSPEED_CONFIGURED_IMAGE: ${{ vars.IAMSPEED_UE_IMAGE }}
+          IAMSPEED_EXPECTED_SHA: ${{ github.sha }}
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          $engineRoot = $env:IAMSPEED_UE_ROOT
-          if ([string]::IsNullOrWhiteSpace($engineRoot)) {
-            throw 'Configure the IAMSPEED_UE_ROOT repository variable with the qualified physical Unreal Engine root before running IAmSpeed CI.'
-          }
-          if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_RULES_ENGINE_ROOT)) {
-            throw 'Configure the IAMSPEED_RULES_ENGINE_ROOT repository variable with the qualified E-slot rules seed root before running IAmSpeed CI.'
-          }
-          if ([string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST) -or
-              [string]::IsNullOrWhiteSpace($env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256)) {
-            throw "The workflow's pinned private UBT manifest path and SHA-256 are required."
-          }
-          .\HostProject\Scripts\RunContracts.ps1 -EngineRoot $engineRoot
+          import os, subprocess, sys
+          configured = os.environ.get('IAMSPEED_CONFIGURED_IMAGE', '').strip()
+          if configured:
+              os.environ['IAMSPEED_UE_IMAGE'] = configured
+          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py'], check=True)
 
-      - name: Upload HostProject logs
-        if: always()
+      - name: Upload exact run diagnostics
+        if: always() && steps.contracts.outputs.output_dir != ''
         uses: actions/upload-artifact@v4
         with:
-          name: iamspeed-host-project-logs
+          name: iamspeed-physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            E:\UEQualification\ias-ci21\CI-v30\Runtime-GitHubCI\IAmSpeed-*\Logs\*
-            E:\UEQualification\ias-ci21\CI-v30\Runtime-GitHubCI\IAmSpeed-*\Automation\*
-          if-no-files-found: ignore
+            ${{ steps.contracts.outputs.output_dir }}/Logs/**
+            ${{ steps.contracts.outputs.output_dir }}/Automation/**
+            ${{ steps.contracts.outputs.output_dir }}/*.json
+            ${{ steps.contracts.outputs.output_dir }}/container.stdout.log
+          if-no-files-found: warn

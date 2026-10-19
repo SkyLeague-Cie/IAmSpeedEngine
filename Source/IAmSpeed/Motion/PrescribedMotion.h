@@ -20,6 +20,7 @@ public:
     bool HasCanonicalKeyTimes() const;
     bool EvaluateCanonicalTicks(double ActiveTicks,FPrescribedMotionSample& Out) const;
     bool IsConfigured() const { return Keys.Num()>=2; }
+    FBox3d GetTranslationBounds() const { FBox3d Bounds(ForceInit);for(const auto& Key:Keys)Bounds+=Key.Translation;return Bounds; }
 private:
     TArray<FPrescribedMotionKey> Keys;
     FVector3d Axis=FVector3d(0.,0.,1.);
