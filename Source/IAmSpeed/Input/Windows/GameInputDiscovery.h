@@ -149,11 +149,29 @@ public:
 		return !Stopping && Catalogue.Skip(Frame);
 	}
 	HRESULT GetLastError() const { std::lock_guard<std::mutex> Lock(Mailbox); return Error; }
+    FGameInputFailureDiagnostics ReadFailureDiagnostics() const
+    {
+        FGameInputFailureDiagnostics Result;
+        { std::lock_guard<std::mutex> Lock(Mailbox); Result.Discovery = FirstFailure; }
+        // Warm callbacks take Warm Gate then Mailbox. Release Mailbox before
+        // reading Warm diagnostics to preserve the existing lock order.
+        if (Warm) Result.Warm = Warm->ReadFailureDiagnostic();
+        return Result;
+    }
 private:
 	struct FRecord { TComPtr<FDevice> Device; std::uint64_t Timestamp; bool Connected; std::uint8_t Kinds; };
 	FGameInputDiscovery(FApi* InApi, std::uint64_t Id, const std::array<bool, ActionCount>& Digital)
 		: Api(InApi), Catalogue(Id, Digital) {}
-	void FailLocked(HRESULT Reason) { if (SUCCEEDED(Error)) Error = Reason; Catalogue.Fail(); }
+	void FailLocked(HRESULT Reason, EGameInputFailureSite Site = EGameInputFailureSite::DiscoveryExternalAcquisition,
+        std::uint64_t Timestamp = 0, std::uint64_t Previous = 0, std::uint64_t Details = 0)
+    {
+        if (SUCCEEDED(Error))
+        {
+            Error = Reason;
+            FirstFailure = FGameInputFailureDiagnostic{Site, static_cast<std::int32_t>(Reason), Timestamp, Previous, Details};
+        }
+        Catalogue.Fail();
+    }
 	static void CALLBACK OnDevice(GameInput::v3::GameInputCallbackToken, void* Context, FDevice* Device,
 		std::uint64_t Timestamp, GameInput::v3::GameInputDeviceStatus Current, GameInput::v3::GameInputDeviceStatus)
 	{
@@ -161,7 +179,7 @@ private:
 		std::lock_guard<std::mutex> Lock(Self.Mailbox);
 		if (Self.Stopping || FAILED(Self.Error)) return;
 		try { Self.UpdateLocked(Device, Timestamp, Current); }
-		catch (...) { Self.FailLocked(E_OUTOFMEMORY); } // Never throw across SDK ABI.
+		catch (...) { Self.FailLocked(E_OUTOFMEMORY, EGameInputFailureSite::DiscoveryCallbackException, Timestamp); } // Never throw across SDK ABI.
 	}
 	static bool OnWarmDevice(void* Context, const FGameInputWarmCatalogue::FRecord& Record) noexcept
 	{
@@ -172,22 +190,22 @@ private:
 		try { Self.UpdateLocked(Record.Device.Get(), Record.Timestamp,
 			Record.Connected ? GameInput::v3::GameInputDeviceConnected
 				: static_cast<GameInput::v3::GameInputDeviceStatus>(0)); }
-		catch (...) { Self.FailLocked(E_OUTOFMEMORY); }
+		catch (...) { Self.FailLocked(E_OUTOFMEMORY, EGameInputFailureSite::DiscoveryWarmCallbackException, Record.Timestamp); }
 		return SUCCEEDED(Self.Error);
 	}
 	static void OnWarmFailure(void* Context, HRESULT Reason) noexcept
 	{
 		auto& Self = *static_cast<FGameInputDiscovery*>(Context);
 		std::lock_guard<std::mutex> Lock(Self.Mailbox);
-		if (!Self.Stopping) Self.FailLocked(Reason);
+		if (!Self.Stopping) Self.FailLocked(Reason, EGameInputFailureSite::DiscoveryWarmPropagation);
 	}
 	void UpdateLocked(FDevice* Device, std::uint64_t Timestamp, GameInput::v3::GameInputDeviceStatus Current)
 	{
 		using namespace GameInput::v3;
-		if (!Device) { FailLocked(E_POINTER); return; }
+		if (!Device) { FailLocked(E_POINTER, EGameInputFailureSite::DiscoveryNullDevice, Timestamp); return; }
 		const GameInputDeviceInfo* Info = nullptr;
 		const auto Status = Device->GetDeviceInfo(&Info);
-		if (FAILED(Status) || !Info) { FailLocked(FAILED(Status) ? Status : E_UNEXPECTED); return; }
+		if (FAILED(Status) || !Info) { FailLocked(FAILED(Status) ? Status : E_UNEXPECTED, FAILED(Status) ? EGameInputFailureSite::DiscoveryDeviceInfoFailure : EGameInputFailureSite::DiscoveryDeviceInfoNull, Timestamp); return; }
 		FDeviceId Id{};
 		static_assert(sizeof(Info->deviceId) == sizeof(Id), "App-local ID must fit losslessly");
 		std::memcpy(Id.data(), &Info->deviceId, Id.size());
@@ -204,12 +222,15 @@ private:
 			if (Timestamp == Old.Timestamp)
 			{
 				if (Old.Device.Get() == Device && Old.Connected == Connected && Old.Kinds == Kinds) return;
-				FailLocked(E_UNEXPECTED); return; // No invented ordering for a timestamp tie.
+				const std::uint64_t Details = std::uint64_t(Old.Device.Get() != Device)
+                    | (std::uint64_t(Old.Connected) << 1) | (std::uint64_t(Connected) << 2)
+                    | (std::uint64_t(Old.Kinds) << 8) | (std::uint64_t(Kinds) << 16);
+                FailLocked(E_UNEXPECTED, EGameInputFailureSite::DiscoveryDivergentTie, Timestamp, Old.Timestamp, Details); return; // No invented ordering for a timestamp tie.
 			}
 		}
-		else if (Records.size() == FDeviceDiscovery::Capacity) { FailLocked(E_OUTOFMEMORY); return; }
+		else if (Records.size() == FDeviceDiscovery::Capacity) { FailLocked(E_OUTOFMEMORY, EGameInputFailureSite::DiscoveryCapacity, Timestamp); return; }
 		const auto Result = Catalogue.Update({Id, Timestamp, Kinds, Connected});
-		if (Result == EDiscoveryUpdate::Failed) { FailLocked(E_UNEXPECTED); return; }
+		if (Result == EDiscoveryUpdate::Failed) { FailLocked(E_UNEXPECTED, EGameInputFailureSite::DiscoveryCatalogueUpdate, Timestamp, 0, static_cast<std::uint64_t>(Result)); return; }
 		Records[Id] = FRecord{TComPtr<FDevice>(Device), Timestamp, Connected, Kinds};
 	}
 	TComPtr<FApi> Api;
@@ -221,6 +242,7 @@ private:
 	std::map<FDeviceId, FRecord> Records;
 	GameInput::v3::GameInputCallbackToken Token = 0;
 	HRESULT Error = S_OK;
+    std::optional<FGameInputFailureDiagnostic> FirstFailure;
 	bool Registered = false;
 	bool Stopping = false;
 };

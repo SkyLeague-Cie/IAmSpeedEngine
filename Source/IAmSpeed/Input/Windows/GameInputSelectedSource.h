@@ -330,6 +330,11 @@ public:
 		std::lock_guard<std::mutex> Lock(Gate);
 		return FAILED(Discovery->GetLastError()) ? EPollStatus::Failed : Status;
 	}
+    FGameInputFailureDiagnostics ReadFailureDiagnostics() const
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        return Discovery->ReadFailureDiagnostics();
+    }
 	HRESULT GetLastError() const
 	{
 		std::lock_guard<std::mutex> Lock(Gate);

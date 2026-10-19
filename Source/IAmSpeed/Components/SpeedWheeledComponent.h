@@ -118,6 +118,8 @@ public:
 	// Center-of-mass state and its fixed local offset from the component origin.
 	const FVector& GetPhysCOM() const override;
 	const FVector& GetPhysCenterOfMassLocal() const override;
+	// Configured COM-local hardpoint span; no live support/pitch sampling.
+	float GetConfiguredWheelbaseCm() const;
 	// Get array of sub-bodies owned by this component
 	const TArray<USSubBody*>& GetSubBodies() const;
 	// Get SubBody Config by SubBody
@@ -414,6 +416,11 @@ protected:
 	virtual float ComputeSteeringRadius(const float& ForwardVelocity, const float& AbsSteeringInput) const;
 	void UpdateWheelFrameHandbrakeValue(const float& Delta);
 	float ComputeWheelFrameSteerAngle(const float& AbsForwardSpeed, const float& TargetRadius, const float& Wheelbase) const;
+	float AdaptWheelFrameSteerAngleToReferenceGeometry(float ReferenceSteerAngle) const;
+	bool TryComputeWheelFrameNormalSteeringInputFraction(float& OutFraction) const;
+	bool TryProjectCanonicalWheelSupportPose() override;
+	bool UsesRetainedHandbrakeDriveModel() const;
+	float ComputeFullHandbrakeGroundEngineAccel() const;
 	FVector ComputeTurningForce(const float& SteeringInput, const float& UpDot,
 		const float& ForwardVelocity, const float& DesiredRadius, const FVector& WheelRight) const;
 	virtual void DampenAngularVelocity(const float& DampingFactor, const FVector& VelocityToDampen, const float& delta);
@@ -539,6 +546,29 @@ public:
 	// Global multiplier for the wheel-frame lateral friction model.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameLateralFrictionScale = 1.0f;
+	// Optional physical-data normalization for a shared handling reference.
+	// Authored per component; one preserves existing tire response exactly.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0"))
+	float WheelFrameLateralResponseScale = 1.0f;
+	// Optional axle allocation derived from physical tire-response moments.
+	// One preserves the shared scalar model; real contact arms/inertia stay intact.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0"))
+	float WheelFrameFrontLateralResponseScale = 1.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0"))
+	float WheelFrameRearLateralResponseScale = 1.0f;
+	// Physical axle allocation inside the existing handbrake tire blend only.
+	// Axles stay physical when the directional front/rear tire factors swap.
+	// Identity defaults preserve the common law and normal steering exactly.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0001", ClampMax = "16.0"))
+	float WheelFrameHandbrakeFrontLateralResponseScale = 1.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0001", ClampMax = "16.0"))
+	float WheelFrameHandbrakeRearLateralResponseScale = 1.0f;
+	// Optional reverse-direction tire response, still indexed by physical axle.
+	// Zero inherits the primary response and preserves existing profiles exactly.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0", ClampMax = "16.0"))
+	float WheelFrameHandbrakeReverseFrontLateralResponseScale = 0.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0", ClampMax = "16.0"))
+	float WheelFrameHandbrakeReverseRearLateralResponseScale = 0.0f;
 	// Response time for the wheel-frame bilateral lateral impulse. This keeps tire response stable across physics tick rates.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameLateralImpulseTimeConstant = 0.037345f;
@@ -573,6 +603,10 @@ public:
 	// Curvature multiplier for the wheel-frame steering geometry.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameSteeringCurvatureScale = 1.0f;
+	// Shared handling curves describe one reference geometry. Zero preserves
+	// the existing per-vehicle curve path; positive uses actual hardpoints.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0"))
+	float WheelFrameSteeringReferenceWheelbaseCm = 0.0f;
 	// Scales the forward/backward component produced by wheel-frame lateral friction.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameLateralForwardLossScale = 1.0f;

@@ -5,6 +5,7 @@
 // subscribe and receive an atomic snapshot plus every later lifecycle event.
 
 #include "GameInputAcquisition.h"
+#include "GameInputFailureDiagnostic.h"
 #include "../DeviceDiscovery.h"
 #include <cstring>
 #include <cstdint>
@@ -63,7 +64,7 @@ public:
             if (!Callback(Context, Item.second)) return 0;
         const auto Id = ++NextSubscriber;
         try { Subscribers.emplace(Id, FBinding{Context, Callback, Fail}); }
-        catch (...) { FailLocked(E_OUTOFMEMORY); return 0; }
+        catch (...) { FailLocked(E_OUTOFMEMORY, EGameInputFailureSite::WarmSubscribeAllocation); return 0; }
         return Id;
     }
 
@@ -83,6 +84,12 @@ public:
     {
         std::lock_guard<std::mutex> Lock(Gate);
         return Error;
+    }
+
+    std::optional<FGameInputFailureDiagnostic> ReadFailureDiagnostic() const
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        return FirstFailure;
     }
 
     std::size_t SubscriberCount() const
@@ -110,9 +117,14 @@ public:
 private:
     struct FBinding { void* Context; FSubscriber Callback; FFailure Fail; bool Failed = false; };
     explicit FGameInputWarmCatalogue(FApi* InApi) : Api(InApi) {}
-    void FailLocked(HRESULT Reason) noexcept
+    void FailLocked(HRESULT Reason, EGameInputFailureSite Site = EGameInputFailureSite::WarmUnclassified,
+        std::uint64_t Timestamp = 0, std::uint64_t Previous = 0, std::uint64_t Details = 0) noexcept
     {
-        if (SUCCEEDED(Error)) Error = Reason;
+        if (SUCCEEDED(Error))
+        {
+            Error = Reason;
+            FirstFailure = FGameInputFailureDiagnostic{Site, static_cast<std::int32_t>(Reason), Timestamp, Previous, Details};
+        }
         for (const auto& Subscriber : Subscribers)
             Subscriber.second.Fail(Subscriber.second.Context, Error);
     }
@@ -126,17 +138,17 @@ private:
         std::lock_guard<std::mutex> Lock(Self.Gate);
         if (Self.Stopping || FAILED(Self.Error)) return;
         try { Self.UpdateLocked(Device, Timestamp, Current); }
-        catch (...) { Self.FailLocked(E_OUTOFMEMORY); }
+        catch (...) { Self.FailLocked(E_OUTOFMEMORY, EGameInputFailureSite::WarmCallbackException, Timestamp); }
     }
 
     void UpdateLocked(FDevice* Device, std::uint64_t Timestamp,
         GameInput::v3::GameInputDeviceStatus Current)
     {
         using namespace GameInput::v3;
-        if (!Device) { FailLocked(E_POINTER); return; }
+        if (!Device) { FailLocked(E_POINTER, EGameInputFailureSite::WarmNullDevice, Timestamp); return; }
         const GameInputDeviceInfo* Info = nullptr;
         const HRESULT Status = Device->GetDeviceInfo(&Info);
-        if (FAILED(Status) || !Info) { FailLocked(FAILED(Status) ? Status : E_UNEXPECTED); return; }
+        if (FAILED(Status) || !Info) { FailLocked(FAILED(Status) ? Status : E_UNEXPECTED, FAILED(Status) ? EGameInputFailureSite::WarmDeviceInfoFailure : EGameInputFailureSite::WarmDeviceInfoNull, Timestamp); return; }
         FRecord Next;
         static_assert(sizeof(Info->deviceId) == sizeof(Next.Id));
         std::memcpy(Next.Id.data(), &Info->deviceId, Next.Id.size());
@@ -150,7 +162,7 @@ private:
         // mailbox; a tied divergent event still finds the tombstone. A
         // violation of the SDK ordering guarantee fails closed.
         if (LastCallbackTimestamp && Timestamp < *LastCallbackTimestamp)
-        { FailLocked(E_UNEXPECTED); return; }
+        { FailLocked(E_UNEXPECTED, EGameInputFailureSite::WarmRetrogradeCallback, Timestamp, *LastCallbackTimestamp); return; }
         if (!LastCallbackTimestamp || Timestamp > *LastCallbackTimestamp)
         {
             for (auto Old = Records.begin(); Old != Records.end();)
@@ -167,11 +179,14 @@ private:
             if (Timestamp == Old.Timestamp)
             {
                 if (Old.Device.Get() == Device && Old.Connected == Next.Connected && Old.Kinds == Next.Kinds) return;
-                FailLocked(E_UNEXPECTED); return;
+                const std::uint64_t Details = std::uint64_t(Old.Device.Get() != Device)
+                    | (std::uint64_t(Old.Connected) << 1) | (std::uint64_t(Next.Connected) << 2)
+                    | (std::uint64_t(Old.Kinds) << 8) | (std::uint64_t(Next.Kinds) << 16);
+                FailLocked(E_UNEXPECTED, EGameInputFailureSite::WarmDivergentTie, Timestamp, Old.Timestamp, Details); return;
             }
         }
         else if (Records.size() == FDeviceDiscovery::Capacity)
-        { FailLocked(E_OUTOFMEMORY); return; }
+        { FailLocked(E_OUTOFMEMORY, EGameInputFailureSite::WarmCapacity, Timestamp); return; }
         Records[Next.Id] = Next;
         // One session can exhaust its own 256-ID history while a newer
         // session remains valid. Quarantine that subscriber only; a catalogue
@@ -193,6 +208,7 @@ private:
     std::uint64_t NextSubscriber = 0;
     std::optional<std::uint64_t> LastCallbackTimestamp;
     HRESULT Error = S_OK;
+    std::optional<FGameInputFailureDiagnostic> FirstFailure;
     bool Registered = false, Stopping = false;
 };
 }

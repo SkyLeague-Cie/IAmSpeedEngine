@@ -73,6 +73,15 @@ public:
 				UE_LOG(LogTemp, Warning, TEXT("[InputReadBatchDiagnostic] reason=%u diagnostic_error=0x%08X kind=%u acquisition_tick=%llu"),
 					unsigned(Diagnostic->ReadReject->Reason), uint32(Diagnostic->ReadReject->DiagnosticError),
 					unsigned(Diagnostic->ReadReject->Kind), Diagnostic->ReadReject->AcquisitionTick);
+            const auto Fatal = Source->ReadFailureDiagnostics();
+            const auto Report = [](const TCHAR* Layer, const std::optional<Windows::FGameInputFailureDiagnostic>& Value)
+            {
+                if (!Value) return;
+                UE_LOG(LogTemp, Warning, TEXT("[InputDiscoveryFailure] layer=%s site=%u hresult=0x%08X timestamp=%llu previous=%llu details=0x%llX"),
+                    Layer, unsigned(Value->Site), uint32(Value->HResult), Value->EventTimestamp, Value->PreviousTimestamp, Value->Details);
+            };
+            Report(TEXT("discovery"), Fatal.Discovery);
+            Report(TEXT("warm"), Fatal.Warm);
 		}
 #if !UE_BUILD_SHIPPING
         // Observe the installed source only on selection changes. Never poll,

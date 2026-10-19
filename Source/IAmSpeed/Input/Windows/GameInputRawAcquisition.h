@@ -141,6 +141,11 @@ public:
 		return FCommittedRawDiagnostic{LastState->DeviceId,
 			LastState->Generation.Value, LastState->Sequence};
 	}
+    FGameInputFailureDiagnostics ReadFailureDiagnostics()
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        return Source ? Source->ReadFailureDiagnostics() : FGameInputFailureDiagnostics{};
+    }
 	bool Close() override
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
