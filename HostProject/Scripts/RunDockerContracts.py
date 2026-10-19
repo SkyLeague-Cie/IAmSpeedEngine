@@ -175,7 +175,10 @@ def docker_args(image_id, source, output, owner, sha):
         if any(char in str(path) for char in (',', '\n', '\r')):
             raise ValueError('Docker bind paths cannot contain commas or newlines')
     bootstrap = 'for p in python3 /opt/unreal/Engine/Binaries/ThirdParty/Python3/Linux/bin/python3 /opt/UnrealEngine/Engine/Binaries/ThirdParty/Python3/Linux/bin/python3; do if command -v "$p" >/dev/null 2>&1; then exec "$p" -I /input/HostProject/Scripts/RunDockerContracts.py --inside; fi; done; echo "Python3 missing from UE image" >&2; exit 127'
-    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--read-only', '--cpus', '2', '--memory', '12g', '--memory-swap', '12g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
+    # Source-built UE writes its early Trace.uba before parsing -Log. Keep
+    # those image-internal writes in this container's private disposable layer;
+    # the immutable image and the read-only exact source bind stay unchanged.
+    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', '2', '--memory', '12g', '--memory-swap', '12g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
     if hasattr(os, 'getuid'):
         if os.getuid() == 0:
             raise ValueError('Run the host launcher as an ordinary user')

@@ -75,7 +75,7 @@ class Contracts(unittest.TestCase):
     def test_no_host_engine_network_or_pull(self):
         with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
             args = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40)
-        for required in ['--read-only', '--network', 'none', '--pull', 'never', '1000:1000']:
+        for required in ['--network', 'none', '--pull', 'never', '1000:1000']:
             self.assertIn(required, args)
         mounts = [args[i + 1] for i, value in enumerate(args[:-1]) if value == '--mount']
         self.assertEqual(len(mounts), 2)

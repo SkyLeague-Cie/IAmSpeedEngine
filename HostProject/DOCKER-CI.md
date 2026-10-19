@@ -23,8 +23,9 @@ An image that only contains packaged games cannot compile a new checkout.
 The launcher archives the clean exact Git commit, mounts it read-only, copies it
 to a unique generated output directory and builds the repository HostProject.
 The immutable image ID and source archive hash are recorded. Runtime uses no
-network, no host engine mount, no Docker socket, a read-only container root and
-private writable output/cache directories. Each run is capped at 2 CPUs, 12 GiB
+network, no host engine mount, no Docker socket, and private writable output/cache
+directories. UE's early internal traces use the container's private writable
+layer; they never change the immutable base image or a host Engine. Each run is capped at 2 CPUs, 12 GiB
 RAM/swap and finite build/test deadlines. A timed-out owned container is stopped
 only after its full ID, owner label and image ID match; a stopped run never passes.
 Containers and diagnostics are preserved for inspection; no prune is performed.
