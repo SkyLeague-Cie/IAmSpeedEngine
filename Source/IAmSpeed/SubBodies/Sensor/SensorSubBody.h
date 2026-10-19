@@ -12,6 +12,8 @@
 namespace Speed { class FFramePointerRegistry; }
 #endif
 
+namespace Speed::Replay {struct FSensorReplayState;}
+
 UCLASS(Abstract, ClassGroup = "Collision", editinlinenew, meta = (BlueprintSpawnableComponent))
 class IAMSPEED_API USensorSubBody : public USSubBody
 {
@@ -34,6 +36,9 @@ public:
 	void ResolveCurrentHitPrv(const float& Delta, const float& SimTime) override;
     void PostPhysicsUpdate() override;
 
+    // Canonical physical owner only. Captures exact ordered/set/touched
+    // identities, never addresses or names; an unresolved weak reference fails.
+    bool CaptureReplaySensorState(Speed::Replay::FSensorReplayState& Out) const;
     UPrimitiveComponent* GetFirstOverlappingComponent() const;
 	bool HasOverlaps() const { return OverlapsOrdered.Num() > 0; }
 

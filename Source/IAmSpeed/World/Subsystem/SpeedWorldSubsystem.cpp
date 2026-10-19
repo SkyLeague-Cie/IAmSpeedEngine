@@ -12,7 +12,7 @@
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
-#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
 #include "IAmSpeed/World/Simulation/FrameSolveWitness.h"
@@ -92,7 +92,7 @@ namespace
 		explicit FScopedGameThreadAdapterAccess(UWorld* World)
 		{
 			if (!IsInGameThread() || !World) return;
-			for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+			for (TActorIterator<ASpeedPhysicsSimulation> It(World); It; ++It)
 			{
 				Driver = *It;
 				break;
@@ -115,7 +115,7 @@ namespace
 		}
 		bool IsValid() const { return bValid; }
 	private:
-		ASpeedSimulation* Driver = nullptr;
+		ASpeedPhysicsSimulation* Driver = nullptr;
 		bool bWasPaused = true;
 		bool bOwnsSuspension = false;
 		bool bValid = true;
@@ -2466,3 +2466,8 @@ void USpeedWorldSubsystem::RegisterFramePointerWitnessForTesting(Speed::FFramePo
  }
 }
 #endif
+bool USpeedWorldSubsystem::CaptureReplayStateFields(
+    TArray<FSimulationReplayStateRecord>& Out, uint64& UnsupportedStableId) const
+{
+    return SimulationWorld.CaptureReplayStateFields(Out, UnsupportedStableId);
+}

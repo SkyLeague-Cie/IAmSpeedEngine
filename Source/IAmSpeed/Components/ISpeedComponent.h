@@ -154,6 +154,14 @@ public:
 	virtual bool ApplySimulationInput(TConstArrayView<uint8> Payload) { return false; }
 	/** Appends deterministic mechanic state not covered by the common kinematic snapshot. */
 	virtual void AppendSimulationSnapshot(TArray<uint8>& OutPayload) const {}
+	/** Optional replay-only named state, called on the sole simulation owner after commit.
+	 * False means unsupported; an empty/default extension never certifies completeness.
+	 * This payload neither changes canonical hashes nor enables live-world restore. */
+	virtual bool AppendReplayStateFields(TArray<uint8>& OutPayload) const { return false; }
+	/** Optional observer-only copy on the same sole physical owner, after commit.
+	 * No GT reads/locks, input inference or UObject lookup. Never canonical state/hash.
+	 * False must leave output empty; the recording policy decides completeness. */
+	virtual bool AppendReplayObservationFields(TArray<uint8>& OutPayload) const { return false; }
 	/** Optional simulation-owned presentation extension; never part of canonical hashes. */
 	virtual void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const {}
 	/** Observation only, after canonical snapshot publication succeeds. */

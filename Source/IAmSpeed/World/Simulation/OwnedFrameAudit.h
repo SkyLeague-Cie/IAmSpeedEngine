@@ -1,7 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "SimulationWorker.h"
-class ASpeedSimulation;
+class ASpeedPhysicsSimulation;
 struct FSpeedStepDiagnostics;
 
 // Diagnostic ABI only. No member, virtual method, canonical state or camera
@@ -112,7 +112,7 @@ IAMSPEED_API bool ReadFrozenPhysicalDetailForTests(const FSessionPtr& Session,
 
 // Production admission is opt-in, normal-owned RealTime only, with a private
 // output path. Allocations/pre-touch happen on the GT before worker creation.
-IAMSPEED_API FSessionPtr CreateForHost(ASpeedSimulation* Host, bool Enabled, const TCHAR* CommandLine);
+IAMSPEED_API FSessionPtr CreateForHost(ASpeedPhysicsSimulation* Host, bool Enabled, const TCHAR* CommandLine);
 // Development-only harness API; tiny bounds exercise the SAME implementation.
 IAMSPEED_API FSessionPtr CreateForTests(uint64 FrameCapacity, uint64 AuxCapacity,
     const FString& BinaryPath = FString(), bool CaptureCpu = true, bool CaptureCanonicalPhases = false, bool CapturePhysicalDetails = false);

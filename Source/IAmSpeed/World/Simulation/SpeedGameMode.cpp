@@ -21,7 +21,7 @@ void ASpeedGameMode::BeginPlay()
     UWorld* World = GetWorld();
     if (!World || !SpeedSimActorClass) return;
 
-	TSubclassOf<ASpeedSimulation> SimulationClass = SpeedSimActorClass;
+	TSubclassOf<ASpeedPhysicsSimulation> SimulationClass = SpeedSimActorClass;
 	if (Speed::CanonicalFrameDriver::IsFastSimulationEnabled())
 	{
 		SimulationClass = AFastSimulation::StaticClass();
@@ -31,7 +31,7 @@ void ASpeedGameMode::BeginPlay()
     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
     Params.bNoFail = true;
 
-    SpeedSimActor = World->SpawnActor<ASpeedSimulation>(SimulationClass, FTransform::Identity, Params);
+    SpeedSimActor = World->SpawnActor<ASpeedPhysicsSimulation>(SimulationClass, FTransform::Identity, Params);
 }
 
 void ASpeedGameMode::SetSimulationPaused(const bool bPaused)

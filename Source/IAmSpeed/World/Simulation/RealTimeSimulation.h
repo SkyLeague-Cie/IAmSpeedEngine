@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SpeedSimulation.h"
+#include "SpeedPhysicsSimulation.h"
 #if !UE_BUILD_SHIPPING
 #include <atomic>
 #endif
@@ -61,7 +61,7 @@ private:
 
 /** Paced real-time policy; the selected execution host advances canonical frames. */
 UCLASS()
-class IAMSPEED_API ARealTimeSimulation : public ASpeedSimulation
+class IAMSPEED_API ARealTimeSimulation : public ASpeedPhysicsSimulation
 {
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS

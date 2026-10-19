@@ -1,8 +1,8 @@
-#include "SpeedSimulation.h"
+#include "SpeedPhysicsSimulation.h"
 #include "Misc/ScopeLock.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 
-Speed::Input::V2::ECommandAdmission ASpeedSimulation::SubmitInputSessionCommand(
+Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionCommand(
     const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
     std::shared_ptr<Speed::Input::V2::FRawAcquisitionJournal> Journal,
     std::shared_ptr<Speed::Input::V2::FInputObservationChannel> Observation,
@@ -45,16 +45,16 @@ Speed::Input::V2::ECommandAdmission ASpeedSimulation::SubmitInputSessionCommand(
     return Result;
 }
 
-std::optional<Speed::Input::V2::FBoundaryReceipt> ASpeedSimulation::ReadInputSessionReceipt(uint64 Id) const
+std::optional<Speed::Input::V2::FBoundaryReceipt> ASpeedPhysicsSimulation::ReadInputSessionReceipt(uint64 Id) const
 { return InputSessionCommands->Read(Id); }
 
-std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ASpeedSimulation::ReadInputRegistryView() const
+std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ASpeedPhysicsSimulation::ReadInputRegistryView() const
 { return PublishedInputRegistry.load(std::memory_order_seq_cst); }
 
-std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ASpeedSimulation::ReadCompletedInputFrame() const
+std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ASpeedPhysicsSimulation::ReadCompletedInputFrame() const
 { return PublishedInputFrame.load(std::memory_order_seq_cst); }
 
-ESimulationBoundaryResult ASpeedSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
+ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
     if (SpeedWorldSubsystem && !SpeedWorldSubsystem->ServiceInputRetirementsAtBoundary())
         return ESimulationBoundaryResult::Failed;
@@ -118,7 +118,7 @@ ESimulationBoundaryResult ASpeedSimulation::ServiceInputSessionBoundary(bool bPa
     }
 }
 
-void ASpeedSimulation::CloseInputSessionsOnWorker()
+void ASpeedPhysicsSimulation::CloseInputSessionsOnWorker()
 {
     if (SpeedWorldSubsystem && !SpeedWorldSubsystem->RetireInputProcessingOnWorker())
         bCanonicalPublicationTerminal.Store(true);

@@ -4,10 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameMode.h"
+#include "SpeedPhysicsSimulation.h"
 #include "SpeedGameMode.generated.h"
 
 
-class ASpeedSimulation;
+class ASpeedPhysicsSimulation;
 
 /**
  *
@@ -37,13 +38,15 @@ public:
 	/** Pauses or resumes the separately-owned simulation lane when it exists. */
 	void SetSimulationPaused(bool bPaused);
 	/** Returns the single authoritative simulation actor owned by this game mode. */
-	ASpeedSimulation* GetSpeedSimulation() const { return SpeedSimActor; }
+	ASpeedPhysicsSimulation* GetSpeedSimulation() const { return SpeedSimActor; }
+	/** Common immutable presentation interface; no physical capability is implied. */
+	ASpeedSimulation* GetSimulationPresentation() const { return SpeedSimActor; }
 
 protected:
 	UPROPERTY(EditDefaultsOnly)
-	TSubclassOf<class ASpeedSimulation> SpeedSimActorClass;
+	TSubclassOf<class ASpeedPhysicsSimulation> SpeedSimActorClass;
 
 private:
 	UPROPERTY()
-	TObjectPtr<ASpeedSimulation> SpeedSimActor;
+	TObjectPtr<ASpeedPhysicsSimulation> SpeedSimActor;
 };

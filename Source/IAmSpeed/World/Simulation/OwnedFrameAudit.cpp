@@ -1,6 +1,6 @@
 #include "OwnedFrameAudit.h"
 #if WITH_DEV_AUTOMATION_TESTS
-#include "SpeedSimulation.h"
+#include "SpeedPhysicsSimulation.h"
 #include "RealTimeSimulation.h"
 #include "../Subsystem/SpeedWorldSubsystem.h"
 #include "HAL/Event.h"
@@ -239,7 +239,7 @@ FSessionPtr CreateForTests(uint64 FrameCapacity, uint64 AuxCapacity,
     catch (...) { return {}; } // Diagnostic refusal never changes physical admission.
 }
 
-FSessionPtr CreateForHost(ASpeedSimulation* Host, bool Enabled, const TCHAR* CommandLine)
+FSessionPtr CreateForHost(ASpeedPhysicsSimulation* Host, bool Enabled, const TCHAR* CommandLine)
 {
 #if !PLATFORM_WINDOWS
     return {}; // No allocation or actor inspection for unsupported capture.

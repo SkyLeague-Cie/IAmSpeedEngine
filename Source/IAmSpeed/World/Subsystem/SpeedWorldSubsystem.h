@@ -146,6 +146,7 @@ public:
 		return LastStepDiagnostics;
 	}
 	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false);
+	bool CaptureReplayStateFields(TArray<FSimulationReplayStateRecord>& Out, uint64& UnsupportedStableId) const;
 	void NotifyCanonicalFramePublished(uint64 NumFrame);
 	ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
 	void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;

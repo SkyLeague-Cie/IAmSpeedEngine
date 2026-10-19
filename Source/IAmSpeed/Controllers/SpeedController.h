@@ -108,6 +108,34 @@ protected:
 	void ResolveInputSessionRestartCompletionV2();
 	void FailInputSessionRestartCompletionV2();
 	bool HasInputSessionV2() const { return InputSessionV2 != nullptr; }
+    // Read-only availability for optional game presentation actions. No source,
+    // acquisition/registry ownership or mutation is exposed to derived games.
+    bool HasWiredInputActionV2(Speed::Input::FActionId Id) const
+    {
+        check(IsInGameThread());
+        const auto Contract=InputSessionV2 ? (InputSessionV2->Descriptor ? InputSessionV2->Descriptor->Contract :
+            (InputSessionV2->Stream ? InputSessionV2->Stream->GetContract() : nullptr)) : nullptr;
+        const auto* Action=Contract ? Contract->Find(Id) : nullptr;
+        return Action && Action->Wiring==Speed::Input::V2::EActionWiring::Wired;
+    }
+    // Completed-edge observation only, no registry/source ownership is exposed.
+    bool IsObservedInputEdgeCurrentV2(const Speed::Input::V2::FInputEdgeIdentity& Edge) const
+    {
+        check(IsInGameThread());
+        if(!Edge.IsValid() || !InputSessionV2 || InputSessionV2->Closed || InputSessionV2->TerminalRetired ||
+            InputSessionV2->Session!=Edge.Epoch || InputSessionV2->IsPaused())return false;
+        if(InputSessionV2->Descriptor)
+        {
+            const auto& D=*InputSessionV2->Descriptor;
+            return InputSessionV2->RegistryBound && !InputSessionV2->RegistryPaused && D.Epoch==Edge.Epoch &&
+                D.Producer==Edge.ProducerId && D.Kind==Speed::Input::V2::EProducerContract::Device &&
+                Edge.ProducerKind==Speed::Input::EProducerKind::Device;
+        }
+        if(!InputSessionV2->Stream)return false;
+        const auto Frame=InputSessionV2->Stream->ReadRecorded(Edge.Frame);
+        const auto Identity=Frame ? Speed::Input::V2::IdentifyEdge(*Frame,Edge.Ordinal) : std::nullopt;
+        return Identity && *Identity==Edge;
+    }
 	// Read-only GT arbitration for an exclusive menu acquisition owner.
 	// Pending and legacy/test acquisitions count as ownership too.
 	bool HasAnyInputAcquisitionOwnershipV2() const
@@ -174,6 +202,7 @@ private:
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FSkyControlSaveTransactionTest;
 	friend class FSkyAIInputPauseRegistryTest;
+	friend class FSkyReplayInputDescriptorContractTest;
 #endif
 	std::shared_ptr<Speed::Input::IInputProducer> InputProducer = nullptr;
 	std::shared_ptr<Speed::Input::FInputStream> InputSnapshots;

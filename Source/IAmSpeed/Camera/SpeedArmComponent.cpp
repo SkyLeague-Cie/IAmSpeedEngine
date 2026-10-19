@@ -6,7 +6,7 @@
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
-#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 
 USpeedArmComponent::USpeedArmComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -89,13 +89,13 @@ bool USpeedArmComponent::HasLocalHumanCameraOwner() const
 	return Player && Player->GetLocalPlayer();
 }
 
-ASpeedSimulation* USpeedArmComponent::GetCurrentCameraSimulation() const
+ASpeedPhysicsSimulation* USpeedArmComponent::GetCurrentCameraSimulation() const
 {
 	check(IsInGameThread());
 	if (RetirementWitness && RetirementWitness->Load()) return nullptr;
 	const UWorld* World = GetWorld();
 	const ASpeedGameMode* Mode = World ? Cast<ASpeedGameMode>(World->GetAuthGameMode()) : nullptr;
-	ASpeedSimulation* Declared = Mode ? Mode->GetSpeedSimulation() : nullptr;
+	ASpeedPhysicsSimulation* Declared = Mode ? Mode->GetSpeedSimulation() : nullptr;
 	if (BoundSimulation.IsValid())
 	{
 		if (BoundSimulation->GetWorld() != World || (Declared && Declared != BoundSimulation.Get())) return nullptr;
@@ -109,7 +109,7 @@ bool USpeedArmComponent::ShouldComputeLocalCamera() const
 {
 	check(IsInGameThread());
 	if (!HasLocalHumanCameraOwner()) return false;
-	const ASpeedSimulation* Simulation = GetCurrentCameraSimulation();
+	const ASpeedPhysicsSimulation* Simulation = GetCurrentCameraSimulation();
 	return Simulation && Simulation->AllowsCameraPresentation();
 }
 
@@ -153,7 +153,7 @@ bool USpeedArmComponent::ReleaseCameraEndpointForEndPlay()
 {
 	check(IsInGameThread());
 	if (ReleaseCameraEndpointAtLifecycle()) return true;
-	ASpeedSimulation* Simulation = BoundSimulation.Get();
+	ASpeedPhysicsSimulation* Simulation = BoundSimulation.Get();
 	if (!Simulation) return false;
 	UE_LOG(LogTemp, Error, TEXT("[CameraEndpointTeardownFenceFailed] Retiring the owned simulation; no partial resume."));
 	::RecordPrivateInputFailure(TEXT("PrivateRetirement.CameraEndPlay"), FString::Printf(
@@ -208,7 +208,7 @@ USpeedArmComponent::FEndpointPtr USpeedArmComponent::CreateCameraEndpoint(const 
 class FSpeedArmCameraBindingCommit final : public ISimulationPresentationAdapterCommit
 {
 public:
-	FSpeedArmCameraBindingCommit(USpeedArmComponent& InArm, ASpeedSimulation& InSimulation) : Arm(InArm), Simulation(InSimulation) {}
+	FSpeedArmCameraBindingCommit(USpeedArmComponent& InArm, ASpeedPhysicsSimulation& InSimulation) : Arm(InArm), Simulation(InSimulation) {}
 	bool Prepare(const TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Endpoint) const override
 	{
 		return Endpoint && Arm.CanBindCameraAdapterAtBoundary(Endpoint);
@@ -222,11 +222,11 @@ public:
 	}
 private:
 	USpeedArmComponent& Arm;
-	ASpeedSimulation& Simulation;
+	ASpeedPhysicsSimulation& Simulation;
 };
 
 USpeedArmComponent::FEndpointPtr USpeedArmComponent::BindEndpointAtLifecycle(
-	ASpeedSimulation& Simulation, ISpeedComponent& Owner, ISpeedComponent* Target)
+	ASpeedPhysicsSimulation& Simulation, ISpeedComponent& Owner, ISpeedComponent* Target)
 {
 	check(IsInGameThread());
 	if (BoundEndpoint && BoundSimulation.Get() != &Simulation) return nullptr;
@@ -248,7 +248,7 @@ bool USpeedArmComponent::ReadGenericOwnerSnapshot(FSimulationPoseConsumption& Ou
 		BoundSimulation->ReadPresentationPose(BoundEndpoint->OwnerStableId(), Out);
 }
 
-ASpeedSimulation* USpeedArmComponent::GetBoundSimulation() const
+ASpeedPhysicsSimulation* USpeedArmComponent::GetBoundSimulation() const
 {
 	return BoundSimulation.Get();
 }

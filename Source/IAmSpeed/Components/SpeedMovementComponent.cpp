@@ -2,6 +2,8 @@
 
 
 #include "SpeedMovementComponent.h"
+#include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
+#include "IAmSpeed/World/Simulation/ReplayBaseStateFields.h"
 #include "IAmSpeed/World/Simulation/CanonicalEpisodeTestingScope.h"
 #include "Engine/World.h"
 #include "Misc/ScopeExit.h"
@@ -1125,3 +1127,11 @@ bool USpeedMovementComponent::RebaseCanonicalEpisodeHistoryForTesting(
  return true;
 }
 #endif
+
+void USpeedMovementComponent::AppendReplayBaseFields(Speed::Replay::FFieldWriter& W) const
+{
+    Speed::Replay::Fields::BasePhysics(W, BasePhysicsState);
+    Speed::Replay::Fields::BaseGame(W, BaseGameState);
+    W.Scalar(MinNbFramesBeforeCanMove);
+    W.Scalar(SinceCanMoveFrame);
+}
