@@ -261,7 +261,9 @@ def inside():
     return 0 if result['state'] in ('PASS', 'PASS_WITH_ACCEPTED_DEBT') else 1
 
 
-def docker_args(image_id, source, output, owner, sha):
+def docker_args(image_id, source, output, owner, sha, cpus=2):
+    if type(cpus) is not int or cpus not in (2, 4, 8, 12):
+        raise ValueError("Native CI CPU cap must be exactly 2, 4, 8 or 12")
     if output.resolve()==source.resolve() or output.resolve() in source.resolve().parents:
         raise ValueError('Read-only source must not be reachable through the writable output mount')
     for path in (source, output):
@@ -271,7 +273,7 @@ def docker_args(image_id, source, output, owner, sha):
     # Source-built UE writes its early Trace.uba before parsing -Log. Keep
     # those image-internal writes in this container's private disposable layer;
     # the immutable image and the read-only exact source bind stay unchanged.
-    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', '2', '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
+    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
     if hasattr(os, 'getuid'):
         if os.getuid() == 0:
             raise ValueError('Run the host launcher as an ordinary user')
@@ -314,7 +316,7 @@ def host(args):
     extract_archive(source_tar, source)
     launch = {'source_sha': sha, 'source_archive_sha256': digest(source_tar), 'image_ref': image, 'image_id': info['Id'], 'owner': owner, 'state': 'STARTING', 'generated_root': str(output), 'read_only_input_root': str(source)}
     save(output / 'launch.json', launch)
-    command = docker_args(info['Id'], source, output, owner, sha)
+    command = docker_args(info['Id'], source, output, owner, sha, args.cpus)
     save(output / 'docker-create.json', command)
     container = subprocess.check_output(command, text=True).strip()
     launch['container_id'] = container; save(output / 'launch.json', launch)
@@ -369,6 +371,7 @@ def main():
     parser.add_argument('--image')
     parser.add_argument('--expected-sha')
     parser.add_argument('--output')
+    parser.add_argument('--cpus', type=int, choices=(2, 4, 8, 12), default=2)
     args = parser.parse_args()
     return inside() if args.inside else host(args)
 

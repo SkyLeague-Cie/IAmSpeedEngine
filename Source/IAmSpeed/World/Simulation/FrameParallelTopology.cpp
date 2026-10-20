@@ -2,6 +2,14 @@
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
+#elif PLATFORM_LINUX
+#include <sched.h>
+#include <unistd.h>
+#include <cerrno>
+#include <fstream>
+#include <set>
+#include <string>
+#include <utility>
 #endif
 
 namespace Speed
@@ -102,6 +110,39 @@ FFrameParallelRuntimeTopology CollectFrameParallelTopology(
         }
     }
     else { Result.LastQueryError = ::GetLastError(); }
+#elif PLATFORM_LINUX
+    // Native Linux discovery belongs to IAmSpeed, independent of Unreal's
+    // task scheduler. Read-only sysfs topology is scoped to the live affinity.
+    // This does NOT certify a complete enclosing cgroup hierarchy: automatic
+    // selection remains serial; explicit bounded diagnostics retain UNKNOWN.
+    const long Online = ::sysconf(_SC_NPROCESSORS_ONLN);
+    cpu_set_t Affinity;
+    CPU_ZERO(&Affinity);
+    if (Online > 0 && Online <= MAX_int32 && ::sched_getaffinity(0, sizeof(Affinity), &Affinity) == 0)
+    {
+        Result.Limits.LogicalCores = int32(Online);
+        std::set<std::pair<int, int>> Physical;
+        bool bComplete = true;
+        for (int Cpu = 0; Cpu < CPU_SETSIZE; ++Cpu)
+        {
+            if (!CPU_ISSET(Cpu, &Affinity)) continue;
+            ++Result.Limits.AvailableLogicalCores;
+            if (Cpu < 64) Result.ProcessAffinityMask |= uint64(1) << Cpu;
+            const std::string Prefix = "/sys/devices/system/cpu/cpu" + std::to_string(Cpu) + "/topology/";
+            int Package = -1, Core = -1;
+            std::ifstream PackageFile(Prefix + "physical_package_id");
+            std::ifstream CoreFile(Prefix + "core_id");
+            if (!(PackageFile >> Package) || !(CoreFile >> Core) || Package < 0 || Core < 0)
+            { bComplete = false; continue; }
+            Physical.emplace(Package, Core);
+        }
+        if (bComplete && Result.Limits.AvailableLogicalCores > 0 &&
+            Result.Limits.AvailableLogicalCores <= Result.Limits.LogicalCores)
+            Result.Limits.PhysicalCores = int32(Physical.size());
+        else Result.LastQueryError = uint32(EINVAL);
+        Result.QuotaObservation = EFrameParallelQuotaObservation::LinuxAffinityQuotaUnobserved;
+    }
+    else Result.LastQueryError = uint32(errno ? errno : EINVAL);
 #endif
     if (QualifiedEffectiveCpuRate10000 > 0 && QualifiedEffectiveCpuRate10000 <= 10000)
     {

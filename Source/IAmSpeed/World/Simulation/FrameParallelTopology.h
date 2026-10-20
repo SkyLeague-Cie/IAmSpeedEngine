@@ -9,7 +9,8 @@ enum class EFrameParallelQuotaObservation : uint8
     Unknown,
     OutsideJobUnbounded,
     ImmediateJobOnly,
-    QualifiedAdmission
+    QualifiedAdmission,
+    LinuxAffinityQuotaUnobserved
 };
 
 struct FFrameParallelRuntimeTopology

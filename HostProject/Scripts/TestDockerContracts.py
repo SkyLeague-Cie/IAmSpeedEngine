@@ -245,5 +245,20 @@ class DockerSharedMemoryContract1581(unittest.TestCase):
         self.assertFalse(any('SYS_PTRACE' in arg or 'seccomp=unconfined' in arg for arg in args))
 
 
+
+
+
+class ExplicitNativeCpuEnvelope1617(unittest.TestCase):
+    def test_requested_cpu_cap_preserves_all_other_resource_bounds(self):
+        with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
+            baseline = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40)
+            for cap in (4, 8, 12):
+                candidate = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40, cap)
+                expected = baseline.copy(); expected[expected.index('--cpus') + 1] = str(cap)
+                self.assertEqual(candidate, expected)
+            for invalid in (0, 1, -1, 3, 13, 2.0, True, '12'):
+                with self.assertRaises(ValueError):
+                    ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40, invalid)
+
 if __name__ == '__main__':
     unittest.main()
