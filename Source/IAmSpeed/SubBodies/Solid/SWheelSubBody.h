@@ -7,6 +7,7 @@
 #include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SWheelSubBody.generated.h"
 
+namespace Speed::Analytic { struct FAnalyticPrefetchQuery1075; }
 class ISpeedWheeledComponent;
 class UChaosVehicleWheel;
 namespace Chaos
@@ -130,6 +131,11 @@ public:
     virtual void UpdateSuspension(const float& delta);
     // sweep for suspension
     virtual void SweepSuspension(const float& delta);
+    // Unknown exact types must explicitly certify that the inherited query
+    // construction remains pure; certification never executes on a worker.
+    virtual bool IsGroundQueryCaptureCertified1075() const
+    { return GetClass() == USWheelSubBody::StaticClass(); }
+    bool TryCaptureGroundQuery1075(float Delta, Speed::Analytic::FAnalyticPrefetchQuery1075& Out) const;
 	bool ProbeSuspensionOnGround(SHitResult& OutHit, float Delta) const;
 	void GetSuspensionSweepSegment(float Delta, FVector& OutStart, FVector& OutEnd) const;
 	virtual bool SweepSuspensionAlongNormal(

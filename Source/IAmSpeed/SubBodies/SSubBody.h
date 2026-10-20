@@ -8,6 +8,10 @@
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
 #include "SSubBody.generated.h"
 
+
+#if !UE_BUILD_SHIPPING
+namespace Speed { struct FNativeBallMechanicalWitnessForTesting; }
+#endif
 class ISpeedComponent;
 class UBoxSubBody;
 class USphereSubBody;
@@ -32,6 +36,10 @@ UCLASS()
 class IAMSPEED_API USSubBody : public UShapeComponent
 {
     GENERATED_UCLASS_BODY()
+#if !UE_BUILD_SHIPPING
+    friend struct Speed::FNativeBallMechanicalWitnessForTesting;
+#endif
+
 	
 public:
 #if !UE_BUILD_SHIPPING

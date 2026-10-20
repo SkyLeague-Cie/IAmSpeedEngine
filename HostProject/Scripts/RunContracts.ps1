@@ -4,12 +4,14 @@ param(
     [string]$RulesEngineRoot = $env:IAMSPEED_RULES_ENGINE_ROOT,
     [string]$PrivateRoot = $env:IAMSPEED_PRIVATE_ROOT,
     [string]$TestFilter = 'IAmSpeed.AnalyticWorld',
+    [string]$RequiredTestsFile,
     [ValidateRange(1, 8)] [int]$MaxParallelActions = 4,
     [ValidateRange(1, 8)] [int]$UBAMaxWorkers = 4
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'RunContracts.Helpers.ps1')
+. (Join-Path $PSScriptRoot 'RunContracts.SourceGraph1495.ps1')
 
 $RunRoot = $null
 $PluginLink = $null
@@ -43,8 +45,21 @@ try {
     $RulesSeedEngine = Assert-IAmSpeedPrivateRulesRoot -Runtime $DirectUbtRuntime
     $PrecompiledEngineRules = Assert-IAmSpeedPrecompiledRules -EngineRoot $Engine.Root -Runtime $DirectUbtRuntime
     if ([string]::IsNullOrWhiteSpace($TestFilter) -or
-        $TestFilter -notmatch '^IAmSpeed\.AnalyticWorld(?:\.[A-Za-z0-9_.]+)?$') {
+        $TestFilter -notmatch '^IAmSpeed(?:\.[A-Za-z0-9_]+)*$') {
         throw "Unsupported physical-contract test filter: $TestFilter"
+    }
+
+    $RequiredTestPaths = @()
+    $RequiredTestsSha256 = $null
+    if (-not [string]::IsNullOrWhiteSpace($RequiredTestsFile)) {
+        if (-not (Test-Path -LiteralPath $RequiredTestsFile -PathType Leaf)) { throw 'Required automation inventory is missing.' }
+        $inventory = Get-Content -LiteralPath $RequiredTestsFile -Raw | ConvertFrom-Json
+        if ($inventory.schema -cne 'IAmSpeed.RequiredAutomationTests.v1') { throw 'Unknown required automation inventory schema.' }
+        $RequiredTestPaths = @($inventory.tests | ForEach-Object { [string]$_ })
+        if ($RequiredTestPaths.Count -eq 0 -or @($RequiredTestPaths | Where-Object { $_ -cnotmatch '^IAmSpeed\.[A-Za-z0-9_.]+$' }).Count -ne 0 -or
+            @($RequiredTestPaths | Group-Object -CaseSensitive | Where-Object { $_.Count -ne 1 }).Count -ne 0) { throw 'Required automation inventory is empty, malformed or duplicated.' }
+        if (@($RequiredTestPaths | Where-Object { $_ -cne $TestFilter -and -not $_.StartsWith($TestFilter + '.', [StringComparison]::Ordinal) }).Count -ne 0) { throw 'Required test falls outside requested filter.' }
+        $RequiredTestsSha256 = (Get-FileHash -LiteralPath $RequiredTestsFile -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 
     $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -218,6 +233,36 @@ try {
     $RulesEvidence.build_trace_policy = 'bound root Build opens the manifest-qualified private trace required by the real UBA non-detour executor; Engine trace remains suppressed'
     $RulesEvidence.build_copy_policy = 'exact provisioned Engine DLLs are read-only inputs; Engine debugger visualizer copy/link outputs are private'
     if (-not [string]::IsNullOrWhiteSpace($env:SL_PRIVATE_SOURCE_GRAPH_SNAPSHOT)) { throw 'Full CI cannot inherit a source graph diagnostic cutoff.' }
+    if ($boundManifest.schema -ceq 'sl.private-ubt-runtime/v3-current-engine-rules') {
+        $GraphDirectory = Join-Path ([string]$boundManifest.baseline_project_parent) ('SourceGraphDiagnostics\' + (Split-Path -Leaf $RunRoot))
+        if (Test-Path -LiteralPath $GraphDirectory) { throw 'Never replay a claimed source graph diagnostic.' }
+        New-Item -ItemType Directory -Path $GraphDirectory | Out-Null
+        $GraphPath = Join-Path $GraphDirectory 'SourceGraph.json'
+        $GraphConsole = Join-Path $GraphDirectory 'ubt-console.raw.log'
+        $GraphLog = Join-Path $GraphDirectory 'ubt.raw.log'
+        $GraphArguments = @($BuildArguments | ForEach-Object { if ($_ -imatch '^-Log=') { "-Log=$GraphLog" } else { $_ } }) + @('-SLPrivateSourceGraph')
+        $GraphInvocation = New-IAmSpeedDirectUbtInvocation -Runtime $DirectUbtRuntime -Arguments $GraphArguments
+        $GraphInvocationArguments = [string[]]$GraphInvocation.Arguments
+        if ($GraphInvocation.SessionId -ceq $BuildInvocation.SessionId) { throw 'Diagnostic and C++ execution need distinct original invocations.' }
+        $GraphExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -DotNetDirectory $GraphInvocation.DotNetDirectory -Action {
+            Push-Location -LiteralPath $GraphInvocation.WorkingDirectory
+            $PreviousGraphPath = [Environment]::GetEnvironmentVariable('SL_PRIVATE_SOURCE_GRAPH_SNAPSHOT', 'Process')
+            try {
+                [Environment]::SetEnvironmentVariable('SL_PRIVATE_SOURCE_GRAPH_SNAPSHOT', $GraphPath, 'Process')
+                Invoke-IAmSpeedPrivateEnginePolicy -Runtime $DirectUbtRuntime -Action {
+                    & $GraphInvocation.Executable @GraphInvocationArguments *> $GraphConsole
+                    [pscustomobject]@{ ExitCode=$LASTEXITCODE }
+                }
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable('SL_PRIVATE_SOURCE_GRAPH_SNAPSHOT', $PreviousGraphPath, 'Process')
+                Pop-Location
+            }
+        }
+        $RulesEvidence.source_graph1495 = Assert-IAmSpeedSourceGraph1495 -Path $GraphPath -ConsolePath $GraphConsole -ExitCode $GraphExecution.ExitCode -EngineRoot $Engine.Root -AllowedOutputRoots @($PrivateProject,$PluginRoot,[string]$boundManifest.private_cache_root)
+        $RulesEvidence.source_graph_invocation1495 = $GraphInvocation
+        $RulesEvidence.source_graph1495 | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $GraphDirectory 'qualification.json') -Encoding utf8
+    }
     $BuildExecution = Invoke-IAmSpeedWithProcessTbbPath -LoaderDirectory $TbbLoader.LoaderDirectory -DotNetDirectory $BuildInvocation.DotNetDirectory -Action {
         Push-Location -LiteralPath $BuildInvocation.WorkingDirectory
         try {
@@ -265,7 +310,7 @@ try {
     }
     $Automation = Assert-IAmSpeedAutomationResult `
         -ExitCode $EditorExitCode -StandardOutput (Get-Content -Raw -LiteralPath $EditorOutputLog) `
-        -ReportPath $ReportIndex -TestFilter $TestFilter
+        -ReportPath $ReportIndex -TestFilter $TestFilter -RequiredTestPaths $RequiredTestPaths
 
     $Result = [pscustomobject]@{
         status = 'passed'
@@ -296,6 +341,9 @@ try {
         private_run_root = $RunRoot
         host_project = $ProjectFile
         test_filter = $TestFilter
+        required_tests_file = $RequiredTestsFile
+        required_tests_sha256 = $RequiredTestsSha256
+        required_test_paths = $RequiredTestPaths
         tests_performed = $Automation.TestsPerformed
         tests_succeeded = $Automation.TestsSucceeded
         tests_failed = 0

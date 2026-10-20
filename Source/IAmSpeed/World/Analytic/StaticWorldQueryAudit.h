@@ -72,6 +72,12 @@ public:
 	static bool TryRecordEmptySingle(
 		UWorld* World, uint8 TraceChannel, const FCollisionResponseParams& ResponseParams);
 
+    // Owner-only pure value construction. No query, counter, hook, or component lookup.
+    static FWorldQuery MakeStrictSingleQuery1075(
+        const FVector& Start, const FVector& End, const FQuat& Rotation,
+        const FCollisionShape& Shape, uint8 TraceChannel,
+        const FCollisionResponseParams& ResponseParams);
+
 	static bool TryCompactAuthoritySingle(
 		UWorld* World,
 		const FVector& Start, const FVector& End, const FQuat& Rotation,

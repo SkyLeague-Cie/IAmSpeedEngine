@@ -1222,6 +1222,18 @@ struct IAMSPEED_API FBoundedPlane
 // ExtrusionCoordinate=0; the two scalar limits close the finite surface.
 // Runtime queries tessellate only the one-dimensional section, never the
 // source mesh, and retain stable face/edge/vertex feature identifiers.
+// Immutable arithmetic derived from one certified section chord. No query or
+// contact history; rebuilt with the chord/BVH representation, not serialized or hashed.
+struct IAMSPEED_API FExtrudedQuinticFacetGeometry
+{
+	FVector3d Chord = FVector3d::ZeroVector;
+	double ChordLength = 0.0;
+	FVector3d AxisU = FVector3d::ZeroVector;
+	FVector3d Normal = FVector3d::ZeroVector;
+	FVector3d Origin = FVector3d::ZeroVector;
+	FVector2d HalfExtents = FVector2d::ZeroVector;
+};
+
 struct IAMSPEED_API FExtrudedQuinticPatch
 {
 	uint64 SourceId = 0;
@@ -1263,6 +1275,7 @@ struct IAMSPEED_API FExtrudedQuinticPatch
 	// One immutable finite-facet AABB per section chord, rebuilt with the BVH.
 	// No per-query history: storage scales only with the fixed approximation.
 	TArray<FBox3d> SectionSegmentBounds;
+	TArray<FExtrudedQuinticFacetGeometry> SectionFacetGeometry;
 	TArray<FTriangleBvhNode> SectionSegmentBvhNodes;
 	TArray<int32> SectionSegmentBvhIndices;
 	double MaximumChordErrorCm = TNumericLimits<double>::Max();

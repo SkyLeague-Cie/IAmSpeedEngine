@@ -1218,6 +1218,7 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 	SectionPolyline.Reset();
 	SectionParameters.Reset();
 	SectionSegmentBounds.Reset();
+	SectionFacetGeometry.Reset();
 	SectionSegmentBvhNodes.Reset();
 	SectionSegmentBvhIndices.Reset();
 	MaximumChordErrorCm = TNumericLimits<double>::Max();
@@ -1274,6 +1275,17 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 	const int32 SegmentCount = FMath::Max(0, SectionPolyline.Num() - 1);
 	SectionSegmentBvhIndices.SetNumUninitialized(SegmentCount);
 	SectionSegmentBounds.SetNumUninitialized(SegmentCount);
+#if !UE_BUILD_SHIPPING
+	// Experimental query reuse is default off; derive both control/candidate
+	// storage identically so the paired runtime axis changes arithmetic reuse only.
+	SectionFacetGeometry.SetNum(SegmentCount);
+	static_assert(sizeof(FExtrudedQuinticFacetGeometry) <= 128,
+		"Account for immutable per-facet geometry storage");
+	const double FacetExtrusionCenter = 0.5 *
+		(MinimumExtrusionCoordinate + MaximumExtrusionCoordinate);
+	const double FacetExtrusionHalfExtent = 0.5 *
+		(MaximumExtrusionCoordinate - MinimumExtrusionCoordinate);
+#endif
 	static_assert(sizeof(FBox3d) <= 56, "Account for per-chord derived geometry storage");
 	for (int32 Segment = 0; Segment < SegmentCount; ++Segment)
 	{
@@ -1288,6 +1300,20 @@ bool FExtrudedQuinticPatch::BuildQueryApproximation(
 		Result += SectionPolyline[Segment + 1] +
 			MaximumExtrusionCoordinate * ExtrusionAxis;
 		SectionSegmentBounds[Segment] = Result;
+#if !UE_BUILD_SHIPPING
+		FExtrudedQuinticFacetGeometry& Geometry = SectionFacetGeometry[Segment];
+		const FVector3d SectionA = SectionPolyline[Segment];
+		const FVector3d SectionB = SectionPolyline[Segment + 1];
+		Geometry.Chord = SectionB - SectionA;
+		Geometry.ChordLength = Geometry.Chord.Length();
+		if (Geometry.ChordLength > UE_DOUBLE_SMALL_NUMBER)
+		{
+			Geometry.AxisU = Geometry.Chord / Geometry.ChordLength;
+			Geometry.Normal = FVector3d::CrossProduct(Geometry.AxisU, ExtrusionAxis).GetSafeNormal();
+			Geometry.Origin = 0.5 * (SectionA + SectionB) + FacetExtrusionCenter * ExtrusionAxis;
+			Geometry.HalfExtents = FVector2d(0.5 * Geometry.ChordLength, FacetExtrusionHalfExtent);
+		}
+#endif
 	}
 	const auto SegmentBounds = [this](const int32 Segment) -> const FBox3d&
 	{

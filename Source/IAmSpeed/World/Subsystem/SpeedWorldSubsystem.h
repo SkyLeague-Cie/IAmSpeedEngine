@@ -11,6 +11,9 @@
 #include "SpeedWorldSubsystem.generated.h"
 
 class ISpeedComponent;
+#if !UE_BUILD_SHIPPING
+namespace Speed { class FFramePointerRegistry; }
+#endif
 class USolidSubBody;
 struct FCanonicalFrameContext;
 namespace Speed::Input::V2 { struct FRegistryFrame; struct FInputRegistryView; class FInputSessionRegistry; }
@@ -66,6 +69,10 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedBoxEquilibriumWorldTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FIAmSpeedNativeCarsCamera1217;
+ friend class FIAmSpeedNativeAnalyticContacts1221;
+	friend class FIAmSpeedNativeAnalyticGrounded1368;
+ friend class FIAmSpeedNativeAnalyticEightCars1534;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;
@@ -83,6 +90,11 @@ public:
     void RegisterSpeedComponent(ISpeedComponent* Comp);
     void UnregisterSpeedComponent(ISpeedComponent* Comp);
     void ApplyPendingOps();
+	#if !UE_BUILD_SHIPPING
+	void RegisterFramePointerWitnessForTesting(Speed::FFramePointerRegistry& Registry,int32& ExpectedActors) const;
+    void FrameAdapterCensusForTesting(TArray<FString>& OutRows) const;
+    void DeclareExpectedFrameAnalogWitnessForTesting() const;
+#endif
 	void RegisterDynamicContactPair(
 		USolidSubBody& BodyA,
 		USolidSubBody& BodyB,
@@ -116,6 +128,11 @@ public:
 	bool BeginCanonicalFrame(FString& OutReason);
 	void EndCanonicalFrame() { bCanonicalFrameActive = false; }
 	ECanonicalRunControlState GetCanonicalRunControlState();
+#if !UE_BUILD_SHIPPING
+    /** Owner-only observer over the already admitted registry. No pending-op
+     * application, sort rebuild, ready-delay update or frame advancement. */
+    ECanonicalRunControlState InspectAdmittedCanonicalRunControlForTesting() const;
+#endif
 	const Speed::Analytic::FAnalyticWorldData* GetAnalyticWorldData() const
 	{
 		return AnalyticWorldData.Get();

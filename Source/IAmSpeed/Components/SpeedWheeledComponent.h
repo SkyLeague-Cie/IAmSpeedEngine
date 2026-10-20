@@ -64,6 +64,15 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	friend struct FNetworkWheeledSpeedInputState;
 
 public:
+#if WITH_DEV_AUTOMATION_TESTS
+    // Isolated native fixtures have one IAmSpeed owner; suppress the host tick.
+    void DisableAsyncPhysicsTickForTesting() { SetAsyncPhysicsTickEnabled(false); }
+#endif
+#if !UE_BUILD_SHIPPING
+    // Joined owner-lane diagnostics only; returns the actual applied input.
+    const FWheeledInputState& GetWheeledPhysicalInputForWitness() const { return WheeledPhysicalInput; }
+#endif
+
 #if !UE_BUILD_SHIPPING
     /** Exact recorded-slot query for diagnostic fixtures; no state mutation. */
     bool TryGetRecordedStatesForTesting(const int32& LocalFrame,
@@ -79,6 +88,8 @@ public:
 	virtual void SetOwner(AActor* NewOwner);
 	void BeginPlay() override;
 	bool ValidateSimulationBindings(FString& OutReason) const override;
+    bool SupportsJoinedActorKinematicCapture1213() const override
+    { return GetClass() == USpeedWheeledComponent::StaticClass(); }
 	bool RetireInputProcessingOnWorker() override;
 	int32 GetPublishedInputTimelineOrigin() const;
 	bool ServiceInputRetirementAtBoundary() override;
@@ -889,6 +900,10 @@ private:
 	friend class FIAmSpeedWheeledInputQueueTest;
 	friend class FIAmSpeedProducedWheeledInputBoundaryTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FIAmSpeedNativeCarsCamera1217;
+ friend class FIAmSpeedNativeAnalyticContacts1221;
+ friend class FIAmSpeedNativeAnalyticGrounded1368;
+ friend class FIAmSpeedNativeAnalyticEightCars1534;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;

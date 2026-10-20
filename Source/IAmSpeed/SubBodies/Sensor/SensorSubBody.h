@@ -4,7 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "SSubBody.h"
+#if !UE_BUILD_SHIPPING
+#include "SensorDelegateCensusForTesting1075.h"
+#endif
 #include "SensorSubBody.generated.h"
+#if !UE_BUILD_SHIPPING
+namespace Speed { class FFramePointerRegistry; }
+#endif
 
 UCLASS(Abstract, ClassGroup = "Collision", editinlinenew, meta = (BlueprintSpawnableComponent))
 class IAMSPEED_API USensorSubBody : public USSubBody
@@ -12,6 +18,9 @@ class IAMSPEED_API USensorSubBody : public USSubBody
     GENERATED_UCLASS_BODY()
 
 public:
+#if !UE_BUILD_SHIPPING
+    bool AppendOverlapStateForFrameWitnessForTesting(TArray<uint8>& Out,const Speed::FFramePointerRegistry& Registry) const;
+#endif
 	virtual void BeginPlay() override;
     virtual bool IsSensor() const override { return true; }
 
@@ -29,9 +38,18 @@ public:
 	bool HasOverlaps() const { return OverlapsOrdered.Num() > 0; }
 
     DECLARE_MULTICAST_DELEGATE_TwoParams(FOnSensorOverlap, USensorSubBody* /*Sensor*/, UPrimitiveComponent* /*Other*/);
+#if !UE_BUILD_SHIPPING
+    using FObservedSensorOverlap1075=Speed::TSensorDelegateCensus1075<FOnSensorOverlap>;
+    static_assert(sizeof(FObservedSensorOverlap1075)==sizeof(FOnSensorOverlap),"observer cannot add delegate storage");
+    static_assert(alignof(FObservedSensorOverlap1075)==alignof(FOnSensorOverlap),"observer cannot change delegate alignment");
+    FObservedSensorOverlap1075 OnBeginOverlap;
+    FObservedSensorOverlap1075 OnEndOverlap;
+    FObservedSensorOverlap1075 OnContinuousOverlap;
+#else
     FOnSensorOverlap OnBeginOverlap;
     FOnSensorOverlap OnEndOverlap;
     FOnSensorOverlap OnContinuousOverlap;
+#endif
 
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 protected:

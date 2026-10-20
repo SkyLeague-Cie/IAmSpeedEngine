@@ -1620,7 +1620,12 @@ void USpeedWheeledComponent::UpdateInputs()
 		WheeledPhysicalInput.Steer = static_cast<int8>(S.Applied[Steering]);
 		SyncWheeledPhysicalInputToState();
 		bInputFrameRejectedV2 = !ApplyProducedInputFrameV2(S.Input);
-		return; // Registry already polled and processed once; no legacy queue/slew.
+		// Camera has its own already-stamped IAmSpeed queue. Consume it at this
+		// same owner input point, without polling the GT mailbox or redoing slew.
+		// Disabled generic camera keeps the old no-lock default path.
+		if (!bInputFrameRejectedV2 && bGenericCameraInputEnabled.load(std::memory_order_acquire))
+			ConsumeQueuedCameraInputsForFrame(CurrentFrame);
+		return; // Registry still polls and processes the driving input once.
 	}
 
 	const auto CanonicalFrame = Speed::Input::FromLegacyLocalFrame(NumFrame());

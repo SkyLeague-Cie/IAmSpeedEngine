@@ -7,6 +7,7 @@
 #include "CylinderSweep.h"
 #include <stdexcept>
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
+#include "IAmSpeed/World/Analytic/JoinedAnalyticQueryPrefetch1075.h"
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "Configs/WheelSubBodyConfig.h"
@@ -525,6 +526,23 @@ void USWheelSubBody::GetSuspensionSweepSegment(
         + (NewDisplacement - SpringDisplacement() - CollisionMargin()) * CarUp;
 }
 
+bool USWheelSubBody::TryCaptureGroundQuery1075(
+    float Delta, Speed::Analytic::FAnalyticPrefetchQuery1075& Out) const
+{
+    if (!IsGroundQueryCaptureCertified1075() || !GetWorld() || !ParentComponent || !PSuspension)
+        return false;
+    FVector Start=FVector::ZeroVector, End=FVector::ZeroVector;
+    GetSuspensionSweepSegment(Delta, Start, End);
+    Out.Consumer.Owner=this;
+    Out.Consumer.ExactType=GetClass();
+    FMemory::Memcpy(&Out.Consumer.DeltaBits, &Delta, sizeof(Delta));
+    Out.MaximumSearchTime=1.0;
+    Out.Query=Speed::Analytic::FStaticWorldQueryAudit::MakeStrictSingleQuery1075(
+        Start, End, Kinematics.Rotation, GetCollisionShape(),
+        static_cast<uint8>(GetCollisionChannel()), GetResponseParams());
+    return true;
+}
+
 bool USWheelSubBody::ProbeSuspensionOnGround(
     SHitResult& OutHit, const float Delta) const
 {
@@ -534,6 +552,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
         return false;
     }
 
+    Speed::Analytic::FScopedAnalyticPrefetchConsumer1075 Consumer(this, Delta);
     FVector Start = FVector::ZeroVector;
     FVector End = FVector::ZeroVector;
     GetSuspensionSweepSegment(Delta, Start, End);

@@ -1,4 +1,5 @@
 """Portable launcher regression tests; no Docker or Unreal process is started."""
+import ast
 import copy
 import io
 import json
@@ -192,6 +193,72 @@ class RawDebtWarningRegression108(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate_report_with_debt(0, log, report, module.accepted_debt_policy(), expected_paths=paths)
         self.assertEqual(report, original)
+
+
+class EditorLoopbackContract1573(unittest.TestCase):
+    def test_real_editor_argv_satisfies_loopback_reference_contract(self):
+        # Evaluate the actual argument-list expression used by inside(), not a
+        # second hand-maintained command. No inside(), Git, Docker or UE runs.
+        tree = ast.parse(Path(ci.__file__).read_text(encoding='utf-8-sig'))
+        inside = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'inside')
+        commands = [node.value for node in ast.walk(inside)
+                    if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == 'command' for target in node.targets)
+                    and isinstance(node.value, ast.List) and node.value.elts
+                    and isinstance(node.value.elts[0], ast.Call)
+                    and isinstance(node.value.elts[0].func, ast.Name) and node.value.elts[0].func.id == 'str'
+                    and len(node.value.elts[0].args) == 1
+                    and isinstance(node.value.elts[0].args[0], ast.Name) and node.value.elts[0].args[0].id == 'editor']
+        self.assertEqual(len(commands), 1, 'One unambiguous native Editor argv must remain inspectable')
+        args = eval(compile(ast.Expression(body=commands[0]), str(ci.__file__), 'eval'),
+                    {'__builtins__': {'str': str}, 'FILTER': ci.FILTER,
+                     'editor': Path('/fixture/UnrealEditor-Cmd'), 'project_file': Path('/fixture/Host.uproject'),
+                     'output': Path('/fixture/output'), 'logs': Path('/fixture/logs'), 'report': Path('/fixture/report')})
+        binds = [arg.partition('=')[2] for arg in args
+                 if arg.lstrip('-').partition('=')[0].upper() == 'MULTIHOME']
+        self.assertEqual(binds, ['127.0.0.1'], 'Mapped reference gate requires exactly one IPv4 loopback binding')
+        self.assertIn('-ExecCmds=Automation RunTests ' + ci.FILTER, args)
+        self.assertIn('-TestExit=Automation Test Queue Empty', args)
+        self.assertIn('-NullRHI', args)
+        self.assertIn('-nosound', args)
+
+
+
+class DockerSharedMemoryContract1581(unittest.TestCase):
+    def test_uba_shared_memory_is_bounded_inside_existing_isolation(self):
+        # docker_args is the real launcher builder; no Docker process starts.
+        with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
+            args = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40)
+        def value(flag):
+            self.assertEqual(args.count(flag), 1, flag + ' must be unambiguous')
+            return args[args.index(flag) + 1]
+        self.assertEqual(value('--shm-size'), '2g')
+        self.assertEqual(value('--memory'), '12g')
+        self.assertEqual(value('--memory-swap'), '12g')
+        self.assertEqual(value('--cpus'), '2')
+        self.assertEqual(value('--pids-limit'), '512')
+        self.assertLessEqual(int(value('--shm-size')[:-1]), int(value('--memory')[:-1]))
+        self.assertEqual(value('--network'), 'none')
+        self.assertEqual(value('--pull'), 'never')
+        for forbidden in ('--ipc', '--privileged', '--cap-add', '--security-opt'):
+            self.assertNotIn(forbidden, args, 'Do not relax IPC, ptrace or seccomp for UBA')
+        self.assertFalse(any('SYS_PTRACE' in arg or 'seccomp=unconfined' in arg for arg in args))
+
+
+
+
+
+class ExplicitNativeCpuEnvelope1617(unittest.TestCase):
+    def test_requested_cpu_cap_preserves_all_other_resource_bounds(self):
+        with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
+            baseline = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40)
+            for cap in (4, 8, 12):
+                candidate = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40, cap)
+                expected = baseline.copy(); expected[expected.index('--cpus') + 1] = str(cap)
+                self.assertEqual(candidate, expected)
+            for invalid in (0, 1, -1, 3, 13, 2.0, True, '12'):
+                with self.assertRaises(ValueError):
+                    ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40, invalid)
 
 if __name__ == '__main__':
     unittest.main()

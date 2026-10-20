@@ -3,6 +3,9 @@
 #include "CanonicalFrameDriver.h"
 #include "CanonicalFrameContext.h"
 #if !UE_BUILD_SHIPPING
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#endif
+#if !UE_BUILD_SHIPPING
 #include "IAmSpeed/IAmSpeed.h"
 #endif
 #include "HAL/IConsoleManager.h"
@@ -156,11 +159,31 @@ ESimulationWorkerResult ARealTimeSimulation::DriveSimulation(
 	const ESimulationWorkerResult Readiness = CheckCanonicalRunReadiness();
 	if (Readiness != ESimulationWorkerResult::Advanced)
 	{
+#if !UE_BUILD_SHIPPING
+        if (Readiness == ESimulationWorkerResult::Complete)
+            EndIndependentRealTimeCoverage696(true,TEXT("Completed"));
+        else if (Readiness == ESimulationWorkerResult::Failed)
+            EndIndependentRealTimeCoverage696(false,TEXT("ReadinessFailed"));
+#endif
 		return Readiness;
 	}
-	return RunCanonicalFrames(1u)
-		? ESimulationWorkerResult::Advanced
-		: ESimulationWorkerResult::Failed;
+#if !UE_BUILD_SHIPPING
+    BeginIndependentRealTimeCoverage696();
+#endif
+    const bool bAdvanced = RunCanonicalFrames(1u);
+#if !UE_BUILD_SHIPPING
+    if (!bAdvanced) EndIndependentRealTimeCoverage696(false,TEXT("CanonicalFrameFailed"));
+    else if (SpeedWorldSubsystem->InspectAdmittedCanonicalRunControlForTesting() ==
+        ECanonicalRunControlState::Complete)
+    {
+        // RunCanonicalFrames has returned: publication, all observer scopes,
+        // frame timing and the integer-frame advance have finished. The GT may
+        // request a pause/exit immediately, before another readiness pulse.
+        // This is an observer close only; the driver still returns Advanced.
+        EndIndependentRealTimeCoverage696(true,TEXT("CompletedAfterCommittedFrame"));
+    }
+#endif
+	return bAdvanced ? ESimulationWorkerResult::Advanced : ESimulationWorkerResult::Failed;
 }
 
 ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(

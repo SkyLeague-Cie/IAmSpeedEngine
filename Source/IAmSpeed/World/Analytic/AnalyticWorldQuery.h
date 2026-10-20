@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AnalyticWorldData.h"
+#include "AnalyticFacetParallelStats.h"
 #include "IAmSpeed/Base/ContactFeature.h"
 
 namespace Speed::Collision { class FOrderedBoundsIndex; }
@@ -11,7 +12,7 @@ class FIAmSpeedPlaneSweepTest;
 namespace Speed::Analytic
 {
 
-namespace Private { struct FBoxSweepContext; }
+namespace Private { struct FBoxSweepContext; struct FBoxBoundsSweepContext; struct FPrimarySatProjectionScope; struct FExactCrossNormalScope; }
 
 using EContactFeatureKind = Speed::EContactFeatureKind;
 
@@ -129,7 +130,18 @@ class IAMSPEED_API FWorldQueryService
 	friend class ::FIAmSpeedPlaneSweepTest;
 #endif
 public:
-	explicit FWorldQueryService(const FAnalyticWorldData& InWorld);
+	explicit FWorldQueryService(const FAnalyticWorldData& InWorld,
+        int32 InFacetLanes = 1, int32 InMinimumFacetItems = 32);
+    FFacetParallelTotals GetFacetParallelTotals() const { return FacetParallelTotals; }
+    static bool QueriesHaveSameCacheKey1075(const FWorldQuery& A, const FWorldQuery& B)
+    { return IsSameQuery(A, B); }
+    void ResetFacetParallelTotals() const { FacetParallelTotals = {}; }
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    static FWorldHit TestRetainedExtrudedSweep938(const FWorldQuery& Query,
+        const FExtrudedQuinticPatch& Patch, bool bRetained938, int32 Lanes,
+        bool bDeepest, Speed::FIndependentQueryBatchStats* OutDispatch = nullptr);
+#endif
 
 	bool HasAuthorityCoverage(const FWorldQuery& Query) const;
 	bool TrySweepAuthority(
@@ -185,6 +197,9 @@ private:
 	};
 
 	const FAnalyticWorldData& World;
+    int32 FacetLanes = 1;
+    int32 MinimumFacetItems = 32;
+    mutable FFacetParallelTotals FacetParallelTotals;
 	// Constructed from this service's immutable world; no spatial order reaches the solver.
 	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> PiecewiseProviderIndex;
 	TSharedPtr<const Speed::Collision::FOrderedBoundsIndex> PlaneProviderIndex;
@@ -230,7 +245,9 @@ private:
 		const FAnalyticWorldData* PlaneUnionWorld = nullptr,
 		const Private::FBoxSweepContext* CachedBoxContext = nullptr,
 		EHitSelection Selection = EHitSelection::FirstSweepHit,
-		FIntPoint* OutPolygonEdge = nullptr);
+		FIntPoint* OutPolygonEdge = nullptr,
+		const Private::FPrimarySatProjectionScope* PrimarySatScope = nullptr,
+		const Private::FExactCrossNormalScope* CrossNormalScope = nullptr);
 	/** Ray/sphere plane kernel: a miss leaves OutHit untouched; a hit replaces every field. */
 	static bool TrySweepRoundPlane(
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
@@ -242,12 +259,24 @@ private:
 		const FWorldQuery& Query, const FBoundedPlane& Plane,
 		const Private::FBoxSweepContext* CachedBoxContext = nullptr,
 		EHitSelection Selection = EHitSelection::FirstSweepHit,
-		FIntPoint* OutPolygonEdge = nullptr);
+		FIntPoint* OutPolygonEdge = nullptr,
+		const Private::FPrimarySatProjectionScope* PrimarySatScope = nullptr,
+		const Private::FExactCrossNormalScope* CrossNormalScope = nullptr);
 	static FWorldHit SweepTriangleFace(
 		const FWorldQuery& Query, const FTriangleSurface& Triangle);
 	static FWorldHit SweepExtrudedQuintic(
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
-		const FExtrudedQuinticPatch& Patch, EHitSelection Selection);
+		const FExtrudedQuinticPatch& Patch, EHitSelection Selection,
+		Private::FBoxBoundsSweepContext* CachedBoundsContext435 = nullptr,
+        int32 InFacetLanes = 1, int32 InMinimumFacetItems = 32,
+        Speed::FIndependentQueryBatchStats* OutDispatch = nullptr,
+        int32* OutEvaluatedFacets = nullptr);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    static FWorldHit SweepExtrudedQuinticRetained938(const FWorldQuery& Query,
+        const FBox3d& QueryBounds, const FExtrudedQuinticPatch& Patch,
+        EHitSelection Selection, Private::FBoxBoundsSweepContext* CachedBoundsContext435);
+#endif
+
 	static FWorldHit SweepTensorBezier(
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FTensorBezierPatch& Patch,
@@ -263,7 +292,7 @@ private:
 		const FWorldQuery& Query, const FBox3d& QueryBounds,
 		const FPiecewiseTensorBezierPatch& Patch,
 		double MaximumSearchTime = 1.0,
-		EHitSelection Selection = EHitSelection::FirstSweepHit);
+		EHitSelection Selection = EHitSelection::FirstSweepHit, int32 InTensorCellLanes1213 = 1);
 	static bool TrianglePassesFilter(
 		const FWorldQuery& Query, const FTriangleSurface& Triangle);
 	static bool PatchPassesFilter(
