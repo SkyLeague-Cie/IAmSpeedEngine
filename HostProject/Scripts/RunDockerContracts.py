@@ -271,7 +271,7 @@ def docker_args(image_id, source, output, owner, sha):
     # Source-built UE writes its early Trace.uba before parsing -Log. Keep
     # those image-internal writes in this container's private disposable layer;
     # the immutable image and the read-only exact source bind stay unchanged.
-    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', '2', '--memory', '12g', '--memory-swap', '12g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
+    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', '2', '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
     if hasattr(os, 'getuid'):
         if os.getuid() == 0:
             raise ValueError('Run the host launcher as an ordinary user')

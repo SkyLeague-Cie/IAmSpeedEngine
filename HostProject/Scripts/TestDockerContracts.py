@@ -223,5 +223,27 @@ class EditorLoopbackContract1573(unittest.TestCase):
         self.assertIn('-nosound', args)
 
 
+
+class DockerSharedMemoryContract1581(unittest.TestCase):
+    def test_uba_shared_memory_is_bounded_inside_existing_isolation(self):
+        # docker_args is the real launcher builder; no Docker process starts.
+        with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
+            args = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40)
+        def value(flag):
+            self.assertEqual(args.count(flag), 1, flag + ' must be unambiguous')
+            return args[args.index(flag) + 1]
+        self.assertEqual(value('--shm-size'), '2g')
+        self.assertEqual(value('--memory'), '12g')
+        self.assertEqual(value('--memory-swap'), '12g')
+        self.assertEqual(value('--cpus'), '2')
+        self.assertEqual(value('--pids-limit'), '512')
+        self.assertLessEqual(int(value('--shm-size')[:-1]), int(value('--memory')[:-1]))
+        self.assertEqual(value('--network'), 'none')
+        self.assertEqual(value('--pull'), 'never')
+        for forbidden in ('--ipc', '--privileged', '--cap-add', '--security-opt'):
+            self.assertNotIn(forbidden, args, 'Do not relax IPC, ptrace or seccomp for UBA')
+        self.assertFalse(any('SYS_PTRACE' in arg or 'seccomp=unconfined' in arg for arg in args))
+
+
 if __name__ == '__main__':
     unittest.main()
