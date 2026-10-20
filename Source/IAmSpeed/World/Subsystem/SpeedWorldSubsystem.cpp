@@ -4,6 +4,10 @@
 
 #include "SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
+#include "IAmSpeed/World/Simulation/SubBodyKinematicsTasks.h"
+#include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
+#include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
+#include "IAmSpeed/World/Analytic/AnalyticCaseSatDiagnostics.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -11,6 +15,8 @@
 #include "IAmSpeed/World/Simulation/SpeedSimulation.h"
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
+#include "IAmSpeed/World/Simulation/FrameSolveWitness.h"
+#include "IAmSpeed/World/Simulation/FrameAppliedCommandWitness.h"
 #include "IAmSpeed/World/Analytic/AnalyticLandscapeAdapter.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticCollisionAsset.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticSourceComponent.h"
@@ -636,18 +642,22 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 #if !UE_BUILD_SHIPPING
 	uint64 ExtrudedFacetCount = 0;
 	uint64 ExtrudedFacetBoundsAllocatedBytes = 0;
+	uint64 ExtrudedFacetGeometryAllocatedBytes = 0;
 	for (const Speed::Analytic::FExtrudedQuinticPatch& Patch : Finalized.ExtrudedQuinticPatches)
 	{
 		ExtrudedFacetCount += Patch.SectionSegmentBounds.Num();
 		ExtrudedFacetBoundsAllocatedBytes += Patch.SectionSegmentBounds.GetAllocatedSize();
+		ExtrudedFacetGeometryAllocatedBytes += Patch.SectionFacetGeometry.GetAllocatedSize();
 	}
 	UE_LOG(LogTemp, Display,
-		TEXT("[AnalyticQueryStorage] ExtrudedFacets=%llu FacetBoundsAllocatedBytes=%llu"),
-		ExtrudedFacetCount, ExtrudedFacetBoundsAllocatedBytes);
+		TEXT("[AnalyticQueryStorage] ExtrudedFacets=%llu FacetBoundsAllocatedBytes=%llu FacetGeometryAllocatedBytes=%llu"),
+		ExtrudedFacetCount, ExtrudedFacetBoundsAllocatedBytes, ExtrudedFacetGeometryAllocatedBytes);
 #endif
-	AnalyticWorldData = MoveTemp(FinalizedWorld);
-	SimulationWorld.SetStaticCollisionWorld(
-		MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*AnalyticWorldData));
+    AnalyticWorldData = MoveTemp(FinalizedWorld);
+    const Speed::FFrameParallelSettings ParallelSettings = Speed::CaptureFrameParallelSettings();
+    SimulationWorld.SetStaticCollisionWorld(MakeUnique<Speed::FAnalyticStaticCollisionWorld>(
+        *AnalyticWorldData, ParallelSettings.LaneLimit, ParallelSettings.MinQueryItems,
+        ParallelSettings.MinFacetItems));
 }
 
 static TAutoConsoleVariable<float> CVarIAmSpeedRollingBaumgarte(
@@ -937,6 +947,18 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 	auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
 	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	constexpr unsigned int MaxUnseenFrames = 2;
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ using CW=Speed::FFrameSolveWitnessScope;
+ using CE=Speed::EFrameDynamicContactEvent;
+ using CO=Speed::EFrameDynamicContactOutcome;
+ const uint64 ContactWitnessPass=CW::IsActive()?CW::BeginDynamicPass(CurrentStepFrame,
+  Speed::EFrameDynamicContactPass::Persistent,Dt,PairKeyFilter,bFilterByPairKey,
+  bSolveFirstSeenFrame,DynamicContactPairs.Num(),
+  bFilterByPairKey?SimulationWorld.FindDynamicContactPair(PairKeyFilter):nullptr):0;
+ ON_SCOPE_EXIT {if(ContactWitnessPass)CW::EndDynamicPass(ContactWitnessPass,DynamicContactPairs.Num());};
+#endif // IAmSpeed contact witness1075 END
+
 	const float SeparationToleranceCm = FMath::Max(
 		0.0f, CVarIAmSpeedRollingSeparationTolerance.GetValueOnAnyThread());
 	const auto LogRollingRelease = [&CurrentStepFrame](
@@ -991,9 +1013,29 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 	for (int32 Index = FirstPairIndex; Index >= LastPairIndex; --Index)
 	{
 		FDynamicContactPair& Pair = DynamicContactPairs[Index];
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ const uint64 WitnessPairKey=Pair.PairKey;
+ const TWeakObjectPtr<USolidSubBody> WitnessBodyA=ContactWitnessPass?Pair.BodyA:TWeakObjectPtr<USolidSubBody>();
+ const TWeakObjectPtr<USolidSubBody> WitnessBodyB=ContactWitnessPass?Pair.BodyB:TWeakObjectPtr<USolidSubBody>();
+ CO WitnessOutcome=CO::Completed;bool bWitnessRolling=false;
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::PairBegin,Index,
+  WitnessPairKey,&Pair,WitnessBodyA.Get(),WitnessBodyB.Get());
+ ON_SCOPE_EXIT
+ {
+  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::PairEnd,Index,
+   WitnessPairKey,SimulationWorld.FindDynamicContactPair(WitnessPairKey),
+   WitnessBodyA.Get(),WitnessBodyB.Get(),WitnessOutcome,bWitnessRolling);
+ };
+#endif // IAmSpeed contact witness1075 END
+
 		if ((bFilterByPairKey && Pair.PairKey != PairKeyFilter) ||
 			Pair.LastSolvedFrame == CurrentStepFrame)
 		{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=(bFilterByPairKey && Pair.PairKey!=PairKeyFilter)?CO::Filtered:CO::AlreadySolved;
+#endif // IAmSpeed contact witness1075 END
+
 			continue;
 		}
 		Pair.bActiveContactLastSolve = false;
@@ -1004,6 +1046,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		if (!BodyA || !BodyB || !CompA || !CompB)
 		{
 			LogRollingRelease(Pair, TEXT("InvalidBody"));
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::InvalidBody;
+#endif // IAmSpeed contact witness1075 END
+
 			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
@@ -1018,6 +1064,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		const bool bUseRollingManifold =
 			AreUnilateralRollingPairsEnabled() &&
 			Sphere != nullptr && Box != nullptr;
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ bWitnessRolling=bUseRollingManifold;
+#endif // IAmSpeed contact witness1075 END
+
 		if (bUseRollingManifold && !bLoggedRollingSolveState)
 		{
 			bLoggedRollingSolveState = true;
@@ -1029,6 +1079,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		if (!bUseRollingManifold &&
 			CurrentStepFrame - Pair.LastSeenFrame > MaxUnseenFrames)
 		{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::Unseen;
+#endif // IAmSpeed contact witness1075 END
+
 			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
@@ -1044,6 +1098,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 					CurrentStepFrame, Pair.FirstSeenFrame);
 			}
 			LogRollingRelease(Pair, TEXT("FrameRewind"));
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::FrameRewind;
+#endif // IAmSpeed contact witness1075 END
+
 			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
@@ -1053,6 +1111,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		// it on its acquisition frame.
 		if (CurrentStepFrame == Pair.FirstSeenFrame && !bSolveFirstSeenFrame)
 		{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::FirstSeenDeferred;
+#endif // IAmSpeed contact witness1075 END
+
 			Pair.bRollingManifoldReady = bUseRollingManifold;
 			continue;
 		}
@@ -1066,6 +1128,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			FVector::DistSquared(CurrentCOMB, Pair.LastCOMB) > FMath::Square(MaxExpectedMoveB))
 		{
 			LogRollingRelease(Pair, TEXT("DiscontinuousMotion"));
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::DiscontinuousMotion;
+#endif // IAmSpeed contact witness1075 END
+
 			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
@@ -1106,6 +1172,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 						*CurrentBoxToSphereNormal.ToString(), *StoredBoxToSphereNormal.ToString());
 				}
 				LogRollingRelease(Pair, TEXT("Geometry"), ShapeSeparation);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::RejectedGeometry;
+#endif // IAmSpeed contact witness1075 END
+
 				SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
 				continue;
 			}
@@ -1149,6 +1219,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 
 		if (N.IsNearlyZero())
 		{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::ZeroNormal;
+#endif // IAmSpeed contact witness1075 END
+
 			continue;
 		}
 		Pair.bRollingManifoldReady = bUseRollingManifold;
@@ -1183,6 +1257,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				Pair, TEXT("SeparatingVelocity"), Separation,
 				PredictedRelativeNormalVelocity);
 			SimulationWorld.RemoveDynamicContactPairAtSwap(Index);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::SeparatingVelocity;
+#endif // IAmSpeed contact witness1075 END
+
 			continue;
 		}
 
@@ -1194,6 +1272,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			Separation + Dt * PredictedRelativeNormalVelocity <= PenetrationSlop;
 		if (!bContactActive)
 		{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::IdentityOnly;
+#endif // IAmSpeed contact witness1075 END
+
 			if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
 			{
 				UE_LOG(LogTemp, Warning,
@@ -1229,6 +1311,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			FVector::DotProduct(N, AngularA + AngularB);
 		if (Denominator <= KINDA_SMALL_NUMBER)
 		{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ WitnessOutcome=CO::ZeroDenominator;
+#endif // IAmSpeed contact witness1075 END
+
 			continue;
 		}
 
@@ -1272,6 +1358,11 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		}
 		const FVector Impulse = NormalImpulseMagnitude * N;
 		const FVector ContactPoint = 0.5f * (AnchorA + AnchorB);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalCandidate,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
+#endif // IAmSpeed contact witness1075 END
+
 		FFakePhysicsImpactContext RollingFakePhysicsContext;
 		if (bUseRollingManifold)
 		{
@@ -1300,8 +1391,28 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		}
 		if (NormalImpulseMagnitude > KINDA_SMALL_NUMBER)
 		{
+
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalBeforeA,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
+#endif // IAmSpeed contact witness1075 END
 			BodyA->ApplyImpulse(Impulse, ContactPoint);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalAfterA,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
+#endif // IAmSpeed contact witness1075 END
+
+
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalBeforeB,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
+#endif // IAmSpeed contact witness1075 END
 			BodyB->ApplyImpulse(-Impulse, ContactPoint);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalAfterB,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
+#endif // IAmSpeed contact witness1075 END
+
 		}
 
 		if (bUseRollingManifold && NormalImpulseMagnitude > KINDA_SMALL_NUMBER)
@@ -1336,8 +1447,33 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 					const float TangentialImpulseMagnitude = FMath::Min(
 						TangentialSpeed / TangentialDenominator, MaxFrictionImpulse);
 					const FVector TangentialImpulse = -TangentialImpulseMagnitude * Tangent;
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialCandidate,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
+#endif // IAmSpeed contact witness1075 END
+
+
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialBeforeA,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
+#endif // IAmSpeed contact witness1075 END
 					BodyA->ApplyImpulse(TangentialImpulse, ContactPoint);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialAfterA,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
+#endif // IAmSpeed contact witness1075 END
+
+
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialBeforeB,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
+#endif // IAmSpeed contact witness1075 END
 					BodyB->ApplyImpulse(-TangentialImpulse, ContactPoint);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialAfterB,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
+#endif // IAmSpeed contact witness1075 END
+
 				}
 			}
 
@@ -1359,8 +1495,18 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			RollingHit.ContactPointThis = Sphere == BodyA ? AnchorA : AnchorB;
 			RollingHit.ContactPointOther = Sphere == BodyA ? AnchorB : AnchorA;
 			RollingHit.SubBody = Box;
+
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::FakePhysicsBefore,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation,&RollingHit,&RollingFakePhysicsContext);
+#endif // IAmSpeed contact witness1075 END
 			Sphere->ApplyFakePhysicsOn(
 				*Box, RollingHit, Dt, &RollingFakePhysicsContext);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::FakePhysicsAfter,Index,
+  Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation,&RollingHit,&RollingFakePhysicsContext);
+#endif // IAmSpeed contact witness1075 END
+
 		}
 	}
 }
@@ -1369,15 +1515,50 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 {
 	auto& DynamicContactPairs = SimulationWorld.GetDynamicContactPairs();
 	auto& PendingRollingContactPairs = SimulationWorld.GetPendingRollingContactPairs();
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ using CW=Speed::FFrameSolveWitnessScope;
+ using CE=Speed::EFrameDynamicContactEvent;
+ using CO=Speed::EFrameDynamicContactOutcome;
+ const uint64 ContactWitnessPass=CW::IsActive()?CW::BeginDynamicPass(SimulationWorld.GetCurrentStepFrame(),
+  Speed::EFrameDynamicContactPass::Projection,0.0f,0,false,false,DynamicContactPairs.Num()):0;
+ ON_SCOPE_EXIT {if(ContactWitnessPass)CW::EndDynamicPass(ContactWitnessPass,DynamicContactPairs.Num());};
+#endif // IAmSpeed contact witness1075 END
+
 	if (!USphereSubBody::IsSphereBoxProjectionEnabled())
 	{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::PassDisabled,
+  0,0,nullptr,nullptr,nullptr,CO::ProjectionDisabled);
+#endif // IAmSpeed contact witness1075 END
+
 		return;
 	}
 
 	const auto ProjectPairs = [](TArray<FDynamicContactPair>& Pairs)
 	{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ using CW=Speed::FFrameSolveWitnessScope;
+ using CE=Speed::EFrameDynamicContactEvent;
+ using CO=Speed::EFrameDynamicContactOutcome;
+ const uint64 WitnessProjectionPass=CW::CurrentDynamicPass();int32 WitnessProjectionIndex=0;
+#endif // IAmSpeed contact witness1075 END
+
 		for (FDynamicContactPair& Pair : Pairs)
 		{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ const int32 WitnessIndex=WitnessProjectionIndex++;
+ const USSubBody* WitnessBodyA=WitnessProjectionPass?Pair.BodyA.Get():nullptr;
+ const USSubBody* WitnessBodyB=WitnessProjectionPass?Pair.BodyB.Get():nullptr;
+ if(WitnessProjectionPass)CW::RecordDynamicEvent(WitnessProjectionPass,CE::PairBegin,
+  WitnessIndex,Pair.PairKey,&Pair,WitnessBodyA,WitnessBodyB);
+ ON_SCOPE_EXIT {if(WitnessProjectionPass)CW::RecordDynamicEvent(WitnessProjectionPass,
+  CE::PairEnd,WitnessIndex,Pair.PairKey,&Pair,WitnessBodyA,WitnessBodyB);};
+#endif // IAmSpeed contact witness1075 END
+
 			USolidSubBody* BodyA = Pair.BodyA.Get();
 			USolidSubBody* BodyB = Pair.BodyB.Get();
 			if (!BodyA || !BodyB)
@@ -1394,17 +1575,54 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 			}
 			if (Sphere && Box)
 			{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(WitnessProjectionPass)CW::RecordDynamicEvent(WitnessProjectionPass,CE::ProjectBefore,
+  WitnessIndex,Pair.PairKey,&Pair,Sphere,Box,CO::Completed);
+#endif // IAmSpeed contact witness1075 END
+
 				Sphere->ProjectOutOfBox(*Box);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(WitnessProjectionPass)CW::RecordDynamicEvent(WitnessProjectionPass,CE::ProjectAfter,
+  WitnessIndex,Pair.PairKey,&Pair,Sphere,Box,CO::Completed);
+#endif // IAmSpeed contact witness1075 END
+
 			}
 		}
 	};
 
+
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectActiveBegin,
+  DynamicContactPairs.Num(),0,nullptr,nullptr,nullptr);
+#endif // IAmSpeed contact witness1075 END
 	ProjectPairs(DynamicContactPairs);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectActiveEnd,
+  DynamicContactPairs.Num(),0,nullptr,nullptr,nullptr);
+#endif // IAmSpeed contact witness1075 END
+
+
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectPendingBegin,
+  PendingRollingContactPairs.Num(),0,nullptr,nullptr,nullptr);
+#endif // IAmSpeed contact witness1075 END
 	ProjectPairs(PendingRollingContactPairs);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectPendingEnd,
+  PendingRollingContactPairs.Num(),0,nullptr,nullptr,nullptr);
+#endif // IAmSpeed contact witness1075 END
+
 
 	// New encounters and teleports do not necessarily own a persistent
 	// manifold yet. Measure every independent sphere/box pair from refreshed
 	// parent states so the next frame cannot inherit an overlap.
+
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ int32 WitnessFreshProjectionIndex=0;
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectFreshBegin,
+  SimulationWorld.GetProjectionSpheres().Num(),0,nullptr,nullptr,nullptr);
+#endif // IAmSpeed contact witness1075 END
 	for (USphereSubBody* Sphere : SimulationWorld.GetProjectionSpheres())
 	{
 		for (UBoxSubBody* Box : SimulationWorld.GetProjectionBoxes())
@@ -1412,10 +1630,27 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 			if (Sphere && Box &&
 				Sphere->GetParentComponent() != Box->GetParentComponent())
 			{
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectBefore,
+  WitnessFreshProjectionIndex++,0,nullptr,Sphere,Box,CO::Completed);
+#endif // IAmSpeed contact witness1075 END
+
 				Sphere->ProjectOutOfBox(*Box);
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectAfter,
+  WitnessFreshProjectionIndex-1,0,nullptr,Sphere,Box,CO::Completed);
+#endif // IAmSpeed contact witness1075 END
+
 			}
 		}
 	}
+#if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
+ if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectFreshEnd,
+  WitnessFreshProjectionIndex,0,nullptr,nullptr,nullptr);
+#endif // IAmSpeed contact witness1075 END
+
 }
 
 bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
@@ -1582,6 +1817,38 @@ ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 		: ECanonicalRunControlState::Ready;
 }
 
+#if !UE_BUILD_SHIPPING
+ECanonicalRunControlState USpeedWorldSubsystem::InspectAdmittedCanonicalRunControlForTesting() const
+{
+	bool bFoundController = false;
+	bool bAllReady = true;
+	bool bAllComplete = true;
+	for (const ISpeedComponent* Component : SimulationWorld.GetOrderedAdapters())
+	{
+		if (!Component || !Component->IsCanonicalRunController())
+		{
+			continue;
+		}
+
+		bFoundController = true;
+		bAllReady &= Component->IsCanonicalRunReady();
+		bAllComplete &= Component->IsCanonicalRunComplete();
+	}
+
+	if (!bFoundController)
+	{
+		return ECanonicalRunControlState::Uncontrolled;
+	}
+	if (!bAllReady)
+	{
+		return ECanonicalRunControlState::WaitingForScenario;
+	}
+	return bAllComplete
+		? ECanonicalRunControlState::Complete
+		: ECanonicalRunControlState::Ready;
+}
+#endif
+
 void USpeedWorldSubsystem::NotifyCanonicalFramePublished(uint64 NumFrame)
 {
 	SimulationWorld.NotifyCanonicalFramePublished(NumFrame);
@@ -1653,6 +1920,10 @@ static void ObserveCcdPose(const USpeedWorldSubsystem* World, uint32 Frame, ECcd
 
 void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
 {
+#if !UE_BUILD_SHIPPING
+    Speed::Analytic::CaseSatDiagnostics::FScopedCpuPhase400 Phase400(
+        Speed::Analytic::CaseSatDiagnostics::ECpuPhase400::SubsystemStep);
+#endif
 	unsigned int& CurrentStepFrame = SimulationWorld.GetCurrentStepFrame();
 	const double StepStartSeconds = FPlatformTime::Seconds();
 	LastStepDiagnostics = FSpeedStepDiagnostics();
@@ -1716,12 +1987,26 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread() != 0 &&
 		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
 			? SimulationWorld.GetStaticCollisionWorld() : nullptr;
+	const Speed::FFrameParallelSettings ParallelPreparationSettings = Speed::CaptureFrameParallelSettings();
+    Speed::FrameParallel::FJoinedActorKinematics1213 JoinedActors1213;
+    if(Speed::FrameParallel::IsJoinedActorKinematicWaveEnabled1213())
+        JoinedActors1213.CaptureAndCompute(SimulationWorld.GetOrderedAdapters(),
+            ParallelPreparationSettings.LaneLimit,ParallelPreparationSettings.MinPrepareItems);
 	for (ISpeedComponent* Comp : SimulationWorld.GetOrderedAdapters())
     {
         if (!Comp) continue;
 
 		IAMSPEED_ACTOR_SCOPE(SimulationWorld, *Comp, Reset);
-		Comp->UpdateSubBodiesKinematics();
+        // Preserve the exact pre-existing native child-batch admission and
+        // fallback choice. Shadow only observes around this original block.
+        const auto OriginalOwnerOperation1213=[&]()
+        {
+            if(!Speed::FrameParallel::TryUpdateSubBodyKinematicsInParallel(*Comp,
+                ParallelPreparationSettings.LaneLimit,ParallelPreparationSettings.MinPrepareItems))
+                Comp->UpdateSubBodiesKinematics();
+        };
+        if(!JoinedActors1213.TryInstall(*Comp,OriginalOwnerOperation1213))
+            OriginalOwnerOperation1213();
         Comp->ResetForFrame(Dt);
 		Comp->SetStaticCollisionWorldForFrame(RestingWorld, Dt);
     }
@@ -2012,6 +2297,14 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			TraceEvent(TEXT("ResolveResult"), bIgnored ? TEXT("Ignored") : TEXT("Resolved"),
 				Iter, HitIndex, Hit.PairKey, Hit.Hit, Resolver,
 				GenerationBefore, GenerationAfter);
+            if (Speed::FFrameSolveWitnessScope::IsActive())
+            {
+                ISpeedComponent* WitnessParent=Resolver?Resolver->GetParentComponent():nullptr;
+                Speed::FFrameSolveWitnessScope::Record(Frame,Iter,HitIndex,
+                    WitnessParent?SimulationWorld.FindStableId(*WitnessParent):0,
+                    WitnessParent?WitnessParent->GetSubBodies().IndexOfByKey(Resolver):INDEX_NONE,
+                    Hit.PairKey,Hit.Hit,bIgnored,GenerationBefore,GenerationAfter,Resolver,RestingWorld!=nullptr);
+            }
 #endif
 			if (RollingBodyA && RollingBodyB)
 			{
@@ -2101,3 +2394,78 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			TimePassed, Dt, LastStepDiagnostics.TotalMilliseconds);
 	}
 }
+
+#if !UE_BUILD_SHIPPING
+void USpeedWorldSubsystem::DeclareExpectedFrameAnalogWitnessForTesting() const
+{
+ // The canonical immutable adapter list declares coverage independently of
+ // UpdateInputs. Missing callbacks cannot erase their own expectation.
+ for(const ISpeedComponent* Adapter:SimulationWorld.GetOrderedAdapters())
+ {
+  if(!Adapter){Speed::FFrameAppliedCommandWitnessScope::MarkCoverageUnknown();continue;}
+  switch(Adapter->DeclareFrameAnalogWitnessForTesting())
+  {
+  case EFrameAnalogWitnessDeclaration::RequiredAnalogConsumer:
+   Speed::FFrameAppliedCommandWitnessScope::ExpectAnalogActor(SimulationWorld.FindStableId(*Adapter));break;
+  case EFrameAnalogWitnessDeclaration::NoAnalogConsumer:break;
+  default:Speed::FFrameAppliedCommandWitnessScope::MarkCoverageUnknown();break;
+  }
+ }
+ if(!Speed::FFrameAppliedCommandWitnessScope::SealExpectedAnalogActors())
+  Speed::FFrameAppliedCommandWitnessScope::MarkCoverageUnknown();
+}
+void USpeedWorldSubsystem::FrameAdapterCensusForTesting(TArray<FString>& OutRows) const
+{
+ OutRows.Reset();
+ static constexpr TCHAR Hex[]=TEXT("0123456789abcdef");
+ for(const ISpeedComponent* Adapter:SimulationWorld.GetOrderedAdapters())
+ {
+  if(!Adapter)continue;
+  const uint64 Id=SimulationWorld.FindStableId(*Adapter);
+  const FString ClassPath=Adapter->FrameWitnessAdapterClassForTesting();
+  const FTCHARToUTF8 Utf8(*ClassPath);FString Encoded;
+  for(int32 Index=0;Index<Utf8.Length();++Index)
+  {
+   const uint8 Byte=uint8(Utf8.Get()[Index]);
+   Encoded.AppendChar(Hex[Byte>>4]);Encoded.AppendChar(Hex[Byte&15]);
+  }
+  OutRows.Add(FString::Printf(TEXT("{\"actor\":%llu,\"class_path_utf8_hex\":\"%s\",\"sub_bodies\":%d,\"analog_declaration\":%u}"),
+   Id,*Encoded,Adapter->GetSubBodies().Num(),uint32(Adapter->DeclareFrameAnalogWitnessForTesting())));
+ }
+}
+void USpeedWorldSubsystem::RegisterFramePointerWitnessForTesting(Speed::FFramePointerRegistry& Registry,int32& ExpectedActors) const
+{
+ ExpectedActors=SimulationWorld.GetOrderedAdapters().Num();
+ TMap<UPTRINT,TArray<uint64>> ActorOwners;
+ // Identities are run-stable world ids and canonical per-owner sub-body order.
+ // Shared/unknown static aliases are deliberately not guessed from addresses.
+ for(const ISpeedComponent* Adapter:SimulationWorld.GetOrderedAdapters())
+ {
+  if(!Adapter)continue;const uint64 Id=SimulationWorld.FindStableId(*Adapter);
+  Registry.Register(Adapter,Speed::FFramePointerKey{1,Id,0,1,0});
+  const auto& Bodies=Adapter->GetSubBodies();
+  for(int32 Index=0;Index<Bodies.Num();++Index)if(Bodies[Index])
+  {
+   Registry.Register(Bodies[Index],Speed::FFramePointerKey{2,Id,0,1,uint64(Index+1)});
+   // The typed owning actor relationship supplies semantic adapter membership.
+   if(const auto* Owner=Bodies[Index]->GetOwner())
+    ActorOwners.FindOrAdd(reinterpret_cast<UPTRINT>(Owner)).AddUnique(Id);
+  }
+ }
+ for(auto& Entry:ActorOwners)
+ {
+  Entry.Value.Sort();Speed::FFramePointerKey Key{5,Entry.Value[0],0,1,0};Key.Membership=Entry.Value;
+  Registry.Register(Entry.Key,Key);
+ }
+ if(const auto* Authority=SimulationWorld.GetStaticCollisionWorld())
+  Registry.Register(Authority,Speed::FFramePointerKey{3,0,0,1,0});
+ TMap<UPTRINT,TArray<uint64>> Members;
+ for(const auto& Entry:AnalyticSourceComponents)if(const auto* Source=Entry.Value.Get())
+  Members.FindOrAdd(reinterpret_cast<UPTRINT>(Source)).Add(Entry.Key);
+ for(auto& Entry:Members)
+ {
+  Entry.Value.Sort();Speed::FFramePointerKey Key{4,Entry.Value[0],0,1,0};Key.Membership=Entry.Value;
+  Registry.Register(Entry.Key,Key);
+ }
+}
+#endif

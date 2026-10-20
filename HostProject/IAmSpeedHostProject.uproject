@@ -1,30 +1,34 @@
 {
-	"FileVersion": 3,
-	"EngineAssociation": "5.8",
-	"Category": "Tests",
-	"Description": "Minimal repository-owned host for IAmSpeed contract tests.",
-	"AdditionalPluginDirectories": [
-		"ExternalPlugins"
-	],
-	"Modules": [
-		{
-			"Name": "IAmSpeedHostProject",
-			"Type": "Runtime",
-			"LoadingPhase": "Default",
-			"AdditionalDependencies": [
-				"IAmSpeed",
-				"Engine"
-			]
-		}
-	],
-	"Plugins": [
-		{
-			"Name": "IAmSpeed",
-			"Enabled": true
-		}
-	],
-	"TargetPlatforms": [
-		"Windows",
-		"Linux"
-	]
+  "FileVersion": 3,
+  "EngineAssociation": "5.8",
+  "Category": "Tests",
+  "Description": "Minimal repository-owned host for IAmSpeed contract tests.",
+  "AdditionalPluginDirectories": [
+    "ExternalPlugins"
+  ],
+  "Modules": [
+    {
+      "Name": "IAmSpeedHostProject",
+      "Type": "Runtime",
+      "LoadingPhase": "Default",
+      "AdditionalDependencies": [
+        "IAmSpeed",
+        "Engine"
+      ]
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "IAmSpeed",
+      "Enabled": true
+    },
+    {
+      "Name": "AndroidFileServer",
+      "Enabled": false
+    }
+  ],
+  "TargetPlatforms": [
+    "Windows",
+    "Linux"
+  ]
 }

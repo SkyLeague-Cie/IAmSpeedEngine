@@ -1,8 +1,12 @@
+[CmdletBinding()]
+param([string]$TestOutputRoot = $env:TEMP)
+
 $ErrorActionPreference = 'Stop'
 $ScriptsRoot = $PSScriptRoot
 $HelperPath = Join-Path $ScriptsRoot 'RunContracts.Helpers.ps1'
 $RunnerPath = Join-Path $ScriptsRoot 'RunContracts.ps1'
 . $HelperPath
+. (Join-Path $ScriptsRoot 'RunContracts.SourceGraph1495.ps1')
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -16,10 +20,14 @@ function Assert-Throws {
     throw "ASSERT: expected failure: $Message"
 }
 
-$TempBase = (Resolve-Path -LiteralPath $env:TEMP).Path.TrimEnd('\')
+if ([string]::IsNullOrWhiteSpace($TestOutputRoot)) { throw 'Explicit fixture output root is required.' }
+$TempBase = [IO.Path]::GetFullPath($TestOutputRoot).TrimEnd('\')
+New-Item -ItemType Directory -Path $TempBase -Force | Out-Null
 $FixtureRoot = Join-Path $TempBase ('IAmSpeedRunContracts-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $FixtureRoot | Out-Null
 try {
+    . (Join-Path $ScriptsRoot 'TestRunContracts.Evidence1534.ps1')
+    Test-IAmSpeedEvidenceContracts1534
     $EngineFixture = Join-Path $FixtureRoot 'Engine'
     $BuildPath = Join-Path $EngineFixture 'Engine\Build\BatchFiles\Build.bat'
     $EditorPath = Join-Path $EngineFixture 'Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
@@ -75,6 +83,25 @@ try {
         $privateRuntime = Assert-IAmSpeedDirectUbtRuntime -EngineRoot $targetEngineRoot -PrivateManifestPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -PrivateManifestSha256 $env:IAMSPEED_PRIVATE_UBT_MANIFEST_SHA256
         $privateManifest = Get-Content -LiteralPath $env:IAMSPEED_PRIVATE_UBT_MANIFEST -Raw | ConvertFrom-Json
         $privatePolicy = Get-Content -LiteralPath $privateRuntime.PrivateEnginePolicyPath -Raw | ConvertFrom-Json
+        if ($privateManifest.schema -ceq 'sl.private-ubt-runtime/v3-current-engine-rules') {
+            Assert-IAmSpeedCurrentEngineRuntime1492 -Manifest $privateManifest -Policy $privatePolicy
+            Test-IAmSpeedDerivedEvidenceContracts1534 -Manifest $privateManifest -EngineRoot $targetEngineRoot
+            Assert-True ($privateManifest.preserved_runtime_copy_count -eq 0 -and @($privatePolicy.preserved_runtime_copies).Count -eq 0) 'Current compiled hook validates existing equal Engine inputs and emits no copy actions'
+            foreach ($mutation in @('binary','source','original_root','copy_count','debugger_count')) {
+                $invalidManifest = $privateManifest | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+                switch ($mutation) {
+                    'binary' { $invalidManifest.ubt_sha256 = '0' * 64 }
+                    'source' { $invalidManifest.readonly_runtime_provenance.source.sha256 = '0' * 64 }
+                    'original_root' { $invalidManifest.readonly_runtime_provenance.original_root.sha256 = '0' * 64 }
+                    'copy_count' { $invalidManifest.preserved_runtime_copy_count = 19 }
+                    'debugger_count' { $invalidManifest.private_debugger_source_count = 0 }
+                }
+                Assert-Throws { Assert-IAmSpeedCurrentEngineRuntime1492 -Manifest $invalidManifest -Policy $privatePolicy } ("Current runtime refuses $mutation drift")
+            }
+            $invalidPolicy = $privatePolicy | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+            $invalidPolicy.preserved_runtime_copies = @([pscustomobject]@{target=(Join-Path $targetEngineRoot 'Engine\Binaries\Win64\AgentInterface.dll')})
+            Assert-Throws { Assert-IAmSpeedCurrentEngineRuntime1492 -Manifest $privateManifest -Policy $invalidPolicy } 'Current contract refuses invented Engine/private copy entries'
+        } else {
         $invalidPolicy = $privatePolicy | ConvertTo-Json -Depth 100 | ConvertFrom-Json
         $invalidPolicy.preserved_runtime_copies[0].target = Join-Path $targetEngineRoot 'Engine\Binaries\Win64\AgentInterface.dll'
         $invalidPolicyPath = Join-Path $FixtureRoot 'policy-engine-target.json'
@@ -123,6 +150,7 @@ try {
         [IO.File]::WriteAllText($invalidManifestPath, ($invalidManifest | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
         $invalidManifestSha = (Get-FileHash -LiteralPath $invalidManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
         Assert-Throws { Assert-IAmSpeedPrivateUbtManifest -Path $invalidManifestPath -Sha256 $invalidManifestSha -EngineRoot $targetEngineRoot } 'private runtime DLL target outside EnginePrivate is rejected'
+        }
         $expectedCache = $privatePolicy.private_cache_root
         $privateCacheBinding = Assert-IAmSpeedPrivateCacheBinding -Runtime $privateRuntime -ExpectedCacheRoot $expectedCache
         Assert-True ($privateCacheBinding.ManifestParent -ceq $privateCacheBinding.PolicyParent) 'private UBT manifest and policy bind the same private root'
@@ -141,6 +169,33 @@ try {
         $seedPolicy = Invoke-IAmSpeedPrivateEnginePolicy -Runtime $rulesSeedRuntime -Action { [Environment]::GetEnvironmentVariable('SL_PRIVATE_ENGINE_METADATA_POLICY','Process') }
         Assert-True ($seedPolicy -ceq $privateRuntime.PrivateEnginePolicyPath) 'private Query and build use the same exact D policy'
     }
+
+    # These are structural validator fixtures, never native graph evidence.
+    $graphFixturePath = Join-Path $FixtureRoot 'SourceGraph.fixture.json'
+    $graphFixtureConsole = Join-Path $FixtureRoot 'SourceGraph.fixture.log'
+    [IO.File]::WriteAllText($graphFixtureConsole, 'Private source graph diagnostic completed: action execution disabled')
+    $graphFixture = [pscustomobject]@{state='REAL_TARGET_GRAPH_CAPTURED_BEFORE_ACTION_EXECUTION';engine=(Join-Path $EngineFixture 'Engine');action_count=2;engine_output_count=0;no_cpp_actions_executed=$true;actions=@(
+        [pscustomobject]@{type='Compile';prerequisite_items=@();engine_outputs=@();produced=@((Join-Path $FixtureRoot 'Project\module.obj'));delete_items=@()},
+        [pscustomobject]@{type='Link';prerequisite_items=@();engine_outputs=@();produced=@((Join-Path $FixtureRoot 'Plugin\module.dll'));delete_items=@()})}
+    $graphOutputRoots = @((Join-Path $FixtureRoot 'Project'),(Join-Path $FixtureRoot 'Plugin'),(Join-Path $FixtureRoot 'Cache'))
+    $graphFixture | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $graphFixturePath -Encoding utf8
+    Assert-IAmSpeedSourceGraph1495 -Path $graphFixturePath -ConsolePath $graphFixtureConsole -ExitCode 6 -EngineRoot $EngineFixture -AllowedOutputRoots $graphOutputRoots | Out-Null
+    foreach ($mutation in @('engine_output','engine_delete','foreign_output','no_compile','count','forbidden_input','relative_output')) {
+        $badGraph = $graphFixture | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        switch ($mutation) {
+            'engine_output' { $badGraph.actions[0].produced=@((Join-Path $EngineFixture 'Engine\Binaries\bad.dll')) }
+            'engine_delete' { $badGraph.actions[0].delete_items=@((Join-Path $EngineFixture 'Engine\Binaries\bad.dll')) }
+            'foreign_output' { $badGraph.actions[0].produced=@((Join-Path $FixtureRoot 'Foreign\bad.dll')) }
+            'no_compile' { $badGraph.actions[0].type='Copy' }
+            'count' { $badGraph.action_count=3 }
+            'forbidden_input' { $badGraph.actions[0].prerequisite_items=@('E:\Documents\Unreal Projects\SkyLeague\Source\blocked.cpp') }
+            'relative_output' { $badGraph.actions[0].produced=@('relative.obj') }
+        }
+        $badGraph | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $graphFixturePath -Encoding utf8
+        Assert-Throws { Assert-IAmSpeedSourceGraph1495 -Path $graphFixturePath -ConsolePath $graphFixtureConsole -ExitCode 6 -EngineRoot $EngineFixture -AllowedOutputRoots $graphOutputRoots } ("Source graph refuses $mutation")
+    }
+    $graphFixture | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $graphFixturePath -Encoding utf8
+    Assert-Throws { Assert-IAmSpeedSourceGraph1495 -Path $graphFixturePath -ConsolePath $graphFixtureConsole -ExitCode 0 -EngineRoot $EngineFixture -AllowedOutputRoots $graphOutputRoots } 'Graph diagnostic cannot pretend to be successful native compilation'
 
     $PluginFixture = Join-Path $FixtureRoot 'PluginCheckout'
     $PluginProject = Join-Path $PluginFixture 'HostProject'
@@ -325,8 +380,8 @@ try {
     $success = @{
         succeeded=2; succeededWithWarnings=0; failed=0; notRun=0; inProcess=0
         tests=@(
-            @{ fullTestPath='IAmSpeed.AnalyticWorld.BoundedPlane'; state='Success' },
-            @{ fullTestPath='IAmSpeed.AnalyticWorld.TriangleFaceBvh'; state='Success' }
+            @{ fullTestPath='IAmSpeed.AnalyticWorld.BoundedPlane'; state='Success'; errors=0; warnings=0; entries=@() },
+            @{ fullTestPath='IAmSpeed.AnalyticWorld.TriangleFaceBvh'; state='Success'; errors=0; warnings=0; entries=@() }
         )
     }
     [IO.File]::WriteAllText($ReportPath, ($success | ConvertTo-Json -Depth 5))
@@ -356,6 +411,20 @@ try {
         -ReportPath $ReportPath -TestFilter 'IAmSpeed.AnalyticWorld'
     Assert-True ($pass.TestsPerformed -eq 2 -and $pass.TestsSucceeded -eq 2) 'strict complete report is accepted'
 
+    foreach ($mutation in @('test_warning','test_error','missing_warning','event_warning','extra_inventory','duplicate_required')) {
+        $bad=$success | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        $required=@('IAmSpeed.AnalyticWorld.BoundedPlane','IAmSpeed.AnalyticWorld.TriangleFaceBvh')
+        switch ($mutation) {
+            'test_warning' {$bad.tests[0].warnings=1}
+            'test_error' {$bad.tests[0].errors=1}
+            'missing_warning' {$bad.tests[0].PSObject.Properties.Remove('warnings')}
+            'event_warning' {$bad.tests[0].entries=@([pscustomobject]@{event=[pscustomobject]@{type='Warning';message='hidden warning'}})}
+            'extra_inventory' {$required=@('IAmSpeed.AnalyticWorld.BoundedPlane')}
+            'duplicate_required' {$required=@('IAmSpeed.AnalyticWorld.BoundedPlane','IAmSpeed.AnalyticWorld.BoundedPlane')}
+        }
+        [IO.File]::WriteAllText($ReportPath,($bad | ConvertTo-Json -Depth 10))
+        Assert-Throws { Assert-IAmSpeedAutomationResult -ExitCode 0 -StandardOutput 'Automation Test Queue Empty 2 tests performed.' -ReportPath $ReportPath -TestFilter 'IAmSpeed.AnalyticWorld' -RequiredTestPaths $required } ("Exact zero-warning native report refuses $mutation")
+    }
     foreach ($path in @($HelperPath, $RunnerPath, $MyInvocation.MyCommand.Path)) {
         $tokens = $null
         $parseErrors = $null
@@ -370,7 +439,7 @@ Write-Output 'PASS split UBT rules preparation, six-file Engine-rule immutabilit
 finally {
     $resolvedFixture = [IO.Path]::GetFullPath($FixtureRoot).TrimEnd('\')
     if (-not $resolvedFixture.StartsWith($TempBase + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to remove fixture outside TEMP: $resolvedFixture"
+        throw "Refusing to remove fixture outside TestOutputRoot: $resolvedFixture"
     }
     Remove-Item -LiteralPath $resolvedFixture -Recurse -Force
 }

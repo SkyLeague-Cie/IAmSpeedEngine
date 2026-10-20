@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot 'RunContracts.Evidence1534.ps1')
 if (-not (Get-Command -Name Get-FileHash -ErrorAction SilentlyContinue)) {
     function Get-FileHash {
         [CmdletBinding()]
@@ -117,7 +118,7 @@ function Assert-IAmSpeedPrivateRulesRoot {
     $engine = Assert-IAmSpeedEngineRoot -EngineRoot $Runtime.Root
     if (Test-Path -LiteralPath (Join-Path $engine.Root 'Engine\Build\InstalledBuild.txt')) { throw 'Private Query requires the exact non-installed source Engine.' }
     $policy = Get-Content -LiteralPath $manifest.policy_path -Raw | ConvertFrom-Json
-    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+    if (@('sl.private-ubt-runtime/v2-qualified-rules','sl.private-ubt-runtime/v3-current-engine-rules') -ccontains $manifest.schema) {
         $profile = Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $Runtime.Root
         $Runtime | Add-Member -NotePropertyName RulesDirectory -NotePropertyValue $profile.rules_root -Force
         $Runtime | Add-Member -NotePropertyName Assemblies -NotePropertyValue $profile.files -Force
@@ -165,7 +166,7 @@ function Assert-IAmSpeedPrivateUbtManifest {
     Assert-IAmSpeedPhysicalFile $Path
     if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Sha256) { throw 'Private UBT manifest SHA differs.' }
     $manifest = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-    if (@('sl.private-ubt-runtime/v1','sl.private-ubt-runtime/v2-qualified-rules') -cnotcontains $manifest.schema -or [IO.Path]::GetFullPath($manifest.engine_root).TrimEnd('\') -ine [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')) { throw 'Private UBT physical Engine binding differs.' }
+    if (@('sl.private-ubt-runtime/v1','sl.private-ubt-runtime/v2-qualified-rules','sl.private-ubt-runtime/v3-current-engine-rules') -cnotcontains $manifest.schema -or [IO.Path]::GetFullPath($manifest.engine_root).TrimEnd('\') -ine [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\')) { throw 'Private UBT physical Engine binding differs.' }
     $runtimeRoot = [IO.Path]::GetFullPath($manifest.runtime_root).TrimEnd('\')
     $enginePrefix = [IO.Path]::GetFullPath($EngineRoot).TrimEnd('\') + '\'
     if ($runtimeRoot.StartsWith($enginePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Private UBT runtime must be outside Engine.' }
@@ -185,12 +186,16 @@ function Assert-IAmSpeedPrivateUbtManifest {
     if ((Get-FileHash -LiteralPath $manifest.policy_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.policy_sha256) { throw 'Private Engine policy SHA differs.' }
     $policy = Get-Content -LiteralPath $manifest.policy_path -Raw | ConvertFrom-Json
     if ([IO.Path]::GetFullPath($policy.engine_root).TrimEnd('\') -ine (Join-Path $EngineRoot 'Engine') -or [IO.Path]::GetFullPath($policy.project_private_parent).TrimEnd('\') -ine [IO.Path]::GetFullPath($manifest.baseline_project_parent).TrimEnd('\')) { throw 'Private Engine policy binding differs.' }
+    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v3-current-engine-rules') {
+        Assert-IAmSpeedCurrentEngineRuntime1492 -Manifest $manifest -Policy $policy
+    } else {
     $traceContract = 'Bound root Build only; private Trace required by real UBA non-detour executor. Query and recursive helper modes retain Session trace suppression.'
     if ($manifest.private_root_trace_contract -cne $traceContract -or $policy.private_root_trace_contract -cne $traceContract) { throw 'Private root Build trace contract differs.' }
     $copyContract = 'Exact 19 runtime DLL pairs use immutable D Engine sources and allowlisted private E targets; four exact pre-existing D runtime pairs (D3D12Core, d3d12SDKLayers, EOSSDK-Win64-Shipping, NNEEditorOnnxTools) are immutable inputs whose Engine copy actions are skipped; pinned Engine Natvis sources use private E copy/link outputs. No Engine action outputs or deletes.'
-    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') { $copyContract = 'Bound Engine exact 19 private runtime DLL pairs and four immutable pre-existing Engine inputs; pinned Natvis sources use private outputs. No Engine action outputs or deletes.' }
+    if (@('sl.private-ubt-runtime/v2-qualified-rules','sl.private-ubt-runtime/v3-current-engine-rules') -ccontains $manifest.schema) { $copyContract = 'Bound Engine exact 19 private runtime DLL pairs and four immutable pre-existing Engine inputs; pinned Natvis sources use private outputs. No Engine action outputs or deletes.' }
     if ($manifest.private_copy_producer_contract -cne $copyContract -or $policy.private_copy_producer_contract -cne $copyContract) { throw 'Private copy producer contract differs.' }
     if ($manifest.preserved_runtime_copy_count -ne 23 -or @($policy.preserved_runtime_copies).Count -ne 23 -or $manifest.private_debugger_source_count -ne @($policy.private_debugger_visualizer_sources).Count) { throw 'Private copy input inventory differs.' }
+    }
     $privateEngineOutputRoot = [IO.Path]::GetFullPath((Join-Path ([string]$manifest.private_root) 'EnginePrivate')).TrimEnd('\') + '\'
     # These exact D targets already exist and are byte-identical to their pinned
     # Engine sources. The UBT hook verifies both files and returns true to
@@ -240,7 +245,7 @@ function Assert-IAmSpeedPrivateUbtManifest {
         }
     }
     if ($visualizerTargets.Count -gt $visualizerSources.Count) { throw 'Private debugger visualizer output inventory exceeds its pinned source set.' }
-    if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') { Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $EngineRoot | Out-Null }
+    if (@('sl.private-ubt-runtime/v2-qualified-rules','sl.private-ubt-runtime/v3-current-engine-rules') -ccontains $manifest.schema) { Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $EngineRoot | Out-Null }
     return $manifest
 }
 
@@ -319,7 +324,7 @@ function Invoke-IAmSpeedPrivateEnginePolicy {
         if ($Runtime.PrivateUbt) {
             [Environment]::SetEnvironmentVariable($names[0],[string]$Runtime.PrivateEnginePolicyPath,'Process')
             $manifest = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $Runtime.Root
-            if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+            if (@('sl.private-ubt-runtime/v2-qualified-rules','sl.private-ubt-runtime/v3-current-engine-rules') -ccontains $manifest.schema) {
                 [Environment]::SetEnvironmentVariable($names[1],[string]$manifest.rules_profile_path,'Process')
                 [Environment]::SetEnvironmentVariable($names[2],[string]$manifest.rules_profile_sha256,'Process')
             }
@@ -407,7 +412,7 @@ function Assert-IAmSpeedPrecompiledRules {
     $engine = Assert-IAmSpeedEngineRoot -EngineRoot $EngineRoot
     if ($null -ne $Runtime -and $Runtime.PrivateUbt) {
         $manifest = Assert-IAmSpeedPrivateUbtManifest -Path $Runtime.PrivateManifestPath -Sha256 $Runtime.PrivateManifestSha256 -EngineRoot $EngineRoot
-        if ($manifest.schema -ceq 'sl.private-ubt-runtime/v2-qualified-rules') {
+        if (@('sl.private-ubt-runtime/v2-qualified-rules','sl.private-ubt-runtime/v3-current-engine-rules') -ccontains $manifest.schema) {
             $profile = Assert-IAmSpeedProspectiveRules -Manifest $manifest -EngineRoot $EngineRoot
             return [pscustomobject]@{ Root=$engine.Root; RulesDirectory=$profile.rules_root; Files=$profile.files }
         }
@@ -740,7 +745,9 @@ function New-IAmSpeedEditorArguments {
         [Parameter(Mandatory=$true)] [string]$ReportPath
     )
     return [string[]]@(
-        $ProjectFile, '-unattended', '-nop4', '-nosplash', '-NullRHI', '-NoSound',
+        $ProjectFile, '-unattended', '-nop4', '-nosplash', '-NullRHI',
+        '-ExpectMediumIntegrityLevel', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoHotReloadFromIDE', '-notraceserver',
+        '-ini:Engine:[ConsoleVariables]:HomeScreen.EnableHomeScreen=0',
         '-stdout', '-FullStdOutLogOutput', '-nosteam', '-NoEOS', '-Locale=en-US',
         "-AbsLog=$LogPath", "-ReportExportPath=$ReportPath",
         '-TestExit=Automation Test Queue Empty', "-ExecCmds=Automation RunTests $TestFilter"
@@ -753,7 +760,8 @@ function Assert-IAmSpeedAutomationResult {
         [Parameter(Mandatory=$true)] [int]$ExitCode,
         [Parameter(Mandatory=$true)] [AllowEmptyString()] [string]$StandardOutput,
         [Parameter(Mandatory=$true)] [string]$ReportPath,
-        [Parameter(Mandatory=$true)] [string]$TestFilter
+        [Parameter(Mandatory=$true)] [string]$TestFilter,
+        [string[]]$RequiredTestPaths = @()
     )
     if ($ExitCode -ne 0) { throw "UnrealEditor-Cmd exited with code $ExitCode." }
     $queueMatches = [regex]::Matches($StandardOutput, 'Automation Test Queue Empty (\d+) tests performed\.')
@@ -777,8 +785,18 @@ function Assert-IAmSpeedAutomationResult {
     if (@($tests | Where-Object { $_.state -cne 'Success' }).Count -ne 0) {
         throw 'Automation report contains failed, warning, skipped, or incomplete tests.'
     }
+    foreach ($test in $tests) {
+        foreach ($field in @('errors','warnings')) {
+            if ($null -eq $test.PSObject.Properties[$field] -or
+                ($test.$field -isnot [int] -and $test.$field -isnot [long]) -or $test.$field -ne 0) {
+                throw 'Every actual native test must explicitly report zero errors and zero warnings.'
+            }
+        }
+        if ($null -eq $test.PSObject.Properties['entries'] -or $test.entries -isnot [System.Array]) { throw 'Native test event array is missing.' }
+        if (@($test.entries | Where-Object { $_.event.type -cin @('Warning','Error') }).Count -ne 0) { throw 'Native event stream contains a warning or error despite aggregate counts.' }
+    }
     $paths = @($tests | ForEach-Object { [string]$_.fullTestPath })
-    if (@($paths | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -notlike "$TestFilter.*" }).Count -ne 0) {
+    if (@($paths | Where-Object { [string]::IsNullOrWhiteSpace($_) -or ($_ -cne $TestFilter -and -not $_.StartsWith($TestFilter + '.', [StringComparison]::Ordinal)) }).Count -ne 0) {
         throw "Automation report contains tests outside the requested filter '$TestFilter'."
     }
     if (@($paths | Group-Object | Where-Object { $_.Count -ne 1 }).Count -ne 0) {
@@ -792,6 +810,13 @@ function Assert-IAmSpeedAutomationResult {
     if ([int]$report.succeeded -ne $queueCount -or [int]$report.succeededWithWarnings -ne 0 -or
         [int]$report.failed -ne 0 -or [int]$report.notRun -ne 0 -or [int]$report.inProcess -ne 0) {
         throw 'Automation aggregate counts do not describe a complete, warning-free pass.'
+    }
+    if ($RequiredTestPaths.Count -gt 0 -and
+        ($paths.Count -ne $RequiredTestPaths.Count -or @($RequiredTestPaths | Group-Object -CaseSensitive | Where-Object { $_.Count -ne 1 }).Count -ne 0)) {
+        throw 'Executed automation inventory must exactly equal the intended required inventory; subset admission is forbidden.'
+    }
+    foreach ($required in $RequiredTestPaths) {
+        if ($paths -cnotcontains $required) { throw "Required automation test did not execute: $required" }
     }
     return [pscustomobject]@{ TestsPerformed=$queueCount; TestsSucceeded=[int]$report.succeeded }
 }
@@ -843,7 +868,11 @@ function Assert-IAmSpeedProspectiveRules {
     }
     if ($sources.Count -eq 0 -or $sourceSeen.Count -ne $sources.Count) { throw 'Incomplete compile source provenance.' }
     $term=& $read $receipt.bootstrap_terminal.path $receipt.bootstrap_terminal.sha256
+    if ($Manifest.schema -ceq 'sl.private-ubt-runtime/v3-current-engine-rules') {
+        Assert-IAmSpeedBootstrapObservation1534 $term
+    } else {
     if ($term.status -cne 'PASS' -or $term.exit -ne 0 -or $term.timeout -or -not $term.Engine_and_source_unchanged -or $term.original_job_zero.assigned -ne 0 -or $term.original_job_zero.listed -ne 0) { throw 'Bootstrap execution is not qualified and drained.' }
+    }
     Assert-IAmSpeedPhysicalFile $receipt.bootstrap_loaded.path
     if ((Get-FileHash -LiteralPath $receipt.bootstrap_loaded.path).Hash.ToLowerInvariant() -cne $receipt.bootstrap_loaded.sha256) { throw 'Real compiled/loaded provenance drift.' }
     $loaded=@(Get-Content -LiteralPath $receipt.bootstrap_loaded.path | ForEach-Object { $_ | ConvertFrom-Json })
@@ -856,6 +885,11 @@ function Assert-IAmSpeedProspectiveRules {
     if ($actual.Count -ne 2) { throw 'Incomplete real assembly load proof.' }
     $negative=& $read $receipt.negative_terminal.path $receipt.negative_terminal.sha256
     $cases=@('good_sealed','source_sha_drift','rules_sha_drift','missing_rules','alias_rules_root','unknown_stage','unknown_rules_file','profile_sha_drift','wrong_engine','missing_profile');$caseSeen=@{}
+    if ($negative.schema -ceq 'sl.rules-derived-admission/v1') {
+        if ($Manifest.schema -cne 'sl.private-ubt-runtime/v3-current-engine-rules') { throw 'Derived admission requires the explicit current runtime schema.' }
+        Assert-IAmSpeedRulesDerivedAdmission1534 -Negative $negative -Loaded $actual -EngineRoot $EngineRoot
+        return $profile
+    }
     if ($negative.status -cne 'PASS' -or -not $negative.Engine_unchanged) { throw 'Prospective load negatives not qualified.' }
     foreach ($c in $negative.cases) {
         if ($cases -cnotcontains $c.case -or $caseSeen.ContainsKey($c.case) -or $c.status -cne 'PASS' -or $c.timeout -or -not $c.Engine_unchanged -or $c.Job0.assigned -ne 0 -or $c.Job0.listed -ne 0) { throw 'Incomplete failed or undrained negative scope.' }
@@ -870,4 +904,48 @@ function Assert-IAmSpeedProspectiveRules {
     }
     if ($caseSeen.Count -ne 10) { throw 'Missing required negative case.' }
     return $profile
+}
+
+
+function Assert-IAmSpeedCurrentEngineRuntime1492 {
+    param([Parameter(Mandatory=$true)][psobject]$Manifest, [Parameter(Mandatory=$true)][psobject]$Policy)
+    # The current managed hook suppresses a pre-existing Engine DLL copy only
+    # after physical-file, size and SHA equality, then rejects Engine outputs.
+    # It has no private 19-copy layout. Keep legacy v1/v2 checks unchanged.
+    if ($Manifest.readonly_runtime_contract -cne 'compiled1221-existing-equal-engine-inputs/v1' -or
+        $Manifest.ubt_sha256 -cne '219fa31a9c75771bd1718f70fb60a0b4d3089ff7188970428c7a47243fcff89b' -or
+        $Manifest.preserved_runtime_copy_count -ne 0 -or @($Policy.preserved_runtime_copies).Count -ne 0 -or
+        @($Policy.private_debugger_visualizers).Count -ne 0 -or
+        $Manifest.private_debugger_source_count -ne @($Policy.private_debugger_visualizer_sources).Count -or
+        $Manifest.private_debugger_source_count -le 0) { throw 'Current readonly runtime contract differs.' }
+    $records = $Manifest.readonly_runtime_provenance
+    $values = @{}
+    foreach ($name in @('source','managed_terminal','managed_observation','original_root','root_terminal')) {
+        $record = $records.$name
+        if (-not $record -or [string]::IsNullOrWhiteSpace($record.path) -or $record.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Current runtime provenance is incomplete.' }
+        Assert-IAmSpeedPhysicalFile $record.path
+        if ((Get-FileHash -LiteralPath $record.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $record.sha256) { throw 'Current runtime provenance drift.' }
+        if ($name -ne 'source') { $values[$name] = Get-Content -LiteralPath $record.path -Raw | ConvertFrom-Json }
+    }
+    if ($records.source.sha256 -cne '9c5044cd4cb65c693db98aa88f145147bd19b0bb223eeb0c18101f91601f29a8') { throw 'Unknown compiled readonly runtime source.' }
+    $terminal = $values.managed_terminal; $observation = $values.managed_observation; $root = $values.original_root
+    if ($terminal.status -cne 'PASS_MANAGED_BUILD_ONLY' -or $terminal.original_exit -ne 0 -or
+        -not $terminal.bound_inputs_unchanged -or $terminal.binary_sha256 -cne $Manifest.ubt_sha256 -or
+        $terminal.observation_sha256 -cne $records.managed_observation.sha256 -or
+        $root.source -cne 'tools.write_stdin' -or -not $root.original_session_retained -or
+        $root.original1221_exit -ne 0 -or $root.actual_exit -ne 0 -or
+        $root.terminal1221_sha256 -cne $records.root_terminal.sha256 -or
+        $root.terminal_path -cne $records.root_terminal.path -or
+        $values.root_terminal.status -cne 'PASS_FRESH_MANAGED1221_ONLY_ENGINE_UNCHANGED' -or
+        -not $values.root_terminal.managed_build0_and_drain -or
+        -not $values.root_terminal.Engine_and_inputs_unchanged -or
+        $values.root_terminal.unresolved_child -or
+        $observation.status -cne 'naturally_drained' -or -not $observation.natural_drain -or
+        $observation.original_exit -ne 0 -or $observation.termination_requested -or
+        @($observation.observations).Count -lt 2) { throw 'Original managed compilation/drain provenance differs.' }
+    foreach ($row in @($observation.observations | Select-Object -Last 2)) {
+        if ($row.active -ne 0 -or $row.original_exit -ne 0) { throw 'Original managed process tree did not naturally drain.' }
+    }
+    $inputPin = $observation.binding.input_hashes.PSObject.Properties[[string]$records.source.path]
+    if (-not $inputPin -or [string]$inputPin.Value -cne $records.source.sha256) { throw 'Readonly hook was not an exact compiled input.' }
 }

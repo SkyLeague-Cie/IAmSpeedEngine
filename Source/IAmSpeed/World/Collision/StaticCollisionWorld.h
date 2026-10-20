@@ -1,6 +1,8 @@
 #pragma once
 
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
+#include "StaticQueryBatch.h"
+#include <atomic>
 
 namespace Speed
 {
@@ -18,6 +20,22 @@ public:
 	virtual ~IStaticCollisionWorld() = default;
 	virtual Analytic::FWorldHit SweepSingle(
 		const Analytic::FWorldQuery& Query) const = 0;
+    // Caller has already proved query independence. Synchronous barrier; index
+    // order is retained. Only the selected immutable backend may parallelize.
+    virtual bool SweepIndependentBatch(TConstArrayView<Analytic::FWorldQuery> Queries,
+        TArrayView<Analytic::FWorldHit> OutHits,
+        FIndependentQueryBatchStats* OutStats = nullptr) const;
+    virtual int32 GetIndependentQueryLaneLimit() const { return 1; }
+    // Prefetch admission never evaluates a query on policy/diagnostic fallback.
+    virtual bool CanPrefetchIndependentQueries1075() const { return false; }
+    virtual bool SweepPrefetchBatch1075(TConstArrayView<Analytic::FWorldQuery>,
+        TArrayView<Analytic::FWorldHit>, FIndependentQueryBatchStats* = nullptr) const { return false; }
+    virtual FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const { return {}; }
+    virtual int32 GetMinimumIndependentQueryItems() const { return 2; }
+    // Owner-only observations at a joined frame barrier, never during dispatch.
+    virtual Analytic::FFacetParallelTotals GetFacetParallelTotals() const { return {}; }
+    virtual void ResetFacetParallelTotals() const {}
+
 	/** Greatest positive finite overlap at one pose, not the first CCD contact.
 	 * False means unsupported/invalid query; true with no hit means no overlap.
 	 * Start must equal End. Tangencies do not mask penetrating constraints. */
@@ -78,11 +96,35 @@ class IAMSPEED_API FAnalyticStaticCollisionWorld final
 	: public IStaticCollisionWorld
 {
 public:
-	explicit FAnalyticStaticCollisionWorld(
-		const Analytic::FAnalyticWorldData& InWorld)
-		: QueryService(InWorld)
-	{
-	}
+
+    // Construct only at the owning world's admission/reset barrier. InWorld
+    // is finalized and remains immutable until this object is destroyed.
+    explicit FAnalyticStaticCollisionWorld(
+        const Analytic::FAnalyticWorldData& InWorld, int32 InIndependentQueryLanes = 1,
+        int32 InMinimumIndependentQueryItems = 4, int32 InMinimumFacetItems = 32);
+    bool SweepIndependentBatch(TConstArrayView<Analytic::FWorldQuery> Queries,
+        TArrayView<Analytic::FWorldHit> OutHits,
+        FIndependentQueryBatchStats* OutStats = nullptr) const override;
+    int32 GetIndependentQueryLaneLimit() const override { return IndependentQueryLanes; }
+    bool CanPrefetchIndependentQueries1075() const override;
+    bool SweepPrefetchBatch1075(TConstArrayView<Analytic::FWorldQuery> Queries,
+        TArrayView<Analytic::FWorldHit> OutHits,
+        FIndependentQueryBatchStats* OutStats = nullptr) const override;
+    FImmutableStaticQueryIdentity1075 GetImmutableQueryIdentity1075() const override
+    { return {&WorldData, &QueryService, ImmutableQueryGeneration1075}; }
+    int32 GetMinimumIndependentQueryItems() const override { return MinimumIndependentQueryItems; }
+    Analytic::FFacetParallelTotals GetFacetParallelTotals() const override
+    {
+        auto Totals = QueryService.GetFacetParallelTotals();
+        for (const auto& Service : IndependentQueryServices) Totals.Accumulate(Service->GetFacetParallelTotals());
+        return Totals;
+    }
+    void ResetFacetParallelTotals() const override
+    {
+        QueryService.ResetFacetParallelTotals();
+        for (const auto& Service : IndependentQueryServices) Service->ResetFacetParallelTotals();
+    }
+
 
 	Analytic::FWorldHit SweepSingle(
 		const Analytic::FWorldQuery& Query) const override
@@ -133,7 +175,18 @@ public:
 	}
 
 private:
-	Analytic::FWorldQueryService QueryService;
+    bool SweepIndependentBatchImpl1075(TConstArrayView<Analytic::FWorldQuery> Queries,
+        TArrayView<Analytic::FWorldHit> OutHits, FIndependentQueryBatchStats* OutStats,
+        bool bRejectSerialFallback) const;
+    const Analytic::FAnalyticWorldData& WorldData;
+    const uint64 ImmutableQueryGeneration1075;
+    Analytic::FWorldQueryService QueryService;
+    int32 IndependentQueryLanes = 1;
+    int32 MinimumIndependentQueryItems = 4;
+    // Separate from canonical QueryService: it can never share a cache with
+    // a dispatched worker. Every logical lane has exclusive persistent state.
+    TArray<TUniquePtr<Analytic::FWorldQueryService>> IndependentQueryServices;
+    mutable std::atomic<bool> IndependentBatchBusy{false};
 };
 
 } // namespace Speed

@@ -6,6 +6,13 @@
 #include "CanonicalFrameDriver.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/IConsoleManager.h"
+
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarFastWindowTiming(
+	TEXT("p.IAmSpeed.FastSimulation.WindowTiming"), 0,
+	TEXT("Opt-in enclosing 30 committed-frame windows, including owned pulse overhead. Forward-run diagnostic, not rollback equivalence proof."));
+#endif
 
 ESimulationWorkerResult AFastSimulation::DriveSimulation(
 	const float DeltaTime, const float SimTime)
@@ -59,6 +66,9 @@ ESimulationWorkerResult AFastSimulation::DriveFastSimulation(
 void AFastSimulation::BeginRunMetrics()
 {
 #if !UE_BUILD_SHIPPING
+    BeginIndependentFastCoverage276();
+#endif
+#if !UE_BUILD_SHIPPING
 	Speed::FSimulationSleepState::ThreadIntegrationSkips() = 0;
 	Speed::ActorDiagnostics::BeginRun();
 #endif
@@ -68,7 +78,17 @@ void AFastSimulation::BeginRunMetrics()
 	RunStartWarningFrameCount = PerformanceWarningFrameCount;
 	RunStartIterationLimitCount = PerformanceIterationLimitCount;
 	RunStartTotalStepMilliseconds = PerformanceTotalStepMilliseconds;
+#if !UE_BUILD_SHIPPING
+	bMeasureWindows = CVarFastWindowTiming.GetValueOnAnyThread() != 0;
+	bWindowTimingInvalid = false;
+	WindowMilliseconds.Reset();
+	if (bMeasureWindows) WindowMilliseconds.Reserve(65536);
+#endif
 	RunStartSeconds = FPlatformTime::Seconds();
+#if !UE_BUILD_SHIPPING
+	WindowStartFrame = RunStartFrame;
+	WindowStartSeconds = RunStartSeconds;
+#endif
 	RunMaximumStepMilliseconds = 0.0;
 	RunCoreStepMilliseconds = 0.0;
 	RunSweepMilliseconds = 0.0;
@@ -121,6 +141,9 @@ ESimulationWorkerResult AFastSimulation::AdvanceSealedSimulation(
 		return ESimulationWorkerResult::Failed;
 	}
 	AccumulateRunFrameMetrics();
+#if !UE_BUILD_SHIPPING
+	if (bMeasureWindows) RecordWindowTiming();
+#endif
 	if (SpeedWorldSubsystem->GetCanonicalRunControlState() != ECanonicalRunControlState::Complete)
 	{
 		return ESimulationWorkerResult::Advanced;
@@ -132,11 +155,17 @@ ESimulationWorkerResult AFastSimulation::AdvanceSealedSimulation(
 void AFastSimulation::ReportCompletedRun()
 {
 #if !UE_BUILD_SHIPPING
+    EndIndependentFastCoverage276(true,TEXT("Completed"));
+#endif
+#if !UE_BUILD_SHIPPING
 	Speed::ActorDiagnostics::EndRun();
 	UE_LOG(LogTemp, Display, TEXT("[SimulationSleep] IntegrationSkips=%llu"),
 		Speed::FSimulationSleepState::ThreadIntegrationSkips());
 #endif
 	const double WallSeconds = FPlatformTime::Seconds() - RunStartSeconds;
+#if !UE_BUILD_SHIPPING
+	if (bMeasureWindows) ReportWindowTimings();
+#endif
 	const uint64 SimulatedFrames = CanonicalNumFrame - RunStartFrame;
 	const double SimulatedSeconds = static_cast<double>(SimulatedFrames) /
 		static_cast<double>(FCanonicalFrameContext::PhysicsFramesPerSecond);
@@ -170,3 +199,48 @@ void AFastSimulation::ReportCompletedRun()
 		RunMaximumIterationCount);
 	bRunMetricsActive = false;
 }
+
+#if !UE_BUILD_SHIPPING
+void AFastSimulation::RecordWindowTiming()
+{
+	if (bWindowTimingInvalid) return;
+	if (CanonicalNumFrame < WindowStartFrame || CanonicalNumFrame - WindowStartFrame > 30u)
+	{
+		bWindowTimingInvalid = true; // A discontinuity cannot be relabelled a contiguous window.
+		return;
+	}
+	if (CanonicalNumFrame - WindowStartFrame != 30u) return;
+	if (WindowMilliseconds.Num() == 65536)
+	{
+		bWindowTimingInvalid = true; // Bound memory; the reader must reject this report.
+		return;
+	}
+	const double EndSeconds = FPlatformTime::Seconds();
+	WindowMilliseconds.Add((EndSeconds - WindowStartSeconds) * 1000.0);
+	WindowStartFrame = CanonicalNumFrame;
+	WindowStartSeconds = EndSeconds;
+}
+
+void AFastSimulation::ReportWindowTimings() const
+{
+	constexpr double DeadlineMs = 1000.0 / 300.0;
+	uint64 Misses = 0;
+	for (int32 Index = 0; Index < WindowMilliseconds.Num(); ++Index)
+	{
+		const double Milliseconds = WindowMilliseconds[Index];
+		if (Milliseconds > DeadlineMs) ++Misses;
+		const uint64 First = RunStartFrame + uint64(Index) * 30u;
+		UE_LOG(LogTemp, Display, TEXT("[FastSimulationWindow] FirstFrame=%llu LastFrame=%llu Frames=30 WallMs=%.9f"),
+			First, First + 29u, Milliseconds);
+	}
+	TArray<double> Sorted = WindowMilliseconds;
+	Sorted.Sort();
+	const auto Percentile = [&Sorted](double Fraction)
+	{
+		return Sorted.IsEmpty() ? 0.0 : Sorted[FMath::Clamp(FMath::CeilToInt(Fraction * Sorted.Num()) - 1, 0, Sorted.Num() - 1)];
+	};
+	UE_LOG(LogTemp, Display, TEXT("[FastSimulationWindowSummary] Valid=%d Windows=%d FramesPerWindow=30 TailFrames=%llu DeadlineMs=%.9f Misses=%llu P50Ms=%.9f P95Ms=%.9f P99Ms=%.9f MaxMs=%.9f Scope=ForwardCommittedFrames CPUCostMeasured=0 RollbackRestoreMeasured=0"),
+		bWindowTimingInvalid ? 0 : 1, Sorted.Num(), CanonicalNumFrame - WindowStartFrame, DeadlineMs, Misses,
+		Percentile(0.50), Percentile(0.95), Percentile(0.99), Sorted.IsEmpty() ? 0.0 : Sorted.Last());
+}
+#endif

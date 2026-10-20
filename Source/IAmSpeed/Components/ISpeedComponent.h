@@ -16,6 +16,9 @@ enum class ESpeedPhysicsObservationPhase : uint8
 {
 	PreForce, PostForcePredictor, PostContact, PostQuantization
 };
+// Independent declaration of diagnostic consumer coverage, before callbacks.
+// Unknown adapters never certify that an unobserved analog consumer is absent.
+enum class EFrameAnalogWitnessDeclaration : uint8 { Unknown, NoAnalogConsumer, RequiredAnalogConsumer };
 class ISpeedComponent;
 /** Fixture-owned observer; installation/removal and dispatch share the canonical lane.
  * The fixture must remove it before its owner retires; no UObject or actor replacement. */
@@ -78,10 +81,21 @@ struct SComponentTOI
 #if !UE_BUILD_SHIPPING
 namespace Speed { struct FCanonicalForeignStateForTesting; }
 #endif
+
+#if !UE_BUILD_SHIPPING
+namespace Speed { struct FNativeBallMechanicalWitnessForTesting; }
+#endif
 class IAMSPEED_API ISpeedComponent
 {
+#if !UE_BUILD_SHIPPING
+    friend struct Speed::FNativeBallMechanicalWitnessForTesting;
+#endif
 public:
 #if !UE_BUILD_SHIPPING
+    // Diagnostic class identity only. Empty means an unclassified native adapter.
+    virtual FString FrameWitnessAdapterClassForTesting() const { return {}; }
+    virtual EFrameAnalogWitnessDeclaration DeclareFrameAnalogWitnessForTesting() const
+    { return EFrameAnalogWitnessDeclaration::Unknown; }
 	/** Default-disabled read-only diagnostics. No sleep or force policy changes. */
 	virtual bool IsPhysicsPhaseObservationEnabled() const { return PhysicsPhaseObserver != nullptr; }
 	/** Receiver reads actual pose and wheel witnesses now, never history.
@@ -112,6 +126,10 @@ public:
 	/** Frame-boundary admission, before inputs, preparation or publication.
 	 * Implementations validate their live storage without mutating physics state. */
 	virtual bool ValidateSimulationBindings(FString& OutReason) const { return true; }
+    /** Opt-in for an owner-only, side-effect-free capture of current origin and
+     * native child transforms. Only arithmetic moves to workers; callbacks,
+     * inputs and Reset stay in canonical order. Derived adapters default out. */
+    virtual bool SupportsJoinedActorKinematicCapture1213() const { return false; }
 	/** Input-only admission for every actor before any actor applies velocity,
 	 * gravity or gameplay. False rejects the whole canonical frame. */
 	/** Worker-only scenario authoring before producer polling. ExactScenario

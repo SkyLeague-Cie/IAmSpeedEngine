@@ -12,12 +12,21 @@ namespace Speed::Analytic::Private
 		FVector3d HalfExtent = FVector3d::ZeroVector;
 		FVector3d WorldExtent = FVector3d::ZeroVector;
 		double DomainTolerance = 0.0;
+		// Opt-in arithmetic scheduling for extruded facets only; never world state.
+		bool bLazyExtrudedSatAxes = false;
+		// Opt-in scratch construction only; no geometry or persistent state.
+		bool bSkipUnusedTriangleContext541 = false;
+		bool bSpecializeTriangleAxisSchedule573 = false;
 
-		FBoxSweepContext() = default;
+		// Keep optional fallback construction from value-zeroing unused padding.
+		FBoxSweepContext() {}
 		explicit FBoxSweepContext(const FWorldQuery& Query) { Initialize(Query); }
 
 		void Initialize(const FWorldQuery& Query, const FVector3d* CachedAxes = nullptr)
 		{
+			bLazyExtrudedSatAxes = false;
+			bSkipUnusedTriangleContext541 = false;
+			bSpecializeTriangleAxisSchedule573 = false;
 			Motion = Query.End - Query.Start;
 			HalfExtent = FVector3d(
 				FMath::Max(0.0, Query.HalfExtent.X),
@@ -54,7 +63,10 @@ namespace Speed::Analytic::Private
 			bool bDegenerate;
 		};
 
-		FBoxBoundsSweepContext() = default;
+		// User-provided constructor prevents value initialization from clearing
+		// unread Projections when TOptional::Emplace() constructs the fallback.
+		// Base member initializers and PreparedMask still initialize every read field.
+		FBoxBoundsSweepContext() {}
 		explicit FBoxBoundsSweepContext(const FWorldQuery& Query) { Initialize(Query); }
 		/** Start another immutable query; never mutate inherited geometry after initialization. */
 		void Initialize(const FWorldQuery& Query, const FVector3d* CachedAxes = nullptr)

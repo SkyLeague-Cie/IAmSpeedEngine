@@ -1,4 +1,7 @@
 #include "SimulationWorld.h"
+#if !UE_BUILD_SHIPPING
+#include "FrameAppliedCommandWitness.h"
+#endif
 #include "SimulationActorDiagnostics.h"
 
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -244,8 +247,12 @@ namespace Speed
 		for (const FSimulationInputCommand& Command : Journal.GetCommandsForFrame(NumFrame))
 		{
 			ISpeedComponent* const* Adapter = AdaptersByStableId.Find(Command.TargetStableId);
-			bAllApplied &= Adapter && *Adapter &&
+			const bool Applied = Adapter && *Adapter &&
 				(*Adapter)->ApplySimulationInput(Command.Payload);
+			bAllApplied &= Applied;
+#if !UE_BUILD_SHIPPING
+            Speed::FFrameAppliedCommandWitnessScope::RecordJournal(NumFrame,Command.TargetStableId,Command.Payload,Applied);
+#endif
 		}
 		return bAllApplied;
 	}

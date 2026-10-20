@@ -3,6 +3,7 @@
 #include "IAmSpeed/Base/Kinematic.h"
 #include "UObject/WeakObjectPtr.h"
 #include <type_traits>
+#include "IAmSpeed/World/Simulation/FramePointerWitness.h"
 #if !UE_BUILD_SHIPPING
 namespace Speed {
 template<class V> struct FEpisodeFieldCodec; // no arbitrary-composite fallback
@@ -10,7 +11,7 @@ struct FEpisodeStateBytesForTesting {
  template<class V> static void Add(TArray<uint8>& O,const V& X) {
   if constexpr(std::is_integral_v<V> || std::is_same_v<V,float> || std::is_same_v<V,double>) {const V Scalar=X;O.Append(reinterpret_cast<const uint8*>(&Scalar),sizeof(Scalar));}
   else if constexpr(std::is_enum_v<V>) {Add(O,static_cast<std::underlying_type_t<V>>(X));}
-  else if constexpr(std::is_pointer_v<V>) {Add(O,reinterpret_cast<UPTRINT>(X));}
+  else if constexpr(std::is_pointer_v<V>) {FFramePointerCaptureScope::Observe(O,reinterpret_cast<UPTRINT>(X));Add(O,reinterpret_cast<UPTRINT>(X));}
   else {FEpisodeFieldCodec<V>::Write(O,X);}
  }
  template<class V> static void Add(TArray<uint8>& O,const TObjectPtr<V>& X){Add(O,X.Get());}

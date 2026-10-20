@@ -126,6 +126,29 @@ bool TryBuildBoxRestingSupport(
 	// The ray straddles each actual corner. Its length locates a witness only;
 	// the accepted gap below is bounded by floating-point roundoff, not this ray.
 	constexpr double ProbeHalfLengthCm = 0.01;
+    // Only these four values-only corner rays are independent. The preceding
+    // overlap certificate and following first-failing-corner fold retain their
+    // canonical order. With one lane the old early-out path is unchanged.
+    Analytic::FWorldQuery CornerQueries[4];
+    Analytic::FWorldHit CornerHits[4];
+    bool bCornerBatchReady = false;
+    if (World.GetIndependentQueryLaneLimit() > 1 && 4 >= World.GetMinimumIndependentQueryItems())
+    {
+        for (int32 PointIndex = 0; PointIndex < 4; ++PointIndex)
+        {
+            const double SignU = (PointIndex & 1) ? 1.0 : -1.0;
+            const double SignV = (PointIndex & 2) ? 1.0 : -1.0;
+            FVector LocalCorner = FVector::ZeroVector;
+            LocalCorner[FaceAxis] = FaceSign * BoxQuery.HalfExtent[FaceAxis];
+            LocalCorner[U] = SignU * BoxQuery.HalfExtent[U];
+            LocalCorner[V] = SignV * BoxQuery.HalfExtent[V];
+            const FVector Corner = BoxQuery.Start + BoxQuery.Rotation.RotateVector(LocalCorner);
+            CornerQueries[PointIndex] = Query;
+            CornerQueries[PointIndex].Start = Corner + Normal * ProbeHalfLengthCm;
+            CornerQueries[PointIndex].End = Corner - Normal * ProbeHalfLengthCm;
+        }
+        bCornerBatchReady = World.SweepIndependentBatch(CornerQueries, CornerHits);
+    }
 	for (int32 PointIndex = 0; PointIndex < 4; ++PointIndex)
 	{
 		const double SignU = (PointIndex & 1) ? 1.0 : -1.0;
@@ -137,7 +160,7 @@ bool TryBuildBoxRestingSupport(
 		const FVector Corner = BoxQuery.Start + BoxQuery.Rotation.RotateVector(LocalCorner);
 		Query.Start = Corner + Normal * ProbeHalfLengthCm;
 		Query.End = Corner - Normal * ProbeHalfLengthCm;
-		const Analytic::FWorldHit Hit = World.SweepSingle(Query);
+		const Analytic::FWorldHit Hit = bCornerBatchReady ? CornerHits[PointIndex] : World.SweepSingle(Query);
 		OutSupport.Result = EBoxRestingSupportResult::UncertifiedGeometry;
 		OutSupport.WitnessIndex = PointIndex;
 		if (!Hit.bHit || Hit.bStartPenetrating || Hit.PenetrationDepth > 0.0 ||

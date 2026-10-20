@@ -15,7 +15,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  runner-contracts:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate portable CI scripts without Unreal
+        shell: powershell
+        run: |
+          $tests = Join-Path $env:RUNNER_TEMP 'IAmSpeed-RunnerContracts'
+          foreach ($file in Get-ChildItem -LiteralPath .\HostProject\Scripts -Filter '*.ps1' -File) {
+            $tokens = $null; $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -ne 0) { throw "PowerShell syntax error: $($file.FullName)" }
+          }
+          .\HostProject\Scripts\TestParallelContractCoverage.ps1 -TestOutputRoot $tests
+          .\HostProject\Scripts\TestCiRuntimeConfiguration.ps1 -TestOutputRoot $tests
+
   docker-contracts:
+    needs: runner-contracts
     # Fork PR code must never run on a self-hosted Docker runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted]

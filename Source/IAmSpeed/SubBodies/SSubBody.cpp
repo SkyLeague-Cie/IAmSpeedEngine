@@ -3,6 +3,7 @@
 
 #include "SSubBody.h"
 #include "Solid/CylinderSubBody.h"
+#include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
 #include "IAmSpeed/Base/ExactRotatorQuaternionCache.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
@@ -129,6 +130,10 @@ void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
 	static thread_local Speed::FExactRotatorQuaternionCache LocalRotationCache;
 	auto RelativeLocationVar = GetRelativeLocation();
 	auto RelativeRotationVar = LocalRotationCache.Get(GetRelativeRotation());
+ // Preserve this exact native cache access even when completed base arithmetic
+ // can be reused. Failed value/FP validation leaves the original path intact.
+ if(Speed::FrameParallel::TryConsumeJoinedActorBase1430(*this,ParentKinematic,
+     RelativeLocationVar,RelativeRotationVar,Kinematics))return;
 	const FVector WorldOffset = ParentKinematic.Rotation.RotateVector(RelativeLocationVar);
 	Kinematics.Location = ParentKinematic.Location + WorldOffset;
 	Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);

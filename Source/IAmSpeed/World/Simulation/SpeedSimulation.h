@@ -7,10 +7,16 @@
 #include "CanonicalFrameDriver.h"
 #include "SimulationFrameJournal.h"
 #include "SimulationWorker.h"
+#include "IAmSpeed/World/Analytic/AnalyticCaseSatDiagnostics.h"
+#include "FrameParallelTiming.h"
+#include "CaseCallerCoverage276.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Input/InputObservationChannel.h"
 #include <atomic>
 #include <memory>
+#if !UE_BUILD_SHIPPING
+#include "NativeFrameWitnessRecorder.h"
+#endif
 #include "SpeedSimulation.generated.h"
 
 class USpeedWorldSubsystem;
@@ -41,6 +47,10 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FIAmSpeedNativeCarsCamera1217;
+ friend class FIAmSpeedNativeAnalyticContacts1221;
+	friend class FIAmSpeedNativeAnalyticGrounded1368;
+ friend class FIAmSpeedNativeAnalyticEightCars1534;
 	friend class FSkyProducedJumpPowerslideWorkerTest;
 	friend class FSkyProducedBooleanV2WorkerTest;
 	friend class FSkyCameraWholePhysicalFrameCounterbalancedTest;
@@ -140,6 +150,10 @@ public:
 	bool ReadInputFirstFrameAtPausedBoundary(uint64& OutFrame);
 	/** Teardown fallback: join the physical owner before releasing any input/actor lifetime. */
 	bool JoinOwnedSimulationForInputTeardown();
+#if !UE_BUILD_SHIPPING
+    /** Observational case identity. GT only after an owned-worker join; never a physics gate. */
+    bool ConfigureCaseSatDiagnosticsAfterJoin(int32 NativeCaseId, int32 BatchIndex, uint64 WorldGeneration);
+#endif
 	/** Resumes the owned lane from its current canonical frame. */
 	void ResumeOwnedSimulation();
 	/** GT-only: re-arms a paused controlled run after its actors/inputs were replaced. Keeps the world's canonical frame continuous. */
@@ -201,6 +215,12 @@ protected:
 	static USpeedWorldSubsystem* GetSpeedWorldSubsystem(UWorld* World);
 	/** Runs consecutive frames and advances the integer authority only on success. */
 	bool RunCanonicalFrames(uint32 FrameCount);
+#if !UE_BUILD_SHIPPING
+    void BeginIndependentFastCoverage276() noexcept;
+    void EndIndependentFastCoverage276(bool bCompleted, const TCHAR* Reason) noexcept;
+    void BeginIndependentRealTimeCoverage696() noexcept;
+    void EndIndependentRealTimeCoverage696(bool bCompleted, const TCHAR* Reason) noexcept;
+#endif
 	void RecordStepPerformance(double PhysicalFrameMilliseconds);
 	float GetWarningFrameFraction() const;
 	float RealDeltaTime = 0.0f;
@@ -230,6 +250,15 @@ protected:
 	Speed::SimulationBoundary::FFrameHashJournal FrameHashes;
 
 private:
+#if !UE_BUILD_SHIPPING
+    Speed::Analytic::CaseSatDiagnostics::FCaseIdentity CaseSatDiagnosticIdentity;
+    Speed::FNativeFrameWitnessCaseIdentity NativeWitnessCase;
+    uint64 NativeWitnessEpoch=0;
+
+    uint64 CaseSatDiagnosticEpoch = 0;
+    Speed::ParallelTiming::FCaseRecorder ParallelFrameTiming;
+    Speed::Diagnostics::CaseCoverage276::FDriverLedger IndependentFastCoverage276;
+#endif
 	bool bPublishPresentation = false;
 	TSharedRef<TAtomic<bool>, ESPMode::ThreadSafe> PresentationRetiredAfterJoin = MakeShared<TAtomic<bool>, ESPMode::ThreadSafe>(false);
 	bool bPresentationBindingClosed = false;

@@ -2,6 +2,18 @@
 
 
 #include "SpeedSimulation.h"
+#if !UE_BUILD_SHIPPING
+#include "NativeFrameWitnessRecorder.h"
+#include "IAmSpeed/World/Analytic/AnalyticCausalStats1075.h"
+#include "IAmSpeed/World/Analytic/JoinedPiecewiseProviderWave1075.h"
+#include "IAmSpeed/World/Analytic/JoinedTensorCellWave1213.h"
+#include "IAmSpeed/World/Analytic/JoinedAnalyticQueryPrefetch1075.h"
+#include "FrameAppliedCommandWitness.h"
+#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
+#endif
+#include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
+#include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
+#include "IAmSpeed/World/Simulation/FramePresentationTasks.h"
 #include "CanonicalFrameContext.h"
 #include "CanonicalEpisodeTestingScope.h"
 #include "SimulationActorDiagnostics.h"
@@ -452,6 +464,8 @@ void ASpeedSimulation::StartOwnedWorkerIfReady()
 			Speed::OwnedFrameAudit::TryExportFrozen(OwnedAudit);
 #endif
 #if !UE_BUILD_SHIPPING
+        EndIndependentFastCoverage276(false,TEXT("WorkerCloseIncompleteUnlessAlreadyEnded"));
+        Speed::Analytic::CaseSatDiagnostics::FlushOnOwnerThread(TEXT("WorkerCloseBeforeInputOwners"));
             if(IsA<ARealTimeSimulation>())Speed::ActorDiagnostics::EndRun();
 #endif
 			CloseInputSessionsOnWorker();
@@ -818,14 +832,137 @@ void ASpeedSimulation::ResetCanonicalFrame()
 	CanonicalReadyDelayPulsesObserved = 0;
 }
 
+#if !UE_BUILD_SHIPPING
+// Case-window totals may contain nested or simultaneous intervals. They are
+// not an exclusive phase sum and are never added to the frame QPC partition.
+static bool ObserveJoinedAnalytic1075()
+{
+    for(const TCHAR* Name : { TEXT("p.IAmSpeed.Parallel.AnalyticCausal1075"),
+        TEXT("p.IAmSpeed.Parallel.PiecewiseProviderObserve1075"),
+        TEXT("p.IAmSpeed.Parallel.TensorCellObserve1213"),
+        TEXT("p.IAmSpeed.Parallel.WheelQueryPrefetch1075") })
+    {
+        const IConsoleVariable* CVar=IConsoleManager::Get().FindConsoleVariable(Name);
+        if(CVar && CVar->GetInt()!=0)return true;
+    }
+    return false;
+}
+static void LogJoinedAnalytic1075(const FString& Context)
+{
+    if(!ObserveJoinedAnalytic1075() || Context.IsEmpty())return;
+    Speed::Analytic::LogAnalyticCausalStats1075(*Context);
+    Speed::Analytic::LogPiecewiseProviderWaveStats1075(*Context);
+    Speed::Analytic::LogTensorCellWaveStats1213(*Context);
+    Speed::Analytic::LogAnalyticPrefetchStats1075(*Context);
+}
+bool ASpeedSimulation::ConfigureCaseSatDiagnosticsAfterJoin(
+    const int32 NativeCaseId, const int32 BatchIndex, const uint64 WorldGeneration)
+{
+    using namespace Speed::Analytic::CaseSatDiagnostics;
+    // No new pause/join or physical rejection: observe the fence already required by SLTest.
+    if (!IsInGameThread() || SimulationWorker || !IsOwnedWorkerExecutionMode() ||
+        !bInputOwnerRetired.Load() || !bInputOwnersClosedOnWorker.Load() || CaseSatDiagnosticEpoch==MAX_uint64)
+    {
+        // Never mutate identity potentially being read by an active owner, even
+        // if the live cvar changed to0. This rejected diagnostic call is inert.
+        try
+        {
+            if (IsEnabled()) UE_LOG(LogTemp, Warning, TEXT("[CaseSatUnavailable] Case=%d Reason=NoJoinedOwnedLane DiagnosticOnly=1"),NativeCaseId);
+        }
+        catch (...) { /* Diagnostics cannot interrupt ResetActors or mutate a live identity. */ }
+        return false;
+    }
+    ParallelFrameTiming.ConfigureAfterJoin(uint64(reinterpret_cast<UPTRINT>(this)),
+        NativeCaseId, BatchIndex, WorldGeneration);
+    // Existing joined-owner fence above, outside the canonical frame body.
+    if(!ParallelFrameTiming.IsActive() && ObserveJoinedAnalytic1075())
+    {
+        Speed::Analytic::ResetAnalyticCausalStats1075();
+        Speed::Analytic::ResetPiecewiseProviderWaveStats1075();
+        Speed::Analytic::ResetTensorCellWaveStats1213();
+        Speed::Analytic::ResetAnalyticPrefetchStats1075();
+    }
+    // The already-joined owned lane is the authority. This case identity is
+    // independent of CaseSat diagnostics, so real parallel kernels stay on.
+    NativeWitnessCase=Speed::FNativeFrameWitnessCaseIdentity{};
+    FString WitnessUUID;
+    if(NativeWitnessEpoch!=MAX_uint64 && NativeCaseId>=0 &&
+       FParse::Value(FCommandLine::Get(),TEXT("SLFrameWitnessRunUUID="),WitnessUUID) &&
+       !WitnessUUID.IsEmpty() && WitnessUUID.Len()<=64)
+    {
+        NativeWitnessCase.RunUUID=MoveTemp(WitnessUUID);
+        NativeWitnessCase.DriverKey=uint64(reinterpret_cast<UPTRINT>(this));
+        NativeWitnessCase.Epoch=++NativeWitnessEpoch;NativeWitnessCase.WorldGeneration=WorldGeneration;
+        NativeWitnessCase.NativeCaseId=NativeCaseId;NativeWitnessCase.BatchIndex=BatchIndex;
+        NativeWitnessCase.bConfigured=true;
+    }
+    // Read the already-established joined owner fence, after mode initialization.
+    // V2 is per-case and must match the real CaseBegin identity; it is not a
+    // replacement for consumed input or callback/source closure.
+    if(ParallelFrameTiming.IsActive() || NativeWitnessCase.bConfigured)
+        UE_LOG(LogTemp,Display,TEXT("[IAmSpeedOwnedCasePolicyV2] Driver=%llu Case=%d Batch=%d WorldGeneration=%llu ExecutionHost=%u OwnedInputFence=1 Scope=ExistingJoinedOwnerFence"),
+            uint64(reinterpret_cast<UPTRINT>(this)),NativeCaseId,BatchIndex,WorldGeneration,uint32(GetActiveExecutionMode()));
+    if (!IsEnabled()) { CaseSatDiagnosticIdentity=FCaseIdentity{}; return true; }
+    try
+    {
+        return BuildCaseIdentity(CaseSatDiagnosticIdentity,
+            uint64(reinterpret_cast<UPTRINT>(this)),++CaseSatDiagnosticEpoch,
+            NativeCaseId,BatchIndex,WorldGeneration);
+    }
+    catch (...) { CaseSatDiagnosticIdentity=FCaseIdentity{}; return false; }
+}
+#endif
+
+#if !UE_BUILD_SHIPPING
+void ASpeedSimulation::BeginIndependentRealTimeCoverage696() noexcept
+{
+    ParallelFrameTiming.BeginDriver(false, CanonicalNumFrame, IsOwnedWorkerExecutionMode());
+    IndependentFastCoverage276.BeginRealTime(CaseSatDiagnosticIdentity,CanonicalNumFrame,
+        PerformanceFrameCount,IsOwnedWorkerExecutionMode());
+}
+void ASpeedSimulation::EndIndependentRealTimeCoverage696(bool bCompleted, const TCHAR* Reason) noexcept
+{
+    ParallelFrameTiming.Close(bCompleted, Reason);
+    if(ParallelFrameTiming.ClaimJoinedCaseLog())
+        LogJoinedAnalytic1075(ParallelFrameTiming.JoinedCaseContextForLogging());
+    IndependentFastCoverage276.EndRealTime(CanonicalNumFrame,PerformanceFrameCount,bCompleted,Reason);
+}
+void ASpeedSimulation::BeginIndependentFastCoverage276() noexcept
+{
+    ParallelFrameTiming.BeginDriver(true, CanonicalNumFrame, IsOwnedWorkerExecutionMode());
+    IndependentFastCoverage276.BeginFast(CaseSatDiagnosticIdentity,CanonicalNumFrame,
+        PerformanceFrameCount,IsOwnedWorkerExecutionMode());
+}
+void ASpeedSimulation::EndIndependentFastCoverage276(bool bCompleted, const TCHAR* Reason) noexcept
+{
+    ParallelFrameTiming.Close(bCompleted, Reason);
+    if(ParallelFrameTiming.ClaimJoinedCaseLog())
+        LogJoinedAnalytic1075(ParallelFrameTiming.JoinedCaseContextForLogging());
+    IndependentFastCoverage276.EndFast(CanonicalNumFrame,PerformanceFrameCount,bCompleted,Reason);
+}
+#endif
+
 bool ASpeedSimulation::RunCanonicalFrames(const uint32 FrameCount)
 {
+#if !UE_BUILD_SHIPPING
+    Speed::Diagnostics::CaseCoverage276::FScopedPreloop CallerPreloop276(IndependentFastCoverage276);
+#endif
 	if (!ProcessPendingRollbackRequest())
 	{
+#if !UE_BUILD_SHIPPING
+        CallerPreloop276.Finish(false);
+#endif
 		return false;
 	}
+#if !UE_BUILD_SHIPPING
+    CallerPreloop276.Finish(true);
+#endif
 	for (uint32 FrameIndex = 0; FrameIndex < FrameCount; ++FrameIndex)
 	{
+#if !UE_BUILD_SHIPPING
+        Speed::Diagnostics::CaseCoverage276::FScopedForward CallerForward276(IndependentFastCoverage276,CanonicalNumFrame);
+        Speed::Analytic::CaseSatDiagnostics::FScopedFrame DiagnosticFrame(CaseSatDiagnosticIdentity,CanonicalNumFrame);
+#endif
 		const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
 #if WITH_DEV_AUTOMATION_TESTS
 		const auto OwnedStep = Speed::OwnedFrameAudit::BeginStep(CanonicalNumFrame, false);
@@ -836,8 +973,16 @@ bool ASpeedSimulation::RunCanonicalFrames(const uint32 FrameCount)
 #endif
 		if (!StepSucceeded)
 		{
+#if !UE_BUILD_SHIPPING
+            DiagnosticFrame.Finish(false);
+            CallerForward276.Finish(false);
+#endif
 			return false;
 		}
+#if !UE_BUILD_SHIPPING
+        DiagnosticFrame.Finish(true);
+        CallerForward276.Finish(true);
+#endif
 		RecordStepPerformance(
 			(FPlatformTime::Seconds() - PhysicalFrameStartSeconds) * 1000.0);
 		++CanonicalNumFrame;
@@ -912,6 +1057,9 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::OwnedFrameAudit::FCanonicalPhaseScope OwnedPhases(Context.NumFrame);
 #endif
+#if !UE_BUILD_SHIPPING
+    Speed::ParallelTiming::FFrameScope ParallelTimingScope(ParallelFrameTiming, Context.NumFrame, Context.PhysicalDeltaTime);
+#endif
 	if (bCanonicalPublicationTerminal.Load()) return false;
 	if (!SpeedWorldSubsystem)
 	{
@@ -943,6 +1091,27 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Admission);
 #endif
+#if !UE_BUILD_SHIPPING
+    // All three stage counters are owner TLS; facet totals belong to this world's
+    // canonical service. Reset only while the independent timing recorder is on,
+    // after admission freezes the backend, before any frame phase dispatch.
+    // Default timing mode 0 pays none
+    // of this observer's per-frame settings/counter work.
+    Speed::ParallelTiming::FFrameWorkEvidence ParallelWork;
+    const auto* ParallelTimingWorld = ParallelFrameTiming.IsActive()
+        ? SpeedWorldSubsystem->GetStaticCollisionWorld() : nullptr;
+    if (ParallelFrameTiming.IsActive())
+    {
+        const auto Settings = Speed::CaptureFrameParallelSettings();
+        ParallelWork.Requested = Settings.RequestedLanes;
+        ParallelWork.PolicyLanes = Settings.LaneLimit;
+        Speed::ResetFrameParallelStageTotals(Speed::EFrameParallelStage::Camera);
+        Speed::ResetFrameParallelStageTotals(Speed::EFrameParallelStage::Prepare);
+        Speed::ResetFrameParallelStageTotals(Speed::EFrameParallelStage::QueryBatch);
+        if (ParallelTimingWorld) ParallelTimingWorld->ResetFacetParallelTotals();
+        ParallelWork.bKnown = true;
+    }
+#endif
 	bool bAuditStarted = false;
 	bool bGlobalPublished = false;
 	bool bOutcomeHandled = false;
@@ -958,6 +1127,10 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		bCanonicalPublicationTerminal.Store(true);
 		bOwnedWorkerTerminal.Store(true);
 	};
+
+#if !UE_BUILD_SHIPPING
+        ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Input);
+#endif
 	const TCHAR* ExceptionStage = TEXT("InputRegistryRead");
 	try
 	{
@@ -1011,6 +1184,18 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputSnapshot);
 #endif
+#if !UE_BUILD_SHIPPING
+        const auto WitnessInstalled=bHasInputSessions && InputSessionRegistry?InputSessionRegistry->ReadInstalled():nullptr;
+        TUniquePtr<Speed::FFrameAppliedCommandWitnessScope> AppliedCommandWitness;
+        TUniquePtr<Speed::FNativeFrameWitnessRecorder> FrameWitness;
+        try { FrameWitness=Speed::FNativeFrameWitnessRecorder::Begin(
+            Context.NumFrame,Context.PhysicalDeltaTime,WitnessInstalled.get(),*SpeedWorldSubsystem,NativeWitnessCase,!bHasInputSessions); }
+        catch(...) { UE_LOG(LogTemp,Error,TEXT("[FrameWitnessBeginUnknown] Frame=%llu"),Context.NumFrame); }
+        if(FrameWitness)try { AppliedCommandWitness=MakeUnique<Speed::FFrameAppliedCommandWitnessScope>(
+            Context.NumFrame,InputJournal.GetCommandsForFrame(Context.NumFrame).Num());
+            SpeedWorldSubsystem->DeclareExpectedFrameAnalogWitnessForTesting(); }
+        catch(...) { UE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandBeginUnknown] Frame=%llu"),Context.NumFrame); }
+#endif
 		ExceptionStage = TEXT("StaticWorldAudit");
 		Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
 			Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
@@ -1051,6 +1236,10 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CanonicalInputs);
 #endif
 		bInputConsumptionErrorReported = false;
+
+#if !UE_BUILD_SHIPPING
+        ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Prepare);
+#endif
 		IAMSPEED_FRAME_PHASE(Prepare);
 		ExceptionStage = TEXT("WorldPrepare");
 #if !UE_BUILD_SHIPPING
@@ -1063,6 +1252,10 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldPrepare);
+#endif
+
+#if !UE_BUILD_SHIPPING
+        ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::WorldStep);
 #endif
 		IAMSPEED_FRAME_PHASE(Core);
 		ExceptionStage = TEXT("WorldStep");
@@ -1079,12 +1272,20 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
     if (OwnedPhases.CapturesPhysicalDetail())
         OwnedPhases.CopyPhysicalDetail(SpeedWorldSubsystem->GetLastStepDiagnostics(), OwnedDiagnosticSerialBefore);
 #endif
+
+#if !UE_BUILD_SHIPPING
+        ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Snapshot);
+#endif
 		IAMSPEED_FRAME_PHASE(Snapshot);
 		ExceptionStage = TEXT("SnapshotCapture");
 		FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
 			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Snapshot);
+#endif
+
+#if !UE_BUILD_SHIPPING
+        ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Presentation);
 #endif
 		ExceptionStage = TEXT("PresentationProducerList");
 		TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
@@ -1095,39 +1296,40 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::ProducerList);
 #endif
+		const Speed::FFrameParallelSettings ParallelPresentationSettings = Speed::CaptureFrameParallelSettings();
 		ExceptionStage = TEXT("PresentationProduce");
-		for (const auto& Producer : Producers)
-		{
-			const bool bCameraProducer = Producer->IsCameraPresentation();
-			if (bCameraProducer && !AllowsCameraPresentation()) continue;
-			FSimulationPresentationOutput Output;
+        Producers.RemoveAll([this](const auto& Producer)
+        { return Producer->IsCameraPresentation() && !AllowsCameraPresentation(); });
 #if WITH_DEV_AUTOMATION_TESTS
-            Speed::Testing::ObservePresentationDispatch(&Producer.Get(), Snapshot.NumFrame);
-#endif
-			{
-#if WITH_DEV_AUTOMATION_TESTS
-				Speed::OwnedFrameAudit::FCameraScope OwnedCamera(Snapshot.NumFrame, bCameraProducer);
-#endif
-				Producer->Produce(Snapshot, Output);
-#if WITH_DEV_AUTOMATION_TESTS
-				OwnedCamera.MarkReturned();
-#endif
-			}
-			// Producer cannot forge the envelope address or publication serial.
-			Output.OwnerStableId = Producer->OwnerStableId();
-			Output.Channel = Producer->Channel();
-			Output.NumFrame = Snapshot.NumFrame;
-			Output.PublicationSerial = 0;
-			Snapshot.PresentationOutputs.Add(MoveTemp(Output));
-		}
-#if WITH_DEV_AUTOMATION_TESTS
-    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Presentation);
+        TOptional<Speed::OwnedFrameAudit::FCameraScope> OwnedCamera;
+        const bool bInputComplete = Speed::FrameParallel::ProduceFramePresentationWithOwnerValidationAndObservation(
+            Snapshot, Producers, ParallelPresentationSettings.bParallelCamera ? ParallelPresentationSettings.LaneLimit : 1,
+            bHasInputSessions, [&] { return !bHasInputSessions || InputSessionRegistry->ValidateComplete(); },
+            [&](const ISimulationPresentationProducer& Producer)
+            {
+                Speed::Testing::ObservePresentationDispatch(&Producer, Snapshot.NumFrame);
+                OwnedCamera.Emplace(Snapshot.NumFrame, Producer.IsCameraPresentation());
+            },
+            [&](bool bProducerReturned)
+            {
+                if (bProducerReturned) OwnedCamera->MarkReturned();
+                OwnedCamera.Reset();
+            });
+        OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Presentation);
+#else
+        const bool bInputComplete = Speed::FrameParallel::ProduceFramePresentationWithOwnerValidation(
+            Snapshot, Producers, ParallelPresentationSettings.bParallelCamera ? ParallelPresentationSettings.LaneLimit : 1,
+            bHasInputSessions, [&] { return !bHasInputSessions || InputSessionRegistry->ValidateComplete(); });
 #endif
 		ExceptionStage = TEXT("InputValidateComplete");
-		if (bHasInputSessions && !InputSessionRegistry->ValidateComplete())
+		if (!bInputComplete)
 			throw std::runtime_error("canonical input completion rejected");
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputValidate);
+#endif
+
+#if !UE_BUILD_SHIPPING
+        ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Publish);
 #endif
 		IAMSPEED_FRAME_PHASE(Publish);
 		ExceptionStage = TEXT("CanonicalPublish");
@@ -1155,6 +1357,10 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 				Context.NumFrame, static_cast<uint32>(Publication), bGlobalPublished ? 1 : 0);
 			return false;
 		}
+
+#if !UE_BUILD_SHIPPING
+        ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::PostCommit);
+#endif
 		if (bHasInputSessions)
 		{
 			ExceptionStage = TEXT("InputComplete");
@@ -1187,11 +1393,12 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 		FCameraCanonicalSample CameraSample;
 		ExceptionStage = TEXT("CameraSample");
 #if WITH_DEV_AUTOMATION_TESTS
-        if (AllowsCameraPresentation() &&
-            (Speed::Testing::ObserveCanonicalCameraSample(Snapshot.NumFrame), BuildCanonicalCameraSample(Snapshot, CameraSample)))
+        const bool bHasCanonicalCameraSample = AllowsCameraPresentation() &&
+            (Speed::Testing::ObserveCanonicalCameraSample(Snapshot.NumFrame), BuildCanonicalCameraSample(Snapshot, CameraSample));
 #else
-		if (AllowsCameraPresentation() && BuildCanonicalCameraSample(Snapshot, CameraSample))
+        const bool bHasCanonicalCameraSample = AllowsCameraPresentation() && BuildCanonicalCameraSample(Snapshot, CameraSample);
 #endif
+        if (bHasCanonicalCameraSample)
 		{
 			CameraSample.NumFrame = Snapshot.NumFrame;
 			CameraSample.PublicationSerial = SnapshotBuffer.PublishedSerial();
@@ -1202,11 +1409,93 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CameraSample);
 #endif
+#if !UE_BUILD_SHIPPING
+        if(FrameWitness)try
+        {
+            // Every output payload and internal camera checkpoint stays in its
+            // publication order; no float rounding, sorting or hash-only oracle.
+            TArray<uint8> WitnessCamera;using WitnessBytes=Speed::FEpisodeStateBytesForTesting;
+            WitnessBytes::Add(WitnessCamera,uint32(1));WitnessBytes::Add(WitnessCamera,Snapshot.NumFrame);
+            WitnessBytes::Add(WitnessCamera,Snapshot.PresentationOutputs.Num());
+            for(const auto& Output:Snapshot.PresentationOutputs)
+            {
+                WitnessBytes::Add(WitnessCamera,Output.OwnerStableId);WitnessBytes::Add(WitnessCamera,Output.Channel);
+                WitnessBytes::Add(WitnessCamera,Output.NumFrame);WitnessBytes::Add(WitnessCamera,Output.PublicationSerial);
+                WitnessBytes::Add(WitnessCamera,Output.Payload.Num());WitnessCamera.Append(Output.Payload);
+                WitnessBytes::Add(WitnessCamera,Output.StatePayload.Num());WitnessCamera.Append(Output.StatePayload);
+            }
+            WitnessBytes::Add(WitnessCamera,bHasCanonicalCameraSample);
+            if(bHasCanonicalCameraSample)
+            {
+                WitnessBytes::Add(WitnessCamera,CameraSample.NumFrame);WitnessBytes::Add(WitnessCamera,CameraSample.PublicationSerial);
+                WitnessBytes::Add(WitnessCamera,CameraSample.StateHash);WitnessBytes::Add(WitnessCamera,CameraSample.InputJournalHash);
+                WitnessBytes::Add(WitnessCamera,CameraSample.CarBodyStableId);WitnessBytes::Add(WitnessCamera,CameraSample.BallBodyStableId);
+                WitnessBytes::Add(WitnessCamera,CameraSample.EvaluatorKind);
+                WitnessBytes::Add(WitnessCamera,CameraSample.Position.X);WitnessBytes::Add(WitnessCamera,CameraSample.Position.Y);WitnessBytes::Add(WitnessCamera,CameraSample.Position.Z);
+                WitnessBytes::Add(WitnessCamera,CameraSample.Rotation.X);WitnessBytes::Add(WitnessCamera,CameraSample.Rotation.Y);WitnessBytes::Add(WitnessCamera,CameraSample.Rotation.Z);WitnessBytes::Add(WitnessCamera,CameraSample.Rotation.W);
+            }
+            if(AppliedCommandWitness && !AppliedCommandWitness->SaveCommittedFrame())
+                UE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandSaveUnknown] Frame=%llu"),Context.NumFrame);
+            const auto WitnessCompleted=bHasInputSessions && InputSessionRegistry?InputSessionRegistry->ReadLatest():nullptr;
+            FrameWitness->Finish(WitnessCompleted.get(),Snapshot.Payload,
+                SpeedWorldSubsystem->GetLastStepDiagnostics().ResolvedEventCount,WitnessCamera,true,!bHasInputSessions);
+        }
+        catch(...) { UE_LOG(LogTemp,Error,TEXT("[FrameWitnessFinishUnknown] Frame=%llu"),Context.NumFrame); }
+#endif
+
+#if !UE_BUILD_SHIPPING
+        ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Finalize);
+#endif
 		IAMSPEED_FRAME_PHASE(Journal);
 		ExceptionStage = TEXT("FrameHash");
 		FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::FrameHash);
+#endif
+#if !UE_BUILD_SHIPPING
+        if (ParallelWork.bKnown)
+        {
+            // Prepare, world queries and presentation have all joined before
+            // reaching committed publication. The owner itself is one actual
+            // participant even on an empty/plane-only frame with no dispatch.
+            ParallelWork.LogicalMax = 1;
+            ParallelWork.NativeMax = 1;
+            for (const auto Stage : {Speed::EFrameParallelStage::Camera,
+                 Speed::EFrameParallelStage::Prepare, Speed::EFrameParallelStage::QueryBatch})
+            {
+                const auto Totals = Speed::GetFrameParallelStageTotals(Stage);
+                ParallelWork.LogicalMax = FMath::Max(ParallelWork.LogicalMax, Totals.MaximumLogicalLanes);
+                ParallelWork.NativeMax = FMath::Max(ParallelWork.NativeMax, Totals.MaximumNativeThreads);
+                ParallelWork.FallbackMask |= static_cast<uint32>(Totals.FallbackMask);
+                if (Stage == Speed::EFrameParallelStage::Prepare)
+                { ParallelWork.ParallelPrepareCalls = Totals.ParallelInvocations; ParallelWork.PrepareNativeMax = Totals.MaximumNativeThreads; }
+                else if (Stage == Speed::EFrameParallelStage::QueryBatch)
+                { ParallelWork.ParallelQueryCalls = Totals.ParallelInvocations; ParallelWork.QueryNativeMax = Totals.MaximumNativeThreads; }
+                else if (Stage == Speed::EFrameParallelStage::Camera)
+                { ParallelWork.ParallelCameraCalls = Totals.ParallelInvocations; ParallelWork.CameraNativeMax = Totals.MaximumNativeThreads; }
+
+            }
+            if (ParallelTimingWorld)
+            {
+                const auto Facets = ParallelTimingWorld->GetFacetParallelTotals();
+                ParallelWork.FacetProviders = Facets.Providers;
+                ParallelWork.ParallelFacetProviders = Facets.ParallelProviders;
+                ParallelWork.EvaluatedFacets = Facets.EvaluatedFacets;
+                ParallelWork.FacetNativeMax = Facets.MaximumNativeThreads;
+
+                ParallelWork.LogicalMax = FMath::Max(ParallelWork.LogicalMax, Facets.MaximumLogicalLanes);
+                ParallelWork.NativeMax = FMath::Max(ParallelWork.NativeMax, Facets.MaximumNativeThreads);
+                if (Facets.InstrumentationFallbackProviders) ParallelWork.FallbackMask |= 1u << 16;
+                if (Facets.NestedFallbackProviders) ParallelWork.FallbackMask |= 1u << 17;
+                if (Facets.CapacityFallbackProviders) ParallelWork.FallbackMask |= 1u << 18;
+                if (Facets.NumericFallbackProviders) ParallelWork.FallbackMask |= 1u << 19;
+            }
+            const auto EndSettings = Speed::CaptureFrameParallelSettings();
+            ParallelWork.bKnown = EndSettings.RequestedLanes == ParallelWork.Requested &&
+                EndSettings.LaneLimit == ParallelWork.PolicyLanes &&
+                ParallelWork.LogicalMax <= ParallelWork.PolicyLanes;
+        }
+        ParallelTimingScope.MarkCommitted(Snapshot.StateHash, Snapshot.InputJournalHash, ParallelWork);
 #endif
 		IAMSPEED_FRAME_PHASE(Finalize);
 		return true;
@@ -1265,6 +1554,9 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 		{
 			return true;
 		}
+#if !UE_BUILD_SHIPPING
+        IndependentFastCoverage276.RollbackDequeued();
+#endif
 		Request = MoveTemp(PendingRollbackRequest);
 		PendingRollbackRequest.Reset();
 	}

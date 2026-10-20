@@ -72,6 +72,9 @@ public:
 	/** Values-only category; the normal replay contract remains unchanged. */
 	virtual bool IsCameraPresentation() const { return false; }
 	virtual void Produce(const FSimulationSnapshot& Bodies, FSimulationPresentationOutput& Out) = 0;
+	/** Explicit values-only/private-state contract. One joined task per frame;
+	 * lifecycle, restore, physical commit and retirement never overlap Produce. */
+	virtual bool SupportsIndependentFrameProduction() const { return false; }
 	virtual void InvalidateTimeline() = 0;
 	virtual bool CanRestore(const FSimulationPresentationOutput& Output, uint64 ReplayThrough) const { return false; }
 	/** Called only after every producer and the body snapshot have validated. */

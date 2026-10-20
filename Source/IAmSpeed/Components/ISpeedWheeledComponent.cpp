@@ -2,10 +2,33 @@
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
+#include "IAmSpeed/World/Analytic/JoinedAnalyticQueryPrefetch1075.h"
 #include "HAL/IConsoleManager.h"
 #include "Engine/World.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "IAmSpeed/World/Simulation/FrameSolveWitness.h"
+namespace
+{
+struct FWheelManifoldCapture1368
+{
+ const ISpeedComponent* Owner;const TArray<SWheelGroundContact>& Contacts;bool Active;
+ FWheelManifoldCapture1368(const ISpeedComponent* InOwner,const TArray<SWheelGroundContact>& InContacts)
+  :Owner(InOwner),Contacts(InContacts),Active(Speed::FFrameSolveWitnessScope::IsWheelManifoldActive1368())
+ {Record(0);}
+ ~FWheelManifoldCapture1368(){Record(255);}
+ void Record(uint8 Event,int32 A=INDEX_NONE,int32 B=INDEX_NONE,
+  TConstArrayView<int32> Order={},TConstArrayView<float> Scalars={},
+  TConstArrayView<double> DoubleScalars={},TConstArrayView<FVector> Vectors={})const noexcept
+ {
+  if(Active)Speed::FFrameSolveWitnessScope::RecordWheelManifold1368(Event,Owner,A,B,
+   TConstArrayView<SWheelGroundContact>(Contacts.GetData(),Contacts.Num()),Order,Scalars,DoubleScalars,Vectors);
+ }
+};
+}
+#endif
+
 
 #if !(UE_BUILD_SHIPPING)
 // Read-only diagnostics over the admitted world data. No contact decision uses this mapping.
@@ -443,6 +466,12 @@ float ISpeedWheeledComponent::GetCanonicalWheelSupportCompression(
 void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delta)
 {
 	TArray<SWheelGroundContact>& PendingWheelGroundContacts = GetPendingWheelContacts();
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+	FWheelManifoldCapture1368 WheelTrace1368(this,PendingWheelGroundContacts);
+#endif
+// END_WHEEL_MANIFOLD1368
+
 	if (PendingWheelGroundContacts.Num() == 0) return;
 
 	const float dt = FMath::Max(delta, 1e-6f);
@@ -478,6 +507,19 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 		CVarIAmSpeedWheelContactSolverMode.GetValueOnAnyThread(), 0, 1);
 	TArray<int32, TInlineAllocator<4>> ContactOrder;
 	ContactOrder.Reserve(PendingWheelGroundContacts.Num());
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active)
+ {
+  const float Values[]={delta,dt,NormalVelTimeConstant,gamma,LockedSeparatingNormalVelTimeConstant,LockedSeparatingGamma,
+   LockedSeparatingMaxNormalVelocity,MaxInwardNormalVelocityToSolve,VNDeadzone,JDeadzone,Softness};
+  const FVector Vectors[]={V0,W0,CurrentV,CurrentW};
+  WheelTrace1368.Record(1,SolverMode,bLockedSeparatingDampingEnabled?1:0,{},MakeArrayView(Values),{},MakeArrayView(Vectors));
+ }
+#endif
+// END_WHEEL_MANIFOLD1368
+
 	for (int32 ContactIndex = 0; ContactIndex < PendingWheelGroundContacts.Num(); ++ContactIndex)
 	{
 		const SWheelGroundContact& Contact =
@@ -516,9 +558,19 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 					*Contact.Normal.ToString());
 			}
 #endif
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+   WheelTrace1368.Record(2,ContactIndex,0);
+#endif
+// END_WHEEL_MANIFOLD1368
 			continue;
 		}
 		ContactOrder.Add(ContactIndex);
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+  WheelTrace1368.Record(2,ContactIndex,1);
+#endif
+// END_WHEEL_MANIFOLD1368
 	}
 	ContactOrder.Sort([&PendingWheelGroundContacts](const int32 A, const int32 B)
 	{
@@ -528,6 +580,12 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 		const int32 WheelIndexB = WheelB ? WheelB->Idx() : INDEX_NONE;
 		return WheelIndexA < WheelIndexB;
 	});
+
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+	WheelTrace1368.Record(3,SolverMode,INDEX_NONE,MakeArrayView(ContactOrder));
+#endif
+// END_WHEEL_MANIFOLD1368
 	if (SolverMode == 1 && ContactOrder.Num() <= 4)
 	{
 		TArray<int32, TInlineAllocator<4>> ActiveContacts;
@@ -561,6 +619,14 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 				-vN, MaxInwardNormalVelocityToSolve)));
 		}
 
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active)
+  WheelTrace1368.Record(4,bHasSeparatingConstraint?1:0,INDEX_NONE,MakeArrayView(ActiveContacts),{},MakeArrayView(TargetNormalVelocityChanges));
+#endif
+// END_WHEEL_MANIFOLD1368
+
 		// Separating damping deliberately applies an attractive impulse and is not
 		// part of the unilateral inward-contact complementarity problem.
 		if (!bHasSeparatingConstraint && ActiveContacts.Num() > 0)
@@ -591,6 +657,19 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 					}
 				}
 			}
+
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active)
+ {
+  double Values[20]={};int32 Count=0;
+  for(int32 R=0;R<ConstraintCount;++R)for(int32 C=0;C<ConstraintCount;++C)Values[Count++]=Response[R][C];
+  for(const double V:TargetNormalVelocityChanges)Values[Count++]=V;
+  WheelTrace1368.Record(5,ConstraintCount,INDEX_NONE,MakeArrayView(ActiveContacts),{},TConstArrayView<double>(Values,Count));
+ }
+#endif
+// END_WHEEL_MANIFOLD1368
 
 			auto SolveSubset = [&Response, &TargetNormalVelocityChanges,
 				ConstraintCount](const uint32 ActiveMask, double OutLambda[4])
@@ -702,6 +781,14 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 				}
 			}
 
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active)
+  WheelTrace1368.Record(6,bFoundSolution?1:0,ConstraintCount,MakeArrayView(ActiveContacts),{},MakeArrayView(Lambda));
+#endif
+// END_WHEEL_MANIFOLD1368
+
 			if (bFoundSolution)
 			{
 				for (int32 Index = 0; Index < ConstraintCount; ++Index)
@@ -713,8 +800,30 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 					{
 						continue;
 					}
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active){const FVector Vectors[]={Impulse,C.WorldPos};const double Values[]={Lambda[Index]};
+  WheelTrace1368.Record(8,ActiveContacts[Index],Index,MakeArrayView(ActiveContacts),{},MakeArrayView(Values),MakeArrayView(Vectors));}
+#endif
+// END_WHEEL_MANIFOLD1368
+
 					AddPhysImpulseAtPoint(Impulse, C.WorldPos);
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active){const FVector Vectors[]={Impulse,C.WorldPos};
+  WheelTrace1368.Record(9,ActiveContacts[Index],Index,MakeArrayView(ActiveContacts),{},{},MakeArrayView(Vectors));}
+#endif
+// END_WHEEL_MANIFOLD1368
+
 				}
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+	WheelTrace1368.Record(254,1,INDEX_NONE,MakeArrayView(ContactOrder));
+#endif
+// END_WHEEL_MANIFOLD1368
+
 				PendingWheelGroundContacts.Reset();
 				return;
 			}
@@ -731,6 +840,14 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 		const FVector& SolverV = SolverMode == 0 ? V0 : CurrentV;
 		const FVector& SolverW = SolverMode == 0 ? W0 : CurrentW;
 		const FVector vContact = SolverV + FVector::CrossProduct(SolverW, C.r);
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active){const FVector Vectors[]={SolverV,SolverW,vContact};
+  WheelTrace1368.Record(10,ContactIndex,SolverMode,MakeArrayView(ContactOrder),{},{},MakeArrayView(Vectors));}
+#endif
+// END_WHEEL_MANIFOLD1368
+
 		const float vN = FVector::DotProduct(vContact, N);
 
 		const bool bMovingIntoSurface =
@@ -773,12 +890,34 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 		if (Impulse.SizeSquared() < (JDeadzone * JDeadzone))
 			continue;
 
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active){const FVector Vectors[]={Impulse,N,C.WorldPos};const float Values[]={vN,denom,NormalVelocityToSolve,SolverGamma,jn};
+  WheelTrace1368.Record(11,ContactIndex,bMovingIntoSurface?1:0,MakeArrayView(ContactOrder),MakeArrayView(Values),{},MakeArrayView(Vectors));}
+#endif
+// END_WHEEL_MANIFOLD1368
+
 		AddPhysImpulseAtPoint(Impulse, C.WorldPos);
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+
+ if(WheelTrace1368.Active){const FVector Vectors[]={Impulse,N,C.WorldPos};
+  WheelTrace1368.Record(12,ContactIndex,bMovingIntoSurface?1:0,MakeArrayView(ContactOrder),{},{},MakeArrayView(Vectors));}
+#endif
+// END_WHEEL_MANIFOLD1368
+
 		if (SolverMode != 0)
 		{
 			CurrentV = GetPhysCOMVelocity();
 			CurrentW = GetPhysAngularVelocity();
 		}
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+ if(WheelTrace1368.Active){const FVector Values[]={CurrentV,CurrentW};WheelTrace1368.Record(13,ContactIndex,SolverMode,MakeArrayView(ContactOrder),{},{},MakeArrayView(Values));}
+#endif
+// END_WHEEL_MANIFOLD1368
+
 
 #if !(UE_BUILD_SHIPPING)
 		if (CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
@@ -802,6 +941,12 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 		}
 #endif
 	}
+
+// BEGIN_WHEEL_MANIFOLD1368
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+	WheelTrace1368.Record(254,0,INDEX_NONE,MakeArrayView(ContactOrder));
+#endif
+// END_WHEEL_MANIFOLD1368
 
 	PendingWheelGroundContacts.Reset();
 }
@@ -1691,6 +1836,10 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 		}
 	}
 
+    {
+        TOptional<Speed::Analytic::FScopedWheelSuspensionPrefetch1075> Prefetch;
+        if (Speed::Analytic::IsWheelSuspensionPrefetch1075Enabled())
+            Prefetch.Emplace(GetWheelSubBodies(), delta);
 	for (auto& Wheel : GetWheelSubBodies())
 	{
 		if (Wheel)
@@ -1698,6 +1847,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			Wheel->SweepSuspension(delta);
 		}
 	}
+    } // Restore the prefetch TLS before retained-support/projection queries.
 	if (bTransactionalProjection && bDeferredWheelGroundState)
 	{
 		for (const TPair<USWheelSubBody*, SHitResult>& Support : EstablishedSupports)

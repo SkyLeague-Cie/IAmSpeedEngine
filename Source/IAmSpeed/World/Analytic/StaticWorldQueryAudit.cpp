@@ -1,4 +1,6 @@
 #include "StaticWorldQueryAudit.h"
+#include "JoinedAnalyticQueryPrefetch1075.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include <limits>
 #include "TorusWorldQuery.h"
 #include "IAmSpeed/SubBodies/Solid/TorusSphereSweep.h"
@@ -804,6 +806,145 @@ bool FStaticWorldQueryAudit::TryRecordEmptySingle(
 	return true;
 }
 
+namespace
+{
+TAutoConsoleVariable<int32> CVarWheelQueryPrefetch1075(
+    TEXT("p.IAmSpeed.Parallel.WheelQueryPrefetch1075"), 0,
+    TEXT("Experimental joined wheel-ground query prefetch. Default off. Reuse requires exact current query/context/dt/type; all physical effects remain serial."));
+thread_local FScopedWheelSuspensionPrefetch1075::FImpl* GJoinedPrefetch1075 = nullptr;
+thread_local FAnalyticPrefetchConsumer1075 GPrefetchConsumer1075;
+}
+struct FScopedWheelSuspensionPrefetch1075::FImpl
+{
+    FJoinedAnalyticQueryCache1075 Cache;
+    FAnalyticPrefetchStats1075 Stats;
+    FImpl(TConstArrayView<FAnalyticPrefetchQuery1075> Entries,
+        TConstArrayView<FWorldHit> Hits, const FAnalyticPrefetchContext1075& Context)
+        : Cache(Entries, Hits, Context) {}
+};
+bool IsWheelSuspensionPrefetch1075Requested()
+{
+    return CVarWheelQueryPrefetch1075.GetValueOnAnyThread() != 0;
+}
+const TCHAR* WheelSuspensionPrefetch1075Status()
+{
+    return TEXT("DisabledCanonicalCacheAndOutputFEnvUnqualified");
+}
+bool IsWheelSuspensionPrefetch1075Enabled()
+{
+    // Deliberately neutralized: private and canonical query-cache hit/miss paths
+    // can leave different output numeric status. No CVar can bypass this gate.
+    return false;
+}
+FScopedWheelSuspensionPrefetch1075::FScopedWheelSuspensionPrefetch1075(
+    TConstArrayView<TObjectPtr<USWheelSubBody>> Wheels, float Delta)
+{
+    if (!IsWheelSuspensionPrefetch1075Enabled()) return;
+    FAnalyticPrefetchStats1075 Stats;
+    Stats.ScopeAttempts=1;
+    const auto Fallback = [&]()
+    {
+        Stats.FallbackScopes=1;
+        Private::AccumulateAnalyticPrefetchStats1075(Stats);
+    };
+    if (GJoinedPrefetch1075 || Wheels.Num()>FJoinedAnalyticQueryCache1075::MaximumQueries ||
+        !FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()) { Fallback(); return; }
+    UWorld* World=nullptr;
+    for (const auto& Wheel : Wheels)
+        if (Wheel) { World=Wheel->GetWorld(); break; }
+    const USpeedWorldSubsystem* Bridge=ResolveRuntimeBridge(World);
+    const Speed::IStaticCollisionWorld* StaticWorld=Bridge ? Bridge->GetStaticCollisionWorld() : nullptr;
+    if (!World || !GStaticWorldAuditFrame.bActive || GStaticWorldAuditFrame.QueryWorld!=World ||
+        GStaticWorldAuditFrame.RuntimeBridge!=Bridge || !StaticWorld ||
+        StaticWorld->GetBackend()!=Speed::EStaticCollisionBackend::SurfaceAnalytic ||
+        !StaticWorld->CanPrefetchIndependentQueries1075()) { Fallback(); return; }
+    const FImmutableStaticQueryIdentity1075 Identity=StaticWorld->GetImmutableQueryIdentity1075();
+    if (!Identity.IsValid()) { Fallback(); return; }
+    TArray<FAnalyticPrefetchQuery1075> Entries;
+    Entries.Reserve(Wheels.Num());
+    for (const auto& Wheel : Wheels)
+    {
+        if (!Wheel || Wheel->GetWorld()!=World) continue;
+        FAnalyticPrefetchQuery1075 Entry;
+        if (Wheel->TryCaptureGroundQuery1075(Delta,Entry)) Entries.Add(MoveTemp(Entry));
+    }
+    Stats.Captured=Entries.Num();
+    if (Entries.Num()<StaticWorld->GetMinimumIndependentQueryItems()) { Fallback(); return; }
+    TArray<FWorldQuery> Queries;
+    Queries.Reserve(Entries.Num());
+    for (const auto& Entry : Entries) Queries.Add(Entry.Query);
+    TArray<FWorldHit> Hits;
+    Hits.SetNum(Queries.Num());
+    Speed::FIndependentQueryBatchStats Dispatch;
+    // This dedicated API returns false BEFORE any query on a serial/diagnostic
+    // fallback. A changed observer setting cannot execute a speculative recorder.
+    if (!StaticWorld->SweepPrefetchBatch1075(Queries,Hits,&Dispatch)) { Fallback(); return; }
+    Stats.Computed=Hits.Num();
+    Stats.PreparedBatches=1;
+    Stats.MaximumLogicalLanes=Dispatch.DispatchedLogicalLanes;
+    Stats.MaximumNativeThreads=Dispatch.DistinctNativeThreads;
+    Stats.MaximumNonEmptyLanes=Dispatch.NonEmptyLanes1075;
+    const FAnalyticPrefetchContext1075 Context{World,Bridge,Identity,GStaticWorldAuditFrame.Frame,
+        CaptureFrameFloatingPointContext()};
+    State=MakeUnique<FImpl>(Entries,Hits,Context);
+    State->Stats=Stats;
+    // All lane-private services have restored their numeric contexts and joined.
+    // No worker can see this owner TLS, and physical callbacks have not moved.
+    GJoinedPrefetch1075=State.Get();
+}
+FScopedWheelSuspensionPrefetch1075::~FScopedWheelSuspensionPrefetch1075()
+{
+    if (!State) return;
+    if (GJoinedPrefetch1075==State.Get()) GJoinedPrefetch1075=nullptr;
+    State->Stats.Reused=State->Cache.Consumed();
+    State->Stats.Rejected=State->Cache.Rejected();
+    for (int32 Reason=0; Reason<8; ++Reason)
+        State->Stats.RejectedReasons[Reason]=State->Cache.RejectedFor(EAnalyticPrefetchReuse1075(Reason));
+    State->Stats.Unused=State->Stats.Computed-State->Stats.Reused;
+    Private::AccumulateAnalyticPrefetchStats1075(State->Stats);
+}
+FScopedAnalyticPrefetchConsumer1075::FScopedAnalyticPrefetchConsumer1075(
+    const USWheelSubBody* Wheel, float Delta)
+{
+    if (!GJoinedPrefetch1075) return;
+    Previous=GPrefetchConsumer1075;
+    GPrefetchConsumer1075.Owner=Wheel;
+    GPrefetchConsumer1075.ExactType=Wheel ? Wheel->GetClass() : nullptr;
+    FMemory::Memcpy(&GPrefetchConsumer1075.DeltaBits,&Delta,sizeof(Delta));
+    bInstalled=true;
+}
+FScopedAnalyticPrefetchConsumer1075::~FScopedAnalyticPrefetchConsumer1075()
+{
+    if (bInstalled) GPrefetchConsumer1075=Previous;
+}
+FWorldQuery FStaticWorldQueryAudit::MakeStrictSingleQuery1075(
+    const FVector& Start, const FVector& End, const FQuat& Rotation,
+    const FCollisionShape& Shape, uint8 TraceChannel,
+    const FCollisionResponseParams& ResponseParams)
+{
+    FWorldQuery Query=MakeQuery(Start,End,Rotation,Shape,TraceChannel,0,false,&ResponseParams);
+    Query.bAuthorityOnly=true;
+    Query.bIncludeCompactPatches=true;
+    Query.bIncludeTriangles=false;
+    return Query;
+}
+namespace
+{
+bool TryConsumeJoinedQuery1075(UWorld* World, const USpeedWorldSubsystem* Bridge,
+    const Speed::IStaticCollisionWorld& StaticWorld, const FWorldQuery& Query, FWorldHit& Out)
+{
+    if (!GJoinedPrefetch1075 || !GPrefetchConsumer1075.Owner) return false;
+    // A callback may have enabled a query observer since capture. Preserve its
+    // original serial boundary instead of consuming an earlier unobserved hit.
+    if (!StaticWorld.CanPrefetchIndependentQueries1075()) return false;
+    const FAnalyticPrefetchContext1075 Current{World,Bridge,
+        StaticWorld.GetImmutableQueryIdentity1075(),GStaticWorldAuditFrame.Frame,
+        CaptureFrameFloatingPointContext()};
+    return GJoinedPrefetch1075->Cache.TryConsume(Current,GPrefetchConsumer1075,
+        Query,1.0,Out)==EAnalyticPrefetchReuse1075::Reused;
+}
+}
+
 bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	UWorld* World,
 	const FVector& Start, const FVector& End, const FQuat& Rotation,
@@ -875,7 +1016,10 @@ bool FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 	}
 	else
 	{
-		Analytic = StaticWorld->SweepSingle(Query);
+		// A trajectory carries release20 torus semantics absent from the joined
+		// wheel-query capture contract. Preserve its canonical owner query.
+		if (TorusTrajectory || !TryConsumeJoinedQuery1075(World, RuntimeBridge, *StaticWorld, Query, Analytic))
+			Analytic = StaticWorld->SweepSingle(Query);
 
 	}
 	if (bStrict)

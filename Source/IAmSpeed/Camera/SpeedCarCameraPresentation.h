@@ -63,6 +63,7 @@ public:
         const FSpeedCarCameraConfiguration& Configuration, const FSpeedCarCameraArmState& Initial);
     uint64 OwnerStableId() const override { return Owner; }
     uint32 Channel() const override { return CameraChannel; }
+    bool SupportsIndependentFrameProduction() const override { return true; }
     void InvalidateTimeline() override { State.bTimelineInvalid = true; }
     bool CanRestore(const FSimulationPresentationOutput& Packet, uint64 ReplayThrough) const override;
     void RestoreValidated(const FSimulationPresentationOutput& Packet, uint64 ReplayThrough,

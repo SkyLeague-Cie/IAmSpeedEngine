@@ -8,6 +8,10 @@
 #include "Netcode/SpeedPhysicsComponent.h"
 #include "SpeedMovementComponent.generated.h"
 
+
+#if !UE_BUILD_SHIPPING
+namespace Speed { struct FNativeBallMechanicalWitnessForTesting; class FFramePointerRegistry; }
+#endif
 /**
  * 
  */
@@ -15,6 +19,10 @@ UCLASS()
 class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public ISpeedComponent
 {
 	GENERATED_BODY()
+#if !UE_BUILD_SHIPPING
+    friend struct Speed::FNativeBallMechanicalWitnessForTesting;
+#endif
+
 
 	friend struct FNetworkBaseSpeedState;
 #if WITH_DEV_AUTOMATION_TESTS
@@ -35,6 +43,10 @@ public:
 	void DisableAsyncPhysicsTickForTesting() { SetAsyncPhysicsTickEnabled(false); }
 #endif
 
+#if !UE_BUILD_SHIPPING
+    FString FrameWitnessAdapterClassForTesting() const override
+    { return GetClass()->GetPathName(); }
+#endif
 	void InitNetwork();
 	/** Used to create any physics engine information for this component */
 	virtual void OnCreatePhysicsState() override;
@@ -147,6 +159,11 @@ private:
 	void applyAngularAccelerationConstraint(const float& delta);
 protected:
 #if !UE_BUILD_SHIPPING
+ // Read-only auxiliary observer, invoked only by exact native game classes.
+ // Disabled movers retain their actual local counter; publication supplies N.
+ void RecordAuxiliaryFrameWitnessForTesting(uint64 Frame,
+  TFunctionRef<bool(Speed::FFramePointerRegistry&)> Declare,
+  TFunctionRef<bool(TArray<uint8>&,const Speed::FFramePointerRegistry&)> Append) const;
  // Called only by the canonical driver after assigning local N+1, before forces.
  virtual void BeforeCanonicalPhysicsPreparationForTesting(const FCanonicalFrameContext&) {}
  const FBasePhysicsState& BasePhysicsStateForEpisodeTesting()const{return BasePhysicsState;}
