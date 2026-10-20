@@ -23,6 +23,31 @@ releases shallow stationary, tangent or separating overlaps; closing motion at
 the same depth remains a time-zero blocking contact. This is an engine-chosen
 contact/release law, not a tolerance for copying a particular mesh backend.
 
+### Open wheel CCD debt
+
+As of 18 October 2026, closed SkyLeague checks P75/P76/P77 record strictly
+positive ground overlaps for all four wheel query envelopes reconstructed from
+recorded body poses and suspension displacement. These remain an open debt of
+the intended CCD/non-penetration contract. All strictly positive records remain
+FAIL, including countdown and neutral phases. No chassis positives occur in
+these three readbacks; that observation is not a general chassis certificate.
+
+The stationary residual query is distinct from the live suspension sweep. The
+held wheel source uses `Radius + CollisionMargin + Inflation` for the effective
+query sphere: the observed base radius is `12.5 cm` and query radius is
+`12.510000228881836 cm`. Existing finite-planar witnesses show that the margin
+alone changes the overlap classification in some cases; one neutral witness
+also overlaps at the base radius. This does not establish the cause of every
+curved or live-pose residual. Source ordering and suspension-jounce findings do
+not prove the live shape/provider/policy generations or a complete root cause.
+
+Improvement is deferred while the host broadens paired rolling coverage.
+Per-wheel support/rolling qualification and full wheel CCD non-penetration
+remain separate claims. Preserve the failed evidence and existing gates; this
+debt introduces no penetration tolerance, exclusion, or vehicle retune.
+The finite-planar box SAT `0.05 cm` release law above is unchanged; it does
+not waive these wheel residuals.
+
 ## `IAMSPEED.PHYS.NORMAL_RESPONSE.V1` — NormalResponse
 
 - `CompositionLevel`: Atomic
