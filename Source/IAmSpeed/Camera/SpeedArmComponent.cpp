@@ -1,5 +1,6 @@
 #include "SpeedArmComponent.h"
 #include "Camera/CameraComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Components/SphereComponent.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -68,7 +69,7 @@ void USpeedArmComponent::InitializeForCar(ASpeedCar& Owner, USpeedWheeledCompone
 		Camera->ProjectionMode != ECameraProjectionMode::Perspective;
 	bGenericSnapshotInitialized = true;
 	GenericMovement = &Movement;
-	Movement.EnableGenericCameraInput(true);
+	Movement.EnableGenericCameraInput(false);
 	SetComponentTickEnabled(false);
 	const FTransform InitialWorld = Camera->GetComponentTransform();
 	Camera->SetAbsolute(true, true, true);
@@ -79,11 +80,103 @@ void USpeedArmComponent::InitializeForCar(ASpeedCar& Owner, USpeedWheeledCompone
 	BindGenericAtWorldBeginPlay();
 }
 
+bool USpeedArmComponent::HasLocalHumanCameraOwner() const
+{
+	check(IsInGameThread());
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const APlayerController* Player = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
+	return Player && Player->GetLocalPlayer();
+}
+
+ASpeedSimulation* USpeedArmComponent::GetCurrentCameraSimulation() const
+{
+	check(IsInGameThread());
+	if (RetirementWitness && RetirementWitness->Load()) return nullptr;
+	const UWorld* World = GetWorld();
+	const ASpeedGameMode* Mode = World ? Cast<ASpeedGameMode>(World->GetAuthGameMode()) : nullptr;
+	ASpeedSimulation* Declared = Mode ? Mode->GetSpeedSimulation() : nullptr;
+	if (BoundSimulation.IsValid())
+	{
+		if (BoundSimulation->GetWorld() != World || (Declared && Declared != BoundSimulation.Get())) return nullptr;
+		// A validated client binding remains usable without AuthGameMode, never across a declared driver conflict.
+		return BoundSimulation.Get();
+	}
+	return Declared;
+}
+
+bool USpeedArmComponent::ShouldComputeLocalCamera() const
+{
+	check(IsInGameThread());
+	if (!HasLocalHumanCameraOwner()) return false;
+	const ASpeedSimulation* Simulation = GetCurrentCameraSimulation();
+	return Simulation && Simulation->AllowsCameraPresentation();
+}
+
+void USpeedArmComponent::RefreshLocalCameraBinding()
+{
+	check(IsInGameThread());
+	if (!HasLocalHumanCameraOwner())
+	{
+		ReleaseCameraEndpointAtLifecycle();
+		return;
+	}
+	if (GetWorld() && GetWorld()->HasBegunPlay() && !ShouldComputeLocalCamera())
+	{
+		if (!ReleaseCameraEndpointAtLifecycle())
+			UE_LOG(LogTemp, Warning, TEXT("[CameraDriverConflictReleasePending] No acknowledged owner boundary."));
+		return;
+	}
+	BindGenericAtWorldBeginPlay();
+}
+
+bool USpeedArmComponent::ReleaseCameraEndpointAtLifecycle()
+{
+	check(IsInGameThread());
+	if (!BoundEndpoint) return true;
+	const auto Release = [this]() noexcept
+	{
+		ReleaseCameraAdapterAtBoundary();
+		if (GenericMovement.IsValid()) GenericMovement->EnableGenericCameraInput(false);
+	};
+	if (RetirementWitness && RetirementWitness->Load()) Release();
+	else
+	{
+		if (!BoundSimulation.IsValid()) return false;
+		if (!BoundSimulation->UnbindPresentationAtFrameBoundary(BoundEndpoint.ToSharedRef(), Release)) return false;
+	}
+	BoundEndpoint.Reset(); BoundSimulation.Reset(); RetirementWitness.Reset(); GenericSnapshot.Reset(); LastPublicationSerial = 0;
+	return true;
+}
+
+bool USpeedArmComponent::ReleaseCameraEndpointForEndPlay()
+{
+	check(IsInGameThread());
+	if (ReleaseCameraEndpointAtLifecycle()) return true;
+	ASpeedSimulation* Simulation = BoundSimulation.Get();
+	if (!Simulation) return false;
+	UE_LOG(LogTemp, Error, TEXT("[CameraEndpointTeardownFenceFailed] Retiring the owned simulation; no partial resume."));
+	if (!Simulation->JoinOwnedSimulationForInputTeardown()) return false;
+	return ReleaseCameraEndpointAtLifecycle();
+}
+
+void USpeedArmComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* TickFunction)
+{
+	if (!ShouldComputeLocalCamera() || bGenericSnapshotInitialized) return;
+	Super::TickComponent(DeltaTime, TickType, TickFunction);
+}
+
 void USpeedArmComponent::BindGenericAtWorldBeginPlay()
 {
 	check(IsInGameThread());
 	UWorld* World = GetWorld();
-	if (!World || !GenericMovement.IsValid() || BoundEndpoint) return;
+	if (!World || !GenericMovement.IsValid() || !HasLocalHumanCameraOwner()) return;
+	if (World->HasBegunPlay() && !ShouldComputeLocalCamera())
+	{
+		if (!ReleaseCameraEndpointAtLifecycle())
+			UE_LOG(LogTemp, Warning, TEXT("[CameraDriverConflictReleasePending] No acknowledged owner boundary."));
+		return;
+	}
+	if (BoundEndpoint) return;
 	if (!World->HasBegunPlay())
 	{
 		if (!WorldBeginPlayHandle.IsValid())
@@ -94,6 +187,7 @@ void USpeedArmComponent::BindGenericAtWorldBeginPlay()
 	WorldBeginPlayHandle.Reset();
 	const auto* Mode = Cast<ASpeedGameMode>(World->GetAuthGameMode());
 	auto* Simulation = Mode ? Mode->GetSpeedSimulation() : nullptr;
+	if (!ShouldComputeLocalCamera()) return;
 	if (!Simulation || !BindEndpointAtLifecycle(*Simulation, *GenericMovement.Get(), nullptr))
 		UE_LOG(LogTemp, Warning, TEXT("[GenericCameraLifecycleUnavailable] No owner binding; no live fallback."));
 }
@@ -105,13 +199,34 @@ USpeedArmComponent::FEndpointPtr USpeedArmComponent::CreateCameraEndpoint(const 
 		Binding.OwnerStableId, Binding.FirstFrame, 1, InitialConfiguration, InitialState);
 }
 
+class FSpeedArmCameraBindingCommit final : public ISimulationPresentationAdapterCommit
+{
+public:
+	FSpeedArmCameraBindingCommit(USpeedArmComponent& InArm, ASpeedSimulation& InSimulation) : Arm(InArm), Simulation(InSimulation) {}
+	bool Prepare(const TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Endpoint) const override
+	{
+		return Endpoint && Arm.CanBindCameraAdapterAtBoundary(Endpoint);
+	}
+	void Finalize(const TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Endpoint) noexcept override
+	{
+		Arm.BoundEndpoint = Endpoint; Arm.BoundSimulation = &Simulation;
+		Arm.RetirementWitness = Simulation.GetPresentationRetirementWitness();
+		if (Arm.GenericMovement.IsValid()) Arm.GenericMovement->EnableGenericCameraInput(true);
+		Arm.BindCameraAdapterAtBoundary();
+	}
+private:
+	USpeedArmComponent& Arm;
+	ASpeedSimulation& Simulation;
+};
+
 USpeedArmComponent::FEndpointPtr USpeedArmComponent::BindEndpointAtLifecycle(
 	ASpeedSimulation& Simulation, ISpeedComponent& Owner, ISpeedComponent* Target)
 {
 	check(IsInGameThread());
 	if (BoundEndpoint && BoundSimulation.Get() != &Simulation) return nullptr;
+	FSpeedArmCameraBindingCommit Commit(*this, Simulation);
 	auto Bound = Simulation.BindPresentationAtFrameBoundary(Owner, Target,
-		[this](const FSimulationPresentationBinding& Binding) { return CreateCameraEndpoint(Binding); }, BoundEndpoint);
+		[this](const FSimulationPresentationBinding& Binding) { return CreateCameraEndpoint(Binding); }, BoundEndpoint, &Commit);
 	if (!Bound) return nullptr;
 	BoundEndpoint = Bound;
 	BoundSimulation = &Simulation;
@@ -178,7 +293,7 @@ bool USpeedArmComponent::UpdateCameraFromSnapshot(const FSimulationPresentationO
 
 void USpeedArmComponent::UpdateDesiredArmLocation(bool bTrace, bool bLocationLag, bool bRotationLag, float Delta)
 {
-	if (bGenericSnapshotInitialized) return;
+	if (!ShouldComputeLocalCamera() || bGenericSnapshotInitialized) return;
 	Super::UpdateDesiredArmLocation(bTrace, bLocationLag, bRotationLag, Delta);
 }
 
@@ -186,11 +301,11 @@ void USpeedArmComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (UWorld* World = GetWorld()) World->OnWorldBeginPlay.Remove(WorldBeginPlayHandle);
 	WorldBeginPlayHandle.Reset();
-	if (BoundEndpoint && BoundSimulation.IsValid()) BoundSimulation->UnregisterPresentationProducer(BoundEndpoint.ToSharedRef());
-	BoundEndpoint.Reset();
-	BoundSimulation.Reset();
-	GenericSnapshot.Reset();
-	if (GenericMovement.IsValid()) GenericMovement->EnableGenericCameraInput(false);
+	if (!ReleaseCameraEndpointForEndPlay())
+	{
+		UE_LOG(LogTemp, Fatal, TEXT("[CameraEndpointEndPlayFenceUnproved] Refusing component destruction without an owned join or retirement receipt."));
+		return;
+	}
 	GenericMovement.Reset();
 	Super::EndPlay(EndPlayReason);
 }

@@ -76,6 +76,28 @@ namespace
 	}
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedLargeOrderedBoundsTest,
+    "IAmSpeed.AnalyticWorld.LargeOrderedBounds", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FIAmSpeedLargeOrderedBoundsTest::RunTest(const FString&)
+{
+    const auto Bounds=MakeBounds(136407,0,1.0);const auto Index=FOrderedBoundsIndex::Create(Bounds);
+    FOrderedBoundsScratch Scratch;FRandomStream Random(384);
+    for(int32 Q=0;Q<64;++Q)
+    {
+        const int32 I=Random.RandRange(0,Bounds.Num()-1);
+        if(!VerifyCandidates(*this,Bounds,*Index,Bounds[I],Scratch))return false;
+        TestTrue(TEXT("Large world local query does not scan overflow providers"),Index->FindCandidates(Bounds[I],Scratch).Num()<32);
+        for(const FVector3d Point:{Bounds[I].Min,Bounds[I].Max})
+            if(!VerifyCandidates(*this,Bounds,*Index,FBox3d(Point,Point),Scratch))return false;
+    }
+    FBox3d All(ForceInit);for(const auto& B:Bounds)All+=B;
+    TestEqual(TEXT("Whole-world query preserves every provider"),Index->FindCandidates(All,Scratch).Num(),Bounds.Num());
+    TestEqual(TEXT("Invalid query falls back conservatively"),Index->FindCandidates(FBox3d(ForceInit),Scratch).Num(),Bounds.Num());
+    auto Invalid=Bounds;Invalid[0]=FBox3d(ForceInit);const auto Fallback=FOrderedBoundsIndex::Create(Invalid);
+    TestEqual(TEXT("Invalid provider disables acceleration without omissions"),Fallback->FindCandidates(Bounds.Last(),Scratch).Num(),Bounds.Num());
+    return !HasAnyErrors();
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedOrderedBoundsIndexTest,
 	"IAmSpeed.AnalyticWorld.OrderedBoundsIndex", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

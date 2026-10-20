@@ -72,3 +72,7 @@ Plugins/**/Intermediate/*
 
 # Cache files for the editor to use
 DerivedDataCache/*
+
+# Private portable CI outputs and Python import cache
+/Artifacts/PhysicalContracts/
+/HostProject/Scripts/__pycache__/

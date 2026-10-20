@@ -2,6 +2,10 @@
 
 
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
+#include "CylinderSubBody.h"
+#include "CylinderSweep.h"
+#include <stdexcept>
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -425,6 +429,7 @@ void USWheelSubBody::SweepSuspension(const float& delta)
         return;
     }
 
+    if(SweepSuspensionOnCylinders(CurrentHit,delta))return;
     bool bHitGround = SweepSuspensionOnGround(CurrentHit, delta);
     if (!bHitGround)
     {
@@ -861,7 +866,10 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         bCrossedIntoCompressionThisFrame = LastDisplacement < 0.0f &&
             CurrentDisplacement >= 0.0f;
         FSuspensionForceDebugData ForceDebugData;
-		const float ProjectedVelocity = ParentComponent->GetPhysVelocityAtPoint(CurrentHit.ImpactPoint).Dot(CurrentHit.ImpactNormal);
+		FVector RelativePointVelocity=ParentComponent->GetPhysVelocityAtPoint(CurrentHit.ImpactPoint);
+        FVector SurfaceVelocity;
+        if(TryGetPrescribedSupportVelocity(CurrentHit.ImpactPoint,SurfaceVelocity))RelativePointVelocity-=SurfaceVelocity;
+        const float ProjectedVelocity = RelativePointVelocity.Dot(CurrentHit.ImpactNormal);
         SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement,
             CurrentDisplacement, ProjectedVelocity, ClampsSuspensionForceToPositive(),
             bUseIncreasingDisplacementAsCompression,
@@ -1057,9 +1065,11 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
         const FVector ContactNormal = CurrentHit.ImpactNormal.GetSafeNormal();
         const float ContactGroundDot = FVector::DotProduct(ContactNormal, FVector::UpVector);
         const float CarUpGroundDot = FVector::DotProduct(WheelComponent->GetPhysUpVector().GetSafeNormal(), FVector::UpVector);
-        const FVector VelAtPoint = WheelComponent->GetPhysVelocityAtPoint(WorldPoint);
+        FVector VelAtPoint = WheelComponent->GetPhysVelocityAtPoint(WorldPoint);
+        FVector BodyVelocity=WheelComponent->GetPhysCOMVelocity(),SurfaceVelocity;
+        if(TryGetPrescribedSupportVelocity(WorldPoint,SurfaceVelocity)){VelAtPoint-=SurfaceVelocity;BodyVelocity-=SurfaceVelocity;}
         const float vN = FVector::DotProduct(VelAtPoint, ContactNormal);
-        const float BodyVN = FVector::DotProduct(WheelComponent->GetPhysCOMVelocity(), ContactNormal);
+        const float BodyVN = FVector::DotProduct(BodyVelocity, ContactNormal);
         const float SkipMaxInwardNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardNormalVelocity.GetValueOnAnyThread());
         const float SkipMaxInwardBodyNormalVelocity = FMath::Max(0.0f, CVarSkyLeagueSuspensionSkipOverextendedWheelContactMaxInwardBodyNormalVelocity.GetValueOnAnyThread());
         if (CVarSkyLeagueSuspensionSkipOverextendedWheelContact.GetValueOnAnyThread() != 0 &&

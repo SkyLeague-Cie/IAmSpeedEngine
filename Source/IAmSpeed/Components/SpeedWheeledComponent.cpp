@@ -2274,12 +2274,15 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 
 		// RocketSim evaluates its tire friction curve from the projected hard point,
 		// then resolves the bilateral lateral impulse at the actual wheel contact.
-		const FVector HardPointVelocity = GetPhysVelocityAtPoint(HardPoint);
+		FVector HardPointVelocity = GetPhysVelocityAtPoint(HardPoint);
+        FVector PrescribedSurfaceVelocity;
+        if(Wheel->TryGetPrescribedSupportVelocity(HardPoint,PrescribedSurfaceVelocity))HardPointVelocity-=PrescribedSurfaceVelocity;
 		const float CurveLateralSpeed = FVector::DotProduct(HardPointVelocity, LateralDir);
 		const float CurveLongitudinalSpeed = FVector::DotProduct(HardPointVelocity, LongitudinalDir);
 		const float AbsCurveLateralSpeed = FMath::Abs(CurveLateralSpeed);
 		const float AbsLongitudinalSpeed = FMath::Abs(CurveLongitudinalSpeed);
-		const FVector ContactVelocity = GetPhysVelocityAtPoint(ContactPoint);
+		FVector ContactVelocity = GetPhysVelocityAtPoint(ContactPoint);
+        if(Wheel->TryGetPrescribedSupportVelocity(ContactPoint,PrescribedSurfaceVelocity))ContactVelocity-=PrescribedSurfaceVelocity;
 		const float LateralSpeed = FVector::DotProduct(ContactVelocity, LateralDir);
 		FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
 		if (ChassisUp.IsNearlyZero())
@@ -3652,7 +3655,9 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		const FVector LongitudinalDir = FVector::CrossProduct(LateralDir, SurfaceNormal).GetSafeNormal();
 		const FVector ContactPoint = Wheel->GetHitContactPoint();
 		const FVector HardPoint = Wheel->SteeringPos();
-		const FVector WheelVelocity = GetPhysVelocityAtPoint(HardPoint);
+		FVector WheelVelocity = GetPhysVelocityAtPoint(HardPoint);
+        FVector PrescribedSurfaceVelocity;
+        if(Wheel->TryGetPrescribedSupportVelocity(HardPoint,PrescribedSurfaceVelocity))WheelVelocity-=PrescribedSurfaceVelocity;
 		const float LateralSpeed = FVector::DotProduct(WheelVelocity, LateralDir);
 		const float LongitudinalSpeed = FVector::DotProduct(WheelVelocity, LongitudinalDir);
 		const float AbsLateralSpeed = FMath::Abs(LateralSpeed);

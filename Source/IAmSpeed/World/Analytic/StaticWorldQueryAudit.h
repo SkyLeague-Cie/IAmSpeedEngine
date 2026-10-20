@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CollisionShape.h"
+#include "IAmSpeed/Base/Kinematic.h"
 
 class UWorld;
 class USpeedWorldSubsystem;
@@ -13,6 +14,19 @@ struct FAnalyticWorldData;
 struct FWorldHit;
 struct FWorldQuery;
 
+/** Values captured from the canonical owner at the current collision substep. */
+struct FTorusSweepTrajectory
+{
+    SKinematic Owner;
+    FVector LocalOffset=FVector::ZeroVector;
+    FQuat LocalRotation=FQuat::Identity;
+    float DeltaSeconds=0.f;
+    FTransform PoseAt(double Time) const
+    {
+        const SKinematic Pose=Owner.Integrate(static_cast<float>(Time*DeltaSeconds));
+        return FTransform(Pose.Rotation*LocalRotation,Pose.Location+Pose.Rotation.RotateVector(LocalOffset));
+    }
+};
 struct FStaticWorldQueryCounters
 {
 	uint32 QueryCount = 0;
@@ -70,7 +84,8 @@ public:
 		uint64 RequiredCanonicalGroupId = 0,
 		const FVector& ReferenceNormal = FVector::ZeroVector,
 		float MinimumReferenceNormalDot = -1.0f,
-		bool bAllowEstablishedFaceContactAtBoundary = false);
+		bool bAllowEstablishedFaceContactAtBoundary = false,
+        const FTorusSweepTrajectory* TorusTrajectory = nullptr);
 	/** Stationary object-overlap bridge. Strict mode returns at most the deepest
 	 * positive constraint, not all contacts; callers iterate and check residuals.
 	 * Hybrid keeps its existing replacement/fallback semantics. */

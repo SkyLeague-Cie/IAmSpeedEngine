@@ -19,6 +19,7 @@ class IAMSPEED_API USpeedMovementComponent : public UMovementComponent, public I
 	friend struct FNetworkBaseSpeedState;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedOriginGetterTest;
+    friend class FCustomMapMovingSolidWorldTest;
 	friend class FSLBallEpisodeAdmissionOwnerTest;
 	friend class FSLBallEpisodeAdmissionOffTest;
 	friend class FIAmSpeedBoxRestingEquilibriumTest;

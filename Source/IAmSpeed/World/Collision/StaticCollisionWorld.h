@@ -29,6 +29,9 @@ public:
 		const Analytic::FWorldQuery& Query,
 		Analytic::FWorldHit& OutAuthorityHit) const = 0;
 	virtual EStaticCollisionBackend GetBackend() const = 0;
+    virtual void VisitTorusCandidates(const Analytic::FWorldQuery& Query,
+        TFunctionRef<void(const Analytic::FTorusSurface&)> Visitor) const {}
+
 	/** Visits finite planar broad-phase candidates, not accepted contacts.
 	 * The caller must refine its actual rotating trajectory and finite witness. */
 	virtual void VisitPlanarCandidates(const Analytic::FWorldQuery& Query,
@@ -98,6 +101,9 @@ public:
 		return QueryService.TryFindDeepestOverlap(Query, OutHit);
 	}
 
+    void VisitTorusCandidates(const Analytic::FWorldQuery& Query,
+        TFunctionRef<void(const Analytic::FTorusSurface&)> Visitor) const override
+    { QueryService.VisitTorusCandidates(Query,Visitor); }
 	bool HasAuthorityCoverage(
 		const Analytic::FWorldQuery& Query) const override
 	{

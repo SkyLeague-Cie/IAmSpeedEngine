@@ -1,4 +1,6 @@
 #include "ISolidSweeper.h"
+#include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
+#include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
@@ -8,6 +10,18 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
     if (!World) return false;
 
     const Speed::FKinematicState& KS = GetKinematicState();
+    const USolidSubBody* Solid=GetSolidSweepBody();
+    const ISpeedComponent* Owner=Solid ? Solid->GetParentComponent() : nullptr;
+    Speed::Analytic::FTorusSweepTrajectory Trajectory;
+    const bool bTorusTrajectory=Owner && Owner->GetStaticCollisionWorldForFrame();
+    if (bTorusTrajectory)
+    {
+        Trajectory.Owner=Owner->GetKinematicState();Trajectory.DeltaSeconds=delta;
+        // Current physical offset includes centre of mass and wheel suspension.
+        Trajectory.LocalOffset=Trajectory.Owner.Rotation.UnrotateVector(KS.Location-Trajectory.Owner.Location);
+        Trajectory.LocalRotation=Trajectory.Owner.Rotation.Inverse()*KS.Rotation;
+    }
+
 	FHitResult Hit;
 	bool bHit = false;
 	Speed::Analytic::FWorldHit AnalyticHit;
@@ -16,7 +30,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 		World,
 		Start, End, KS.Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit,
-		&AnalyticHit);
+		&AnalyticHit,0,0,0,FVector::ZeroVector,-1.f,false,bTorusTrajectory ? &Trajectory : nullptr);
 	if (!bUsedAnalyticAuthority)
 	{
 		const FCollisionQueryParams Params = BuildTraceParams();

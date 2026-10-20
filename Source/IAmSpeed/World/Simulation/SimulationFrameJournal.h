@@ -66,12 +66,23 @@ public:
 	virtual ~ISimulationPresentationProducer() = default;
 	virtual uint64 OwnerStableId() const = 0;
 	virtual uint32 Channel() const = 0;
+	/** Values-only category; the normal replay contract remains unchanged. */
+	virtual bool IsCameraPresentation() const { return false; }
 	virtual void Produce(const FSimulationSnapshot& Bodies, FSimulationPresentationOutput& Out) = 0;
 	virtual void InvalidateTimeline() = 0;
 	virtual bool CanRestore(const FSimulationPresentationOutput& Output, uint64 ReplayThrough) const { return false; }
 	/** Called only after every producer and the body snapshot have validated. */
 	virtual void RestoreValidated(const FSimulationPresentationOutput& Output, uint64 ReplayThrough,
 		FSimulationPresentationOutput& Restored) { InvalidateTimeline(); }
+};
+
+/** GT adapter transaction. Prepare is pure; Finalize is infallible after admission. */
+class IAMSPEED_API ISimulationPresentationAdapterCommit
+{
+public:
+	virtual ~ISimulationPresentationAdapterCommit() = default;
+	virtual bool Prepare(const TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer) const = 0;
+	virtual void Finalize(const TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer) noexcept = 0;
 };
 
 /** Exact publication selected by a presentation consumer, scoped to one simulation. */
@@ -242,3 +253,16 @@ namespace Speed::SimulationBoundary
 		TArray<TPair<uint64, uint64>> Entries;
 	};
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+// Per-thread test observer. No producer identity or runtime state is replaced.
+namespace Speed::Testing
+{
+enum class EPresentationAuditEvent : uint8 { ProducerDispatch, CanonicalCameraSample };
+using FPresentationDispatchObserver = void (*)(void*, EPresentationAuditEvent, const ISimulationPresentationProducer*,
+    uint64 Owner, uint32 Channel, bool bCamera, uint64 Frame) noexcept;
+IAMSPEED_API bool SetPresentationDispatchObserverForCurrentThread(FPresentationDispatchObserver Observer, void* Context) noexcept;
+IAMSPEED_API bool ClearPresentationDispatchObserverForCurrentThread(FPresentationDispatchObserver Observer, void* Context) noexcept;
+IAMSPEED_API bool HasPresentationDispatchObserverForCurrentThread(FPresentationDispatchObserver Observer, const void* Context) noexcept;
+}
+#endif

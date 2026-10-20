@@ -1,0 +1,17 @@
+{
+  "schema": "iamspeed.accepted-test-debt/v1",
+  "authority_date": "2026-10-20",
+  "authority": "Direct human acceptance in CustomMaps: these two red tests are debt and must not prevent integration on main; commit and push, then Local Manager forwards to Central Manager.",
+  "execute_tests": true,
+  "preserve_raw_failures": true,
+  "tests": {
+    "IAmSpeed.Camera.NetworkInputBoundary": {
+      "reason": "Malformed/truncated input frame header triggers SerializeIntPacked ensure; revisit with netcode restoration.",
+      "follow_up": "Netcode/input serialization safety; keep boundary tests and raw ensure visible."
+    },
+    "IAmSpeed.PhysicalLaws.BoxEquilibrium.CanonicalDrops": {
+      "reason": "Four drop/acquisition cases do not reach exact face support held for one second; human accepts deferred repair.",
+      "follow_up": "Central physics contact/equilibrium review; preserve tolerances, horizon and all four failed cases."
+    }
+  }
+}
