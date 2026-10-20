@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "ISpeedWheeledComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
@@ -822,7 +823,7 @@ private:
 		int32 SinceCanMove = INDEX_NONE;
 	};
 	mutable std::shared_ptr<const FCompletedWheeledInput> PreparedWheeledNetworkInput;
-	std::atomic<std::shared_ptr<const FCompletedWheeledInput>> PublishedWheeledNetworkInput{};
+	Speed::Concurrency::TAtomicSharedPtr<const FCompletedWheeledInput> PublishedWheeledNetworkInput{};
 	bool PrepareWheeledNetworkInput(uint64 Frame) const;
 	void RestoreWheeledPhysicalInputFromState();
 	void SyncWheeledPhysicalInputToState();

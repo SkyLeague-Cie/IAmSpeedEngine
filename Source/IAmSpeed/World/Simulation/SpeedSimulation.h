@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
 #include "GameFramework/Actor.h"
 #include "CanonicalFrameDriver.h"
 #include "SimulationFrameJournal.h"
@@ -284,8 +285,8 @@ private:
 	void CloseInputSessionsOnWorker();
 	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;
 	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;
-	std::atomic<std::shared_ptr<const Speed::Input::V2::FInputRegistryView>> PublishedInputRegistry{};
-	std::atomic<std::shared_ptr<const Speed::Input::V2::FRegistryFrame>> PublishedInputFrame{};
+	Speed::Concurrency::TAtomicSharedPtr<const Speed::Input::V2::FInputRegistryView> PublishedInputRegistry{};
+	Speed::Concurrency::TAtomicSharedPtr<const Speed::Input::V2::FRegistryFrame> PublishedInputFrame{};
 	FCriticalSection InputSessionAdmissionMutex;
 	std::vector<Speed::Input::V2::FInputSessionRegistry::FJournalService> PendingInputJournals;
 	std::map<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>> InputObservations;

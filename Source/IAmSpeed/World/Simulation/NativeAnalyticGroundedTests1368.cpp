@@ -546,7 +546,7 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
      Testing1368::AppendInput(RawStates,Value->Requested);W::Add(RawStates,Value->LocalFrame);W::Add(RawStates,Value->SinceCanMove);
     };
     AppendNetworkInput(std::atomic_load_explicit(&C->PreparedWheeledNetworkInput,std::memory_order_acquire));
-    AppendNetworkInput(std::atomic_load_explicit(&C->PublishedWheeledNetworkInput,std::memory_order_acquire));
+    AppendNetworkInput(C->PublishedWheeledNetworkInput.load(std::memory_order_acquire));
     W::Add(RawStates,C->bGenericCameraInputEnabled.load(std::memory_order_acquire));
     W::Add(RawStates,C->PendingCameraInput.load(std::memory_order_acquire));
     {

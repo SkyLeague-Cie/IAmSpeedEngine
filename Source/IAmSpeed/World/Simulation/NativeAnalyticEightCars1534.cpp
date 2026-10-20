@@ -688,7 +688,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
     };
     MarkState1534(A,TEXT("PublishedPreparedNetworkAndCameraQueue"));
     AppendNetworkInput(std::atomic_load_explicit(&C->PreparedWheeledNetworkInput,std::memory_order_acquire));
-    AppendNetworkInput(std::atomic_load_explicit(&C->PublishedWheeledNetworkInput,std::memory_order_acquire));
+    AppendNetworkInput(C->PublishedWheeledNetworkInput.load(std::memory_order_acquire));
     W::Add(RawStates,C->bGenericCameraInputEnabled.load(std::memory_order_acquire));
     W::Add(RawStates,C->PendingCameraInput.load(std::memory_order_acquire));
     {
