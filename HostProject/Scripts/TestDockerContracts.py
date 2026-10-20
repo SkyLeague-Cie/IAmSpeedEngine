@@ -140,6 +140,27 @@ class Contracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             ci.validate_report_with_debt(1, log, report, policy)
 
+    def test_completed_debt_report_with_crash_diagnostics_is_rejected(self):
+        report, log = self.debt_report(); policy = ci.accepted_debt_policy()
+        for marker in ('Fatal error!', 'Unhandled Exception: EXCEPTION_ACCESS_VIOLATION',
+                       'Unhandled signal 11', 'Assertion failed: NativeInvariant',
+                       'Segmentation fault (core dumped)'):
+            for code in (0, 1):
+                with self.subTest(marker=marker, code=code), self.assertRaises(ValueError):
+                    ci.validate_report_with_debt(code, log + '\n' + marker, report, policy)
+
+    def test_boundary_ensure_remains_visible_as_accepted_debt(self):
+        report, log = self.debt_report(); original = copy.deepcopy(report)
+        log += '\nEnsure condition failed: CompleteInputFrame'
+        result = ci.validate_report_with_debt(1, log, report, ci.accepted_debt_policy())
+        self.assertEqual(result['state'], 'PASS_WITH_ACCEPTED_DEBT')
+        self.assertEqual(report, original)
+        self.assertFalse(result['full_ci_qualified'])
+
+    def test_clean_report_with_fatal_tail_is_rejected(self):
+        with self.assertRaises(ValueError):
+            ci.validate_report(0, self.log + '\nFatal error!', self.report)
+
     def test_fixed_debt_is_clean_pass_and_no_debt_exit_one_is_rejected(self):
         policy = ci.accepted_debt_policy()
         result = ci.validate_report_with_debt(0, self.log, self.report, policy)

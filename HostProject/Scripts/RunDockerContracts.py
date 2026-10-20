@@ -47,6 +47,11 @@ def digest(path):
 def validate_report(exit_code, log, report, required=REQUIRED, expected_paths=None):
     if exit_code != 0:
         raise ValueError('Editor exited with code ' + str(exit_code))
+    # A completed queue does not prove that shutdown was crash-free. Exit 1
+    # may also accompany accepted debt, so check fatal diagnostics independently.
+    crash = re.search(r'\b(?:Fatal error[!:]|Unhandled Exception:|Unhandled signal\b|Assertion failed:|Segmentation fault\b|LowLevelFatalError\b)', log, re.IGNORECASE)
+    if crash:
+        raise ValueError('Native crash diagnostic: ' + crash.group(0))
     markers = re.findall(r'Automation Test Queue Empty (\d+) tests performed\.', log)
     if len(markers) != 1 or int(markers[0]) <= 0:
         raise ValueError('Missing, empty, or ambiguous automation completion')
