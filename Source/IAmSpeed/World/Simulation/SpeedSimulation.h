@@ -9,6 +9,8 @@
 #include "SimulationWorker.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Input/InputObservationChannel.h"
+#include <atomic>
+#include <memory>
 #include "SpeedSimulation.generated.h"
 
 class USpeedWorldSubsystem;
@@ -253,8 +255,8 @@ private:
 	void CloseInputSessionsOnWorker();
 	std::shared_ptr<Speed::Input::V2::FInputSessionCommands> InputSessionCommands;
 	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;
-	std::shared_ptr<const Speed::Input::V2::FInputRegistryView> PublishedInputRegistry;
-	std::shared_ptr<const Speed::Input::V2::FRegistryFrame> PublishedInputFrame;
+	std::atomic<std::shared_ptr<const Speed::Input::V2::FInputRegistryView>> PublishedInputRegistry{};
+	std::atomic<std::shared_ptr<const Speed::Input::V2::FRegistryFrame>> PublishedInputFrame{};
 	FCriticalSection InputSessionAdmissionMutex;
 	std::vector<Speed::Input::V2::FInputSessionRegistry::FJournalService> PendingInputJournals;
 	std::map<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>> InputObservations;

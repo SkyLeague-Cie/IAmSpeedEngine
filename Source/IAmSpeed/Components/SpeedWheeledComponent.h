@@ -811,7 +811,7 @@ private:
 		int32 SinceCanMove = INDEX_NONE;
 	};
 	mutable std::shared_ptr<const FCompletedWheeledInput> PreparedWheeledNetworkInput;
-	std::shared_ptr<const FCompletedWheeledInput> PublishedWheeledNetworkInput;
+	std::atomic<std::shared_ptr<const FCompletedWheeledInput>> PublishedWheeledNetworkInput{};
 	bool PrepareWheeledNetworkInput(uint64 Frame) const;
 	void RestoreWheeledPhysicalInputFromState();
 	void SyncWheeledPhysicalInputToState();

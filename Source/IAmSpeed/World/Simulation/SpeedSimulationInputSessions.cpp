@@ -49,10 +49,10 @@ std::optional<Speed::Input::V2::FBoundaryReceipt> ASpeedSimulation::ReadInputSes
 { return InputSessionCommands->Read(Id); }
 
 std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ASpeedSimulation::ReadInputRegistryView() const
-{ return std::atomic_load(&PublishedInputRegistry); }
+{ return PublishedInputRegistry.load(std::memory_order_seq_cst); }
 
 std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ASpeedSimulation::ReadCompletedInputFrame() const
-{ return std::atomic_load(&PublishedInputFrame); }
+{ return PublishedInputFrame.load(std::memory_order_seq_cst); }
 
 ESimulationBoundaryResult ASpeedSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
@@ -91,7 +91,7 @@ ESimulationBoundaryResult ASpeedSimulation::ServiceInputSessionBoundary(bool bPa
             Ready = InputSessionRegistry->ServiceBoundary(CanonicalNumFrame);
         }
         const auto View = InputSessionRegistry->ReadRegistry();
-        std::atomic_store(&PublishedInputRegistry, View);
+        PublishedInputRegistry.store(View, std::memory_order_seq_cst);
         if (bPauseRequested && (!bInputNeutralizedDuringPause || NeutralizedInputRegistryVersion != View->Version))
         {
             if (!SpeedWorldSubsystem || !SpeedWorldSubsystem->NeutralizeCanonicalInputs(*View))
@@ -107,7 +107,7 @@ ESimulationBoundaryResult ASpeedSimulation::ServiceInputSessionBoundary(bool bPa
             if (!Bound) { I->second->Deactivate(); I = InputObservations.erase(I); }
             else { if (bPauseRequested) I->second->Pause(); ++I; }
         }
-        if (bPauseRequested) std::atomic_store(&PublishedInputFrame, std::shared_ptr<const FRegistryFrame>{});
+        if (bPauseRequested) PublishedInputFrame.store(std::shared_ptr<const FRegistryFrame>{}, std::memory_order_seq_cst);
         return Ready ? ESimulationBoundaryResult::Ready : ESimulationBoundaryResult::Waiting;
     }
     catch (...)
@@ -123,14 +123,14 @@ void ASpeedSimulation::CloseInputSessionsOnWorker()
     if (SpeedWorldSubsystem && !SpeedWorldSubsystem->RetireInputProcessingOnWorker())
         bCanonicalPublicationTerminal.Store(true);
     using namespace Speed::Input::V2;
-    std::atomic_store(&PublishedInputFrame, std::shared_ptr<const FRegistryFrame>{});
+    PublishedInputFrame.store(std::shared_ptr<const FRegistryFrame>{}, std::memory_order_seq_cst);
     if (InputSessionRegistry)
     {
         const auto View = InputSessionRegistry->ReadRegistry();
         if (View && SpeedWorldSubsystem && !SpeedWorldSubsystem->NeutralizeCanonicalInputs(*View))
             bCanonicalPublicationTerminal.Store(true);
         const bool Retired = InputSessionRegistry->CloseWorkerLedger();
-        std::atomic_store(&PublishedInputRegistry, InputSessionRegistry->ReadRegistry());
+        PublishedInputRegistry.store(InputSessionRegistry->ReadRegistry(), std::memory_order_seq_cst);
         InputSessionRegistry.reset();
         for (const auto& Observation : InputObservations) Observation.second->Deactivate();
         InputObservations.clear();

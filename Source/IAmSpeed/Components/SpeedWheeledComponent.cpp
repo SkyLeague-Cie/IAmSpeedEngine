@@ -1394,7 +1394,7 @@ bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
 {
 	if (bCanonicalInputPending || InputReservationV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
 	CanonicalInputSnapshot.reset(); PreparedCanonicalInputFrame.Reset();
-	std::atomic_store(&PublishedWheeledNetworkInput, std::shared_ptr<const FCompletedWheeledInput>{});
+	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
 	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
 	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
 	return PublishInputCancellationAtBoundary();
@@ -1748,7 +1748,7 @@ bool USpeedWheeledComponent::NeutralizeProducedInputAtBoundary()
 		|| ReservedInputFrameV2 || ConsumedFrameInputStreamV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
 	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
 
-	std::atomic_store(&PublishedWheeledNetworkInput, std::shared_ptr<const FCompletedWheeledInput>{});
+	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
 	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
 	return PublishInputCancellationAtBoundary();
 }
@@ -1812,7 +1812,7 @@ bool USpeedWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
 bool USpeedWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
 {
 	if (LegacyWheeledOwner && !LegacyWheeledOwner->Complete(Frame)) return false;
-	std::atomic_store(&PublishedWheeledNetworkInput, PreparedWheeledNetworkInput);
+	PublishedWheeledNetworkInput.store(PreparedWheeledNetworkInput, std::memory_order_seq_cst);
 	PreparedWheeledNetworkInput.reset();
 	if (CanonicalInputSnapshot)
 	{
@@ -1832,7 +1832,7 @@ void USpeedWheeledComponent::AbortCanonicalFrame(uint64, ECanonicalFrameAbortRea
 	PreparedCanonicalInputFrame.Reset();
 	if (LegacyWheeledOwner) LegacyWheeledOwner->Abort();
 	PreparedWheeledNetworkInput.reset();
-	std::atomic_store(&PublishedWheeledNetworkInput, std::shared_ptr<const FCompletedWheeledInput>{});
+	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
 	if (CanonicalInputSnapshot)
 	{
 		CanonicalInputSnapshot.reset(); bCanonicalInputPending = false; bInputFrameRejectedV2 = true;

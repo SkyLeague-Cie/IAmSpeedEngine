@@ -320,7 +320,7 @@ void FNetworkWheeledSpeedInputState::BuildData(const UActorComponent* NetworkCom
 	bInputProjectionValid = false;
 	const auto* Mover = Cast<const USpeedWheeledComponent>(NetworkComponent);
 	if (!Mover) return;
-	const auto Input = std::atomic_load(&Mover->PublishedWheeledNetworkInput);
+	const auto Input = Mover->PublishedWheeledNetworkInput.load(std::memory_order_seq_cst);
 	if (!Input) return;
 	WheeledInput = Input->Requested; ClientFrame = Input->LocalFrame;
 	ClientFramesSinceCanMove = Input->SinceCanMove != INDEX_NONE && int64(ClientFrame) >= Input->SinceCanMove

@@ -2,7 +2,7 @@
 
 int32 USpeedWheeledComponent::GetPublishedInputTimelineOrigin() const
 {
-	const auto Input = std::atomic_load(&PublishedWheeledNetworkInput);
+	const auto Input = PublishedWheeledNetworkInput.load(std::memory_order_seq_cst);
 	return Input ? Input->SinceCanMove : INDEX_NONE;
 }
 

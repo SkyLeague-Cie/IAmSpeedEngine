@@ -222,7 +222,7 @@ void ASpeedCar::DemoedByPrv(ASpeedCar* car)
 void ASpeedCar::StartSparkleTimer()
 {
 	OnStartSparkle();
-	GetWorld()->GetTimerManager().SetTimer(SparkleTimerHandler, this, &ASpeedCar::StopSparkle, 0.2, false);
+	GetWorld()->GetTimerManager().SetTimer(SparkleTimerHandler, this, &ASpeedCar::StopSparkle, static_cast<float>(0.2), false);
 }
 
 void ASpeedCar::DemoedBy(ASpeedCar* otherCar)

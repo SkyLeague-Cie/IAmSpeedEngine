@@ -45,8 +45,7 @@ bool FIAmSpeedAdapterRespawnBoundaryTest::RunTest(const FString&)
     // The V2 authority flag follows the real controller path even when the
     // registry view is empty after its old Bind has been detached.
     if (!TestTrue(TEXT("first car claims neutral V2 authority"), First->SetFrameInputStreamV2(nullptr))) return false;
-    std::atomic_store(&Driver->PublishedInputRegistry,
-        std::make_shared<const Speed::Input::V2::FInputRegistryView>());
+    Driver->PublishedInputRegistry.store(std::make_shared<const Speed::Input::V2::FInputRegistryView>(), std::memory_order_seq_cst);
     TAtomic<int32> BoundaryServices = 0;
     std::atomic<uint64> SurvivorSteps{0};
     Driver->SimulationWorker = MakeUnique<FSimulationWorker>(

@@ -56,7 +56,7 @@ bool FIAmSpeedResolvedPairSetTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("varying normal is excluded"),
 			Speed::Collision::IsEligibleExactStaticRepeatHit(Curved));
 		SHitResult Uncertain = Eligible;
-		Uncertain.GeometricErrorBoundCm = .001;
+		Uncertain.GeometricErrorBoundCm = static_cast<float>(.001);
 		TestFalse(TEXT("uncertain geometry is excluded"),
 			Speed::Collision::IsEligibleExactStaticRepeatHit(Uncertain));
 		SHitResult DifferentFeature = Eligible;

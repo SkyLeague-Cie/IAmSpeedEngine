@@ -481,8 +481,8 @@ bool ASpeedSimulation::PrepareControlledInputRun()
 		InputWorkerGeneration = Generation; NextInputCommandId = 1;
 	}
 	catch (...) { return false; }
-	std::atomic_store(&PublishedInputRegistry, std::shared_ptr<const Speed::Input::V2::FInputRegistryView>{});
-	std::atomic_store(&PublishedInputFrame, std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{});
+	PublishedInputRegistry.store(std::shared_ptr<const Speed::Input::V2::FInputRegistryView>{}, std::memory_order_seq_cst);
+	PublishedInputFrame.store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
 	bInputSessionAdmissionRequested.Store(false); bInputOwnersClosedOnWorker.Store(false);
 	bInputNeutralizedDuringPause = false; NeutralizedInputRegistryVersion = MAX_uint64;
 	bInputOwnerRetired.Store(false); bOwnedWorkerTerminal.Store(false);
@@ -939,7 +939,7 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 	const auto MarkTerminal = [this]()
 	{
 		if (InputSessionRegistry) InputSessionRegistry->AbortFrame();
-		std::atomic_store(&PublishedInputFrame, std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{});
+		PublishedInputFrame.store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
 		bCanonicalPublicationTerminal.Store(true);
 		bOwnedWorkerTerminal.Store(true);
 	};
@@ -1149,7 +1149,7 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 				return false;
 			}
 			const auto Completed = InputSessionRegistry->ReadLatest();
-			std::atomic_store(&PublishedInputFrame, Completed);
+			PublishedInputFrame.store(Completed, std::memory_order_seq_cst);
 			for (const auto& Input : Completed->Inputs)
 			{
 				const auto Observation = InputObservations.find(Input.Session);
