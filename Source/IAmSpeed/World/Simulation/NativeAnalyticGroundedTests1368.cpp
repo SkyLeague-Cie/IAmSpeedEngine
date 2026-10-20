@@ -713,7 +713,7 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
     const auto& Ref=(IdleSpin1403!=0&&!Fast&&Lanes==1)?ZeroSpinOracles1403.FindChecked(CellCount1403)[N]:Oracle[N];
     if(!TestTrue(FString::Printf(TEXT("first divergence at N%u fast%d lanes%d: snapshot/input/listed states/ordered contacts/camera"),N,Fast?1:0,Lanes),
      Row.Snapshot==Ref.Snapshot&&Row.Inputs==Ref.Inputs&&Row.ObservedStates==Ref.ObservedStates
-     &&Row.OrderedSolve==Ref.OrderedSolve&&Row.WheelManifold==Ref.WheelManifold&&Row.PrepareDeltas==Ref.PrepareDeltas&&(!Fast||(Row.CameraPose==Ref.CameraPose&&Row.CameraCheckpoint==Ref.CameraCheckpoint))))return false;
+     &&Row.OrderedSolve==Ref.OrderedSolve&&Row.WheelManifold==Ref.WheelManifold&&Row.PrepareDeltas==Ref.PrepareDeltas&&(Fast||(Row.CameraPose==Ref.CameraPose&&Row.CameraCheckpoint==Ref.CameraCheckpoint))))return false;
    }
   }
   if(Lanes>1&&!TestTrue(TEXT("same paired grounded run consumed real multi-producer base arithmetic"),ConsumedBaseTotal1430>0&&UsefulBaseMax1430>1))return false;

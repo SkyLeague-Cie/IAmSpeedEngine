@@ -575,7 +575,7 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
     const auto& Ref=Oracle[N];
     if(!TestTrue(FString::Printf(TEXT("first divergence at N%u fast%d lanes%d: snapshot/input/listed states/ordered contacts/camera"),N,Fast?1:0,Lanes),
      Row.Snapshot==Ref.Snapshot&&Row.Inputs==Ref.Inputs&&Row.ObservedStates==Ref.ObservedStates
-     &&Row.OrderedSolve==Ref.OrderedSolve&&Row.PrepareDeltas==Ref.PrepareDeltas&&(!Fast||(Row.CameraPose==Ref.CameraPose&&Row.CameraCheckpoint==Ref.CameraCheckpoint))))return false;
+     &&Row.OrderedSolve==Ref.OrderedSolve&&Row.PrepareDeltas==Ref.PrepareDeltas&&(Fast||(Row.CameraPose==Ref.CameraPose&&Row.CameraCheckpoint==Ref.CameraCheckpoint))))return false;
    }
   }
   TestTrue(TEXT("fixture exercised actual selected physical contacts"),TotalContacts>0);
