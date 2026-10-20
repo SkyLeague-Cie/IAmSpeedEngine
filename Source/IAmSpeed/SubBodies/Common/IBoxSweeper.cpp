@@ -188,7 +188,7 @@ bool IBoxSweeper::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& D
         if (!Box) continue;
 
         // Ignore if box's hitbox already hit this frame
-        if (ComponentHasBeenIgnored(*Box))
+        if (ComponentHasBeenIgnored(*Box) || ShouldSkipBoxSweep(*Box))
             continue;
 
         SSBox BoxShape = Box->MakeBox();

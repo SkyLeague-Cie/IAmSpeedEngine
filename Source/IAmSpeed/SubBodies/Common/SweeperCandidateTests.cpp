@@ -5,6 +5,7 @@
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "Misc/AutomationTest.h"
+#include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "UObject/StrongObjectPtr.h"
 
 namespace
@@ -110,6 +111,68 @@ bool FIAmSpeedSweeperCandidatesTest::RunTest(const FString& Parameters)
 	Check(BoxFixture, BoxFixture.Boxes, BoxA.Get(), BoxB.Get(), 0, true, false);
 	Check(BoxFixture, BoxFixture.Spheres, SphereA.Get(), SphereB.Get(), 1, false, true);
 	Check(BoxFixture, BoxFixture.Wheels, WheelA.Get(), WheelB.Get(), 2, false, false);
+
+	// Real UBox peers: a consumed asymmetric contact must be excluded before
+	// minimum-TOI selection, leaving a different later collision discoverable.
+	{
+		constexpr float Delta = 1.0f / 300.0f;
+		TStrongObjectPtr<USpeedWheeledComponent> OwnerA(NewObject<USpeedWheeledComponent>());
+		TStrongObjectPtr<USpeedWheeledComponent> OwnerB(NewObject<USpeedWheeledComponent>());
+		TStrongObjectPtr<USpeedWheeledComponent> OwnerC(NewObject<USpeedWheeledComponent>());
+		TStrongObjectPtr<UBoxSubBody> Sweeper(NewObject<UBoxSubBody>());
+		TStrongObjectPtr<UBoxSubBody> ConsumedPeer(NewObject<UBoxSubBody>());
+		TStrongObjectPtr<UBoxSubBody> LaterPeer(NewObject<UBoxSubBody>());
+		Sweeper->Initialize(OwnerA.Get());
+		ConsumedPeer->Initialize(OwnerB.Get());
+		LaterPeer->Initialize(OwnerC.Get());
+		for (UBoxSubBody* Box : { Sweeper.Get(), ConsumedPeer.Get(), LaterPeer.Get() })
+			Box->SetBoxExtent(FVector(10.0));
+		SKinematic Moving, Overlap, Later;
+		Moving.Velocity = FVector(6000.0, 0.0, 0.0);
+		Overlap.Location = FVector(15.0, 0.0, 0.0);
+		Later.Location = FVector(30.0, 0.0, 0.0);
+		Sweeper->SetKinematicState(Moving);
+		ConsumedPeer->SetKinematicState(Overlap);
+		LaterPeer->SetKinematicState(Later);
+		const TArray<USSubBody*> Partners = { ConsumedPeer.Get(), LaterPeer.Get() };
+		Sweeper->AddExternalSubBodies(Partners);
+		TestEqual(TEXT("real distinct parents admit both box partners"), Sweeper->GetExternalBoxSubBodies().Num(), 2);
+		ConsumedPeer->IgnoredComponents.AddUnique(Sweeper.Get());
+		TestFalse(TEXT("asymmetric exclusion is not locally mirrored"), Sweeper->ComponentHasBeenIgnored(*ConsumedPeer));
+		TestTrue(TEXT("peer holds the real reverse exclusion"), ConsumedPeer->ComponentHasBeenIgnored(*Sweeper));
+		SHitResult Pending;
+		Pending.Component = LaterPeer.Get(); Pending.SubBody = LaterPeer.Get();
+		Pending.FrameTag = 713; Pending.bBlockingHit = true; Pending.TOI = .002f;
+		ConsumedPeer->SetFutureHit(Pending);
+		SHitResult Current = Pending; Current.FrameTag = 714;
+		ConsumedPeer->SetHit(Current);
+		const auto ReverseIgnoredBefore = ConsumedPeer->IgnoredComponents;
+		const auto LocalIgnoredBefore = Sweeper->IgnoredComponents;
+		SHitResult Hit;
+		float TOI = -1;
+		TestTrue(TEXT("reverse-excluded zero-TOI box leaves a later collision"), Sweeper->SweepVsBoxes(nullptr, Hit, Delta, TOI));
+		TestTrue(TEXT("third real box wins before minimum selection"), Hit.Component.Get() == LaterPeer.Get() && Hit.SubBody.Get() == LaterPeer.Get());
+		TestTrue(TEXT("later real collision occurs strictly inside the frame"), TOI > 0.0f && TOI < Delta);
+		TestTrue(TEXT("filter does not consume unrelated peer future hit"),
+			ConsumedPeer->GetFutureHit().Component.Get() == LaterPeer.Get() &&
+			ConsumedPeer->GetFutureHit().SubBody.Get() == LaterPeer.Get() &&
+			ConsumedPeer->GetFutureHit().FrameTag == 713 && ConsumedPeer->GetFutureHit().TOI == .002f);
+		TestTrue(TEXT("filter preserves unrelated peer current hit"),
+			ConsumedPeer->GetHit().Component.Get() == LaterPeer.Get() &&
+			ConsumedPeer->GetHit().SubBody.Get() == LaterPeer.Get() &&
+			ConsumedPeer->GetHit().FrameTag == 714 && ConsumedPeer->GetHit().TOI == .002f);
+		TestTrue(TEXT("sweep preserves both directional ignored lists"),
+			ConsumedPeer->IgnoredComponents == ReverseIgnoredBefore && Sweeper->IgnoredComponents == LocalIgnoredBefore);
+		Sweeper->RemoveExternalSubBodies({ LaterPeer.Get() });
+		Hit.FrameTag = 99;
+		TestFalse(TEXT("only reverse-excluded real peer misses"), Sweeper->SweepVsBoxes(nullptr, Hit, Delta, TOI));
+		TestEqual(TEXT("reverse-exclusion miss preserves the box output contract"), Hit.FrameTag, 99u);
+		ConsumedPeer->ResetForFrame(Delta);
+		TestFalse(TEXT("real frame reset retires reverse exclusion"), ConsumedPeer->ComponentHasBeenIgnored(*Sweeper));
+		TestTrue(TEXT("reset peer is eligible again in the following frame"), Sweeper->SweepVsBoxes(nullptr, Hit, Delta, TOI));
+		TestTrue(TEXT("reset peer is the selected real box"), Hit.Component.Get() == ConsumedPeer.Get());
+		TestEqual(TEXT("reset overlap retains exact zero TOI"), TOI, 0.0f);
+	}
 	return true;
 }
 #endif

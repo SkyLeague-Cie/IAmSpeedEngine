@@ -22,6 +22,9 @@ UCLASS(ClassGroup = "Collision", hidecategories = (Object, LOD, Lighting, Textur
 class IAMSPEED_API UBoxSubBody : public USolidSubBody, public IBoxSweeper, public ISolidSweeper
 {
     GENERATED_UCLASS_BODY()
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FIAmSpeedSweeperCandidatesTest;
+#endif
 	
 public:
     const USolidSubBody* GetSolidSweepBody() const override { return this; }
@@ -165,6 +168,7 @@ protected:
     virtual const FCollisionResponseParams& GetResponseParams() const { return USolidSubBody::GetResponseParams(); }
     virtual FCollisionQueryParams BuildTraceParams() const { return USolidSubBody::BuildTraceParams(); }
 	bool ShouldSkipSphereSweep(const USphereSubBody& Sphere) const override;
+	bool ShouldSkipBoxSweep(const UBoxSubBody& Box) const override;
     bool ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const { return USolidSubBody::ComponentHasBeenIgnored(OtherComp); }
     const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const { return USolidSubBody::GetExternalBoxSubBodies(); }
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }

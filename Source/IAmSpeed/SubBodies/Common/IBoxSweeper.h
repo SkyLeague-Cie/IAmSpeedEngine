@@ -13,6 +13,7 @@ protected:
 
 	virtual FVector GetBoxExtent() const = 0;
 	virtual bool ShouldSkipSphereSweep(const USphereSubBody& Sphere) const { return false; }
+	virtual bool ShouldSkipBoxSweep(const UBoxSubBody& Box) const { return false; }
 public:
 	virtual ~IBoxSweeper() = default;
 };

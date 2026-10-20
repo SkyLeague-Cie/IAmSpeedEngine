@@ -34,6 +34,11 @@ static TAutoConsoleVariable<int32> CVarRetireSeparatingOwnGroundConstraints(
 
 
 
+bool UBoxSubBody::ShouldSkipBoxSweep(const UBoxSubBody& Box) const
+{
+    return Box.ComponentHasBeenIgnored(*this);
+}
+
 bool UBoxSubBody::ShouldSkipSphereSweep(const USphereSubBody& Sphere) const
 {
 	UWorld* World = GetWorld();
