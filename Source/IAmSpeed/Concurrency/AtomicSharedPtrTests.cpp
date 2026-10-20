@@ -54,7 +54,13 @@ bool FIAmSpeedAtomicSharedPtrPublicationTest::RunTest(const FString&)
     while (!Ready.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < StartDeadline)
         std::this_thread::yield();
     const bool ReaderStarted = Ready.load(std::memory_order_acquire);
-    for (uint64 N = 1; N <= 20000; ++N)
+    for (uint64 N = 1; N <= 10000; ++N)
+        Published.store(std::make_shared<const FSnapshot>(FSnapshot{N, ~N}), std::memory_order_release);
+    const auto MidDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (Observed.load(std::memory_order_acquire) != 10000 && std::chrono::steady_clock::now() < MidDeadline)
+        std::this_thread::yield();
+    const bool ReaderConsumedIntermediate = Observed.load(std::memory_order_acquire) == 10000;
+    for (uint64 N = 10001; N <= 20000; ++N)
         Published.store(std::make_shared<const FSnapshot>(FSnapshot{N, ~N}), std::memory_order_release);
     const auto EndDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (Observed.load(std::memory_order_acquire) != 20000 && std::chrono::steady_clock::now() < EndDeadline)
@@ -64,6 +70,7 @@ bool FIAmSpeedAtomicSharedPtrPublicationTest::RunTest(const FString&)
     Reader.join();
     const auto Last = Published.load(std::memory_order_seq_cst);
     TestTrue(TEXT("Reader acknowledged startup before writes"), ReaderStarted);
+    TestTrue(TEXT("Reader consumed intermediate publication before the second write phase"), ReaderConsumedIntermediate);
     TestTrue(TEXT("Reader consumed final publication before retirement"), ReaderConsumedFinal);
     TestFalse(TEXT("Acquire readers observe complete immutable payloads"), Bad.load());
     TestTrue(TEXT("Reader consumed a publication"), Reads.load() > 0);
