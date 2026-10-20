@@ -32,7 +32,7 @@ bool FIAmSpeedDeferredCanonical1456::RunTest(const FString&)
   ExpectedBoundaries1534={0,int32(sizeof(Prefix)),int32(Golden.Num()-sizeof(Suffix)),Golden.Num()};
   TArray<uint8> Projected1534;TArray<int32> Boundaries1534;
   TestTrue(TEXT("field boundaries use the identical validated projector"),Scope.MakeCanonicalWithBoundaries1534(Projected1534,RawBoundaries1534,Boundaries1534)&&Projected1534==Golden&&Boundaries1534==ExpectedBoundaries1534);
-  for(const TArray<int32> BadBoundaries1534:{TArray<int32>{5},TArray<int32>{4,0},TArray<int32>{Raw.Num()+1}})
+  for(const TArray<int32>& BadBoundaries1534:{TArray<int32>{5},TArray<int32>{4,0},TArray<int32>{Raw.Num()+1}})
   {
    TArray<uint8> Sentinel1534={0x91};TArray<int32> SentinelBounds1534={73};
    TestFalse(TEXT("interior/nonmonotone/out-of-range boundary refuses exact localization"),Scope.MakeCanonicalWithBoundaries1534(Sentinel1534,BadBoundaries1534,SentinelBounds1534));

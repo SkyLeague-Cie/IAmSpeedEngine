@@ -29,6 +29,15 @@ private:
 	void AccumulateRunFrameMetrics();
 	void ReportCompletedRun();
 
+#if !UE_BUILD_SHIPPING
+	void RecordWindowTiming();
+	void ReportWindowTimings() const;
+	bool bMeasureWindows = false;
+	bool bWindowTimingInvalid = false;
+	uint64 WindowStartFrame = 0;
+	double WindowStartSeconds = 0.0;
+	TArray<double> WindowMilliseconds;
+#endif
 	bool bFrameBudgetExceeded = false;
 	bool bRunMetricsActive = false;
 	uint64 RunStartFrame = 0;

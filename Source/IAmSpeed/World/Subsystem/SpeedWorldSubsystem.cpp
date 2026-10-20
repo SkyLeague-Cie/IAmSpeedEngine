@@ -1540,9 +1540,6 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 	{
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
 
- using CW=Speed::FFrameSolveWitnessScope;
- using CE=Speed::EFrameDynamicContactEvent;
- using CO=Speed::EFrameDynamicContactOutcome;
  const uint64 WitnessProjectionPass=CW::CurrentDynamicPass();int32 WitnessProjectionIndex=0;
 #endif // IAmSpeed contact witness1075 END
 
