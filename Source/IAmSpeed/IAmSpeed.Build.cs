@@ -24,6 +24,10 @@ public class IAmSpeed : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore",
 			"EnhancedInput", "ChaosVehicles", "PhysicsCore", "Chaos", "ChaosVehiclesCore", "Landscape"});
+		if (Target.Platform == UnrealTargetPlatform.Linux && Target.Configuration != UnrealTargetConfiguration.Shipping)
+		{
+			PrivateDependencyModuleNames.Add("ApplicationCore");
+		}
 		// Connected PackageMap contract fixture uses only editor test worlds.
 		if (Target.bBuildEditor)
 		{
