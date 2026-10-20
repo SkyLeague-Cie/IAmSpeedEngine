@@ -96,7 +96,7 @@ class Contracts(unittest.TestCase):
 
     def debt_report(self):
         report = copy.deepcopy(self.report)
-        report['tests'] += [dict(fullTestPath=name, state='Fail', errors=4, warnings=1)
+        report['tests'] += [dict(fullTestPath=name, state='Fail', errors=4, warnings=0)
                             for name in sorted(ci.ACCEPTED_DEBT_IDS)]
         report['failed'] = 2
         return report, 'Automation Test Queue Empty 7 tests performed.'
@@ -170,6 +170,28 @@ class Contracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             ci.validate_report_with_debt(1, self.log, self.report, policy)
 
+
+
+class RawDebtWarningRegression108(unittest.TestCase):
+    def test_accepted_fail_warning_is_rejected_without_mutation(self):
+        import copy
+        import importlib.util
+        from pathlib import Path
+        source = Path(__file__).with_name('RunDockerContracts.py')
+        spec = importlib.util.spec_from_file_location('strict_debt_108', source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        paths = sorted(module.REQUIRED | module.ACCEPTED_DEBT_IDS)
+        rows = [dict(fullTestPath=name, state='Fail' if name in module.ACCEPTED_DEBT_IDS else 'Success',
+                     errors=int(name in module.ACCEPTED_DEBT_IDS), warnings=0, entries=[]) for name in paths]
+        report = dict(tests=rows, succeeded=len(paths)-2, failed=2, notRun=0, inProcess=0, succeededWithWarnings=0)
+        log = 'Automation Test Queue Empty '+str(len(paths))+' tests performed.'
+        module.validate_report_with_debt(0, log, report, module.accepted_debt_policy(), expected_paths=paths)
+        next(row for row in rows if row['state']=='Fail')['warnings'] = 1
+        original = copy.deepcopy(report)
+        with self.assertRaises(ValueError):
+            module.validate_report_with_debt(0, log, report, module.accepted_debt_policy(), expected_paths=paths)
+        self.assertEqual(report, original)
 
 if __name__ == '__main__':
     unittest.main()

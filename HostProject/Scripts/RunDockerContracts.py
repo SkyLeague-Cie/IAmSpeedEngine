@@ -140,6 +140,10 @@ def validate_report_with_debt(exit_code, log, report, policy, required=REQUIRED,
     Only completed Fail rows for the two explicit debts may be nonblocking.
     Incomplete tests, another failure, non-debt warnings and a crash stay blocking.
     """
+    if report.get('succeededWithWarnings') != 0 or any(
+            row.get('warnings') != 0 or any(e.get('event', {}).get('type') == 'Warning'
+                for e in row.get('entries', [])) for row in report.get('tests', [])):
+        raise ValueError('Raw warnings remain blocking, including accepted Fail rows')
     if set(policy.get('tests', {})) != ACCEPTED_DEBT_IDS:
         raise ValueError('Debt identities differ from human authorization')
     accepted = [row for row in report.get('tests', [])

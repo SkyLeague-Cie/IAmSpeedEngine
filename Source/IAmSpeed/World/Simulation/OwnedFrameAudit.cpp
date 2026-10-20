@@ -69,9 +69,14 @@ bool PrivatePath(const FString& Path)
     FString Full = FPaths::ConvertRelativePathToFull(Path);
     FPaths::NormalizeFilename(Full);
     if (!FPaths::CollapseRelativeDirectories(Full)) return false;
-    if(Full.StartsWith(TEXT("E:/UELeadPrivate/"),ESearchCase::IgnoreCase))return true;
     FString Root,Saved;
-    return GetDeclaredMainNativeOutputRoot(Root,Saved)&&FPaths::IsUnderDirectory(Full,Saved);
+    if(GetDeclaredMainNativeOutputRoot(Root,Saved))
+    {
+        if(FPaths::IsUnderDirectory(Full,Saved))return true;
+        // A declared stage confines its own files even on the legacy E: drive.
+        if(FPaths::IsUnderDirectory(Full,Root))return false;
+    }
+    return Full.StartsWith(TEXT("E:/UELeadPrivate/"),ESearchCase::IgnoreCase);
 }
 struct FBinaryHeader
 {
