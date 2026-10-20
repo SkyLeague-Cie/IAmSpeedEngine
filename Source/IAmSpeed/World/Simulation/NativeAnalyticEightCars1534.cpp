@@ -430,8 +430,18 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
     if(Binding.OwnerStableId!=MainId||Binding.TargetStableId!=0||Binding.FirstFrame!=0)return nullptr;
     return SerialCamera;
    });
+  // Release20's real AFastSimulation intentionally has no camera presentation.
+  // Retain the production rejection; never force a camera onto the Fast driver.
+  if(Fast)
+  {
+   if(!TestTrue(TEXT("Fast driver rejects camera binding and presentation capture"),
+    !BoundCamera.IsValid()&&!Driver->bPublishPresentation&&!Driver->AllowsCameraPresentation()))return false;
+  }
+  else
+  {
   if(!TestTrue(TEXT("real driver camera binding includes presentation capture"),
    BoundCamera.IsValid()&&BoundCamera.Get()==&SerialCamera.Get()&&Driver->bPublishPresentation))return false;
+  }
   ON_SCOPE_EXIT{Driver->UnregisterPresentationProducer(SerialCamera);};
   const FSpeedCarCameraCommand Cmd{25,1,ESpeedCarCameraCommandKind::Distance,320};
   if(!TestTrue(TEXT("same exact-frame camera command queued"),SerialCamera->QueueAt(Cmd)&&WorkerCamera->QueueAt(Cmd)))return false;
@@ -576,7 +586,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
     W::Add(Row.PrepareDeltas,Bridge->GetSimulationStableId(*Cars[A]));W::Add(Row.PrepareDeltas,N);W::Add(Row.PrepareDeltas,PW.Deltas.Last());
    }
    FSimulationSnapshot Snapshot;
-   if(!Driver->ReadLatestSimulationSnapshot(Snapshot)||Snapshot.NumFrame!=N||Snapshot.PresentationOutputs.Num()!=1)
+   if(!Driver->ReadLatestSimulationSnapshot(Snapshot)||Snapshot.NumFrame!=N||Snapshot.PresentationOutputs.Num()!=(Fast?0:1))
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    Row.Frame=N;Row.Publication=Snapshot.PublicationSerial;Row.Snapshot=Snapshot.Payload;
    Row.MainContacts=Ordered.NumMainRows();Row.WheelManifoldRows=Ordered.NumWheelManifoldRows1368();
@@ -737,8 +747,11 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    }
    // Save actual production output and participation before running the
    // independent comparison, which must not inflate production worker evidence.
+   if(!Fast)
+   {
    Row.CameraPose=Snapshot.PresentationOutputs[0].Payload;
    Row.CameraCheckpoint=Snapshot.PresentationOutputs[0].StatePayload;
+   }
    Row.CameraNative=GetFrameParallelStageTotals(EFrameParallelStage::Camera).MaximumNativeThreads;
    // Freeze actual completed-N values before leaving the canonical owner.
    // Only the independent comparison is replayed after natural drain, as in1217.
@@ -772,6 +785,8 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
     ||CanonicalBounds1534.Num()!=R.StateFields1534.Num()+1)
    {Failed=true;FailureLine=__LINE__;R.bComplete=false;PointerFailure=FString::Printf(TEXT("Deferred exact projection refused at N=%u; raw bytes and boundaries retained\n"),N);break;}
    for(int32 I=0;I<R.StateFields1534.Num();++I){R.StateFields1534[I].Begin=CanonicalBounds1534[I];R.StateFields1534[I].End=CanonicalBounds1534[I+1];}
+   if(!Fast)
+   {
    FScopedFrameFloatingPointContext OracleNumeric1534(R.CameraOracleNumeric1534);
    if(!OracleNumeric1534.IsApplied()){Failed=true;FailureLine=__LINE__;R.bComplete=false;break;}
    const auto ValidateCompleted1534=[&]()
@@ -785,6 +800,9 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    if(PoseRead1534){CameraStatus=int32(Pose1534.Result.Status);CameraReason=int32(Pose1534.Result.Reason);}
    const bool Equal1534=PoseRead1534&&Pose1534.Frame==N&&Pose1534.Result.Status==ESpeedCarCameraStatus::Valid&&R.CameraPose==Outputs1534[0].Payload&&R.CameraCheckpoint==Outputs1534[0].StatePayload;
    if(!OracleNumeric1534.Restore()||!Equal1534){Failed=true;FailureLine=__LINE__;R.bComplete=false;break;}
+   }
+   else if(R.CameraOracleSnapshot1534.PresentationOutputs.Num()!=0||!R.CameraPose.IsEmpty()||!R.CameraCheckpoint.IsEmpty()||R.CameraNative!=0)
+   {Failed=true;FailureLine=__LINE__;R.bComplete=false;break;}
   }
   if(Failed)AddInfo(FString::Printf(TEXT("[NativeAnalyticContactsFirstFailure1297] Fast=%d Lanes=%d Steps=%u Line=%d CameraStatus=%d CameraReason=%d"),Fast?1:0,Lanes,Steps,FailureLine,CameraStatus,CameraReason));
   // Save ALL raw/canonical observations only after joining, so file I/O is
@@ -909,7 +927,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
     for(int32 Car=0;Car<CarCount;++Car)if(!TestTrue(FString::Printf(TEXT("N%u car%d actually consumed prepared arithmetic"),N,Car),PerCarConsumed1534[Car]==5))return false;
    }
    else if(!TestTrue(TEXT("serial control has zero claimed private base events"),Row.BaseEvents1534.IsEmpty()&&Row.BaseComputed1534==0&&Row.BaseConsumed1430==0&&Row.BaseUsefulNative1430==0))return false;
-   if(Lanes>1&&!TestTrue(TEXT("real camera calculation ran on worker plus owner validation"),Row.CameraNative>1))return false;
+   if(!Fast&&Lanes>1&&!TestTrue(TEXT("real camera calculation ran on worker plus owner validation"),Row.CameraNative>1))return false;
    ConsumedBaseTotal1430+=Row.BaseConsumed1430;UsefulBaseMax1430=FMath::Max(UsefulBaseMax1430,Row.BaseUsefulNative1430);
    WheelManifoldRows+=Row.WheelManifoldRows;TotalContacts+=Row.MainContacts;Computed+=Row.TensorComputed;Reused+=Row.TensorReused;Wasted+=Row.TensorWasted;
    for(int32 A=0;A<CarCount;++A){GroundedFrames[A]+=Row.GroundedWheels[A]>0;SuspensionFrames[A]+=Row.ActiveSuspension[A];}
@@ -933,8 +951,8 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
      ||!Compare1534(TEXT("contacts.canonical.pack"),Row.OrderedSolve,Ref.OrderedSolve)
      ||!Compare1534(TEXT("wheel-manifold.canonical.pack"),Row.WheelManifold,Ref.WheelManifold)
      ||!Compare1534(TEXT("prepare.deltas.pack"),Row.PrepareDeltas,Ref.PrepareDeltas)
-     ||!Compare1534(TEXT("camera.pose.pack"),Row.CameraPose,Ref.CameraPose)
-     ||!Compare1534(TEXT("camera.checkpoint.pack"),Row.CameraCheckpoint,Ref.CameraCheckpoint)
+     ||(!Fast&&(!Compare1534(TEXT("camera.pose.pack"),Row.CameraPose,Ref.CameraPose)
+     ||!Compare1534(TEXT("camera.checkpoint.pack"),Row.CameraCheckpoint,Ref.CameraCheckpoint)))
      ||!Compare1534(TEXT("numeric.context1534.pack"),Row.NumericContext1534,Ref.NumericContext1534)
      ||!Compare1534(TEXT("snapshots.pack"),Row.Snapshot,Ref.Snapshot))return false;
    }
@@ -958,6 +976,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
   }
  }
  } // One bounded scene; all four condition journals survive failures.
+ AddInfo(TEXT("Release20 camera contract: Normal camera outputs/checkpoints remain exactly equal across lanes and the independent oracle; Fast binding is rejected and every production camera output/native participant must remain empty/zero. Full physical/input/contact/wheel/state byte comparisons against NormalW1 remain mandatory. Cross-mode camera equality is intentionally not claimed."));
  AddInfo(TEXT("Scope: eight independent actual native plugin cars;90 consecutive300Hz frames; Normal/Fast selectors0/1,host2 at1/8total lanes; authored16-cell flat plane with separated support footprints plus one native CCD box. Exact consumed commands, all previously listed native states/history/transients, wheels/suspensions, ordered selected/dynamic contacts and real pure-camera pose/checkpoint are paired with Normal W1. Audio playback is allowed; this fixture has no production audio asset or private delegate-list proof. W8 admits eight logical lanes only when available; actual useful native producer identities INCLUDING the canonical owner are counted separately by the unchanged admission/consumption gates, which accept 2..8 useful producers on each admitted parallel frame and join their actual consumed base items. Eight requested or admitted lanes do not claim eight useful native producers. Current and every recorded wheeled state include the new bump cooldown and a null-or-canonical-stable victim ID; stale, foreign or ambiguous identities remain UNKNOWN. Original virtual/cache/wheel/callback operations remain on their owner. It is bounded arithmetic/capture evidence, not complete actor preparation parallelism, topology portability, whole-world/lifecycle/effects/private-callback/audio/fullStadium/matrix qualification or performance measurement; these remain UNKNOWN."));
  return !HasAnyErrors();
 }

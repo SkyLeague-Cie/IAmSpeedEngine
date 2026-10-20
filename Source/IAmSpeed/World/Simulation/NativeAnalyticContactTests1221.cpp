@@ -267,8 +267,18 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
     if(Binding.OwnerStableId!=MainId||Binding.TargetStableId!=0||Binding.FirstFrame!=0)return nullptr;
     return SerialCamera;
    });
+  // Release20's real AFastSimulation intentionally has no camera presentation.
+  // Retain the production rejection; never force a camera onto the Fast driver.
+  if(Fast)
+  {
+   if(!TestTrue(TEXT("Fast driver rejects camera binding and presentation capture"),
+    !BoundCamera.IsValid()&&!Driver->bPublishPresentation&&!Driver->AllowsCameraPresentation()))return false;
+  }
+  else
+  {
   if(!TestTrue(TEXT("real driver camera binding includes presentation capture"),
    BoundCamera.IsValid()&&BoundCamera.Get()==&SerialCamera.Get()&&Driver->bPublishPresentation))return false;
+  }
   ON_SCOPE_EXIT{Driver->UnregisterPresentationProducer(SerialCamera);};
   const FSpeedCarCameraCommand Cmd{25,1,ESpeedCarCameraCommandKind::Distance,320};
   if(!TestTrue(TEXT("same exact-frame camera command queued"),SerialCamera->QueueAt(Cmd)&&WorkerCamera->QueueAt(Cmd)))return false;
@@ -402,7 +412,7 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
     W::Add(Row.PrepareDeltas,Bridge->GetSimulationStableId(*Cars[A]));W::Add(Row.PrepareDeltas,N);W::Add(Row.PrepareDeltas,PW.Deltas.Last());
    }
    FSimulationSnapshot Snapshot;
-   if(!Driver->ReadLatestSimulationSnapshot(Snapshot)||Snapshot.NumFrame!=N||Snapshot.PresentationOutputs.Num()!=1)
+   if(!Driver->ReadLatestSimulationSnapshot(Snapshot)||Snapshot.NumFrame!=N||Snapshot.PresentationOutputs.Num()!=(Fast?0:1))
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    Row.Frame=N;Row.Publication=Snapshot.PublicationSerial;Row.Snapshot=Snapshot.Payload;
    Row.MainContacts=Ordered.NumMainRows();TArray<uint8> Canonical;
@@ -463,6 +473,8 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
    }
    // Save actual production output and participation before running the
    // independent comparison, which must not inflate production worker evidence.
+   if(!Fast)
+   {
    Row.CameraPose=Snapshot.PresentationOutputs[0].Payload;
    Row.CameraCheckpoint=Snapshot.PresentationOutputs[0].StatePayload;
    Row.CameraNative=GetFrameParallelStageTotals(EFrameParallelStage::Camera).MaximumNativeThreads;
@@ -482,6 +494,14 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
    if(PoseRead){CameraStatus=int32(Pose.Result.Status);CameraReason=int32(Pose.Result.Reason);}
    if(!PoseRead||Pose.Frame!=N||Pose.Result.Status!=ESpeedCarCameraStatus::Valid)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+
+   }
+   else
+   {
+    Row.CameraNative=GetFrameParallelStageTotals(EFrameParallelStage::Camera).MaximumNativeThreads;
+    if(Snapshot.PresentationOutputs.Num()!=0||Row.CameraNative!=0)
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   }
 
    Row.PrepareNative=GetFrameParallelStageTotals(EFrameParallelStage::Prepare).MaximumNativeThreads;
    Row.ShadowNative=FrameParallel::GetJoinedActorKinematicShadowTotals1213().MaximumShadowNativeParticipants;
@@ -547,7 +567,7 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
   {
    const auto& Row=Seen[N];
    if(!TestTrue(TEXT("exact N and publication cover every300Hz frame"),Row.bComplete&&Row.Frame==N&&Row.Publication==N+1))return false;
-   if(Lanes>1&&!TestTrue(TEXT("real camera calculation ran on worker plus owner validation"),Row.CameraNative>1))return false;
+   if(!Fast&&Lanes>1&&!TestTrue(TEXT("real camera calculation ran on worker plus owner validation"),Row.CameraNative>1))return false;
    TotalContacts+=Row.MainContacts;Computed+=Row.TensorComputed;Reused+=Row.TensorReused;Wasted+=Row.TensorWasted;
    UsefulNative=FMath::Max(UsefulNative,Row.TensorUsefulNative);ReusedNative=FMath::Max(ReusedNative,Row.TensorReusedNative);ReusedLanes=FMath::Max(ReusedLanes,Row.TensorReusedLanes);
    if(Fast||Lanes>1)
@@ -555,7 +575,7 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
     const auto& Ref=Oracle[N];
     if(!TestTrue(FString::Printf(TEXT("first divergence at N%u fast%d lanes%d: snapshot/input/listed states/ordered contacts/camera"),N,Fast?1:0,Lanes),
      Row.Snapshot==Ref.Snapshot&&Row.Inputs==Ref.Inputs&&Row.ObservedStates==Ref.ObservedStates
-     &&Row.OrderedSolve==Ref.OrderedSolve&&Row.PrepareDeltas==Ref.PrepareDeltas&&Row.CameraPose==Ref.CameraPose&&Row.CameraCheckpoint==Ref.CameraCheckpoint))return false;
+     &&Row.OrderedSolve==Ref.OrderedSolve&&Row.PrepareDeltas==Ref.PrepareDeltas&&(!Fast||(Row.CameraPose==Ref.CameraPose&&Row.CameraCheckpoint==Ref.CameraCheckpoint))))return false;
    }
   }
   TestTrue(TEXT("fixture exercised actual selected physical contacts"),TotalContacts>0);
@@ -564,6 +584,7 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
   AddInfo(FString::Printf(TEXT("[NativeAnalyticContacts1221] Fast=%d Requested=%d Frames=%u Hz=300 SelectedContacts=%llu Computed=%llu Reused=%llu Wasted=%llu UsefulNativeMax=%d ReusedNativeMax=%d ReusedLaneMax=%d"),Fast?1:0,Lanes,Frames,TotalContacts,Computed,Reused,Wasted,UsefulNative,ReusedNative,ReusedLanes));
   if(!Fast&&Lanes==1)Oracle=MoveTemp(Seen);
  }
+ AddInfo(TEXT("Release20 camera contract: Normal camera outputs/checkpoints remain exactly equal across lanes and the independent oracle; Fast binding is rejected and every production camera output/native participant must remain empty/zero. Full physical/input/contact/wheel/state byte comparisons against NormalW1 remain mandatory. Cross-mode camera equality is intentionally not claimed."));
  AddInfo(TEXT("Scope: isolated plugin fixture, two actual native cars and actual camera, plus an explicitly configured native box/controller using production integration/CCD/solve; one authored64cell flat Tensor provider; finite90frame300Hz controller; real Normal/Fast owned pulses with selector0/1,host2;actual full-delta arguments from box Prepare and native car PreForce checked bitwise1/300 on exactly90 consecutive frames; actual consumed car commands, ordered real contacts and declared native body/contact/cache/history fields compared exactly against Normal W1. Actor shadow disabled. Dynamic complete-cell queue1353 explicitly enabled. Actual Tensor parallel reuse is required, never inferred from requests. Vehicle transients and external lifecycle closure beyond the listed fixture fields are NOT certified; full physics/Stadium/matrix equivalence and acceleration remain UNKNOWN. This test is not a performance measurement."));
  return !HasAnyErrors();
 }
