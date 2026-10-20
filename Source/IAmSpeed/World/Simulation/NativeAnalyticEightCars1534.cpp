@@ -208,6 +208,9 @@ bool EightCarBumpVictimIdentity1564(const FWheeledPhysicsState& X,
  int32 Matches=0;
  for(const auto& E:Registry)if(E.Component==Victim){++Matches;StableId=E.StableId;}
  if(Matches!=1||StableId==0)return false;
+ // The frozen table is valid only while this same canonical registration lives.
+ // Pointer/address reuse alone can never revive the previous registry identity.
+ if(Victim->GetPublishedSimulationStableId()!=StableId)return false;
  for(const auto& E:Registry)if(E.StableId==StableId&&E.Component!=Victim)return false;
  Kind=1;return true;
 }
@@ -409,6 +412,9 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
   auto Ambiguous=BumpIdentities1564;Ambiguous.Add(BumpIdentities1564[0]);
   if(!TestFalse(TEXT("ambiguous bump victim stays UNKNOWN"),
    EightCarBumpVictimIdentity1564(BumpProbe1564,Ambiguous,BumpKind1564,BumpId1564)))return false;
+  auto ChangedRegistration=BumpIdentities1564;ChangedRegistration[0].StableId+=uint64(MAX_uint32);
+  if(!TestFalse(TEXT("changed canonical bump registration stays UNKNOWN"),
+   EightCarBumpVictimIdentity1564(BumpProbe1564,ChangedRegistration,BumpKind1564,BumpId1564)))return false;
   auto Aliased=BumpIdentities1564;Aliased[1].StableId=Aliased[0].StableId;
   if(!TestFalse(TEXT("aliased canonical bump identity stays UNKNOWN"),
    EightCarBumpVictimIdentity1564(BumpProbe1564,Aliased,BumpKind1564,BumpId1564)))return false;

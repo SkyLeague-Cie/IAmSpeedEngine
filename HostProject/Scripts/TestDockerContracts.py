@@ -1,4 +1,5 @@
 """Portable launcher regression tests; no Docker or Unreal process is started."""
+import ast
 import copy
 import io
 import json
@@ -192,6 +193,35 @@ class RawDebtWarningRegression108(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate_report_with_debt(0, log, report, module.accepted_debt_policy(), expected_paths=paths)
         self.assertEqual(report, original)
+
+
+class EditorLoopbackContract1573(unittest.TestCase):
+    def test_real_editor_argv_satisfies_loopback_reference_contract(self):
+        # Evaluate the actual argument-list expression used by inside(), not a
+        # second hand-maintained command. No inside(), Git, Docker or UE runs.
+        tree = ast.parse(Path(ci.__file__).read_text(encoding='utf-8-sig'))
+        inside = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'inside')
+        commands = [node.value for node in ast.walk(inside)
+                    if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == 'command' for target in node.targets)
+                    and isinstance(node.value, ast.List) and node.value.elts
+                    and isinstance(node.value.elts[0], ast.Call)
+                    and isinstance(node.value.elts[0].func, ast.Name) and node.value.elts[0].func.id == 'str'
+                    and len(node.value.elts[0].args) == 1
+                    and isinstance(node.value.elts[0].args[0], ast.Name) and node.value.elts[0].args[0].id == 'editor']
+        self.assertEqual(len(commands), 1, 'One unambiguous native Editor argv must remain inspectable')
+        args = eval(compile(ast.Expression(body=commands[0]), str(ci.__file__), 'eval'),
+                    {'__builtins__': {'str': str}, 'FILTER': ci.FILTER,
+                     'editor': Path('/fixture/UnrealEditor-Cmd'), 'project_file': Path('/fixture/Host.uproject'),
+                     'output': Path('/fixture/output'), 'logs': Path('/fixture/logs'), 'report': Path('/fixture/report')})
+        binds = [arg.partition('=')[2] for arg in args
+                 if arg.lstrip('-').partition('=')[0].upper() == 'MULTIHOME']
+        self.assertEqual(binds, ['127.0.0.1'], 'Mapped reference gate requires exactly one IPv4 loopback binding')
+        self.assertIn('-ExecCmds=Automation RunTests ' + ci.FILTER, args)
+        self.assertIn('-TestExit=Automation Test Queue Empty', args)
+        self.assertIn('-NullRHI', args)
+        self.assertIn('-nosound', args)
+
 
 if __name__ == '__main__':
     unittest.main()
