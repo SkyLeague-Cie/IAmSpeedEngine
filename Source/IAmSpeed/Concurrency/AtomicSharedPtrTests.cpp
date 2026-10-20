@@ -2,6 +2,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
 #include <thread>
+#include <chrono>
 #include <type_traits>
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedAtomicSharedPtrPublicationTest,
@@ -28,7 +29,9 @@ bool FIAmSpeedAtomicSharedPtrPublicationTest::RunTest(const FString&)
     Held.reset();
     TestTrue(TEXT("Last reader releases the retired object"), Weak.expired());
 
-    std::atomic<bool> Done{false}, Bad{false};
+    Published.store(std::make_shared<const FSnapshot>(FSnapshot{0, ~uint64(0)}));
+    std::atomic<bool> Done{false}, Bad{false}, Ready{false};
+    std::atomic<uint64> Observed{0};
     std::atomic<uint64> Reads{0};
     std::thread Reader([&]
     {
@@ -39,14 +42,29 @@ bool FIAmSpeedAtomicSharedPtrPublicationTest::RunTest(const FString&)
             {
                 ++Reads;
                 if (Value->Complement != ~Value->Sequence) Bad.store(true);
+                Observed.store(Value->Sequence, std::memory_order_release);
+                Ready.store(true, std::memory_order_release);
             }
         } while (!Done.load(std::memory_order_acquire));
     });
+    // A bounded handshake proves the reader is active before the writer starts.
+    // Keep an immutable initial publication so scheduling cannot turn an empty
+    // first load into a false failure, and require consumption of the final one.
+    const auto StartDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!Ready.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < StartDeadline)
+        std::this_thread::yield();
+    const bool ReaderStarted = Ready.load(std::memory_order_acquire);
     for (uint64 N = 1; N <= 20000; ++N)
         Published.store(std::make_shared<const FSnapshot>(FSnapshot{N, ~N}), std::memory_order_release);
+    const auto EndDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (Observed.load(std::memory_order_acquire) != 20000 && std::chrono::steady_clock::now() < EndDeadline)
+        std::this_thread::yield();
+    const bool ReaderConsumedFinal = Observed.load(std::memory_order_acquire) == 20000;
     Done.store(true, std::memory_order_release);
     Reader.join();
     const auto Last = Published.load(std::memory_order_seq_cst);
+    TestTrue(TEXT("Reader acknowledged startup before writes"), ReaderStarted);
+    TestTrue(TEXT("Reader consumed final publication before retirement"), ReaderConsumedFinal);
     TestFalse(TEXT("Acquire readers observe complete immutable payloads"), Bad.load());
     TestTrue(TEXT("Reader consumed a publication"), Reads.load() > 0);
     TestTrue(TEXT("Final publication is the complete final snapshot"),
