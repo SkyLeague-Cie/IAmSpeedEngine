@@ -38,6 +38,7 @@ class IAMSPEED_API USphereSubBody : public USolidSubBody, public ISphereSweeper,
     GENERATED_UCLASS_BODY()
 	
 public:
+    const USolidSubBody* GetSolidSweepBody() const override { return this; }
 #if !UE_BUILD_SHIPPING
     /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override

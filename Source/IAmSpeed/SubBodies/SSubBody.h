@@ -12,6 +12,7 @@ class ISpeedComponent;
 class UBoxSubBody;
 class USphereSubBody;
 class USWheelSubBody;
+class UCylinderSubBody;
 namespace Speed { class IStaticCollisionWorld; }
 
 /**
@@ -56,6 +57,7 @@ public:
         B::Array(Out,ExternalBoxSubBodies);
         B::Array(Out,ExternalSphereSubBodies);
         B::Array(Out,ExternalWheelSubBodies);
+        B::Array(Out,ExternalCylinderSubBodies);
     }
 #endif
 
@@ -64,7 +66,8 @@ public:
         Unknown,
         Wheel,
         Hitbox,
-        Sphere
+        Sphere,
+        Cylinder
 	};
 
     virtual void Initialize(ISpeedComponent* InParentComponent);
@@ -150,6 +153,7 @@ protected:
     const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const;
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const;
     const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const;
+    const TArray<TWeakObjectPtr<UCylinderSubBody>>& GetExternalCylinderSubBodies() const {return ExternalCylinderSubBodies;}
 protected:
 
 	ISpeedComponent* ParentComponent;
@@ -180,6 +184,7 @@ protected:
 	TArray< TWeakObjectPtr<UBoxSubBody> > ExternalBoxSubBodies;
 	TArray< TWeakObjectPtr<USphereSubBody> > ExternalSphereSubBodies;
 	TArray< TWeakObjectPtr<USWheelSubBody> > ExternalWheelSubBodies;
+    TArray<TWeakObjectPtr<UCylinderSubBody>> ExternalCylinderSubBodies;
 
     // Internal sweep helper
     bool InternalSweep(const FVector& Start, const FVector& End, SHitResult& OutHit, const float& delta);

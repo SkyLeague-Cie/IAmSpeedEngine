@@ -1,4 +1,5 @@
 #include "AnalyticWorldQuery.h"
+#include "TorusWorldQuery.h"
 #include "AnalyticBoxSweepContext.h"
 #include "IAmSpeed/World/Collision/OrderedBoundsIndex.h"
 
@@ -207,6 +208,9 @@ FWorldQueryService::FWorldQueryService(const FAnalyticWorldData& InWorld)
 			Triangle.BlockingChannels, Triangle.bQueryCollisionEnabled, true,
 			Triangle.bAuthorityEligible);
 	}
+    for (const auto& Torus:World.Tori)
+        RegisterPrimitive(Torus.SourceId,Torus.Bounds,Torus.ObjectType,Torus.BlockingChannels,
+            Torus.bQueryCollisionEnabled,false,Torus.bAuthorityEligible);
 	CoverageBySource.GenerateValueArray(SourceAuthorityCoverage);
 	SourceAuthorityCoverage.Sort(
 		[](const FSourceAuthorityCoverage& A, const FSourceAuthorityCoverage& B)
@@ -2833,7 +2837,7 @@ bool FWorldQueryService::IsSameQuery(
 		A.bObjectQuery == B.bObjectQuery &&
 		A.bApplyCollisionFilter == B.bApplyCollisionFilter &&
 		A.bAuthorityOnly == B.bAuthorityOnly &&
-		A.bExcludeAuthorityEligible == B.bExcludeAuthorityEligible &&
+		A.bExcludeAuthorityEligible == B.bExcludeAuthorityEligible && A.bExcludeTori == B.bExcludeTori &&
 		A.bIncludeCompactPatches == B.bIncludeCompactPatches &&
 		A.bIncludeTriangles == B.bIncludeTriangles;
 }
@@ -3046,13 +3050,20 @@ FWorldHit FWorldQueryService::SweepDetailed(
 		return Best.bHit ? FMath::Min(1.0, Best.Time + 1.0e-12) : 1.0;
 	};
 	const FBox3d QueryBounds = SweptQueryBounds(Query);
+    if (!Query.bExcludeTori)
+        for (const auto& Torus:World.Tori)
+            if (TorusPassesFilter(Query,Torus) && Torus.Bounds.Intersect(QueryBounds))
+                ConsiderProviderHit(SweepTorusSurface(Query,Torus));
+
 #if !UE_BUILD_SHIPPING
 	const double PlaneStartSeconds = bPhaseTimingEnabled
 		? FPlatformTime::Seconds()
 		: 0.0;
 #endif
-	for (const FBoundedPlane& Plane : World.Planes)
+	Speed::Collision::FOrderedBoundsScratch PlaneScratch;
+	for (int32 PlaneIndex : PlaneProviderIndex->FindCandidates(QueryBounds, PlaneScratch))
 	{
+		const FBoundedPlane& Plane = World.Planes[PlaneIndex];
 		if (Plane.bRequiresCompactOptIn) continue;
 		if (Query.bAuthorityOnly && !Plane.bAuthorityEligible) continue;
 		if (Query.bExcludeAuthorityEligible && Plane.bAuthorityEligible) continue;
@@ -3323,3 +3334,11 @@ FWorldHit FWorldQueryService::SweepDetailed(
 }
 
 } // namespace Speed::Analytic
+
+void Speed::Analytic::FWorldQueryService::VisitTorusCandidates(const FWorldQuery& Query,
+    TFunctionRef<void(const FTorusSurface&)> Visitor) const
+{
+    const FBox3d Bounds=SweptQueryBounds(Query);
+    for (const auto& Torus:World.Tori)
+        if (TorusPassesFilter(Query,Torus) && Torus.Bounds.Intersect(Bounds)) Visitor(Torus);
+}

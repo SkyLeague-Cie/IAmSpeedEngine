@@ -23,6 +23,7 @@ protected:
 	bool SweepSuspensionOnGround(SHitResult& OutHit, const float& Delta) override;
 	bool SweepSuspensionOnSpheres(SHitResult& OutHit, const float& Delta) override;
 	bool SweepSuspensionOnBoxes(SHitResult& OutHit, const float& Delta) override;
+    bool SweepSuspensionOnCylinders(SHitResult& OutHit,const float& Delta) override;
 
 private:
 	bool BuildSuspensionRay(float Delta, FVector& OutStart, FVector& OutEnd,

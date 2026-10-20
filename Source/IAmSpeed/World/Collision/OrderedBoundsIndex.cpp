@@ -26,6 +26,52 @@ namespace
 	};
 
 	// Index the two widest axes; omitting the third can add false positives, never misses.
+    // Large analytical courses exceed the small grid's membership budget.
+    // Immutable BVH leaves retain provider IDs; queries sort IDs before CCD.
+    class FBvhBoundsIndex final : public FOrderedBoundsIndex
+    {
+        struct FNode { FBox3d Bounds{ForceInit}; int32 Begin=0,Count=0,Left=INDEX_NONE,Right=INDEX_NONE; };
+        TArray<FNode> Nodes;
+        TArray<int32> Order;
+        TArray<FBox3d> ProviderBounds;
+        int32 Build(int32 Begin,int32 Count)
+        {
+            const int32 Node=Nodes.AddDefaulted();FBox3d Bounds(ForceInit);
+            for(int32 I=Begin;I<Begin+Count;++I)Bounds+=ProviderBounds[Order[I]];
+            Nodes[Node].Bounds=Bounds;Nodes[Node].Begin=Begin;Nodes[Node].Count=Count;
+            if(Count<=8)return Node;
+            const FVector3d Span=Bounds.GetSize();int32 Axis=0;
+            if(Span.Y>Span[Axis])Axis=1;if(Span.Z>Span[Axis])Axis=2;
+            MakeArrayView(Order.GetData()+Begin,Count).Sort([&](int32 A,int32 B)
+            {
+                // Avoid overflow from adding large finite endpoints.
+                const double X=ProviderBounds[A].Min[Axis]*.5+ProviderBounds[A].Max[Axis]*.5;
+                const double Y=ProviderBounds[B].Min[Axis]*.5+ProviderBounds[B].Max[Axis]*.5;
+                return X==Y?A<B:X<Y;
+            });
+            const int32 Left=Build(Begin,Count/2),Right=Build(Begin+Count/2,Count-Count/2);
+            Nodes[Node].Left=Left;Nodes[Node].Right=Right;return Node;
+        }
+    public:
+        explicit FBvhBoundsIndex(TConstArrayView<FBox3d> Bounds):FOrderedBoundsIndex(Bounds.Num())
+        {ProviderBounds.Append(Bounds.GetData(),Bounds.Num());Order=AllIndices;Nodes.Reserve(Bounds.Num()*2);Build(0,Bounds.Num());}
+        TConstArrayView<int32> FindCandidates(const FBox3d& Bounds,FOrderedBoundsScratch& Scratch) const override
+        {
+            if(!IsFiniteBounds(Bounds))return AllIndices;
+            Scratch.Ordered.Reset();TArray<int32,TInlineAllocator<64>> Stack;Stack.Add(0);
+            while(!Stack.IsEmpty())
+            {
+                const auto& Node=Nodes[Stack.Pop(EAllowShrinking::No)];if(!Node.Bounds.Intersect(Bounds))continue;
+                if(Node.Left!=INDEX_NONE){Stack.Add(Node.Right);Stack.Add(Node.Left);continue;}
+                for(int32 I=Node.Begin;I<Node.Begin+Node.Count;++I)
+                    if(ProviderBounds[Order[I]].Intersect(Bounds))Scratch.Ordered.Add(Order[I]);
+            }
+            Scratch.Ordered.Sort();return Scratch.Ordered;
+        }
+        SIZE_T GetAllocatedSize() const override
+        {return sizeof(*this)+AllIndices.GetAllocatedSize()+Nodes.GetAllocatedSize()+Order.GetAllocatedSize()+ProviderBounds.GetAllocatedSize();}
+    };
+
 	class FGridBoundsIndex final : public FOrderedBoundsIndex
 	{
 		static constexpr int32 Divisions = 16;
@@ -138,6 +184,7 @@ TSharedRef<const FOrderedBoundsIndex> FOrderedBoundsIndex::Create(TConstArrayVie
 		if (!IsFiniteBounds(Bound)) return MakeShared<FLinearBoundsIndex>(Bounds.Num());
 		WorldBounds += Bound;
 	}
+	if (Bounds.Num() >= 4096) return MakeShared<FBvhBoundsIndex>(Bounds);
 	const FVector3d Span = WorldBounds.GetSize();
 	int32 Axes[3] = { 0, 1, 2 };
 	for (int32 A = 0; A < 2; ++A)

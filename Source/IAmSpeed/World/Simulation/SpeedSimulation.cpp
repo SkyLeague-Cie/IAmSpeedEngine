@@ -380,8 +380,20 @@ void ASpeedSimulation::StartOwnedWorkerIfReady()
 #if WITH_DEV_AUTOMATION_TESTS
 		, OwnedAudit
 #endif
-		]()
-		{
+#if !UE_BUILD_SHIPPING
+        , bActorProfileStarted=false
+#endif
+        ]() mutable
+        {
+#if !UE_BUILD_SHIPPING
+            // Reuse the existing default-off aggregate profile on its owning
+            // lane. It covers normal controlled-run worker generations.
+            if(!bActorProfileStarted)
+            {
+                if(IsA<ARealTimeSimulation>())Speed::ActorDiagnostics::BeginRun();
+                bActorProfileStarted=true;
+            }
+#endif
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::BeginWork(OwnedAudit, CanonicalNumFrame);
 #endif
@@ -438,6 +450,9 @@ void ASpeedSimulation::StartOwnedWorkerIfReady()
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::FreezeOnOwner(OwnedAudit, Speed::OwnedFrameAudit::EFreezeReason::WorkerClose);
 			Speed::OwnedFrameAudit::TryExportFrozen(OwnedAudit);
+#endif
+#if !UE_BUILD_SHIPPING
+            if(IsA<ARealTimeSimulation>())Speed::ActorDiagnostics::EndRun();
 #endif
 			CloseInputSessionsOnWorker();
 		});
