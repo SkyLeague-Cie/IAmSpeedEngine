@@ -48,6 +48,24 @@ jobs:
               os.environ['IAMSPEED_UE_IMAGE'] = configured
           subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py'], check=True)
 
+      - name: Report strict result and accepted integration debt
+        if: always() && steps.contracts.outputs.output_dir != ''
+        shell: python {0}
+        env:
+          CONTRACT_OUTPUT: ${{ steps.contracts.outputs.output_dir }}
+        run: |
+          import json, os
+          from pathlib import Path
+          result_path = Path(os.environ['CONTRACT_OUTPUT']) / 'container-result.json'
+          result = json.loads(result_path.read_text()) if result_path.exists() else {'state': 'NO_RESULT'}
+          lines = ['IAmSpeed contracts: ' + result['state']]
+          for debt in result.get('accepted_debt', []):
+              lines.append('- Accepted integration debt (raw Fail retained): ' + debt['test'])
+          if result['state'] == 'PASS_WITH_ACCEPTED_DEBT':
+              print('::warning::Human-accepted test debt remains; raw editor/report failures are preserved.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('\n'.join(lines) + '\n')
+
       - name: Upload exact run diagnostics
         if: always() && steps.contracts.outputs.output_dir != ''
         uses: actions/upload-artifact@v4

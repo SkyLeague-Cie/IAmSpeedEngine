@@ -94,6 +94,61 @@ class Contracts(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ci.inspect_owned('a' * 64, 'owner', observed['Image'])
 
+    def debt_report(self):
+        report = copy.deepcopy(self.report)
+        report['tests'] += [dict(fullTestPath=name, state='Fail', errors=4, warnings=1)
+                            for name in sorted(ci.ACCEPTED_DEBT_IDS)]
+        report['failed'] = 2
+        return report, 'Automation Test Queue Empty 7 tests performed.'
+
+    def test_exact_accepted_debts_are_visible_and_do_not_mutate_raw_report(self):
+        report, log = self.debt_report(); original = copy.deepcopy(report)
+        decision = ci.validate_report_with_debt(1, log, report, ci.accepted_debt_policy(),
+                                                expected_paths=self.paths + sorted(ci.ACCEPTED_DEBT_IDS))
+        self.assertEqual(decision['state'], 'PASS_WITH_ACCEPTED_DEBT')
+        self.assertFalse(decision['full_ci_qualified'])
+        self.assertEqual({d['test'] for d in decision['accepted_debt']}, ci.ACCEPTED_DEBT_IDS)
+        self.assertEqual(report, original)
+        with self.assertRaises(ValueError):
+            ci.validate_report(1, log, report)
+
+    def test_debt_does_not_accept_other_failures_warnings_or_missing_tests(self):
+        report, log = self.debt_report(); policy = ci.accepted_debt_policy()
+        for key, value in [('state', 'Fail'), ('warnings', 1), ('errors', 1)]:
+            changed = copy.deepcopy(report); changed['tests'][0][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                ci.validate_report_with_debt(1, log, changed, policy)
+        for key in ('notRun', 'inProcess', 'failed'):
+            changed = copy.deepcopy(report); changed[key] += 1
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                ci.validate_report_with_debt(1, log, changed, policy)
+        for state in ('NotRun', 'InProcess'):
+            changed = copy.deepcopy(report); changed['tests'][-1]['state'] = state
+            with self.assertRaises(ValueError):
+                ci.validate_report_with_debt(1, log, changed, policy)
+        with self.assertRaises(ValueError):
+            ci.validate_report_with_debt(1, log, report, policy, expected_paths=self.paths)
+
+    def test_debt_never_accepts_crashes_missing_completion_or_wildcards(self):
+        report, log = self.debt_report(); policy = ci.accepted_debt_policy()
+        for code in (-11, 3, 124, 134, 255):
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                ci.validate_report_with_debt(code, log, report, policy)
+        with self.assertRaises(ValueError):
+            ci.validate_report_with_debt(1, '', report, policy)
+        policy['tests']['IAmSpeed.*'] = dict(reason='forbidden')
+        with self.assertRaises(ValueError):
+            ci.validate_report_with_debt(1, log, report, policy)
+
+    def test_fixed_debt_is_clean_pass_and_no_debt_exit_one_is_rejected(self):
+        policy = ci.accepted_debt_policy()
+        result = ci.validate_report_with_debt(0, self.log, self.report, policy)
+        self.assertEqual(result['state'], 'PASS')
+        self.assertEqual(result['accepted_debt'], [])
+        self.assertTrue(result['full_ci_qualified'])
+        with self.assertRaises(ValueError):
+            ci.validate_report_with_debt(1, self.log, self.report, policy)
+
 
 if __name__ == '__main__':
     unittest.main()

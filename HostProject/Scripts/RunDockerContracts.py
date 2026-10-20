@@ -4,6 +4,7 @@ No host Unreal installation, private UBT manifest, automatic pull, or service
 management. Docker source/input is read-only; generated files stay in one run.
 """
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -25,6 +26,10 @@ REQUIRED = {
     'IAmSpeed.Collision.Torus.WorldProvider',
 }
 ROOTS = ('/opt/unreal', '/opt/UnrealEngine', '/opt/unreal-engine', '/home/ue4/UnrealEngine')
+ACCEPTED_DEBT_IDS = {
+    'IAmSpeed.Camera.NetworkInputBoundary',
+    'IAmSpeed.PhysicalLaws.BoxEquilibrium.CanonicalDrops',
+}
 
 
 def save(path, data):
@@ -113,6 +118,46 @@ def source_test_manifest(root):
     return sorted(names)
 
 
+def accepted_debt_policy():
+    policy = json.loads(Path(__file__).with_name('accepted-test-debt.json').read_text(encoding='utf-8'))
+    if (policy.get('schema') != 'iamspeed.accepted-test-debt/v1'
+            or set(policy.get('tests', {})) != ACCEPTED_DEBT_IDS
+            or policy.get('authority_date') != '2026-10-20'
+            or policy.get('execute_tests') is not True
+            or policy.get('preserve_raw_failures') is not True):
+        raise ValueError('Expected the exact two human-accepted test debts; no wildcard or skipped test')
+    return policy
+
+
+def validate_report_with_debt(exit_code, log, report, policy, required=REQUIRED, expected_paths=None):
+    """Assess integration separately; never rewrite the raw UE report or test result.
+
+    Only completed Fail rows for the two explicit debts may be nonblocking.
+    Incomplete tests, another failure, non-debt warnings and a crash stay blocking.
+    """
+    if set(policy.get('tests', {})) != ACCEPTED_DEBT_IDS:
+        raise ValueError('Debt identities differ from human authorization')
+    accepted = [row for row in report.get('tests', [])
+                if row.get('fullTestPath') in ACCEPTED_DEBT_IDS and row.get('state') == 'Fail']
+    if exit_code not in (0, 1) or (exit_code != 0 and not accepted):
+        raise ValueError('Native exit is not a completed accepted-debt test failure: ' + str(exit_code))
+    # A private assessment copy lets the existing strict manifest/completion/
+    # aggregate checks apply unchanged to every other row. Raw artifacts stay Fail.
+    assessment = copy.deepcopy(report)
+    for row in assessment.get('tests', []):
+        if row.get('fullTestPath') in ACCEPTED_DEBT_IDS and row.get('state') == 'Fail':
+            row.update(state='Success', warnings=0, errors=0)
+    assessment['failed'] = report.get('failed', -1) - len(accepted)
+    assessment['succeeded'] = report.get('succeeded', -1) + len(accepted)
+    validated = validate_report(0, log, assessment, required, expected_paths)
+    return dict(validated, state='PASS_WITH_ACCEPTED_DEBT' if accepted else 'PASS',
+                accepted_debt=[dict(test=row['fullTestPath'], raw_state=row['state'],
+                                    errors=row.get('errors', 0), warnings=row.get('warnings', 0),
+                                    reason=policy['tests'][row['fullTestPath']]['reason']) for row in accepted],
+                raw_editor_exit=exit_code, raw_report_unchanged=True,
+                full_ci_qualified=not accepted)
+
+
 def extract_archive(archive, destination):
     destination = Path(destination)
     destination.mkdir()
@@ -188,12 +233,23 @@ def inside():
         save(output / 'test-command.json', command)
         code = run_logged(command, logs / 'tests.stdout.log', 1800, project, env)
         result['editor_exit'] = code
-        result.update(validate_report(code, (logs / 'tests.stdout.log').read_text(encoding='utf-8-sig', errors='replace'), json.loads((report / 'index.json').read_text(encoding='utf-8-sig')), expected_paths=expected))
-        result.update(state='PASS', engine_version=version, engine_root_inside_image=str(engine))
+        policy = accepted_debt_policy()
+        raw_report = json.loads((report / 'index.json').read_text(encoding='utf-8-sig'))
+        save(output / 'debt-assessment.json', dict(state='PENDING_VALIDATION', policy=policy,
+             accepted_failures=[row['fullTestPath'] for row in raw_report.get('tests', [])
+                               if row.get('state') == 'Fail' and row.get('fullTestPath') in ACCEPTED_DEBT_IDS],
+             raw_editor_exit=code, raw_report_unchanged=True, full_ci_qualified=False))
+        result.update(validate_report_with_debt(code, (logs / 'tests.stdout.log').read_text(encoding='utf-8-sig', errors='replace'), raw_report, policy, expected_paths=expected))
+        result.update(engine_version=version, engine_root_inside_image=str(engine))
     except Exception as exc:
         result['reason'] = str(exc)
+    if (output / 'debt-assessment.json').exists():
+        assessment = json.loads((output / 'debt-assessment.json').read_text())
+        assessment.update(state=result['state'], reason=result.get('reason'),
+                          full_ci_qualified=result.get('full_ci_qualified', False))
+        save(output / 'debt-assessment.json', assessment)
     save(output / 'container-result.json', result)
-    return 0 if result['state'] == 'PASS' else 1
+    return 0 if result['state'] in ('PASS', 'PASS_WITH_ACCEPTED_DEBT') else 1
 
 
 def docker_args(image_id, source, output, owner, sha):
@@ -267,9 +323,11 @@ def host(args):
         if digest(source_tar) != launch['source_archive_sha256']:
             raise RuntimeError('Source archive changed during the run')
         result = json.loads((output / 'container-result.json').read_text())
-        if status != '0' or observed['State']['ExitCode'] != 0 or result.get('state') != 'PASS' or result.get('source_sha') != sha or result.get('image_id') != info['Id']:
+        if status != '0' or observed['State']['ExitCode'] != 0 or result.get('state') not in ('PASS', 'PASS_WITH_ACCEPTED_DEBT') or result.get('source_sha') != sha or result.get('image_id') != info['Id']:
             raise RuntimeError('Container/report exit or exact candidate mismatch; preserve failures')
-        launch.update(state='PASS', native_container_closed=True, tests=result['tests'])
+        launch.update(state=result['state'], native_container_closed=True, tests=result['tests'],
+                      accepted_debt=result.get('accepted_debt', []),
+                      full_ci_qualified=result.get('full_ci_qualified', False))
     except Exception as exc:
         launch.update(state='FAIL', reason=str(exc))
         try:

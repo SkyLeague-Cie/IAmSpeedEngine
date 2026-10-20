@@ -33,7 +33,7 @@ Containers and diagnostics are preserved for inspection; no prune is performed.
 The suite runs every Linux-eligible static test declared in the plugin checkout: the `IAmSpeed.`
 namespace, including AnalyticWorld, Collision, ContactDetection, Motion and
 Simulation, plus its retained `SkyLeague.Camera.GenericInputLifecycle` identity.
-Success requires editor exit
+Strict success requires editor exit
 zero, one nonempty queue-completion marker,
 unique matching report identities, no failure/warning/incomplete tests, and the
 exact static test manifest extracted from the committed source, including the
@@ -60,3 +60,28 @@ Artifacts are written beneath `Artifacts/PhysicalContracts/<unique-run>/` by
 default. `--output` may select a new empty directory on the host; its path is only
 generated output storage, never an engine dependency. On remote Docker daemons,
 the bind paths must exist on the daemon host, as required by Docker bind mounts.
+
+## Human-accepted integration debt (20 October 2026)
+
+The human accepts exactly two tests as deferred, nonblocking integration debt:
+`IAmSpeed.Camera.NetworkInputBoundary` (malformed/truncated frame serialization,
+to revisit with netcode restoration) and
+`IAmSpeed.PhysicalLaws.BoxEquilibrium.CanonicalDrops` (four face-support cases,
+to revisit with Central physics). See `Scripts/accepted-test-debt.json`.
+
+Both tests stay in the complete source manifest and are executed normally.
+Their assertions, tolerances, time horizon and raw UE results remain unchanged.
+A completed failure of these exact identities may produce
+`PASS_WITH_ACCEPTED_DEBT`, with a separate `debt-assessment.json`, the original
+editor exit (0 or automation failure1), and `full_ci_qualified=false`. The
+container's zero integration exit does not rewrite the editor's raw failure.
+When both tests are fixed, the same runner returns ordinary PASS.
+
+Crashes/signals/timeouts, missing or duplicate identities, incomplete tests,
+new failing identities and warnings/errors on other tests remain blocking.
+This policy does not waive the SDL warnings on other tests in historical
+Docker534: its raw124-test result stays72Success/50warningtests/2Fail.
+No new UE/Docker run is implied by installing this classification. The
+portable classifier has its own Python checks; full project image CI must
+carry this exact policy when the managers prepare integration. Existing
+seven-test main debt is a separate policy and is not broadened here.
