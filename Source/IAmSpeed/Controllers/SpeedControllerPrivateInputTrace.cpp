@@ -1,4 +1,6 @@
 #include "SpeedController.h"
+#include "PrivateInputFailureFile.h"
+#include "UObject/ObjectKey.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
@@ -7,8 +9,55 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 
+
+namespace
+{
+void RecordPrivateControllerInputFailure(ASpeedController& Controller,
+    const std::shared_ptr<Speed::Input::V2::FInputHostSession>& Session,
+    const TCHAR* Site, bool FirstFault, bool Faulted,
+    const Speed::Input::V2::FBoundaryReceipt* CheckedReceipt = nullptr)
+{
+    static const bool Enabled = FParse::Param(FCommandLine::Get(), TEXT("SLPrivateInputFailureFile"));
+    if (!Enabled || !IsInGameThread() || Controller.HasAnyFlags(RF_ClassDefaultObject)
+        || !Controller.GetWorld() || !Controller.GetWorld()->IsGameWorld()) return;
+    // Fixed-size observer-only state: no controller layout change, no unbounded
+    // map. First admission and first fault correlate by process/controller id.
+    struct FSeen { FObjectKey Key; bool Used = false, Admission = false, Fault = false; };
+    static FSeen Seen[8];
+    const FObjectKey ControllerKey(&Controller);
+    FSeen* Entry = nullptr;
+    for (auto& Candidate : Seen)
+        if (Candidate.Used && Candidate.Key == ControllerKey) { Entry = &Candidate; break; }
+    if (!Entry) for (auto& Candidate : Seen)
+        if (!Candidate.Used) { Candidate.Key = ControllerKey; Candidate.Used = true; Entry = &Candidate; break; }
+    if (!Entry || (FirstFault ? Entry->Fault : Entry->Admission)) return;
+    if (FirstFault) Entry->Fault = true; else Entry->Admission = true;
+    const auto* Descriptor = Session && Session->Descriptor ? &*Session->Descriptor : nullptr;
+    const auto* Mode = Controller.GetWorld()->GetAuthGameMode<ASpeedGameMode>();
+    const auto* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
+    const auto ObservedReceipt = !CheckedReceipt && Driver && Session && Session->PendingCommand
+        ? Driver->ReadInputSessionReceipt(Session->PendingCommand)
+        : std::optional<Speed::Input::V2::FBoundaryReceipt>{};
+    const auto* Receipt = CheckedReceipt ? CheckedReceipt : (ObservedReceipt ? &*ObservedReceipt : nullptr);
+    const FString Evidence = FString::Printf(
+        TEXT("event=%s controller=%u map=%s pawn=%s fault=%d session_present=%d descriptor=%d session=%llu epoch=%llu worker_submitted=%llu worker_current=%llu command=%llu operation=%d receipt_present=%d receipt_status=%d receipt_reason=%d driver_present=%d driver_paused=%d registry_bound=%d session_closed=%d"),
+        FirstFault ? TEXT("first_fault") : TEXT("admission_refused"), Controller.GetUniqueID(),
+        *Controller.GetWorld()->GetMapName().Left(128), *GetNameSafe(Controller.GetPawn()).Left(128), int32(Faulted),
+        int32(bool(Session)), int32(Descriptor != nullptr), Session ? Session->Session : 0,
+        Descriptor ? Descriptor->Epoch : (Session && Session->Stream ? Session->Stream->GetEpoch().Value : 0),
+        Session ? Session->WorkerGeneration : 0, Driver ? Driver->GetInputWorkerGeneration() : 0,
+        Session ? Session->PendingCommand : 0, Session ? int32(Session->PendingOperation) : -1,
+        int32(Receipt != nullptr), Receipt ? int32(Receipt->Status) : -1,
+        Receipt ? int32(Receipt->RejectionReason) : -1, int32(Driver != nullptr),
+        Driver ? int32(Driver->IsOwnedSimulationPaused()) : -1,
+        int32(Session && Session->RegistryBound), int32(Session && Session->Closed));
+    RecordPrivateInputFailure(Site, Evidence);
+}
+}
+
 bool ASpeedController::ObservePrivateInputAdmission(bool Result, const TCHAR* Site)
 {
+    if (!Result) RecordPrivateControllerInputFailure(*this, InputSessionV2, Site, false, bInputLifecycleFault);
 #if !UE_BUILD_SHIPPING
     if (!Result) TracePrivateInputState(Site);
 #endif
@@ -20,6 +69,7 @@ void ASpeedController::MarkInputLifecycleFault(const TCHAR* Site,
 {
     const bool WasFaulted = bInputLifecycleFault;
     bInputLifecycleFault = true;
+    if (!WasFaulted) RecordPrivateControllerInputFailure(*this, InputSessionV2, Site, true, bInputLifecycleFault, Receipt);
 #if !UE_BUILD_SHIPPING
     if (!WasFaulted) TracePrivateInputState(Site, Receipt, true);
 #endif
