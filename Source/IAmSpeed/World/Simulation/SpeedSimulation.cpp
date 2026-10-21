@@ -2,6 +2,7 @@
 
 
 #include "SpeedSimulation.h"
+#include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #if !UE_BUILD_SHIPPING
 #include "NativeFrameWitnessRecorder.h"
 #include "IAmSpeed/World/Analytic/AnalyticCausalStats1075.h"
@@ -604,7 +605,18 @@ bool ASpeedSimulation::ReadInputFirstFrameAtPausedBoundary(uint64& OutFrame)
 	check(IsInGameThread());
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
 		|| bInputOwnerRetired.Load() || !bOwnedSimulationPaused.Load() || bCanonicalPublicationTerminal.Load()
-		|| (SimulationWorker && SimulationWorker->IsRunning() && !SimulationWorker->IsPaused())) return false;
+		|| (SimulationWorker && SimulationWorker->IsRunning() && !SimulationWorker->IsPaused()))
+	{
+		// Current atomic observations after the existing rejection, not a new ACK/readiness predicate.
+		RecordPrivateInputFailure(TEXT("SpeedSimulation.ReadFirstFramePausedBoundaryRejected"), FString::Printf(
+			TEXT("mode=%u retired=%d paused=%d publication_terminal=%d worker_present=%d worker_running=%d worker_paused=%d worker_terminal=%d driver_uid=%u generation=%llu"),
+			uint32(GetActiveExecutionMode()), int32(bInputOwnerRetired.Load()), int32(bOwnedSimulationPaused.Load()),
+			int32(bCanonicalPublicationTerminal.Load()), int32(bool(SimulationWorker)),
+			SimulationWorker ? int32(SimulationWorker->IsRunning()) : -1,
+			SimulationWorker ? int32(SimulationWorker->IsPaused()) : -1,
+			int32(bOwnedWorkerTerminal.Load()), GetUniqueID(), GetInputWorkerGeneration()));
+		return false;
+	}
 	InitializeCanonicalFrame(0.0f); OutFrame = CanonicalNumFrame; return true;
 }
 

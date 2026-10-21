@@ -1,4 +1,5 @@
 #include "SpeedController.h"
+#include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/World/Simulation/SpeedSimulation.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
@@ -114,7 +115,15 @@ bool ASpeedController::RefreshInputSessionV2()
 	uint64 FirstFrame = 0;
 	if ((Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
 		|| !Driver->ReadInputFirstFrameAtPausedBoundary(FirstFrame))
-	{ MarkInputLifecycleFault(TEXT("SpeedControllerInputV2.cpp:117")); return false; }
+	{
+		RecordPrivateInputFailure(TEXT("SpeedController.RefreshFirstFrameBoundaryRejected"), FString::Printf(
+			TEXT("boundary=%u read_attempted=%d driver_uid=%u controller_uid=%u pawn_uid=%u world_time=%.6f required=%d pending=%d generation=%llu"), uint32(Boundary),
+			int32(Boundary == ESimulationQuiescence::BoundaryAcknowledged || Boundary == ESimulationQuiescence::AlreadyStopped),
+			Driver->GetUniqueID(), GetUniqueID(), GetPawn() ? GetPawn()->GetUniqueID() : 0,
+			GetWorld() ? double(GetWorld()->GetTimeSeconds()) : -1., int32(bInputSessionRequiredV2), int32(bInputSessionPendingV2),
+			Driver->GetInputWorkerGeneration()));
+		MarkInputLifecycleFault(TEXT("SpeedControllerInputV2.cpp:117")); return false;
+	}
 	auto Session = CreateInputSessionV2(FirstFrame);
 	if (Session && Session->Descriptor)
 	{
