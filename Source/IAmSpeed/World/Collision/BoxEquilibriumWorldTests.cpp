@@ -291,10 +291,13 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
         const bool ObserverCleared=Speed::Testing::ClearCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace);ObserverInstalled=false;
         if(!TestTrue(TEXT("exact return dispatch observer closes"),ObserverCleared))return false;
         for(int32 Index=0;Index<Trace.Count;++Index)AddInfo(FString::Printf(TEXT("[ExactInitialReturnDispatch] Index=%d Vertex=%d TOI=%.17g TimePassed=%.17g"),Index,Trace.Events[Index].Corner,double(Trace.Events[Index].TOI),double(Trace.Events[Index].TimePassed)));
-        if(!TestTrue(TEXT("exact initial event followed by two real positive arrivals is dispatched"),!Trace.Overflow&&Trace.Count>=3))return false;
+        const bool bHasDispatch=TestTrue(TEXT("exact initial event followed by two real positive arrivals is dispatched"),!Trace.Overflow&&Trace.Count>=3);
+        if(bHasDispatch)
+        {
         TestTrue(TEXT("first actual resolution is initial vertex time zero"),Trace.Events[0].Corner>=0&&Trace.Events[0].TOI==0&&Trace.Events[0].TimePassed==0);
         TestTrue(TEXT("second actual resolution is another positive-time vertex"),Trace.Events[1].Corner!=Trace.Events[0].Corner&&Trace.Events[1].TOI>0);
         TestTrue(TEXT("initial vertex can genuinely return after the second event"),Trace.Events[2].Corner==Trace.Events[0].Corner&&Trace.Events[2].TOI>0&&Trace.Events[2].TimePassed>Trace.Events[1].TimePassed&&Trace.Events[2].TimePassed<Context.PhysicalDeltaTime);
+        }
     }
 	// Regression at the actual Box -> owner integration boundary, rather than
 	// another call to the stand-alone reaction helper. Only INITIAL geometry is
