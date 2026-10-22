@@ -1,4 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -286,7 +287,7 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
    ResetFrameParallelStageTotals(EFrameParallelStage::Camera);
    FFrameSolveWitnessScope Ordered(N,Row.OrderedSolve,Pointers);
    const uint64 PulseBegin1420=FPlatformTime::Cycles64();
-   const auto Pulse=static_cast<ASpeedSimulation*>(Driver)->DriveOwnedWorkerPulse(1.f/300,float(N)/300);
+   const auto Pulse=static_cast<ASpeedPhysicsSimulation*>(Driver)->DriveOwnedWorkerPulse(1.f/300,float(N)/300);
    Row.PulseCycles1420=FPlatformTime::Cycles64()-PulseBegin1420;
    const uint64 WitnessBegin1420=FPlatformTime::Cycles64();
    if(Driver->CanonicalNumFrame==N&&Pulse==ESimulationWorkerResult::Idle)return ESimulationWorkerResult::Idle;
@@ -360,7 +361,7 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
    Row.PresentationTicks1450=FPlatformTime::Cycles64()-PresentationBegin1450;
    Row.WitnessCycles1420=FPlatformTime::Cycles64()-WitnessBegin1420;
    Row.bComplete=true;++Steps;return ESimulationWorkerResult::Advanced;
-  },[&](FSimulationWorkerWaitContext& Wait){static_cast<ASpeedSimulation*>(Driver)->WaitBetweenFrames(Wait);},
+  },[&](FSimulationWorkerWaitContext& Wait){static_cast<ASpeedPhysicsSimulation*>(Driver)->WaitBetweenFrames(Wait);},
    [&](bool Paused){return Driver->ServiceInputSessionBoundary(Paused);},[&]{Driver->CloseInputSessionsOnWorker();});
   ON_SCOPE_EXIT{Owner.StopAndJoin();};
   const uint32 GT=FPlatformTLS::GetCurrentThreadId();if(!TestTrue(TEXT("actual native canonical owner starts"),Owner.Start()))return false;

@@ -1,4 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -181,8 +182,8 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
  ON_SCOPE_EXIT{LaneVar->Set(OldLane,ECVF_SetByCode);MinVar->Set(OldMin,ECVF_SetByCode);WaveVar->Set(OldWave,ECVF_SetByCode);Backend->Set(OldBackend,ECVF_SetByCode);};
  if(!TestTrue(TEXT("native private workers available"),EnsurePrivateFrameWorkers(FFrameParallelPolicy::MaximumLanes-1)>0))return false;
  AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="),ELogVerbosity::Warning,EAutomationExpectedMessageFlags::Contains,CarCount*60);
- const uint32 OldFPS=ASpeedSimulation::EngineFPS;ASpeedSimulation::EngineFPS=300;
- ON_SCOPE_EXIT{ASpeedSimulation::EngineFPS=OldFPS;};
+ const uint32 OldFPS=ASpeedPhysicsSimulation::EngineFPS;ASpeedPhysicsSimulation::EngineFPS=300;
+ ON_SCOPE_EXIT{ASpeedPhysicsSimulation::EngineFPS=OldFPS;};
  FContactCVar1368 Canonical(TEXT("p.IAmSpeed.CanonicalFrame.Enabled"),1),Host(TEXT("p.IAmSpeed.Simulation.ExecutionMode"),2);
  FContactCVar1368 Tensor(TEXT("p.IAmSpeed.Parallel.TensorCellWave1213"),1),Observe(TEXT("p.IAmSpeed.Parallel.TensorCellObserve1213"),1);
  // Each scene gets its own Normal W1 oracle and complete evidence family.
@@ -215,7 +216,7 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
   if(!TestNotNull(TEXT("isolated native canonical multicars world"),World))return false;
   GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
   ON_SCOPE_EXIT{World->DestroyWorld(false);GEngine->DestroyWorldContext(World);};
-  ASpeedSimulation* Driver=Fast?static_cast<ASpeedSimulation*>(World->SpawnActor<AFastSimulation>()):static_cast<ASpeedSimulation*>(World->SpawnActor<ARealTimeSimulation>());auto* Bridge=World->GetSubsystem<USpeedWorldSubsystem>();
+  ASpeedPhysicsSimulation* Driver=Fast?static_cast<ASpeedPhysicsSimulation*>(World->SpawnActor<AFastSimulation>()):static_cast<ASpeedPhysicsSimulation*>(World->SpawnActor<ARealTimeSimulation>());auto* Bridge=World->GetSubsystem<USpeedWorldSubsystem>();
   if(!TestNotNull(TEXT("canonical driver"),Driver)||!TestNotNull(TEXT("native registry"),Bridge))return false;
   Driver->SpeedWorldSubsystem=Bridge;
   Driver->ActiveExecutionModeValue.Store(static_cast<uint8>(ESimulationExecutionMode::IAmSpeedThread));
