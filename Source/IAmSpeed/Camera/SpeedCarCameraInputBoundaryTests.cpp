@@ -61,7 +61,8 @@ bool FIAmSpeedInputFrameHeaderBoundaryTest::RunTest(const FString&)
   TestEqual(TEXT("header seeds endpoint local frame"),int32(Destination.LocalFrame),Frame);
   TestEqual(TEXT("header consumes exactly its bits"),Reader.GetBitsLeft(),int64(0));
  };
- for(int32 Frame:{INDEX_NONE,0,126,127,128,16382,16383,MAX_int32-1})Check(Frame,nullptr);
+ const int32 BoundaryFrames[]={INDEX_NONE,0,126,127,128,16382,16383,MAX_int32-1};
+ for(int32 Frame:BoundaryFrames)Check(Frame,nullptr);
  FNetworkWheeledSpeedInputState Delta;Delta.ServerFrame=200;
  for(int32 Frame:{201,199,0,40000})Check(Frame,&Delta);
 
