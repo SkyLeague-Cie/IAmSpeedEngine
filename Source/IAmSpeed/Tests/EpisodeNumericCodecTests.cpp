@@ -53,6 +53,38 @@ void FillKinematic(Speed::FKinematicState& Value,uint32 Index)
  FillXYZ(Value.Rotation,Index+9);SetScalarBits(Value.Rotation.W,Index+12);
  FillXYZ(Value.AngularVelocity,Index+13);FillXYZ(Value.AngularAcceleration,Index+16);
 }
+// Nineteen distinct native representations detect any field reordering even
+// between fields sixteen positions apart in the existing rotating pattern set.
+template<class T> void SetDistinctKinematicBits(T& Value,uint32 Index)
+{
+ using S=std::remove_cvref_t<T>;
+ static_assert(std::is_same_v<S,float> || std::is_same_v<S,double>);
+ if constexpr(std::is_same_v<S,float>)
+ {
+  const uint32 Bits[]={0u,0x80000000u,1u,0x80000001u,0x007fffffu,0x00800000u,
+   0x3f800001u,0xc0200001u,0x7f7fffffu,0xff7fffffu,0x7f800000u,0xff800000u,
+   0x7fc00001u,0x7fc00002u,0xffc00123u,0x3eaaaaabu,0x3f000001u,0xbf000001u,0x00400001u};
+  FMemory::Memcpy(&Value,&Bits[Index%19],sizeof(Value));
+ }
+ else
+ {
+  const uint64 Bits[]={0ull,0x8000000000000000ull,1ull,0x8000000000000001ull,
+   0x000fffffffffffffull,0x0010000000000000ull,0x3ff0000000000001ull,0xc004000000000001ull,
+   0x7fefffffffffffffull,0xffefffffffffffffull,0x7ff0000000000000ull,0xfff0000000000000ull,
+   0x7ff8000000000001ull,0x7ff8000000000002ull,0xfff8000000000123ull,0x3fd5555555555555ull,
+   0x3fe0000000000001ull,0xbfe0000000000001ull,0x0008000000000001ull};
+  FMemory::Memcpy(&Value,&Bits[Index%19],sizeof(Value));
+ }
+}
+void FillDistinctKinematic(Speed::FKinematicState& Value,uint32 Case)
+{
+ SetDistinctKinematicBits(Value.Location.X,Case);SetDistinctKinematicBits(Value.Location.Y,Case+1);SetDistinctKinematicBits(Value.Location.Z,Case+2);
+ SetDistinctKinematicBits(Value.Velocity.X,Case+3);SetDistinctKinematicBits(Value.Velocity.Y,Case+4);SetDistinctKinematicBits(Value.Velocity.Z,Case+5);
+ SetDistinctKinematicBits(Value.Acceleration.X,Case+6);SetDistinctKinematicBits(Value.Acceleration.Y,Case+7);SetDistinctKinematicBits(Value.Acceleration.Z,Case+8);
+ SetDistinctKinematicBits(Value.Rotation.X,Case+9);SetDistinctKinematicBits(Value.Rotation.Y,Case+10);SetDistinctKinematicBits(Value.Rotation.Z,Case+11);SetDistinctKinematicBits(Value.Rotation.W,Case+12);
+ SetDistinctKinematicBits(Value.AngularVelocity.X,Case+13);SetDistinctKinematicBits(Value.AngularVelocity.Y,Case+14);SetDistinctKinematicBits(Value.AngularVelocity.Z,Case+15);
+ SetDistinctKinematicBits(Value.AngularAcceleration.X,Case+16);SetDistinctKinematicBits(Value.AngularAcceleration.Y,Case+17);SetDistinctKinematicBits(Value.AngularAcceleration.Z,Case+18);
+}
 void ReferencePointer(TArray<uint8>& Out,int* Pointer)
 {
  const UPTRINT Address=reinterpret_cast<UPTRINT>(Pointer);
@@ -98,6 +130,16 @@ bool FEpisodeNumericCodecTests::RunTest(const FString&)
   Check(TEXT("FMatrix row-major"),Matrix,ReferenceMatrix);
   Speed::FKinematicState Kinematic;FillKinematic(Kinematic,Case);
   Check(TEXT("FKinematicState explicit fields"),Kinematic,ReferenceKinematic);
+ }
+ // Every field has a distinct representation; rotate to put each special value
+ // in every position. ReferenceKinematic appends each scalar independently.
+ for(uint32 Case=0;Case<19;++Case)
+ {
+  Speed::FKinematicState State;FillDistinctKinematic(State,Case);
+  Check(TEXT("FKinematicState 19 distinct scalar representations"),State,ReferenceKinematic);
+  TArray<uint8> Payload;W::Add(Payload,State);
+  TestEqual(TEXT("kinematic payload has exactly 19 scalars and no count prefix"),
+   Payload.Num(),int32(19*sizeof(State.Location.X)));
  }
  // Exercise the existing fixed-array length prefix independently, too.
  const float Fixed[3]={1.f,-0.f,3.f};TArray<uint8> FixedActual,FixedExpected;
