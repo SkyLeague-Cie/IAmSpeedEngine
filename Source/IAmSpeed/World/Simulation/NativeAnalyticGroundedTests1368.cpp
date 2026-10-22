@@ -408,14 +408,17 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
   const int32 StateCapacity1368=HistoryBytes1368+CarCount*65536;
   for(auto& R:Seen)
   {
-   R.RawObservedStates.Reserve(StateCapacity1368);
+   R.RawObservedStates.SetNumZeroed(StateCapacity1368);R.RawObservedStates.Reset();
    R.Snapshot.Reserve(65536);R.Inputs.Reserve(CarCount*4096);
    R.PrepareDeltas.Reserve(2*sizeof(uint32)+(CarCount+1)*(2*sizeof(uint64)+sizeof(float)));
-   R.RawOrderedSolve.Reserve(65536);R.RawWheelManifold.Reserve(65536);
+   // Native06 raw maxima were 50,413 contact bytes and 105,686 wheel bytes.
+   // Touch fixture-owned storage before the owner; these are growable hints.
+   R.RawOrderedSolve.SetNumZeroed(65536);R.RawOrderedSolve.Reset();
+   R.RawWheelManifold.SetNumZeroed(128*1024);R.RawWheelManifold.Reset();
    if(!Fast){R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);}
   }
-  // Reserve does not pre-touch every OS page. Canonical projectors have their
-  // own temporary storage; this does not claim to eliminate all allocations.
+  // Only these fixture buffers are pre-touched. Canonical projectors and the
+  // wheel observer's internal buffers may still allocate during capture.
   FSimulationWorker Owner([&]
   {
    if(Steps==Frames)return ESimulationWorkerResult::Complete;

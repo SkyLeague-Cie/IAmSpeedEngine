@@ -519,15 +519,22 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
   {
    R.BaseEvents1534.Reserve(2048);R.StateFields1534.Reserve(128);R.InputFields1534.Reserve(64);
    R.CameraOraclePolls1534.SetNum(CarCount);R.RawStateBounds1534.Reserve(129);
-   R.RawObservedStates.Reserve(StateCapacity1534);R.DeferredStates1534.Reserve1456(StateCapacity1534,4096);
-   R.DeferredContacts1534.Reserve1456(65536,2048);R.RawContactBounds1534.Reserve(2049);
+   R.RawObservedStates.SetNumZeroed(StateCapacity1534);R.RawObservedStates.Reset();
+   if(!TestTrue(TEXT("empty eight-car state snapshot prepared before owner"),
+    R.DeferredStates1534.ReserveAndPreTouch1456(StateCapacity1534,4096)))return false;
+   // Native06 raw contacts reached 769,453 bytes, beyond the old 64KiB hint.
+   if(!TestTrue(TEXT("empty eight-car contact snapshot prepared before owner"),
+    R.DeferredContacts1534.ReserveAndPreTouch1456(1024*1024,2048)))return false;
+   R.RawContactBounds1534.Reserve(2049);
    R.Snapshot.Reserve(65536);R.Inputs.Reserve(CarCount*4096);R.NumericContext1534.Reserve(256);
    R.PrepareDeltas.Reserve(2*sizeof(uint32)+(CarCount+1)*(2*sizeof(uint64)+sizeof(float)));
-   R.RawOrderedSolve.Reserve(65536);R.RawWheelManifold.Reserve(65536);
+   R.RawOrderedSolve.SetNumZeroed(1024*1024);R.RawOrderedSolve.Reset();
+   // Native06 raw wheel maximum was 405,756 bytes. No capture is truncated.
+   R.RawWheelManifold.SetNumZeroed(512*1024);R.RawWheelManifold.Reset();
    if(!Fast){R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);}
   }
-  // No page pre-touch or allocation-free claim: local capture/projector
-  // internals may still allocate, and capacity does not imply committed RAM.
+  // Only these fixture buffers are pre-touched. Local capture/projector and
+  // wheel observer internals may still allocate; no allocation-free claim.
   uint32 Steps=0,OwnerThread=0;int32 FailureLine=0,CameraStatus=-1,CameraReason=-1;FString PointerFailure;bool Failed=false;
   FSimulationWorker Owner([&]
   {
