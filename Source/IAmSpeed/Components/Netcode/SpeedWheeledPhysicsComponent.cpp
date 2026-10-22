@@ -18,10 +18,10 @@ namespace
 // truncated Serialize(). Preserve its ten-byte legacy 64->32 compatibility
 // and modulo-uint32 projection, but stop before using a failed byte read.
 // Saving and network readers retain their existing backend without a proxy.
-class FInputFrameHeaderArchive final : public FArchiveProxy
+class FNetworkFrameHeaderArchive final : public FArchiveProxy
 {
 public:
- explicit FInputFrameHeaderArchive(FArchive& Inner) : FArchiveProxy(Inner) {}
+ explicit FNetworkFrameHeaderArchive(FArchive& Inner) : FArchiveProxy(Inner) {}
  void SerializeIntPacked(uint32& Value) override
  {
   if(!IsLoading()||IsNetArchive()){InnerArchive.SerializeIntPacked(Value);return;}
@@ -38,6 +38,16 @@ public:
   SetError();
  }
 };
+bool SerializeNetworkFrameHeader(FNetworkPhysicsData& Value,FArchive& Ar)
+{
+ if(Ar.IsLoading()&&!Ar.IsNetArchive())
+ {
+  FNetworkFrameHeaderArchive Header(Ar);
+  Value.SerializeFrames(Header);
+ }
+ else Value.SerializeFrames(Ar);
+ return !Ar.IsError();
+}
 }
 
 bool FSpeedCarCameraPhysicalInput::IsValid() const
@@ -196,7 +206,7 @@ bool FNetworkWheeledSpeedState::NetSerialize(FArchive& Ar, UPackageMap* Map, boo
 	// Commit the complete decode only after archive validation. Mapping remains
 	// a retry condition and is carried separately from archive success.
 	auto Value = *this;
-	Value.FNetworkPhysicsData::SerializeFrames(Ar);
+	if(!SerializeNetworkFrameHeader(Value,Ar)){bOutSuccess=false;return false;}
 	Ar << Value.SourceLocalFrame;
 	Ar << Value.SourceFramesSinceCanMove;
 	Ar << Value.WheeledState.nbFramesbeforeCanMove;
@@ -363,13 +373,7 @@ bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map
     auto Value=*this;
     if(!Speed::Input::SerializeInputProjectionAvailability(Ar,Value.bInputProjectionValid))
     { bOutSuccess=false; return false; }
-    if(Ar.IsLoading()&&!Ar.IsNetArchive())
-    {
-        FInputFrameHeaderArchive Header(Ar);
-        Value.FNetworkPhysicsData::SerializeFrames(Header);
-    }
-    else Value.FNetworkPhysicsData::SerializeFrames(Ar);
-    if(Ar.IsError()){bOutSuccess=false;return false;}
+    if(!SerializeNetworkFrameHeader(Value,Ar)){bOutSuccess=false;return false;}
     if(!Value.bInputProjectionValid)
     {
         bOutSuccess=!Ar.IsError();

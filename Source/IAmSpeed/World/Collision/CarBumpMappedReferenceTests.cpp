@@ -13,9 +13,87 @@
 #include "Misc/ScopeExit.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "Serialization/BitReader.h"
+#include "Serialization/BitWriter.h"
 #include "Tests/NetTestHelpers.h"
 #include "UObject/CoreNet.h"
 #include "UObject/StrongObjectPtr.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCarBumpStateFrameHeaderTest,
+    "IAmSpeed.Collision.CarBump.StateFrameHeaderBoundary",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCarBumpStateFrameHeaderTest::RunTest(const FString&)
+{
+    FNetworkWheeledSpeedState Source;Source.ServerFrame=INDEX_NONE;
+    Source.SourceLocalFrame=421;Source.SourceFramesSinceCanMove=17;
+    Source.WheeledState.PhysicalSteerInput=-71;
+    TArray<uint8> Complete;FMemoryWriter Writer(Complete);bool Success=false;
+    if(!TestTrue(TEXT("neutral state supplies a real production body"),Source.NetSerialize(Writer,nullptr,Success)&&Success&&!Writer.IsError()))return false;
+    if(!TestTrue(TEXT("INDEX_NONE frame has independently known one-byte zero header"),Complete.Num()>1&&Complete[0]==0))return false;
+    // Only the body comes from the production writer. Headers below are
+    // independently constructed bytes, including legacy wide encodings.
+    const auto Decode=[&](TArray<uint8> Header,int32 ExpectedFrame)
+    {
+        Header.Append(Complete.GetData()+1,Complete.Num()-1);FMemoryReader Reader(Header);
+        FNetworkWheeledSpeedState Value;Value.ServerFrame=Value.LocalFrame=3111;bool Decoded=false;
+        TestTrue(TEXT("independent state header and real body decode"),Value.NetSerialize(Reader,nullptr,Decoded)&&Decoded&&!Reader.IsError());
+        TestEqual(TEXT("independent state header transports server frame"),int32(Value.ServerFrame),ExpectedFrame);
+        TestEqual(TEXT("independent state header seeds local frame"),int32(Value.LocalFrame),ExpectedFrame);
+        TestTrue(TEXT("independent header preserves exact body fields"),Value.SourceLocalFrame==421&&Value.SourceFramesSinceCanMove==17&&Value.WheeledState.PhysicalSteerInput==-71);
+        TestEqual(TEXT("independent state bytes are consumed exactly"),Reader.Tell(),int64(Header.Num()));
+    };
+    const int32 StandardFrames[]={INDEX_NONE,0,126,127,128,16382,16383,MAX_int32-1};
+    for(const int32 Frame:StandardFrames)
+    {
+        uint32 Remaining=uint32(Frame+1);TArray<uint8> Header;
+        do{const uint8 Data=uint8(Remaining&127);Remaining>>=7;Header.Add(uint8((Data<<1)|(Remaining?1:0)));}while(Remaining);
+        Decode(Header,Frame);
+    }
+    Decode(TArray<uint8>{1,0},INDEX_NONE); // Nonminimal remains valid.
+    Decode(TArray<uint8>{1,1,1,1,0x20},INDEX_NONE); // UE modulo-uint32 compatibility.
+    for(int32 Width=6;Width<=10;++Width)
+    {TArray<uint8> Header;for(int32 Index=1;Index<Width;++Index)Header.Add(1);Header.Add(0);Decode(Header,INDEX_NONE);}
+
+    TStrongObjectPtr<USpeedWheeledComponent> PriorVictim(NewObject<USpeedWheeledComponent>());
+    const auto Reject=[&](const TArray<uint8>& Header)
+    {
+        FMemoryReader Reader(Header);FNetworkWheeledSpeedState Value;
+        Value.ServerFrame=Value.LocalFrame=3111;Value.SourceLocalFrame=3999;Value.SourceFramesSinceCanMove=23;
+        Value.WheeledState.LastCarBumpVictim=PriorVictim.Get();Value.WheeledState.CarBumpCooldownFrames=75;
+        Value.WheeledState.PhysicalSteerInput=-19;Value.bStateProjectionValid=false;
+        const auto Before=Value;bool Decoded=true;
+        TestFalse(TEXT("malformed state frame header returns failure"),Value.NetSerialize(Reader,nullptr,Decoded));
+        TestTrue(TEXT("state frame header failure propagates archive error"),Reader.IsError()&&!Decoded);
+        TestEqual(TEXT("malformed header stops at EOF or its ten-byte boundary"),Reader.Tell(),int64(FMath::Min(Header.Num(),10)));
+        TestTrue(TEXT("state header failure is transactional"),Value.ServerFrame==Before.ServerFrame&&Value.LocalFrame==Before.LocalFrame
+            &&Value.SourceLocalFrame==Before.SourceLocalFrame&&Value.SourceFramesSinceCanMove==Before.SourceFramesSinceCanMove
+            &&Value.WheeledState.LastCarBumpVictim==Before.WheeledState.LastCarBumpVictim
+            &&Value.WheeledState.CarBumpCooldownFrames==Before.WheeledState.CarBumpCooldownFrames
+            &&Value.WheeledState.PhysicalSteerInput==Before.WheeledState.PhysicalSteerInput&&Value.bStateProjectionValid==Before.bStateProjectionValid);
+    };
+    for(int32 Width=0;Width<=10;++Width)
+    {TArray<uint8> Header;for(int32 Index=0;Index<Width;++Index)Header.Add(1);Reject(Header);}
+    Reject(TArray<uint8>{1,1,1,1,1,1,1,1,1,1,0}); // Byte eleven cannot repair an overlong header.
+
+    // Saving and real network readers retain their direct UE backend. Exercise
+    // nonaligned complete state and both incremental/nonincremental delta paths.
+    FNetworkWheeledSpeedState Delta;Delta.ServerFrame=200;
+    const int32 DeltaFrames[]={201,199,0,40000};
+    for(const int32 Frame:DeltaFrames)
+    {
+        auto Packet=Source;Packet.ServerFrame=Frame;Packet.SetDeltaSourceData(&Delta);
+        FBitWriter Bits(32768,true);uint8 Prefix=5;Bits.SerializeBits(&Prefix,3);bool Saved=false;
+        TestTrue(TEXT("state saves through direct network backend"),Packet.NetSerialize(Bits,nullptr,Saved)&&Saved&&!Bits.IsError());
+        FBitReader Reader(Bits.GetData(),Bits.GetNumBits());uint8 SeenPrefix=0;Reader.SerializeBits(&SeenPrefix,3);
+        FNetworkWheeledSpeedState Value;Value.SetDeltaSourceData(&Delta);bool Decoded=false;
+        TestTrue(TEXT("nonaligned delta state retains network decode"),Value.NetSerialize(Reader,nullptr,Decoded)&&Decoded&&!Reader.IsError());
+        TestEqual(TEXT("network prefix unchanged"),SeenPrefix,Prefix);
+        TestEqual(TEXT("network delta frame unchanged"),int32(Value.ServerFrame),Frame);
+        TestTrue(TEXT("network state body unchanged"),Value.SourceLocalFrame==421&&Value.SourceFramesSinceCanMove==17&&Value.WheeledState.PhysicalSteerInput==-71);
+        TestEqual(TEXT("complete delta state consumes exact bits"),Reader.GetBitsLeft(),int64(0));
+    }
+    return !HasAnyErrors();
+}
 
 // Actual connected Engine PackageMaps, with controlled GUID resolution. The
 // state archive is copied locally: this is not a wire-delivery or rollback test.
