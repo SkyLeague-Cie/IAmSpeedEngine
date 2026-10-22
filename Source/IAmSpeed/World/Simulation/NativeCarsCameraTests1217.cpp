@@ -271,9 +271,13 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
   // Reserve observer storage before the paced owner starts; all fields and full histories remain captured.
   for(auto& R:Seen)
   {
-   R.Snapshot.Reserve(1024*1024);R.ObservedStates.Reserve(1024*1024);R.Inputs.Reserve(32768);R.OrderedSolve.Reserve(4096);R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);
+   R.Snapshot.Reserve(1024*1024);R.ObservedStates.Reserve(1024*1024);R.Inputs.Reserve(32768);R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);
+   // Observed contact streams exceed 1.5 MiB. Prepare/touch growable fixture
+   // storage on GT; never cap contacts or move their actual owner capture.
+   R.OrderedSolve.SetNumZeroed(2*1024*1024);R.OrderedSolve.Reset();
    R.CapturedCars.SetNum(CarCount);R.CameraOraclePolls1434.SetNum(CarCount);
-   R.DeferredContacts1456.Reserve1456(65536,2048);
+   if(!TestTrue(TEXT("empty contact snapshot storage prepared before owner"),
+    R.DeferredContacts1456.ReserveAndPreTouch1456(2*1024*1024,2048)))return false;
    for(int32 A=0;A<CarCount;++A)
    {
     auto& Captured=R.CapturedCars[A];const auto* Car=Cars[A];

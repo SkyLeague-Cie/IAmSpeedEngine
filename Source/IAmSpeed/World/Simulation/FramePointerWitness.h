@@ -118,6 +118,10 @@ class IAMSPEED_API FFramePointerCanonicalSnapshot1456
 {
 public:
     void Reserve1456(int32 RawBytes,int32 Observations);
+    // Explicit fixture preparation only, before capture. Touch raw storage on
+    // the caller, retain Num=0, and keep normal growth/failure semantics.
+    // Refuses without mutation if any existing capture/data would be erased.
+    bool ReserveAndPreTouch1456(int32 RawBytes,int32 Observations);
     bool MakeCanonical(TArray<uint8>& Out) const;
     bool MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const;
     const TArray<uint8>& RawForEvidence1456() const { return Raw1456; }

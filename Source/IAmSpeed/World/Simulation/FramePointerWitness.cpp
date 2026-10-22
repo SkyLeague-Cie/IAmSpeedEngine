@@ -177,6 +177,14 @@ void FFramePointerCanonicalSnapshot1456::Reserve1456(int32 Bytes,int32 Count)
     Raw1456.Reserve(FMath::Clamp(Bytes,0,16*1024*1024));
     Events1456.Reserve(FMath::Clamp(Count,0,16384));
 }
+bool FFramePointerCanonicalSnapshot1456::ReserveAndPreTouch1456(int32 Bytes,int32 Count)
+{
+    if(bCaptured1456||!Raw1456.IsEmpty()||!Events1456.IsEmpty())return false;
+    Raw1456.SetNumZeroed(FMath::Clamp(Bytes,0,16*1024*1024));
+    Raw1456.Reset();
+    Events1456.Reserve(FMath::Clamp(Count,0,16384));
+    return true;
+}
 bool FFramePointerCaptureScope::CaptureCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out) const
 {
     if(!Identities.IsValidSealed()||bUnknown||bOverflow)return false;
