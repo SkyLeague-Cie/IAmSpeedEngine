@@ -274,7 +274,18 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
    R.Snapshot.Reserve(1024*1024);R.ObservedStates.Reserve(1024*1024);R.Inputs.Reserve(32768);R.OrderedSolve.Reserve(4096);R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);
    R.CapturedCars.SetNum(CarCount);R.CameraOraclePolls1434.SetNum(CarCount);
    R.DeferredContacts1456.Reserve1456(65536,2048);
-   for(auto& C:R.CapturedCars){C.RecordedFrames.Reserve(Frames+2);C.RecordedBase.Reserve(Frames+2);C.RecordedWheeled.Reserve(Frames+2);C.Bodies.Reserve(16);}
+   for(int32 A=0;A<CarCount;++A)
+   {
+    auto& Captured=R.CapturedCars[A];const auto* Car=Cars[A];
+    // These are complete fixed-size ring histories (currently1024 slots),
+    // not a growing array bounded by this fixture's90-frame run. Allocate
+    // and populate real typed storage before starting the paced owner.
+    // Every frame below still overwrites all slots with its actual values.
+    Captured.RecordedFrames=Car->RecordedBaseFrames;
+    Captured.RecordedBase=Car->RecordedBaseStates;
+    Captured.RecordedWheeled=Car->RecordedWheeledStates;
+    Captured.Bodies.Reserve(Car->GetSubBodies().Num());
+   }
   }
   uint32 Steps=0,OwnerThread=0;int32 FailureLine=0,CameraStatus=-1,CameraReason=-1;bool Failed=false;
   FSimulationWorker Owner([&]
