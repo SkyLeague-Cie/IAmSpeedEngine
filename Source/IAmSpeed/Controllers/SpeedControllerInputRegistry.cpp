@@ -1,4 +1,5 @@
 #include "SpeedController.h"
+#include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
@@ -167,6 +168,12 @@ bool ASpeedController::ReleaseRegistryInputSession()
     if (Session->WorkerGeneration != Driver->GetInputWorkerGeneration()) return false;
     const auto RetireJoined = [&]()
     {
+        ::RecordPrivateInputFailure(TEXT("PrivateRetirement.RegistryRelease"), FString::Printf(
+            TEXT("driver_uid=%u controller_uid=%u pawn_uid=%u world_time=%.6f generation=%llu session=%llu epoch=%llu submitted_generation=%llu registry_bound=%d command=%llu operation=%d"),
+            Driver->GetUniqueID(), GetUniqueID(), GetPawn() ? GetPawn()->GetUniqueID() : 0,
+            GetWorld() ? double(GetWorld()->GetTimeSeconds()) : -1., Driver->GetInputWorkerGeneration(),
+            Session->Descriptor->Id, Session->Descriptor->Epoch, Session->WorkerGeneration,
+            int32(Session->RegistryBound), Session->PendingCommand, int32(Session->PendingOperation)));
         if (!Driver->JoinOwnedSimulationForInputTeardown() || !Driver->InputOwnersRetiredAfterJoin(Session->WorkerGeneration)) return false;
 #if !UE_BUILD_SHIPPING
         UE_LOG(LogTemp, Display, TEXT("[InputSessionTeardownAck] Controller=%u Session=%llu Epoch=%llu Route=JoinRetired WorkerGeneration=%llu"),

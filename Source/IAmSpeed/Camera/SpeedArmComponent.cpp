@@ -1,4 +1,5 @@
 #include "SpeedArmComponent.h"
+#include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SphereComponent.h"
@@ -155,6 +156,11 @@ bool USpeedArmComponent::ReleaseCameraEndpointForEndPlay()
 	ASpeedSimulation* Simulation = BoundSimulation.Get();
 	if (!Simulation) return false;
 	UE_LOG(LogTemp, Error, TEXT("[CameraEndpointTeardownFenceFailed] Retiring the owned simulation; no partial resume."));
+	::RecordPrivateInputFailure(TEXT("PrivateRetirement.CameraEndPlay"), FString::Printf(
+		TEXT("driver_uid=%u arm_uid=%u actor_uid=%u world_time=%.6f generation=%llu bound_endpoint=%d local_human_owner=%d"),
+		Simulation->GetUniqueID(), GetUniqueID(), GetOwner() ? GetOwner()->GetUniqueID() : 0,
+		GetWorld() ? double(GetWorld()->GetTimeSeconds()) : -1., Simulation->GetInputWorkerGeneration(),
+		int32(bool(BoundEndpoint)), int32(HasLocalHumanCameraOwner())));
 	if (!Simulation->JoinOwnedSimulationForInputTeardown()) return false;
 	return ReleaseCameraEndpointAtLifecycle();
 }

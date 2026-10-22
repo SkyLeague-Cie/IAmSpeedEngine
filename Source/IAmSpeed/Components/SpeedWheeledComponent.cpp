@@ -1,6 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #include "IAmSpeed/Base/CarBumpCooldown.h"
 #include "IAmSpeed/Input/DrivingInputTargets.h"
 #include "IAmSpeed/Components/SpeedWheeledSteeringMath.h"
@@ -952,6 +953,13 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 			}
 			// Orphan/scenario owners still bound to the actor must close on their
 			// worker. Resume then requires an explicit new controlled run.
+			::RecordPrivateInputFailure(TEXT("PrivateRetirement.WheeledStorage"), FString::Printf(
+				TEXT("driver_uid=%u component_uid=%u actor_uid=%u world_time=%.6f generation=%llu boundary=%u produced=%d legacy_remote=%d endplay=%d begun=%d owner_destroying=%d registry_present=%d actor_stable=%llu still_bound=%d"),
+				It->GetUniqueID(), GetUniqueID(), GetOwner() ? GetOwner()->GetUniqueID() : 0,
+				double(World->GetTimeSeconds()), It->GetInputWorkerGeneration(), uint32(Boundary),
+				int32(HasProducedInputAuthority()), int32(HasLegacyRemoteInputAuthority()),
+				int32(bWheeledEndPlayTeardown), int32(HasBegunPlay()),
+				int32(GetOwner() && GetOwner()->IsActorBeingDestroyed()), int32(bool(View)), Actor, int32(bStillBound)));
 			if (!It->JoinOwnedSimulationForInputTeardown())
 				UE_LOG(SpeedInputLog, Fatal, TEXT("Input worker could not join before actor storage destruction"));
 			if (!RetireSpeedWorldAdapterBeforeTeardown())
@@ -1275,6 +1283,12 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 			const auto Boundary = RetirementDriver->TryPauseOwnedSimulation(1000);
 			if (Boundary != ESimulationQuiescence::BoundaryAcknowledged)
 			{
+				::RecordPrivateInputFailure(TEXT("PrivateRetirement.WheeledRemote"), FString::Printf(
+					TEXT("driver_uid=%u component_uid=%u actor_uid=%u world_time=%.6f generation=%llu boundary=%u produced=%d legacy_remote=%d endplay=%d retirement_completed=%d"),
+					RetirementDriver->GetUniqueID(), GetUniqueID(), GetOwner() ? GetOwner()->GetUniqueID() : 0,
+					GetWorld() ? double(GetWorld()->GetTimeSeconds()) : -1., RetirementDriver->GetInputWorkerGeneration(),
+					uint32(Boundary), int32(HasProducedInputAuthority()), int32(HasLegacyRemoteInputAuthority()),
+					int32(bWheeledEndPlayTeardown), int32(bInputRetirementCompleted.load(std::memory_order_acquire))));
 				RetirementDriver->JoinOwnedSimulationForInputTeardown();
 				bResumeAfterRemoval = false;
 			}
