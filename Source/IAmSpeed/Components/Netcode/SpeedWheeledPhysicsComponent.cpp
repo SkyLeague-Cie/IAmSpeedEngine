@@ -10,6 +10,35 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "IAmSpeed/Base/InputProjectionWire.h"
+#include "Serialization/ArchiveProxy.h"
+
+namespace
+{
+// FArchive's generic non-network decoder can inspect an unwritten byte after
+// truncated Serialize(). Preserve its ten-byte legacy 64->32 compatibility
+// and modulo-uint32 projection, but stop before using a failed byte read.
+// Saving and network readers retain their existing backend without a proxy.
+class FInputFrameHeaderArchive final : public FArchiveProxy
+{
+public:
+ explicit FInputFrameHeaderArchive(FArchive& Inner) : FArchiveProxy(Inner) {}
+ void SerializeIntPacked(uint32& Value) override
+ {
+  if(!IsLoading()||IsNetArchive()){InnerArchive.SerializeIntPacked(Value);return;}
+  if(IsError())return;
+  uint32 Decoded=0;
+  for(uint32 Index=0;Index<10;++Index)
+  {
+   uint8 Byte=0;InnerArchive.Serialize(&Byte,1);
+   if(InnerArchive.IsError())return;
+   const uint32 Payload=Byte>>1;
+   Decoded+=uint32(uint64(Payload)<<(7*Index));
+   if(!(Byte&1)){Value=Decoded;return;}
+  }
+  SetError();
+ }
+};
+}
 
 bool FSpeedCarCameraPhysicalInput::IsValid() const
 {
@@ -334,7 +363,13 @@ bool FNetworkWheeledSpeedInputState::NetSerialize(FArchive& Ar, UPackageMap* Map
     auto Value=*this;
     if(!Speed::Input::SerializeInputProjectionAvailability(Ar,Value.bInputProjectionValid))
     { bOutSuccess=false; return false; }
-    Value.FNetworkPhysicsData::SerializeFrames(Ar);
+    if(Ar.IsLoading()&&!Ar.IsNetArchive())
+    {
+        FInputFrameHeaderArchive Header(Ar);
+        Value.FNetworkPhysicsData::SerializeFrames(Header);
+    }
+    else Value.FNetworkPhysicsData::SerializeFrames(Ar);
+    if(Ar.IsError()){bOutSuccess=false;return false;}
     if(!Value.bInputProjectionValid)
     {
         bOutSuccess=!Ar.IsError();
