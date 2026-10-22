@@ -22,6 +22,9 @@ void FFrameSolveWitnessScope::Record(uint64 InFrame,int32 Iteration,int32 Order,
     bool bIgnored,int32 GenerationBefore,int32 GenerationAfter,const USSubBody* Resolver,bool bStaticRestingWorld) try
 {
     auto* Scope=ActiveSolveWitness;if(!Scope)return;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(Scope->PointerCapture.RejectRecordAfterConsume1456()){Scope->bOverflow=true;return;}
+#endif
     if(InFrame!=Scope->Frame || Scope->Rows>=Scope->Limit)
     { Scope->bOverflow=true;return; }
     auto& B=Scope->Bytes;
@@ -83,6 +86,9 @@ uint64 FFrameSolveWitnessScope::BeginDynamicPass(uint64 InFrame,EFrameDynamicCon
  const ::FDynamicContactPair* FilterPair) noexcept try
 {
  auto* S=ActiveSolveWitness;if(!S)return 0;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return 0;}
+#endif
  if(InFrame!=S->Frame || S->Rows>=S->Limit || S->NextDynamicPass==MAX_uint64)
  {S->bOverflow=true;return 0;}
  FDynamicPass Pass;Pass.Id=++S->NextDynamicPass;Pass.Kind=Kind;Pass.Dt=Dt;
@@ -100,6 +106,9 @@ uint64 FFrameSolveWitnessScope::CurrentDynamicPass() noexcept
 void FFrameSolveWitnessScope::EndDynamicPass(uint64 Pass,int32 PairCount) noexcept try
 {
  auto* S=ActiveSolveWitness;if(!S)return;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return;}
+#endif
  if(!Pass || S->OpenDynamicPasses.IsEmpty() || S->OpenDynamicPasses.Last().Id!=Pass)
  {S->bOverflow=true;return;}
  RecordDynamicEvent(Pass,EFrameDynamicContactEvent::PassEnd,PairCount,0,nullptr,nullptr,nullptr,
@@ -114,6 +123,9 @@ void FFrameSolveWitnessScope::RecordDynamicEvent(uint64 Pass,EFrameDynamicContac
  const ::FFakePhysicsImpactContext* Context) noexcept try
 {
  auto* S=ActiveSolveWitness;if(!S)return;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return;}
+#endif
  if(!Pass || S->OpenDynamicPasses.IsEmpty() || S->OpenDynamicPasses.Last().Id!=Pass || S->Rows>=S->Limit)
  {S->bOverflow=true;return;}
  const FDynamicPass& P=S->OpenDynamicPasses.Last();auto& B=S->Bytes;
@@ -147,6 +159,9 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  TConstArrayView<double> DoubleScalars,TConstArrayView<FVector> Vectors) noexcept try
 {
  auto* Scope=ActiveSolveWitness;if(!Scope||!Scope->bCaptureWheelManifold1368)return;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(Scope->PointerCapture.RejectRecordAfterConsume1456()){Scope->bOverflow=true;return;}
+#endif
  const auto Numeric=CaptureFrameFloatingPointContext();FScopedFrameFloatingPointContext Guard(Numeric);
  if(!Guard.IsApplied()){Scope->bOverflow=true;return;}
  const bool KnownEvent=Event<=6||Event==8||Event==9||Event==10||Event==11||Event==12||Event==13||Event==254||Event==255;

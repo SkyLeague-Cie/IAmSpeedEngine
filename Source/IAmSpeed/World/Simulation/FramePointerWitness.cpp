@@ -12,12 +12,28 @@ FFramePointerCaptureScope::FFramePointerCaptureScope(TArray<uint8>& Bytes,
     : Target(Bytes),Identities(Registry),Limit(FMath::Clamp(InLimit,1,16384))
 { Previous=ActivePointerCapture;ActivePointerCapture=this; }
 FFramePointerCaptureScope::~FFramePointerCaptureScope()
-{ check(ActivePointerCapture==this);ActivePointerCapture=Previous; }
+{
+ check(ActivePointerCapture==this);
+#if WITH_DEV_AUTOMATION_TESTS
+ if(ConsumedSnapshot1456)
+ {
+  // Swapped-out source arrays must remain empty after final transfer. Detect
+  // even an unobserved scalar append before exposing the deferred certificate.
+  ConsumedSnapshot1456->bOverflow1456|=bOverflow||!Target.IsEmpty()||!Events.IsEmpty();
+  ConsumedSnapshot1456->bUnknown1456|=bUnknown;
+  ConsumedSnapshot1456->bWriterScopeOpen1456=false;
+ }
+#endif
+ ActivePointerCapture=Previous;
+}
 void FFramePointerCaptureScope::Observe(TArray<uint8>& Bytes,const UPTRINT Address)
 {
     FFramePointerCaptureScope* Scope=ActivePointerCapture;
     while(Scope && &Scope->Target!=&Bytes) Scope=Scope->Previous;
     if (!Scope) return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(Scope->RejectRecordAfterConsume1456())return;
+#endif
     if (Scope->Events.Num()>=Scope->Limit) { Scope->bOverflow=true;return; }
     FFramePointerObservation E;
     E.Offset=Bytes.Num();E.RawAddress=Address;
@@ -32,6 +48,9 @@ void FFramePointerCaptureScope::ObserveObjectId(TArray<uint8>& Bytes,uint32 Id,c
  FFramePointerCaptureScope* Scope=ActivePointerCapture;
  while(Scope && &Scope->Target!=&Bytes)Scope=Scope->Previous;
  if(!Scope)return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(Scope->RejectRecordAfterConsume1456())return;
+#endif
  if(Scope->Events.Num()>=Scope->Limit){Scope->bOverflow=true;return;}
  FFramePointerObservation E;E.Offset=Bytes.Num();E.RawAddress=UPTRINT(Id);E.bObjectId=true;
  if(Object && Object->GetUniqueID()==Id)
@@ -45,6 +64,9 @@ void FFramePointerCaptureScope::ObservePairToken(TArray<uint8>& Bytes,uint64 Tok
  FFramePointerCaptureScope* Scope=ActivePointerCapture;
  while(Scope && &Scope->Target!=&Bytes)Scope=Scope->Previous;
  if(!Scope)return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(Scope->RejectRecordAfterConsume1456())return;
+#endif
  if(Scope->Events.Num()>=Scope->Limit){Scope->bOverflow=true;return;}
  FFramePointerObservation E;E.Offset=Bytes.Num();E.RawAddress=UPTRINT(Token);E.bPairToken=true;
  if(!Token)E.bKnown=true;
@@ -75,6 +97,9 @@ void FFramePointerCaptureScope::ObserveSolverPairToken(TArray<uint8>& Bytes,uint
  FFramePointerCaptureScope* S=ActivePointerCapture;
  while(S && &S->Target!=&Bytes)S=S->Previous;
  if(!S)return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(S->RejectRecordAfterConsume1456())return;
+#endif
  if(S->Events.Num()>=S->Limit){S->bOverflow=true;return;}
  FFramePointerObservation E;E.Offset=Bytes.Num();E.RawAddress=UPTRINT(Token);
  E.bPairToken=true;E.bSolverPairToken=true;E.PairProviderId=Provider;E.PairFeatureSalt=Feature;
@@ -97,6 +122,9 @@ void FFramePointerCaptureScope::ObserveDynamicPairToken(TArray<uint8>& Bytes,uin
  FFramePointerCaptureScope* Scope=ActivePointerCapture;
  while(Scope && &Scope->Target!=&Bytes)Scope=Scope->Previous;
  if(!Scope)return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(Scope->RejectRecordAfterConsume1456())return;
+#endif
  if(Scope->Events.Num()>=Scope->Limit){Scope->bOverflow=true;return;}
  FFramePointerObservation E;E.Offset=Bytes.Num();E.RawAddress=UPTRINT(Token);E.bPairToken=true;
  if(!Token)E.bKnown=true;
@@ -161,16 +189,20 @@ bool MakeCapturedPointerCanonical1456(const TArray<uint8>& Target,
 }
 bool FFramePointerCaptureScope::MakeCanonical(TArray<uint8>& Canonical) const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+    if(bConsumed1456)return false;
+#endif
     return MakeCapturedPointerCanonical1456(Target,Events,Identities.IsValidSealed(),bUnknown,bOverflow,Canonical);
 }
 #if WITH_DEV_AUTOMATION_TESTS
 bool FFramePointerCaptureScope::MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const
 {
+ if(bConsumed1456)return false;
  return MakeCapturedPointerCanonical1456(Target,Events,Identities.IsValidSealed(),bUnknown,bOverflow,Out,RawBoundaries,&CanonicalBoundaries);
 }
 bool FFramePointerCanonicalSnapshot1456::MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const
 {
- return bCaptured1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out,RawBoundaries,&CanonicalBoundaries);
+ return bCaptured1456&&!bWriterScopeOpen1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out,RawBoundaries,&CanonicalBoundaries);
 }
 void FFramePointerCanonicalSnapshot1456::Reserve1456(int32 Bytes,int32 Count)
 {
@@ -187,14 +219,30 @@ bool FFramePointerCanonicalSnapshot1456::ReserveAndPreTouch1456(int32 Bytes,int3
 }
 bool FFramePointerCaptureScope::CaptureCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out) const
 {
-    if(!Identities.IsValidSealed()||bUnknown||bOverflow)return false;
+    if(bConsumed1456||Out.bWriterScopeOpen1456||!Identities.IsValidSealed()||bUnknown||bOverflow)return false;
     Out.Raw1456=Target;Out.Events1456=Events;
     Out.bValidSealed1456=true;Out.bUnknown1456=bUnknown;Out.bOverflow1456=bOverflow;Out.bCaptured1456=true;
     return true;
 }
+bool FFramePointerCaptureScope::ConsumeCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out)
+{
+ if(bConsumed1456||!Identities.IsValidSealed()||bUnknown||bOverflow||Out.bCaptured1456
+  ||!Out.Raw1456.IsEmpty()||!Out.Events1456.IsEmpty())return false;
+ // Exchange with already-prepared empty storage, avoiding both full copies and
+ // hot-path freeing of the destination reservations. Source remains valid/empty.
+ Swap(Out.Raw1456,Target);Swap(Out.Events1456,Events);
+ Out.bCaptured1456=true;Out.bValidSealed1456=true;Out.bUnknown1456=false;Out.bOverflow1456=false;
+ Out.bWriterScopeOpen1456=true;bConsumed1456=true;ConsumedSnapshot1456=&Out;
+ return true;
+}
+bool FFramePointerCaptureScope::RejectRecordAfterConsume1456() noexcept
+{
+ if(!bConsumed1456)return false;
+ bOverflow=true;ConsumedSnapshot1456->bOverflow1456=true;return true;
+}
 bool FFramePointerCanonicalSnapshot1456::MakeCanonical(TArray<uint8>& Out) const
 {
-    return bCaptured1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out);
+    return bCaptured1456&&!bWriterScopeOpen1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out);
 }
 #endif
 }

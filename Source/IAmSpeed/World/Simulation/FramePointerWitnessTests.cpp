@@ -1,4 +1,5 @@
 #include "FramePointerWitness.h"
+#include "FrameSolveWitness.h"
 #include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
@@ -176,6 +177,106 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         TArray<uint8> Out{99};
         TestFalse(TEXT("unknown/overflow/raw drift never canonicalizes"),Destination.MakeCanonical(Out));
         TestTrue(TEXT("failed projection leaves destination bytes untouched"),Out==TArray<uint8>{99});
+    }
+    // Final transfer is checked against the independently assembled byte/key
+    // oracle above, as well as the unchanged copy API. Destinations precede
+    // scopes in lifetime and never move while the writer scope is open.
+    {
+        TArray<uint8> Source;FFramePointerCanonicalSnapshot1456 Copy,Consumed,Second;
+        TestTrue(TEXT("consume destination prepares empty storage"),Consumed.ReserveAndPreTouch1456(128,4));
+        {
+            FFramePointerCaptureScope Scope(Source,Registry);
+            FEpisodeStateBytesForTesting::Add(Source,Prefix);FEpisodeStateBytesForTesting::Add(Source,&Object);
+            FEpisodeStateBytesForTesting::Add(Source,static_cast<int*>(nullptr));FEpisodeStateBytesForTesting::Add(Source,Suffix);
+            const uint8* OriginalStorage=Source.GetData();
+            TestTrue(TEXT("copy remains supported before final transfer"),Scope.CaptureCanonicalSnapshot1456(Copy));
+            TestTrue(TEXT("final transfer accepts complete stream"),Scope.ConsumeCanonicalSnapshot1456(Consumed));
+            TestTrue(TEXT("transfer leaves valid empty source"),Source.IsEmpty());
+            TestTrue(TEXT("transfer preserves original raw storage ownership"),Consumed.RawForEvidence1456().GetData()==OriginalStorage);
+            TestTrue(TEXT("transferred raw bytes match independent oracle"),Consumed.RawForEvidence1456()==ExpectedRaw);
+            TestEqual(TEXT("all transferred pointer events retained"),Consumed.NumObservations1456(),2);
+            TArray<uint8> Premature{99};
+            TestFalse(TEXT("deferred projection waits for scope closure"),Consumed.MakeCanonical(Premature));
+            TestTrue(TEXT("premature destination untouched"),Premature==TArray<uint8>{99});
+            TestFalse(TEXT("double consume refuses without replacing first snapshot"),Scope.ConsumeCanonicalSnapshot1456(Second));
+            TestFalse(TEXT("copy from consumed source cannot produce empty certificate"),Scope.CaptureCanonicalSnapshot1456(Second));
+            {
+                TArray<uint8> Inner;FFramePointerCaptureScope Nested(Inner,Registry);
+                FEpisodeStateBytesForTesting::Add(Inner,Prefix);FEpisodeStateBytesForTesting::Add(Inner,&Object);
+                FEpisodeStateBytesForTesting::Add(Inner,static_cast<int*>(nullptr));FEpisodeStateBytesForTesting::Add(Inner,Suffix);
+                TArray<uint8> Canonical;
+                TestTrue(TEXT("independent nested scope stays usable"),Nested.MakeCanonical(Canonical));
+                TestTrue(TEXT("nested raw/canonical remains complete"),Inner==ExpectedRaw&&Canonical==ExpectedCanonical);
+                TestFalse(TEXT("nested copy cannot overwrite an active consumed destination"),Nested.CaptureCanonicalSnapshot1456(Consumed));
+            }
+        }
+        TArray<uint8> A,B;
+        TestTrue(TEXT("closed transfer canonicalizes"),Consumed.MakeCanonical(A));
+        TestTrue(TEXT("unchanged copy canonicalizes"),Copy.MakeCanonical(B));
+        TestTrue(TEXT("copy and transfer retain exact independent raw bytes"),Copy.RawForEvidence1456()==ExpectedRaw&&Consumed.RawForEvidence1456()==ExpectedRaw);
+        TestTrue(TEXT("copy and transfer match independent canonical oracle"),A==ExpectedCanonical&&B==ExpectedCanonical);
+    }
+    // Nonempty membership is an owned semantic value, not a registry reference.
+    {
+        FFramePointerKey MemberKey=Key;MemberKey.Membership={11,17,29};FFramePointerRegistry MemberRegistry;
+        if(!TestTrue(TEXT("membership identity registers"),MemberRegistry.Register(&Object,MemberKey))||!TestTrue(TEXT("membership registry seals"),MemberRegistry.Seal()))return false;
+        FFramePointerCanonicalSnapshot1456 Consumed;TArray<uint8> Source,Expected;
+        Scalar(Expected,MemberKey.Domain);Scalar(Expected,MemberKey.Owner);Scalar(Expected,MemberKey.Generation);
+        Scalar(Expected,MemberKey.Role);Scalar(Expected,MemberKey.Element);Scalar(Expected,uint32(3));
+        for(uint64 Member:MemberKey.Membership)Scalar(Expected,Member);
+        {
+            FFramePointerCaptureScope Scope(Source,MemberRegistry);FEpisodeStateBytesForTesting::Add(Source,&Object);
+            TestTrue(TEXT("membership stream transfers"),Scope.ConsumeCanonicalSnapshot1456(Consumed));
+        }
+        TArray<uint8> Actual;TestTrue(TEXT("transferred membership projects"),Consumed.MakeCanonical(Actual));
+        TestTrue(TEXT("all ordered membership scalars preserved"),Actual==Expected);
+    }
+    for(int32 Failure=0;Failure<3;++Failure)
+    {
+        FFramePointerCanonicalSnapshot1456 Consumed;TArray<uint8> Source,Before;
+        {
+            FFramePointerCaptureScope Scope(Source,Registry,Failure==1?1:16384);
+            FEpisodeStateBytesForTesting::Add(Source,Failure==0?&Unknown:&Object);
+            if(Failure==1)FEpisodeStateBytesForTesting::Add(Source,&Object);
+            if(Failure==2)Source[0]^=1;
+            Before=Source;
+            if(Failure<2)
+            {
+                TestFalse(TEXT("unknown/overflow transfer refuses transactionally"),Scope.ConsumeCanonicalSnapshot1456(Consumed));
+                TestTrue(TEXT("failed transfer retains source and empty destination"),Source==Before&&Consumed.RawForEvidence1456().IsEmpty());
+            }
+            else
+            {
+                TestTrue(TEXT("transfer retains raw drift for original validator"),Scope.ConsumeCanonicalSnapshot1456(Consumed));
+                TestTrue(TEXT("transferred drift bytes are not normalized"),Consumed.RawForEvidence1456()==Before);
+            }
+        }
+        TArray<uint8> Out{99};TestFalse(TEXT("closed invalid transfer never canonicalizes"),Consumed.MakeCanonical(Out));
+        TestTrue(TEXT("invalid transfer leaves output untouched"),Out==TArray<uint8>{99});
+    }
+    for(int32 LateKind=0;LateKind<2;++LateKind)
+    {
+        FFramePointerCanonicalSnapshot1456 Consumed;TArray<uint8> Source;
+        {
+            FFramePointerCaptureScope Scope(Source,Registry);FEpisodeStateBytesForTesting::Add(Source,&Object);
+            TestTrue(TEXT("misuse fixture initially transfers"),Scope.ConsumeCanonicalSnapshot1456(Consumed));
+            if(LateKind==0)FEpisodeStateBytesForTesting::Add(Source,Prefix); // unobserved scalar
+            else FEpisodeStateBytesForTesting::Add(Source,&Object); // observed pointer
+        }
+        TArray<uint8> Out{99};TestFalse(TEXT("late source write invalidates closed certificate"),Consumed.MakeCanonical(Out));
+        TestTrue(TEXT("late write never produces partial canonical bytes"),Out==TArray<uint8>{99});
+    }
+    {
+        FFramePointerCanonicalSnapshot1456 Consumed;TArray<uint8> Source;
+        {
+            FFrameSolveWitnessScope Solve(9,Source,Registry);
+            TestTrue(TEXT("closed empty solve stream can be transferred"),Solve.SealAndConsumeCanonicalSnapshot1456(Consumed));
+            const uint64 Pass=FFrameSolveWitnessScope::BeginDynamicPass(9,EFrameDynamicContactPass::Persistent,1.f/300,0,false,false,0);
+            TestEqual(TEXT("late physical record admission is rejected"),Pass,uint64(0));
+            TestTrue(TEXT("late physical record is visibly UNKNOWN"),Solve.HasOverflow());
+            TestTrue(TEXT("rejected late physical record appends no raw bytes"),Source.IsEmpty());
+        }
+        TArray<uint8> Out{99};TestFalse(TEXT("late physical record invalidates deferred snapshot"),Consumed.MakeCanonical(Out));
     }
     return true;
 }

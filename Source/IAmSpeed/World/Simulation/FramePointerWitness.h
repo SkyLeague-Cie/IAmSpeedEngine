@@ -95,6 +95,12 @@ public:
     // Copies immutable values only. Success means captured, not yet canonical:
     // the same byte/token validation still runs in the deferred MakeCanonical.
     bool CaptureCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out) const;
+    // Final transfer only after every physical writer has joined. Out must
+    // outlive this scope and stay unmoved/unassigned until it closes. Raw/events
+    // retain their exact bytes/keys by array swap;
+    // projection is blocked until scope destruction validates no later write.
+    bool ConsumeCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out);
+    bool RejectRecordAfterConsume1456() noexcept;
     // Transactional mapping of exact raw field/row boundaries through the SAME
     // validated projector. A boundary inside a pointer token is unavailable.
     bool MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const;
@@ -109,6 +115,10 @@ private:
     FFramePointerCaptureScope* Previous=nullptr;
     int32 Limit=0;
     bool bUnknown=false,bOverflow=false;
+#if WITH_DEV_AUTOMATION_TESTS
+    bool bConsumed1456=false;
+    FFramePointerCanonicalSnapshot1456* ConsumedSnapshot1456=nullptr;
+#endif
 };
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -131,6 +141,7 @@ private:
     TArray<uint8> Raw1456;
     TArray<FFramePointerObservation> Events1456;
     bool bCaptured1456=false,bValidSealed1456=false,bUnknown1456=false,bOverflow1456=false;
+    bool bWriterScopeOpen1456=false;
 };
 #endif
 }

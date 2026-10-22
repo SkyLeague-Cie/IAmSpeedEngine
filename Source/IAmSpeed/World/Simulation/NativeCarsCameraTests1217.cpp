@@ -314,7 +314,9 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
    Row.SnapshotTicks1450=FPlatformTime::Cycles64()-WitnessBegin1420;
    const uint64 CanonicalBegin1450=FPlatformTime::Cycles64();
    Row.MainContacts=Ordered.NumMainRows();
-   if(!Ordered.CaptureCanonicalSnapshot1456(Row.DeferredContacts1456)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   // DriveOwnedWorkerPulse returned after all physical children joined; the
+   // remaining observer reads/copies only. No solve/contact writer follows.
+   if(!Ordered.SealAndConsumeCanonicalSnapshot1456(Row.DeferredContacts1456)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    Row.CanonicalTicks1450=FPlatformTime::Cycles64()-CanonicalBegin1450;
    for(int32 A=0;A<Cars.Num();++A)
    {

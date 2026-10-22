@@ -76,6 +76,13 @@ public:
         return !bOverflow&&OpenDynamicPasses.IsEmpty()&&OpenWheelOwners1368.IsEmpty()
             &&PointerCapture.CaptureCanonicalSnapshot1456(Out);
     }
+    // Final one-shot handoff; caller has returned from the joined physical body
+    // and performs no further solve/contact records. Destination outlives scope.
+    bool SealAndConsumeCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out)
+    {
+        return !bOverflow&&!bRowBoundaries1534&&OpenDynamicPasses.IsEmpty()&&OpenWheelOwners1368.IsEmpty()
+            &&PointerCapture.ConsumeCanonicalSnapshot1456(Out);
+    }
     // Explicit opt-in only. Legacy main/dynamic streams remain schemas1/2.
     bool EnableWheelManifoldCapture1368() noexcept
     {
