@@ -38,7 +38,7 @@ jobs:
     needs: runner-contracts
     # Fork PR code must never run on a self-hosted Docker runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, Windows, X64, skyleague-ci]
     timeout-minutes: 140
     steps:
       - uses: actions/checkout@v4
