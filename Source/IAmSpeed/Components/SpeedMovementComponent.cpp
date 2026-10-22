@@ -2,6 +2,7 @@
 
 
 #include "SpeedMovementComponent.h"
+#include "IAmSpeed/World/ReplayInertWorld.h"
 #include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
 #include "IAmSpeed/World/Simulation/ReplayBaseStateFields.h"
 #include "IAmSpeed/World/Simulation/CanonicalEpisodeTestingScope.h"
@@ -99,6 +100,8 @@ void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 
 void USpeedMovementComponent::OnCreatePhysicsState()
 {
+	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
+	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS movement physics-state creation in inert replay")); return; }
 	Super::OnCreatePhysicsState();
 
 	UWorld* World = GetWorld();
@@ -123,6 +126,7 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 
 bool USpeedMovementComponent::ShouldCreatePhysicsState() const
 {
+	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
 	if (!IsRegistered() || IsBeingDestroyed())
 	{
 		return false;

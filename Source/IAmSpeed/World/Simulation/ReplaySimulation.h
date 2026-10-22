@@ -49,10 +49,33 @@ public:
 // It must never issue gameplay inputs, collision/solver steps, scores or rewards.
 enum class EReplayFramePreparation : uint8 { Ready, Pending, Failed };
 
+// Uncompiled source candidate: the paired consumer may retain these immutable
+// references only while this session witness and explicit control serial live.
+// No additional file owner or IO opening is introduced by this context.
+struct FReplayConsumerContext
+{
+    TSharedPtr<IReplayFrameSource, ESPMode::ThreadSafe> Source;
+    TSharedPtr<const FRecordedReplayFrame, ESPMode::ThreadSafe> Previous;
+    TSharedPtr<const TAtomic<bool>, ESPMode::ThreadSafe> Session;
+    uint64 Generation = 0, ControlSerial = 0;
+    bool bDiscontinuity = false, bEmitForwardEffects = false, bPaused = true;
+    double Rate = 1;
+};
+
 class IAMSPEED_API IReplayFrameConsumer
 {
 public:
     virtual ~IReplayFrameConsumer() = default;
+    // Called on every accepted explicit play/pause/rate/seek, including a
+    // repeated pause whose clock epoch does not advance. Must retire staging;
+    // this callback cannot emit delayed one-shots or run gameplay.
+    virtual void InvalidatePreparation(uint64 NewControlSerial) {}
+    // Explicit controls and automatic EOF pauses can change continuous
+    // presentation without selecting a new pose. Never emit one-shots here.
+    virtual bool TransportChanged(const FReplayConsumerContext& Context) { return true; }
+    virtual EReplayFramePreparation PrepareWithContext(const FRecordedReplayFrame& Frame,
+        const FReplayConsumerContext& Context)
+    { return Prepare(Frame, Context.bDiscontinuity); }
     virtual EReplayFramePreparation Prepare(const FRecordedReplayFrame& Frame, bool Discontinuity) = 0;
     virtual bool Commit(const FRecordedReplayFrame& Frame, uint64 PublicationSerial,
         bool Discontinuity, bool EmitForwardEffects) = 0;
@@ -71,8 +94,16 @@ class IAMSPEED_API ASpeedReplaySimulation : public ASpeedSimulation
     TSharedPtr<IReplayFrameSource, ESPMode::ThreadSafe> Source;
     TSharedPtr<IReplayFrameConsumer, ESPMode::ThreadSafe> Consumer;
     TSharedPtr<const FRecordedReplayFrame, ESPMode::ThreadSafe> Selected;
+    // Source candidate: keep the exact ready target while the consumer polls
+    // intermediate frames or waits for asset admission. Do not fight those
+    // demands by re-polling the target on the next nonblocking Select().
+    TSharedPtr<const FRecordedReplayFrame, ESPMode::ThreadSafe> PreparingTarget;
+    uint64 PreparingTargetGeneration = 0;
     ERecordedReplayState StateValue = ERecordedReplayState::Closed;
     uint64 PublicationSerial = 0, PublishedGeneration = 0;
+    uint64 ControlSerial = 0;
+    bool InvalidateExplicitControl(bool RetireContinuous=false);
+    bool NotifyTransportState(bool RetireContinuous=false);
     TSharedRef<TAtomic<bool>, ESPMode::ThreadSafe> PublicationRetired = MakeShared<TAtomic<bool>, ESPMode::ThreadSafe>(false);
     bool bBuffering = false;
     // Retained across nonblocking preparation of one ordinary forward target.
@@ -100,6 +131,7 @@ public:
     uint64 SelectedOrdinal() const { return Clock.Index(); }
     uint64 Generation() const { return Clock.Epoch(); }
     uint64 Serial() const { return PublicationSerial; }
+    uint64 ExplicitControlSerial() const { return ControlSerial; }
     // Borrowed immutable values are scoped to this Replay actor/session.
     TSharedPtr<const FRecordedReplayFrame, ESPMode::ThreadSafe> Current() const { return Selected; }
 };

@@ -105,6 +105,7 @@ protected:
 public:
 	ASpeedCar* GetSpeedCarOwner() const;
 	/** Used to create any physics engine information for this component */
+	bool ShouldCreatePhysicsState() const override;
 	virtual void OnCreatePhysicsState() override;
 	/** Used to shut down and physics engine structure for this component */
 	virtual void OnDestroyPhysicsState() override;

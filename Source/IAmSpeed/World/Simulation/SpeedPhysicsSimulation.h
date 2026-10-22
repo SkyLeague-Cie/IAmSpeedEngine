@@ -19,6 +19,8 @@
 #include "NativeFrameWitnessRecorder.h"
 #endif
 #include "SpeedSimulation.h"
+#include <atomic>
+#include <memory>
 #include "SpeedPhysicsSimulation.generated.h"
 
 class USpeedWorldSubsystem;

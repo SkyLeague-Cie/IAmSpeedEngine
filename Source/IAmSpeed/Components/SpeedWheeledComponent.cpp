@@ -1,3 +1,5 @@
+#include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/World/ReplayInertWorld.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -786,8 +788,15 @@ ASpeedCar* USpeedWheeledComponent::GetSpeedCarOwner() const
 	return SpeedCarOwner;
 }
 
+bool USpeedWheeledComponent::ShouldCreatePhysicsState() const
+{
+    if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
+    return Super::ShouldCreatePhysicsState();
+}
 void USpeedWheeledComponent::OnCreatePhysicsState()
 {
+	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
+	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS wheeled physics-state creation in inert replay")); return; }
 	// =========> START OVERLOAD Chaos prediction here
 	UPawnMovementComponent::OnCreatePhysicsState();
 

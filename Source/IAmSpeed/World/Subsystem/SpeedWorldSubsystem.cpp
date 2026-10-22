@@ -8,6 +8,7 @@
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
 #include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
 #include "IAmSpeed/World/Analytic/AnalyticCaseSatDiagnostics.h"
+#include "IAmSpeed/World/ReplayInertWorld.h"
 #include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "IAmSpeed/Actors/SpeedStaticActor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -129,6 +130,8 @@ namespace
 
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
+	if (Speed::ReplayIsolation::IsInertReplayWorld(&InWorld)) return;
+
 	Super::OnWorldBeginPlay(InWorld);
 	SimulationWorld.ResetStaticCollisionWorld();
 	AnalyticWorldData.Reset();
