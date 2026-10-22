@@ -89,8 +89,8 @@ public:
     bool SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(FFramePointerCanonicalSnapshot1456& Out,TArray<int32>& RawBoundaries)
     {
         if(!bRowBoundaries1534||bOverflow||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()||RawRowBoundaries1534.Num()!=Rows)return false;
-        const int32 RawEnd=Bytes.Num();int32 Previous=-1;
-        for(const int32 B:RawRowBoundaries1534){if(B<Previous||B<0||B>RawEnd)return false;Previous=B;}
+        const int32 RawEnd=Bytes.Num();int32 PreviousBoundary=-1;
+        for(const int32 B:RawRowBoundaries1534){if(B<PreviousBoundary||B<0||B>RawEnd)return false;PreviousBoundary=B;}
         TArray<int32> CapturedBounds=RawRowBoundaries1534;CapturedBounds.Add(RawEnd);
         if(!PointerCapture.ConsumeCanonicalSnapshot1456(Out))return false;
         RawBoundaries=MoveTemp(CapturedBounds);return true;
