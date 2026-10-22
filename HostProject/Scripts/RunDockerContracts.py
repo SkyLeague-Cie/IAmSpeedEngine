@@ -227,6 +227,9 @@ def inside():
         env = os.environ.copy()
         for name, directory in [('HOME', 'home'), ('TMPDIR', 'tmp'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('DOTNET_CLI_HOME', 'dotnet')]:
             path = output / directory; path.mkdir(exist_ok=True); env[name] = str(path)
+        # Linux Editor probes its user Documents filesystem during automation.
+        # Keep that real directory inside this run, including on headless hosts.
+        (output / 'home/Documents').mkdir(parents=True, exist_ok=True)
         for name, value in {'UE-LocalDataCachePath': str(output / 'DDC'), 'UE-SharedDataCachePath': 'None', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE': '1', 'DOTNET_CLI_TELEMETRY_OPTOUT': '1'}.items():
             env[name] = value
         logs = output / 'Logs'; logs.mkdir()
@@ -238,7 +241,7 @@ def inside():
         result['build_exit'] = code
         if code:
             raise RuntimeError('HostProject compilation failed; original log preserved')
-        command = [str(editor), str(project_file), '-NullRHI', '-SLPortableHeadlessSDL', '-sdlvideodriver=dummy', '-unattended', '-MULTIHOME=127.0.0.1', '-nosound', '-nop4', '-nosplash', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoShaderCompile', '-notraceserver', '-NoTrace', '-ini:EditorSettings:[/Script/UnrealEd.AnalyticsPrivacySettings]:bSendUsageData=False', '-stdout', '-FullStdOutLogOutput', '-UserDir=' + str(output / 'user'), '-abslog=' + str(logs / 'editor.log'), '-ReportExportPath=' + str(report), '-ExecCmds=Automation RunTests ' + FILTER, '-TestExit=Automation Test Queue Empty']
+        command = [str(editor), str(project_file), '-NullRHI', '-SLPortableHeadlessSDL', '-sdlvideodriver=dummy', '-unattended', '-MULTIHOME=127.0.0.1', '-NoEOS', '-nosound', '-nop4', '-nosplash', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoShaderCompile', '-notraceserver', '-NoTrace', '-ini:EditorSettings:[/Script/UnrealEd.AnalyticsPrivacySettings]:bSendUsageData=False', '-stdout', '-FullStdOutLogOutput', '-UserDir=' + str(output / 'user'), '-abslog=' + str(logs / 'editor.log'), '-ReportExportPath=' + str(report), '-ExecCmds=Automation RunTests ' + FILTER, '-TestExit=Automation Test Queue Empty']
         save(output / 'test-command.json', command)
         code = run_logged(command, logs / 'tests.stdout.log', 1800, project, env)
         result['editor_exit'] = code

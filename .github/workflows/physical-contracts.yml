@@ -66,7 +66,8 @@ jobs:
           configured = os.environ.get('IAMSPEED_CONFIGURED_IMAGE', '').strip()
           if configured:
               os.environ['IAMSPEED_UE_IMAGE'] = configured
-          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py'], check=True)
+          # The full native inventory exercises real 8/12-lane frame workers.
+          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py', '--cpus', '12'], check=True)
 
       - name: Report strict result and accepted integration debt
         if: always() && steps.contracts.outputs.output_dir != ''
