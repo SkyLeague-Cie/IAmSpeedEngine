@@ -44,6 +44,20 @@ class Contracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             ci.validate_report(0, self.log, self.report, expected_paths=self.paths + ['IAmSpeed.Simulation.Missing'])
 
+    def test_soft_quit_completion_never_overrides_exit_or_raw_report(self):
+        log = self.log + '\n**** TEST COMPLETE. EXIT CODE: 0 ****'
+        self.assertEqual(ci.validate_report(0, log, self.report)['tests'], 5)
+        for code in (1, 3, 124, 255):
+            with self.subTest(exit=code), self.assertRaises(ValueError):
+                ci.validate_report(code, log, self.report)
+        for key, value in [('state', 'Fail'), ('warnings', 1), ('errors', 1),
+                           ('state', 'NotRun'), ('state', 'InProcess')]:
+            raw = copy.deepcopy(self.report); raw['tests'][0][key] = value
+            original = copy.deepcopy(raw)
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                ci.validate_report(0, log, raw)
+            self.assertEqual(raw, original)
+
     def test_exact_source_manifest(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
             p = Path(tmp) / 'Tests.cpp'
@@ -229,8 +243,15 @@ class EditorLoopbackContract1573(unittest.TestCase):
         binds = [arg.partition('=')[2] for arg in args
                  if arg.lstrip('-').partition('=')[0].upper() == 'MULTIHOME']
         self.assertEqual(binds, ['127.0.0.1'], 'Mapped reference gate requires exactly one IPv4 loopback binding')
-        self.assertIn('-ExecCmds=Automation RunTests ' + ci.FILTER, args)
-        self.assertIn('-TestExit=Automation Test Queue Empty', args)
+        exec_commands = [arg.partition('=')[2] for arg in args
+                         if arg.lstrip('-').partition('=')[0].lower() == 'execcmds']
+        self.assertEqual(exec_commands, ['Automation RunTests ' + ci.FILTER + '; SoftQuit'])
+        # Keep RunTests and SoftQuit in one Automation queue. An independent
+        # console Quit could exit before test completion.
+        self.assertEqual(exec_commands[0].removeprefix('Automation ').split(';'),
+                         ['RunTests ' + ci.FILTER, ' SoftQuit'])
+        self.assertFalse(any(arg.lstrip('-').partition('=')[0].lower() == 'testexit' for arg in args))
+        self.assertFalse(any(arg.lower() in ('quit', 'softquit', '-quit', '-softquit') for arg in args))
         self.assertIn('-NullRHI', args)
         self.assertIn('-nosound', args)
 
