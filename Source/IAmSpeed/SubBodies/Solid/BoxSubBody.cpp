@@ -4227,6 +4227,22 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         Linear = Response.DeltaVelocity; Angular = Response.DeltaAngularVelocity;
         return true;
     }
+    // Partial support can also carry sliding traction. Keep the existing
+    // sticking law below; the sliding helper certifies only supplied rows and
+    // rejects a possible slip reversal over this horizon. Its refusal retains
+    // the original normal-only fallback, without promoting a vertex to a face.
+    if (!bSticking && Count <= 2)
+    {
+        const auto Sliding = Speed::SolvePlanarSlidingReaction(MakeArrayView(Points, Count), N,
+            State.Location, State.Velocity, State.AngularVelocity, State.Acceleration,
+            State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI,
+            GetDynamicFriction(), ParentComponent->GetStaticSupportFrameHorizon());
+        if (Sliding.bSolved)
+        {
+            Linear = Sliding.DeltaVelocity; Angular = Sliding.DeltaAngularVelocity;
+            return !Linear.IsZero() || !Angular.IsZero();
+        }
+    }
     // The same contact Jacobian maps force to acceleration and impulse to
     // velocity. The curvature term is essential when rotating about an edge.
     // A sticking vertex/edge needs tangential forces as well as its normal
