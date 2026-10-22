@@ -251,6 +251,83 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
 	Floor->SetCollisionObjectType(ECC_WorldStatic);
 	Floor->SetCollisionResponseToAllChannels(ECR_Block);
 	Bridge->AnalyticSourceComponents.Add(1, Floor);
+	// Regression at the actual Box -> owner integration boundary, rather than
+	// another call to the stand-alone reaction helper. Only INITIAL geometry is
+	// authored here. All measured reactions use a fresh finite provider witness.
+	if (SelectedCell.IsEmpty())
+	for (int32 ExpectedPoints : { 1, 2 })
+	for (double Sign : { -1.0, 1.0 })
+	for (float Friction : { 0.0f, 0.3f })
+	{
+		AActor* SlidingActor = World->SpawnActor<AActor>();
+		ON_SCOPE_EXIT { SlidingActor->Destroy(); };
+		FBoxLawBody Body(*SlidingActor, Friction);
+		const float Dt = FCanonicalFrameContext(0).PhysicalDeltaTime;
+		Body.SetStaticCollisionWorldForFrame(Bridge->GetStaticCollisionWorld(), Dt);
+		Body.State.Rotation = FQuat(FVector::ForwardVector, 0.2);
+		if (ExpectedPoints == 1)
+			Body.State.Rotation = FQuat(FVector::RightVector, 0.13) * Body.State.Rotation;
+		// Configure a legal initial exterior pose; no correction is applied in
+		// response to a measured force or after integration begins.
+		Body.State.Location.Z -= Body.Clearance();
+		Body.State.Location.Z += 8 * DBL_EPSILON * 120;
+		Body.State.Velocity = FVector(Sign * 450, 0, 0);
+		Body.State.Acceleration = Body.GetNominalGravityAcceleration();
+		Body.UpdateSubBodiesKinematics();
+		const SKinematic Initial = Body.State;
+		FVector Corners[8];double Lowest = DBL_MAX;
+		for (int32 Corner = 0; Corner < 8; ++Corner)
+		{
+			const FVector E = Body.Config.BoxExtent;
+			const FVector Local((Corner & 1) ? E.X : -E.X,
+				(Corner & 2) ? E.Y : -E.Y, (Corner & 4) ? E.Z : -E.Z);
+			Corners[Corner] = Initial.Location + Initial.Rotation.RotateVector(Local);
+			Lowest = FMath::Min(Lowest, Corners[Corner].Z);
+		}
+		TArray<FVector> Points;
+		for (const FVector& Point : Corners) if (Point.Z == Lowest) Points.Add(Point);
+		if (!TestEqual(TEXT("partial sliding fixture has the authored vertex/edge"), Points.Num(), ExpectedPoints)) return false;
+		Speed::Analytic::FWorldQuery Ray;
+		Ray.Shape = Speed::Analytic::EQueryShape::Ray;
+		Ray.Start = Points[0] + FVector(0, 0, .01);
+		Ray.End = Points[0] - FVector(0, 0, .01);
+		Ray.RequiredSourceId = 1; Ray.RequiredSurfaceId = 2;
+		Ray.bAuthorityOnly = true; Ray.bIncludeCompactPatches = true;
+		Ray.DomainTolerance = 0; Ray.InitialOverlapTolerance = 0;
+		const auto Witness = Bridge->GetStaticCollisionWorld()->SweepSingle(Ray);
+		if (!TestTrue(TEXT("partial sliding support has a fresh exact finite face witness"),
+			Witness.bHit && !Witness.bStartPenetrating && !Witness.bSurfaceNormalMayVary &&
+			Witness.GeometricErrorBoundCm == 0 && Witness.SurfaceFeatureKind == Speed::EContactFeatureKind::Face &&
+			Witness.Normal == FVector::UpVector)) return false;
+		Body.Box->SetFutureHit(SHitResult::FromAnalyticHit(Witness, 0, Floor));
+		Body.Box->AcceptHit(); // Genuine current provider contact, no response/pose mutation.
+		FVector Linear, Angular;
+		Body.GetStaticContactAcceleration(Linear, Angular);
+		const FString Label = FString::Printf(TEXT("partial sliding points%d sign%.0f mu%.1f"), ExpectedPoints, Sign, double(Friction));
+		TestTrue(Label + TEXT(": reaction query preserves pose and velocity"),
+			Body.State.Location == Initial.Location && Body.State.Rotation == Initial.Rotation &&
+			Body.State.Velocity == Initial.Velocity && Body.State.AngularVelocity == Initial.AngularVelocity);
+		TestTrue(Label + TEXT(": normal pressure remains non-attractive"), Linear.Z > 0);
+		for (const FVector& Point : Points)
+		{
+			// Initial spin is zero, so this independently checks the actual
+			// acceleration-level reaction on every geometrically supplied row.
+			const FVector AP = Initial.Acceleration + Linear + FVector::CrossProduct(Angular, Point - Initial.Location);
+			TestTrue(Label + TEXT(": coupled contact normal acceleration balances"), FMath::Abs(AP.Z) < 1.e-7);
+		}
+		if (Friction == 0)
+			TestTrue(Label + TEXT(": frictionless contact retains zero tangent reaction"), Linear.X == 0 && Linear.Y == 0);
+		else
+		{
+			TestTrue(Label + TEXT(": established partial slip has dissipative continuous traction"),
+				FVector::DotProduct(Linear, Initial.Velocity) < 0);
+			TestTrue(Label + TEXT(": total traction stays in the Coulomb cone"),
+				FVector(Linear.X, Linear.Y, 0).Size() <= double(Friction) * Linear.Z + 1.e-7);
+			Body.IntegrateKinematics(Dt);
+			TestTrue(Label + TEXT(": real owner integration reduces the signed slip"),
+				Sign * Body.State.Velocity.X < 450 && Sign * Body.State.Velocity.X > 0);
+		}
+	}
 	{
 		AActor* GuardActor = World->SpawnActor<AActor>();
 		ON_SCOPE_EXIT { GuardActor->Destroy(); };
