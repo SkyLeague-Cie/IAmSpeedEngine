@@ -52,6 +52,11 @@ def validate_report(exit_code, log, report, required=REQUIRED, expected_paths=No
     crash = re.search(r'\b(?:Fatal error[!:]|Unhandled Exception:|Unhandled signal\b|Assertion failed:|Segmentation fault\b|LowLevelFatalError\b)', log, re.IGNORECASE)
     if crash:
         raise ValueError('Native crash diagnostic: ' + crash.group(0))
+    # Startup/shutdown ensures can occur outside any automation report row.
+    # A successful queue or an accepted test debt must not hide them.
+    ensure = re.search(r'\bEnsure condition failed:|===\s*Handled ensure\s*:?\s*===', log, re.IGNORECASE)
+    if ensure:
+        raise ValueError('Native ensure diagnostic: ' + ensure.group(0))
     markers = re.findall(r'Automation Test Queue Empty (\d+) tests performed\.', log)
     if len(markers) != 1 or int(markers[0]) <= 0:
         raise ValueError('Missing, empty, or ambiguous automation completion')
@@ -243,7 +248,9 @@ def inside():
             raise RuntimeError('HostProject compilation failed; original log preserved')
         command = [str(editor), str(project_file), '-NullRHI', '-SLPortableHeadlessSDL', '-sdlvideodriver=dummy', '-unattended', '-MULTIHOME=127.0.0.1', '-NoEOS', '-nosound', '-nop4', '-nosplash', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoShaderCompile', '-notraceserver', '-NoTrace', '-ini:Engine:[ConsoleVariables]:HomeScreen.EnableHomeScreen=0', '-ini:EditorSettings:[/Script/UnrealEd.AnalyticsPrivacySettings]:bSendUsageData=False', '-stdout', '-FullStdOutLogOutput', '-UserDir=' + str(output / 'user'), '-abslog=' + str(logs / 'editor.log'), '-ReportExportPath=' + str(report), '-ExecCmds=Automation RunTests ' + FILTER, '-TestExit=Automation Test Queue Empty']
         save(output / 'test-command.json', command)
-        code = run_logged(command, logs / 'tests.stdout.log', 1800, project, env)
+        # The embedded Python home may be relative to the Editor executable.
+        # Keep project/output arguments absolute and resolve that SDK layout.
+        code = run_logged(command, logs / 'tests.stdout.log', 1800, editor.parent, env)
         result['editor_exit'] = code
         policy = accepted_debt_policy()
         raw_report = json.loads((report / 'index.json').read_text(encoding='utf-8-sig'))

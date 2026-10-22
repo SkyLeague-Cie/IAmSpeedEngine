@@ -150,13 +150,25 @@ class Contracts(unittest.TestCase):
                 with self.subTest(marker=marker, code=code), self.assertRaises(ValueError):
                     ci.validate_report_with_debt(code, log + '\n' + marker, report, policy)
 
-    def test_boundary_ensure_remains_visible_as_accepted_debt(self):
+    def test_boundary_ensure_rejects_accepted_debt_without_mutating_report(self):
         report, log = self.debt_report(); original = copy.deepcopy(report)
         log += '\nEnsure condition failed: CompleteInputFrame'
-        result = ci.validate_report_with_debt(1, log, report, ci.accepted_debt_policy())
-        self.assertEqual(result['state'], 'PASS_WITH_ACCEPTED_DEBT')
+        with self.assertRaisesRegex(ValueError, 'Native ensure diagnostic'):
+            ci.validate_report_with_debt(1, log, report, ci.accepted_debt_policy())
         self.assertEqual(report, original)
-        self.assertFalse(result['full_ci_qualified'])
+
+    def test_startup_ensure_blocks_clean_queue_and_debt_at_both_exit_codes(self):
+        for marker in ('Ensure condition failed: !PyStatus_Exception(Status)',
+                       '=== Handled ensure: ===', '=== Handled ensure ==='):
+            for code in (0, 1):
+                for debt in (False, True):
+                    report, log = self.debt_report() if debt else (copy.deepcopy(self.report), self.log)
+                    original = copy.deepcopy(report)
+                    raw_log = marker + '\nPython startup failed before automation\n' + log
+                    with self.subTest(marker=marker, code=code, debt=debt), self.assertRaises(ValueError):
+                        ci.validate_report_with_debt(code, raw_log, report, ci.accepted_debt_policy())
+                    self.assertEqual(report, original)
+                    self.assertTrue(raw_log.startswith(marker))
 
     def test_clean_report_with_fatal_tail_is_rejected(self):
         with self.assertRaises(ValueError):
