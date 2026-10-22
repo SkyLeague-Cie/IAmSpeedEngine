@@ -502,7 +502,32 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
   }
   Driver->ResumeOwnedSimulation();
   TArray<TSharedRef<ISimulationPresentationProducer,ESPMode::ThreadSafe>> WorkerList{WorkerCamera};
-  TArray<FEightCarCapturedRow1534> Seen;Seen.SetNum(Frames);for(auto& R:Seen){R.BaseEvents1534.Reserve(2048);R.StateFields1534.Reserve(128);R.InputFields1534.Reserve(64);R.CameraOraclePolls1534.SetNum(CarCount);R.DeferredStates1534.Reserve1456(1024*1024,4096);R.DeferredContacts1534.Reserve1456(65536,2048);}
+  TArray<FEightCarCapturedRow1534> Seen;Seen.SetNum(Frames);
+  // Exact fixed-history contribution, including the typed bump suffix in
+  // EVERY slot. Extra 64KiB/car is initial capacity for other captured fields,
+  // not a limit or permission to drop data; all arrays remain growable.
+  TArray<uint8> HistorySizeProbe1534;
+  EightCarBaseState1534(HistorySizeProbe1534,FBasePhysicsState{});
+  const int32 BaseHistoryBytes1534=HistorySizeProbe1534.Num();HistorySizeProbe1534.Reset();
+  if(!EightCarWheeledState1534(HistorySizeProbe1534,FWheeledPhysicsState{},BumpIdentities1564))return false;
+  const int32 WheeledHistoryBytes1534=HistorySizeProbe1534.Num();
+  int32 HistoryBytes1534=0;
+  for(const auto* C:Cars)HistoryBytes1534+=3*sizeof(int32)+C->RecordedBaseFrames.Num()*sizeof(int32)
+   +C->RecordedBaseStates.Num()*BaseHistoryBytes1534+C->RecordedWheeledStates.Num()*WheeledHistoryBytes1534;
+  const int32 StateCapacity1534=HistoryBytes1534+CarCount*65536;
+  for(auto& R:Seen)
+  {
+   R.BaseEvents1534.Reserve(2048);R.StateFields1534.Reserve(128);R.InputFields1534.Reserve(64);
+   R.CameraOraclePolls1534.SetNum(CarCount);R.RawStateBounds1534.Reserve(129);
+   R.RawObservedStates.Reserve(StateCapacity1534);R.DeferredStates1534.Reserve1456(StateCapacity1534,4096);
+   R.DeferredContacts1534.Reserve1456(65536,2048);R.RawContactBounds1534.Reserve(2049);
+   R.Snapshot.Reserve(65536);R.Inputs.Reserve(CarCount*4096);R.NumericContext1534.Reserve(256);
+   R.PrepareDeltas.Reserve(2*sizeof(uint32)+(CarCount+1)*(2*sizeof(uint64)+sizeof(float)));
+   R.RawOrderedSolve.Reserve(65536);R.RawWheelManifold.Reserve(65536);
+   if(!Fast){R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);}
+  }
+  // No page pre-touch or allocation-free claim: local capture/projector
+  // internals may still allocate, and capacity does not imply committed RAM.
   uint32 Steps=0,OwnerThread=0;int32 FailureLine=0,CameraStatus=-1,CameraReason=-1;FString PointerFailure;bool Failed=false;
   FSimulationWorker Owner([&]
   {
@@ -755,7 +780,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    Row.CameraNative=GetFrameParallelStageTotals(EFrameParallelStage::Camera).MaximumNativeThreads;
    // Freeze actual completed-N values before leaving the canonical owner.
    // Only the independent comparison is replayed after natural drain, as in1217.
-   Row.CameraOracleSnapshot1534=Snapshot;Row.CameraOracleSnapshot1534.PresentationOutputs.Reset();
+   Snapshot.PresentationOutputs.Reset();Row.CameraOracleSnapshot1534=MoveTemp(Snapshot);
    Row.CameraOracleNumeric1534=CaptureFrameFloatingPointContext();
    for(int32 A=0;A<Cars.Num();++A)Row.CameraOraclePolls1534[A]=Driver->InputSessionRegistry?Driver->InputSessionRegistry->PollCount(ExactDescriptors[A].Id):0;
 

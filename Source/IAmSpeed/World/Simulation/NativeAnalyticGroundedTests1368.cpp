@@ -394,6 +394,28 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
   Driver->ResumeOwnedSimulation();
   TArray<TSharedRef<ISimulationPresentationProducer,ESPMode::ThreadSafe>> WorkerList{WorkerCamera};
   TArray<FNativeContactRow1368> Seen;Seen.SetNum(Frames);uint32 Steps=0,OwnerThread=0;int32 FailureLine=0,CameraStatus=-1,CameraReason=-1;FString PointerFailure;bool Failed=false;
+  // Size the COMPLETE fixed histories with the same field codecs, before the
+  // paced owner starts. The other-state allowance is an initial capacity,
+  // never a semantic bound: TArray still grows and every byte is retained.
+  TArray<uint8> HistorySizeProbe1368;
+  ContactBaseState1368(HistorySizeProbe1368,FBasePhysicsState{});
+  const int32 BaseHistoryBytes1368=HistorySizeProbe1368.Num();HistorySizeProbe1368.Reset();
+  ContactWheeledState1368(HistorySizeProbe1368,FWheeledPhysicsState{});
+  const int32 WheeledHistoryBytes1368=HistorySizeProbe1368.Num();
+  int32 HistoryBytes1368=0;
+  for(const auto* C:Cars)HistoryBytes1368+=3*sizeof(int32)+C->RecordedBaseFrames.Num()*sizeof(int32)
+   +C->RecordedBaseStates.Num()*BaseHistoryBytes1368+C->RecordedWheeledStates.Num()*WheeledHistoryBytes1368;
+  const int32 StateCapacity1368=HistoryBytes1368+CarCount*65536;
+  for(auto& R:Seen)
+  {
+   R.RawObservedStates.Reserve(StateCapacity1368);
+   R.Snapshot.Reserve(65536);R.Inputs.Reserve(CarCount*4096);
+   R.PrepareDeltas.Reserve(2*sizeof(uint32)+(CarCount+1)*(2*sizeof(uint64)+sizeof(float)));
+   R.RawOrderedSolve.Reserve(65536);R.RawWheelManifold.Reserve(65536);
+   if(!Fast){R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);}
+  }
+  // Reserve does not pre-touch every OS page. Canonical projectors have their
+  // own temporary storage; this does not claim to eliminate all allocations.
   FSimulationWorker Owner([&]
   {
    if(Steps==Frames)return ESimulationWorkerResult::Complete;
@@ -594,7 +616,7 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
    Row.CameraPose=Snapshot.PresentationOutputs[0].Payload;
    Row.CameraCheckpoint=Snapshot.PresentationOutputs[0].StatePayload;
    Row.CameraNative=GetFrameParallelStageTotals(EFrameParallelStage::Camera).MaximumNativeThreads;
-   const auto Expected=Snapshot.PresentationOutputs[0];Snapshot.PresentationOutputs.Reset();
+   Snapshot.PresentationOutputs.Reset();
    const auto Validate=[&]
    {
     for(int32 A=0;A<Cars.Num();++A)
@@ -602,8 +624,8 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
     return true;
    };
    if(!FrameParallel::ProduceFramePresentationWithOwnerValidation(Snapshot,WorkerList,Lanes,true,Validate)
-    ||Snapshot.PresentationOutputs.Num()!=1||Expected.Payload!=Snapshot.PresentationOutputs[0].Payload
-    ||Expected.StatePayload!=Snapshot.PresentationOutputs[0].StatePayload)
+    ||Snapshot.PresentationOutputs.Num()!=1||Row.CameraPose!=Snapshot.PresentationOutputs[0].Payload
+    ||Row.CameraCheckpoint!=Snapshot.PresentationOutputs[0].StatePayload)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    FSpeedCarCameraPose Pose;
    const bool PoseRead=FSpeedCarCameraPose::Read(Snapshot.PresentationOutputs[0].Payload,Pose);
