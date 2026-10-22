@@ -27,6 +27,21 @@ enum class EFrameDynamicContactOutcome : uint8
  FirstSeenDeferred,DiscontinuousMotion,RejectedGeometry,ZeroNormal,SeparatingVelocity,
  IdentityOnly,ZeroDenominator,ProjectionDisabled
 };
+#if WITH_DEV_AUTOMATION_TESTS
+enum class EWheelWitnessRelease1368 : uint8
+{ NotCaptured, WriterOpen, DestinationNotEmpty, AliasedDestinations, AlreadyReleased, TransferredValid, TransferredInvalid };
+// Final owner capture; object must stay immobile and alive until solve scope
+// closure. Evidence is released after the physical owner has joined.
+class IAMSPEED_API FWheelWitnessSnapshot1368
+{
+    friend class FFrameSolveWitnessScope;
+    TArray<uint8> Raw,Canonical,RawDebris,CanonicalDebris;
+    bool bCaptured=false,bWriterOpen=false,bValid=false,bReleased=false;
+public:
+    EWheelWitnessRelease1368 ReleaseAfterClosure(TArray<uint8>& OutRaw,TArray<uint8>& OutCanonical,
+        TArray<uint8>& OutRawDebris,TArray<uint8>& OutCanonicalDebris);
+};
+#endif
 class IAMSPEED_API FFrameSolveWitnessScope
 {
 public:
@@ -105,9 +120,13 @@ public:
     const TArray<uint8>& RawWheelManifold1368()const noexcept{return WheelRaw1368;}
     bool MakeWheelManifoldCanonical1368(TArray<uint8>& Out)const
     {
-        if(!bCaptureWheelManifold1368||bOverflow||!OpenWheelOwners1368.IsEmpty()||WheelCanonicalRows1368!=WheelRows1368)return false;
+        if(ConsumedWheel1368||!bCaptureWheelManifold1368||bOverflow||!OpenWheelOwners1368.IsEmpty()||WheelCanonicalRows1368!=WheelRows1368)return false;
         Out=WheelCanonical1368;return true;
     }
+    // One-shot final transfer after the last joined physical/wheel callback.
+    // Nonempty main bytes must first be sealed/transferred by their own API.
+    // Return success is provisional until scope closure; it is never a verdict.
+    bool ConsumeWheelWitness1368(FWheelWitnessSnapshot1368& Out);
     // Framed schema3 sidecar: actual suspension inputs/order/impulses.
     static void RecordWheelManifold1368(uint8 Event,const ISpeedComponent* Owner,
         int32 DetailA,int32 DetailB,TConstArrayView<SWheelGroundContact> Contacts,
@@ -142,6 +161,9 @@ private:
     // A row owns no data after append/canonicalization. Keep only its raw
     // capacity for the next event; canonical and pointer scopes stay distinct.
     TArray<uint8> WheelRowRawScratch1368;
+#if WITH_DEV_AUTOMATION_TESTS
+    FWheelWitnessSnapshot1368* ConsumedWheel1368=nullptr;
+#endif
     bool bOverflow=false;
 #if WITH_DEV_AUTOMATION_TESTS
     bool bRowBoundaries1534=false;TArray<int32> RawRowBoundaries1534;

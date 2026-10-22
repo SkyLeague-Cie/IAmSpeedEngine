@@ -405,6 +405,128 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         TArray<uint8> Canonical{99};TestFalse(TEXT("forensic recovery never makes an invalid certificate pass"),Consumed.MakeCanonical(Canonical));
         TestTrue(TEXT("invalid projection destination remains untouched"),Canonical==TArray<uint8>{99});
     }
+
+    // Independent schema3 bytes: no production wheel encoder/projector is used
+    // to assemble this oracle. A fake typed owner is only an identity token;
+    // RecordWheelManifold never dereferences it.
+    const auto* WheelOwner1368=reinterpret_cast<const ISpeedComponent*>(&Object);
+    const auto EmitWheel1368=[&](uint8 Event,TConstArrayView<float> Values)
+    {FFrameSolveWitnessScope::RecordWheelManifold1368(Event,WheelOwner1368,3,4,{}, {},Values,{}, {});};
+    const auto IndependentWheel1368=[&](TArray<uint8>& Pack,uint64 FrameNumber,int32 Sequence,uint8 Event,TConstArrayView<float> Values,bool CanonicalOwner)
+    {
+        TArray<uint8> Row;
+        Scalar(Row,uint32(3));Scalar(Row,FrameNumber);Scalar(Row,Sequence);Scalar(Row,int32(0));Scalar(Row,Event);
+        if(CanonicalOwner)
+        {
+            Scalar(Row,Key.Domain);Scalar(Row,Key.Owner);Scalar(Row,Key.Generation);Scalar(Row,Key.Role);Scalar(Row,Key.Element);Scalar(Row,uint32(0));
+        }
+        else Scalar(Row,reinterpret_cast<UPTRINT>(&Object));
+        Scalar(Row,int32(3));Scalar(Row,int32(4));Scalar(Row,int32(0));Scalar(Row,int32(0));
+        Scalar(Row,int32(Values.Num()));for(float Value:Values)Scalar(Row,Value);
+        Scalar(Row,int32(0));Scalar(Row,int32(0));
+        Scalar(Pack,uint32(0x334d5749));Scalar(Pack,uint32(Row.Num()));Pack.Append(Row);
+    };
+    TArray<float> LargeWheelValues1368;for(int32 I=0;I<32;++I)LargeWheelValues1368.Add(float(I)-17.5f);
+    const float SmallWheelValues1368[]={-0.0f};
+    for(uint64 FrameNumber1368=0;FrameNumber1368<2;++FrameNumber1368)
+    {
+        FWheelWitnessSnapshot1368 Snapshot1368;TArray<uint8> Main,ControlRaw,ControlCanonical,ExpectedWheelRaw,ExpectedWheelCanonical;
+        TArray<uint8> RawOut,CanonicalOut,RawDebris,CanonicalDebris;RawOut.Reserve(512*1024);
+        {
+            FFrameSolveWitnessScope Solve(FrameNumber1368,Main,Registry);
+            TestTrue(TEXT("wheel transfer test enables real observer"),Solve.EnableWheelManifoldCapture1368());
+            const TConstArrayView<float> Large=FrameNumber1368==0?TConstArrayView<float>(LargeWheelValues1368):TConstArrayView<float>{};
+            EmitWheel1368(0,Large);EmitWheel1368(1,MakeArrayView(SmallWheelValues1368));EmitWheel1368(255,{});
+            IndependentWheel1368(ExpectedWheelRaw,FrameNumber1368,0,0,Large,false);
+            IndependentWheel1368(ExpectedWheelRaw,FrameNumber1368,1,1,MakeArrayView(SmallWheelValues1368),false);
+            IndependentWheel1368(ExpectedWheelRaw,FrameNumber1368,2,255,{},false);
+            IndependentWheel1368(ExpectedWheelCanonical,FrameNumber1368,0,0,Large,true);
+            IndependentWheel1368(ExpectedWheelCanonical,FrameNumber1368,1,1,MakeArrayView(SmallWheelValues1368),true);
+            IndependentWheel1368(ExpectedWheelCanonical,FrameNumber1368,2,255,{},true);
+            ControlRaw=Solve.RawWheelManifold1368();TestTrue(TEXT("legacy canonical wheel copy remains available"),Solve.MakeWheelManifoldCanonical1368(ControlCanonical));
+            TestTrue(TEXT("legacy wheel raw and canonical match independent byte oracle"),ControlRaw==ExpectedWheelRaw&&ControlCanonical==ExpectedWheelCanonical);
+            TestTrue(TEXT("final wheel capture transfers complete streams"),Solve.ConsumeWheelWitness1368(Snapshot1368));
+            TestFalse(TEXT("legacy canonical API cannot bless emptied transferred source"),Solve.MakeWheelManifoldCanonical1368(CanonicalOut));
+            TestTrue(TEXT("release cannot precede scope closure"),Snapshot1368.ReleaseAfterClosure(RawOut,CanonicalOut,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::WriterOpen&&RawOut.IsEmpty());
+            FWheelWitnessSnapshot1368 Duplicate;
+            TestFalse(TEXT("wheel capture is one shot"),Solve.ConsumeWheelWitness1368(Duplicate));
+            // A nested unrelated solve does not change the outer certificate.
+            TArray<uint8> NestedRaw;{FFrameSolveWitnessScope Nested(99,NestedRaw,Registry);TestTrue(TEXT("nested solve remains independent"),Nested.EnableWheelManifoldCapture1368());EmitWheel1368(0,{});EmitWheel1368(255,{});}
+        }
+        TArray<uint8> Sentinel{99};
+        TestTrue(TEXT("nonempty release destination is transactional"),Snapshot1368.ReleaseAfterClosure(Sentinel,CanonicalOut,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::DestinationNotEmpty&&Sentinel==TArray<uint8>{99}&&CanonicalOut.IsEmpty());
+        TestTrue(TEXT("alias release destinations refuse without transfer"),Snapshot1368.ReleaseAfterClosure(RawOut,RawOut,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::AliasedDestinations);
+        TestTrue(TEXT("closed wheel release restores exact complete raw and canonical evidence"),Snapshot1368.ReleaseAfterClosure(RawOut,CanonicalOut,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::TransferredValid&&RawOut==ControlRaw&&CanonicalOut==ControlCanonical&&RawDebris.IsEmpty()&&CanonicalDebris.IsEmpty());
+        TArray<uint8> AgainRaw,AgainCanonical;
+        TestTrue(TEXT("closed evidence cannot be released twice"),Snapshot1368.ReleaseAfterClosure(AgainRaw,AgainCanonical,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::AlreadyReleased&&AgainRaw.IsEmpty());
+    }
+    for(int32 Failure1368=0;Failure1368<4;++Failure1368)
+    {
+        TArray<uint8> Main,OriginalRaw,OriginalCanonical,OutRaw,OutCanonical,DebrisRaw,DebrisCanonical;
+        FWheelWitnessSnapshot1368 Captured;FFramePointerCanonicalSnapshot1456 MainCaptured1368;
+        {
+            FFrameSolveWitnessScope Solve(17,Main,Registry);
+            Solve.EnableWheelManifoldCapture1368();EmitWheel1368(0,{});EmitWheel1368(255,{});
+            OriginalRaw=Solve.RawWheelManifold1368();Solve.MakeWheelManifoldCanonical1368(OriginalCanonical);
+            TestTrue(TEXT("main contact certificate seals before final wheel transfer"),Solve.SealAndConsumeCanonicalSnapshot1456(MainCaptured1368));
+            TestTrue(TEXT("late-write test first captures a complete wheel stream"),Solve.ConsumeWheelWitness1368(Captured));
+            if(Failure1368==0)EmitWheel1368(0,{}); // Late observed callback is rejected and invalidates.
+            if(Failure1368==1)FFrameSolveWitnessScope::Record(17,0,0,41,0,0,SHitResult{},false,0,1);
+            if(Failure1368==2)const_cast<TArray<uint8>&>(Solve.RawWheelManifold1368()).Add(0x5a); // Unobserved source debris.
+            if(Failure1368==3)FFrameSolveWitnessScope::BeginDynamicPass(17,EFrameDynamicContactPass::Persistent,1.f/300,0,false,false,0);
+        }
+        TestTrue(TEXT("late callback or source debris cannot become valid after closure"),Captured.ReleaseAfterClosure(OutRaw,OutCanonical,DebrisRaw,DebrisCanonical)==EWheelWitnessRelease1368::TransferredInvalid);
+        TestTrue(TEXT("invalid late stream still preserves exact original captured pack bytes"),OutRaw==OriginalRaw&&OutCanonical==OriginalCanonical);
+        if(Failure1368!=2){TArray<uint8> MainCanonical1368;TestFalse(TEXT("late observed callback also invalidates the existing main certificate"),MainCaptured1368.MakeCanonical(MainCanonical1368));}
+        TestTrue(TEXT("unobserved raw source debris is retained separately"),Failure1368==2?DebrisRaw==TArray<uint8>{0x5a}:DebrisRaw.IsEmpty());
+    }
+    for(int32 Failure1368=0;Failure1368<3;++Failure1368)
+    {
+        TArray<uint8> Main,RawBefore,CanonicalOut,OutRaw,DebrisRaw,DebrisCanonical;FWheelWitnessSnapshot1368 Captured;
+        {
+            FFrameSolveWitnessScope Solve(18,Main,Registry,Failure1368==2?1:65536);Solve.EnableWheelManifoldCapture1368();
+            if(Failure1368==0)EmitWheel1368(0,{}); // Owner remains open.
+            if(Failure1368==1)FFrameSolveWitnessScope::RecordWheelManifold1368(0,reinterpret_cast<const ISpeedComponent*>(&Unknown),3,4,{},{});
+            if(Failure1368==2){EmitWheel1368(0,{});EmitWheel1368(255,{});} // Overflow.
+            RawBefore=Solve.RawWheelManifold1368();
+            TestFalse(TEXT("open owner unknown or overflow cannot transfer wheel capture"),Solve.ConsumeWheelWitness1368(Captured));
+            TestTrue(TEXT("failed transfer preserves partial raw evidence"),Solve.RawWheelManifold1368()==RawBefore);
+        }
+        TestTrue(TEXT("noncaptured failed frame is distinct and leaves preexisting evidence untouched"),Captured.ReleaseAfterClosure(OutRaw,CanonicalOut,DebrisRaw,DebrisCanonical)==EWheelWitnessRelease1368::NotCaptured&&OutRaw.IsEmpty());
+    }
+
+    {
+        FWheelWitnessSnapshot1368 Empty;TArray<uint8> Main,RawOut,CanonicalOut,DebrisRaw,DebrisCanonical;
+        {FFrameSolveWitnessScope Solve(19,Main,Registry);Solve.EnableWheelManifoldCapture1368();TestTrue(TEXT("empty complete wheel evidence is transferable"),Solve.ConsumeWheelWitness1368(Empty));}
+        TestTrue(TEXT("empty wheel stream is not an unobserved frame"),Empty.ReleaseAfterClosure(RawOut,CanonicalOut,DebrisRaw,DebrisCanonical)==EWheelWitnessRelease1368::TransferredValid&&RawOut.IsEmpty()&&CanonicalOut.IsEmpty());
+    }
+    {
+        FWheelWitnessSnapshot1368 Frames1368[3];TArray<uint8> Main[3],RawFrames[3],CanonicalFrames[3],DebrisRaw[3],DebrisCanonical[3];
+        TArray<uint8> ExpectedFirstRaw,ExpectedPartialRaw;
+        {
+            FFrameSolveWitnessScope First(0,Main[0],Registry);First.EnableWheelManifoldCapture1368();EmitWheel1368(0,{});EmitWheel1368(255,{});
+            ExpectedFirstRaw=First.RawWheelManifold1368();TestTrue(TEXT("failed-run first frame consumes"),First.ConsumeWheelWitness1368(Frames1368[0]));
+        }
+        {
+            FFrameSolveWitnessScope Partial(1,Main[1],Registry);Partial.EnableWheelManifoldCapture1368();EmitWheel1368(0,{});
+            TestFalse(TEXT("failed-run open second frame refuses consume"),Partial.ConsumeWheelWitness1368(Frames1368[1]));
+            RawFrames[1]=Partial.RawWheelManifold1368();ExpectedPartialRaw=RawFrames[1];
+        }
+        for(int32 N=0;N<3;++N)
+        {
+            const auto Status=Frames1368[N].ReleaseAfterClosure(RawFrames[N],CanonicalFrames[N],DebrisRaw[N],DebrisCanonical[N]);
+            TestTrue(TEXT("failure-independent release retains captured versus partial evidence distinction"),N==0?Status==EWheelWitnessRelease1368::TransferredValid:Status==EWheelWitnessRelease1368::NotCaptured);
+        }
+        TArray<uint8> ActualPack,ExpectedPack;
+        Scalar(ActualPack,uint32(0x31434149));Scalar(ActualPack,uint32(3));Scalar(ExpectedPack,uint32(0x31434149));Scalar(ExpectedPack,uint32(3));
+        for(uint64 N=0;N<3;++N)
+        {
+            const TArray<uint8>& Expected=N==0?ExpectedFirstRaw:N==1?ExpectedPartialRaw:RawFrames[2];
+            Scalar(ActualPack,N);Scalar(ActualPack,uint32(RawFrames[N].Num()));ActualPack.Append(RawFrames[N]);
+            Scalar(ExpectedPack,N);Scalar(ExpectedPack,uint32(Expected.Num()));ExpectedPack.Append(Expected);
+        }
+        TestTrue(TEXT("failed-run wheel pack framing preserves prior transferred and partial failed raw streams"),ActualPack==ExpectedPack);
+    }
     return true;
 }
 #endif

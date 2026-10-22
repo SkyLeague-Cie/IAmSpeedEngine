@@ -142,7 +142,8 @@ struct FEightCarCapturedRow1534
  TArray<uint8> Snapshot,ObservedStates,RawObservedStates,Inputs,OrderedSolve,RawOrderedSolve,CameraPose,CameraCheckpoint,PrepareDeltas,RawWheelManifold,WheelManifold;
  TArray<uint8> NumericContext1534;
  // Only populated on illegal post-seal writes; normal evidence pack bytes stay unchanged.
- TArray<uint8> RawContactAfterSealDebris1534,RawStateAfterSealDebris1534;
+ TArray<uint8> RawContactAfterSealDebris1534,RawStateAfterSealDebris1534,RawWheelAfterSealDebris1368,CanonicalWheelAfterSealDebris1368,RawWheelDestinationDebris1368,CanonicalWheelDestinationDebris1368;
+ FWheelWitnessSnapshot1368 DeferredWheel1368;
  Speed::FFramePointerCanonicalSnapshot1456 DeferredStates1534,DeferredContacts1534;TArray<int32> RawStateBounds1534,RawContactBounds1534;
  FSimulationSnapshot CameraOracleSnapshot1534;Speed::FFrameFloatingPointContext CameraOracleNumeric1534;TArray<uint64> CameraOraclePolls1534;
  TArray<FEightCarField1534> InputFields1534,StateFields1534;TArray<int32> ContactBounds1534;
@@ -624,12 +625,19 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    Row.Frame=N;Row.Publication=Snapshot.PublicationSerial;Row.Snapshot=Snapshot.Payload;
    Row.MainContacts=Ordered.NumMainRows();Row.WheelManifoldRows=Ordered.NumWheelManifoldRows1368();
-   Row.RawWheelManifold=Ordered.RawWheelManifold1368();
-   if(!Ordered.MakeWheelManifoldCanonical1368(Row.WheelManifold)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    if(!Ordered.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Row.DeferredContacts1534,Row.RawContactBounds1534))
    {
+    Row.RawWheelManifold=Ordered.RawWheelManifold1368();
+    Ordered.MakeWheelManifoldCanonical1368(Row.WheelManifold);
     PointerFailure=FString::Printf(TEXT("Solve N=%llu Overflow=%d Unknown=%d OpenPasses=%d\nOffset\tRaw\tKnown\tObjectId\tPair\tSolverPair\tProvider\tFeatureSalt\n"),N,Ordered.HasOverflow()?1:0,Ordered.HasUnknownPointer()?1:0,Ordered.OpenDynamicPassCount());
     for(const auto& E:Ordered.PointerObservations())PointerFailure+=FString::Printf(TEXT("%d\t%llu\t%d\t%d\t%d\t%d\t%llu\t%llu\n"),E.Offset,uint64(E.RawAddress),E.bKnown?1:0,E.bObjectId?1:0,E.bPairToken?1:0,E.bSolverPairToken?1:0,E.PairProviderId,E.PairFeatureSalt);
+    Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;
+   }
+   if(!Ordered.ConsumeWheelWitness1368(Row.DeferredWheel1368))
+   {
+    // Failed capture must still retain original partial raw wheel evidence.
+    Row.RawWheelManifold=Ordered.RawWheelManifold1368();
+    Ordered.MakeWheelManifoldCanonical1368(Row.WheelManifold);
     Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;
    }
    TArray<uint8>& RawStates=Row.RawObservedStates;FFramePointerCaptureScope StatePointers(RawStates,Pointers);
@@ -831,6 +839,16 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    };
    RestoreRaw1534(R.DeferredContacts1534,R.RawOrderedSolve,R.RawContactAfterSealDebris1534);
    RestoreRaw1534(R.DeferredStates1534,R.RawObservedStates,R.RawStateAfterSealDebris1534);
+   auto WheelStatus1368=R.DeferredWheel1368.ReleaseAfterClosure(R.RawWheelManifold,R.WheelManifold,
+    R.RawWheelAfterSealDebris1368,R.CanonicalWheelAfterSealDebris1368);
+   if(WheelStatus1368==EWheelWitnessRelease1368::DestinationNotEmpty)
+   {
+    Swap(R.RawWheelManifold,R.RawWheelDestinationDebris1368);Swap(R.WheelManifold,R.CanonicalWheelDestinationDebris1368);
+    Failed=true;R.bComplete=false;PointerFailure+=FString::Printf(TEXT("Wheel destination writes retained separately at N=%u\n"),N);
+    WheelStatus1368=R.DeferredWheel1368.ReleaseAfterClosure(R.RawWheelManifold,R.WheelManifold,R.RawWheelAfterSealDebris1368,R.CanonicalWheelAfterSealDebris1368);
+   }
+   if(WheelStatus1368!=EWheelWitnessRelease1368::NotCaptured&&WheelStatus1368!=EWheelWitnessRelease1368::TransferredValid)
+   {Failed=true;R.bComplete=false;PointerFailure=FString::Printf(TEXT("Wheel evidence unavailable or invalid after join at N=%u Status=%d\n"),N,int32(WheelStatus1368));}
   }
   // All raw bytes, semantic keys, field boundaries, camera inputs and poll
   // counts were owned captures at N. No live physics getter runs in projection.
@@ -880,6 +898,14 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
   EvidenceSaved&=SavePack(TEXT("contacts.raw.pack"),&FEightCarCapturedRow1534::RawOrderedSolve);
   // Extra forensic streams exist only on detected misuse; normal pack set,
   // framing, row count and payload bytes are unchanged.
+  bool WheelRawDestinationDebris1368=false,WheelCanonicalDestinationDebris1368=false;
+  for(const auto& R:Seen){WheelRawDestinationDebris1368|=!R.RawWheelDestinationDebris1368.IsEmpty();WheelCanonicalDestinationDebris1368|=!R.CanonicalWheelDestinationDebris1368.IsEmpty();}
+  if(WheelRawDestinationDebris1368)EvidenceSaved&=SavePack(TEXT("wheel-manifold.destination-debris.raw.pack"),&FEightCarCapturedRow1534::RawWheelDestinationDebris1368);
+  if(WheelCanonicalDestinationDebris1368)EvidenceSaved&=SavePack(TEXT("wheel-manifold.destination-debris.canonical.pack"),&FEightCarCapturedRow1534::CanonicalWheelDestinationDebris1368);
+  bool WheelRawDebris1368=false,WheelCanonicalDebris1368=false;
+  for(const auto& R:Seen){WheelRawDebris1368|=!R.RawWheelAfterSealDebris1368.IsEmpty();WheelCanonicalDebris1368|=!R.CanonicalWheelAfterSealDebris1368.IsEmpty();}
+  if(WheelRawDebris1368)EvidenceSaved&=SavePack(TEXT("wheel-manifold.after-seal-debris.raw.pack"),&FEightCarCapturedRow1534::RawWheelAfterSealDebris1368);
+  if(WheelCanonicalDebris1368)EvidenceSaved&=SavePack(TEXT("wheel-manifold.after-seal-debris.canonical.pack"),&FEightCarCapturedRow1534::CanonicalWheelAfterSealDebris1368);
   bool ContactDebris1534=false,StateDebris1534=false;
   for(const auto& R:Seen){ContactDebris1534|=!R.RawContactAfterSealDebris1534.IsEmpty();StateDebris1534|=!R.RawStateAfterSealDebris1534.IsEmpty();}
   if(ContactDebris1534)EvidenceSaved&=SavePack(TEXT("contacts.after-seal-debris.raw.pack"),&FEightCarCapturedRow1534::RawContactAfterSealDebris1534);

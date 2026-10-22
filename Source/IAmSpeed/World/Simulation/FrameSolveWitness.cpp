@@ -10,12 +10,48 @@
 namespace Speed
 {
 namespace { thread_local FFrameSolveWitnessScope* ActiveSolveWitness=nullptr; }
+#if WITH_DEV_AUTOMATION_TESTS
+EWheelWitnessRelease1368 FWheelWitnessSnapshot1368::ReleaseAfterClosure(TArray<uint8>& OutRaw,TArray<uint8>& OutCanonical,
+    TArray<uint8>& OutRawDebris,TArray<uint8>& OutCanonicalDebris)
+{
+ if(!bCaptured)return EWheelWitnessRelease1368::NotCaptured;
+ if(bWriterOpen)return EWheelWitnessRelease1368::WriterOpen;
+ if(bReleased)return EWheelWitnessRelease1368::AlreadyReleased;
+ const TArray<uint8>* Destinations[]={&OutRaw,&OutCanonical,&OutRawDebris,&OutCanonicalDebris};
+ for(int32 A=0;A<4;++A)for(int32 B=A+1;B<4;++B)if(Destinations[A]==Destinations[B])return EWheelWitnessRelease1368::AliasedDestinations;
+ if(!OutRaw.IsEmpty()||!OutCanonical.IsEmpty()||!OutRawDebris.IsEmpty()||!OutCanonicalDebris.IsEmpty())
+  return EWheelWitnessRelease1368::DestinationNotEmpty;
+ Swap(Raw,OutRaw);Swap(Canonical,OutCanonical);Swap(RawDebris,OutRawDebris);Swap(CanonicalDebris,OutCanonicalDebris);
+ bReleased=true;return bValid?EWheelWitnessRelease1368::TransferredValid:EWheelWitnessRelease1368::TransferredInvalid;
+}
+bool FFrameSolveWitnessScope::ConsumeWheelWitness1368(FWheelWitnessSnapshot1368& Out)
+{
+ if(ConsumedWheel1368||!Bytes.IsEmpty()||!bCaptureWheelManifold1368||bOverflow||PointerCapture.HasOverflow()||PointerCapture.HasUnknown()
+  ||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()||WheelCanonicalRows1368!=WheelRows1368
+  ||Out.bCaptured||Out.bWriterOpen||!Out.Raw.IsEmpty()||!Out.Canonical.IsEmpty()||!Out.RawDebris.IsEmpty()||!Out.CanonicalDebris.IsEmpty())return false;
+ Swap(WheelRaw1368,Out.Raw);Swap(WheelCanonical1368,Out.Canonical);
+ Out.bCaptured=true;Out.bWriterOpen=true;Out.bValid=true;ConsumedWheel1368=&Out;return true;
+}
+#endif
 FFrameSolveWitnessScope::FFrameSolveWitnessScope(uint64 InFrame,TArray<uint8>& Raw,
     const FFramePointerRegistry& Registry,int32 MaximumRows)
     : Frame(InFrame),Bytes(Raw),PointerCapture(Raw,Registry),WheelRegistry1368(Registry),Limit(FMath::Clamp(MaximumRows,1,65536))
 { Previous=ActiveSolveWitness;ActiveSolveWitness=this; }
 FFrameSolveWitnessScope::~FFrameSolveWitnessScope()
-{ check(ActiveSolveWitness==this);ActiveSolveWitness=Previous; }
+{
+ check(ActiveSolveWitness==this);
+#if WITH_DEV_AUTOMATION_TESTS
+ if(ConsumedWheel1368)
+ {
+  ConsumedWheel1368->bValid&=!bOverflow&&!PointerCapture.HasOverflow()&&!PointerCapture.HasUnknown()
+   &&OpenDynamicPasses.IsEmpty()&&OpenWheelOwners1368.IsEmpty()&&WheelCanonicalRows1368==WheelRows1368
+   &&Bytes.IsEmpty()&&WheelRaw1368.IsEmpty()&&WheelCanonical1368.IsEmpty();
+  Swap(ConsumedWheel1368->RawDebris,WheelRaw1368);Swap(ConsumedWheel1368->CanonicalDebris,WheelCanonical1368);
+  ConsumedWheel1368->bWriterOpen=false;
+ }
+#endif
+ ActiveSolveWitness=Previous;
+}
 bool FFrameSolveWitnessScope::IsActive() { return ActiveSolveWitness!=nullptr; }
 void FFrameSolveWitnessScope::Record(uint64 InFrame,int32 Iteration,int32 Order,
     uint64 ActorStableId,int32 ResolverIndex,uint64 PairKey,const SHitResult& Hit,
@@ -23,6 +59,7 @@ void FFrameSolveWitnessScope::Record(uint64 InFrame,int32 Iteration,int32 Order,
 {
     auto* Scope=ActiveSolveWitness;if(!Scope)return;
 #if WITH_DEV_AUTOMATION_TESTS
+ if(Scope->ConsumedWheel1368){Scope->PointerCapture.RejectRecordAfterConsume1456();Scope->bOverflow=true;return;}
  if(Scope->PointerCapture.RejectRecordAfterConsume1456()){Scope->bOverflow=true;return;}
 #endif
     if(InFrame!=Scope->Frame || Scope->Rows>=Scope->Limit)
@@ -87,6 +124,7 @@ uint64 FFrameSolveWitnessScope::BeginDynamicPass(uint64 InFrame,EFrameDynamicCon
 {
  auto* S=ActiveSolveWitness;if(!S)return 0;
 #if WITH_DEV_AUTOMATION_TESTS
+ if(S->ConsumedWheel1368){S->PointerCapture.RejectRecordAfterConsume1456();S->bOverflow=true;return 0;}
  if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return 0;}
 #endif
  if(InFrame!=S->Frame || S->Rows>=S->Limit || S->NextDynamicPass==MAX_uint64)
@@ -107,6 +145,7 @@ void FFrameSolveWitnessScope::EndDynamicPass(uint64 Pass,int32 PairCount) noexce
 {
  auto* S=ActiveSolveWitness;if(!S)return;
 #if WITH_DEV_AUTOMATION_TESTS
+ if(S->ConsumedWheel1368){S->PointerCapture.RejectRecordAfterConsume1456();S->bOverflow=true;return;}
  if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return;}
 #endif
  if(!Pass || S->OpenDynamicPasses.IsEmpty() || S->OpenDynamicPasses.Last().Id!=Pass)
@@ -124,6 +163,7 @@ void FFrameSolveWitnessScope::RecordDynamicEvent(uint64 Pass,EFrameDynamicContac
 {
  auto* S=ActiveSolveWitness;if(!S)return;
 #if WITH_DEV_AUTOMATION_TESTS
+ if(S->ConsumedWheel1368){S->PointerCapture.RejectRecordAfterConsume1456();S->bOverflow=true;return;}
  if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return;}
 #endif
  if(!Pass || S->OpenDynamicPasses.IsEmpty() || S->OpenDynamicPasses.Last().Id!=Pass || S->Rows>=S->Limit)
@@ -160,6 +200,7 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
 {
  auto* Scope=ActiveSolveWitness;if(!Scope||!Scope->bCaptureWheelManifold1368)return;
 #if WITH_DEV_AUTOMATION_TESTS
+ if(Scope->ConsumedWheel1368){Scope->PointerCapture.RejectRecordAfterConsume1456();Scope->bOverflow=true;return;}
  if(Scope->PointerCapture.RejectRecordAfterConsume1456()){Scope->bOverflow=true;return;}
 #endif
  const auto Numeric=CaptureFrameFloatingPointContext();FScopedFrameFloatingPointContext Guard(Numeric);
