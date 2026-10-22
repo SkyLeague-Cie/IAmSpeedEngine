@@ -120,6 +120,9 @@ private:
     TArray<const ISpeedComponent*,TInlineAllocator<4>> OpenWheelOwners1368;
     bool bCaptureWheelManifold1368=false;int32 WheelCanonicalRows1368=0;
     TArray<uint8> WheelRaw1368,WheelCanonical1368;
+    // A row owns no data after append/canonicalization. Keep only its raw
+    // capacity for the next event; canonical and pointer scopes stay distinct.
+    TArray<uint8> WheelRowRawScratch1368;
     bool bOverflow=false;
 #if WITH_DEV_AUTOMATION_TESTS
     bool bRowBoundaries1534=false;TArray<int32> RawRowBoundaries1534;

@@ -162,7 +162,8 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  {Scope->bOverflow=true;return;}
  // A separate pointer capture owns this row. Main/dynamic bytes and sequence
  // are not touched. No additional component/vehicle kinematic getter is called.
- TArray<uint8> Raw,Canonical;FFramePointerCaptureScope Pointers(Raw,Scope->WheelRegistry1368);
+ auto& Raw=Scope->WheelRowRawScratch1368;Raw.Reset();
+ TArray<uint8> Canonical;FFramePointerCaptureScope Pointers(Raw,Scope->WheelRegistry1368);
  using W=FEpisodeStateBytesForTesting;
  W::Add(Raw,uint32(3));W::Add(Raw,Scope->Frame);W::Add(Raw,Scope->WheelRows1368++);
  W::Add(Raw,Scope->Rows);W::Add(Raw,Event);W::Add(Raw,Owner);
