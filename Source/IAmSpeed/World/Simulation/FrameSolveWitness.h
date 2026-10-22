@@ -158,9 +158,9 @@ private:
     TArray<const ISpeedComponent*,TInlineAllocator<4>> OpenWheelOwners1368;
     bool bCaptureWheelManifold1368=false;int32 WheelCanonicalRows1368=0;
     TArray<uint8> WheelRaw1368,WheelCanonical1368;
-    // A row owns no data after append/canonicalization. Keep only its raw
-    // capacity for the next event; canonical and pointer scopes stay distinct.
-    TArray<uint8> WheelRowRawScratch1368;
+    // Per-scope row storage; the explicit transactional scratch API swaps the
+    // two canonical buffers only after complete validation and encoding.
+    TArray<uint8> WheelRowRawScratch1368,WheelRowCanonicalScratch1368,WheelRowCanonicalBuildScratch1368;
 #if WITH_DEV_AUTOMATION_TESTS
     FWheelWitnessSnapshot1368* ConsumedWheel1368=nullptr;
 #endif

@@ -219,7 +219,8 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  // A separate pointer capture owns this row. Main/dynamic bytes and sequence
  // are not touched. No additional component/vehicle kinematic getter is called.
  auto& Raw=Scope->WheelRowRawScratch1368;Raw.Reset();
- TArray<uint8> Canonical;FFramePointerCaptureScope Pointers(Raw,Scope->WheelRegistry1368);
+ auto& Canonical=Scope->WheelRowCanonicalScratch1368;Canonical.Reset();
+ FFramePointerCaptureScope Pointers(Raw,Scope->WheelRegistry1368);
  using W=FEpisodeStateBytesForTesting;
  W::Add(Raw,uint32(3));W::Add(Raw,Scope->Frame);W::Add(Raw,Scope->WheelRows1368++);
  W::Add(Raw,Scope->Rows);W::Add(Raw,Event);W::Add(Raw,Owner);
@@ -237,7 +238,7 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  W::Add(Raw,DoubleScalars.Num());for(const auto V:DoubleScalars)W::Add(Raw,V);
  W::Add(Raw,Vectors.Num());for(const auto& V:Vectors)W::Add(Raw,V);
  W::Add(Scope->WheelRaw1368,uint32(0x334d5749));W::Add(Scope->WheelRaw1368,uint32(Raw.Num()));Scope->WheelRaw1368.Append(Raw);
- if(!Scope->bOverflow&&Pointers.MakeCanonical(Canonical))
+ if(!Scope->bOverflow&&Pointers.MakeCanonicalWithScratch1368(Canonical,Scope->WheelRowCanonicalBuildScratch1368))
  {
   W::Add(Scope->WheelCanonical1368,uint32(0x334d5749));W::Add(Scope->WheelCanonical1368,uint32(Canonical.Num()));Scope->WheelCanonical1368.Append(Canonical);
   ++Scope->WheelCanonicalRows1368;

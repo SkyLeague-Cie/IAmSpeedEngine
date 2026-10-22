@@ -92,6 +92,11 @@ public:
     // In that case Canonical is left untouched and Raw remains available.
     bool MakeCanonical(TArray<uint8>& Canonical) const;
 #if WITH_DEV_AUTOMATION_TESTS
+    // Explicit test witness path only. Canonical must be empty; all three
+    // arrays must be distinct. Failure preserves Canonical and raw Target,
+    // while BuildScratch may retain uncertified partial bytes. Only success
+    // swaps a complete build into Canonical, retaining both buffer capacities.
+    bool MakeCanonicalWithScratch1368(TArray<uint8>& Canonical,TArray<uint8>& BuildScratch) const;
     // Copies immutable values only. Success means captured, not yet canonical:
     // the same byte/token validation still runs in the deferred MakeCanonical.
     bool CaptureCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out) const;

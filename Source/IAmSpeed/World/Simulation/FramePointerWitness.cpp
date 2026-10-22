@@ -149,10 +149,13 @@ namespace
 bool MakeCapturedPointerCanonical1456(const TArray<uint8>& Target,
     const TArray<FFramePointerObservation>& Events,bool bValidSealed1456,
     bool bUnknown1456,bool bOverflow1456,TArray<uint8>& Canonical,
-    TConstArrayView<int32> RawBoundaries={},TArray<int32>* ProjectedBoundaries=nullptr)
+    TConstArrayView<int32> RawBoundaries={},TArray<int32>* ProjectedBoundaries=nullptr,
+    TArray<uint8>* BuildScratch1368=nullptr)
 {
+    if(BuildScratch1368)BuildScratch1368->Reset();
     if (!bValidSealed1456 || bUnknown1456 || bOverflow1456) return false;
-    TArray<uint8> Out;
+    TArray<uint8> LocalOut;
+    TArray<uint8>& Out=BuildScratch1368?*BuildScratch1368:LocalOut;
     int32 Next=0,BoundaryIndex=0;TArray<int32> Mapped;
     if(ProjectedBoundaries)
     {
@@ -184,7 +187,8 @@ bool MakeCapturedPointerCanonical1456(const TArray<uint8>& Target,
     }
     if(ProjectedBoundaries)while(BoundaryIndex<RawBoundaries.Num())Mapped.Add(Out.Num()+RawBoundaries[BoundaryIndex++]-Next);
     if(Target.Num()>Next)Out.Append(Target.GetData()+Next,Target.Num()-Next);
-    Canonical=MoveTemp(Out);if(ProjectedBoundaries)*ProjectedBoundaries=MoveTemp(Mapped);return true;
+    if(BuildScratch1368)Swap(Canonical,Out);else Canonical=MoveTemp(Out);
+    if(ProjectedBoundaries)*ProjectedBoundaries=MoveTemp(Mapped);return true;
 }
 }
 bool FFramePointerCaptureScope::MakeCanonical(TArray<uint8>& Canonical) const
@@ -195,6 +199,11 @@ bool FFramePointerCaptureScope::MakeCanonical(TArray<uint8>& Canonical) const
     return MakeCapturedPointerCanonical1456(Target,Events,Identities.IsValidSealed(),bUnknown,bOverflow,Canonical);
 }
 #if WITH_DEV_AUTOMATION_TESTS
+bool FFramePointerCaptureScope::MakeCanonicalWithScratch1368(TArray<uint8>& Canonical,TArray<uint8>& BuildScratch) const
+{
+ if(bConsumed1456||!Canonical.IsEmpty()||&Canonical==&BuildScratch||&Canonical==&Target||&BuildScratch==&Target)return false;
+ return MakeCapturedPointerCanonical1456(Target,Events,Identities.IsValidSealed(),bUnknown,bOverflow,Canonical,{},nullptr,&BuildScratch);
+}
 bool FFramePointerCaptureScope::MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const
 {
  if(bConsumed1456)return false;

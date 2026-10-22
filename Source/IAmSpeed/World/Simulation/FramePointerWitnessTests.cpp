@@ -200,6 +200,9 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
             TestTrue(TEXT("premature destination untouched"),Premature==TArray<uint8>{99});
             TestFalse(TEXT("double consume refuses without replacing first snapshot"),Scope.ConsumeCanonicalSnapshot1456(Second));
             TestFalse(TEXT("copy from consumed source cannot produce empty certificate"),Scope.CaptureCanonicalSnapshot1456(Second));
+            TArray<uint8> ScratchOut,ScratchBuild{77};
+            TestFalse(TEXT("consumed source cannot use explicit scratch projector"),Scope.MakeCanonicalWithScratch1368(ScratchOut,ScratchBuild));
+            TestTrue(TEXT("consumed refusal preserves scratch destination and build"),ScratchOut.IsEmpty()&&ScratchBuild==TArray<uint8>{77});
             {
                 TArray<uint8> Inner;FFramePointerCaptureScope Nested(Inner,Registry);
                 FEpisodeStateBytesForTesting::Add(Inner,Prefix);FEpisodeStateBytesForTesting::Add(Inner,&Object);
@@ -428,6 +431,70 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
     };
     TArray<float> LargeWheelValues1368;for(int32 I=0;I<32;++I)LargeWheelValues1368.Add(float(I)-17.5f);
     const float SmallWheelValues1368[]={-0.0f};
+    // Opt-in two-buffer projection uses the same independent scalar/key oracle.
+    // Warm both arrays at the largest row before checking storage reuse; this
+    // is a buffer invariant, not an allocation-free or cadence assertion.
+    {
+        TArray<uint8> Canonical,Build;
+        const uint8* WarmA=nullptr;const uint8* WarmB=nullptr;int32 WarmCapacity=0;
+        const int32 Sizes[]={32,32,32,1,-1,32,1,-1};
+        for(int32 Pass=0;Pass<int32(UE_ARRAY_COUNT(Sizes));++Pass)
+        {
+            TArray<uint8> Source,Expected,Legacy;
+            FFramePointerCaptureScope Scope(Source,Registry);
+            if(Sizes[Pass]>=0)
+            {
+                FEpisodeStateBytesForTesting::Add(Source,&Object);
+                FEpisodeStateBytesForTesting::Add(Source,Sizes[Pass]);
+                Scalar(Expected,Key.Domain);Scalar(Expected,Key.Owner);Scalar(Expected,Key.Generation);
+                Scalar(Expected,Key.Role);Scalar(Expected,Key.Element);Scalar(Expected,uint32(0));Scalar(Expected,Sizes[Pass]);
+                for(int32 N=0;N<Sizes[Pass];++N)
+                {
+                    const float Value=Sizes[Pass]==1?-0.0f:float(N)-17.5f;
+                    FEpisodeStateBytesForTesting::Add(Source,Value);Scalar(Expected,Value);
+                }
+            }
+            const TArray<uint8> Original=Source;
+            TestTrue(TEXT("scratch control uses unchanged legacy API"),Scope.MakeCanonical(Legacy));
+            Canonical.Reset();
+            TestTrue(TEXT("explicit scratch projection accepts large small and empty rows"),Scope.MakeCanonicalWithScratch1368(Canonical,Build));
+            TestTrue(TEXT("scratch and legacy match independent bytes including signed zero"),Canonical==Expected&&Legacy==Expected&&Source==Original);
+            if(Pass==1){WarmA=Canonical.GetData();WarmB=Build.GetData();WarmCapacity=Canonical.Max();}
+            if(Pass>=2)
+            {
+                TestTrue(TEXT("both warmed canonical allocations remain owned and alternate"),
+                    (Canonical.GetData()==WarmA&&Build.GetData()==WarmB)||(Canonical.GetData()==WarmB&&Build.GetData()==WarmA));
+                TestTrue(TEXT("short and empty canonical rows retain warmed capacities"),Canonical.Max()==WarmCapacity&&Build.Max()==WarmCapacity);
+            }
+        }
+    }
+    {
+        TArray<uint8> Source,Sentinel{99},Build{88},Empty;
+        FFramePointerCaptureScope Scope(Source,Registry);FEpisodeStateBytesForTesting::Add(Source,&Object);
+        const TArray<uint8> Original=Source;
+        TestFalse(TEXT("scratch nonempty output refuses transactionally"),Scope.MakeCanonicalWithScratch1368(Sentinel,Build));
+        TestTrue(TEXT("refusal preserves output build and raw"),Sentinel==TArray<uint8>{99}&&Build==TArray<uint8>{88}&&Source==Original);
+        TestFalse(TEXT("scratch output and build must not alias"),Scope.MakeCanonicalWithScratch1368(Empty,Empty));
+        TestFalse(TEXT("scratch build cannot alias retained raw"),Scope.MakeCanonicalWithScratch1368(Empty,Source));
+        TestFalse(TEXT("scratch output cannot alias retained raw"),Scope.MakeCanonicalWithScratch1368(Source,Build));
+        TestTrue(TEXT("alias refusals leave every byte intact"),Source==Original&&Empty.IsEmpty()&&Build==TArray<uint8>{88});
+    }
+    for(int32 Failure=0;Failure<4;++Failure)
+    {
+        TArray<uint8> Source,Sentinel{99},Build{88};
+        FFramePointerCaptureScope Scope(Source,Registry,Failure==1?1:16);
+        FEpisodeStateBytesForTesting::Add(Source,Failure==0?&Unknown:&Object);
+        if(Failure==1)FEpisodeStateBytesForTesting::Add(Source,&Object);
+        if(Failure==2)Source[0]^=1;
+        if(Failure==3){FEpisodeStateBytesForTesting::Add(Source,&Object);Source[int32(sizeof(UPTRINT))]^=1;}
+        const TArray<uint8> Original=Source;
+        TestFalse(TEXT("scratch UNKNOWN overflow and raw drift preserve sentinel output"),Scope.MakeCanonicalWithScratch1368(Sentinel,Build));
+        TestTrue(TEXT("failed sentinel transaction preserves exact evidence"),Sentinel==TArray<uint8>{99}&&Build==TArray<uint8>{88}&&Source==Original);
+        Sentinel.Reset();
+        TestFalse(TEXT("scratch validation rejects invalid source even with empty destination"),Scope.MakeCanonicalWithScratch1368(Sentinel,Build));
+        TestTrue(TEXT("partial scratch is not promoted to canonical evidence"),Sentinel.IsEmpty()&&Source==Original);
+        if(Failure==3)TestFalse(TEXT("failure after a valid first token retains uncertified partial scratch only"),Build.IsEmpty());
+    }
     for(uint64 FrameNumber1368=0;FrameNumber1368<2;++FrameNumber1368)
     {
         FWheelWitnessSnapshot1368 Snapshot1368;TArray<uint8> Main,ControlRaw,ControlCanonical,ExpectedWheelRaw,ExpectedWheelCanonical;
