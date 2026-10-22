@@ -94,6 +94,8 @@ public:
 	virtual bool TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const { return false; }
 	/** A genuine later arrival may revisit a pair already resolved in this frame. */
 	virtual bool CanResolveRepeatedContact(const SHitResult& Hit) const { return false; }
+	// Separate from positive-time repeat eligibility: seed only a resolved exact initial contact.
+	virtual bool CanInitializeRepeatedContact(const SHitResult& Hit) const { return false; }
 	/** Keeps canonical pose precision while a native exact contact is being solved. */
 	virtual bool RequiresUnquantizedContactPose() const { return false; }
 	/** A canonical rounding operation is not a physical sweep. Shapes can reject

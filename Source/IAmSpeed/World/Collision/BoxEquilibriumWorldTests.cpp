@@ -5,6 +5,7 @@
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "Components/BoxComponent.h"
 #include "Engine/World.h"
@@ -251,6 +252,50 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
 	Floor->SetCollisionObjectType(ECC_WorldStatic);
 	Floor->SetCollisionResponseToAllChannels(ECR_Block);
 	Bridge->AnalyticSourceComponents.Add(1, Floor);
+    // A real late-drop state reproduces a resolved vertex at time zero,
+    // another arriving vertex, then a positive-time return of the first one.
+    // Observe actual World dispatch, not a duplicate call to the pair helper.
+    if (SelectedCell.IsEmpty())
+    {
+        AActor* ReturnActor = World->SpawnActor<AActor>();
+        FBoxLawBody Body(*ReturnActor);
+        Body.State.Location = FVector(11.149403915201553,4.856227467809191,20.003513503819136);
+        Body.State.Rotation = FQuat(-0.99999812033462188,-0.0019385609136272487,-5.5043970713212138e-6,-3.5756242132778936e-5);
+        Body.State.Velocity = FVector(.69425621613199984,.11150737165457771,-1.8660927358541797);
+        Body.State.AngularVelocity = FVector(.00063574231657515066,.030601447411696948,.002065092988575479);
+        Body.State.Acceleration = Body.GetNominalGravityAcceleration();
+        Body.PreviousRotation = Body.State.Rotation;Body.UpdateSubBodiesKinematics();
+        Bridge->AddComponent(Body);
+        ON_SCOPE_EXIT { Bridge->RemoveComponent(Body);ReturnActor->Destroy(); };
+        struct FReturnDispatchTrace
+        {
+            const USpeedWorldSubsystem* ExpectedWorld=nullptr;const UBoxSubBody* Box=nullptr;
+            struct FEvent { int32 Corner=-1;float TOI=0,TimePassed=0; };
+            FEvent Events[24];int32 Count=0;bool Overflow=false;
+            static void Observe(void* O,const Speed::Testing::FCcdPoseAuditSample& Sample) noexcept
+            {
+                auto& Trace=*static_cast<FReturnDispatchTrace*>(O);
+                if(Sample.World!=Trace.ExpectedWorld||Sample.Stage!=Speed::Testing::ECcdPoseAuditStage::BeforeResolve)return;
+                if(Trace.Count>=24){Trace.Overflow=true;return;}
+                const auto& Hit=Trace.Box->GetHit();auto& E=Trace.Events[Trace.Count++];
+                E.Corner=Hit.ContactFeatureIndexThis;E.TOI=Hit.TOI;E.TimePassed=Sample.TimePassed;
+            }
+        } Trace;
+        Trace.ExpectedWorld=Bridge;Trace.Box=Body.Box;
+        if(!TestTrue(TEXT("exact return dispatch observer installs without replacing a reader"),
+            Speed::Testing::SetCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace)))return false;
+        bool ObserverInstalled=true;
+        ON_SCOPE_EXIT { if(ObserverInstalled)Speed::Testing::ClearCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace); };
+        const FCanonicalFrameContext Context(0);Bridge->PrepareCanonicalFrame(Context);
+        Bridge->Step(Context.PhysicalDeltaTime,Context.SimTime,0);
+        const bool ObserverCleared=Speed::Testing::ClearCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace);ObserverInstalled=false;
+        if(!TestTrue(TEXT("exact return dispatch observer closes"),ObserverCleared))return false;
+        for(int32 Index=0;Index<Trace.Count;++Index)AddInfo(FString::Printf(TEXT("[ExactInitialReturnDispatch] Index=%d Vertex=%d TOI=%.17g TimePassed=%.17g"),Index,Trace.Events[Index].Corner,double(Trace.Events[Index].TOI),double(Trace.Events[Index].TimePassed)));
+        if(!TestTrue(TEXT("exact initial event followed by two real positive arrivals is dispatched"),!Trace.Overflow&&Trace.Count>=3))return false;
+        TestTrue(TEXT("first actual resolution is initial vertex time zero"),Trace.Events[0].Corner>=0&&Trace.Events[0].TOI==0&&Trace.Events[0].TimePassed==0);
+        TestTrue(TEXT("second actual resolution is another positive-time vertex"),Trace.Events[1].Corner!=Trace.Events[0].Corner&&Trace.Events[1].TOI>0);
+        TestTrue(TEXT("initial vertex can genuinely return after the second event"),Trace.Events[2].Corner==Trace.Events[0].Corner&&Trace.Events[2].TOI>0&&Trace.Events[2].TimePassed>Trace.Events[1].TimePassed&&Trace.Events[2].TimePassed<Context.PhysicalDeltaTime);
+    }
 	// Regression at the actual Box -> owner integration boundary, rather than
 	// another call to the stand-alone reaction helper. Only INITIAL geometry is
 	// authored here. All measured reactions use a fresh finite provider witness.

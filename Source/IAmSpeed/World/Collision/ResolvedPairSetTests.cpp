@@ -46,6 +46,30 @@ bool FIAmSpeedResolvedPairSetTest::RunTest(const FString& Parameters)
 			TestFalse(TEXT("nonpositive TOI is excluded"),
 				Speed::Collision::IsEligibleExactStaticRepeatHit(Invalid));
 		}
+        SHitResult InitialExact = Eligible;InitialExact.TOI = 0;
+        TestTrue(TEXT("exact time-zero event qualifies only for initial bookkeeping"), Speed::Collision::IsEligibleExactStaticInitialHit(InitialExact));
+        TestFalse(TEXT("initial zero event never becomes repeat-query eligible"), Speed::Collision::IsEligibleExactStaticRepeatHit(InitialExact));
+        TestFalse(TEXT("positive repeat is not an initial event"), Speed::Collision::IsEligibleExactStaticInitialHit(Eligible));
+        Speed::Collision::FResolvedPairSet InitiallyResolved;
+        InitiallyResolved.RecordEligibleResolution(103); // Actual qualified initial resolution, unlike Add.
+        TestEqual(TEXT("qualified initial contact seeds generation one"),InitiallyResolved.GetGeneration(103),uint8(1));
+        TestTrue(TEXT("later certified positive return can reacquire initial identity"),InitiallyResolved.CanResolve(103,Speed::Collision::IsEligibleExactStaticRepeatHit(Eligible)));
+        TestFalse(TEXT("zero-time rediscovery remains rejected even after initialization"),InitiallyResolved.CanResolve(103,Speed::Collision::IsEligibleExactStaticRepeatHit(InitialExact)));
+        InitiallyResolved.RecordEligibleResolution(103);
+        TestFalse(TEXT("initial plus one positive return saturates existing generation budget"),InitiallyResolved.CanResolve(103,true));
+        for(int32 InvalidCase=0;InvalidCase<8;++InvalidCase)
+        {
+            SHitResult InvalidInitial=InitialExact;
+            if(InvalidCase==0)InvalidInitial.TOI=-.001f;
+            if(InvalidCase==1)InvalidInitial.bSurfaceNormalMayVary=true;
+            if(InvalidCase==2)InvalidInitial.GeometricErrorBoundCm=.001f;
+            if(InvalidCase==3)InvalidInitial.bStartPenetrating=true;
+            if(InvalidCase==4)InvalidInitial.PenetrationDepth=.001f;
+            if(InvalidCase==5)InvalidInitial.SourceId=0;
+            if(InvalidCase==6)InvalidInitial.SurfaceId=0;
+            if(InvalidCase==7)InvalidInitial.ContactFeatureOther=Speed::EContactFeatureKind::Edge;
+            TestFalse(TEXT("ineligible initial geometry/time cannot seed exact reacquisition"),Speed::Collision::IsEligibleExactStaticInitialHit(InvalidInitial));
+        }
 		SHitResult Penetrating = Eligible;
 		Penetrating.bStartPenetrating = true;
 		Penetrating.PenetrationDepth = .001f;

@@ -2276,9 +2276,14 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			LastStepDiagnostics.ResolveMilliseconds +=
 				(FPlatformTime::Seconds() - ResolveStartSeconds) * 1000.0;
 			++LastStepDiagnostics.ResolvedEventCount;
+            // A resolved exact time-zero vertex is an initial event, not a
+            // repeat. Seed its identity only now, so a later positive return
+            // can use the existing one-reacquisition generation budget.
+            const bool bRecordExactGeneration = !bIgnored &&
+                (bEligibleExactReacquisition || Resolver->CanInitializeRepeatedContact(Hit.Hit));
 			if (Hit.Hit.SurfaceId != 0)
 			{
-				if (!bIgnored && bEligibleExactReacquisition)
+				if (bRecordExactGeneration)
 				{
 					ResolvedPairs.RecordEligibleResolution(Hit.PairKey);
 				}
@@ -2289,7 +2294,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			}
 #if !UE_BUILD_SHIPPING
 			const int32 GenerationAfter = ResolvedPairs.GetGeneration(Hit.PairKey);
-			const int32 GenerationBefore = bEligibleExactReacquisition && !bIgnored
+			const int32 GenerationBefore = bRecordExactGeneration
 				? FMath::Max(0, GenerationAfter - 1) : GenerationAfter;
 			TraceEvent(TEXT("ResolveResult"), bIgnored ? TEXT("Ignored") : TEXT("Resolved"),
 				Iter, HitIndex, Hit.PairKey, Hit.Hit, Resolver,

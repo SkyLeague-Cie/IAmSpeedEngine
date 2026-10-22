@@ -11,15 +11,27 @@ class FIAmSpeedResolvedPairSetTest;
 namespace Speed::Collision
 {
 
-/** Threshold-free structural eligibility; generation is tracked separately. */
-inline bool IsEligibleExactStaticRepeatHit(const SHitResult& Hit)
+/** Shared exact identity checks; no temporal admissibility is implied here. */
+inline bool IsExactStaticVertexFaceIdentity(const SHitResult& Hit)
 {
-	return Hit.TOI > 0 && Hit.SourceId != 0 && Hit.SurfaceId != 0 &&
+	return Hit.SourceId != 0 && Hit.SurfaceId != 0 &&
 		!Hit.bSurfaceNormalMayVary && Hit.GeometricErrorBoundCm == 0 &&
 		Hit.ContactFeatureThis == EContactFeatureKind::Vertex &&
 		Hit.ContactFeatureIndexThis >= 0 && Hit.ContactFeatureIndexThis < 8 &&
 		Hit.ContactFeatureOther == EContactFeatureKind::Face &&
 		!Hit.bStartPenetrating && Hit.PenetrationDepth <= 0;
+}
+
+/** Repeat events still require strictly positive physical time. */
+inline bool IsEligibleExactStaticRepeatHit(const SHitResult& Hit)
+{
+	return Hit.TOI > 0 && IsExactStaticVertexFaceIdentity(Hit);
+}
+
+/** Seed after a real nonignored initial resolution, never for a repeat query. */
+inline bool IsEligibleExactStaticInitialHit(const SHitResult& Hit)
+{
+	return Hit.TOI == 0 && IsExactStaticVertexFaceIdentity(Hit);
 }
 
 /** Frame-local membership only; canonical collision order never comes from this set. */
@@ -50,7 +62,7 @@ public:
 		Pairs.Add(PairKey);
 	}
 
-	/** Call only after an eligible, positive-TOI, non-ignored resolution executed. */
+	/** Call only after a nonignored positive repeat or qualified exact initial resolution actually executed. */
 	void RecordEligibleResolution(const uint64 PairKey)
 	{
 		Add(PairKey);

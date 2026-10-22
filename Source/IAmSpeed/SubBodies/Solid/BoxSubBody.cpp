@@ -4159,6 +4159,13 @@ bool UBoxSubBody::CanResolveRepeatedContact(const SHitResult& Hit) const
         Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
 }
 
+bool UBoxSubBody::CanInitializeRepeatedContact(const SHitResult& Hit) const
+{
+    return ParentComponent && ParentComponent->GetStaticCollisionWorldForFrame() &&
+        Speed::Collision::IsEligibleExactStaticInitialHit(Hit) && Hit.Component.IsValid() &&
+        Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
+}
+
 bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const
 {
     Linear = Angular = FVector::ZeroVector;
