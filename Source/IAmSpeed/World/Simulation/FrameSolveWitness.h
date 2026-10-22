@@ -83,6 +83,18 @@ public:
         return !bOverflow&&!bRowBoundaries1534&&OpenDynamicPasses.IsEmpty()&&OpenWheelOwners1368.IsEmpty()
             &&PointerCapture.ConsumeCanonicalSnapshot1456(Out);
     }
+    // The row-framed path retains its exact raw starts plus original stream
+    // end before ownership moves. The same deferred token/boundary projector
+    // still validates all canonical bytes; no row capture is disabled.
+    bool SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(FFramePointerCanonicalSnapshot1456& Out,TArray<int32>& RawBoundaries)
+    {
+        if(!bRowBoundaries1534||bOverflow||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()||RawRowBoundaries1534.Num()!=Rows)return false;
+        const int32 RawEnd=Bytes.Num();int32 Previous=-1;
+        for(const int32 B:RawRowBoundaries1534){if(B<Previous||B<0||B>RawEnd)return false;Previous=B;}
+        TArray<int32> CapturedBounds=RawRowBoundaries1534;CapturedBounds.Add(RawEnd);
+        if(!PointerCapture.ConsumeCanonicalSnapshot1456(Out))return false;
+        RawBoundaries=MoveTemp(CapturedBounds);return true;
+    }
     // Explicit opt-in only. Legacy main/dynamic streams remain schemas1/2.
     bool EnableWheelManifoldCapture1368() noexcept
     {

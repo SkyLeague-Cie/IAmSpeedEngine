@@ -141,6 +141,8 @@ struct FEightCarCapturedRow1534
 {
  TArray<uint8> Snapshot,ObservedStates,RawObservedStates,Inputs,OrderedSolve,RawOrderedSolve,CameraPose,CameraCheckpoint,PrepareDeltas,RawWheelManifold,WheelManifold;
  TArray<uint8> NumericContext1534;
+ // Only populated on illegal post-seal writes; normal evidence pack bytes stay unchanged.
+ TArray<uint8> RawContactAfterSealDebris1534,RawStateAfterSealDebris1534;
  Speed::FFramePointerCanonicalSnapshot1456 DeferredStates1534,DeferredContacts1534;TArray<int32> RawStateBounds1534,RawContactBounds1534;
  FSimulationSnapshot CameraOracleSnapshot1534;Speed::FFrameFloatingPointContext CameraOracleNumeric1534;TArray<uint64> CameraOraclePolls1534;
  TArray<FEightCarField1534> InputFields1534,StateFields1534;TArray<int32> ContactBounds1534;
@@ -624,7 +626,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    Row.MainContacts=Ordered.NumMainRows();Row.WheelManifoldRows=Ordered.NumWheelManifoldRows1368();
    Row.RawWheelManifold=Ordered.RawWheelManifold1368();
    if(!Ordered.MakeWheelManifoldCanonical1368(Row.WheelManifold)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
-   if(!Ordered.CaptureCanonicalSnapshotWithRowBoundaries1534(Row.DeferredContacts1534,Row.RawContactBounds1534))
+   if(!Ordered.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Row.DeferredContacts1534,Row.RawContactBounds1534))
    {
     PointerFailure=FString::Printf(TEXT("Solve N=%llu Overflow=%d Unknown=%d OpenPasses=%d\nOffset\tRaw\tKnown\tObjectId\tPair\tSolverPair\tProvider\tFeatureSalt\n"),N,Ordered.HasOverflow()?1:0,Ordered.HasUnknownPointer()?1:0,Ordered.OpenDynamicPassCount());
     for(const auto& E:Ordered.PointerObservations())PointerFailure+=FString::Printf(TEXT("%d\t%llu\t%d\t%d\t%d\t%d\t%llu\t%llu\n"),E.Offset,uint64(E.RawAddress),E.bKnown?1:0,E.bObjectId?1:0,E.bPairToken?1:0,E.bSolverPairToken?1:0,E.PairProviderId,E.PairFeatureSalt);
@@ -771,7 +773,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    }
    Row.StateFields1534.Last().RawEnd=RawStates.Num();Row.InputFields1534.Last().End=Row.Inputs.Num();
    for(const auto& F:Row.StateFields1534)Row.RawStateBounds1534.Add(F.RawBegin);Row.RawStateBounds1534.Add(RawStates.Num());
-   if(!StatePointers.CaptureCanonicalSnapshot1456(Row.DeferredStates1534))
+   if(!StatePointers.ConsumeCanonicalSnapshot1456(Row.DeferredStates1534))
    {
     PointerFailure=FString::Printf(TEXT("N=%llu Overflow=%d Unknown=%d\nOffset\tAddress\tKnown\tObjectId\tPairToken\n"),N,StatePointers.HasOverflow()?1:0,StatePointers.HasUnknown()?1:0);
     for(const auto& E:StatePointers.Observations())PointerFailure+=FString::Printf(TEXT("%d\t%llu\t%d\t%d\t%d\n"),E.Offset,uint64(E.RawAddress),E.bKnown?1:0,E.bObjectId?1:0,E.bPairToken?1:0);
@@ -807,8 +809,31 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
   const double Deadline=FPlatformTime::Seconds()+60;
   while(Owner.IsRunning()&&FPlatformTime::Seconds()<Deadline)FPlatformProcess::SleepNoStats(.001f);
   const bool Finished=!Owner.IsRunning();Owner.StopAndJoin();
+  // Recover every captured raw stream after join, including successful
+  // earlier frames of a failed/incomplete run. Canonical validity is separate:
+  // UNKNOWN snapshots retain evidence, and non-consumed sources stay intact.
+  for(uint32 N=0;N<Frames;++N)
+  {
+   auto& R=Seen[N];
+   const auto RestoreRaw1534=[&](const FFramePointerCanonicalSnapshot1456& Captured,TArray<uint8>& Raw,TArray<uint8>& Debris)
+   {
+    auto Status=Captured.CopyRawForEvidenceAfterClosure1456(Raw);
+    if(Status==EFramePointerRawEvidenceCopy1456::DestinationNotEmpty)
+    {
+     // Keep both the exact captured bytes and illegal source writes. Never
+     // erase the latter or turn this misuse into a successful certificate.
+     Swap(Raw,Debris);Failed=true;R.bComplete=false;
+     PointerFailure+=FString::Printf(TEXT("Post-seal raw writes retained separately at N=%u\n"),N);
+     Status=Captured.CopyRawForEvidenceAfterClosure1456(Raw);
+    }
+    if(Status!=EFramePointerRawEvidenceCopy1456::Copied&&Status!=EFramePointerRawEvidenceCopy1456::NotCaptured)
+    {Failed=true;R.bComplete=false;PointerFailure+=FString::Printf(TEXT("Raw recovery unavailable after join at N=%u Status=%d\n"),N,int32(Status));}
+   };
+   RestoreRaw1534(R.DeferredContacts1534,R.RawOrderedSolve,R.RawContactAfterSealDebris1534);
+   RestoreRaw1534(R.DeferredStates1534,R.RawObservedStates,R.RawStateAfterSealDebris1534);
+  }
   // All raw bytes, semantic keys, field boundaries, camera inputs and poll
-  // counts were owned copies at N. No live physics getter runs in projection.
+  // counts were owned captures at N. No live physics getter runs in projection.
   if(Finished&&!Failed&&Steps==Frames)for(uint32 N=0;N<Frames;++N)
   {
    auto& R=Seen[N];TArray<int32> CanonicalBounds1534;
@@ -853,6 +878,12 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
   };
   if(!PointerFailure.IsEmpty())EvidenceSaved&=FFileHelper::SaveStringToFile(PointerFailure,*FPaths::Combine(CaseDir,TEXT("pointers.first-failure.tsv")),FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_NoReplaceExisting);
   EvidenceSaved&=SavePack(TEXT("contacts.raw.pack"),&FEightCarCapturedRow1534::RawOrderedSolve);
+  // Extra forensic streams exist only on detected misuse; normal pack set,
+  // framing, row count and payload bytes are unchanged.
+  bool ContactDebris1534=false,StateDebris1534=false;
+  for(const auto& R:Seen){ContactDebris1534|=!R.RawContactAfterSealDebris1534.IsEmpty();StateDebris1534|=!R.RawStateAfterSealDebris1534.IsEmpty();}
+  if(ContactDebris1534)EvidenceSaved&=SavePack(TEXT("contacts.after-seal-debris.raw.pack"),&FEightCarCapturedRow1534::RawContactAfterSealDebris1534);
+  if(StateDebris1534)EvidenceSaved&=SavePack(TEXT("states.after-seal-debris.raw.pack"),&FEightCarCapturedRow1534::RawStateAfterSealDebris1534);
   EvidenceSaved&=SavePack(TEXT("wheel-manifold.raw.pack"),&FEightCarCapturedRow1534::RawWheelManifold);
   EvidenceSaved&=SavePack(TEXT("wheel-manifold.canonical.pack"),&FEightCarCapturedRow1534::WheelManifold);
   EvidenceSaved&=SavePack(TEXT("contacts.canonical.pack"),&FEightCarCapturedRow1534::OrderedSolve);

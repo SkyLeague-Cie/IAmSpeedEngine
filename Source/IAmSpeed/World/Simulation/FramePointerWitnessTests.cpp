@@ -278,6 +278,133 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         }
         TArray<uint8> Out{99};TestFalse(TEXT("late physical record invalidates deferred snapshot"),Consumed.MakeCanonical(Out));
     }
+    // Raw recovery is explicitly separate from canonical validity. This is
+    // required when an incomplete multi-frame run still exports earlier frames.
+    {
+        FFramePointerCanonicalSnapshot1456 Consumed,UncapturedSnapshot;TArray<uint8> Source;
+        TArray<uint8> Sentinel{99};
+        TestTrue(TEXT("uncaptured raw recovery is explicit and non-mutating"),
+            UncapturedSnapshot.CopyRawForEvidenceAfterClosure1456(Sentinel)==EFramePointerRawEvidenceCopy1456::NotCaptured&&Sentinel==TArray<uint8>{99});
+        {
+            FFramePointerCaptureScope Scope(Source,Registry);
+            FEpisodeStateBytesForTesting::Add(Source,Prefix);FEpisodeStateBytesForTesting::Add(Source,&Object);
+            FEpisodeStateBytesForTesting::Add(Source,static_cast<int*>(nullptr));FEpisodeStateBytesForTesting::Add(Source,Suffix);
+            TestTrue(TEXT("boundary oracle stream consumes"),Scope.ConsumeCanonicalSnapshot1456(Consumed));
+            TestTrue(TEXT("raw recovery refuses an open writer without touching destination"),
+                Consumed.CopyRawForEvidenceAfterClosure1456(Sentinel)==EFramePointerRawEvidenceCopy1456::WriterScopeOpen&&Sentinel==TArray<uint8>{99});
+        }
+        TestTrue(TEXT("raw recovery refuses to overwrite unrelated bytes"),
+            Consumed.CopyRawForEvidenceAfterClosure1456(Sentinel)==EFramePointerRawEvidenceCopy1456::DestinationNotEmpty&&Sentinel==TArray<uint8>{99});
+        TArray<uint8> Recovered;
+        TestTrue(TEXT("closed captured raw is independently exact"),
+            Consumed.CopyRawForEvidenceAfterClosure1456(Recovered)==EFramePointerRawEvidenceCopy1456::Copied&&Recovered==ExpectedRaw);
+        const int32 PrefixEnd=sizeof(Prefix),FirstEnd=PrefixEnd+sizeof(UPTRINT),SecondEnd=FirstEnd+sizeof(UPTRINT);
+        const int32 CanonicalKeyBytes=(ExpectedCanonical.Num()-sizeof(Prefix)-sizeof(Suffix))/2;
+        const TArray<int32> RawBounds{0,PrefixEnd,PrefixEnd,FirstEnd,SecondEnd,ExpectedRaw.Num()};
+        const TArray<int32> ExpectedBounds{0,PrefixEnd,PrefixEnd,PrefixEnd+CanonicalKeyBytes,PrefixEnd+2*CanonicalKeyBytes,ExpectedCanonical.Num()};
+        TArray<uint8> Canonical;TArray<int32> Projected;
+        TestTrue(TEXT("duplicate boundaries and every complete token map exactly"),Consumed.MakeCanonicalWithBoundaries1534(Canonical,RawBounds,Projected));
+        TestTrue(TEXT("canonical bytes and field boundaries match independently assembled oracle"),Canonical==ExpectedCanonical&&Projected==ExpectedBounds);
+        for(const TArray<int32>& Bad:TArray<TArray<int32>>{{-1},{ExpectedRaw.Num()+1},{1,0},{PrefixEnd+1}})
+        {
+            TArray<uint8> Untouched{99};TArray<int32> UntouchedBounds{77};
+            TestFalse(TEXT("invalid or within-token boundary refuses"),Consumed.MakeCanonicalWithBoundaries1534(Untouched,Bad,UntouchedBounds));
+            TestTrue(TEXT("boundary failure cannot publish partial bytes or spans"),Untouched==TArray<uint8>{99}&&UntouchedBounds==TArray<int32>{77});
+        }
+    }
+    {
+        FFramePointerCanonicalSnapshot1456 Copy,Consumed;TArray<uint8> Source;TArray<int32> CopyBounds,ConsumeBounds{77};
+        {
+            FFrameSolveWitnessScope Solve(7,Source,Registry);
+            TestTrue(TEXT("row-boundary capture explicitly enabled"),Solve.EnableRowBoundaryCapture1534());
+            const uint64 Pass=FFrameSolveWitnessScope::BeginDynamicPass(7,EFrameDynamicContactPass::Persistent,1.f/300,0,false,false,0);
+            TestFalse(TEXT("open dynamic pass cannot consume row-framed stream"),Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Consumed,ConsumeBounds));
+            TestTrue(TEXT("failed consume leaves destination boundaries untouched"),ConsumeBounds==TArray<int32>{77});
+            FFrameSolveWitnessScope::EndDynamicPass(Pass,0);
+            FFrameSolveWitnessScope::Record(7,2,3,41,0,0,SHitResult{},false,0,1);
+            TestFalse(TEXT("1217 unframed API still refuses row-framed capture"),Solve.SealAndConsumeCanonicalSnapshot1456(Consumed));
+            TestTrue(TEXT("copy control retains schema1 and schema2 rows"),Solve.CaptureCanonicalSnapshotWithRowBoundaries1534(Copy,CopyBounds));
+            TestEqual(TEXT("copy boundaries include every row and terminator"),CopyBounds.Num(),Solve.NumRows()+1);
+            TestTrue(TEXT("dedicated transfer retains row-framed stream"),Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Consumed,ConsumeBounds));
+            TestTrue(TEXT("transferred exact raw and boundaries match unchanged capture"),Consumed.RawForEvidence1456()==Copy.RawForEvidence1456()&&ConsumeBounds==CopyBounds&&Source.IsEmpty());
+            FFramePointerCanonicalSnapshot1456 Second;TArray<int32> SecondBounds{77};
+            TestFalse(TEXT("row-framed transfer is one shot"),Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Second,SecondBounds));
+            TestTrue(TEXT("repeated transfer cannot replace either certificate or spans"),SecondBounds==TArray<int32>{77}&&Second.RawForEvidence1456().IsEmpty()&&Consumed.RawForEvidence1456()==Copy.RawForEvidence1456());
+            TArray<uint8> Premature{99};TArray<int32> Spans{77};
+            TestFalse(TEXT("row-framed projection also waits for writer closure"),Consumed.MakeCanonicalWithBoundaries1534(Premature,ConsumeBounds,Spans));
+            TestTrue(TEXT("open scope leaves row projection destinations untouched"),Premature==TArray<uint8>{99}&&Spans==TArray<int32>{77});
+        }
+        TArray<uint8> A,B,Recovered;TArray<int32> ABounds,BBounds;
+        TestTrue(TEXT("copy row projector succeeds after closure"),Copy.MakeCanonicalWithBoundaries1534(A,CopyBounds,ABounds));
+        TestTrue(TEXT("consumed row projector succeeds after closure"),Consumed.MakeCanonicalWithBoundaries1534(B,ConsumeBounds,BBounds));
+        TestTrue(TEXT("main/dynamic canonical bytes and all row spans retained"),A==B&&ABounds==BBounds);
+        TestTrue(TEXT("complete raw row pack recovers after closure"),Consumed.CopyRawForEvidenceAfterClosure1456(Recovered)==EFramePointerRawEvidenceCopy1456::Copied&&Recovered==Copy.RawForEvidence1456());
+    }
+    for(int32 Failure=0;Failure<2;++Failure)
+    {
+        FFramePointerCanonicalSnapshot1456 Destination;TArray<uint8> Source;TArray<int32> Bounds{77};
+        {
+            FFrameSolveWitnessScope Solve(8,Source,Registry,1);
+            TestTrue(TEXT("negative row transfer explicitly enables boundaries"),Solve.EnableRowBoundaryCapture1534());
+            if(Failure==0)FEpisodeStateBytesForTesting::Add(Source,&Unknown);
+            else
+            {
+                FFrameSolveWitnessScope::Record(8,0,0,41,0,0,SHitResult{},false,0,1);
+                FFrameSolveWitnessScope::Record(8,0,1,41,0,0,SHitResult{},false,0,1);
+            }
+            const TArray<uint8> Before=Source;
+            TestFalse(TEXT("unknown pointer or solve overflow refuses row transfer"),Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Destination,Bounds));
+            TestTrue(TEXT("rejected row transfer preserves raw and both output destinations"),Source==Before&&Destination.RawForEvidence1456().IsEmpty()&&Bounds==TArray<int32>{77});
+        }
+    }
+    {
+        // Simulate a failed second frame: recovery must not be hidden behind
+        // Finished && !Failed, and the unknown partial frame stays original.
+        FFramePointerCanonicalSnapshot1456 Captured[3];TArray<uint8> Sources[3];
+        {
+            FFramePointerCaptureScope First(Sources[0],Registry);FEpisodeStateBytesForTesting::Add(Sources[0],&Object);
+            TestTrue(TEXT("earlier successful frame consumes"),First.ConsumeCanonicalSnapshot1456(Captured[0]));
+        }
+        {
+            FFramePointerCaptureScope Partial(Sources[1],Registry);FEpisodeStateBytesForTesting::Add(Sources[1],&Unknown);
+            TestFalse(TEXT("unknown partial frame refuses consume without losing raw"),Partial.ConsumeCanonicalSnapshot1456(Captured[1]));
+        }
+        const TArray<uint8> PartialRaw=Sources[1];
+        TestTrue(TEXT("prior frame recovers although later frame failed"),Captured[0].CopyRawForEvidenceAfterClosure1456(Sources[0])==EFramePointerRawEvidenceCopy1456::Copied);
+        TestTrue(TEXT("non-consumed partial raw stays untouched"),Captured[1].CopyRawForEvidenceAfterClosure1456(Sources[1])==EFramePointerRawEvidenceCopy1456::NotCaptured&&Sources[1]==PartialRaw);
+        TArray<uint8> ActualPack,ExpectedPack,FirstRaw,SecondRaw;
+        Scalar(FirstRaw,reinterpret_cast<UPTRINT>(&Object));Scalar(SecondRaw,reinterpret_cast<UPTRINT>(&Unknown));
+        FEpisodeStateBytesForTesting::Add(ActualPack,uint32(0x31434149));FEpisodeStateBytesForTesting::Add(ActualPack,uint32(3));
+        Scalar(ExpectedPack,uint32(0x31434149));Scalar(ExpectedPack,uint32(3));
+        for(uint32 N=0;N<3;++N)
+        {
+            FEpisodeStateBytesForTesting::Add(ActualPack,uint64(N));FEpisodeStateBytesForTesting::Add(ActualPack,uint32(Sources[N].Num()));ActualPack.Append(Sources[N]);
+            const TArray<uint8>& Expected=N==0?FirstRaw:N==1?SecondRaw:Sources[2];
+            Scalar(ExpectedPack,uint64(N));Scalar(ExpectedPack,uint32(Expected.Num()));ExpectedPack.Append(Expected);
+        }
+        TestTrue(TEXT("failed-run pack preserves complete earlier raw and partial unknown bytes with exact framing"),ActualPack==ExpectedPack);
+    }
+    for(int32 Kind=0;Kind<2;++Kind)
+    {
+        FFramePointerCanonicalSnapshot1456 Consumed;TArray<uint8> Source,Original,Debris;
+        {
+            FFramePointerCaptureScope Scope(Source,Registry);FEpisodeStateBytesForTesting::Add(Source,&Object);Original=Source;
+            if(Kind==0)Source[0]^=1; // Original projector must still reject raw drift.
+            Original=Source;
+            TestTrue(TEXT("forensic stream consumes without normalizing bytes"),Scope.ConsumeCanonicalSnapshot1456(Consumed));
+            if(Kind==1)FEpisodeStateBytesForTesting::Add(Source,Prefix); // Illegal unobserved append.
+        }
+        if(Kind==1)
+        {
+            const TArray<uint8> Before=Source;
+            TestTrue(TEXT("late source debris is never overwritten by recovery"),Consumed.CopyRawForEvidenceAfterClosure1456(Source)==EFramePointerRawEvidenceCopy1456::DestinationNotEmpty&&Source==Before);
+            Swap(Source,Debris);
+            TestTrue(TEXT("late source scalar bytes survive separately"),Debris==Before&&!Debris.IsEmpty());
+        }
+        TestTrue(TEXT("UNKNOWN raw remains exportable after writer closure"),Consumed.CopyRawForEvidenceAfterClosure1456(Source)==EFramePointerRawEvidenceCopy1456::Copied&&Source==Original);
+        TArray<uint8> Canonical{99};TestFalse(TEXT("forensic recovery never makes an invalid certificate pass"),Consumed.MakeCanonical(Canonical));
+        TestTrue(TEXT("invalid projection destination remains untouched"),Canonical==TArray<uint8>{99});
+    }
     return true;
 }
 #endif

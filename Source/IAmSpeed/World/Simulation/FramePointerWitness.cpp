@@ -240,6 +240,13 @@ bool FFramePointerCaptureScope::RejectRecordAfterConsume1456() noexcept
  if(!bConsumed1456)return false;
  bOverflow=true;ConsumedSnapshot1456->bOverflow1456=true;return true;
 }
+EFramePointerRawEvidenceCopy1456 FFramePointerCanonicalSnapshot1456::CopyRawForEvidenceAfterClosure1456(TArray<uint8>& Out) const
+{
+ if(!bCaptured1456)return EFramePointerRawEvidenceCopy1456::NotCaptured;
+ if(bWriterScopeOpen1456)return EFramePointerRawEvidenceCopy1456::WriterScopeOpen;
+ if(!Out.IsEmpty())return EFramePointerRawEvidenceCopy1456::DestinationNotEmpty;
+ Out=Raw1456;return EFramePointerRawEvidenceCopy1456::Copied;
+}
 bool FFramePointerCanonicalSnapshot1456::MakeCanonical(TArray<uint8>& Out) const
 {
     return bCaptured1456&&!bWriterScopeOpen1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out);

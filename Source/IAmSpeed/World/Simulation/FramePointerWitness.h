@@ -122,6 +122,10 @@ private:
 };
 
 #if WITH_DEV_AUTOMATION_TESTS
+// Evidence copying has a separate result from canonical validity: UNKNOWN
+// snapshots still retain their exact captured raw stream after scope closure.
+enum class EFramePointerRawEvidenceCopy1456 : uint8
+{ NotCaptured, WriterScopeOpen, DestinationNotEmpty, Copied };
 // Owns raw bytes and complete semantic observations. No UObject, registry or
 // live scope access is needed when projecting after the physical owner joins.
 class IAMSPEED_API FFramePointerCanonicalSnapshot1456
@@ -134,6 +138,10 @@ public:
     bool ReserveAndPreTouch1456(int32 RawBytes,int32 Observations);
     bool MakeCanonical(TArray<uint8>& Out) const;
     bool MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const;
+    // Copies only after writer-scope closure. Nonempty destinations are never
+    // overwritten: callers can preserve illegal late-write debris separately.
+    // A captured UNKNOWN is still evidence and is deliberately copyable.
+    EFramePointerRawEvidenceCopy1456 CopyRawForEvidenceAfterClosure1456(TArray<uint8>& Out) const;
     const TArray<uint8>& RawForEvidence1456() const { return Raw1456; }
     int32 NumObservations1456() const { return Events1456.Num(); }
 private:
