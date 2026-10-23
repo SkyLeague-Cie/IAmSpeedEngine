@@ -106,7 +106,11 @@ bool FWheelWitnessRowStorageTests::RunTest(const FString&)
  TestTrue(TEXT("prepared raw matches original byte oracle"),PreparedRaw==LeftRaw&&OtherPreparedRaw==RightRaw);
  TestTrue(TEXT("prepared raw independently decodes every field"),CheckRaw(PreparedRaw,Left.Get())&&CheckRaw(OtherPreparedRaw,Right.Get()));
  TestTrue(TEXT("prepared canonical equals original independent owner oracle"),PreparedCanonical==LeftCanonical&&OtherPreparedCanonical==RightCanonical);
- FFramePointerRegistry Registry;TestTrue(TEXT("prepared refusal registry seals"),Registry.Register(Left.Get(),FFramePointerKey{1,41,2,7,0})&&Registry.Seal());
+ // RecordWheelManifold1368 serializes the interface address, which need not
+ // equal the concrete UObject address under multiple inheritance.
+ const ISpeedComponent* const PreparedOwner=Left.Get();
+ FFramePointerRegistry Registry;TestTrue(TEXT("prepared refusal registry seals"),Registry.Register(PreparedOwner,FFramePointerKey{1,41,2,7,0})&&Registry.Seal());
+ TestNotNull(TEXT("prepared registry declares the exact serialized owner interface"),Registry.Find(reinterpret_cast<UPTRINT>(PreparedOwner)));
  {
   FWheelWitnessSnapshot1368 Prepared,Second;Prepared.ReserveAndPreTouch1368();Second.ReserveAndPreTouch1368();
   TArray<uint8> Main,InnerMain;FFrameSolveWitnessScope Outer(17,Main,Registry);
