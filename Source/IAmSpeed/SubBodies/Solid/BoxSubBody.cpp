@@ -781,8 +781,8 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
 #endif
 
     HitCountThisFrame.Empty();
-    CurrentGroundContactsWS.Empty();
-    CurrentGroundNormalsWS.Empty();
+    CurrentGroundContactsWS.Reset();
+    CurrentGroundNormalsWS.Reset();
 
     bGroundHitFromSweep = false;
     bHasGroundContact =
