@@ -62,7 +62,7 @@ void FFramePointerCaptureScope::Observe(TArray<uint8>& Bytes,const UPTRINT Addre
     else if (const FFramePointerKey* K=Scope->Identities.Find(Address))
     { E.Key=*K;E.bKnown=true; }
     else Scope->bUnknown=true;
-    Scope->Events.Add(E);
+    Scope->Events.Add(MoveTemp(E));
 }
 void FFramePointerCaptureScope::ObserveObjectId(TArray<uint8>& Bytes,uint32 Id,const UObject* Object)
 {
@@ -77,7 +77,7 @@ void FFramePointerCaptureScope::ObserveObjectId(TArray<uint8>& Bytes,uint32 Id,c
  if(Object && Object->GetUniqueID()==Id)
   if(const auto* Key=Scope->Identities.Find(reinterpret_cast<UPTRINT>(Object))){E.Key=*Key;E.bKnown=true;}
  if(!E.bKnown)Scope->bUnknown=true;
- Scope->Events.Add(E);
+ Scope->Events.Add(MoveTemp(E));
 }
 void FFramePointerCaptureScope::ObservePairToken(TArray<uint8>& Bytes,uint64 Token,const USSubBody* Source,const UPrimitiveComponent* Other)
 {
@@ -105,7 +105,7 @@ void FFramePointerCaptureScope::ObservePairToken(TArray<uint8>& Bytes,uint64 Tok
   }
  }
  if(!E.bKnown)Scope->bUnknown=true;
- Scope->Events.Add(E);
+ Scope->Events.Add(MoveTemp(E));
 }
 void FFramePointerCaptureScope::ObserveSolverPairToken(TArray<uint8>& Bytes,uint64 Token,
  const USSubBody* Source,const SHitResult& Hit,bool bStaticRestingWorld)
@@ -135,7 +135,7 @@ void FFramePointerCaptureScope::ObserveSolverPairToken(TArray<uint8>& Bytes,uint
   if(Expected==Token && A && B){E.Key=*A;E.SecondKey=*B;E.bKnown=true;}
  }
  if(!E.bKnown)S->bUnknown=true;
- S->Events.Add(E);
+ S->Events.Add(MoveTemp(E));
 }
 void FFramePointerCaptureScope::ObserveDynamicPairToken(TArray<uint8>& Bytes,uint64 Token,const USSubBody* Source,const USSubBody* Other)
 {
@@ -163,7 +163,7 @@ void FFramePointerCaptureScope::ObserveDynamicPairToken(TArray<uint8>& Bytes,uin
   }
  }
  if(!E.bKnown)Scope->bUnknown=true;
- Scope->Events.Add(E);
+ Scope->Events.Add(MoveTemp(E));
 }
 namespace
 {

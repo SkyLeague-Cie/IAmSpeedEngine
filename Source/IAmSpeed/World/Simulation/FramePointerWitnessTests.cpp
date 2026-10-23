@@ -3,6 +3,9 @@
 #include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+#include "UObject/StrongObjectPtr.h"
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFramePointerWitnessTests,
     "IAmSpeed.Simulation.FrameWitness.PointerIdentity",
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
@@ -79,6 +82,78 @@ bool FFramePointerWitnessTests::RunTest(const FString&)
         TArray<uint8> Raw,Out;FFramePointerCaptureScope Scope(Raw,RA);
         FEpisodeStateBytesForTesting::Add(Raw,&A);Raw[0]^=1;
         TestFalse(TEXT("raw bytes cannot drift after typed observation"),Scope.MakeCanonical(Out));
+    }
+    {
+        // Nonempty membership owns heap storage. Exercise every observation
+        // entrypoint, event-array growth, semantic pair swaps and final array
+        // transfer against an independent explicit scalar-byte oracle.
+        TStrongObjectPtr<UBoxSubBody> Left(NewObject<UBoxSubBody>()),Right(NewObject<UBoxSubBody>());
+        if(!TestTrue(TEXT("membership bodies exist"),Left.IsValid()&&Right.IsValid()))return false;
+        FFramePointerKey LeftKey{3,77,5,9,11},RightKey{3,77,5,9,11};
+        LeftKey.Membership={13,21,34};RightKey.Membership={8,55};
+        FFramePointerRegistry Members;
+        if(!TestTrue(TEXT("left membership declared"),Members.Register(Left.Get(),LeftKey))
+            ||!TestTrue(TEXT("right membership declared"),Members.Register(Right.Get(),RightKey))
+            ||!TestTrue(TEXT("membership registry seals"),Members.Seal()))return false;
+        TArray<uint8> Raw,ExpectedRaw,ExpectedCanonical,Actual;
+        const auto Scalar=[](TArray<uint8>& Out,const auto& Value)
+        {const int32 At=Out.AddUninitialized(sizeof(Value));FMemory::Memcpy(Out.GetData()+At,&Value,sizeof(Value));};
+        const auto KeyBytes=[&](const FFramePointerKey& K)
+        {
+            Scalar(ExpectedCanonical,K.Domain);Scalar(ExpectedCanonical,K.Owner);Scalar(ExpectedCanonical,K.Generation);
+            Scalar(ExpectedCanonical,K.Role);Scalar(ExpectedCanonical,K.Element);Scalar(ExpectedCanonical,uint32(K.Membership.Num()));
+            for(uint64 Id:K.Membership)Scalar(ExpectedCanonical,Id);
+        };
+        const uint32 Prefix=0x91a7c3e5u;const uint16 Suffix=0x6bd2u;
+        const uint32 LeftId=Left->GetUniqueID(),RightId=Right->GetUniqueID();
+        const uint32 Lo=LeftId<RightId?LeftId:RightId,Hi=LeftId<RightId?RightId:LeftId;
+        const uint64 Pair=(uint64(Hi)<<32)|uint64(Lo),Dynamic=(uint64(Lo)<<32)|uint64(Hi);
+        const uint64 Provider=0x73519ac2468def01ull;
+        const uint64 Solver=Speed::Analytic::CombineStableIds(Pair,Provider);
+        FFramePointerCanonicalSnapshot1456 Snapshot;
+        {
+            FFramePointerCaptureScope Scope(Raw,Members);
+            FEpisodeStateBytesForTesting::Add(Raw,Prefix);Scalar(ExpectedRaw,Prefix);Scalar(ExpectedCanonical,Prefix);
+            for(int32 I=0;I<32;++I)
+            {
+                UBoxSubBody* Body=(I&1)?Right.Get():Left.Get();
+                FEpisodeStateBytesForTesting::Add(Raw,Body);Scalar(ExpectedRaw,reinterpret_cast<UPTRINT>(Body));
+                KeyBytes((I&1)?RightKey:LeftKey);
+            }
+            FFramePointerCaptureScope::ObserveObjectId(Raw,LeftId,Left.Get());
+            FEpisodeStateBytesForTesting::Add(Raw,LeftId);Scalar(ExpectedRaw,LeftId);
+            Scalar(ExpectedCanonical,uint32(0xfffffffdu));KeyBytes(LeftKey);
+            for(int32 Reverse=0;Reverse<2;++Reverse)
+            {
+                UBoxSubBody* Source=Reverse?Right.Get():Left.Get();
+                UBoxSubBody* OtherBody=Reverse?Left.Get():Right.Get();
+                FFramePointerCaptureScope::ObservePairToken(Raw,Pair,Source,OtherBody);
+                FEpisodeStateBytesForTesting::Add(Raw,Pair);Scalar(ExpectedRaw,Pair);
+                Scalar(ExpectedCanonical,uint32(0xfffffffeu));KeyBytes(RightKey);KeyBytes(LeftKey);
+                SHitResult Hit;Hit.Component=OtherBody;Hit.CanonicalGroupId=Provider;
+                FFramePointerCaptureScope::ObserveSolverPairToken(Raw,Solver,Source,Hit,false);
+                FEpisodeStateBytesForTesting::Add(Raw,Solver);Scalar(ExpectedRaw,Solver);
+                Scalar(ExpectedCanonical,uint32(0xfffffffcu));KeyBytes(Reverse?RightKey:LeftKey);KeyBytes(Reverse?LeftKey:RightKey);
+                Scalar(ExpectedCanonical,Provider);Scalar(ExpectedCanonical,uint64(0));
+                FFramePointerCaptureScope::ObserveDynamicPairToken(Raw,Dynamic,Source,OtherBody);
+                FEpisodeStateBytesForTesting::Add(Raw,Dynamic);Scalar(ExpectedRaw,Dynamic);
+                Scalar(ExpectedCanonical,uint32(0xfffffffeu));KeyBytes(RightKey);KeyBytes(LeftKey);
+            }
+            FEpisodeStateBytesForTesting::Add(Raw,Suffix);Scalar(ExpectedRaw,Suffix);Scalar(ExpectedCanonical,Suffix);
+            TestEqual(TEXT("all membership observations retained through growth"),Scope.Observations().Num(),39);
+            TestTrue(TEXT("membership raw oracle is exact"),Raw==ExpectedRaw);
+            TestTrue(TEXT("membership live projection succeeds"),Scope.MakeCanonical(Actual));
+            TestTrue(TEXT("membership canonical scalar oracle is exact"),Actual==ExpectedCanonical);
+            TestTrue(TEXT("left declaration not moved from"),Members.Find(reinterpret_cast<UPTRINT>(Left.Get()))->Membership==LeftKey.Membership);
+            TestTrue(TEXT("right declaration not moved from"),Members.Find(reinterpret_cast<UPTRINT>(Right.Get()))->Membership==RightKey.Membership);
+            TestTrue(TEXT("membership final array transfer succeeds"),Scope.ConsumeCanonicalSnapshot1456(Snapshot));
+            TArray<uint8> Open{0x42};TestFalse(TEXT("membership transferred snapshot awaits scope closure"),Snapshot.MakeCanonical(Open));
+            TestTrue(TEXT("open membership output unchanged"),Open==TArray<uint8>{0x42});
+        }
+        TArray<uint8> Deferred;
+        TestTrue(TEXT("membership transferred raw oracle is exact"),Snapshot.RawForEvidence1456()==ExpectedRaw);
+        TestTrue(TEXT("membership deferred projection succeeds"),Snapshot.MakeCanonical(Deferred));
+        TestTrue(TEXT("membership deferred oracle survives event swaps"),Deferred==ExpectedCanonical);
     }
     return true;
 }
