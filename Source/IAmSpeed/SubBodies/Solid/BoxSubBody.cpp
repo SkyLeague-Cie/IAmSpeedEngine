@@ -1197,8 +1197,10 @@ void UBoxSubBody::AcceptHit()
         uint32& Count = HitCountThisFrame.FindOrAdd(Comp);
         Count++;
 
-        // Ignore only after several hits on the same component in the same frame
-        if (Count >= MaxHitsPerComponentPerFrame)
+        // Exact vertex identities already use the World per-pair resolution budget.
+        // Keep counting every hit; all other contacts retain the component cap.
+        if (Count >= MaxHitsPerComponentPerFrame &&
+            !(CanInitializeRepeatedContact(CurrentHit) || CanResolveRepeatedContact(CurrentHit)))
         {
             IgnoredComponents.AddUnique(Comp);
         }
