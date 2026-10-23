@@ -326,12 +326,18 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
         struct FReturnDispatchTrace
         {
             const USpeedWorldSubsystem* ExpectedWorld=nullptr;const UBoxSubBody* Box=nullptr;
-            struct FEvent { int32 Corner=-1;float TOI=0,TimePassed=0;bool bIgnored=true; };
+            struct FEvent { int32 Corner=-1;float TOI=0,TimePassed=0;bool bIgnored=true,bCompleted=false; };
             FEvent Events[24];int32 Count=0;bool Overflow=false;
             static void Observe(void* O,const Speed::Testing::FCcdPoseAuditSample& Sample) noexcept
             {
                 auto& Trace=*static_cast<FReturnDispatchTrace*>(O);
-                if(Sample.World!=Trace.ExpectedWorld||Sample.Stage!=Speed::Testing::ECcdPoseAuditStage::BeforeResolve)return;
+                if(Sample.World!=Trace.ExpectedWorld)return;
+                if(Sample.Stage==Speed::Testing::ECcdPoseAuditStage::AfterResolve)
+                {
+                    if(Trace.Count>0)Trace.Events[Trace.Count-1].bCompleted=true;
+                    return;
+                }
+                if(Sample.Stage!=Speed::Testing::ECcdPoseAuditStage::BeforeResolve)return;
                 if(Trace.Count>=24){Trace.Overflow=true;return;}
                 const auto& Hit=Trace.Box->GetHit();auto& E=Trace.Events[Trace.Count++];
                 E.Corner=Hit.ContactFeatureIndexThis;E.TOI=Hit.TOI;E.TimePassed=Sample.TimePassed;
@@ -371,6 +377,24 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
                 {bFourthReturned=true;break;}
             }
             TestTrue(TEXT("Stage02 seed: fourth vertex returns nonignored after another real vertex and positive physical time"),bFourthReturned);
+            bool bThirdProgressResolution=false;
+            for(int32 Index=0;Index<Trace.Count;++Index)
+            {
+                const auto& Event=Trace.Events[Index];
+                if(!Event.bCompleted||Event.bIgnored||Event.Corner<0||Event.TOI<=0||!(Event.TimePassed<Context.PhysicalDeltaTime))continue;
+                int32 PriorCount=0,LastIndex=-1;float LastTime=-1;bool bAdvancing=true;
+                for(int32 Prior=0;Prior<Index;++Prior)
+                    if(Trace.Events[Prior].bCompleted&&!Trace.Events[Prior].bIgnored&&Trace.Events[Prior].Corner==Event.Corner)
+                    {
+                        bAdvancing=bAdvancing&&Trace.Events[Prior].TimePassed>LastTime;
+                        LastTime=Trace.Events[Prior].TimePassed;LastIndex=Prior;++PriorCount;
+                    }
+                bool bOtherBetween=false;
+                for(int32 Between=LastIndex+1;LastIndex>=0&&Between<Index;++Between)
+                    bOtherBetween=bOtherBetween||(Trace.Events[Between].bCompleted&&!Trace.Events[Between].bIgnored&&Trace.Events[Between].Corner!=Event.Corner);
+                if(PriorCount>=2&&bAdvancing&&bOtherBetween&&Event.TimePassed>LastTime)bThirdProgressResolution=true;
+            }
+            TestTrue(TEXT("Stage02 seed: exact identity resolves a third time nonignored after another vertex at strictly advancing actual time"),!Trace.Overflow&&bThirdProgressResolution);
         }
     }
     // Complement the real dispatch oracle with the existing four-hit fallback:
