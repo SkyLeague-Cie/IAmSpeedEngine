@@ -279,7 +279,7 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
                 if(Trace.Count>=24){Trace.Overflow=true;return;}
                 const auto& Hit=Trace.Box->GetHit();auto& E=Trace.Events[Trace.Count++];
                 E.Corner=Hit.ContactFeatureIndexThis;E.TOI=Hit.TOI;E.TimePassed=Sample.TimePassed;
-                E.bIgnored=!Hit.Component.IsValid()||Trace.Box->ComponentHasBeenIgnored(*Hit.Component);
+                E.bIgnored=!Hit.Component.IsValid()||static_cast<const USSubBody*>(Trace.Box)->ComponentHasBeenIgnored(*Hit.Component);
             }
         } Trace;
         Trace.ExpectedWorld=Bridge;Trace.Box=Body.Box;
@@ -335,7 +335,7 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
                 if(Trace.Count>=24){Trace.Overflow=true;return;}
                 const auto& Hit=Trace.Box->GetHit();auto& E=Trace.Events[Trace.Count++];
                 E.Corner=Hit.ContactFeatureIndexThis;E.TOI=Hit.TOI;E.TimePassed=Sample.TimePassed;
-                E.bIgnored=!Hit.Component.IsValid()||Trace.Box->ComponentHasBeenIgnored(*Hit.Component);
+                E.bIgnored=!Hit.Component.IsValid()||static_cast<const USSubBody*>(Trace.Box)->ComponentHasBeenIgnored(*Hit.Component);
             }
         } Trace;
         Trace.ExpectedWorld=Bridge;Trace.Box=Body.Box;
@@ -398,15 +398,15 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
         if(PolicyCase==9)Hit.SurfaceId=0;
         if(PolicyCase==10)Hit.ContactFeatureThis=Speed::EContactFeatureKind::Face;
         for(int32 Contact=0;Contact<3;++Contact){Body.Box->SetFutureHit(Hit);Body.Box->AcceptHit();}
-        TestFalse(TEXT("legacy component policy does not ignore before fourth acceptance"),Body.Box->ComponentHasBeenIgnored(*PolicySurface));
+        TestFalse(TEXT("legacy component policy does not ignore before fourth acceptance"),static_cast<const USSubBody*>(Body.Box)->ComponentHasBeenIgnored(*PolicySurface));
         Body.Box->SetFutureHit(Hit);Body.Box->AcceptHit();
         const bool bExactNative=PolicyCase<2;
-        TestEqual(TEXT("fourth acceptance preserves exact-only exemption and every legacy fallback"),Body.Box->ComponentHasBeenIgnored(*PolicySurface),!bExactNative);
+        TestEqual(TEXT("fourth acceptance preserves exact-only exemption and every legacy fallback"),static_cast<const USSubBody*>(Body.Box)->ComponentHasBeenIgnored(*PolicySurface),!bExactNative);
         if(bExactNative)
         {
             SHitResult Ordinary=Hit;Ordinary.bSurfaceNormalMayVary=true;
             Body.Box->SetFutureHit(Ordinary);Body.Box->AcceptHit();
-            TestTrue(TEXT("exact exemption keeps contact count so a later ordinary contact still ignores"),Body.Box->ComponentHasBeenIgnored(*PolicySurface));
+            TestTrue(TEXT("exact exemption keeps contact count so a later ordinary contact still ignores"),static_cast<const USSubBody*>(Body.Box)->ComponentHasBeenIgnored(*PolicySurface));
         }
         else
         {
@@ -414,7 +414,7 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
             Later.SourceId=1;Later.SurfaceId=2;Later.bStartPenetrating=false;Later.PenetrationDepth=0;
             Later.ContactFeatureOther=Speed::EContactFeatureKind::Face;
             Body.Box->SetFutureHit(Later);Body.Box->AcceptHit();
-            TestTrue(TEXT("later exact-looking acceptance never removes prior ignored membership"),Body.Box->ComponentHasBeenIgnored(*PolicySurface));
+            TestTrue(TEXT("later exact-looking acceptance never removes prior ignored membership"),static_cast<const USSubBody*>(Body.Box)->ComponentHasBeenIgnored(*PolicySurface));
         }
     }
 	// Regression at the actual Box -> owner integration boundary, rather than
