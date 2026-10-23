@@ -128,6 +128,10 @@ private:
     int32 Limit=0;
     bool bUnknown=false,bOverflow=false;
 #if WITH_DEV_AUTOMATION_TESTS
+    friend class FFrameSolveWitnessScope;
+    bool CanAdoptPreparedEvents1456(const FFramePointerCanonicalSnapshot1456& Prepared) const noexcept;
+    void AdoptPreparedEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept;
+    bool bPreparedEventsAdopted1534=false;
     TArray<FFramePointerObservation>* BorrowedEvents1368=nullptr;
     bool bConsumed1456=false;
     FFramePointerCanonicalSnapshot1456* ConsumedSnapshot1456=nullptr;
@@ -157,6 +161,7 @@ public:
     EFramePointerRawEvidenceCopy1456 CopyRawForEvidenceAfterClosure1456(TArray<uint8>& Out) const;
     const TArray<uint8>& RawForEvidence1456() const { return Raw1456; }
     int32 NumObservations1456() const { return Events1456.Num(); }
+    int32 ObservationCapacityForTesting1456() const { return Events1456.Max(); }
 private:
     friend class FFramePointerCaptureScope;
     TArray<uint8> Raw1456;

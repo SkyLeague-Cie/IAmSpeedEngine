@@ -247,6 +247,17 @@ bool FFramePointerCanonicalSnapshot1456::ReserveAndPreTouch1456(int32 Bytes,int3
     Events1456.Reserve(FMath::Clamp(Count,0,16384));
     return true;
 }
+bool FFramePointerCaptureScope::CanAdoptPreparedEvents1456(const FFramePointerCanonicalSnapshot1456& Prepared) const noexcept
+{
+ return ActivePointerCapture==this&&!BorrowedEvents1368&&!bPreparedEventsAdopted1534
+  && &Target!=&Prepared.Raw1456&&Target.IsEmpty()&&Events.IsEmpty()&&!bConsumed1456&&!bUnknown&&!bOverflow&&Identities.IsValidSealed()
+  &&!Prepared.bCaptured1456&&!Prepared.bWriterScopeOpen1456&&!Prepared.bValidSealed1456
+  &&!Prepared.bUnknown1456&&!Prepared.bOverflow1456&&Prepared.Raw1456.IsEmpty()&&Prepared.Events1456.IsEmpty();
+}
+void FFramePointerCaptureScope::AdoptPreparedEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept
+{
+ Swap(Events,Prepared.Events1456);bPreparedEventsAdopted1534=true;
+}
 bool FFramePointerCaptureScope::CaptureCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out) const
 {
     if(bConsumed1456||Out.bWriterScopeOpen1456||!Identities.IsValidSealed()||bUnknown||bOverflow)return false;

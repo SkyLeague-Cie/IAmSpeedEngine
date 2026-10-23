@@ -5,12 +5,37 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include "FrameFloatingPointContext.h"
+#include "Misc/ScopeExit.h"
 #endif
 #include "IAmSpeed/Components/ISpeedComponent.h"
 namespace Speed
 {
 namespace { thread_local FFrameSolveWitnessScope* ActiveSolveWitness=nullptr; }
 #if WITH_DEV_AUTOMATION_TESTS
+bool FFrameSolveWitnessScope::PrepareFreshCaptureStorage1534(FFramePointerCanonicalSnapshot1456& Prepared,TArray<int32>& PreparedBounds) noexcept
+{
+ if(Rows||MainRows||WheelRows1368||bCaptureWheelManifold1368||bRowBoundaries1534||bPreparedCaptureStorage1534||bOverflow||ConsumedWheel1368
+  ||!Bytes.IsEmpty()||!RawRowBoundaries1534.IsEmpty()||!PreparedBounds.IsEmpty()
+  ||&PreparedBounds==&RawRowBoundaries1534||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()
+  ||!PointerCapture.CanAdoptPreparedEvents1456(Prepared))return false;
+ PointerCapture.AdoptPreparedEvents1456(Prepared);Swap(RawRowBoundaries1534,PreparedBounds);
+ bPreparedCaptureStorage1534=true;bRowBoundaries1534=true;return true;
+}
+bool FFrameSolveWitnessScope::SealAndConsumePreparedStorage1534(FFramePointerCanonicalSnapshot1456& Out,TArray<int32>& RawBoundaries)
+{
+ if(!bPreparedCaptureStorage1534||!bRowBoundaries1534||bOverflow||!RawBoundaries.IsEmpty()
+  ||&RawBoundaries==&RawRowBoundaries1534||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()
+  ||RawRowBoundaries1534.Num()!=Rows)return false;
+ const int32 RawEnd=Bytes.Num();int32 PreviousBoundary=-1;
+ for(const int32 Boundary:RawRowBoundaries1534)
+ {if(Boundary<PreviousBoundary||Boundary<0||Boundary>RawEnd)return false;PreviousBoundary=Boundary;}
+ const int32 OriginalCount=RawRowBoundaries1534.Num();bool Committed=false;
+ ON_SCOPE_EXIT{if(!Committed)RawRowBoundaries1534.SetNum(OriginalCount,EAllowShrinking::No);};
+ // Growth, when needed, precedes the irreversible certificate handoff.
+ RawRowBoundaries1534.Add(RawEnd);
+ if(!PointerCapture.ConsumeCanonicalSnapshot1456(Out))return false;
+ Swap(RawRowBoundaries1534,RawBoundaries);Committed=true;return true;
+}
 EWheelWitnessRelease1368 FWheelWitnessSnapshot1368::ReleaseAfterClosure(TArray<uint8>& OutRaw,TArray<uint8>& OutCanonical,
     TArray<uint8>& OutRawDebris,TArray<uint8>& OutCanonicalDebris)
 {

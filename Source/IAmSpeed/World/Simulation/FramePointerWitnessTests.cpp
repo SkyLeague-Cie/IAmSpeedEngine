@@ -390,20 +390,23 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
             TestTrue(TEXT("boundary failure cannot publish partial bytes or spans"),Untouched==TArray<uint8>{99}&&UntouchedBounds==TArray<int32>{77});
         }
     }
+    for(int32 FreshMode1534=0;FreshMode1534<2;++FreshMode1534)
     {
-        FFramePointerCanonicalSnapshot1456 Copy,Consumed;TArray<uint8> Source;TArray<int32> CopyBounds,ConsumeBounds{77};
+        FFramePointerCanonicalSnapshot1456 Copy,Consumed;TArray<uint8> Source;TArray<int32> CopyBounds,ConsumeBounds;
+        if(!FreshMode1534)ConsumeBounds.Add(77);
+        Consumed.ReserveAndPreTouch1456(4096,2048);ConsumeBounds.Reserve(2049);
         {
             FFrameSolveWitnessScope Solve(7,Source,Registry);
-            TestTrue(TEXT("row-boundary capture explicitly enabled"),Solve.EnableRowBoundaryCapture1534());
+            TestTrue(TEXT("row-boundary capture explicitly enabled"),FreshMode1534?Solve.PrepareFreshCaptureStorage1534(Consumed,ConsumeBounds):Solve.EnableRowBoundaryCapture1534());
             const uint64 Pass=FFrameSolveWitnessScope::BeginDynamicPass(7,EFrameDynamicContactPass::Persistent,1.f/300,0,false,false,0);
-            TestFalse(TEXT("open dynamic pass cannot consume row-framed stream"),Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Consumed,ConsumeBounds));
-            TestTrue(TEXT("failed consume leaves destination boundaries untouched"),ConsumeBounds==TArray<int32>{77});
+            TestFalse(TEXT("open dynamic pass cannot consume row-framed stream"),FreshMode1534?Solve.SealAndConsumePreparedStorage1534(Consumed,ConsumeBounds):Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Consumed,ConsumeBounds));
+            TestTrue(TEXT("failed consume leaves destination boundaries untouched"),FreshMode1534?ConsumeBounds.IsEmpty():ConsumeBounds==TArray<int32>{77});
             FFrameSolveWitnessScope::EndDynamicPass(Pass,0);
             FFrameSolveWitnessScope::Record(7,2,3,41,0,0,SHitResult{},false,0,1);
             TestFalse(TEXT("1217 unframed API still refuses row-framed capture"),Solve.SealAndConsumeCanonicalSnapshot1456(Consumed));
             TestTrue(TEXT("copy control retains schema1 and schema2 rows"),Solve.CaptureCanonicalSnapshotWithRowBoundaries1534(Copy,CopyBounds));
             TestEqual(TEXT("copy boundaries include every row and terminator"),CopyBounds.Num(),Solve.NumRows()+1);
-            TestTrue(TEXT("dedicated transfer retains row-framed stream"),Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Consumed,ConsumeBounds));
+            TestTrue(TEXT("dedicated transfer retains row-framed stream"),FreshMode1534?Solve.SealAndConsumePreparedStorage1534(Consumed,ConsumeBounds):Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Consumed,ConsumeBounds));
             TestTrue(TEXT("transferred exact raw and boundaries match unchanged capture"),Consumed.RawForEvidence1456()==Copy.RawForEvidence1456()&&ConsumeBounds==CopyBounds&&Source.IsEmpty());
             FFramePointerCanonicalSnapshot1456 Second;TArray<int32> SecondBounds{77};
             TestFalse(TEXT("row-framed transfer is one shot"),Solve.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Second,SecondBounds));
@@ -772,6 +775,115 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
          catch(int32 Marker){TestEqual(TEXT("synthetic row unwind is observed"),Marker,17);}
          FEpisodeStateBytesForTesting::Add(AfterUnwind,&Object);TestEqual(TEXT("unwind restores outer TLS route"),Outer.Observations().Num(),1);}
         TestTrue(TEXT("unwind returns scratch empty without erasing aborted raw evidence"),Scratch.IsEmpty()&&Aborted.Num()==sizeof(UPTRINT));
+    }
+
+    // Fresh main storage is owned by the scope immediately after preparation;
+    // no borrowed snapshot reference or writer certificate exists yet.
+    {
+        FFramePointerCanonicalSnapshot1456 Prepared;Prepared.ReserveAndPreTouch1456(4096,2048);
+        TArray<int32> Bounds;Bounds.Reserve(2049);TArray<uint8> Source;
+        const int32 EventCapacity=Prepared.ObservationCapacityForTesting1456(),BoundsCapacity=Bounds.Max();
+        {
+            FFrameSolveWitnessScope Solve(31,Source,Registry);
+            TestTrue(TEXT("fresh main storage adopts both capacities"),Solve.PrepareFreshCaptureStorage1534(Prepared,Bounds));
+            TestTrue(TEXT("prepared events capacity is used before any record"),Solve.PointerObservations().Max()==EventCapacity&&Prepared.ObservationCapacityForTesting1456()==0&&Bounds.Max()==0);
+            TestFalse(TEXT("same fresh scope cannot adopt another preparation"),Solve.PrepareFreshCaptureStorage1534(Prepared,Bounds));
+            TestTrue(TEXT("capacity adoption alone never certifies empty evidence"),Prepared.RawForEvidence1456().IsEmpty()&&Prepared.NumObservations1456()==0);
+            FFrameSolveWitnessScope::Record(31,0,0,41,0,0,SHitResult{},false,0,1);
+            FFramePointerCanonicalSnapshot1456 Copy;TArray<int32> ReferenceBounds;
+            TestTrue(TEXT("legacy copy remains independent control after fresh preparation"),Solve.CaptureCanonicalSnapshotWithRowBoundaries1534(Copy,ReferenceBounds));
+            TestTrue(TEXT("fresh seal returns the exact starts and terminator"),Solve.SealAndConsumePreparedStorage1534(Prepared,Bounds)&&Bounds==ReferenceBounds&&Bounds.Max()>=BoundsCapacity);
+            TestTrue(TEXT("captured events retain adopted capacity"),Prepared.ObservationCapacityForTesting1456()>=EventCapacity&&Prepared.RawForEvidence1456()==Copy.RawForEvidence1456());
+        }
+        TArray<uint8> Canonical;TArray<int32> CanonicalBounds;
+        TestTrue(TEXT("fresh certificate projects only after scope closure"),Prepared.MakeCanonicalWithBoundaries1534(Canonical,Bounds,CanonicalBounds));
+    }
+    for(int32 Refusal1534=0;Refusal1534<7;++Refusal1534)
+    {
+        FFramePointerCanonicalSnapshot1456 Prepared;Prepared.ReserveAndPreTouch1456(128,2048);
+        TArray<int32> Bounds;Bounds.Reserve(2049);TArray<uint8> Source;
+        if(Refusal1534==0)Bounds.Add(77);
+        if(Refusal1534==1)
+        {TArray<uint8> Used;FFramePointerCaptureScope Other(Used,Registry);FEpisodeStateBytesForTesting::Add(Used,&Object);Other.ConsumeCanonicalSnapshot1456(Prepared);}
+        const int32 BeforeEvents=Prepared.ObservationCapacityForTesting1456(),BeforeBounds=Bounds.Max();
+        const TArray<int32> OriginalBounds=Bounds;const TArray<uint8> OriginalSnapshot=Prepared.RawForEvidence1456();
+        TArray<uint8>& Target1534=Refusal1534==4?const_cast<TArray<uint8>&>(Prepared.RawForEvidence1456()):Source;
+        FFrameSolveWitnessScope Solve(32,Target1534,Registry);
+        if(Refusal1534==2)FEpisodeStateBytesForTesting::Add(Source,uint32(93));
+        if(Refusal1534==3)Solve.EnableRowBoundaryCapture1534();
+        if(Refusal1534==5||Refusal1534==6)Solve.EnableWheelManifoldCapture1368();
+        if(Refusal1534==6){EmitWheel1368(0,{});EmitWheel1368(255,{});}
+        const TArray<uint8> OriginalSource=Source;
+        TestFalse(TEXT("invalid fresh preparation refuses transactionally"),Solve.PrepareFreshCaptureStorage1534(Prepared,Bounds));
+        TestTrue(TEXT("refused preparation preserves both destinations and all capacities"),Bounds==OriginalBounds&&Bounds.Max()==BeforeBounds&&Prepared.RawForEvidence1456()==OriginalSnapshot&&Prepared.ObservationCapacityForTesting1456()==BeforeEvents&&Source==OriginalSource);
+    }
+    {
+        // A destination used by another closed capture makes Consume reject
+        // AFTER the endpoint append. Retry into a fresh destination proves the
+        // internal row count was rolled back, without exposing private arrays.
+        FFramePointerCanonicalSnapshot1456 Prepared,Retry;Prepared.ReserveAndPreTouch1456(256,2048);
+        TArray<int32> Bounds;Bounds.Reserve(2049);TArray<uint8> Source;
+        FFrameSolveWitnessScope Solve(33,Source,Registry);Solve.PrepareFreshCaptureStorage1534(Prepared,Bounds);
+        FFrameSolveWitnessScope::Record(33,0,0,41,0,0,SHitResult{},false,0,1);
+        {
+            TArray<uint8> OtherRaw;FFramePointerCaptureScope Other(OtherRaw,Registry);
+            FEpisodeStateBytesForTesting::Add(OtherRaw,&Object);Other.ConsumeCanonicalSnapshot1456(Prepared);
+        }
+        const TArray<uint8> Before=Source,Destination=Prepared.RawForEvidence1456();
+        TestFalse(TEXT("used snapshot rejects fresh seal after endpoint staging"),Solve.SealAndConsumePreparedStorage1534(Prepared,Bounds));
+        TestTrue(TEXT("failed consume preserves raw and destination values"),Source==Before&&Prepared.RawForEvidence1456()==Destination&&Bounds.IsEmpty());
+        TestTrue(TEXT("retry into empty certificate has exactly one endpoint"),Solve.SealAndConsumePreparedStorage1534(Retry,Bounds)&&Bounds.Num()==Solve.NumRows()+1&&Bounds.Last()==Before.Num());
+    }
+    for(int32 Failure1534=0;Failure1534<3;++Failure1534)
+    {
+        FFramePointerCanonicalSnapshot1456 Prepared;Prepared.ReserveAndPreTouch1456(256,2048);
+        TArray<int32> Bounds;Bounds.Reserve(2049);TArray<uint8> Source;
+        FFrameSolveWitnessScope Solve(34,Source,Registry,Failure1534==1?1:65536);Solve.PrepareFreshCaptureStorage1534(Prepared,Bounds);
+        if(Failure1534==0)FEpisodeStateBytesForTesting::Add(Source,&Unknown);
+        else
+        {
+            FFrameSolveWitnessScope::Record(34,0,0,41,0,0,SHitResult{},false,0,1);
+            if(Failure1534==1)FFrameSolveWitnessScope::Record(34,0,0,41,0,0,SHitResult{},false,0,1);
+            if(Failure1534==2){FFrameSolveWitnessScope::Record(34,0,0,41,0,0,SHitResult{},false,0,1);Source.Reset();} // second start exceeds the reset raw end.
+        }
+        const TArray<uint8> Before=Source;
+        TestFalse(TEXT("unknown overflow or byte-drift cannot certify prepared evidence"),Solve.SealAndConsumePreparedStorage1534(Prepared,Bounds));
+        TestTrue(TEXT("prepared failure keeps complete original raw prefix and output empty"),Source==Before&&Bounds.IsEmpty()&&Prepared.RawForEvidence1456().IsEmpty());
+    }
+    for(int32 Late1534=0;Late1534<2;++Late1534)
+    {
+        FFramePointerCanonicalSnapshot1456 Prepared;Prepared.ReserveAndPreTouch1456(256,2048);
+        TArray<int32> Bounds;Bounds.Reserve(2049);TArray<uint8> Source,Original;
+        {
+            FFrameSolveWitnessScope Solve(35,Source,Registry);Solve.PrepareFreshCaptureStorage1534(Prepared,Bounds);
+            FFrameSolveWitnessScope::Record(35,0,0,41,0,0,SHitResult{},false,0,1);Original=Source;
+            TestTrue(TEXT("prepared late-write test first seals normally"),Solve.SealAndConsumePreparedStorage1534(Prepared,Bounds));
+            if(Late1534==0)FEpisodeStateBytesForTesting::Add(Source,uint32(123));
+            else FFrameSolveWitnessScope::Record(35,0,0,41,0,0,SHitResult{},false,0,1);
+        }
+        TArray<uint8> Canonical{99},Recovered;
+        TestFalse(TEXT("prepared storage does not weaken late-write invalidation"),Prepared.MakeCanonical(Canonical));
+        TestTrue(TEXT("late-write failure retains captured raw evidence"),Canonical==TArray<uint8>{99}&&Prepared.CopyRawForEvidenceAfterClosure1456(Recovered)==EFramePointerRawEvidenceCopy1456::Copied&&Recovered==Original);
+        if(Late1534==0)TestEqual(TEXT("unobserved late raw remains available separately"),Source.Num(),int32(sizeof(uint32)));
+    }
+
+    {
+        FFramePointerCanonicalSnapshot1456 Prepared;Prepared.ReserveAndPreTouch1456(256,2048);
+        TArray<int32> Bounds;Bounds.Reserve(2049);TArray<uint8> Aborted,OuterRaw;
+        {
+            FFramePointerCaptureScope Outer(OuterRaw,Registry);
+            try
+            {
+                FFrameSolveWitnessScope Inner(36,Aborted,Registry);Inner.PrepareFreshCaptureStorage1534(Prepared,Bounds);
+                FFrameSolveWitnessScope::Record(36,0,0,41,0,0,SHitResult{},false,0,1);throw int32(19);
+            }
+            catch(int32 Marker){TestEqual(TEXT("fresh scope synthetic unwind is observed"),Marker,19);}
+            FEpisodeStateBytesForTesting::Add(OuterRaw,&Object);
+            TestEqual(TEXT("fresh scope unwind restores outer pointer TLS"),Outer.Observations().Num(),1);
+        }
+        TArray<uint8> Out{99};
+        TestTrue(TEXT("fresh unsealed unwind keeps raw failure prefix without false capture"),!Aborted.IsEmpty()&&Bounds.IsEmpty()&&Prepared.RawForEvidence1456().IsEmpty());
+        TestFalse(TEXT("unwound fresh preparation never creates a certificate"),Prepared.MakeCanonical(Out));
     }
     return true;
 }

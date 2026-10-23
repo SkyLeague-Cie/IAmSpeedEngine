@@ -72,6 +72,10 @@ public:
     // including schema2 events, without changing or framing its existing bytes.
     bool EnableRowBoundaryCapture1534()
     {if(Rows||bRowBoundaries1534)return false;bRowBoundaries1534=true;RawRowBoundaries1534.Reserve(FMath::Min(Limit,256));return true;}
+    // Fresh test-only ownership transfer, not a lease: preflight both empty
+    // destinations before either swap. Legacy enable/capture/consume stay exact.
+    bool PrepareFreshCaptureStorage1534(FFramePointerCanonicalSnapshot1456& Prepared,TArray<int32>& PreparedBounds) noexcept;
+    bool SealAndConsumePreparedStorage1534(FFramePointerCanonicalSnapshot1456& Out,TArray<int32>& RawBoundaries);
     bool MakeCanonicalWithRowBoundaries1534(TArray<uint8>& Out,TArray<int32>& Boundaries)const
     {
         if(!bRowBoundaries1534||bOverflow||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()||RawRowBoundaries1534.Num()!=Rows)return false;
@@ -175,6 +179,7 @@ private:
 #endif
     bool bOverflow=false;
 #if WITH_DEV_AUTOMATION_TESTS
+    bool bPreparedCaptureStorage1534=false;
     bool bRowBoundaries1534=false;TArray<int32> RawRowBoundaries1534;
 #endif
 };

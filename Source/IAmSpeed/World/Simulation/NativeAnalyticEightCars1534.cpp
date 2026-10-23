@@ -578,7 +578,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    }
    if(!Identities||!Pointers.Seal()){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    FFrameSolveWitnessScope Ordered(N,Row.RawOrderedSolve,Pointers);
-   if(!Ordered.EnableRowBoundaryCapture1534()||FrameParallel::FJoinedActorBaseWitnessScope1534::IsActive()){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   if(!Ordered.PrepareFreshCaptureStorage1534(Row.DeferredContacts1534,Row.RawContactBounds1534)||FrameParallel::FJoinedActorBaseWitnessScope1534::IsActive()){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    FrameParallel::FJoinedActorBaseWitnessScope1534 BaseWitness1534(Row.BaseEvents1534);
    if(!Ordered.EnableWheelManifoldCapture1368(true)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    // Install/remove on this same canonical owner, outside the physical call.
@@ -623,7 +623,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    Row.Frame=N;Row.Publication=Snapshot.PublicationSerial;Row.Snapshot=Snapshot.Payload;
    Row.MainContacts=Ordered.NumMainRows();Row.WheelManifoldRows=Ordered.NumWheelManifoldRows1368();
-   if(!Ordered.SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(Row.DeferredContacts1534,Row.RawContactBounds1534))
+   if(!Ordered.SealAndConsumePreparedStorage1534(Row.DeferredContacts1534,Row.RawContactBounds1534))
    {
     Row.RawWheelManifold=Ordered.RawWheelManifold1368();
     Ordered.MakeWheelManifoldCanonical1368(Row.WheelManifold);
