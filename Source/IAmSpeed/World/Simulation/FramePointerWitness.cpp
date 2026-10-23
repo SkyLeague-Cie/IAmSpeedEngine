@@ -185,6 +185,19 @@ bool MakeCapturedPointerCanonical1456(const TArray<uint8>& Target,
     }
     const auto Add=[&Out](const auto& V)
     { Out.Append(reinterpret_cast<const uint8*>(&V),sizeof(V)); };
+    const auto AddKeyPrefix=[&Out](const FFramePointerKey& K)
+    {
+        // Copy individual fields: the serialized prefix contains no struct padding.
+        uint8 Prefix[2*sizeof(uint32)+4*sizeof(uint64)];
+        const uint32 MembershipCount=uint32(K.Membership.Num());
+        FMemory::Memcpy(Prefix,&K.Domain,sizeof(K.Domain));
+        FMemory::Memcpy(Prefix+sizeof(uint32),&K.Owner,sizeof(K.Owner));
+        FMemory::Memcpy(Prefix+sizeof(uint32)+sizeof(uint64),&K.Generation,sizeof(K.Generation));
+        FMemory::Memcpy(Prefix+sizeof(uint32)+2*sizeof(uint64),&K.Role,sizeof(K.Role));
+        FMemory::Memcpy(Prefix+sizeof(uint32)+3*sizeof(uint64),&K.Element,sizeof(K.Element));
+        FMemory::Memcpy(Prefix+sizeof(uint32)+4*sizeof(uint64),&MembershipCount,sizeof(MembershipCount));
+        Out.Append(Prefix,sizeof(Prefix));
+    };
     for (const FFramePointerObservation& E:Events)
     {
         const int32 Width=E.bObjectId?int32(sizeof(uint32)):int32(sizeof(UPTRINT));
@@ -201,8 +214,8 @@ bool MakeCapturedPointerCanonical1456(const TArray<uint8>& Target,
         if(E.bObjectId)Add(uint32(0xFFFFFFFDu));
         if(E.bSolverPairToken)Add(uint32(0xFFFFFFFCu));
         else if(E.bPairToken)Add(uint32(0xFFFFFFFEu));
-        Add(E.Key.Domain);Add(E.Key.Owner);Add(E.Key.Generation);Add(E.Key.Role);Add(E.Key.Element);Add(uint32(E.Key.Membership.Num()));for(uint64 Id:E.Key.Membership)Add(Id);
-        if(E.bPairToken){Add(E.SecondKey.Domain);Add(E.SecondKey.Owner);Add(E.SecondKey.Generation);Add(E.SecondKey.Role);Add(E.SecondKey.Element);Add(uint32(E.SecondKey.Membership.Num()));for(uint64 Id:E.SecondKey.Membership)Add(Id);}
+        AddKeyPrefix(E.Key);for(uint64 Id:E.Key.Membership)Add(Id);
+        if(E.bPairToken){AddKeyPrefix(E.SecondKey);for(uint64 Id:E.SecondKey.Membership)Add(Id);}
         if(E.bSolverPairToken){Add(E.PairProviderId);Add(E.PairFeatureSalt);}
         Next=E.Offset+Width;
     }

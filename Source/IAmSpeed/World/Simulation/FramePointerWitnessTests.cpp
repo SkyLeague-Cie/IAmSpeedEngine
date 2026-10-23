@@ -84,14 +84,30 @@ bool FFramePointerWitnessTests::RunTest(const FString&)
         FEpisodeStateBytesForTesting::Add(Raw,&A);Raw[0]^=1;
         TestFalse(TEXT("raw bytes cannot drift after typed observation"),Scope.MakeCanonical(Out));
     }
+    for(int32 KeyCase1456=0;KeyCase1456<4;++KeyCase1456)
     {
-        // Nonempty membership owns heap storage. Exercise every observation
-        // entrypoint, event-array growth, semantic pair swaps and final array
-        // transfer against an independent explicit scalar-byte oracle.
+        // Keep a legacy scalar-byte oracle independent of the fixed-prefix encoder.
+        // Cover boundary field values and empty/nonempty membership through every
+        // entrypoint, event growth, semantic pair swaps and final array transfer.
         TStrongObjectPtr<UBoxSubBody> Left(NewObject<UBoxSubBody>()),Right(NewObject<UBoxSubBody>());
         if(!TestTrue(TEXT("membership bodies exist"),Left.IsValid()&&Right.IsValid()))return false;
         FFramePointerKey LeftKey{3,77,5,9,11},RightKey{3,77,5,9,11};
         LeftKey.Membership={13,21,34};RightKey.Membership={8,55};
+        if(KeyCase1456==1)
+        {
+            LeftKey={MAX_uint32,MAX_uint64,MAX_uint64,MAX_uint64,MAX_uint64};
+            RightKey=LeftKey;LeftKey.Membership={MAX_uint64};
+        }
+        else if(KeyCase1456==2)
+        {
+            LeftKey={1,0,0,0,MAX_uint64};RightKey=LeftKey;
+            LeftKey.Membership={1,MAX_uint64};RightKey.Membership={0,MAX_uint64};
+        }
+        else if(KeyCase1456==3)
+        {
+            LeftKey={MAX_uint32,MAX_uint64,MAX_uint64,MAX_uint64,MAX_uint64};
+            RightKey=LeftKey;RightKey.Element=0;
+        }
         FFramePointerRegistry Members;
         if(!TestTrue(TEXT("left membership declared"),Members.Register(Left.Get(),LeftKey))
             ||!TestTrue(TEXT("right membership declared"),Members.Register(Right.Get(),RightKey))
@@ -101,8 +117,10 @@ bool FFramePointerWitnessTests::RunTest(const FString&)
         {const int32 At=Out.AddUninitialized(sizeof(Value));FMemory::Memcpy(Out.GetData()+At,&Value,sizeof(Value));};
         const auto KeyBytes=[&](const FFramePointerKey& K)
         {
+            const int32 PrefixStart1456=ExpectedCanonical.Num();
             Scalar(ExpectedCanonical,K.Domain);Scalar(ExpectedCanonical,K.Owner);Scalar(ExpectedCanonical,K.Generation);
             Scalar(ExpectedCanonical,K.Role);Scalar(ExpectedCanonical,K.Element);Scalar(ExpectedCanonical,uint32(K.Membership.Num()));
+            TestEqual(TEXT("independent key prefix is exactly 40 bytes without padding"),ExpectedCanonical.Num()-PrefixStart1456,40);
             for(uint64 Id:K.Membership)Scalar(ExpectedCanonical,Id);
         };
         const uint32 Prefix=0x91a7c3e5u;const uint16 Suffix=0x6bd2u;
