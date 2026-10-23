@@ -38,6 +38,8 @@ class IAMSPEED_API FWheelWitnessSnapshot1368
     TArray<uint8> Raw,Canonical,RawDebris,CanonicalDebris;
     bool bCaptured=false,bWriterOpen=false,bValid=false,bReleased=false;
 public:
+    // Growable capacity hints only, prepared on the game thread before owner start.
+    bool ReserveAndPreTouch1368();
     EWheelWitnessRelease1368 ReleaseAfterClosure(TArray<uint8>& OutRaw,TArray<uint8>& OutCanonical,
         TArray<uint8>& OutRawDebris,TArray<uint8>& OutCanonicalDebris);
 };
@@ -75,6 +77,8 @@ public:
     // Fresh test-only ownership transfer, not a lease: preflight both empty
     // destinations before either swap. Legacy enable/capture/consume stay exact.
     bool PrepareFreshCaptureStorage1534(FFramePointerCanonicalSnapshot1456& Prepared,TArray<int32>& PreparedBounds) noexcept;
+    // Fresh byte-array ownership only: no lease, callback change or saved reference.
+    bool PrepareFreshWheelCaptureStorage1368(FWheelWitnessSnapshot1368& Prepared) noexcept;
     bool SealAndConsumePreparedStorage1534(FFramePointerCanonicalSnapshot1456& Out,TArray<int32>& RawBoundaries);
     bool MakeCanonicalWithRowBoundaries1534(TArray<uint8>& Out,TArray<int32>& Boundaries)const
     {
@@ -174,6 +178,7 @@ private:
     TArray<uint8> WheelRowRawScratch1368,WheelRowCanonicalScratch1368,WheelRowCanonicalBuildScratch1368;
 #if WITH_DEV_AUTOMATION_TESTS
     bool bReuseWheelPointerEvents1368=false;
+    bool bPreparedWheelCaptureStorage1368=false;
     TArray<FFramePointerObservation> WheelRowPointerEventsScratch1368;
     FWheelWitnessSnapshot1368* ConsumedWheel1368=nullptr;
 #endif

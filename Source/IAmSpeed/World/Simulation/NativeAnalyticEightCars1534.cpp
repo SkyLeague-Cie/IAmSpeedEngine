@@ -526,6 +526,8 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    // Native06 raw contacts reached 769,453 bytes, beyond the old 64KiB hint.
    if(!TestTrue(TEXT("empty eight-car contact snapshot prepared before owner"),
     R.DeferredContacts1534.ReserveAndPreTouch1456(1024*1024,2048)))return false;
+   if(!TestTrue(TEXT("empty eight-car wheel byte snapshot prepared before owner"),
+    R.DeferredWheel1368.ReserveAndPreTouch1368()))return false;
    R.RawContactBounds1534.Reserve(2049);
    R.Snapshot.Reserve(65536);R.Inputs.Reserve(CarCount*4096);R.NumericContext1534.Reserve(256);
    R.PrepareDeltas.Reserve(2*sizeof(uint32)+(CarCount+1)*(2*sizeof(uint64)+sizeof(float)));
@@ -580,6 +582,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    FFrameSolveWitnessScope Ordered(N,Row.RawOrderedSolve,Pointers);
    if(!Ordered.PrepareFreshCaptureStorage1534(Row.DeferredContacts1534,Row.RawContactBounds1534)||FrameParallel::FJoinedActorBaseWitnessScope1534::IsActive()){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    FrameParallel::FJoinedActorBaseWitnessScope1534 BaseWitness1534(Row.BaseEvents1534);
+   if(!Ordered.PrepareFreshWheelCaptureStorage1368(Row.DeferredWheel1368)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    if(!Ordered.EnableWheelManifoldCapture1368(true)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    // Install/remove on this same canonical owner, outside the physical call.
    // Never replace an existing observer, including on an Idle or failure pulse.
