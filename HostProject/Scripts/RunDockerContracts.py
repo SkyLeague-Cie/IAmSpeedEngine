@@ -207,12 +207,63 @@ def run_logged(command, log, timeout, cwd, env):
     return result.returncode
 
 
+
+def cpuset_ids(spec):
+    if type(spec) is not str or not re.fullmatch(r'[0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*', spec):
+        raise ValueError('CPU set must contain only nonnegative CPU IDs or ascending ranges')
+    selected = set()
+    for item in spec.split(','):
+        ends = item.split('-')
+        first, last = int(ends[0]), int(ends[-1])
+        if first > last or last > 65535 or last-first > 4095:
+            raise ValueError('Invalid or unbounded CPU range')
+        values = set(range(first, last+1))
+        if selected.intersection(values):
+            raise ValueError('Duplicate CPU IDs are ambiguous')
+        selected.update(values)
+    return sorted(selected)
+
+
+def canonical_cpuset(spec, cpus):
+    selected = cpuset_ids(spec)
+    if len(selected) != cpus:
+        raise ValueError('Explicit CPU set cardinality must match the unchanged CPU quota')
+    return ','.join(map(str, selected))
+
+
+def cpu_affinity_evidence(spec, cpus):
+    selected = cpuset_ids(canonical_cpuset(spec, cpus))
+    if not hasattr(os, 'sched_getaffinity') or sorted(os.sched_getaffinity(0)) != selected:
+        raise ValueError('Linux effective affinity does not match the explicit CPU set')
+    rows = []
+    for cpu in selected:
+        topology = Path('/sys/devices/system/cpu/cpu' + str(cpu) + '/topology')
+        package = int((topology / 'physical_package_id').read_text().strip())
+        core = int((topology / 'core_id').read_text().strip())
+        die_file = topology / 'die_id'
+        die = int(die_file.read_text().strip()) if die_file.is_file() else None
+        siblings = cpuset_ids((topology / 'thread_siblings_list').read_text().strip())
+        if package < 0 or core < 0 or (die is not None and die < 0) or cpu not in siblings:
+            raise ValueError('Unknown Linux guest core topology')
+        if set(siblings).intersection(selected) != {cpu}:
+            raise ValueError('Explicit CPU set selects SMT siblings of the same guest core')
+        rows.append(dict(cpu=cpu, package=package, die=die, core=core, thread_siblings=siblings))
+    if len({(r['package'], r['die'], r['core']) for r in rows}) != len(rows):
+        raise ValueError('Explicit CPU set does not select distinct Linux guest cores')
+    return dict(state='VERIFIED_EXPLICIT_DISTINCT_LINUX_GUEST_CORES', effective_affinity=selected,
+                topology=rows, quota_cpus=cpus, exclusivity_claimed=False,
+                Windows_host_physical_mapping='UNKNOWN')
+
+
 def inside():
     output = Path('/output')
     result = {'state': 'FAIL', 'source_sha': os.environ['IAMSPEED_SOURCE_SHA'], 'image_id': os.environ['IAMSPEED_IMAGE_ID']}
     try:
         if hasattr(os, 'geteuid') and os.geteuid() == 0:
             raise RuntimeError('Unreal must run as a non-root user supplied by the image')
+        spec = os.environ.get('IAMSPEED_CPUSET_CPUS')
+        affinity = cpu_affinity_evidence(spec, int(os.environ['IAMSPEED_CPUSET_QUOTA'])) if spec else {'state': 'NOT_REQUESTED'}
+        save(output / 'cpu-affinity.json', affinity)
         engine = engine_root()
         version = json.loads((engine / 'Engine/Build/Build.version').read_text())
         if tuple(version.get(k) for k in ('MajorVersion', 'MinorVersion', 'PatchVersion')) != (5, 8, 2):
@@ -230,8 +281,10 @@ def inside():
         expected = source_test_manifest(plugin / 'Source')
         save(output / 'expected-tests.json', expected)
         env = os.environ.copy()
-        for name, directory in [('HOME', 'home'), ('TMPDIR', 'tmp'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('DOTNET_CLI_HOME', 'dotnet')]:
+        for name, directory in [('HOME', 'home'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('DOTNET_CLI_HOME', 'dotnet')]:
             path = output / directory; path.mkdir(exist_ok=True); env[name] = str(path)
+        # Keep .NET FIFOs and native temporary files on Linux tmpfs, not the host bind.
+        env['TMPDIR'] = '/tmp'
         # Linux Editor probes its user Documents filesystem during automation.
         # Keep that real directory inside this run, including on headless hosts.
         (output / 'home/Documents').mkdir(parents=True, exist_ok=True)
@@ -273,9 +326,10 @@ def inside():
     return 0 if result['state'] in ('PASS', 'PASS_WITH_ACCEPTED_DEBT') else 1
 
 
-def docker_args(image_id, source, output, owner, sha, cpus=2):
+def docker_args(image_id, source, output, owner, sha, cpus=2, cpuset_cpus=None):
     if type(cpus) is not int or cpus not in (2, 4, 8, 12):
         raise ValueError("Native CI CPU cap must be exactly 2, 4, 8 or 12")
+    cpuset = canonical_cpuset(cpuset_cpus, cpus) if cpuset_cpus is not None else None
     if output.resolve()==source.resolve() or output.resolve() in source.resolve().parents:
         raise ValueError('Read-only source must not be reachable through the writable output mount')
     for path in (source, output):
@@ -285,7 +339,9 @@ def docker_args(image_id, source, output, owner, sha, cpus=2):
     # Source-built UE writes its early Trace.uba before parsing -Log. Keep
     # those image-internal writes in this container's private disposable layer;
     # the immutable image and the read-only exact source bind stay unchanged.
-    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
+    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
+    if cpuset is not None:
+        command.extend(['--cpuset-cpus', cpuset, '--env', 'IAMSPEED_CPUSET_CPUS=' + cpuset, '--env', 'IAMSPEED_CPUSET_QUOTA=' + str(cpus)])
     if hasattr(os, 'getuid'):
         if os.getuid() == 0:
             raise ValueError('Run the host launcher as an ordinary user')
@@ -328,7 +384,7 @@ def host(args):
     extract_archive(source_tar, source)
     launch = {'source_sha': sha, 'source_archive_sha256': digest(source_tar), 'image_ref': image, 'image_id': info['Id'], 'owner': owner, 'state': 'STARTING', 'generated_root': str(output), 'read_only_input_root': str(source)}
     save(output / 'launch.json', launch)
-    command = docker_args(info['Id'], source, output, owner, sha, args.cpus)
+    command = docker_args(info['Id'], source, output, owner, sha, args.cpus, args.cpuset_cpus)
     save(output / 'docker-create.json', command)
     container = subprocess.check_output(command, text=True).strip()
     launch['container_id'] = container; save(output / 'launch.json', launch)
@@ -384,6 +440,7 @@ def main():
     parser.add_argument('--expected-sha')
     parser.add_argument('--output')
     parser.add_argument('--cpus', type=int, choices=(2, 4, 8, 12), default=2)
+    parser.add_argument('--cpuset-cpus', help='Explicit Docker Linux CPU IDs, one distinct guest core per --cpus; validated inside before build')
     args = parser.parse_args()
     return inside() if args.inside else host(args)
 

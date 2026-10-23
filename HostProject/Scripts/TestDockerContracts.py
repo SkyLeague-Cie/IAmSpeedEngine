@@ -293,5 +293,49 @@ class ExplicitNativeCpuEnvelope1617(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40, invalid)
 
+
+
+class ExplicitLinuxCpuTopologyProposal(unittest.TestCase):
+    def test_cardinality_duplicates_and_unbounded_cpu_ranges_fail_closed(self):
+        self.assertEqual(ci.canonical_cpuset('0,2,4,6', 4), '0,2,4,6')
+        for spec in ('0-2', '0,2,4,6,8', '0,0,2,4', '3-1', '-1', '0, 2', '0-999999999'):
+            with self.assertRaises(ValueError):
+                ci.canonical_cpuset(spec, 4)
+
+    def topology(self, text_by_path, actual):
+        def read(path):
+            return text_by_path[str(path).replace('\\', '/')]
+        return patch.object(Path, 'read_text', read), patch.object(Path, 'is_file', lambda path: False), patch.object(ci.os, 'sched_getaffinity', return_value=set(actual), create=True)
+
+    def test_effective_affinity_mismatch_is_not_a_performance_result(self):
+        with patch.object(ci.os, 'sched_getaffinity', return_value={0, 1}, create=True):
+            with self.assertRaises(ValueError):
+                ci.cpu_affinity_evidence('0,2', 2)
+
+    def test_smt_sibling_selection_refused_and_distinct_cores_recorded(self):
+        files = {}
+        for cpu, core, siblings in [(0, 0, '0-1'), (1, 0, '0-1'), (2, 1, '2-3')]:
+            prefix = '/sys/devices/system/cpu/cpu'+str(cpu)+'/topology/'
+            files.update({prefix+'physical_package_id': '0', prefix+'core_id': str(core), prefix+'thread_siblings_list': siblings})
+        a,b,c = self.topology(files, [0, 1])
+        with a,b,c:
+            with self.assertRaises(ValueError):
+                ci.cpu_affinity_evidence('0,1', 2)
+        a,b,c = self.topology(files, [0, 2])
+        with a,b,c:
+            evidence = ci.cpu_affinity_evidence('0,2', 2)
+        self.assertEqual(evidence['effective_affinity'], [0,2])
+        self.assertFalse(evidence['exclusivity_claimed'])
+        self.assertEqual(evidence['Windows_host_physical_mapping'], 'UNKNOWN')
+
+    def test_single_bounded_executable_sticky_tmpfs_and_explicit_mask(self):
+        with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
+            args = ci.docker_args('sha256:'+'a'*64, Path('/source'), Path('/output'), 'owner', 'b'*40, 2, '0,2')
+        self.assertEqual(args.count('--tmpfs'), 1)
+        self.assertEqual(args[args.index('--tmpfs')+1], '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m')
+        self.assertEqual(args[args.index('--cpus')+1], '2')
+        self.assertEqual(args[args.index('--cpuset-cpus')+1], '0,2')
+        self.assertEqual(args[args.index('--user')+1], '1000:1000')
+
 if __name__ == '__main__':
     unittest.main()

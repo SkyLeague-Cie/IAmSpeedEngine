@@ -60,14 +60,18 @@ jobs:
         env:
           IAMSPEED_CONFIGURED_IMAGE: ${{ vars.IAMSPEED_UE_IMAGE }}
           IAMSPEED_EXPECTED_SHA: ${{ github.sha }}
+          IAMSPEED_CONFIGURED_CPUSET: ${{ vars.IAMSPEED_CPUSET_CPUS }}
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           import os, subprocess, sys
           configured = os.environ.get('IAMSPEED_CONFIGURED_IMAGE', '').strip()
           if configured:
               os.environ['IAMSPEED_UE_IMAGE'] = configured
-          # The full native inventory exercises real 8/12-lane frame workers.
-          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py', '--cpus', '12'], check=True)
+          # CPU IDs belong to the runner Linux VM, not Windows processor numbering.
+          cpuset = os.environ.get('IAMSPEED_CONFIGURED_CPUSET', '').strip()
+          if not cpuset:
+              raise RuntimeError('Configure IAMSPEED_CPUSET_CPUS from the runner Linux sysfs topology; no portable numeric default')
+          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py', '--cpus', '12', '--cpuset-cpus', cpuset], check=True)
 
       - name: Report strict result and accepted integration debt
         if: always() && steps.contracts.outputs.output_dir != ''
