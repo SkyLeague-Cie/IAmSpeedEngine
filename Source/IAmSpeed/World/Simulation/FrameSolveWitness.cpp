@@ -15,21 +15,30 @@ namespace { thread_local FFrameSolveWitnessScope* ActiveSolveWitness=nullptr; }
 bool FWheelWitnessSnapshot1368::ReserveAndPreTouch1368()
 {
  if(bCaptured||bWriterOpen||bValid||bReleased||!Raw.IsEmpty()||!Canonical.IsEmpty()
-  ||!RawDebris.IsEmpty()||!CanonicalDebris.IsEmpty())return false;
+  ||!RawDebris.IsEmpty()||!CanonicalDebris.IsEmpty()||!PreparedRowRaw1368.IsEmpty()
+  ||!PreparedRowCanonical1368.IsEmpty()||!PreparedRowBuild1368.IsEmpty())return false;
  Raw.SetNumZeroed(128*1024);Raw.Reset();
- Canonical.SetNumZeroed(128*1024);Canonical.Reset();return true;
+ Canonical.SetNumZeroed(128*1024);Canonical.Reset();
+ PreparedRowRaw1368.SetNumZeroed(8*1024);PreparedRowRaw1368.Reset();
+ PreparedRowCanonical1368.SetNumZeroed(8*1024);PreparedRowCanonical1368.Reset();
+ PreparedRowBuild1368.SetNumZeroed(8*1024);PreparedRowBuild1368.Reset();return true;
 }
 bool FFrameSolveWitnessScope::PrepareFreshWheelCaptureStorage1368(FWheelWitnessSnapshot1368& Prepared) noexcept
 {
- // All checks precede either ownership transfer; refusal leaves both owners intact.
+ // All checks precede any ownership transfer; refusal leaves both owners intact.
  if(ActiveSolveWitness!=this||Rows||MainRows||WheelRows1368||WheelCanonicalRows1368
   ||bCaptureWheelManifold1368||bPreparedWheelCaptureStorage1368||bOverflow||ConsumedWheel1368
   ||PointerCapture.bConsumed1456||PointerCapture.HasOverflow()||PointerCapture.HasUnknown()||!WheelRegistry1368.IsValidSealed()
   ||!Bytes.IsEmpty()||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()
   ||!WheelRaw1368.IsEmpty()||!WheelCanonical1368.IsEmpty()
+  ||!WheelRowRawScratch1368.IsEmpty()||!WheelRowCanonicalScratch1368.IsEmpty()||!WheelRowCanonicalBuildScratch1368.IsEmpty()
   ||Prepared.bCaptured||Prepared.bWriterOpen||Prepared.bValid||Prepared.bReleased
-  ||!Prepared.Raw.IsEmpty()||!Prepared.Canonical.IsEmpty()||!Prepared.RawDebris.IsEmpty()||!Prepared.CanonicalDebris.IsEmpty())return false;
+  ||!Prepared.Raw.IsEmpty()||!Prepared.Canonical.IsEmpty()||!Prepared.RawDebris.IsEmpty()||!Prepared.CanonicalDebris.IsEmpty()
+  ||!Prepared.PreparedRowRaw1368.IsEmpty()||!Prepared.PreparedRowCanonical1368.IsEmpty()||!Prepared.PreparedRowBuild1368.IsEmpty())return false;
  Swap(WheelRaw1368,Prepared.Raw);Swap(WheelCanonical1368,Prepared.Canonical);
+ Swap(WheelRowRawScratch1368,Prepared.PreparedRowRaw1368);
+ Swap(WheelRowCanonicalScratch1368,Prepared.PreparedRowCanonical1368);
+ Swap(WheelRowCanonicalBuildScratch1368,Prepared.PreparedRowBuild1368);
  bPreparedWheelCaptureStorage1368=true;return true;
 }
 bool FFrameSolveWitnessScope::PrepareFreshCaptureStorage1534(FFramePointerCanonicalSnapshot1456& Prepared,TArray<int32>& PreparedBounds) noexcept

@@ -35,7 +35,9 @@ enum class EWheelWitnessRelease1368 : uint8
 class IAMSPEED_API FWheelWitnessSnapshot1368
 {
     friend class FFrameSolveWitnessScope;
+    friend struct FWheelWitnessPreparedStorageTestAccess1368;
     TArray<uint8> Raw,Canonical,RawDebris,CanonicalDebris;
+    TArray<uint8> PreparedRowRaw1368,PreparedRowCanonical1368,PreparedRowBuild1368;
     bool bCaptured=false,bWriterOpen=false,bValid=false,bReleased=false;
 public:
     // Growable capacity hints only, prepared on the game thread before owner start.
@@ -177,6 +179,7 @@ private:
     // two canonical buffers only after complete validation and encoding.
     TArray<uint8> WheelRowRawScratch1368,WheelRowCanonicalScratch1368,WheelRowCanonicalBuildScratch1368;
 #if WITH_DEV_AUTOMATION_TESTS
+    friend struct FWheelWitnessPreparedStorageTestAccess1368;
     bool bReuseWheelPointerEvents1368=false;
     bool bPreparedWheelCaptureStorage1368=false;
     TArray<FFramePointerObservation> WheelRowPointerEventsScratch1368;

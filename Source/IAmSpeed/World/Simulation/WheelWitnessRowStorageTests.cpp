@@ -5,6 +5,35 @@
 #include "UObject/StrongObjectPtr.h"
 #include <type_traits>
 
+namespace Speed
+{
+// Private read-only test access: no storage accessor enters the public API.
+struct FWheelWitnessPreparedStorageTestAccess1368
+{
+ struct FState {const void* Data[5]{};SIZE_T Allocated[5]{};int32 Num[5]{};};
+ static FState Read(const TArray<uint8>* const Buffers[5])
+ {
+  FState State;
+  for(int32 I=0;I<5;++I){State.Data[I]=Buffers[I]->GetData();State.Allocated[I]=Buffers[I]->GetAllocatedSize();State.Num[I]=Buffers[I]->Num();}
+  return State;
+ }
+ static FState Snapshot(const FWheelWitnessSnapshot1368& S)
+ {
+  const TArray<uint8>* Buffers[]={&S.Raw,&S.Canonical,&S.PreparedRowRaw1368,&S.PreparedRowCanonical1368,&S.PreparedRowBuild1368};return Read(Buffers);
+ }
+ static FState Scope(const FFrameSolveWitnessScope& S)
+ {
+  const TArray<uint8>* Buffers[]={&S.WheelRaw1368,&S.WheelCanonical1368,&S.WheelRowRawScratch1368,&S.WheelRowCanonicalScratch1368,&S.WheelRowCanonicalBuildScratch1368};return Read(Buffers);
+ }
+ static bool Same(const FState& A,const FState& B)
+ {for(int32 I=0;I<5;++I)if(A.Data[I]!=B.Data[I]||A.Allocated[I]!=B.Allocated[I]||A.Num[I]!=B.Num[I])return false;return true;}
+ static bool Prepared(const FState& S)
+ {for(int32 I=0;I<5;++I)if(S.Num[I]||S.Allocated[I]<(I<2?128*1024:8*1024))return false;return true;}
+ static bool Empty(const FState& S)
+ {for(int32 I=0;I<5;++I)if(S.Num[I]||S.Allocated[I]||S.Data[I])return false;return true;}
+};
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWheelWitnessRowStorageTests,
  "IAmSpeed.Simulation.FrameWitness.WheelRowStorageIsolation",
  EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
@@ -24,10 +53,14 @@ bool FWheelWitnessRowStorageTests::RunTest(const FString&)
   if(!Registry.Register(Owner,Key)||!Registry.Seal())return false;
   TArray<uint8> Main;FWheelWitnessSnapshot1368 WheelSnapshot;FFramePointerCanonicalSnapshot1456 MainSnapshot;
   if(Prepared&&!WheelSnapshot.ReserveAndPreTouch1368())return false;
+  const auto PreparedBefore=FWheelWitnessPreparedStorageTestAccess1368::Snapshot(WheelSnapshot);
+  if(Prepared&&!FWheelWitnessPreparedStorageTestAccess1368::Prepared(PreparedBefore))return false;
   bool Captured=false;
   {
   FFrameSolveWitnessScope Scope(17,Main,Registry);
   if(Prepared&&!Scope.PrepareFreshWheelCaptureStorage1368(WheelSnapshot))return false;
+  if(Prepared&&(!FWheelWitnessPreparedStorageTestAccess1368::Same(PreparedBefore,FWheelWitnessPreparedStorageTestAccess1368::Scope(Scope))
+   ||!FWheelWitnessPreparedStorageTestAccess1368::Empty(FWheelWitnessPreparedStorageTestAccess1368::Snapshot(WheelSnapshot))))return false;
   if(!Scope.EnableWheelManifoldCapture1368())return false;
   FFrameSolveWitnessScope::RecordWheelManifold1368(0,Owner,0,0,{},{});
   FFrameSolveWitnessScope::RecordWheelManifold1368(1,Owner,1,7,{},Orders,Scalars,Doubles,Vectors);
@@ -114,11 +147,16 @@ bool FWheelWitnessRowStorageTests::RunTest(const FString&)
  {
   FWheelWitnessSnapshot1368 Prepared,Second;Prepared.ReserveAndPreTouch1368();Second.ReserveAndPreTouch1368();
   TArray<uint8> Main,InnerMain;FFrameSolveWitnessScope Outer(17,Main,Registry);
+  const auto Before=FWheelWitnessPreparedStorageTestAccess1368::Snapshot(Prepared);
+  const auto OuterBefore=FWheelWitnessPreparedStorageTestAccess1368::Scope(Outer);
   {FFrameSolveWitnessScope Inner(17,InnerMain,Registry);
-   TestFalse(TEXT("inactive outer TLS scope cannot take prepared storage"),Outer.PrepareFreshWheelCaptureStorage1368(Prepared));}
+   TestFalse(TEXT("inactive outer TLS scope cannot take prepared storage"),Outer.PrepareFreshWheelCaptureStorage1368(Prepared));
+   TestTrue(TEXT("TLS refusal leaves all five donor and destination buffers untouched"),FWheelWitnessPreparedStorageTestAccess1368::Same(Before,FWheelWitnessPreparedStorageTestAccess1368::Snapshot(Prepared))&&FWheelWitnessPreparedStorageTestAccess1368::Same(OuterBefore,FWheelWitnessPreparedStorageTestAccess1368::Scope(Outer)));}
   TestTrue(TEXT("TLS refusal preserves prepared capacity for active outer"),Outer.PrepareFreshWheelCaptureStorage1368(Prepared));
+  TestTrue(TEXT("all five prepared arrays transfer by exact ownership"),FWheelWitnessPreparedStorageTestAccess1368::Same(Before,FWheelWitnessPreparedStorageTestAccess1368::Scope(Outer))&&FWheelWitnessPreparedStorageTestAccess1368::Empty(FWheelWitnessPreparedStorageTestAccess1368::Snapshot(Prepared)));
   TestTrue(TEXT("prepared raw capacity adopted before first record"),Outer.RawWheelManifold1368().IsEmpty()&&Outer.RawWheelManifold1368().GetAllocatedSize()>=128*1024);
   TestFalse(TEXT("scope may adopt fresh wheel bytes only once"),Outer.PrepareFreshWheelCaptureStorage1368(Second));
+  TestTrue(TEXT("double-adoption refusal retains every second prepared capacity"),FWheelWitnessPreparedStorageTestAccess1368::Prepared(FWheelWitnessPreparedStorageTestAccess1368::Snapshot(Second)));
  }
  {
   FWheelWitnessSnapshot1368 Prepared;Prepared.ReserveAndPreTouch1368();
@@ -167,6 +205,62 @@ bool FWheelWitnessRowStorageTests::RunTest(const FString&)
   TArray<uint8> Raw,Canonical,RawDebris,CanonicalDebris;
   TestTrue(TEXT("large captured stream releases normally"),Prepared.ReleaseAfterClosure(Raw,Canonical,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::TransferredValid);
   TestTrue(TEXT("both real wheel streams grow beyond hint"),Raw.Num()>128*1024&&Canonical.Num()>128*1024&&RawDebris.IsEmpty()&&CanonicalDebris.IsEmpty());
+ }
+ {
+  FFramePointerKey Key{1,41,2,7,0};for(uint64 I=0;I<1024;++I)Key.Membership.Add(I);
+  FFramePointerRegistry LargeRegistry;TestTrue(TEXT("large semantic membership registry seals"),LargeRegistry.Register(PreparedOwner,Key)&&LargeRegistry.Seal());
+  FWheelWitnessSnapshot1368 Prepared;Prepared.ReserveAndPreTouch1368();TArray<uint8> OriginalRaw,ActualCanonical;
+  {
+   TArray<uint8> Main;FFrameSolveWitnessScope Scope(17,Main,LargeRegistry);
+   TestTrue(TEXT("large membership fixture adopts prepared storage"),Scope.PrepareFreshWheelCaptureStorage1368(Prepared));
+   Scope.EnableWheelManifoldCapture1368();
+   FFrameSolveWitnessScope::RecordWheelManifold1368(0,PreparedOwner,0,0,{},{});
+   FFrameSolveWitnessScope::RecordWheelManifold1368(1,PreparedOwner,0,0,{},{});
+   FFrameSolveWitnessScope::RecordWheelManifold1368(255,PreparedOwner,0,0,{},{});
+   OriginalRaw=Scope.RawWheelManifold1368();
+   TestTrue(TEXT("large membership canonical rows remain valid"),Scope.MakeWheelManifoldCanonical1368(ActualCanonical));
+   const auto Storage=FWheelWitnessPreparedStorageTestAccess1368::Scope(Scope);
+   TestTrue(TEXT("both alternating canonical row scratches grow beyond 8KiB hint"),Storage.Allocated[3]>8*1024&&Storage.Allocated[4]>8*1024);
+   TestTrue(TEXT("large membership witness consumes without truncation"),Scope.NumWheelManifoldRows1368()==3&&!Scope.HasOverflow()&&Scope.ConsumeWheelWitness1368(Prepared));
+  }
+  // Independent legacy scalar encoding at the sole owner-pointer field. The
+  // surrounding authored raw bytes and row framing retain their exact order.
+  TArray<uint8> Expected;int32 At=0;bool Framing=true;
+  const auto Scalar=[&](const auto& V){const int32 Offset=Expected.AddUninitialized(sizeof(V));FMemory::Memcpy(Expected.GetData()+Offset,&V,sizeof(V));};
+  constexpr int32 OwnerOffset=sizeof(uint32)+sizeof(uint64)+2*sizeof(int32)+sizeof(uint8);
+  constexpr int32 PointerBytes=sizeof(UPTRINT);
+  for(int32 Row=0;Row<3;++Row)
+  {
+   if(At>OriginalRaw.Num()-8){Framing=false;break;}
+   uint32 Magic,Bytes;FMemory::Memcpy(&Magic,OriginalRaw.GetData()+At,4);FMemory::Memcpy(&Bytes,OriginalRaw.GetData()+At+4,4);At+=8;
+   if(Magic!=0x334d5749||Bytes<uint32(OwnerOffset+sizeof(UPTRINT))||Bytes>uint32(OriginalRaw.Num()-At)){Framing=false;break;}
+   Scalar(Magic);Scalar(uint32(int32(Bytes)-PointerBytes+40+Key.Membership.Num()*int32(sizeof(uint64))));
+   Expected.Append(OriginalRaw.GetData()+At,OwnerOffset);
+   Scalar(Key.Domain);Scalar(Key.Owner);Scalar(Key.Generation);Scalar(Key.Role);Scalar(Key.Element);Scalar(uint32(Key.Membership.Num()));for(uint64 Id:Key.Membership)Scalar(Id);
+   Expected.Append(OriginalRaw.GetData()+At+OwnerOffset+PointerBytes,int32(Bytes)-OwnerOffset-PointerBytes);At+=int32(Bytes);
+  }
+  TestTrue(TEXT("large canonical scratch growth preserves independent scalar wire oracle"),Framing&&At==OriginalRaw.Num()&&Expected==ActualCanonical);
+  TArray<uint8> Raw,Canonical,RawDebris,CanonicalDebris;
+  TestTrue(TEXT("large membership snapshot releases normally"),Prepared.ReleaseAfterClosure(Raw,Canonical,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::TransferredValid);
+  TestTrue(TEXT("large membership release retains all raw and canonical bytes"),Raw==OriginalRaw&&Canonical==Expected&&RawDebris.IsEmpty()&&CanonicalDebris.IsEmpty());
+ }
+ {
+  FWheelWitnessSnapshot1368 Prepared;Prepared.ReserveAndPreTouch1368();TArray<uint8> OriginalRaw;
+  {
+   TArray<uint8> Main;FFrameSolveWitnessScope Scope(17,Main,Registry);
+   TestTrue(TEXT("late-write fixture adopts all fresh storage"),Scope.PrepareFreshWheelCaptureStorage1368(Prepared));
+   Scope.EnableWheelManifoldCapture1368();
+   FFrameSolveWitnessScope::RecordWheelManifold1368(0,PreparedOwner,0,0,{},{});
+   FFrameSolveWitnessScope::RecordWheelManifold1368(255,PreparedOwner,0,0,{},{});
+   OriginalRaw=Scope.RawWheelManifold1368();
+   TestTrue(TEXT("late-write fixture captures the original framed rows"),Scope.ConsumeWheelWitness1368(Prepared));
+   // The object is non-const; simulate an unobserved write through its existing
+   // evidence view after transfer. Closure must preserve it as invalid debris.
+   const_cast<TArray<uint8>&>(Scope.RawWheelManifold1368()).Add(0x9b);
+  }
+  TArray<uint8> Raw,Canonical,RawDebris,CanonicalDebris;
+  TestTrue(TEXT("fresh row scratch never hides a late unobserved write"),Prepared.ReleaseAfterClosure(Raw,Canonical,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::TransferredInvalid);
+  TestTrue(TEXT("late-write failure preserves original raw and exact debris"),Raw==OriginalRaw&&RawDebris==TArray<uint8>{0x9b}&&!Canonical.IsEmpty()&&CanonicalDebris.IsEmpty());
  }
  return !HasAnyErrors();
 }
