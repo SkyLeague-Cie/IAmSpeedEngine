@@ -106,13 +106,15 @@ public:
 template<int32 Expected,class... V> void WriteHistoryScalars1564(uint8*& Cursor,const V&... Fields)
 {
  static_assert(sizeof...(V)>0 && (std::is_arithmetic_v<V> && ...));
- static_assert((sizeof(V)+...)==Expected);
- const auto Copy=[&Cursor](const auto& Value)
+ static_assert((sizeof(V)+...)==Expected && Expected<=256);
+ uint8 Bytes[Expected];uint8* LocalCursor=Bytes;
+ const auto Copy=[&LocalCursor](const auto& Value)
  {
   using S=std::remove_cvref_t<decltype(Value)>;
-  const S Scalar=Value;FMemory::Memcpy(Cursor,&Scalar,sizeof(Scalar));Cursor+=sizeof(Scalar);
+  const S Scalar=Value;FMemory::Memcpy(LocalCursor,&Scalar,sizeof(Scalar));LocalCursor+=sizeof(Scalar);
  };
  (Copy(Fields),...);
+ FMemory::Memcpy(Cursor,Bytes,Expected);Cursor+=Expected;
 }
 inline void WriteBaseHistory1564(uint8*& Cursor,const FBasePhysicsState& X)
 {
