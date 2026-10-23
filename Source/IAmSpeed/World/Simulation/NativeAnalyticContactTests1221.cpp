@@ -1,4 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "IAmSpeed/World/Simulation/NativeContactStateBytes1221.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -140,17 +141,10 @@ struct FNativeContactRow1221
  bool bComplete=false;
 };
 void ContactBaseState1221(TArray<uint8>& O,const FBasePhysicsState& X)
-{
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.Kinematic);W::Add(O,X.bIsFrozen);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.bStartCountdown);
-}
+{Speed::Testing1221::AppendContactBaseState(O,X);}
 void ContactWheeledState1221(TArray<uint8>& O,const FWheeledPhysicsState& X)
-{
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.bStartCountdown);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.FramesSinceLastImpact);
- W::Add(O,X.AllowedSideVelocity);W::Add(O,X.AllowedAngularVelocity);W::Add(O,X.SuspensionLastDisplacement);
- W::Add(O,X.PhysicalThrottleInput);W::Add(O,X.PhysicalBrakeInput);W::Add(O,X.PhysicalSteerInput);W::Add(O,X.NbFramesSinceGroundContact);
-}
+{Speed::Testing1221::AppendContactWheeledState(O,X);}
+
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedNativeAnalyticContacts1221,
  "IAmSpeed.Simulation.FrameParallel.NativeAnalyticContacts1221",
@@ -475,10 +469,11 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
    // independent comparison, which must not inflate production worker evidence.
    if(!Fast)
    {
-   Row.CameraPose=Snapshot.PresentationOutputs[0].Payload;
-   Row.CameraCheckpoint=Snapshot.PresentationOutputs[0].StatePayload;
+   Row.CameraPose=MoveTemp(Snapshot.PresentationOutputs[0].Payload);
+   Row.CameraCheckpoint=MoveTemp(Snapshot.PresentationOutputs[0].StatePayload);
    Row.CameraNative=GetFrameParallelStageTotals(EFrameParallelStage::Camera).MaximumNativeThreads;
-   const auto Expected=Snapshot.PresentationOutputs[0];Snapshot.PresentationOutputs.Reset();
+   // Retain original production bytes in Row, including on comparison failure.
+   Snapshot.PresentationOutputs.Reset();
    const auto Validate=[&]
    {
     for(int32 A=0;A<Cars.Num();++A)
@@ -486,8 +481,8 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
     return true;
    };
    if(!FrameParallel::ProduceFramePresentationWithOwnerValidation(Snapshot,WorkerList,Lanes,true,Validate)
-    ||Snapshot.PresentationOutputs.Num()!=1||Expected.Payload!=Snapshot.PresentationOutputs[0].Payload
-    ||Expected.StatePayload!=Snapshot.PresentationOutputs[0].StatePayload)
+    ||Snapshot.PresentationOutputs.Num()!=1||Row.CameraPose!=Snapshot.PresentationOutputs[0].Payload
+    ||Row.CameraCheckpoint!=Snapshot.PresentationOutputs[0].StatePayload)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    FSpeedCarCameraPose Pose;
    const bool PoseRead=FSpeedCarCameraPose::Read(Snapshot.PresentationOutputs[0].Payload,Pose);

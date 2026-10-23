@@ -1,4 +1,5 @@
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
+#include "IAmSpeed/World/Simulation/NativeContactStateBytes1221.h"
 #include "IAmSpeed/World/Simulation/FrameFloatingPointContext.h"
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "Misc/AutomationTest.h"
@@ -85,6 +86,43 @@ void FillDistinctKinematic(Speed::FKinematicState& Value,uint32 Case)
  SetDistinctKinematicBits(Value.AngularVelocity.X,Case+13);SetDistinctKinematicBits(Value.AngularVelocity.Y,Case+14);SetDistinctKinematicBits(Value.AngularVelocity.Z,Case+15);
  SetDistinctKinematicBits(Value.AngularAcceleration.X,Case+16);SetDistinctKinematicBits(Value.AngularAcceleration.Y,Case+17);SetDistinctKinematicBits(Value.AngularAcceleration.Z,Case+18);
 }
+// Independent selected-state oracle: no production Add or bounded writer.
+void ReferenceContactBase(TArray<uint8>& Out,const FBasePhysicsState& X)
+{
+ ReferenceKinematic(Out,X.Kinematic);ReferenceScalar(Out,X.bIsFrozen);
+ ReferenceScalar(Out,X.nbFramesbeforeCanMove);ReferenceScalar(Out,X.bStartCountdown);
+}
+void ReferenceContactWheeled(TArray<uint8>& Out,const FWheeledPhysicsState& X)
+{
+ ReferenceScalar(Out,X.bStartCountdown);ReferenceScalar(Out,X.nbFramesbeforeCanMove);ReferenceScalar(Out,X.FramesSinceLastImpact);
+ ReferenceXYZ(Out,X.AllowedSideVelocity);ReferenceXYZ(Out,X.AllowedAngularVelocity);
+ ReferenceScalar(Out,uint64(4));for(const float Value:X.SuspensionLastDisplacement)ReferenceScalar(Out,Value);
+ ReferenceScalar(Out,X.PhysicalThrottleInput);ReferenceScalar(Out,X.PhysicalBrakeInput);
+ ReferenceScalar(Out,X.PhysicalSteerInput);ReferenceScalar(Out,X.NbFramesSinceGroundContact);
+}
+// Retain the previous fixture spelling independently of the new writer.
+void LegacyContactBase(TArray<uint8>& Out,const FBasePhysicsState& X)
+{
+ using W=Speed::FEpisodeStateBytesForTesting;
+ W::Add(Out,X.Kinematic);W::Add(Out,X.bIsFrozen);W::Add(Out,X.nbFramesbeforeCanMove);W::Add(Out,X.bStartCountdown);
+}
+void LegacyContactWheeled(TArray<uint8>& Out,const FWheeledPhysicsState& X)
+{
+ using W=Speed::FEpisodeStateBytesForTesting;
+ W::Add(Out,X.bStartCountdown);W::Add(Out,X.nbFramesbeforeCanMove);W::Add(Out,X.FramesSinceLastImpact);
+ W::Add(Out,X.AllowedSideVelocity);W::Add(Out,X.AllowedAngularVelocity);W::Add(Out,X.SuspensionLastDisplacement);
+ W::Add(Out,X.PhysicalThrottleInput);W::Add(Out,X.PhysicalBrakeInput);W::Add(Out,X.PhysicalSteerInput);W::Add(Out,X.NbFramesSinceGroundContact);
+}
+void FillContactStates(FBasePhysicsState& Base,FWheeledPhysicsState& Wheel,uint32 Slot)
+{
+ FillDistinctKinematic(Base.Kinematic,Slot);Base.bIsFrozen=(Slot&1)!=0;
+ Base.nbFramesbeforeCanMove=uint16(Slot);Base.bStartCountdown=(Slot&2)!=0;
+ Wheel.bStartCountdown=(Slot&4)!=0;Wheel.nbFramesbeforeCanMove=uint16(Slot);Wheel.FramesSinceLastImpact=uint8(Slot);
+ FillXYZ(Wheel.AllowedSideVelocity,Slot+3);FillXYZ(Wheel.AllowedAngularVelocity,Slot+6);
+ for(uint32 Index=0;Index<4;++Index)SetScalarBits(Wheel.SuspensionLastDisplacement[Index],Slot+Index+9);
+ Wheel.PhysicalThrottleInput=uint8(Slot+1);Wheel.PhysicalBrakeInput=uint8(Slot+2);
+ Wheel.PhysicalSteerInput=int8(int32(Slot%255)-127);Wheel.NbFramesSinceGroundContact=uint8(Slot+3);
+}
 void ReferencePointer(TArray<uint8>& Out,int* Pointer)
 {
  const UPTRINT Address=reinterpret_cast<UPTRINT>(Pointer);
@@ -158,6 +196,42 @@ bool FEpisodeNumericCodecTests::RunTest(const FString&)
   ReferenceScalar(HistoryExpected,Slot);ReferenceKinematic(HistoryExpected,State);
  }
  TestTrue(TEXT("all 1024 marked history slots retain exact bytes"),HistoryActual==HistoryExpected);
+
+ // Full legacy/new/reference agreement, including mixed widths and the fixed
+ // suspension array prefix. Distinct slot counters detect omission/reordering.
+ for(uint32 Case=0;Case<19;++Case)
+ {
+  FBasePhysicsState Base;FWheeledPhysicsState Wheel;FillContactStates(Base,Wheel,Case);
+  TArray<uint8> New,Legacy,Reference;
+  W::Add(New,Prefix);W::Add(Legacy,Prefix);ReferenceScalar(Reference,Prefix);
+  Speed::Testing1221::AppendContactBaseState(New,Base);Speed::Testing1221::AppendContactWheeledState(New,Wheel);
+  LegacyContactBase(Legacy,Base);LegacyContactWheeled(Legacy,Wheel);
+  ReferenceContactBase(Reference,Base);ReferenceContactWheeled(Reference,Wheel);
+  W::Add(New,Suffix);W::Add(Legacy,Suffix);ReferenceScalar(Reference,Suffix);
+  TestTrue(TEXT("1221 bounded states exactly match legacy and independent scalar oracle with special bits"),New==Legacy&&New==Reference);
+ }
+ {
+  TArray<uint8> New,Legacy,Reference;
+  for(uint32 Car=0;Car<2;++Car)
+  {
+   W::Add(New,int32(1024));W::Add(Legacy,int32(1024));ReferenceScalar(Reference,int32(1024));
+   for(int32 Slot=0;Slot<1024;++Slot)
+   {W::Add(New,Slot);W::Add(Legacy,Slot);ReferenceScalar(Reference,Slot);}
+   W::Add(New,int32(1024));W::Add(Legacy,int32(1024));ReferenceScalar(Reference,int32(1024));
+   for(uint32 Slot=0;Slot<1024;++Slot)
+   {
+    FBasePhysicsState Base;FWheeledPhysicsState Wheel;FillContactStates(Base,Wheel,Slot+Car*1024);
+    Speed::Testing1221::AppendContactBaseState(New,Base);LegacyContactBase(Legacy,Base);ReferenceContactBase(Reference,Base);
+   }
+   W::Add(New,int32(1024));W::Add(Legacy,int32(1024));ReferenceScalar(Reference,int32(1024));
+   for(uint32 Slot=0;Slot<1024;++Slot)
+   {
+    FBasePhysicsState Base;FWheeledPhysicsState Wheel;FillContactStates(Base,Wheel,Slot+Car*1024);
+    Speed::Testing1221::AppendContactWheeledState(New,Wheel);LegacyContactWheeled(Legacy,Wheel);ReferenceContactWheeled(Reference,Wheel);
+   }
+  }
+  TestTrue(TEXT("1221 both cars retain all1024 base/frame/wheeled history slots and count prefixes"),New==Legacy&&New==Reference);
+ }
 
  int Object=7,Unknown=9;
  const Speed::FFramePointerKey Key{1,41,2,7,0};Speed::FFramePointerRegistry Registry;
