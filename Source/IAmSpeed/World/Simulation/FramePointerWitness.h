@@ -73,6 +73,13 @@ class IAMSPEED_API FFramePointerCaptureScope
 {
 public:
     FFramePointerCaptureScope(TArray<uint8>& Bytes,const FFramePointerRegistry& Registry,int32 InLimit=16384);
+#if WITH_DEV_AUTOMATION_TESTS
+    // Explicit wheel-row storage lease only. Scratch must be empty, immobile,
+    // and untouched until destruction. Busy/nonempty scratch fails closed without
+    // touching it. nullptr preserves the default owned storage path.
+    FFramePointerCaptureScope(TArray<uint8>& Bytes,const FFramePointerRegistry& Registry,
+        int32 InLimit,TArray<FFramePointerObservation>* ReusableEvents1368);
+#endif
     ~FFramePointerCaptureScope();
     FFramePointerCaptureScope(const FFramePointerCaptureScope&)=delete;
     FFramePointerCaptureScope& operator=(const FFramePointerCaptureScope&)=delete;
@@ -121,6 +128,7 @@ private:
     int32 Limit=0;
     bool bUnknown=false,bOverflow=false;
 #if WITH_DEV_AUTOMATION_TESTS
+    TArray<FFramePointerObservation>* BorrowedEvents1368=nullptr;
     bool bConsumed1456=false;
     FFramePointerCanonicalSnapshot1456* ConsumedSnapshot1456=nullptr;
 #endif

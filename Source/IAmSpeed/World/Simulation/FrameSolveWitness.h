@@ -116,6 +116,13 @@ public:
         if(Rows||WheelRows1368||bCaptureWheelManifold1368)return false;
         bCaptureWheelManifold1368=true;return true;
     }
+#if WITH_DEV_AUTOMATION_TESTS
+    bool EnableWheelManifoldCapture1368(bool ReusePointerEvents1368) noexcept
+    {
+        if(!EnableWheelManifoldCapture1368())return false;
+        bReuseWheelPointerEvents1368=ReusePointerEvents1368;return true;
+    }
+#endif
     static bool IsWheelManifoldActive1368() noexcept;
     const TArray<uint8>& RawWheelManifold1368()const noexcept{return WheelRaw1368;}
     bool MakeWheelManifoldCanonical1368(TArray<uint8>& Out)const
@@ -162,6 +169,8 @@ private:
     // two canonical buffers only after complete validation and encoding.
     TArray<uint8> WheelRowRawScratch1368,WheelRowCanonicalScratch1368,WheelRowCanonicalBuildScratch1368;
 #if WITH_DEV_AUTOMATION_TESTS
+    bool bReuseWheelPointerEvents1368=false;
+    TArray<FFramePointerObservation> WheelRowPointerEventsScratch1368;
     FWheelWitnessSnapshot1368* ConsumedWheel1368=nullptr;
 #endif
     bool bOverflow=false;

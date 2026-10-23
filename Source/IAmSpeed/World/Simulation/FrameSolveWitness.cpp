@@ -220,7 +220,8 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  // are not touched. No additional component/vehicle kinematic getter is called.
  auto& Raw=Scope->WheelRowRawScratch1368;Raw.Reset();
  auto& Canonical=Scope->WheelRowCanonicalScratch1368;Canonical.Reset();
- FFramePointerCaptureScope Pointers(Raw,Scope->WheelRegistry1368);
+ FFramePointerCaptureScope Pointers(Raw,Scope->WheelRegistry1368,16384,
+  Scope->bReuseWheelPointerEvents1368?&Scope->WheelRowPointerEventsScratch1368:nullptr);
  using W=FEpisodeStateBytesForTesting;
  W::Add(Raw,uint32(3));W::Add(Raw,Scope->Frame);W::Add(Raw,Scope->WheelRows1368++);
  W::Add(Raw,Scope->Rows);W::Add(Raw,Event);W::Add(Raw,Owner);

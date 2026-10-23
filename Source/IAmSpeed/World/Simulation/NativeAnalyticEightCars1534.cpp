@@ -580,7 +580,7 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    FFrameSolveWitnessScope Ordered(N,Row.RawOrderedSolve,Pointers);
    if(!Ordered.EnableRowBoundaryCapture1534()||FrameParallel::FJoinedActorBaseWitnessScope1534::IsActive()){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    FrameParallel::FJoinedActorBaseWitnessScope1534 BaseWitness1534(Row.BaseEvents1534);
-   if(!Ordered.EnableWheelManifoldCapture1368()){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   if(!Ordered.EnableWheelManifoldCapture1368(true)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    // Install/remove on this same canonical owner, outside the physical call.
    // Never replace an existing observer, including on an Idle or failure pulse.
    int32 InstalledPrepareObservers=0;

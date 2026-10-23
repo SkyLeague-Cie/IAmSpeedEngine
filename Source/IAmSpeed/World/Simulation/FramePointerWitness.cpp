@@ -11,6 +11,20 @@ FFramePointerCaptureScope::FFramePointerCaptureScope(TArray<uint8>& Bytes,
     const FFramePointerRegistry& Registry,const int32 InLimit)
     : Target(Bytes),Identities(Registry),Limit(FMath::Clamp(InLimit,1,16384))
 { Previous=ActivePointerCapture;ActivePointerCapture=this; }
+#if WITH_DEV_AUTOMATION_TESTS
+FFramePointerCaptureScope::FFramePointerCaptureScope(TArray<uint8>& Bytes,
+ const FFramePointerRegistry& Registry,const int32 InLimit,TArray<FFramePointerObservation>* ReusableEvents1368)
+ : FFramePointerCaptureScope(Bytes,Registry,InLimit)
+{
+ if(!ReusableEvents1368)return;
+ // The same backing storage cannot be leased by a nested live scope, even
+ // though Swap leaves the external scratch temporarily empty.
+ for(auto* Outer=Previous;Outer;Outer=Outer->Previous)
+  if(Outer->BorrowedEvents1368==ReusableEvents1368){bOverflow=true;return;}
+ if(!ReusableEvents1368->IsEmpty()){bOverflow=true;return;}
+ Swap(Events,*ReusableEvents1368);BorrowedEvents1368=ReusableEvents1368;
+}
+#endif
 FFramePointerCaptureScope::~FFramePointerCaptureScope()
 {
  check(ActivePointerCapture==this);
@@ -22,6 +36,13 @@ FFramePointerCaptureScope::~FFramePointerCaptureScope()
   ConsumedSnapshot1456->bOverflow1456|=bOverflow||!Target.IsEmpty()||!Events.IsEmpty();
   ConsumedSnapshot1456->bUnknown1456|=bUnknown;
   ConsumedSnapshot1456->bWriterScopeOpen1456=false;
+ }
+ if(BorrowedEvents1368)
+ {
+  // Destroy keys/Membership at the same row boundary as before. Only the
+  // outer Events allocation is retained; inner allocations are not retained.
+  check(BorrowedEvents1368->IsEmpty());
+  Events.Reset();Swap(Events,*BorrowedEvents1368);
  }
 #endif
  ActivePointerCapture=Previous;
@@ -235,7 +256,7 @@ bool FFramePointerCaptureScope::CaptureCanonicalSnapshot1456(FFramePointerCanoni
 }
 bool FFramePointerCaptureScope::ConsumeCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out)
 {
- if(bConsumed1456||!Identities.IsValidSealed()||bUnknown||bOverflow||Out.bCaptured1456
+ if(BorrowedEvents1368||bConsumed1456||!Identities.IsValidSealed()||bUnknown||bOverflow||Out.bCaptured1456
   ||!Out.Raw1456.IsEmpty()||!Out.Events1456.IsEmpty())return false;
  // Exchange with already-prepared empty storage, avoiding both full copies and
  // hot-path freeing of the destination reservations. Source remains valid/empty.

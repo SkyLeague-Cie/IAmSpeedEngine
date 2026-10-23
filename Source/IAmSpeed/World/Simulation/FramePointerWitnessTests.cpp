@@ -495,13 +495,17 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         TestTrue(TEXT("partial scratch is not promoted to canonical evidence"),Sentinel.IsEmpty()&&Source==Original);
         if(Failure==3)TestFalse(TEXT("failure after a valid first token retains uncertified partial scratch only"),Build.IsEmpty());
     }
+    // Run the existing independent full-wheel framing/lifecycle/failure-pack
+    // oracles under BOTH legacy allocation and the opt-in scratch lease.
+    for(int32 ReuseMode1368=0;ReuseMode1368<2;++ReuseMode1368)
+    {
     for(uint64 FrameNumber1368=0;FrameNumber1368<2;++FrameNumber1368)
     {
         FWheelWitnessSnapshot1368 Snapshot1368;TArray<uint8> Main,ControlRaw,ControlCanonical,ExpectedWheelRaw,ExpectedWheelCanonical;
         TArray<uint8> RawOut,CanonicalOut,RawDebris,CanonicalDebris;RawOut.Reserve(512*1024);
         {
             FFrameSolveWitnessScope Solve(FrameNumber1368,Main,Registry);
-            TestTrue(TEXT("wheel transfer test enables real observer"),Solve.EnableWheelManifoldCapture1368());
+            TestTrue(TEXT("wheel transfer test enables real observer"),Solve.EnableWheelManifoldCapture1368(ReuseMode1368!=0));
             const TConstArrayView<float> Large=FrameNumber1368==0?TConstArrayView<float>(LargeWheelValues1368):TConstArrayView<float>{};
             EmitWheel1368(0,Large);EmitWheel1368(1,MakeArrayView(SmallWheelValues1368));EmitWheel1368(255,{});
             IndependentWheel1368(ExpectedWheelRaw,FrameNumber1368,0,0,Large,false);
@@ -518,7 +522,7 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
             FWheelWitnessSnapshot1368 Duplicate;
             TestFalse(TEXT("wheel capture is one shot"),Solve.ConsumeWheelWitness1368(Duplicate));
             // A nested unrelated solve does not change the outer certificate.
-            TArray<uint8> NestedRaw;{FFrameSolveWitnessScope Nested(99,NestedRaw,Registry);TestTrue(TEXT("nested solve remains independent"),Nested.EnableWheelManifoldCapture1368());EmitWheel1368(0,{});EmitWheel1368(255,{});}
+            TArray<uint8> NestedRaw;{FFrameSolveWitnessScope Nested(99,NestedRaw,Registry);TestTrue(TEXT("nested solve remains independent"),Nested.EnableWheelManifoldCapture1368(ReuseMode1368!=0));EmitWheel1368(0,{});EmitWheel1368(255,{});}
         }
         TArray<uint8> Sentinel{99};
         TestTrue(TEXT("nonempty release destination is transactional"),Snapshot1368.ReleaseAfterClosure(Sentinel,CanonicalOut,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::DestinationNotEmpty&&Sentinel==TArray<uint8>{99}&&CanonicalOut.IsEmpty());
@@ -533,7 +537,7 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         FWheelWitnessSnapshot1368 Captured;FFramePointerCanonicalSnapshot1456 MainCaptured1368;
         {
             FFrameSolveWitnessScope Solve(17,Main,Registry);
-            Solve.EnableWheelManifoldCapture1368();EmitWheel1368(0,{});EmitWheel1368(255,{});
+            Solve.EnableWheelManifoldCapture1368(ReuseMode1368!=0);EmitWheel1368(0,{});EmitWheel1368(255,{});
             OriginalRaw=Solve.RawWheelManifold1368();Solve.MakeWheelManifoldCanonical1368(OriginalCanonical);
             TestTrue(TEXT("main contact certificate seals before final wheel transfer"),Solve.SealAndConsumeCanonicalSnapshot1456(MainCaptured1368));
             TestTrue(TEXT("late-write test first captures a complete wheel stream"),Solve.ConsumeWheelWitness1368(Captured));
@@ -551,7 +555,7 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
     {
         TArray<uint8> Main,RawBefore,CanonicalOut,OutRaw,DebrisRaw,DebrisCanonical;FWheelWitnessSnapshot1368 Captured;
         {
-            FFrameSolveWitnessScope Solve(18,Main,Registry,Failure1368==2?1:65536);Solve.EnableWheelManifoldCapture1368();
+            FFrameSolveWitnessScope Solve(18,Main,Registry,Failure1368==2?1:65536);Solve.EnableWheelManifoldCapture1368(ReuseMode1368!=0);
             if(Failure1368==0)EmitWheel1368(0,{}); // Owner remains open.
             if(Failure1368==1)FFrameSolveWitnessScope::RecordWheelManifold1368(0,reinterpret_cast<const ISpeedComponent*>(&Unknown),3,4,{},{});
             if(Failure1368==2){EmitWheel1368(0,{});EmitWheel1368(255,{});} // Overflow.
@@ -564,18 +568,18 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
 
     {
         FWheelWitnessSnapshot1368 Empty;TArray<uint8> Main,RawOut,CanonicalOut,DebrisRaw,DebrisCanonical;
-        {FFrameSolveWitnessScope Solve(19,Main,Registry);Solve.EnableWheelManifoldCapture1368();TestTrue(TEXT("empty complete wheel evidence is transferable"),Solve.ConsumeWheelWitness1368(Empty));}
+        {FFrameSolveWitnessScope Solve(19,Main,Registry);Solve.EnableWheelManifoldCapture1368(ReuseMode1368!=0);TestTrue(TEXT("empty complete wheel evidence is transferable"),Solve.ConsumeWheelWitness1368(Empty));}
         TestTrue(TEXT("empty wheel stream is not an unobserved frame"),Empty.ReleaseAfterClosure(RawOut,CanonicalOut,DebrisRaw,DebrisCanonical)==EWheelWitnessRelease1368::TransferredValid&&RawOut.IsEmpty()&&CanonicalOut.IsEmpty());
     }
     {
         FWheelWitnessSnapshot1368 Frames1368[3];TArray<uint8> Main[3],RawFrames[3],CanonicalFrames[3],DebrisRaw[3],DebrisCanonical[3];
         TArray<uint8> ExpectedFirstRaw,ExpectedPartialRaw;
         {
-            FFrameSolveWitnessScope First(0,Main[0],Registry);First.EnableWheelManifoldCapture1368();EmitWheel1368(0,{});EmitWheel1368(255,{});
+            FFrameSolveWitnessScope First(0,Main[0],Registry);First.EnableWheelManifoldCapture1368(ReuseMode1368!=0);EmitWheel1368(0,{});EmitWheel1368(255,{});
             ExpectedFirstRaw=First.RawWheelManifold1368();TestTrue(TEXT("failed-run first frame consumes"),First.ConsumeWheelWitness1368(Frames1368[0]));
         }
         {
-            FFrameSolveWitnessScope Partial(1,Main[1],Registry);Partial.EnableWheelManifoldCapture1368();EmitWheel1368(0,{});
+            FFrameSolveWitnessScope Partial(1,Main[1],Registry);Partial.EnableWheelManifoldCapture1368(ReuseMode1368!=0);EmitWheel1368(0,{});
             TestFalse(TEXT("failed-run open second frame refuses consume"),Partial.ConsumeWheelWitness1368(Frames1368[1]));
             RawFrames[1]=Partial.RawWheelManifold1368();ExpectedPartialRaw=RawFrames[1];
         }
@@ -593,6 +597,106 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
             Scalar(ExpectedPack,N);Scalar(ExpectedPack,uint32(Expected.Num()));ExpectedPack.Append(Expected);
         }
         TestTrue(TEXT("failed-run wheel pack framing preserves prior transferred and partial failed raw streams"),ActualPack==ExpectedPack);
+    }
+
+    }
+    // Row-storage reuse is checked against both the unchanged owned path and
+    // a scalar/key byte oracle, including semantic Membership and a failed tail.
+    {
+        FFramePointerKey MemberKey=Key;MemberKey.Membership={11,17,29};
+        FFramePointerRegistry MemberRegistry;
+        if(!TestTrue(TEXT("scratch member registry registers"),MemberRegistry.Register(&Object,MemberKey))
+            ||!TestTrue(TEXT("scratch member registry seals"),MemberRegistry.Seal()))return false;
+        TArray<FFramePointerObservation> Scratch;int32 RetainedCapacity=0;
+        TArray<uint8> OwnedRawPack,BorrowedRawPack,ExpectedRawPack,OwnedCanonicalPack,BorrowedCanonicalPack,ExpectedCanonicalPack;
+        const int32 Counts[]={65,1,0,3};
+        for(int32 RowIndex=0;RowIndex<UE_ARRAY_COUNT(Counts);++RowIndex)
+        {
+            TArray<uint8> ExpectedRow,ExpectedCan;
+            Scalar(ExpectedRow,uint32(RowIndex));Scalar(ExpectedCan,uint32(RowIndex));
+            for(int32 J=0;J<Counts[RowIndex];++J)
+            {
+                const bool IsUnknown=RowIndex==3&&J==2;
+                int* Address=IsUnknown?&Unknown:(J%2?nullptr:&Object);
+                Scalar(ExpectedRow,reinterpret_cast<UPTRINT>(Address));
+                const FFramePointerKey Identity=Address?MemberKey:FFramePointerKey{};
+                Scalar(ExpectedCan,Identity.Domain);Scalar(ExpectedCan,Identity.Owner);Scalar(ExpectedCan,Identity.Generation);
+                Scalar(ExpectedCan,Identity.Role);Scalar(ExpectedCan,Identity.Element);Scalar(ExpectedCan,uint32(Identity.Membership.Num()));
+                for(uint64 Member:Identity.Membership)Scalar(ExpectedCan,Member);
+            }
+            Scalar(ExpectedRow,Suffix);Scalar(ExpectedCan,Suffix);
+            for(int32 Mode=0;Mode<2;++Mode)
+            {
+                TArray<uint8> Source,Can;
+                {
+                    FFramePointerCaptureScope Scope(Source,MemberRegistry,16384,Mode?&Scratch:nullptr);
+                    FEpisodeStateBytesForTesting::Add(Source,uint32(RowIndex));
+                    for(int32 J=0;J<Counts[RowIndex];++J)
+                        FEpisodeStateBytesForTesting::Add(Source,RowIndex==3&&J==2?&Unknown:(J%2?static_cast<int*>(nullptr):&Object));
+                    FEpisodeStateBytesForTesting::Add(Source,Suffix);
+                    const bool Made=Scope.MakeCanonical(Can);
+                    TestEqual(TEXT("borrowed/default unknown row eligibility agrees"),Made,RowIndex!=3);
+                    TestTrue(TEXT("borrowed/default raw row matches independent scalar bytes"),Source==ExpectedRow);
+                    if(Made)TestTrue(TEXT("borrowed/default canonical row matches independent semantic keys"),Can==ExpectedCan);
+                    else TestTrue(TEXT("unknown failed row preserves empty canonical destination"),Can.IsEmpty());
+                    auto& RawPack=Mode?BorrowedRawPack:OwnedRawPack;
+                    Scalar(RawPack,uint32(Source.Num()));RawPack.Append(Source);
+                    if(Made){auto& CanonicalPack=Mode?BorrowedCanonicalPack:OwnedCanonicalPack;Scalar(CanonicalPack,uint32(Can.Num()));CanonicalPack.Append(Can);}
+                }
+                if(Mode)
+                {
+                    TestTrue(TEXT("row destructor clears observations but retains outer allocation"),Scratch.IsEmpty()&&Scratch.Max()>=RetainedCapacity);
+                    RetainedCapacity=Scratch.Max();
+                }
+            }
+            Scalar(ExpectedRawPack,uint32(ExpectedRow.Num()));ExpectedRawPack.Append(ExpectedRow);
+            if(RowIndex!=3){Scalar(ExpectedCanonicalPack,uint32(ExpectedCan.Num()));ExpectedCanonicalPack.Append(ExpectedCan);}
+        }
+        TestTrue(TEXT("all raw rows and canonical prefix survive the unknown tail identically"),OwnedRawPack==ExpectedRawPack&&BorrowedRawPack==ExpectedRawPack&&OwnedCanonicalPack==ExpectedCanonicalPack&&BorrowedCanonicalPack==ExpectedCanonicalPack);
+        // Same scratch cannot be reentered; an unrelated nested scratch remains
+        // legal and pointer routing resumes on the outer scope afterward.
+        TArray<uint8> OuterRaw,InnerRaw,OtherRaw;TArray<FFramePointerObservation> OtherScratch;
+        {
+            FFramePointerCaptureScope Outer(OuterRaw,Registry,16384,&Scratch);
+            FEpisodeStateBytesForTesting::Add(OuterRaw,&Object);
+            {
+                FFramePointerCaptureScope Reentered(InnerRaw,Registry,16384,&Scratch);
+                TestTrue(TEXT("same scratch nested lease fails closed"),Reentered.HasOverflow());
+                TestEqual(TEXT("failed nested lease leaves outer observation intact"),Outer.Observations().Num(),1);
+            }
+            {
+                FFramePointerCaptureScope Nested(OtherRaw,Registry,16384,&OtherScratch);
+                FEpisodeStateBytesForTesting::Add(OtherRaw,&Object);TArray<uint8> Out;
+                TestTrue(TEXT("distinct nested scratch canonicalizes"),Nested.MakeCanonical(Out));
+            }
+            FEpisodeStateBytesForTesting::Add(OuterRaw,&Object);
+            TestEqual(TEXT("outer typed routing survives nested scopes"),Outer.Observations().Num(),2);
+            FFramePointerCanonicalSnapshot1456 Refused,Copied;const TArray<uint8> Before=OuterRaw;
+            TestFalse(TEXT("borrowed events cannot be consumed out of their lease"),Outer.ConsumeCanonicalSnapshot1456(Refused));
+            TestTrue(TEXT("refused consume keeps raw and destination exact"),OuterRaw==Before&&Refused.RawForEvidence1456().IsEmpty());
+            TestTrue(TEXT("ordinary copy snapshot remains available on borrowed scope"),Outer.CaptureCanonicalSnapshot1456(Copied));
+            FEpisodeStateBytesForTesting::Add(OuterRaw,&Object);
+            TestEqual(TEXT("refused consume does not seal or suppress later valid observations"),Outer.Observations().Num(),3);
+        }
+        TestTrue(TEXT("nested leases return both independent scratch arrays empty"),Scratch.IsEmpty()&&OtherScratch.IsEmpty());
+        // Nonempty storage is refused transactionally; it is never Reset by a
+        // constructor which did not acquire that storage.
+        Scratch.AddDefaulted();Scratch[0].RawAddress=123;
+        {TArray<uint8> Source;FFramePointerCaptureScope Refused(Source,Registry,16384,&Scratch);TestTrue(TEXT("nonempty scratch fails closed without mutation"),Refused.HasOverflow()&&Scratch.Num()==1&&Scratch[0].RawAddress==123);}
+        Scratch.Reset();
+        for(int32 Mode=0;Mode<2;++Mode)
+        {
+            TArray<uint8> Source,Can{99};
+            {FFramePointerCaptureScope Scope(Source,Registry,1,Mode?&Scratch:nullptr);FEpisodeStateBytesForTesting::Add(Source,&Object);FEpisodeStateBytesForTesting::Add(Source,&Object);TestTrue(TEXT("borrowed/default event limit is unchanged"),Scope.HasOverflow());TestFalse(TEXT("overflow keeps canonical unavailable"),Scope.MakeCanonical(Can));}
+            TestTrue(TEXT("overflow preserves failed canonical destination and all raw pointer bytes"),Can==TArray<uint8>{99}&&Source.Num()==2*sizeof(UPTRINT));
+        }
+        // Unwinding an inner row lease restores TLS and leaves storage reusable.
+        TArray<uint8> AfterUnwind,Aborted;
+        {FFramePointerCaptureScope Outer(AfterUnwind,Registry);
+         try{FFramePointerCaptureScope Inner(Aborted,Registry,16384,&Scratch);FEpisodeStateBytesForTesting::Add(Aborted,&Object);throw int32(17);}
+         catch(int32 Marker){TestEqual(TEXT("synthetic row unwind is observed"),Marker,17);}
+         FEpisodeStateBytesForTesting::Add(AfterUnwind,&Object);TestEqual(TEXT("unwind restores outer TLS route"),Outer.Observations().Num(),1);}
+        TestTrue(TEXT("unwind returns scratch empty without erasing aborted raw evidence"),Scratch.IsEmpty()&&Aborted.Num()==sizeof(UPTRINT));
     }
     return true;
 }
