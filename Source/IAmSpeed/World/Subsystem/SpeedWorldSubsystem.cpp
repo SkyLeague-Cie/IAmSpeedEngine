@@ -1707,7 +1707,7 @@ bool USpeedWorldSubsystem::InstallCanonicalInputs(const Speed::Input::V2::FRegis
 	if (!bCanonicalFrameActive || !Frame.Registry || Frame.Registry->Terminal) return false;
 	// Resolve every identity before the first install. Stable ids are monotonic
 	// for this world lifetime; generation equals that non-reused registration id.
-	TArray<TPair<ISpeedComponent*, std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>>> Installs;
+	TArray<TPair<ISpeedComponent*, std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>>, TInlineAllocator<16>> Installs;
 	for (const auto& Session : Frame.Inputs)
 	{
 		if (!Session.Snapshot || Session.Snapshot->Input.GetData().ConsumptionFrame != Frame.Frame) return false;
