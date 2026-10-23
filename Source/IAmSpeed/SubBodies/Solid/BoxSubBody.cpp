@@ -22,6 +22,26 @@
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+namespace
+{
+template<class AllocatorType>
+void BuildBoxVerticesWithAllocator(const FVector& Center, const FQuat& Rot, const FVector& Ext, TArray<FVector, AllocatorType>& OutVerts)
+{
+    OutVerts.Reset();
+    for (int sx : {-1, 1})
+    {
+        for (int sy : {-1, 1})
+        {
+            for (int sz : {-1, 1})
+            {
+                FVector local = FVector(sx * Ext.X, sy * Ext.Y, sz * Ext.Z);
+                OutVerts.Add(Center + Rot.RotateVector(local));
+            }
+        }
+    }
+}
+}
+
 // Couple the single-point normal/friction impulse and retire only certified
 // fresh separating constraints before owner projection. Both policies have
 // identical defaults in Development and Shipping; diagnostic captures are separate.
@@ -3558,8 +3578,8 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
 
     // Positional drift correction toward plane (soft).
     // Keep within a small band so you don't accumulate penetration over many frames.
-    TArray<FVector> Verts;
-    GetBoxVertices(K.Location, K.Rotation, BoxExtent, Verts);
+    TArray<FVector, TInlineAllocator<8>> Verts;
+    BuildBoxVerticesWithAllocator(K.Location, K.Rotation, BoxExtent, Verts);
 
     float minDist = FLT_MAX;
     const FVector PlaneN = GroundPlaneN.GetSafeNormal();
@@ -3743,8 +3763,8 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         PrevGroundContactsLS.Reset();
     }
 
-    TArray<FVector> Verts;
-    GetBoxVertices(K.Location, K.Rotation, BoxExtent, Verts);
+    TArray<FVector, TInlineAllocator<8>> Verts;
+    BuildBoxVerticesWithAllocator(K.Location, K.Rotation, BoxExtent, Verts);
 
     // ------------------------------------------------------------
     // Compute min distance to plane
@@ -4758,18 +4778,7 @@ SSBox UBoxSubBody::MakeBoxFromKS(const SKinematic& BoxKinematicState) const
 
 void UBoxSubBody::GetBoxVertices(const FVector& Center, const FQuat& Rot, const FVector& Ext, TArray<FVector>& OutVerts)
 {
-    OutVerts.Reset();
-    for (int sx : {-1, 1})
-    {
-        for (int sy : {-1, 1})
-        {
-            for (int sz : {-1, 1})
-            {
-                FVector local = FVector(sx * Ext.X, sy * Ext.Y, sz * Ext.Z);
-                OutVerts.Add(Center + Rot.RotateVector(local));
-            }
-        }
-    }
+    BuildBoxVerticesWithAllocator(Center, Rot, Ext, OutVerts);
 }
 
 FVector UBoxSubBody::ComputeBoxSupportPointWS(const FVector& Center, const FQuat& Rot, const FVector& Ext, const FVector& N)
