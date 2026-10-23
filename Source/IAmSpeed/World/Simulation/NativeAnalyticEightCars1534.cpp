@@ -144,7 +144,7 @@ struct FEightCarCapturedRow1534
  TArray<uint8> NumericContext1534;
  // Only populated on illegal post-seal writes; normal evidence pack bytes stay unchanged.
  TArray<uint8> RawContactAfterSealDebris1534,RawStateAfterSealDebris1534,RawWheelAfterSealDebris1368,CanonicalWheelAfterSealDebris1368,RawWheelDestinationDebris1368,CanonicalWheelDestinationDebris1368;
- FWheelWitnessSnapshot1368 DeferredWheel1368;
+ Speed::FWheelWitnessSnapshot1368 DeferredWheel1368;
  Speed::FFramePointerCanonicalSnapshot1456 DeferredStates1534,DeferredContacts1534;TArray<int32> RawStateBounds1534,RawContactBounds1534;
  FSimulationSnapshot CameraOracleSnapshot1534;Speed::FFrameFloatingPointContext CameraOracleNumeric1534;TArray<uint64> CameraOraclePolls1534;
  TArray<FEightCarField1534> InputFields1534,StateFields1534;TArray<int32> ContactBounds1534;

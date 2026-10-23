@@ -187,14 +187,14 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         Scalar(ExpectedCanonical,Identity.Element);Scalar(ExpectedCanonical,uint32(0));
     }
     Scalar(ExpectedCanonical,Suffix);
-    FFramePointerCanonicalSnapshot1456 Prepared,Control,Tiny;
+    FFramePointerCanonicalSnapshot1456 InitialPrepared1456,Control,Tiny;
     Control.Reserve1456(32,2);
-    TestTrue(TEXT("explicit two-MiB pre-touch succeeds"),Prepared.ReserveAndPreTouch1456(2*1024*1024,2048));
-    TestTrue(TEXT("pre-touch keeps raw byte count zero"),Prepared.RawForEvidence1456().IsEmpty());
-    TestEqual(TEXT("pre-touch creates no pointer observations"),Prepared.NumObservations1456(),0);
+    TestTrue(TEXT("explicit two-MiB pre-touch succeeds"),InitialPrepared1456.ReserveAndPreTouch1456(2*1024*1024,2048));
+    TestTrue(TEXT("pre-touch keeps raw byte count zero"),InitialPrepared1456.RawForEvidence1456().IsEmpty());
+    TestEqual(TEXT("pre-touch creates no pointer observations"),InitialPrepared1456.NumObservations1456(),0);
     TestTrue(TEXT("tiny reservation is only a growable hint"),Tiny.ReserveAndPreTouch1456(1,1));
     TArray<uint8> Uncaptured{99};
-    TestFalse(TEXT("pre-touch alone never creates a certificate"),Prepared.MakeCanonical(Uncaptured));
+    TestFalse(TEXT("pre-touch alone never creates a certificate"),InitialPrepared1456.MakeCanonical(Uncaptured));
     TestTrue(TEXT("uncaptured result stays untouched"),Uncaptured==TArray<uint8>{99});
     {
         FFramePointerCaptureScope Scope(Raw,Registry);
@@ -202,12 +202,12 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         FEpisodeStateBytesForTesting::Add(Raw,&Object);
         FEpisodeStateBytesForTesting::Add(Raw,static_cast<int*>(nullptr));
         FEpisodeStateBytesForTesting::Add(Raw,Suffix);
-        TestTrue(TEXT("prepared snapshot captures complete owner bytes"),Scope.CaptureCanonicalSnapshot1456(Prepared));
+        TestTrue(TEXT("prepared snapshot captures complete owner bytes"),Scope.CaptureCanonicalSnapshot1456(InitialPrepared1456));
         TestTrue(TEXT("unchanged reserve-only control captures"),Scope.CaptureCanonicalSnapshot1456(Control));
         TestTrue(TEXT("raw/events grow past tiny reservation"),Scope.CaptureCanonicalSnapshot1456(Tiny));
     }
     TestTrue(TEXT("owner raw stream matches independent oracle"),Raw==ExpectedRaw);
-    for(FFramePointerCanonicalSnapshot1456* Snapshot:{&Prepared,&Control,&Tiny})
+    for(FFramePointerCanonicalSnapshot1456* Snapshot:{&InitialPrepared1456,&Control,&Tiny})
     {
         TArray<uint8> Canonical;
         TestTrue(TEXT("snapshot retains all raw bytes"),Snapshot->RawForEvidence1456()==ExpectedRaw);
