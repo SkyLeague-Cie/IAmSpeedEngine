@@ -113,6 +113,9 @@ public:
     // projection is blocked until scope destruction validates no later write.
     bool ConsumeCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out);
     bool RejectRecordAfterConsume1456() noexcept;
+    // Fresh test-only event storage, owned by this scope after one swap.
+    // All admission checks precede mutation; raw bytes are never exchanged.
+    bool PrepareFreshEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept;
     // Transactional mapping of exact raw field/row boundaries through the SAME
     // validated projector. A boundary inside a pointer token is unavailable.
     bool MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const;

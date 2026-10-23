@@ -272,6 +272,57 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         TestFalse(TEXT("unknown/overflow/raw drift never canonicalizes"),Destination.MakeCanonical(Out));
         TestTrue(TEXT("failed projection leaves destination bytes untouched"),Out==TArray<uint8>{99});
     }
+    // Prepared event storage is transferred once before observation; the
+    // independent raw/key oracle above remains authoritative after consume.
+    {
+        TArray<uint8> Source;FFramePointerCanonicalSnapshot1456 Prepared,Second;
+        TestTrue(TEXT("fresh events prepare on the caller"),Prepared.ReserveAndPreTouch1456(128,8));
+        TestTrue(TEXT("second events prepare on the caller"),Second.ReserveAndPreTouch1456(128,4));
+        const int32 Capacity=Prepared.ObservationCapacityForTesting1456();
+        const int32 SecondCapacity=Second.ObservationCapacityForTesting1456();
+        {
+            FFramePointerCaptureScope Scope(Source,Registry);
+            {
+                TArray<uint8> NestedRaw;FFramePointerCaptureScope Nested(NestedRaw,Registry);
+                TestFalse(TEXT("inactive outer scope cannot adopt prepared events"),Scope.PrepareFreshEvents1456(Prepared));
+                TestEqual(TEXT("TLS refusal preserves prepared capacity"),Prepared.ObservationCapacityForTesting1456(),Capacity);
+                TestTrue(TEXT("TLS refusal preserves raw prefix"),Source.IsEmpty());
+            }
+            TestTrue(TEXT("fresh active scope adopts prepared events"),Scope.PrepareFreshEvents1456(Prepared));
+            TestEqual(TEXT("adoption transfers the existing event capacity"),Scope.Observations().Max(),Capacity);
+            TestEqual(TEXT("prepared destination now has empty event storage"),Prepared.ObservationCapacityForTesting1456(),0);
+            TestFalse(TEXT("fresh events cannot be adopted twice"),Scope.PrepareFreshEvents1456(Second));
+            TestEqual(TEXT("double-adoption refusal preserves other capacity"),Second.ObservationCapacityForTesting1456(),SecondCapacity);
+            FEpisodeStateBytesForTesting::Add(Source,Prefix);
+            FEpisodeStateBytesForTesting::Add(Source,&Object);
+            FEpisodeStateBytesForTesting::Add(Source,static_cast<int*>(nullptr));
+            FEpisodeStateBytesForTesting::Add(Source,Suffix);
+            TestTrue(TEXT("adoption retains exact independent raw stream"),Source==ExpectedRaw);
+            TestTrue(TEXT("adopted events consume back into their destination"),Scope.ConsumeCanonicalSnapshot1456(Prepared));
+            TestEqual(TEXT("consume retains the prepared event capacity"),Prepared.ObservationCapacityForTesting1456(),Capacity);
+            TestFalse(TEXT("consumed scope cannot adopt new events"),Scope.PrepareFreshEvents1456(Second));
+        }
+        TArray<uint8> Canonical;
+        TestTrue(TEXT("adopted snapshot retains independent raw bytes"),Prepared.RawForEvidence1456()==ExpectedRaw);
+        TestTrue(TEXT("adopted snapshot canonicalizes after closure"),Prepared.MakeCanonical(Canonical));
+        TestTrue(TEXT("adopted snapshot matches independent key bytes"),Canonical==ExpectedCanonical);
+        TestEqual(TEXT("adopted snapshot retains both observations"),Prepared.NumObservations1456(),2);
+        {
+            TArray<uint8> Empty;FFramePointerCaptureScope Scope(Empty,Registry);
+            TestFalse(TEXT("captured snapshot cannot donate event storage"),Scope.PrepareFreshEvents1456(Prepared));
+            TestTrue(TEXT("captured refusal preserves raw certificate"),Prepared.RawForEvidence1456()==ExpectedRaw);
+        }
+    }
+    {
+        TArray<uint8> Source;FFramePointerCanonicalSnapshot1456 Prepared;
+        TestTrue(TEXT("nonempty refusal destination prepares"),Prepared.ReserveAndPreTouch1456(128,4));
+        const int32 Capacity=Prepared.ObservationCapacityForTesting1456();
+        FFramePointerCaptureScope Scope(Source,Registry);
+        FEpisodeStateBytesForTesting::Add(Source,Prefix);const auto Before=Source;
+        TestFalse(TEXT("nonempty raw scope cannot adopt events"),Scope.PrepareFreshEvents1456(Prepared));
+        TestTrue(TEXT("nonempty refusal retains exact raw prefix"),Source==Before);
+        TestEqual(TEXT("nonempty refusal retains prepared capacity"),Prepared.ObservationCapacityForTesting1456(),Capacity);
+    }
     // Final transfer is checked against the independently assembled byte/key
     // oracle above, as well as the unchanged copy API. Destinations precede
     // scopes in lifetime and never move while the writer scope is open.

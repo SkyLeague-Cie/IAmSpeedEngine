@@ -526,6 +526,8 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
    if(!Ordered.ConsumeWheelWitness1368(Row.DeferredWheel1368))
    {PreserveUnconsumedWheel1368();Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    TArray<uint8>& RawStates=Row.RawObservedStates;FFramePointerCaptureScope StatePointers(RawStates,Pointers);
+   if(!StatePointers.PrepareFreshEvents1456(Row.DeferredStates1368))
+   {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    Control.AppendNativeWitness(RawStates);
    for(int32 A=0;A<Cars.Num();++A)
    {

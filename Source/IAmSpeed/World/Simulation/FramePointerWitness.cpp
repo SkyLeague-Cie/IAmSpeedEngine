@@ -257,7 +257,9 @@ bool FFramePointerCanonicalSnapshot1456::ReserveAndPreTouch1456(int32 Bytes,int3
     if(bCaptured1456||!Raw1456.IsEmpty()||!Events1456.IsEmpty())return false;
     Raw1456.SetNumZeroed(FMath::Clamp(Bytes,0,16*1024*1024));
     Raw1456.Reset();
-    Events1456.Reserve(FMath::Clamp(Count,0,16384));
+    // Construct real event objects on the caller, then retire them while
+    // retaining their backing storage. No raw memset of nontrivial keys.
+    Events1456.SetNum(FMath::Clamp(Count,0,16384));Events1456.Reset();
     return true;
 }
 bool FFramePointerCaptureScope::CanAdoptPreparedEvents1456(const FFramePointerCanonicalSnapshot1456& Prepared) const noexcept
@@ -270,6 +272,11 @@ bool FFramePointerCaptureScope::CanAdoptPreparedEvents1456(const FFramePointerCa
 void FFramePointerCaptureScope::AdoptPreparedEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept
 {
  Swap(Events,Prepared.Events1456);bPreparedEventsAdopted1534=true;
+}
+bool FFramePointerCaptureScope::PrepareFreshEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept
+{
+ if(!CanAdoptPreparedEvents1456(Prepared))return false;
+ AdoptPreparedEvents1456(Prepared);return true;
 }
 bool FFramePointerCaptureScope::CaptureCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out) const
 {

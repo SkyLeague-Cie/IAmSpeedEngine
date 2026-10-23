@@ -639,6 +639,8 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
     Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;
    }
    TArray<uint8>& RawStates=Row.RawObservedStates;FFramePointerCaptureScope StatePointers(RawStates,Pointers);
+   if(!StatePointers.PrepareFreshEvents1456(Row.DeferredStates1534))
+   {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    const auto MarkState1534=[&](int32 Car,const TCHAR* Name)
    {if(!Row.StateFields1534.IsEmpty())Row.StateFields1534.Last().RawEnd=RawStates.Num();FEightCarField1534 F;F.Car=Car;F.Name=Name;F.RawBegin=RawStates.Num();Row.StateFields1534.Add(F);};
    const auto MarkInput1534=[&](int32 Car,const TCHAR* Name)
