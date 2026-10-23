@@ -233,6 +233,27 @@ bool FEpisodeNumericCodecTests::RunTest(const FString&)
   TestTrue(TEXT("1221 both cars retain all1024 base/frame/wheeled history slots and count prefixes"),New==Legacy&&New==Reference);
  }
 
+ // Exercise each mixed-width suffix boundary independently. The legacy path
+ // retains four scalar Append calls; ReferenceScalar uses its separate memcpy
+ // oracle. Nonzero framing detects a write at an incorrect destination offset.
+ static_assert(std::is_same_v<decltype(FWheeledPhysicsState{}.CarBumpCooldownFrames),uint16>);
+ const uint32 Schemas1564[]={0,0x15640001u,MAX_uint32};
+ const uint8 Kinds1564[]={0,1,MAX_uint8};
+ const uint64 Ids1564[]={0,1,MAX_uint64};
+ const uint16 Cooldowns1564[]={0,1,MAX_uint16};
+ for(uint32 Schema1564:Schemas1564)for(uint8 Kind1564:Kinds1564)
+ for(uint64 Id1564:Ids1564)for(uint16 Cooldown1564:Cooldowns1564)
+ {
+  TArray<uint8> New1564,Legacy1564,Reference1564;
+  W::Add(New1564,Prefix);W::Add(Legacy1564,Prefix);ReferenceScalar(Reference1564,Prefix);
+  Speed::SelectedStateBytesForTesting::AppendWheeledBumpSuffix1564(New1564,Schema1564,Kind1564,Id1564,Cooldown1564);
+  W::Add(Legacy1564,Schema1564);W::Add(Legacy1564,Kind1564);W::Add(Legacy1564,Id1564);W::Add(Legacy1564,Cooldown1564);
+  ReferenceScalar(Reference1564,Schema1564);ReferenceScalar(Reference1564,Kind1564);ReferenceScalar(Reference1564,Id1564);ReferenceScalar(Reference1564,Cooldown1564);
+  TestEqual(TEXT("1564 suffix exact 15 byte payload without padding"),New1564.Num()-int32(sizeof(Prefix)),15);
+  W::Add(New1564,Suffix);W::Add(Legacy1564,Suffix);ReferenceScalar(Reference1564,Suffix);
+  TestTrue(TEXT("1564 suffix boundaries preserve legacy and independent framed scalar bytes"),New1564==Legacy1564&&New1564==Reference1564);
+ }
+
  int Object=7,Unknown=9;
  const Speed::FFramePointerKey Key{1,41,2,7,0};Speed::FFramePointerRegistry Registry;
  if(!TestTrue(TEXT("explicit pointer registration"),Registry.Register(&Object,Key))

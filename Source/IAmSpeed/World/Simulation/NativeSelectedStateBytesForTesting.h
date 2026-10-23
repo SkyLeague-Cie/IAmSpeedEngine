@@ -46,5 +46,13 @@ inline void AppendWheeledStatePrefix(TArray<uint8>& Out,const FWheeledPhysicsSta
   X.SuspensionLastDisplacement[2],X.SuspensionLastDisplacement[3],
   X.PhysicalThrottleInput,X.PhysicalBrakeInput,X.PhysicalSteerInput,X.NbFramesSinceGroundContact);
 }
+inline void AppendWheeledBumpSuffix1564(TArray<uint8>& Out,uint32 Schema,uint8 Kind,uint64 StableId,uint16 Cooldown)
+{
+ static_assert(sizeof(Schema)==4&&sizeof(Kind)==1&&sizeof(StableId)==8&&sizeof(Cooldown)==2);
+ uint8 Bytes[15];
+ FMemory::Memcpy(Bytes,&Schema,4);FMemory::Memcpy(Bytes+4,&Kind,1);
+ FMemory::Memcpy(Bytes+5,&StableId,8);FMemory::Memcpy(Bytes+13,&Cooldown,2);
+ Out.Append(Bytes,15);
+}
 }
 #endif

@@ -220,15 +220,13 @@ bool EightCarBumpVictimIdentity1564(const FWheeledPhysicsState& X,
 bool EightCarWheeledState1534(TArray<uint8>& O,const FWheeledPhysicsState& X,
  const TArray<FEightCarBumpVictimIdentity1564>& BumpIdentities)
 {
- using W=Speed::FEpisodeStateBytesForTesting;
  uint8 BumpVictimKind=0;uint64 BumpVictimStableId=0;
  if(!EightCarBumpVictimIdentity1564(X,BumpIdentities,BumpVictimKind,BumpVictimStableId))return false;
  Speed::SelectedStateBytesForTesting::AppendWheeledStatePrefix(O,X);
  // Typed suffix: schema u32, explicit-null/stable kind u8, canonical ID u64,
  // actual cooldown u16. Do not normalize cooldown, including an inconsistent
  // null/nonzero pair: a state observer must retain the original causal values.
- W::Add(O,EightCarBumpOracleSchema1564);W::Add(O,BumpVictimKind);
- W::Add(O,BumpVictimStableId);W::Add(O,X.CarBumpCooldownFrames);return true;
+ Speed::SelectedStateBytesForTesting::AppendWheeledBumpSuffix1564(O,EightCarBumpOracleSchema1564,BumpVictimKind,BumpVictimStableId,X.CarBumpCooldownFrames);return true;
 }
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedNativeAnalyticEightCars1534,
