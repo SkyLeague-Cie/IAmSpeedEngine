@@ -1,4 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "NativeSelectedStateBytesForTesting.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -58,15 +59,11 @@ struct FNativeRow1217
 };
 void BaseState1217(TArray<uint8>& O,const FBasePhysicsState& X)
 {
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.Kinematic);W::Add(O,X.bIsFrozen);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.bStartCountdown);
+ Speed::SelectedStateBytesForTesting::AppendBaseState(O,X);
 }
 void WheeledState1217(TArray<uint8>& O,const FWheeledPhysicsState& X)
 {
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.bStartCountdown);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.FramesSinceLastImpact);
- W::Add(O,X.AllowedSideVelocity);W::Add(O,X.AllowedAngularVelocity);W::Add(O,X.SuspensionLastDisplacement);
- W::Add(O,X.PhysicalThrottleInput);W::Add(O,X.PhysicalBrakeInput);W::Add(O,X.PhysicalSteerInput);W::Add(O,X.NbFramesSinceGroundContact);
+ Speed::SelectedStateBytesForTesting::AppendWheeledStatePrefix(O,X);
 }
 void SerializeCapturedCar1425(TArray<uint8>& O,const FCapturedNativeCarState1425& X)
 {

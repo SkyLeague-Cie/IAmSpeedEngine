@@ -1,5 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
-#include "IAmSpeed/World/Simulation/NativeContactStateBytes1221.h"
+#include "IAmSpeed/World/Simulation/NativeSelectedStateBytesForTesting.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -141,9 +141,9 @@ struct FNativeContactRow1221
  bool bComplete=false;
 };
 void ContactBaseState1221(TArray<uint8>& O,const FBasePhysicsState& X)
-{Speed::Testing1221::AppendContactBaseState(O,X);}
+{Speed::SelectedStateBytesForTesting::AppendBaseState(O,X);}
 void ContactWheeledState1221(TArray<uint8>& O,const FWheeledPhysicsState& X)
-{Speed::Testing1221::AppendContactWheeledState(O,X);}
+{Speed::SelectedStateBytesForTesting::AppendWheeledStatePrefix(O,X);}
 
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedNativeAnalyticContacts1221,

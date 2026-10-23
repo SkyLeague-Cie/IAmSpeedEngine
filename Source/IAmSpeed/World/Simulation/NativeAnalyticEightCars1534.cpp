@@ -1,4 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "NativeSelectedStateBytesForTesting.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -189,8 +190,7 @@ FString EightCarsWheelAt1534(const TArray<uint8>& Bytes,int32 Offset)
 
 void EightCarBaseState1534(TArray<uint8>& O,const FBasePhysicsState& X)
 {
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.Kinematic);W::Add(O,X.bIsFrozen);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.bStartCountdown);
+ Speed::SelectedStateBytesForTesting::AppendBaseState(O,X);
 }
 // This is an observer-only identity table, frozen before the simulation owner
 // starts. StableId is the canonical registry ID already carried by the exact
@@ -223,9 +223,7 @@ bool EightCarWheeledState1534(TArray<uint8>& O,const FWheeledPhysicsState& X,
  using W=Speed::FEpisodeStateBytesForTesting;
  uint8 BumpVictimKind=0;uint64 BumpVictimStableId=0;
  if(!EightCarBumpVictimIdentity1564(X,BumpIdentities,BumpVictimKind,BumpVictimStableId))return false;
- W::Add(O,X.bStartCountdown);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.FramesSinceLastImpact);
- W::Add(O,X.AllowedSideVelocity);W::Add(O,X.AllowedAngularVelocity);W::Add(O,X.SuspensionLastDisplacement);
- W::Add(O,X.PhysicalThrottleInput);W::Add(O,X.PhysicalBrakeInput);W::Add(O,X.PhysicalSteerInput);W::Add(O,X.NbFramesSinceGroundContact);
+ Speed::SelectedStateBytesForTesting::AppendWheeledStatePrefix(O,X);
  // Typed suffix: schema u32, explicit-null/stable kind u8, canonical ID u64,
  // actual cooldown u16. Do not normalize cooldown, including an inconsistent
  // null/nonzero pair: a state observer must retain the original causal values.

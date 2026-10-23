@@ -3,7 +3,7 @@
 #include "IAmSpeed/Components/Netcode/SpeedWheeledPhysicsComponent.h"
 #include <type_traits>
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
-namespace Speed::Testing1221
+namespace Speed::SelectedStateBytesForTesting
 {
 namespace Private
 {
@@ -13,7 +13,7 @@ template<class... V> void AppendNamedScalars(TArray<uint8>& Out,const V&... Fiel
 {
  static_assert(sizeof...(V)>0 && (std::is_arithmetic_v<V> && ...));
  constexpr SIZE_T BytesCount=(sizeof(V)+...);
- static_assert(BytesCount<=256); // The two fixture-only bounded records below.
+ static_assert(BytesCount<=256); // The two selected-field bounded records below.
  uint8 Bytes[BytesCount];uint8* Cursor=Bytes;
  const auto Copy=[&Cursor](const auto& Value)
  {
@@ -24,7 +24,7 @@ template<class... V> void AppendNamedScalars(TArray<uint8>& Out,const V&... Fiel
  Out.Append(Bytes,int32(BytesCount));
 }
 }
-inline void AppendContactBaseState(TArray<uint8>& Out,const FBasePhysicsState& X)
+inline void AppendBaseState(TArray<uint8>& Out,const FBasePhysicsState& X)
 {
  const auto& K=X.Kinematic;
  Private::AppendNamedScalars(Out,
@@ -35,7 +35,7 @@ inline void AppendContactBaseState(TArray<uint8>& Out,const FBasePhysicsState& X
   K.AngularAcceleration.X,K.AngularAcceleration.Y,K.AngularAcceleration.Z,
   X.bIsFrozen,X.nbFramesbeforeCanMove,X.bStartCountdown);
 }
-inline void AppendContactWheeledState(TArray<uint8>& Out,const FWheeledPhysicsState& X)
+inline void AppendWheeledStatePrefix(TArray<uint8>& Out,const FWheeledPhysicsState& X)
 {
  static_assert(UE_ARRAY_COUNT(X.SuspensionLastDisplacement)==4);
  // The fixed-array uint64 length prefix remains exactly where legacy Add put it.

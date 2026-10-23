@@ -1,5 +1,5 @@
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
-#include "IAmSpeed/World/Simulation/NativeContactStateBytes1221.h"
+#include "IAmSpeed/World/Simulation/NativeSelectedStateBytesForTesting.h"
 #include "IAmSpeed/World/Simulation/FrameFloatingPointContext.h"
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "Misc/AutomationTest.h"
@@ -204,7 +204,7 @@ bool FEpisodeNumericCodecTests::RunTest(const FString&)
   FBasePhysicsState Base;FWheeledPhysicsState Wheel;FillContactStates(Base,Wheel,Case);
   TArray<uint8> New,Legacy,Reference;
   W::Add(New,Prefix);W::Add(Legacy,Prefix);ReferenceScalar(Reference,Prefix);
-  Speed::Testing1221::AppendContactBaseState(New,Base);Speed::Testing1221::AppendContactWheeledState(New,Wheel);
+  Speed::SelectedStateBytesForTesting::AppendBaseState(New,Base);Speed::SelectedStateBytesForTesting::AppendWheeledStatePrefix(New,Wheel);
   LegacyContactBase(Legacy,Base);LegacyContactWheeled(Legacy,Wheel);
   ReferenceContactBase(Reference,Base);ReferenceContactWheeled(Reference,Wheel);
   W::Add(New,Suffix);W::Add(Legacy,Suffix);ReferenceScalar(Reference,Suffix);
@@ -221,13 +221,13 @@ bool FEpisodeNumericCodecTests::RunTest(const FString&)
    for(uint32 Slot=0;Slot<1024;++Slot)
    {
     FBasePhysicsState Base;FWheeledPhysicsState Wheel;FillContactStates(Base,Wheel,Slot+Car*1024);
-    Speed::Testing1221::AppendContactBaseState(New,Base);LegacyContactBase(Legacy,Base);ReferenceContactBase(Reference,Base);
+    Speed::SelectedStateBytesForTesting::AppendBaseState(New,Base);LegacyContactBase(Legacy,Base);ReferenceContactBase(Reference,Base);
    }
    W::Add(New,int32(1024));W::Add(Legacy,int32(1024));ReferenceScalar(Reference,int32(1024));
    for(uint32 Slot=0;Slot<1024;++Slot)
    {
     FBasePhysicsState Base;FWheeledPhysicsState Wheel;FillContactStates(Base,Wheel,Slot+Car*1024);
-    Speed::Testing1221::AppendContactWheeledState(New,Wheel);LegacyContactWheeled(Legacy,Wheel);ReferenceContactWheeled(Reference,Wheel);
+    Speed::SelectedStateBytesForTesting::AppendWheeledStatePrefix(New,Wheel);LegacyContactWheeled(Legacy,Wheel);ReferenceContactWheeled(Reference,Wheel);
    }
   }
   TestTrue(TEXT("1221 both cars retain all1024 base/frame/wheeled history slots and count prefixes"),New==Legacy&&New==Reference);
