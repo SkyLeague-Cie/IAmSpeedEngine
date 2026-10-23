@@ -241,6 +241,7 @@ bool FEpisodeNumericCodecTests::RunTest(const FString&)
  const uint8 Kinds1564[]={0,1,MAX_uint8};
  const uint64 Ids1564[]={0,1,MAX_uint64};
  const uint16 Cooldowns1564[]={0,1,MAX_uint16};
+ uint32 CombinedCase1564=0;
  for(uint32 Schema1564:Schemas1564)for(uint8 Kind1564:Kinds1564)
  for(uint64 Id1564:Ids1564)for(uint16 Cooldown1564:Cooldowns1564)
  {
@@ -252,6 +253,22 @@ bool FEpisodeNumericCodecTests::RunTest(const FString&)
   TestEqual(TEXT("1564 suffix exact 15 byte payload without padding"),New1564.Num()-int32(sizeof(Prefix)),15);
   W::Add(New1564,Suffix);W::Add(Legacy1564,Suffix);ReferenceScalar(Reference1564,Suffix);
   TestTrue(TEXT("1564 suffix boundaries preserve legacy and independent framed scalar bytes"),New1564==Legacy1564&&New1564==Reference1564);
+
+  // Keep both previous80/15-byte tests above; this independently checks their
+  // complete95-byte concatenation with rotating special prefix bit patterns.
+  FBasePhysicsState Base1564;FWheeledPhysicsState Wheel1564;
+  FillContactStates(Base1564,Wheel1564,CombinedCase1564++);
+  Wheel1564.CarBumpCooldownFrames=Cooldown1564;
+  TArray<uint8> Combined1564,LegacyCombined1564,ReferenceCombined1564;
+  W::Add(Combined1564,Prefix);W::Add(LegacyCombined1564,Prefix);ReferenceScalar(ReferenceCombined1564,Prefix);
+  Speed::SelectedStateBytesForTesting::AppendWheeledStateWithBump1564(Combined1564,Wheel1564,Schema1564,Kind1564,Id1564);
+  LegacyContactWheeled(LegacyCombined1564,Wheel1564);
+  W::Add(LegacyCombined1564,Schema1564);W::Add(LegacyCombined1564,Kind1564);W::Add(LegacyCombined1564,Id1564);W::Add(LegacyCombined1564,Cooldown1564);
+  ReferenceContactWheeled(ReferenceCombined1564,Wheel1564);
+  ReferenceScalar(ReferenceCombined1564,Schema1564);ReferenceScalar(ReferenceCombined1564,Kind1564);ReferenceScalar(ReferenceCombined1564,Id1564);ReferenceScalar(ReferenceCombined1564,Cooldown1564);
+  TestEqual(TEXT("1564 combined exact95-byte payload without padding"),Combined1564.Num()-int32(sizeof(Prefix)),95);
+  W::Add(Combined1564,Suffix);W::Add(LegacyCombined1564,Suffix);ReferenceScalar(ReferenceCombined1564,Suffix);
+  TestTrue(TEXT("1564 combined states preserve both independent complete framed oracles"),Combined1564==LegacyCombined1564&&Combined1564==ReferenceCombined1564);
  }
 
  int Object=7,Unknown=9;

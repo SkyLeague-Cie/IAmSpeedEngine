@@ -46,6 +46,18 @@ inline void AppendWheeledStatePrefix(TArray<uint8>& Out,const FWheeledPhysicsSta
   X.SuspensionLastDisplacement[2],X.SuspensionLastDisplacement[3],
   X.PhysicalThrottleInput,X.PhysicalBrakeInput,X.PhysicalSteerInput,X.NbFramesSinceGroundContact);
 }
+inline void AppendWheeledStateWithBump1564(TArray<uint8>& Out,const FWheeledPhysicsState& X,uint32 Schema,uint8 Kind,uint64 StableId)
+{
+ static_assert(UE_ARRAY_COUNT(X.SuspensionLastDisplacement)==4);
+ // Same 80-byte selected prefix followed by the validated 15-byte suffix.
+ Private::AppendNamedScalars(Out,X.bStartCountdown,X.nbFramesbeforeCanMove,X.FramesSinceLastImpact,
+  X.AllowedSideVelocity.X,X.AllowedSideVelocity.Y,X.AllowedSideVelocity.Z,
+  X.AllowedAngularVelocity.X,X.AllowedAngularVelocity.Y,X.AllowedAngularVelocity.Z,
+  uint64(4),X.SuspensionLastDisplacement[0],X.SuspensionLastDisplacement[1],
+  X.SuspensionLastDisplacement[2],X.SuspensionLastDisplacement[3],
+  X.PhysicalThrottleInput,X.PhysicalBrakeInput,X.PhysicalSteerInput,X.NbFramesSinceGroundContact,
+  Schema,Kind,StableId,X.CarBumpCooldownFrames);
+}
 inline void AppendWheeledBumpSuffix1564(TArray<uint8>& Out,uint32 Schema,uint8 Kind,uint64 StableId,uint16 Cooldown)
 {
  static_assert(sizeof(Schema)==4&&sizeof(Kind)==1&&sizeof(StableId)==8&&sizeof(Cooldown)==2);
