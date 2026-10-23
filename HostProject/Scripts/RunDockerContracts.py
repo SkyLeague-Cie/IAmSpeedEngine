@@ -339,7 +339,7 @@ def docker_args(image_id, source, output, owner, sha, cpus=2, cpuset_cpus=None):
     # Source-built UE writes its early Trace.uba before parsing -Log. Keep
     # those image-internal writes in this container's private disposable layer;
     # the immutable image and the read-only exact source bind stay unchanged.
-    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
+    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--ulimit', 'nice=30:30', '--tmpfs', '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
     if cpuset is not None:
         command.extend(['--cpuset-cpus', cpuset, '--env', 'IAMSPEED_CPUSET_CPUS=' + cpuset, '--env', 'IAMSPEED_CPUSET_QUOTA=' + str(cpus)])
     if hasattr(os, 'getuid'):
@@ -356,6 +356,16 @@ def inspect_owned(container, owner, image_id):
     if observed.get('Id') != container or observed.get('Config', {}).get('Labels', {}).get('iamspeed.owner') != owner or observed.get('Image') != image_id:
         raise RuntimeError('Container identity does not match this run')
     return observed
+
+
+def nice_limit_evidence(observed):
+    limits = observed.get('HostConfig', {}).get('Ulimits')
+    if not isinstance(limits, list) or any(not isinstance(row, dict) for row in limits):
+        raise RuntimeError('Container nice limit readback is missing or malformed')
+    nice = [row for row in limits if row.get('Name') == 'nice']
+    if len(nice) != 1 or any(type(nice[0].get(key)) is not int or nice[0][key] != 30 for key in ('Soft', 'Hard')):
+        raise RuntimeError('Container nice limit must be exactly soft30/hard30')
+    return dict(nice[0])
 
 
 def host(args):
@@ -389,6 +399,8 @@ def host(args):
     container = subprocess.check_output(command, text=True).strip()
     launch['container_id'] = container; save(output / 'launch.json', launch)
     try:
+        launch['nice_limit'] = nice_limit_evidence(inspect_owned(container, owner, info['Id']))
+        save(output / 'launch.json', launch)
         subprocess.run(['docker', 'start', container], check=True)
         launch['state'] = 'RUNNING'
         save(output / 'launch.json', launch)

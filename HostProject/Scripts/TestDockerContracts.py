@@ -337,5 +337,35 @@ class ExplicitLinuxCpuTopologyProposal(unittest.TestCase):
         self.assertEqual(args[args.index('--cpuset-cpus')+1], '0,2')
         self.assertEqual(args[args.index('--user')+1], '1000:1000')
 
+
+class UnrealNiceLimitContract(unittest.TestCase):
+    def test_real_launcher_sets_one_bounded_nice_limit_without_extra_privileges(self):
+        with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
+            args = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40, 12, '0,2,4,6,8,10,12,14,16,18,20,22')
+        self.assertEqual(args.count('--ulimit'), 1)
+        self.assertEqual(args[args.index('--ulimit') + 1], 'nice=30:30')
+        self.assertEqual(args[args.index('--user') + 1], '1000:1000')
+        for forbidden in ('--cap-add', '--privileged', '--pid'):
+            self.assertNotIn(forbidden, args)
+
+    def test_nice_limit_readback_requires_exact_unique_integer_soft_and_hard(self):
+        good = {'HostConfig': {'Ulimits': [{'Name': 'nice', 'Soft': 30, 'Hard': 30}]}}
+        original = copy.deepcopy(good)
+        self.assertEqual(ci.nice_limit_evidence(good), good['HostConfig']['Ulimits'][0])
+        self.assertEqual(good, original)
+        bad_limits = [None, [], [{'Name': 'other', 'Soft': 30, 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': 29, 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': 30, 'Hard': 31}],
+                      [{'Name': 'nice', 'Soft': '30', 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': 30.0, 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': True, 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': 30}],
+                      good['HostConfig']['Ulimits'] * 2, ['not-a-limit']]
+        for limits in bad_limits:
+            with self.subTest(limits=limits), self.assertRaises(RuntimeError):
+                ci.nice_limit_evidence({'HostConfig': {'Ulimits': limits}})
+        with self.assertRaises(RuntimeError):
+            ci.nice_limit_evidence({})
+
 if __name__ == '__main__':
     unittest.main()
