@@ -560,9 +560,14 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
     W::Add(RawStates,C->WheeledGameState.WheelsOmega);W::Add(RawStates,C->WheeledGameState.WheelsAngularPosition);
     W::Add(RawStates,C->WheeledGameState.NbWheelsOnGround);W::Add(RawStates,C->WheeledGameState.NbFrameSinceInAir);
     W::Add(RawStates,C->CarLocalInvI);W::Add(RawStates,C->RecordedBaseFrames.Num());
-    for(int32 F:C->RecordedBaseFrames)W::Add(RawStates,F);
-    W::Add(RawStates,C->RecordedBaseStates.Num());for(const auto& X:C->RecordedBaseStates)ContactBaseState1368(RawStates,X);
-    W::Add(RawStates,C->RecordedWheeledStates.Num());for(const auto& X:C->RecordedWheeledStates)ContactWheeledState1368(RawStates,X);
+    if(!SelectedStateBytesForTesting::AppendFrameHistory1564(RawStates,C->RecordedBaseFrames))
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+    W::Add(RawStates,C->RecordedBaseStates.Num());
+    if(!SelectedStateBytesForTesting::AppendBaseHistory1564(RawStates,C->RecordedBaseStates))
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+    W::Add(RawStates,C->RecordedWheeledStates.Num());
+    if(!SelectedStateBytesForTesting::AppendWheelPrefixHistory1564(RawStates,C->RecordedWheeledStates))
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
     W::Array(RawStates,C->PhysicalConstraints);
     C->SleepState.AppendEpisodeFieldsForTesting<W>(RawStates);C->KinematicQuantizationCache.AppendEpisodeFieldsForTesting<W>(RawStates);
     W::Add(RawStates,C->GetStaticCollisionWorldForFrame());W::Add(RawStates,C->GetStaticSupportFrameHorizon());

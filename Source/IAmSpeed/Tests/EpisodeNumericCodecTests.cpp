@@ -3,6 +3,7 @@
 #include "IAmSpeed/World/Simulation/FrameFloatingPointContext.h"
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "Misc/AutomationTest.h"
+#include <stdexcept>
 
 namespace
 {
@@ -269,6 +270,113 @@ bool FEpisodeNumericCodecTests::RunTest(const FString&)
   TestEqual(TEXT("1564 combined exact95-byte payload without padding"),Combined1564.Num()-int32(sizeof(Prefix)),95);
   W::Add(Combined1564,Suffix);W::Add(LegacyCombined1564,Suffix);ReferenceScalar(ReferenceCombined1564,Suffix);
   TestTrue(TEXT("1564 combined states preserve both independent complete framed oracles"),Combined1564==LegacyCombined1564&&Combined1564==ReferenceCombined1564);
+ }
+
+
+ // Range serializers retain all framing and scalar representations; the two
+ // oracles below append fields independently, never call a range writer.
+ for(int32 Count1564:{0,1,2,1024})
+ {
+  TArray<int32> Frames1564;TArray<FBasePhysicsState> Base1564;TArray<FWheeledPhysicsState> Wheel1564;
+  Frames1564.SetNum(Count1564);Base1564.SetNum(Count1564);Wheel1564.SetNum(Count1564);
+  for(int32 Index1564=0;Index1564<Count1564;++Index1564)
+  {
+   Frames1564[Index1564]=Index1564%2 ? MIN_int32+Index1564 : MAX_int32-Index1564;
+   FillContactStates(Base1564[Index1564],Wheel1564[Index1564],uint32(Index1564));
+   Wheel1564[Index1564].CarBumpCooldownFrames=uint16(Index1564%2 ? MAX_uint16-Index1564 : Index1564);
+  }
+  const auto CaptureInputs1564=[&]
+  {
+   TArray<uint8> Bytes;
+   for(int32 Index1564=0;Index1564<Count1564;++Index1564)
+   {
+    ReferenceScalar(Bytes,Frames1564[Index1564]);ReferenceContactBase(Bytes,Base1564[Index1564]);
+    ReferenceContactWheeled(Bytes,Wheel1564[Index1564]);ReferenceScalar(Bytes,Wheel1564[Index1564].CarBumpCooldownFrames);
+   }
+   return Bytes;
+  };
+  const auto InputBefore1564=CaptureInputs1564();
+  TArray<uint8> Batched1564,Legacy1564,Reference1564;
+  W::Add(Batched1564,Prefix);W::Add(Legacy1564,Prefix);ReferenceScalar(Reference1564,Prefix);
+  for(TArray<uint8>* Bytes:{&Batched1564,&Legacy1564})W::Add(*Bytes,Count1564);
+  ReferenceScalar(Reference1564,Count1564);
+  TestTrue(TEXT("range frame IDs admitted"),Speed::SelectedStateBytesForTesting::AppendFrameHistory1564(Batched1564,Frames1564));
+  for(int32 Frame1564:Frames1564){W::Add(Legacy1564,Frame1564);ReferenceScalar(Reference1564,Frame1564);}
+  for(TArray<uint8>* Bytes:{&Batched1564,&Legacy1564})W::Add(*Bytes,Count1564);
+  ReferenceScalar(Reference1564,Count1564);
+  TestTrue(TEXT("range base states admitted"),Speed::SelectedStateBytesForTesting::AppendBaseHistory1564(Batched1564,Base1564));
+  for(const auto& X:Base1564){LegacyContactBase(Legacy1564,X);ReferenceContactBase(Reference1564,X);}
+  for(TArray<uint8>* Bytes:{&Batched1564,&Legacy1564})W::Add(*Bytes,Count1564);
+  ReferenceScalar(Reference1564,Count1564);
+  TestTrue(TEXT("range wheel prefixes admitted"),Speed::SelectedStateBytesForTesting::AppendWheelPrefixHistory1564(Batched1564,Wheel1564));
+  for(const auto& X:Wheel1564){LegacyContactWheeled(Legacy1564,X);ReferenceContactWheeled(Reference1564,X);}
+  W::Add(Batched1564,Suffix);W::Add(Legacy1564,Suffix);ReferenceScalar(Reference1564,Suffix);
+  TestTrue(TEXT("0/1/2/1024 ranges preserve all legacy/reference framing and special bits"),Batched1564==Legacy1564&&Batched1564==Reference1564);
+  TestEqual(TEXT("range framed exact byte count"),Batched1564.Num(),int32(sizeof(Prefix)+3*sizeof(int32)+Count1564*(sizeof(int32)+156+80)+sizeof(Suffix)));
+
+  // Success plus first/middle/last refusal. Count framing deliberately remains
+  // the full authored count even if only a prefix of wheel records is valid.
+  TArray<int32> FailurePositions1564{INDEX_NONE};
+  if(Count1564){FailurePositions1564.AddUnique(0);FailurePositions1564.AddUnique(Count1564/2);FailurePositions1564.AddUnique(Count1564-1);}
+  for(int32 FailAt1564:FailurePositions1564)
+  {
+   TArray<uint8> BatchWheel1564,LegacyWheel1564,ReferenceWheel1564;
+   W::Add(BatchWheel1564,Prefix);W::Add(LegacyWheel1564,Prefix);ReferenceScalar(ReferenceWheel1564,Prefix);
+   W::Add(BatchWheel1564,Count1564);W::Add(LegacyWheel1564,Count1564);ReferenceScalar(ReferenceWheel1564,Count1564);
+   SIZE_T RangeCapacity1564=BatchWheel1564.GetAllocatedSize();
+   int32 Calls1564=0,FailureIndex1564=123;
+   const auto Identity1564=[&](const FWheeledPhysicsState& X,uint8& Kind,uint64& StableId)
+   {
+    const int32 Index1564=Calls1564++;RangeCapacity1564=BatchWheel1564.GetAllocatedSize();
+    TestTrue(TEXT("live range callback receives exact original record in order"),&X==&Wheel1564[Index1564]);
+    if(Index1564==FailAt1564)return false;
+    Kind=uint8(Index1564%2);StableId=Kind ? MAX_uint64-uint64(Index1564) : 0;return true;
+   };
+   const bool Accepted1564=Speed::SelectedStateBytesForTesting::AppendWheelBumpHistory1564(BatchWheel1564,Wheel1564,0x15640001u,Identity1564,FailureIndex1564);
+   const int32 Successful1564=FailAt1564==INDEX_NONE ? Count1564 : FailAt1564;
+   TestEqual(TEXT("range identity result preserved"),Accepted1564,FailAt1564==INDEX_NONE);
+   TestEqual(TEXT("range failure index exact"),FailureIndex1564,FailAt1564);
+   TestEqual(TEXT("range callback stops at first refusal"),Calls1564,Successful1564+(FailAt1564==INDEX_NONE ? 0 : 1));
+   for(int32 Index1564=0;Index1564<Successful1564;++Index1564)
+   {
+    const auto& X=Wheel1564[Index1564];const uint8 Kind=uint8(Index1564%2);const uint64 Id=Kind ? MAX_uint64-uint64(Index1564) : 0;
+    LegacyContactWheeled(LegacyWheel1564,X);W::Add(LegacyWheel1564,uint32(0x15640001u));W::Add(LegacyWheel1564,Kind);W::Add(LegacyWheel1564,Id);W::Add(LegacyWheel1564,X.CarBumpCooldownFrames);
+    ReferenceContactWheeled(ReferenceWheel1564,X);ReferenceScalar(ReferenceWheel1564,uint32(0x15640001u));ReferenceScalar(ReferenceWheel1564,Kind);ReferenceScalar(ReferenceWheel1564,Id);ReferenceScalar(ReferenceWheel1564,X.CarBumpCooldownFrames);
+   }
+   TestEqual(TEXT("range trim retains complete appended backing capacity"),BatchWheel1564.GetAllocatedSize(),RangeCapacity1564);
+   TestEqual(TEXT("range refusal retains only fully validated records"),BatchWheel1564.Num(),int32(sizeof(Prefix)+sizeof(int32)+Successful1564*95));
+   W::Add(BatchWheel1564,Suffix);W::Add(LegacyWheel1564,Suffix);ReferenceScalar(ReferenceWheel1564,Suffix);
+   TestTrue(TEXT("range full/partial bytes preserve independent legacy framing"),BatchWheel1564==LegacyWheel1564&&BatchWheel1564==ReferenceWheel1564);
+  }
+  TestTrue(TEXT("all source history scalar bytes unchanged"),CaptureInputs1564()==InputBefore1564);
+ }
+ {
+  TArray<FWheeledPhysicsState> Wheel1564;Wheel1564.SetNum(2);
+  FBasePhysicsState Base1564;
+  for(int32 Index1564=0;Index1564<2;++Index1564)FillContactStates(Base1564,Wheel1564[Index1564],uint32(Index1564));
+  TArray<uint8> Partial1564,Expected1564;W::Add(Partial1564,Prefix);ReferenceScalar(Expected1564,Prefix);
+  int32 Calls1564=0,Failure1564=123;bool Threw1564=false;
+  try
+  {
+   Speed::SelectedStateBytesForTesting::AppendWheelBumpHistory1564(Partial1564,Wheel1564,0x15640001u,
+    [&](const FWheeledPhysicsState&,uint8& Kind,uint64& Id)
+    {if(Calls1564++==1)throw std::runtime_error("fixture identity failure");Kind=1;Id=17;return true;},Failure1564);
+  }
+  catch(const std::runtime_error&){Threw1564=true;}
+  ReferenceContactWheeled(Expected1564,Wheel1564[0]);ReferenceScalar(Expected1564,uint32(0x15640001u));
+  ReferenceScalar(Expected1564,uint8(1));ReferenceScalar(Expected1564,uint64(17));ReferenceScalar(Expected1564,Wheel1564[0].CarBumpCooldownFrames);
+  TestTrue(TEXT("range exception retains prior committed bytes without tail"),Threw1564&&Calls1564==2&&Partial1564==Expected1564);
+ }
+ TestTrue(TEXT("range extent exact boundary admitted"),Speed::SelectedStateBytesForTesting::Private::HistoryRangeFits1564(MAX_int32-156,1,156));
+ TestFalse(TEXT("range overflow rejected before allocation"),Speed::SelectedStateBytesForTesting::Private::HistoryRangeFits1564(MAX_int32-155,1,156));
+ TestFalse(TEXT("range negative count rejected"),Speed::SelectedStateBytesForTesting::Private::HistoryRangeFits1564(0,-1,95));
+ {
+  // Reinterpret only constructs the view; alias rejection must happen before
+  // any int32 dereference or destination resize, so no fabricated object read.
+  TArray<uint8> Aliased1564;Aliased1564.Init(0x5a,32);const auto Original1564=Aliased1564;
+  TConstArrayView<int32> View1564(reinterpret_cast<const int32*>(Aliased1564.GetData()),1);
+  TestFalse(TEXT("aliased scalar input rejected before mutation"),Speed::SelectedStateBytesForTesting::AppendFrameHistory1564(Aliased1564,View1564));
+  TestTrue(TEXT("alias refusal keeps original bytes"),Aliased1564==Original1564);
  }
 
  int Object=7,Unknown=9;

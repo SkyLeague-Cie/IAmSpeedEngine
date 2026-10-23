@@ -685,16 +685,18 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
     W::Add(RawStates,C->WheeledGameState.NbWheelsOnGround);W::Add(RawStates,C->WheeledGameState.NbFrameSinceInAir);
     MarkState1534(A,TEXT("InertiaAndCompleteRecordedHistory"));
     W::Add(RawStates,C->CarLocalInvI);W::Add(RawStates,C->RecordedBaseFrames.Num());
-    for(int32 F:C->RecordedBaseFrames)W::Add(RawStates,F);
-    W::Add(RawStates,C->RecordedBaseStates.Num());for(const auto& X:C->RecordedBaseStates)EightCarBaseState1534(RawStates,X);
+    if(!SelectedStateBytesForTesting::AppendFrameHistory1564(RawStates,C->RecordedBaseFrames))
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+    W::Add(RawStates,C->RecordedBaseStates.Num());
+    if(!SelectedStateBytesForTesting::AppendBaseHistory1564(RawStates,C->RecordedBaseStates))
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
     W::Add(RawStates,C->RecordedWheeledStates.Num());
-    for(int32 HistoryIndex1564=0;HistoryIndex1564<C->RecordedWheeledStates.Num();++HistoryIndex1564)
+    int32 HistoryIndex1564=INDEX_NONE;
+    if(!SelectedStateBytesForTesting::AppendWheelBumpHistory1564(RawStates,C->RecordedWheeledStates,EightCarBumpOracleSchema1564,
+     [&](const FWheeledPhysicsState& X,uint8& Kind,uint64& StableId){return EightCarBumpVictimIdentity1564(X,BumpIdentities1564,Kind,StableId);},HistoryIndex1564))
     {
-     if(!EightCarWheeledState1534(RawStates,C->RecordedWheeledStates[HistoryIndex1564],BumpIdentities1564))
-     {
       PointerFailure=FString::Printf(TEXT("UNKNOWN_WHEELED_BUMP_IDENTITY1564\tN=%llu\tCar=%d\tField=InertiaAndCompleteRecordedHistory\tHistoryIndex=%d\n"),N,A,HistoryIndex1564);
       Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;
-     }
     }
     MarkState1534(A,TEXT("ConstraintsSleepQuantizationSupport"));
     W::Array(RawStates,C->PhysicalConstraints);
