@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "NativeSelectedStateBytesForTesting.h"
+#include "FrameFloatingPointContext.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -143,6 +144,13 @@ struct FNativeContactRow1368
  Speed::Analytic::FTensorCellWaveStats1213 TensorDiagnostics;
  int32 TensorUsefulNative=0,TensorReusedNative=0,TensorReusedLanes=0;
  int32 GroundedWheels[2]={0,0};bool ActiveSuspension[2]={false,false};int32 WheelManifoldRows=0;
+ Speed::FFramePointerCanonicalSnapshot1456 DeferredContacts1368,DeferredStates1368;
+ Speed::FWheelWitnessSnapshot1368 DeferredWheel1368;
+ Speed::FFrameFloatingPointContext ContactProjectionNumeric1368,StateProjectionNumeric1368;
+ TArray<uint8> RawContactAfterSealDebris1368,RawStateAfterSealDebris1368;
+ TArray<uint8> RawWheelAfterSealDebris1368,CanonicalWheelAfterSealDebris1368;
+ TArray<uint8> RawWheelDestinationDebris1368,CanonicalWheelDestinationDebris1368;
+ bool bContactsCaptured1368=false,bStatesCaptured1368=false;
  bool bComplete=false;
 };
 void ContactBaseState1368(TArray<uint8>& O,const FBasePhysicsState& X)
@@ -412,6 +420,8 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
    // Touch fixture-owned storage before the owner; these are growable hints.
    R.RawOrderedSolve.SetNumZeroed(65536);R.RawOrderedSolve.Reset();
    R.RawWheelManifold.SetNumZeroed(128*1024);R.RawWheelManifold.Reset();
+   if(!TestTrue(TEXT("grounded state deferred storage prepared before owner"),R.DeferredStates1368.ReserveAndPreTouch1456(StateCapacity1368,4096))
+    ||!TestTrue(TEXT("grounded contact deferred storage prepared before owner"),R.DeferredContacts1368.ReserveAndPreTouch1456(65536,2048)))return false;
    if(!Fast){R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);}
   }
   // Only these fixture buffers are pre-touched. Canonical projectors and the
@@ -457,7 +467,7 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
    }
    if(!Identities||!Pointers.Seal()){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    FFrameSolveWitnessScope Ordered(N,Row.RawOrderedSolve,Pointers);
-   if(!Ordered.EnableWheelManifoldCapture1368()){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   if(!Ordered.EnableWheelManifoldCapture1368(true)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    // Install/remove on this same canonical owner, outside the physical call.
    // Never replace an existing observer, including on an Idle or failure pulse.
    int32 InstalledPrepareObservers=0;
@@ -496,14 +506,25 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    Row.Frame=N;Row.Publication=Snapshot.PublicationSerial;Row.Snapshot=Snapshot.Payload;
    Row.MainContacts=Ordered.NumMainRows();Row.WheelManifoldRows=Ordered.NumWheelManifoldRows1368();
-   Row.RawWheelManifold=Ordered.RawWheelManifold1368();
-   if(!Ordered.MakeWheelManifoldCanonical1368(Row.WheelManifold)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}TArray<uint8> Canonical;
-   if(!Ordered.MakeCanonical(Canonical))
+   // No more physical/contact writers follow the joined production pulse.
+   // Preserve even the refusal prefix: a failed handoff keeps the legacy wheel
+   // copy on this exceptional path, before the live scope is destroyed.
+   const auto PreserveUnconsumedWheel1368=[&]
+   {
+    Row.RawWheelManifold=Ordered.RawWheelManifold1368();
+    return Ordered.MakeWheelManifoldCanonical1368(Row.WheelManifold);
+   };
+   Row.ContactProjectionNumeric1368=CaptureFrameFloatingPointContext();
+   if(!Row.ContactProjectionNumeric1368.bValid||!Ordered.SealAndConsumeCanonicalSnapshot1456(Row.DeferredContacts1368))
    {
     PointerFailure=FString::Printf(TEXT("Solve N=%llu Overflow=%d Unknown=%d OpenPasses=%d\nOffset\tRaw\tKnown\tObjectId\tPair\tSolverPair\tProvider\tFeatureSalt\n"),N,Ordered.HasOverflow()?1:0,Ordered.HasUnknownPointer()?1:0,Ordered.OpenDynamicPassCount());
     for(const auto& E:Ordered.PointerObservations())PointerFailure+=FString::Printf(TEXT("%d\t%llu\t%d\t%d\t%d\t%d\t%llu\t%llu\n"),E.Offset,uint64(E.RawAddress),E.bKnown?1:0,E.bObjectId?1:0,E.bPairToken?1:0,E.bSolverPairToken?1:0,E.PairProviderId,E.PairFeatureSalt);
+    PreserveUnconsumedWheel1368();
     Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;
-   }Row.OrderedSolve=MoveTemp(Canonical);
+   }
+   Row.bContactsCaptured1368=true;
+   if(!Ordered.ConsumeWheelWitness1368(Row.DeferredWheel1368))
+   {PreserveUnconsumedWheel1368();Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    TArray<uint8>& RawStates=Row.RawObservedStates;FFramePointerCaptureScope StatePointers(RawStates,Pointers);
    Control.AppendNativeWitness(RawStates);
    for(int32 A=0;A<Cars.Num();++A)
@@ -603,12 +624,14 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
      Row.ActiveSuspension[A]|=Wheel->GetSuspensionSim()->GetLastDisplacement()!=0.f;
     W::Add(RawStates,Row.GroundedWheels[A]);W::Add(RawStates,Row.ActiveSuspension[A]);
    }
-   if(!StatePointers.MakeCanonical(Row.ObservedStates))
+   Row.StateProjectionNumeric1368=CaptureFrameFloatingPointContext();
+   if(!Row.StateProjectionNumeric1368.bValid||!StatePointers.ConsumeCanonicalSnapshot1456(Row.DeferredStates1368))
    {
     PointerFailure=FString::Printf(TEXT("N=%llu Overflow=%d Unknown=%d\nOffset\tAddress\tKnown\tObjectId\tPairToken\n"),N,StatePointers.HasOverflow()?1:0,StatePointers.HasUnknown()?1:0);
     for(const auto& E:StatePointers.Observations())PointerFailure+=FString::Printf(TEXT("%d\t%llu\t%d\t%d\t%d\n"),E.Offset,uint64(E.RawAddress),E.bKnown?1:0,E.bObjectId?1:0,E.bPairToken?1:0);
     Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;
    }
+   Row.bStatesCaptured1368=true;
    // Save actual production output and participation before running the
    // independent comparison, which must not inflate production worker evidence.
    if(!Fast)
@@ -657,6 +680,65 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
   const double Deadline=FPlatformTime::Seconds()+60;
   while(Owner.IsRunning()&&FPlatformTime::Seconds()<Deadline)FPlatformProcess::SleepNoStats(.001f);
   const bool Finished=!Owner.IsRunning();Owner.StopAndJoin();
+  // Recover ALL 90 rows before any success gate or export, including captures
+  // preceding a later failure. Never overwrite an illegal source/destination
+  // write: retain both sources separately and keep the verdict failed.
+  for(uint32 N=0;N<Frames;++N)
+  {
+   auto& R=Seen[N];
+   const auto RejectDeferred1368=[&](const TCHAR* Reason)
+   {
+    Failed=true;R.bComplete=false;if(FailureLine==0)FailureLine=__LINE__;
+    PointerFailure+=FString::Printf(TEXT("Deferred N=%u %s; all captured raw/debris retained\n"),N,Reason);
+   };
+   const auto RestoreRaw1368=[&](const FFramePointerCanonicalSnapshot1456& Captured,TArray<uint8>& Raw,TArray<uint8>& Debris)
+   {
+    auto Status=Captured.CopyRawForEvidenceAfterClosure1456(Raw);
+    if(Status==EFramePointerRawEvidenceCopy1456::DestinationNotEmpty)
+    {
+     Swap(Raw,Debris);RejectDeferred1368(TEXT("post-seal raw write"));
+     Status=Captured.CopyRawForEvidenceAfterClosure1456(Raw);
+    }
+    if(Status!=EFramePointerRawEvidenceCopy1456::Copied&&Status!=EFramePointerRawEvidenceCopy1456::NotCaptured)
+     RejectDeferred1368(TEXT("raw recovery refused"));
+   };
+   RestoreRaw1368(R.DeferredContacts1368,R.RawOrderedSolve,R.RawContactAfterSealDebris1368);
+   RestoreRaw1368(R.DeferredStates1368,R.RawObservedStates,R.RawStateAfterSealDebris1368);
+   auto WheelStatus1368=R.DeferredWheel1368.ReleaseAfterClosure(R.RawWheelManifold,R.WheelManifold,
+    R.RawWheelAfterSealDebris1368,R.CanonicalWheelAfterSealDebris1368);
+   if(WheelStatus1368==EWheelWitnessRelease1368::DestinationNotEmpty)
+   {
+    Swap(R.RawWheelManifold,R.RawWheelDestinationDebris1368);Swap(R.WheelManifold,R.CanonicalWheelDestinationDebris1368);
+    RejectDeferred1368(TEXT("wheel destination write"));
+    WheelStatus1368=R.DeferredWheel1368.ReleaseAfterClosure(R.RawWheelManifold,R.WheelManifold,
+     R.RawWheelAfterSealDebris1368,R.CanonicalWheelAfterSealDebris1368);
+   }
+   if(WheelStatus1368!=EWheelWitnessRelease1368::NotCaptured&&WheelStatus1368!=EWheelWitnessRelease1368::TransferredValid)
+    RejectDeferred1368(TEXT("wheel capture invalid"));
+  }
+  // Recovery is complete for every row before any projection can fail.
+  for(uint32 N=0;N<Frames;++N)
+  {
+   auto& R=Seen[N];
+   const auto RejectDeferred1368=[&](const TCHAR* Reason)
+   {
+    Failed=true;R.bComplete=false;if(FailureLine==0)FailureLine=__LINE__;
+    PointerFailure+=FString::Printf(TEXT("Deferred N=%u %s; all captured raw/debris retained\n"),N,Reason);
+   };
+   const auto Project1368=[&](bool Captured,const FFramePointerCanonicalSnapshot1456& Snapshot1368,
+    const FFrameFloatingPointContext& Numeric1368,TArray<uint8>& Canonical1368)
+   {
+    if(!Captured)return;
+    FScopedFrameFloatingPointContext ProjectionNumeric1368(Numeric1368);
+    const bool Projected1368=ProjectionNumeric1368.IsApplied()&&Snapshot1368.MakeCanonical(Canonical1368);
+    const bool Restored1368=ProjectionNumeric1368.Restore();
+    if(!Projected1368||!Restored1368)RejectDeferred1368(TEXT("canonical projection or numeric restore refused"));
+   };
+   // Do not gate projection on Finished/Failed: successful earlier captures
+   // of an incomplete run keep their canonical prefixes as well as raw bytes.
+   Project1368(R.bContactsCaptured1368,R.DeferredContacts1368,R.ContactProjectionNumeric1368,R.OrderedSolve);
+   Project1368(R.bStatesCaptured1368,R.DeferredStates1368,R.StateProjectionNumeric1368,R.ObservedStates);
+  }
   if(Failed)AddInfo(FString::Printf(TEXT("[NativeAnalyticContactsFirstFailure1297] Fast=%d Lanes=%d Steps=%u Line=%d CameraStatus=%d CameraReason=%d"),Fast?1:0,Lanes,Steps,FailureLine,CameraStatus,CameraReason));
   // Save ALL raw/canonical observations only after joining, so file I/O is
   // excluded from physical frames and an UNKNOWN keeps its original bytes.
@@ -679,6 +761,15 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
   EvidenceSaved&=SavePack(TEXT("contacts.canonical.pack"),&FNativeContactRow1368::OrderedSolve);
   EvidenceSaved&=SavePack(TEXT("states.raw.pack"),&FNativeContactRow1368::RawObservedStates);
   EvidenceSaved&=SavePack(TEXT("states.canonical.pack"),&FNativeContactRow1368::ObservedStates);
+  // Exceptional misuse only: the ordinary pack names and framing are exact.
+  const auto SaveDebris1368=[&](const TCHAR* Name,auto Member)
+  {for(const auto& R:Seen)if(!(R.*Member).IsEmpty())return SavePack(Name,Member);return true;};
+  EvidenceSaved&=SaveDebris1368(TEXT("contacts.after-seal.raw.pack"),&FNativeContactRow1368::RawContactAfterSealDebris1368);
+  EvidenceSaved&=SaveDebris1368(TEXT("states.after-seal.raw.pack"),&FNativeContactRow1368::RawStateAfterSealDebris1368);
+  EvidenceSaved&=SaveDebris1368(TEXT("wheel.after-seal.raw.pack"),&FNativeContactRow1368::RawWheelAfterSealDebris1368);
+  EvidenceSaved&=SaveDebris1368(TEXT("wheel.after-seal.canonical.pack"),&FNativeContactRow1368::CanonicalWheelAfterSealDebris1368);
+  EvidenceSaved&=SaveDebris1368(TEXT("wheel.destination.raw.pack"),&FNativeContactRow1368::RawWheelDestinationDebris1368);
+  EvidenceSaved&=SaveDebris1368(TEXT("wheel.destination.canonical.pack"),&FNativeContactRow1368::CanonicalWheelDestinationDebris1368);
   EvidenceSaved&=SavePack(TEXT("commands.consumed.pack"),&FNativeContactRow1368::Inputs);
   EvidenceSaved&=SavePack(TEXT("snapshots.pack"),&FNativeContactRow1368::Snapshot);
   EvidenceSaved&=SavePack(TEXT("camera.pose.pack"),&FNativeContactRow1368::CameraPose);

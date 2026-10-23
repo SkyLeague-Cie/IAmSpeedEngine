@@ -1,5 +1,6 @@
 #include "FramePointerWitness.h"
 #include "FrameSolveWitness.h"
+#include "FrameFloatingPointContext.h"
 #include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
@@ -884,6 +885,84 @@ bool FFramePointerPreTouchTests::RunTest(const FString&)
         TArray<uint8> Out{99};
         TestTrue(TEXT("fresh unsealed unwind keeps raw failure prefix without false capture"),!Aborted.IsEmpty()&&Bounds.IsEmpty()&&Prepared.RawForEvidence1456().IsEmpty());
         TestFalse(TEXT("unwound fresh preparation never creates a certificate"),Prepared.MakeCanonical(Out));
+    }
+    // Grounded's final contact handoff stays alive around its nested state
+    // capture and live camera comparison. Exercise that exact TLS/lifetime
+    // shape with independent scalar/key and wheel framing oracles, including
+    // a later failed frame and illegal writes to either transferred source.
+    for(int32 Failure1368=0;Failure1368<4;++Failure1368)
+    {
+        TArray<uint8> Main1368,States1368,OuterRaw1368,UnrelatedCamera1368;
+        TArray<uint8> ExpectedMain1368,ExpectedStates1368,MainRaw1368,StatesRaw1368;
+        TArray<uint8> ExpectedWheelRaw1368,ExpectedWheelCanonical1368;
+        FFramePointerCanonicalSnapshot1456 Contacts1368,StatesSnapshot1368;
+        FWheelWitnessSnapshot1368 WheelSnapshot1368;
+        const auto AddExpectedKey1368=[&](TArray<uint8>& Bytes)
+        {
+            Scalar(Bytes,Key.Domain);Scalar(Bytes,Key.Owner);Scalar(Bytes,Key.Generation);
+            Scalar(Bytes,Key.Role);Scalar(Bytes,Key.Element);Scalar(Bytes,uint32(0));
+        };
+        Scalar(ExpectedMain1368,Prefix);AddExpectedKey1368(ExpectedMain1368);
+        Scalar(ExpectedStates1368,Suffix);AddExpectedKey1368(ExpectedStates1368);
+        const FFrameFloatingPointContext Numeric1368=CaptureFrameFloatingPointContext();
+        {
+            FFramePointerCaptureScope Outer1368(OuterRaw1368,Registry);
+            {
+                FFrameSolveWitnessScope Solve1368(90,Main1368,Registry);
+                TestTrue(TEXT("grounded coupled scope enables borrowed wheel events"),Solve1368.EnableWheelManifoldCapture1368(true));
+                FEpisodeStateBytesForTesting::Add(Main1368,Prefix);FEpisodeStateBytesForTesting::Add(Main1368,&Object);
+                EmitWheel1368(0,{});EmitWheel1368(255,{});
+                IndependentWheel1368(ExpectedWheelRaw1368,90,0,0,{},false);
+                IndependentWheel1368(ExpectedWheelRaw1368,90,1,255,{},false);
+                IndependentWheel1368(ExpectedWheelCanonical1368,90,0,0,{},true);
+                IndependentWheel1368(ExpectedWheelCanonical1368,90,1,255,{},true);
+                MainRaw1368=Main1368;
+                TestTrue(TEXT("grounded main capture seals before nested states"),Solve1368.SealAndConsumeCanonicalSnapshot1456(Contacts1368));
+                TestTrue(TEXT("grounded wheel handoff follows main handoff"),Solve1368.ConsumeWheelWitness1368(WheelSnapshot1368));
+                {
+                    FFramePointerCaptureScope StateScope1368(States1368,Registry);
+                    FEpisodeStateBytesForTesting::Add(States1368,Suffix);FEpisodeStateBytesForTesting::Add(States1368,&Object);
+                    StatesRaw1368=States1368;
+                    TestTrue(TEXT("grounded nested state capture consumes independently"),StateScope1368.ConsumeCanonicalSnapshot1456(StatesSnapshot1368));
+                    // A camera codec targets a different byte array while both
+                    // consumed scopes remain alive; it must not poison either.
+                    FEpisodeStateBytesForTesting::Add(UnrelatedCamera1368,&Object);
+                    if(Failure1368==3)FEpisodeStateBytesForTesting::Add(States1368,&Object);
+                }
+                if(Failure1368==2)FEpisodeStateBytesForTesting::Add(Main1368,&Object);
+            }
+            FEpisodeStateBytesForTesting::Add(OuterRaw1368,&Object);
+            TestEqual(TEXT("grounded nested handoffs restore original pointer TLS"),Outer1368.Observations().Num(),1);
+        }
+        TArray<uint8> MainDebris1368,StateDebris1368;
+        Swap(Main1368,MainDebris1368);Swap(States1368,StateDebris1368);
+        TestTrue(TEXT("grounded closed main raw always recovers including invalid late write"),Contacts1368.CopyRawForEvidenceAfterClosure1456(Main1368)==EFramePointerRawEvidenceCopy1456::Copied&&Main1368==MainRaw1368);
+        TestTrue(TEXT("grounded closed state raw always recovers including invalid late write"),StatesSnapshot1368.CopyRawForEvidenceAfterClosure1456(States1368)==EFramePointerRawEvidenceCopy1456::Copied&&States1368==StatesRaw1368);
+        TestEqual(TEXT("grounded main late-write debris retained separately"),MainDebris1368.Num(),Failure1368==2?int32(sizeof(UPTRINT)):0);
+        TestEqual(TEXT("grounded state late-write debris retained separately"),StateDebris1368.Num(),Failure1368==3?int32(sizeof(UPTRINT)):0);
+        TArray<uint8> WheelRaw1368,WheelCanonical1368,WheelRawDebris1368,WheelCanonicalDebris1368;
+        const auto WheelStatus1368=WheelSnapshot1368.ReleaseAfterClosure(WheelRaw1368,WheelCanonical1368,WheelRawDebris1368,WheelCanonicalDebris1368);
+        TestTrue(TEXT("grounded wheel raw and canonical match independent complete framing after closure"),WheelRaw1368==ExpectedWheelRaw1368&&WheelCanonical1368==ExpectedWheelCanonical1368);
+        TestTrue(TEXT("grounded main late write invalidates wheel certificate too"),WheelStatus1368==(Failure1368==2?EWheelWitnessRelease1368::TransferredInvalid:EWheelWitnessRelease1368::TransferredValid));
+        if(Failure1368==1)
+        {
+            TArray<uint8> LaterPartial1368;FFramePointerCanonicalSnapshot1456 Later1368;
+            {
+                FFramePointerCaptureScope FailedScope1368(LaterPartial1368,Registry);
+                FEpisodeStateBytesForTesting::Add(LaterPartial1368,&Unknown);
+                TestFalse(TEXT("grounded later failed frame cannot create a certificate"),FailedScope1368.ConsumeCanonicalSnapshot1456(Later1368));
+            }
+            const TArray<uint8> PartialBefore1368=LaterPartial1368;
+            TestTrue(TEXT("grounded later failed raw prefix remains unconsumed"),Later1368.CopyRawForEvidenceAfterClosure1456(LaterPartial1368)==EFramePointerRawEvidenceCopy1456::NotCaptured&&LaterPartial1368==PartialBefore1368&&!LaterPartial1368.IsEmpty());
+        }
+        TArray<uint8> CanonicalMain1368,CanonicalStates1368;
+        FScopedFrameFloatingPointContext Projection1368(Numeric1368);
+        TestTrue(TEXT("grounded pure projection restores captured owner numeric environment"),Projection1368.IsApplied());
+        const bool MainValid1368=Contacts1368.MakeCanonical(CanonicalMain1368);
+        const bool StatesValid1368=StatesSnapshot1368.MakeCanonical(CanonicalStates1368);
+        TestTrue(TEXT("grounded deferred contact oracle distinguishes illegal main writes"),MainValid1368==(Failure1368!=2)&&(MainValid1368?CanonicalMain1368==ExpectedMain1368:CanonicalMain1368.IsEmpty()));
+        TestTrue(TEXT("grounded deferred state oracle distinguishes illegal state writes"),StatesValid1368==(Failure1368!=3)&&(StatesValid1368?CanonicalStates1368==ExpectedStates1368:CanonicalStates1368.IsEmpty()));
+        TestTrue(TEXT("grounded projection leaves caller numeric environment restored"),Projection1368.Restore());
     }
     return true;
 }
