@@ -255,12 +255,77 @@ def cpu_affinity_evidence(spec, cpus):
                 Windows_host_physical_mapping='UNKNOWN')
 
 
+def work_tmpfs_evidence(work):
+    # This is a transport envelope, not a physical acceptance threshold.
+    fs = os.statvfs(work)
+    if fs.f_blocks * fs.f_frsize != 14 * 1024**3:
+        raise RuntimeError('Native work requires the bounded 14 GiB tmpfs')
+    if not hasattr(os, 'ST_NOEXEC') or fs.f_flag & os.ST_NOEXEC:
+        raise RuntimeError('Executable native work tmpfs was not proved')
+    mounts = [line for line in Path('/proc/self/mountinfo').read_text().splitlines()
+              if len(line.split(' - ')[0].split()) > 4
+              and line.split(' - ')[0].split()[4] == str(work)]
+    if len(mounts) != 1 or mounts[0].partition(' - ')[2].split()[0] != 'tmpfs':
+        raise RuntimeError('Native work is not the exact private Linux tmpfs mount')
+    return dict(capacity_bytes=fs.f_blocks * fs.f_frsize, mountinfo=mounts[0], noexec=False)
+
+
+def export_artifacts(work, export, editor_started, editor_call_finished):
+    # run_logged uses subprocess.run: normal return and exceptional exit both
+    # reap its Editor process before this point. Never copy while it is live.
+    if editor_started and not editor_call_finished:
+        raise RuntimeError('Native Editor call has not finished; export is forbidden')
+    # Preserve raw failures too. Build caches/DDC/home are disposable, while
+    # source.tar and the exact committed input remain in the host run metadata.
+    roots = ('Logs', 'Automation', 'user/Saved', 'HostProject/Saved',
+             'HostProject/Binaries', 'HostProject/ExternalPlugins/IAmSpeed/Binaries',
+             'HostProject/ExternalPlugins/IAmSpeed/Saved')
+    files = list(work.glob('*.json'))
+    for name in roots:
+        root = work / name
+        if root.is_symlink():
+            raise RuntimeError('Symlink export root is not dereferenced: ' + name)
+        if root.exists():
+            entries = list(root.rglob('*'))
+            if any(path.is_symlink() for path in entries):
+                raise RuntimeError('Symlink in native export tree: ' + name)
+            files.extend(path for path in entries if path.is_file())
+    files = sorted(set(files))
+    for path in files:
+        if path.is_symlink() or not path.is_file() or any(
+                parent.is_symlink() for parent in path.parents if parent != work.parent):
+            raise RuntimeError('Unsafe native export source: ' + str(path))
+        target = export / path.relative_to(work)
+        if any(parent.is_symlink() for parent in target.parents if parent != export.parent):
+            raise RuntimeError('Symlink native export destination: ' + str(target))
+        if target.exists() or target.is_symlink():
+            raise RuntimeError('Native export would overwrite retained host evidence: ' + str(target))
+    before = [dict(path=path.relative_to(work).as_posix(), bytes=path.stat().st_size,
+                   sha256=digest(path)) for path in files]
+    for path in files:
+        target = export / path.relative_to(work)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+    after = [dict(path=path.relative_to(work).as_posix(), bytes=path.stat().st_size,
+                  sha256=digest(path)) for path in files]
+    copied = [dict(path=row['path'], bytes=(export/row['path']).stat().st_size,
+                   sha256=digest(export/row['path'])) for row in before]
+    if before != after or before != copied:
+        raise RuntimeError('Native export source/destination byte identity differs')
+    save(export / 'export-manifest.json', dict(state='VERIFIED_AFTER_NATIVE_CALL', files=before,
+         editor_started=editor_started, editor_call_finished=editor_call_finished,
+         source_before_equals_after=True, destination_verified=True,
+         excluded=['home', 'config', 'cache', 'dotnet', 'DDC', 'Intermediate', 'immutable image SDK']))
+
+
 def inside():
-    output = Path('/output')
+    output = Path('/work')
+    editor_started = editor_call_finished = False
     result = {'state': 'FAIL', 'source_sha': os.environ['IAMSPEED_SOURCE_SHA'], 'image_id': os.environ['IAMSPEED_IMAGE_ID']}
     try:
         if hasattr(os, 'geteuid') and os.geteuid() == 0:
             raise RuntimeError('Unreal must run as a non-root user supplied by the image')
+        save(output / 'work-tmpfs.json', work_tmpfs_evidence(output))
         spec = os.environ.get('IAMSPEED_CPUSET_CPUS')
         affinity = cpu_affinity_evidence(spec, int(os.environ['IAMSPEED_CPUSET_QUOTA'])) if spec else {'state': 'NOT_REQUESTED'}
         save(output / 'cpu-affinity.json', affinity)
@@ -305,7 +370,12 @@ def inside():
         save(output / 'test-command.json', command)
         # The embedded Python home may be relative to the Editor executable.
         # Keep project/output arguments absolute and resolve that SDK layout.
-        code = run_logged(command, logs / 'tests.stdout.log', 1800, editor.parent, env)
+        editor_started = True
+        try:
+            code = run_logged(command, logs / 'tests.stdout.log', 1800, editor.parent, env)
+        finally:
+            # subprocess.run kills and reaps its child before raising on timeout.
+            editor_call_finished = True
         result['editor_exit'] = code
         policy = accepted_debt_policy()
         raw_report = json.loads((report / 'index.json').read_text(encoding='utf-8-sig'))
@@ -317,12 +387,26 @@ def inside():
         result.update(engine_version=version, engine_root_inside_image=str(engine))
     except Exception as exc:
         result['reason'] = str(exc)
-    if (output / 'debt-assessment.json').exists():
-        assessment = json.loads((output / 'debt-assessment.json').read_text())
-        assessment.update(state=result['state'], reason=result.get('reason'),
-                          full_ci_qualified=result.get('full_ci_qualified', False))
-        save(output / 'debt-assessment.json', assessment)
-    save(output / 'container-result.json', result)
+    result.update(editor_started=editor_started, editor_call_finished=editor_call_finished)
+    try:
+        if (output / 'debt-assessment.json').exists():
+            assessment = json.loads((output / 'debt-assessment.json').read_text())
+            assessment.update(state=result['state'], reason=result.get('reason'),
+                              full_ci_qualified=result.get('full_ci_qualified', False))
+            save(output / 'debt-assessment.json', assessment)
+        save(output / 'container-result.json', result)
+    except Exception as exc:
+        result.update(state='FAIL', evidence_error=str(exc), full_ci_qualified=False)
+    try:
+        export_artifacts(output, Path('/output'), editor_started, editor_call_finished)
+    except Exception as exc:
+        # Preserve the original Editor/build exit and raw files already copied.
+        result.update(state='FAIL', export_error=str(exc), full_ci_qualified=False)
+        save(Path('/output') / 'container-result.json', result)
+        return 1
+    # Also covers a full tmpfs which prevented saving the local result above.
+    if result.get('evidence_error'):
+        save(Path('/output') / 'container-result.json', result)
     return 0 if result['state'] in ('PASS', 'PASS_WITH_ACCEPTED_DEBT') else 1
 
 
@@ -339,7 +423,7 @@ def docker_args(image_id, source, output, owner, sha, cpus=2, cpuset_cpus=None):
     # Source-built UE writes its early Trace.uba before parsing -Log. Keep
     # those image-internal writes in this container's private disposable layer;
     # the immutable image and the read-only exact source bind stay unchanged.
-    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--ulimit', 'nice=30:30', '--tmpfs', '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
+    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '24g', '--memory-swap', '24g', '--shm-size', '2g', '--pids-limit', '512', '--ulimit', 'nice=30:30', '--tmpfs', '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m', '--tmpfs', '/work:rw,nosuid,nodev,exec,mode=1777,size=14g', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/work', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/work/home', '--entrypoint', '/bin/bash']
     if cpuset is not None:
         command.extend(['--cpuset-cpus', cpuset, '--env', 'IAMSPEED_CPUSET_CPUS=' + cpuset, '--env', 'IAMSPEED_CPUSET_QUOTA=' + str(cpus)])
     if hasattr(os, 'getuid'):

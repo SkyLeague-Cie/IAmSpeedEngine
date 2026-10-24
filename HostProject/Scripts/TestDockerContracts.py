@@ -266,8 +266,8 @@ class DockerSharedMemoryContract1581(unittest.TestCase):
             self.assertEqual(args.count(flag), 1, flag + ' must be unambiguous')
             return args[args.index(flag) + 1]
         self.assertEqual(value('--shm-size'), '2g')
-        self.assertEqual(value('--memory'), '12g')
-        self.assertEqual(value('--memory-swap'), '12g')
+        self.assertEqual(value('--memory'), '24g')
+        self.assertEqual(value('--memory-swap'), '24g')
         self.assertEqual(value('--cpus'), '2')
         self.assertEqual(value('--pids-limit'), '512')
         self.assertLessEqual(int(value('--shm-size')[:-1]), int(value('--memory')[:-1]))
@@ -331,7 +331,8 @@ class ExplicitLinuxCpuTopologyProposal(unittest.TestCase):
     def test_single_bounded_executable_sticky_tmpfs_and_explicit_mask(self):
         with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
             args = ci.docker_args('sha256:'+'a'*64, Path('/source'), Path('/output'), 'owner', 'b'*40, 2, '0,2')
-        self.assertEqual(args.count('--tmpfs'), 1)
+        self.assertEqual(args.count('--tmpfs'), 2)
+        self.assertIn('/work:rw,nosuid,nodev,exec,mode=1777,size=14g', args)
         self.assertEqual(args[args.index('--tmpfs')+1], '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m')
         self.assertEqual(args[args.index('--cpus')+1], '2')
         self.assertEqual(args[args.index('--cpuset-cpus')+1], '0,2')
@@ -366,6 +367,95 @@ class UnrealNiceLimitContract(unittest.TestCase):
                 ci.nice_limit_evidence({'HostConfig': {'Ulimits': limits}})
         with self.assertRaises(RuntimeError):
             ci.nice_limit_evidence({})
+
+class LinuxWorkExportTransport(unittest.TestCase):
+    def run_fixture(self, root, mode):
+        work, export, engine = (root/name for name in ('work', 'export', 'engine'))
+        work.mkdir(); export.mkdir()
+        (export/'launch.json').write_bytes(b'host metadata must remain exact')
+        version = engine/'Engine/Build/Build.version'; version.parent.mkdir(parents=True)
+        version.write_text(json.dumps(dict(MajorVersion=5, MinorVersion=8, PatchVersion=2,
+                                          CompatibleChangelist=55116800)))
+        build=engine/'Engine/Build/BatchFiles/Linux/Build.sh'; build.parent.mkdir(parents=True); build.touch()
+        editor=engine/'Engine/Binaries/Linux/UnrealEditor-Cmd'; editor.parent.mkdir(parents=True); editor.touch()
+        calls=[]; paths=sorted(ci.REQUIRED)
+        def mapped(value):
+            return {'/work':work, '/output':export}.get(str(value), Path(value))
+        def copy_source(source, target, **kwargs):
+            Path(target).mkdir(parents=True)
+            if str(source)=='/input/HostProject':
+                (Path(target)/'IAmSpeedHostProject.uproject').write_bytes(b'{}')
+        def native(command, log, timeout, cwd, env):
+            # Test doubles only. Real exporter and strict report validator run.
+            self.assertEqual(list(export.iterdir()),[export/'launch.json'])
+            self.assertTrue(str(log).startswith(str(work)))
+            self.assertTrue(env['HOME'].startswith(str(work)))
+            calls.append(command)
+            if len(calls)==1:
+                Path(log).write_bytes(b'original build stdout')
+                return 43 if mode=='build_failure' else 0
+            report=dict(succeeded=len(paths),succeededWithWarnings=0,failed=0,notRun=0,inProcess=0,
+                        tests=[dict(fullTestPath=p,state='Success',warnings=0,errors=0)for p in paths])
+            if mode=='warning':report['tests'][0]['warnings']=1
+            (work/'Automation/index.json').write_text(json.dumps(report))
+            Path(log).write_text('Automation Test Queue Empty '+str(len(paths))+' tests performed.')
+            for relative in ('HostProject/Saved/IAmSpeed/raw-failed.pack',
+                             'user/Saved/Logs/native.log', 'HostProject/Binaries/Linux/module.so'):
+                path=work/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'RAW\x00WITNESS')
+            if mode=='timeout':raise ci.subprocess.TimeoutExpired(command,timeout)
+            return 1 if mode=='editor_failure' else 0
+        with patch.object(ci,'Path',side_effect=mapped), patch.object(ci.os,'geteuid',return_value=10001,create=True), \
+             patch.dict(ci.os.environ,{'IAMSPEED_SOURCE_SHA':'b'*40,'IAMSPEED_IMAGE_ID':'sha256:'+'a'*64},clear=True), \
+             patch.object(ci,'work_tmpfs_evidence',return_value={'fixture':True}), \
+             patch.object(ci,'engine_root',return_value=engine), patch.object(ci.shutil,'copytree',side_effect=copy_source), \
+             patch.object(ci,'source_test_manifest',return_value=paths),patch.object(ci,'run_logged',side_effect=native):
+            code=ci.inside()
+        result=json.loads((export/'container-result.json').read_text())
+        self.assertEqual((export/'launch.json').read_bytes(),b'host metadata must remain exact')
+        self.assertEqual(json.loads((export/'export-manifest.json').read_text())['destination_verified'],True)
+        return code,result,work,export,calls
+
+    def test_success_failure_warning_timeout_preserve_raw_after_editor(self):
+        for mode in ('success','warning','editor_failure','timeout'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+                code,result,work,export,calls=self.run_fixture(Path(tmp),mode)
+                self.assertEqual(code,0 if mode=='success'else 1)
+                self.assertEqual(result['state'],'PASS'if mode=='success'else'FAIL')
+                self.assertTrue(result['editor_call_finished']);self.assertEqual(len(calls),2)
+                for relative in ('Automation/index.json','Logs/tests.stdout.log','HostProject/Saved/IAmSpeed/raw-failed.pack','HostProject/Binaries/Linux/module.so'):
+                    self.assertEqual((work/relative).read_bytes(),(export/relative).read_bytes())
+                if mode=='timeout':self.assertIn('timed out',result['reason'])
+                else:self.assertEqual(result['editor_exit'],1 if mode=='editor_failure'else 0)
+
+    def test_build_failure_preserves_original_code_and_logs_without_editor(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            code,result,work,export,calls=self.run_fixture(Path(tmp),'build_failure')
+            self.assertEqual((code,result['build_exit'],len(calls)),(1,43,1))
+            self.assertFalse(result['editor_started']);self.assertFalse(result['editor_call_finished'])
+            self.assertEqual((export/'Logs/build.stdout.log').read_bytes(),b'original build stdout')
+
+    def test_active_editor_blocks_export_before_any_file_access(self):
+        with patch.object(Path,'glob',side_effect=AssertionError('must not enumerate active files')):
+            with self.assertRaisesRegex(RuntimeError,'has not finished'):
+                ci.export_artifacts(Path('unused-work'),Path('unused-export'),True,False)
+
+    def test_export_refuses_collision_and_retains_existing_metadata(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            work,export=(Path(tmp)/name for name in ('work','export'));work.mkdir();export.mkdir()
+            (work/'raw.json').write_bytes(b'new');(export/'raw.json').write_bytes(b'original')
+            with self.assertRaisesRegex(RuntimeError,'overwrite retained'):
+                ci.export_artifacts(work,export,False,False)
+            self.assertEqual((export/'raw.json').read_bytes(),b'original')
+
+    def test_corrupted_export_fails_independent_byte_verification(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            work,export=(Path(tmp)/name for name in ('work','export'));work.mkdir();export.mkdir()
+            (work/'raw.json').write_bytes(b'original native report')
+            with patch.object(ci.shutil,'copyfile',side_effect=lambda source,target:Path(target).write_bytes(b'corrupted')):
+                with self.assertRaisesRegex(RuntimeError,'byte identity differs'):
+                    ci.export_artifacts(work,export,True,True)
+            self.assertFalse((export/'export-manifest.json').exists())
+
 
 if __name__ == '__main__':
     unittest.main()
