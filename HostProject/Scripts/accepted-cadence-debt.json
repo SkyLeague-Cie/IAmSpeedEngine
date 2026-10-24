@@ -1,0 +1,21 @@
+{
+  "schema": "iamspeed.additive-cadence-debt/v1",
+  "activation": {
+    "enabled": false,
+    "trigger": null,
+    "at_utc": null,
+    "decision_sha256": null
+  },
+  "authority": "Human deadline2026-10-24T20:30:00Z or prior CI green, explicitly recorded by Root. INACTIVE until a versioned activation decision.",
+  "preserve_raw_evidence": true,
+  "preserve_existing_v1_debt": true,
+  "normal_lanes": [1, 2, 4, 8, 12],
+  "frames": 90,
+  "hz": 300,
+  "tests": {
+    "IAmSpeed.Simulation.FrameParallel.NativeAnalyticEightCars1552": ["QualificationEightCars1534"],
+    "IAmSpeed.Simulation.FrameParallel.NativeAnalyticGrounded1368": ["Qualification1368", "QualificationLow16_1403", "QualificationLow8_1403", "QualificationIdle50Cells64_1403", "QualificationIdle50Cells16_1403", "QualificationIdle50Cells8_1403"]
+  },
+  "scope": "Exact RealTimeSimulationCadence Physics Thread is too slow warnings only, Normal mode, explicit source scenes/lanes, unique complete cohort proof. No duration threshold invented, no pacer/test/physics change. Preserve/count every raw event and metric. All other warnings/new errors remain blocking; historical v1 debts remain exactly authorized.",
+  "follow_up": "Optimization owns observer-cadence attribution/removal after handoff; Native60 functional source reference e87, separate NONCI62 evidence218. No causal performance improvement or strict green asserted."
+}

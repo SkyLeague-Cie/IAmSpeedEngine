@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import uuid
+from CadenceDebt import check_policy as check_cadence_policy, project_cadence
 
 RETAINED_TESTS = {'SkyLeague.Camera.GenericInputLifecycle'}
 FILTER = 'IAmSpeed.' + ''.join('+' + name for name in sorted(RETAINED_TESTS))
@@ -170,6 +171,41 @@ def validate_report_with_debt(exit_code, log, report, policy, required=REQUIRED,
                                     reason=policy['tests'][row['fullTestPath']]['reason']) for row in accepted],
                 raw_editor_exit=exit_code, raw_report_unchanged=True,
                 full_ci_qualified=not accepted)
+
+
+def additive_cadence_policy():
+    policy = json.loads(Path(__file__).with_name('accepted-cadence-debt.json').read_text(encoding='utf-8'))
+    check_cadence_policy(policy)
+    return policy
+
+
+def validate_report_with_additive_debt(exit_code, log, report, policy, cadence_policy,
+                                     evidence_root, required=REQUIRED, expected_paths=None):
+    # Default off: preserve the exact pre-existing two-Fail-debt contract.
+    if not check_cadence_policy(cadence_policy):
+        return validate_report_with_debt(exit_code, log, report, policy, required, expected_paths)
+    # Cadence cannot hide a new diagnostic. The already-authorized v1 completed
+    # Fail identities retain their unchanged existing assessment below.
+    for row in report.get('tests', []):
+        old_debt = row.get('fullTestPath') in ACCEPTED_DEBT_IDS and row.get('state') == 'Fail'
+        if not old_debt and (type(row.get('errors')) is not int or row['errors'] < 0):
+            raise ValueError('Missing or invalid raw error counter')
+        if not old_debt and any(entry.get('event', {}).get('type') in ('Error', 'Fatal')
+                                for entry in row.get('entries', [])):
+            raise ValueError('New raw error remains blocking outside existing v1 debt')
+    assessment, events = project_cadence(report, evidence_root)
+    result = validate_report_with_debt(exit_code, log, assessment, policy, required, expected_paths)
+    if events:
+        counts = {}
+        for event in events:
+            counts[event['test']] = counts.get(event['test'], 0) + 1
+        result['accepted_debt'].extend(dict(test=test, kind='additive_observer_cadence',
+                                           warning_count=count, raw_state='Success')
+                                       for test, count in sorted(counts.items()))
+        result.update(state='PASS_WITH_ACCEPTED_DEBT', full_ci_qualified=False)
+    result.update(accepted_cadence=events, accepted_cadence_count=len(events),
+                  cadence_policy=cadence_policy, raw_report_unchanged=True)
+    return result
 
 
 def extract_archive(archive, destination):
@@ -389,12 +425,13 @@ def inside():
             editor_call_finished = True
         result['editor_exit'] = code
         policy = accepted_debt_policy()
+        cadence_policy = additive_cadence_policy()
         raw_report = json.loads((report / 'index.json').read_text(encoding='utf-8-sig'))
-        save(output / 'debt-assessment.json', dict(state='PENDING_VALIDATION', policy=policy,
+        save(output / 'debt-assessment.json', dict(state='PENDING_VALIDATION', policy=policy, cadence_policy=cadence_policy,
              accepted_failures=[row['fullTestPath'] for row in raw_report.get('tests', [])
                                if row.get('state') == 'Fail' and row.get('fullTestPath') in ACCEPTED_DEBT_IDS],
              raw_editor_exit=code, raw_report_unchanged=True, full_ci_qualified=False))
-        result.update(validate_report_with_debt(code, (logs / 'tests.stdout.log').read_text(encoding='utf-8-sig', errors='replace'), raw_report, policy, expected_paths=expected))
+        result.update(validate_report_with_additive_debt(code, (logs / 'tests.stdout.log').read_text(encoding='utf-8-sig', errors='replace'), raw_report, policy, cadence_policy, output, expected_paths=expected))
         result.update(engine_version=version, engine_root_inside_image=str(engine))
     except Exception as exc:
         result['reason'] = str(exc)
@@ -406,6 +443,9 @@ def inside():
         if (output / 'debt-assessment.json').exists():
             assessment = json.loads((output / 'debt-assessment.json').read_text())
             assessment.update(state=result['state'], reason=result.get('reason'),
+                              accepted_debt=result.get('accepted_debt', []),
+                              accepted_cadence=result.get('accepted_cadence', []),
+                              accepted_cadence_count=result.get('accepted_cadence_count', 0),
                               full_ci_qualified=result.get('full_ci_qualified', False))
             save(output / 'debt-assessment.json', assessment)
         save(output / 'container-result.json', result)
@@ -517,6 +557,7 @@ def host(args):
             raise RuntimeError('Container/report exit or exact candidate mismatch; preserve failures')
         launch.update(state=result['state'], native_container_closed=True, tests=result['tests'],
                       accepted_debt=result.get('accepted_debt', []),
+                      accepted_cadence_count=result.get('accepted_cadence_count', 0),
                       full_ci_qualified=result.get('full_ci_qualified', False))
     except Exception as exc:
         launch.update(state='FAIL', reason=str(exc))
