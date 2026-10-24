@@ -1,4 +1,5 @@
 #pragma once
+#include "IAmSpeed/World/Simulation/PreparedSimulationRestore.h"
 
 #include "CoreMinimal.h"
 #include <memory>
@@ -181,6 +182,10 @@ public:
 	virtual void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
 	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
+    /** Complete prepared restore is opt-in. Legacy payload validation does not
+     * qualify mechanical/gameplay/caches/lifecycle state for this transaction. */
+    virtual std::unique_ptr<Speed::IPreparedSimulationComponentRestore>
+        PrepareCompleteSimulationRestore(const Speed::FSimulationComponentRestoreRequest&) { return {}; }
 	/** Validates component-specific bytes before an atomic world restore starts. */
 	virtual bool CanRestoreSimulationSnapshot(TConstArrayView<uint8> Payload) const
 	{

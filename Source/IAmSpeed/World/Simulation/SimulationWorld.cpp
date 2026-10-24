@@ -116,7 +116,7 @@ namespace Speed
  {
   Out=FBodyContactPairInspection();Out.PreparingFrame=PreparingFrame;
   Out.CompletedStepFrame=CurrentStepFrame;Out.QueryObjectId=Body.GetUniqueID();
-  Out.DynamicTotal=DynamicContactPairs.Num();Out.PendingTotal=PendingRollingContactPairs.Num();
+  Out.DynamicTotal=ContactStorage->DynamicContactPairs.Num();Out.PendingTotal=ContactStorage->PendingRollingContactPairs.Num();
   // This test query is only useful after at least one completed core step.
   if(bOrderDirty || PreparingFrame==0 || PreparingFrame>=MAX_uint32 ||
      CurrentStepFrame!=PreparingFrame-1){Out.Failure=1;return false;}
@@ -154,7 +154,7 @@ namespace Speed
    return true;
   };
   // Never use active-body adjacency as a substitute for the pending collection.
-  if(!Inspect(DynamicContactPairs,0) || !Inspect(PendingRollingContactPairs,1))return false;
+  if(!Inspect(ContactStorage->DynamicContactPairs,0) || !Inspect(ContactStorage->PendingRollingContactPairs,1))return false;
   Out.Rows.Sort([](const auto& A,const auto& B){return A.Collection!=B.Collection?A.Collection<B.Collection:A.PairKey<B.PairKey;});
   Out.bComplete=Out.DynamicScanned==Out.DynamicTotal && Out.PendingScanned==Out.PendingTotal;
   return Out.bComplete;
@@ -163,6 +163,7 @@ namespace Speed
 
 	bool FSimulationWorld::AddAdapter(ISpeedComponent& Adapter)
 	{
+		if (IsRestoreBoundaryReserved()) return false;
 		if (StableIds.Contains(&Adapter)) return false;
 		const uint64 StableId = NextStableId++;
 		Adapters.Add(&Adapter);
@@ -175,6 +176,7 @@ namespace Speed
 
 	bool FSimulationWorld::RemoveAdapter(ISpeedComponent& Adapter)
 	{
+		if (IsRestoreBoundaryReserved()) return false;
 		const uint64 StableId = FindStableId(Adapter);
 		const int32 Removed = Adapters.Remove(&Adapter);
 		StableIds.Remove(&Adapter);
@@ -191,6 +193,7 @@ namespace Speed
 
 	void FSimulationWorld::RebuildOrderedAdapters()
 	{
+		if (IsRestoreBoundaryReserved()) std::terminate();
 		if (!bOrderDirty) return;
 		Adapters.Remove(nullptr);
 		OrderedAdapters = Adapters;
@@ -242,6 +245,7 @@ namespace Speed
 	bool FSimulationWorld::ApplyInputsForFrame(
 		const uint64 NumFrame, const SimulationBoundary::FInputJournal& Journal)
 	{
+		if (IsRestoreBoundaryReserved()) return false;
 		if (!Journal.IsSealed()) return false;
 		bool bAllApplied = true;
 		for (const FSimulationInputCommand& Command : Journal.GetCommandsForFrame(NumFrame))
@@ -265,18 +269,21 @@ namespace Speed
 
 	void FSimulationWorld::NotifyCanonicalFramePublished(uint64 NumFrame)
 	{
+		if (IsRestoreBoundaryReserved()) std::terminate();
 		for (const FSimulationBodyRecord& Body : Bodies)
 			if (Body.Adapter) Body.Adapter->OnCanonicalFramePublished(NumFrame);
 	}
 
 	void FSimulationWorld::AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept
 	{
+		if (IsRestoreBoundaryReserved()) std::terminate();
 		for (const FSimulationBodyRecord& Body : Bodies)
 			if (Body.Adapter) Body.Adapter->AbortCanonicalFrame(Frame, Reason);
 	}
 
 	ECanonicalPublicationResult FSimulationWorld::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
 	{
+		if (IsRestoreBoundaryReserved()) return ECanonicalPublicationResult::ValidationFailed;
 		// Bodies is stable for the enclosing canonical frame. No registry lock is
 		// held across validation/publication; no GT registration enters this frame.
 		bool Valid = true;
@@ -312,6 +319,7 @@ namespace Speed
 	FSimulationSnapshot FSimulationWorld::CaptureSnapshot(
 		const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation) const
 	{
+		if (IsRestoreBoundaryReserved()) std::terminate();
 		IAMSPEED_FRAME_SCOPE(SnapshotBodies);
 		FSimulationSnapshot Snapshot;
 		Snapshot.NumFrame = NumFrame;
@@ -406,8 +414,8 @@ namespace Speed
 				AppendValue(Snapshot.Payload, uint8(Pair->bActiveContactLastSolve));
 			}
 		};
-		AppendPairs(DynamicContactPairs);
-		AppendPairs(PendingRollingContactPairs);
+		AppendPairs(ContactStorage->DynamicContactPairs);
+		AppendPairs(ContactStorage->PendingRollingContactPairs);
 		IAMSPEED_FRAME_PHASE(SnapshotHash);
 		Snapshot.StateHash = SimulationBoundary::HashBytes(
 			Snapshot.Payload.GetData(), Snapshot.Payload.Num());
@@ -418,6 +426,7 @@ namespace Speed
 		const FSimulationSnapshot& Snapshot,
 		const uint64 ExpectedInputJournalHash)
 	{
+		if (IsRestoreBoundaryReserved()) return false;
 		if (bOrderDirty || Snapshot.Payload.IsEmpty() ||
 			Snapshot.InputJournalHash != ExpectedInputJournalHash ||
 			Snapshot.StateHash == 0 ||
@@ -576,21 +585,21 @@ namespace Speed
 			Body.Adapter->RestoreSimulationSnapshot(
 				Body.KinematicState, Body.bFrozen, Body.MechanicPayload);
 		}
-		DynamicContactPairs = MoveTemp(RestoredDynamicPairs);
-		PendingRollingContactPairs = MoveTemp(RestoredPendingPairs);
-		DynamicContactPairIndices.Reset();
-		PendingRollingContactPairIndices.Reset();
-		DynamicContactPairKeysByBody.Reset();
-		for (int32 PairIndex = 0; PairIndex < DynamicContactPairs.Num(); ++PairIndex)
+		ContactStorage->DynamicContactPairs = MoveTemp(RestoredDynamicPairs);
+		ContactStorage->PendingRollingContactPairs = MoveTemp(RestoredPendingPairs);
+		ContactStorage->DynamicContactPairIndices.Reset();
+		ContactStorage->PendingRollingContactPairIndices.Reset();
+		ContactStorage->DynamicContactPairKeysByBody.Reset();
+		for (int32 PairIndex = 0; PairIndex < ContactStorage->DynamicContactPairs.Num(); ++PairIndex)
 		{
-			const uint64 PairKey = DynamicContactPairs[PairIndex].PairKey;
-			DynamicContactPairIndices.Add(PairKey, PairIndex);
+			const uint64 PairKey = ContactStorage->DynamicContactPairs[PairIndex].PairKey;
+			ContactStorage->DynamicContactPairIndices.Add(PairKey, PairIndex);
 			IndexDynamicContactPair(PairKey);
 		}
-		for (int32 PairIndex = 0; PairIndex < PendingRollingContactPairs.Num(); ++PairIndex)
+		for (int32 PairIndex = 0; PairIndex < ContactStorage->PendingRollingContactPairs.Num(); ++PairIndex)
 		{
-			PendingRollingContactPairIndices.Add(
-				PendingRollingContactPairs[PairIndex].PairKey, PairIndex);
+			ContactStorage->PendingRollingContactPairIndices.Add(
+				ContactStorage->PendingRollingContactPairs[PairIndex].PairKey, PairIndex);
 		}
 		CurrentStepFrame = static_cast<unsigned int>(Snapshot.NumFrame);
 		return true;
@@ -598,35 +607,38 @@ namespace Speed
 
 	FDynamicContactPair* FSimulationWorld::FindDynamicContactPair(const uint64 PairKey)
 	{
-		const int32* Index = DynamicContactPairIndices.Find(PairKey);
-		return Index ? &DynamicContactPairs[*Index] : nullptr;
+		if (IsRestoreBoundaryReserved()) std::terminate();
+		const int32* Index = ContactStorage->DynamicContactPairIndices.Find(PairKey);
+		return Index ? &ContactStorage->DynamicContactPairs[*Index] : nullptr;
 	}
 
 	const FDynamicContactPair* FSimulationWorld::FindDynamicContactPair(const uint64 PairKey) const
 	{
-		const int32* Index = DynamicContactPairIndices.Find(PairKey);
-		return Index ? &DynamicContactPairs[*Index] : nullptr;
+		const int32* Index = ContactStorage->DynamicContactPairIndices.Find(PairKey);
+		return Index ? &ContactStorage->DynamicContactPairs[*Index] : nullptr;
 	}
 
 	FDynamicContactPair* FSimulationWorld::FindPendingRollingContactPair(const uint64 PairKey)
 	{
-		const int32* Index = PendingRollingContactPairIndices.Find(PairKey);
-		return Index ? &PendingRollingContactPairs[*Index] : nullptr;
+		if (IsRestoreBoundaryReserved()) std::terminate();
+		const int32* Index = ContactStorage->PendingRollingContactPairIndices.Find(PairKey);
+		return Index ? &ContactStorage->PendingRollingContactPairs[*Index] : nullptr;
 	}
 
 	FDynamicContactPair& FSimulationWorld::AddDynamicContactPair(
 		const uint64 PairKey, USolidSubBody& BodyA, USolidSubBody& BodyB)
 	{
+		if (IsRestoreBoundaryReserved()) std::terminate();
 		if (FDynamicContactPair* Existing = FindDynamicContactPair(PairKey))
 		{
 			return *Existing;
 		}
-		const int32 Index = DynamicContactPairs.AddDefaulted();
-		FDynamicContactPair& Pair = DynamicContactPairs[Index];
+		const int32 Index = ContactStorage->DynamicContactPairs.AddDefaulted();
+		FDynamicContactPair& Pair = ContactStorage->DynamicContactPairs[Index];
 		Pair.PairKey = PairKey;
 		Pair.BodyA = &BodyA;
 		Pair.BodyB = &BodyB;
-		DynamicContactPairIndices.Add(PairKey, Index);
+		ContactStorage->DynamicContactPairIndices.Add(PairKey, Index);
 		IndexDynamicContactPair(PairKey);
 		return Pair;
 	}
@@ -634,55 +646,59 @@ namespace Speed
 	FDynamicContactPair& FSimulationWorld::AddPendingRollingContactPair(
 		const uint64 PairKey, USolidSubBody& BodyA, USolidSubBody& BodyB)
 	{
+		if (IsRestoreBoundaryReserved()) std::terminate();
 		if (FDynamicContactPair* Existing = FindPendingRollingContactPair(PairKey))
 		{
 			return *Existing;
 		}
-		const int32 Index = PendingRollingContactPairs.AddDefaulted();
-		FDynamicContactPair& Pair = PendingRollingContactPairs[Index];
+		const int32 Index = ContactStorage->PendingRollingContactPairs.AddDefaulted();
+		FDynamicContactPair& Pair = ContactStorage->PendingRollingContactPairs[Index];
 		Pair.PairKey = PairKey;
 		Pair.BodyA = &BodyA;
 		Pair.BodyB = &BodyB;
-		PendingRollingContactPairIndices.Add(PairKey, Index);
+		ContactStorage->PendingRollingContactPairIndices.Add(PairKey, Index);
 		return Pair;
 	}
 
 	void FSimulationWorld::RemoveDynamicContactPairAtSwap(const int32 PairIndex)
 	{
-		if (!DynamicContactPairs.IsValidIndex(PairIndex)) return;
-		const uint64 RemovedKey = DynamicContactPairs[PairIndex].PairKey;
-		DynamicContactPairs.RemoveAtSwap(PairIndex, 1, EAllowShrinking::No);
-		DynamicContactPairIndices.Remove(RemovedKey);
+		if (IsRestoreBoundaryReserved()) std::terminate();
+		if (!ContactStorage->DynamicContactPairs.IsValidIndex(PairIndex)) return;
+		const uint64 RemovedKey = ContactStorage->DynamicContactPairs[PairIndex].PairKey;
+		ContactStorage->DynamicContactPairs.RemoveAtSwap(PairIndex, 1, EAllowShrinking::No);
+		ContactStorage->DynamicContactPairIndices.Remove(RemovedKey);
 		UnindexDynamicContactPair(RemovedKey);
-		if (DynamicContactPairs.IsValidIndex(PairIndex))
+		if (ContactStorage->DynamicContactPairs.IsValidIndex(PairIndex))
 		{
-			DynamicContactPairIndices.FindChecked(DynamicContactPairs[PairIndex].PairKey) = PairIndex;
+			ContactStorage->DynamicContactPairIndices.FindChecked(ContactStorage->DynamicContactPairs[PairIndex].PairKey) = PairIndex;
 		}
 	}
 
 	void FSimulationWorld::RemovePendingRollingContactPairAtSwap(const int32 PairIndex)
 	{
-		if (!PendingRollingContactPairs.IsValidIndex(PairIndex)) return;
-		const uint64 RemovedKey = PendingRollingContactPairs[PairIndex].PairKey;
-		PendingRollingContactPairs.RemoveAtSwap(PairIndex, 1, EAllowShrinking::No);
-		PendingRollingContactPairIndices.Remove(RemovedKey);
-		if (PendingRollingContactPairs.IsValidIndex(PairIndex))
+		if (IsRestoreBoundaryReserved()) std::terminate();
+		if (!ContactStorage->PendingRollingContactPairs.IsValidIndex(PairIndex)) return;
+		const uint64 RemovedKey = ContactStorage->PendingRollingContactPairs[PairIndex].PairKey;
+		ContactStorage->PendingRollingContactPairs.RemoveAtSwap(PairIndex, 1, EAllowShrinking::No);
+		ContactStorage->PendingRollingContactPairIndices.Remove(RemovedKey);
+		if (ContactStorage->PendingRollingContactPairs.IsValidIndex(PairIndex))
 		{
-			PendingRollingContactPairIndices.FindChecked(
-				PendingRollingContactPairs[PairIndex].PairKey) = PairIndex;
+			ContactStorage->PendingRollingContactPairIndices.FindChecked(
+				ContactStorage->PendingRollingContactPairs[PairIndex].PairKey) = PairIndex;
 		}
 	}
 
 	bool FSimulationWorld::ActivatePendingRollingContactPair(const uint64 PairKey)
 	{
-		const int32* PendingIndex = PendingRollingContactPairIndices.Find(PairKey);
+		if (IsRestoreBoundaryReserved()) std::terminate();
+		const int32* PendingIndex = ContactStorage->PendingRollingContactPairIndices.Find(PairKey);
 		if (!PendingIndex) return false;
-		FDynamicContactPair PendingPair = MoveTemp(PendingRollingContactPairs[*PendingIndex]);
+		FDynamicContactPair PendingPair = MoveTemp(ContactStorage->PendingRollingContactPairs[*PendingIndex]);
 		RemovePendingRollingContactPairAtSwap(*PendingIndex);
 		if (!FindDynamicContactPair(PairKey))
 		{
-			const int32 ActiveIndex = DynamicContactPairs.Add(MoveTemp(PendingPair));
-			DynamicContactPairIndices.Add(PairKey, ActiveIndex);
+			const int32 ActiveIndex = ContactStorage->DynamicContactPairs.Add(MoveTemp(PendingPair));
+			ContactStorage->DynamicContactPairIndices.Add(PairKey, ActiveIndex);
 			IndexDynamicContactPair(PairKey);
 		}
 		return true;
@@ -690,52 +706,55 @@ namespace Speed
 
 	void FSimulationWorld::MergePendingRollingContactPairs()
 	{
-		for (FDynamicContactPair& PendingPair : PendingRollingContactPairs)
+		if (IsRestoreBoundaryReserved()) std::terminate();
+		for (FDynamicContactPair& PendingPair : ContactStorage->PendingRollingContactPairs)
 		{
 			if (!FindDynamicContactPair(PendingPair.PairKey))
 			{
 				const uint64 PairKey = PendingPair.PairKey;
-				const int32 ActiveIndex = DynamicContactPairs.Add(MoveTemp(PendingPair));
-				DynamicContactPairIndices.Add(PairKey, ActiveIndex);
+				const int32 ActiveIndex = ContactStorage->DynamicContactPairs.Add(MoveTemp(PendingPair));
+				ContactStorage->DynamicContactPairIndices.Add(PairKey, ActiveIndex);
 				IndexDynamicContactPair(PairKey);
 			}
 		}
-		PendingRollingContactPairs.Reset();
-		PendingRollingContactPairIndices.Reset();
+		ContactStorage->PendingRollingContactPairs.Reset();
+		ContactStorage->PendingRollingContactPairIndices.Reset();
 	}
 
 	const TSet<uint64>* FSimulationWorld::FindDynamicContactPairKeys(
 		const uint32 SubBodyId) const
 	{
-		return DynamicContactPairKeysByBody.Find(SubBodyId);
+		return ContactStorage->DynamicContactPairKeysByBody.Find(SubBodyId);
 	}
 
 	int32 FSimulationWorld::FindDynamicContactPairIndex(const uint64 PairKey) const
 	{
-		const int32* Index = DynamicContactPairIndices.Find(PairKey);
+		const int32* Index = ContactStorage->DynamicContactPairIndices.Find(PairKey);
 		return Index ? *Index : INDEX_NONE;
 	}
 
 	void FSimulationWorld::IndexDynamicContactPair(const uint64 PairKey)
 	{
+		if (IsRestoreBoundaryReserved()) std::terminate();
 		const uint32 LowBodyId = static_cast<uint32>(PairKey >> 32);
 		const uint32 HighBodyId = static_cast<uint32>(PairKey);
-		DynamicContactPairKeysByBody.FindOrAdd(LowBodyId).Add(PairKey);
-		DynamicContactPairKeysByBody.FindOrAdd(HighBodyId).Add(PairKey);
+		ContactStorage->DynamicContactPairKeysByBody.FindOrAdd(LowBodyId).Add(PairKey);
+		ContactStorage->DynamicContactPairKeysByBody.FindOrAdd(HighBodyId).Add(PairKey);
 	}
 
 	void FSimulationWorld::UnindexDynamicContactPair(const uint64 PairKey)
 	{
+		if (IsRestoreBoundaryReserved()) std::terminate();
 		const uint32 BodyIds[] = {
 			static_cast<uint32>(PairKey >> 32), static_cast<uint32>(PairKey) };
 		for (const uint32 BodyId : BodyIds)
 		{
-			TSet<uint64>* PairKeys = DynamicContactPairKeysByBody.Find(BodyId);
+			TSet<uint64>* PairKeys = ContactStorage->DynamicContactPairKeysByBody.Find(BodyId);
 			if (!PairKeys) continue;
 			PairKeys->Remove(PairKey);
 			if (PairKeys->IsEmpty())
 			{
-				DynamicContactPairKeysByBody.Remove(BodyId);
+				ContactStorage->DynamicContactPairKeysByBody.Remove(BodyId);
 			}
 		}
 	}
@@ -765,3 +784,6 @@ bool Speed::FSimulationWorld::CaptureReplayStateFields(
     }
     Out=MoveTemp(Prepared); UnsupportedStableId=0; return true;
 }
+#include "PreparedWorldRestore.inc"
+
+#include "PreparedAccessComposition.inc"
