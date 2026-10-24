@@ -1,4 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "IAmSpeed/World/Simulation/NativeSelectedStateBytesForTesting.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -140,17 +141,10 @@ struct FNativeContactRow1221
  bool bComplete=false;
 };
 void ContactBaseState1221(TArray<uint8>& O,const FBasePhysicsState& X)
-{
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.Kinematic);W::Add(O,X.bIsFrozen);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.bStartCountdown);
-}
+{Speed::SelectedStateBytesForTesting::AppendBaseState(O,X);}
 void ContactWheeledState1221(TArray<uint8>& O,const FWheeledPhysicsState& X)
-{
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.bStartCountdown);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.FramesSinceLastImpact);
- W::Add(O,X.AllowedSideVelocity);W::Add(O,X.AllowedAngularVelocity);W::Add(O,X.SuspensionLastDisplacement);
- W::Add(O,X.PhysicalThrottleInput);W::Add(O,X.PhysicalBrakeInput);W::Add(O,X.PhysicalSteerInput);W::Add(O,X.NbFramesSinceGroundContact);
-}
+{Speed::SelectedStateBytesForTesting::AppendWheeledStatePrefix(O,X);}
+
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedNativeAnalyticContacts1221,
  "IAmSpeed.Simulation.FrameParallel.NativeAnalyticContacts1221",
@@ -457,9 +451,14 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
     W::Add(RawStates,C->WheeledGameState.WheelsOmega);W::Add(RawStates,C->WheeledGameState.WheelsAngularPosition);
     W::Add(RawStates,C->WheeledGameState.NbWheelsOnGround);W::Add(RawStates,C->WheeledGameState.NbFrameSinceInAir);
     W::Add(RawStates,C->CarLocalInvI);W::Add(RawStates,C->RecordedBaseFrames.Num());
-    for(int32 F:C->RecordedBaseFrames)W::Add(RawStates,F);
-    W::Add(RawStates,C->RecordedBaseStates.Num());for(const auto& X:C->RecordedBaseStates)ContactBaseState1221(RawStates,X);
-    W::Add(RawStates,C->RecordedWheeledStates.Num());for(const auto& X:C->RecordedWheeledStates)ContactWheeledState1221(RawStates,X);
+    if(!SelectedStateBytesForTesting::AppendFrameHistory1564(RawStates,C->RecordedBaseFrames))
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+    W::Add(RawStates,C->RecordedBaseStates.Num());
+    if(!SelectedStateBytesForTesting::AppendBaseHistory1564(RawStates,C->RecordedBaseStates))
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+    W::Add(RawStates,C->RecordedWheeledStates.Num());
+    if(!SelectedStateBytesForTesting::AppendWheelPrefixHistory1564(RawStates,C->RecordedWheeledStates))
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
     W::Array(RawStates,C->PhysicalConstraints);
     C->SleepState.AppendEpisodeFieldsForTesting<W>(RawStates);C->KinematicQuantizationCache.AppendEpisodeFieldsForTesting<W>(RawStates);
     W::Add(RawStates,C->GetStaticCollisionWorldForFrame());W::Add(RawStates,C->GetStaticSupportFrameHorizon());
@@ -475,10 +474,11 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
    // independent comparison, which must not inflate production worker evidence.
    if(!Fast)
    {
-   Row.CameraPose=Snapshot.PresentationOutputs[0].Payload;
-   Row.CameraCheckpoint=Snapshot.PresentationOutputs[0].StatePayload;
+   Row.CameraPose=MoveTemp(Snapshot.PresentationOutputs[0].Payload);
+   Row.CameraCheckpoint=MoveTemp(Snapshot.PresentationOutputs[0].StatePayload);
    Row.CameraNative=GetFrameParallelStageTotals(EFrameParallelStage::Camera).MaximumNativeThreads;
-   const auto Expected=Snapshot.PresentationOutputs[0];Snapshot.PresentationOutputs.Reset();
+   // Retain original production bytes in Row, including on comparison failure.
+   Snapshot.PresentationOutputs.Reset();
    const auto Validate=[&]
    {
     for(int32 A=0;A<Cars.Num();++A)
@@ -486,8 +486,8 @@ bool FIAmSpeedNativeAnalyticContacts1221::RunTest(const FString&)
     return true;
    };
    if(!FrameParallel::ProduceFramePresentationWithOwnerValidation(Snapshot,WorkerList,Lanes,true,Validate)
-    ||Snapshot.PresentationOutputs.Num()!=1||Expected.Payload!=Snapshot.PresentationOutputs[0].Payload
-    ||Expected.StatePayload!=Snapshot.PresentationOutputs[0].StatePayload)
+    ||Snapshot.PresentationOutputs.Num()!=1||Row.CameraPose!=Snapshot.PresentationOutputs[0].Payload
+    ||Row.CameraCheckpoint!=Snapshot.PresentationOutputs[0].StatePayload)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    FSpeedCarCameraPose Pose;
    const bool PoseRead=FSpeedCarCameraPose::Read(Snapshot.PresentationOutputs[0].Payload,Pose);

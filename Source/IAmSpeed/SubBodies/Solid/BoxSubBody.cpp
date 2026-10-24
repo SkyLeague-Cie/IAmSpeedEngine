@@ -22,6 +22,26 @@
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+namespace
+{
+template<class AllocatorType>
+void BuildBoxVerticesWithAllocator(const FVector& Center, const FQuat& Rot, const FVector& Ext, TArray<FVector, AllocatorType>& OutVerts)
+{
+    OutVerts.Reset();
+    for (int sx : {-1, 1})
+    {
+        for (int sy : {-1, 1})
+        {
+            for (int sz : {-1, 1})
+            {
+                FVector local = FVector(sx * Ext.X, sy * Ext.Y, sz * Ext.Z);
+                OutVerts.Add(Center + Rot.RotateVector(local));
+            }
+        }
+    }
+}
+}
+
 // Couple the single-point normal/friction impulse and retire only certified
 // fresh separating constraints before owner projection. Both policies have
 // identical defaults in Development and Shipping; diagnostic captures are separate.
@@ -781,8 +801,8 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
 #endif
 
     HitCountThisFrame.Empty();
-    CurrentGroundContactsWS.Empty();
-    CurrentGroundNormalsWS.Empty();
+    CurrentGroundContactsWS.Reset();
+    CurrentGroundNormalsWS.Reset();
 
     bGroundHitFromSweep = false;
     bHasGroundContact =
@@ -1197,8 +1217,10 @@ void UBoxSubBody::AcceptHit()
         uint32& Count = HitCountThisFrame.FindOrAdd(Comp);
         Count++;
 
-        // Ignore only after several hits on the same component in the same frame
-        if (Count >= MaxHitsPerComponentPerFrame)
+        // Exact vertex identities already use the World per-pair resolution budget.
+        // Keep counting every hit; all other contacts retain the component cap.
+        if (Count >= MaxHitsPerComponentPerFrame &&
+            !(CanInitializeRepeatedContact(CurrentHit) || CanResolveRepeatedContact(CurrentHit)))
         {
             IgnoredComponents.AddUnique(Comp);
         }
@@ -3556,8 +3578,8 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
 
     // Positional drift correction toward plane (soft).
     // Keep within a small band so you don't accumulate penetration over many frames.
-    TArray<FVector> Verts;
-    GetBoxVertices(K.Location, K.Rotation, BoxExtent, Verts);
+    TArray<FVector, TInlineAllocator<8>> Verts;
+    BuildBoxVerticesWithAllocator(K.Location, K.Rotation, BoxExtent, Verts);
 
     float minDist = FLT_MAX;
     const FVector PlaneN = GroundPlaneN.GetSafeNormal();
@@ -3741,8 +3763,8 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         PrevGroundContactsLS.Reset();
     }
 
-    TArray<FVector> Verts;
-    GetBoxVertices(K.Location, K.Rotation, BoxExtent, Verts);
+    TArray<FVector, TInlineAllocator<8>> Verts;
+    BuildBoxVerticesWithAllocator(K.Location, K.Rotation, BoxExtent, Verts);
 
     // ------------------------------------------------------------
     // Compute min distance to plane
@@ -4159,6 +4181,13 @@ bool UBoxSubBody::CanResolveRepeatedContact(const SHitResult& Hit) const
         Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
 }
 
+bool UBoxSubBody::CanInitializeRepeatedContact(const SHitResult& Hit) const
+{
+    return ParentComponent && ParentComponent->GetStaticCollisionWorldForFrame() &&
+        Speed::Collision::IsEligibleExactStaticInitialHit(Hit) && Hit.Component.IsValid() &&
+        Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
+}
+
 bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const
 {
     Linear = Angular = FVector::ZeroVector;
@@ -4226,6 +4255,22 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         if (!Response.bSolved) return false;
         Linear = Response.DeltaVelocity; Angular = Response.DeltaAngularVelocity;
         return true;
+    }
+    // Partial support can also carry sliding traction. Keep the existing
+    // sticking law below; the sliding helper certifies only supplied rows and
+    // rejects a possible slip reversal over this horizon. Its refusal retains
+    // the original normal-only fallback, without promoting a vertex to a face.
+    if (!bSticking && Count <= 2)
+    {
+        const auto Sliding = Speed::SolvePlanarSlidingReaction(MakeArrayView(Points, Count), N,
+            State.Location, State.Velocity, State.AngularVelocity, State.Acceleration,
+            State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI,
+            GetDynamicFriction(), ParentComponent->GetStaticSupportFrameHorizon());
+        if (Sliding.bSolved)
+        {
+            Linear = Sliding.DeltaVelocity; Angular = Sliding.DeltaAngularVelocity;
+            return !Linear.IsZero() || !Angular.IsZero();
+        }
     }
     // The same contact Jacobian maps force to acceleration and impulse to
     // velocity. The curvature term is essential when rotating about an edge.
@@ -4733,18 +4778,7 @@ SSBox UBoxSubBody::MakeBoxFromKS(const SKinematic& BoxKinematicState) const
 
 void UBoxSubBody::GetBoxVertices(const FVector& Center, const FQuat& Rot, const FVector& Ext, TArray<FVector>& OutVerts)
 {
-    OutVerts.Reset();
-    for (int sx : {-1, 1})
-    {
-        for (int sy : {-1, 1})
-        {
-            for (int sz : {-1, 1})
-            {
-                FVector local = FVector(sx * Ext.X, sy * Ext.Y, sz * Ext.Z);
-                OutVerts.Add(Center + Rot.RotateVector(local));
-            }
-        }
-    }
+    BuildBoxVerticesWithAllocator(Center, Rot, Ext, OutVerts);
 }
 
 FVector UBoxSubBody::ComputeBoxSupportPointWS(const FVector& Center, const FQuat& Rot, const FVector& Ext, const FVector& N)

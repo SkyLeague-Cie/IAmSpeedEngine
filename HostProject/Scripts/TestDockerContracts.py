@@ -6,12 +6,36 @@ import json
 from pathlib import Path
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
+import subprocess
+import sys
 from unittest.mock import patch
 import RunDockerContracts as ci
 
 
 class Contracts(unittest.TestCase):
+    def test_isolated_cli_loads_bound_cadence_helper_without_docker(self):
+        result = subprocess.run([sys.executable, "-I", "-B", str(Path(ci.__file__)), "--help"],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--cpuset-cpus", result.stdout)
+
+    def test_host_archive_disables_checkout_line_ending_conversion(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            args=SimpleNamespace(image='sha256:'+'a'*64,expected_sha='b'*40,
+                                 output=str(Path(tmp)/'fresh'),cpus=12,cpuset_cpus='0,2,4,6,8,10,12,14,16,18,20,22')
+            info={'Id':args.image,'Os':'linux','Architecture':'amd64'}
+            class StopBeforeDockerCreation(Exception):pass
+            with patch.object(ci.subprocess,'check_output',side_effect=['b'*40+'\n','',json.dumps([info])]), \
+                 patch.object(ci.subprocess,'run')as archive, \
+                 patch.object(ci,'extract_archive',side_effect=StopBeforeDockerCreation):
+                with self.assertRaises(StopBeforeDockerCreation):ci.host(args)
+            argv=archive.call_args.args[0]
+            self.assertEqual(argv[:4],['git','-c','core.autocrlf=false','-C'])
+            self.assertEqual(argv[5:],['archive','--format=tar','b'*40])
+            self.assertTrue(archive.call_args.kwargs['check'])
+
     def setUp(self):
         self.paths = sorted(ci.REQUIRED)
         self.log = 'Automation Test Queue Empty 5 tests performed.'
@@ -43,6 +67,20 @@ class Contracts(unittest.TestCase):
             ci.validate_report(3, self.log, self.report)
         with self.assertRaises(ValueError):
             ci.validate_report(0, self.log, self.report, expected_paths=self.paths + ['IAmSpeed.Simulation.Missing'])
+
+    def test_soft_quit_completion_never_overrides_exit_or_raw_report(self):
+        log = self.log + '\n**** TEST COMPLETE. EXIT CODE: 0 ****'
+        self.assertEqual(ci.validate_report(0, log, self.report)['tests'], 5)
+        for code in (1, 3, 124, 255):
+            with self.subTest(exit=code), self.assertRaises(ValueError):
+                ci.validate_report(code, log, self.report)
+        for key, value in [('state', 'Fail'), ('warnings', 1), ('errors', 1),
+                           ('state', 'NotRun'), ('state', 'InProcess')]:
+            raw = copy.deepcopy(self.report); raw['tests'][0][key] = value
+            original = copy.deepcopy(raw)
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                ci.validate_report(0, log, raw)
+            self.assertEqual(raw, original)
 
     def test_exact_source_manifest(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
@@ -150,13 +188,25 @@ class Contracts(unittest.TestCase):
                 with self.subTest(marker=marker, code=code), self.assertRaises(ValueError):
                     ci.validate_report_with_debt(code, log + '\n' + marker, report, policy)
 
-    def test_boundary_ensure_remains_visible_as_accepted_debt(self):
+    def test_boundary_ensure_rejects_accepted_debt_without_mutating_report(self):
         report, log = self.debt_report(); original = copy.deepcopy(report)
         log += '\nEnsure condition failed: CompleteInputFrame'
-        result = ci.validate_report_with_debt(1, log, report, ci.accepted_debt_policy())
-        self.assertEqual(result['state'], 'PASS_WITH_ACCEPTED_DEBT')
+        with self.assertRaisesRegex(ValueError, 'Native ensure diagnostic'):
+            ci.validate_report_with_debt(1, log, report, ci.accepted_debt_policy())
         self.assertEqual(report, original)
-        self.assertFalse(result['full_ci_qualified'])
+
+    def test_startup_ensure_blocks_clean_queue_and_debt_at_both_exit_codes(self):
+        for marker in ('Ensure condition failed: !PyStatus_Exception(Status)',
+                       '=== Handled ensure: ===', '=== Handled ensure ==='):
+            for code in (0, 1):
+                for debt in (False, True):
+                    report, log = self.debt_report() if debt else (copy.deepcopy(self.report), self.log)
+                    original = copy.deepcopy(report)
+                    raw_log = marker + '\nPython startup failed before automation\n' + log
+                    with self.subTest(marker=marker, code=code, debt=debt), self.assertRaises(ValueError):
+                        ci.validate_report_with_debt(code, raw_log, report, ci.accepted_debt_policy())
+                    self.assertEqual(report, original)
+                    self.assertTrue(raw_log.startswith(marker))
 
     def test_clean_report_with_fatal_tail_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -217,8 +267,15 @@ class EditorLoopbackContract1573(unittest.TestCase):
         binds = [arg.partition('=')[2] for arg in args
                  if arg.lstrip('-').partition('=')[0].upper() == 'MULTIHOME']
         self.assertEqual(binds, ['127.0.0.1'], 'Mapped reference gate requires exactly one IPv4 loopback binding')
-        self.assertIn('-ExecCmds=Automation RunTests ' + ci.FILTER, args)
-        self.assertIn('-TestExit=Automation Test Queue Empty', args)
+        exec_commands = [arg.partition('=')[2] for arg in args
+                         if arg.lstrip('-').partition('=')[0].lower() == 'execcmds']
+        self.assertEqual(exec_commands, ['Automation RunTests ' + ci.FILTER + '; SoftQuit'])
+        # Keep RunTests and SoftQuit in one Automation queue. An independent
+        # console Quit could exit before test completion.
+        self.assertEqual(exec_commands[0].removeprefix('Automation ').split(';'),
+                         ['RunTests ' + ci.FILTER, ' SoftQuit'])
+        self.assertFalse(any(arg.lstrip('-').partition('=')[0].lower() == 'testexit' for arg in args))
+        self.assertFalse(any(arg.lower() in ('quit', 'softquit', '-quit', '-softquit') for arg in args))
         self.assertIn('-NullRHI', args)
         self.assertIn('-nosound', args)
 
@@ -233,8 +290,8 @@ class DockerSharedMemoryContract1581(unittest.TestCase):
             self.assertEqual(args.count(flag), 1, flag + ' must be unambiguous')
             return args[args.index(flag) + 1]
         self.assertEqual(value('--shm-size'), '2g')
-        self.assertEqual(value('--memory'), '12g')
-        self.assertEqual(value('--memory-swap'), '12g')
+        self.assertEqual(value('--memory'), '24g')
+        self.assertEqual(value('--memory-swap'), '24g')
         self.assertEqual(value('--cpus'), '2')
         self.assertEqual(value('--pids-limit'), '512')
         self.assertLessEqual(int(value('--shm-size')[:-1]), int(value('--memory')[:-1]))
@@ -259,6 +316,202 @@ class ExplicitNativeCpuEnvelope1617(unittest.TestCase):
             for invalid in (0, 1, -1, 3, 13, 2.0, True, '12'):
                 with self.assertRaises(ValueError):
                     ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40, invalid)
+
+
+
+class ExplicitLinuxCpuTopologyProposal(unittest.TestCase):
+    def test_cardinality_duplicates_and_unbounded_cpu_ranges_fail_closed(self):
+        self.assertEqual(ci.canonical_cpuset('0,2,4,6', 4), '0,2,4,6')
+        for spec in ('0-2', '0,2,4,6,8', '0,0,2,4', '3-1', '-1', '0, 2', '0-999999999'):
+            with self.assertRaises(ValueError):
+                ci.canonical_cpuset(spec, 4)
+
+    def topology(self, text_by_path, actual):
+        def read(path):
+            return text_by_path[str(path).replace('\\', '/')]
+        return patch.object(Path, 'read_text', read), patch.object(Path, 'is_file', lambda path: False), patch.object(ci.os, 'sched_getaffinity', return_value=set(actual), create=True)
+
+    def test_effective_affinity_mismatch_is_not_a_performance_result(self):
+        with patch.object(ci.os, 'sched_getaffinity', return_value={0, 1}, create=True):
+            with self.assertRaises(ValueError):
+                ci.cpu_affinity_evidence('0,2', 2)
+
+    def test_smt_sibling_selection_refused_and_distinct_cores_recorded(self):
+        files = {}
+        for cpu, core, siblings in [(0, 0, '0-1'), (1, 0, '0-1'), (2, 1, '2-3')]:
+            prefix = '/sys/devices/system/cpu/cpu'+str(cpu)+'/topology/'
+            files.update({prefix+'physical_package_id': '0', prefix+'core_id': str(core), prefix+'thread_siblings_list': siblings})
+        a,b,c = self.topology(files, [0, 1])
+        with a,b,c:
+            with self.assertRaises(ValueError):
+                ci.cpu_affinity_evidence('0,1', 2)
+        a,b,c = self.topology(files, [0, 2])
+        with a,b,c:
+            evidence = ci.cpu_affinity_evidence('0,2', 2)
+        self.assertEqual(evidence['effective_affinity'], [0,2])
+        self.assertFalse(evidence['exclusivity_claimed'])
+        self.assertEqual(evidence['Windows_host_physical_mapping'], 'UNKNOWN')
+
+    def test_single_bounded_executable_sticky_tmpfs_and_explicit_mask(self):
+        with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
+            args = ci.docker_args('sha256:'+'a'*64, Path('/source'), Path('/output'), 'owner', 'b'*40, 2, '0,2')
+        self.assertEqual(args.count('--tmpfs'), 2)
+        self.assertIn('/work:rw,nosuid,nodev,exec,mode=1777,size=14g', args)
+        self.assertEqual(args[args.index('--tmpfs')+1], '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m')
+        self.assertEqual(args[args.index('--cpus')+1], '2')
+        self.assertEqual(args[args.index('--cpuset-cpus')+1], '0,2')
+        self.assertEqual(args[args.index('--user')+1], '1000:1000')
+
+
+class UnrealNiceLimitContract(unittest.TestCase):
+    def test_real_launcher_sets_one_bounded_nice_limit_without_extra_privileges(self):
+        with patch.object(ci.os, 'getuid', return_value=1000, create=True), patch.object(ci.os, 'getgid', return_value=1000, create=True):
+            args = ci.docker_args('sha256:' + 'a' * 64, Path('/source'), Path('/output'), 'owner', 'b' * 40, 12, '0,2,4,6,8,10,12,14,16,18,20,22')
+        self.assertEqual(args.count('--ulimit'), 1)
+        self.assertEqual(args[args.index('--ulimit') + 1], 'nice=30:30')
+        self.assertEqual(args[args.index('--user') + 1], '1000:1000')
+        for forbidden in ('--cap-add', '--privileged', '--pid'):
+            self.assertNotIn(forbidden, args)
+
+    def test_nice_limit_readback_requires_exact_unique_integer_soft_and_hard(self):
+        good = {'HostConfig': {'Ulimits': [{'Name': 'nice', 'Soft': 30, 'Hard': 30}]}}
+        original = copy.deepcopy(good)
+        self.assertEqual(ci.nice_limit_evidence(good), good['HostConfig']['Ulimits'][0])
+        self.assertEqual(good, original)
+        bad_limits = [None, [], [{'Name': 'other', 'Soft': 30, 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': 29, 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': 30, 'Hard': 31}],
+                      [{'Name': 'nice', 'Soft': '30', 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': 30.0, 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': True, 'Hard': 30}],
+                      [{'Name': 'nice', 'Soft': 30}],
+                      good['HostConfig']['Ulimits'] * 2, ['not-a-limit']]
+        for limits in bad_limits:
+            with self.subTest(limits=limits), self.assertRaises(RuntimeError):
+                ci.nice_limit_evidence({'HostConfig': {'Ulimits': limits}})
+        with self.assertRaises(RuntimeError):
+            ci.nice_limit_evidence({})
+
+class LinuxWorkExportTransport(unittest.TestCase):
+    def run_fixture(self, root, mode):
+        work, export, engine = (root/name for name in ('work', 'export', 'engine'))
+        work.mkdir(); export.mkdir()
+        (export/'launch.json').write_bytes(b'host metadata must remain exact')
+        version = engine/'Engine/Build/Build.version'; version.parent.mkdir(parents=True)
+        version.write_text(json.dumps(dict(MajorVersion=5, MinorVersion=8, PatchVersion=2,
+                                          CompatibleChangelist=55116800)))
+        build=engine/'Engine/Build/BatchFiles/Linux/Build.sh'; build.parent.mkdir(parents=True); build.touch()
+        editor=engine/'Engine/Binaries/Linux/UnrealEditor-Cmd'; editor.parent.mkdir(parents=True); editor.touch()
+        calls=[]; paths=sorted(ci.REQUIRED)
+        def mapped(value):
+            return {'/work':work, '/output':export}.get(str(value), Path(value))
+        def copy_source(source, target, **kwargs):
+            Path(target).mkdir(parents=True)
+            if str(source)=='/input/HostProject':
+                (Path(target)/'IAmSpeedHostProject.uproject').write_bytes(b'{}')
+        def native(command, log, timeout, cwd, env):
+            # Test doubles only. Real exporter and strict report validator run.
+            self.assertEqual(list(export.iterdir()),[export/'launch.json'])
+            self.assertTrue(str(log).startswith(str(work)))
+            self.assertTrue(env['HOME'].startswith(str(work)))
+            calls.append(command)
+            if len(calls)==1:
+                Path(log).write_bytes(b'original build stdout')
+                if mode=='build_timeout':raise ci.subprocess.TimeoutExpired(command,timeout)
+                return 43 if mode=='build_failure' else 0
+            report=dict(succeeded=len(paths),succeededWithWarnings=0,failed=0,notRun=0,inProcess=0,
+                        tests=[dict(fullTestPath=p,state='Success',warnings=0,errors=0)for p in paths])
+            if mode=='warning':report['tests'][0]['warnings']=1
+            (work/'Automation/index.json').write_text(json.dumps(report))
+            Path(log).write_text('Automation Test Queue Empty '+str(len(paths))+' tests performed.')
+            for relative in ('HostProject/Saved/IAmSpeed/raw-failed.pack',
+                             'user/Saved/Logs/native.log', 'HostProject/Binaries/Linux/module.so'):
+                path=work/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'RAW\x00WITNESS')
+            if mode=='timeout':raise ci.subprocess.TimeoutExpired(command,timeout)
+            return 1 if mode=='editor_failure' else 0
+        with patch.object(ci,'Path',side_effect=mapped), patch.object(ci.os,'geteuid',return_value=10001,create=True), \
+             patch.dict(ci.os.environ,{'IAMSPEED_SOURCE_SHA':'b'*40,'IAMSPEED_IMAGE_ID':'sha256:'+'a'*64},clear=True), \
+             patch.object(ci,'work_tmpfs_evidence',return_value={'fixture':True}), \
+             patch.object(ci,'engine_root',return_value=engine), patch.object(ci.shutil,'copytree',side_effect=copy_source), \
+             patch.object(ci,'source_test_manifest',return_value=paths),patch.object(ci,'run_logged',side_effect=native):
+            code=ci.inside()
+        result=json.loads((export/'container-result.json').read_text())
+        self.assertEqual((export/'launch.json').read_bytes(),b'host metadata must remain exact')
+        self.assertEqual(json.loads((export/'export-manifest.json').read_text())['destination_verified'],True)
+        return code,result,work,export,calls
+
+    def test_success_failure_warning_timeout_preserve_raw_after_editor(self):
+        for mode in ('success','warning','editor_failure','timeout'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+                code,result,work,export,calls=self.run_fixture(Path(tmp),mode)
+                self.assertEqual(code,0 if mode=='success'else 1)
+                self.assertEqual(result['state'],'PASS'if mode=='success'else'FAIL')
+                self.assertTrue(result['editor_call_finished']);self.assertEqual(len(calls),2)
+                for relative in ('Automation/index.json','Logs/tests.stdout.log','HostProject/Saved/IAmSpeed/raw-failed.pack','HostProject/Binaries/Linux/module.so'):
+                    self.assertEqual((work/relative).read_bytes(),(export/relative).read_bytes())
+                if mode=='timeout':
+                    self.assertIn('timed out',result['reason'])
+                    self.assertTrue(result['native_timeout'])
+                    self.assertEqual(result['export_completeness'],'UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')
+                    manifest=json.loads((export/'export-manifest.json').read_text())
+                    self.assertEqual(manifest['native_call_closure_scope'],'DIRECT_CHILD_ONLY')
+                    self.assertEqual(manifest['export_completeness'],'UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')
+                else:self.assertEqual(result['editor_exit'],1 if mode=='editor_failure'else 0)
+
+    def test_build_failure_preserves_original_code_and_logs_without_editor(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            code,result,work,export,calls=self.run_fixture(Path(tmp),'build_failure')
+            self.assertEqual((code,result['build_exit'],len(calls)),(1,43,1))
+            self.assertFalse(result['editor_started']);self.assertFalse(result['editor_call_finished'])
+            self.assertEqual((export/'Logs/build.stdout.log').read_bytes(),b'original build stdout')
+
+    def test_active_editor_blocks_export_before_any_file_access(self):
+        with patch.object(Path,'glob',side_effect=AssertionError('must not enumerate active files')):
+            with self.assertRaisesRegex(RuntimeError,'has not finished'):
+                ci.export_artifacts(Path('unused-work'),Path('unused-export'),True,False)
+
+    def test_build_timeout_keeps_failure_and_unknown_completeness(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            code,result,work,export,calls=self.run_fixture(Path(tmp),'build_timeout')
+            self.assertEqual((code,result['state'],len(calls)),(1,'FAIL',1))
+            self.assertFalse(result['editor_started']);self.assertTrue(result['native_timeout'])
+            self.assertEqual(result['export_completeness'],'UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')
+            self.assertEqual((export/'Logs/build.stdout.log').read_bytes(),b'original build stdout')
+
+    def test_export_refuses_collision_and_retains_existing_metadata(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            work,export=(Path(tmp)/name for name in ('work','export'));work.mkdir();export.mkdir()
+            (work/'raw.json').write_bytes(b'new');(export/'raw.json').write_bytes(b'original')
+            with self.assertRaisesRegex(RuntimeError,'overwrite retained'):
+                ci.export_artifacts(work,export,False,False)
+            self.assertEqual((export/'raw.json').read_bytes(),b'original')
+
+    def test_corrupted_export_fails_independent_byte_verification(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            work,export=(Path(tmp)/name for name in ('work','export'));work.mkdir();export.mkdir()
+            (work/'raw.json').write_bytes(b'original native report')
+            with patch.object(ci.shutil,'copyfile',side_effect=lambda source,target:Path(target).write_bytes(b'corrupted')):
+                with self.assertRaisesRegex(RuntimeError,'byte identity differs'):
+                    ci.export_artifacts(work,export,True,True)
+            self.assertFalse((export/'export-manifest.json').exists())
+
+    def test_new_raw_file_after_inventory_refuses_verified_manifest(self):
+        for trigger in (1,2,3):
+          with self.subTest(digest_call=trigger),tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            work,export=(Path(tmp)/name for name in ('work','export'));work.mkdir();export.mkdir()
+            logs=work/'Logs';logs.mkdir();(logs/'first.log').write_bytes(b'original')
+            original_digest=ci.digest;calls=0
+            def create_late_file(path):
+                nonlocal calls
+                calls+=1
+                if calls==trigger:(logs/'late.log').write_bytes(b'late native bytes')
+                return original_digest(path)
+            with patch.object(ci,'digest',side_effect=create_late_file):
+                with self.assertRaisesRegex(RuntimeError,'file set changed'):
+                    ci.export_artifacts(work,export,True,True)
+            self.assertTrue((logs/'late.log').exists())
+            self.assertFalse((export/'export-manifest.json').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

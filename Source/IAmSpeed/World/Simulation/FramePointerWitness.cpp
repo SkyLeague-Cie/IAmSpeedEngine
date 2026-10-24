@@ -11,13 +11,50 @@ FFramePointerCaptureScope::FFramePointerCaptureScope(TArray<uint8>& Bytes,
     const FFramePointerRegistry& Registry,const int32 InLimit)
     : Target(Bytes),Identities(Registry),Limit(FMath::Clamp(InLimit,1,16384))
 { Previous=ActivePointerCapture;ActivePointerCapture=this; }
+#if WITH_DEV_AUTOMATION_TESTS
+FFramePointerCaptureScope::FFramePointerCaptureScope(TArray<uint8>& Bytes,
+ const FFramePointerRegistry& Registry,const int32 InLimit,TArray<FFramePointerObservation>* ReusableEvents1368)
+ : FFramePointerCaptureScope(Bytes,Registry,InLimit)
+{
+ if(!ReusableEvents1368)return;
+ // The same backing storage cannot be leased by a nested live scope, even
+ // though Swap leaves the external scratch temporarily empty.
+ for(auto* Outer=Previous;Outer;Outer=Outer->Previous)
+  if(Outer->BorrowedEvents1368==ReusableEvents1368){bOverflow=true;return;}
+ if(!ReusableEvents1368->IsEmpty()){bOverflow=true;return;}
+ Swap(Events,*ReusableEvents1368);BorrowedEvents1368=ReusableEvents1368;
+}
+#endif
 FFramePointerCaptureScope::~FFramePointerCaptureScope()
-{ check(ActivePointerCapture==this);ActivePointerCapture=Previous; }
+{
+ check(ActivePointerCapture==this);
+#if WITH_DEV_AUTOMATION_TESTS
+ if(ConsumedSnapshot1456)
+ {
+  // Swapped-out source arrays must remain empty after final transfer. Detect
+  // even an unobserved scalar append before exposing the deferred certificate.
+  ConsumedSnapshot1456->bOverflow1456|=bOverflow||!Target.IsEmpty()||!Events.IsEmpty();
+  ConsumedSnapshot1456->bUnknown1456|=bUnknown;
+  ConsumedSnapshot1456->bWriterScopeOpen1456=false;
+ }
+ if(BorrowedEvents1368)
+ {
+  // Destroy keys/Membership at the same row boundary as before. Only the
+  // outer Events allocation is retained; inner allocations are not retained.
+  check(BorrowedEvents1368->IsEmpty());
+  Events.Reset();Swap(Events,*BorrowedEvents1368);
+ }
+#endif
+ ActivePointerCapture=Previous;
+}
 void FFramePointerCaptureScope::Observe(TArray<uint8>& Bytes,const UPTRINT Address)
 {
     FFramePointerCaptureScope* Scope=ActivePointerCapture;
     while(Scope && &Scope->Target!=&Bytes) Scope=Scope->Previous;
     if (!Scope) return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(Scope->RejectRecordAfterConsume1456())return;
+#endif
     if (Scope->Events.Num()>=Scope->Limit) { Scope->bOverflow=true;return; }
     FFramePointerObservation E;
     E.Offset=Bytes.Num();E.RawAddress=Address;
@@ -25,19 +62,22 @@ void FFramePointerCaptureScope::Observe(TArray<uint8>& Bytes,const UPTRINT Addre
     else if (const FFramePointerKey* K=Scope->Identities.Find(Address))
     { E.Key=*K;E.bKnown=true; }
     else Scope->bUnknown=true;
-    Scope->Events.Add(E);
+    Scope->Events.Add(MoveTemp(E));
 }
 void FFramePointerCaptureScope::ObserveObjectId(TArray<uint8>& Bytes,uint32 Id,const UObject* Object)
 {
  FFramePointerCaptureScope* Scope=ActivePointerCapture;
  while(Scope && &Scope->Target!=&Bytes)Scope=Scope->Previous;
  if(!Scope)return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(Scope->RejectRecordAfterConsume1456())return;
+#endif
  if(Scope->Events.Num()>=Scope->Limit){Scope->bOverflow=true;return;}
  FFramePointerObservation E;E.Offset=Bytes.Num();E.RawAddress=UPTRINT(Id);E.bObjectId=true;
  if(Object && Object->GetUniqueID()==Id)
   if(const auto* Key=Scope->Identities.Find(reinterpret_cast<UPTRINT>(Object))){E.Key=*Key;E.bKnown=true;}
  if(!E.bKnown)Scope->bUnknown=true;
- Scope->Events.Add(E);
+ Scope->Events.Add(MoveTemp(E));
 }
 void FFramePointerCaptureScope::ObservePairToken(TArray<uint8>& Bytes,uint64 Token,const USSubBody* Source,const UPrimitiveComponent* Other)
 {
@@ -45,6 +85,9 @@ void FFramePointerCaptureScope::ObservePairToken(TArray<uint8>& Bytes,uint64 Tok
  FFramePointerCaptureScope* Scope=ActivePointerCapture;
  while(Scope && &Scope->Target!=&Bytes)Scope=Scope->Previous;
  if(!Scope)return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(Scope->RejectRecordAfterConsume1456())return;
+#endif
  if(Scope->Events.Num()>=Scope->Limit){Scope->bOverflow=true;return;}
  FFramePointerObservation E;E.Offset=Bytes.Num();E.RawAddress=UPTRINT(Token);E.bPairToken=true;
  if(!Token)E.bKnown=true;
@@ -62,7 +105,7 @@ void FFramePointerCaptureScope::ObservePairToken(TArray<uint8>& Bytes,uint64 Tok
   }
  }
  if(!E.bKnown)Scope->bUnknown=true;
- Scope->Events.Add(E);
+ Scope->Events.Add(MoveTemp(E));
 }
 void FFramePointerCaptureScope::ObserveSolverPairToken(TArray<uint8>& Bytes,uint64 Token,
  const USSubBody* Source,const SHitResult& Hit,bool bStaticRestingWorld)
@@ -75,6 +118,9 @@ void FFramePointerCaptureScope::ObserveSolverPairToken(TArray<uint8>& Bytes,uint
  FFramePointerCaptureScope* S=ActivePointerCapture;
  while(S && &S->Target!=&Bytes)S=S->Previous;
  if(!S)return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(S->RejectRecordAfterConsume1456())return;
+#endif
  if(S->Events.Num()>=S->Limit){S->bOverflow=true;return;}
  FFramePointerObservation E;E.Offset=Bytes.Num();E.RawAddress=UPTRINT(Token);
  E.bPairToken=true;E.bSolverPairToken=true;E.PairProviderId=Provider;E.PairFeatureSalt=Feature;
@@ -89,7 +135,7 @@ void FFramePointerCaptureScope::ObserveSolverPairToken(TArray<uint8>& Bytes,uint
   if(Expected==Token && A && B){E.Key=*A;E.SecondKey=*B;E.bKnown=true;}
  }
  if(!E.bKnown)S->bUnknown=true;
- S->Events.Add(E);
+ S->Events.Add(MoveTemp(E));
 }
 void FFramePointerCaptureScope::ObserveDynamicPairToken(TArray<uint8>& Bytes,uint64 Token,const USSubBody* Source,const USSubBody* Other)
 {
@@ -97,6 +143,9 @@ void FFramePointerCaptureScope::ObserveDynamicPairToken(TArray<uint8>& Bytes,uin
  FFramePointerCaptureScope* Scope=ActivePointerCapture;
  while(Scope && &Scope->Target!=&Bytes)Scope=Scope->Previous;
  if(!Scope)return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if(Scope->RejectRecordAfterConsume1456())return;
+#endif
  if(Scope->Events.Num()>=Scope->Limit){Scope->bOverflow=true;return;}
  FFramePointerObservation E;E.Offset=Bytes.Num();E.RawAddress=UPTRINT(Token);E.bPairToken=true;
  if(!Token)E.bKnown=true;
@@ -114,17 +163,20 @@ void FFramePointerCaptureScope::ObserveDynamicPairToken(TArray<uint8>& Bytes,uin
   }
  }
  if(!E.bKnown)Scope->bUnknown=true;
- Scope->Events.Add(E);
+ Scope->Events.Add(MoveTemp(E));
 }
 namespace
 {
 bool MakeCapturedPointerCanonical1456(const TArray<uint8>& Target,
     const TArray<FFramePointerObservation>& Events,bool bValidSealed1456,
     bool bUnknown1456,bool bOverflow1456,TArray<uint8>& Canonical,
-    TConstArrayView<int32> RawBoundaries={},TArray<int32>* ProjectedBoundaries=nullptr)
+    TConstArrayView<int32> RawBoundaries={},TArray<int32>* ProjectedBoundaries=nullptr,
+    TArray<uint8>* BuildScratch1368=nullptr)
 {
+    if(BuildScratch1368)BuildScratch1368->Reset();
     if (!bValidSealed1456 || bUnknown1456 || bOverflow1456) return false;
-    TArray<uint8> Out;
+    TArray<uint8> LocalOut;
+    TArray<uint8>& Out=BuildScratch1368?*BuildScratch1368:LocalOut;
     int32 Next=0,BoundaryIndex=0;TArray<int32> Mapped;
     if(ProjectedBoundaries)
     {
@@ -133,6 +185,19 @@ bool MakeCapturedPointerCanonical1456(const TArray<uint8>& Target,
     }
     const auto Add=[&Out](const auto& V)
     { Out.Append(reinterpret_cast<const uint8*>(&V),sizeof(V)); };
+    const auto AddKeyPrefix=[&Out](const FFramePointerKey& K)
+    {
+        // Copy individual fields: the serialized prefix contains no struct padding.
+        uint8 Prefix[2*sizeof(uint32)+4*sizeof(uint64)];
+        const uint32 MembershipCount=uint32(K.Membership.Num());
+        FMemory::Memcpy(Prefix,&K.Domain,sizeof(K.Domain));
+        FMemory::Memcpy(Prefix+sizeof(uint32),&K.Owner,sizeof(K.Owner));
+        FMemory::Memcpy(Prefix+sizeof(uint32)+sizeof(uint64),&K.Generation,sizeof(K.Generation));
+        FMemory::Memcpy(Prefix+sizeof(uint32)+2*sizeof(uint64),&K.Role,sizeof(K.Role));
+        FMemory::Memcpy(Prefix+sizeof(uint32)+3*sizeof(uint64),&K.Element,sizeof(K.Element));
+        FMemory::Memcpy(Prefix+sizeof(uint32)+4*sizeof(uint64),&MembershipCount,sizeof(MembershipCount));
+        Out.Append(Prefix,sizeof(Prefix));
+    };
     for (const FFramePointerObservation& E:Events)
     {
         const int32 Width=E.bObjectId?int32(sizeof(uint32)):int32(sizeof(UPTRINT));
@@ -149,44 +214,103 @@ bool MakeCapturedPointerCanonical1456(const TArray<uint8>& Target,
         if(E.bObjectId)Add(uint32(0xFFFFFFFDu));
         if(E.bSolverPairToken)Add(uint32(0xFFFFFFFCu));
         else if(E.bPairToken)Add(uint32(0xFFFFFFFEu));
-        Add(E.Key.Domain);Add(E.Key.Owner);Add(E.Key.Generation);Add(E.Key.Role);Add(E.Key.Element);Add(uint32(E.Key.Membership.Num()));for(uint64 Id:E.Key.Membership)Add(Id);
-        if(E.bPairToken){Add(E.SecondKey.Domain);Add(E.SecondKey.Owner);Add(E.SecondKey.Generation);Add(E.SecondKey.Role);Add(E.SecondKey.Element);Add(uint32(E.SecondKey.Membership.Num()));for(uint64 Id:E.SecondKey.Membership)Add(Id);}
+        AddKeyPrefix(E.Key);for(uint64 Id:E.Key.Membership)Add(Id);
+        if(E.bPairToken){AddKeyPrefix(E.SecondKey);for(uint64 Id:E.SecondKey.Membership)Add(Id);}
         if(E.bSolverPairToken){Add(E.PairProviderId);Add(E.PairFeatureSalt);}
         Next=E.Offset+Width;
     }
     if(ProjectedBoundaries)while(BoundaryIndex<RawBoundaries.Num())Mapped.Add(Out.Num()+RawBoundaries[BoundaryIndex++]-Next);
     if(Target.Num()>Next)Out.Append(Target.GetData()+Next,Target.Num()-Next);
-    Canonical=MoveTemp(Out);if(ProjectedBoundaries)*ProjectedBoundaries=MoveTemp(Mapped);return true;
+    if(BuildScratch1368)Swap(Canonical,Out);else Canonical=MoveTemp(Out);
+    if(ProjectedBoundaries)*ProjectedBoundaries=MoveTemp(Mapped);return true;
 }
 }
 bool FFramePointerCaptureScope::MakeCanonical(TArray<uint8>& Canonical) const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+    if(bConsumed1456)return false;
+#endif
     return MakeCapturedPointerCanonical1456(Target,Events,Identities.IsValidSealed(),bUnknown,bOverflow,Canonical);
 }
 #if WITH_DEV_AUTOMATION_TESTS
+bool FFramePointerCaptureScope::MakeCanonicalWithScratch1368(TArray<uint8>& Canonical,TArray<uint8>& BuildScratch) const
+{
+ if(bConsumed1456||!Canonical.IsEmpty()||&Canonical==&BuildScratch||&Canonical==&Target||&BuildScratch==&Target)return false;
+ return MakeCapturedPointerCanonical1456(Target,Events,Identities.IsValidSealed(),bUnknown,bOverflow,Canonical,{},nullptr,&BuildScratch);
+}
 bool FFramePointerCaptureScope::MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const
 {
+ if(bConsumed1456)return false;
  return MakeCapturedPointerCanonical1456(Target,Events,Identities.IsValidSealed(),bUnknown,bOverflow,Out,RawBoundaries,&CanonicalBoundaries);
 }
 bool FFramePointerCanonicalSnapshot1456::MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const
 {
- return bCaptured1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out,RawBoundaries,&CanonicalBoundaries);
+ return bCaptured1456&&!bWriterScopeOpen1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out,RawBoundaries,&CanonicalBoundaries);
 }
 void FFramePointerCanonicalSnapshot1456::Reserve1456(int32 Bytes,int32 Count)
 {
     Raw1456.Reserve(FMath::Clamp(Bytes,0,16*1024*1024));
     Events1456.Reserve(FMath::Clamp(Count,0,16384));
 }
+bool FFramePointerCanonicalSnapshot1456::ReserveAndPreTouch1456(int32 Bytes,int32 Count)
+{
+    if(bCaptured1456||!Raw1456.IsEmpty()||!Events1456.IsEmpty())return false;
+    Raw1456.SetNumZeroed(FMath::Clamp(Bytes,0,16*1024*1024));
+    Raw1456.Reset();
+    // Construct real event objects on the caller, then retire them while
+    // retaining their backing storage. No raw memset of nontrivial keys.
+    Events1456.SetNum(FMath::Clamp(Count,0,16384));Events1456.Reset();
+    return true;
+}
+bool FFramePointerCaptureScope::CanAdoptPreparedEvents1456(const FFramePointerCanonicalSnapshot1456& Prepared) const noexcept
+{
+ return ActivePointerCapture==this&&!BorrowedEvents1368&&!bPreparedEventsAdopted1534
+  && &Target!=&Prepared.Raw1456&&Target.IsEmpty()&&Events.IsEmpty()&&!bConsumed1456&&!bUnknown&&!bOverflow&&Identities.IsValidSealed()
+  &&!Prepared.bCaptured1456&&!Prepared.bWriterScopeOpen1456&&!Prepared.bValidSealed1456
+  &&!Prepared.bUnknown1456&&!Prepared.bOverflow1456&&Prepared.Raw1456.IsEmpty()&&Prepared.Events1456.IsEmpty();
+}
+void FFramePointerCaptureScope::AdoptPreparedEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept
+{
+ Swap(Events,Prepared.Events1456);bPreparedEventsAdopted1534=true;
+}
+bool FFramePointerCaptureScope::PrepareFreshEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept
+{
+ if(!CanAdoptPreparedEvents1456(Prepared))return false;
+ AdoptPreparedEvents1456(Prepared);return true;
+}
 bool FFramePointerCaptureScope::CaptureCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out) const
 {
-    if(!Identities.IsValidSealed()||bUnknown||bOverflow)return false;
+    if(bConsumed1456||Out.bWriterScopeOpen1456||!Identities.IsValidSealed()||bUnknown||bOverflow)return false;
     Out.Raw1456=Target;Out.Events1456=Events;
     Out.bValidSealed1456=true;Out.bUnknown1456=bUnknown;Out.bOverflow1456=bOverflow;Out.bCaptured1456=true;
     return true;
 }
+bool FFramePointerCaptureScope::ConsumeCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out)
+{
+ if(BorrowedEvents1368||bConsumed1456||!Identities.IsValidSealed()||bUnknown||bOverflow||Out.bCaptured1456
+  ||!Out.Raw1456.IsEmpty()||!Out.Events1456.IsEmpty())return false;
+ // Exchange with already-prepared empty storage, avoiding both full copies and
+ // hot-path freeing of the destination reservations. Source remains valid/empty.
+ Swap(Out.Raw1456,Target);Swap(Out.Events1456,Events);
+ Out.bCaptured1456=true;Out.bValidSealed1456=true;Out.bUnknown1456=false;Out.bOverflow1456=false;
+ Out.bWriterScopeOpen1456=true;bConsumed1456=true;ConsumedSnapshot1456=&Out;
+ return true;
+}
+bool FFramePointerCaptureScope::RejectRecordAfterConsume1456() noexcept
+{
+ if(!bConsumed1456)return false;
+ bOverflow=true;ConsumedSnapshot1456->bOverflow1456=true;return true;
+}
+EFramePointerRawEvidenceCopy1456 FFramePointerCanonicalSnapshot1456::CopyRawForEvidenceAfterClosure1456(TArray<uint8>& Out) const
+{
+ if(!bCaptured1456)return EFramePointerRawEvidenceCopy1456::NotCaptured;
+ if(bWriterScopeOpen1456)return EFramePointerRawEvidenceCopy1456::WriterScopeOpen;
+ if(!Out.IsEmpty())return EFramePointerRawEvidenceCopy1456::DestinationNotEmpty;
+ Out=Raw1456;return EFramePointerRawEvidenceCopy1456::Copied;
+}
 bool FFramePointerCanonicalSnapshot1456::MakeCanonical(TArray<uint8>& Out) const
 {
-    return bCaptured1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out);
+    return bCaptured1456&&!bWriterScopeOpen1456&&MakeCapturedPointerCanonical1456(Raw1456,Events1456,bValidSealed1456,bUnknown1456,bOverflow1456,Out);
 }
 #endif
 }

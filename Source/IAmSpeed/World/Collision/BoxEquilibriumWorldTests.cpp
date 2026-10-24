@@ -5,6 +5,7 @@
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "Components/BoxComponent.h"
 #include "Engine/World.h"
@@ -251,6 +252,272 @@ bool FIAmSpeedBoxEquilibriumWorldTest::RunTest(const FString& Parameters)
 	Floor->SetCollisionObjectType(ECC_WorldStatic);
 	Floor->SetCollisionResponseToAllChannels(ECR_Block);
 	Bridge->AnalyticSourceComponents.Add(1, Floor);
+    // A real late-drop state reproduces a resolved vertex at time zero,
+    // another arriving vertex, then a positive-time return of the first one.
+    // Observe actual World dispatch, not a duplicate call to the pair helper.
+    if (SelectedCell.IsEmpty())
+    {
+        AActor* ReturnActor = World->SpawnActor<AActor>();
+        FBoxLawBody Body(*ReturnActor);
+        Body.State.Location = FVector(11.149403915201553,4.856227467809191,20.003513503819136);
+        Body.State.Rotation = FQuat(-0.99999812033462188,-0.0019385609136272487,-5.5043970713212138e-6,-3.5756242132778936e-5);
+        Body.State.Velocity = FVector(.69425621613199984,.11150737165457771,-1.8660927358541797);
+        Body.State.AngularVelocity = FVector(.00063574231657515066,.030601447411696948,.002065092988575479);
+        Body.State.Acceleration = Body.GetNominalGravityAcceleration();
+        Body.PreviousRotation = Body.State.Rotation;Body.UpdateSubBodiesKinematics();
+        Bridge->AddComponent(Body);
+        ON_SCOPE_EXIT { Bridge->RemoveComponent(Body);ReturnActor->Destroy(); };
+        struct FReturnDispatchTrace
+        {
+            const USpeedWorldSubsystem* ExpectedWorld=nullptr;const UBoxSubBody* Box=nullptr;
+            struct FEvent { int32 Corner=-1;float TOI=0,TimePassed=0;bool bIgnored=true; };
+            FEvent Events[24];int32 Count=0;bool Overflow=false;
+            static void Observe(void* O,const Speed::Testing::FCcdPoseAuditSample& Sample) noexcept
+            {
+                auto& Trace=*static_cast<FReturnDispatchTrace*>(O);
+                if(Sample.World!=Trace.ExpectedWorld||Sample.Stage!=Speed::Testing::ECcdPoseAuditStage::BeforeResolve)return;
+                if(Trace.Count>=24){Trace.Overflow=true;return;}
+                const auto& Hit=Trace.Box->GetHit();auto& E=Trace.Events[Trace.Count++];
+                E.Corner=Hit.ContactFeatureIndexThis;E.TOI=Hit.TOI;E.TimePassed=Sample.TimePassed;
+                E.bIgnored=!Hit.Component.IsValid()||static_cast<const USSubBody*>(Trace.Box)->ComponentHasBeenIgnored(*Hit.Component);
+            }
+        } Trace;
+        Trace.ExpectedWorld=Bridge;Trace.Box=Body.Box;
+        if(!TestTrue(TEXT("exact return dispatch observer installs without replacing a reader"),
+            Speed::Testing::SetCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace)))return false;
+        bool ObserverInstalled=true;
+        ON_SCOPE_EXIT { if(ObserverInstalled)Speed::Testing::ClearCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace); };
+        const FCanonicalFrameContext Context(0);Bridge->PrepareCanonicalFrame(Context);
+        Bridge->Step(Context.PhysicalDeltaTime,Context.SimTime,0);
+        const bool ObserverCleared=Speed::Testing::ClearCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace);ObserverInstalled=false;
+        if(!TestTrue(TEXT("exact return dispatch observer closes"),ObserverCleared))return false;
+        for(int32 Index=0;Index<Trace.Count;++Index)AddInfo(FString::Printf(TEXT("[ExactInitialReturnDispatch] Index=%d Vertex=%d TOI=%.17g TimePassed=%.17g Ignored=%d"),Index,Trace.Events[Index].Corner,double(Trace.Events[Index].TOI),double(Trace.Events[Index].TimePassed),int32(Trace.Events[Index].bIgnored)));
+        const bool bHasDispatch=TestTrue(TEXT("exact initial event followed by two real positive arrivals is dispatched"),!Trace.Overflow&&Trace.Count>=3);
+        if(bHasDispatch)
+        {
+        TestTrue(TEXT("first actual resolution is initial vertex time zero"),Trace.Events[0].Corner>=0&&Trace.Events[0].TOI==0&&Trace.Events[0].TimePassed==0);
+        TestTrue(TEXT("second actual resolution is another positive-time vertex"),Trace.Events[1].Corner!=Trace.Events[0].Corner&&Trace.Events[1].TOI>0);
+        TestTrue(TEXT("initial vertex can genuinely return after the second event"),Trace.Events[2].Corner==Trace.Events[0].Corner&&Trace.Events[2].TOI>0&&Trace.Events[2].TimePassed>Trace.Events[1].TimePassed&&Trace.Events[2].TimePassed<Context.PhysicalDeltaTime);
+        }
+        const bool bHasFourth=TestTrue(TEXT("fourth distinct exact contact reaches actual World dispatch"),!Trace.Overflow&&Trace.Count>=4);
+        if(bHasFourth)
+        {
+            const auto& Fourth=Trace.Events[3];
+            TestTrue(TEXT("fourth exact vertex is distinct from both earlier vertices"),Fourth.Corner>=0&&Fourth.Corner!=Trace.Events[0].Corner&&Fourth.Corner!=Trace.Events[1].Corner);
+            TestTrue(TEXT("fourth actual arrival advances positive physical time"),Fourth.TOI>0&&Fourth.TimePassed>Trace.Events[2].TimePassed&&Fourth.TimePassed<Context.PhysicalDeltaTime);
+            TestFalse(TEXT("fourth exact static vertex is not component-ignored"),Fourth.bIgnored);
+        }
+    }
+    // Stage02 frame2979 authors only pose/velocities at frame start.
+    // Gravity/zero external angular acceleration are reset by the production fixture.
+    // Observe actual World dispatch, not a duplicate call to the pair helper.
+    if (SelectedCell.IsEmpty())
+    {
+        AActor* ReturnActor = World->SpawnActor<AActor>();
+        FBoxLawBody Body(*ReturnActor);
+        Body.State.Location = FVector(7.0528285513881812,4.9581409305892645,20.001249557755372);
+        Body.State.Rotation = FQuat(-0.99999266029863321,-0.0038313537884594106,-6.458705169172705e-06,-5.9409647241519729e-06);
+        Body.State.Velocity = FVector(0.060069147987176816,-0.050084677292159499,-0.72249402326139656);
+        Body.State.AngularVelocity = FVector(0.009592993793980523,0.0056910903328626691,0.00070872950238149118);
+        Body.State.Acceleration = Body.GetNominalGravityAcceleration();
+        Body.PreviousRotation = Body.State.Rotation;Body.UpdateSubBodiesKinematics();
+        Bridge->AddComponent(Body);
+        ON_SCOPE_EXIT { Bridge->RemoveComponent(Body);ReturnActor->Destroy(); };
+        struct FReturnDispatchTrace
+        {
+            const USpeedWorldSubsystem* ExpectedWorld=nullptr;const UBoxSubBody* Box=nullptr;
+            struct FEvent { int32 Corner=-1;float TOI=0,TimePassed=0;bool bIgnored=true,bCompleted=false; };
+            FEvent Events[24];int32 Count=0;bool Overflow=false;
+            static void Observe(void* O,const Speed::Testing::FCcdPoseAuditSample& Sample) noexcept
+            {
+                auto& Trace=*static_cast<FReturnDispatchTrace*>(O);
+                if(Sample.World!=Trace.ExpectedWorld)return;
+                if(Sample.Stage==Speed::Testing::ECcdPoseAuditStage::AfterResolve)
+                {
+                    if(Trace.Count>0)Trace.Events[Trace.Count-1].bCompleted=true;
+                    return;
+                }
+                if(Sample.Stage!=Speed::Testing::ECcdPoseAuditStage::BeforeResolve)return;
+                if(Trace.Count>=24){Trace.Overflow=true;return;}
+                const auto& Hit=Trace.Box->GetHit();auto& E=Trace.Events[Trace.Count++];
+                E.Corner=Hit.ContactFeatureIndexThis;E.TOI=Hit.TOI;E.TimePassed=Sample.TimePassed;
+                E.bIgnored=!Hit.Component.IsValid()||static_cast<const USSubBody*>(Trace.Box)->ComponentHasBeenIgnored(*Hit.Component);
+            }
+        } Trace;
+        Trace.ExpectedWorld=Bridge;Trace.Box=Body.Box;
+        if(!TestTrue(TEXT("Stage02 seed: exact return dispatch observer installs without replacing a reader"),
+            Speed::Testing::SetCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace)))return false;
+        bool ObserverInstalled=true;
+        ON_SCOPE_EXIT { if(ObserverInstalled)Speed::Testing::ClearCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace); };
+        const FCanonicalFrameContext Context(0);Bridge->PrepareCanonicalFrame(Context);
+        Bridge->Step(Context.PhysicalDeltaTime,Context.SimTime,0);
+        const bool ObserverCleared=Speed::Testing::ClearCcdPoseAuditObserverForCurrentThread(&FReturnDispatchTrace::Observe,&Trace);ObserverInstalled=false;
+        if(!TestTrue(TEXT("Stage02 seed: exact return dispatch observer closes"),ObserverCleared))return false;
+        for(int32 Index=0;Index<Trace.Count;++Index)AddInfo(FString::Printf(TEXT("Stage02 seed: [ExactFourthStage02Dispatch] Index=%d Vertex=%d TOI=%.17g TimePassed=%.17g Ignored=%d"),Index,Trace.Events[Index].Corner,double(Trace.Events[Index].TOI),double(Trace.Events[Index].TimePassed),int32(Trace.Events[Index].bIgnored)));
+        const bool bHasDispatch=TestTrue(TEXT("Stage02 seed: exact initial event followed by two real positive arrivals is dispatched"),!Trace.Overflow&&Trace.Count>=3);
+        if(bHasDispatch)
+        {
+        TestTrue(TEXT("Stage02 seed: first actual resolution is initial vertex time zero"),Trace.Events[0].Corner>=0&&Trace.Events[0].TOI==0&&Trace.Events[0].TimePassed==0);
+        TestTrue(TEXT("Stage02 seed: second actual resolution is another positive-time vertex"),Trace.Events[1].Corner!=Trace.Events[0].Corner&&Trace.Events[1].TOI>0);
+        TestTrue(TEXT("Stage02 seed: third arrival is a new positive-time vertex"),Trace.Events[2].Corner!=Trace.Events[0].Corner&&Trace.Events[2].Corner!=Trace.Events[1].Corner&&Trace.Events[2].TOI>0&&Trace.Events[2].TimePassed>Trace.Events[1].TimePassed&&Trace.Events[2].TimePassed<Context.PhysicalDeltaTime);
+        }
+        const bool bHasFourth=TestTrue(TEXT("Stage02 seed: fourth distinct exact contact reaches actual World dispatch"),!Trace.Overflow&&Trace.Count>=4);
+        if(bHasFourth)
+        {
+            const auto& Fourth=Trace.Events[3];
+            TestTrue(TEXT("Stage02 seed: fourth exact vertex is distinct from both earlier vertices"),Fourth.Corner>=0&&Fourth.Corner!=Trace.Events[0].Corner&&Fourth.Corner!=Trace.Events[1].Corner&&Fourth.Corner!=Trace.Events[2].Corner);
+            TestTrue(TEXT("Stage02 seed: fourth actual arrival advances positive physical time"),Fourth.TOI>0&&Fourth.TimePassed>Trace.Events[2].TimePassed&&Fourth.TimePassed<Context.PhysicalDeltaTime);
+            TestFalse(TEXT("Stage02 seed: fourth exact static vertex is not component-ignored"),Fourth.bIgnored);
+            bool bInterveningOtherVertex=false,bFourthReturned=false;
+            for(int32 Index=4;Index<Trace.Count;++Index)
+            {
+                const auto& Event=Trace.Events[Index];
+                if(Event.Corner!=Fourth.Corner)bInterveningOtherVertex=true;
+                if(bInterveningOtherVertex&&Event.Corner==Fourth.Corner&&Event.TOI>0&&Event.TimePassed>Fourth.TimePassed&&Event.TimePassed<Context.PhysicalDeltaTime&&!Event.bIgnored)
+                {bFourthReturned=true;break;}
+            }
+            TestTrue(TEXT("Stage02 seed: fourth vertex returns nonignored after another real vertex and positive physical time"),bFourthReturned);
+            bool bThirdProgressResolution=false;
+            for(int32 Index=0;Index<Trace.Count;++Index)
+            {
+                const auto& Event=Trace.Events[Index];
+                if(!Event.bCompleted||Event.bIgnored||Event.Corner<0||Event.TOI<=0||!(Event.TimePassed<Context.PhysicalDeltaTime))continue;
+                int32 PriorCount=0,LastIndex=-1;float LastTime=-1;bool bAdvancing=true;
+                for(int32 Prior=0;Prior<Index;++Prior)
+                    if(Trace.Events[Prior].bCompleted&&!Trace.Events[Prior].bIgnored&&Trace.Events[Prior].Corner==Event.Corner)
+                    {
+                        bAdvancing=bAdvancing&&Trace.Events[Prior].TimePassed>LastTime;
+                        LastTime=Trace.Events[Prior].TimePassed;LastIndex=Prior;++PriorCount;
+                    }
+                bool bOtherBetween=false;
+                for(int32 Between=LastIndex+1;LastIndex>=0&&Between<Index;++Between)
+                    bOtherBetween=bOtherBetween||(Trace.Events[Between].bCompleted&&!Trace.Events[Between].bIgnored&&Trace.Events[Between].Corner!=Event.Corner);
+                if(PriorCount>=2&&bAdvancing&&bOtherBetween&&Event.TimePassed>LastTime)bThirdProgressResolution=true;
+            }
+            TestTrue(TEXT("Stage02 seed: exact identity resolves a third time nonignored after another vertex at strictly advancing actual time"),!Trace.Overflow&&bThirdProgressResolution);
+        }
+    }
+    // Complement the real dispatch oracle with the existing four-hit fallback:
+    // exact native vertex/face arrivals are the sole exemption; every other
+    // component policy still ignores after its fourth accepted contact.
+    if(SelectedCell.IsEmpty())
+    for(int32 PolicyCase=0;PolicyCase<11;++PolicyCase)
+    {
+        AActor* PolicyActor=World->SpawnActor<AActor>();
+        FBoxLawBody Body(*PolicyActor);
+        ON_SCOPE_EXIT { PolicyActor->Destroy(); };
+        UBoxComponent* PolicySurface=NewObject<UBoxComponent>(PolicyActor);
+        PolicyActor->AddInstanceComponent(PolicySurface);
+        PolicySurface->SetMobility(EComponentMobility::Static);
+        PolicySurface->SetCollisionObjectType(PolicyCase==7?ECC_WorldDynamic:ECC_WorldStatic);
+        Body.SetStaticCollisionWorldForFrame(PolicyCase==8?nullptr:Bridge->GetStaticCollisionWorld(),FCanonicalFrameContext(0).PhysicalDeltaTime);
+        SHitResult Hit;Hit.bBlockingHit=true;Hit.Component=PolicySurface;Hit.TOI=PolicyCase==1?0.f:.001f;
+        Hit.SourceId=1;Hit.SurfaceId=2;Hit.ContactFeatureThis=Speed::EContactFeatureKind::Vertex;
+        Hit.ContactFeatureIndexThis=0;Hit.ContactFeatureOther=Speed::EContactFeatureKind::Face;
+        if(PolicyCase==2)Hit.bSurfaceNormalMayVary=true;
+        if(PolicyCase==3)Hit.GeometricErrorBoundCm=.001f;
+        if(PolicyCase==4)Hit.SourceId=0;
+        if(PolicyCase==5){Hit.bStartPenetrating=true;Hit.PenetrationDepth=.001f;}
+        if(PolicyCase==6)Hit.ContactFeatureOther=Speed::EContactFeatureKind::Edge;
+        if(PolicyCase==9)Hit.SurfaceId=0;
+        if(PolicyCase==10)Hit.ContactFeatureThis=Speed::EContactFeatureKind::Face;
+        for(int32 Contact=0;Contact<3;++Contact){Body.Box->SetFutureHit(Hit);Body.Box->AcceptHit();}
+        TestFalse(TEXT("legacy component policy does not ignore before fourth acceptance"),static_cast<const USSubBody*>(Body.Box)->ComponentHasBeenIgnored(*PolicySurface));
+        Body.Box->SetFutureHit(Hit);Body.Box->AcceptHit();
+        const bool bExactNative=PolicyCase<2;
+        TestEqual(TEXT("fourth acceptance preserves exact-only exemption and every legacy fallback"),static_cast<const USSubBody*>(Body.Box)->ComponentHasBeenIgnored(*PolicySurface),!bExactNative);
+        if(bExactNative)
+        {
+            SHitResult Ordinary=Hit;Ordinary.bSurfaceNormalMayVary=true;
+            Body.Box->SetFutureHit(Ordinary);Body.Box->AcceptHit();
+            TestTrue(TEXT("exact exemption keeps contact count so a later ordinary contact still ignores"),static_cast<const USSubBody*>(Body.Box)->ComponentHasBeenIgnored(*PolicySurface));
+        }
+        else
+        {
+            SHitResult Later=Hit;Later.bSurfaceNormalMayVary=false;Later.GeometricErrorBoundCm=0;
+            Later.SourceId=1;Later.SurfaceId=2;Later.bStartPenetrating=false;Later.PenetrationDepth=0;
+            Later.ContactFeatureOther=Speed::EContactFeatureKind::Face;
+            Body.Box->SetFutureHit(Later);Body.Box->AcceptHit();
+            TestTrue(TEXT("later exact-looking acceptance never removes prior ignored membership"),static_cast<const USSubBody*>(Body.Box)->ComponentHasBeenIgnored(*PolicySurface));
+        }
+    }
+	// Regression at the actual Box -> owner integration boundary, rather than
+	// another call to the stand-alone reaction helper. Only INITIAL geometry is
+	// authored here. All measured reactions use a fresh finite provider witness.
+	if (SelectedCell.IsEmpty())
+	for (int32 ExpectedPoints : { 1, 2 })
+	for (double Sign : { -1.0, 1.0 })
+	for (float Friction : { 0.0f, 0.3f })
+	{
+		AActor* SlidingActor = World->SpawnActor<AActor>();
+		ON_SCOPE_EXIT { SlidingActor->Destroy(); };
+		FBoxLawBody Body(*SlidingActor, Friction);
+		const float Dt = FCanonicalFrameContext(0).PhysicalDeltaTime;
+		Body.SetStaticCollisionWorldForFrame(Bridge->GetStaticCollisionWorld(), Dt);
+		Body.State.Rotation = FQuat(FVector::ForwardVector, 0.2);
+		if (ExpectedPoints == 1)
+			Body.State.Rotation = FQuat(FVector::RightVector, 0.13) * Body.State.Rotation;
+		// Configure a legal initial exterior pose; no correction is applied in
+		// response to a measured force or after integration begins.
+		Body.State.Location.Z -= Body.Clearance();
+		Body.State.Location.Z += 8 * DBL_EPSILON * 120;
+		Body.State.Velocity = FVector(Sign * 450, 0, 0);
+		Body.State.Acceleration = Body.GetNominalGravityAcceleration();
+		Body.UpdateSubBodiesKinematics();
+		const SKinematic Initial = Body.State;
+		FVector Corners[8];double Lowest = DBL_MAX;
+		for (int32 Corner = 0; Corner < 8; ++Corner)
+		{
+			const FVector E = Body.Config.BoxExtent;
+			const FVector Local((Corner & 1) ? E.X : -E.X,
+				(Corner & 2) ? E.Y : -E.Y, (Corner & 4) ? E.Z : -E.Z);
+			Corners[Corner] = Initial.Location + Initial.Rotation.RotateVector(Local);
+			Lowest = FMath::Min(Lowest, Corners[Corner].Z);
+		}
+		TArray<FVector> Points;
+		for (const FVector& Point : Corners) if (Point.Z == Lowest) Points.Add(Point);
+		if (!TestEqual(TEXT("partial sliding fixture has the authored vertex/edge"), Points.Num(), ExpectedPoints)) return false;
+		Speed::Analytic::FWorldQuery Ray;
+		Ray.Shape = Speed::Analytic::EQueryShape::Ray;
+		Ray.Start = Points[0] + FVector(0, 0, .01);
+		Ray.End = Points[0] - FVector(0, 0, .01);
+		Ray.RequiredSourceId = 1; Ray.RequiredSurfaceId = 2;
+		Ray.bAuthorityOnly = true; Ray.bIncludeCompactPatches = true;
+		Ray.DomainTolerance = 0; Ray.InitialOverlapTolerance = 0;
+		const auto Witness = Bridge->GetStaticCollisionWorld()->SweepSingle(Ray);
+		if (!TestTrue(TEXT("partial sliding support has a fresh exact finite face witness"),
+			Witness.bHit && !Witness.bStartPenetrating && !Witness.bSurfaceNormalMayVary &&
+			Witness.GeometricErrorBoundCm == 0 && Witness.SurfaceFeatureKind == Speed::EContactFeatureKind::Face &&
+			Witness.Normal == FVector::UpVector)) return false;
+		Body.Box->SetFutureHit(SHitResult::FromAnalyticHit(Witness, 0, Floor));
+		Body.Box->AcceptHit(); // Genuine current provider contact, no response/pose mutation.
+		FVector Linear, Angular;
+		Body.GetStaticContactAcceleration(Linear, Angular);
+		const FString Label = FString::Printf(TEXT("partial sliding points%d sign%.0f mu%.1f"), ExpectedPoints, Sign, double(Friction));
+		TestTrue(Label + TEXT(": reaction query preserves pose and velocity"),
+			Body.State.Location == Initial.Location && Body.State.Rotation == Initial.Rotation &&
+			Body.State.Velocity == Initial.Velocity && Body.State.AngularVelocity == Initial.AngularVelocity);
+		TestTrue(Label + TEXT(": normal pressure remains non-attractive"), Linear.Z > 0);
+		for (const FVector& Point : Points)
+		{
+			// Initial spin is zero, so this independently checks the actual
+			// acceleration-level reaction on every geometrically supplied row.
+			const FVector AP = Initial.Acceleration + Linear + FVector::CrossProduct(Angular, Point - Initial.Location);
+			TestTrue(Label + TEXT(": coupled contact normal acceleration balances"), FMath::Abs(AP.Z) < 1.e-7);
+		}
+		if (Friction == 0)
+			TestTrue(Label + TEXT(": frictionless contact retains zero tangent reaction"), Linear.X == 0 && Linear.Y == 0);
+		else
+		{
+			TestTrue(Label + TEXT(": established partial slip has dissipative continuous traction"),
+				FVector::DotProduct(Linear, Initial.Velocity) < 0);
+			TestTrue(Label + TEXT(": total traction stays in the Coulomb cone"),
+				FVector(Linear.X, Linear.Y, 0).Size() <= double(Friction) * Linear.Z + 1.e-7);
+			Body.IntegrateKinematics(Dt);
+			TestTrue(Label + TEXT(": real owner integration reduces the signed slip"),
+				Sign * Body.State.Velocity.X < 450 && Sign * Body.State.Velocity.X > 0);
+		}
+	}
 	{
 		AActor* GuardActor = World->SpawnActor<AActor>();
 		ON_SCOPE_EXIT { GuardActor->Destroy(); };

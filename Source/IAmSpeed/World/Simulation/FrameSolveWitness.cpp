@@ -5,23 +5,118 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include "FrameFloatingPointContext.h"
+#include "Misc/ScopeExit.h"
+#include <type_traits>
 #endif
 #include "IAmSpeed/Components/ISpeedComponent.h"
 namespace Speed
 {
 namespace { thread_local FFrameSolveWitnessScope* ActiveSolveWitness=nullptr; }
+#if WITH_DEV_AUTOMATION_TESTS
+bool FWheelWitnessSnapshot1368::ReserveAndPreTouch1368()
+{
+ if(bCaptured||bWriterOpen||bValid||bReleased||!Raw.IsEmpty()||!Canonical.IsEmpty()
+  ||!RawDebris.IsEmpty()||!CanonicalDebris.IsEmpty()||!PreparedRowRaw1368.IsEmpty()
+  ||!PreparedRowCanonical1368.IsEmpty()||!PreparedRowBuild1368.IsEmpty())return false;
+ Raw.SetNumZeroed(128*1024);Raw.Reset();
+ Canonical.SetNumZeroed(128*1024);Canonical.Reset();
+ PreparedRowRaw1368.SetNumZeroed(8*1024);PreparedRowRaw1368.Reset();
+ PreparedRowCanonical1368.SetNumZeroed(8*1024);PreparedRowCanonical1368.Reset();
+ PreparedRowBuild1368.SetNumZeroed(8*1024);PreparedRowBuild1368.Reset();return true;
+}
+bool FFrameSolveWitnessScope::PrepareFreshWheelCaptureStorage1368(FWheelWitnessSnapshot1368& Prepared) noexcept
+{
+ // All checks precede any ownership transfer; refusal leaves both owners intact.
+ if(ActiveSolveWitness!=this||Rows||MainRows||WheelRows1368||WheelCanonicalRows1368
+  ||bCaptureWheelManifold1368||bPreparedWheelCaptureStorage1368||bOverflow||ConsumedWheel1368
+  ||PointerCapture.bConsumed1456||PointerCapture.HasOverflow()||PointerCapture.HasUnknown()||!WheelRegistry1368.IsValidSealed()
+  ||!Bytes.IsEmpty()||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()
+  ||!WheelRaw1368.IsEmpty()||!WheelCanonical1368.IsEmpty()
+  ||!WheelRowRawScratch1368.IsEmpty()||!WheelRowCanonicalScratch1368.IsEmpty()||!WheelRowCanonicalBuildScratch1368.IsEmpty()
+  ||Prepared.bCaptured||Prepared.bWriterOpen||Prepared.bValid||Prepared.bReleased
+  ||!Prepared.Raw.IsEmpty()||!Prepared.Canonical.IsEmpty()||!Prepared.RawDebris.IsEmpty()||!Prepared.CanonicalDebris.IsEmpty()
+  ||!Prepared.PreparedRowRaw1368.IsEmpty()||!Prepared.PreparedRowCanonical1368.IsEmpty()||!Prepared.PreparedRowBuild1368.IsEmpty())return false;
+ Swap(WheelRaw1368,Prepared.Raw);Swap(WheelCanonical1368,Prepared.Canonical);
+ Swap(WheelRowRawScratch1368,Prepared.PreparedRowRaw1368);
+ Swap(WheelRowCanonicalScratch1368,Prepared.PreparedRowCanonical1368);
+ Swap(WheelRowCanonicalBuildScratch1368,Prepared.PreparedRowBuild1368);
+ bPreparedWheelCaptureStorage1368=true;return true;
+}
+bool FFrameSolveWitnessScope::PrepareFreshCaptureStorage1534(FFramePointerCanonicalSnapshot1456& Prepared,TArray<int32>& PreparedBounds) noexcept
+{
+ if(Rows||MainRows||WheelRows1368||bCaptureWheelManifold1368||bRowBoundaries1534||bPreparedCaptureStorage1534||bOverflow||ConsumedWheel1368
+  ||!Bytes.IsEmpty()||!RawRowBoundaries1534.IsEmpty()||!PreparedBounds.IsEmpty()
+  ||&PreparedBounds==&RawRowBoundaries1534||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()
+  ||!PointerCapture.CanAdoptPreparedEvents1456(Prepared))return false;
+ PointerCapture.AdoptPreparedEvents1456(Prepared);Swap(RawRowBoundaries1534,PreparedBounds);
+ bPreparedCaptureStorage1534=true;bRowBoundaries1534=true;return true;
+}
+bool FFrameSolveWitnessScope::SealAndConsumePreparedStorage1534(FFramePointerCanonicalSnapshot1456& Out,TArray<int32>& RawBoundaries)
+{
+ if(!bPreparedCaptureStorage1534||!bRowBoundaries1534||bOverflow||!RawBoundaries.IsEmpty()
+  ||&RawBoundaries==&RawRowBoundaries1534||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()
+  ||RawRowBoundaries1534.Num()!=Rows)return false;
+ const int32 RawEnd=Bytes.Num();int32 PreviousBoundary=-1;
+ for(const int32 Boundary:RawRowBoundaries1534)
+ {if(Boundary<PreviousBoundary||Boundary<0||Boundary>RawEnd)return false;PreviousBoundary=Boundary;}
+ const int32 OriginalCount=RawRowBoundaries1534.Num();bool Committed=false;
+ ON_SCOPE_EXIT{if(!Committed)RawRowBoundaries1534.SetNum(OriginalCount,EAllowShrinking::No);};
+ // Growth, when needed, precedes the irreversible certificate handoff.
+ RawRowBoundaries1534.Add(RawEnd);
+ if(!PointerCapture.ConsumeCanonicalSnapshot1456(Out))return false;
+ Swap(RawRowBoundaries1534,RawBoundaries);Committed=true;return true;
+}
+EWheelWitnessRelease1368 FWheelWitnessSnapshot1368::ReleaseAfterClosure(TArray<uint8>& OutRaw,TArray<uint8>& OutCanonical,
+    TArray<uint8>& OutRawDebris,TArray<uint8>& OutCanonicalDebris)
+{
+ if(!bCaptured)return EWheelWitnessRelease1368::NotCaptured;
+ if(bWriterOpen)return EWheelWitnessRelease1368::WriterOpen;
+ if(bReleased)return EWheelWitnessRelease1368::AlreadyReleased;
+ const TArray<uint8>* Destinations[]={&OutRaw,&OutCanonical,&OutRawDebris,&OutCanonicalDebris};
+ for(int32 A=0;A<4;++A)for(int32 B=A+1;B<4;++B)if(Destinations[A]==Destinations[B])return EWheelWitnessRelease1368::AliasedDestinations;
+ if(!OutRaw.IsEmpty()||!OutCanonical.IsEmpty()||!OutRawDebris.IsEmpty()||!OutCanonicalDebris.IsEmpty())
+  return EWheelWitnessRelease1368::DestinationNotEmpty;
+ Swap(Raw,OutRaw);Swap(Canonical,OutCanonical);Swap(RawDebris,OutRawDebris);Swap(CanonicalDebris,OutCanonicalDebris);
+ bReleased=true;return bValid?EWheelWitnessRelease1368::TransferredValid:EWheelWitnessRelease1368::TransferredInvalid;
+}
+bool FFrameSolveWitnessScope::ConsumeWheelWitness1368(FWheelWitnessSnapshot1368& Out)
+{
+ if(ConsumedWheel1368||!Bytes.IsEmpty()||!bCaptureWheelManifold1368||bOverflow||PointerCapture.HasOverflow()||PointerCapture.HasUnknown()
+  ||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()||WheelCanonicalRows1368!=WheelRows1368
+  ||Out.bCaptured||Out.bWriterOpen||!Out.Raw.IsEmpty()||!Out.Canonical.IsEmpty()||!Out.RawDebris.IsEmpty()||!Out.CanonicalDebris.IsEmpty())return false;
+ Swap(WheelRaw1368,Out.Raw);Swap(WheelCanonical1368,Out.Canonical);
+ Out.bCaptured=true;Out.bWriterOpen=true;Out.bValid=true;ConsumedWheel1368=&Out;return true;
+}
+#endif
 FFrameSolveWitnessScope::FFrameSolveWitnessScope(uint64 InFrame,TArray<uint8>& Raw,
     const FFramePointerRegistry& Registry,int32 MaximumRows)
     : Frame(InFrame),Bytes(Raw),PointerCapture(Raw,Registry),WheelRegistry1368(Registry),Limit(FMath::Clamp(MaximumRows,1,65536))
 { Previous=ActiveSolveWitness;ActiveSolveWitness=this; }
 FFrameSolveWitnessScope::~FFrameSolveWitnessScope()
-{ check(ActiveSolveWitness==this);ActiveSolveWitness=Previous; }
+{
+ check(ActiveSolveWitness==this);
+#if WITH_DEV_AUTOMATION_TESTS
+ if(ConsumedWheel1368)
+ {
+  ConsumedWheel1368->bValid&=!bOverflow&&!PointerCapture.HasOverflow()&&!PointerCapture.HasUnknown()
+   &&OpenDynamicPasses.IsEmpty()&&OpenWheelOwners1368.IsEmpty()&&WheelCanonicalRows1368==WheelRows1368
+   &&Bytes.IsEmpty()&&WheelRaw1368.IsEmpty()&&WheelCanonical1368.IsEmpty();
+  Swap(ConsumedWheel1368->RawDebris,WheelRaw1368);Swap(ConsumedWheel1368->CanonicalDebris,WheelCanonical1368);
+  ConsumedWheel1368->bWriterOpen=false;
+ }
+#endif
+ ActiveSolveWitness=Previous;
+}
 bool FFrameSolveWitnessScope::IsActive() { return ActiveSolveWitness!=nullptr; }
 void FFrameSolveWitnessScope::Record(uint64 InFrame,int32 Iteration,int32 Order,
     uint64 ActorStableId,int32 ResolverIndex,uint64 PairKey,const SHitResult& Hit,
     bool bIgnored,int32 GenerationBefore,int32 GenerationAfter,const USSubBody* Resolver,bool bStaticRestingWorld) try
 {
     auto* Scope=ActiveSolveWitness;if(!Scope)return;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(Scope->ConsumedWheel1368){Scope->PointerCapture.RejectRecordAfterConsume1456();Scope->bOverflow=true;return;}
+ if(Scope->PointerCapture.RejectRecordAfterConsume1456()){Scope->bOverflow=true;return;}
+#endif
     if(InFrame!=Scope->Frame || Scope->Rows>=Scope->Limit)
     { Scope->bOverflow=true;return; }
     auto& B=Scope->Bytes;
@@ -83,6 +178,10 @@ uint64 FFrameSolveWitnessScope::BeginDynamicPass(uint64 InFrame,EFrameDynamicCon
  const ::FDynamicContactPair* FilterPair) noexcept try
 {
  auto* S=ActiveSolveWitness;if(!S)return 0;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(S->ConsumedWheel1368){S->PointerCapture.RejectRecordAfterConsume1456();S->bOverflow=true;return 0;}
+ if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return 0;}
+#endif
  if(InFrame!=S->Frame || S->Rows>=S->Limit || S->NextDynamicPass==MAX_uint64)
  {S->bOverflow=true;return 0;}
  FDynamicPass Pass;Pass.Id=++S->NextDynamicPass;Pass.Kind=Kind;Pass.Dt=Dt;
@@ -100,6 +199,10 @@ uint64 FFrameSolveWitnessScope::CurrentDynamicPass() noexcept
 void FFrameSolveWitnessScope::EndDynamicPass(uint64 Pass,int32 PairCount) noexcept try
 {
  auto* S=ActiveSolveWitness;if(!S)return;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(S->ConsumedWheel1368){S->PointerCapture.RejectRecordAfterConsume1456();S->bOverflow=true;return;}
+ if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return;}
+#endif
  if(!Pass || S->OpenDynamicPasses.IsEmpty() || S->OpenDynamicPasses.Last().Id!=Pass)
  {S->bOverflow=true;return;}
  RecordDynamicEvent(Pass,EFrameDynamicContactEvent::PassEnd,PairCount,0,nullptr,nullptr,nullptr,
@@ -114,6 +217,10 @@ void FFrameSolveWitnessScope::RecordDynamicEvent(uint64 Pass,EFrameDynamicContac
  const ::FFakePhysicsImpactContext* Context) noexcept try
 {
  auto* S=ActiveSolveWitness;if(!S)return;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(S->ConsumedWheel1368){S->PointerCapture.RejectRecordAfterConsume1456();S->bOverflow=true;return;}
+ if(S->PointerCapture.RejectRecordAfterConsume1456()){S->bOverflow=true;return;}
+#endif
  if(!Pass || S->OpenDynamicPasses.IsEmpty() || S->OpenDynamicPasses.Last().Id!=Pass || S->Rows>=S->Limit)
  {S->bOverflow=true;return;}
  const FDynamicPass& P=S->OpenDynamicPasses.Last();auto& B=S->Bytes;
@@ -139,6 +246,46 @@ void FFrameSolveWitnessScope::RecordDynamicEvent(uint64 Pass,EFrameDynamicContac
 catch(...){if(ActiveSolveWitness)ActiveSolveWitness->bOverflow=true;}
 
 #if WITH_DEV_AUTOMATION_TESTS
+namespace
+{
+// Explicit wire fields only: no SWheelGroundContact/FVector object padding.
+// Keep both pointer observations and their offsets in the calling row writer.
+void AppendWheelContactNumericTail1368(TArray<uint8>& Out,const SWheelGroundContact& C)
+{
+ using S=std::remove_cvref_t<decltype(C.SurfacePoint.X)>;
+ static_assert(std::is_same_v<S,double> && sizeof(S)==8 && sizeof(bool)==1);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.WorldPos.X)>,S>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.Normal.X)>,S>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.r.X)>,S>);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.SurfaceFaceIndex)>,int32> && sizeof(int32)==4);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.SurfaceSourceId)>,uint64>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.SurfaceId)>,uint64>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.SurfaceFeatureId)>,uint64> && sizeof(uint64)==8);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.vN)>,float>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.InvMassEff)>,float>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.SpringDisplacement)>,float> && sizeof(float)==4);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.bVelocityLocked)>,bool>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.bNewContact)>,bool>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.bAtBumpStop)>,bool>);
+ constexpr int32 TailBytes=4*sizeof(bool)+12*sizeof(S)+sizeof(int32)+3*sizeof(uint64)+3*sizeof(float);
+ static_assert(TailBytes==140);
+ uint8 Tail[TailBytes];int32 Offset=0;
+ const auto Scalar=[&](const auto& Value)
+ {
+  using T=std::remove_cvref_t<decltype(Value)>;
+  static_assert(std::is_integral_v<T>||std::is_same_v<T,float>||std::is_same_v<T,double>);
+  FMemory::Memcpy(Tail+Offset,&Value,sizeof(T));Offset+=sizeof(T);
+ };
+ const auto XYZ=[&](const FVector& V){Scalar(V.X);Scalar(V.Y);Scalar(V.Z);};
+ // Acquire the weak-reference null bit at the same point as the old Add chain.
+ const bool bExplicitlyNull=C.SurfaceComponent.IsExplicitlyNull();Scalar(bExplicitlyNull);
+ XYZ(C.SurfacePoint);Scalar(C.SurfaceFaceIndex);Scalar(C.SurfaceSourceId);Scalar(C.SurfaceId);Scalar(C.SurfaceFeatureId);
+ XYZ(C.WorldPos);XYZ(C.Normal);XYZ(C.r);Scalar(C.vN);Scalar(C.InvMassEff);
+ Scalar(C.SpringDisplacement);Scalar(C.bVelocityLocked);Scalar(C.bNewContact);Scalar(C.bAtBumpStop);
+ check(Offset==TailBytes);
+ Out.Append(Tail,TailBytes);
+}
+}
 bool FFrameSolveWitnessScope::IsWheelManifoldActive1368() noexcept
 {return ActiveSolveWitness&&ActiveSolveWitness->bCaptureWheelManifold1368;}
 void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedComponent* Owner,
@@ -147,6 +294,10 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  TConstArrayView<double> DoubleScalars,TConstArrayView<FVector> Vectors) noexcept try
 {
  auto* Scope=ActiveSolveWitness;if(!Scope||!Scope->bCaptureWheelManifold1368)return;
+#if WITH_DEV_AUTOMATION_TESTS
+ if(Scope->ConsumedWheel1368){Scope->PointerCapture.RejectRecordAfterConsume1456();Scope->bOverflow=true;return;}
+ if(Scope->PointerCapture.RejectRecordAfterConsume1456()){Scope->bOverflow=true;return;}
+#endif
  const auto Numeric=CaptureFrameFloatingPointContext();FScopedFrameFloatingPointContext Guard(Numeric);
  if(!Guard.IsApplied()){Scope->bOverflow=true;return;}
  const bool KnownEvent=Event<=6||Event==8||Event==9||Event==10||Event==11||Event==12||Event==13||Event==254||Event==255;
@@ -162,7 +313,10 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  {Scope->bOverflow=true;return;}
  // A separate pointer capture owns this row. Main/dynamic bytes and sequence
  // are not touched. No additional component/vehicle kinematic getter is called.
- TArray<uint8> Raw,Canonical;FFramePointerCaptureScope Pointers(Raw,Scope->WheelRegistry1368);
+ auto& Raw=Scope->WheelRowRawScratch1368;Raw.Reset();
+ auto& Canonical=Scope->WheelRowCanonicalScratch1368;Canonical.Reset();
+ FFramePointerCaptureScope Pointers(Raw,Scope->WheelRegistry1368,16384,
+  Scope->bReuseWheelPointerEvents1368?&Scope->WheelRowPointerEventsScratch1368:nullptr);
  using W=FEpisodeStateBytesForTesting;
  W::Add(Raw,uint32(3));W::Add(Raw,Scope->Frame);W::Add(Raw,Scope->WheelRows1368++);
  W::Add(Raw,Scope->Rows);W::Add(Raw,Event);W::Add(Raw,Owner);
@@ -170,17 +324,18 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  for(const auto& C:Contacts)
  {
   if(C.SurfaceComponent.IsStale(true,true)){Scope->bOverflow=true;break;}
-  W::Add(Raw,C.Wheel);W::Add(Raw,C.SurfaceComponent.GetEvenIfUnreachable());W::Add(Raw,C.SurfaceComponent.IsExplicitlyNull());
-  W::Add(Raw,C.SurfacePoint);W::Add(Raw,C.SurfaceFaceIndex);W::Add(Raw,C.SurfaceSourceId);W::Add(Raw,C.SurfaceId);W::Add(Raw,C.SurfaceFeatureId);
-  W::Add(Raw,C.WorldPos);W::Add(Raw,C.Normal);W::Add(Raw,C.r);W::Add(Raw,C.vN);W::Add(Raw,C.InvMassEff);
-  W::Add(Raw,C.SpringDisplacement);W::Add(Raw,C.bVelocityLocked);W::Add(Raw,C.bNewContact);W::Add(Raw,C.bAtBumpStop);
+  W::Add(Raw,C.Wheel);W::Add(Raw,C.SurfaceComponent.GetEvenIfUnreachable());
+  AppendWheelContactNumericTail1368(Raw,C);
  }
- W::Add(Raw,Order.Num());for(const auto V:Order)W::Add(Raw,V);
- W::Add(Raw,Scalars.Num());for(const auto V:Scalars)W::Add(Raw,V);
- W::Add(Raw,DoubleScalars.Num());for(const auto V:DoubleScalars)W::Add(Raw,V);
+ W::Add(Raw,Order.Num());
+ if(Order.Num()>0)Raw.Append(reinterpret_cast<const uint8*>(Order.GetData()),Order.Num()*int32(sizeof(int32)));
+ W::Add(Raw,Scalars.Num());
+ if(Scalars.Num()>0)Raw.Append(reinterpret_cast<const uint8*>(Scalars.GetData()),Scalars.Num()*int32(sizeof(float)));
+ W::Add(Raw,DoubleScalars.Num());
+ if(DoubleScalars.Num()>0)Raw.Append(reinterpret_cast<const uint8*>(DoubleScalars.GetData()),DoubleScalars.Num()*int32(sizeof(double)));
  W::Add(Raw,Vectors.Num());for(const auto& V:Vectors)W::Add(Raw,V);
  W::Add(Scope->WheelRaw1368,uint32(0x334d5749));W::Add(Scope->WheelRaw1368,uint32(Raw.Num()));Scope->WheelRaw1368.Append(Raw);
- if(!Scope->bOverflow&&Pointers.MakeCanonical(Canonical))
+ if(!Scope->bOverflow&&Pointers.MakeCanonicalWithScratch1368(Canonical,Scope->WheelRowCanonicalBuildScratch1368))
  {
   W::Add(Scope->WheelCanonical1368,uint32(0x334d5749));W::Add(Scope->WheelCanonical1368,uint32(Canonical.Num()));Scope->WheelCanonical1368.Append(Canonical);
   ++Scope->WheelCanonicalRows1368;

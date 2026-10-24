@@ -10,7 +10,7 @@ $pathB = 'IAmSpeed.Simulation.ParallelFrame.WorkerPolicy'
 $reportPath = Join-Path $taskCaseRoot 'index.json'
 
 function Write-Report($Paths, $State = 'Success', $Warnings = 0, $NotRun = 0) {
-    $tests = @($Paths | ForEach-Object { @{ fullTestPath=$_; state=$State } })
+    $tests = @($Paths | ForEach-Object { @{ fullTestPath=$_; state=$State; errors=0; warnings=0; entries=@() } })
     $report = @{ succeeded=$tests.Count; succeededWithWarnings=$Warnings; failed=0; notRun=$NotRun; inProcess=0; tests=$tests }
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding UTF8
 }
@@ -40,6 +40,31 @@ Expect-Pass 'exact_leaf_filter_is_valid' { Check-Report $pathB @($pathB) 'Automa
 Expect-Fail 'case_changed_required_name_is_not_the_test' { Check-Report 'IAmSpeed' @('IAmSpeed.Simulation.ParallelFrame.workerpolicy') 'Automation Test Queue Empty 1 tests performed.' }
 Expect-Fail 'wrong_prefix_cannot_satisfy_leaf_filter' { Check-Report 'IAmSpeed.Parallel' @() 'Automation Test Queue Empty 1 tests performed.' }
 Expect-Fail 'nonzero_native_exit_is_preserved' { Assert-IAmSpeedAutomationResult -ExitCode 1 -StandardOutput 'Automation Test Queue Empty 1 tests performed.' -ReportPath $reportPath -TestFilter 'IAmSpeed' -RequiredTestPaths @($pathB) }
+
+# Fixtures must obey the native report schema. Missing diagnostics never mean zero.
+foreach ($field in @('errors', 'warnings', 'entries')) {
+    Write-Report @($pathB)
+    $malformed = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+    $malformed.tests[0].PSObject.Properties.Remove($field)
+    $malformed | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+    Expect-Fail ('missing_native_' + $field) { Check-Report $pathB @($pathB) 'Automation Test Queue Empty 1 tests performed.' }
+}
+foreach ($field in @('errors', 'warnings')) {
+    foreach ($value in @(1, '0')) {
+        Write-Report @($pathB)
+        $malformed = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+        $malformed.tests[0].$field = $value
+        $malformed | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+        Expect-Fail ('invalid_native_' + $field + '_' + $value.GetType().Name) { Check-Report $pathB @($pathB) 'Automation Test Queue Empty 1 tests performed.' }
+    }
+}
+foreach ($eventType in @('Warning', 'Error')) {
+    Write-Report @($pathB)
+    $malformed = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+    $malformed.tests[0].entries = @(@{ event=@{ type=$eventType } })
+    $malformed | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+    Expect-Fail ('native_event_' + $eventType) { Check-Report $pathB @($pathB) 'Automation Test Queue Empty 1 tests performed.' }
+}
 
 Write-Report @($pathB, $pathB)
 Expect-Fail 'duplicate_successful_test_is_not_coverage' { Check-Report 'IAmSpeed' @($pathB) }

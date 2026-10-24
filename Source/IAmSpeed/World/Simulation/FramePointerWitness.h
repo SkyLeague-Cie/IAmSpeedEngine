@@ -73,6 +73,13 @@ class IAMSPEED_API FFramePointerCaptureScope
 {
 public:
     FFramePointerCaptureScope(TArray<uint8>& Bytes,const FFramePointerRegistry& Registry,int32 InLimit=16384);
+#if WITH_DEV_AUTOMATION_TESTS
+    // Explicit wheel-row storage lease only. Scratch must be empty, immobile,
+    // and untouched until destruction. Busy/nonempty scratch fails closed without
+    // touching it. nullptr preserves the default owned storage path.
+    FFramePointerCaptureScope(TArray<uint8>& Bytes,const FFramePointerRegistry& Registry,
+        int32 InLimit,TArray<FFramePointerObservation>* ReusableEvents1368);
+#endif
     ~FFramePointerCaptureScope();
     FFramePointerCaptureScope(const FFramePointerCaptureScope&)=delete;
     FFramePointerCaptureScope& operator=(const FFramePointerCaptureScope&)=delete;
@@ -92,9 +99,23 @@ public:
     // In that case Canonical is left untouched and Raw remains available.
     bool MakeCanonical(TArray<uint8>& Canonical) const;
 #if WITH_DEV_AUTOMATION_TESTS
+    // Explicit test witness path only. Canonical must be empty; all three
+    // arrays must be distinct. Failure preserves Canonical and raw Target,
+    // while BuildScratch may retain uncertified partial bytes. Only success
+    // swaps a complete build into Canonical, retaining both buffer capacities.
+    bool MakeCanonicalWithScratch1368(TArray<uint8>& Canonical,TArray<uint8>& BuildScratch) const;
     // Copies immutable values only. Success means captured, not yet canonical:
     // the same byte/token validation still runs in the deferred MakeCanonical.
     bool CaptureCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out) const;
+    // Final transfer only after every physical writer has joined. Out must
+    // outlive this scope and stay unmoved/unassigned until it closes. Raw/events
+    // retain their exact bytes/keys by array swap;
+    // projection is blocked until scope destruction validates no later write.
+    bool ConsumeCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out);
+    bool RejectRecordAfterConsume1456() noexcept;
+    // Fresh test-only event storage, owned by this scope after one swap.
+    // All admission checks precede mutation; raw bytes are never exchanged.
+    bool PrepareFreshEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept;
     // Transactional mapping of exact raw field/row boundaries through the SAME
     // validated projector. A boundary inside a pointer token is unavailable.
     bool MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const;
@@ -109,24 +130,47 @@ private:
     FFramePointerCaptureScope* Previous=nullptr;
     int32 Limit=0;
     bool bUnknown=false,bOverflow=false;
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FFrameSolveWitnessScope;
+    bool CanAdoptPreparedEvents1456(const FFramePointerCanonicalSnapshot1456& Prepared) const noexcept;
+    void AdoptPreparedEvents1456(FFramePointerCanonicalSnapshot1456& Prepared) noexcept;
+    bool bPreparedEventsAdopted1534=false;
+    TArray<FFramePointerObservation>* BorrowedEvents1368=nullptr;
+    bool bConsumed1456=false;
+    FFramePointerCanonicalSnapshot1456* ConsumedSnapshot1456=nullptr;
+#endif
 };
 
 #if WITH_DEV_AUTOMATION_TESTS
+// Evidence copying has a separate result from canonical validity: UNKNOWN
+// snapshots still retain their exact captured raw stream after scope closure.
+enum class EFramePointerRawEvidenceCopy1456 : uint8
+{ NotCaptured, WriterScopeOpen, DestinationNotEmpty, Copied };
 // Owns raw bytes and complete semantic observations. No UObject, registry or
 // live scope access is needed when projecting after the physical owner joins.
 class IAMSPEED_API FFramePointerCanonicalSnapshot1456
 {
 public:
     void Reserve1456(int32 RawBytes,int32 Observations);
+    // Explicit fixture preparation only, before capture. Touch raw storage on
+    // the caller, retain Num=0, and keep normal growth/failure semantics.
+    // Refuses without mutation if any existing capture/data would be erased.
+    bool ReserveAndPreTouch1456(int32 RawBytes,int32 Observations);
     bool MakeCanonical(TArray<uint8>& Out) const;
     bool MakeCanonicalWithBoundaries1534(TArray<uint8>& Out,TConstArrayView<int32> RawBoundaries,TArray<int32>& CanonicalBoundaries) const;
+    // Copies only after writer-scope closure. Nonempty destinations are never
+    // overwritten: callers can preserve illegal late-write debris separately.
+    // A captured UNKNOWN is still evidence and is deliberately copyable.
+    EFramePointerRawEvidenceCopy1456 CopyRawForEvidenceAfterClosure1456(TArray<uint8>& Out) const;
     const TArray<uint8>& RawForEvidence1456() const { return Raw1456; }
     int32 NumObservations1456() const { return Events1456.Num(); }
+    int32 ObservationCapacityForTesting1456() const { return Events1456.Max(); }
 private:
     friend class FFramePointerCaptureScope;
     TArray<uint8> Raw1456;
     TArray<FFramePointerObservation> Events1456;
     bool bCaptured1456=false,bValidSealed1456=false,bUnknown1456=false,bOverflow1456=false;
+    bool bWriterScopeOpen1456=false;
 };
 #endif
 }

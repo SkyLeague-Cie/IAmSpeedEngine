@@ -38,7 +38,7 @@ jobs:
     needs: runner-contracts
     # Fork PR code must never run on a self-hosted Docker runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted]
+    runs-on: [self-hosted, Windows, X64, skyleague-ci]
     timeout-minutes: 140
     steps:
       - uses: actions/checkout@v4
@@ -60,13 +60,24 @@ jobs:
         env:
           IAMSPEED_CONFIGURED_IMAGE: ${{ vars.IAMSPEED_UE_IMAGE }}
           IAMSPEED_EXPECTED_SHA: ${{ github.sha }}
+          IAMSPEED_CONFIGURED_CPUSET: ${{ vars.IAMSPEED_CPUSET_CPUS }}
+          IAMSPEED_CONFIGURED_OUTPUT_ROOT: ${{ vars.IAMSPEED_OUTPUT_ROOT }}
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           import os, subprocess, sys
           configured = os.environ.get('IAMSPEED_CONFIGURED_IMAGE', '').strip()
           if configured:
               os.environ['IAMSPEED_UE_IMAGE'] = configured
-          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py'], check=True)
+          # CPU IDs belong to the runner Linux VM, not Windows processor numbering.
+          cpuset = os.environ.get('IAMSPEED_CONFIGURED_CPUSET', '').strip()
+          if not cpuset:
+              raise RuntimeError('Configure IAMSPEED_CPUSET_CPUS from the runner Linux sysfs topology; no portable numeric default')
+          from pathlib import Path
+          output_root = os.environ.get('IAMSPEED_CONFIGURED_OUTPUT_ROOT', '').strip()
+          if not output_root:
+              raise RuntimeError('Configure a short runner-local IAMSPEED_OUTPUT_ROOT; source and evidence paths must fit Windows limits')
+          output = Path(output_root) / (os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py', '--cpus', '12', '--cpuset-cpus', cpuset, '--output', str(output)], check=True)
 
       - name: Report strict result and accepted integration debt
         if: always() && steps.contracts.outputs.output_dir != ''

@@ -1707,7 +1707,7 @@ bool USpeedWorldSubsystem::InstallCanonicalInputs(const Speed::Input::V2::FRegis
 	if (!bCanonicalFrameActive || !Frame.Registry || Frame.Registry->Terminal) return false;
 	// Resolve every identity before the first install. Stable ids are monotonic
 	// for this world lifetime; generation equals that non-reused registration id.
-	TArray<TPair<ISpeedComponent*, std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>>> Installs;
+	TArray<TPair<ISpeedComponent*, std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>>, TInlineAllocator<16>> Installs;
 	for (const auto& Session : Frame.Inputs)
 	{
 		if (!Session.Snapshot || Session.Snapshot->Input.GetData().ConsumptionFrame != Frame.Frame) return false;
@@ -2130,7 +2130,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			const bool bEligibleExactReacquisition = Ctoi.Resolver.IsValid() &&
 				Ctoi.Resolver->CanResolveRepeatedContact(Ctoi.Hit);
 			if (Ctoi.Hit.SurfaceId != 0 &&
-				!ResolvedPairs.CanResolve(Ctoi.PairKey, bEligibleExactReacquisition))
+				!(ResolvedPairs.Contains(Ctoi.PairKey)
+                    ? bEligibleExactReacquisition && ResolvedPairs.CanSelectExactProgress(
+                        Ctoi.PairKey, Ctoi.Hit.TOI, TimePassed, Dt)
+                    : ResolvedPairs.CanResolve(Ctoi.PairKey, bEligibleExactReacquisition)))
 			{
 #if !UE_BUILD_SHIPPING
 				const int32 Generation = ResolvedPairs.GetGeneration(Ctoi.PairKey);
@@ -2209,6 +2212,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		const bool bWillResolve = !EarliestHits.IsEmpty();
 		const float SubDelta = FMath::Clamp(
 			bWillResolve ? EarliestTOI : Remaining, 0.0f, Remaining);
+        const float TimeBeforeIntegration = TimePassed;
 		IntegrateAll(SubDelta);
 #if !UE_BUILD_SHIPPING
 		if (bCaptureSolverEventTrace)
@@ -2237,7 +2241,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			USSubBody* Resolver = Hit.Resolver.Get();
 			const bool bEligibleExactReacquisition = Resolver &&
 				Resolver->CanResolveRepeatedContact(Hit.Hit);
-			if (!Resolver || !ResolvedPairs.CanResolve(Hit.PairKey, bEligibleExactReacquisition))
+			if (!Resolver || !(ResolvedPairs.Contains(Hit.PairKey)
+                ? bEligibleExactReacquisition && ResolvedPairs.CanResolveExactProgress(
+                    Hit.PairKey, Hit.Hit.TOI, TimeBeforeIntegration, TimePassed, Dt)
+                : ResolvedPairs.CanResolve(Hit.PairKey, bEligibleExactReacquisition)))
 			{
 #if !UE_BUILD_SHIPPING
 				const int32 Generation = ResolvedPairs.GetGeneration(Hit.PairKey);
@@ -2247,6 +2254,9 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 				continue;
 			}
 
+#if !UE_BUILD_SHIPPING
+            const int32 GenerationBefore = ResolvedPairs.GetGeneration(Hit.PairKey);
+#endif
 			Resolver->SetFutureHit(Hit.Hit);
 			Resolver->AcceptHit();
 			bool bIgnored = false;
@@ -2276,11 +2286,17 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			LastStepDiagnostics.ResolveMilliseconds +=
 				(FPlatformTime::Seconds() - ResolveStartSeconds) * 1000.0;
 			++LastStepDiagnostics.ResolvedEventCount;
+            // A resolved exact time-zero vertex is an initial event, not a
+            // repeat. Seed its identity only now, so a later positive return
+            // can use an actual-time progress certificate; the legacy generation
+            // remains saturated at two for diagnostics and legacy callers.
+            const bool bRecordExactGeneration = !bIgnored &&
+                (bEligibleExactReacquisition || Resolver->CanInitializeRepeatedContact(Hit.Hit));
 			if (Hit.Hit.SurfaceId != 0)
 			{
-				if (!bIgnored && bEligibleExactReacquisition)
+				if (bRecordExactGeneration)
 				{
-					ResolvedPairs.RecordEligibleResolution(Hit.PairKey);
+					ResolvedPairs.RecordExactProgressResolution(Hit.PairKey, TimePassed, Dt);
 				}
 				else
 				{
@@ -2289,8 +2305,6 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			}
 #if !UE_BUILD_SHIPPING
 			const int32 GenerationAfter = ResolvedPairs.GetGeneration(Hit.PairKey);
-			const int32 GenerationBefore = bEligibleExactReacquisition && !bIgnored
-				? FMath::Max(0, GenerationAfter - 1) : GenerationAfter;
 			TraceEvent(TEXT("ResolveResult"), bIgnored ? TEXT("Ignored") : TEXT("Resolved"),
 				Iter, HitIndex, Hit.PairKey, Hit.Hit, Resolver,
 				GenerationBefore, GenerationAfter);

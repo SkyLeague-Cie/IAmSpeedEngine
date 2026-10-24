@@ -6,8 +6,103 @@
 #include "Misc/ScopeExit.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "Serialization/BitReader.h"
+#include "Serialization/BitWriter.h"
 #include "UObject/StrongObjectPtr.h"
 #include <limits>
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedInputFrameHeaderBoundaryTest,
+ "IAmSpeed.Camera.InputFrameHeaderBoundary",
+ EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+bool FIAmSpeedInputFrameHeaderBoundaryTest::RunTest(const FString&)
+{
+ // Independent byte construction, not SerializeFrames/SerializeIntPacked.
+ const auto Packed=[](uint32 Value)
+ {
+  TArray<uint8> Bytes;
+  do{const uint8 Payload=uint8(Value&127);Value>>=7;Bytes.Add(uint8((Payload<<1)|(Value?1:0)));}while(Value);
+  return Bytes;
+ };
+ const auto Check=[&](int32 Frame,FNetworkWheeledSpeedInputState* Delta)
+ {
+  FNetworkWheeledSpeedInputState Packet;Packet.bInputProjectionValid=false;
+  Packet.ServerFrame=Frame;Packet.SetDeltaSourceData(Delta);
+  FBitWriter Written(1024,true),Reference(1024,true);uint8 Prefix=5;
+  Written.SerializeBits(&Prefix,3);Reference.SerializeBits(&Prefix,3);
+  uint8 Version=1,Presence=0;Reference<<Version<<Presence;
+  if(Delta)
+  {
+   uint8 Increment=Frame==Delta->ServerFrame+1;Reference.SerializeBits(&Increment,1);
+   if(!Increment)
+   {
+    const int32 Difference=Frame-Delta->ServerFrame;uint8 Negative=Difference<0;
+    Reference.SerializeBits(&Negative,1);const auto Bytes=Packed(uint32(FMath::Abs(Difference)));
+    Reference.SerializeBits(const_cast<uint8*>(Bytes.GetData()),Bytes.Num()*8);
+   }
+  }
+  else
+  {
+   const auto Bytes=Packed(uint32(Frame+1));Reference.SerializeBits(const_cast<uint8*>(Bytes.GetData()),Bytes.Num()*8);
+  }
+  bool Success=false;
+  TestTrue(TEXT("real frame header saves at nonzero bit offset"),Packet.NetSerialize(Written,nullptr,Success)&&Success&&!Written.IsError());
+  TestEqual(TEXT("independent packed header bit count"),Written.GetNumBits(),Reference.GetNumBits());
+  FBitReader ActualBits(Written.GetData(),Written.GetNumBits()),ReferenceBits(Reference.GetData(),Reference.GetNumBits());
+  bool SameBits=Written.GetNumBits()==Reference.GetNumBits();
+  while(SameBits&&ActualBits.GetBitsLeft())
+  {uint8 L=0,R=0;ActualBits.SerializeBits(&L,1);ReferenceBits.SerializeBits(&R,1);SameBits=L==R;}
+  TestTrue(TEXT("saving preserves independent LSB continuation and delta bits"),SameBits);
+  FBitReader Reader(Reference.GetData(),Reference.GetNumBits());uint8 ReadPrefix=0;Reader.SerializeBits(&ReadPrefix,3);
+  FNetworkWheeledSpeedInputState Destination;Destination.ServerFrame=Destination.LocalFrame=3111;
+  Destination.SetDeltaSourceData(Delta);
+  TestTrue(TEXT("independent nonaligned header decodes"),Destination.NetSerialize(Reader,nullptr,Success)&&Success&&!Reader.IsError());
+  TestEqual(TEXT("nonaligned prefix preserved"),ReadPrefix,Prefix);
+  TestEqual(TEXT("header transports server frame"),int32(Destination.ServerFrame),Frame);
+  TestEqual(TEXT("header seeds endpoint local frame"),int32(Destination.LocalFrame),Frame);
+  TestEqual(TEXT("header consumes exactly its bits"),Reader.GetBitsLeft(),int64(0));
+ };
+ const int32 BoundaryFrames[]={INDEX_NONE,0,126,127,128,16382,16383,MAX_int32-1};
+ for(int32 Frame:BoundaryFrames)Check(Frame,nullptr);
+ FNetworkWheeledSpeedInputState Delta;Delta.ServerFrame=200;
+ for(int32 Frame:{201,199,0,40000})Check(Frame,&Delta);
+
+ const auto Reject=[&](const TArray<uint8>& Bytes)
+ {
+  FMemoryReader Reader(Bytes);FNetworkWheeledSpeedInputState Destination;
+  Destination.ServerFrame=Destination.LocalFrame=3111;Destination.ClientFrame=3999;
+  const auto Before=Destination;bool Success=true;
+  TestFalse(TEXT("malformed packed header rejected"),Destination.NetSerialize(Reader,nullptr,Success));
+  TestTrue(TEXT("malformed header propagates archive failure"),Reader.IsError()&&!Success);
+  TestTrue(TEXT("malformed header is transactional"),Destination.ServerFrame==Before.ServerFrame
+   &&Destination.LocalFrame==Before.LocalFrame&&Destination.ClientFrame==Before.ClientFrame
+   &&Destination.bInputProjectionValid==Before.bInputProjectionValid&&Destination.WheeledInput.Camera.Equals(Before.WheeledInput.Camera));
+ };
+ TArray<uint8> Complete{1,0};Complete.Append(Packed(uint32(MAX_int32)));
+ for(int32 Length=0;Length<Complete.Num();++Length)
+ {TArray<uint8> Short;Short.Append(Complete.GetData(),Length);Reject(Short);}
+ for(int32 Width=0;Width<10;++Width)
+ {TArray<uint8> Truncated{1,0};for(int32 Index=0;Index<Width;++Index)Truncated.Add(1);Reject(Truncated);}
+ Reject(TArray<uint8>{1,0,1,1,1,1,1}); // Truncated after five continuations.
+ Reject(TArray<uint8>{1,0,1,1,1,1,1,1,1,1,1,1}); // Ten continuations have no terminator.
+ // Preserve the distinct generic-memory compatibility policy of UE archives.
+ for(int32 Width=6;Width<=10;++Width)
+ {
+  TArray<uint8> Compatible{1,0};for(int32 Index=1;Index<Width;++Index)Compatible.Add(1);Compatible.Add(0);
+  FMemoryReader CompatibilityReader(Compatible);FNetworkWheeledSpeedInputState Value;bool Saved=false;
+  TestTrue(TEXT("memory archive retains legacy wide packed input"),Value.NetSerialize(CompatibilityReader,nullptr,Saved)&&Saved&&!CompatibilityReader.IsError());
+  TestEqual(TEXT("legacy memory modulo uint32 value preserved"),int32(Value.ServerFrame),INDEX_NONE);
+ }
+ TArray<uint8> WidePayload{1,0,1,1,1,1,0x20};FMemoryReader WideReader(WidePayload);
+ FNetworkWheeledSpeedInputState WideValue;bool WideSuccess=false;
+ TestTrue(TEXT("memory fifth payload keeps UE modulo semantics"),WideValue.NetSerialize(WideReader,nullptr,WideSuccess)&&WideSuccess&&!WideReader.IsError());
+ TestEqual(TEXT("wide memory payload projects modulo uint32"),int32(WideValue.ServerFrame),INDEX_NONE);
+ // Nonminimal-but-in-range remains accepted; no new canonical-encoding rule.
+ TArray<uint8> Nonminimal{1,0,1,0};FMemoryReader Reader(Nonminimal);
+ FNetworkWheeledSpeedInputState Destination;bool Success=false;
+ TestTrue(TEXT("nonminimal uint32 encoding is preserved"),Destination.NetSerialize(Reader,nullptr,Success)&&Success&&!Reader.IsError());
+ TestEqual(TEXT("nonminimal zero transports INDEX_NONE"),int32(Destination.ServerFrame),INDEX_NONE);
+ return !HasAnyErrors();
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedCameraInputBoundaryTest,
 	"IAmSpeed.Camera.NetworkInputBoundary",

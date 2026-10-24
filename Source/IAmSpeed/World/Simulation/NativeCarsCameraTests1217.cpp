@@ -1,4 +1,5 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+#include "NativeSelectedStateBytesForTesting.h"
 #include "IAmSpeed/World/Simulation/NativeExactInputFixture1304.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -58,15 +59,11 @@ struct FNativeRow1217
 };
 void BaseState1217(TArray<uint8>& O,const FBasePhysicsState& X)
 {
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.Kinematic);W::Add(O,X.bIsFrozen);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.bStartCountdown);
+ Speed::SelectedStateBytesForTesting::AppendBaseState(O,X);
 }
 void WheeledState1217(TArray<uint8>& O,const FWheeledPhysicsState& X)
 {
- using W=Speed::FEpisodeStateBytesForTesting;
- W::Add(O,X.bStartCountdown);W::Add(O,X.nbFramesbeforeCanMove);W::Add(O,X.FramesSinceLastImpact);
- W::Add(O,X.AllowedSideVelocity);W::Add(O,X.AllowedAngularVelocity);W::Add(O,X.SuspensionLastDisplacement);
- W::Add(O,X.PhysicalThrottleInput);W::Add(O,X.PhysicalBrakeInput);W::Add(O,X.PhysicalSteerInput);W::Add(O,X.NbFramesSinceGroundContact);
+ Speed::SelectedStateBytesForTesting::AppendWheeledStatePrefix(O,X);
 }
 void SerializeCapturedCar1425(TArray<uint8>& O,const FCapturedNativeCarState1425& X)
 {
@@ -271,10 +268,25 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
   // Reserve observer storage before the paced owner starts; all fields and full histories remain captured.
   for(auto& R:Seen)
   {
-   R.Snapshot.Reserve(1024*1024);R.ObservedStates.Reserve(1024*1024);R.Inputs.Reserve(32768);R.OrderedSolve.Reserve(4096);R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);
+   R.Snapshot.Reserve(1024*1024);R.ObservedStates.Reserve(1024*1024);R.Inputs.Reserve(32768);R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);
+   // Observed contact streams exceed 1.5 MiB. Prepare/touch growable fixture
+   // storage on GT; never cap contacts or move their actual owner capture.
+   R.OrderedSolve.SetNumZeroed(2*1024*1024);R.OrderedSolve.Reset();
    R.CapturedCars.SetNum(CarCount);R.CameraOraclePolls1434.SetNum(CarCount);
-   R.DeferredContacts1456.Reserve1456(65536,2048);
-   for(auto& C:R.CapturedCars){C.RecordedFrames.Reserve(Frames+2);C.RecordedBase.Reserve(Frames+2);C.RecordedWheeled.Reserve(Frames+2);C.Bodies.Reserve(16);}
+   if(!TestTrue(TEXT("empty contact snapshot storage prepared before owner"),
+    R.DeferredContacts1456.ReserveAndPreTouch1456(2*1024*1024,2048)))return false;
+   for(int32 A=0;A<CarCount;++A)
+   {
+    auto& Captured=R.CapturedCars[A];const auto* Car=Cars[A];
+    // These are complete fixed-size ring histories (currently1024 slots),
+    // not a growing array bounded by this fixture's90-frame run. Allocate
+    // and populate real typed storage before starting the paced owner.
+    // Every frame below still overwrites all slots with its actual values.
+    Captured.RecordedFrames=Car->RecordedBaseFrames;
+    Captured.RecordedBase=Car->RecordedBaseStates;
+    Captured.RecordedWheeled=Car->RecordedWheeledStates;
+    Captured.Bodies.Reserve(Car->GetSubBodies().Num());
+   }
   }
   uint32 Steps=0,OwnerThread=0;int32 FailureLine=0,CameraStatus=-1,CameraReason=-1;bool Failed=false;
   FSimulationWorker Owner([&]
@@ -299,7 +311,9 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
    Row.SnapshotTicks1450=FPlatformTime::Cycles64()-WitnessBegin1420;
    const uint64 CanonicalBegin1450=FPlatformTime::Cycles64();
    Row.MainContacts=Ordered.NumMainRows();
-   if(!Ordered.CaptureCanonicalSnapshot1456(Row.DeferredContacts1456)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   // DriveOwnedWorkerPulse returned after all physical children joined; the
+   // remaining observer reads/copies only. No solve/contact writer follows.
+   if(!Ordered.SealAndConsumeCanonicalSnapshot1456(Row.DeferredContacts1456)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    Row.CanonicalTicks1450=FPlatformTime::Cycles64()-CanonicalBegin1450;
    for(int32 A=0;A<Cars.Num();++A)
    {

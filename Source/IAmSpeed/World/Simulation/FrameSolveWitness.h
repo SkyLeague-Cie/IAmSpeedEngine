@@ -27,6 +27,25 @@ enum class EFrameDynamicContactOutcome : uint8
  FirstSeenDeferred,DiscontinuousMotion,RejectedGeometry,ZeroNormal,SeparatingVelocity,
  IdentityOnly,ZeroDenominator,ProjectionDisabled
 };
+#if WITH_DEV_AUTOMATION_TESTS
+enum class EWheelWitnessRelease1368 : uint8
+{ NotCaptured, WriterOpen, DestinationNotEmpty, AliasedDestinations, AlreadyReleased, TransferredValid, TransferredInvalid };
+// Final owner capture; object must stay immobile and alive until solve scope
+// closure. Evidence is released after the physical owner has joined.
+class IAMSPEED_API FWheelWitnessSnapshot1368
+{
+    friend class FFrameSolveWitnessScope;
+    friend struct FWheelWitnessPreparedStorageTestAccess1368;
+    TArray<uint8> Raw,Canonical,RawDebris,CanonicalDebris;
+    TArray<uint8> PreparedRowRaw1368,PreparedRowCanonical1368,PreparedRowBuild1368;
+    bool bCaptured=false,bWriterOpen=false,bValid=false,bReleased=false;
+public:
+    // Growable capacity hints only, prepared on the game thread before owner start.
+    bool ReserveAndPreTouch1368();
+    EWheelWitnessRelease1368 ReleaseAfterClosure(TArray<uint8>& OutRaw,TArray<uint8>& OutCanonical,
+        TArray<uint8>& OutRawDebris,TArray<uint8>& OutCanonicalDebris);
+};
+#endif
 class IAMSPEED_API FFrameSolveWitnessScope
 {
 public:
@@ -57,6 +76,12 @@ public:
     // including schema2 events, without changing or framing its existing bytes.
     bool EnableRowBoundaryCapture1534()
     {if(Rows||bRowBoundaries1534)return false;bRowBoundaries1534=true;RawRowBoundaries1534.Reserve(FMath::Min(Limit,256));return true;}
+    // Fresh test-only ownership transfer, not a lease: preflight both empty
+    // destinations before either swap. Legacy enable/capture/consume stay exact.
+    bool PrepareFreshCaptureStorage1534(FFramePointerCanonicalSnapshot1456& Prepared,TArray<int32>& PreparedBounds) noexcept;
+    // Fresh byte-array ownership only: no lease, callback change or saved reference.
+    bool PrepareFreshWheelCaptureStorage1368(FWheelWitnessSnapshot1368& Prepared) noexcept;
+    bool SealAndConsumePreparedStorage1534(FFramePointerCanonicalSnapshot1456& Out,TArray<int32>& RawBoundaries);
     bool MakeCanonicalWithRowBoundaries1534(TArray<uint8>& Out,TArray<int32>& Boundaries)const
     {
         if(!bRowBoundaries1534||bOverflow||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()||RawRowBoundaries1534.Num()!=Rows)return false;
@@ -76,19 +101,49 @@ public:
         return !bOverflow&&OpenDynamicPasses.IsEmpty()&&OpenWheelOwners1368.IsEmpty()
             &&PointerCapture.CaptureCanonicalSnapshot1456(Out);
     }
+    // Final one-shot handoff; caller has returned from the joined physical body
+    // and performs no further solve/contact records. Destination outlives scope.
+    bool SealAndConsumeCanonicalSnapshot1456(FFramePointerCanonicalSnapshot1456& Out)
+    {
+        return !bOverflow&&!bRowBoundaries1534&&OpenDynamicPasses.IsEmpty()&&OpenWheelOwners1368.IsEmpty()
+            &&PointerCapture.ConsumeCanonicalSnapshot1456(Out);
+    }
+    // The row-framed path retains its exact raw starts plus original stream
+    // end before ownership moves. The same deferred token/boundary projector
+    // still validates all canonical bytes; no row capture is disabled.
+    bool SealAndConsumeCanonicalSnapshotWithRowBoundaries1534(FFramePointerCanonicalSnapshot1456& Out,TArray<int32>& RawBoundaries)
+    {
+        if(!bRowBoundaries1534||bOverflow||!OpenDynamicPasses.IsEmpty()||!OpenWheelOwners1368.IsEmpty()||RawRowBoundaries1534.Num()!=Rows)return false;
+        const int32 RawEnd=Bytes.Num();int32 PreviousBoundary=-1;
+        for(const int32 B:RawRowBoundaries1534){if(B<PreviousBoundary||B<0||B>RawEnd)return false;PreviousBoundary=B;}
+        TArray<int32> CapturedBounds=RawRowBoundaries1534;CapturedBounds.Add(RawEnd);
+        if(!PointerCapture.ConsumeCanonicalSnapshot1456(Out))return false;
+        RawBoundaries=MoveTemp(CapturedBounds);return true;
+    }
     // Explicit opt-in only. Legacy main/dynamic streams remain schemas1/2.
     bool EnableWheelManifoldCapture1368() noexcept
     {
         if(Rows||WheelRows1368||bCaptureWheelManifold1368)return false;
         bCaptureWheelManifold1368=true;return true;
     }
+#if WITH_DEV_AUTOMATION_TESTS
+    bool EnableWheelManifoldCapture1368(bool ReusePointerEvents1368) noexcept
+    {
+        if(!EnableWheelManifoldCapture1368())return false;
+        bReuseWheelPointerEvents1368=ReusePointerEvents1368;return true;
+    }
+#endif
     static bool IsWheelManifoldActive1368() noexcept;
     const TArray<uint8>& RawWheelManifold1368()const noexcept{return WheelRaw1368;}
     bool MakeWheelManifoldCanonical1368(TArray<uint8>& Out)const
     {
-        if(!bCaptureWheelManifold1368||bOverflow||!OpenWheelOwners1368.IsEmpty()||WheelCanonicalRows1368!=WheelRows1368)return false;
+        if(ConsumedWheel1368||!bCaptureWheelManifold1368||bOverflow||!OpenWheelOwners1368.IsEmpty()||WheelCanonicalRows1368!=WheelRows1368)return false;
         Out=WheelCanonical1368;return true;
     }
+    // One-shot final transfer after the last joined physical/wheel callback.
+    // Nonempty main bytes must first be sealed/transferred by their own API.
+    // Return success is provisional until scope closure; it is never a verdict.
+    bool ConsumeWheelWitness1368(FWheelWitnessSnapshot1368& Out);
     // Framed schema3 sidecar: actual suspension inputs/order/impulses.
     static void RecordWheelManifold1368(uint8 Event,const ISpeedComponent* Owner,
         int32 DetailA,int32 DetailB,TConstArrayView<SWheelGroundContact> Contacts,
@@ -120,8 +175,19 @@ private:
     TArray<const ISpeedComponent*,TInlineAllocator<4>> OpenWheelOwners1368;
     bool bCaptureWheelManifold1368=false;int32 WheelCanonicalRows1368=0;
     TArray<uint8> WheelRaw1368,WheelCanonical1368;
+    // Per-scope row storage; the explicit transactional scratch API swaps the
+    // two canonical buffers only after complete validation and encoding.
+    TArray<uint8> WheelRowRawScratch1368,WheelRowCanonicalScratch1368,WheelRowCanonicalBuildScratch1368;
+#if WITH_DEV_AUTOMATION_TESTS
+    friend struct FWheelWitnessPreparedStorageTestAccess1368;
+    bool bReuseWheelPointerEvents1368=false;
+    bool bPreparedWheelCaptureStorage1368=false;
+    TArray<FFramePointerObservation> WheelRowPointerEventsScratch1368;
+    FWheelWitnessSnapshot1368* ConsumedWheel1368=nullptr;
+#endif
     bool bOverflow=false;
 #if WITH_DEV_AUTOMATION_TESTS
+    bool bPreparedCaptureStorage1534=false;
     bool bRowBoundaries1534=false;TArray<int32> RawRowBoundaries1534;
 #endif
 };

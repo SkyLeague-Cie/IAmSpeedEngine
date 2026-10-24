@@ -15,6 +15,14 @@ import subprocess
 import sys
 import tarfile
 import uuid
+# Isolated Python (-I) omits the script directory from sys.path.
+# Bind the helper to the same immutable source directory explicitly.
+import importlib.util
+_cadence_spec = importlib.util.spec_from_file_location("IAmSpeedCadenceDebt", Path(__file__).resolve().with_name("CadenceDebt.py"))
+_cadence_module = importlib.util.module_from_spec(_cadence_spec)
+_cadence_spec.loader.exec_module(_cadence_module)
+check_cadence_policy = _cadence_module.check_policy
+project_cadence = _cadence_module.project_cadence
 
 RETAINED_TESTS = {'SkyLeague.Camera.GenericInputLifecycle'}
 FILTER = 'IAmSpeed.' + ''.join('+' + name for name in sorted(RETAINED_TESTS))
@@ -52,6 +60,11 @@ def validate_report(exit_code, log, report, required=REQUIRED, expected_paths=No
     crash = re.search(r'\b(?:Fatal error[!:]|Unhandled Exception:|Unhandled signal\b|Assertion failed:|Segmentation fault\b|LowLevelFatalError\b)', log, re.IGNORECASE)
     if crash:
         raise ValueError('Native crash diagnostic: ' + crash.group(0))
+    # Startup/shutdown ensures can occur outside any automation report row.
+    # A successful queue or an accepted test debt must not hide them.
+    ensure = re.search(r'\bEnsure condition failed:|===\s*Handled ensure\s*:?\s*===', log, re.IGNORECASE)
+    if ensure:
+        raise ValueError('Native ensure diagnostic: ' + ensure.group(0))
     markers = re.findall(r'Automation Test Queue Empty (\d+) tests performed\.', log)
     if len(markers) != 1 or int(markers[0]) <= 0:
         raise ValueError('Missing, empty, or ambiguous automation completion')
@@ -167,6 +180,41 @@ def validate_report_with_debt(exit_code, log, report, policy, required=REQUIRED,
                 full_ci_qualified=not accepted)
 
 
+def additive_cadence_policy():
+    policy = json.loads(Path(__file__).with_name('accepted-cadence-debt.json').read_text(encoding='utf-8'))
+    check_cadence_policy(policy)
+    return policy
+
+
+def validate_report_with_additive_debt(exit_code, log, report, policy, cadence_policy,
+                                     evidence_root, required=REQUIRED, expected_paths=None):
+    # Default off: preserve the exact pre-existing two-Fail-debt contract.
+    if not check_cadence_policy(cadence_policy):
+        return validate_report_with_debt(exit_code, log, report, policy, required, expected_paths)
+    # Cadence cannot hide a new diagnostic. The already-authorized v1 completed
+    # Fail identities retain their unchanged existing assessment below.
+    for row in report.get('tests', []):
+        old_debt = row.get('fullTestPath') in ACCEPTED_DEBT_IDS and row.get('state') == 'Fail'
+        if not old_debt and (type(row.get('errors')) is not int or row['errors'] < 0):
+            raise ValueError('Missing or invalid raw error counter')
+        if not old_debt and any(entry.get('event', {}).get('type') in ('Error', 'Fatal')
+                                for entry in row.get('entries', [])):
+            raise ValueError('New raw error remains blocking outside existing v1 debt')
+    assessment, events = project_cadence(report, evidence_root)
+    result = validate_report_with_debt(exit_code, log, assessment, policy, required, expected_paths)
+    if events:
+        counts = {}
+        for event in events:
+            counts[event['test']] = counts.get(event['test'], 0) + 1
+        result['accepted_debt'].extend(dict(test=test, kind='additive_observer_cadence',
+                                           warning_count=count, raw_state='Success')
+                                       for test, count in sorted(counts.items()))
+        result.update(state='PASS_WITH_ACCEPTED_DEBT', full_ci_qualified=False)
+    result.update(accepted_cadence=events, accepted_cadence_count=len(events),
+                  cadence_policy=cadence_policy, raw_report_unchanged=True)
+    return result
+
+
 def extract_archive(archive, destination):
     destination = Path(destination)
     destination.mkdir()
@@ -202,12 +250,139 @@ def run_logged(command, log, timeout, cwd, env):
     return result.returncode
 
 
+
+def cpuset_ids(spec):
+    if type(spec) is not str or not re.fullmatch(r'[0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*', spec):
+        raise ValueError('CPU set must contain only nonnegative CPU IDs or ascending ranges')
+    selected = set()
+    for item in spec.split(','):
+        ends = item.split('-')
+        first, last = int(ends[0]), int(ends[-1])
+        if first > last or last > 65535 or last-first > 4095:
+            raise ValueError('Invalid or unbounded CPU range')
+        values = set(range(first, last+1))
+        if selected.intersection(values):
+            raise ValueError('Duplicate CPU IDs are ambiguous')
+        selected.update(values)
+    return sorted(selected)
+
+
+def canonical_cpuset(spec, cpus):
+    selected = cpuset_ids(spec)
+    if len(selected) != cpus:
+        raise ValueError('Explicit CPU set cardinality must match the unchanged CPU quota')
+    return ','.join(map(str, selected))
+
+
+def cpu_affinity_evidence(spec, cpus):
+    selected = cpuset_ids(canonical_cpuset(spec, cpus))
+    if not hasattr(os, 'sched_getaffinity') or sorted(os.sched_getaffinity(0)) != selected:
+        raise ValueError('Linux effective affinity does not match the explicit CPU set')
+    rows = []
+    for cpu in selected:
+        topology = Path('/sys/devices/system/cpu/cpu' + str(cpu) + '/topology')
+        package = int((topology / 'physical_package_id').read_text().strip())
+        core = int((topology / 'core_id').read_text().strip())
+        die_file = topology / 'die_id'
+        die = int(die_file.read_text().strip()) if die_file.is_file() else None
+        siblings = cpuset_ids((topology / 'thread_siblings_list').read_text().strip())
+        if package < 0 or core < 0 or (die is not None and die < 0) or cpu not in siblings:
+            raise ValueError('Unknown Linux guest core topology')
+        if set(siblings).intersection(selected) != {cpu}:
+            raise ValueError('Explicit CPU set selects SMT siblings of the same guest core')
+        rows.append(dict(cpu=cpu, package=package, die=die, core=core, thread_siblings=siblings))
+    if len({(r['package'], r['die'], r['core']) for r in rows}) != len(rows):
+        raise ValueError('Explicit CPU set does not select distinct Linux guest cores')
+    return dict(state='VERIFIED_EXPLICIT_DISTINCT_LINUX_GUEST_CORES', effective_affinity=selected,
+                topology=rows, quota_cpus=cpus, exclusivity_claimed=False,
+                Windows_host_physical_mapping='UNKNOWN')
+
+
+def work_tmpfs_evidence(work):
+    # This is a transport envelope, not a physical acceptance threshold.
+    fs = os.statvfs(work)
+    if fs.f_blocks * fs.f_frsize != 14 * 1024**3:
+        raise RuntimeError('Native work requires the bounded 14 GiB tmpfs')
+    if not hasattr(os, 'ST_NOEXEC') or fs.f_flag & os.ST_NOEXEC:
+        raise RuntimeError('Executable native work tmpfs was not proved')
+    mounts = [line for line in Path('/proc/self/mountinfo').read_text().splitlines()
+              if len(line.split(' - ')[0].split()) > 4
+              and line.split(' - ')[0].split()[4] == str(work)]
+    if len(mounts) != 1 or mounts[0].partition(' - ')[2].split()[0] != 'tmpfs':
+        raise RuntimeError('Native work is not the exact private Linux tmpfs mount')
+    return dict(capacity_bytes=fs.f_blocks * fs.f_frsize, mountinfo=mounts[0], noexec=False)
+
+
+def artifact_files(work):
+    # Preserve raw failures too. Build caches/DDC/home are disposable, while
+    # source.tar and the exact committed input remain in the host run metadata.
+    roots = ('Logs', 'Automation', 'user/Saved', 'HostProject/Saved',
+             'HostProject/Binaries', 'HostProject/ExternalPlugins/IAmSpeed/Binaries',
+             'HostProject/ExternalPlugins/IAmSpeed/Saved')
+    files = list(work.glob('*.json'))
+    for name in roots:
+        root = work / name
+        if root.is_symlink():
+            raise RuntimeError('Symlink export root is not dereferenced: ' + name)
+        if root.exists():
+            entries = list(root.rglob('*'))
+            if any(path.is_symlink() for path in entries):
+                raise RuntimeError('Symlink in native export tree: ' + name)
+            files.extend(path for path in entries if path.is_file())
+    files = sorted(set(files))
+    for path in files:
+        if path.is_symlink() or not path.is_file() or any(
+                parent.is_symlink() for parent in path.parents if parent != work.parent):
+            raise RuntimeError('Unsafe native export source: ' + str(path))
+    return files
+
+
+def export_artifacts(work, export, editor_started, editor_call_finished, native_timeout=False):
+    # subprocess.run returns/reaps its direct child, including on timeout;
+    # this marker does not establish closure of arbitrary descendant writers.
+    if editor_started and not editor_call_finished:
+        raise RuntimeError('Native Editor call has not finished; export is forbidden')
+    files = artifact_files(work)
+    for path in files:
+        target = export / path.relative_to(work)
+        if any(parent.is_symlink() for parent in target.parents if parent != export.parent):
+            raise RuntimeError('Symlink native export destination: ' + str(target))
+        if target.exists() or target.is_symlink():
+            raise RuntimeError('Native export would overwrite retained host evidence: ' + str(target))
+    before = [dict(path=path.relative_to(work).as_posix(), bytes=path.stat().st_size,
+                   sha256=digest(path)) for path in files]
+    for path in files:
+        target = export / path.relative_to(work)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+    after = [dict(path=path.relative_to(work).as_posix(), bytes=path.stat().st_size,
+                  sha256=digest(path)) for path in files]
+    copied = [dict(path=row['path'], bytes=(export/row['path']).stat().st_size,
+                   sha256=digest(export/row['path'])) for row in before]
+    if before != after or before != copied:
+        raise RuntimeError('Native export source/destination byte identity differs')
+    if artifact_files(work) != files:
+        raise RuntimeError('Native export source file set changed during export')
+    save(export / 'export-manifest.json', dict(state='VERIFIED_AFTER_NATIVE_CALL', files=before,
+         editor_started=editor_started, editor_call_finished=editor_call_finished,
+         source_before_equals_after=True, destination_verified=True,
+         source_file_set_before_equals_after=True, native_call_closure_scope='DIRECT_CHILD_ONLY',
+         export_completeness='UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY' if native_timeout else
+                             'REINVENTORIED_SELECTED_ROOTS_AFTER_DIRECT_CHILD',
+         excluded=['home', 'config', 'cache', 'dotnet', 'DDC', 'Intermediate', 'immutable image SDK']))
+
+
 def inside():
-    output = Path('/output')
+    output = Path('/work')
+    editor_started = editor_call_finished = False
     result = {'state': 'FAIL', 'source_sha': os.environ['IAMSPEED_SOURCE_SHA'], 'image_id': os.environ['IAMSPEED_IMAGE_ID']}
     try:
         if hasattr(os, 'geteuid') and os.geteuid() == 0:
             raise RuntimeError('Unreal must run as a non-root user supplied by the image')
+        save(output / 'work-tmpfs.json', work_tmpfs_evidence(output))
+        spec = os.environ.get('IAMSPEED_CPUSET_CPUS')
+        affinity = cpu_affinity_evidence(spec, int(os.environ['IAMSPEED_CPUSET_QUOTA'])) if spec else {'state': 'NOT_REQUESTED'}
+        save(output / 'cpu-affinity.json', affinity)
         engine = engine_root()
         version = json.loads((engine / 'Engine/Build/Build.version').read_text())
         if tuple(version.get(k) for k in ('MajorVersion', 'MinorVersion', 'PatchVersion')) != (5, 8, 2):
@@ -225,8 +400,13 @@ def inside():
         expected = source_test_manifest(plugin / 'Source')
         save(output / 'expected-tests.json', expected)
         env = os.environ.copy()
-        for name, directory in [('HOME', 'home'), ('TMPDIR', 'tmp'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('DOTNET_CLI_HOME', 'dotnet')]:
+        for name, directory in [('HOME', 'home'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('DOTNET_CLI_HOME', 'dotnet')]:
             path = output / directory; path.mkdir(exist_ok=True); env[name] = str(path)
+        # Keep .NET FIFOs and native temporary files on Linux tmpfs, not the host bind.
+        env['TMPDIR'] = '/tmp'
+        # Linux Editor probes its user Documents filesystem during automation.
+        # Keep that real directory inside this run, including on headless hosts.
+        (output / 'home/Documents').mkdir(parents=True, exist_ok=True)
         for name, value in {'UE-LocalDataCachePath': str(output / 'DDC'), 'UE-SharedDataCachePath': 'None', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE': '1', 'DOTNET_CLI_TELEMETRY_OPTOUT': '1'}.items():
             env[name] = value
         logs = output / 'Logs'; logs.mkdir()
@@ -238,32 +418,64 @@ def inside():
         result['build_exit'] = code
         if code:
             raise RuntimeError('HostProject compilation failed; original log preserved')
-        command = [str(editor), str(project_file), '-NullRHI', '-SLPortableHeadlessSDL', '-sdlvideodriver=dummy', '-unattended', '-MULTIHOME=127.0.0.1', '-nosound', '-nop4', '-nosplash', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoShaderCompile', '-notraceserver', '-NoTrace', '-ini:EditorSettings:[/Script/UnrealEd.AnalyticsPrivacySettings]:bSendUsageData=False', '-stdout', '-FullStdOutLogOutput', '-UserDir=' + str(output / 'user'), '-abslog=' + str(logs / 'editor.log'), '-ReportExportPath=' + str(report), '-ExecCmds=Automation RunTests ' + FILTER, '-TestExit=Automation Test Queue Empty']
+        # One Automation command queues SoftQuit after RunTests. Unlike TestExit,
+        # this preserves report error status and performs normal Linux cleanup.
+        command = [str(editor), str(project_file), '-NullRHI', '-SLPortableHeadlessSDL', '-sdlvideodriver=dummy', '-unattended', '-MULTIHOME=127.0.0.1', '-NoEOS', '-nosound', '-nop4', '-nosplash', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoShaderCompile', '-notraceserver', '-NoTrace', '-ini:Engine:[ConsoleVariables]:HomeScreen.EnableHomeScreen=0', '-ini:EditorSettings:[/Script/UnrealEd.AnalyticsPrivacySettings]:bSendUsageData=False', '-stdout', '-FullStdOutLogOutput', '-UserDir=' + str(output / 'user'), '-abslog=' + str(logs / 'editor.log'), '-ReportExportPath=' + str(report), '-ExecCmds=Automation RunTests ' + FILTER + '; SoftQuit']
         save(output / 'test-command.json', command)
-        code = run_logged(command, logs / 'tests.stdout.log', 1800, project, env)
+        # The embedded Python home may be relative to the Editor executable.
+        # Keep project/output arguments absolute and resolve that SDK layout.
+        editor_started = True
+        try:
+            code = run_logged(command, logs / 'tests.stdout.log', 1800, editor.parent, env)
+        finally:
+            # Direct child only: timeout does not prove descendant-writer drain.
+            editor_call_finished = True
         result['editor_exit'] = code
         policy = accepted_debt_policy()
+        cadence_policy = additive_cadence_policy()
         raw_report = json.loads((report / 'index.json').read_text(encoding='utf-8-sig'))
-        save(output / 'debt-assessment.json', dict(state='PENDING_VALIDATION', policy=policy,
+        save(output / 'debt-assessment.json', dict(state='PENDING_VALIDATION', policy=policy, cadence_policy=cadence_policy,
              accepted_failures=[row['fullTestPath'] for row in raw_report.get('tests', [])
                                if row.get('state') == 'Fail' and row.get('fullTestPath') in ACCEPTED_DEBT_IDS],
              raw_editor_exit=code, raw_report_unchanged=True, full_ci_qualified=False))
-        result.update(validate_report_with_debt(code, (logs / 'tests.stdout.log').read_text(encoding='utf-8-sig', errors='replace'), raw_report, policy, expected_paths=expected))
+        result.update(validate_report_with_additive_debt(code, (logs / 'tests.stdout.log').read_text(encoding='utf-8-sig', errors='replace'), raw_report, policy, cadence_policy, output, expected_paths=expected))
         result.update(engine_version=version, engine_root_inside_image=str(engine))
     except Exception as exc:
         result['reason'] = str(exc)
-    if (output / 'debt-assessment.json').exists():
-        assessment = json.loads((output / 'debt-assessment.json').read_text())
-        assessment.update(state=result['state'], reason=result.get('reason'),
-                          full_ci_qualified=result.get('full_ci_qualified', False))
-        save(output / 'debt-assessment.json', assessment)
-    save(output / 'container-result.json', result)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            result.update(state='FAIL', native_timeout=True, full_ci_qualified=False,
+                          export_completeness='UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')
+    result.update(editor_started=editor_started, editor_call_finished=editor_call_finished)
+    try:
+        if (output / 'debt-assessment.json').exists():
+            assessment = json.loads((output / 'debt-assessment.json').read_text())
+            assessment.update(state=result['state'], reason=result.get('reason'),
+                              accepted_debt=result.get('accepted_debt', []),
+                              accepted_cadence=result.get('accepted_cadence', []),
+                              accepted_cadence_count=result.get('accepted_cadence_count', 0),
+                              full_ci_qualified=result.get('full_ci_qualified', False))
+            save(output / 'debt-assessment.json', assessment)
+        save(output / 'container-result.json', result)
+    except Exception as exc:
+        result.update(state='FAIL', evidence_error=str(exc), full_ci_qualified=False)
+    try:
+        export_artifacts(output, Path('/output'), editor_started, editor_call_finished,
+                         native_timeout=result.get('native_timeout', False))
+    except Exception as exc:
+        # Preserve the original Editor/build exit and raw files already copied.
+        result.update(state='FAIL', export_error=str(exc), full_ci_qualified=False)
+        save(Path('/output') / 'container-result.json', result)
+        return 1
+    # Also covers a full tmpfs which prevented saving the local result above.
+    if result.get('evidence_error'):
+        save(Path('/output') / 'container-result.json', result)
     return 0 if result['state'] in ('PASS', 'PASS_WITH_ACCEPTED_DEBT') else 1
 
 
-def docker_args(image_id, source, output, owner, sha, cpus=2):
+def docker_args(image_id, source, output, owner, sha, cpus=2, cpuset_cpus=None):
     if type(cpus) is not int or cpus not in (2, 4, 8, 12):
         raise ValueError("Native CI CPU cap must be exactly 2, 4, 8 or 12")
+    cpuset = canonical_cpuset(cpuset_cpus, cpus) if cpuset_cpus is not None else None
     if output.resolve()==source.resolve() or output.resolve() in source.resolve().parents:
         raise ValueError('Read-only source must not be reachable through the writable output mount')
     for path in (source, output):
@@ -273,7 +485,9 @@ def docker_args(image_id, source, output, owner, sha, cpus=2):
     # Source-built UE writes its early Trace.uba before parsing -Log. Keep
     # those image-internal writes in this container's private disposable layer;
     # the immutable image and the read-only exact source bind stay unchanged.
-    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '12g', '--memory-swap', '12g', '--shm-size', '2g', '--pids-limit', '512', '--tmpfs', '/tmp:rw,nosuid,nodev,size=1024m', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/output', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/output/home', '--entrypoint', '/bin/bash']
+    command = ['docker', 'create', '--pull', 'never', '--name', 'iamspeed-' + owner, '--label', 'iamspeed.owner=' + owner, '--network', 'none', '--cpus', str(cpus), '--memory', '24g', '--memory-swap', '24g', '--shm-size', '2g', '--pids-limit', '512', '--ulimit', 'nice=30:30', '--tmpfs', '/tmp:rw,nosuid,nodev,exec,mode=1777,size=1024m', '--tmpfs', '/work:rw,nosuid,nodev,exec,mode=1777,size=14g', '--mount', 'type=bind,source=' + str(source) + ',target=/input,readonly', '--mount', 'type=bind,source=' + str(output) + ',target=/output', '--workdir', '/work', '--env', 'IAMSPEED_SOURCE_SHA=' + sha, '--env', 'IAMSPEED_IMAGE_ID=' + image_id, '--env', 'HOME=/work/home', '--entrypoint', '/bin/bash']
+    if cpuset is not None:
+        command.extend(['--cpuset-cpus', cpuset, '--env', 'IAMSPEED_CPUSET_CPUS=' + cpuset, '--env', 'IAMSPEED_CPUSET_QUOTA=' + str(cpus)])
     if hasattr(os, 'getuid'):
         if os.getuid() == 0:
             raise ValueError('Run the host launcher as an ordinary user')
@@ -288,6 +502,16 @@ def inspect_owned(container, owner, image_id):
     if observed.get('Id') != container or observed.get('Config', {}).get('Labels', {}).get('iamspeed.owner') != owner or observed.get('Image') != image_id:
         raise RuntimeError('Container identity does not match this run')
     return observed
+
+
+def nice_limit_evidence(observed):
+    limits = observed.get('HostConfig', {}).get('Ulimits')
+    if not isinstance(limits, list) or any(not isinstance(row, dict) for row in limits):
+        raise RuntimeError('Container nice limit readback is missing or malformed')
+    nice = [row for row in limits if row.get('Name') == 'nice']
+    if len(nice) != 1 or any(type(nice[0].get(key)) is not int or nice[0][key] != 30 for key in ('Soft', 'Hard')):
+        raise RuntimeError('Container nice limit must be exactly soft30/hard30')
+    return dict(nice[0])
 
 
 def host(args):
@@ -311,16 +535,18 @@ def host(args):
     save(output / 'image.json', {k: info.get(k) for k in ('Id', 'RepoDigests', 'Os', 'Architecture')})
     source_tar = output / 'source.tar'
     with source_tar.open('wb') as stream:
-        subprocess.run(['git', '-C', str(plugin), 'archive', '--format=tar', sha], stdout=stream, check=True)
+        subprocess.run(['git', '-c', 'core.autocrlf=false', '-C', str(plugin), 'archive', '--format=tar', sha], stdout=stream, check=True)
     source = output.parent / (output.name + '-input-' + owner)
     extract_archive(source_tar, source)
     launch = {'source_sha': sha, 'source_archive_sha256': digest(source_tar), 'image_ref': image, 'image_id': info['Id'], 'owner': owner, 'state': 'STARTING', 'generated_root': str(output), 'read_only_input_root': str(source)}
     save(output / 'launch.json', launch)
-    command = docker_args(info['Id'], source, output, owner, sha, args.cpus)
+    command = docker_args(info['Id'], source, output, owner, sha, args.cpus, args.cpuset_cpus)
     save(output / 'docker-create.json', command)
     container = subprocess.check_output(command, text=True).strip()
     launch['container_id'] = container; save(output / 'launch.json', launch)
     try:
+        launch['nice_limit'] = nice_limit_evidence(inspect_owned(container, owner, info['Id']))
+        save(output / 'launch.json', launch)
         subprocess.run(['docker', 'start', container], check=True)
         launch['state'] = 'RUNNING'
         save(output / 'launch.json', launch)
@@ -338,6 +564,7 @@ def host(args):
             raise RuntimeError('Container/report exit or exact candidate mismatch; preserve failures')
         launch.update(state=result['state'], native_container_closed=True, tests=result['tests'],
                       accepted_debt=result.get('accepted_debt', []),
+                      accepted_cadence_count=result.get('accepted_cadence_count', 0),
                       full_ci_qualified=result.get('full_ci_qualified', False))
     except Exception as exc:
         launch.update(state='FAIL', reason=str(exc))
@@ -372,6 +599,7 @@ def main():
     parser.add_argument('--expected-sha')
     parser.add_argument('--output')
     parser.add_argument('--cpus', type=int, choices=(2, 4, 8, 12), default=2)
+    parser.add_argument('--cpuset-cpus', help='Explicit Docker Linux CPU IDs, one distinct guest core per --cpus; validated inside before build')
     args = parser.parse_args()
     return inside() if args.inside else host(args)
 

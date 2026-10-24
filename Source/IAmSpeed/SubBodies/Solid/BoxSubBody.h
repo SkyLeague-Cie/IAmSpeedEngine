@@ -102,6 +102,7 @@ public:
 	double GetStaticSupportStopTimeCandidate() const override;
 	bool TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const override;
 	bool CanResolveRepeatedContact(const SHitResult& Hit) const override;
+	bool CanInitializeRepeatedContact(const SHitResult& Hit) const override;
 	bool RequiresUnquantizedContactPose() const override;
 	bool CanApplyQuantizedPose(const Speed::IStaticCollisionWorld& World, const SKinematic& OwnerPose) const override;
 	/** Evaluates the current box pose/filters against a supplied load, without changing any state. */
