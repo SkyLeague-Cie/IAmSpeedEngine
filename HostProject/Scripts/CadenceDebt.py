@@ -33,6 +33,12 @@ def check_policy(policy, now=None):
             or policy.get('preserve_raw_evidence') is not True
             or policy.get('preserve_existing_v1_debt') is not True):
         raise ValueError('Cadence policy scope differs from the three authorized fixture identities')
+    try:
+        not_before = dt.datetime.fromisoformat(policy['not_before_utc'].replace('Z', '+00:00'))
+        if not_before != DEADLINE or not_before.utcoffset() != dt.timedelta(0):
+            raise ValueError('Unexpected cadence effect boundary')
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValueError('Invalid cadence not-before UTC date') from exc
     activation = policy.get('activation', {})
     if activation.get('enabled') is False:
         return False
@@ -48,9 +54,12 @@ def check_policy(policy, now=None):
         raise ValueError('Invalid cadence activation timestamp') from exc
     if activation.get('trigger') not in ('CI_GREEN', 'HUMAN_DEADLINE_2026_10_24'):
         raise ValueError('Unknown cadence activation trigger')
-    if activation['trigger'] == 'HUMAN_DEADLINE_2026_10_24' and at < DEADLINE:
-        raise ValueError('Human deadline has not been reached')
-    if (now or dt.datetime.now(dt.timezone.utc)) < at:
+    current = now or dt.datetime.now(dt.timezone.utc)
+    # Root may stage the versioned decision before the handoff deadline. Only
+    # the real UTC validation time gives it effect, never a background action.
+    if current < not_before:
+        return False
+    if current < at:
         raise ValueError('Cadence activation is in the future')
     return True
 

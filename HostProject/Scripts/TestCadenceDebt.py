@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import CadenceDebt as debt
 import RunDockerContracts as ci
@@ -46,7 +47,9 @@ class AdditiveCadence(unittest.TestCase):
         return self.event('Info', f'[NativeAnalyticContacts1368Evidence] Path={path} Saved={saved}')
 
     def assess(self, report=None, log=None, policy=None, code=0):
-        return ci.validate_report_with_additive_debt(code, self.log if log is None else log,
+        # Synthetic validation boundary only; never change the actual system clock.
+        with patch.object(ci,'check_cadence_policy',side_effect=lambda p:debt.check_policy(p,now=debt.DEADLINE)):
+            return ci.validate_report_with_additive_debt(code, self.log if log is None else log,
                     self.report if report is None else report, self.old,
                     self.policy if policy is None else policy, self.root,
                     required=set(), expected_paths=[row['fullTestPath'] for row in (report or self.report)['tests']])
@@ -196,11 +199,15 @@ class AdditiveCadence(unittest.TestCase):
         for key,value in [('normal_lanes',[1,2,4,8,12,24]),('frames',91),('preserve_existing_v1_debt',False)]:
             policy=copy.deepcopy(self.policy);policy[key]=value
             with self.subTest(key=key),self.assertRaises(ValueError):self.assess(policy=policy)
-        policy=copy.deepcopy(self.policy);policy['activation'].update(trigger='HUMAN_DEADLINE_2026_10_24',at_utc='2026-10-24T20:29:59Z')
-        with self.assertRaises(ValueError):debt.check_policy(policy,now=debt.DEADLINE)
-        policy['activation']['at_utc']='2026-10-24T20:30:00Z'
+        policy=copy.deepcopy(self.policy);policy['activation'].update(trigger='HUMAN_DEADLINE_2026_10_24',at_utc='2026-10-24T20:25:00Z')
+        self.assertFalse(debt.check_policy(policy,now=debt.DEADLINE-dt.timedelta(microseconds=1)))
         self.assertTrue(debt.check_policy(policy,now=debt.DEADLINE))
-        with self.assertRaises(ValueError):debt.check_policy(policy,now=debt.DEADLINE-dt.timedelta(seconds=1))
+        self.assertTrue(debt.check_policy(policy,now=debt.DEADLINE+dt.timedelta(microseconds=1)))
+
+    def test_invalid_not_before_date_refused_even_if_disabled(self):
+        for value in ('bad-date','2026-10-24T20:29:59Z','2026-10-24T22:30:00+02:00',None):
+            policy=copy.deepcopy(self.policy);policy['not_before_utc']=value
+            with self.subTest(value=value),self.assertRaises(ValueError):debt.check_policy(policy,now=debt.DEADLINE)
 
 
 if __name__=='__main__':unittest.main()

@@ -1,5 +1,6 @@
 {
   "schema": "iamspeed.additive-cadence-debt/v2",
+  "not_before_utc": "2026-10-24T20:30:00Z",
   "activation": {
     "enabled": false,
     "trigger": null,
