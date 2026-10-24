@@ -3,6 +3,7 @@
 #include "InputProducerV2.h"
 #include "InputProducerPollFence.h"
 #include <thread>
+#include <exception>
 
 namespace Speed::Input::V2
 {
@@ -96,6 +97,7 @@ public:
     FPreparation Poll(FFrameNumber N)
     {
         if (!IsOwner()) return {EOwnerInputStatus::WrongOwner, {}};
+        if ((ResumePending || ReplayStart)) return {EOwnerInputStatus::Busy, {}};
         LastPollFailure = EOwnerPollFailure::None;
         if (FPresentationInputScope::IsActive()) return {EOwnerInputStatus::Busy, {}};
         if (CallingSource) { Quarantine(); return {EOwnerInputStatus::Quarantined, {}}; }
@@ -244,19 +246,19 @@ public:
     { return IsOwner() && Source ? Source->GetProducerContract() : EProducerContract::Unknown; }
     bool AppendExactScenarioFrame(const FInputFrame& Frame)
     {
-        if (!IsOwner() || CallingSource || Pending || Replay || Initial || !Source
+        if (!IsOwner() || CallingSource || Pending || (ResumePending || ReplayStart) || Replay || Initial || !Source
             || FPresentationInputScope::IsActive() || GetProducerContract() != EProducerContract::ExactScenario
             || (Phase != EOwnerInputPhase::Idle && Phase != EOwnerInputPhase::Paused)) return false;
         return Source->AppendExactScenarioFrame(Frame);
     }
     std::optional<FInputFrame> InspectBaseline(FFrameNumber N) const
     {
-        if (!IsOwner() || CallingSource || Pending || !Source || Initial) return {};
+        if (!IsOwner() || CallingSource || Pending || (ResumePending || ReplayStart) || !Source || Initial) return {};
         return Source->InspectBaseline(N);
     }
     bool RetireAtBoundary()
     {
-        if (!IsOwner() || CallingSource || Pending) return false;
+        if (!IsOwner() || CallingSource || Pending || (ResumePending || ReplayStart)) return false;
         Quarantine();
         if (!Source) return true;
         CallingSource = true;
@@ -268,7 +270,7 @@ public:
 
     bool PauseAtBoundary()
     {
-        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || Replay
+        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || (ResumePending || ReplayStart) || Replay
             || (Phase != EOwnerInputPhase::Idle && Phase != EOwnerInputPhase::Paused)) return false;
         if (Initial) { Quarantine(); return false; }
         CallingSource = true;
@@ -279,9 +281,11 @@ public:
         if (Filter) Filter->Applied = {}; RequireBaseline = true; Latest.reset(); Phase = EOwnerInputPhase::Paused;
         return true;
     }
+    #include "../PreparedReplayStart.inc"
+    #include "../OwnerResumeMethods.inc"
     bool ResumeAtBoundary()
     {
-        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || Phase != EOwnerInputPhase::Paused) return false;
+        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || (ResumePending || ReplayStart) || Phase != EOwnerInputPhase::Paused) return false;
         CallingSource = true;
         ELifecycleResult Result = ELifecycleResult::Rejected;
         try { Result = Source->SetLifecyclePaused(false); } catch (...) {}
@@ -293,7 +297,7 @@ public:
     // selection. A new epoch is mandatory even when adapter/source is unchanged.
     bool RebindAtBoundary(std::unique_ptr<IInputProducer> Producer, FOwnerInputBinding NewBinding, FFrameNumber FirstFrame)
     {
-        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || Pending || Replay
+        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || Pending || (ResumePending || ReplayStart) || Replay
             || (Phase != EOwnerInputPhase::Idle && Phase != EOwnerInputPhase::Paused && Phase != EOwnerInputPhase::Quarantined)
             || NewBinding.Epoch.Value <= Binding.Epoch.Value) return false;
         const auto PriorPhase = Phase;
@@ -324,7 +328,7 @@ public:
     }
     bool BeginReplay(FFrameNumber First, FFrameNumber Last)
     {
-        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || Replay || Phase != EOwnerInputPhase::Idle
+        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || (ResumePending || ReplayStart) || Replay || Phase != EOwnerInputPhase::Idle
             || First > Last || Last - First >= HistoryCapacity || ReplayPass == UINT64_MAX) return false;
         for (FFrameNumber N = First;; ++N)
         {
@@ -361,6 +365,21 @@ public:
     FContractFingerprint GetBindingFingerprint() const { return IsOwner() ? Fingerprint : FContractFingerprint{}; }
 
 private:
+    struct FPendingResume
+    {
+        std::shared_ptr<const std::uint8_t> Identity;
+        std::unique_ptr<IPreparedInputResume> Reservation;
+        std::shared_ptr<const FInputFrame> Baseline;
+        FFrameNumber Frame = 0;
+        std::uint64_t Generation = 0, Fault = 0, Poll = 0;
+        bool FinalizationReady = false, Finalized = false;
+    };
+    bool MatchesResume(const FResumeToken& T) const noexcept
+    { return ResumePending && T.Identity && T.Identity == ResumePending->Identity; }
+    bool ResumeAllowed(const FResumeToken& T) const noexcept
+    { return IsOwner() && !FPresentationInputScope::IsActive() && !CallingSource && MatchesResume(T)
+        && !ResumePending->Finalized && Phase == EOwnerInputPhase::Paused && NextFrame == ResumePending->Frame
+        && FaultSerial == ResumePending->Fault && PollSerial == ResumePending->Poll; }
     struct FFilterState { FActionValues Applied{}, Replay{}; };
     struct FHistoryEntry
     {
@@ -478,5 +497,9 @@ private:
     FFrameNumber ReplayNext = 0, ReplayEnd = 0;
     std::uint64_t ReplayPass = 0;
     std::shared_ptr<const FHistoryEntry> Initial;
+    std::uint64_t LastResumeGeneration = 0;
+    std::optional<FPreparedReplayStart> ReplayStart;
+    std::optional<FPendingResume> ResumePending; // destroyed before unique Source
+
 };
 }
