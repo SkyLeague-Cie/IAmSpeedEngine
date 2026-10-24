@@ -6,12 +6,28 @@ import json
 from pathlib import Path
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import RunDockerContracts as ci
 
 
 class Contracts(unittest.TestCase):
+    def test_host_archive_disables_checkout_line_ending_conversion(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            args=SimpleNamespace(image='sha256:'+'a'*64,expected_sha='b'*40,
+                                 output=str(Path(tmp)/'fresh'),cpus=12,cpuset_cpus='0,2,4,6,8,10,12,14,16,18,20,22')
+            info={'Id':args.image,'Os':'linux','Architecture':'amd64'}
+            class StopBeforeDockerCreation(Exception):pass
+            with patch.object(ci.subprocess,'check_output',side_effect=['b'*40+'\n','',json.dumps([info])]), \
+                 patch.object(ci.subprocess,'run')as archive, \
+                 patch.object(ci,'extract_archive',side_effect=StopBeforeDockerCreation):
+                with self.assertRaises(StopBeforeDockerCreation):ci.host(args)
+            argv=archive.call_args.args[0]
+            self.assertEqual(argv[:4],['git','-c','core.autocrlf=false','-C'])
+            self.assertEqual(argv[5:],['archive','--format=tar','b'*40])
+            self.assertTrue(archive.call_args.kwargs['check'])
+
     def setUp(self):
         self.paths = sorted(ci.REQUIRED)
         self.log = 'Automation Test Queue Empty 5 tests performed.'

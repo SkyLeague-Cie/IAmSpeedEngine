@@ -488,7 +488,7 @@ def host(args):
     save(output / 'image.json', {k: info.get(k) for k in ('Id', 'RepoDigests', 'Os', 'Architecture')})
     source_tar = output / 'source.tar'
     with source_tar.open('wb') as stream:
-        subprocess.run(['git', '-C', str(plugin), 'archive', '--format=tar', sha], stdout=stream, check=True)
+        subprocess.run(['git', '-c', 'core.autocrlf=false', '-C', str(plugin), 'archive', '--format=tar', sha], stdout=stream, check=True)
     source = output.parent / (output.name + '-input-' + owner)
     extract_archive(source_tar, source)
     launch = {'source_sha': sha, 'source_archive_sha256': digest(source_tar), 'image_ref': image, 'image_id': info['Id'], 'owner': owner, 'state': 'STARTING', 'generated_root': str(output), 'read_only_input_root': str(source)}
