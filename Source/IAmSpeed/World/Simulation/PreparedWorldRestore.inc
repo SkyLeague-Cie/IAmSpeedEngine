@@ -46,7 +46,7 @@ FSimulationWorld::~FSimulationWorld()
     PreparedRestore.reset();
 }
 bool FSimulationWorld::MatchesPreparedRestore(const FPreparedRestoreToken& T) const noexcept
-{ return !PreparedRestoreEntryActive && PreparedRestore && PreparedRestore->Worker == std::this_thread::get_id()
+{ return T.IsExactOrigin(*this) && !PreparedRestoreEntryActive && PreparedRestore && PreparedRestore->Worker == std::this_thread::get_id()
     && !PreparedRestore->Calling && (!PreparedRestore->LeaseOwner || !PreparedRestore->LeaseOwner->IsCallbackActive()) && T.Identity && T.Identity == PreparedRestore->Identity; }
 
 std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::PrepareSnapshotRestore(
@@ -184,7 +184,7 @@ std::optional<FSimulationWorld::FPreparedRestoreToken> FSimulationWorld::Prepare
         }
         if (!CollectPreparedAccess(PreparedRestore->Access)) return Fail();
         PreparedRestore->Calling = false;
-        return FPreparedRestoreToken(PreparedRestore->Identity);
+        return FPreparedRestoreToken(*this, PreparedRestore->Identity);
     }
     catch (...) { PreparedRestore.reset(); return {}; }
 }

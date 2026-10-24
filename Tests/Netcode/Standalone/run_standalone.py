@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--vc',type=Path,default=Path('C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.38.33130'))
     parser.add_argument('--windows-kits',type=Path,default=Path('C:/Program Files (x86)/Windows Kits/10'))
     parser.add_argument('--sdk-version',default='10.0.22621.0')
+    parser.add_argument('--suite',choices=['all','world'],default='all')
     args=parser.parse_args()
     tests=Path(__file__).resolve().parent
     repo=tests.parents[2]
@@ -39,7 +40,8 @@ def main():
             if p.is_file():pin(p)
     pin(cl);pin(link)
     include=[source]+sorted(p for p in (source/'IAmSpeed/Netcode').iterdir() if p.is_dir())+sorted(p for p in tests.iterdir() if p.is_dir())
-    flags=['/nologo','/std:c++17','/EHsc','/W4','/WX','/Od','/MT','/showIncludes']+['/I'+str(p) for p in include]
+    policy=['/nologo','/std:c++17','/EHsc','/W4','/WX','/Od','/MT','/showIncludes']
+    flags=policy+['/I'+str(p) for p in include]
     def execute(label,argv,expected=0):
         t=time.monotonic()
         try:
@@ -57,14 +59,24 @@ def main():
     suites=[('input',tests/'transport/TransportTests.cpp'),('state',tests/'transport/StateTransportTests.cpp'),
             ('consumed',tests/'consumed-command-v2/ConsumedTests.cpp'),('authority',tests/'authoritative-owner-v2/AuthoritativeOwnerTests.cpp'),
             ('envelope',tests/'state-authority-envelope-v2/StateEnvelopeTests.cpp'),('remote',tests/'remote-input/ExactRemoteInputProducerTests.cpp'),
-            ('registry',repo/'Tests/Netcode/EmptyInputFrameTests.cpp')]
+            ('registry',repo/'Tests/Netcode/EmptyInputFrameTests.cpp'),
+            ('world',repo/'Tests/Netcode/WorldTokenGuardTests.cpp')]
+    if args.suite=='world':suites=[s for s in suites if s[0]=='world']
     for n,(name,cpp) in enumerate(suites):
         if not ok:break
         obj=out/(str(n)+'.obj');exe=out/(name+'.exe')
-        ok=execute(name+'-compile',[cl]+flags+['/c','/Fo:'+str(obj),cpp])
+        suite_flags=flags
+        if name=='world':
+            support=repo/'Tests/Netcode/WorldSupport'
+            suite_flags=policy+['/I'+str(support/'test-shim'),'/I'+str(support)]+['/I'+str(p) for p in include]
+        ok=execute(name+'-compile',[cl]+suite_flags+['/c','/Fo:'+str(obj),cpp])
         if ok:ok=execute(name+'-link',[link,'/nologo','/out:'+str(exe),obj,out/'p.obj'])
         if ok:ok=execute(name+'-run',[exe]+([out] if name=='registry' else []))
-    if ok:ok=execute('registry-lifetime',[out/'registry.exe','--boundary-reservation-live-destruction'],86)
+    if ok and args.suite=='all':ok=execute('registry-lifetime',[out/'registry.exe','--boundary-reservation-live-destruction'],86)
+    if ok:
+        for mode in ('worker','world','default','finalize','release'):
+            if not ok:break
+            ok=execute('world-probe-'+mode,[out/'world.exe','--probe-'+mode],86 if mode in ('finalize','release') else 0)
     trace=set()
     for p in out.glob('*-compile.raw.txt'):
         for line in p.read_text(errors='replace').splitlines():
@@ -80,11 +92,11 @@ def main():
     outside=[str(p) for p in trace if p.is_relative_to(repo.parent) and not p.is_relative_to(repo)]
     if outside or not unchanged:ok=False
     (out/'inputs.json').write_text(json.dumps(list(pins.values()),indent=2)+'\n')
-    receipt=dict(schema='netcode-consolidated-repository-ordinary-tests/v1',utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    receipt=dict(schema='netcode-consolidated-repository-ordinary-tests/v1',utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),selected_suite=args.suite,
         repository=str(repo),qualification_exit=0 if ok else 1,operations=operations,results=results,elapsed_seconds=time.monotonic()-start,
         inputs=str(out/'inputs.json'),inputs_unchanged=unchanged,repository_includes=sorted(str(p) for p in trace if p.is_relative_to(repo)),
         historical_artifact_includes=outside,not_run=[name for name,_ in suites if name+'-run' not in results],
-        scope='Actual current rebased Input implementations and consolidated protocol headers. Synthetic world/mechanics/gameplay/ledger providers remain synthetic/default deny; no native integration/restore verdict.',
+        scope='Actual current rebased Input implementations/protocol headers; world token and transaction INC under explicit ordinary World/UE shims, own protected-page negative probes. Synthetic mechanics/gameplay/ledger and native lifetime providers remain unqualified; no native integration/restore verdict.',
         Engine_SDK_UBT_Editor_jobs=0,socket_peer_jobs=0,full_state_v3=False,old_PASS_transferred=False,
         toolchain_headers='Compiler-discovered header hashes observed after compilation; not a frozen native toolchain admission.')
     (out/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
