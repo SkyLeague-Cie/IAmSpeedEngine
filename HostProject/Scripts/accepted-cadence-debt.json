@@ -2,21 +2,38 @@
   "schema": "iamspeed.additive-cadence-debt/v2",
   "not_before_utc": "2026-10-24T20:30:00Z",
   "activation": {
-    "enabled": false,
-    "trigger": null,
-    "at_utc": null,
-    "decision_sha256": null
+    "enabled": true,
+    "trigger": "HUMAN_DEADLINE_2026_10_24",
+    "at_utc": "2026-10-24T20:15:38.242450Z",
+    "decision_sha256": "a3fa46f9c71e4b02cae81c147640327301a39bbf92e54bbd2ad40ccb79ffe239"
   },
   "authority": "Human deadline2026-10-24T20:30:00Z or prior CI green, explicitly recorded by Root. INACTIVE until a versioned activation decision.",
   "preserve_raw_evidence": true,
   "preserve_existing_v1_debt": true,
-  "normal_lanes": [1, 2, 4, 8, 12],
+  "normal_lanes": [
+    1,
+    2,
+    4,
+    8,
+    12
+  ],
   "frames": 90,
   "hz": 300,
   "tests": {
-    "IAmSpeed.Simulation.FrameParallel.NativeAnalyticEightCars1552": ["QualificationEightCars1534"],
-    "IAmSpeed.Simulation.FrameParallel.NativeAnalyticGrounded1368": ["Qualification1368", "QualificationLow16_1403", "QualificationLow8_1403", "QualificationIdle50Cells64_1403", "QualificationIdle50Cells16_1403", "QualificationIdle50Cells8_1403"],
-    "IAmSpeed.Simulation.FrameParallel.NativeCarsCanonicalCamera1217": ["NativeCarsDeferredContacts1456"]
+    "IAmSpeed.Simulation.FrameParallel.NativeAnalyticEightCars1552": [
+      "QualificationEightCars1534"
+    ],
+    "IAmSpeed.Simulation.FrameParallel.NativeAnalyticGrounded1368": [
+      "Qualification1368",
+      "QualificationLow16_1403",
+      "QualificationLow8_1403",
+      "QualificationIdle50Cells64_1403",
+      "QualificationIdle50Cells16_1403",
+      "QualificationIdle50Cells8_1403"
+    ],
+    "IAmSpeed.Simulation.FrameParallel.NativeCarsCanonicalCamera1217": [
+      "NativeCarsDeferredContacts1456"
+    ]
   },
   "scope": "Exact RealTimeSimulationCadence Physics Thread is too slow warnings only in1552/1368/1217. Normal mode, explicit source scenes/lanes, unique complete cohort proof.1217 source uses RealTimeSimulation only,90 frames and lanes1/2/4/8/12, verified through post-natural-drain marker plus90 frame-cost and90 post-cost records. No duration threshold invented, no pacer/test/physics change. Preserve/count every raw event and metric. All other warnings/new errors remain blocking; historical v1 debts remain exactly authorized.",
   "follow_up": "Optimization owns observer-cadence attribution/removal after handoff; Native60 functional source reference e87, separate NONCI62 evidence218. No causal performance improvement or strict green asserted."

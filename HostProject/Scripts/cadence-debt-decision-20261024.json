@@ -1,0 +1,18 @@
+{
+  "schema": "iamspeed.versioned-cadence-debt-decision/v1",
+  "recorded_at_utc": "2026-10-24T20:15:38.242450Z",
+  "human_instruction_verbatim": "Concentre tes efforts sur IAmSpeed pour débloquer le lead Optimization. Je te laisse jusqu'à 22h30 grand maximum. Dès que la CI IAmSpeed est verte ou que le délai est dépassé, tu laisses les erreurs et/ou avertissements en dettes qu'on essayera de résoudre plus tard. Il y a plusieurs autres priorités et tu utilises également beaucoup de quota Codex. Donc à 22h30 au pire, tu donneras tes \"meilleurs états de CI\" au manager pour qu'ils soient mergés dans IAmSpeed puis Sky League. Ensuite le lead Optimization pourra reprendre",
+  "human_message_date": "2026-10-24",
+  "human_timezone": "Europe/Paris",
+  "human_deadline_local": "2026-10-24T22:30:00+02:00",
+  "human_deadline_utc": "2026-10-24T20:30:00Z",
+  "root_interpretation_separate": "Prepare and hand off the best functional IAmSpeed source before the deadline. Stage only the narrowly scoped additive observer-cadence debt now; it has no effect before the fixed real-UTC deadline. Preserve existing v1 debts and all raw results; Manager performs actual remote CI and merge, Optimization resumes. This interpretation is separate from the verbatim human quote.",
+  "functional_native_source": "0c2f0575795fdf29524be2fa8b5e59c45727646c",
+  "prepared_inactive_source": "f0c173e2f6e2173e5efbd0eb0c8747525db31714",
+  "native63_verification_sha256": "69fbd618d68fbc8a23779954792adeacf53606baaf97554cbca241d71165b23c",
+  "raw_native63": "STRICT_FAIL:223Success,zeroerrors,two1217warnings,fourbytegatesPASS",
+  "scope": "Additive too-slow Normal observer cadence only in1552,1368,1217 with complete source-defined cohort evidence; no broad error acceptance or skipped tests. Old v1 policy/validator unchanged.",
+  "effect_not_before_utc": "2026-10-24T20:30:00Z",
+  "no_background_execution": true,
+  "no_new_native_execution": true
+}
