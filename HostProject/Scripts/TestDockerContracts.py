@@ -8,11 +8,19 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
+import subprocess
+import sys
 from unittest.mock import patch
 import RunDockerContracts as ci
 
 
 class Contracts(unittest.TestCase):
+    def test_isolated_cli_loads_bound_cadence_helper_without_docker(self):
+        result = subprocess.run([sys.executable, "-I", "-B", str(Path(ci.__file__)), "--help"],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--cpuset-cpus", result.stdout)
+
     def test_host_archive_disables_checkout_line_ending_conversion(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
             args=SimpleNamespace(image='sha256:'+'a'*64,expected_sha='b'*40,

@@ -15,7 +15,14 @@ import subprocess
 import sys
 import tarfile
 import uuid
-from CadenceDebt import check_policy as check_cadence_policy, project_cadence
+# Isolated Python (-I) omits the script directory from sys.path.
+# Bind the helper to the same immutable source directory explicitly.
+import importlib.util
+_cadence_spec = importlib.util.spec_from_file_location("IAmSpeedCadenceDebt", Path(__file__).resolve().with_name("CadenceDebt.py"))
+_cadence_module = importlib.util.module_from_spec(_cadence_spec)
+_cadence_spec.loader.exec_module(_cadence_module)
+check_cadence_policy = _cadence_module.check_policy
+project_cadence = _cadence_module.project_cadence
 
 RETAINED_TESTS = {'SkyLeague.Camera.GenericInputLifecycle'}
 FILTER = 'IAmSpeed.' + ''.join('+' + name for name in sorted(RETAINED_TESTS))
