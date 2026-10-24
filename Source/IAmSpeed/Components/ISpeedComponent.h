@@ -1,4 +1,5 @@
 #pragma once
+namespace Speed { struct FCommonComponentValueAccess; }
 #include "IAmSpeed/World/Simulation/PreparedSimulationRestore.h"
 
 #include "CoreMinimal.h"
@@ -422,6 +423,7 @@ private:
 	friend struct Speed::FCanonicalForeignStateForTesting;
 #endif
 	friend class Speed::FSimulationWorld;
+    friend struct Speed::FCommonComponentValueAccess;
 	TAtomic<uint64> PublishedSimulationStableId = 0;
 	// Borrowed only during the world's canonical step; no historical/cache state.
 	const Speed::IStaticCollisionWorld* StaticRestingWorld = nullptr;
