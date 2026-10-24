@@ -226,11 +226,20 @@ public:
     ~FInputSessionRegistry()
     {
         // Never destroy thread-affine producers implicitly on a foreign lane.
-        if (!IsWorker() || !CloseWorkerLedger()) std::terminate();
+        // A coordinator may still use this registry in its no-fail tail. It
+        // must explicitly release/abort before destroying the mutable endpoint;
+        // retained immutable capture metadata alone is not lifetime ownership.
+        if (!IsWorker() || BoundaryMutationBlocked() || !CloseWorkerLedger()) std::terminate();
     }
+    #include "../RegistryResumeMethods.inc"
+    #include "../GroupReplayStart.inc"
     bool CloseWorkerLedger()
     {
-        if (!IsWorker()) return false;
+        if (!IsWorker() || BoundaryMutationBlocked()) return false;
+        if (ReplayGroup && ReplayGroup->Finalized) return false;
+        ReplayGroup.reset();
+        if (ResumeGroup && ResumeGroup->Finalized) return false;
+        ResumeGroup.reset();
         AbortFrame();
         std::lock_guard<std::mutex> Lock(Commands->Gate);
         Commands->StopRequested = true;
@@ -238,14 +247,14 @@ public:
         for (auto& P : Commands->Records)
             if (P.second.Receipt.Status == EBoundaryStatus::Pending || P.second.Receipt.Status == EBoundaryStatus::WaitingForBaseline)
             { P.second.Receipt.Status = EBoundaryStatus::TerminalFailure; Outcomes(P.second); }
-        Commands->Queue.clear(); Waiting.reset(); Replaying = false; ReplayPlan.clear();
+        Commands->Queue.clear(); Waiting.reset(); Replaying = false; GroupExecutionReplay = false; ReplayPlan.clear(); GroupReplayPublished.reset(); GroupReplayReceipt.reset();
         return Retired;
     }
     // Thread-neutral acquisition journals cross the bridge, never producers or
     // native device handles. Called only at a worker boundary before Bind.
     bool RegisterJournalAtBoundary(FJournalService Service)
     {
-        if (!IsWorker() || Pending || Terminal || !Service.Id || (bool(Service.Journal)==bool(Service.AI))) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending || Terminal || !Service.Id || (bool(Service.Journal)==bool(Service.AI))) return false;
         for (const auto& J : Journals)
             if (J.Id == Service.Id || (J.Journal && J.Journal == Service.Journal) || (J.AI && J.AI == Service.AI))
                 return J.Id == Service.Id && J.Journal == Service.Journal && J.AI == Service.AI;
@@ -255,7 +264,7 @@ public:
     bool AppendExactScenarioFrame(std::uint64_t Session, std::uint64_t Epoch,
         std::uint64_t Controller, const FInputFrame& Frame)
     {
-        if (!IsWorker() || Pending || Terminal || Replaying) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending || Terminal || Replaying) return false;
         const auto It = Sessions.find(Session);
         if (It == Sessions.end()) return false;
         auto& S = It->second;
@@ -266,6 +275,9 @@ public:
     std::shared_ptr<const FInputRegistryView> ReadRegistry() const
     {
         if (!IsWorker()) return {};
+        if (BoundaryReservation) return BoundaryReservation->Capture->CurrentBoundary();
+        if (ReplayGroup) return ReplayGroup->Before;
+        if (ResumeGroup) return ResumeGroup->Published ? ResumeGroup->Publication->Registry : ResumeGroup->Before;
         auto Published=std::make_shared<FInputRegistryView>(*View);
         Published->Phases.clear();
         for (const auto& P:Sessions) Published->Phases.push_back({P.first,P.second.Description.Epoch,P.second.Phase});
@@ -282,7 +294,7 @@ public:
     // Called between transactions, including while the simulation is paused.
     bool ServiceBoundary(std::optional<FFrameNumber> ActualWorkerFrame = std::nullopt)
     {
-        if (!IsWorker() || Pending) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending) return false;
         std::lock_guard<std::mutex> Lock(Commands->Gate);
         if (Commands->StopRequested)
         {
@@ -365,7 +377,7 @@ public:
     }
     bool PrepareFrame(FFrameNumber N)
     {
-        if (!IsWorker()) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup) return false;
         LastFrameFailure = {};
         if (Terminal || Pending || Waiting || Replaying || Sessions.empty())
         { RecordFrameFailure(ERegistryFrameFailure::PrepareAdmission, N); return false; }
@@ -395,7 +407,7 @@ public:
     }
     bool InstallAll()
     {
-        if (!IsWorker()) return false;
+        if (!IsWorker() || BoundaryMutationBlocked()) return false;
         const auto N = Pending ? Pending->Frame : FFrameNumber{0};
         LastFrameFailure = {};
         if (!Pending || Installed || Begun)
@@ -417,7 +429,7 @@ public:
     { return IsWorker() && Installed && !Terminal ? Pending : nullptr; }
     bool BeginAll()
     {
-        if (!IsWorker() || !Pending || !Installed || Begun || Terminal) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Installed || Begun || Terminal) return false;
         for (const auto& Pair : Sessions)
             if (!Pair.second.Token || Pair.second.Owner->GetPhase() != EOwnerInputPhase::Installed) { AbortFrame(); return false; }
         for (auto& Pair : Sessions)
@@ -426,7 +438,7 @@ public:
     }
     bool CloseInitialBoundary()
     {
-        if (!IsWorker() || !Pending || !Installed || Begun || Terminal) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Installed || Begun || Terminal) return false;
         for (const auto& Pair : Sessions)
         {
             const auto& S = Pair.second;
@@ -443,7 +455,7 @@ public:
     }
     bool ValidateComplete() const noexcept
     {
-        if (!IsWorker() || !Pending || !Begun || Terminal) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Begun || Terminal) return false;
         for (const auto& Pair : Sessions)
             if (!Pair.second.Token || !Pair.second.Owner->CanComplete(*Pair.second.Token, Pending->Frame)) return false;
         return true;
@@ -457,15 +469,18 @@ public:
             if (!S.Owner->CompleteStep(*S.Token, Pending->Frame)) { MakeTerminal(); return false; }
             S.Token.reset();
         }
+        if (GroupExecutionReplay) { GroupReplayReceipt = Pending; ++ReplayIndex; Pending.reset(); Installed = Begun = false; return true; }
         History[Pending->Frame % History.size()] = Pending;
-        Latest = Pending; InitialReceipt.reset(); Pending.reset(); Installed = Begun = false; return true;
+        Latest = Pending; LastCompletedForCapture = Pending; InitialReceipt.reset(); Pending.reset(); Installed = Begun = false; return true;
     }
     void AbortFrame() noexcept
     {
-        if (!IsWorker()) return;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup) return;
         for (auto& Pair : Sessions) { auto& S = Pair.second; if (S.Token) S.Owner->Abort(*S.Token); S.Token.reset(); }
         Pending.reset(); Installed = Begun = false; MakeTerminal();
     }
+#include "../RegistryBoundaryCapture.inc"
+#include "../RegistryBoundaryReservation.inc"
     std::shared_ptr<const FRegistryFrame> ReadLatest() const { return IsWorker() && !Terminal ? Latest : nullptr; }
     std::shared_ptr<const FRegistryFrame> ReadInitial() const { return IsWorker() && !Terminal ? InitialReceipt : nullptr; }
     std::shared_ptr<const FRegistryFrame> ReadHistoricalInitial() const { return IsWorker() ? HistoricalInitial : nullptr; }
@@ -490,7 +505,7 @@ public:
     // receive the historical registry/actor set to restore before engine replay.
     bool BeginRetainedReplay(FFrameNumber First, FFrameNumber Last, const std::vector<FSessionActor>& AvailableActors)
     {
-        if (!IsWorker() || Terminal || Pending || Waiting || Replaying || First > Last || Last - First >= History.size()) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Terminal || Pending || Waiting || Replaying || First > Last || Last - First >= History.size()) return false;
         try
         {
             std::vector<std::shared_ptr<const FRegistryFrame>> Plan;
@@ -522,10 +537,10 @@ public:
         catch (...) { return false; }
     }
     std::shared_ptr<const FRegistryFrame> NextRetainedReplay()
-    { return IsWorker() && Replaying && ReplayIndex < ReplayPlan.size() ? ReplayPlan[ReplayIndex++] : nullptr; }
+    { return IsWorker() && !BoundaryMutationBlocked() && !GroupExecutionReplay && Replaying && ReplayIndex < ReplayPlan.size() ? ReplayPlan[ReplayIndex++] : nullptr; }
     bool EndRetainedReplay()
     {
-        if (!IsWorker() || !Replaying || ReplayIndex != ReplayPlan.size()) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || GroupExecutionReplay || !Replaying || ReplayIndex != ReplayPlan.size()) return false;
         Replaying = false; ReplayPlan.clear(); return true;
     }
 private:
@@ -737,6 +752,16 @@ private:
     std::optional<std::uint64_t> Waiting;
     bool Terminal = false, Installed = false, Begun = false, Replaying = false;
     FRegistryFrameFailure LastFrameFailure{};
+    std::unique_ptr<FReplayGroupPlan> ReplayGroup;
+    bool GroupExecutionReplay = false;
+    std::shared_ptr<const FGroupReplayPublication> GroupReplayPublished;
+    std::shared_ptr<const FRegistryFrame> GroupReplayReceipt;
+    std::unique_ptr<FGroupResumePlan> ResumeGroup; // destroyed before Sessions
+
+    const std::shared_ptr<const std::uint8_t> BoundaryCaptureOrigin=std::make_shared<const std::uint8_t>(std::uint8_t{0});
+    std::shared_ptr<const FRegistryFrame> LastCompletedForCapture; // Completion history survives PauseAll clearing the public Latest observation.
+    bool BoundaryReservationCalling = false;
+    std::unique_ptr<FBoundaryReservationPlan> BoundaryReservation; // destroyed before the worker-owned sessions
     std::uint64_t Constructed = 0, Destroyed = 0;
 };
 }

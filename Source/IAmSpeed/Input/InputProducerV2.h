@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ActionMapping.h"
+#include "../PreparedInputResume.h"
 #include "InputProducerPollFence.h"
 
 namespace Speed::Input::V2
@@ -15,6 +16,7 @@ public:
 	virtual bool SupportsPollFence() const noexcept { return false; }
 	virtual EProducerContract GetProducerContract() const noexcept { return EProducerContract::Unknown; }
 	virtual std::optional<FInputFrame> InspectBaseline(FFrameNumber) const { return {}; }
+	virtual std::unique_ptr<IPreparedInputResume> PrepareResumeAtBoundary(FFrameNumber) { return {}; }
 	virtual std::optional<FInputFrame> Produce(FFrameNumber Frame) = 0;
 	// Exact test authoring only: seal a future frame on the owner before poll.
 	// Device/network producers deliberately keep the rejecting default.
