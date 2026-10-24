@@ -61,6 +61,7 @@ jobs:
           IAMSPEED_CONFIGURED_IMAGE: ${{ vars.IAMSPEED_UE_IMAGE }}
           IAMSPEED_EXPECTED_SHA: ${{ github.sha }}
           IAMSPEED_CONFIGURED_CPUSET: ${{ vars.IAMSPEED_CPUSET_CPUS }}
+          IAMSPEED_CONFIGURED_OUTPUT_ROOT: ${{ vars.IAMSPEED_OUTPUT_ROOT }}
         working-directory: .ci/physical-contracts-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           import os, subprocess, sys
@@ -71,7 +72,12 @@ jobs:
           cpuset = os.environ.get('IAMSPEED_CONFIGURED_CPUSET', '').strip()
           if not cpuset:
               raise RuntimeError('Configure IAMSPEED_CPUSET_CPUS from the runner Linux sysfs topology; no portable numeric default')
-          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py', '--cpus', '12', '--cpuset-cpus', cpuset], check=True)
+          from pathlib import Path
+          output_root = os.environ.get('IAMSPEED_CONFIGURED_OUTPUT_ROOT', '').strip()
+          if not output_root:
+              raise RuntimeError('Configure a short runner-local IAMSPEED_OUTPUT_ROOT; source and evidence paths must fit Windows limits')
+          output = Path(output_root) / (os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          subprocess.run([sys.executable, '-B', 'HostProject/Scripts/RunDockerContracts.py', '--cpus', '12', '--cpuset-cpus', cpuset, '--output', str(output)], check=True)
 
       - name: Report strict result and accepted integration debt
         if: always() && steps.contracts.outputs.output_dir != ''
