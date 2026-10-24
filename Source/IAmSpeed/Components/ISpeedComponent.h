@@ -9,6 +9,7 @@ namespace Speed::Input::V2 { struct FOwnerInputSnapshot; class FInputSessionRegi
 #include "IAmSpeed/Base/KinematicQuantizationCache.h"
 #include "IAmSpeed/World/Simulation/SimulationSleepState.h"
 class USpeedWheeledComponent;
+struct FSimulationWheelVisual;
 
 #if !UE_BUILD_SHIPPING
 /** Native observation boundaries; excluded from published physics state. */
@@ -156,6 +157,8 @@ public:
 	virtual void AppendSimulationSnapshot(TArray<uint8>& OutPayload) const {}
 	/** Optional simulation-owned presentation extension; never part of canonical hashes. */
 	virtual void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const {}
+    /** Owner lane only, opt-in immutable visual data; never canonical state. */
+    virtual void AppendWheelPresentationSnapshot(TArray<FSimulationWheelVisual>& Out) const {}
 	/** Observation only, after canonical snapshot publication succeeds. */
 	virtual void OnCanonicalFramePublished(uint64 NumFrame) {}
 	/** Worker-only, side-effect-free validation of every pending reservation. */

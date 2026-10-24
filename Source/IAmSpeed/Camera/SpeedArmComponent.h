@@ -23,6 +23,7 @@ class IAMSPEED_API USpeedArmComponent : public USpringArmComponent
 #endif
 public:
 	USpeedArmComponent(const FObjectInitializer& ObjectInitializer);
+	void OnRegister() override;
 	void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void InitializeForCar(ASpeedCar& Owner, USpeedWheeledComponent& Movement);
 	/** CURRENT possession and simulation policy, evaluated only on GT. */
@@ -36,6 +37,8 @@ public:
 	bool UsesGenericOwnerSnapshot() const { return bGenericSnapshotInitialized; }
 	bool ReadGenericOwnerSnapshot(FSimulationPoseConsumption& Out) const;
 	bool ApplyGenericCameraSnapshot(const FSimulationPoseConsumption& Owner);
+	/** Queue a setting on the canonical camera timeline. Game-specific endpoints opt in separately. */
+	bool QueueGenericCameraSetting(ESpeedCarCameraCommandKind Kind, float Value);
 	/** Pure GT import seam, also exercised with sealed physical publications. */
 	bool UpdateCameraFromSnapshot(const FSimulationPresentationOutput& Output, const FSimulationPoseConsumption& Owner);
 
@@ -47,6 +50,10 @@ public:
 	USphereComponent* HitSphere;
 	UPROPERTY(BlueprintReadWrite, Category = Lag, EditDefaultsOnly)
 	float LagSpeedCoeff = 1.0f;
+    // Opt-in immutable Analytic geometry, frozen at the owner binding barrier.
+    // Existing game-specialized arms and the generic unconstrained default stay unchanged.
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category="Camera|Collision")
+    bool bUseAnalyticWorldCollision = false;
 
 protected:
 	using FEndpointPtr = TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe>;

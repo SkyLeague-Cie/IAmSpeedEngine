@@ -1,8 +1,14 @@
-# Physical input frames (CP1)
+# Physical input frames
 
-Status: opt-in source checkpoint. Existing player controls use the migration
-adapter by default. This checkpoint is not Unreal build, control-parity,
-multiplayer or rollback acceptance.
+This page records frame-addressed input acquisition and commit contracts. The
+CP labels below identify their development increments; they are not a claim
+that the current simulation is still an unconnected source-only prototype.
+For the current 0.4 execution path, see [Simulation.md](Simulation.md).
+
+Input framing, producer lifecycle and local native tests are building blocks.
+They do not establish control parity on every device or operational multiplayer
+and rollback. Netcode is currently not operational end to end; restoration is
+targeted for 0.5. See [Netcode.md](Netcode.md) for its separate acceptance scope.
 
 ## Portable acquisition lifecycle (CP2 first increment)
 

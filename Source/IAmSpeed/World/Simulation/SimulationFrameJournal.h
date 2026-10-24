@@ -20,13 +20,28 @@ struct IAMSPEED_API FSimulationInputCommand
 	uint64 PayloadHash = 0;
 };
 
+/** Optional owner-authored visual values. No world query or GT physical read. */
+struct IAMSPEED_API FSimulationWheelVisual
+{
+    uint32 Ordinal = 0;
+    float SuspensionOffset = 0;
+    bool bGrounded = false;
+    bool bLandedThisFrame = false;
+    float Throttle = 0;
+    float Brake = 0;
+    FQuat SteeringRotation = FQuat::Identity;
+    FQuat RollingRotation = FQuat::Identity;
+};
+
 /** Optional values-only presentation data; excluded from the canonical byte hash. */
 struct IAMSPEED_API FSimulationPresentationBody
 {
 	uint64 StableId = 0;
 	SKinematic COMState;
 	FVector CenterOfMassLocal = FVector::ZeroVector;
-	TArray<uint8> Extension;
+    TArray<uint8> Extension;
+    uint32 WheelVisualsVersion = 0;
+    TArray<FSimulationWheelVisual> WheelVisuals;
 	FVector OriginLocation() const { return COMState.Location - COMState.Rotation.RotateVector(CenterOfMassLocal); }
 	FVector OriginVelocity() const
 	{

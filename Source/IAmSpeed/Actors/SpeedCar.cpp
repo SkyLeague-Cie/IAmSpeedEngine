@@ -3,6 +3,7 @@
 
 #include "SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Driving/StockRoadCar.h"
 #include "IAmSpeed/Controllers/SpeedController.h"
 #if !UE_BUILD_SHIPPING
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
@@ -18,6 +19,7 @@ ASpeedCar::ASpeedCar(const FObjectInitializer& ObjectInitializer) :
 	GetMesh()->SetSimulatePhysics(false);
 	GetMesh()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
 	SpeedWheeledComponent = Cast<USpeedWheeledComponent>(GetVehicleMovement());
+	Speed::Driving::ApplyStockRoadCarToGenericMovement(*SpeedWheeledComponent);
 	CameraArm = CreateDefaultSubobject<USpeedArmComponent>(TEXT("Spring Arm"));
 	CameraArm->SetupAttachment(GetMesh());
 }

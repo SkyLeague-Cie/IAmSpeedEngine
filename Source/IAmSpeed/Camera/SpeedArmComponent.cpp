@@ -7,11 +7,12 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 
 USpeedArmComponent::USpeedArmComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	TargetArmLength = 350.0f;
+	TargetArmLength = GetClass() == USpeedArmComponent::StaticClass() ? 650.0f : 350.0f;
 	TargetOffset.Z = 150.0f;
 	ProbeSize = 25.0f;
 	bDoCollisionTest = true;
@@ -37,6 +38,31 @@ USpeedArmComponent::USpeedArmComponent(const FObjectInitializer& ObjectInitializ
 	HitSphere->BodyInstance.bUseCCD = true;
 }
 
+void USpeedArmComponent::OnRegister()
+{
+	// Blueprint instancing can retain a nested component's archetype parent.
+	// Rebind only this actor's instance components before registration; never
+	// attach an instance to, or mutate, the Blueprint/class default template.
+	if (!IsTemplate())
+	{
+		if (Camera && !Camera->IsTemplate() && Camera->GetOwner() == GetOwner() &&
+			Camera->GetAttachParent() != this)
+		{
+			if (Camera->IsRegistered())
+				Camera->AttachToComponent(this, FAttachmentTransformRules::KeepRelativeTransform, FName("SpringEndpoint"));
+			else Camera->SetupAttachment(this, FName("SpringEndpoint"));
+		}
+		if (HitSphere && Camera && !HitSphere->IsTemplate() &&
+			HitSphere->GetOwner() == GetOwner() && HitSphere->GetAttachParent() != Camera)
+		{
+			if (HitSphere->IsRegistered())
+				HitSphere->AttachToComponent(Camera, FAttachmentTransformRules::KeepRelativeTransform);
+			else HitSphere->SetupAttachment(Camera);
+		}
+	}
+	Super::OnRegister();
+}
+
 void USpeedArmComponent::InitializeForCar(ASpeedCar& Owner, USpeedWheeledComponent& Movement)
 {
 	check(IsInGameThread());
@@ -55,6 +81,7 @@ void USpeedArmComponent::InitializeForCar(ASpeedCar& Owner, USpeedWheeledCompone
 	InitialState.Stiffness = .55f;
 	InitialState.SwivelSpeed = 2.9f;
 	InitialState.TransitionSpeed = 1.3f;
+	InitialState.bIsSwivelInverted = true;
 	InitialState.DesiredRegularArmLength = TargetArmLength;
 	InitialState.TargetArmLength = TargetArmLength;
 	InitialState.TargetOffset = TargetOffset;
@@ -198,11 +225,31 @@ void USpeedArmComponent::BindGenericAtWorldBeginPlay()
 		UE_LOG(LogTemp, Warning, TEXT("[GenericCameraLifecycleUnavailable] No owner binding; no live fallback."));
 }
 
+bool USpeedArmComponent::QueueGenericCameraSetting(ESpeedCarCameraCommandKind Kind, float Value)
+{
+	check(IsInGameThread());
+	// A derived game's endpoint has its own settings protocol. Never cast it to
+	// the generic producer or silently change the game's presentation contract.
+	if (GetClass() != USpeedArmComponent::StaticClass() || !BoundEndpoint || !FMath::IsFinite(Value)) return false;
+	return StaticCastSharedPtr<FSpeedCarCameraPresentation>(BoundEndpoint)->TryQueueSetting(Kind, Value);
+}
+
 USpeedArmComponent::FEndpointPtr USpeedArmComponent::CreateCameraEndpoint(const FSimulationPresentationBinding& Binding)
 {
 	if (bGenericSettingsUnsupported) return nullptr;
-	return MakeShared<FSpeedCarCameraPresentation, ESPMode::ThreadSafe>(
-		Binding.OwnerStableId, Binding.FirstFrame, 1, InitialConfiguration, InitialState);
+    TSharedPtr<const Speed::Analytic::FAnalyticWorldData, ESPMode::ThreadSafe> Environment;
+    if (bUseAnalyticWorldCollision)
+    {
+        const auto* Subsystem=GetWorld()?GetWorld()->GetSubsystem<USpeedWorldSubsystem>():nullptr;
+        const auto* Data=Subsystem?Subsystem->GetAnalyticWorldData():nullptr;
+        if (!Data || !Subsystem->GetStaticCollisionWorld() ||
+            Subsystem->GetStaticCollisionWorld()->GetBackend()!=Speed::EStaticCollisionBackend::SurfaceAnalytic) return nullptr;
+        // A finalized copy retains derived bounds and pins its exact geometry
+        // independently of UObject/world reset lifetime; no rebuild or lookup per frame.
+        Environment=MakeShared<const Speed::Analytic::FAnalyticWorldData, ESPMode::ThreadSafe>(*Data);
+    }
+    return MakeShared<FSpeedCarCameraPresentation, ESPMode::ThreadSafe>(
+        Binding.OwnerStableId, Binding.FirstFrame, 1, InitialConfiguration, InitialState, MoveTemp(Environment));
 }
 
 class FSpeedArmCameraBindingCommit final : public ISimulationPresentationAdapterCommit

@@ -17,6 +17,12 @@ public:
     /** Procedural builders provide a stable unique identity; placed actors may use their authored path. */
     UPROPERTY(EditAnywhere,BlueprintReadOnly,Category="Shape") FName AnalyticIdentity;
     bool BuildStaticTorus(uint64 StableSourceId,Speed::Analytic::FTorusSurface& Out,FString& Error) const;
+    // Editor trace-collision worlds otherwise force UShapeComponent to call its
+    // abstract body builder even with NoCollision. The canonical torus provider
+    // above is the sole physics representation in both editor and game worlds.
+    bool ShouldCreatePhysicsState() const override { return false; }
+    UBodySetup* GetBodySetup() override { return nullptr; }
+    void UpdateBodySetup() override {}
     FPrimitiveSceneProxy* CreateSceneProxy() override { return nullptr; }
     FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 };

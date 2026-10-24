@@ -40,19 +40,37 @@ public:
             const bool Reused = bool(Catalogue);
             if (!Catalogue)
             {
+                UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=create_enter"), Producer);
                 const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
+                UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=create_exit hresult=0x%08X"), Producer, uint32(Created));
                 if (FAILED(Created))
                 { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
             }
 #if !UE_BUILD_SHIPPING
             const double CreatedAt = FPlatformTime::Seconds();
 #endif
-            if (Warm && !Catalogue) Catalogue = Warm->GetOrCreate(Api.Get());
+            HRESULT Registration = S_FALSE;
+            if (Warm && !Catalogue)
+            {
+                UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=catalogue_enter"), Producer);
+                Catalogue = Warm->GetOrCreate(Api.Get(), &Registration);
+                UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=catalogue_exit hresult=0x%08X catalogue=%d"), Producer, uint32(Registration), int32(bool(Catalogue)));
+            }
+            const auto ReportWarmFailure = [&]()
+            {
+                if (!Catalogue) return;
+                if (const auto D = Catalogue->ReadFailureDiagnostic())
+                    UE_LOG(LogTemp, Error, TEXT("[InputStartupFailure] session=%llu site=%u hresult=0x%08X timestamp=%llu previous=%llu details=0x%llX"),
+                        Producer, unsigned(D->Site), uint32(D->HResult), D->EventTimestamp, D->PreviousTimestamp, D->Details);
+            };
+            ReportWarmFailure();
+            UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_enter"), Producer);
             auto Raw = Warm
-                ? Windows::FGameInputSelectedSource::CreateRaw(std::move(Catalogue), Producer, Activity, true)
+                ? Windows::FGameInputSelectedSource::CreateRaw(Catalogue, Producer, Activity, true)
                 : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Activity, true);
+            UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_exit source=%d"), Producer, int32(bool(Raw)));
             if (!Raw)
-            { UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
+            { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
             Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
 #if !UE_BUILD_SHIPPING
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStartup] game_input_create_ms=%.3f discovery_ms=%.3f catalogue_reused=%d"),

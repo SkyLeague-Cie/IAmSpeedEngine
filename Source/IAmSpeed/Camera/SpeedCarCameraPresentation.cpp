@@ -1,6 +1,8 @@
 #include "SpeedCarCameraPresentation.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
+#include "Engine/EngineTypes.h"
 
 namespace SpeedCarCameraCodec
 {
@@ -95,6 +97,7 @@ TArray<uint8> ConfigurationIdentity(FSpeedCarCameraConfiguration C)
     auto S = FSpeedCarCameraArm::DefaultState();
     TArray<uint8> Bytes; FMemoryWriter Ar(Bytes);
     StateValues(Ar, C, S);
+    if (C.CollisionWorldHash) Ar << C.CollisionWorldHash;
     return Bytes;
 }
 void PoseValues(FArchive& Ar, FSpeedCarCameraPose& P)
@@ -174,10 +177,22 @@ bool FSpeedCarCameraPose::Compose(const FSimulationPresentationOutput& Packet,
 }
 
 FSpeedCarCameraPresentation::FSpeedCarCameraPresentation(uint64 InOwner, uint64 InFirstFrame, uint64 InGeneration,
-    const FSpeedCarCameraConfiguration& InConfiguration, const FSpeedCarCameraArmState& Initial)
+    const FSpeedCarCameraConfiguration& InConfiguration, const FSpeedCarCameraArmState& Initial,
+    TSharedPtr<const Speed::Analytic::FAnalyticWorldData, ESPMode::ThreadSafe> InCollisionWorld)
     : Owner(InOwner), FirstFrame(InFirstFrame), Generation(InGeneration),
       Configuration(InConfiguration), State(Initial), Journal(InFirstFrame)
 {
+    CollisionWorld = MoveTemp(InCollisionWorld);
+    if (CollisionWorld)
+    {
+        const uint64 Hash = CollisionWorld->StableHash();
+        if (!Hash || !CollisionWorld->IsAuthorityEligible() ||
+            (Configuration.CollisionWorldHash && Configuration.CollisionWorldHash != Hash))
+            State.bTimelineInvalid = true;
+        Configuration.CollisionWorldHash = Hash;
+        CollisionQuery = MakeUnique<Speed::Analytic::FWorldQueryService>(*CollisionWorld);
+    }
+    else if (Configuration.CollisionWorldHash) State.bTimelineInvalid = true;
     State.ProbeSize = Configuration.ProbeSize; State.SocketOffset = Configuration.SocketOffset;
     State.CameraRotationLagSpeed = Configuration.RotationLagSpeed; State.LagSpeedCoeff = Configuration.LagSpeedCoeff;
     // The owned simulation negotiates frame zero before its first publication.
@@ -185,6 +200,72 @@ FSpeedCarCameraPresentation::FSpeedCarCameraPresentation(uint64 InOwner, uint64 
     if (!Owner || FirstFrame == MAX_uint64 || !Generation ||
         !SpeedCarCameraCodec::Valid(Configuration, State)) State.bTimelineInvalid = true;
 }
+FSpeedCarCameraPresentation::~FSpeedCarCameraPresentation() = default;
+
+namespace
+{
+// One owner-local query service over immutable baked geometry. No UWorld/GT
+// trace, fallback, mutable car state or collision history crosses this seam.
+class FAnalyticOwnerCameraPolicy final : public ISpeedCarCameraFramePolicy
+{
+public:
+    FAnalyticOwnerCameraPolicy(const Speed::Analytic::FWorldQueryService& InQuery, float InRadius)
+        : Query(InQuery), Radius(InRadius) {}
+    ESpeedCarCameraReason ResolveConstraint(uint64, const FVector& Start,
+        const FVector& Eye, const FQuat&, FVector& Location) override
+    {
+        using namespace Speed::Analytic;
+        FWorldQuery Q; Q.Shape=EQueryShape::Sphere; Q.Start=Start; Q.End=Eye;
+        Q.Radius=Radius; Q.TraceChannel=ECC_Camera; Q.bApplyCollisionFilter=true;
+        Q.bAuthorityOnly=true; Q.bIncludeTriangles=true; Q.bUseFiniteContactDomain=true;
+        // The arm origin can meet a ramp/wall while the car moves. Resolve
+        // this CURRENT sphere before sweeping; never keep a stale world pose.
+        // Each correction is proved again against the same immutable geometry.
+        const auto ClearSphere=[&](FVector& Point)
+        {
+            for(int32 Iteration=0;Iteration<24;++Iteration)
+            {
+                Q.Start=Q.End=Point;FWorldHit Overlap;
+                if(!Query.TryFindDeepestOverlap(Q,Overlap))return false;
+                if(!Overlap.bHit || Overlap.PenetrationDepth<=Q.DomainTolerance)return true;
+                if(!FMath::IsFinite(Overlap.PenetrationDepth) || !Overlap.Normal.IsNormalized())return false;
+                Point+=FVector(Overlap.Normal)*(Overlap.PenetrationDepth+.01);
+            }
+            return false;
+        };
+        FVector Anchor=Start;
+        if(!ClearSphere(Anchor))return ESpeedCarCameraReason::FinalEllipsoidRejected;
+        FVector Requested=Eye;
+        for(int32 Iteration=0;Iteration<24;++Iteration)
+        {
+            Q.Start=Anchor;Q.End=Requested;FWorldHit Hit;
+            // Constructor admission requires EVERY immutable provider to be
+            // authority eligible, exactly the SurfaceAnalytic world contract.
+            // Its finite-domain sweep makes empty space definitive. The Hybrid
+            // winning-hit coverage operation would reject legitimate empty
+            // diagonal AABBs after residual triangles have been pruned.
+            Hit=Query.Sweep(Q);
+            if(Hit.bHit && (!FMath::IsFinite(Hit.Time) || Hit.Time<0 || Hit.Time>1))
+                return ESpeedCarCameraReason::ContinuousQueryRejected;
+            const FVector CertifiedLocation=Hit.bHit?FVector(Hit.Location):Requested;
+            Location=CertifiedLocation;
+            if(!ClearSphere(Location))return ESpeedCarCameraReason::FinalEllipsoidRejected;
+            // This EXACT endpoint is the prefix of the authority sweep above.
+            // Repeating its tangent endpoint query can be an unproved miss at
+            // t=1; the already certified winning sweep remains the proof.
+            if(Location==CertifiedLocation)return ESpeedCarCameraReason::None;
+            // A real endpoint correction needs a NEW authority proof. Do not
+            // accept a depenetrated point behind an intervening wall.
+            Requested=Location;
+        }
+        return ESpeedCarCameraReason::FinalEllipsoidRejected;
+    }
+private:
+    const Speed::Analytic::FWorldQueryService& Query;
+    const double Radius;
+};
+}
+
 bool FSpeedCarCameraPresentation::QueueSetting(ESpeedCarCameraCommandKind Kind, float Value)
 {
     if (Kind == ESpeedCarCameraCommandKind::Toggle || !Journal.QueueNext(Kind, Value))
@@ -202,16 +283,16 @@ bool FSpeedCarCameraPresentation::ApplyCommand(const FSpeedCarCameraCommand& C)
     };
     switch (C.Kind)
     {
-    case ESpeedCarCameraCommandKind::Height: State.ConfiguredCameraHeight = Snap(C.Value, 40, 200, 10); State.TargetOffset.Z = State.ConfiguredCameraHeight; break;
-    case ESpeedCarCameraCommandKind::Distance: State.BaseDistance = Snap(C.Value, 100, 400, 10); break;
-    case ESpeedCarCameraCommandKind::FieldOfView: Configuration.FieldOfView = Snap(C.Value, 60, 110, 1); break;
-    case ESpeedCarCameraCommandKind::Angle: Configuration.Arm.LocalCameraRotation = FRotator(Snap(C.Value, -15, 0, 1), 0, 0); break;
+    case ESpeedCarCameraCommandKind::Height: State.ConfiguredCameraHeight = Snap(C.Value, 0, 600, 10); State.TargetOffset.Z = State.ConfiguredCameraHeight; break;
+    case ESpeedCarCameraCommandKind::Distance: State.BaseDistance = Snap(C.Value, 200, 1500, 25); break;
+    case ESpeedCarCameraCommandKind::FieldOfView: Configuration.FieldOfView = Snap(C.Value, 60, 140, 1); break;
+    case ESpeedCarCameraCommandKind::Angle: Configuration.Arm.LocalCameraRotation = FRotator(Snap(C.Value, -30, 15, 1), 0, 0); break;
     case ESpeedCarCameraCommandKind::Stiffness:
         State.Stiffness = Snap(C.Value, 0, 1, .05f);
         State.CameraRotationLagSpeed = 40.0 * State.Stiffness + 15.0;
         Configuration.RotationLagSpeed = State.CameraRotationLagSpeed;
         State.CameraLagSpeed = 44.0 * State.Stiffness + 8.0; break;
-    case ESpeedCarCameraCommandKind::SwivelSpeed: State.SwivelSpeed = Snap(C.Value, 1, 10, .1f); break;
+    case ESpeedCarCameraCommandKind::SwivelSpeed: State.SwivelSpeed = Snap(C.Value, .2f, 8, .1f); break;
     case ESpeedCarCameraCommandKind::TransitionSpeed: State.TransitionSpeed = Snap(C.Value, 1, 2, .1f); break;
     case ESpeedCarCameraCommandKind::InvertSwivel:
         if (C.Value != 0 && C.Value != 1) return false;
@@ -256,7 +337,12 @@ void FSpeedCarCameraPresentation::ProduceCameraFrame(const FSimulationSnapshot& 
         Input.bOnGround = Captured.bOnGround; Input.bBackCamera = Captured.bBackCamera;
         Input.CameraYaw = Captured.CameraYaw; Input.CameraPitch = Captured.CameraPitch;
         ISpeedCarCameraFramePolicy OwnerOnly;
-        Pose.Result = FSpeedCarCameraArm::Step(State, Configuration.Arm, Bodies.NumFrame, *Car, Input, OwnerOnly);
+        if (CollisionQuery)
+        {
+            FAnalyticOwnerCameraPolicy Constrained(*CollisionQuery, Configuration.ProbeSize);
+            Pose.Result=FSpeedCarCameraArm::Step(State, Configuration.Arm, Bodies.NumFrame, *Car, Input, Constrained);
+        }
+        else Pose.Result = FSpeedCarCameraArm::Step(State, Configuration.Arm, Bodies.NumFrame, *Car, Input, OwnerOnly);
     }
     Pose.SettingsVersion = Configuration.Version;
     Pose.CommandSerial = State.LastAppliedCommandSerial; Pose.FieldOfView = Configuration.FieldOfView;
@@ -267,7 +353,7 @@ void FSpeedCarCameraPresentation::CaptureState(FSimulationPresentationOutput& Pa
 {
     auto& Bytes = Packet.StatePayload;
     Bytes.Reset(); FMemoryWriter Ar(Bytes);
-    uint32 Magic = 0x53504353; uint8 Version = 1;
+    uint32 Magic = 0x53504353; uint8 Version = Configuration.CollisionWorldHash ? 2 : 1;
     uint64 SavedOwner = Owner, SavedFirst = FirstFrame, SavedGeneration = Generation, SavedEpoch = Epoch;
     uint64 Frame = Packet.NumFrame, JournalFrame = 0, PrefixHash = 0; uint32 Count = 0;
     Journal.GetCheckpoint(JournalFrame, Count, PrefixHash);
@@ -276,6 +362,7 @@ void FSpeedCarCameraPresentation::CaptureState(FSimulationPresentationOutput& Pa
         << JournalFrame << Count << PrefixHash << PoseHash;
     auto C = Configuration; auto S = State;
     SpeedCarCameraCodec::StateValues(Ar, C, S);
+    if (Version==2) Ar << C.CollisionWorldHash;
     uint64 Hash = Speed::SimulationBoundary::HashBytes(Bytes.GetData(), Bytes.Num());
     Ar << Hash;
 }
@@ -285,7 +372,7 @@ bool FSpeedCarCameraPresentation::ReadPublishedState(const FSimulationPresentati
     uint32& OutCount, uint64& OutPrefixHash)
 {
     // Reject every short/oversized packet before any FMemoryReader operation.
-    if (Packet.Channel != CameraChannel || Packet.StatePayload.Num() != StateBytes) return false;
+    if (Packet.Channel != CameraChannel || (Packet.StatePayload.Num() != StateBytes && Packet.StatePayload.Num() != StateBytes+8)) return false;
     FSpeedCarCameraPose Pose;
     if (!FSpeedCarCameraPose::Read(Packet.Payload, Pose)) return false;
     FMemoryReader Ar(Packet.StatePayload);
@@ -295,8 +382,12 @@ bool FSpeedCarCameraPresentation::ReadPublishedState(const FSimulationPresentati
     Ar << Magic << Version << SavedOwner << SavedFirst << SavedGeneration << SavedEpoch << Frame
         << JournalFrame << Count << PrefixHash << PoseHash;
     FSpeedCarCameraConfiguration C; FSpeedCarCameraArmState S;
-    SpeedCarCameraCodec::StateValues(Ar, C, S); Ar << Hash;
-    if (Ar.IsError() || !Ar.AtEnd() || Magic != 0x53504353 || Version != 1 ||
+    SpeedCarCameraCodec::StateValues(Ar, C, S);
+    if (Version==2) Ar << C.CollisionWorldHash;
+    Ar << Hash;
+    if (Ar.IsError() || !Ar.AtEnd() || Magic != 0x53504353 ||
+        !((Version==1 && Packet.StatePayload.Num()==StateBytes) ||
+          (Version==2 && Packet.StatePayload.Num()==StateBytes+8 && C.CollisionWorldHash)) ||
         SavedOwner != Packet.OwnerStableId || SavedOwner != Pose.Owner || Frame != Packet.NumFrame ||
         Frame != Pose.Frame || SavedFirst != Pose.FirstFrame || SavedGeneration != Pose.Generation ||
         SavedEpoch != Pose.Epoch || C.Version != Pose.SettingsVersion || C.FieldOfView != Pose.FieldOfView ||

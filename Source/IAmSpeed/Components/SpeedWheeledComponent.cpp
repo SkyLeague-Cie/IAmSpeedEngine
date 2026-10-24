@@ -444,6 +444,23 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 	}
 }
 
+void USpeedWheeledComponent::OnRegister()
+{
+    Super::OnRegister();
+    AActor* Actor=GetOwner();
+    if(!Actor || Actor->IsTemplate() || !Actor->GetRootComponent())return;
+    // Nested native shapes must participate in the actor's scene/component
+    // lifecycle too. Keep all authored geometry. An explicit parent is kept
+    // (the shape resolves a template parent on its own registration).
+    for(USSubBody* Shape:SubBodies)
+    {
+        if(!Shape || Shape->IsTemplate() || Shape->GetOwner()!=Actor)continue;
+        Actor->AddOwnedComponent(Shape);
+        if(!Shape->GetAttachParent())Shape->SetupAttachment(Actor->GetRootComponent());
+        if(!Shape->IsRegistered())Shape->RegisterComponent();
+    }
+}
+
 void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 {
 	if (NewOwner == nullptr)
@@ -1961,6 +1978,7 @@ bool USpeedWheeledComponent::SetHeldCameraPitch(float Value)
 FSpeedCarCameraPhysicalInput USpeedWheeledComponent::CaptureNetworkCameraInput(
 	int32 HistoryFrame, int32 ActivationFrame) const
 {
+	if(CanonicalCameraYawAction>=0 || CanonicalCameraPitchAction>=0)return FSpeedCarCameraPhysicalInput();
 	FScopeLock CameraLock(&PendingCameraInputMutex);
 	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled() ||
 		HistoryFrame == INDEX_NONE || ActivationFrame == INDEX_NONE) return FSpeedCarCameraPhysicalInput();
@@ -1981,6 +1999,7 @@ FSpeedCarCameraPhysicalInput USpeedWheeledComponent::CaptureNetworkCameraInput(
 void USpeedWheeledComponent::QueueCameraInputForFrame(int32 ActivationFrame,
 	const FSpeedCarCameraPhysicalInput& Input) const
 {
+	if(CanonicalCameraYawAction>=0 || CanonicalCameraPitchAction>=0)return;
 	if (ActivationFrame == INDEX_NONE || !Input.IsValid()) return;
 	FScopeLock CameraLock(&PendingCameraInputMutex);
 	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
@@ -2005,6 +2024,7 @@ void USpeedWheeledComponent::QueueCameraInputLocked(int32 ActivationFrame,
 
 void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFrame)
 {
+	if(CanonicalCameraYawAction>=0 || CanonicalCameraPitchAction>=0)return;
 	FScopeLock CameraLock(&PendingCameraInputMutex);
 	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || IsTestInputOverrideEnabled()) return;
 	int32 LastDue = INDEX_NONE;
@@ -2023,6 +2043,49 @@ void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFram
 	++CameraInputApplyCount;
 #endif
 }
+bool USpeedWheeledComponent::ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame& Frame)
+{
+    // Disabled by default: existing game adapters and the old explicit queue
+    // retain their exact behavior. Enabled slots are immutable car setup.
+    if(CanonicalCameraYawAction<0 && CanonicalCameraPitchAction<0)return true;
+    FSpeedCarCameraPhysicalInput Camera;
+    const auto Contract=Frame.GetContract();if(!Contract)return false;
+    const auto ReadAxis=[&](int32 Slot,int8& Value)
+    {
+        if(Slot==-1){Value=0;return true;}
+        if(Slot<0 || Slot>=int32(Speed::Input::ActionCount))return false;
+        const auto* A=Contract->Find(Speed::Input::FActionId(Slot));
+        if(!A || A->Type!=Speed::Input::V2::EActionType::Axis1D || A->Wiring!=Speed::Input::V2::EActionWiring::Wired || !A->Signed || A->Quantization!=127)return false;
+        const auto V=Frame.GetData().Values[Slot];if(V < -127 || V>127)return false;
+        Value=int8(V);return true;
+    };
+    if(!ReadAxis(CanonicalCameraYawAction,Camera.Yaw) || !ReadAxis(CanonicalCameraPitchAction,Camera.Pitch))return false;
+    if(bGenericCameraInputEnabled.load(std::memory_order_acquire))Camera.Flags=1;
+    else {Camera.Yaw=0;Camera.Pitch=0;}
+    if(!Camera.IsValid())return false;
+    WheeledPhysicalInput.Camera=Camera;
+    return true;
+}
+
+void USpeedWheeledComponent::AppendWheelPresentationSnapshot(TArray<FSimulationWheelVisual>& Out) const
+{
+    Out.Reset();
+    if(!bPublishWheelPresentation)return;
+    Out.Reserve(WheelSubBodies.Num());
+    for(const auto& Wheel:WheelSubBodies)
+    {
+        if(!Wheel) {Out.Reset();return;}
+        const auto& R=Wheel->GetRenderData();
+        FSimulationWheelVisual& V=Out.AddDefaulted_GetRef();
+        V.Ordinal=uint32(Wheel->Idx());V.SuspensionOffset=Wheel->SpringDisplacement();
+        V.SteeringRotation=R.SteerRotation;V.RollingRotation=R.RollRotation;
+        V.bGrounded=Wheel->IsOnGround();
+        V.bLandedThisFrame=V.bGrounded && !Wheel->WasOnGroundPreviousFrame();
+        V.Throttle=float(WheeledPhysicalInput.Throttle)/255.f;
+        V.Brake=float(WheeledPhysicalInput.Brake)/255.f;
+    }
+}
+
 void USpeedWheeledComponent::AppendPresentationSnapshot(TArray<uint8>& OutPayload) const
 {
 	OutPayload.Reset();
