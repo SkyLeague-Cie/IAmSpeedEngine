@@ -5,6 +5,7 @@
 #include "PreparedSimulationRestore.h"
 #include <memory>
 #include <optional>
+#include <thread>
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 
@@ -106,18 +107,7 @@ namespace Speed
             std::shared_ptr<const PreparedWorld::FRestoreEnvelope> Envelope;
             std::shared_ptr<const PreparedWorld::FParsedWorld> Physical;
         };
-        class FPreparedRestoreToken
-        {
-            friend class FSimulationWorld;
-            std::shared_ptr<const uint8> Identity;
-            explicit FPreparedRestoreToken(std::shared_ptr<const uint8> I) noexcept : Identity(std::move(I)) {}
-        public:
-            FPreparedRestoreToken() = default;
-            FPreparedRestoreToken(const FPreparedRestoreToken&) = delete;
-            FPreparedRestoreToken& operator=(const FPreparedRestoreToken&) = delete;
-            FPreparedRestoreToken(FPreparedRestoreToken&&) noexcept = default;
-            FPreparedRestoreToken& operator=(FPreparedRestoreToken&&) noexcept = default;
-        };
+#include "PreparedRestoreToken.inc"
         std::optional<FPreparedRestoreToken> PrepareSnapshotRestore(
             const FSimulationSnapshot&, std::shared_ptr<const PreparedWorld::FRestoreEnvelope>,
             std::unique_ptr<ISimulationRestoreBoundaryLease>,
