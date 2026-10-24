@@ -375,6 +375,7 @@ public:
         }
         return !Terminal && !Waiting;
     }
+    #include "../EmptyInputFrameReceipt.inc"
     bool PrepareFrame(FFrameNumber N)
     {
         if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup) return false;
@@ -410,7 +411,7 @@ public:
         if (!IsWorker() || BoundaryMutationBlocked()) return false;
         const auto N = Pending ? Pending->Frame : FFrameNumber{0};
         LastFrameFailure = {};
-        if (!Pending || Installed || Begun)
+        if (!Pending || Installed || Begun || !EmptyReceiptStateValid())
         { RecordFrameFailure(ERegistryFrameFailure::InstallAdmission, N); return false; }
         std::size_t I = 0;
         for (auto& Pair : Sessions)
@@ -429,7 +430,7 @@ public:
     { return IsWorker() && Installed && !Terminal ? Pending : nullptr; }
     bool BeginAll()
     {
-        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Installed || Begun || Terminal) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Installed || Begun || Terminal || !EmptyReceiptStateValid()) return false;
         for (const auto& Pair : Sessions)
             if (!Pair.second.Token || Pair.second.Owner->GetPhase() != EOwnerInputPhase::Installed) { AbortFrame(); return false; }
         for (auto& Pair : Sessions)
@@ -438,7 +439,9 @@ public:
     }
     bool CloseInitialBoundary()
     {
-        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Installed || Begun || Terminal) return false;
+        // Empty steps never establish an owner Reset/baseline. Check worker
+        // identity before reading this worker-owned transaction tag.
+        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Installed || Begun || Terminal || PendingEmptyReceipt || !EmptyReceiptStateValid()) return false;
         for (const auto& Pair : Sessions)
         {
             const auto& S = Pair.second;
@@ -455,7 +458,7 @@ public:
     }
     bool ValidateComplete() const noexcept
     {
-        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Begun || Terminal) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || !Pending || !Begun || Terminal || !EmptyReceiptStateValid()) return false;
         for (const auto& Pair : Sessions)
             if (!Pair.second.Token || !Pair.second.Owner->CanComplete(*Pair.second.Token, Pending->Frame)) return false;
         return true;
@@ -469,15 +472,15 @@ public:
             if (!S.Owner->CompleteStep(*S.Token, Pending->Frame)) { MakeTerminal(); return false; }
             S.Token.reset();
         }
-        if (GroupExecutionReplay) { GroupReplayReceipt = Pending; ++ReplayIndex; Pending.reset(); Installed = Begun = false; return true; }
+        if (GroupExecutionReplay) { GroupReplayReceipt = Pending; ++ReplayIndex; Pending.reset(); Installed = Begun = PendingEmptyReceipt = false; return true; }
         History[Pending->Frame % History.size()] = Pending;
-        Latest = Pending; LastCompletedForCapture = Pending; InitialReceipt.reset(); Pending.reset(); Installed = Begun = false; return true;
+        Latest = Pending; LastCompletedForCapture = Pending; InitialReceipt.reset(); Pending.reset(); Installed = Begun = PendingEmptyReceipt = false; return true;
     }
     void AbortFrame() noexcept
     {
         if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup) return;
         for (auto& Pair : Sessions) { auto& S = Pair.second; if (S.Token) S.Owner->Abort(*S.Token); S.Token.reset(); }
-        Pending.reset(); Installed = Begun = false; MakeTerminal();
+        Pending.reset(); Installed = Begun = PendingEmptyReceipt = false; MakeTerminal();
     }
 #include "../RegistryBoundaryCapture.inc"
 #include "../RegistryBoundaryReservation.inc"
@@ -751,6 +754,7 @@ private:
     std::size_t ReplayIndex = 0;
     std::optional<std::uint64_t> Waiting;
     bool Terminal = false, Installed = false, Begun = false, Replaying = false;
+    bool PendingEmptyReceipt = false;
     FRegistryFrameFailure LastFrameFailure{};
     std::unique_ptr<FReplayGroupPlan> ReplayGroup;
     bool GroupExecutionReplay = false;
