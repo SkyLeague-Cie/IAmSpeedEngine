@@ -6,6 +6,7 @@
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include "FrameFloatingPointContext.h"
 #include "Misc/ScopeExit.h"
+#include <type_traits>
 #endif
 #include "IAmSpeed/Components/ISpeedComponent.h"
 namespace Speed
@@ -245,6 +246,46 @@ void FFrameSolveWitnessScope::RecordDynamicEvent(uint64 Pass,EFrameDynamicContac
 catch(...){if(ActiveSolveWitness)ActiveSolveWitness->bOverflow=true;}
 
 #if WITH_DEV_AUTOMATION_TESTS
+namespace
+{
+// Explicit wire fields only: no SWheelGroundContact/FVector object padding.
+// Keep both pointer observations and their offsets in the calling row writer.
+void AppendWheelContactNumericTail1368(TArray<uint8>& Out,const SWheelGroundContact& C)
+{
+ using S=std::remove_cvref_t<decltype(C.SurfacePoint.X)>;
+ static_assert(std::is_same_v<S,double> && sizeof(S)==8 && sizeof(bool)==1);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.WorldPos.X)>,S>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.Normal.X)>,S>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.r.X)>,S>);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.SurfaceFaceIndex)>,int32> && sizeof(int32)==4);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.SurfaceSourceId)>,uint64>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.SurfaceId)>,uint64>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.SurfaceFeatureId)>,uint64> && sizeof(uint64)==8);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.vN)>,float>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.InvMassEff)>,float>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.SpringDisplacement)>,float> && sizeof(float)==4);
+ static_assert(std::is_same_v<std::remove_cvref_t<decltype(C.bVelocityLocked)>,bool>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.bNewContact)>,bool>
+  &&std::is_same_v<std::remove_cvref_t<decltype(C.bAtBumpStop)>,bool>);
+ constexpr int32 TailBytes=4*sizeof(bool)+12*sizeof(S)+sizeof(int32)+3*sizeof(uint64)+3*sizeof(float);
+ static_assert(TailBytes==140);
+ uint8 Tail[TailBytes];int32 Offset=0;
+ const auto Scalar=[&](const auto& Value)
+ {
+  using T=std::remove_cvref_t<decltype(Value)>;
+  static_assert(std::is_integral_v<T>||std::is_same_v<T,float>||std::is_same_v<T,double>);
+  FMemory::Memcpy(Tail+Offset,&Value,sizeof(T));Offset+=sizeof(T);
+ };
+ const auto XYZ=[&](const FVector& V){Scalar(V.X);Scalar(V.Y);Scalar(V.Z);};
+ // Acquire the weak-reference null bit at the same point as the old Add chain.
+ const bool bExplicitlyNull=C.SurfaceComponent.IsExplicitlyNull();Scalar(bExplicitlyNull);
+ XYZ(C.SurfacePoint);Scalar(C.SurfaceFaceIndex);Scalar(C.SurfaceSourceId);Scalar(C.SurfaceId);Scalar(C.SurfaceFeatureId);
+ XYZ(C.WorldPos);XYZ(C.Normal);XYZ(C.r);Scalar(C.vN);Scalar(C.InvMassEff);
+ Scalar(C.SpringDisplacement);Scalar(C.bVelocityLocked);Scalar(C.bNewContact);Scalar(C.bAtBumpStop);
+ check(Offset==TailBytes);
+ Out.Append(Tail,TailBytes);
+}
+}
 bool FFrameSolveWitnessScope::IsWheelManifoldActive1368() noexcept
 {return ActiveSolveWitness&&ActiveSolveWitness->bCaptureWheelManifold1368;}
 void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedComponent* Owner,
@@ -283,10 +324,8 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
  for(const auto& C:Contacts)
  {
   if(C.SurfaceComponent.IsStale(true,true)){Scope->bOverflow=true;break;}
-  W::Add(Raw,C.Wheel);W::Add(Raw,C.SurfaceComponent.GetEvenIfUnreachable());W::Add(Raw,C.SurfaceComponent.IsExplicitlyNull());
-  W::Add(Raw,C.SurfacePoint);W::Add(Raw,C.SurfaceFaceIndex);W::Add(Raw,C.SurfaceSourceId);W::Add(Raw,C.SurfaceId);W::Add(Raw,C.SurfaceFeatureId);
-  W::Add(Raw,C.WorldPos);W::Add(Raw,C.Normal);W::Add(Raw,C.r);W::Add(Raw,C.vN);W::Add(Raw,C.InvMassEff);
-  W::Add(Raw,C.SpringDisplacement);W::Add(Raw,C.bVelocityLocked);W::Add(Raw,C.bNewContact);W::Add(Raw,C.bAtBumpStop);
+  W::Add(Raw,C.Wheel);W::Add(Raw,C.SurfaceComponent.GetEvenIfUnreachable());
+  AppendWheelContactNumericTail1368(Raw,C);
  }
  W::Add(Raw,Order.Num());
  if(Order.Num()>0)Raw.Append(reinterpret_cast<const uint8*>(Order.GetData()),Order.Num()*int32(sizeof(int32)));

@@ -4,6 +4,10 @@
 #include "Misc/AutomationTest.h"
 #include "UObject/StrongObjectPtr.h"
 #include <type_traits>
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "Components/BoxComponent.h"
+#include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
+#include "FrameFloatingPointContext.h"
 
 namespace Speed
 {
@@ -261,6 +265,101 @@ bool FWheelWitnessRowStorageTests::RunTest(const FString&)
   TArray<uint8> Raw,Canonical,RawDebris,CanonicalDebris;
   TestTrue(TEXT("fresh row scratch never hides a late unobserved write"),Prepared.ReleaseAfterClosure(Raw,Canonical,RawDebris,CanonicalDebris)==EWheelWitnessRelease1368::TransferredInvalid);
   TestTrue(TEXT("late-write failure preserves original raw and exact debris"),Raw==OriginalRaw&&RawDebris==TArray<uint8>{0x9b}&&!Canonical.IsEmpty()&&CanonicalDebris.IsEmpty());
+ }
+ // Compare the actual production row capture against the previous complete
+ // W::Add chain. Both use the same live pointers in this process; no ASLR hash.
+ // The reference retains all per-scalar writes, including the three spans.
+ {
+  using W=FEpisodeStateBytesForTesting;
+  const auto Numeric=CaptureFrameFloatingPointContext();FScopedFrameFloatingPointContext NumericGuard(Numeric);
+  if(!TestTrue(TEXT("contact-tail oracle preserves captured FP context"),NumericGuard.IsApplied()))return false;
+  TStrongObjectPtr<UBoxComponent> Surface(NewObject<UBoxComponent>());
+  TArray<TStrongObjectPtr<USWheelSubBody>> Wheels;
+  for(int32 I=0;I<32;++I)Wheels.Emplace(NewObject<USWheelSubBody>());
+  const uint64 DoubleBits[]={0ull,0x8000000000000000ull,1ull,0x8000000000000001ull,
+   0x000fffffffffffffull,0x0010000000000000ull,0x3ff0000000000001ull,0xc004000000000001ull,
+   0x7fefffffffffffffull,0xffefffffffffffffull,0x7ff0000000000000ull,0xfff0000000000000ull,
+   0x7ff8000000000001ull,0x7ff8000000000002ull,0xfff8000000000123ull,0x3fd5555555555555ull,
+   0x3fe0000000000001ull,0xbfe0000000000001ull,0x0008000000000001ull};
+  const uint32 FloatBits[]={0u,0x80000000u,1u,0x80000001u,0x007fffffu,0x00800000u,
+   0x3f800001u,0xc0200001u,0x7f7fffffu,0xff7fffffu,0x7f800000u,0xff800000u,
+   0x7fc00001u,0x7fc00002u,0xffc00123u,0x3eaaaaabu,0x3f000001u,0xbf000001u,0x00400001u};
+  for(uint32 Case=0;Case<19;++Case)for(const int32 Count:{0,1,4,32})
+  {
+   TArray<SWheelGroundContact> Contacts;Contacts.SetNum(Count);
+   FFramePointerRegistry Identities;FFramePointerKey OwnerKey{1,41,2,7,0};OwnerKey.Membership={19,31};
+   bool Declared=Identities.Register(PreparedOwner,OwnerKey)
+    &&Identities.Register(Surface.Get(),FFramePointerKey{4,1,2,0,0});
+   for(int32 I=0;I<Count;++I)
+   {
+    auto& Contact=Contacts[I];Contact.Wheel=Wheels[I].Get();
+    Contact.SurfaceComponent=(I+Case)%3==0?nullptr:Surface.Get();
+    Declared&=Identities.Register(Contact.Wheel,FFramePointerKey{3,41,2,0,uint64(I+1)});
+    FVector* VectorFields[]={&Contact.SurfacePoint,&Contact.WorldPos,&Contact.Normal,&Contact.r};
+    uint32 Field=0;
+    for(auto* Vector:VectorFields)
+    {
+     double* Components[]={&Vector->X,&Vector->Y,&Vector->Z};
+     for(auto* Component:Components){const uint64 Bits=DoubleBits[(Case+I+Field++)%19];FMemory::Memcpy(Component,&Bits,sizeof(Bits));}
+    }
+    Contact.SurfaceFaceIndex=I%3==0?MIN_int32:I%3==1?MAX_int32:I;
+    Contact.SurfaceSourceId=~uint64(0)-uint64(I);Contact.SurfaceId=(uint64(1)<<63)|uint64(Case+I);
+    Contact.SurfaceFeatureId=0x123456789abcdef0ull+uint64(I);
+    float* FloatFields[]={&Contact.vN,&Contact.InvMassEff,&Contact.SpringDisplacement};
+    for(auto* Value:FloatFields){const uint32 Bits=FloatBits[(Case+I+Field++)%19];FMemory::Memcpy(Value,&Bits,sizeof(Bits));}
+    Contact.bVelocityLocked=((Case+I)&1)!=0;Contact.bNewContact=((Case+I)&2)!=0;Contact.bAtBumpStop=((Case+I)&4)!=0;
+   }
+   if(!TestTrue(TEXT("contact-tail declares all exact serialized pointer identities"),Declared&&Identities.Seal()))return false;
+   TArray<uint8> ActualRaw,ActualCanonical,LegacyRaw,LegacyCanonical;
+   const auto BeforeFP=CaptureFrameFloatingPointContext();
+   {
+    TArray<uint8> Main;FFrameSolveWitnessScope Scope(17,Main,Identities);
+    if(!Scope.EnableWheelManifoldCapture1368())return false;
+    FFrameSolveWitnessScope::RecordWheelManifold1368(0,PreparedOwner,0,0,Contacts,Orders,Scalars,Doubles,Vectors);
+    FFrameSolveWitnessScope::RecordWheelManifold1368(1,PreparedOwner,1,7,Contacts,Orders,Scalars,Doubles,Vectors);
+    FFrameSolveWitnessScope::RecordWheelManifold1368(255,PreparedOwner,2,14,Contacts,Orders,Scalars,Doubles,Vectors);
+    ActualRaw=Scope.RawWheelManifold1368();
+    if(!TestTrue(TEXT("contact-tail production capture has all3 certified rows"),!Scope.HasOverflow()
+     &&Scope.NumWheelManifoldRows1368()==3&&Scope.MakeWheelManifoldCanonical1368(ActualCanonical)))return false;
+   }
+   const auto AfterFP=CaptureFrameFloatingPointContext();
+   TestTrue(TEXT("contact-tail recording preserves full entry FP context"),BeforeFP.bValid&&AfterFP.bValid
+    &&BeforeFP.VectorControl==AfterFP.VectorControl
+    &&FMemory::Memcmp(&BeforeFP.Environment,&AfterFP.Environment,sizeof(std::fenv_t))==0);
+   for(int32 RowIndex=0;RowIndex<3;++RowIndex)
+   {
+    TArray<uint8> Row,CanonicalRow;
+    FFramePointerCaptureScope Pointers(Row,Identities);
+    const uint8 Event=RowIndex==0?0:RowIndex==1?1:255;
+    W::Add(Row,uint32(3));W::Add(Row,uint64(17));W::Add(Row,RowIndex);W::Add(Row,int32(0));
+    W::Add(Row,Event);W::Add(Row,PreparedOwner);W::Add(Row,RowIndex);W::Add(Row,int32(RowIndex*7));W::Add(Row,Contacts.Num());
+    for(const auto& Contact:Contacts)
+    {
+     W::Add(Row,Contact.Wheel);W::Add(Row,Contact.SurfaceComponent.GetEvenIfUnreachable());W::Add(Row,Contact.SurfaceComponent.IsExplicitlyNull());
+     W::Add(Row,Contact.SurfacePoint);W::Add(Row,Contact.SurfaceFaceIndex);W::Add(Row,Contact.SurfaceSourceId);W::Add(Row,Contact.SurfaceId);W::Add(Row,Contact.SurfaceFeatureId);
+     W::Add(Row,Contact.WorldPos);W::Add(Row,Contact.Normal);W::Add(Row,Contact.r);W::Add(Row,Contact.vN);W::Add(Row,Contact.InvMassEff);
+     W::Add(Row,Contact.SpringDisplacement);W::Add(Row,Contact.bVelocityLocked);W::Add(Row,Contact.bNewContact);W::Add(Row,Contact.bAtBumpStop);
+    }
+    W::Add(Row,Orders.Num());for(const auto V:Orders)W::Add(Row,V);
+    W::Add(Row,Scalars.Num());for(const auto V:Scalars)W::Add(Row,V);
+    W::Add(Row,Doubles.Num());for(const auto V:Doubles)W::Add(Row,V);
+    W::Add(Row,Vectors.Num());for(const auto& V:Vectors)W::Add(Row,V);
+    const auto& Observations=Pointers.Observations();
+    constexpr int32 OwnerOffset=sizeof(uint32)+sizeof(uint64)+2*sizeof(int32)+sizeof(uint8);
+    constexpr int32 FirstContactOffset=OwnerOffset+sizeof(UPTRINT)+3*sizeof(int32);
+    constexpr int32 ContactBytes=2*sizeof(UPTRINT)+140;
+    bool Offsets=Observations.Num()==1+2*Count&&Observations[0].Offset==OwnerOffset;
+    for(int32 I=0;I<Count&&Offsets;++I)Offsets=Observations[1+2*I].Offset==FirstContactOffset+I*ContactBytes
+     &&Observations[2+2*I].Offset==FirstContactOffset+I*ContactBytes+int32(sizeof(UPTRINT));
+    if(!TestTrue(TEXT("legacy contact oracle retains owner/wheel/surface canonical pointer offsets"),Offsets)
+     ||!TestTrue(TEXT("legacy contact oracle canonicalizes every exact pointer"),Pointers.MakeCanonical(CanonicalRow)))return false;
+    W::Add(LegacyRaw,uint32(0x334d5749));W::Add(LegacyRaw,uint32(Row.Num()));LegacyRaw.Append(Row);
+    W::Add(LegacyCanonical,uint32(0x334d5749));W::Add(LegacyCanonical,uint32(CanonicalRow.Num()));LegacyCanonical.Append(CanonicalRow);
+   }
+   const FString Label=FString::Printf(TEXT("contact-tail bits%u count%d"),Case,Count);
+   TestTrue(Label+TEXT(" complete raw bytes match previous Add chain"),ActualRaw==LegacyRaw);
+   TestTrue(Label+TEXT(" complete canonical bytes and row framing match previous Add chain"),ActualCanonical==LegacyCanonical);
+  }
  }
  return !HasAnyErrors();
 }
