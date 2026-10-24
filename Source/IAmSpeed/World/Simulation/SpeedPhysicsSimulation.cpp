@@ -34,6 +34,9 @@
 #include "Misc/ScopeExit.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include <exception>
 #include <stdexcept>
@@ -213,15 +216,27 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedPhysicsSi
 	ISimulationPresentationAdapterCommit* AdapterCommit)
 {
 	check(IsInGameThread());
+    int32 ProbeBoundary=-1; uint64 ProbeOwner=0,ProbeTarget=0;
+    const auto Refuse=[&](int32 Line)->TSharedPtr<ISimulationPresentationProducer,ESPMode::ThreadSafe>
+    {
+        if(FParse::Param(FCommandLine::Get(),TEXT("ReplayDeliveryProbe")))
+        {
+            const FString File=FPaths::ProjectSavedDir()/TEXT("ReplayBoundaryDiagnostics.txt");
+            const FString Row=FString::Printf(TEXT("Refuse line=%d closed=%d mode=%d terminal=%d subsystem=%d collision=%d startup=%d worker=%d paused=%d frame=%llu boundary=%d owner=%llu target=%llu\n"),Line,bPresentationBindingClosed?1:0,(int32)GetActiveExecutionMode(),bOwnedWorkerTerminal.Load()?1:0,SpeedWorldSubsystem?1:0,(SpeedWorldSubsystem&&SpeedWorldSubsystem->GetStaticCollisionWorld())?1:0,HasReplayStartupHoldOnGameThread(this)?1:0,SimulationWorker?1:0,IsOwnedSimulationPaused()?1:0,(unsigned long long)CanonicalNumFrame,ProbeBoundary,(unsigned long long)ProbeOwner,(unsigned long long)ProbeTarget);
+            if(IFileManager::Get().FileSize(*File)<65536)FFileHelper::SaveStringToFile(Row,*File,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_Append);
+        }
+        return nullptr;
+    };
 	if (bPresentationBindingClosed || GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback ||
-		bOwnedWorkerTerminal.Load() || !EnsureSimulationWorldReady()) return nullptr;
+		bOwnedWorkerTerminal.Load() || !EnsureSimulationWorldReady()) return Refuse(__LINE__);
 	const bool bWasPaused = IsOwnedSimulationPaused();
 	const bool bOwnedLane = GetActiveExecutionMode() == ESimulationExecutionMode::IAmSpeedThread;
 	const ESimulationQuiescence Boundary = bOwnedLane ? TrySuspendOwnedBoundaryService() : TryPauseOwnedSimulation();
+    ProbeBoundary=(int32)Boundary;
 	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[PresentationBindingPauseUnacknowledged] Registration rejected; simulation remains pause-requested."));
-		return nullptr;
+		return Refuse(__LINE__);
 	}
 	const bool bSuspensionLease = bOwnedLane && Boundary == ESimulationQuiescence::BoundaryAcknowledged;
 	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused) ResumeOwnedSimulation(); };
@@ -230,23 +245,24 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedPhysicsSi
 	Binding.OwnerStableId = SpeedWorldSubsystem->GetSimulationStableId(OwnerComponent);
 	Binding.TargetStableId = TargetComponent ? SpeedWorldSubsystem->GetSimulationStableId(*TargetComponent) : 0;
 	Binding.FirstFrame = CanonicalNumFrame;
+    ProbeOwner=Binding.OwnerStableId;ProbeTarget=Binding.TargetStableId;
 	if (!Binding.OwnerStableId || (TargetComponent && !Binding.TargetStableId) || Binding.OwnerStableId == Binding.TargetStableId)
-		return nullptr;
+		return Refuse(__LINE__);
 	auto Producer = Factory(Binding);
 	if (!Producer || Producer->OwnerStableId() != Binding.OwnerStableId || !Producer->Channel() ||
 		(Producer->IsCameraPresentation() && !AllowsCameraPresentation()))
-		return nullptr;
-	if (AdapterCommit && !AdapterCommit->Prepare(Producer)) return nullptr;
+		return Refuse(__LINE__);
+	if (AdapterCommit && !AdapterCommit->Prepare(Producer)) return Refuse(__LINE__);
 	if (Previous)
 	{
 		FScopeLock Lock(&PresentationProducerMutex);
 		const int32 Index = PresentationProducers.IndexOfByKey(Previous.ToSharedRef());
 		if (Index == INDEX_NONE || Previous->OwnerStableId() != Producer->OwnerStableId() ||
-			Previous->Channel() != Producer->Channel()) return nullptr;
+			Previous->Channel() != Producer->Channel()) return Refuse(__LINE__);
 		// The acknowledged boundary makes replacement atomic with respect to Produce.
 		PresentationProducers[Index] = Producer.ToSharedRef();
 	}
-	else if (!RegisterPresentationProducer(Producer.ToSharedRef())) return nullptr;
+	else if (!RegisterPresentationProducer(Producer.ToSharedRef())) return Refuse(__LINE__);
 	// Successful binding opts into its body/output sidecars. The owned worker
 	// is pause-acknowledged above and resumes only after this boundary returns.
 	// Failed factories/registration must leave publication policy unchanged.

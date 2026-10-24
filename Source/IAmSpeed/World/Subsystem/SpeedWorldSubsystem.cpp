@@ -37,6 +37,11 @@
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/PackageName.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 #if !UE_BUILD_SHIPPING
 #include "Misc/ScopeExit.h"
 #endif
@@ -155,6 +160,8 @@ TWeakObjectPtr<UPrimitiveComponent> USpeedWorldSubsystem::FindAnalyticSourceComp
 	return nullptr;
 }
 
+
+#define REPLAY_ANALYTIC_LOG(Category,Verbosity,...) do { UE_LOG(Category,Verbosity,__VA_ARGS__); if(FParse::Param(FCommandLine::Get(),TEXT("ReplayDeliveryProbe"))) { const FString File=FPaths::ProjectSavedDir()/TEXT("ReplayAnalyticDiagnostics.txt"); if(IFileManager::Get().FileSize(*File)<65536) FFileHelper::SaveStringToFile(FString::Printf(__VA_ARGS__)+TEXT("\n"),*File,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_Append); } } while(false)
 void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 {
 	UWorld* World = GetWorld();
@@ -222,14 +229,14 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 				SourceComponent->AnalyticCollisionAsset.LoadSynchronous();
 			if (!CandidateAsset)
 			{
-				UE_LOG(LogTemp, Error,
+				REPLAY_ANALYTIC_LOG(LogTemp, Error,
 					TEXT("[AnalyticExplicitBake] Asset=%s Result=Missing Owner=%s"),
 					*AssetPath, *SourceActor->GetPathName());
 				return;
 			}
 			if (ExplicitBakedAsset && ExplicitBakedAsset != CandidateAsset)
 			{
-				UE_LOG(LogTemp, Error,
+				REPLAY_ANALYTIC_LOG(LogTemp, Error,
 					TEXT("[AnalyticExplicitBake] Result=ConflictingAssets First=%s Second=%s"),
 					*ExplicitBakedAssetPath, *AssetPath);
 				return;
@@ -260,7 +267,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			MeshSourceInventoryHash = Speed::Analytic::CombineStableIds(
 				MeshSourceInventoryHash,
 				Speed::Analytic::StableStringId(StableIdentity));
-			UE_LOG(LogTemp, Display,
+			REPLAY_ANALYTIC_LOG(LogTemp, Display,
 				TEXT("[AnalyticMeshSource] Owner=%s Component=%s Mesh=%s"),
 				*SourceActor->GetPathName(), *MeshComponent->GetName(),
 				*Mesh->GetPathName());
@@ -335,7 +342,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		const TSharedPtr<const Speed::Analytic::FAnalyticWorldData> BakedRuntime =
 			BakedAsset->BuildRuntimeData(&BakedReason, false,
 				bAuthorityProvidersOnly);
-		UE_LOG(LogTemp, Display,
+		REPLAY_ANALYTIC_LOG(LogTemp, Display,
 			TEXT("[AnalyticRuntimeLoadTiming] AuthorityOnly=%d Seconds=%.6f Success=%d"),
 			bAuthorityProvidersOnly ? 1 : 0,
 			FPlatformTime::Seconds() - RuntimeBuildStartSeconds,
@@ -387,7 +394,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			BakedRuntime->TensorBezierPatches.Num() : 0;
 		const int32 RuntimePiecewiseCount = BakedRuntime ?
 			BakedRuntime->PiecewiseTensorBezierPatches.Num() : 0;
-		UE_LOG(LogTemp, Display,
+		REPLAY_ANALYTIC_LOG(LogTemp, Display,
 			TEXT("[AnalyticMeshBakeAuthority] BakeSchema=%u SerializedPlanes=%d/%d SerializedQuintics=%d/%d SerializedTensors=%d/%d SerializedPiecewise=%d/%d RuntimePlanes=%d/%d RuntimeQuintics=%d/%d RuntimeTensors=%d/%d RuntimePiecewise=%d/%d"),
 			BakedAsset->BakeSchemaVersion,
 			SerializedPlaneAuthorityCount, BakedAsset->BoundedPlanes.Num(),
@@ -400,7 +407,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			RuntimeQuinticAuthorityCount, RuntimeQuinticCount,
 			RuntimeTensorAuthorityCount, RuntimeTensorCount,
 			RuntimePiecewiseAuthorityCount, RuntimePiecewiseCount);
-		UE_LOG(LogTemp, Display,
+		REPLAY_ANALYTIC_LOG(LogTemp, Display,
 			TEXT("[AnalyticMeshBakeAcceleration] TensorApproximationCells=%lld PiecewiseCells=%lld PiecewiseApproximationCells=%lld PiecewiseApproximationBvhNodes=%lld"),
 			RuntimeTensorApproximationCellCount, RuntimePiecewiseCellCount,
 			RuntimePiecewiseApproximationCellCount,
@@ -447,28 +454,28 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			CombinedSourceHash = Speed::Analytic::CombineStableIds(
 				CombinedSourceHash, BakedRuntime->SourceHash);
 			bMeshBakeLoaded = true;
-			UE_LOG(LogTemp, Display,
+			REPLAY_ANALYTIC_LOG(LogTemp, Display,
 				TEXT("[AnalyticExplicitBake] Asset=%s Result=%s"),
 				bUsesExplicitBake ? *ExplicitBakedAssetPath : *BakedObjectPath,
 				bUsesExplicitBake ? TEXT("Accepted") : TEXT("MapFallbackAccepted"));
 		}
 		else
 		{
-			UE_LOG(LogTemp, Warning,
+			REPLAY_ANALYTIC_LOG(LogTemp, Warning,
 				TEXT("[AnalyticMeshBake] Asset=%s Result=Rejected LiveHash=%016llX BakedHash=%016llX Detail=%s"),
 				bUsesExplicitBake ? *ExplicitBakedAssetPath : *BakedObjectPath,
 				MeshSourceInventoryHash, BakedInventoryHash,
 				BakedRuntime ? TEXT("Source inventory mismatch.") : *BakedReason);
 		}
 	}
-	UE_LOG(LogTemp, Display,
+	REPLAY_ANALYTIC_LOG(LogTemp, Display,
 		TEXT("[AnalyticMeshSourceInventory] Actors=%d Components=%d Hash=%016llX Baked=%d Triangles=%d"),
 		AnalyticMeshSourceActors.Num(), MeshSourceComponentCount,
 		MeshSourceInventoryHash, bMeshBakeLoaded ? 1 : 0,
 		BakedRuntimeWorld ? BakedRuntimeWorld->Triangles.Num() : Imported->Triangles.Num());
 	if (MeshSourceComponentCount > 0 && !bMeshBakeLoaded)
 	{
-		UE_LOG(LogTemp, Error,
+		REPLAY_ANALYTIC_LOG(LogTemp, Error,
 			TEXT("[AnalyticAuthorityCoverageMissing] World=%s Components=%d Hash=%016llX Detail=The strict analytical world will remain unavailable until the authored source inventory has a matching immutable bake."),
 			*WorldName, MeshSourceComponentCount, MeshSourceInventoryHash);
 		return;
@@ -501,7 +508,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 					!Plane.bRequiresCompactOptIn;
 			}))
 		{
-			UE_LOG(LogTemp, Display,
+			REPLAY_ANALYTIC_LOG(LogTemp, Display,
 				TEXT("[AnalyticLandscapeAdapter] Source=%s Result=BakedAuthority Detail=Immutable baked Landscape certificate loaded."),
 				*Landscape->GetPathName());
 			continue;
@@ -510,7 +517,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			Speed::Analytic::BuildFlatLandscapePlane(
 				*Landscape,
 				CVarIAmSpeedAnalyticLandscapeFlatnessTolerance.GetValueOnGameThread());
-		UE_LOG(LogTemp, Display,
+		REPLAY_ANALYTIC_LOG(LogTemp, Display,
 			TEXT("[AnalyticLandscapeAdapter] Source=%s Result=%u ResidualCm=%.9g Detail=%s"),
 			*Landscape->GetPathName(), static_cast<uint8>(Output.Result),
 			Output.MaximumHeightResidual, *Output.Diagnostic);
@@ -548,7 +555,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			if (!Imported->AppendFinalizedNonCompactPlanes(
 				MoveTemp(AdditionalLandscapePlanes), &ExtensionReason))
 			{
-				UE_LOG(LogTemp, Warning,
+				REPLAY_ANALYTIC_LOG(LogTemp, Warning,
 					TEXT("[AnalyticWorldBuild] IncrementalPlaneExtensionRejected Detail=%s"),
 					*ExtensionReason);
 				return;
@@ -571,7 +578,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
             const uint64 Id=Speed::Analytic::StableStringId(TEXT("AuthoredTorus|")+Identity);
             Speed::Analytic::FTorusSurface Torus;FString Error;
             if (!Ring->BuildStaticTorus(Id,Torus,Error))
-            { UE_LOG(LogTemp,Error,TEXT("[AnalyticTorusRejected] %s: %s"),*Ring->GetPathName(),*Error); return; }
+            { REPLAY_ANALYTIC_LOG(LogTemp,Error,TEXT("[AnalyticTorusRejected] %s: %s"),*Ring->GetPathName(),*Error); return; }
             AuthoredTori.Add(Torus);AnalyticSourceComponents.Add(Id,Ring);
         }
     }
@@ -584,7 +591,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
             CombinedSourceHash=Speed::Analytic::CombineStableIds(CombinedSourceHash,Torus.SourceId);
         Imported->Tori.Append(MoveTemp(AuthoredTori));
         bRuntimeWorldMutated=true;bRuntimeWorldIncrementallyFinalized=false;
-        UE_LOG(LogTemp,Display,TEXT("[AnalyticTorusAdmission] Count=%d"),Imported->Tori.Num());
+        REPLAY_ANALYTIC_LOG(LogTemp,Display,TEXT("[AnalyticTorusAdmission] Count=%d"),Imported->Tori.Num());
     }
 	TSharedPtr<const Speed::Analytic::FAnalyticWorldData> FinalizedWorld;
 	if (BakedRuntimeWorld && !bRuntimeWorldMutated)
@@ -601,7 +608,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		FString ValidationReason;
 		if (!Imported->FinalizeAndValidate(&ValidationReason))
 		{
-			UE_LOG(LogTemp, Warning,
+			REPLAY_ANALYTIC_LOG(LogTemp, Warning,
 				TEXT("[AnalyticWorldBuild] Rejected Detail=%s"), *ValidationReason);
 			return;
 		}
@@ -632,7 +639,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 	{
 		ValidShapeSampleCount += Sample.bValid ? 1 : 0;
 	}
-	UE_LOG(LogTemp, Display,
+	REPLAY_ANALYTIC_LOG(LogTemp, Display,
 		TEXT("[AnalyticWorldBuild] Attempt=%u Planes=%d ExtrudedQuintics=%d Triangles=%d Vertices=%d Edges=%d BoundaryEdges=%d NonManifoldEdges=%d SmoothEdges=%d CreaseEdges=%d SmoothRegions=%d Patches=%d PlanarCandidates=%d ShapeValid=%d BvhNodes=%d Hash=%016llX AuthorityEligible=%d PendingSource=%d"),
 		AnalyticWorldBuildAttempt, Finalized.Planes.Num(),
 		Finalized.ExtrudedQuinticPatches.Num(), Finalized.Triangles.Num(),
@@ -652,7 +659,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		ExtrudedFacetBoundsAllocatedBytes += Patch.SectionSegmentBounds.GetAllocatedSize();
 		ExtrudedFacetGeometryAllocatedBytes += Patch.SectionFacetGeometry.GetAllocatedSize();
 	}
-	UE_LOG(LogTemp, Display,
+	REPLAY_ANALYTIC_LOG(LogTemp, Display,
 		TEXT("[AnalyticQueryStorage] ExtrudedFacets=%llu FacetBoundsAllocatedBytes=%llu FacetGeometryAllocatedBytes=%llu"),
 		ExtrudedFacetCount, ExtrudedFacetBoundsAllocatedBytes, ExtrudedFacetGeometryAllocatedBytes);
 #endif
@@ -687,6 +694,8 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedDebugPersistentDynamicPairs(
 	TEXT("p.IAmSpeed.Collision.DebugPersistentDynamicPairs"),
 	0,
 	TEXT("Logs registration, rejection and impulses for persistent dynamic pairs."));
+
+#undef REPLAY_ANALYTIC_LOG
 
 bool USpeedWorldSubsystem::AreUnilateralRollingPairsEnabled()
 {

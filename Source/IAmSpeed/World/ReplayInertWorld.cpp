@@ -16,6 +16,7 @@
 #include "HAL/PlatformProperties.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectKey.h"
+#include "PhysicsEngine/BodyInstance.h"
 namespace Speed::ReplayIsolation
 {
 namespace
@@ -29,6 +30,8 @@ struct Scope
     bool Bound=false,Retired=false,Fenced=false,Ready=false;
     TArray<TWeakObjectPtr<AActor>> Originals;
     TSet<FObjectKey> Components;
+    TSet<FObjectKey> DeferredOriginalComponents;
+    TMap<FObjectKey,TWeakObjectPtr<AActor>> AuthoredChildActors;
 };
 TArray<TSharedPtr<Scope>> Scopes;
 bool Installed=false;
@@ -56,8 +59,20 @@ bool PhysicalBody(const AActor& Actor)
     for(UActorComponent* C:Actor.GetComponents())if(IsValid(C)&&(C->IsA<USpeedMovementComponent>()||C->IsA<USpeedWheeledComponent>()))return true;
     return false;
 }
-bool HasClassInChain(const UActorComponent& C,const TCHAR* Path)
+bool HasClassInChain(const UObject& C,const TCHAR* Path)
 {for(UClass* K=C.GetClass();K;K=K->GetSuperClass())if(K->GetPathName()==Path)return true;return false;}
+// Landscape collision components read the proxy actor BodyInstance instead
+// of their own primitive BodyInstance. Configure only that new-world instance;
+// never mutate Landscape assets, BodySetup data or an existing physical body.
+bool ReadLandscapeBody(AActor& Actor,FBodyInstance*& Body)
+{
+    Body=nullptr;
+    if(!HasClassInChain(Actor,TEXT("/Script/Landscape.LandscapeProxy")))return true;
+    auto* Property=FindFProperty<FStructProperty>(Actor.GetClass(),TEXT("BodyInstance"));
+    if(!Property||Property->Struct!=FBodyInstance::StaticStruct())return false;
+    Body=Property->ContainerPtrToValuePtr<FBodyInstance>(&Actor);
+    return Body!=nullptr;
+}
 bool Gather(UWorld& World,TArray<AActor*>& Actors,FString& Why)
 {
     if(!World.PersistentLevel){Why=TEXT("inert replay missing persistent level");return false;}
@@ -100,16 +115,33 @@ void BeforeWorldInitialization(UWorld* World,const UWorld::InitializationValues)
     // unregister/destroy-physics/stop-solver repair is performed on refusal.
     for(auto* Actor:Actors)
     {
+        FBodyInstance* LandscapeBody=nullptr;
+        if(!ReadLandscapeBody(*Actor,LandscapeBody)||(LandscapeBody&&LandscapeBody->IsValidBodyInstance()))
+        {Failure(*S,*World,TEXT("inert replay landscape proxy body missing or already physical: ")+Actor->GetPathName());return;}
         if(Actor->HasActorBegunPlay()){Failure(*S,*World,TEXT("inert replay actor already began play"));return;}
         const bool IsBody=PhysicalBody(*Actor);
         if(auto* Pawn=Cast<APawn>(Actor))if(Pawn->GetController())
         {Failure(*S,*World,TEXT("inert replay authored pawn already possessed"));return;}
         for(UActorComponent* C:Actor->GetComponents())
         {
+            // Original gameplay render components must never enter registration:
+            // child actor spawning, widget construction and animation callbacks
+            // would reintroduce live gameplay into a snapshot replay.
             if(IsValid(C)&&(C->IsA<UChildActorComponent>()||HasClassInChain(*C,TEXT("/Script/UMG.WidgetComponent"))||(!IsBody&&C->IsA<USkeletalMeshComponent>())))
-            {Failure(*S,*World,TEXT("inert replay map contains unadmitted child-actor/widget/non-body animated component"));return;}
+            {
+                if(auto* Child=Cast<UChildActorComponent>(C))if(auto* Existing=Child->GetChildActor())
+                {
+                    // A cooked authored child may already be serialized in the
+                    // loaded level. It is admitted only as another exact member
+                    // of the complete original actor fence, never as a new spawn.
+                    if(!Actors.Contains(Existing)||Existing->GetWorld()!=World||Existing->GetLevel()!=Actor->GetLevel()||Existing->GetParentComponent()!=Child)
+                    {Failure(*S,*World,TEXT("inert replay child is outside the exact loaded actor fence: ")+C->GetPathName());return;}
+                    S->AuthoredChildActors.Add(FObjectKey(C),Existing);
+                }
+                S->DeferredOriginalComponents.Add(FObjectKey(C));
+            }
             if(!IsValid(C)||++Count>200000||C->IsRegistered()||C->IsPreRegistered()||C->IsPreRegistering()||C->IsPhysicsStateCreated()||C->IsActive())
-            {Failure(*S,*World,TEXT("inert replay component already registered/preregistered/physical or invalid"));return;}
+            {Failure(*S,*World,TEXT("inert replay component already registered/preregistered/physical/active or invalid: ")+GetPathNameSafe(C));return;}
         }
     }
 #if WITH_EDITOR
@@ -117,6 +149,14 @@ void BeforeWorldInitialization(UWorld* World,const UWorld::InitializationValues)
 #endif
     for(auto* Actor:Actors)
     {
+        FBodyInstance* LandscapeBody=nullptr;
+        if(!ReadLandscapeBody(*Actor,LandscapeBody))
+        {Failure(*S,*World,TEXT("inert replay landscape proxy body changed before fence"));return;}
+        if(LandscapeBody)
+        {
+            LandscapeBody->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            LandscapeBody->bSimulatePhysics=false;
+        }
         Actor->SetActorEnableCollision(false);Actor->PrimaryActorTick.bStartWithTickEnabled=false;Actor->SetActorTickEnabled(false);
         const bool Body=PhysicalBody(*Actor);
         Actor->AutoReceiveInput=EAutoReceiveInput::Disabled;
@@ -129,12 +169,14 @@ void BeforeWorldInitialization(UWorld* World,const UWorld::InitializationValues)
             // Original physical bodies are replaced by the inert native scene.
             // They need no component registration: this prevents original
             // skeletal InitAnim/PostProcessBP/Cloth and component callbacks.
-            if(Body)C->bAutoRegister=false;
+            if(Body||S->DeferredOriginalComponents.Contains(FObjectKey(C)))C->bAutoRegister=false;
             if(auto* Primitive=Cast<UPrimitiveComponent>(C))
             {
                 Primitive->bAlwaysCreatePhysicsState=false;
                 Primitive->SetCollisionEnabled(ECollisionEnabled::NoCollision);
                 Primitive->SetGenerateOverlapEvents(false);Primitive->SetSimulatePhysics(false);
+                if(Primitive->bAlwaysCreatePhysicsState||Primitive->GetCollisionEnabled()!=ECollisionEnabled::NoCollision||Primitive->IsSimulatingPhysics())
+                {Failure(*S,*World,TEXT("pre-registration setters: ")+FString::Printf(TEXT("inert replay original primitive collision changed: %s class=%s registered=%d physics=%d always=%d collision=%d sim=%d"),*C->GetPathName(),*C->GetClass()->GetPathName(),int32(C->IsRegistered()),int32(C->IsPhysicsStateCreated()),int32(Primitive->bAlwaysCreatePhysicsState),int32(Primitive->GetCollisionEnabled()),int32(Primitive->IsSimulatingPhysics())));return;}
             }
         }
         if(Body)Actor->SetActorHiddenInGame(true);
@@ -157,14 +199,29 @@ bool Audit(Scope& S,UWorld& World,AGameModeBase& Mode,FString& Why)
     {
         auto* A=Weak.Get();if(!A||A->HasActorBegunPlay()||A->GetActorEnableCollision()||A->IsActorTickEnabled())
         {Why=TEXT("inert replay original actor lifecycle/isolation changed");return Failure(S,World,Why);}
+        FBodyInstance* LandscapeBody=nullptr;
+        if(!ReadLandscapeBody(*A,LandscapeBody)||(LandscapeBody&&(LandscapeBody->IsValidBodyInstance()||LandscapeBody->bSimulatePhysics||LandscapeBody->GetCollisionEnabled(false)!=ECollisionEnabled::NoCollision)))
+        {Why=TEXT("inert replay landscape proxy collision configuration changed: ")+A->GetPathName();return Failure(S,World,Why);}
         for(UActorComponent* C:A->GetComponents())
         {
             ++SeenComponents;
+            if(IsValid(C)&&S.DeferredOriginalComponents.Contains(FObjectKey(C)))
+            {
+                if(C->bAutoRegister||C->IsRegistered()||C->IsPreRegistered()||C->IsPreRegistering())
+                {Why=TEXT("inert replay deferred gameplay component entered registration: ")+C->GetPathName();return Failure(S,World,Why);}
+                if(auto* Child=Cast<UChildActorComponent>(C))
+                {
+                    const auto* Expected=S.AuthoredChildActors.Find(FObjectKey(C));
+                    if((Expected&&!Expected->IsValid())||Child->GetChildActor()!=(Expected?Expected->Get():nullptr)||
+                       (Expected&&(Expected->Get()->GetWorld()!=&World||Expected->Get()->GetParentComponent()!=Child)))
+                    {Why=TEXT("inert replay deferred child actor identity changed: ")+C->GetPathName();return Failure(S,World,Why);}
+                }
+            }
             if(!IsValid(C)||!S.Components.Contains(FObjectKey(C))||C->IsPhysicsStateCreated()||C->IsComponentTickEnabled()||C->IsActive()||C->bAutoActivate||C->bWantsInitializeComponent)
             {Why=TEXT("inert replay original component set/physics/tick changed");return Failure(S,World,Why);}
             if(auto* Primitive=Cast<UPrimitiveComponent>(C))
                 if(Primitive->bAlwaysCreatePhysicsState||Primitive->GetCollisionEnabled()!=ECollisionEnabled::NoCollision||Primitive->IsSimulatingPhysics())
-                {Why=TEXT("inert replay original primitive collision changed");return Failure(S,World,Why);}
+                {Why=FString::Printf(TEXT("inert replay original primitive collision changed: %s class=%s registered=%d physics=%d always=%d collision=%d sim=%d"),*C->GetPathName(),*C->GetClass()->GetPathName(),int32(C->IsRegistered()),int32(C->IsPhysicsStateCreated()),int32(Primitive->bAlwaysCreatePhysicsState),int32(Primitive->GetCollisionEnabled()),int32(Primitive->IsSimulatingPhysics()));return Failure(S,World,Why);}
         }
     }
     if(SeenComponents!=uint64(S.Components.Num()))
