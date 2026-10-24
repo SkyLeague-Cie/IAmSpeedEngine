@@ -1369,11 +1369,38 @@ bool USpeedWheeledComponent::CanBypassCanonicalSupportContactWarmup() const
 
 bool USpeedWheeledComponent::CanPreserveCanonicalSupportNormalRotation() const
 {
-	// Normal-axis rotation is compatible with a support pose only when this
-	// support was already proven at startup. An impact replay may accumulate
-	// contact frames while frozen during countdown; its incoming yaw must not
-	// make it eligible for an immediate canonical projection.
-	return bCanonicalSupportStartupPoseConfirmed;
+	// Retain the already-proven startup point fix. A moving impact must instead
+	// complete five unfrozen movable frames before yaw can be preserved by the
+	// ordinary canonical-support projection. Countdown contacts alone do not
+	// establish this history; independent freezes must also interrupt it.
+	if (bCanonicalSupportStartupPoseConfirmed)
+	{
+		return true;
+	}
+	const uint32 CurrentFrame = NumFrame();
+	if (!CanMove() || IsFrozen() || SinceCanMoveFrame < 0
+		|| CurrentFrame > uint32(MAX_int32)
+		|| uint64(CurrentFrame) < uint64(SinceCanMoveFrame) + 5u)
+	{
+		return false;
+	}
+	for (int32 Offset = 1; Offset <= 5; ++Offset)
+	{
+		const int32 Frame = int32(CurrentFrame) - Offset;
+		const int32 Idx = Frame % SpeedConstants::RecordedHistorySize;
+		if (!RecordedBaseFrames.IsValidIndex(Idx)
+			|| !RecordedBaseStates.IsValidIndex(Idx)
+			|| !RecordedWheeledStates.IsValidIndex(Idx)
+			|| RecordedBaseFrames[Idx] != Frame
+			|| RecordedBaseStates[Idx].bIsFrozen
+			|| RecordedWheeledStates[Idx].nbFramesbeforeCanMove != 0)
+		{
+			return false;
+		}
+	}
+	// The base projection still requires every wheel's contact warmup,
+	// coplanarity, bounded normal/tangent motion and a feasible nearby pose.
+	return true;
 }
 
 unsigned int USpeedWheeledComponent::NbFramesSinceCanMove() const
