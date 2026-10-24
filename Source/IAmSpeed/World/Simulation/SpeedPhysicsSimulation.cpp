@@ -1,5 +1,8 @@
 #include "SpeedPhysicsSimulation.h"
 #include "ReplayPhysicalFrameScope.h"
+#include "ReplayLifecycleBoundary.h"
+#include "Engine/World.h"
+#include <array>
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
@@ -40,6 +43,132 @@
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include <exception>
 #include <stdexcept>
+
+namespace Speed::ReplayLifecycle
+{
+namespace
+{
+struct FFence
+{
+    std::atomic<const ASpeedPhysicsSimulation*> Host{nullptr};
+    std::atomic<bool> ResumeRequested{false};
+};
+std::array<FFence,64> Fences;
+struct FHold
+{
+    Token Id=0;TWeakObjectPtr<UWorld> World;uint64 Frame=0,Serial=0,Generation=0;
+    uint32 Slot=0;bool InitiallyPaused=false,ServiceLease=false,Ready=false,RenewedWithoutFrame=false;
+};
+TMap<TWeakObjectPtr<ASpeedPhysicsSimulation>,FHold> Holds;
+Token Next=1;
+TWeakObjectPtr<ASpeedPhysicsSimulation> Key(ASpeedPhysicsSimulation& H){return TWeakObjectPtr<ASpeedPhysicsSimulation>(&H);}
+bool Refuse(FString& F,const TCHAR* Why){F=Why;return false;}
+FHold* Find(ASpeedPhysicsSimulation& H,Token T)
+{auto* V=Holds.Find(Key(H));return V&&T&&V->Id==T?V:nullptr;}
+bool Identity(ASpeedPhysicsSimulation& H,const FHold& V,FString& F)
+{
+    if(!V.Ready||!IsValid(&H)||!V.World.IsValid()||H.GetWorld()!=V.World.Get()||V.World->bIsTearingDown||
+       !H.IsOwnedWorkerExecutionMode()||H.GetInputWorkerGeneration()!=V.Generation||
+       !H.IsOwnedSimulationPaused()||Fences[V.Slot].Host.load()!=&H)
+        return Refuse(F,TEXT("Replay lifecycle native owner/world/input generation/fence changed"));
+    FSimulationSnapshot S;
+    if(!H.ReadLatestSimulationSnapshot(S)||S.NumFrame!=V.Frame||S.PublicationSerial!=V.Serial)
+        return Refuse(F,TEXT("Replay lifecycle physical publication advanced or unavailable under hold"));
+    return true;
+}
+}
+// Called only on GT by the existing resume path after its original guards.
+// Public resume rejects non-GT calls before it can observe this ownership.
+bool DeferResume(const ASpeedPhysicsSimulation* H)
+{
+    for(auto& V:Fences)if(V.Host.load()==H){V.ResumeRequested.store(true);return true;}
+    return false;
+}
+void RetireHost(ASpeedPhysicsSimulation& H)
+{
+    check(IsInGameThread());auto* V=Holds.Find(Key(H));if(!V)return;
+    Fences[V->Slot].Host.store(nullptr);Fences[V->Slot].ResumeRequested.store(false);Holds.Remove(Key(H));
+}
+Token Acquire(ASpeedPhysicsSimulation& H,FString& F)
+{
+    if(!IsInGameThread()){Refuse(F,TEXT("Replay lifecycle requires game thread"));return 0;}F.Empty();
+    if(!IsValid(&H)||!H.HasActorBegunPlay()||!H.GetWorld()||H.GetWorld()->bIsTearingDown||
+       !H.IsOwnedWorkerExecutionMode()||H.IsOwnedBoundaryServiceSuspended()||Holds.Contains(Key(H))||!Next||Next==MAX_uint64)
+    {Refuse(F,TEXT("Replay lifecycle acquisition owner/boundary unavailable"));return 0;}
+    uint32 Slot=uint32(Fences.size());
+    for(uint32 I=0;I<uint32(Fences.size());++I)if(!Fences[I].Host.load()){Slot=I;break;}
+    if(Slot==uint32(Fences.size())){Refuse(F,TEXT("Replay lifecycle finite fence capacity"));return 0;}
+    FHold V;V.Id=Next++;V.Slot=Slot;V.World=H.GetWorld();V.InitiallyPaused=H.IsOwnedSimulationPaused();
+    Holds.Add(Key(H),V); // allocation completes before publishing the fence
+    Fences[Slot].ResumeRequested.store(false);Fences[Slot].Host.store(&H);
+    const auto Q=H.TrySuspendOwnedBoundaryService(1000);auto* Current=Find(H,V.Id);
+    const bool Ack=Q==ESimulationQuiescence::BoundaryAcknowledged&&H.IsOwnedBoundaryServiceSuspended();
+    const bool Joined=Q==ESimulationQuiescence::AlreadyStopped&&H.InputOwnersRetiredAfterJoin(H.GetInputWorkerGeneration());
+    FSimulationSnapshot S;
+    if(!Current||(!Ack&&!Joined)||!H.ReadLatestSimulationSnapshot(S)||!S.PublicationSerial)
+    {
+        const bool Requested=Fences[Slot].ResumeRequested.load();
+        if(Ack)H.ResumeOwnedBoundaryService();RetireHost(H);
+        auto* W=H.GetWorld();
+        if(Ack&&IsValid(&H)&&W&&V.World.IsValid()&&W==V.World.Get()&&!W->bIsTearingDown&&
+           (!V.InitiallyPaused||Requested))H.ResumeOwnedSimulation();
+        Refuse(F,TEXT("Replay lifecycle actual boundary ACK or joined input owner/publication missing"));return 0;
+    }
+    Current->Frame=S.NumFrame;Current->Serial=S.PublicationSerial;Current->Generation=H.GetInputWorkerGeneration();
+    Current->ServiceLease=Ack;Current->Ready=true;
+    if(!Identity(H,*Current,F)){FString Ignore;Release(H,V.Id,Ignore);return 0;}
+    return V.Id;
+}
+bool Validate(ASpeedPhysicsSimulation& H,Token T,FString& F)
+{if(!IsInGameThread())return Refuse(F,TEXT("Replay lifecycle requires game thread"));F.Empty();auto* V=Find(H,T);return V?Identity(H,*V,F):Refuse(F,TEXT("Replay lifecycle token is not current owner"));}
+bool SuspendService(ASpeedPhysicsSimulation& H,Token T,FString& F)
+{
+    if(!IsInGameThread())return Refuse(F,TEXT("Replay lifecycle requires game thread"));if(!Validate(H,T,F))return false;auto* V=Find(H,T);
+    if(V->ServiceLease)return H.IsOwnedBoundaryServiceSuspended()||Refuse(F,TEXT("Replay lifecycle owned service ACK lost"));
+    const auto Q=H.TrySuspendOwnedBoundaryService(1000);V=Find(H,T);
+    if(!V)return Refuse(F,TEXT("Replay lifecycle owner changed during suspension"));
+    if(Q==ESimulationQuiescence::BoundaryAcknowledged&&H.IsOwnedBoundaryServiceSuspended())V->ServiceLease=true;
+    else if(Q!=ESimulationQuiescence::AlreadyStopped||
+            (!H.InputOwnersRetiredAfterJoin(V->Generation)&&!V->RenewedWithoutFrame))
+        return Refuse(F,TEXT("Replay lifecycle service needs ACK or proved joined/new paused generation"));
+    return Identity(H,*V,F);
+}
+bool ResumeService(ASpeedPhysicsSimulation& H,Token T,FString& F)
+{
+    if(!IsInGameThread())return Refuse(F,TEXT("Replay lifecycle requires game thread"));if(!Validate(H,T,F))return false;auto* V=Find(H,T);
+    if(V->ServiceLease){V->ServiceLease=false;H.ResumeOwnedBoundaryService();}
+    V=Find(H,T);if(!V)return Refuse(F,TEXT("Replay lifecycle owner changed while releasing service"));
+    return Identity(H,*V,F); // physical pause/fence remains active
+}
+bool RenewJoinedInputs(ASpeedPhysicsSimulation& H,Token T,FString& F)
+{
+    if(!IsInGameThread())return Refuse(F,TEXT("Replay lifecycle requires game thread"));if(!Validate(H,T,F))return false;auto* V=Find(H,T);
+    if(V->ServiceLease||!H.InputOwnersRetiredAfterJoin(V->Generation))
+        return Refuse(F,TEXT("Replay lifecycle input renewal requires the actual old generation join with service released"));
+    const uint64 Previous=V->Generation;
+    if(!H.PrepareControlledInputRun()||H.GetInputWorkerGeneration()==Previous)
+        return Refuse(F,TEXT("Replay lifecycle controlled input generation renewal failed"));
+    V=Find(H,T);if(!V)return Refuse(F,TEXT("Replay lifecycle owner changed during input renewal"));
+    V->Generation=H.GetInputWorkerGeneration();V->RenewedWithoutFrame=true;
+    return Identity(H,*V,F);
+}
+bool Release(ASpeedPhysicsSimulation& H,Token T,FString& F)
+{
+    if(!IsInGameThread())return Refuse(F,TEXT("Replay lifecycle requires game thread"));F.Empty();auto* V=Find(H,T);
+    if(!V)return Refuse(F,TEXT("Replay lifecycle release is not the matching live owner"));
+    const bool Verified=Identity(H,*V,F);const auto Copy=*V;
+    const bool Requested=Fences[Copy.Slot].ResumeRequested.load();
+    if(Copy.ServiceLease)H.ResumeOwnedBoundaryService();
+    RetireHost(H);
+    // Restoring the game's original resume intent is not capture admission.
+    // Original native registry/teardown guards still decide whether it resumes.
+    auto* W=H.GetWorld();
+    if(Verified&&IsValid(&H)&&W&&Copy.World.IsValid()&&W==Copy.World.Get()&&!W->bIsTearingDown&&
+       (!Copy.InitiallyPaused||Requested))H.ResumeOwnedSimulation();
+    return Verified;
+}
+}
+
 
 namespace
 {
@@ -309,6 +438,7 @@ void ASpeedPhysicsSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Speed::OwnedFrameAudit::TryExportForHostOnGameThread(this);
 #endif
 	StopOwnedWorker();
+    Speed::ReplayLifecycle::RetireHost(*this);
 	{
 		FScopeLock Lock(&PresentationProducerMutex);
 		PresentationProducers.Reset();
@@ -414,6 +544,7 @@ void ASpeedPhysicsSimulation::TransitionExecutionMode(
     // recording owner must refuse rather than override the requested mode.
     if(NewMode!=ESimulationExecutionMode::IAmSpeedThread&&!ReplayStartupHolds.IsEmpty())ReplayStartupHolds.Remove(ReplayStartupKeyFor(this));
 	StopOwnedWorker();
+    Speed::ReplayLifecycle::RetireHost(*this);
 	bAsyncPhysicsTickEnabled = false;
 	ResetCanonicalFrame();
 	GameThreadAccumulatorSeconds = 0.0;
@@ -702,6 +833,9 @@ bool ASpeedPhysicsSimulation::JoinOwnedSimulationForInputTeardown()
 
 void ASpeedPhysicsSimulation::ResumeOwnedSimulation()
 {
+    // Native input/gameplay callers are GT owners. Refuse a foreign-thread
+    // resume before consulting GT lifecycle ownership or changing pause state.
+    if(!IsInGameThread())return;
 	if (bInputOwnerRetired.Load()) return;
     // A resumed device does not prove the other owners (bots included) have
     // acknowledged Resume. Keep servicing boundaries, but do not step a
@@ -717,6 +851,7 @@ void ASpeedPhysicsSimulation::ResumeOwnedSimulation()
 	// A timed-out structural request remains fail-closed until a later caller
 	// claims its ACK or joins the worker. Do not publish a false resumed state.
 	if (SimulationWorker && SimulationWorker->IsBoundaryServiceSuspendRequested()) return;
+    if (Speed::ReplayLifecycle::DeferResume(this)) return;
 	bOwnedSimulationPaused.Store(false);
 	OnOwnedSimulationResumed();
 	if (SimulationWorker &&
