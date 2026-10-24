@@ -27,7 +27,6 @@ class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
 class ISpeedComponent;
 namespace Speed::CanonicalObservers {struct FAccess20;}
-
 struct FSimulationPresentationBinding
 {
 	uint64 OwnerStableId = 0;

@@ -152,3 +152,25 @@ tests d'intégration. Complete n'est pas une prise20s Saved. Si la demande GT de
 sauvegarde arrive après la sortie du worker, elle doit emprunter un vrai drain
 retired admis pour cette génération ; cette extension n'ajoute ni frame fictif
 ni faux service pour terminer l'écriture.
+
+
+## Qualification de compilation UE isolée Observer25
+
+Deux véritables TU ont compilé exit0 : CanonicalCommitObserver.cpp et
+SpeedPhysicsSimulation.cpp. Les stdout entiers contiennent uniquement leurs
+noms de fichier ; stderr0 et SARIF sans résultat. Leurs105/159 dépendances sont
+entièrement pré-gelées, avec un seul Driver.h overlay admis ; ReadSet3004/3004,
+deuxJob0 et cleanup vide. Les objets restent des produits de validation isolée.
+
+La correction source retire exactement une ligne vide après le forward FAccess20 :
+UCLASS41 et GENERATED_BODY44 correspondent au generated header existant exact
+SHA76a1e0f8cf1fe90234085e95c1ea52c5a4a4706c1cc6007622aae4cf345f4529.
+L'ancien essai01 FAIL42/45 est conservé ; aucun generated ni PCH n'est modifié.
+La compilation réutilise les generated/PCH exacts préexistants : aucune exécution
+UHT, Link, Editor, worker/join natif ou prise TAS20s n'est qualifiée. Les163
+assertions portables précédentes gardent leur portée. Ni gameplay ni champ UCLASS,
+ABI, codec, hash, sink ou corps C++ n'est changé par cette suppression de ligne.
+
+Prochaine étape : intégrer leur V6 isolé après la clôture1086 côté Experimental,
+sans intervenir dans leur build ou prise active. Complete ne remplace toujours
+pas le Saved corrélé ni la preuve Epoch/EndFrame.
