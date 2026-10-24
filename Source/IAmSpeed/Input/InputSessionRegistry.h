@@ -484,6 +484,7 @@ public:
     }
 #include "../RegistryBoundaryCapture.inc"
 #include "../RegistryBoundaryReservation.inc"
+#include "../EmptyInputPeriodEvidence.inc"
     std::shared_ptr<const FRegistryFrame> ReadLatest() const { return IsWorker() && !Terminal ? Latest : nullptr; }
     std::shared_ptr<const FRegistryFrame> ReadInitial() const { return IsWorker() && !Terminal ? InitialReceipt : nullptr; }
     std::shared_ptr<const FRegistryFrame> ReadHistoricalInitial() const { return IsWorker() ? HistoricalInitial : nullptr; }

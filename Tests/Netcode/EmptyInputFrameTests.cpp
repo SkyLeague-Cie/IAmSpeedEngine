@@ -180,6 +180,8 @@ static void EmptyWorkerPresentationAndStopGates()
     CHECK(F.Registry.ReadHistorical(1) && !F.Registry.PrepareEmptyFrameReceipt(2));
 }
 
+#include "EmptyInputPeriodTests.inc"
+
 int main(int Argc, char* Argv[])
 {
     if (RebasedRegistryRegressionMain(Argc,Argv)) return 1;
@@ -190,6 +192,9 @@ int main(int Argc, char* Argv[])
         PendingEmptyPreservesNextBoundaryBind(); EmptyFailuresNoCompletedReceipt(); EmptyWorkerPresentationAndStopGates();
         std::cout << "EMPTY_COHORT " << Checks-Before << " new checks; combined " << Checks
             << "; actual registry+driver adapter INPUT only; UE driver/world publication NOT_COMPILED/RUN\n";
+        const auto BeforePeriod = Checks;
+        TestActualEmptyInputPeriodEvidence();
+        std::cout << "EMPTY_PERIOD " << Checks-BeforePeriod << " new checks; combined " << Checks << "; genuine INPUT history only, no world/branch/restore admission\n";
         return 0;
     }
     catch (const std::exception& E)
