@@ -44,6 +44,8 @@ template<class Archive,class State> void WheeledPhysics(Archive& A,State& S)
     A.Scalar(S.bStartCountdown);
     A.Scalar(S.nbFramesbeforeCanMove);
     A.Scalar(S.FramesSinceLastImpact);
+    // Presentation-only exclusion LastCarBumpVictim: process-local bump target pointer; car schemas3/4 replay recorded poses/effects in an inert world, not collision solver state.
+    // Presentation-only exclusion CarBumpCooldownFrames: bump collision cooldown is simulation-only; paired target identity is not stored in presentation car schemas3/4.
     A.Vector(S.AllowedSideVelocity);
     A.Vector(S.AllowedAngularVelocity);
     A.Array(S.SuspensionLastDisplacement);
