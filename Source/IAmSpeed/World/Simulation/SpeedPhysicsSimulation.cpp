@@ -1,6 +1,7 @@
 #include "SpeedPhysicsSimulation.h"
 #include "ReplayPhysicalFrameScope.h"
 #include "ReplayLifecycleBoundary.h"
+#include "CanonicalCommitObserverInternal.h"
 #include "Engine/World.h"
 #include <array>
 // Fill out your copyright notice in the Description page of Project Settings.
@@ -438,6 +439,8 @@ void ASpeedPhysicsSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Speed::OwnedFrameAudit::TryExportForHostOnGameThread(this);
 #endif
 	StopOwnedWorker();
+    if(!Speed::CanonicalObservers::RetireAllAfterActualJoin(*this))
+        UE_LOG(LogTemp,Error,TEXT("[CanonicalObserverRetirementUnproven] Driver=%u Generation=%llu"),GetUniqueID(),GetInputWorkerGeneration());
     Speed::ReplayLifecycle::RetireHost(*this);
 	{
 		FScopeLock Lock(&PresentationProducerMutex);
@@ -540,6 +543,11 @@ void ASpeedPhysicsSimulation::TransitionExecutionMode(
 	const ESimulationExecutionMode NewMode)
 {
 	if (bInputOwnerRetired.Load()) return;
+    if(Speed::CanonicalObservers::HasRegistration(*this))
+    {
+        Speed::CanonicalObservers::DriverFailed(*this);bOwnedSimulationPaused.Store(true);bOwnedWorkerTerminal.Store(true);
+        StopOwnedWorker();return; // controlled owner must join/retire before changing mode
+    }
     // A manual unsupported mode change invalidates startup admission; the
     // recording owner must refuse rather than override the requested mode.
     if(NewMode!=ESimulationExecutionMode::IAmSpeedThread&&!ReplayStartupHolds.IsEmpty())ReplayStartupHolds.Remove(ReplayStartupKeyFor(this));
@@ -597,9 +605,13 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::BeginWork(OwnedAudit, CanonicalNumFrame);
 #endif
+			if(!Speed::CanonicalObservers::EnterActualWorkerPulse(*this))return ESimulationWorkerResult::Failed;
 			const ESimulationWorkerResult Result = DriveOwnedWorkerPulse(
 				FCanonicalFrameContext::CanonicalPhysicalDeltaTime,
 				GetCanonicalPulseSimTime());
+            // Includes failures before RunCanonicalFrames (for example the
+            // existing physical frame cap); keep the first observer reason.
+            if(Result==ESimulationWorkerResult::Failed)Speed::CanonicalObservers::DriverFailed(*this);
 #if WITH_DEV_AUTOMATION_TESTS
 			Speed::OwnedFrameAudit::EndWork(OwnedAudit, Result);
 #endif
@@ -678,6 +690,7 @@ void ASpeedPhysicsSimulation::StopOwnedWorker()
 bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
 {
 	check(IsInGameThread());
+    if(Speed::CanonicalObservers::HasRegistration(*this))return false; // no generation replacement while retained
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
 		|| bCanonicalPublicationTerminal.Load()) return false;
 	const auto Boundary = TryPauseOwnedSimulation();
@@ -998,27 +1011,20 @@ bool ASpeedPhysicsSimulation::EnsureSimulationWorldReady()
 
 ESimulationWorkerResult ASpeedPhysicsSimulation::CheckCanonicalRunReadiness()
 {
-	const ECanonicalRunControlState RunState =
-		SpeedWorldSubsystem->GetCanonicalRunControlState();
-	if (RunState == ECanonicalRunControlState::WaitingForScenario ||
-		(RunState == ECanonicalRunControlState::Uncontrolled &&
-			RequiresCanonicalRunController()))
-	{
-		CanonicalReadyDelayPulsesObserved = 0;
-		return ESimulationWorkerResult::Idle;
-	}
-	if (RunState == ECanonicalRunControlState::Complete)
-	{
-		return ESimulationWorkerResult::Complete;
-	}
-	if (RunState == ECanonicalRunControlState::Ready &&
-		CanonicalReadyDelayPulsesObserved <
-			Speed::CanonicalFrameDriver::GetFastReadyDelayCallbacks())
-	{
-		++CanonicalReadyDelayPulsesObserved;
-		return ESimulationWorkerResult::Idle;
-	}
-	return ESimulationWorkerResult::Advanced;
+    using Speed::CanonicalObserver20::EReadiness;
+    const auto Body=SpeedWorldSubsystem->GetCanonicalRunControlState();
+    const auto Participant=Body==ECanonicalRunControlState::WaitingForScenario?EReadiness::Waiting:
+        Body==ECanonicalRunControlState::Complete?EReadiness::Complete:
+        Body==ECanonicalRunControlState::Ready?EReadiness::Ready:EReadiness::None;
+    const auto Observer=Speed::CanonicalObservers::DriverDecision(*this);
+    const auto Decision=Speed::CanonicalObserver20::Combine(Participant,Observer);
+    if(Decision==EReadiness::Failed)return ESimulationWorkerResult::Failed;
+    if(Decision==EReadiness::Complete)return ESimulationWorkerResult::Complete;
+    if(Decision==EReadiness::Waiting||(Decision==EReadiness::None&&RequiresCanonicalRunController()))
+    {CanonicalReadyDelayPulsesObserved=0;return ESimulationWorkerResult::Idle;}
+    if(Decision==EReadiness::Ready&&CanonicalReadyDelayPulsesObserved<Speed::CanonicalFrameDriver::GetFastReadyDelayCallbacks())
+    {++CanonicalReadyDelayPulsesObserved;return ESimulationWorkerResult::Idle;}
+    return ESimulationWorkerResult::Advanced;
 }
 
 void ASpeedPhysicsSimulation::InitializeCanonicalFrame(const float SimTime)
@@ -1162,6 +1168,9 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 #endif
 	for (uint32 FrameIndex = 0; FrameIndex < FrameCount; ++FrameIndex)
 	{
+        const auto ObserverGate=Speed::CanonicalObservers::TerminalDecision(*this);
+        if(ObserverGate==Speed::CanonicalObserver20::EReadiness::Failed)return false;
+        if(ObserverGate==Speed::CanonicalObserver20::EReadiness::Complete)break;
 #if !UE_BUILD_SHIPPING
         Speed::Diagnostics::CaseCoverage276::FScopedForward CallerForward276(IndependentFastCoverage276,CanonicalNumFrame);
         Speed::Analytic::CaseSatDiagnostics::FScopedFrame DiagnosticFrame(CaseSatDiagnosticIdentity,CanonicalNumFrame);
@@ -1180,6 +1189,10 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
             DiagnosticFrame.Finish(false);
             CallerForward276.Finish(false);
 #endif
+			// A refused observer may follow an actually published commit. Advance
+            // only that proven frame counter, never restore or repeat it.
+            if(Speed::CanonicalObservers::HasCommittedAt(*this,CanonicalNumFrame))++CanonicalNumFrame;
+            Speed::CanonicalObservers::DriverFailed(*this);
 			return false;
 		}
 #if !UE_BUILD_SHIPPING
@@ -1189,6 +1202,9 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 		RecordStepPerformance(
 			(FPlatformTime::Seconds() - PhysicalFrameStartSeconds) * 1000.0);
 		++CanonicalNumFrame;
+        const auto ObserverAfter=Speed::CanonicalObservers::TerminalDecision(*this);
+        if(ObserverAfter==Speed::CanonicalObserver20::EReadiness::Failed)return false;
+        if(ObserverAfter==Speed::CanonicalObserver20::EReadiness::Complete)break;
 	}
 	return true;
 }
@@ -1264,6 +1280,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     Speed::ParallelTiming::FFrameScope ParallelTimingScope(ParallelFrameTiming, Context.NumFrame, Context.PhysicalDeltaTime);
 #endif
 	if (bCanonicalPublicationTerminal.Load()) return false;
+    if(!Speed::CanonicalObservers::AllowsPhysicalStep(*this,Context.NumFrame))return false;
 	if (!SpeedWorldSubsystem)
 	{
 		SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());
@@ -1594,6 +1611,9 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		// Optional replay observes only the successful full commit. Failure retires
 		// recording, never the live physics step or its canonical hash.
 		ServiceReplayCapture(Snapshot);
+        ExceptionStage=TEXT("PostCommitObserver");
+        if(Speed::CanonicalObservers::PostCommitted(*this,Snapshot,SnapshotBuffer.PublishedSerial())==Speed::CanonicalObserver20::EReadiness::Failed)
+        {MarkTerminal();return false;} // the published frame is retained; RunCanonicalFrames counts it once
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::PostCommit);
 #endif
@@ -1743,6 +1763,7 @@ bool ASpeedPhysicsSimulation::RequestRollbackAndResimulation(
 	const auto InputView = ReadInputRegistryView();
 	if (InputView && !InputView->Bindings.empty()) return false;
 	FScopeLock Lock(&RollbackRequestMutex);
+    if(Speed::CanonicalObservers::HasRegistration(*this))return false; // no rewind under an observer generation
 	if (PendingRollbackRequest.IsSet())
 	{
 		return false;

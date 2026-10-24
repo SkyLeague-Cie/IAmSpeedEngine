@@ -26,6 +26,7 @@
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
 class ISpeedComponent;
+namespace Speed::CanonicalObservers {struct FAccess20;}
 
 struct FSimulationPresentationBinding
 {
@@ -42,6 +43,7 @@ UCLASS(Abstract)
 class IAMSPEED_API ASpeedPhysicsSimulation : public ASpeedSimulation
 {
 	GENERATED_BODY()
+    friend struct Speed::CanonicalObservers::FAccess20; // no fields or reflected layout change
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 #endif
@@ -74,7 +76,7 @@ public:
 	void Tick(float DeltaSeconds) override;
 	void AsyncPhysicsTickActor(float DeltaTime, float SimTime) override final;
 	void Simulate(const float& DeltaTime, const float& SimTime);
-	/** Executes one complete canonical frame; false means no frame was committed. */
+	/** Executes one complete canonical frame. A post-commit failure remains committed and is terminal; false does not authorize rollback. */
 	bool StepCanonicalFrame(const FCanonicalFrameContext& Context);
 	/** Frame-addressed boundary API; adapters seal inputs before FastSimulation. */
 	/** Queues an opaque input for one run-stable component id and target frame. */
