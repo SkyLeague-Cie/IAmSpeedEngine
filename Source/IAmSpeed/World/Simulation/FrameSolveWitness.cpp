@@ -288,9 +288,12 @@ void FFrameSolveWitnessScope::RecordWheelManifold1368(uint8 Event,const ISpeedCo
   W::Add(Raw,C.WorldPos);W::Add(Raw,C.Normal);W::Add(Raw,C.r);W::Add(Raw,C.vN);W::Add(Raw,C.InvMassEff);
   W::Add(Raw,C.SpringDisplacement);W::Add(Raw,C.bVelocityLocked);W::Add(Raw,C.bNewContact);W::Add(Raw,C.bAtBumpStop);
  }
- W::Add(Raw,Order.Num());for(const auto V:Order)W::Add(Raw,V);
- W::Add(Raw,Scalars.Num());for(const auto V:Scalars)W::Add(Raw,V);
- W::Add(Raw,DoubleScalars.Num());for(const auto V:DoubleScalars)W::Add(Raw,V);
+ W::Add(Raw,Order.Num());
+ if(Order.Num()>0)Raw.Append(reinterpret_cast<const uint8*>(Order.GetData()),Order.Num()*int32(sizeof(int32)));
+ W::Add(Raw,Scalars.Num());
+ if(Scalars.Num()>0)Raw.Append(reinterpret_cast<const uint8*>(Scalars.GetData()),Scalars.Num()*int32(sizeof(float)));
+ W::Add(Raw,DoubleScalars.Num());
+ if(DoubleScalars.Num()>0)Raw.Append(reinterpret_cast<const uint8*>(DoubleScalars.GetData()),DoubleScalars.Num()*int32(sizeof(double)));
  W::Add(Raw,Vectors.Num());for(const auto& V:Vectors)W::Add(Raw,V);
  W::Add(Scope->WheelRaw1368,uint32(0x334d5749));W::Add(Scope->WheelRaw1368,uint32(Raw.Num()));Scope->WheelRaw1368.Append(Raw);
  if(!Scope->bOverflow&&Pointers.MakeCanonicalWithScratch1368(Canonical,Scope->WheelRowCanonicalBuildScratch1368))
