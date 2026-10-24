@@ -144,6 +144,11 @@ struct FNativeContactRow1368
  Speed::Analytic::FTensorCellWaveStats1213 TensorDiagnostics;
  int32 TensorUsefulNative=0,TensorReusedNative=0,TensorReusedLanes=0;
  int32 GroundedWheels[2]={0,0};bool ActiveSuspension[2]={false,false};int32 WheelManifoldRows=0;
+ // Values-only comparison inputs, captured at N; no live registry in oracle.
+ ::FSimulationSnapshot CameraOracleSnapshot1368;
+ Speed::FFrameFloatingPointContext CameraOracleNumeric1368;
+ TArray<uint64> CameraOraclePolls1368;
+ bool bCameraOracleCaptured1368=false;
  Speed::FFramePointerCanonicalSnapshot1456 DeferredContacts1368,DeferredStates1368;
  Speed::FWheelWitnessSnapshot1368 DeferredWheel1368;
  Speed::FFrameFloatingPointContext ContactProjectionNumeric1368,StateProjectionNumeric1368;
@@ -422,7 +427,7 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
    R.RawWheelManifold.SetNumZeroed(128*1024);R.RawWheelManifold.Reset();
    if(!TestTrue(TEXT("grounded state deferred storage prepared before owner"),R.DeferredStates1368.ReserveAndPreTouch1456(StateCapacity1368,4096))
     ||!TestTrue(TEXT("grounded contact deferred storage prepared before owner"),R.DeferredContacts1368.ReserveAndPreTouch1456(65536,2048)))return false;
-   if(!Fast){R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);}
+   if(!Fast){R.CameraPose.Reserve(512);R.CameraCheckpoint.Reserve(4096);R.CameraOraclePolls1368.SetNum(CarCount);}
   }
   // Only these fixture buffers are pre-touched. Canonical projectors and the
   // wheel observer's internal buffers may still allocate during capture.
@@ -646,22 +651,25 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
    Row.CameraPose=Snapshot.PresentationOutputs[0].Payload;
    Row.CameraCheckpoint=Snapshot.PresentationOutputs[0].StatePayload;
    Row.CameraNative=GetFrameParallelStageTotals(EFrameParallelStage::Camera).MaximumNativeThreads;
+   // The production camera has already run, joined, owner-validated and
+   // published in this physical pulse. Keep the independent oracle off its
+   // cadence, exactly as NativeCarsCameraTests1217's deferred1434 path.
    Snapshot.PresentationOutputs.Reset();
-   const auto Validate=[&]
+   for(int32 A=0;A<Cars.Num();++A)
    {
-    for(int32 A=0;A<Cars.Num();++A)
-    {if(!Driver->InputSessionRegistry||Driver->InputSessionRegistry->PollCount(ExactDescriptors[A].Id)!=N+1)return false;}
-    return true;
-   };
-   if(!FrameParallel::ProduceFramePresentationWithOwnerValidation(Snapshot,WorkerList,Lanes,true,Validate)
-    ||Snapshot.PresentationOutputs.Num()!=1||Row.CameraPose!=Snapshot.PresentationOutputs[0].Payload
-    ||Row.CameraCheckpoint!=Snapshot.PresentationOutputs[0].StatePayload)
+    // Retain the original live check at N, in addition to the input checks
+    // above; defer only its immutable observed count, never a registry read.
+    if(!Driver->InputSessionRegistry)
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+    Row.CameraOraclePolls1368[A]=Driver->InputSessionRegistry->PollCount(ExactDescriptors[A].Id);
+    if(Row.CameraOraclePolls1368[A]!=N+1)
+    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   }
+   Row.CameraOracleNumeric1368=CaptureFrameFloatingPointContext();
+   if(!Row.CameraOracleNumeric1368.bValid)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
-   FSpeedCarCameraPose Pose;
-   const bool PoseRead=FSpeedCarCameraPose::Read(Snapshot.PresentationOutputs[0].Payload,Pose);
-   if(PoseRead){CameraStatus=int32(Pose.Result.Status);CameraReason=int32(Pose.Result.Reason);}
-   if(!PoseRead||Pose.Frame!=N||Pose.Result.Status!=ESpeedCarCameraStatus::Valid)
-   {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   Row.CameraOracleSnapshot1368=MoveTemp(Snapshot);
+   Row.bCameraOracleCaptured1368=true;
 
    }
    else
@@ -745,6 +753,40 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
    // of an incomplete run keep their canonical prefixes as well as raw bytes.
    Project1368(R.bContactsCaptured1368,R.DeferredContacts1368,R.ContactProjectionNumeric1368,R.OrderedSolve);
    Project1368(R.bStatesCaptured1368,R.DeferredStates1368,R.StateProjectionNumeric1368,R.ObservedStates);
+  }
+  // Replay only after natural completion and StopAndJoin, while producers
+  // remain alive. Failed/incomplete owners retain their original raw evidence;
+  // no oracle result can promote such a run to success.
+  if(Finished&&!Failed&&Steps==Frames&&!Fast)
+  for(uint32 N=0;N<Frames;++N)
+  {
+   auto& R=Seen[N];
+   const auto RejectCameraOracle1368=[&](const TCHAR* Reason)
+   {
+    Failed=true;R.bComplete=false;if(FailureLine==0)FailureLine=__LINE__;
+    PointerFailure+=FString::Printf(TEXT("Camera oracle N=%u %s; original production bytes retained\n"),N,Reason);
+   };
+   FScopedFrameFloatingPointContext OracleNumeric1368(R.CameraOracleNumeric1368);
+   if(!TestTrue(TEXT("completed grounded camera oracle numeric entry available"),OracleNumeric1368.IsApplied()))
+   {RejectCameraOracle1368(TEXT("numeric entry refused"));continue;}
+   const auto ValidateCompleted1368=[&]()
+   {
+    if(!R.bCameraOracleCaptured1368||!R.bComplete||R.Frame!=N||R.Publication!=N+1||R.CameraOraclePolls1368.Num()!=CarCount)return false;
+    for(const uint64 Polls:R.CameraOraclePolls1368)if(Polls!=N+1)return false;
+    return true;
+   };
+   const bool Produced1368=FrameParallel::ProduceFramePresentationWithOwnerValidation(
+    R.CameraOracleSnapshot1368,WorkerList,Lanes,true,ValidateCompleted1368);
+   const auto& Outputs1368=R.CameraOracleSnapshot1368.PresentationOutputs;
+   FSpeedCarCameraPose Pose1368;
+   const bool PoseRead1368=Produced1368&&Outputs1368.Num()==1&&FSpeedCarCameraPose::Read(Outputs1368[0].Payload,Pose1368);
+   if(PoseRead1368){CameraStatus=int32(Pose1368.Result.Status);CameraReason=int32(Pose1368.Result.Reason);}
+   const bool Equal1368=PoseRead1368&&R.CameraPose==Outputs1368[0].Payload&&R.CameraCheckpoint==Outputs1368[0].StatePayload
+    &&Pose1368.Frame==N&&Pose1368.Result.Status==ESpeedCarCameraStatus::Valid;
+   const bool Restored1368=OracleNumeric1368.Restore();
+   if(!TestTrue(FString::Printf(TEXT("completed grounded camera oracle matches actual native publication at N%u lanes%d"),N,Lanes),Equal1368)
+    ||!TestTrue(TEXT("grounded camera oracle restores complete GT numeric context"),Restored1368))
+    RejectCameraOracle1368(TEXT("production comparison or numeric restore refused"));
   }
   if(Failed)AddInfo(FString::Printf(TEXT("[NativeAnalyticContactsFirstFailure1297] Fast=%d Lanes=%d Steps=%u Line=%d CameraStatus=%d CameraReason=%d"),Fast?1:0,Lanes,Steps,FailureLine,CameraStatus,CameraReason));
   // Save ALL raw/canonical observations only after joining, so file I/O is
