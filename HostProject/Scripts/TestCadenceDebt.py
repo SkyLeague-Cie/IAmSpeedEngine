@@ -51,9 +51,12 @@ class AdditiveCadence(unittest.TestCase):
                     self.policy if policy is None else policy, self.root,
                     required=set(), expected_paths=[row['fullTestPath'] for row in (report or self.report)['tests']])
 
-    def test_inactive_default_stays_strict_fail(self):
+    def test_disabled_policy_stays_strict_fail(self):
         inactive = ci.additive_cadence_policy()
-        self.assertIs(inactive['activation']['enabled'], False)
+        # Exercise the disabled behavior even after Root's later versioned
+        # activation. The prepared candidate's false default is pinned in its
+        # source receipt, not an assertion which would break that future CI.
+        inactive['activation'] = dict(enabled=False, trigger=None, at_utc=None, decision_sha256=None)
         with self.assertRaises(ValueError): self.assess(policy=inactive)
 
     def test_accepts_only_separate_assessment_preserves_raw_and_log(self):
