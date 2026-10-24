@@ -270,11 +270,7 @@ def work_tmpfs_evidence(work):
     return dict(capacity_bytes=fs.f_blocks * fs.f_frsize, mountinfo=mounts[0], noexec=False)
 
 
-def export_artifacts(work, export, editor_started, editor_call_finished):
-    # run_logged uses subprocess.run: normal return and exceptional exit both
-    # reap its Editor process before this point. Never copy while it is live.
-    if editor_started and not editor_call_finished:
-        raise RuntimeError('Native Editor call has not finished; export is forbidden')
+def artifact_files(work):
     # Preserve raw failures too. Build caches/DDC/home are disposable, while
     # source.tar and the exact committed input remain in the host run metadata.
     roots = ('Logs', 'Automation', 'user/Saved', 'HostProject/Saved',
@@ -295,6 +291,16 @@ def export_artifacts(work, export, editor_started, editor_call_finished):
         if path.is_symlink() or not path.is_file() or any(
                 parent.is_symlink() for parent in path.parents if parent != work.parent):
             raise RuntimeError('Unsafe native export source: ' + str(path))
+    return files
+
+
+def export_artifacts(work, export, editor_started, editor_call_finished, native_timeout=False):
+    # subprocess.run returns/reaps its direct child, including on timeout;
+    # this marker does not establish closure of arbitrary descendant writers.
+    if editor_started and not editor_call_finished:
+        raise RuntimeError('Native Editor call has not finished; export is forbidden')
+    files = artifact_files(work)
+    for path in files:
         target = export / path.relative_to(work)
         if any(parent.is_symlink() for parent in target.parents if parent != export.parent):
             raise RuntimeError('Symlink native export destination: ' + str(target))
@@ -312,9 +318,14 @@ def export_artifacts(work, export, editor_started, editor_call_finished):
                    sha256=digest(export/row['path'])) for row in before]
     if before != after or before != copied:
         raise RuntimeError('Native export source/destination byte identity differs')
+    if artifact_files(work) != files:
+        raise RuntimeError('Native export source file set changed during export')
     save(export / 'export-manifest.json', dict(state='VERIFIED_AFTER_NATIVE_CALL', files=before,
          editor_started=editor_started, editor_call_finished=editor_call_finished,
          source_before_equals_after=True, destination_verified=True,
+         source_file_set_before_equals_after=True, native_call_closure_scope='DIRECT_CHILD_ONLY',
+         export_completeness='UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY' if native_timeout else
+                             'REINVENTORIED_SELECTED_ROOTS_AFTER_DIRECT_CHILD',
          excluded=['home', 'config', 'cache', 'dotnet', 'DDC', 'Intermediate', 'immutable image SDK']))
 
 
@@ -374,7 +385,7 @@ def inside():
         try:
             code = run_logged(command, logs / 'tests.stdout.log', 1800, editor.parent, env)
         finally:
-            # subprocess.run kills and reaps its child before raising on timeout.
+            # Direct child only: timeout does not prove descendant-writer drain.
             editor_call_finished = True
         result['editor_exit'] = code
         policy = accepted_debt_policy()
@@ -387,6 +398,9 @@ def inside():
         result.update(engine_version=version, engine_root_inside_image=str(engine))
     except Exception as exc:
         result['reason'] = str(exc)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            result.update(state='FAIL', native_timeout=True, full_ci_qualified=False,
+                          export_completeness='UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')
     result.update(editor_started=editor_started, editor_call_finished=editor_call_finished)
     try:
         if (output / 'debt-assessment.json').exists():
@@ -398,7 +412,8 @@ def inside():
     except Exception as exc:
         result.update(state='FAIL', evidence_error=str(exc), full_ci_qualified=False)
     try:
-        export_artifacts(output, Path('/output'), editor_started, editor_call_finished)
+        export_artifacts(output, Path('/output'), editor_started, editor_call_finished,
+                         native_timeout=result.get('native_timeout', False))
     except Exception as exc:
         # Preserve the original Editor/build exit and raw files already copied.
         result.update(state='FAIL', export_error=str(exc), full_ci_qualified=False)

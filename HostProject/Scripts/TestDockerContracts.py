@@ -393,6 +393,7 @@ class LinuxWorkExportTransport(unittest.TestCase):
             calls.append(command)
             if len(calls)==1:
                 Path(log).write_bytes(b'original build stdout')
+                if mode=='build_timeout':raise ci.subprocess.TimeoutExpired(command,timeout)
                 return 43 if mode=='build_failure' else 0
             report=dict(succeeded=len(paths),succeededWithWarnings=0,failed=0,notRun=0,inProcess=0,
                         tests=[dict(fullTestPath=p,state='Success',warnings=0,errors=0)for p in paths])
@@ -424,7 +425,13 @@ class LinuxWorkExportTransport(unittest.TestCase):
                 self.assertTrue(result['editor_call_finished']);self.assertEqual(len(calls),2)
                 for relative in ('Automation/index.json','Logs/tests.stdout.log','HostProject/Saved/IAmSpeed/raw-failed.pack','HostProject/Binaries/Linux/module.so'):
                     self.assertEqual((work/relative).read_bytes(),(export/relative).read_bytes())
-                if mode=='timeout':self.assertIn('timed out',result['reason'])
+                if mode=='timeout':
+                    self.assertIn('timed out',result['reason'])
+                    self.assertTrue(result['native_timeout'])
+                    self.assertEqual(result['export_completeness'],'UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')
+                    manifest=json.loads((export/'export-manifest.json').read_text())
+                    self.assertEqual(manifest['native_call_closure_scope'],'DIRECT_CHILD_ONLY')
+                    self.assertEqual(manifest['export_completeness'],'UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')
                 else:self.assertEqual(result['editor_exit'],1 if mode=='editor_failure'else 0)
 
     def test_build_failure_preserves_original_code_and_logs_without_editor(self):
@@ -438,6 +445,14 @@ class LinuxWorkExportTransport(unittest.TestCase):
         with patch.object(Path,'glob',side_effect=AssertionError('must not enumerate active files')):
             with self.assertRaisesRegex(RuntimeError,'has not finished'):
                 ci.export_artifacts(Path('unused-work'),Path('unused-export'),True,False)
+
+    def test_build_timeout_keeps_failure_and_unknown_completeness(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            code,result,work,export,calls=self.run_fixture(Path(tmp),'build_timeout')
+            self.assertEqual((code,result['state'],len(calls)),(1,'FAIL',1))
+            self.assertFalse(result['editor_started']);self.assertTrue(result['native_timeout'])
+            self.assertEqual(result['export_completeness'],'UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')
+            self.assertEqual((export/'Logs/build.stdout.log').read_bytes(),b'original build stdout')
 
     def test_export_refuses_collision_and_retains_existing_metadata(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
@@ -454,6 +469,23 @@ class LinuxWorkExportTransport(unittest.TestCase):
             with patch.object(ci.shutil,'copyfile',side_effect=lambda source,target:Path(target).write_bytes(b'corrupted')):
                 with self.assertRaisesRegex(RuntimeError,'byte identity differs'):
                     ci.export_artifacts(work,export,True,True)
+            self.assertFalse((export/'export-manifest.json').exists())
+
+    def test_new_raw_file_after_inventory_refuses_verified_manifest(self):
+        for trigger in (1,2,3):
+          with self.subTest(digest_call=trigger),tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            work,export=(Path(tmp)/name for name in ('work','export'));work.mkdir();export.mkdir()
+            logs=work/'Logs';logs.mkdir();(logs/'first.log').write_bytes(b'original')
+            original_digest=ci.digest;calls=0
+            def create_late_file(path):
+                nonlocal calls
+                calls+=1
+                if calls==trigger:(logs/'late.log').write_bytes(b'late native bytes')
+                return original_digest(path)
+            with patch.object(ci,'digest',side_effect=create_late_file):
+                with self.assertRaisesRegex(RuntimeError,'file set changed'):
+                    ci.export_artifacts(work,export,True,True)
+            self.assertTrue((logs/'late.log').exists())
             self.assertFalse((export/'export-manifest.json').exists())
 
 
