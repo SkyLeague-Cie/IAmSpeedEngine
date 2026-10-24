@@ -8,11 +8,13 @@ import re
 
 EIGHT = 'IAmSpeed.Simulation.FrameParallel.NativeAnalyticEightCars1552'
 GROUND = 'IAmSpeed.Simulation.FrameParallel.NativeAnalyticGrounded1368'
+CAMERA = 'IAmSpeed.Simulation.FrameParallel.NativeCarsCanonicalCamera1217'
 FAMILIES = {
     EIGHT: ['QualificationEightCars1534'],
     GROUND: ['Qualification1368', 'QualificationLow16_1403', 'QualificationLow8_1403',
              'QualificationIdle50Cells64_1403', 'QualificationIdle50Cells16_1403',
              'QualificationIdle50Cells8_1403'],
+    CAMERA: ['NativeCarsDeferredContacts1456'],
 }
 LANES = [1, 2, 4, 8, 12]
 METRICS = ['ActualStartIntervalMs', 'TargetStartIntervalMs', 'BaseStartIntervalMs',
@@ -20,16 +22,17 @@ METRICS = ['ActualStartIntervalMs', 'TargetStartIntervalMs', 'BaseStartIntervalM
 MESSAGE = re.compile(r'SpeedPhysicsLog: \[RealTimeSimulationCadence\] Physics Thread is too slow: Frame=(\d+) '
                      + ' '.join(name + r'=([^ ]+)' for name in METRICS))
 EVIDENCE = re.compile(r'\[NativeAnalyticContacts1368Evidence\] Path=(\S+) Saved=([01])')
+CAMERA_EVIDENCE = re.compile(r'\[NativeCarsDeferredContacts1456\] Requested=(1|2|4|8|12) Frames=90 CounterHz=(\d+) ProjectionTicks=(\d+) Scope=PureOwnedContactProjectionAfterNaturalOwnerDrain')
 DEADLINE = dt.datetime(2026, 10, 24, 20, 30, tzinfo=dt.timezone.utc)
 
 
 def check_policy(policy, now=None):
-    if (policy.get('schema') != 'iamspeed.additive-cadence-debt/v1'
+    if (policy.get('schema') != 'iamspeed.additive-cadence-debt/v2'
             or policy.get('tests') != FAMILIES or policy.get('normal_lanes') != LANES
             or policy.get('frames') != 90 or policy.get('hz') != 300
             or policy.get('preserve_raw_evidence') is not True
             or policy.get('preserve_existing_v1_debt') is not True):
-        raise ValueError('Cadence policy scope differs from the two authorized fixture identities')
+        raise ValueError('Cadence policy scope differs from the three authorized fixture identities')
     activation = policy.get('activation', {})
     if activation.get('enabled') is False:
         return False
@@ -90,6 +93,32 @@ def cohort_proof(evidence_root, test, native_path, saved):
                 family=parts[5], normal=True, frames=90, hz=300, rows_header=lines[0])
 
 
+def camera_cohort_proof(entries, at, marker):
+    # Source1217 uses ARealTimeSimulation only,90 frames, lanes1/2/4/8/12.
+    # Its real evidence family is the post-natural-drain Info stream, not TSV.
+    lane = int(marker[1])
+    if int(marker[2]) <= 0:
+        raise ValueError('Invalid native camera counter frequency')
+    frames, post = [], []
+    for entry in entries[at+1:]:
+        message = entry.get('event', {}).get('message', '')
+        if CAMERA_EVIDENCE.fullmatch(message):
+            break
+        for tag, destination in [('NativeCarsFrameCost1420', frames), ('NativeCarsPostCost1456', post)]:
+            found = re.match(r'\['+tag+r'\] Requested=(\d+) N=(\d+) ', message)
+            if found:
+                if int(found[1]) != lane:
+                    raise ValueError('Ambiguous native camera cohort costs')
+                destination.append(int(found[2]))
+    if frames != list(range(90)) or post != list(range(90)):
+        raise ValueError('Camera cadence debt needs complete native90-frame/post-cost evidence')
+    return dict(evidence_kind='SAME_TEST_NATIVE_POST_NATURAL_DRAIN_INFOS',
+                family='NativeCarsDeferredContacts1456', requested_lanes=lane,
+                normal=True, frames=90, hz=300, marker_entry_index=at,
+                marker_event=copy.deepcopy(entries[at]['event']),
+                native_frame_cost_rows=90, native_post_cost_rows=90)
+
+
 def project_cadence(report, evidence_root):
     """Make a private assessment copy and an exhaustive list of accepted events.
 
@@ -133,7 +162,25 @@ def project_cadence(report, evidence_root):
                 if any(not value.is_finite() or value < 0 for value in numbers) or not numbers[0] > numbers[1] or numbers[2] <= 0:
                     raise ValueError('Invalid too-slow cadence metrics')
                 pending.append((i, int(match[1]), dict(zip(METRICS, match.groups()[1:]))))
-            evidence = EVIDENCE.fullmatch(message)
+            camera_marker = CAMERA_EVIDENCE.fullmatch(message) if test == CAMERA else None
+            evidence = EVIDENCE.fullmatch(message) if test != CAMERA else None
+            if camera_marker:
+                identity = ('NativeCarsDeferredContacts1456', int(camera_marker[1]))
+                if identity in seen_paths:
+                    raise ValueError('Ambiguous repeated native camera cohort')
+                seen_paths.add(identity)
+                if pending:
+                    proof = camera_cohort_proof(entries, i, camera_marker)
+                    cohort_frames = frames.setdefault(str(identity), set())
+                    for warning_index, frame, values in pending:
+                        if frame in cohort_frames:
+                            raise ValueError('Duplicate native camera cadence event for same frame')
+                        cohort_frames.add(frame)
+                        accepted.append(dict(test=test, entry_index=warning_index, frame=frame,
+                                             raw_event=copy.deepcopy(entries[warning_index]['event']),
+                                             metrics=values, cohort=proof))
+                        matched.add(warning_index)
+                    pending.clear()
             if evidence:
                 path, saved = evidence.groups()
                 if path in seen_paths:

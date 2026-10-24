@@ -86,6 +86,39 @@ class AdditiveCadence(unittest.TestCase):
         report['tests'][0]['entries'][-1] = self.evidence(native)
         self.assertEqual(self.assess(report)['accepted_cadence'][0]['cohort']['requested_lanes'],12)
 
+    def camera_report(self, lane=2):
+        report=copy.deepcopy(self.report);row=report['tests'][0]
+        row['fullTestPath']=debt.CAMERA
+        marker=f'[NativeCarsDeferredContacts1456] Requested={lane} Frames=90 CounterHz=10000000 ProjectionTicks=409211 Scope=PureOwnedContactProjectionAfterNaturalOwnerDrain'
+        row['entries']=[self.event('Warning',self.message),self.event('Info',marker)]
+        row['entries'] += [self.event('Info',f'[NativeCarsFrameCost1420] Requested={lane} N={n} CounterHz=10000000 PulseTicks=1 ObserverTicks=2 Scope=NonOverlappingPulseAndPostPulseWitness') for n in range(90)]
+        row['entries'] += [self.event('Info',f'[NativeCarsPostCost1456] Requested={lane} N={n} CounterHz=10000000 TotalTicks=2 Scope=DisjointOwnerPostPulseWitness') for n in range(90)]
+        return report
+
+    def test_camera1217_real_marker_family_and_complete90_rows(self):
+        report=self.camera_report();before=copy.deepcopy(report)
+        result=self.assess(report)
+        self.assertEqual(result['accepted_cadence_count'],1)
+        self.assertEqual(result['accepted_cadence'][0]['cohort']['requested_lanes'],2)
+        self.assertEqual(report,before)
+
+    def test_camera_incomplete_wrong_lane_or_wrong_scope_rejected(self):
+        for mode in ('missing','lane','scope','duplicate'):
+            report=self.camera_report()
+            if mode=='missing':report['tests'][0]['entries'].pop()
+            if mode=='lane':report['tests'][0]['entries'][2]['event']['message']=report['tests'][0]['entries'][2]['event']['message'].replace('Requested=2','Requested=8')
+            if mode=='scope':report['tests'][0]['entries'][1]['event']['message']=report['tests'][0]['entries'][1]['event']['message'].replace('AfterNaturalOwnerDrain','BeforeDrain')
+            if mode=='duplicate':report['tests'][0]['entries'].append(copy.deepcopy(report['tests'][0]['entries'][1]))
+            with self.subTest(mode=mode),self.assertRaises(ValueError):self.assess(report)
+
+    def test_camera_too_fast_new_error_and_foreign_test_rejected(self):
+        for mode in ('too_fast','error','foreign'):
+            report=self.camera_report();row=report['tests'][0]
+            if mode=='too_fast':row['entries'][0]['event']['message']=self.message.replace('too slow','too fast')
+            if mode=='error':row['entries'].append(self.event('Error','new error'))
+            if mode=='foreign':row['fullTestPath']='IAmSpeed.Simulation.FrameParallel.OtherCamera'
+            with self.subTest(mode=mode),self.assertRaises(ValueError):self.assess(report)
+
     def test_other_warning_and_too_fast_rejected(self):
         for message in (self.message.replace('too slow','too fast'), 'Other warning', self.message+' extra', self.message.replace('Frame=50','Frame=91')):
             with self.subTest(message=message):

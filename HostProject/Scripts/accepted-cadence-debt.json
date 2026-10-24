@@ -1,5 +1,5 @@
 {
-  "schema": "iamspeed.additive-cadence-debt/v1",
+  "schema": "iamspeed.additive-cadence-debt/v2",
   "activation": {
     "enabled": false,
     "trigger": null,
@@ -14,8 +14,9 @@
   "hz": 300,
   "tests": {
     "IAmSpeed.Simulation.FrameParallel.NativeAnalyticEightCars1552": ["QualificationEightCars1534"],
-    "IAmSpeed.Simulation.FrameParallel.NativeAnalyticGrounded1368": ["Qualification1368", "QualificationLow16_1403", "QualificationLow8_1403", "QualificationIdle50Cells64_1403", "QualificationIdle50Cells16_1403", "QualificationIdle50Cells8_1403"]
+    "IAmSpeed.Simulation.FrameParallel.NativeAnalyticGrounded1368": ["Qualification1368", "QualificationLow16_1403", "QualificationLow8_1403", "QualificationIdle50Cells64_1403", "QualificationIdle50Cells16_1403", "QualificationIdle50Cells8_1403"],
+    "IAmSpeed.Simulation.FrameParallel.NativeCarsCanonicalCamera1217": ["NativeCarsDeferredContacts1456"]
   },
-  "scope": "Exact RealTimeSimulationCadence Physics Thread is too slow warnings only, Normal mode, explicit source scenes/lanes, unique complete cohort proof. No duration threshold invented, no pacer/test/physics change. Preserve/count every raw event and metric. All other warnings/new errors remain blocking; historical v1 debts remain exactly authorized.",
+  "scope": "Exact RealTimeSimulationCadence Physics Thread is too slow warnings only in1552/1368/1217. Normal mode, explicit source scenes/lanes, unique complete cohort proof.1217 source uses RealTimeSimulation only,90 frames and lanes1/2/4/8/12, verified through post-natural-drain marker plus90 frame-cost and90 post-cost records. No duration threshold invented, no pacer/test/physics change. Preserve/count every raw event and metric. All other warnings/new errors remain blocking; historical v1 debts remain exactly authorized.",
   "follow_up": "Optimization owns observer-cadence attribution/removal after handoff; Native60 functional source reference e87, separate NONCI62 evidence218. No causal performance improvement or strict green asserted."
 }
