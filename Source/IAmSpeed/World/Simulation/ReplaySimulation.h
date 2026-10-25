@@ -91,6 +91,16 @@ class IAMSPEED_API ASpeedReplaySimulation : public ASpeedSimulation
 {
     GENERATED_BODY()
     Speed::Replay::FPlaybackClock Clock;
+    Speed::Replay::FPlaybackElapsedBudget Elapsed;
+    // Wall-derived virtual unpaused timestamp. World pause stops this value
+    // without discarding pre-pause IO debt or changing the pinned target.
+    double PlaybackWallLast32=0,PlaybackUnpausedWall32=0;
+    bool PlaybackWorldWasPaused32=false;
+    bool Diagnostics32=false,Diagnostics32Started=false,Diagnostics32EOF=false,Diagnostics32WriteFailed=false;
+    uint64 DiagnosticTicks32=0,DiagnosticPolls32=0,DiagnosticSourcePending32=0,DiagnosticPreparePending32=0;
+    uint64 DiagnosticPublications32=0,DiagnosticBufferingTicks32=0;
+    double DiagnosticWallStart32=0,DiagnosticAudioStart32=0,DiagnosticRenderDelta32=0;
+    void EmitPlaybackDiagnostics32(const TCHAR* Phase);
     TSharedPtr<IReplayFrameSource, ESPMode::ThreadSafe> Source;
     TSharedPtr<IReplayFrameConsumer, ESPMode::ThreadSafe> Consumer;
     TSharedPtr<const FRecordedReplayFrame, ESPMode::ThreadSafe> Selected;
@@ -113,6 +123,7 @@ class IAMSPEED_API ASpeedReplaySimulation : public ASpeedSimulation
     void Fail();
 public:
     ASpeedReplaySimulation();
+    FString PlaybackDiagnosticStatus32() const;
     bool ReadLatestSimulationSnapshot(FSimulationSnapshot& OutSnapshot) const override;
     bool ReadPresentationPose(uint64 StableId, FSimulationPoseConsumption& Out) override;
     bool ReadPresentationOutput(uint64 StableId, uint32 Channel, FSimulationPresentationOutput& Out) override;

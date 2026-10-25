@@ -90,4 +90,29 @@ public:
         return std::clamp(Rate<0?Frame-Coordinate:Coordinate-Frame,0.,1.);
     }
 };
+// Unpaused, undilated world time feeds transport, not actor render cadence.
+// Pending IO/preparation retains elapsed time without changing its exact target.
+// Explicit controls reset this debt; no old interval bursts after pause/seek.
+class FPlaybackElapsedBudget
+{
+    double Last = 0, Pending = 0; bool Anchored = false;
+public:
+    static constexpr double MaxPendingSeconds = 60.;
+    bool Reset(double Now)
+    { if(!std::isfinite(Now)||Now<0)return false;Last=Now;Pending=0;Anchored=true;return true; }
+    void Close(){Last=Pending=0;Anchored=false;}
+    bool Accumulate(double Now,bool Running)
+    {
+        if(!std::isfinite(Now)||Now<0)return false;
+        if(!Anchored)return Reset(Now);
+        if(Now<Last)return false;
+        const double Delta=Now-Last;Last=Now;
+        if(!Running){Pending=0;return true;}
+        if(Delta>MaxPendingSeconds-Pending)return false;
+        Pending+=Delta;return true;
+    }
+    double Take(){const double Out=Pending;Pending=0;return Out;}
+    double PendingSeconds()const{return Pending;}
+};
+
 }
