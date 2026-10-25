@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 401,
-  "VersionName": "0.4.1",
+  "Version": 402,
+  "VersionName": "0.4.2",
   "FriendlyName": "IAmSpeed",
   "Description": "Plugin that implement IAmSpeed Engine",
   "Category": "IAmSpeed Plugin",

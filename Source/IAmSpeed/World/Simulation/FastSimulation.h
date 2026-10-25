@@ -21,6 +21,9 @@ protected:
 	bool RequiresCanonicalRunController() const override { return true; }
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    friend class FIAmSpeedCollisionMatrix042Test;
+#endif
 	/** Chooses a complete legacy pulse or one interruptible owned-worker frame. */
 	ESimulationWorkerResult DriveFastSimulation(float SimTime, bool bSingleFramePulse);
 	/** Advances one frame and updates aggregate metrics for the current sealed run. */

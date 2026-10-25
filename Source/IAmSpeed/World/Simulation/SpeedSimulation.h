@@ -42,6 +42,7 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 	friend struct FLocalFastBatchFixtureAccess;
+	friend class FIAmSpeedCollisionMatrix042Test;
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FSkyAIInputPauseRegistryTest;
@@ -217,6 +218,13 @@ protected:
 	static USpeedWorldSubsystem* GetSpeedWorldSubsystem(UWorld* World);
 	/** Runs consecutive frames and advances the integer authority only on success. */
 	bool RunCanonicalFrames(uint32 FrameCount);
+	/** Production remains 300 Hz. The matrix opts in only after its owner joined. */
+	FCanonicalFrameContext MakeCanonicalFrameContext(uint64 Frame) const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+	// No public runtime selector or cross-rate rollback admission is introduced.
+	uint32 CollisionMatrixTestHz = 0;
+	uint64 CollisionMatrixTestFirstFrame = 0;
+#endif
 #if !UE_BUILD_SHIPPING
     void BeginIndependentFastCoverage276() noexcept;
     void EndIndependentFastCoverage276(bool bCompleted, const TCHAR* Reason) noexcept;

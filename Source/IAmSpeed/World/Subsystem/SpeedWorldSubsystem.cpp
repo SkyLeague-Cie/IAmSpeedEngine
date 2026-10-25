@@ -16,6 +16,7 @@
 #include "IAmSpeed/World/Simulation/SimulationActorDiagnostics.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
 #include "IAmSpeed/World/Simulation/FrameSolveWitness.h"
+#include "IAmSpeed/World/Simulation/CollisionMatrixObservationForTesting.h"
 #include "IAmSpeed/World/Simulation/FrameAppliedCommandWitness.h"
 #include "IAmSpeed/World/Analytic/AnalyticLandscapeAdapter.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticCollisionAsset.h"
@@ -2291,7 +2292,14 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::BeforeResolve,TimePassed,SubDelta);
 #endif
 
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            auto MatrixResolution042 = Speed::CollisionMatrix042::FObserver::Before(
+                Frame, TimePassed, *Resolver, Hit.Hit);
+#endif
 			Resolver->ResolveCurrentHit(SubDelta, SimTime);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            Speed::CollisionMatrix042::FObserver::After(MatrixResolution042);
+#endif
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterResolve,TimePassed,SubDelta);
 #endif

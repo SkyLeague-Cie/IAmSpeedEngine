@@ -167,8 +167,8 @@ void AFastSimulation::ReportCompletedRun()
 	if (bMeasureWindows) ReportWindowTimings();
 #endif
 	const uint64 SimulatedFrames = CanonicalNumFrame - RunStartFrame;
-	const double SimulatedSeconds = static_cast<double>(SimulatedFrames) /
-		static_cast<double>(FCanonicalFrameContext::PhysicsFramesPerSecond);
+	const double FrameDuration = MakeCanonicalFrameContext(RunStartFrame).PhysicalDeltaTime;
+	const double SimulatedSeconds = static_cast<double>(SimulatedFrames) * FrameDuration;
 	const uint64 MeasuredFrames = PerformanceFrameCount - RunStartPerformanceFrameCount;
 	const uint64 WarningFrames = PerformanceWarningFrameCount - RunStartWarningFrameCount;
 	const uint64 IterationLimits = PerformanceIterationLimitCount - RunStartIterationLimitCount;
@@ -184,7 +184,7 @@ void AFastSimulation::ReportCompletedRun()
 		MeasuredFrames, WarningFrames, IterationLimits,
 		MeasuredFrames > 0 ? TotalStepMilliseconds / static_cast<double>(MeasuredFrames) : 0.0,
 		RunMaximumStepMilliseconds, WarningFrameFraction,
-		1000.0 / static_cast<double>(FCanonicalFrameContext::PhysicsFramesPerSecond) * WarningFrameFraction,
+		1000.0 * FrameDuration * WarningFrameFraction,
 		MeasuredFrames > 0 ? RunCoreStepMilliseconds / static_cast<double>(MeasuredFrames) : 0.0,
 		MeasuredFrames > 0 ? RunSweepMilliseconds / static_cast<double>(MeasuredFrames) : 0.0,
 		MeasuredFrames > 0 ? RunStaticAuthorityMilliseconds / static_cast<double>(MeasuredFrames) : 0.0,

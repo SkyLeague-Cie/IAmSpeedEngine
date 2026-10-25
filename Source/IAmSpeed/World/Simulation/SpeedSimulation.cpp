@@ -954,6 +954,20 @@ void ASpeedSimulation::EndIndependentFastCoverage276(bool bCompleted, const TCHA
 }
 #endif
 
+FCanonicalFrameContext ASpeedSimulation::MakeCanonicalFrameContext(const uint64 Frame) const
+{
+    FCanonicalFrameContext Context(Frame);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    if (CollisionMatrixTestHz != 0)
+    {
+        check(Frame >= CollisionMatrixTestFirstFrame);
+        Context.PhysicalDeltaTime = 1.0f / float(CollisionMatrixTestHz);
+        Context.SimTime = float(Frame - CollisionMatrixTestFirstFrame) * Context.PhysicalDeltaTime;
+    }
+#endif
+    return Context;
+}
+
 bool ASpeedSimulation::RunCanonicalFrames(const uint32 FrameCount)
 {
 #if !UE_BUILD_SHIPPING
@@ -979,7 +993,7 @@ bool ASpeedSimulation::RunCanonicalFrames(const uint32 FrameCount)
 #if WITH_DEV_AUTOMATION_TESTS
 		const auto OwnedStep = Speed::OwnedFrameAudit::BeginStep(CanonicalNumFrame, false);
 #endif
-		const bool StepSucceeded = StepCanonicalFrame(FCanonicalFrameContext(CanonicalNumFrame));
+		const bool StepSucceeded = StepCanonicalFrame(MakeCanonicalFrameContext(CanonicalNumFrame));
 #if WITH_DEV_AUTOMATION_TESTS
 		Speed::OwnedFrameAudit::EndStep(OwnedStep, true, StepSucceeded);
 #endif

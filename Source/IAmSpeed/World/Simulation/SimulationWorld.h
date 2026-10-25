@@ -102,6 +102,20 @@ namespace Speed
 		/** Removes one live adapter while keeping already-issued ids monotonic. */
 		bool RemoveAdapter(ISpeedComponent& Adapter);
 		bool ContainsAdapter(const ISpeedComponent& Adapter) const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        /** Joined empty-registry boundary; stable identities stay monotonic. */
+        bool ResetEmptyCollisionMatrixEpisodeForTesting()
+        {
+            if (!Adapters.IsEmpty()) return false;
+            DynamicContactPairs.Reset();
+            PendingRollingContactPairs.Reset();
+            DynamicContactPairIndices.Reset();
+            PendingRollingContactPairIndices.Reset();
+            DynamicContactPairKeysByBody.Reset();
+            StaticCollisionWorld.Reset();
+            return true;
+        }
+#endif
 		/** Rebuilds the canonical adapter/body view after queued registry changes. */
 		void RebuildOrderedAdapters();
 		const TArray<ISpeedComponent*>& GetAdapters() const { return Adapters; }
