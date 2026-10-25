@@ -381,6 +381,9 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
             Analytic::FBoundedPlane Plane;
             Plane.SourceId = Plane.SurfaceId = Plane.FeatureId = Plane.PrimitiveId = 1;
             Plane.ObjectType = uint32(ECC_WorldStatic); Plane.BlockingChannels = MAX_uint64;
+            // Authored finite fixture geometry is the selected analytic authority.
+            // FBoundedPlane defaults to diagnostic-only, which cannot block CCD.
+            Plane.bAuthorityEligible = true;
             Plane.Origin = FVector3d(C.Offset); Plane.HalfExtents = FVector2d(1000, 1000);
             Data->Planes.Add(Plane);
         } else if (C.B == EMatrixShape::Ring) {
@@ -401,6 +404,7 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
             Analytic::FBoundedPlane Plane;
             Plane.SourceId = Plane.SurfaceId = Plane.FeatureId = Plane.PrimitiveId = 1;
             Plane.ObjectType = uint32(ECC_WorldStatic); Plane.BlockingChannels = MAX_uint64;
+            Plane.bAuthorityEligible = true;
             Plane.Origin = FVector3d(C.Offset + FVector(0,0,-10000));
             Plane.HalfExtents = FVector2d(1000,1000); Data->Planes.Add(Plane);
         }
@@ -450,7 +454,16 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
         if (FParse::Param(FCommandLine::Get(), TEXT("IAmSpeedCollisionMatrix042WheelSmoke"))) C.A=EMatrixShape::Wheel;
         TestTrue(TEXT("real native FastBatch smoke completed"), Run(C,R));
         TestTrue(TEXT("real native analytic collision selected"), R.HasHit);
-        AddInfo(FString::Printf(TEXT("[CollisionMatrix042Smoke] Worlds=1 Cases=1 Frames=%u Hits=%u Time=%.17g FullMatrix=0"), R.Frames,R.Events,R.Time));
+        FMatrixResult Shifted; C.Offset=FVector(1000,-2000,3000);
+        TestTrue(TEXT("joined second case in the same world completed"), Run(C,Shifted));
+        TestTrue(TEXT("translated native analytic collision selected"),Shifted.HasHit);
+        TestTrue(TEXT("on-grid smoke impact point is translation invariant"),
+            R.HasHit && Shifted.HasHit && FVector::Distance(R.Point,Shifted.Point)<=.0001);
+        TestTrue(TEXT("on-grid smoke TOI is translation invariant"),
+            R.HasHit && Shifted.HasHit && FMath::Abs(R.Time-Shifted.Time)<=1.e-6);
+        AddInfo(FString::Printf(TEXT("[CollisionMatrix042Smoke] Worlds=1 Cases=2 Frames=%u Hits=%u Time=%.17g ShiftHits=%u ShiftTime=%.17g InitialA=%s FinalA=%s ShiftFinalA=%s FullMatrix=0"),
+            R.Frames+Shifted.Frames,R.Events,R.Time,Shifted.Events,Shifted.Time,
+            *KinematicCsv(R.InitialA),*KinematicCsv(R.FinalA),*KinematicCsv(Shifted.FinalA)));
         return !HasAnyErrors();
     }
     // This sparse design varies each declared axis; it is not the Cartesian

@@ -36,8 +36,13 @@ is reported, not hidden by a success label.
 First selected contacts are copied from the actual CCD resolution, before and
 after response. The observer performs no replacement query and supplies no
 synthetic hit. Raw rows retain the local case frame, within-frame elapsed time,
-geometry witnesses, feature identity, and both actors' pre/post velocities.
+geometry witnesses, feature identity, and both actors' post-response velocities.
 End-state comparisons are separate from immediate impact response.
+
+Fixture planes explicitly opt into analytic authority, just like the existing
+native plane law fixtures. The diagnostic-only default is not a blocking floor.
+The short smoke checks two joined cases in the same world, including a common
+on-grid translation; it does not qualify the complete matrix.
 
 Tolerances are frozen before native qualification in the native test and exported
 as `spec.json`. The position grid is
