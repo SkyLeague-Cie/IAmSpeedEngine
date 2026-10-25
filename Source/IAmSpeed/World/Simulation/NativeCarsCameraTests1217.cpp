@@ -140,6 +140,10 @@ bool FIAmSpeedNativeCarsCamera1217::RunTest(const FString&)
    auto* Car=World->SpawnActor<ASpeedCar>();auto* C=Car?Cast<USpeedWheeledComponent>(Car->GetVehicleMovement()):nullptr;
    if(!TestNotNull(TEXT("actual native car"),C))return false;
    C->SetOwner(Car);C->DisableAsyncPhysicsTickForTesting();Cars.Add(C);
+   // This fixture authors a finite frame-addressed camera queue independently
+   // of its driving-only V2 contract. Select that retained adapter explicitly;
+   // production stock cars keep their canonical V2 camera slots.
+   C->CanonicalCameraYawAction=-1;C->CanonicalCameraPitchAction=-1;
    auto Vehicle=MakeUnique<Chaos::FSimpleWheeledVehicle>();
    for(int32 I=0;I<4;++I){Vehicle->Wheels.Emplace(&WheelConfig);Vehicle->Suspension.Emplace(&SuspensionConfig);C->Wheels.Add(NewObject<UChaosVehicleWheel>(C));}
    C->VehicleSimulationPT=MakeUnique<USpeedSimulation>();C->SkySimulation=static_cast<USpeedSimulation*>(C->VehicleSimulationPT.Get());C->SkySimulation->Init(Vehicle);

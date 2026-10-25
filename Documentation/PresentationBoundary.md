@@ -1,4 +1,15 @@
-# Owned presentation boundary (experimental)
+# Owned presentation boundary
+
+The owned presentation boundary is used by IAmSpeed's physical-frame camera
+pipeline and is available to values-only host extensions. Normal mode may
+produce an admitted local camera from the completed frame. FastSimulation
+rejects camera registration and excludes camera producers from dispatch; it
+continues to use the canonical physical snapshot/publication transaction.
+
+See [Simulation.md](Simulation.md) for execution modes and parallel admission,
+and [CarCamera.md](CarCamera.md) for the camera implementation and Unreal
+adapter. The contracts below concern ownership, publication and restore; they
+do not imply complete netcode or network rollback acceptance.
 
 `ISimulationPresentationProducer` is an optional values-only extension to a
 completed canonical frame. It must not retain or dereference an Unreal actor,

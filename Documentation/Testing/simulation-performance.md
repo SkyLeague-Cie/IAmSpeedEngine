@@ -1,8 +1,65 @@
 # Simulation performance observability
 
-IAmSpeed measures every physical `Step` independently from its Unreal callback.
-This distinction is required because a fast-simulation callback may execute many
-canonical physical frames, while a real-time callback normally executes one.
+IAmSpeed 0.4 owns the canonical frame loop through its native simulation
+worker. Real-time execution paces fixed physical frames; FastSimulation executes
+a sealed, frame-addressed run without the real-time wait. Both use the same
+canonical physical transitions. Unreal remains the host and adapter; a host
+callback is not the definition of one physical frame. See
+[Simulation](../Simulation.md) for execution modes and ownership, and
+[Netcode](../Netcode.md) for the multiplayer migration status.
+
+## Measure the scope that is being compared
+
+| Quantity | What it includes |
+| --- | --- |
+| A world/solver step | The physical kernel and its own phases; not automatically input preparation, publication, camera or test observers. |
+| A complete canonical frame | The driver path: frame inputs, preparation, physical work, snapshot/publication and the mode's allowed presentation work. |
+| Real-time start-to-start cadence | Everything between owner starts, including the previous frame, owner-side observations, waiting and scheduling. It is not an isolated WorldStep timer. |
+| A test or process duration | Setup, compilation when included, the scenario, witness encoding, independent oracles, output and shutdown. It is not physical frame time. |
+
+Compare Normal and Fast with the same consumed commands, initial state, fixed
+delta, ordered contacts, causal states and wheel/suspension coverage. The camera
+contract is mode-dependent: Normal exercises the real camera and its oracle;
+Fast intentionally has no camera presentation. A headless or `-nosound` run does
+not qualify audio or a complete interactive multiplayer cycle.
+
+Keep observers active for equivalence measurements. Attribute their cost
+separately rather than removing them to obtain a smaller frame time. Some native
+fixtures capture complete histories on the owner after its physical pulse, then
+write packs and run independent oracles after joining. That memory-capture cost
+and after-join I/O are different scopes. A long test does not by itself identify
+an expensive analytical query.
+
+## Parallel measurements
+
+`p.IAmSpeed.Parallel.Lanes` requests total execution lanes **including the
+canonical owner**. Its plugin default is `1`; relevant comparison fixtures exercise requests of
+`1`, `2`, `4`, `8` and `12`. A request of `0` selects the topology policy, whose
+automatic decision requires known effective limits. Eight lanes is a useful
+explicit comparison baseline, not a universal optimum or the plugin default.
+Admission also depends on available cores, affinity/quota, worker capacity and
+enough independent work. A four-query wheel batch cannot use twelve lanes for
+twelve useful sweeps.
+
+Record requested lanes, admitted/policy lanes, actual native participants,
+computed work and work actually consumed by the canonical owner. Tensor-wave
+diagnostics distinguish computed, reused and discarded work; a thread ID or a
+dispatched task alone does not establish useful parallel acceleration. Measure
+dispatch, useful work, imbalance and join/wait separately. Concurrent worker
+times must not be added to owner wall time, and nested phases must not be added
+to their inclusive parents.
+
+The development-only `p.IAmSpeed.Parallel.FrameTiming` and
+`p.IAmSpeed.Parallel.FrameCostPhases` recorder uses Windows QPC and requires an
+owned run identity. Missing clock/platform/coverage data remains unavailable;
+these counters do not provide an equivalent Linux phase breakdown by themselves.
+Diagnostic clocks never enter physical state or result hashes. Full-frame
+measurements, repeated paired runs and an exact source/build/configuration are
+required before retaining a gain. Neither a microbenchmark nor a subset of the
+Stadium scenarios establishes a whole-matrix speedup, a linear `1 / lanes`
+division, or the target of 100 ms simulated inside 3.333 ms wall time.
+
+## Solver and cadence diagnostics
 
 `FSpeedStepDiagnostics` reports the physical delta, solver iterations, component
 sweep passes, static-world query counts, resolved events, and wall time split
@@ -36,12 +93,24 @@ When both audit and shadow comparison are disabled, query counters remain
 available, but legacy diagnostic hashes and multi-hit sorting are skipped.
 This path adds no cache or persistent memory and does not alter physical hits.
 
+The solver warning counter is distinct from real-time start-cadence warnings
+and from the CI rule that emitted native warnings remain blocking. A cadence
+warning measures the owner start interval, not just physical kernel time; its
+cost must be attributed before changing code. Reducing capture coverage or
+relaxing cadence tolerances is not a performance qualification.
+
 Real-time frame starts retain recoverable wall-clock lateness and spread it over
 `p.IAmSpeed.Simulation.RealTimeRecoveryWindowMs`, which defaults to 10 ms (three
 intervals at 300 Hz). The fixed simulated delta never changes. Recovery debt is
 bounded to two frames and each interval can be shortened by at most 25%, so an
 OS wake-up delay is smoothed while a large hitch cannot cause an unbounded
 catch-up burst. Set the recovery window to zero to disable this policy.
+
+## Query and state optimizations
+
+The following notes describe individual implementations and their focused
+oracles. They do not constitute a current all-platform CI result, complete
+Stadium qualification or a transferable release-performance certificate.
 
 Hybrid coverage returns the already-evaluated authority hit through
 `TrySweepAuthority`. Callers must reuse that hit rather than immediately

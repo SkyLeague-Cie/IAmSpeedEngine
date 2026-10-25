@@ -18,6 +18,7 @@
 #include "SimpleVehicle.h"
 #include "SuspensionSystem.h"
 #include "WheelSystem.h"
+#include "ControllerDeviceV2Lifecycle2443.h"
 #include <atomic>
 
 namespace
@@ -69,6 +70,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
 bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	using namespace Speed::Input;
+	if (Parameters == TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"))
+	{
+#include "ControllerDeviceV2Lifecycle2443.inl"
+	}
 	if (!TestTrue(TEXT("controller fixture on game thread"), IsInGameThread())) return false;
 	auto Unadapted = std::make_shared<FUnadaptedLifecycleProbe>();
 	FInputStream UnadaptedStream(Unadapted);

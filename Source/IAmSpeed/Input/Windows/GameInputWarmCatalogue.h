@@ -35,16 +35,24 @@ public:
     using FSubscriber = bool (*)(void* Context, const FRecord& Record) noexcept;
     using FFailure = void (*)(void* Context, HRESULT Reason) noexcept;
 
-    static std::unique_ptr<FGameInputWarmCatalogue> Create(FApi* Api)
+    static std::unique_ptr<FGameInputWarmCatalogue> Create(FApi* Api, HRESULT* RegistrationResult = nullptr)
     {
         using namespace GameInput::v3;
+        if (RegistrationResult) *RegistrationResult = E_POINTER;
         if (!Api) return {};
         auto Result = std::unique_ptr<FGameInputWarmCatalogue>(new FGameInputWarmCatalogue(Api));
         const auto Kinds = GameInputKindRawDeviceReport | GameInputKindController | GameInputKindKeyboard
             | GameInputKindMouse | GameInputKindSensors | GameInputKindArcadeStick
             | GameInputKindFlightStick | GameInputKindGamepad | GameInputKindRacingWheel;
-        if (FAILED(Api->RegisterDeviceCallback(nullptr, Kinds, GameInputDeviceConnected,
-            GameInputBlockingEnumeration, Result.get(), &OnDevice, &Result->Token))) return {};
+        const HRESULT Registration = Api->RegisterDeviceCallback(nullptr, Kinds, GameInputDeviceConnected,
+            // Enumeration and later lifecycle events use the same registered
+            // callback. A new view may start empty and stays neutral until an
+            // actual device arrives and its fresh input baseline is admitted.
+            // Blocking enumeration can fail with ERROR_TIMEOUT before any
+            // callback is dispatched (measured startup2787/2789).
+            GameInputAsyncEnumeration, Result.get(), &OnDevice, &Result->Token);
+        if (RegistrationResult) *RegistrationResult = Registration;
+        if (FAILED(Registration)) return {};
         Result->Registered = true;
         return Result;
     }

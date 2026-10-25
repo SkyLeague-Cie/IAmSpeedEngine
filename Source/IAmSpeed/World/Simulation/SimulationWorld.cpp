@@ -332,6 +332,8 @@ namespace Speed
 				Pose.COMState = State;
 				Pose.CenterOfMassLocal = Body.Adapter->GetPhysCenterOfMassLocal();
 				Body.Adapter->AppendPresentationSnapshot(Pose.Extension);
+                Body.Adapter->AppendWheelPresentationSnapshot(Pose.WheelVisuals);
+                if(Pose.WheelVisuals.Num())Pose.WheelVisualsVersion=1;
 			}
 			AppendValue(Snapshot.Payload, Body.StableId);
 			AppendKinematic(Snapshot.Payload, State);

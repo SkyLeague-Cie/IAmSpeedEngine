@@ -41,6 +41,7 @@ class IAMSPEED_API ASpeedSimulation : public AActor
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
+	friend struct FLocalFastBatchFixtureAccess;
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FSkyAIInputPauseRegistryTest;

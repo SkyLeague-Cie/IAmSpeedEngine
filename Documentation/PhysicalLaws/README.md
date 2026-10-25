@@ -37,3 +37,10 @@ be appended after the law identifier without changing it.
 The owner mapping is deliberately many-to-many. A law may be implemented by
 several types, and a type may participate in several laws. See
 [`implementation-owners.md`](implementation-owners.md).
+
+## Stabilization work in 0.4.n
+
+The [FrequencyConsistency draft](FrequencyConsistency.md) specifies the target
+for behavior at 60, 100, 120, 240, 300 and 360 Hz. It complements the catalogue
+above; its matrix is not yet qualified, and the current canonical driver is
+still fixed at 300 Hz. Netcode restoration is targeted for 0.5.

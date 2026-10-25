@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Driving/DrivingInput.h"
 #include "IAmSpeed/Controllers/SpeedController.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/Engine.h"
@@ -34,6 +35,17 @@ bool FGenericCameraInputLifecycleTest::RunTest(const FString& Parameters)
 		!TestNotNull(TEXT("second pawn"), Second)) return false;
 	auto* FirstMovement = CastChecked<USpeedWheeledComponent>(First->GetVehicleMovement());
 	auto* SecondMovement = CastChecked<USpeedWheeledComponent>(Second->GetVehicleMovement());
+	// Stock cars now acquire camera axes through the deterministic V2 contract.
+	TestEqual(TEXT("stock camera yaw uses V2"), FirstMovement->CanonicalCameraYawAction, int32(Speed::Driving::CameraYaw));
+	TestEqual(TEXT("stock camera pitch uses V2"), FirstMovement->CanonicalCameraPitchAction, int32(Speed::Driving::CameraPitch));
+	// This fixture deliberately exercises the retained manual-mailbox adapter,
+	// including release, possession and unpossession. Opt into that legacy mode;
+	// never add a mailbox bypass to the canonical runtime path for a test.
+	for (auto* Movement : {FirstMovement, SecondMovement})
+	{
+		Movement->CanonicalCameraYawAction = -1;
+		Movement->CanonicalCameraPitchAction = -1;
+	}
 	FirstMovement->EnableGenericCameraInput(true);
 	SecondMovement->EnableGenericCameraInput(true);
 	TStrongObjectPtr<UEnhancedInputComponent> Input(NewObject<UEnhancedInputComponent>(Controller));
