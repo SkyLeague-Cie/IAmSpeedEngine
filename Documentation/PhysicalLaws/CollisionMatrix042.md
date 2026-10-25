@@ -8,6 +8,11 @@ Unreal world. A joined boundary unregisters each previous actor and its contact
 pairs before replacing its bodies and static query authority. Canonical frame
 numbers remain monotonic; an explicit test episode records its first frame and
 physical step. Changing frequency never reinterprets an earlier frame's time.
+After a failed episode, a fresh FastSimulation driver replaces the terminal one
+in that same world. Production terminal latches are never cleared, and no
+receipt is fabricated for an unpublished frame. Attempted and completed cases,
+expected and actual frames, driver generations and terminal failures are
+reported separately; a loop reaching its last row does not prove coverage.
 This test-only episode hook does not qualify production multi-rate gameplay,
 cross-rate rollback, hardware, audio, rendering or Netcode.
 

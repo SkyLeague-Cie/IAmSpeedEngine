@@ -253,6 +253,8 @@ struct FMatrixResult
 {
     bool Complete = false, ClockValid = false, HasHit = false, Overflow = false;
     uint32 Events = 0, Frames = 0;
+    uint32 DriverGeneration = 0;
+    bool TerminalFailure = false;
     double Time = 0; FVector Point = FVector::ZeroVector, Normal = FVector::ZeroVector;
     FVector VelocityA=FVector::ZeroVector, AngularA=FVector::ZeroVector, VelocityB=FVector::ZeroVector, AngularB=FVector::ZeroVector;
     SKinematic FinalA, FinalB;
@@ -327,11 +329,30 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
     Driver->ActiveExecutionModeValue.Store(uint8(ESimulationExecutionMode::IAmSpeedThread));
     Driver->InitializeCanonicalFrame(0);
     Driver->SealSimulationInputs();
+    uint32 DriversCreated=1;
+    bool ReplaceDriverAtNextCase=false;
 
     auto Run = [&](const FMatrixCase& C, FMatrixResult& Out) -> bool
     {
         // The previous owner has joined before this GT-only replacement boundary.
         if (!Bridge->SimulationWorld.ResetEmptyCollisionMatrixEpisodeForTesting()) return false;
+        if (ReplaceDriverAtNextCase)
+        {
+            // A production terminal latch is never cleared. The failed case and
+            // its uncommitted frame stay failed; a fresh test driver starts the
+            // independent next episode in this SAME world, with no fake receipt.
+            const uint64 NextUnpublishedFrame=Driver->CanonicalNumFrame;
+            Driver->Destroy();
+            Driver=World->SpawnActor<AFastSimulation>();
+            if (!Driver) return false;
+            Driver->SpeedWorldSubsystem=Bridge;
+            Driver->ActiveExecutionModeValue.Store(uint8(ESimulationExecutionMode::IAmSpeedThread));
+            Driver->InitializeCanonicalFrame(0);
+            Driver->CanonicalNumFrame=NextUnpublishedFrame;
+            Driver->SealSimulationInputs();
+            ++DriversCreated; ReplaceDriverAtNextCase=false;
+        }
+        Out.DriverGeneration=DriversCreated;
         Bridge->AnalyticSourceComponents.Reset(); Bridge->AnalyticWorldData.Reset();
         Driver->CollisionMatrixTestFirstFrame = Driver->CanonicalNumFrame;
         Driver->CollisionMatrixTestHz = C.Hz;
@@ -440,11 +461,14 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
         while (Owner.IsRunning() && FPlatformTime::Seconds() < End) FPlatformProcess::SleepNoStats(.0001f);
         const bool Finished = !Owner.IsRunning(); Owner.StopAndJoin();
         Out.Complete = Finished && Final == ESimulationWorkerResult::Complete && A.Published == A.Limit;
+        Out.TerminalFailure=Driver->bCanonicalPublicationTerminal.Load() || Driver->bOwnedWorkerTerminal.Load();
         Out.ClockValid = A.ClockValid && (!DynamicPair || B.ClockValid);
         Out.Frames = A.Published; Out.FinalA = A.State; Out.FinalB = B.State;
         if (!DynamicPair) Out.FinalB.Location=C.Offset;
         Out.FinalA.Location -= C.Offset; Out.FinalB.Location -= C.Offset;
-        return Out.Complete && Out.ClockValid && Out.ActualDeltaValid && !Out.Overflow && !Out.IterationExhausted;
+        const bool Valid=Out.Complete && Out.ClockValid && Out.ActualDeltaValid && !Out.Overflow && !Out.IterationExhausted;
+        ReplaceDriverAtNextCase=!Valid;
+        return Valid;
     };
 
     if (FParse::Param(FCommandLine::Get(), TEXT("IAmSpeedCollisionMatrix042Smoke"))
@@ -454,6 +478,8 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
         if (FParse::Param(FCommandLine::Get(), TEXT("IAmSpeedCollisionMatrix042WheelSmoke"))) C.A=EMatrixShape::Wheel;
         TestTrue(TEXT("real native FastBatch smoke completed"), Run(C,R));
         TestTrue(TEXT("real native analytic collision selected"), R.HasHit);
+        // Exercise driver replacement after join without clearing any latch.
+        ReplaceDriverAtNextCase=true;
         FMatrixResult Shifted; C.Offset=FVector(1000,-2000,3000);
         TestTrue(TEXT("joined second case in the same world completed"), Run(C,Shifted));
         TestTrue(TEXT("translated native analytic collision selected"),Shifted.HasHit);
@@ -461,9 +487,9 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
             R.HasHit && Shifted.HasHit && FVector::Distance(R.Point,Shifted.Point)<=.0001);
         TestTrue(TEXT("on-grid smoke TOI is translation invariant"),
             R.HasHit && Shifted.HasHit && FMath::Abs(R.Time-Shifted.Time)<=1.e-6);
-        AddInfo(FString::Printf(TEXT("[CollisionMatrix042Smoke] Worlds=1 Cases=2 Frames=%u Hits=%u Time=%.17g ShiftHits=%u ShiftTime=%.17g InitialA=%s FinalA=%s ShiftFinalA=%s FullMatrix=0"),
+        AddInfo(FString::Printf(TEXT("[CollisionMatrix042Smoke] Worlds=1 Cases=2 Frames=%u Hits=%u Time=%.17g ShiftHits=%u ShiftTime=%.17g InitialA=%s FinalA=%s ShiftFinalA=%s Drivers=%u FullMatrix=0"),
             R.Frames+Shifted.Frames,R.Events,R.Time,Shifted.Events,Shifted.Time,
-            *KinematicCsv(R.InitialA),*KinematicCsv(R.FinalA),*KinematicCsv(Shifted.FinalA)));
+            *KinematicCsv(R.InitialA),*KinematicCsv(R.FinalA),*KinematicCsv(Shifted.FinalA),DriversCreated));
         return !HasAnyErrors();
     }
     // This sparse design varies each declared axis; it is not the Cartesian
@@ -477,7 +503,7 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
     IFileManager::Get().MakeDirectory(*Output, true);
     const FString CasesFile = Output / TEXT("cases.csv"), EventsFile = Output / TEXT("events.csv"), EndFile=Output/TEXT("end-states.csv"), InitialFile=Output/TEXT("initial-states.csv");
     FFileHelper::SaveStringToFile(TEXT("case,a_x,a_y,a_z,a_qx,a_qy,a_qz,a_qw,a_vx,a_vy,a_vz,a_wx,a_wy,a_wz,b_x,b_y,b_z,b_qx,b_qy,b_qz,b_qw,b_vx,b_vy,b_vz,b_wx,b_wy,b_wz,environment_x,environment_y,environment_z,mass_a,mass_b\n"),*InitialFile);
-    FFileHelper::SaveStringToFile(TEXT("case,shape_a,shape_b,variant,hz,translation,complete,clock_valid,hits,impact_seconds,point_x,point_y,point_z,normal_x,normal_y,normal_z,frequency_pass,translation_pass,oracle_pass,point_bound_cm,time_bound_s,frequency_point_error_cm,frequency_time_error_s,translation_point_error_cm,first_global_frame,frames,world_id,actual_delta_valid,iteration_exhausted,observer_overflow,real_wheel_hit,max_delta_error_ms\n"), *CasesFile);
+    FFileHelper::SaveStringToFile(TEXT("case,shape_a,shape_b,variant,hz,translation,complete,clock_valid,hits,impact_seconds,point_x,point_y,point_z,normal_x,normal_y,normal_z,frequency_pass,translation_pass,oracle_pass,point_bound_cm,time_bound_s,frequency_point_error_cm,frequency_time_error_s,translation_point_error_cm,first_global_frame,frames,world_id,actual_delta_valid,iteration_exhausted,observer_overflow,real_wheel_hit,max_delta_error_ms,driver_generation,terminal_failure\n"), *CasesFile);
     FFileHelper::SaveStringToFile(TEXT("case,sample_seconds,position_a_x,position_a_y,position_a_z,velocity_a_x,velocity_a_y,velocity_a_z,angular_a_x,angular_a_y,angular_a_z,position_b_x,position_b_y,position_b_z,velocity_b_x,velocity_b_y,velocity_b_z,angular_b_x,angular_b_y,angular_b_z\n"), *EndFile);
     FFileHelper::SaveStringToFile(TEXT("case,local_frame,elapsed_in_frame,query_toi,point_x,point_y,point_z,normal_x,normal_y,normal_z,feature_a,feature_b,velocity_a_x,velocity_a_y,velocity_a_z,angular_a_x,angular_a_y,angular_a_z,velocity_b_x,velocity_b_y,velocity_b_z,angular_b_x,angular_b_y,angular_b_z\n"), *EventsFile);
     const TArray<uint32> Rates = {1440, 720, 360, 300, 240, 120, 100, 60};
@@ -486,6 +512,7 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
     uint32 CaseCount = 0, Failed = 0, FrequencyFailures = 0, TranslationFailures = 0, OracleFailures = 0;
     uint64 FrameCount = 0;
     uint32 WheelCases=0,WheelHitCases=0,IterationCases=0,OverflowCases=0;
+    uint32 CompletedCases=0,TerminalFailureCases=0;
     const double Start = FPlatformTime::Seconds();
     bool Incomplete = false, ExportValid = true;
     // Frozen pre-run numerical gates. 0.005 cm is half the canonical position
@@ -518,6 +545,7 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
                 FMatrixResult R;
                 const bool Valid = Run(C, R);
                 ++CaseCount; FrameCount += R.Frames;
+                CompletedCases+=R.Complete; TerminalFailureCases+=R.TerminalFailure;
                 if (T == 0) Origin = R;
                 if (Hz == Rates[0]) Fine[T] = R;
                 const auto& Ref = Fine[T];
@@ -570,11 +598,11 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
                 IterationCases += R.IterationExhausted; OverflowCases += R.Overflow;
                 if (!Pass && Failed <= 20) AddError(FString::Printf(TEXT("CollisionMatrix042 case=%u %s/%s variant=%d Hz=%u offset=%d native=%d frequency=%d translation=%d oracle=%d"),
                     CaseCount, Name(ShapeA), Name(ShapeB), Variant, Hz, T, Valid, FrequencyPass, TranslationPass, OraclePass));
-                const FString Row = FString::Printf(TEXT("%u,%s,%s,%d,%u,%d,%d,%d,%u,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%d,%d,%d,%.17g,%.17g,%.17g,%.17g,%.17g,%llu,%u,%u,%d,%d,%d,%d,%.17g\n"),
+                const FString Row = FString::Printf(TEXT("%u,%s,%s,%d,%u,%d,%d,%d,%u,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%d,%d,%d,%.17g,%.17g,%.17g,%.17g,%.17g,%llu,%u,%u,%d,%d,%d,%d,%.17g,%u,%d\n"),
                     CaseCount, Name(ShapeA), Name(ShapeB), Variant, Hz, T, R.Complete, R.ClockValid, R.Events,
                     R.Time, R.Point.X, R.Point.Y, R.Point.Z, R.Normal.X, R.Normal.Y, R.Normal.Z,
                     FrequencyPass, TranslationPass, OraclePass, PointBound, TimeBound, PointError, TimeError, TranslationPointError,
-                    R.FirstGlobalFrame,R.Frames,R.WorldId,R.ActualDeltaValid,R.IterationExhausted,R.Overflow,R.RealWheelHit,R.MaximumDeltaErrorMs);
+                    R.FirstGlobalFrame,R.Frames,R.WorldId,R.ActualDeltaValid,R.IterationExhausted,R.Overflow,R.RealWheelHit,R.MaximumDeltaErrorMs,R.DriverGeneration,R.TerminalFailure);
                 ExportValid &= FFileHelper::SaveStringToFile(Row, *CasesFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
                 const FString InitialRow=FString::Printf(TEXT("%u,%s,%s,%.17g,%.17g,%.17g,%.17g,%.17g\n"),CaseCount,
                     *KinematicCsv(R.InitialA),*KinematicCsv(R.InitialB),R.EnvironmentOrigin.X,R.EnvironmentOrigin.Y,R.EnvironmentOrigin.Z,R.MassA,R.MassB);
@@ -595,11 +623,17 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
         if (Incomplete) break;
     }
     const uint32 Expected = 3 * 5 * 8 * Rates.Num() * Translations.Num();
+    uint64 ExpectedFrames=0;
+    for(uint32 H:Rates)ExpectedFrames+=uint64(3*5*8*Translations.Num())*(H/20);
+    Incomplete|=CompletedCases!=Expected || FrameCount!=ExpectedFrames;
     const FString Summary = FString::Printf(TEXT("{\"schema\":1,\"worlds_created_by_harness\":1,\"driver\":\"AFastSimulation\",\"fast_batch\":true,\"highest_hz\":1440,\"expected_cases\":%u,\"actual_cases\":%u,\"frames\":%llu,\"failed\":%u,\"frequency_failures\":%u,\"translation_failures\":%u,\"oracle_failures\":%u,\"incomplete\":%s,\"export_valid\":%s,\"wheel_coverage\":%s,\"wheel_cases\":%u,\"wheel_hit_cases\":%u,\"iteration_limit_cases\":%u,\"observer_overflow_cases\":%u}\n"),
         Expected, CaseCount, FrameCount, Failed, FrequencyFailures, TranslationFailures, OracleFailures,
         Incomplete ? TEXT("true") : TEXT("false"), ExportValid ? TEXT("true") : TEXT("false"),
         WheelCases>0 && WheelHitCases==WheelCases ? TEXT("true") : TEXT("false"),WheelCases,WheelHitCases,IterationCases,OverflowCases);
     ExportValid &= FFileHelper::SaveStringToFile(Summary, *(Output / TEXT("summary.json")));
+    const FString Execution=FString::Printf(TEXT("{\"completed_cases\":%u,\"attempted_cases\":%u,\"expected_frames\":%llu,\"actual_frames\":%llu,\"drivers_created\":%u,\"terminal_failure_cases\":%u,\"worlds_created\":1,\"production_terminal_latches_cleared\":false}\n"),
+        CompletedCases,CaseCount,ExpectedFrames,FrameCount,DriversCreated,TerminalFailureCases);
+    ExportValid &= FFileHelper::SaveStringToFile(Execution,*(Output/TEXT("execution.json")));
     TestTrue(TEXT("matrix completed every declared case"), !Incomplete && CaseCount == Expected);
     TestTrue(TEXT("all matrix evidence saved"), ExportValid);
     TestEqual(TEXT("all collision and invariance gates"), Failed, uint32(0));
