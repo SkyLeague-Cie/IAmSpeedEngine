@@ -30,6 +30,7 @@
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
+#include "Serialization/Archive.h"
 #include "UObject/GarbageCollection.h"
 
 namespace
@@ -47,6 +48,33 @@ const TCHAR* Name(EMatrixShape S)
     default: return TEXT("RingStatic");
     }
 }
+// Keep one bounded platform file writer per stream. Reopening five files for
+// every episode adds filesystem work to a physics budget without more evidence.
+// Rows and UTF-8 encoding are unchanged; Close propagates deferred write errors.
+class FMatrixCsvWriter
+{
+    TUniquePtr<FArchive> Writer;
+public:
+    FMatrixCsvWriter(const FString& Filename, const TCHAR* Header)
+        : Writer(IFileManager::Get().CreateFileWriter(*Filename))
+    { Append(Header); }
+    bool Append(const FString& Text)
+    {
+        if (!Writer) return false;
+        const FTCHARToUTF8 Bytes(*Text);
+        Writer->Serialize(const_cast<ANSICHAR*>(Bytes.Get()), Bytes.Length());
+        return !Writer->IsError();
+    }
+    bool IsValid() const { return Writer && !Writer->IsError(); }
+    bool Close()
+    {
+        if (!Writer) return false;
+        const bool Closed = Writer->Close();
+        const bool Valid = Closed && !Writer->IsError();
+        Writer.Reset();
+        return Valid;
+    }
+};
 FString KinematicCsv(const SKinematic& K)
 {
     return FString::Printf(TEXT("%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g"),
@@ -534,11 +562,11 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
     IFileManager::Get().MakeDirectory(*Output, true);
     const FString CasesFile = Output / TEXT("cases.csv"), EventsFile = Output / TEXT("events.csv"), EndFile=Output/TEXT("end-states.csv"), InitialFile=Output/TEXT("initial-states.csv");
     const FString SupportFile=Output/TEXT("support-samples.csv");
-    FFileHelper::SaveStringToFile(TEXT("case,local_frame,sample_seconds,query_parameter,point_x,point_y,point_z,normal_x,normal_y,normal_z,before_x,before_y,before_z,before_qx,before_qy,before_qz,before_qw,before_vx,before_vy,before_vz,before_wx,before_wy,before_wz,after_x,after_y,after_z,after_qx,after_qy,after_qz,after_qw,after_vx,after_vy,after_vz,after_wx,after_wy,after_wz\n"),*SupportFile);
-    FFileHelper::SaveStringToFile(TEXT("case,a_x,a_y,a_z,a_qx,a_qy,a_qz,a_qw,a_vx,a_vy,a_vz,a_wx,a_wy,a_wz,b_x,b_y,b_z,b_qx,b_qy,b_qz,b_qw,b_vx,b_vy,b_vz,b_wx,b_wy,b_wz,environment_x,environment_y,environment_z,mass_a,mass_b\n"),*InitialFile);
-    FFileHelper::SaveStringToFile(TEXT("case,shape_a,shape_b,variant,hz,translation,complete,clock_valid,hits,impact_seconds,point_x,point_y,point_z,normal_x,normal_y,normal_z,frequency_pass,translation_pass,oracle_pass,point_bound_cm,time_bound_s,frequency_point_error_cm,frequency_time_error_s,translation_point_error_cm,first_global_frame,frames,world_id,actual_delta_valid,iteration_exhausted,observer_overflow,real_wheel_hit,max_delta_error_ms,driver_generation,terminal_failure\n"), *CasesFile);
-    FFileHelper::SaveStringToFile(TEXT("case,sample_seconds,position_a_x,position_a_y,position_a_z,velocity_a_x,velocity_a_y,velocity_a_z,angular_a_x,angular_a_y,angular_a_z,position_b_x,position_b_y,position_b_z,velocity_b_x,velocity_b_y,velocity_b_z,angular_b_x,angular_b_y,angular_b_z\n"), *EndFile);
-    FFileHelper::SaveStringToFile(TEXT("case,local_frame,elapsed_in_frame,query_toi,point_x,point_y,point_z,normal_x,normal_y,normal_z,feature_a,feature_b,velocity_a_x,velocity_a_y,velocity_a_z,angular_a_x,angular_a_y,angular_a_z,velocity_b_x,velocity_b_y,velocity_b_z,angular_b_x,angular_b_y,angular_b_z\n"), *EventsFile);
+    FMatrixCsvWriter SupportWriter(SupportFile,TEXT("case,local_frame,sample_seconds,query_parameter,point_x,point_y,point_z,normal_x,normal_y,normal_z,before_x,before_y,before_z,before_qx,before_qy,before_qz,before_qw,before_vx,before_vy,before_vz,before_wx,before_wy,before_wz,after_x,after_y,after_z,after_qx,after_qy,after_qz,after_qw,after_vx,after_vy,after_vz,after_wx,after_wy,after_wz\n"));
+    FMatrixCsvWriter InitialWriter(InitialFile,TEXT("case,a_x,a_y,a_z,a_qx,a_qy,a_qz,a_qw,a_vx,a_vy,a_vz,a_wx,a_wy,a_wz,b_x,b_y,b_z,b_qx,b_qy,b_qz,b_qw,b_vx,b_vy,b_vz,b_wx,b_wy,b_wz,environment_x,environment_y,environment_z,mass_a,mass_b\n"));
+    FMatrixCsvWriter CasesWriter(CasesFile,TEXT("case,shape_a,shape_b,variant,hz,translation,complete,clock_valid,hits,impact_seconds,point_x,point_y,point_z,normal_x,normal_y,normal_z,frequency_pass,translation_pass,oracle_pass,point_bound_cm,time_bound_s,frequency_point_error_cm,frequency_time_error_s,translation_point_error_cm,first_global_frame,frames,world_id,actual_delta_valid,iteration_exhausted,observer_overflow,real_wheel_hit,max_delta_error_ms,driver_generation,terminal_failure\n"));
+    FMatrixCsvWriter EndWriter(EndFile,TEXT("case,sample_seconds,position_a_x,position_a_y,position_a_z,velocity_a_x,velocity_a_y,velocity_a_z,angular_a_x,angular_a_y,angular_a_z,position_b_x,position_b_y,position_b_z,velocity_b_x,velocity_b_y,velocity_b_z,angular_b_x,angular_b_y,angular_b_z\n"));
+    FMatrixCsvWriter EventsWriter(EventsFile,TEXT("case,local_frame,elapsed_in_frame,query_toi,point_x,point_y,point_z,normal_x,normal_y,normal_z,feature_a,feature_b,velocity_a_x,velocity_a_y,velocity_a_z,angular_a_x,angular_a_y,angular_a_z,velocity_b_x,velocity_b_y,velocity_b_z,angular_b_x,angular_b_y,angular_b_z\n"));
     const TArray<uint32> Rates = {1440, 720, 360, 300, 240, 120, 100, 60};
     const TArray<FVector> Translations = { FVector::ZeroVector, FVector(1000,-2000,3000),
         FVector(-1048576,2097152,-524288), FVector(100000000,-100000000,100000000), FVector(.003,-.004,.001) };
@@ -547,7 +575,8 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
     uint32 WheelCases=0,WheelHitCases=0,IterationCases=0,OverflowCases=0;
     uint32 CompletedCases=0,TerminalFailureCases=0;
     const double Start = FPlatformTime::Seconds();
-    bool Incomplete = false, ExportValid = true;
+    bool Incomplete = false, ExportValid = CasesWriter.IsValid() && InitialWriter.IsValid()
+        && EndWriter.IsValid() && EventsWriter.IsValid() && SupportWriter.IsValid();
     // Frozen pre-run numerical gates. 0.005 cm is half the canonical position
     // grid. Per-frame accumulation is charged separately from CCD geometry.
     const double GeometricCm = .02, NormalRadians = .002, TranslationCm = .0001;
@@ -636,28 +665,33 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
                     R.Time, R.Point.X, R.Point.Y, R.Point.Z, R.Normal.X, R.Normal.Y, R.Normal.Z,
                     FrequencyPass, TranslationPass, OraclePass, PointBound, TimeBound, PointError, TimeError, TranslationPointError,
                     R.FirstGlobalFrame,R.Frames,R.WorldId,R.ActualDeltaValid,R.IterationExhausted,R.Overflow,R.RealWheelHit,R.MaximumDeltaErrorMs,R.DriverGeneration,R.TerminalFailure);
-                ExportValid &= FFileHelper::SaveStringToFile(Row, *CasesFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
+                ExportValid &= CasesWriter.Append(Row);
                 const FString InitialRow=FString::Printf(TEXT("%u,%s,%s,%.17g,%.17g,%.17g,%.17g,%.17g\n"),CaseCount,
                     *KinematicCsv(R.InitialA),*KinematicCsv(R.InitialB),R.EnvironmentOrigin.X,R.EnvironmentOrigin.Y,R.EnvironmentOrigin.Z,R.MassA,R.MassB);
-                ExportValid &= FFileHelper::SaveStringToFile(InitialRow,*InitialFile,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_Append);
+                ExportValid &= InitialWriter.Append(InitialRow);
                 const FString EndRow=FString::Printf(TEXT("%u,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n"),
                     CaseCount,double(R.Frames)/double(Hz),R.FinalA.Location.X,R.FinalA.Location.Y,R.FinalA.Location.Z,
                     R.FinalA.Velocity.X,R.FinalA.Velocity.Y,R.FinalA.Velocity.Z,R.FinalA.AngularVelocity.X,R.FinalA.AngularVelocity.Y,R.FinalA.AngularVelocity.Z,
                     R.FinalB.Location.X,R.FinalB.Location.Y,R.FinalB.Location.Z,R.FinalB.Velocity.X,R.FinalB.Velocity.Y,R.FinalB.Velocity.Z,
                     R.FinalB.AngularVelocity.X,R.FinalB.AngularVelocity.Y,R.FinalB.AngularVelocity.Z);
-                ExportValid &= FFileHelper::SaveStringToFile(EndRow,*EndFile,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_Append);
+                ExportValid &= EndWriter.Append(EndRow);
                 FString Events;
                 for (const auto& Event : R.RawEvents) Events += FString::Printf(TEXT("%u,"), CaseCount) + Event;
-                ExportValid &= FFileHelper::SaveStringToFile(Events, *EventsFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
+                ExportValid &= EventsWriter.Append(Events);
                 FString Supports;
                 for (const auto& Sample:R.RawSupportSamples) Supports+=FString::Printf(TEXT("%u,"),CaseCount)+Sample;
-                ExportValid &= FFileHelper::SaveStringToFile(Supports,*SupportFile,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_Append);
+                ExportValid &= SupportWriter.Append(Supports);
                 if (CaseCount % 128 == 0) CollectGarbage(RF_NoFlags);
             }
             if (Incomplete) break;
         }
         if (Incomplete) break;
     }
+    ExportValid &= CasesWriter.Close();
+    ExportValid &= InitialWriter.Close();
+    ExportValid &= EndWriter.Close();
+    ExportValid &= EventsWriter.Close();
+    ExportValid &= SupportWriter.Close();
     const uint32 Expected = 3 * 5 * 8 * Rates.Num() * Translations.Num();
     uint64 ExpectedFrames=0;
     for(uint32 H:Rates)ExpectedFrames+=uint64(3*5*8*Translations.Num())*(H/20);
