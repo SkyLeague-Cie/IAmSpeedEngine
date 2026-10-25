@@ -163,16 +163,43 @@ bool FIAmSpeedStationaryAxes042Test::RunTest(const FString&)
 		Component.QuantizeKinematicState(State,FQuat::Identity);
 		TestEqual(TEXT("unmoving Y preserves its exact authored coordinate"),State.Location.Y,Authored.Y);
 		TestEqual(TEXT("unmoving Z preserves its exact authored coordinate"),State.Location.Z,Authored.Z);
-		TestEqual(TEXT("moving X retains canonical grid quantization"),State.Location.X,
-			Speed::RoundVectorToNetQuantize(Authored,100).X);
+		TestEqual(TEXT("unforced moving X preserves the integrated coordinate"),State.Location.X,Authored.X);
 		State.Acceleration.Y = 1.;
 		Component.QuantizeKinematicState(State,FQuat::Identity);
 		TestEqual(TEXT("new acceleration revokes stationary-axis preservation"),State.Location.Y,
 			Speed::RoundVectorToNetQuantize(Authored,100).Y);
 		State.Location.Z = Authored.Z; State.Velocity.Z = .00001;
 		Component.QuantizeKinematicState(State,FQuat::Identity);
-		TestEqual(TEXT("real sub-grid velocity is not mistaken for rest after rounding"),State.Location.Z,
-			Speed::RoundVectorToNetQuantize(Authored,100).Z);
+		TestEqual(TEXT("unforced sub-grid velocity does not inject a position snap"),State.Location.Z,Authored.Z);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedUnforcedTrajectory042Test,
+	"IAmSpeed.PhysicalLaws.UnforcedTrajectory042",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedUnforcedTrajectory042Test::RunTest(const FString&)
+{
+	FStationaryQuantizationBody Component;
+	for (const int32 Hz : {60,100,120,240,300,360,720,1440})
+	for (const FVector Offset : {FVector::ZeroVector,FVector(.003,-.004,.001),
+		FVector(1000,-2000,3000),FVector(-1048576,2097152,-524288),FVector(1e8,-1e8,1e8)})
+	{
+		SKinematic State;
+		const FVector Start=Offset+FVector(-121.6,3.017,12.341);
+		const FVector Velocity(4600,80,-300);
+		State.Location=Start;State.Velocity=Velocity;State.Acceleration=FVector::ZeroVector;
+		const float Delta=1.f/float(Hz);
+		for (int32 Frame=0;Frame<Hz/20;++Frame)
+		{
+			State=State.Integrate(Delta);
+			Component.QuantizeKinematicState(State,FQuat::Identity);
+			const FVector Expected=Start+Velocity*(double(Frame+1)*double(Delta));
+			TestTrue(TEXT("unforced trajectory follows distance=velocity*time at every rate and translation"),
+				(State.Location-Expected).GetAbsMax()<1e-5);
+			TestTrue(TEXT("declared constant grid velocities remain exact"),State.Velocity==Velocity);
+		}
 	}
 	return true;
 }

@@ -66,13 +66,15 @@ void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& Pre
 	const FVector SupportedVelocity = State.Velocity;
 	const FVector SupportedAngularVelocity = State.AngularVelocity;
 	KinematicQuantizationCache.Quantize(State, PreviousRotation);
-	// A world-space rounding grid must not translate an axis that the free
-	// integrator did not move. In particular, a common fractional translation
-	// must not create tangential displacement before the first contact. Test
-	// the unrounded velocity: a small real motion may round to zero but is not
-	// stationary. Acceleration remains live and revokes this per-axis rule.
+	// Preserve the integrator's affine trajectory on unforced axes. Snapping
+	// the position every frame changes an otherwise constant velocity by a
+	// rate-dependent amount (80/1440 -> .06, but 80/60 -> 1.33 cm per frame).
+	// This includes stationary axes and prevents a common fractional offset
+	// from moving only one collision participant. A live acceleration revokes
+	// the rule; velocity/rotation quantization and the canonical cache remain
+	// unchanged. No residual, origin anchor or new published state is needed.
 	for (int32 Axis = 0; Axis < 3; ++Axis)
-		if (SupportedVelocity[Axis] == 0. && State.Acceleration[Axis] == 0.)
+		if (State.Acceleration[Axis] == 0.)
 			State.Location[Axis] = SupportedLocation[Axis];
 	bool bRejectedQuantizedPose = false;
 	if (!bPreserveSupportedPose && StaticRestingWorld &&

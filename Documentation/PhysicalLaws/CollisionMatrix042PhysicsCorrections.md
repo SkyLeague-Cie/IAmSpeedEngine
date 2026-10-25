@@ -66,3 +66,20 @@ invariance for moving axes or collision-response invariance in general.
 ordinary, fractional and large coordinates, moving-axis quantization, and
 revocation when acceleration or a sub-grid velocity starts. Its native
 qualification must be reported for the exact newly built source tuple.
+
+The stationary-only experiment (native9174) improved translation point errors
+but increased TOI errors: keeping a stationary peer exact while still snapping
+its moving peer did not fix the relative trajectory. The successor preserves
+the integrated position of every axis with exactly zero acceleration, including
+moving axes. This is an explicit free-flight pose-policy change: a .01cm grid
+snap on every frame cannot preserve a constant-velocity trajectory at different
+rates. For example80cm/s becomes86.4cm/s at1440Hz when .05555cm steps are snapped
+to .06cm, versus79.8cm/s at60Hz. Velocity/angular/rotation quantization, the inner
+canonical quantizer/cache, accelerated axes and wire/snapshot layouts are
+unchanged. Network equivalence is not qualified by these local regressions.
+
+`IAmSpeed.PhysicalLaws.UnforcedTrajectory042` checks the independent linear
+distance/time law over every frame at eight rates and five common translations.
+The stationary-axis regression now asserts this successor moving-axis policy;
+the older native9174 evidence is retained as a separate experiment, with its
+TOI regression explicitly reported. No matrix threshold is changed.
