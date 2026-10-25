@@ -57,8 +57,11 @@ counts above remain untouched rather than being retroactively marked passing.
 
 The source correction protects that unit owner's setter, skips its free-body
 quantization, and adds an independent exact stationary-state artifact check.
-Runtime qualification of this successor is separate from the baseline reported
-here. No production solver or numerical tolerance is changed.
+The successor was subsequently compiled and exercised in its own
+[corrective run](CollisionMatrix042CorrectedResults20261025.md). The prescribed
+state defect is absent there, but its physical matrix and controller remain
+failed. This original baseline is retained unchanged. No production solver or
+numerical tolerance is changed.
 
 ## Contact observations
 
