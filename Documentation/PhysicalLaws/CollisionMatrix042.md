@@ -11,6 +11,14 @@ physical step. Changing frequency never reinterprets an earlier frame's time.
 This test-only episode hook does not qualify production multi-rate gameplay,
 cross-rate rollback, hardware, audio, rendering or Netcode.
 
+The declared sparse matrix contains 4,800 cases: three dynamic fixture shapes
+(Sphere, Box, Wheel), five peer roles (analytic plane, static Ring, Sphere, Box,
+prescribed Cylinder), eight authored variants, eight frequencies and five common
+translations. Wheel uses an actual `USWheelSubBody`, real Chaos wheel and
+suspension storage and the native `ISpeedWheeledComponent` support solver; this
+unit fixture does not qualify an entire car. Free dynamic Ring/Cylinder and
+Wheel/Wheel are outside the admitted set, not successful misses.
+
 The same authored relative configuration is exercised at 60, 100, 120, 240, 300,
 360, 720 and 1440 Hz. The highest tested rate, 1440 Hz, is the comparison
 reference; comparison with 720 Hz also exposes reference convergence. Equal frame indices at different rates are
@@ -31,11 +39,16 @@ synthetic hit. Raw rows retain the local case frame, within-frame elapsed time,
 geometry witnesses, feature identity, and both actors' pre/post velocities.
 End-state comparisons are separate from immediate impact response.
 
-Tolerances must be frozen before native qualification. The position grid is
+Tolerances are frozen before native qualification in the native test and exported
+as `spec.json`. The position grid is
 0.01 cm (`FKinematicState::PositionQuantizationScale`). A frequency comparison
 must account explicitly for the worst-case accumulated half-grid errors of
-the two finite runs; this bound is separate from the observed discrepancy.
-Translation tests on grid-aligned offsets use a tighter numeric bound. Normal
+the two finite runs, multiplied by sqrt(3) for its Euclidean bound. The geometric
+part is 0.02 cm; the normal bound is 0.002 radians. This bound is separate from
+the observed discrepancy. Translation uses 0.0001 cm, 1 microsecond, 0.000002
+radians, 0.01 cm/s and 0.001 rad/s; fractional-grid cases keep the strict gate and
+remain failures if the existing absolute quantization changes the trajectory.
+Normal
 orientation, contact presence/topology, unsupported admissions and iteration
 exhaustion remain independent gates; they cannot be waived by a position bound.
 Analytic first-impact oracles are required for non-rotating axis-aligned cases.
