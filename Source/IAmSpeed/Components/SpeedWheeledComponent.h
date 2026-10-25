@@ -83,6 +83,7 @@ public:
 #endif
 
 	USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer);
+	void OnRegister() override;
 
 	// Set the owner of this component. Call this at begin play
 	virtual void SetOwner(AActor* NewOwner);
@@ -215,6 +216,15 @@ public:
 	bool SetHeldCameraPitch(float Value);
 	void ClearHeldCameraInput();
 	void AppendPresentationSnapshot(TArray<uint8>& OutPayload) const override;
+    void AppendWheelPresentationSnapshot(TArray<FSimulationWheelVisual>& Out) const override;
+    /** Presentation only; false preserves existing clients and canonical bytes. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category=Presentation)
+    bool bPublishWheelPresentation = false;
+    /** Optional sealed V2 action slots. -1 preserves the existing camera queue. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category=Camera, meta=(ClampMin="-1",ClampMax="31"))
+    int32 CanonicalCameraYawAction = -1;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category=Camera, meta=(ClampMin="-1",ClampMax="31"))
+    int32 CanonicalCameraPitchAction = -1;
 	void OnCanonicalFramePublished(uint64 NumFrame) override;
 	bool ValidateCanonicalFrameCommit(uint64 Frame) const override;
 	bool CommitCanonicalFrame(uint64 Frame) noexcept override;
@@ -335,7 +345,7 @@ protected:
 	virtual bool ValidateProducedInputFrame(const Speed::Input::FInputFrame&) const { return true; }
 	virtual bool ApplyProducedInputFrame(const Speed::Input::FInputFrame&) { return true; }
 	virtual bool ValidateProducedInputFrameV2(const Speed::Input::V2::FInputFrame&) const { return true; }
-	virtual bool ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame&) { return true; }
+	virtual bool ApplyProducedInputFrameV2(const Speed::Input::V2::FInputFrame& Frame);
 	// Simulation-lane cancellation, never a synthetic gameplay release event.
 	virtual void ResetProducedInputState() {}
 	virtual bool PublishInputCancellationAtBoundary() { return true; }

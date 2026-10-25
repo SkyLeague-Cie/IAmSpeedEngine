@@ -20,14 +20,15 @@ public:
     FGameInputWarmContext(const FGameInputWarmContext&) = delete;
     FGameInputWarmContext& operator=(const FGameInputWarmContext&) = delete;
 
-    std::shared_ptr<FGameInputWarmCatalogue> GetOrCreate(FApi* Api)
+    std::shared_ptr<FGameInputWarmCatalogue> GetOrCreate(FApi* Api, HRESULT* RegistrationResult = nullptr)
     {
         std::lock_guard<std::mutex> Lock(Gate);
+        if (RegistrationResult) *RegistrationResult = Closed ? E_ABORT : S_FALSE;
         if (Closed) return {};
         if (!Catalogue)
         {
             if (!Api) return {};
-            auto Created = FGameInputWarmCatalogue::Create(Api);
+            auto Created = FGameInputWarmCatalogue::Create(Api, RegistrationResult);
             if (!Created) return {};
             Catalogue = std::move(Created);
         }

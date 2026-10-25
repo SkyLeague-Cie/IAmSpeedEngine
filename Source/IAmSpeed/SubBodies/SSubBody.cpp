@@ -10,6 +10,7 @@
 #include "IAmSpeed/SubBodies/Solid/SphereSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
+#include "GameFramework/Actor.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
@@ -24,6 +25,27 @@ USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
     SetSimulatePhysics(false); // For UE
     SetGenerateOverlapEvents(false); // For UE
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+
+void USSubBody::OnRegister()
+{
+    // A nested native component can inherit a Blueprint-template parent
+    // pointer. Resolve that exact default-subobject identity on this actor
+    // before SceneComponent attempts attachment. Preserve every authored
+    // relative transform, socket and dimension; never fit geometry to a mesh.
+    if(!IsTemplate())
+    {
+        USceneComponent* Parent=GetAttachParent();
+        AActor* Actor=GetOwner();
+        if(Parent && Parent->IsTemplate() && Actor)
+        {
+            auto* Instance=Cast<USceneComponent>(Actor->GetDefaultSubobjectByName(Parent->GetFName()));
+            if(Instance && !Instance->IsTemplate() && Instance->GetOwner()==Actor &&
+                Instance->IsA(Parent->GetClass()))
+                SetupAttachment(Instance,GetAttachSocketName());
+        }
+    }
+    Super::OnRegister();
 }
 
 void USSubBody::Initialize(ISpeedComponent* InParentComponent)

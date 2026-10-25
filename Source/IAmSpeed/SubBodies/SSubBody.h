@@ -42,6 +42,7 @@ class IAMSPEED_API USSubBody : public UShapeComponent
 
 	
 public:
+    void OnRegister() override;
 #if !UE_BUILD_SHIPPING
     /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
     virtual void AppendEpisodeStateForTesting(TArray<uint8>& Out) const

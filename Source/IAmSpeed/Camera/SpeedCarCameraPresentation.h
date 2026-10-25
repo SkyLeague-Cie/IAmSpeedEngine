@@ -2,6 +2,8 @@
 #include "SpeedCarCameraArm.h"
 #include "SpeedCarCameraCommandJournal.h"
 
+namespace Speed::Analytic { struct FAnalyticWorldData; class FWorldQueryService; }
+
 /** Generic physical extension; intentionally not the game's legacy Kind1 bytes. */
 struct IAMSPEED_API FSpeedCarCameraInputSnapshot
 {
@@ -21,6 +23,8 @@ struct IAMSPEED_API FSpeedCarCameraConfiguration
     float RotationLagSpeed = 37;
     float LagSpeedCoeff = 1;
     uint64 Version = 1;
+    // Nonzero only for the opt-in, immutable analytic camera environment.
+    uint64 CollisionWorldHash = 0;
 };
 
 struct IAMSPEED_API FSpeedCarCameraPose
@@ -60,7 +64,9 @@ public:
     // Fixed-width v1: header 73 + configuration/state 442 + checksum 8.
     static constexpr int32 StateBytes = 523;
     FSpeedCarCameraPresentation(uint64 Owner, uint64 FirstFrame, uint64 Generation,
-        const FSpeedCarCameraConfiguration& Configuration, const FSpeedCarCameraArmState& Initial);
+        const FSpeedCarCameraConfiguration& Configuration, const FSpeedCarCameraArmState& Initial,
+        TSharedPtr<const Speed::Analytic::FAnalyticWorldData, ESPMode::ThreadSafe> CollisionWorld = nullptr);
+    ~FSpeedCarCameraPresentation() override;
     uint64 OwnerStableId() const override { return Owner; }
     uint32 Channel() const override { return CameraChannel; }
     bool SupportsIndependentFrameProduction() const override { return true; }
@@ -69,6 +75,9 @@ public:
     void RestoreValidated(const FSimulationPresentationOutput& Packet, uint64 ReplayThrough,
         FSimulationPresentationOutput& Restored) override;
     bool QueueSetting(ESpeedCarCameraCommandKind Kind, float Value);
+    /** Optional UI admission; a full journal rejects the setting without invalidating physics. */
+    bool TryQueueSetting(ESpeedCarCameraCommandKind Kind, float Value)
+    { return Kind != ESpeedCarCameraCommandKind::Toggle && FMath::IsFinite(Value) && Journal.QueueNext(Kind,Value); }
     bool QueueAt(const FSpeedCarCameraCommand& Command) { return Journal.QueueAt(Command); }
     bool Accepts(const FSimulationPresentationOutput& Packet) const;
     static bool ReadPublishedState(const FSimulationPresentationOutput& Packet,
@@ -79,6 +88,8 @@ protected:
     void ProduceCameraFrame(const FSimulationSnapshot& Bodies, FSimulationPresentationOutput& Out) override;
 private:
     const uint64 Owner, FirstFrame, Generation;
+    TSharedPtr<const Speed::Analytic::FAnalyticWorldData, ESPMode::ThreadSafe> CollisionWorld;
+    TUniquePtr<Speed::Analytic::FWorldQueryService> CollisionQuery;
     uint64 Epoch = 0;
     FSpeedCarCameraConfiguration Configuration;
     FSpeedCarCameraArmState State;

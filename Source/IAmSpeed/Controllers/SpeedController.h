@@ -101,6 +101,9 @@ public:
 	bool IsInputLifecycleFaulted() const { return bInputLifecycleFault; }
 
 protected:
+	/** Borrow the existing acquisition history for paused UI; never create another owner. */
+	std::shared_ptr<const Speed::Input::V2::FRawAcquisitionJournal> ReadInputJournalV2() const
+	{ check(IsInGameThread()); return InputSessionV2 ? InputSessionV2->Journal : nullptr; }
 	virtual bool RequiresInputSessionV2() const { return false; }
 	virtual std::shared_ptr<Speed::Input::V2::FInputHostSession> CreateInputSessionV2(uint64 FirstFrame) { return {}; }
 	virtual bool BindInputPresentationV2() { return true; }

@@ -316,8 +316,21 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 			SerializedPiecewiseAuthorityCount += Patch.bAuthorityEligible ? 1 : 0;
 		}
 		uint64 BakedInventoryHash = 0;
+		// Bake records are serialized in SourceId order. Live discovery above is
+		// ordered by authored actor/component paths. Compare the same inventory
+		// order without changing baked geometry, primitive ids or contact order.
+		TArray<const FSpeedAnalyticMeshSourceRecord*> InventorySources;
 		for (const FSpeedAnalyticMeshSourceRecord& Source : BakedAsset->MeshSources)
+			InventorySources.Add(&Source);
+		InventorySources.Sort([](const FSpeedAnalyticMeshSourceRecord& A,
+			const FSpeedAnalyticMeshSourceRecord& B)
 		{
+			return A.ActorPath == B.ActorPath
+				? A.ComponentPath < B.ComponentPath : A.ActorPath < B.ActorPath;
+		});
+		for (const FSpeedAnalyticMeshSourceRecord* SourceRecord : InventorySources)
+		{
+			const FSpeedAnalyticMeshSourceRecord& Source = *SourceRecord;
 			const FString StableIdentity = FString::Printf(
 				TEXT("%s|%s|%s|%s"), *Source.ActorPath, *Source.ComponentPath,
 				*Source.MeshPath, *Source.WorldTransform.ToString());
