@@ -766,6 +766,7 @@ private:
     const std::shared_ptr<const std::uint8_t> BoundaryCaptureOrigin=std::make_shared<const std::uint8_t>(std::uint8_t{0});
     std::shared_ptr<const FRegistryFrame> LastCompletedForCapture; // Completion history survives PauseAll clearing the public Latest observation.
     bool BoundaryReservationCalling = false;
+    mutable bool BoundaryCaptureCalling = false; // worker-only, spans cleanup as well as allocations
     std::unique_ptr<FBoundaryReservationPlan> BoundaryReservation; // destroyed before the worker-owned sessions
     std::uint64_t Constructed = 0, Destroyed = 0;
 };

@@ -77,6 +77,10 @@ def main():
         if ok:ok=execute(name+'-link',[link,'/nologo','/out:'+str(exe),obj,out/'p.obj'])
         if ok:ok=execute(name+'-run',[exe]+([out] if name=='registry' else []))
     if ok and args.suite in ('all','registry'):ok=execute('registry-lifetime',[out/'registry.exe','--boundary-reservation-live-destruction'],86)
+    if ok and args.suite in ('all','registry'):
+        for mode in ('submit','stop'):
+            if not ok:break
+            ok=execute('capture-probe-'+mode,[out/'registry.exe','--capture-alloc-'+mode])
     if ok and args.suite in ('all','world'):
         for mode in ('worker','world','default','finalize','release'):
             if not ok:break

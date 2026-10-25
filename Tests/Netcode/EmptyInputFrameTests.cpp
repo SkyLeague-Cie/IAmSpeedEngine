@@ -182,9 +182,15 @@ static void EmptyWorkerPresentationAndStopGates()
 
 #include "EmptyInputPeriodTests.inc"
 #include "ReservationObservationTests.inc"
+#include "CaptureEntryTests.inc"
 
 int main(int Argc, char* Argv[])
 {
+    if(Argc==2 && (std::string(Argv[1])=="--capture-alloc-submit" || std::string(Argv[1])=="--capture-alloc-stop"))
+    {
+        try { return CaptureEntryCommandSubmissionProbe(std::string(Argv[1])=="--capture-alloc-stop"); }
+        catch(const std::exception& E) { Budget=-1;AllocationHook=nullptr;std::cerr << "CAPTURE_PROBE_FAIL " << E.what() << '\n';return 1; }
+    }
     if (RebasedRegistryRegressionMain(Argc,Argv)) return 1;
     const auto Before = Checks;
     try
@@ -200,6 +206,10 @@ int main(int Argc, char* Argv[])
         TestReservationObservation();
         std::cout << "RESERVATION_OBSERVATION " << Checks-BeforeObservation << " new checks; combined " << Checks
             << "; exact live INPUT reservation only, no world/branch/restore authority\n";
+        const auto BeforeCapture=Checks;
+        TestCaptureEntryReentrancy();
+        std::cout << "CAPTURE_ENTRY " << Checks-BeforeCapture << " new checks; combined " << Checks
+            << "; INPUT capture only, no world/branch/native qualification\n";
         return 0;
     }
     catch (const std::exception& E)
