@@ -12,8 +12,8 @@ This test-only episode hook does not qualify production multi-rate gameplay,
 cross-rate rollback, hardware, audio, rendering or Netcode.
 
 The same authored relative configuration is exercised at 60, 100, 120, 240, 300,
-360 and 720 Hz. The 720 Hz case is the comparison reference; an additional 1440
-Hz run checks reference convergence. Equal frame indices at different rates are
+360, 720 and 1440 Hz. The highest tested rate, 1440 Hz, is the comparison
+reference; comparison with 720 Hz also exposes reference convergence. Equal frame indices at different rates are
 never compared as equal physical times. End states are sampled at 50 ms.
 Linear and angular velocities, initial orientation and relative offset vary in
 an explicit sparse design; this is not the complete Cartesian product.

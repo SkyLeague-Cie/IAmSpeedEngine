@@ -107,6 +107,9 @@ namespace Speed
         bool ResetEmptyCollisionMatrixEpisodeForTesting()
         {
             if (!Adapters.IsEmpty()) return false;
+            RebuildOrderedAdapters();
+            if (!OrderedAdapters.IsEmpty() || !Bodies.IsEmpty()
+                || !ProjectionSpheres.IsEmpty() || !ProjectionBoxes.IsEmpty()) return false;
             DynamicContactPairs.Reset();
             PendingRollingContactPairs.Reset();
             DynamicContactPairIndices.Reset();

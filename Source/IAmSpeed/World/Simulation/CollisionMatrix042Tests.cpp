@@ -18,8 +18,11 @@
 #include "Math/QuatRotationTranslationMatrix.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
+#include "UObject/GarbageCollection.h"
 
 namespace
 {
@@ -140,6 +143,7 @@ struct FMatrixResult
     FVector VelocityA, AngularA, VelocityB, AngularB;
     SKinematic FinalA, FinalB;
     EContactFeatureKind FeatureA = EContactFeatureKind::Unknown, FeatureB = EContactFeatureKind::Unknown;
+    TArray<FString> RawEvents;
 };
 class FMatrixObserver final : public CollisionMatrix042::FObserver
 {
@@ -153,16 +157,25 @@ public:
         if (R.Owner != A && R.Other != A) return;
         if (!R.Hit.bHit || !R.Hit.bBlockingHit) return;
         if (++Result.Events > 4096) { Result.Overflow = true; return; }
+        const bool Direct = R.Owner == A;
+        const auto& SA = Direct ? R.After : R.OtherAfter;
+        const auto& SB = Direct ? R.OtherAfter : R.After;
+        const FVector Point = R.Hit.ImpactPoint - Offset;
+        const FVector Normal = Direct ? R.Hit.ImpactNormal : -R.Hit.ImpactNormal;
+        Result.RawEvents.Add(FString::Printf(TEXT("%llu,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%u,%u,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n"),
+            R.Frame - FirstFrame, double(R.TimeWithinFrame), double(R.Hit.TOI), Point.X, Point.Y, Point.Z,
+            Normal.X, Normal.Y, Normal.Z,
+            unsigned(Direct ? R.Hit.ContactFeatureThis : R.Hit.ContactFeatureOther),
+            unsigned(Direct ? R.Hit.ContactFeatureOther : R.Hit.ContactFeatureThis),
+            SA.Velocity.X, SA.Velocity.Y, SA.Velocity.Z, SA.AngularVelocity.X, SA.AngularVelocity.Y, SA.AngularVelocity.Z,
+            SB.Velocity.X, SB.Velocity.Y, SB.Velocity.Z, SB.AngularVelocity.X, SB.AngularVelocity.Y, SB.AngularVelocity.Z));
         if (Result.HasHit) return;
         Result.HasHit = true;
         Result.Time = double(R.Frame - FirstFrame) * double(Delta) + R.TimeWithinFrame;
         Result.Point = R.Hit.ImpactPoint - Offset;
-        const bool Direct = R.Owner == A;
         Result.Normal = Direct ? R.Hit.ImpactNormal : -R.Hit.ImpactNormal;
         Result.FeatureA = Direct ? R.Hit.ContactFeatureThis : R.Hit.ContactFeatureOther;
         Result.FeatureB = Direct ? R.Hit.ContactFeatureOther : R.Hit.ContactFeatureThis;
-        const auto& SA = Direct ? R.After : R.OtherAfter;
-        const auto& SB = Direct ? R.OtherAfter : R.After;
         Result.VelocityA = SA.Velocity; Result.AngularA = SA.AngularVelocity;
         Result.VelocityB = SB.Velocity; Result.AngularB = SB.AngularVelocity;
     }
@@ -220,7 +233,8 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
         const double Spin = C.Variant == 3 ? 1. : C.Variant == 4 ? -3. : 0.;
         const double Tangent = C.Variant == 5 ? 80. : 0.;
         const double OffsetY = C.Variant == 6 ? 3. : 0.;
-        A.State.Rotation = C.Variant == 3 || C.Variant == 4 ? FQuat(FVector::YAxisVector, .17) : FQuat::Identity;
+        A.State.Rotation = C.Variant == 3 || C.Variant == 4 ? FQuat(FVector::YAxisVector, .17)
+            : C.Variant == 7 ? FQuat(FVector::ZAxisVector, .37) : FQuat::Identity;
         A.State.AngularVelocity = FVector(0, Spin, 0);
         const double SupportA = C.A == EMatrixShape::Sphere ? 12.5 : 20.;
         auto Data = MakeShared<Analytic::FAnalyticWorldData>();
@@ -246,8 +260,15 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
             const double SupportB = C.B == EMatrixShape::Sphere ? 12.5 : C.B == EMatrixShape::Box ? 20. : 25.;
             A.State.Location = C.Offset + FVector(-SupportA - SupportB - Speed * .021, OffsetY, 0);
             A.State.Velocity = FVector(Speed, Tangent, 0); B.State.Location = C.Offset;
+            // A valid static authority is still supplied for body/body cases.
+            // This remote floor is outside the finite episode's swept bounds.
+            Analytic::FBoundedPlane Plane;
+            Plane.SourceId = Plane.SurfaceId = Plane.FeatureId = Plane.PrimitiveId = 1;
+            Plane.ObjectType = uint32(ECC_WorldStatic); Plane.BlockingChannels = MAX_uint64;
+            Plane.Origin = FVector3d(C.Offset + FVector(0,0,-10000));
+            Plane.HalfExtents = FVector2d(1000,1000); Data->Planes.Add(Plane);
         }
-        if (!DynamicPair) {
+        {
             FString Error;
             if (!Data->FinalizeAndValidate(&Error)) { AddError(Error); return false; }
             auto* Source = NewObject<UBoxComponent>(ActorB); ActorB->AddInstanceComponent(Source);
@@ -280,15 +301,127 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
         return Out.Complete && Out.ClockValid && !Out.Overflow;
     };
 
-    // First compile/smoke exercises the real path. The full declared matrix and
-    // independent comparison/export gates are added before native qualification.
-    FMatrixResult Result;
-    FMatrixCase Case;
-    const bool Valid = Run(Case, Result);
-    TestTrue(TEXT("real FastBatch case completed with the requested physical clock"), Valid);
-    TestTrue(TEXT("real analytic plane collision was selected"), Result.HasHit);
-    AddInfo(FString::Printf(TEXT("[CollisionMatrix042] Worlds=1 Cases=1 Frames=%u Hits=%u Time=%.17g NOT_FULL_MATRIX=1"),
-        Result.Frames, Result.Events, Result.Time));
+    if (FParse::Param(FCommandLine::Get(), TEXT("IAmSpeedCollisionMatrix042Smoke")))
+    {
+        FMatrixResult R; FMatrixCase C;
+        TestTrue(TEXT("real native FastBatch smoke completed"), Run(C,R));
+        TestTrue(TEXT("real native analytic collision selected"), R.HasHit);
+        AddInfo(FString::Printf(TEXT("[CollisionMatrix042Smoke] Worlds=1 Cases=1 Frames=%u Hits=%u Time=%.17g FullMatrix=0"), R.Frames,R.Events,R.Time));
+        return !HasAnyErrors();
+    }
+    // This sparse design varies each declared axis; it is not the Cartesian
+    // product of all velocities, orientations, offsets and angular velocities.
+    FString Output;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("IAmSpeedCollisionMatrix042Output="), Output))
+        Output = FPaths::ProjectSavedDir() / TEXT("CollisionMatrix042") / FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    if (IFileManager::Get().DirectoryExists(*Output)) {
+        AddError(TEXT("Matrix output already exists; no previous evidence is overwritten")); return false;
+    }
+    IFileManager::Get().MakeDirectory(*Output, true);
+    const FString CasesFile = Output / TEXT("cases.csv"), EventsFile = Output / TEXT("events.csv");
+    FFileHelper::SaveStringToFile(TEXT("case,shape_a,shape_b,variant,hz,translation,complete,clock_valid,hits,impact_seconds,point_x,point_y,point_z,normal_x,normal_y,normal_z,frequency_pass,translation_pass,oracle_pass,point_bound_cm,time_bound_s,frequency_point_error_cm,frequency_time_error_s,translation_point_error_cm\n"), *CasesFile);
+    FFileHelper::SaveStringToFile(TEXT("case,local_frame,elapsed_in_frame,query_toi,point_x,point_y,point_z,normal_x,normal_y,normal_z,feature_a,feature_b,velocity_a_x,velocity_a_y,velocity_a_z,angular_a_x,angular_a_y,angular_a_z,velocity_b_x,velocity_b_y,velocity_b_z,angular_b_x,angular_b_y,angular_b_z\n"), *EventsFile);
+    const TArray<uint32> Rates = {1440, 720, 360, 300, 240, 120, 100, 60};
+    const TArray<FVector> Translations = { FVector::ZeroVector, FVector(1000,-2000,3000),
+        FVector(-1048576,2097152,-524288), FVector(100000000,-100000000,100000000), FVector(.003,-.004,.001) };
+    uint32 CaseCount = 0, Failed = 0, FrequencyFailures = 0, TranslationFailures = 0, OracleFailures = 0;
+    uint64 FrameCount = 0;
+    const double Start = FPlatformTime::Seconds();
+    bool Incomplete = false, ExportValid = true;
+    // Frozen pre-run numerical gates. 0.005 cm is half the canonical position
+    // grid. Per-frame accumulation is charged separately from CCD geometry.
+    const double GeometricCm = .02, NormalRadians = .002, TranslationCm = .0001;
+    auto NormalError = [](const FVector& A, const FVector& B) {
+        return FMath::Acos(FMath::Clamp(FVector::DotProduct(A.GetSafeNormal(), B.GetSafeNormal()), -1., 1.));
+    };
+    for (EMatrixShape ShapeA : {EMatrixShape::Sphere, EMatrixShape::Box})
+    for (EMatrixShape ShapeB : {EMatrixShape::Plane, EMatrixShape::Ring, EMatrixShape::Sphere, EMatrixShape::Box, EMatrixShape::Cylinder})
+    for (int32 Variant = 0; Variant < 8; ++Variant)
+    {
+        TArray<FMatrixResult> Fine; Fine.SetNum(Translations.Num());
+        for (uint32 Hz : Rates)
+        {
+            FMatrixResult Origin;
+            for (int32 T = 0; T < Translations.Num(); ++T)
+            {
+                if (FPlatformTime::Seconds() - Start > 60.) { Incomplete = true; break; }
+                FMatrixCase C; C.A = ShapeA; C.B = ShapeB; C.Variant = Variant; C.Hz = Hz; C.Offset = Translations[T];
+                FMatrixResult R;
+                const bool Valid = Run(C, R);
+                ++CaseCount; FrameCount += R.Frames;
+                if (T == 0) Origin = R;
+                if (Hz == Rates[0]) Fine[T] = R;
+                const auto& Ref = Fine[T];
+                const double Speed = Variant == 1 ? 300. : Variant == 2 ? 4600. : 1200.;
+                const double PointBound = GeometricCm + .005 * double(R.Frames + Ref.Frames);
+                const double TimeBound = 1.e-6 + PointBound / (Speed - 75.);
+                const double VelocityBound = .02 + NormalRadians * Speed;
+                const double AngularBound = .01 + NormalRadians * Speed / 12.5;
+                const double PointError = FVector::Distance(R.Point, Ref.Point);
+                const double TimeError = FMath::Abs(R.Time - Ref.Time);
+                const bool Presence = Valid && R.HasHit && Ref.Complete && Ref.ClockValid && Ref.HasHit;
+                const bool FrequencyPass = Presence && PointError <= PointBound && TimeError <= TimeBound
+                    && R.FeatureA == Ref.FeatureA && R.FeatureB == Ref.FeatureB
+                    && NormalError(R.Normal, Ref.Normal) <= NormalRadians
+                    && FVector::Distance(R.VelocityA, Ref.VelocityA) <= VelocityBound
+                    && FVector::Distance(R.VelocityB, Ref.VelocityB) <= VelocityBound
+                    && FVector::Distance(R.AngularA, Ref.AngularA) <= AngularBound
+                    && FVector::Distance(R.AngularB, Ref.AngularB) <= AngularBound
+                    && FVector::Distance(R.FinalA.Velocity, Ref.FinalA.Velocity) <= VelocityBound
+                    && FVector::Distance(R.FinalB.Velocity, Ref.FinalB.Velocity) <= VelocityBound
+                    && FVector::Distance(R.FinalA.AngularVelocity, Ref.FinalA.AngularVelocity) <= AngularBound
+                    && FVector::Distance(R.FinalB.AngularVelocity, Ref.FinalB.AngularVelocity) <= AngularBound;
+                // Fractional-grid translations are subjected to the same strict
+                // invariance gate; a quantization phase failure stays a failure.
+                const double TranslationPointError = FVector::Distance(R.Point, Origin.Point);
+                const bool TranslationPass = Valid && R.HasHit && Origin.HasHit
+                    && R.FeatureA == Origin.FeatureA && R.FeatureB == Origin.FeatureB
+                    && TranslationPointError <= TranslationCm && FMath::Abs(R.Time - Origin.Time) <= 1.e-6
+                    && NormalError(R.Normal, Origin.Normal) <= 2.e-6
+                    && FVector::Distance(R.VelocityA, Origin.VelocityA) <= .01
+                    && FVector::Distance(R.VelocityB, Origin.VelocityB) <= .01
+                    && FVector::Distance(R.AngularA, Origin.AngularA) <= .001
+                    && FVector::Distance(R.AngularB, Origin.AngularB) <= .001
+                    && FVector::Distance(R.FinalA.Velocity, Origin.FinalA.Velocity) <= .01
+                    && FVector::Distance(R.FinalB.Velocity, Origin.FinalB.Velocity) <= .01
+                    && FVector::Distance(R.FinalA.AngularVelocity, Origin.FinalA.AngularVelocity) <= .001
+                    && FVector::Distance(R.FinalB.AngularVelocity, Origin.FinalB.AngularVelocity) <= .001;
+                const bool HasOracle = ShapeA == EMatrixShape::Sphere && ShapeB == EMatrixShape::Plane
+                    && Variant != 3 && Variant != 4;
+                const double OraclePointBound = GeometricCm + .005 * R.Frames;
+                const bool OraclePass = !HasOracle || (R.HasHit && FMath::Abs(R.Time - .021) <= 1.e-6 + OraclePointBound / Speed
+                    && FMath::Abs(R.Point.Z) <= GeometricCm
+                    && NormalError(R.Normal, FVector::UpVector) <= 1.e-6
+                    && FMath::Abs(R.VelocityA.Z) <= .02);
+                FrequencyFailures += !FrequencyPass; TranslationFailures += !TranslationPass; OracleFailures += !OraclePass;
+                const bool Pass = FrequencyPass && TranslationPass && OraclePass;
+                Failed += !Pass;
+                if (!Pass && Failed <= 20) AddError(FString::Printf(TEXT("CollisionMatrix042 case=%u %s/%s variant=%d Hz=%u offset=%d native=%d frequency=%d translation=%d oracle=%d"),
+                    CaseCount, Name(ShapeA), Name(ShapeB), Variant, Hz, T, Valid, FrequencyPass, TranslationPass, OraclePass));
+                const FString Row = FString::Printf(TEXT("%u,%s,%s,%d,%u,%d,%d,%d,%u,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%d,%d,%d,%.17g,%.17g,%.17g,%.17g,%.17g\n"),
+                    CaseCount, Name(ShapeA), Name(ShapeB), Variant, Hz, T, R.Complete, R.ClockValid, R.Events,
+                    R.Time, R.Point.X, R.Point.Y, R.Point.Z, R.Normal.X, R.Normal.Y, R.Normal.Z,
+                    FrequencyPass, TranslationPass, OraclePass, PointBound, TimeBound, PointError, TimeError, TranslationPointError);
+                ExportValid &= FFileHelper::SaveStringToFile(Row, *CasesFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
+                FString Events;
+                for (const auto& Event : R.RawEvents) Events += FString::Printf(TEXT("%u,"), CaseCount) + Event;
+                ExportValid &= FFileHelper::SaveStringToFile(Events, *EventsFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
+                if (CaseCount % 128 == 0) CollectGarbage(RF_NoFlags);
+            }
+            if (Incomplete) break;
+        }
+        if (Incomplete) break;
+    }
+    const uint32 Expected = 2 * 5 * 8 * Rates.Num() * Translations.Num();
+    const FString Summary = FString::Printf(TEXT("{\"schema\":1,\"worlds_created_by_harness\":1,\"driver\":\"AFastSimulation\",\"fast_batch\":true,\"highest_hz\":1440,\"expected_cases\":%u,\"actual_cases\":%u,\"frames\":%llu,\"failed\":%u,\"frequency_failures\":%u,\"translation_failures\":%u,\"oracle_failures\":%u,\"incomplete\":%s,\"export_valid\":%s,\"wheel_coverage\":false}\n"),
+        Expected, CaseCount, FrameCount, Failed, FrequencyFailures, TranslationFailures, OracleFailures,
+        Incomplete ? TEXT("true") : TEXT("false"), ExportValid ? TEXT("true") : TEXT("false"));
+    ExportValid &= FFileHelper::SaveStringToFile(Summary, *(Output / TEXT("summary.json")));
+    TestTrue(TEXT("matrix completed every declared case"), !Incomplete && CaseCount == Expected);
+    TestTrue(TEXT("all matrix evidence saved"), ExportValid);
+    TestEqual(TEXT("all collision and invariance gates"), Failed, uint32(0));
+    AddInfo(FString::Printf(TEXT("[CollisionMatrix042] Worlds=1 Cases=%u/%u Frames=%llu Failures=%u Evidence=%s WheelCoverage=0"),
+        CaseCount, Expected, FrameCount, Failed, *Output));
     return !HasAnyErrors();
 }
 #endif
