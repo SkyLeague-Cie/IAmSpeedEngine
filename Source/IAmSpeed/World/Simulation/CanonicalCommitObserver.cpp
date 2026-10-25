@@ -1,3 +1,4 @@
+#include "CanonicalCommitObserver.h"
 #include "CanonicalCommitObserverInternal.h"
 #include "SpeedPhysicsSimulation.h"
 #include "Engine/World.h"
