@@ -1,6 +1,7 @@
 # Collision matrix 0.4.2 — causal production corrections
 
-Status: source candidate, native validation pending. The earlier baseline and
+Status: measured native candidate: 30 targeted regressions PASS; strict matrix
+remains FAIL. See [final measurements](CollisionMatrix042PhysicsResults20261025.md). The earlier baseline and
 prescribed-fixture reports remain separate failed executions. No numerical
 gate, production frequency, public interface or snapshot provider is changed.
 

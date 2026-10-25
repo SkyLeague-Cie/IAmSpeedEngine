@@ -1,0 +1,410 @@
+{
+  "schema": 1,
+  "state": "SCIENTIFIC_MATRIX_FAIL_RETAINED",
+  "native_source": "40fd72115748b4835d66a41359e32bd56f607e17",
+  "Source_tree": "9d17d19b97d7b7023547c17a56dd193b1b4ab7e1",
+  "private_Windows_host": "IAmSpeedDemo0.1 source host,UE5.8.2",
+  "production_rate_hz": 300,
+  "expected_cases": 4800,
+  "reference_hz": 1440,
+  "common_state_time_seconds": 0.05,
+  "exact_targeted_regressions": 30,
+  "targeted_ids": [
+    "IAmSpeed.Camera.IndependentNominalTrajectoriesNoPhysicalCertificate",
+    "IAmSpeed.Camera.InputFrameHeaderBoundary",
+    "IAmSpeed.Camera.NetworkInputBoundary",
+    "IAmSpeed.Collision.Cylinder.MovingCCD",
+    "IAmSpeed.Collision.Cylinder.ProjectedSideSlide",
+    "IAmSpeed.Collision.Torus.BoxTrajectoryCCD",
+    "IAmSpeed.Collision.Torus.SmoothCurvatureBounds238",
+    "IAmSpeed.Driving.MenuResume2836",
+    "IAmSpeed.Driving.PausedMenuJournal",
+    "IAmSpeed.Driving.PreferencesRoundTrip",
+    "IAmSpeed.Driving.RingEditorRegistration",
+    "IAmSpeed.Driving.StockContractAndHalfAxes",
+    "IAmSpeed.PhysicalLaws.QuantizationLargeCoordinates042",
+    "IAmSpeed.PhysicalLaws.SphereSphereContinuous042",
+    "IAmSpeed.PhysicalLaws.StationaryAxesTranslation042",
+    "IAmSpeed.PhysicalLaws.Steering.UnsteeredAligningYawAuthority",
+    "IAmSpeed.PhysicalLaws.UnforcedTrajectory042",
+    "IAmSpeed.PhysicalLaws.VehicleInertia.Covariance",
+    "IAmSpeed.Simulation.FrameParallel.CameraExactSequence",
+    "IAmSpeed.Simulation.FrameWitness.NumericCodecByteConformance",
+    "IAmSpeed.Simulation.FrameWitness.PointerIdentity",
+    "IAmSpeed.Simulation.FrameWitness.PointerSnapshotPreTouch",
+    "IAmSpeed.Simulation.FrameWitness.WheelRowStorageIsolation",
+    "IAmSpeed.Simulation.IdentityKinematicQuantizationCache",
+    "IAmSpeed.Simulation.OriginGetterBits",
+    "IAmSpeed.Simulation.ResolvedPairSet",
+    "IAmSpeed.Vehicle.WheelSimulationAdmission",
+    "IAmSpeed.Wheel.ContactObjectClassification",
+    "IAmSpeed.Wheel.SuspensionHitProducers",
+    "SkyLeague.Camera.GenericInputLifecycle"
+  ],
+  "targeted_report": {
+    "file": "index.json",
+    "bytes": 13814,
+    "sha256": "e07b431a29bf99f54f3901f09784bdda628d6a7eff97e94fd2790c880b7369bb"
+  },
+  "targeted_receipt": {
+    "file": "completion-receipt.json",
+    "bytes": 1350,
+    "sha256": "23014f2f0a80840655b26102474752fa4693648b185e87d2d62b70aaea64931f"
+  },
+  "matrix_receipt": {
+    "file": "completion-receipt.json",
+    "bytes": 1349,
+    "sha256": "155d5a82013d8b24c855ff7389587cde1541b5f4f611404b080098661dbc3785"
+  },
+  "matrix_assessment": {
+    "file": "assessment.json",
+    "bytes": 629708,
+    "sha256": "77bf0da4ce9913b0c90fc86e62f7586b453e54a9d28bb89f302fe84c40cbc46f"
+  },
+  "raw_artifacts": [
+    {
+      "file": "spec.json",
+      "bytes": 954,
+      "sha256": "2b4b68a03c9055c264c658a2983b838dfa068c3b4784b236d180253c8ea2fe75"
+    },
+    {
+      "file": "cases.csv",
+      "bytes": 944374,
+      "sha256": "20f2f23cc362f778df61b7bc0aa85b6a28fd6448b475028a50757c062c12c4f3"
+    },
+    {
+      "file": "events.csv",
+      "bytes": 8957885,
+      "sha256": "44d4b46ee6d45977c196dcbb03b537d46599843f4798fd0a723743be671bc009"
+    },
+    {
+      "file": "initial-states.csv",
+      "bytes": 744014,
+      "sha256": "3f6fa05de1420fd5f26749c618d32f799eed8396e17e33c29ff7be80a5c35792"
+    },
+    {
+      "file": "end-states.csv",
+      "bytes": 566334,
+      "sha256": "a35fedf5cb8c28c539bc2e00355665ab4eafe003dfe14b55f4e0d383fc9e1e2f"
+    },
+    {
+      "file": "support-samples.csv",
+      "bytes": 4988686,
+      "sha256": "94bf444843c599981fa9f6e5ad035a2e8d5ed5384257a90c1ba02a09bd43c460"
+    },
+    {
+      "file": "summary.json",
+      "bytes": 411,
+      "sha256": "0da1cc40fe1c9532e54008080a47b60102638f6c6d2e1c6bf218206347d7d79d"
+    },
+    {
+      "file": "execution.json",
+      "bytes": 208,
+      "sha256": "7acabff0ff046fdf6dd470ee688201bb98517a35b8f0e8b035347914f942df78"
+    }
+  ],
+  "summary": {
+    "cases": 4800,
+    "completed": 4800,
+    "contacts": 4160,
+    "frames": 100200,
+    "cases_with_diagnostic_faults": 2031,
+    "failures": {
+      "contact.missing": 640,
+      "contact.wheel_not_observed": 640,
+      "execution.iteration_exhausted": 436,
+      "frequency.common_time_angular": 631,
+      "frequency.common_time_velocity": 887,
+      "frequency.immediate_velocity": 140,
+      "frequency.reference_contact_missing": 640,
+      "translation.common_time_angular": 72,
+      "translation.common_time_velocity": 81,
+      "translation.immediate_angular": 40,
+      "translation.immediate_velocity": 24,
+      "translation.point": 160,
+      "translation.reference_contact_missing": 640
+    }
+  },
+  "by_pair": {
+    "Box/AnalyticPlane": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 5,
+      "failures": {
+        "frequency.common_time_angular": 3,
+        "frequency.common_time_velocity": 3,
+        "translation.common_time_angular": 2,
+        "translation.common_time_velocity": 2
+      }
+    },
+    "Box/Box": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 50,
+      "failures": {
+        "frequency.common_time_angular": 5,
+        "frequency.common_time_velocity": 50
+      }
+    },
+    "Box/CylinderPrescribed": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 120,
+      "failures": {
+        "execution.iteration_exhausted": 120,
+        "frequency.common_time_angular": 73,
+        "frequency.common_time_velocity": 85,
+        "translation.common_time_angular": 30,
+        "translation.common_time_velocity": 34
+      }
+    },
+    "Box/RingStatic": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 166,
+      "failures": {
+        "frequency.common_time_velocity": 15,
+        "translation.common_time_angular": 40,
+        "translation.common_time_velocity": 43,
+        "translation.immediate_angular": 40,
+        "translation.immediate_velocity": 24,
+        "translation.point": 160
+      }
+    },
+    "Box/Sphere": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 140,
+      "failures": {
+        "frequency.common_time_angular": 135,
+        "frequency.common_time_velocity": 140
+      }
+    },
+    "Sphere/AnalyticPlane": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 0,
+      "failures": {}
+    },
+    "Sphere/Box": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 30,
+      "failures": {
+        "frequency.common_time_angular": 5,
+        "frequency.common_time_velocity": 30
+      }
+    },
+    "Sphere/CylinderPrescribed": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 0,
+      "failures": {}
+    },
+    "Sphere/RingStatic": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 0,
+      "failures": {}
+    },
+    "Sphere/Sphere": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 0,
+      "failures": {}
+    },
+    "Wheel/AnalyticPlane": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 0,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 320,
+      "failures": {
+        "contact.missing": 320,
+        "contact.wheel_not_observed": 320,
+        "frequency.reference_contact_missing": 320,
+        "translation.reference_contact_missing": 320
+      }
+    },
+    "Wheel/Box": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 280,
+      "failures": {
+        "frequency.common_time_angular": 280,
+        "frequency.common_time_velocity": 280,
+        "frequency.immediate_velocity": 70
+      }
+    },
+    "Wheel/CylinderPrescribed": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 320,
+      "failures": {
+        "execution.iteration_exhausted": 316,
+        "frequency.common_time_angular": 70,
+        "frequency.common_time_velocity": 4,
+        "frequency.immediate_velocity": 35,
+        "translation.common_time_velocity": 1
+      }
+    },
+    "Wheel/RingStatic": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 0,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 320,
+      "failures": {
+        "contact.missing": 320,
+        "contact.wheel_not_observed": 320,
+        "frequency.reference_contact_missing": 320,
+        "translation.reference_contact_missing": 320
+      }
+    },
+    "Wheel/Sphere": {
+      "cases": 320,
+      "completed": 320,
+      "contacts": 320,
+      "frames": 6680,
+      "cases_with_diagnostic_faults": 280,
+      "failures": {
+        "frequency.common_time_angular": 60,
+        "frequency.common_time_velocity": 280,
+        "frequency.immediate_velocity": 35,
+        "translation.common_time_velocity": 1
+      }
+    }
+  },
+  "world_count": 1,
+  "strictly_sequential_driver_generations": 436,
+  "history": [
+    {
+      "label": "Fixture corrected baseline",
+      "source": "e2c77d5fd92683aefcbd58f590da7abd17663ad7",
+      "cases": 4800,
+      "completed": 4792,
+      "contacts": 3680,
+      "frames": 100184,
+      "fault_cases": 3730,
+      "terminals": 8,
+      "iterations": 380,
+      "frequency_point": 59,
+      "frequency_toi": 178,
+      "frequency_normal": 140,
+      "translation_point": 1181,
+      "translation_toi": 1552,
+      "translation_normal": 332,
+      "seconds": 96.17199999999139,
+      "guard_failed": true,
+      "diagnostic_sha256": "962e1da363260a82c90446c9500566cb593b8f6d618fe57f73cfa51417e3a245"
+    },
+    {
+      "label": "Double/continuous sphere",
+      "source": "a4027ea04c4f617ba943a56e318f5bd6b248e084",
+      "cases": 4800,
+      "completed": 4796,
+      "contacts": 4156,
+      "frames": 100186,
+      "fault_cases": 2724,
+      "terminals": 4,
+      "iterations": 437,
+      "frequency_point": 0,
+      "frequency_toi": 0,
+      "frequency_normal": 175,
+      "translation_point": 924,
+      "translation_toi": 369,
+      "translation_normal": 212,
+      "seconds": 72.86000000000058,
+      "guard_failed": false,
+      "diagnostic_sha256": "4ced0d28b2ec808ca9a96d12961817ec22ed192111171d743d044bcf32c43eae"
+    },
+    {
+      "label": "Stationary axes experiment",
+      "source": "9174e3dd82659d4875b87448a4f8f02788731011",
+      "cases": 4800,
+      "completed": 4797,
+      "contacts": 4156,
+      "frames": 100194,
+      "fault_cases": 2596,
+      "terminals": 3,
+      "iterations": 437,
+      "frequency_point": 0,
+      "frequency_toi": 0,
+      "frequency_normal": 175,
+      "translation_point": 267,
+      "translation_toi": 628,
+      "translation_normal": 65,
+      "seconds": 82.01600000000326,
+      "guard_failed": false,
+      "diagnostic_sha256": "2f636363f7e61024e87f88fb543f726a1583aba8b42afd4ee73558b43d6075b2"
+    },
+    {
+      "label": "Affine trajectory",
+      "source": "f49b1f29fa8a257b837f7ec09e51e0c34729778a",
+      "cases": 4800,
+      "completed": 4785,
+      "contacts": 4145,
+      "frames": 100170,
+      "fault_cases": 2041,
+      "terminals": 15,
+      "iterations": 431,
+      "frequency_point": 0,
+      "frequency_toi": 0,
+      "frequency_normal": 0,
+      "translation_point": 160,
+      "translation_toi": 0,
+      "translation_normal": 0,
+      "seconds": 77.25,
+      "guard_failed": false,
+      "diagnostic_sha256": "d0ce1e89d9111a43e036feb35db711db211df1cd59e506edd679a97ec438d11b"
+    },
+    {
+      "label": "Refined CCD candidate",
+      "source": "40fd72115748b4835d66a41359e32bd56f607e17",
+      "cases": 4800,
+      "completed": 4800,
+      "contacts": 4160,
+      "frames": 100200,
+      "fault_cases": 2031,
+      "terminals": 0,
+      "iterations": 436,
+      "frequency_point": 0,
+      "frequency_toi": 0,
+      "frequency_normal": 0,
+      "translation_point": 160,
+      "translation_toi": 0,
+      "translation_normal": 0,
+      "seconds": 72.46799999999348,
+      "guard_failed": false,
+      "diagnostic_sha256": "13719971146e974809d417ce49fbac3f300d0522ef95bc51e9433f107a0a851e"
+    }
+  ],
+  "tolerances_unchanged": true,
+  "missing_contact_not_measured_invariance": true,
+  "Full_physics_hardware_audio_render_Netcode_or_parent_build_qualified": false,
+  "source_integration_is_not_new_Demo_or_SkyLeague_native_build": true
+}

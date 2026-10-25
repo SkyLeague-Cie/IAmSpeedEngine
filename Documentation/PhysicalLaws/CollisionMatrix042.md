@@ -1,6 +1,7 @@
 # Collision matrix 0.4.2
 
-Status: implementation in progress, **NOT_QUALIFIED**. No inherited 0.4.1 pass
+Status: implemented and measured; strict matrix remains **FAIL / NOT_QUALIFIED**.
+Latest evidence: [measured physics corrections](CollisionMatrix042PhysicsResults20261025.md). No inherited 0.4.1 pass
 qualifies this matrix. The production canonical clock remains 300 Hz.
 
 The CI matrix runs sealed cases through `AFastSimulation` in FastBatch, in one
