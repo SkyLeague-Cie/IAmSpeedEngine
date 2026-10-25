@@ -115,7 +115,10 @@ FTorusBoxSweep SweepTorusShapeBoundedTrajectory(const FTorusGeometry& Torus,
                 Node.SB.Pose.TransformPosition(LocalPoint)-Node.SA.Distance.BoxPoint);
             if (Node.SA.Distance.UpperSeparation>=-InitialOverlapTolerance && Closing>=0.) continue;
             if (Node.SA.Distance.UpperSeparation<=2.*ToleranceCm) { Contact(Node.A,Node.SA); return Out; }
-            Out.Result=ETorusSweepResult::Unresolved;return Out;
+            // A short time cell is not a contact certificate when pose
+            // uncertainty still dominates its clearance. Refine this SAME
+            // earlier interval instead of aborting before the unchanged
+            // spatial hit bound can be satisfied. Budget/collapse still deny.
         }
         const double Mid=(Node.A+Node.B)*.5; FSample Middle;
         if (Mid==Node.A || Mid==Node.B || !Sample(Mid,Middle))

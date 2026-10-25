@@ -72,6 +72,21 @@ bool FTorusCurvatureSweepTest::RunTest(const FString&)
     const auto Hole=[](double T){return FTransform(FVector(-50.+100.*T,0.,0.));};
     const auto Miss=SweepTorusShapeBoundedTrajectory(Small,false,0.,FVector3d(10.),Hole,100.,.05,0.);
     TestTrue(TEXT("Axis-singular region falls back safely and preserves empty hole"),Miss.Result==ETorusSweepResult::Miss);
+    {
+        const FTorusGeometry MatrixTorus{60.,10.};
+        const double Bound=double(4600.f)*double(1.f/60.f);
+        const double Radius=12.510000228881836;
+        const double Start=10.+12.5+4600.*.021-Bound;
+        const double Error=8.*double(std::numeric_limits<float>::epsilon())*(1.+Bound);
+        const auto Fast=[&](double T){return FTransform(FVector(Start-4600.*double(float(T*double(1.f/60.f))),60.,0.));};
+        int32 Count=0;
+        const auto Resolved=SweepTorusShapeBoundedTrajectory(MatrixTorus,true,Radius,FVector3d::ZeroVector,Fast,Bound,.05,0.,Error,&Count);
+        const double Expected=(Start-10.-Radius)/Bound;
+        TestTrue(TEXT("coarse fast crossing refines past the first uncertainty-dominated cell"),Resolved.Result==ETorusSweepResult::Hit);
+        if(Resolved.Result==ETorusSweepResult::Hit)
+            TestTrue(TEXT("same spatial hit bound after extra temporal refinement"),FMath::Abs(Resolved.Time-Expected)*Bound<=2.e-4&&FMath::Abs(Resolved.Separation)<=Resolved.ErrorBoundCm);
+        TestTrue(TEXT("same finite pose budget"),Count<=4096);
+    }
     return !HasAnyErrors();
 }
 #endif

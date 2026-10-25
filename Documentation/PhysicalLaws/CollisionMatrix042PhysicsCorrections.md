@@ -83,3 +83,17 @@ distance/time law over every frame at eight rates and five common translations.
 The stationary-axis regression now asserts this successor moving-axis policy;
 the older native9174 evidence is retained as a separate experiment, with its
 TOI regression explicitly reported. No matrix threshold is changed.
+
+## Refining uncertainty-dominated CCD cells
+
+The affine native run exposes15 terminal queries at4600cm/s and60Hz, consistently
+across all five translations of Sphere/Ring, Sphere/Cylinder and Wheel/Cylinder.
+The existing temporal tree reached a cell with motion width below1e-4cm, but
+its pose-error lower bound still allowed contact while its first sample lay
+beyond the unchanged2e-4cm contact acceptance. It returned Unresolved there.
+The successor continues subdividing that same earliest cell until a real
+contact certificate or exclusion is available. It does not skip the cell,
+inflate a hit, manufacture a miss, increase tolerances, clear terminal latches
+or increase the4096 evaluation budget. An unresolvable/collapsed interval
+still fails closed. Native regressions include the observed coarse crossings
+and retain an explicitly over-uncertain negative control.
