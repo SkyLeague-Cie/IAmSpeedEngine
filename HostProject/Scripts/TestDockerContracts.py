@@ -402,7 +402,7 @@ class LinuxWorkExportTransport(unittest.TestCase):
                                           CompatibleChangelist=55116800)))
         build=engine/'Engine/Build/BatchFiles/Linux/Build.sh'; build.parent.mkdir(parents=True); build.touch()
         editor=engine/'Engine/Binaries/Linux/UnrealEditor-Cmd'; editor.parent.mkdir(parents=True); editor.touch()
-        calls=[]; paths=sorted(ci.REQUIRED)
+        calls=[]; paths=sorted(ci.REQUIRED | {ci._matrix_module.IDENTITY})
         def mapped(value):
             return {'/work':work, '/output':export}.get(str(value), Path(value))
         def copy_source(source, target, **kwargs):
@@ -425,7 +425,8 @@ class LinuxWorkExportTransport(unittest.TestCase):
             (work/'Automation/index.json').write_text(json.dumps(report))
             Path(log).write_text('Automation Test Queue Empty '+str(len(paths))+' tests performed.')
             for relative in ('HostProject/Saved/IAmSpeed/raw-failed.pack',
-                             'user/Saved/Logs/native.log', 'HostProject/Binaries/Linux/module.so'):
+                             'user/Saved/Logs/native.log', 'HostProject/Binaries/Linux/module.so',
+                             'CollisionMatrix042/raw-contact-witness.csv'):
                 path=work/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'RAW\x00WITNESS')
             if mode=='timeout':raise ci.subprocess.TimeoutExpired(command,timeout)
             return 1 if mode=='editor_failure' else 0
@@ -433,7 +434,9 @@ class LinuxWorkExportTransport(unittest.TestCase):
              patch.dict(ci.os.environ,{'IAMSPEED_SOURCE_SHA':'b'*40,'IAMSPEED_IMAGE_ID':'sha256:'+'a'*64},clear=True), \
              patch.object(ci,'work_tmpfs_evidence',return_value={'fixture':True}), \
              patch.object(ci,'engine_root',return_value=engine), patch.object(ci.shutil,'copytree',side_effect=copy_source), \
-             patch.object(ci,'source_test_manifest',return_value=paths),patch.object(ci,'run_logged',side_effect=native):
+             patch.object(ci,'source_test_manifest',return_value=paths),patch.object(ci,'run_logged',side_effect=native), \
+             patch.object(ci,'validate_collision_matrix',side_effect=ValueError('fixture matrix rejection') if mode=='matrix_failure' else None,
+                          return_value={'state':'ARTIFACT_CONTRACT_OK','transport_unit_test_double':True}):
             code=ci.inside()
         result=json.loads((export/'container-result.json').read_text())
         self.assertEqual((export/'launch.json').read_bytes(),b'host metadata must remain exact')
@@ -464,6 +467,16 @@ class LinuxWorkExportTransport(unittest.TestCase):
             self.assertEqual((code,result['build_exit'],len(calls)),(1,43,1))
             self.assertFalse(result['editor_started']);self.assertFalse(result['editor_call_finished'])
             self.assertEqual((export/'Logs/build.stdout.log').read_bytes(),b'original build stdout')
+
+    def test_matrix_rejection_cannot_inherit_pass_from_automation_report(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent)as tmp:
+            code,result,work,export,calls=self.run_fixture(Path(tmp),'matrix_failure')
+            self.assertEqual((code,result['state'],result['editor_exit']),(1,'FAIL',0))
+            self.assertFalse(result['full_ci_qualified'])
+            self.assertIn('fixture matrix rejection',result['reason'])
+            self.assertEqual(json.loads((export/'collision-matrix042-assessment.json').read_text())['state'],'FAIL')
+            self.assertEqual((work/'CollisionMatrix042/raw-contact-witness.csv').read_bytes(),
+                             (export/'CollisionMatrix042/raw-contact-witness.csv').read_bytes())
 
     def test_active_editor_blocks_export_before_any_file_access(self):
         with patch.object(Path,'glob',side_effect=AssertionError('must not enumerate active files')):

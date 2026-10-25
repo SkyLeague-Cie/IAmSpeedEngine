@@ -33,6 +33,11 @@ jobs:
           }
           .\HostProject\Scripts\TestParallelContractCoverage.ps1 -TestOutputRoot $tests
           .\HostProject\Scripts\TestCiRuntimeConfiguration.ps1 -TestOutputRoot $tests
+      - name: Validate collision matrix artifact contracts without Unreal
+        shell: python {0}
+        run: |
+          import subprocess, sys
+          subprocess.run([sys.executable, '-I', '-B', 'HostProject/Scripts/TestCollisionMatrix042.py'], check=True)
 
   docker-contracts:
     needs: runner-contracts
@@ -105,6 +110,7 @@ jobs:
           path: |
             ${{ steps.contracts.outputs.output_dir }}/Logs/**
             ${{ steps.contracts.outputs.output_dir }}/Automation/**
+            ${{ steps.contracts.outputs.output_dir }}/CollisionMatrix042/**
             ${{ steps.contracts.outputs.output_dir }}/*.json
             ${{ steps.contracts.outputs.output_dir }}/container.stdout.log
           if-no-files-found: warn
