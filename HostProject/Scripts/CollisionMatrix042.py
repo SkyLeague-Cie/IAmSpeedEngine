@@ -90,6 +90,21 @@ def compare_response(event, reference, end, end_reference, velocity_bound, angul
                     label+' common-time post-impact '+prefix+' differs')
 
 
+def validate_support_samples(root, cases):
+    counts=Counter()
+    for sample in records(root/'support-samples.csv'):
+        ident=integer(sample,'case')
+        require(ident in cases and cases[ident]['shape_a']=='Wheel','Support sample has no Wheel case')
+        frame=integer(sample,'local_frame')
+        require(0<=frame<integer(cases[ident],'frames'),'Support sample outside episode')
+        expected=(frame+1)*struct.unpack('f',struct.pack('f',1./integer(cases[ident],'hz')))[0]
+        require(abs(number(sample,'sample_seconds')-expected)<1e-10,'Support sample has wrong frame-end time')
+        for field in sample: number(sample,field)
+        angle(xyz(sample,'normal'),xyz(sample,'normal'))
+        counts[ident]+=1
+    return counts
+
+
 def validate_artifacts(directory, *, allow_synthetic=False):
     root = Path(directory)
     spec = json.loads((root/'spec.json').read_text(encoding='utf-8-sig'))
@@ -210,6 +225,7 @@ def validate_artifacts(directory, *, allow_synthetic=False):
     require(all(summary.get(k) == 0 for k in ('failed','frequency_failures','translation_failures',
                 'oracle_failures','iteration_limit_cases','observer_overflow_cases')),
             'Native failure aggregate remains nonzero')
+    validate_support_samples(root,cases)
     return dict(state='ARTIFACT_CONTRACT_OK', cases=len(cases), frames=next_frame, worlds=1,
                 native_identity=IDENTITY, highest_hz=max(RATES), physical_execution_provenance='REQUIRES_EDITOR_EXIT_AND_AUTOMATION_REPORT')
 
@@ -319,6 +335,8 @@ def diagnose_artifacts(directory):
         groups=defaultdict(list)
         for ident,row in cases.items(): groups[dimension(row)].append(ident)
         return {name:aggregate(ids) for name,ids in sorted(groups.items())}
+    support_path=root/'support-samples.csv'
+    support_counts=validate_support_samples(root,cases) if support_path.is_file() else Counter()
     return dict(schema=1,state='DIAGNOSTIC_ONLY_NO_QUALIFICATION',categories_may_overlap=True,
         tolerances_unchanged=True,missing_contact_is_not_a_measured_invariance_delta=True,
         incomplete_case_is_not_a_completed_physics_comparison=True,
@@ -326,6 +344,10 @@ def diagnose_artifacts(directory):
         driver_generations=sorted({integer(r,'driver_generation') for r in cases.values() if 'driver_generation' in r}),
         by_pair=grouped(lambda r:r['shape_a']+'/'+r['shape_b']),
         by_rate=grouped(lambda r:r['hz']),by_translation=grouped(lambda r:r['translation']),
+        wheel_support=dict(artifact_present=support_path.is_file(),samples=sum(support_counts.values()),cases=len(support_counts),
+            cases_without_CCD_contact=sum(i not in first for i in support_counts),
+            by_peer=dict(sorted(Counter(cases[i]['shape_b'] for i in support_counts).items())),
+            semantics='Native frame-end suspension response; query_parameter is not a CCD impact time; no CCD gate is waived'),
         largest_initial_translation_residual_cm=max((m.get('initial_translation_residual_cm',0) for m in metrics.values()),default=0),
         first_fault_cases=[dict(case=i,scenario=key(cases[i]),faults=sorted(faults[i]),metrics=metrics.get(i,{}))
                            for i in sorted(cases) if faults[i]][:24])

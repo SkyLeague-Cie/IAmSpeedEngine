@@ -74,6 +74,9 @@ def fixture(root):
         with (root/name).open('x',encoding='utf-8') as stream: json.dump(data,stream)
     for name,rows in (('cases.csv',cases),('initial-states.csv',initial),('end-states.csv',end),('events.csv',events)):
         write_rows(root/name,rows)
+    write_rows(root/'support-samples.csv',[dict(case=3201,local_frame=0,
+        sample_seconds=struct.unpack('f',struct.pack('f',1./1440))[0],query_parameter=.5,
+        point_x=0,point_y=0,point_z=0,normal_x=0,normal_y=0,normal_z=1)])
 
 
 class ArtifactContracts(unittest.TestCase):
@@ -242,6 +245,19 @@ class ArtifactContracts(unittest.TestCase):
         self.assertEqual(result['summary']['failures']['contact.missing'],1)
         self.assertGreater(result['summary']['failures']['frequency.reference_contact_missing'],0)
         self.assertNotIn('frequency.point',result['summary']['failures'])
+
+    def test_support_query_parameter_is_not_a_CCD_time(self):
+        def change(i,r):r['query_parameter']='1000000000';return r
+        with self.altered_rows('support-samples.csv',change):
+            result=gate.diagnose_artifacts(self.root)
+            self.validate()
+        self.assertEqual(result['wheel_support']['samples'],1)
+        self.assertIn('not a CCD impact time',result['wheel_support']['semantics'])
+
+    def test_support_frame_time_is_validated_independently(self):
+        def change(i,r):r['sample_seconds']='.049';return r
+        with self.altered_rows('support-samples.csv',change):
+            with self.assertRaisesRegex(ValueError,'wrong frame-end time'):self.validate()
 
 
 if __name__=='__main__':
