@@ -4,6 +4,7 @@
 #include "QuaternionQuantizationCache.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
+#include <cmath>
 
 using namespace Speed;
 
@@ -182,9 +183,9 @@ SHitResult SSphere::IntersectNextFrame(const SSphere& Other, const float& deltaT
 
 	auto DistMinusR = [&](float t)
 		{
-			FVector d =
-				(Other.Center + Other.Vel * t + 0.5f * Other.Accel * t * t)
-				- (Center + Vel * t + 0.5f * Accel * t * t);
+			// Subtract the common world translation before advancing the pair.
+			const FVector d = (Other.Center - Center) + (Other.Vel - Vel) * t
+				+ 0.5 * (Other.Accel - Accel) * double(t) * double(t);
 			return d.Size() - (Radius + Other.Radius);
 		};
 
@@ -229,13 +230,40 @@ SHitResult SSphere::IntersectNextFrame(const SSphere& Other, const float& deltaT
 		return Hit;
 	}
 
-	// ------------- EARLY OUT -------------
+	// A pair can enter AND leave during one coarse frame. Endpoint overlap
+	// is not a certificate of a miss. For affine relative motion, solve the
+	// complete swept interval analytically in the pair's relative coordinates.
+	const FVector RelativeAcceleration = Accel - Other.Accel;
+	if (RelativeAcceleration.IsZero())
+	{
+		const FVector P = Center - Other.Center;
+		const FVector V = Vel - Other.Vel;
+		const double A = FVector::DotProduct(V, V);
+		const double B = FVector::DotProduct(P, V);
+		const double SumRadius = double(Radius) + double(Other.Radius);
+		const double C = P.SizeSquared() - SumRadius * SumRadius;
+		if (A == 0.0 || B >= 0.0) return SHitResult();
+		const double Discriminant = std::fma(-A, C, B * B);
+		if (Discriminant < 0.0) return SHitResult();
+		// Equivalent to (-B-sqrt(D))/A without subtracting close numbers.
+		const double Time = C / (-B + FMath::Sqrt(Discriminant));
+		if (Time < 0.0 || Time > double(deltaTime)) return SHitResult();
+		const float TOI = FMath::Clamp(float(Time), 0.0f, deltaTime);
+		const FVector N = (P + V * double(TOI)).GetSafeNormal();
+		const FVector PA = Center + Vel * double(TOI)
+			+ 0.5 * Accel * double(TOI) * double(TOI);
+		const FVector PB = Other.Center + Other.Vel * double(TOI)
+			+ 0.5 * Other.Accel * double(TOI) * double(TOI);
+		SHitResult Hit(true, PA - N * Radius, N, TOI);
+		Hit.ContactPointThis = PA - N * Radius;
+		Hit.ContactPointOther = PB + N * Other.Radius;
+		return Hit;
+	}
+
+	// The accelerated legacy bracket retains its conservative travel rejection.
 	const float Gap0 = FMath::Abs(f0);
 	const float MaxClosing = SEarlyOut::MaxRelativeTravel(Vel, Accel, Other.Vel, Other.Accel, deltaTime);
-	if (Gap0 > MaxClosing)
-		return SHitResult(); // no hit
-	// -------------------------------------
-
+	if (Gap0 > MaxClosing) return SHitResult();
 	float f1 = DistMinusR(deltaTime);
 	if (f1 > 0.f)
 		return SHitResult(); // no hit
@@ -251,6 +279,7 @@ SHitResult SSphere::IntersectNextFrame(const SSphere& Other, const float& deltaT
 		if (FMath::Abs(fMid) < Epsilon)
 		{
 			tMin = tMid;
+			tMax = tMid;
 			break;
 		}
 
@@ -1465,9 +1494,13 @@ int Speed::Interpolate(const int& min, const int& max, const float& factor)
 
 FVector Speed::RoundVectorToNetQuantize(const FVector& vector, const unsigned int& base)
 {
-	float X = static_cast<float>(FMath::RoundToInt(vector.X * base)) / base;
-	float Y = static_cast<float>(FMath::RoundToInt(vector.Y * base)) / base;
-	float Z = static_cast<float>(FMath::RoundToInt(vector.Z * base)) / base;
+	// FVector is double precision. Narrowing the rounded grid index to float
+	// makes an integer translation change local motion at large coordinates.
+	// Preserve the existing grid and half-up convention without the narrowing.
+	const double Scale = double(base);
+	const double X = FMath::RoundToDouble(vector.X * Scale) / Scale;
+	const double Y = FMath::RoundToDouble(vector.Y * Scale) / Scale;
+	const double Z = FMath::RoundToDouble(vector.Z * Scale) / Scale;
 	return FVector(X, Y, Z);
 }
 

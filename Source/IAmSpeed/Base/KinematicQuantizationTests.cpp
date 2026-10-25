@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "KinematicQuantizationCache.h"
+#include "SUtils.h"
 #include "Misc/AutomationTest.h"
 #include "Math/RandomStream.h"
 
@@ -75,6 +76,82 @@ bool FIAmSpeedKinematicQuantizationTest::RunTest(const FString& Parameters)
 			State.Quantize(Reference);
 		}
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedQuantizationLargeCoordinates042Test,
+	"IAmSpeed.PhysicalLaws.QuantizationLargeCoordinates042",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedQuantizationLargeCoordinates042Test::RunTest(const FString&)
+{
+	for (const uint32 Scale : {100u, 10000u})
+	{
+		for (const double Offset : {0.0, 1000.0, -1048576.0, 2097152.0, 100000000.0, -100000000.0})
+		{
+			for (const double Local : {-25.673, -12.341, -0.013, 0.017, 12.342, 25.677})
+			{
+				const FVector Input(Offset + Local, Offset - Local, Offset + .01);
+				const FVector Rounded = Speed::RoundVectorToNetQuantize(Input, Scale);
+				const double HalfStep = .5 / double(Scale);
+				TestTrue(TEXT("rounding error stays within half the declared grid at large coordinates"),
+					(Rounded - Input).GetAbsMax() <= HalfStep + 2.e-8);
+				const FVector LocalRounded = Speed::RoundVectorToNetQuantize(FVector(Local, -Local, .01), Scale);
+				TestTrue(TEXT("whole-grid translations preserve the rounded local coordinates"),
+					(Rounded - FVector(Offset) - LocalRounded).GetAbsMax() < 2.e-8);
+			}
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedSphereSphereContinuous042Test,
+	"IAmSpeed.PhysicalLaws.SphereSphereContinuous042",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedSphereSphereContinuous042Test::RunTest(const FString&)
+{
+	using Speed::SSphere;
+	for (const int32 Hz : {60, 100, 120, 240, 300, 360, 720, 1440})
+	{
+		for (const FVector Offset : {FVector::ZeroVector, FVector(1000,-2000,3000),
+			FVector(-1048576,2097152,-524288), FVector(1.e8,-1.e8,1.e8), FVector(.003,-.004,.001)})
+		{
+			const float Delta = 1.f / float(Hz);
+			const FVector CommonVelocity(50, 10, -20);
+			const FVector Velocity = FVector(4600,0,0) + CommonVelocity;
+			const FVector Initial = Offset + FVector(-25.0 - 4600.0 * .021, 0, 0);
+			bool Found = false;
+			for (int32 Frame=0; Frame<Hz/20 && !Found; ++Frame)
+			{
+				const double StartSeconds = double(Frame) * double(Delta);
+				const SSphere A(Initial + Velocity * StartSeconds, 12.5f, Velocity, FVector::ZeroVector);
+				const SSphere B(Offset + CommonVelocity * StartSeconds, 12.5f, CommonVelocity, FVector::ZeroVector);
+				const SHitResult Hit = A.IntersectNextFrame(B, Delta);
+				if (!Hit.bHit) continue;
+				Found = true;
+				const double Seconds = StartSeconds + double(Hit.TOI);
+				TestTrue(TEXT("first impact matches the independent distance/speed oracle at every rate"),
+					FMath::Abs(Seconds - .021) < 5.e-8);
+				TestTrue(TEXT("relative contact normal is translation invariant"),
+					Hit.ImpactNormal.Equals(FVector(-1,0,0), 1.e-7));
+				const FVector ExpectedPoint = Offset + CommonVelocity * Seconds + FVector(-12.5,0,0);
+				TestTrue(TEXT("impact witness preserves common translation and common velocity"),
+					(Hit.ImpactPoint - ExpectedPoint).Size() < .0001);
+			}
+			TestTrue(TEXT("coarse through-crossing is detected even with separated frame endpoints"), Found);
+		}
+	}
+	const SSphere Origin(FVector::ZeroVector,12.5f,FVector::ZeroVector,FVector::ZeroVector);
+	const SSphere Tangent(FVector(-30,25,0),12.5f,FVector(3000,0,0),FVector::ZeroVector);
+	const SHitResult Grazing = Tangent.IntersectNextFrame(Origin,.02f);
+	TestTrue(TEXT("affine grazing contact is retained"), Grazing.bHit && FMath::Abs(Grazing.TOI-.01f)<1.e-7f);
+	const SSphere Clear(FVector(-30,25.01,0),12.5f,FVector(3000,0,0),FVector::ZeroVector);
+	TestFalse(TEXT("a true near miss is not turned into a contact"),Clear.IntersectNextFrame(Origin,.02f).bHit);
+	const SSphere Accelerating(FVector(-30,0,0),12.5f,FVector::ZeroVector,FVector(2000,0,0));
+	const SHitResult Accelerated = Accelerating.IntersectNextFrame(Origin,.1f);
+	TestTrue(TEXT("accelerated refinement returns its accepted root rather than averaging a stale endpoint"),
+		Accelerated.bHit && FMath::Abs(double(Accelerated.TOI)-FMath::Sqrt(.005))<1.e-6);
 	return true;
 }
 #endif
