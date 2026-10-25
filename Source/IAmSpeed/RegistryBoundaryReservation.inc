@@ -39,7 +39,7 @@ private:
             : Identity(std::move(I)), Capture(std::move(C)), CommandOwner(std::move(O)), CommandFence(std::move(L)) {}
     };
     bool BoundaryMutationBlocked() const noexcept
-    { return BoundaryReservationCalling || bool(BoundaryReservation); }
+    { return BoundaryCaptureCalling || BoundaryReservationCalling || bool(BoundaryReservation); }
     bool MatchesBoundaryReservation(const FCompletedBoundaryReservation& T) const noexcept
     { return BoundaryReservation && T.Identity && T.Identity==BoundaryReservation->Identity; }
 public:
