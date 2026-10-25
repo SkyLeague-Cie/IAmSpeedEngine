@@ -9,7 +9,8 @@
 #include "Misc/AutomationTest.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDrivingRingEditorRegistration,"IAmSpeed.Driving.RingEditorRegistration",EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
+#if WITH_EDITOR
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDrivingRingEditorRegistration,"IAmSpeed.Driving.RingEditorRegistration",EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
 bool FDrivingRingEditorRegistration::RunTest(const FString&)
 {
     const auto Init=UWorld::InitializationValues().AllowAudioPlayback(false).RequiresHitProxies(false).CreatePhysicsScene(true).ShouldSimulatePhysics(false).EnableTraceCollision(true).CreateNavigation(false).CreateAISystem(false);
@@ -29,6 +30,7 @@ bool FDrivingRingEditorRegistration::RunTest(const FString&)
     World->DestroyWorld(false);
     return !HasAnyErrors();
 }
+#endif // WITH_EDITOR
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FDrivingPreferencesRoundTrip,"IAmSpeed.Driving.PreferencesRoundTrip",EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
 bool FDrivingPreferencesRoundTrip::RunTest(const FString&)
