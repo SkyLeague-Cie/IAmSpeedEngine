@@ -181,6 +181,7 @@ static void EmptyWorkerPresentationAndStopGates()
 }
 
 #include "EmptyInputPeriodTests.inc"
+#include "ReservationObservationTests.inc"
 
 int main(int Argc, char* Argv[])
 {
@@ -195,6 +196,10 @@ int main(int Argc, char* Argv[])
         const auto BeforePeriod = Checks;
         TestActualEmptyInputPeriodEvidence();
         std::cout << "EMPTY_PERIOD " << Checks-BeforePeriod << " new checks; combined " << Checks << "; genuine INPUT history only, no world/branch/restore admission\n";
+        const auto BeforeObservation=Checks;
+        TestReservationObservation();
+        std::cout << "RESERVATION_OBSERVATION " << Checks-BeforeObservation << " new checks; combined " << Checks
+            << "; exact live INPUT reservation only, no world/branch/restore authority\n";
         return 0;
     }
     catch (const std::exception& E)

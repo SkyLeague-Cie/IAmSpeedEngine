@@ -6,6 +6,7 @@ static void BoundaryWireActualRegistryViews()
     FFixture F;const auto C=F.Registry.CaptureCompletedBoundary(0);CHECK(C);
     auto T=F.Registry.ReserveCompletedBoundary(C);CHECK(T);
     const auto P=M::PrepareRegistryMetadata(F.Registry,*T);CHECK(P && P->OriginCapture()==C);
+    CHECK(F.Registry.ValidateCompletedBoundaryReservationObservation(*T,P->OriginReservation()));
     SaveBoundaryWireSample("six-session-paused.irb",P->CanonicalBytes());
     CHECK(P->Metadata().Consumed.size()==6 && P->Metadata().Current.size()==6 && P->Metadata().Closed.size()==6);
     CHECK(P->Metadata().ConsumedRegistryVersion==P->Metadata().CurrentRegistryVersion);
@@ -20,6 +21,7 @@ static void BoundaryWireActualRegistryViews()
         CHECK(D->Closed.front().OwnerBindingFingerprint==C->Completed()->Inputs.front().Snapshot->BindingFingerprint);
     }
     F.Registry.ReleaseCompletedBoundaryReservation(*T);CHECK(!M::PrepareRegistryMetadata(F.Registry,*T));
+    CHECK(!F.Registry.ValidateCompletedBoundaryReservationObservation(*T,P->OriginReservation()));
     auto Detach=F.Command(V::EBoundaryOperation::Detach);Detach.Session=1;Detach.Epoch=7;
     CHECK(F.Commands->Submit(Detach)==V::ECommandAdmission::Enqueued && F.Registry.ServiceBoundary(1));
     const auto After=F.Registry.CaptureCompletedBoundary(0);T=F.Registry.ReserveCompletedBoundary(After);CHECK(T);
@@ -104,6 +106,20 @@ static void AbortReservationDuringExport()
 {
     if(!WireAbortDone){WireAbortDone=WireHookRegistry->AbortCompletedBoundaryReservation(*WireHookToken);}
 }
+static V::FInputSessionRegistry::FCompletedBoundaryReservation* WireRenewToken=nullptr;
+static std::shared_ptr<const V::FInputSessionRegistry::FCompletedBoundaryCapture> WireRenewCapture;
+static bool WireRenewDone=false,WireRenewSucceeded=false;
+static int WireRenewAllocation=0;
+static void RenewSameReservationDuringExport()
+{
+    if(WireRenewDone)return;
+    if(WireRenewAllocation-- > 0)return;
+    WireRenewDone=true;
+    if(!WireHookRegistry->AbortCompletedBoundaryReservation(*WireRenewToken))return;
+    auto Replacement=WireHookRegistry->ReserveCompletedBoundary(WireRenewCapture);
+    WireRenewSucceeded=bool(Replacement);
+    if(Replacement)*WireRenewToken=std::move(*Replacement);
+}
 static void BoundaryWireFailureAndReentrancy()
 {
     FFixture F(1);const auto C=F.Registry.CaptureCompletedBoundary(0);auto T=F.Registry.ReserveCompletedBoundary(C);CHECK(T);
@@ -120,7 +136,18 @@ static void BoundaryWireFailureAndReentrancy()
     const auto Reentered=M::PrepareRegistryMetadata(F.Registry,*T);AllocationHook=nullptr;WireHookRegistry=nullptr;WireHookToken=nullptr;
     CHECK(WireAbortDone && !Reentered && F.Registry.ValidateCompletedBoundaryCapture(*C));
     T=F.Registry.ReserveCompletedBoundary(C);CHECK(T);const auto Retry=M::PrepareRegistryMetadata(F.Registry,*T);CHECK(Retry && Retry->CanonicalBytes()==Bytes);
+    bool EveryRenewalRejected=true;
+    for(int At=0;At<Count;++At)
+    {
+        WireHookRegistry=&F.Registry;WireRenewToken=&*T;WireRenewCapture=C;
+        WireRenewDone=WireRenewSucceeded=false;WireRenewAllocation=At;AllocationHook=RenewSameReservationDuringExport;
+        const auto Renewed=M::PrepareRegistryMetadata(F.Registry,*T);
+        AllocationHook=nullptr;WireHookRegistry=nullptr;WireRenewToken=nullptr;WireRenewCapture.reset();
+        EveryRenewalRejected &= WireRenewSucceeded && !Renewed;
+        EveryRenewalRejected &= F.Registry.ReadReservedCompletedBoundary(*T)==C && !F.Registry.IsTerminal();
+    }
     F.Registry.ReleaseCompletedBoundaryReservation(*T);
+    CHECK(EveryRenewalRejected); // Same Capture is insufficient at EVERY exporter allocation.
     CHECK(Probe->OriginCapture()==C && M::Decode(Probe->CanonicalBytes()));
     std::cout<<"BOUNDARY_METADATA_ALLOCATIONS "<<Count<<"; all preparation failures preserve actual consumed/current input state\n";
 }

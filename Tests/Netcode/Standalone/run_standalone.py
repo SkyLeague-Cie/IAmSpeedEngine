@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--vc',type=Path,default=Path('C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.38.33130'))
     parser.add_argument('--windows-kits',type=Path,default=Path('C:/Program Files (x86)/Windows Kits/10'))
     parser.add_argument('--sdk-version',default='10.0.22621.0')
-    parser.add_argument('--suite',choices=['all','world'],default='all')
+    parser.add_argument('--suite',choices=['all','world','registry'],default='all')
     args=parser.parse_args()
     tests=Path(__file__).resolve().parent
     repo=tests.parents[2]
@@ -27,6 +27,10 @@ def main():
     assert source.is_dir()
     out=args.out.resolve();out.mkdir(parents=True,exist_ok=False)
     env=os.environ.copy();env['VSLANG']='1033'
+    # All compiler/linker scratch writes belong to this exact run, including
+    # when the caller has no write permission to the account-wide TEMP.
+    scratch=out/'temporary';scratch.mkdir()
+    env['TEMP']=env['TMP']=str(scratch)
     env['PATH']=str(args.vc/'bin/Hostx64/x64')+os.pathsep+env['PATH']
     env['INCLUDE']=os.pathsep.join(str(p) for p in [args.vc/'include']+[args.windows_kits/'Include'/args.sdk_version/s for s in ('ucrt','shared','um')])
     env['LIB']=os.pathsep.join(str(p) for p in [args.vc/'lib/x64']+[args.windows_kits/'Lib'/args.sdk_version/s/'x64' for s in ('ucrt','um')])
@@ -61,7 +65,7 @@ def main():
             ('envelope',tests/'state-authority-envelope-v2/StateEnvelopeTests.cpp'),('remote',tests/'remote-input/ExactRemoteInputProducerTests.cpp'),
             ('registry',repo/'Tests/Netcode/EmptyInputFrameTests.cpp'),
             ('world',repo/'Tests/Netcode/WorldTokenGuardTests.cpp')]
-    if args.suite=='world':suites=[s for s in suites if s[0]=='world']
+    if args.suite!='all':suites=[s for s in suites if s[0]==args.suite]
     for n,(name,cpp) in enumerate(suites):
         if not ok:break
         obj=out/(str(n)+'.obj');exe=out/(name+'.exe')
@@ -72,8 +76,8 @@ def main():
         ok=execute(name+'-compile',[cl]+suite_flags+['/c','/Fo:'+str(obj),cpp])
         if ok:ok=execute(name+'-link',[link,'/nologo','/out:'+str(exe),obj,out/'p.obj'])
         if ok:ok=execute(name+'-run',[exe]+([out] if name=='registry' else []))
-    if ok and args.suite=='all':ok=execute('registry-lifetime',[out/'registry.exe','--boundary-reservation-live-destruction'],86)
-    if ok:
+    if ok and args.suite in ('all','registry'):ok=execute('registry-lifetime',[out/'registry.exe','--boundary-reservation-live-destruction'],86)
+    if ok and args.suite in ('all','world'):
         for mode in ('worker','world','default','finalize','release'):
             if not ok:break
             ok=execute('world-probe-'+mode,[out/'world.exe','--probe-'+mode],86 if mode in ('finalize','release') else 0)
@@ -93,7 +97,7 @@ def main():
     if outside or not unchanged:ok=False
     (out/'inputs.json').write_text(json.dumps(list(pins.values()),indent=2)+'\n')
     receipt=dict(schema='netcode-consolidated-repository-ordinary-tests/v1',utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),selected_suite=args.suite,
-        repository=str(repo),qualification_exit=0 if ok else 1,operations=operations,results=results,elapsed_seconds=time.monotonic()-start,
+        repository=str(repo),qualification_exit=0 if ok else 1,operations=operations,results=results,elapsed_seconds=time.monotonic()-start,temporary_directory=str(scratch),
         inputs=str(out/'inputs.json'),inputs_unchanged=unchanged,repository_includes=sorted(str(p) for p in trace if p.is_relative_to(repo)),
         historical_artifact_includes=outside,not_run=[name for name,_ in suites if name+'-run' not in results],
         scope='Actual current rebased Input implementations/protocol headers; world token and transaction INC under explicit ordinary World/UE shims, own protected-page negative probes. Synthetic mechanics/gameplay/ledger and native lifetime providers remain unqualified; no native integration/restore verdict.',

@@ -13,20 +13,22 @@ class FPreparedRegistryMetadata final
 public:
     const FMetadata& Metadata()const noexcept{return Facts;}
     const std::vector<std::uint8_t>& CanonicalBytes()const noexcept{return Bytes;}
-    const std::shared_ptr<const V::FInputSessionRegistry::FCompletedBoundaryCapture>& OriginCapture()const noexcept{return Capture;}
+    const std::shared_ptr<const V::FInputSessionRegistry::FCompletedBoundaryCapture>& OriginCapture()const noexcept{return Reservation.Capture();}
+    const auto& OriginReservation()const noexcept{return Reservation;}
     FPreparedRegistryMetadata(const FPreparedRegistryMetadata&)=delete;
 private:
     friend std::shared_ptr<const FPreparedRegistryMetadata> PrepareRegistryMetadata(V::FInputSessionRegistry&,const V::FInputSessionRegistry::FCompletedBoundaryReservation&);
-    FPreparedRegistryMetadata(std::shared_ptr<const V::FInputSessionRegistry::FCompletedBoundaryCapture> C,FMetadata M,std::vector<std::uint8_t> B)noexcept
-        :Capture(std::move(C)),Facts(std::move(M)),Bytes(std::move(B)){}
-    const std::shared_ptr<const V::FInputSessionRegistry::FCompletedBoundaryCapture> Capture;
+    FPreparedRegistryMetadata(V::FInputSessionRegistry::FCompletedBoundaryReservationObservation O,FMetadata M,std::vector<std::uint8_t> B)noexcept
+        :Reservation(std::move(O)),Facts(std::move(M)),Bytes(std::move(B)){}
+    const V::FInputSessionRegistry::FCompletedBoundaryReservationObservation Reservation;
     const FMetadata Facts;
     const std::vector<std::uint8_t> Bytes;
 };
 inline std::shared_ptr<const FPreparedRegistryMetadata> PrepareRegistryMetadata(V::FInputSessionRegistry& Registry,
     const V::FInputSessionRegistry::FCompletedBoundaryReservation& Token)
 {
-    const auto Capture=Registry.ReadReservedCompletedBoundary(Token);if(!Capture)return {};
+    const auto Observation=Registry.ObserveCompletedBoundaryReservation(Token);if(!Observation)return {};
+    const auto Capture=Observation->Capture();
     try
     {
         const auto Frame=Capture->Completed();const auto Current=Capture->CurrentBoundary();
@@ -72,8 +74,8 @@ inline std::shared_ptr<const FPreparedRegistryMetadata> PrepareRegistryMetadata(
         auto Bytes=Encode(M);if(!Bytes)return {};
         // No virtual providers are invoked. Still refuse a custom allocator's
         // reentrant abort/replacement rather than returning an unreserved result.
-        auto Prepared=std::shared_ptr<const FPreparedRegistryMetadata>(new FPreparedRegistryMetadata(Capture,std::move(M),std::move(*Bytes)));
-        if(Registry.ReadReservedCompletedBoundary(Token)!=Capture)return {};
+        auto Prepared=std::shared_ptr<const FPreparedRegistryMetadata>(new FPreparedRegistryMetadata(*Observation,std::move(M),std::move(*Bytes)));
+        if(!Registry.ValidateCompletedBoundaryReservationObservation(Token,*Observation))return {};
         return Prepared;
     }
     catch(...){return {};}
