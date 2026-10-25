@@ -6,8 +6,10 @@ the individual failures; no existing accepted-debt policy waives this matrix.
 
 The measured native source is `ca562712918010967006183b5fc1fda055d6e823`, based
 on IAmSpeed main `6176be81cac530da24ce2b741d430e9736c415eb` including the reviewed
-editor/server fixture guard from PR55. Subsequent reporting-only changes do not
-alter the native source tested here. Windows Editor and the controller exited
+editor/server fixture guard from PR55. Later reporting changes preserve that
+baseline. A subsequently identified prescribed-owner fixture correction is a
+new native source change and requires its own runtime qualification. Windows
+Editor and the controller exited
 0, with an exact one-test Automation report in state Fail. Canonical log
 processing completed before the results were interpreted. This is not Linux
 CI, a complete physics qualification, or a hardware/audio/rendering certificate.
@@ -42,6 +44,21 @@ identified by SHA256
 The independent raw diagnostic report is identified by SHA256
 `38fc548b53d5d27f4f6c850431fff1c5bcb964206154b2ba81ac57cc9c67e496`.
 Neither a receipt hash nor a portable parser test substitutes for native evidence.
+
+## Fixture limitation found after the run
+
+Further inspection found that the unit owner marked prescribed did not reject
+generic state writes and directly applied the free-body quantizer. Production
+`USpeedPrescribedComponent` protects its authored trajectory. In this baseline,
+845 of 960 Cylinder cases ended with a non-authored position or velocity.
+Their changed prescribed state is a **fixture defect**; those results cannot
+establish a production Cylinder invariance failure. Original rows and aggregate
+counts above remain untouched rather than being retroactively marked passing.
+
+The source correction protects that unit owner's setter, skips its free-body
+quantization, and adds an independent exact stationary-state artifact check.
+Runtime qualification of this successor is separate from the baseline reported
+here. No production solver or numerical tolerance is changed.
 
 ## Contact observations
 
@@ -101,8 +118,9 @@ Cylinder prescribed; free dynamic Ring/Cylinder and Wheel/Wheel are not
 qualified by these 4,800 cases. Production remains 300 Hz. The matrix's test-only
 episode rate hook does not qualify production multirate simulation or rollback.
 
-Portable CI checks passed 60 tests (23 artifact contracts and 37 runner
-contracts). Their synthetic fixtures are explicitly marked and rejected as
+The baseline portable checks passed 60 tests (23 artifact contracts and 37 runner
+contracts). Subsequent artifact checks cover prescribed-state protection and
+paired support measurements. Their synthetic fixtures are explicitly marked and rejected as
 native qualification evidence. CI independently recomputes the raw physical
 gates, exports diagnostics even when the matrix fails, and cannot inherit a
 PASS from a successful Editor exit or another Automation test.

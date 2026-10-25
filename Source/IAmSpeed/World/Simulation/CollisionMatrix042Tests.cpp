@@ -139,7 +139,12 @@ public:
     FMatrix ComputeWorldInvInertiaTensorOfSubBody(const USSubBody&) const override { return ComputeWorldInvInertiaTensor(); }
     const SKinematic& GetKinematicState() const override { return State; }
     const SKinematic& GetKinematicStateForFrame(const unsigned int&) const override { return State; }
-    void SetKinematicState(const SKinematic& S) override { State = S; }
+    void SetKinematicState(const SKinematic& S) override
+    {
+        // Match the production prescribed owner: only the authored track may
+        // write it. Generic impulses/projections cannot deflect this fixture.
+        if (!Prescribed) State = S;
+    }
     float GetPhysMaxSpeed() const override { return 20000; }
     float GetPhysMaxAngularSpeed() const override { return 100; }
     FVector GetNominalGravityAcceleration() const override { return FVector::ZeroVector; }
@@ -149,7 +154,12 @@ public:
     bool IsSubBodyInAutoRecoverMode() const override { return false; }
     void RcvImpactOnSubBody(const USSubBody&, const FVector&) override {}
     void PostPhysicsUpdatePrv(const float&) override
-    { QuantizeKinematicState(State, Previous); Previous = State.Rotation; }
+    {
+        // A stationary prescribed pose is authored exactly, including a common
+        // fractional translation; the generic free-body quantizer is no writer.
+        if (Prescribed) return;
+        QuantizeKinematicState(State, Previous); Previous = State.Rotation;
+    }
 };
 
 /** One native wheel, its real Chaos wheel/suspension storage and the production

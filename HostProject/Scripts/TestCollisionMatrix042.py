@@ -63,6 +63,7 @@ def fixture(root):
         event=dict(case=ident,local_frame=local,elapsed_in_frame=elapsed,query_toi=elapsed,
                    point_x=0,point_y=0,point_z=0,normal_x=0,normal_y=0,normal_z=1,feature_a=1,feature_b=2)
         for actor in ('a','b'):
+            for axis in 'xyz':final['position_'+actor+'_'+axis]=0
             for quantity in ('velocity','angular'):
                 for axis in 'xyz': final[quantity+'_'+actor+'_'+axis]=event[quantity+'_'+actor+'_'+axis]=0
         end.append(final);events.append(event)
@@ -258,6 +259,43 @@ class ArtifactContracts(unittest.TestCase):
         def change(i,r):r['sample_seconds']='.049';return r
         with self.altered_rows('support-samples.csv',change):
             with self.assertRaisesRegex(ValueError,'wrong frame-end time'):self.validate()
+
+    def test_support_pairing_uses_highest_rate_and_common_time_without_a_new_PASS(self):
+        original=gate.records
+        def rows(path):
+            for row in original(path):
+                yield row
+                if Path(path).name=='support-samples.csv':
+                    second=copy.deepcopy(row);second.update(case='3206',
+                        sample_seconds=str(struct.unpack('f',struct.pack('f',1./720))[0]),point_x='3')
+                    yield second
+        with patch.object(gate,'records',side_effect=rows):
+            result=gate.diagnose_artifacts(self.root)
+        pairs=result['wheel_support']['paired_comparisons']['frequency']
+        self.assertEqual(pairs['state'],'MEASUREMENTS_ONLY_NO_NEW_THRESHOLD_OR_PASS')
+        self.assertEqual(pairs['maxima']['first_sample_point_cm'],dict(value=3.,case=3206,reference_case=3201))
+        self.assertGreater(pairs['maxima']['first_sample_time_delta_s']['value'],0)
+        self.assertEqual(pairs['maxima']['common50ms_velocity_a']['value'],0)
+
+    def test_support_comparison_rejects_a_wrong_common_time_sample(self):
+        def change(i,r):
+            if r['case']=='3201':r['sample_seconds']='.049'
+            return r
+        with self.altered_rows('end-states.csv',change):
+            result=gate.diagnose_artifacts(self.root)
+        pairs=result['wheel_support']['paired_comparisons']['frequency']
+        self.assertEqual(pairs['compared_cases'],0)
+        self.assertEqual(pairs['unavailable_cases'],1)
+        self.assertFalse(pairs['maxima'])
+
+    def test_stationary_prescribed_owner_cannot_inherit_free_body_motion(self):
+        def change(i,r):
+            if r['case']=='1281':r['velocity_b_x']='20000'
+            return r
+        with self.altered_rows('end-states.csv',change):
+            with self.assertRaisesRegex(ValueError,'prescribed fixture was deflected'):self.validate()
+            result=gate.diagnose_artifacts(self.root)
+        self.assertEqual(result['summary']['failures']['fixture.prescribed_owner_deflected'],1)
 
 
 if __name__=='__main__':

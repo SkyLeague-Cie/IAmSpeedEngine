@@ -87,3 +87,15 @@ normal, time and response differences. Categories overlap and grant no PASS.
 Common translated initial positions are checked independently of output
 invariance. `execution.json` counts completed cases and actual frames, rather
 than treating an attempted loop as complete physical coverage.
+
+Stationary prescribed Cylinder owners reject generic state writes and bypass
+free-body quantization, matching the production prescribed-owner contract.
+The artifact gate independently requires their final relative position and
+linear/angular velocity to remain the authored zero values. A deflected fixture
+is identified as a fixture defect, not accepted as a mechanical track result.
+
+Paired suspension diagnostics compare first observed support points/normals and
+report the difference between frame-sample times. They also compare both actors'
+velocities at the common 50 ms endpoint. These additional measurements introduce
+no new acceptance threshold or PASS, and exclude incomplete, mis-timed or
+deflected-prescription cases. They do not reinterpret a support time as CCD TOI.

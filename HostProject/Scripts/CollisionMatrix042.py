@@ -149,6 +149,10 @@ def validate_artifacts(directory, *, allow_synthetic=False):
                 'Missing collision or wrong actual physics delta')
         require(abs(number(end[ident], 'sample_seconds')-.05) < 1e-12,
                 'End states were not sampled at the common physical time')
+        if key[1]=='CylinderPrescribed':
+            for prefix in ('position_b','velocity_b','angular_b'):
+                require(xyz(end[ident],prefix)==(0.,0.,0.),
+                        'Stationary prescribed fixture was deflected: '+prefix)
     require(len(worlds) == 1 and set(keyed) == expected and summary.get('frames') == next_frame,
             'World identity, complete coverage or frame aggregate mismatch')
     counts, first = {ident: 0 for ident in cases}, {}
@@ -267,6 +271,8 @@ def diagnose_artifacts(directory):
         if 'terminal_failure' in row and integer(row, 'terminal_failure'):
             tags.add('execution.terminal')
         if event_counts[ident] != integer(row, 'hits'): tags.add('evidence.event_count')
+        if row['shape_b']=='CylinderPrescribed' and any(xyz(end[ident],f)!=(0.,0.,0.) for f in ('position_b','velocity_b','angular_b')):
+            tags.add('fixture.prescribed_owner_deflected')
         if ident not in first: tags.add('contact.missing')
         if row['shape_a'] == 'Wheel' and not integer(row, 'real_wheel_hit'):
             tags.add('contact.wheel_not_observed')
@@ -337,6 +343,37 @@ def diagnose_artifacts(directory):
         return {name:aggregate(ids) for name,ids in sorted(groups.items())}
     support_path=root/'support-samples.csv'
     support_counts=validate_support_samples(root,cases) if support_path.is_file() else Counter()
+    support_first={}
+    if support_path.is_file():
+        for sample in records(support_path):support_first.setdefault(integer(sample,'case'),sample)
+    support_comparisons={}
+    def common_time_complete(ident):
+        row=cases[ident]
+        return (all(integer(row,f)==1 for f in ('complete','clock_valid','actual_delta_valid'))
+                and integer(row,'frames')==integer(row,'hz')//20
+                and abs(number(end[ident],'sample_seconds')-.05)<1e-12
+                and 'fixture.prescribed_owner_deflected' not in faults[ident])
+    for label in ('frequency','translation'):
+        maxima={};compared=0;unavailable=0
+        for ident,sample in support_first.items():
+            scenario=key(cases[ident])
+            other_id=keyed.get(scenario[:3]+(max(RATES),scenario[-1])if label=='frequency' else scenario[:-1]+(0,))
+            if other_id not in support_first or not common_time_complete(ident) or not common_time_complete(other_id):
+                unavailable+=1;continue
+            reference=support_first[other_id];compared+=1
+            values=dict(first_sample_point_cm=distance(xyz(sample,'point'),xyz(reference,'point')),
+                first_sample_normal_radians=angle(xyz(sample,'normal'),xyz(reference,'normal')),
+                first_sample_time_delta_s=abs(number(sample,'sample_seconds')-number(reference,'sample_seconds')))
+            for actor in ('a','b'):
+                for quantity in ('velocity','angular'):
+                    values['common50ms_'+quantity+'_'+actor]=distance(xyz(end[ident],quantity+'_'+actor),xyz(end[other_id],quantity+'_'+actor))
+            for metric,value in values.items():
+                if metric not in maxima or value>maxima[metric]['value']:
+                    maxima[metric]=dict(value=value,case=ident,reference_case=other_id)
+        support_comparisons[label]=dict(compared_cases=compared,unavailable_cases=unavailable,maxima=maxima,
+            state='MEASUREMENTS_ONLY_NO_NEW_THRESHOLD_OR_PASS',
+            time_semantics='Difference between first frame-end support samples, not a CCD TOI error',
+            state_semantics='Both actors compared at common50ms; first support observations can occur at different times')
     return dict(schema=1,state='DIAGNOSTIC_ONLY_NO_QUALIFICATION',categories_may_overlap=True,
         tolerances_unchanged=True,missing_contact_is_not_a_measured_invariance_delta=True,
         incomplete_case_is_not_a_completed_physics_comparison=True,
@@ -347,6 +384,7 @@ def diagnose_artifacts(directory):
         wheel_support=dict(artifact_present=support_path.is_file(),samples=sum(support_counts.values()),cases=len(support_counts),
             cases_without_CCD_contact=sum(i not in first for i in support_counts),
             by_peer=dict(sorted(Counter(cases[i]['shape_b'] for i in support_counts).items())),
+            paired_comparisons=support_comparisons,
             semantics='Native frame-end suspension response; query_parameter is not a CCD impact time; no CCD gate is waived'),
         largest_initial_translation_residual_cm=max((m.get('initial_translation_residual_cm',0) for m in metrics.values()),default=0),
         first_fault_cases=[dict(case=i,scenario=key(cases[i]),faults=sorted(faults[i]),metrics=metrics.get(i,{}))
