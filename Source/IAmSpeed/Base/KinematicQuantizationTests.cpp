@@ -3,6 +3,8 @@
 #include "SUtils.h"
 #include "Misc/AutomationTest.h"
 #include "Math/RandomStream.h"
+#include "IAmSpeed/Components/SpeedMovementComponent.h"
+#include "UObject/StrongObjectPtr.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedKinematicQuantizationTest,
 	"IAmSpeed.Simulation.IdentityKinematicQuantizationCache",
@@ -101,6 +103,38 @@ bool FIAmSpeedQuantizationLargeCoordinates042Test::RunTest(const FString&)
 					(Rounded - FVector(Offset) - LocalRounded).GetAbsMax() < 2.e-8);
 			}
 		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedStationaryAxes042Test,
+	"IAmSpeed.PhysicalLaws.StationaryAxesTranslation042",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedStationaryAxes042Test::RunTest(const FString&)
+{
+	TStrongObjectPtr<USpeedMovementComponent> Component(NewObject<USpeedMovementComponent>());
+	for (const FVector Offset : {FVector::ZeroVector, FVector(.003,-.004,.001),
+		FVector(100000000,-100000000,100000000)})
+	{
+		SKinematic State;
+		State.Location = Offset + FVector(-25.673,3.017,12.341);
+		State.Velocity = FVector(1200,0,0);
+		State.Acceleration = FVector::ZeroVector;
+		const FVector Authored = State.Location;
+		Component->QuantizeKinematicState(State,FQuat::Identity);
+		TestEqual(TEXT("unmoving Y preserves its exact authored coordinate"),State.Location.Y,Authored.Y);
+		TestEqual(TEXT("unmoving Z preserves its exact authored coordinate"),State.Location.Z,Authored.Z);
+		TestEqual(TEXT("moving X retains canonical grid quantization"),State.Location.X,
+			Speed::RoundVectorToNetQuantize(Authored,100).X);
+		State.Acceleration.Y = 1.;
+		Component->QuantizeKinematicState(State,FQuat::Identity);
+		TestEqual(TEXT("new acceleration revokes stationary-axis preservation"),State.Location.Y,
+			Speed::RoundVectorToNetQuantize(Authored,100).Y);
+		State.Location.Z = Authored.Z; State.Velocity.Z = .00001;
+		Component->QuantizeKinematicState(State,FQuat::Identity);
+		TestEqual(TEXT("real sub-grid velocity is not mistaken for rest after rounding"),State.Location.Z,
+			Speed::RoundVectorToNetQuantize(Authored,100).Z);
 	}
 	return true;
 }
