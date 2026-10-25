@@ -88,6 +88,9 @@ public:
             Cylinder->Configure(25., 30.); Body = Cylinder;
         }
         Bodies.Add(Body); Actor.AddInstanceComponent(Body); Body->Initialize(this);
+        // This is a blocking-pair matrix. Cylinder's exact dispatch correctly
+        // checks BOTH native response containers, whose base default is Ignore.
+        Body->SetCollisionResponseToAllChannels(ECR_Block);
     }
     bool IsCanonicalRunController() const override { return Controller; }
     bool IsCanonicalRunReady() const override { return true; }
@@ -162,6 +165,7 @@ public:
     TArray<TObjectPtr<USWheelSubBody>> Wheels;
     TArray<SWheelGroundContact> Contacts;
     UChaosVehicleWheel* ChaosWheel = nullptr;
+    TFunction<void(const SHitResult&,const SKinematic&,const SKinematic&)> SupportObserver;
     void Initialize(AActor& Actor)
     {
         Core.Config.bValid = Core.Config.bIsMainSubBody = true;
@@ -177,6 +181,7 @@ public:
         auto* Wheel = NewObject<USWheelSubBody>(&Actor);
         Wheels.Add(Wheel); Core.Bodies.Add(Wheel); Core.Body = Wheel;
         Actor.AddInstanceComponent(Wheel); Wheel->Initialize(this);
+        Wheel->SetCollisionResponseToAllChannels(ECR_Block);
     }
     ~FMatrixWheelOwner()
     {
@@ -239,8 +244,13 @@ protected:
     const TArray<SWheelGroundContact>& GetPendingWheelContacts() const override { return Contacts; }
     void PostPhysicsUpdatePrv(const float& Dt) override
     {
+        const SKinematic Before=Core.State;
         ISpeedWheeledComponent::PostPhysicsUpdatePrv(Dt);
         QuantizeKinematicState(Core.State,Core.Previous); Core.Previous=Core.State.Rotation;
+        // Suspension contacts are real but are NOT CCD-selected impacts.
+        // Observe the actual frame-end support response without inventing a TOI.
+        if (SupportObserver && Wheels[0]->IsOnGround() && Wheels[0]->GetHit().bBlockingHit)
+            SupportObserver(Wheels[0]->GetHit(),Before,Core.State);
     }
 };
 
@@ -255,6 +265,8 @@ struct FMatrixResult
     uint32 Events = 0, Frames = 0;
     uint32 DriverGeneration = 0;
     bool TerminalFailure = false;
+    uint32 SupportSamples=0;
+    TArray<FString> RawSupportSamples;
     double Time = 0; FVector Point = FVector::ZeroVector, Normal = FVector::ZeroVector;
     FVector VelocityA=FVector::ZeroVector, AngularA=FVector::ZeroVector, VelocityB=FVector::ZeroVector, AngularB=FVector::ZeroVector;
     SKinematic FinalA, FinalB;
@@ -376,6 +388,15 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
         auto* ActorA = World->SpawnActor<AActor>(); auto* ActorB = World->SpawnActor<AActor>();
         if (!ActorA || !ActorB) return false;
         if (Wheel) Wheel->Initialize(*ActorA); else A.Initialize(*ActorA, C.A);
+        if (Wheel) Wheel->SupportObserver=[&](const SHitResult& Hit,const SKinematic& Before,const SKinematic& After)
+        {
+            const FVector Point=Hit.ImpactPoint-C.Offset;
+            ++Out.SupportSamples;
+            Out.RawSupportSamples.Add(FString::Printf(TEXT("%u,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%s,%s\n"),
+                A.Published,double(A.Published+1)*double(1.f/float(C.Hz)),double(Hit.TOI),
+                Point.X,Point.Y,Point.Z,Hit.ImpactNormal.X,Hit.ImpactNormal.Y,Hit.ImpactNormal.Z,
+                *KinematicCsv(Before),*KinematicCsv(After)));
+        };
         FString BindingError;
         if (!AComponent->ValidateSimulationBindings(BindingError)) { AddError(BindingError); return false; }
         const bool DynamicPair = C.B == EMatrixShape::Sphere || C.B == EMatrixShape::Box || C.B == EMatrixShape::Cylinder;
@@ -502,6 +523,8 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
     }
     IFileManager::Get().MakeDirectory(*Output, true);
     const FString CasesFile = Output / TEXT("cases.csv"), EventsFile = Output / TEXT("events.csv"), EndFile=Output/TEXT("end-states.csv"), InitialFile=Output/TEXT("initial-states.csv");
+    const FString SupportFile=Output/TEXT("support-samples.csv");
+    FFileHelper::SaveStringToFile(TEXT("case,local_frame,sample_seconds,query_parameter,point_x,point_y,point_z,normal_x,normal_y,normal_z,before_x,before_y,before_z,before_qx,before_qy,before_qz,before_qw,before_vx,before_vy,before_vz,before_wx,before_wy,before_wz,after_x,after_y,after_z,after_qx,after_qy,after_qz,after_qw,after_vx,after_vy,after_vz,after_wx,after_wy,after_wz\n"),*SupportFile);
     FFileHelper::SaveStringToFile(TEXT("case,a_x,a_y,a_z,a_qx,a_qy,a_qz,a_qw,a_vx,a_vy,a_vz,a_wx,a_wy,a_wz,b_x,b_y,b_z,b_qx,b_qy,b_qz,b_qw,b_vx,b_vy,b_vz,b_wx,b_wy,b_wz,environment_x,environment_y,environment_z,mass_a,mass_b\n"),*InitialFile);
     FFileHelper::SaveStringToFile(TEXT("case,shape_a,shape_b,variant,hz,translation,complete,clock_valid,hits,impact_seconds,point_x,point_y,point_z,normal_x,normal_y,normal_z,frequency_pass,translation_pass,oracle_pass,point_bound_cm,time_bound_s,frequency_point_error_cm,frequency_time_error_s,translation_point_error_cm,first_global_frame,frames,world_id,actual_delta_valid,iteration_exhausted,observer_overflow,real_wheel_hit,max_delta_error_ms,driver_generation,terminal_failure\n"), *CasesFile);
     FFileHelper::SaveStringToFile(TEXT("case,sample_seconds,position_a_x,position_a_y,position_a_z,velocity_a_x,velocity_a_y,velocity_a_z,angular_a_x,angular_a_y,angular_a_z,position_b_x,position_b_y,position_b_z,velocity_b_x,velocity_b_y,velocity_b_z,angular_b_x,angular_b_y,angular_b_z\n"), *EndFile);
@@ -616,6 +639,9 @@ bool FIAmSpeedCollisionMatrix042Test::RunTest(const FString&)
                 FString Events;
                 for (const auto& Event : R.RawEvents) Events += FString::Printf(TEXT("%u,"), CaseCount) + Event;
                 ExportValid &= FFileHelper::SaveStringToFile(Events, *EventsFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM, &IFileManager::Get(), FILEWRITE_Append);
+                FString Supports;
+                for (const auto& Sample:R.RawSupportSamples) Supports+=FString::Printf(TEXT("%u,"),CaseCount)+Sample;
+                ExportValid &= FFileHelper::SaveStringToFile(Supports,*SupportFile,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_Append);
                 if (CaseCount % 128 == 0) CollectGarbage(RF_NoFlags);
             }
             if (Incomplete) break;

@@ -69,3 +69,21 @@ Cylinder is a prescribed obstacle; free dynamic cylinders and moving rings are
 not claimed. Wheel cases must use real wheel and suspension storage. Unsupported
 roles must be identified explicitly rather than counted as successful misses.
 Open Wheel CCD debts and existing laws remain unchanged.
+
+All native pair response containers explicitly block. The base sub-body default
+ignores dynamic channels; Cylinder checks both containers. Leaving that default
+in a blocking fixture would test filtering rather than a blocking collision.
+The original failing run is retained before this fixture correction.
+
+Wheel suspension support is exported separately in `support-samples.csv`, from
+the actual native frame-end support solve. Its `sample_seconds` is a frame sample;
+`query_parameter` is the unmodified native support-query value. Neither is relabeled
+as a CCD impact time. `events.csv` and its strict gates continue to require a real
+selected CCD resolution. A support sample cannot waive a missing CCD contact.
+
+The CI also exports independent diagnostics on failure. They separate incomplete
+episodes, missing reference contacts, input equivalence and measured point,
+normal, time and response differences. Categories overlap and grant no PASS.
+Common translated initial positions are checked independently of output
+invariance. `execution.json` counts completed cases and actual frames, rather
+than treating an attempted loop as complete physical coverage.

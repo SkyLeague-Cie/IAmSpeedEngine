@@ -208,6 +208,41 @@ class ArtifactContracts(unittest.TestCase):
         with self.altered_rows('cases.csv',change):
             with self.assertRaisesRegex(ValueError,'not actually contacted'):self.validate()
 
+    def test_diagnostics_separate_incomplete_episodes(self):
+        def change(i,r):
+            if i==0:r.update(complete='0',frames='0')
+            return r
+        with self.altered_rows('cases.csv',change):
+            result=gate.diagnose_artifacts(self.root)
+        self.assertEqual(result['state'],'DIAGNOSTIC_ONLY_NO_QUALIFICATION')
+        self.assertEqual(result['summary']['completed'],4799)
+        self.assertEqual(result['summary']['failures']['execution.incomplete'],1)
+        self.assertGreater(result['summary']['failures']['frequency.not_comparable'],0)
+
+    def test_diagnostics_recompute_response_despite_native_pass(self):
+        def change(i,r):
+            if i==40:r['velocity_a_z']='1200'
+            return r
+        with self.altered_rows('events.csv',change):
+            result=gate.diagnose_artifacts(self.root)
+        self.assertGreater(result['summary']['failures']['frequency.immediate_velocity'],0)
+
+    def test_diagnostics_detect_non_equivalent_initial_conditions(self):
+        def change(i,r):
+            if i==1:r['a_z']=str(float(r['a_z'])+1)
+            return r
+        with self.altered_rows('initial-states.csv',change):
+            result=gate.diagnose_artifacts(self.root)
+        self.assertEqual(result['summary']['failures']['input.common_translation_changed'],1)
+
+    def test_diagnostics_missing_reference_is_not_a_numeric_delta(self):
+        def change(i,r):return None if i==0 else r
+        with self.altered_rows('events.csv',change):
+            result=gate.diagnose_artifacts(self.root)
+        self.assertEqual(result['summary']['failures']['contact.missing'],1)
+        self.assertGreater(result['summary']['failures']['frequency.reference_contact_missing'],0)
+        self.assertNotIn('frequency.point',result['summary']['failures'])
+
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()

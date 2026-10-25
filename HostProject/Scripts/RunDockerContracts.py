@@ -27,6 +27,7 @@ _matrix_spec = importlib.util.spec_from_file_location("IAmSpeedCollisionMatrix04
 _matrix_module = importlib.util.module_from_spec(_matrix_spec)
 _matrix_spec.loader.exec_module(_matrix_module)
 validate_collision_matrix = _matrix_module.validate_artifacts
+diagnose_collision_matrix = _matrix_module.diagnose_artifacts
 
 RETAINED_TESTS = {'SkyLeague.Camera.GenericInputLifecycle'}
 FILTER = 'IAmSpeed.' + ''.join('+' + name for name in sorted(RETAINED_TESTS))
@@ -430,6 +431,9 @@ def inside():
         # The native test creates its own fresh evidence directory and runs
         # the complete matrix in one world. No smoke-only option is passed.
         command.append('-IAmSpeedCollisionMatrix042Output=' + str(output / 'CollisionMatrix042'))
+        # Stock cache-write opt-out: gathering/reads remain available. Preserve
+        # the same C++ startup locale used by the private Windows validation.
+        command.extend(['-NoAssetRegistryCacheWrite', '-locale=en-US', '-DisablePython'])
         save(output / 'test-command.json', command)
         # The embedded Python home may be relative to the Editor executable.
         # Keep project/output arguments absolute and resolve that SDK layout.
@@ -440,6 +444,12 @@ def inside():
             # Direct child only: timeout does not prove descendant-writer drain.
             editor_call_finished = True
         result['editor_exit'] = code
+        try:
+            diagnostics = diagnose_collision_matrix(output / 'CollisionMatrix042')
+        except Exception as exc:
+            diagnostics = dict(state='DIAGNOSTICS_UNAVAILABLE', reason=str(exc),
+                               qualification_granted=False)
+        save(output / 'collision-matrix042-diagnostics.json', diagnostics)
         matrix_error = None
         try:
             matrix_result = validate_collision_matrix(output / 'CollisionMatrix042')

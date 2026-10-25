@@ -5,6 +5,7 @@ runner must also retain the real Editor exit, exact Automation report and source
 identity. No debt policy or warning waiver applies to this new matrix.
 """
 import csv
+from collections import Counter, defaultdict
 import itertools
 import json
 import math
@@ -211,3 +212,120 @@ def validate_artifacts(directory, *, allow_synthetic=False):
             'Native failure aggregate remains nonzero')
     return dict(state='ARTIFACT_CONTRACT_OK', cases=len(cases), frames=next_frame, worlds=1,
                 native_identity=IDENTITY, highest_hz=max(RATES), physical_execution_provenance='REQUIRES_EDITOR_EXIT_AND_AUTOMATION_REPORT')
+
+
+def diagnose_artifacts(directory):
+    """Recompute all comparison failures, including when the strict gate rejects.
+
+    Diagnostic categories can overlap. Missing contacts and incomplete episodes
+    are kept separate from measured differences. This never grants a PASS or
+    changes the predeclared tolerances, and does not establish native provenance.
+    """
+    root = Path(directory)
+    cases, initial, end = (by_case(root/name) for name in
+                           ('cases.csv', 'initial-states.csv', 'end-states.csv'))
+    require(set(cases) == set(initial) == set(end), 'Diagnostic case ID mismatch')
+    first, event_counts = {}, Counter()
+    for event in records(root/'events.csv'):
+        ident = integer(event, 'case')
+        require(ident in cases, 'Unknown diagnostic event case')
+        first.setdefault(ident, event)
+        event_counts[ident] += 1
+    def key(row):
+        return (row['shape_a'], row['shape_b'], integer(row, 'variant'),
+                integer(row, 'hz'), integer(row, 'translation'))
+    keyed = {key(row): ident for ident, row in cases.items()}
+    require(len(keyed) == len(cases), 'Duplicate diagnostic scenario')
+    faults, metrics = defaultdict(set), {}
+    non_positions = tuple(prefix+'_'+field for prefix in ('a', 'b')
+        for field in ('qx','qy','qz','qw','vx','vy','vz','wx','wy','wz'))+('mass_a','mass_b')
+    for ident, row in cases.items():
+        tags = faults[ident]
+        completed = integer(row, 'complete') == 1
+        if not completed: tags.add('execution.incomplete')
+        if integer(row, 'frames') != integer(row, 'hz')//20: tags.add('execution.duration')
+        for field in ('clock_valid','actual_delta_valid'):
+            if integer(row, field) != 1: tags.add('execution.'+field)
+        for field in ('iteration_exhausted','observer_overflow'):
+            if integer(row, field): tags.add('execution.'+field)
+        if 'terminal_failure' in row and integer(row, 'terminal_failure'):
+            tags.add('execution.terminal')
+        if event_counts[ident] != integer(row, 'hits'): tags.add('evidence.event_count')
+        if ident not in first: tags.add('contact.missing')
+        if row['shape_a'] == 'Wheel' and not integer(row, 'real_wheel_hit'):
+            tags.add('contact.wheel_not_observed')
+        scenario = key(row)
+        origin_id = keyed.get(scenario[:-1]+(0,))
+        reference_id = keyed.get(scenario[:3]+(max(RATES), scenario[-1]))
+        if origin_id is not None:
+            residual = max(abs(number(initial[ident],prefix+'_'+axis)-shift-
+                               number(initial[origin_id],prefix+'_'+axis))
+                for prefix in ('a','b','environment')
+                for axis,shift in zip('xyz',TRANSLATIONS[scenario[-1]]))
+            metrics[ident] = {'initial_translation_residual_cm':residual}
+            if residual >= 2e-7: tags.add('input.common_translation_changed')
+            if any(number(initial[ident],f) != number(initial[origin_id],f) for f in non_positions):
+                tags.add('input.non_position_changed')
+        else:
+            tags.add('evidence.origin_missing')
+        for label, other_id in (('frequency',reference_id),('translation',origin_id)):
+            if other_id is None or other_id not in first:
+                tags.add(label+'.reference_contact_missing'); continue
+            if ident not in first or not completed or integer(cases[other_id],'complete') != 1:
+                tags.add(label+'.not_comparable'); continue
+            event, reference = first[ident], first[other_id]
+            speed = 300. if scenario[2] == 1 else 4600. if scenario[2] == 2 else 1200.
+            point_bound = .02+math.sqrt(3)*.005*(integer(row,'frames')+integer(cases[other_id],'frames'))
+            bounds = (point_bound,1e-6+point_bound/(speed-75.),.002,
+                      .02+.002*speed,.01+.002*speed/12.5) if label=='frequency' else (.0001,1e-6,2e-6,.01,.001)
+            point_error = distance(xyz(event,'point'),xyz(reference,'point'))
+            time_error = abs(number(row,'impact_seconds')-number(cases[other_id],'impact_seconds'))
+            metrics.setdefault(ident,{}).update({label+'_point_error_cm':point_error,
+                                                label+'_time_error_s':time_error})
+            if point_error > bounds[0]: tags.add(label+'.point')
+            if time_error > bounds[1]: tags.add(label+'.toi')
+            try:
+                if angle(xyz(event,'normal'),xyz(reference,'normal')) > bounds[2]: tags.add(label+'.normal')
+            except ValueError:
+                tags.add('evidence.non_unit_normal')
+            if any(integer(event,f) != integer(reference,f) for f in ('feature_a','feature_b')):
+                tags.add(label+'.feature')
+            for actor in ('a','b'):
+                for quantity,bound in (('velocity',bounds[3]),('angular',bounds[4])):
+                    prefix = quantity+'_'+actor
+                    if distance(xyz(event,prefix),xyz(reference,prefix)) > bound:
+                        tags.add(label+'.immediate_'+quantity)
+                    if distance(xyz(end[ident],prefix),xyz(end[other_id],prefix)) > bound:
+                        tags.add(label+'.common_time_'+quantity)
+        if scenario[0:2] == ('Sphere','AnalyticPlane') and scenario[2] not in (3,4):
+            if ident not in first: tags.add('oracle.missing_contact')
+            else:
+                event=first[ident]
+                speed=300. if scenario[2]==1 else 4600. if scenario[2]==2 else 1200.
+                if abs(number(row,'impact_seconds')-.021) > 1e-6+(.02+.005*integer(row,'frames'))/speed:
+                    tags.add('oracle.toi')
+                if abs(number(event,'point_z')) > .02: tags.add('oracle.point')
+                try:
+                    if angle(xyz(event,'normal'),(0.,0.,1.)) > 1e-6: tags.add('oracle.normal')
+                except ValueError: tags.add('evidence.non_unit_normal')
+                if abs(number(event,'velocity_a_z')) > .02: tags.add('oracle.response')
+    def aggregate(ids):
+        ids=list(ids)
+        return dict(cases=len(ids),completed=sum(integer(cases[i],'complete') for i in ids),
+            contacts=sum(i in first for i in ids),frames=sum(integer(cases[i],'frames') for i in ids),
+            cases_with_diagnostic_faults=sum(bool(faults[i]) for i in ids),
+            failures=dict(sorted(Counter(tag for i in ids for tag in faults[i]).items())))
+    def grouped(dimension):
+        groups=defaultdict(list)
+        for ident,row in cases.items(): groups[dimension(row)].append(ident)
+        return {name:aggregate(ids) for name,ids in sorted(groups.items())}
+    return dict(schema=1,state='DIAGNOSTIC_ONLY_NO_QUALIFICATION',categories_may_overlap=True,
+        tolerances_unchanged=True,missing_contact_is_not_a_measured_invariance_delta=True,
+        incomplete_case_is_not_a_completed_physics_comparison=True,
+        summary=aggregate(cases),world_ids=sorted({integer(r,'world_id') for r in cases.values()}),
+        driver_generations=sorted({integer(r,'driver_generation') for r in cases.values() if 'driver_generation' in r}),
+        by_pair=grouped(lambda r:r['shape_a']+'/'+r['shape_b']),
+        by_rate=grouped(lambda r:r['hz']),by_translation=grouped(lambda r:r['translation']),
+        largest_initial_translation_residual_cm=max((m.get('initial_translation_residual_cm',0) for m in metrics.values()),default=0),
+        first_fault_cases=[dict(case=i,scenario=key(cases[i]),faults=sorted(faults[i]),metrics=metrics.get(i,{}))
+                           for i in sorted(cases) if faults[i]][:24])
