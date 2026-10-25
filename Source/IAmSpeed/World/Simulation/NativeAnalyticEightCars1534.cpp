@@ -338,6 +338,10 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
    auto* Car=World->SpawnActor<ASpeedCar>();auto* C=Car?Cast<USpeedWheeledComponent>(Car->GetVehicleMovement()):nullptr;
    if(!TestNotNull(TEXT("actual native car"),C))return false;
    C->SetOwner(Car);C->DisableAsyncPhysicsTickForTesting();Cars.Add(C);
+   // This fixture authors a finite frame-addressed camera queue independently
+   // of its driving-only V2 contract. Select that retained adapter explicitly;
+   // production stock cars keep their canonical V2 camera slots.
+   C->CanonicalCameraYawAction=-1;C->CanonicalCameraPitchAction=-1;
    auto DeltaWitness=MakeUnique<FEightCarPrepareDeltaWitness1534>();DeltaWitness->Frames.Reserve(Frames);DeltaWitness->Deltas.Reserve(Frames);PrepareWitnesses.Add(MoveTemp(DeltaWitness));
    auto Vehicle=MakeUnique<Chaos::FSimpleWheeledVehicle>();
    for(int32 I=0;I<4;++I)

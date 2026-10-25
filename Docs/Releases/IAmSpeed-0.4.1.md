@@ -10,12 +10,22 @@ Version du descripteur : 401 / 0.4.1. Simulation canonique : 300 Hz.
 - Conservation des ajouts Root lors de l'intégration des correctifs déjà revus.
 - Journal/witness, stockage des lignes de roues et cohérence des sorties caméra.
 
-Les 449 fichiers qualifiés sont strictement ceux du candidat
+Le lot initial de 449 fichiers qualifiés est strictement celui du candidat
 `c0f56e6112664ab7a4898186cb2675f1e8d720db`. La branche de livraison reprend
 leur arbre sur le vrai main IAmSpeed `a01528654c6b1cae2fdb9712f4abbb0d69f6e4f8`
 et ajoute uniquement cette note dans `Docs/Releases/`. Aucun hunk C++,
 coefficient physique, baseline, seuil, tolérance ou sélection de tests n'est
 modifié par le conditionnement.
+
+La première CI de la revue (PR54, run40188110361) a compilé sous Linux puis
+exécuté 231 tests : 227 réussites et quatre échecs. Les fixtures Contacts1221,
+EightCars1552, Grounded1368 et CanonicalCamera1217 injectent une queue caméra
+explicite avec un contrat V2 de conduite seul ; elles doivent sélectionner
+explicitement cet adaptateur conservé, au lieu des nouveaux slots caméra V2
+du profil stock. La correction de revue configure leurs slots à -1/-1 avant
+l'initialisation native. Leurs 189 assertions, commandes, nombres de frames,
+voies et seuils sont conservés. La production n'est pas modifiée ; le FAIL
+original reste visible et la CI doit qualifier ce nouveau SHA.
 
 ## Validation acquise
 
