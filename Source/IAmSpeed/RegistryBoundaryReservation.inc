@@ -11,6 +11,21 @@ public:
         FCompletedBoundaryReservation(FCompletedBoundaryReservation&&) noexcept = default;
         FCompletedBoundaryReservation& operator=(FCompletedBoundaryReservation&&) noexcept = default;
     };
+    // Local INPUT provenance, not an owner/branch/world identity. Retaining
+    // this observation does NOT retain the command fence. A later reservation
+    // of the identical Capture is a different transaction and cannot revive it.
+    class FCompletedBoundaryReservationObservation final
+    {
+        friend class FInputSessionRegistry;
+        const std::shared_ptr<const std::uint8_t> Identity;
+        const std::shared_ptr<const FCompletedBoundaryCapture> Boundary;
+        FCompletedBoundaryReservationObservation(std::shared_ptr<const std::uint8_t> I,
+            std::shared_ptr<const FCompletedBoundaryCapture> C) noexcept
+            : Identity(std::move(I)), Boundary(std::move(C)) {}
+    public:
+        FCompletedBoundaryReservationObservation(const FCompletedBoundaryReservationObservation&) noexcept = default;
+        const auto& Capture() const noexcept { return Boundary; }
+    };
 private:
     struct FBoundaryReservationPlan
     {
@@ -64,6 +79,21 @@ public:
     {
         return IsWorker() && !FPresentationInputScope::IsActive() && MatchesBoundaryReservation(T)
             ? BoundaryReservation->Capture : nullptr;
+    }
+    // Pin BOTH identities before any exporter/provider allocation can reenter.
+    // Construction and validation allocate nothing and touch no source/owner.
+    std::optional<FCompletedBoundaryReservationObservation> ObserveCompletedBoundaryReservation(
+        const FCompletedBoundaryReservation& T) const noexcept
+    {
+        const auto Capture=ReadReservedCompletedBoundary(T);
+        if (!Capture) return {};
+        return FCompletedBoundaryReservationObservation(T.Identity,Capture);
+    }
+    bool ValidateCompletedBoundaryReservationObservation(const FCompletedBoundaryReservation& T,
+        const FCompletedBoundaryReservationObservation& O) const noexcept
+    {
+        const auto Capture=ReadReservedCompletedBoundary(T);
+        return Capture && Capture==O.Boundary && T.Identity==O.Identity;
     }
     // Aborting changes no consumed input, owner filter, registry publication or
     // source journal. A token alone never keeps the live registry reserved.
