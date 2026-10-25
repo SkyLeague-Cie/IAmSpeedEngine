@@ -3,8 +3,46 @@
 #include "SUtils.h"
 #include "Misc/AutomationTest.h"
 #include "Math/RandomStream.h"
-#include "IAmSpeed/Components/SpeedMovementComponent.h"
-#include "UObject/StrongObjectPtr.h"
+#include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
+
+namespace
+{
+class FStationaryQuantizationBody final : public ISpeedComponent
+{
+public:
+	using ISpeedComponent::QuantizeKinematicState;
+	void PrepareCanonicalFrame(const FCanonicalFrameContext&) override {}
+	unsigned int NumFrame() const override { return 1; }
+	float GetPhysMass() const override { return 1; }
+	const FVector& GetPhysCOM() const override { return Zero; }
+	const FVector& GetPhysCenterOfMassLocal() const override { return Zero; }
+	const TArray<USSubBody*>& GetSubBodies() const override { return SubBodies; }
+	TArray<USSubBody*> CreateSubBodies() override { return {}; }
+	bool IsFrozen() const override { return false; }
+	SubBodyConfig GetSubBodyConfig(const USSubBody&) const override { return {}; }
+	SKinematic GetKinematicsOfSubBody(const USSubBody&, const unsigned int&) const override { return State; }
+	FMatrix ComputeWorldInvInertiaTensor() const override { return FMatrix::Identity; }
+	FMatrix ComputeWorldInvInertiaTensorOfSubBody(const USSubBody&) const override { return FMatrix::Identity; }
+	const SKinematic& GetKinematicState() const override { return State; }
+	const SKinematic& GetKinematicStateForFrame(const unsigned int&) const override { return State; }
+	float GetPhysMaxSpeed() const override { return 0; }
+	float GetPhysMaxAngularSpeed() const override { return 0; }
+	void SetIsUpsideDown(bool) override {}
+	bool IsUpsideDown() const override { return false; }
+	bool IsInAutoRecover() const override { return false; }
+	bool IsSubBodyInAutoRecoverMode() const override { return false; }
+	void RcvImpactOnSubBody(const USSubBody&, const FVector&) override {}
+protected:
+	void PostPhysicsUpdatePrv(const float&) override {}
+	void SetKinematicState(const SKinematic& S) override { State=S; }
+	void SetIsFrozen(bool) override {}
+private:
+	FVector Zero = FVector::ZeroVector;
+	SKinematic State;
+	TArray<USSubBody*> SubBodies;
+};
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedKinematicQuantizationTest,
 	"IAmSpeed.Simulation.IdentityKinematicQuantizationCache",
@@ -113,7 +151,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedStationaryAxes042Test,
 
 bool FIAmSpeedStationaryAxes042Test::RunTest(const FString&)
 {
-	TStrongObjectPtr<USpeedMovementComponent> Component(NewObject<USpeedMovementComponent>());
+	FStationaryQuantizationBody Component;
 	for (const FVector Offset : {FVector::ZeroVector, FVector(.003,-.004,.001),
 		FVector(100000000,-100000000,100000000)})
 	{
@@ -122,17 +160,17 @@ bool FIAmSpeedStationaryAxes042Test::RunTest(const FString&)
 		State.Velocity = FVector(1200,0,0);
 		State.Acceleration = FVector::ZeroVector;
 		const FVector Authored = State.Location;
-		Component->QuantizeKinematicState(State,FQuat::Identity);
+		Component.QuantizeKinematicState(State,FQuat::Identity);
 		TestEqual(TEXT("unmoving Y preserves its exact authored coordinate"),State.Location.Y,Authored.Y);
 		TestEqual(TEXT("unmoving Z preserves its exact authored coordinate"),State.Location.Z,Authored.Z);
 		TestEqual(TEXT("moving X retains canonical grid quantization"),State.Location.X,
 			Speed::RoundVectorToNetQuantize(Authored,100).X);
 		State.Acceleration.Y = 1.;
-		Component->QuantizeKinematicState(State,FQuat::Identity);
+		Component.QuantizeKinematicState(State,FQuat::Identity);
 		TestEqual(TEXT("new acceleration revokes stationary-axis preservation"),State.Location.Y,
 			Speed::RoundVectorToNetQuantize(Authored,100).Y);
 		State.Location.Z = Authored.Z; State.Velocity.Z = .00001;
-		Component->QuantizeKinematicState(State,FQuat::Identity);
+		Component.QuantizeKinematicState(State,FQuat::Identity);
 		TestEqual(TEXT("real sub-grid velocity is not mistaken for rest after rounding"),State.Location.Z,
 			Speed::RoundVectorToNetQuantize(Authored,100).Z);
 	}
