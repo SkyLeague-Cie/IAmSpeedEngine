@@ -38,6 +38,7 @@ jobs:
         run: |
           import subprocess, sys
           subprocess.run([sys.executable, '-I', '-B', 'HostProject/Scripts/TestCollisionMatrix042.py'], check=True)
+          subprocess.run([sys.executable, '-I', '-B', 'HostProject/Scripts/TestCollisionMatrixDebt.py'], check=True)
 
   docker-contracts:
     needs: runner-contracts

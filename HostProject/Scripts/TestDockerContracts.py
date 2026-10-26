@@ -436,7 +436,15 @@ class LinuxWorkExportTransport(unittest.TestCase):
              patch.object(ci,'engine_root',return_value=engine), patch.object(ci.shutil,'copytree',side_effect=copy_source), \
              patch.object(ci,'source_test_manifest',return_value=paths),patch.object(ci,'run_logged',side_effect=native), \
              patch.object(ci,'validate_collision_matrix',side_effect=ValueError('fixture matrix rejection') if mode=='matrix_failure' else None,
-                          return_value={'state':'ARTIFACT_CONTRACT_OK','transport_unit_test_double':True}):
+                          return_value={'state':'ARTIFACT_CONTRACT_OK','transport_unit_test_double':True}), \
+             patch.object(ci._matrix_debt,'validate_accepted_matrix',
+                          side_effect=ValueError('fixture matrix rejection') if mode=='matrix_failure' else None,
+                          return_value={'state':'PASS','accepted_case_count':0,'transport_unit_test_double':True}), \
+             patch.object(ci._matrix_debt,'project_matrix_report',
+                          side_effect=lambda code,report,assessment,directory:(copy.deepcopy(report),False)):
+            # Transport fixtures have no physical Source or matrix corpus.
+            # Admission/rejection is a boundary double here; the real finite
+            # policy, evidence and projection run in TestCollisionMatrixDebt.
             code=ci.inside()
         result=json.loads((export/'container-result.json').read_text())
         self.assertEqual((export/'launch.json').read_bytes(),b'host metadata must remain exact')

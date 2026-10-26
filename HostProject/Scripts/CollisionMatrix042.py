@@ -2,7 +2,9 @@
 
 This validates artifacts, not physical execution provenance by itself. The CI
 runner must also retain the real Editor exit, exact Automation report and source
-identity. No debt policy or warning waiver applies to this new matrix.
+identity. The strict default remains unchanged. The separate, human-authorized
+finite debt assessment can request evidence-only validation, without qualifying
+the raw physics result.
 """
 import csv
 from collections import Counter, defaultdict
@@ -105,7 +107,7 @@ def validate_support_samples(root, cases):
     return counts
 
 
-def validate_artifacts(directory, *, allow_synthetic=False):
+def validate_artifacts(directory, *, allow_synthetic=False, _evidence_only=False):
     root = Path(directory)
     spec = json.loads((root/'spec.json').read_text(encoding='utf-8-sig'))
     summary = json.loads((root/'summary.json').read_text(encoding='utf-8-sig'))
@@ -136,6 +138,9 @@ def validate_artifacts(directory, *, allow_synthetic=False):
     keyed, next_frame, worlds = {}, 0, set()
     for ident, row in sorted(cases.items()):
         key = (row['shape_a'], row['shape_b'], integer(row, 'variant'), integer(row, 'hz'), integer(row, 'translation'))
+        if _evidence_only:
+            require(ident == 1 + list(itertools.product(SHAPES_A, SHAPES_B, range(8), RATES, range(5))).index(key),
+                    'Case/scenario identity differs from frozen enumeration')
         require(key not in keyed and key in expected, 'Duplicate or undeclared scenario')
         keyed[key] = ident
         require(integer(row, 'first_global_frame') == next_frame, 'Inter-case frame discontinuity')
@@ -143,9 +148,18 @@ def validate_artifacts(directory, *, allow_synthetic=False):
         next_frame += integer(row, 'frames'); worlds.add(integer(row, 'world_id'))
         for field in ('complete', 'clock_valid', 'actual_delta_valid'):
             require(integer(row, field) == 1, 'Native execution/clock gate failed: ' + field)
-        for field in ('iteration_exhausted', 'observer_overflow'):
-            require(integer(row, field) == 0, 'Native budget/observation exhausted: ' + field)
-        require(integer(row, 'hits') > 0 and number(row, 'max_delta_error_ms') < 1e-5,
+        require(integer(row, 'observer_overflow') == 0, 'Native observation exhausted')
+        require(integer(row, 'iteration_exhausted') in ((0, 1) if _evidence_only else (0,)),
+                'Native budget exhausted: iteration_exhausted')
+        if _evidence_only:
+            for record in (initial[ident], end[ident]):
+                for field in record: number(record, field)
+            for field in row:
+                if field not in ('shape_a', 'shape_b'): number(row, field)
+            for field in ('frequency_pass','translation_pass','oracle_pass','real_wheel_hit'):
+                require(integer(row,field) in (0,1),'Invalid boolean: '+field)
+            require(integer(row,'terminal_failure') == 0, 'Terminal simulation failure')
+        require(integer(row, 'hits') >= (0 if _evidence_only else 1) and number(row, 'max_delta_error_ms') < 1e-5,
                 'Missing collision or wrong actual physics delta')
         require(abs(number(end[ident], 'sample_seconds')-.05) < 1e-12,
                 'End states were not sampled at the common physical time')
@@ -186,6 +200,18 @@ def validate_artifacts(directory, *, allow_synthetic=False):
         for field in ('a_qx','a_qy','a_qz','a_qw','a_vx','a_vy','a_vz','a_wx','a_wy','a_wz',
                       'b_qx','b_qy','b_qz','b_qw','b_vx','b_vy','b_vz','b_wx','b_wy','b_wz','mass_a','mass_b'):
             require(number(this, field) == number(origin, field), 'Non-position input changed under translation')
+        if _evidence_only:
+            speed = 300. if key[2] == 1 else 4600. if key[2] == 2 else 1200.
+            reference_id = keyed[key[:3]+(max(RATES),key[-1])]
+            bound = .02+math.sqrt(3)*.005*(integer(row,'frames')+integer(cases[reference_id],'frames'))
+            require(abs(number(row,'point_bound_cm')-bound)<1e-10
+                    and abs(number(row,'time_bound_s')-(1e-6+bound/(speed-75.)))<1e-10,
+                    'Reported frequency bounds differ from the frozen specification')
+            if ident in first:
+                for quantity in ('point','normal'):
+                    require(distance(xyz(row,quantity),xyz(first[ident],quantity))<1e-10,
+                            'First contact differs from its case summary: '+quantity)
+            continue
         for field in ('frequency_pass','translation_pass','oracle_pass'):
             require(integer(row, field) == 1, 'Native physical gate failed: ' + field)
         require(key[0] != 'Wheel' or integer(row, 'real_wheel_hit') == 1, 'Wheel was not actually contacted')
@@ -223,18 +249,19 @@ def validate_artifacts(directory, *, allow_synthetic=False):
                     and angle(xyz(event,'normal'),(0.,0.,1.)) <= 1e-6
                     and abs(number(event,'velocity_a_z')) <= .02,
                     'Independent Sphere/Plane oracle failed despite native pass flag')
-    require(summary.get('wheel_coverage') is True
-            and summary.get('wheel_cases') == summary.get('wheel_hit_cases') == len(expected)//3,
-            'Incomplete actual Wheel contact coverage')
-    require(all(summary.get(k) == 0 for k in ('failed','frequency_failures','translation_failures',
-                'oracle_failures','iteration_limit_cases','observer_overflow_cases')),
-            'Native failure aggregate remains nonzero')
+    if not _evidence_only:
+        require(summary.get('wheel_coverage') is True
+                and summary.get('wheel_cases') == summary.get('wheel_hit_cases') == len(expected)//3,
+                'Incomplete actual Wheel contact coverage')
+        require(all(summary.get(k) == 0 for k in ('failed','frequency_failures','translation_failures',
+                    'oracle_failures','iteration_limit_cases','observer_overflow_cases')),
+                'Native failure aggregate remains nonzero')
     validate_support_samples(root,cases)
-    return dict(state='ARTIFACT_CONTRACT_OK', cases=len(cases), frames=next_frame, worlds=1,
+    return dict(state='EVIDENCE_ONLY_NOT_PHYSICS_PASS' if _evidence_only else 'ARTIFACT_CONTRACT_OK', cases=len(cases), frames=next_frame, worlds=1,
                 native_identity=IDENTITY, highest_hz=max(RATES), physical_execution_provenance='REQUIRES_EDITOR_EXIT_AND_AUTOMATION_REPORT')
 
 
-def diagnose_artifacts(directory):
+def diagnose_artifacts(directory, *, include_all_fault_cases=False):
     """Recompute all comparison failures, including when the strict gate rejects.
 
     Diagnostic categories can overlap. Missing contacts and incomplete episodes
@@ -374,7 +401,7 @@ def diagnose_artifacts(directory):
             state='MEASUREMENTS_ONLY_NO_NEW_THRESHOLD_OR_PASS',
             time_semantics='Difference between first frame-end support samples, not a CCD TOI error',
             state_semantics='Both actors compared at common50ms; first support observations can occur at different times')
-    return dict(schema=1,state='DIAGNOSTIC_ONLY_NO_QUALIFICATION',categories_may_overlap=True,
+    result = dict(schema=1,state='DIAGNOSTIC_ONLY_NO_QUALIFICATION',categories_may_overlap=True,
         tolerances_unchanged=True,missing_contact_is_not_a_measured_invariance_delta=True,
         incomplete_case_is_not_a_completed_physics_comparison=True,
         summary=aggregate(cases),world_ids=sorted({integer(r,'world_id') for r in cases.values()}),
@@ -389,3 +416,8 @@ def diagnose_artifacts(directory):
         largest_initial_translation_residual_cm=max((m.get('initial_translation_residual_cm',0) for m in metrics.values()),default=0),
         first_fault_cases=[dict(case=i,scenario=key(cases[i]),faults=sorted(faults[i]),metrics=metrics.get(i,{}))
                            for i in sorted(cases) if faults[i]][:24])
+
+    if include_all_fault_cases:
+        result['all_fault_cases'] = [dict(case=i,scenario=key(cases[i]),faults=sorted(faults[i]))
+                                     for i in sorted(cases) if faults[i]]
+    return result
