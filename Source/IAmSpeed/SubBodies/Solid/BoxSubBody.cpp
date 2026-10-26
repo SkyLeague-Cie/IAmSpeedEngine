@@ -1137,12 +1137,10 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
 
     SHitResult ProjectedHit = SHitResult::FromAnalyticHit(
         Projection.Hit, Delta, GroundComp.Get());
-    ProjectedHit.ImpactNormal =
-        Speed::QuantizeUnitNormal(ProjectedHit.ImpactNormal);
-    ProjectedHit.ImpactPoint =
-        Speed::QuantizeVectorCm(ProjectedHit.ImpactPoint, 0.1f);
-    ProjectedHit.PenetrationDepth = Speed::QuantizeScalar(
-        static_cast<float>(Projection.ResidualPenetrationDepth), 0.01f);
+    // Preserve the projected analytic witness as a coherent geometric tuple.
+    // A world-coordinate grid moves its support point relative to the body.
+    ProjectedHit.PenetrationDepth =
+        static_cast<float>(Projection.ResidualPenetrationDepth);
     const FVector Normal = ProjectedHit.ImpactNormal.GetSafeNormal();
     if (Normal.IsNearlyZero())
     {
@@ -2394,8 +2392,15 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 {
     if (!ParentComponent) return;
 
-    const FVector N = Speed::QuantizeUnitNormal(Hit.ImpactNormal.GetSafeNormal());
-    const FVector P = Speed::QuantizeVectorCm(Hit.ImpactPoint, 0.1f); // 1 mm
+    const bool bAnalyticWitness = ParentComponent->GetStaticCollisionWorldForFrame() &&
+        Hit.SourceId != 0 && Hit.SurfaceId != 0;
+    // The sweep already supplies the admitted analytic witness. Quantizing it
+    // again here changes the impulse lever arm after a common translation,
+    // even when the emitted CCD point and normal are invariant.
+    const FVector N = bAnalyticWitness ? Hit.ImpactNormal.GetSafeNormal()
+        : Speed::QuantizeUnitNormal(Hit.ImpactNormal.GetSafeNormal());
+    const FVector P = bAnalyticWitness ? Hit.ImpactPoint
+        : Speed::QuantizeVectorCm(Hit.ImpactPoint, 0.1f); // legacy Unreal policy
 
     const FVector COM = GetCOM();
     const float FaceAlignment = FMath::Max(
