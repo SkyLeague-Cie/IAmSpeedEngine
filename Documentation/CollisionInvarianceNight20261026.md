@@ -104,3 +104,63 @@ Follow-up evidence:
   `d2172415325b528790fcc28dcfdfb4e341663d03edec08c910b8374618a265d2`.
 - Raw diagnostics SHA256:
   `b194c27216c515222d67a879c0bcbe23b82ac42a6c57eb9b406cb522a0130fa1`.
+
+
+## Follow-up: preserve uniform unforced rotation
+
+Native source `74175d978377fc0034491121de0fe642c3e35290` preserves the
+integrated quaternion when angular acceleration is exactly zero. Repeated
+packed-Euler rounding otherwise changes constant spin according to the number
+of steps and pins sufficiently slow rotations. A nonzero angular acceleration
+retains the existing outer rotation quantizer. Inner codec/cache, velocity
+quantization, layouts and query thresholds are unchanged. This explicitly
+changes the outer pose precision policy; network/full-state restore is not
+qualified by this result.
+
+The new independent axis-angle regression covers 60/100/120/240/300/360/720/
+1440 Hz, three axes, two initial orientations and angular speeds 0.0001,
+0.01 and 20 rad/s. All **31 targeted native regressions** succeed with no
+warnings or errors. This is an actual native result, not the scalar model.
+
+The full matrix remains **FAIL**, with 4,800 completed cases, 100,200 frames,
+one world, 436 sequential joined drivers and zero terminal query failures.
+Controller closure takes 74.125 s. There are still **1,880 cases with a
+diagnostic fault or missing observation**; no previously faulty case becomes
+entirely clean and no previously clean case becomes faulty.
+
+| Diagnostic | Previous `d455bca` | Candidate `74175d9` |
+| --- | ---: | ---: |
+| Frequency common-50-ms angular-velocity violations | 631 | 621 |
+| Frequency common-50-ms linear-velocity violations | 887 | 887 |
+| Translation common-50-ms angular-velocity violations | 32 | 26 |
+| Translation common-50-ms linear-velocity violations | 38 | 35 |
+| Missing Wheel CCD observations | 640 | 640 |
+| Cases reaching the iteration limit | 436 | 436 |
+
+These category counts overlap and include mixed case-level changes: the
+comparison artifact retains every removed **and added** violation. For example,
+case 3129 newly exceeds frequency velocity/angular bounds while case 3134
+ceases to exceed them. Both remain in the already failing Cylinder subset;
+this is not a claim that every individual comparison improves.
+
+All Box/Ring translation checks remain clear for their 320 cases; its remaining
+15 failures still concern frequency common-time velocity. Sphere/Plane,
+Sphere/Sphere, Sphere/Ring and Sphere/Cylinder remain clear in their respective
+320-case diagnostic subsets. Wheel frame-end supports remain observations,
+not fabricated CCD impact times. The spec and all acceptance thresholds are
+byte-identical to the previous run.
+
+Evidence SHA256:
+
+- Exact31 regressions receipt:
+  `405ca121ea8a4d5c3b8b26b0f2e4a7be15ab555a06c95131877bd094bfe32465`.
+- Matrix receipt:
+  `086b5577526a8b0ae3d24d874992d80577fc55bbd69c51f66977de27e63bf24b`.
+- Raw diagnostics:
+  `825adc4495cf2bd218fbbf704256f9caa02fe7eeaded5d2d9e4e9dc3cda87aff`.
+- Complete case-level before/after diagnostic:
+  `b95dc2421ecbfd5e75fcbd8ae48878505a6b083b7135102c76c18fe42da46aae`.
+
+No Demo/SkyLeague adoption, public CI, release, whole-engine physics,
+hardware/audio/rendering or Netcode qualification is inferred. The previous
+measured candidate remains separately retained.
