@@ -164,3 +164,57 @@ Evidence SHA256:
 No Demo/SkyLeague adoption, public CI, release, whole-engine physics,
 hardware/audio/rendering or Netcode qualification is inferred. The previous
 measured candidate remains separately retained.
+
+
+## Follow-up: normal impulse precision
+
+Native source `9c887e2d0f25957a0aa61ed235de1355ed3d7cdf` avoids narrowing
+reciprocal masses, normal contact velocity, effective-mass terms and default
+normal/friction impulse arithmetic to float. Public signatures, layouts,
+coefficients, thresholds, iteration budgets and the quantization cache are
+unchanged. Alternate coupled solver policies are not separately qualified.
+
+The new native regression applies the returned impulses through independent
+Newton/Euler momentum equations and checks the restitution law. It covers
+multiple masses (including a prescribed peer), two restitution values, two
+normals and four translations. All **32 targeted native regressions** succeed
+without warnings/errors. In 64 retained offset-zero Box/Cylinder first-impact
+observations, the maximum absolute post-impact normal velocity falls from
+`9.179536405667932e-5` to `3.6514843353806237e-13` cm/s. For case 3081, it changes
+from `-2.743010550076974e-5` to `1.5631940186722204e-13` cm/s. These measurements
+use the first actual CCD event and affine pre-impact COM trajectory; no support
+sample is reinterpreted as an impact time.
+
+This correction does **not** remove contact continuation failures. The matrix
+still completes 4,800 cases / 100,200 frames in one world, with zero terminal
+query failures and a 71.906 s controller closure. It remains **FAIL**:
+1,880 cases have diagnostic faults/missing observations, including 640 missing
+Wheel CCD observations and 436 cases reaching the unchanged iteration limit.
+The current native source limit is 24; older historical labels are not current.
+
+The before/after diagnostic is mixed, rather than uniformly greener. Translation
+common-time angular violations change from 26 to 27 (case 3139 removed; 3129
+and 3188 added). Translation common-time linear violations remain 35, with two
+removed and two added comparisons. No previously clean case becomes faulty,
+and no previously faulty case becomes fully clean. Frequency category counts
+are unchanged. Spec and acceptance thresholds are byte-identical.
+
+This measured successor retains the more accurate restitution law and the extra
+native regression; the previous `722f386`/`74175d9` measured candidate remains
+available, with the comparative tradeoff explicit. No whole-matrix PASS,
+Demo/SkyLeague runtime adoption, public CI, release or Netcode certificate is
+inferred.
+
+Evidence SHA256:
+
+- Exact32 regressions receipt:
+  `f6b80710dc9d58795dda81fa9481068c87c0dc23d57a2666ab8c0cecaa028bfc`.
+- Matrix receipt:
+  `55d98f9ed5f8e7265bc709599feab2c404d9cae5c080656f68799f93e5887d53`.
+- Raw diagnostics:
+  `9f254fdf3eb417193eb1ed2f628975edbf455fad7d64033d3f3527dbef4ef37d`.
+- Complete before/after diagnostic:
+  `9a9178b765337ddf8cdfd01f3983fe63b256cc01a9be97a52bfaa51b1cd54482`.
+- First-impact residual measurements before/after:
+  `83e56533b2a0b0cac6de781d637b32cc13b0a5a816a9ed929ef4e52191df6dbd` /
+  `2ff41684c3fc9de7fe64c5ea72cb421ab01081c5e13388b5fbba8f2ef91f38a5`.
