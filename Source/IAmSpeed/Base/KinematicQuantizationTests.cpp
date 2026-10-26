@@ -204,6 +204,51 @@ bool FIAmSpeedUnforcedTrajectory042Test::RunTest(const FString&)
 	return true;
 }
 
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedUnforcedRotation042Test,
+    "IAmSpeed.PhysicalLaws.UnforcedRotation042",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedUnforcedRotation042Test::RunTest(const FString&)
+{
+    for (const int32 Hz : {60,100,120,240,300,360,720,1440})
+    for (const double Speed : {.0001, .01, 20.})
+    for (const FVector Axis : {FVector::ForwardVector, FVector::RightVector, FVector::UpVector})
+    for (const FQuat Initial : {FQuat::Identity, FRotator(17,31,-11).Quaternion()})
+    {
+        FStationaryQuantizationBody Component;
+        SKinematic State; State.Rotation=Initial;
+        State.AngularVelocity=Axis*Speed;
+        State.AngularAcceleration=FVector::ZeroVector;
+        const float Delta=1.f/float(Hz);
+        FQuat Previous=Initial;
+        for (int32 Frame=0;Frame<Hz/20;++Frame)
+        {
+            State=State.Integrate(Delta);
+            Component.QuantizeKinematicState(State,Previous);
+            const double Elapsed=double(Frame+1)*double(Delta);
+            // Independent analytic axis-angle oracle; no packed Euler or
+            // repeated-step reference is used to define the expected result.
+            const FQuat Expected=(FQuat(Axis,Speed*Elapsed)*Initial).GetNormalized();
+            const double Dot=FMath::Clamp(FMath::Abs(State.Rotation|Expected),0.,1.);
+            TestTrue(TEXT("unforced angular trajectory matches analytic spin at every tested rate"),
+                2.*FMath::Acos(Dot)<1.e-6);
+            TestTrue(TEXT("declared grid angular velocity is preserved"),
+                (State.AngularVelocity-Axis*Speed).GetAbsMax()<1.e-12);
+            Previous=State.Rotation;
+        }
+    }
+    // This policy is deliberately limited to unforced angular motion.
+    FStationaryQuantizationBody Accelerating;
+    SKinematic State; State.Rotation=FRotator(.0037,.0021,.0019).Quaternion();
+    State.AngularAcceleration=FVector(0,0,1);
+    SKinematic Canonical=State; Canonical.Quantize(FQuat::Identity);
+    Accelerating.QuantizeKinematicState(State,FQuat::Identity);
+    TestTrue(TEXT("angular acceleration retains the canonical rotation quantizer"),
+        State.Rotation.Equals(Canonical.Rotation,0.));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedSphereSphereContinuous042Test,
 	"IAmSpeed.PhysicalLaws.SphereSphereContinuous042",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

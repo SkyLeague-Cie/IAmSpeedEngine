@@ -71,11 +71,18 @@ void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& Pre
 	// rate-dependent amount (80/1440 -> .06, but 80/60 -> 1.33 cm per frame).
 	// This includes stationary axes and prevents a common fractional offset
 	// from moving only one collision participant. A live acceleration revokes
-	// the rule; velocity/rotation quantization and the canonical cache remain
+	// the rule; velocity quantization and the inner codec/cache remain
 	// unchanged. No residual, origin anchor or new published state is needed.
 	for (int32 Axis = 0; Axis < 3; ++Axis)
 		if (State.Acceleration[Axis] == 0.)
 			State.Location[Axis] = SupportedLocation[Axis];
+	// A packed Euler grid is not an angular integrator. Rounding after every
+	// unforced step makes constant spin depend on the number of frames (and
+	// pins sufficiently slow rotations). Preserve the integrated orientation
+	// when angular acceleration is zero; the inner codec, cache and velocity
+	// quantization remain unchanged. A live angular acceleration revokes this.
+	if (State.AngularAcceleration.IsZero())
+		State.Rotation = SupportedRotation;
 	bool bRejectedQuantizedPose = false;
 	if (!bPreserveSupportedPose && StaticRestingWorld &&
 		(State.Location != SupportedLocation || State.Rotation != SupportedRotation))
