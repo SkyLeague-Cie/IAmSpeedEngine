@@ -76,7 +76,8 @@ def case_faults(root):
 def validate_accepted_matrix(directory, plugin_source):
     root = Path(directory)
     policy = load_policy()
-    gate.require(source_tree(plugin_source) in ADMITTED_SOURCE_TREES, 'Matrix debt belongs to another Source tree')
+    observed_source = source_tree(plugin_source)
+    gate.require(observed_source in ADMITTED_SOURCE_TREES, 'Matrix debt belongs to another Source tree')
     gate.require(sha256(root/'spec.json') == policy['spec_sha256'], 'Frozen matrix specification changed')
     evidence = gate.validate_artifacts(root, _evidence_only=True)
     cases, faults, diagnostics = case_faults(root)
@@ -105,6 +106,7 @@ def validate_accepted_matrix(directory, plugin_source):
     except ValueError as exc:
         raw = dict(state='FAIL',reason=str(exc))
     return dict(state='PASS_WITH_ACCEPTED_DEBT' if faults else 'PASS',
+        observed_source_tree=observed_source, frozen_source_tree=SOURCE_TREE,
         accepted_case_count=len(faults), admitted_case_limit=1880, faults=faults,
         strict_assessment=raw, evidence=evidence, raw_report_unchanged=True,
         physical_matrix_qualified=not faults, policy_sha256=POLICY_SHA256,

@@ -117,6 +117,8 @@ class FiniteMatrixDebtContracts(unittest.TestCase):
         self.assertFalse(result['physical_matrix_qualified'])
         self.assertEqual(result['evidence']['cases'],4800)
         self.assertEqual(result['evidence']['frames'],100200)
+        self.assertEqual(result['observed_source_tree'],debt.SOURCE_TREE)
+        self.assertEqual(result['frozen_source_tree'],debt.SOURCE_TREE)
         self.assertEqual(before,{p.name:debt.sha256(p) for p in self.root.iterdir() if p.is_file()})
 
     def test_production_gate_rejects_synthetic_evidence(self):
@@ -126,6 +128,14 @@ class FiniteMatrixDebtContracts(unittest.TestCase):
     def test_another_source_tree_is_not_covered(self):
         with self.corpus(source='0'*40),self.assertRaisesRegex(ValueError,'another Source tree'):
             self.assess()
+
+    def test_admitted_replay_source_is_observed_without_relabelling_the_freeze(self):
+        replay=debt.ADMITTED_SOURCE_TREES[1]
+        with self.corpus(source=replay):
+            result=self.assess()
+        self.assertEqual(result['observed_source_tree'],replay)
+        self.assertEqual(result['frozen_source_tree'],debt.SOURCE_TREE)
+        self.assertNotEqual(result['observed_source_tree'],result['frozen_source_tree'])
 
     def test_modified_policy_is_rejected_before_interpretation(self):
         with patch.object(debt,'sha256',return_value='0'*64),self.assertRaisesRegex(ValueError,'policy identity'):
