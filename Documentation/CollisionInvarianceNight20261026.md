@@ -65,3 +65,42 @@ Evidence identities:
 The next work is to diagnose the remaining post-impact state discrepancies with
 unchanged paired inputs and thresholds. This result does not qualify the whole
 physics engine, hardware, rendering, audio, Netcode, or production multirate use.
+
+## Follow-up: keep the witness through the response
+
+Native source `d455bca1d7a9c994c185489f03aa4b350ad0826c` also removes the
+second absolute-coordinate rounding in the analytic wall impulse and projected
+support consumers. The legacy Unreal response still uses its existing policy.
+Before this change, a pair could report the same point and normal but acquire
+different angular velocities because the impulse used a separately rounded
+point. A retained pair differed by 0.329091867 rad/s after a common translation.
+
+The same 30 native regressions pass without warnings or errors. All 4,800 matrix
+cases and 100,200 frames complete with one world and no terminal query failure;
+the controller closes normally in 77.953 s. The complete matrix remains **FAIL**.
+
+| Observation | Previous reference `40fd721` | First fix `04c98c6` | Follow-up `d455bca` |
+| --- | ---: | ---: | ---: |
+| Cases with diagnostic faults or missing observations | 2,031 | 1,916 | 1,880 |
+| Box/Ring cases with any diagnostic fault | 166 | 51 | 15 |
+| Box/Ring translation point violations | 160 | 0 | 0 |
+| Box/Ring immediate translation angular-velocity violations | 40 | 40 | 0 |
+| Box/Ring immediate translation linear-velocity violations | 24 | 24 | 0 |
+| Box/Ring common-50-ms translation angular-velocity violations | 40 | 40 | 0 |
+| Box/Ring common-50-ms translation linear-velocity violations | 43 | 42 | 0 |
+
+The remaining 15 Box/Ring cases concern common-50-ms velocity comparisons
+between frequencies. Translation checks for point, normal, TOI and both actors'
+post-impact/common-time velocities now show no diagnostic violations in this
+320-case subset. This is not a qualification of the other shape combinations.
+Wheel missing observations, iteration limits and other frequency-dependent
+post-impact states remain explicit failures, with unchanged thresholds.
+
+Follow-up evidence:
+
+- Native regressions receipt SHA256:
+  `d6885defce250375b8a0424554bda76f1feb9783711632f948eb9ba560e224f6`.
+- Full matrix receipt SHA256:
+  `d2172415325b528790fcc28dcfdfb4e341663d03edec08c910b8374618a265d2`.
+- Raw diagnostics SHA256:
+  `b194c27216c515222d67a879c0bcbe23b82ac42a6c57eb9b406cb522a0130fa1`.
