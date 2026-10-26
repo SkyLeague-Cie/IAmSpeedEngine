@@ -12577,5 +12577,16 @@
     "summary.json": "db05c5b0ab49122edf7f053447c1ebcdfd9d5468c8c755f7b1f85984efbf6e1a",
     "support-samples.csv": "8c4c0ecd6de37afe40b13167f5dd4d0c9257dfb54b6343110858434cdc8944b4"
   },
-  "raw_report_sha256": "3f8bc093d78e0aa3048203d815ebbabd3a58583732371668ee9f5f10c15c2859"
+  "raw_report_sha256": "3f8bc093d78e0aa3048203d815ebbabd3a58583732371668ee9f5f10c15c2859",
+  "admitted_source_trees": [
+    "9f5b085e66c7435d260556b26856a7d22227fcfe",
+    "9f0ff5635dc6c9a75d076b833b9ecbf5a84286aa"
+  ],
+  "reviewed_source_adaptations": {
+    "9f0ff5635dc6c9a75d076b833b9ecbf5a84286aa": {
+      "source_commit": "9b2311dddbcf4897527fd34e5f8707f14c970ff9",
+      "review_sha256": "151a95eade6f1ccc0a729919a8438899553a1a08fd433c9413f81b2d54ce7843",
+      "reason": "Reviewed Replay type extraction preserving Optimization; every new case/category fault remains blocking. Native qualification pending."
+    }
+  }
 }

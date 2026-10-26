@@ -1,7 +1,7 @@
 #include "SpeedController.h"
 #include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
-#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "IAmSpeed/Input/ControlBatchPolicy.h"
 #include "InputActionValue.h"
@@ -109,7 +109,7 @@ bool ASpeedController::RefreshInputSessionV2()
 	if (!bInputSessionRequiredV2 || !IsValid(SpeedCar) || InputSessionV2 || bInputLifecycleFault
 		|| Speed::Input::FPresentationInputScope::IsActive()) return false;
 	ASpeedGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASpeedGameMode>() : nullptr;
-	ASpeedSimulation* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
+	ASpeedPhysicsSimulation* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
 	if (!Driver) return false; // GameMode may spawn its owned driver after possession.
 	const auto Boundary = Driver->TryPauseOwnedSimulation();
 	uint64 FirstFrame = 0;
@@ -293,7 +293,7 @@ bool ASpeedController::ReleaseInputSessionV2()
 	auto JoinAndFlush = [&]()
 	{
 		ASpeedGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASpeedGameMode>() : nullptr;
-		ASpeedSimulation* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
+		ASpeedPhysicsSimulation* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
 		MarkInputLifecycleFault(TEXT("SpeedControllerInputV2.cpp:288")); // A retired driver must never restart in place.
 		if (!Driver || !Driver->JoinOwnedSimulationForInputTeardown()) return false;
 		Joined = true;

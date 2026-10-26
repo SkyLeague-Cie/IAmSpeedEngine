@@ -9,7 +9,7 @@ class UCameraComponent;
 class USphereComponent;
 class USpeedWheeledComponent;
 class ASpeedCar;
-class ASpeedSimulation;
+class ASpeedPhysicsSimulation;
 class ISpeedComponent;
 struct FSimulationPresentationBinding;
 
@@ -29,7 +29,7 @@ public:
 	/** CURRENT possession and simulation policy, evaluated only on GT. */
 	bool HasLocalHumanCameraOwner() const;
 	bool ShouldComputeLocalCamera() const;
-	ASpeedSimulation* GetCurrentCameraSimulation() const;
+	ASpeedPhysicsSimulation* GetCurrentCameraSimulation() const;
 	virtual void RefreshLocalCameraBinding();
 	bool ReleaseCameraEndpointAtLifecycle();
 	bool ReleaseCameraEndpointForEndPlay();
@@ -64,9 +64,9 @@ protected:
 	virtual void ReleaseCameraAdapterAtBoundary() noexcept {}
 	virtual bool CanBindCameraAdapterAtBoundary(const FEndpointPtr&) const { return true; }
 	virtual void BindCameraAdapterAtBoundary() noexcept {}
-	FEndpointPtr BindEndpointAtLifecycle(ASpeedSimulation& Simulation, ISpeedComponent& Owner, ISpeedComponent* Target);
+	FEndpointPtr BindEndpointAtLifecycle(ASpeedPhysicsSimulation& Simulation, ISpeedComponent& Owner, ISpeedComponent* Target);
 	const FEndpointPtr& GetBoundEndpoint() const { return BoundEndpoint; }
-	ASpeedSimulation* GetBoundSimulation() const;
+	ASpeedPhysicsSimulation* GetBoundSimulation() const;
 	void UpdateDesiredArmLocation(bool bTrace, bool bLocationLag, bool bRotationLag, float Delta) override;
 
 private:
@@ -77,7 +77,7 @@ private:
 #endif
 	void BindGenericAtWorldBeginPlay();
 	FEndpointPtr BoundEndpoint;
-	TWeakObjectPtr<ASpeedSimulation> BoundSimulation;
+	TWeakObjectPtr<ASpeedPhysicsSimulation> BoundSimulation;
 	TWeakObjectPtr<USpeedWheeledComponent> GenericMovement;
 	FDelegateHandle WorldBeginPlayHandle;
 	bool bGenericSnapshotInitialized = false;

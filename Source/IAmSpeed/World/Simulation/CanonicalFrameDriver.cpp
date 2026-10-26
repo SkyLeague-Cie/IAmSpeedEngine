@@ -9,7 +9,7 @@ namespace Speed::CanonicalFrameDriver
 	static TAutoConsoleVariable<int32> CVarEnabled(
 		TEXT("p.IAmSpeed.CanonicalFrame.Enabled"),
 		1,
-		TEXT("When enabled, ASpeedSimulation owns component preparation and the world step."));
+		TEXT("When enabled, ASpeedPhysicsSimulation owns component preparation and the world step."));
 
 	static TAutoConsoleVariable<int32> CVarExecutionMode(
 		TEXT("p.IAmSpeed.Simulation.ExecutionMode"),

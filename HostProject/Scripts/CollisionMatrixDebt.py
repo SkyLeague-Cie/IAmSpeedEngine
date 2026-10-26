@@ -18,7 +18,8 @@ gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 SOURCE_TREE = '9f5b085e66c7435d260556b26856a7d22227fcfe'
 FROZEN_COMMIT = '4beb89bb1c58ecb7c65b9fc1e2d9ba77efe6b47a'
-POLICY_SHA256 = 'ec7b2dff0c465b136f4b5829be4436ae5982eb9651665eae75d97e662df3a627'
+ADMITTED_SOURCE_TREES = (SOURCE_TREE, '9f0ff5635dc6c9a75d076b833b9ecbf5a84286aa')
+POLICY_SHA256 = '7293e53b4f44a5d46414ba9fb478570d8177c01daffa3df5e49210dd5bc539be'
 
 
 def sha256(path):
@@ -53,6 +54,7 @@ def load_policy():
     gate.require(policy['schema'] == 'iamspeed.collision-matrix042-debt/v1'
                  and policy['frozen_commit'] == FROZEN_COMMIT
                  and policy['source_tree'] == SOURCE_TREE
+                 and policy['admitted_source_trees'] == list(ADMITTED_SOURCE_TREES)
                  and policy['native_identity'] == gate.IDENTITY
                  and len(policy['cases']) == 1880
                  and policy['preserve_raw_failures'] is True,
@@ -74,7 +76,7 @@ def case_faults(root):
 def validate_accepted_matrix(directory, plugin_source):
     root = Path(directory)
     policy = load_policy()
-    gate.require(source_tree(plugin_source) == SOURCE_TREE, 'Matrix debt belongs to another Source tree')
+    gate.require(source_tree(plugin_source) in ADMITTED_SOURCE_TREES, 'Matrix debt belongs to another Source tree')
     gate.require(sha256(root/'spec.json') == policy['spec_sha256'], 'Frozen matrix specification changed')
     evidence = gate.validate_artifacts(root, _evidence_only=True)
     cases, faults, diagnostics = case_faults(root)

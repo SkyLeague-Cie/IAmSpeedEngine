@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "IAmSpeed/Concurrency/AtomicSharedPtr.h"
+namespace Speed::Replay { class FFieldWriter; }
 #include "ChaosWheeledVehicleMovementComponent.h"
 #include "ISpeedWheeledComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
@@ -23,7 +24,7 @@ DECLARE_LOG_CATEGORY_EXTERN(SpeedInputLog, Log, All);
 class UBoxSubBody;
 class USpeedWheeledComponent;
 class ASpeedCar;
-class ASpeedSimulation;
+class ASpeedPhysicsSimulation;
 
 class IAMSPEED_API USpeedSimulation : public UChaosWheeledVehicleSimulation
 {
@@ -105,6 +106,7 @@ protected:
 public:
 	ASpeedCar* GetSpeedCarOwner() const;
 	/** Used to create any physics engine information for this component */
+	bool ShouldCreatePhysicsState() const override;
 	virtual void OnCreatePhysicsState() override;
 	/** Used to shut down and physics engine structure for this component */
 	virtual void OnDestroyPhysicsState() override;
@@ -351,6 +353,8 @@ protected:
 	virtual bool PublishInputCancellationAtBoundary() { return true; }
 	/** Boundary-only inspection, without acquiring a possibly prepared owner lock. */
 	virtual bool CanNeutralizeProducedInputStateAtBoundary() const { return true; }
+	// Owner-lane only; helpers do not certify an unknown derived adapter.
+	void AppendReplayWheeledFields(Speed::Replay::FFieldWriter& Writer) const;
 	bool IsProducedInputFrameOwned() const { return bProducedInputFrameOwned; }
 	// Vehicle presets may deterministically put an unchanged support manifold to
 	// sleep before frame forces are accumulated.
@@ -819,7 +823,7 @@ private:
 	bool bSpeedWorldAdapterRetiredForTeardown = false;
 	bool bResumeAfterPhysicsRecreation = false; // GT-only, captured before teardown pauses the worker.
 	bool bOwnedRecreationBoundary = false;
-	TWeakObjectPtr<ASpeedSimulation> RecreationDriver;
+	TWeakObjectPtr<ASpeedPhysicsSimulation> RecreationDriver;
 	bool RetireSpeedWorldAdapterBeforeTeardown();
 	Speed::Input::ELegacyRemoteAdmission SubmitLegacyWheeledInput(uint64 SourceFrame, int32 ActivationFrame, const FWheeledInputState& Wire);
 	bool PrepareLegacyWheeledInput(uint64 Frame);

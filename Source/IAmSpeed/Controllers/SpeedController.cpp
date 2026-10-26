@@ -4,7 +4,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
-#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "InputActionValue.h"
 
 ASpeedController::ASpeedController()
@@ -286,7 +286,7 @@ ESimulationQuiescence ASpeedController::QuiesceStandaloneInputOwner()
 {
 	UWorld* World = GetWorld();
 	ASpeedGameMode* GameMode = World ? Cast<ASpeedGameMode>(World->GetAuthGameMode()) : nullptr;
-	ASpeedSimulation* Simulation = GameMode ? GameMode->GetSpeedSimulation() : nullptr;
+	ASpeedPhysicsSimulation* Simulation = GameMode ? GameMode->GetSpeedSimulation() : nullptr;
 	return Simulation ? Simulation->TryPauseOwnedSimulation() : ESimulationQuiescence::AlreadyStopped;
 }
 

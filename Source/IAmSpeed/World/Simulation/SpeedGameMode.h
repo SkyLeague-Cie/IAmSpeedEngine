@@ -4,14 +4,15 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameMode.h"
+#include "SpeedPhysicsSimulation.h"
+#include "GameModeReplayRecorder.h"
+#include <memory>
 #include "SpeedGameMode.generated.h"
 
 
-class ASpeedSimulation;
+class ASpeedPhysicsSimulation;
 
-/**
- *
- */
+/** Common gameplay simulation and replay entry point. */
 UCLASS()
 class IAMSPEED_API ASpeedGameMode : public AGameMode
 {
@@ -30,6 +31,12 @@ class IAMSPEED_API ASpeedGameMode : public AGameMode
 
 public:
 	ASpeedGameMode();
+	void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
+	void EndPlay(const EEndPlayReason::Type Reason) override;
+	// Common recording entry for every gameplay mode, independent of map/menu.
+	bool SaveReplay(APlayerController& Player);
+	bool AttachReplayRecorder(std::shared_ptr<Speed::Replay::IGameModeReplayRecorder> Recorder);
+	bool DetachReplayRecorder(const Speed::Replay::IGameModeReplayRecorder* Expected);
 	/** Automated scenarios reserve input authority and lifecycle for their
 	 * exact producer. Merely opening a test map may still allow devices. */
 	virtual bool AllowsDeviceInputAuthority() const { return true; }
@@ -37,13 +44,16 @@ public:
 	/** Pauses or resumes the separately-owned simulation lane when it exists. */
 	void SetSimulationPaused(bool bPaused);
 	/** Returns the single authoritative simulation actor owned by this game mode. */
-	ASpeedSimulation* GetSpeedSimulation() const { return SpeedSimActor; }
+	ASpeedPhysicsSimulation* GetSpeedSimulation() const { return SpeedSimActor; }
+	/** Common immutable presentation interface; no physical capability is implied. */
+	ASpeedSimulation* GetSimulationPresentation() const { return SpeedSimActor; }
 
 protected:
 	UPROPERTY(EditDefaultsOnly)
-	TSubclassOf<class ASpeedSimulation> SpeedSimActorClass;
+	TSubclassOf<class ASpeedPhysicsSimulation> SpeedSimActorClass;
 
 private:
+	std::shared_ptr<Speed::Replay::IGameModeReplayRecorder> ReplayRecorder;
 	UPROPERTY()
-	TObjectPtr<ASpeedSimulation> SpeedSimActor;
+	TObjectPtr<ASpeedPhysicsSimulation> SpeedSimActor;
 };

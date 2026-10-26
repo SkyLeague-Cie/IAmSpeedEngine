@@ -171,6 +171,8 @@ namespace Speed
 		bool ApplyInputsForFrame(uint64 NumFrame, const SimulationBoundary::FInputJournal& Journal);
 		/** Builds a values-only immutable output snapshot for one completed frame. */
 		FSimulationSnapshot CaptureSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false) const;
+		/** Owner-lane named-state collection; transactional and bounded, no UObject reads. */
+		bool CaptureReplayStateFields(TArray<FSimulationReplayStateRecord>& Out, uint64& UnsupportedStableId) const;
 		void NotifyCanonicalFramePublished(uint64 NumFrame);
 		ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
 		void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;

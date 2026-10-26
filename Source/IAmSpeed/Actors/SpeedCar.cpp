@@ -71,7 +71,7 @@ void ASpeedCar::AuditPresentationFrameCadence(const float GameDeltaSeconds)
 			? Cast<ASpeedGameMode>(World->GetAuthGameMode())
 			: nullptr;
 		PresentationSimulation = SpeedGameMode
-			? SpeedGameMode->GetSpeedSimulation()
+			? SpeedGameMode->GetSimulationPresentation()
 			: nullptr;
 	}
 

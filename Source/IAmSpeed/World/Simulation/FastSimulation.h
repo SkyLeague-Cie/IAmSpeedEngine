@@ -1,11 +1,11 @@
 #pragma once
 
-#include "SpeedSimulation.h"
+#include "SpeedPhysicsSimulation.h"
 #include "FastSimulation.generated.h"
 
 /** Unpaced driver for a complete, previously sealed frame-addressed run. */
 UCLASS()
-class IAMSPEED_API AFastSimulation final : public ASpeedSimulation
+class IAMSPEED_API AFastSimulation final : public ASpeedPhysicsSimulation
 {
 	GENERATED_BODY()
 

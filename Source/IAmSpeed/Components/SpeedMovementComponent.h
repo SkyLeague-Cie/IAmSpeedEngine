@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+namespace Speed::Replay { class FFieldWriter; }
 #include "GameFramework/MovementComponent.h"
 #include "ISpeedComponent.h"
 #include "Netcode/SpeedPhysicsComponent.h"
@@ -171,6 +172,8 @@ protected:
  bool RebaseCanonicalEpisodeHistoryForTesting(const FCanonicalFrameContext&,const SKinematic&);
 #endif
  virtual void RecordPhysicsState();
+	// Owner-lane only; helpers do not certify an unknown derived adapter.
+	void AppendReplayBaseFields(Speed::Replay::FFieldWriter& Writer) const;
 	bool GetBaseState(const int32& LocalFrame, FBasePhysicsState& OutState) const;
 	int32 GetSinceCanMoveFrame() const;
 	unsigned int NbFramesSinceCanMove() const;
