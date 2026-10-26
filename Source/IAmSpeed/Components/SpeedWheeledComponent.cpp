@@ -1,8 +1,12 @@
+#include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/World/ReplayInertWorld.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #include "IAmSpeed/Base/CarBumpCooldown.h"
+#include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
+#include "IAmSpeed/World/Simulation/ReplayBaseStateFields.h"
 #include "IAmSpeed/Input/DrivingInputTargets.h"
 #include "IAmSpeed/Components/SpeedWheeledSteeringMath.h"
 #include "IAmSpeed/IAmSpeed.h"
@@ -21,7 +25,7 @@
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
 #include "EngineUtils.h"
-#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/Camera/SpeedCarCameraPresentation.h"
 #include "Math/QuatRotationTranslationMatrix.h"
 
@@ -801,8 +805,15 @@ ASpeedCar* USpeedWheeledComponent::GetSpeedCarOwner() const
 	return SpeedCarOwner;
 }
 
+bool USpeedWheeledComponent::ShouldCreatePhysicsState() const
+{
+    if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
+    return Super::ShouldCreatePhysicsState();
+}
 void USpeedWheeledComponent::OnCreatePhysicsState()
 {
+	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
+	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS wheeled physics-state creation in inert replay")); return; }
 	// =========> START OVERLOAD Chaos prediction here
 	UPawnMovementComponent::OnCreatePhysicsState();
 
@@ -869,7 +880,7 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	{
 		// A live RecreatePhysicsState keeps the same adapter identity and input
 		// binding. The worker has been parked across the whole storage gap.
-		ASpeedSimulation* Driver = RecreationDriver.Get();
+		ASpeedPhysicsSimulation* Driver = RecreationDriver.Get();
 		if (!Driver || !Driver->IsOwnedBoundaryServiceSuspended())
 			UE_LOG(SpeedInputLog, Fatal, TEXT("Physics recreation lost its exclusive worker boundary"));
 		FString Reason;
@@ -896,7 +907,7 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 			}
 		if (bResumeAfterPhysicsRecreation)
 			if (UWorld* CurrentWorld = GetWorld())
-				for (TActorIterator<ASpeedSimulation> It(CurrentWorld); It; ++It)
+				for (TActorIterator<ASpeedPhysicsSimulation> It(CurrentWorld); It; ++It)
 				{ It->ResumeOwnedSimulation(); break; }
 		bResumeAfterPhysicsRecreation = false;
 	}
@@ -930,7 +941,7 @@ void USpeedWheeledComponent::JoinInputWorkerBeforeStorageDestruction()
 	if (!HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority()) return;
 	check(IsInGameThread());
 	if (UWorld* World = GetWorld())
-		for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+		for (TActorIterator<ASpeedPhysicsSimulation> It(World); It; ++It)
 		{
 			const bool bWasPausedBeforeRemoval = It->IsOwnedSimulationPaused();
 			const auto Boundary = It->TryPauseOwnedSimulation();
@@ -991,7 +1002,7 @@ void USpeedWheeledComponent::OnDestroyPhysicsState()
 	if (!bWheeledEndPlayTeardown && HasBegunPlay()
 		&& (!GetOwner() || !GetOwner()->IsActorBeingDestroyed()))
 		if (UWorld* World = GetWorld())
-			for (TActorIterator<ASpeedSimulation> It(World); It; ++It)
+			for (TActorIterator<ASpeedPhysicsSimulation> It(World); It; ++It)
 			{
 				bResumeAfterPhysicsRecreation = !It->IsOwnedSimulationPaused();
 				if (It->IsOwnedWorkerExecutionMode())
@@ -1286,14 +1297,14 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	bWheeledEndPlayTeardown = true;
 	JoinInputWorkerBeforeStorageDestruction();
-	ASpeedSimulation* RetirementDriver = nullptr;
+	ASpeedPhysicsSimulation* RetirementDriver = nullptr;
 	bool bResumeAfterRemoval = false;
 	if (HasLegacyRemoteInputAuthority() && !bInputRetirementCompleted.load(std::memory_order_acquire))
 	{
 		check(IsInGameThread());
 		bInputRetirementRequested.store(true, std::memory_order_release);
 		if (UWorld* World = GetWorld())
-			for (TActorIterator<ASpeedSimulation> It(World); It; ++It) { RetirementDriver = *It; break; }
+			for (TActorIterator<ASpeedPhysicsSimulation> It(World); It; ++It) { RetirementDriver = *It; break; }
 		if (RetirementDriver)
 		{
 			bResumeAfterRemoval = !RetirementDriver->IsOwnedSimulationPaused();
@@ -1318,7 +1329,7 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		UE_LOG(SpeedInputLog, Fatal, TEXT("Wheeled adapter removal was not acknowledged before EndPlay teardown"));
 	if (bOwnedRecreationBoundary)
 	{
-		if (ASpeedSimulation* Driver = RecreationDriver.Get()) Driver->ResumeOwnedBoundaryService();
+		if (ASpeedPhysicsSimulation* Driver = RecreationDriver.Get()) Driver->ResumeOwnedBoundaryService();
 		bOwnedRecreationBoundary = false;
 		RecreationDriver.Reset();
 		bResumeAfterPhysicsRecreation = false;
@@ -5230,4 +5241,16 @@ float USpeedWheeledComponent::ComputeFullHandbrakeGroundEngineAccel() const
 	const float DriveScale = EvaluateLinearFloatCurve(DriveSpeedAccelScaleCurve,
 		AbsSpeed, FMath::Clamp(1.0f - AbsSpeed / FMath::Max(MaxThrottleSpeed, 1.0f), 0.0f, 1.0f));
 	return ThrottleAccel * DriveScale;
+}
+
+void USpeedWheeledComponent::AppendReplayWheeledFields(Speed::Replay::FFieldWriter& W) const
+{
+    // Wheeled derives from Chaos movement, independently of USpeedMovementComponent.
+    Speed::Replay::Fields::BasePhysics(W, BasePhysicsState);
+    Speed::Replay::Fields::BaseGame(W, BaseGameState);
+    W.Scalar(MinNbFramesBeforeCanMove);
+    W.Scalar(SinceCanMoveFrame);
+    Speed::Replay::Fields::WheeledGame(W, WheeledGameState);
+    Speed::Replay::Fields::WheeledPhysics(W, WheeledPhysicsState);
+    Speed::Replay::Fields::WheeledInput(W, WheeledPhysicalInput);
 }

@@ -74,6 +74,34 @@ struct IAMSPEED_API FSimulationSnapshot
 	TArray<FSimulationPresentationOutput> PresentationOutputs;
 };
 
+/** Replay-only values, separate from the canonical state hash/restore schema. */
+struct IAMSPEED_API FSimulationReplayStateRecord
+{
+    uint64 StableId = 0;
+    TArray<uint8> StateFields;
+    // Auxiliary presentation observations; excluded from canonical payload/hash.
+    TArray<uint8> ObservationFields;
+};
+struct IAMSPEED_API FSimulationReplayFrame
+{
+    FSimulationSnapshot Snapshot;
+    TArray<FSimulationReplayStateRecord> Records;
+};
+/** Pure values-only sink; no UObject, disk/compression or waiting in these calls.
+ * Consume takes immutable frame ownership into bounded storage or reports failure.
+ * Named fields are not a full-game certificate: the game must also capture its
+ * lifecycle/roster/presets/countdowns and validate every required adapter.
+ * Replacement permits one in-flight callback; sink lifetime and generation fence
+ * must cover it. Rewind/non-contiguous frames must explicitly end the old epoch.
+ */
+class IAMSPEED_API ISimulationReplaySink
+{
+public:
+    virtual ~ISimulationReplaySink() = default;
+    virtual bool IsCapturing() const noexcept = 0;
+    virtual void Consume(FSimulationReplayFrame&& Frame) noexcept = 0;
+    virtual void Failed(uint64 Frame, uint64 UnsupportedStableId) noexcept = 0;
+};
 /** Values-only producer, retained by shared ownership across a canonical call.
  * Registration never transfers a UObject to the worker. Rollback invalidation is
  * explicit until a producer implements its own complete restoration protocol.

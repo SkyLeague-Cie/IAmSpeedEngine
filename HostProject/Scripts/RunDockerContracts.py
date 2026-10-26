@@ -23,6 +23,14 @@ _cadence_module = importlib.util.module_from_spec(_cadence_spec)
 _cadence_spec.loader.exec_module(_cadence_module)
 check_cadence_policy = _cadence_module.check_policy
 project_cadence = _cadence_module.project_cadence
+_matrix_spec = importlib.util.spec_from_file_location("IAmSpeedCollisionMatrix042", Path(__file__).resolve().with_name("CollisionMatrix042.py"))
+_matrix_module = importlib.util.module_from_spec(_matrix_spec)
+_matrix_spec.loader.exec_module(_matrix_module)
+validate_collision_matrix = _matrix_module.validate_artifacts
+diagnose_collision_matrix = _matrix_module.diagnose_artifacts
+_matrix_debt_spec = importlib.util.spec_from_file_location("IAmSpeedCollisionMatrixDebt", Path(__file__).resolve().with_name("CollisionMatrixDebt.py"))
+_matrix_debt = importlib.util.module_from_spec(_matrix_debt_spec)
+_matrix_debt_spec.loader.exec_module(_matrix_debt)
 
 RETAINED_TESTS = {'SkyLeague.Camera.GenericInputLifecycle'}
 FILTER = 'IAmSpeed.' + ''.join('+' + name for name in sorted(RETAINED_TESTS))
@@ -316,7 +324,7 @@ def work_tmpfs_evidence(work):
 def artifact_files(work):
     # Preserve raw failures too. Build caches/DDC/home are disposable, while
     # source.tar and the exact committed input remain in the host run metadata.
-    roots = ('Logs', 'Automation', 'user/Saved', 'HostProject/Saved',
+    roots = ('Logs', 'Automation', 'CollisionMatrix042', 'user/Saved', 'HostProject/Saved',
              'HostProject/Binaries', 'HostProject/ExternalPlugins/IAmSpeed/Binaries',
              'HostProject/ExternalPlugins/IAmSpeed/Saved')
     files = list(work.glob('*.json'))
@@ -398,6 +406,8 @@ def inside():
         plugin = project / 'ExternalPlugins/IAmSpeed'
         shutil.copytree('/input', plugin, ignore=shutil.ignore_patterns('HostProject', '.git', 'Binaries', 'Intermediate', 'Saved', 'Artifacts'))
         expected = source_test_manifest(plugin / 'Source')
+        if _matrix_module.IDENTITY not in expected:
+            raise RuntimeError('The native single-world collision matrix042 is missing from the exact source test manifest')
         save(output / 'expected-tests.json', expected)
         env = os.environ.copy()
         for name, directory in [('HOME', 'home'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('DOTNET_CLI_HOME', 'dotnet')]:
@@ -421,6 +431,12 @@ def inside():
         # One Automation command queues SoftQuit after RunTests. Unlike TestExit,
         # this preserves report error status and performs normal Linux cleanup.
         command = [str(editor), str(project_file), '-NullRHI', '-SLPortableHeadlessSDL', '-sdlvideodriver=dummy', '-unattended', '-MULTIHOME=127.0.0.1', '-NoEOS', '-nosound', '-nop4', '-nosplash', '-NoCompile', '-NoCompileEditor', '-NoLiveCoding', '-NoShaderCompile', '-notraceserver', '-NoTrace', '-ini:Engine:[ConsoleVariables]:HomeScreen.EnableHomeScreen=0', '-ini:EditorSettings:[/Script/UnrealEd.AnalyticsPrivacySettings]:bSendUsageData=False', '-stdout', '-FullStdOutLogOutput', '-UserDir=' + str(output / 'user'), '-abslog=' + str(logs / 'editor.log'), '-ReportExportPath=' + str(report), '-ExecCmds=Automation RunTests ' + FILTER + '; SoftQuit']
+        # The native test creates its own fresh evidence directory and runs
+        # the complete matrix in one world. No smoke-only option is passed.
+        command.append('-IAmSpeedCollisionMatrix042Output=' + str(output / 'CollisionMatrix042'))
+        # Stock cache-write opt-out: gathering/reads remain available. Preserve
+        # the same C++ startup locale used by the private Windows validation.
+        command.extend(['-NoAssetRegistryCacheWrite', '-locale=en-US', '-DisablePython'])
         save(output / 'test-command.json', command)
         # The embedded Python home may be relative to the Editor executable.
         # Keep project/output arguments absolute and resolve that SDK layout.
@@ -431,6 +447,23 @@ def inside():
             # Direct child only: timeout does not prove descendant-writer drain.
             editor_call_finished = True
         result['editor_exit'] = code
+        try:
+            diagnostics = diagnose_collision_matrix(output / 'CollisionMatrix042')
+        except Exception as exc:
+            diagnostics = dict(state='DIAGNOSTICS_UNAVAILABLE', reason=str(exc),
+                               qualification_granted=False)
+        save(output / 'collision-matrix042-diagnostics.json', diagnostics)
+        matrix_error = None
+        try:
+            matrix_result = validate_collision_matrix(output / 'CollisionMatrix042')
+        except Exception as exc:
+            matrix_error = str(exc)
+            matrix_result = dict(state='FAIL', reason=matrix_error, native_report_not_waived=True)
+        save(output / 'collision-matrix042-assessment.json', matrix_result)
+        # Human-authorized integration debt is a separate assessment. The raw
+        # strict FAIL above and the Automation report remain unchanged.
+        matrix_debt_result = _matrix_debt.validate_accepted_matrix(output / 'CollisionMatrix042', plugin / 'Source')
+        save(output / 'collision-matrix042-debt-assessment.json', matrix_debt_result)
         policy = accepted_debt_policy()
         cadence_policy = additive_cadence_policy()
         raw_report = json.loads((report / 'index.json').read_text(encoding='utf-8-sig'))
@@ -438,10 +471,19 @@ def inside():
              accepted_failures=[row['fullTestPath'] for row in raw_report.get('tests', [])
                                if row.get('state') == 'Fail' and row.get('fullTestPath') in ACCEPTED_DEBT_IDS],
              raw_editor_exit=code, raw_report_unchanged=True, full_ci_qualified=False))
-        result.update(validate_report_with_additive_debt(code, (logs / 'tests.stdout.log').read_text(encoding='utf-8-sig', errors='replace'), raw_report, policy, cadence_policy, output, expected_paths=expected))
+        matrix_report, matrix_accepted = _matrix_debt.project_matrix_report(code, raw_report, matrix_debt_result, output / 'CollisionMatrix042')
+        result.update(validate_report_with_additive_debt(0 if matrix_accepted else code, (logs / 'tests.stdout.log').read_text(encoding='utf-8-sig', errors='replace'), matrix_report, policy, cadence_policy, output, expected_paths=expected))
+        result['raw_editor_exit'] = code
+        if matrix_debt_result['accepted_case_count']:
+            result.update(state='PASS_WITH_ACCEPTED_DEBT', full_ci_qualified=False)
+            result.setdefault('accepted_debt', []).append(dict(test=_matrix_module.IDENTITY,
+                raw_state=next(row['state'] for row in raw_report['tests'] if row['fullTestPath']==_matrix_module.IDENTITY), cases=matrix_debt_result['accepted_case_count'],
+                reason='Temporary frozen matrix debt admitted by human on 2026-10-26'))
+        result['collision_matrix042_debt'] = matrix_debt_result
+        result['collision_matrix042'] = matrix_result
         result.update(engine_version=version, engine_root_inside_image=str(engine))
     except Exception as exc:
-        result['reason'] = str(exc)
+        result.update(state='FAIL', reason=str(exc), full_ci_qualified=False)
         if isinstance(exc, subprocess.TimeoutExpired):
             result.update(state='FAIL', native_timeout=True, full_ci_qualified=False,
                           export_completeness='UNKNOWN_TIMEOUT_DIRECT_CHILD_ONLY')

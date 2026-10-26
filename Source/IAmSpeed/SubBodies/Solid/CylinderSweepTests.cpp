@@ -1,6 +1,7 @@
 #include "CylinderSweep.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include <limits>
 using namespace Speed::Geometry;
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCylinderSweepGeometryTest,"IAmSpeed.Collision.Cylinder.MovingCCD",EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
 bool FCylinderSweepGeometryTest::RunTest(const FString&)
@@ -35,6 +36,22 @@ bool FCylinderSweepGeometryTest::RunTest(const FString&)
     const auto Miss=[](double T){return FTransform(FQuat::Identity,FVector(12.1,10.*T,0.));};
     const auto N=SweepCylinderShapeTrajectory(C,true,2.,FVector3d::ZeroVector,Fixed,Miss,10.,0.);
     TestTrue(TEXT("Near miss not inflated into hit"),N.Result==ECylinderSweepResult::Miss);
+    {
+        const FCylinderGeometry MatrixCylinder{25.,20.};
+        const double Bound=double(4600.f)*double(1.f/60.f);
+        const double Start=-37.5-4600.*.021+Bound;
+        const double Error=8.*double(std::numeric_limits<float>::epsilon())*(2.+Bound);
+        const auto Fast=[&](double T){return FTransform(FVector(Start+4600.*double(float(T*double(1.f/60.f))),0.,0.));};
+        FCylinderProjectedMotionBounds Projected;Projected.TranslationVelocity=FVector(Bound,0,0);Projected.TransformRoundoff=1.e-9;
+        const auto Resolved=SweepCylinderShapeTrajectory(MatrixCylinder,true,12.5,FVector3d::ZeroVector,Fixed,Fast,Bound,0.,Error,&Projected);
+        const double Expected=(-37.5-Start)/Bound;
+        TestTrue(TEXT("fast coarse cylinder crossing refines uncertainty-dominated cells"),Resolved.Result==ECylinderSweepResult::Hit);
+        if(Resolved.Result==ECylinderSweepResult::Hit)
+            TestTrue(TEXT("unchanged cylinder spatial hit bound"),FMath::Abs(Resolved.Time-Expected)*Bound<=2.e-4&&Resolved.Contact.UpperSeparation<=2.e-4);
+        TestTrue(TEXT("unchanged cylinder pose budget"),Resolved.PoseEvaluations<=4096);
+        const auto Uncertain=SweepCylinderShapeTrajectory(MatrixCylinder,true,12.5,FVector3d::ZeroVector,Fixed,Fast,Bound,0.,.002);
+        TestTrue(TEXT("over-uncertain cylinder trajectory still fails closed"),Uncertain.Result==ECylinderSweepResult::Unresolved);
+    }
     return !HasAnyErrors();
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCylinderProjectedSlideTest,"IAmSpeed.Collision.Cylinder.ProjectedSideSlide",EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)

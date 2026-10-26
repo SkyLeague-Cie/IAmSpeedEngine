@@ -3,14 +3,14 @@
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
-#include "IAmSpeed/World/Simulation/SpeedSimulation.h"
+#include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 
 namespace
 {
-ASpeedSimulation* InputDriver(UWorld* World)
+ASpeedPhysicsSimulation* InputDriver(UWorld* World)
 {
     const auto* Mode = World ? World->GetAuthGameMode<ASpeedGameMode>() : nullptr;
     return Mode ? Mode->GetSpeedSimulation() : nullptr;

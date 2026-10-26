@@ -99,7 +99,9 @@ FCylinderSweep SweepCylinderShapeTrajectory(const FCylinderGeometry& Cylinder,bo
             const double Closing=FVector3d::DotProduct(SA.Contact.Normal,Relative);
             if(float(-SA.Contact.UpperSeparation)<=.05f&&Closing>=0.)continue;
             if(SA.Contact.UpperSeparation<=2.*Tolerance){Hit(I.A,SA);return Out;}
-            Out.Result=ECylinderSweepResult::Unresolved;return Out;
+            // Width alone cannot certify a hit in the presence of pose error.
+            // Retain this earlier interval and refine; keep the same spatial
+            // acceptance, pose budget and fail-closed collapse conditions.
         }
         const double Mid=(I.A+I.B)*.5;FSample M;
         if(Mid==I.A||Mid==I.B||!Sample(Mid,M)){Out.Result=ECylinderSweepResult::Unresolved;return Out;}

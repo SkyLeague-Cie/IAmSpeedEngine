@@ -1,11 +1,11 @@
 #pragma once
 
-#include "SpeedSimulation.h"
+#include "SpeedPhysicsSimulation.h"
 #include "FastSimulation.generated.h"
 
 /** Unpaced driver for a complete, previously sealed frame-addressed run. */
 UCLASS()
-class IAMSPEED_API AFastSimulation final : public ASpeedSimulation
+class IAMSPEED_API AFastSimulation final : public ASpeedPhysicsSimulation
 {
 	GENERATED_BODY()
 
@@ -21,6 +21,9 @@ protected:
 	bool RequiresCanonicalRunController() const override { return true; }
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    friend class FIAmSpeedCollisionMatrix042Test;
+#endif
 	/** Chooses a complete legacy pulse or one interruptible owned-worker frame. */
 	ESimulationWorkerResult DriveFastSimulation(float SimTime, bool bSingleFramePulse);
 	/** Advances one frame and updates aggregate metrics for the current sealed run. */

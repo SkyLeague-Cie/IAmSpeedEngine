@@ -4,6 +4,7 @@
 #include "QuaternionQuantizationCache.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
+#include <cmath>
 
 using namespace Speed;
 
@@ -182,9 +183,9 @@ SHitResult SSphere::IntersectNextFrame(const SSphere& Other, const float& deltaT
 
 	auto DistMinusR = [&](float t)
 		{
-			FVector d =
-				(Other.Center + Other.Vel * t + 0.5f * Other.Accel * t * t)
-				- (Center + Vel * t + 0.5f * Accel * t * t);
+			// Subtract the common world translation before advancing the pair.
+			const FVector d = (Other.Center - Center) + (Other.Vel - Vel) * t
+				+ 0.5 * (Other.Accel - Accel) * double(t) * double(t);
 			return d.Size() - (Radius + Other.Radius);
 		};
 
@@ -229,13 +230,40 @@ SHitResult SSphere::IntersectNextFrame(const SSphere& Other, const float& deltaT
 		return Hit;
 	}
 
-	// ------------- EARLY OUT -------------
+	// A pair can enter AND leave during one coarse frame. Endpoint overlap
+	// is not a certificate of a miss. For affine relative motion, solve the
+	// complete swept interval analytically in the pair's relative coordinates.
+	const FVector RelativeAcceleration = Accel - Other.Accel;
+	if (RelativeAcceleration.IsZero())
+	{
+		const FVector P = Center - Other.Center;
+		const FVector V = Vel - Other.Vel;
+		const double A = FVector::DotProduct(V, V);
+		const double B = FVector::DotProduct(P, V);
+		const double SumRadius = double(Radius) + double(Other.Radius);
+		const double C = P.SizeSquared() - SumRadius * SumRadius;
+		if (A == 0.0 || B >= 0.0) return SHitResult();
+		const double Discriminant = std::fma(-A, C, B * B);
+		if (Discriminant < 0.0) return SHitResult();
+		// Equivalent to (-B-sqrt(D))/A without subtracting close numbers.
+		const double Time = C / (-B + FMath::Sqrt(Discriminant));
+		if (Time < 0.0 || Time > double(deltaTime)) return SHitResult();
+		const float TOI = FMath::Clamp(float(Time), 0.0f, deltaTime);
+		const FVector N = (P + V * double(TOI)).GetSafeNormal();
+		const FVector PA = Center + Vel * double(TOI)
+			+ 0.5 * Accel * double(TOI) * double(TOI);
+		const FVector PB = Other.Center + Other.Vel * double(TOI)
+			+ 0.5 * Other.Accel * double(TOI) * double(TOI);
+		SHitResult Hit(true, PA - N * Radius, N, TOI);
+		Hit.ContactPointThis = PA - N * Radius;
+		Hit.ContactPointOther = PB + N * Other.Radius;
+		return Hit;
+	}
+
+	// The accelerated legacy bracket retains its conservative travel rejection.
 	const float Gap0 = FMath::Abs(f0);
 	const float MaxClosing = SEarlyOut::MaxRelativeTravel(Vel, Accel, Other.Vel, Other.Accel, deltaTime);
-	if (Gap0 > MaxClosing)
-		return SHitResult(); // no hit
-	// -------------------------------------
-
+	if (Gap0 > MaxClosing) return SHitResult();
 	float f1 = DistMinusR(deltaTime);
 	if (f1 > 0.f)
 		return SHitResult(); // no hit
@@ -251,6 +279,7 @@ SHitResult SSphere::IntersectNextFrame(const SSphere& Other, const float& deltaT
 		if (FMath::Abs(fMid) < Epsilon)
 		{
 			tMin = tMid;
+			tMax = tMid;
 			break;
 		}
 
@@ -1465,9 +1494,13 @@ int Speed::Interpolate(const int& min, const int& max, const float& factor)
 
 FVector Speed::RoundVectorToNetQuantize(const FVector& vector, const unsigned int& base)
 {
-	float X = static_cast<float>(FMath::RoundToInt(vector.X * base)) / base;
-	float Y = static_cast<float>(FMath::RoundToInt(vector.Y * base)) / base;
-	float Z = static_cast<float>(FMath::RoundToInt(vector.Z * base)) / base;
+	// FVector is double precision. Narrowing the rounded grid index to float
+	// makes an integer translation change local motion at large coordinates.
+	// Preserve the existing grid and half-up convention without the narrowing.
+	const double Scale = double(base);
+	const double X = FMath::RoundToDouble(vector.X * Scale) / Scale;
+	const double Y = FMath::RoundToDouble(vector.Y * Scale) / Scale;
+	const double Z = FMath::RoundToDouble(vector.Z * Scale) / Scale;
 	return FVector(X, Y, Z);
 }
 
@@ -1790,8 +1823,8 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// -------------------------------------------------------
 	// 1) Inverse masses
 	// -------------------------------------------------------
-	const float InvMassA = (MassA > KINDA_SMALL_NUMBER) ? 1.f / MassA : 0.f;
-	const float InvMassB = (MassB > KINDA_SMALL_NUMBER) ? 1.f / MassB : 0.f;
+	const double InvMassA = (MassA > KINDA_SMALL_NUMBER) ? 1. / double(MassA) : 0.;
+	const double InvMassB = (MassB > KINDA_SMALL_NUMBER) ? 1. / double(MassB) : 0.;
 
 	// -------------------------------------------------------
 	// 2) Lever arms
@@ -1808,7 +1841,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// Relative velocity: THIS relative to OTHER
 	const FVector vRel = vA - vB;
 
-	const float vRelN = FVector::DotProduct(vRel, N);
+	const double vRelN = FVector::DotProduct(vRel, N);
 
 	// -------------------------------------------------------
 	// 4) Separating -> no impulse
@@ -1968,16 +2001,20 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// -------------------------------------------------------
 	// 5) Normal effective mass
 	// -------------------------------------------------------
-	const FVector rAxN = FVector::CrossProduct(rA, N);
+		// Keep the effective-mass solve in the same double precision as the
+	// contact point, velocities and inertia. Narrowing reciprocal masses or
+	// the normal impulse leaves a false closing velocity after an inelastic
+	// contact; repeated CCD then sees a collision manufactured by that roundoff.
+const FVector rAxN = FVector::CrossProduct(rA, N);
 	const FVector rBxN = FVector::CrossProduct(rB, N);
 
 	const FVector invIA_rAxN = InvInertiaA.TransformVector(rAxN);
 	const FVector invIB_rBxN = InvInertiaB.TransformVector(rBxN);
 
-	const float angA = FVector::DotProduct(N, FVector::CrossProduct(invIA_rAxN, rA));
-	const float angB = FVector::DotProduct(N, FVector::CrossProduct(invIB_rBxN, rB));
+	const double angA = FVector::DotProduct(N, FVector::CrossProduct(invIA_rAxN, rA));
+	const double angB = FVector::DotProduct(N, FVector::CrossProduct(invIB_rBxN, rB));
 
-	float denomN = InvMassA + InvMassB + angA + angB;
+	double denomN = InvMassA + InvMassB + angA + angB;
 	if (denomN <= KINDA_SMALL_NUMBER)
 		return false;
 
@@ -1993,7 +2030,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// -------------------------------------------------------
 	// 7) Normal impulse
 	// -------------------------------------------------------
-	const float jn = -(1.f + e) * vRelN / denomN;
+	const double jn = -(1. + double(e)) * vRelN / denomN;
 	const FVector Jn = jn * N;
 
 	// -------------------------------------------------------
@@ -2002,7 +2039,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	FVector Jt = FVector::ZeroVector;
 
 	const FVector vRelT = vRel - vRelN * N;
-	const float vRelTmag = vRelT.Size();
+	const double vRelTmag = vRelT.Size();
 
 	if (vRelTmag > KINDA_SMALL_NUMBER && Friction > 0.f)
 	{
@@ -2014,16 +2051,16 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 		const FVector invIA_rAxT = InvInertiaA.TransformVector(rAxT);
 		const FVector invIB_rBxT = InvInertiaB.TransformVector(rBxT);
 
-		const float angTA = FVector::DotProduct(T, FVector::CrossProduct(invIA_rAxT, rA));
-		const float angTB = FVector::DotProduct(T, FVector::CrossProduct(invIB_rBxT, rB));
+		const double angTA = FVector::DotProduct(T, FVector::CrossProduct(invIA_rAxT, rA));
+		const double angTB = FVector::DotProduct(T, FVector::CrossProduct(invIB_rBxT, rB));
 
-		float denomT = InvMassA + InvMassB + angTA + angTB;
+		double denomT = InvMassA + InvMassB + angTA + angTB;
 		if (denomT > KINDA_SMALL_NUMBER)
 		{
-			float jt = -vRelTmag / denomT;
+			double jt = -vRelTmag / denomT;
 
 			// Coulomb clamp
-			const float jtMax = Friction * jn;
+			const double jtMax = Friction * jn;
 			jt = FMath::Clamp(jt, -jtMax, jtMax);
 
 			Jt = jt * T;

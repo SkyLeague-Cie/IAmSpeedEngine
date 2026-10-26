@@ -1,6 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
-class ASpeedSimulation;
+class ASpeedPhysicsSimulation;
 struct FCanonicalFrameContext;
 #if !UE_BUILD_SHIPPING
 namespace Speed
@@ -9,7 +9,7 @@ namespace Speed
 // This is diagnostic admission metadata, never a scheduling/physics input.
 class IAMSPEED_API FCanonicalEpisodeTestingScope
 {
- friend class ::ASpeedSimulation;
+ friend class ::ASpeedPhysicsSimulation;
  FCanonicalEpisodeTestingScope(const FCanonicalFrameContext& Context);
  ~FCanonicalEpisodeTestingScope();
  FCanonicalEpisodeTestingScope(const FCanonicalEpisodeTestingScope&)=delete;

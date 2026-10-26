@@ -5,10 +5,12 @@
 
 #if PLATFORM_WINDOWS && !UE_SERVER
 #include "Windows/AllowWindowsPlatformTypes.h"
+PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
 THIRD_PARTY_INCLUDES_START
 #include "Windows/GameInputRawAcquisition.h"
 #include "Windows/GameInputWarmContext.h"
 THIRD_PARTY_INCLUDES_END
+PRAGMA_POP_PLATFORM_DEFAULT_PACKING
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 

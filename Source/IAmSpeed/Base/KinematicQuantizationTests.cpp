@@ -1,7 +1,49 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "KinematicQuantizationCache.h"
+#include "SUtils.h"
 #include "Misc/AutomationTest.h"
 #include "Math/RandomStream.h"
+#include "HAL/IConsoleManager.h"
+#include "IAmSpeed/Components/ISpeedComponent.h"
+#include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
+
+namespace
+{
+class FStationaryQuantizationBody final : public ISpeedComponent
+{
+public:
+	using ISpeedComponent::QuantizeKinematicState;
+	void PrepareCanonicalFrame(const FCanonicalFrameContext&) override {}
+	unsigned int NumFrame() const override { return 1; }
+	float GetPhysMass() const override { return 1; }
+	const FVector& GetPhysCOM() const override { return Zero; }
+	const FVector& GetPhysCenterOfMassLocal() const override { return Zero; }
+	const TArray<USSubBody*>& GetSubBodies() const override { return SubBodies; }
+	TArray<USSubBody*> CreateSubBodies() override { return {}; }
+	bool IsFrozen() const override { return false; }
+	SubBodyConfig GetSubBodyConfig(const USSubBody&) const override { return {}; }
+	SKinematic GetKinematicsOfSubBody(const USSubBody&, const unsigned int&) const override { return State; }
+	FMatrix ComputeWorldInvInertiaTensor() const override { return FMatrix::Identity; }
+	FMatrix ComputeWorldInvInertiaTensorOfSubBody(const USSubBody&) const override { return FMatrix::Identity; }
+	const SKinematic& GetKinematicState() const override { return State; }
+	const SKinematic& GetKinematicStateForFrame(const unsigned int&) const override { return State; }
+	float GetPhysMaxSpeed() const override { return 0; }
+	float GetPhysMaxAngularSpeed() const override { return 0; }
+	void SetIsUpsideDown(bool) override {}
+	bool IsUpsideDown() const override { return false; }
+	bool IsInAutoRecover() const override { return false; }
+	bool IsSubBodyInAutoRecoverMode() const override { return false; }
+	void RcvImpactOnSubBody(const USSubBody&, const FVector&) override {}
+protected:
+	void PostPhysicsUpdatePrv(const float&) override {}
+	void SetKinematicState(const SKinematic& S) override { State=S; }
+	void SetIsFrozen(bool) override {}
+private:
+	FVector Zero = FVector::ZeroVector;
+	SKinematic State;
+	TArray<USSubBody*> SubBodies;
+};
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedKinematicQuantizationTest,
 	"IAmSpeed.Simulation.IdentityKinematicQuantizationCache",
@@ -75,6 +117,230 @@ bool FIAmSpeedKinematicQuantizationTest::RunTest(const FString& Parameters)
 			State.Quantize(Reference);
 		}
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedQuantizationLargeCoordinates042Test,
+	"IAmSpeed.PhysicalLaws.QuantizationLargeCoordinates042",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedQuantizationLargeCoordinates042Test::RunTest(const FString&)
+{
+	for (const uint32 Scale : {100u, 10000u})
+	{
+		for (const double Offset : {0.0, 1000.0, -1048576.0, 2097152.0, 100000000.0, -100000000.0})
+		{
+			for (const double Local : {-25.673, -12.341, -0.013, 0.017, 12.342, 25.677})
+			{
+				const FVector Input(Offset + Local, Offset - Local, Offset + .01);
+				const FVector Rounded = Speed::RoundVectorToNetQuantize(Input, Scale);
+				const double HalfStep = .5 / double(Scale);
+				TestTrue(TEXT("rounding error stays within half the declared grid at large coordinates"),
+					(Rounded - Input).GetAbsMax() <= HalfStep + 2.e-8);
+				const FVector LocalRounded = Speed::RoundVectorToNetQuantize(FVector(Local, -Local, .01), Scale);
+				TestTrue(TEXT("whole-grid translations preserve the rounded local coordinates"),
+					(Rounded - FVector(Offset) - LocalRounded).GetAbsMax() < 2.e-8);
+			}
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedStationaryAxes042Test,
+	"IAmSpeed.PhysicalLaws.StationaryAxesTranslation042",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedStationaryAxes042Test::RunTest(const FString&)
+{
+	FStationaryQuantizationBody Component;
+	for (const FVector Offset : {FVector::ZeroVector, FVector(.003,-.004,.001),
+		FVector(100000000,-100000000,100000000)})
+	{
+		SKinematic State;
+		State.Location = Offset + FVector(-25.673,3.017,12.341);
+		State.Velocity = FVector(1200,0,0);
+		State.Acceleration = FVector::ZeroVector;
+		const FVector Authored = State.Location;
+		Component.QuantizeKinematicState(State,FQuat::Identity);
+		TestEqual(TEXT("unmoving Y preserves its exact authored coordinate"),State.Location.Y,Authored.Y);
+		TestEqual(TEXT("unmoving Z preserves its exact authored coordinate"),State.Location.Z,Authored.Z);
+		TestEqual(TEXT("unforced moving X preserves the integrated coordinate"),State.Location.X,Authored.X);
+		State.Acceleration.Y = 1.;
+		Component.QuantizeKinematicState(State,FQuat::Identity);
+		TestEqual(TEXT("new acceleration revokes stationary-axis preservation"),State.Location.Y,
+			Speed::RoundVectorToNetQuantize(Authored,100).Y);
+		State.Location.Z = Authored.Z; State.Velocity.Z = .00001;
+		Component.QuantizeKinematicState(State,FQuat::Identity);
+		TestEqual(TEXT("unforced sub-grid velocity does not inject a position snap"),State.Location.Z,Authored.Z);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedUnforcedTrajectory042Test,
+	"IAmSpeed.PhysicalLaws.UnforcedTrajectory042",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedUnforcedTrajectory042Test::RunTest(const FString&)
+{
+	FStationaryQuantizationBody Component;
+	for (const int32 Hz : {60,100,120,240,300,360,720,1440})
+	for (const FVector Offset : {FVector::ZeroVector,FVector(.003,-.004,.001),
+		FVector(1000,-2000,3000),FVector(-1048576,2097152,-524288),FVector(1e8,-1e8,1e8)})
+	{
+		SKinematic State;
+		const FVector Start=Offset+FVector(-121.6,3.017,12.341);
+		const FVector Velocity(4600,80,-300);
+		State.Location=Start;State.Velocity=Velocity;State.Acceleration=FVector::ZeroVector;
+		const float Delta=1.f/float(Hz);
+		for (int32 Frame=0;Frame<Hz/20;++Frame)
+		{
+			State=State.Integrate(Delta);
+			Component.QuantizeKinematicState(State,FQuat::Identity);
+			const FVector Expected=Start+Velocity*(double(Frame+1)*double(Delta));
+			TestTrue(TEXT("unforced trajectory follows distance=velocity*time at every rate and translation"),
+				(State.Location-Expected).GetAbsMax()<1e-5);
+			TestTrue(TEXT("declared constant grid velocities remain exact"),State.Velocity==Velocity);
+		}
+	}
+	return true;
+}
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedUnforcedRotation042Test,
+    "IAmSpeed.PhysicalLaws.UnforcedRotation042",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedUnforcedRotation042Test::RunTest(const FString&)
+{
+    for (const int32 Hz : {60,100,120,240,300,360,720,1440})
+    for (const double Speed : {.0001, .01, 20.})
+    for (const FVector Axis : {FVector::ForwardVector, FVector::RightVector, FVector::UpVector})
+    for (const FQuat Initial : {FQuat::Identity, FRotator(17,31,-11).Quaternion()})
+    {
+        FStationaryQuantizationBody Component;
+        SKinematic State; State.Rotation=Initial;
+        State.AngularVelocity=Axis*Speed;
+        State.AngularAcceleration=FVector::ZeroVector;
+        const float Delta=1.f/float(Hz);
+        FQuat Previous=Initial;
+        for (int32 Frame=0;Frame<Hz/20;++Frame)
+        {
+            State=State.Integrate(Delta);
+            Component.QuantizeKinematicState(State,Previous);
+            const double Elapsed=double(Frame+1)*double(Delta);
+            // Independent analytic axis-angle oracle; no packed Euler or
+            // repeated-step reference is used to define the expected result.
+            const FQuat Expected=(FQuat(Axis,Speed*Elapsed)*Initial).GetNormalized();
+            const double Dot=FMath::Clamp(FMath::Abs(State.Rotation|Expected),0.,1.);
+            TestTrue(TEXT("unforced angular trajectory matches analytic spin at every tested rate"),
+                2.*FMath::Acos(Dot)<1.e-6);
+            TestTrue(TEXT("declared grid angular velocity is preserved"),
+                (State.AngularVelocity-Axis*Speed).GetAbsMax()<1.e-12);
+            Previous=State.Rotation;
+        }
+    }
+    // This policy is deliberately limited to unforced angular motion.
+    FStationaryQuantizationBody Accelerating;
+    SKinematic State; State.Rotation=FRotator(.0037,.0021,.0019).Quaternion();
+    State.AngularAcceleration=FVector(0,0,1);
+    SKinematic Canonical=State; Canonical.Quantize(FQuat::Identity);
+    Accelerating.QuantizeKinematicState(State,FQuat::Identity);
+    TestTrue(TEXT("angular acceleration retains the canonical rotation quantizer"),
+        State.Rotation.Equals(Canonical.Rotation,0.));
+    return true;
+}
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedContactImpulsePrecisionNightTest,
+    "IAmSpeed.PhysicalLaws.ContactImpulsePrecisionNight",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FIAmSpeedContactImpulsePrecisionNightTest::RunTest(const FString&)
+{
+    const IConsoleVariable* Coupled=IConsoleManager::Get().FindConsoleVariable(
+        TEXT("p.IAmSpeed.Collision.CoupledContactImpulse"));
+    if (!TestTrue(TEXT("test observes the unchanged default uncoupled policy"),
+        Coupled && Coupled->GetInt()==0)) return false;
+    for (float MA : {7.25f,10.f,18.f})
+    for (float MB : {0.f,13.5f})
+    for (float E : {0.f,.35f})
+    for (FVector N : {FVector(-1,0,0),FVector(-.8,-.6,0).GetSafeNormal()})
+    for (FVector Offset : {FVector::ZeroVector,FVector(1000,-2000,3000),
+        FVector(1.e8,-1.e8,1.e8),FVector(1./256.,-1./512.,1./1024.)})
+    {
+        SKinematic A,B; A.Location=Offset+FVector(-20,1.625,0);
+        B.Location=Offset+FVector(20,.375,-.5);
+        A.Velocity=FVector(1200,80,-30);B.Velocity=FVector(-40,12,5);
+        A.AngularVelocity=FVector(.25,-.5,1.5);B.AngularVelocity=FVector(.1,.2,-.3);
+        const FVector P=Offset+FVector(1.25,-.5,2.5);
+        FMatrix IA=FMatrix::Identity,IB=FMatrix::Identity;
+        IA.M[0][0]=.001;IA.M[1][1]=.002;IA.M[2][2]=.003;
+        IB.M[0][0]=MB>0.f?.003:0.;IB.M[1][1]=MB>0.f?.004:0.;IB.M[2][2]=MB>0.f?.005:0.;
+        const FVector RA=P-A.Location,RB=P-B.Location;
+        const auto AtPoint=[](const SKinematic& K,const FVector& Arm){
+            return K.Velocity+FVector::CrossProduct(K.AngularVelocity,Arm);};
+        const double Before=FVector::DotProduct(AtPoint(A,RA)-AtPoint(B,RB),N);
+        FVector JA,JB;
+        TestTrue(TEXT("approaching mechanical contact produces an impulse"),
+            Speed::SImpulseSolver::ComputeCollisionImpulse(P,N,A,MA,IA,B,MB,IB,E,0.f,JA,JB,0.f,false,false));
+        // Apply the returned impulse using Newton/Euler momentum equations,
+        // independently of the solver's effective-mass denominator.
+        A.Velocity+=JA/double(MA);A.AngularVelocity+=IA.TransformVector(FVector::CrossProduct(RA,JA));
+        if(MB>0.f){B.Velocity+=JB/double(MB);B.AngularVelocity+=IB.TransformVector(FVector::CrossProduct(RB,JB));}
+        const double After=FVector::DotProduct(AtPoint(A,RA)-AtPoint(B,RB),N);
+        TestTrue(TEXT("normal post-impact velocity obeys the declared restitution law"),
+            FMath::Abs(After+double(E)*Before)<1.e-9);
+        TestTrue(TEXT("contact impulses obey action and reaction"),(JA+JB).IsZero());
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedSphereSphereContinuous042Test,
+	"IAmSpeed.PhysicalLaws.SphereSphereContinuous042",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FIAmSpeedSphereSphereContinuous042Test::RunTest(const FString&)
+{
+	using Speed::SSphere;
+	for (const int32 Hz : {60, 100, 120, 240, 300, 360, 720, 1440})
+	{
+		for (const FVector Offset : {FVector::ZeroVector, FVector(1000,-2000,3000),
+			FVector(-1048576,2097152,-524288), FVector(1.e8,-1.e8,1.e8), FVector(.003,-.004,.001)})
+		{
+			const float Delta = 1.f / float(Hz);
+			const FVector CommonVelocity(50, 10, -20);
+			const FVector Velocity = FVector(4600,0,0) + CommonVelocity;
+			const FVector Initial = Offset + FVector(-25.0 - 4600.0 * .021, 0, 0);
+			bool Found = false;
+			for (int32 Frame=0; Frame<Hz/20 && !Found; ++Frame)
+			{
+				const double StartSeconds = double(Frame) * double(Delta);
+				const SSphere A(Initial + Velocity * StartSeconds, 12.5f, Velocity, FVector::ZeroVector);
+				const SSphere B(Offset + CommonVelocity * StartSeconds, 12.5f, CommonVelocity, FVector::ZeroVector);
+				const SHitResult Hit = A.IntersectNextFrame(B, Delta);
+				if (!Hit.bHit) continue;
+				Found = true;
+				const double Seconds = StartSeconds + double(Hit.TOI);
+				TestTrue(TEXT("first impact matches the independent distance/speed oracle at every rate"),
+					FMath::Abs(Seconds - .021) < 5.e-8);
+				TestTrue(TEXT("relative contact normal is translation invariant"),
+					Hit.ImpactNormal.Equals(FVector(-1,0,0), 1.e-7));
+				const FVector ExpectedPoint = Offset + CommonVelocity * Seconds + FVector(-12.5,0,0);
+				TestTrue(TEXT("impact witness preserves common translation and common velocity"),
+					(Hit.ImpactPoint - ExpectedPoint).Size() < .0001);
+			}
+			TestTrue(TEXT("coarse through-crossing is detected even with separated frame endpoints"), Found);
+		}
+	}
+	const SSphere Origin(FVector::ZeroVector,12.5f,FVector::ZeroVector,FVector::ZeroVector);
+	const SSphere Tangent(FVector(-30,25,0),12.5f,FVector(3000,0,0),FVector::ZeroVector);
+	const SHitResult Grazing = Tangent.IntersectNextFrame(Origin,.02f);
+	TestTrue(TEXT("affine grazing contact is retained"), Grazing.bHit && FMath::Abs(Grazing.TOI-.01f)<1.e-7f);
+	const SSphere Clear(FVector(-30,25.01,0),12.5f,FVector(3000,0,0),FVector::ZeroVector);
+	TestFalse(TEXT("a true near miss is not turned into a contact"),Clear.IntersectNextFrame(Origin,.02f).bHit);
+	const SSphere Accelerating(FVector(-30,0,0),12.5f,FVector::ZeroVector,FVector(2000,0,0));
+	const SHitResult Accelerated = Accelerating.IntersectNextFrame(Origin,.1f);
+	TestTrue(TEXT("accelerated refinement returns its accepted root rather than averaging a stale endpoint"),
+		Accelerated.bHit && FMath::Abs(double(Accelerated.TOI)-FMath::Sqrt(.005))<1.e-6);
 	return true;
 }
 #endif

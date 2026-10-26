@@ -15,18 +15,18 @@
 // Test-only access to the existing virtual entry points. No new runtime driver.
 struct FLocalFastBatchFixtureAccess
 {
-    static void Initialize(ASpeedSimulation& Driver, USpeedWorldSubsystem& World)
+    static void Initialize(ASpeedPhysicsSimulation& Driver, USpeedWorldSubsystem& World)
     {
         Driver.SpeedWorldSubsystem = &World;
         Driver.ActiveExecutionModeValue.Store(static_cast<uint8>(ESimulationExecutionMode::IAmSpeedThread));
         Driver.InitializeCanonicalFrame(0.f);
     }
-    static ESimulationWorkerResult Drive(ASpeedSimulation& Driver, bool Batch)
+    static ESimulationWorkerResult Drive(ASpeedPhysicsSimulation& Driver, bool Batch)
     {
         return Batch ? Driver.DriveSimulation(1.f / 300.f, 0.f)
                      : Driver.DriveOwnedWorkerPulse(1.f / 300.f, 0.f);
     }
-    static uint64 Frame(const ASpeedSimulation& Driver) { return Driver.CanonicalNumFrame; }
+    static uint64 Frame(const ASpeedPhysicsSimulation& Driver) { return Driver.CanonicalNumFrame; }
 };
 
 namespace

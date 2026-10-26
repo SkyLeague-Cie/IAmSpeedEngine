@@ -65,6 +65,7 @@ class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
+	friend class FIAmSpeedCollisionMatrix042Test;
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedBoxEquilibriumWorldTest;
@@ -146,6 +147,7 @@ public:
 		return LastStepDiagnostics;
 	}
 	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false);
+	bool CaptureReplayStateFields(TArray<FSimulationReplayStateRecord>& Out, uint64& UnsupportedStableId) const;
 	void NotifyCanonicalFramePublished(uint64 NumFrame);
 	ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
 	void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;

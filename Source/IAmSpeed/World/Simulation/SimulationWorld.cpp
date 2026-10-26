@@ -740,3 +740,28 @@ namespace Speed
 		}
 	}
 }
+
+bool Speed::FSimulationWorld::CaptureReplayStateFields(
+    TArray<FSimulationReplayStateRecord>& Out, uint64& UnsupportedStableId) const
+{
+    Out.Reset(); UnsupportedStableId=0;
+    if (Bodies.IsEmpty() || Bodies.Num()>256) return false;
+    TArray<FSimulationReplayStateRecord> Prepared; Prepared.Reserve(Bodies.Num());
+    int64 TotalBytes=0,ObservationBytes=0;
+    for (const auto& Body:Bodies)
+    {
+        UnsupportedStableId=Body.StableId;
+        FSimulationReplayStateRecord Record; Record.StableId=Body.StableId;
+        if (!Record.StableId || !Body.Adapter || !Body.Adapter->AppendReplayStateFields(Record.StateFields)
+            || Record.StateFields.IsEmpty()) return false;
+        TotalBytes+=Record.StateFields.Num();
+        if(TotalBytes>512*1024) return false;
+        const bool HasObservation=Body.Adapter->AppendReplayObservationFields(Record.ObservationFields);
+        if(!HasObservation&&!Record.ObservationFields.IsEmpty())return false;
+        if(Record.ObservationFields.Num()>4096)return false;
+        ObservationBytes+=Record.ObservationFields.Num();
+        if(ObservationBytes>64*1024)return false;
+        Prepared.Add(MoveTemp(Record));
+    }
+    Out=MoveTemp(Prepared); UnsupportedStableId=0; return true;
+}

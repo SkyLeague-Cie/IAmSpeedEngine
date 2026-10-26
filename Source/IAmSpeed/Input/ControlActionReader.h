@@ -4,7 +4,7 @@
 
 namespace Speed::Input::V2
 {
-enum class EControlCommand : std::uint8_t { Pause, ResetWorld, AutoControl };
+enum class EControlCommand : std::uint8_t { Pause, ResetWorld, AutoControl, SaveReplay };
 struct FControlBinding { FActionId Action = 0; EControlCommand Command = EControlCommand::Pause; };
 struct FControlRequest
 {
@@ -47,7 +47,7 @@ public:
 		{
 			const auto* A = Contract->Find(B.Action);
 			if (!A || A->Type != EActionType::Bool || A->Wiring != EActionWiring::Wired
-				|| B.Command > EControlCommand::AutoControl || (Used & (std::uint32_t{1} << B.Action))) return {};
+				|| B.Command > EControlCommand::SaveReplay || (Used & (std::uint32_t{1} << B.Action))) return {};
 			Used |= std::uint32_t{1} << B.Action;
 		}
 		std::sort(Bindings.begin(), Bindings.end(), [](const auto& A, const auto& B) { return A.Action < B.Action; });

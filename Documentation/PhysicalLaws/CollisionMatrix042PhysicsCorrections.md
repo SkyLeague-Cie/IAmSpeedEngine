@@ -1,0 +1,100 @@
+# Collision matrix 0.4.2 — causal production corrections
+
+Status: measured native candidate: 30 targeted regressions PASS; strict matrix
+remains FAIL. See [final measurements](CollisionMatrix042PhysicsResults20261025.md). The earlier baseline and
+prescribed-fixture reports remain separate failed executions. No numerical
+gate, production frequency, public interface or snapshot provider is changed.
+
+## Large-coordinate quantization
+
+`RoundVectorToNetQuantize` narrowed its rounded grid index to `float` and
+performed the division in that precision. At large world coordinates this
+loses the declared 0.01 cm position grid and makes whole-grid translations
+change local trajectories. The correction keeps double precision through the
+same half-up rounding and division. Engine `RoundToInt(double)` returns int64;
+this is a floating-point narrowing defect, not a demonstrated int32 overflow.
+
+The new regression checks the half-grid error bound and equivariance under
+whole-grid offsets through positive/negative 1e8 cm, at scales 100 and 10000.
+It does not claim invariance under a fractional offset of an absolute grid.
+
+## Sphere/sphere coarse-frame crossing
+
+The previous sphere/sphere sweep required overlap at the end of the frame.
+A fast pair can enter and leave between two separated endpoints. For example,
+a relative start of -40 cm, combined radius 25 cm and speed 4600 cm/s has a
+first contact after 15/4600 seconds inside a 60 Hz frame, yet is separated at
+both frame endpoints. Its old endpoint rule returned a miss.
+
+For zero relative acceleration, the correction solves the continuous relative
+quadratic over the complete frame. It uses the stable near-root expression,
+tests the root against the real frame interval, and computes normal and both
+witness points from relative motion. A common translation is subtracted before
+advancing the pair, avoiding extra large-coordinate cancellation. Shared
+acceleration is supported because the relative path is still affine.
+
+The existing accelerated bracket is retained. Its accepted midpoint now sets
+both bracket endpoints: previously the returned time averaged that accepted
+root with a stale upper endpoint. Accelerated enter/leave paths with separated
+endpoints remain outside this limited correction.
+
+New native regressions cover the independent first-impact distance/speed
+oracle at all eight matrix frequencies and five translations, common velocity,
+grazing contact, a true near miss, and the accelerated accepted-root branch.
+Portable scalar reproductions demonstrate the two causes but do not establish
+an Unreal or matrix PASS. The native regression IDs are
+`IAmSpeed.PhysicalLaws.QuantizationLargeCoordinates042` and
+`IAmSpeed.PhysicalLaws.SphereSphereContinuous042`.
+
+## Stationary axes and fractional translations
+
+The full a402 native matrix has 64 translation-point failures in each of
+Sphere/Plane and Box/Plane. A body's zero-velocity, zero-acceleration tangent
+coordinate was rounded onto an absolute world grid even though the integrator
+had not moved it. For example a common Y offset of -.004 cm was rounded to
+zero for the body while the analytic environment kept its authored offset.
+This injects relative motion before any physical contact.
+
+`ISpeedComponent::QuantizeKinematicState` now preserves each unmoving location
+axis exactly. It tests the velocity before rounding and the live acceleration;
+small real velocities or a new acceleration do not qualify. The canonical
+quantizer/cache and the moving-axis grid are unchanged, and existing geometric
+support preservation still applies. No new persistent state or origin anchor
+is introduced. This limited correction does not promise fractional-translation
+invariance for moving axes or collision-response invariance in general.
+
+`IAmSpeed.PhysicalLaws.StationaryAxesTranslation042` checks preservation at
+ordinary, fractional and large coordinates, moving-axis quantization, and
+revocation when acceleration or a sub-grid velocity starts. Its native
+qualification must be reported for the exact newly built source tuple.
+
+The stationary-only experiment (native9174) improved translation point errors
+but increased TOI errors: keeping a stationary peer exact while still snapping
+its moving peer did not fix the relative trajectory. The successor preserves
+the integrated position of every axis with exactly zero acceleration, including
+moving axes. This is an explicit free-flight pose-policy change: a .01cm grid
+snap on every frame cannot preserve a constant-velocity trajectory at different
+rates. For example80cm/s becomes86.4cm/s at1440Hz when .05555cm steps are snapped
+to .06cm, versus79.8cm/s at60Hz. Velocity/angular/rotation quantization, the inner
+canonical quantizer/cache, accelerated axes and wire/snapshot layouts are
+unchanged. Network equivalence is not qualified by these local regressions.
+
+`IAmSpeed.PhysicalLaws.UnforcedTrajectory042` checks the independent linear
+distance/time law over every frame at eight rates and five common translations.
+The stationary-axis regression now asserts this successor moving-axis policy;
+the older native9174 evidence is retained as a separate experiment, with its
+TOI regression explicitly reported. No matrix threshold is changed.
+
+## Refining uncertainty-dominated CCD cells
+
+The affine native run exposes15 terminal queries at4600cm/s and60Hz, consistently
+across all five translations of Sphere/Ring, Sphere/Cylinder and Wheel/Cylinder.
+The existing temporal tree reached a cell with motion width below1e-4cm, but
+its pose-error lower bound still allowed contact while its first sample lay
+beyond the unchanged2e-4cm contact acceptance. It returned Unresolved there.
+The successor continues subdividing that same earliest cell until a real
+contact certificate or exclusion is available. It does not skip the cell,
+inflate a hit, manufacture a miss, increase tolerances, clear terminal latches
+or increase the4096 evaluation budget. An unresolvable/collapsed interval
+still fails closed. Native regressions include the observed coarse crossings
+and retain an explicitly over-uncertain negative control.

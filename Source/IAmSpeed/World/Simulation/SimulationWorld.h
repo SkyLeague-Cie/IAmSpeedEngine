@@ -102,6 +102,23 @@ namespace Speed
 		/** Removes one live adapter while keeping already-issued ids monotonic. */
 		bool RemoveAdapter(ISpeedComponent& Adapter);
 		bool ContainsAdapter(const ISpeedComponent& Adapter) const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        /** Joined empty-registry boundary; stable identities stay monotonic. */
+        bool ResetEmptyCollisionMatrixEpisodeForTesting()
+        {
+            if (!Adapters.IsEmpty()) return false;
+            RebuildOrderedAdapters();
+            if (!OrderedAdapters.IsEmpty() || !Bodies.IsEmpty()
+                || !ProjectionSpheres.IsEmpty() || !ProjectionBoxes.IsEmpty()) return false;
+            DynamicContactPairs.Reset();
+            PendingRollingContactPairs.Reset();
+            DynamicContactPairIndices.Reset();
+            PendingRollingContactPairIndices.Reset();
+            DynamicContactPairKeysByBody.Reset();
+            StaticCollisionWorld.Reset();
+            return true;
+        }
+#endif
 		/** Rebuilds the canonical adapter/body view after queued registry changes. */
 		void RebuildOrderedAdapters();
 		const TArray<ISpeedComponent*>& GetAdapters() const { return Adapters; }
@@ -154,6 +171,8 @@ namespace Speed
 		bool ApplyInputsForFrame(uint64 NumFrame, const SimulationBoundary::FInputJournal& Journal);
 		/** Builds a values-only immutable output snapshot for one completed frame. */
 		FSimulationSnapshot CaptureSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false) const;
+		/** Owner-lane named-state collection; transactional and bounded, no UObject reads. */
+		bool CaptureReplayStateFields(TArray<FSimulationReplayStateRecord>& Out, uint64& UnsupportedStableId) const;
 		void NotifyCanonicalFramePublished(uint64 NumFrame);
 		ECanonicalPublicationResult PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish);
 		void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept;
