@@ -895,11 +895,9 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
 
     SHitResult RefreshedHit =
         SHitResult::FromAnalyticHit(AnalyticHit, Delta, GroundComp.Get());
-    RefreshedHit.ImpactNormal = Speed::QuantizeUnitNormal(RefreshedHit.ImpactNormal);
-    RefreshedHit.TOI = Speed::QuantizeScalar(RefreshedHit.TOI, 1e-5f);
-    RefreshedHit.ImpactPoint = Speed::QuantizeVectorCm(RefreshedHit.ImpactPoint, 0.1f);
-    RefreshedHit.PenetrationDepth =
-        Speed::QuantizeScalar(RefreshedHit.PenetrationDepth, 0.01f);
+    // This is already an admitted analytic witness. Keep its point, normal,
+    // time and error bound together, just as for the initial CCD contact.
+    // Absolute-coordinate rounding would move a translated support surface.
     if (RefreshedHit.ImpactNormal.IsNearlyZero())
     {
         return false;
@@ -1577,10 +1575,13 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
     }
     if (!bFoundGroundHit) return false;
     OutHit = Hit;
-    if (bExactPlanarContact)
+    if (bExactPlanarContact || (StaticWorld && Hit.SourceId != 0 && Hit.SurfaceId != 0))
     {
-        // Keep exact geometry: rounding the witness to millimetres moves a
-        // non-grid support plane and changes the physical equilibrium height.
+        // Keep the analytic provider witness, including its geometric error
+        // bound. Rounding a world-space point to millimetres changes the
+        // contact lever arm under a common translation, and a float cast loses
+        // centimetres far from the origin. Curved providers need the same
+        // preservation as exact planes; no query tolerance is changed here.
         OutTOI = OutHit.TOI;
         bGroundHitFromSweep = true;
         AddGroundNormal(OutHit.ImpactNormal);
