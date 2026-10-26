@@ -1823,8 +1823,8 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// -------------------------------------------------------
 	// 1) Inverse masses
 	// -------------------------------------------------------
-	const float InvMassA = (MassA > KINDA_SMALL_NUMBER) ? 1.f / MassA : 0.f;
-	const float InvMassB = (MassB > KINDA_SMALL_NUMBER) ? 1.f / MassB : 0.f;
+	const double InvMassA = (MassA > KINDA_SMALL_NUMBER) ? 1. / double(MassA) : 0.;
+	const double InvMassB = (MassB > KINDA_SMALL_NUMBER) ? 1. / double(MassB) : 0.;
 
 	// -------------------------------------------------------
 	// 2) Lever arms
@@ -1841,7 +1841,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// Relative velocity: THIS relative to OTHER
 	const FVector vRel = vA - vB;
 
-	const float vRelN = FVector::DotProduct(vRel, N);
+	const double vRelN = FVector::DotProduct(vRel, N);
 
 	// -------------------------------------------------------
 	// 4) Separating -> no impulse
@@ -2001,16 +2001,20 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// -------------------------------------------------------
 	// 5) Normal effective mass
 	// -------------------------------------------------------
-	const FVector rAxN = FVector::CrossProduct(rA, N);
+		// Keep the effective-mass solve in the same double precision as the
+	// contact point, velocities and inertia. Narrowing reciprocal masses or
+	// the normal impulse leaves a false closing velocity after an inelastic
+	// contact; repeated CCD then sees a collision manufactured by that roundoff.
+const FVector rAxN = FVector::CrossProduct(rA, N);
 	const FVector rBxN = FVector::CrossProduct(rB, N);
 
 	const FVector invIA_rAxN = InvInertiaA.TransformVector(rAxN);
 	const FVector invIB_rBxN = InvInertiaB.TransformVector(rBxN);
 
-	const float angA = FVector::DotProduct(N, FVector::CrossProduct(invIA_rAxN, rA));
-	const float angB = FVector::DotProduct(N, FVector::CrossProduct(invIB_rBxN, rB));
+	const double angA = FVector::DotProduct(N, FVector::CrossProduct(invIA_rAxN, rA));
+	const double angB = FVector::DotProduct(N, FVector::CrossProduct(invIB_rBxN, rB));
 
-	float denomN = InvMassA + InvMassB + angA + angB;
+	double denomN = InvMassA + InvMassB + angA + angB;
 	if (denomN <= KINDA_SMALL_NUMBER)
 		return false;
 
@@ -2026,7 +2030,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	// -------------------------------------------------------
 	// 7) Normal impulse
 	// -------------------------------------------------------
-	const float jn = -(1.f + e) * vRelN / denomN;
+	const double jn = -(1. + double(e)) * vRelN / denomN;
 	const FVector Jn = jn * N;
 
 	// -------------------------------------------------------
@@ -2035,7 +2039,7 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 	FVector Jt = FVector::ZeroVector;
 
 	const FVector vRelT = vRel - vRelN * N;
-	const float vRelTmag = vRelT.Size();
+	const double vRelTmag = vRelT.Size();
 
 	if (vRelTmag > KINDA_SMALL_NUMBER && Friction > 0.f)
 	{
@@ -2047,16 +2051,16 @@ bool SImpulseSolver::ComputeCollisionImpulse(
 		const FVector invIA_rAxT = InvInertiaA.TransformVector(rAxT);
 		const FVector invIB_rBxT = InvInertiaB.TransformVector(rBxT);
 
-		const float angTA = FVector::DotProduct(T, FVector::CrossProduct(invIA_rAxT, rA));
-		const float angTB = FVector::DotProduct(T, FVector::CrossProduct(invIB_rBxT, rB));
+		const double angTA = FVector::DotProduct(T, FVector::CrossProduct(invIA_rAxT, rA));
+		const double angTB = FVector::DotProduct(T, FVector::CrossProduct(invIB_rBxT, rB));
 
-		float denomT = InvMassA + InvMassB + angTA + angTB;
+		double denomT = InvMassA + InvMassB + angTA + angTB;
 		if (denomT > KINDA_SMALL_NUMBER)
 		{
-			float jt = -vRelTmag / denomT;
+			double jt = -vRelTmag / denomT;
 
 			// Coulomb clamp
-			const float jtMax = Friction * jn;
+			const double jtMax = Friction * jn;
 			jt = FMath::Clamp(jt, -jtMax, jtMax);
 
 			Jt = jt * T;

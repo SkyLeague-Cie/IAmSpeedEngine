@@ -3,6 +3,7 @@
 #include "SUtils.h"
 #include "Misc/AutomationTest.h"
 #include "Math/RandomStream.h"
+#include "HAL/IConsoleManager.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 
@@ -246,6 +247,50 @@ bool FIAmSpeedUnforcedRotation042Test::RunTest(const FString&)
     Accelerating.QuantizeKinematicState(State,FQuat::Identity);
     TestTrue(TEXT("angular acceleration retains the canonical rotation quantizer"),
         State.Rotation.Equals(Canonical.Rotation,0.));
+    return true;
+}
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedContactImpulsePrecisionNightTest,
+    "IAmSpeed.PhysicalLaws.ContactImpulsePrecisionNight",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FIAmSpeedContactImpulsePrecisionNightTest::RunTest(const FString&)
+{
+    const IConsoleVariable* Coupled=IConsoleManager::Get().FindConsoleVariable(
+        TEXT("p.IAmSpeed.Collision.CoupledContactImpulse"));
+    if (!TestTrue(TEXT("test observes the unchanged default uncoupled policy"),
+        Coupled && Coupled->GetInt()==0)) return false;
+    for (float MA : {7.25f,10.f,18.f})
+    for (float MB : {0.f,13.5f})
+    for (float E : {0.f,.35f})
+    for (FVector N : {FVector(-1,0,0),FVector(-.8,-.6,0).GetSafeNormal()})
+    for (FVector Offset : {FVector::ZeroVector,FVector(1000,-2000,3000),
+        FVector(1.e8,-1.e8,1.e8),FVector(1./256.,-1./512.,1./1024.)})
+    {
+        SKinematic A,B; A.Location=Offset+FVector(-20,1.625,0);
+        B.Location=Offset+FVector(20,.375,-.5);
+        A.Velocity=FVector(1200,80,-30);B.Velocity=FVector(-40,12,5);
+        A.AngularVelocity=FVector(.25,-.5,1.5);B.AngularVelocity=FVector(.1,.2,-.3);
+        const FVector P=Offset+FVector(1.25,-.5,2.5);
+        FMatrix IA=FMatrix::Identity,IB=FMatrix::Identity;
+        IA.M[0][0]=.001;IA.M[1][1]=.002;IA.M[2][2]=.003;
+        IB.M[0][0]=MB>0.f?.003:0.;IB.M[1][1]=MB>0.f?.004:0.;IB.M[2][2]=MB>0.f?.005:0.;
+        const FVector RA=P-A.Location,RB=P-B.Location;
+        const auto AtPoint=[](const SKinematic& K,const FVector& Arm){
+            return K.Velocity+FVector::CrossProduct(K.AngularVelocity,Arm);};
+        const double Before=FVector::DotProduct(AtPoint(A,RA)-AtPoint(B,RB),N);
+        FVector JA,JB;
+        TestTrue(TEXT("approaching mechanical contact produces an impulse"),
+            Speed::SImpulseSolver::ComputeCollisionImpulse(P,N,A,MA,IA,B,MB,IB,E,0.f,JA,JB,0.f,false,false));
+        // Apply the returned impulse using Newton/Euler momentum equations,
+        // independently of the solver's effective-mass denominator.
+        A.Velocity+=JA/double(MA);A.AngularVelocity+=IA.TransformVector(FVector::CrossProduct(RA,JA));
+        if(MB>0.f){B.Velocity+=JB/double(MB);B.AngularVelocity+=IB.TransformVector(FVector::CrossProduct(RB,JB));}
+        const double After=FVector::DotProduct(AtPoint(A,RA)-AtPoint(B,RB),N);
+        TestTrue(TEXT("normal post-impact velocity obeys the declared restitution law"),
+            FMath::Abs(After+double(E)*Before)<1.e-9);
+        TestTrue(TEXT("contact impulses obey action and reaction"),(JA+JB).IsZero());
+    }
     return true;
 }
 
