@@ -76,3 +76,5 @@ DerivedDataCache/*
 # Private portable CI outputs and Python import cache
 /Artifacts/PhysicalContracts/
 /HostProject/Scripts/__pycache__/
+/Artifacts/Matrix042Parser/
+/Artifacts/Matrix042DebtParser/
