@@ -1,5 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
+#include "Components/PrimitiveComponent.h"
 #include "Engine/HitResult.h"
 #include "IAmSpeed/Base/ContactFeature.h"
 
