@@ -1,5 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
+#include "Engine/HitResult.h"
 #include "IAmSpeed/Base/ContactFeature.h"
 
 class UWorld;

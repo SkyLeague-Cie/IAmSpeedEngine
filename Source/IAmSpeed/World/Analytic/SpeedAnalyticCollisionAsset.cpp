@@ -1,6 +1,7 @@
 #include "SpeedAnalyticCollisionAsset.h"
 
 #include "AnalyticWorldData.h"
+#include "Engine/EngineTypes.h"
 #include "HAL/PlatformTime.h"
 
 #if WITH_EDITOR
@@ -9,6 +10,59 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogSpeedAnalyticCollisionAsset, Log, All);
 #endif
+
+bool FSpeedAnalyticAuthoredSourceRecord::IsValid(FString* OutReason) const
+{
+	auto Fail = [OutReason](const TCHAR* Reason)
+	{
+		if (OutReason) *OutReason = Reason;
+		return false;
+	};
+	auto IsDigest = [](const FString& Value)
+	{
+		if (Value.Len() != 64) return false;
+		bool bNonzero = false;
+		for (const TCHAR C : Value)
+		{
+			if (!((C >= '0' && C <= '9') || (C >= 'a' && C <= 'f'))) return false;
+			bNonzero |= C != '0';
+		}
+		return bNonzero;
+	};
+	auto IsRelativeComponentPath = [](const FString& Value)
+	{
+		if (Value.IsEmpty() || Value.StartsWith(TEXT(".")) || Value.EndsWith(TEXT(".")) ||
+			Value.Contains(TEXT(".."))) return false;
+		for (const TCHAR C : Value)
+		{
+			if (C == '/' || C == '\\' || C == ':' || FChar::IsWhitespace(C)) return false;
+		}
+		return true;
+	};
+	auto IsUsableTransform = [](const FTransform& Value)
+	{
+		const FVector Scale = Value.GetScale3D();
+		return Value.IsValid() && Scale.X != 0.0 && Scale.Y != 0.0 && Scale.Z != 0.0;
+	};
+	if (Kind != ESpeedAnalyticSourceKind::AuthoredAnalytic || SourceId == 0 ||
+		RecipeSchema.IsEmpty() || !IsDigest(RecipeSha256) || !IsDigest(PayloadSha256))
+		return Fail(TEXT("Authored source identity or recipe/payload provenance is incomplete."));
+	if (!IsRelativeComponentPath(SourceComponentPath) ||
+		!IsRelativeComponentPath(ContactComponentPath) ||
+		!IsUsableTransform(OwnerWorldTransform) || !IsUsableTransform(ContactWorldTransform))
+		return Fail(TEXT("Authored source has invalid relative paths or world transforms."));
+	// Authored static providers serve queries; no invented fallback policy.
+	constexpr uint32 ChannelCount = UE_ARRAY_COUNT(FCollisionResponseContainer::EnumArray);
+	static_assert(ChannelCount > 0 && ChannelCount <= 64, "Collision policy must fit the uint64 mask.");
+	constexpr uint64 ChannelMask = ~uint64(0) >> (64 - ChannelCount);
+	if (ObjectType >= ChannelCount || !bQueryCollisionEnabled ||
+		(CollisionEnabled != static_cast<uint8>(ECollisionEnabled::QueryOnly) &&
+		 CollisionEnabled != static_cast<uint8>(ECollisionEnabled::QueryAndPhysics)) ||
+		BlockingChannels == 0 || ((BlockingChannels | OverlapChannels) & ~ChannelMask) != 0 ||
+		(BlockingChannels & OverlapChannels) != 0)
+		return Fail(TEXT("Authored source collision policy is incomplete or unsupported."));
+	return true;
+}
 
 bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 	FString* OutReason, const bool bAuthorityProvidersOnly) const
@@ -31,13 +85,14 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 		return Fail(FString::Printf(
 			TEXT("Unsupported runtime schema %u."), SchemaVersion));
 	}
-	if ((!MeshSources.IsEmpty() || !BoundedPlanes.IsEmpty()) && SourceHash == 0)
+	if ((!MeshSources.IsEmpty() || !AuthoredSources.IsEmpty() || !BoundedPlanes.IsEmpty()) && SourceHash == 0)
 	{
 		return Fail(TEXT("Generated analytical data has no source hash."));
 	}
 	uint64 PreviousSourceId = 0;
 	int64 ExpectedTriangleCount = 0;
 	TSet<uint64> SourceIds;
+	TSet<uint64> MeshSourceIds;
 	for (int32 Index = 0; Index < MeshSources.Num(); ++Index)
 	{
 		const FSpeedAnalyticMeshSourceRecord& Source = MeshSources[Index];
@@ -55,7 +110,31 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 		PreviousSourceId = Source.SourceId;
 		ExpectedTriangleCount += Source.TriangleCount;
 		SourceIds.Add(Source.SourceId);
+		MeshSourceIds.Add(Source.SourceId);
 	}
+	if (AuthoredSourceSchemaVersion > 1 ||
+		(AuthoredSourceSchemaVersion == 0) != AuthoredSources.IsEmpty())
+		return Fail(TEXT("Unsupported or inconsistent authored source schema."));
+	TMap<uint64, const FSpeedAnalyticAuthoredSourceRecord*> AuthoredById;
+	PreviousSourceId = 0;
+	for (const FSpeedAnalyticAuthoredSourceRecord& Source : AuthoredSources)
+	{
+		if (!Source.IsValid(OutReason)) return false;
+		if (Source.SourceId <= PreviousSourceId || SourceIds.Contains(Source.SourceId))
+			return Fail(TEXT("Authored sources are not unique, sorted and disjoint from mesh sources."));
+		PreviousSourceId = Source.SourceId;
+		SourceIds.Add(Source.SourceId);
+		AuthoredById.Add(Source.SourceId, &Source);
+	}
+	TSet<uint64> UsedAuthoredSources;
+	auto MatchesAuthoredPolicy = [&AuthoredById](
+		uint64 Id, uint32 ObjectType, uint64 BlockingChannels, bool bQuery)
+	{
+		const FSpeedAnalyticAuthoredSourceRecord* const* Found = AuthoredById.Find(Id);
+		if (!Found) return true;
+		return (*Found)->ObjectType == ObjectType && (*Found)->BlockingChannels == BlockingChannels &&
+			(*Found)->bQueryCollisionEnabled == bQuery;
+	};
 	if (!Triangles.IsEmpty())
 	{
 		return Fail(TEXT("Schema-6 asset still contains expanded schema-2 triangles."));
@@ -72,16 +151,16 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 		return Fail(TEXT("Indexed triangle payload has an empty vertex or normal pool."));
 	}
 	uint64 PreviousPrimitiveId = 0;
-	for (int32 Index = 0;
-		!bAuthorityProvidersOnly && Index < IndexedTriangles.Num(); ++Index)
+	for (int32 Index = 0; Index < IndexedTriangles.Num(); ++Index)
 	{
 		const FSpeedAnalyticIndexedTriangleRecord& Triangle = IndexedTriangles[Index];
-		if (!SourceIds.Contains(Triangle.SourceId) || Triangle.SurfaceId == 0 ||
+		if (!MeshSourceIds.Contains(Triangle.SourceId) || Triangle.SurfaceId == 0 ||
 			Triangle.FeatureId == 0 || Triangle.PrimitiveId == 0)
 		{
 			return Fail(FString::Printf(
 				TEXT("Triangle record %d has incomplete identifiers."), Index));
 		}
+		if (bAuthorityProvidersOnly) continue;
 		for (int32 Corner = 0; Corner < 3; ++Corner)
 		{
 			if (!VertexPositions.IsValidIndex(Triangle.VertexIndices[Corner]) ||
@@ -102,10 +181,15 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 	for (int32 Index = 0; Index < BoundedPlanes.Num(); ++Index)
 	{
 		const FSpeedAnalyticBoundedPlaneRecord& Record = BoundedPlanes[Index];
+		if ((AuthoredSourceSchemaVersion != 0 && !SourceIds.Contains(Record.SourceId)) ||
+			!MatchesAuthoredPolicy(Record.SourceId, static_cast<uint32>(Record.ObjectType),
+				Record.BlockingChannels, Record.bQueryCollisionEnabled))
+			return Fail(TEXT("Bounded plane has an unknown source or mismatched authored policy."));
 		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
 		{
 			continue;
 		}
+		if (AuthoredById.Contains(Record.SourceId)) UsedAuthoredSources.Add(Record.SourceId);
 		Speed::Analytic::FBoundedPlane Plane;
 		Plane.SourceId = Record.SourceId;
 		Plane.SurfaceId = Record.SurfaceId;
@@ -146,10 +230,15 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 	{
 		const FSpeedAnalyticExtrudedQuinticPatchRecord& Patch =
 			ExtrudedQuinticPatches[Index];
+		if ((AuthoredSourceSchemaVersion != 0 && !SourceIds.Contains(Patch.SourceId)) ||
+			!MatchesAuthoredPolicy(Patch.SourceId, Patch.ObjectType,
+			Patch.BlockingChannels, Patch.bQueryCollisionEnabled))
+			return Fail(TEXT("Extruded patch policy differs from its authored source."));
 		if (bAuthorityProvidersOnly && !Patch.bAuthorityEligible)
 		{
 			continue;
 		}
+		if (AuthoredById.Contains(Patch.SourceId)) UsedAuthoredSources.Add(Patch.SourceId);
 		if (!SourceIds.Contains(Patch.SourceId) || Patch.SurfaceId == 0 ||
 			Patch.FeatureId == 0 || Patch.PrimitiveId == 0 ||
 			Patch.SectionControlPoints.Num() != 6 ||
@@ -215,10 +304,15 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 	{
 		const FSpeedAnalyticTensorBezierPatchRecord& Record =
 			TensorBezierPatches[Index];
+		if ((AuthoredSourceSchemaVersion != 0 && !SourceIds.Contains(Record.SourceId)) ||
+			!MatchesAuthoredPolicy(Record.SourceId, Record.ObjectType,
+			Record.BlockingChannels, Record.bQueryCollisionEnabled))
+			return Fail(TEXT("Tensor patch policy differs from its authored source."));
 		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
 		{
 			continue;
 		}
+		if (AuthoredById.Contains(Record.SourceId)) UsedAuthoredSources.Add(Record.SourceId);
 		if (!SourceIds.Contains(Record.SourceId))
 		{
 			return Fail(FString::Printf(
@@ -258,10 +352,15 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 	{
 		const FSpeedAnalyticPiecewiseTensorBezierPatchRecord& Record =
 			PiecewiseTensorBezierPatches[Index];
+		if ((AuthoredSourceSchemaVersion != 0 && !SourceIds.Contains(Record.SourceId)) ||
+			!MatchesAuthoredPolicy(Record.SourceId, Record.ObjectType,
+			Record.BlockingChannels, Record.bQueryCollisionEnabled))
+			return Fail(TEXT("Piecewise tensor policy differs from its authored source."));
 		if (bAuthorityProvidersOnly && !Record.bAuthorityEligible)
 		{
 			continue;
 		}
+		if (AuthoredById.Contains(Record.SourceId)) UsedAuthoredSources.Add(Record.SourceId);
 		if (!SourceIds.Contains(Record.SourceId))
 		{
 			return Fail(FString::Printf(
@@ -318,6 +417,8 @@ bool USpeedAnalyticCollisionAsset::ValidateGeneratedData(
 		}
 		PreviousPrimitiveId = Record.PrimitiveId;
 	}
+	if (UsedAuthoredSources.Num() != AuthoredSources.Num())
+		return Fail(TEXT("An authored source has no admitted analytic primitives."));
 	return true;
 }
 
