@@ -2,6 +2,11 @@
 
 
 #include "BoxSubBody.h"
+#include "Engine/World.h"
+#include "PrimitiveViewRelevance.h"
+#include "PrimitiveSceneProxy.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
 #include "IAmSpeed/World/Collision/BoxRestingSupport.h"
 #include "IAmSpeed/World/Collision/ResolvedPairSet.h"
 #include "IAmSpeed/World/Collision/ReciprocalBoxContact.h"

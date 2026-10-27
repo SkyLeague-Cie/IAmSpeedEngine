@@ -1,3 +1,5 @@
+#include "Misc/Build.h"
+
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "NativeSelectedStateBytesForTesting.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"

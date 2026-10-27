@@ -2,6 +2,7 @@
 
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
+#include "TextureResource.h"
 #include "LandscapeComponent.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
 #include "LandscapeProxy.h"

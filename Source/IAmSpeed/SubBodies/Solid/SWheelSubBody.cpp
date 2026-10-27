@@ -2,6 +2,7 @@
 
 
 #include "SWheelSubBody.h"
+#include "Engine/World.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldQuery.h"
 #include "CylinderSubBody.h"
 #include "CylinderSweep.h"

@@ -11,7 +11,7 @@ public class IAmSpeedEditor : ModuleRules
 		});
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"AssetRegistry", "Landscape", "MeshDescription", "StaticMeshDescription", "UnrealEd"
+			"AssetRegistry", "Json", "Landscape", "MeshDescription", "StaticMeshDescription", "UnrealEd"
 		});
 	}
 }

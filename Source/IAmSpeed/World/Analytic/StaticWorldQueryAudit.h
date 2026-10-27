@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CollisionQueryParams.h"
 #include "CollisionShape.h"
 #include "IAmSpeed/Base/Kinematic.h"
 

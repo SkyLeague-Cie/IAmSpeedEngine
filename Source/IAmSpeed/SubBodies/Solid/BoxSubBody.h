@@ -3,6 +3,7 @@
 #pragma once
 
 #include "SolidSubBody.h"
+#include "ShowFlags.h"
 #include "IAmSpeed/SubBodies/Common/IBoxSweeper.h"
 #include "IAmSpeed/SubBodies/Common/ISolidSweeper.h"
 #include "UObject/ObjectMacros.h"

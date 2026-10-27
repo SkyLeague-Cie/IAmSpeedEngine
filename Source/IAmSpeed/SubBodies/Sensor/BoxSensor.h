@@ -3,6 +3,7 @@
 #pragma once
 
 #include "SensorSubBody.h"
+#include "ShowFlags.h"
 #include "IAmSpeed/SubBodies/Common/IBoxSweeper.h"
 #include "IAmSpeed/SubBodies/Common/ISensorSweeper.h"
 #include "BoxSensor.generated.h"

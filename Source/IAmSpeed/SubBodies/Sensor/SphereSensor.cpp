@@ -1,6 +1,10 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "SphereSensor.h"
+#include "PrimitiveViewRelevance.h"
+#include "PrimitiveSceneProxy.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
 #include "PhysicsEngine/BodySetup.h"
 
 USphereSensor::USphereSensor(const FObjectInitializer& ObjectInitializer) :

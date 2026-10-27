@@ -2,6 +2,10 @@
 
 
 #include "BoxSensor.h"
+#include "PrimitiveViewRelevance.h"
+#include "PrimitiveSceneProxy.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
 #include "PhysicsEngine/BodySetup.h"
 
 UBoxSensor::UBoxSensor(const FObjectInitializer& ObjectInitializer) :
