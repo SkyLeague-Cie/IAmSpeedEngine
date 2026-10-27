@@ -2,6 +2,11 @@
 
 
 #include "SphereSubBody.h"
+#include "Engine/World.h"
+#include "PrimitiveViewRelevance.h"
+#include "PrimitiveSceneProxy.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 #include "BoxSubBody.h"
 #include "SWheelSubBody.h"

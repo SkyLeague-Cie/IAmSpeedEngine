@@ -1,4 +1,5 @@
 #include "StaticWorldQueryAudit.h"
+#include "Engine/World.h"
 #include "JoinedAnalyticQueryPrefetch1075.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include <limits>
