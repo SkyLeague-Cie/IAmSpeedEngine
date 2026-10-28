@@ -3,6 +3,7 @@
 // USpeedWorldSubsystem.cpp
 
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "IAmSpeed/World/Simulation/CcdPoseAudit.h"
 #include "IAmSpeed/World/Simulation/SubBodyKinematicsTasks.h"
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
@@ -367,6 +368,18 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 					Record.SourceId, Declaration ? *BindingReason : TEXT("Declaration missing."));
 				return;
 			}
+            // Source/component registration order must not leave a stale empty
+            // bounds cache. Refresh once after exact binding, never per query.
+            if (auto* AnalyticContact = Cast<USpeedAnalyticContactComponent>(Contact))
+            {
+                bool BoundsReady = false;
+                AnalyticContact->RefreshAuthoredBounds(BoundsReady, BindingReason);
+                if (!BoundsReady)
+                {
+                    REPLAY_ANALYTIC_LOG(LogTemp, Error, TEXT("[AnalyticSourceBinding] Invalid analytic contact bounds: %s"), *BindingReason);
+                    return;
+                }
+            }
 			if (!TryBindSource(Record.SourceId, Contact)) return;
 		}
 
