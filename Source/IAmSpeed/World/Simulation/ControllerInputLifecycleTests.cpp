@@ -14,12 +14,18 @@
 #include "GameFramework/WorldSettings.h"
 #include "GameFramework/PlayerState.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTLS.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 #include "SimpleVehicle.h"
 #include "SuspensionSystem.h"
 #include "WheelSystem.h"
 #include "ControllerDeviceV2Lifecycle2443.h"
+#include "Components/BoxComponent.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 #include <atomic>
 
 namespace
@@ -71,6 +77,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
 bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	using namespace Speed::Input;
+	if (Parameters == TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories"))
+	{
+#include "StockDrivingCanonicalTrajectories.inl"
+	}
 	if (Parameters == TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle"))
 	{
 #include "CompletedPublicationCanonicalLifecycle.inl"
@@ -465,6 +475,20 @@ namespace
 FIAmSpeedDeviceV2Lifecycle2443Test DeviceV2Lifecycle2443Instance(
     TEXT("FIAmSpeedDeviceV2Lifecycle2443Test"));
 }
+#endif
+
+class FIAmSpeedStockCanonicalTrajectoriesTest final : public FIAmSpeedControllerInputLifecycleTest
+{
+public:
+ explicit FIAmSpeedStockCanonicalTrajectoriesTest(const FString& Name):FIAmSpeedControllerInputLifecycleTest(Name){}
+protected:
+ void GetTests(TArray<FString>& Names,TArray<FString>& Commands)const override
+ {Names.Add(TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories"));Commands.Add(FString());}
+ FString GetBeautifiedTestName()const override{return TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories");}
+ bool RunTest(const FString&)override{return FIAmSpeedControllerInputLifecycleTest::RunTest(TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories"));}
+};
+#if WITH_AUTOMATION_WORKER
+namespace { FIAmSpeedStockCanonicalTrajectoriesTest StockCanonicalTrajectoriesInstance(TEXT("FIAmSpeedStockCanonicalTrajectoriesTest")); }
 #endif
 
 #endif
