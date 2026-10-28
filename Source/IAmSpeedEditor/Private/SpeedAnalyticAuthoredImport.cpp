@@ -446,6 +446,7 @@ USpeedAnalyticCollisionAsset* USpeedAnalyticAuthoredImport::StageStadiumV1(
 // Same translation unit so both importers share the bounded pinned-input reader.
 #include "SpeedAnalyticRenderImport.inl"
 #include "SpeedAnalyticPersistImport.inl"
+#include "SpeedAnalyticCurrentImport.inl"
 
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Components/BoxComponent.h"
