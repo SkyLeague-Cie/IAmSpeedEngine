@@ -258,6 +258,7 @@ void ASpeedPhysicsSimulation::BeginPlay()
 	Super::BeginPlay();
 	// Fixed before the worker starts; diagnostics never change the canonical payload.
 	bPublishPresentation = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
+	bPublishCompletedWorldInput = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishCompletedWorldInput"));
 	RefreshExecutionMode();
 }
 
@@ -487,6 +488,7 @@ void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
 			{
 				if (Result == ESimulationWorkerResult::Failed)
 				{
+					PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 					bOwnedWorkerTerminal.Store(true);
 					bOwnedSimulationPaused.Store(true);
 				}
@@ -606,6 +608,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 			if (Result == ESimulationWorkerResult::Complete ||
 				Result == ESimulationWorkerResult::Failed)
 			{
+				PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 				bOwnedWorkerTerminal.Store(true);
 			}
 			return Result;
@@ -661,6 +664,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 	if (!SimulationWorker->Start(bOwnedSimulationPaused.Load() || Speed::CanonicalFrameDriver::IsOwnedThreadPaused()))
 	{
 		SimulationWorker.Reset();
+		PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 		bOwnedWorkerTerminal.Store(true);
 		UE_LOG(LogTemp, Error, TEXT("[SimulationWorkerStartFailed]"));
 	}
@@ -673,6 +677,8 @@ void ASpeedPhysicsSimulation::StopOwnedWorker()
 		SimulationWorker->StopAndJoin();
 		SimulationWorker.Reset();
 	}
+	// After join, no in-flight frame can republish an endpoint.
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 }
 
 bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
@@ -698,6 +704,7 @@ bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
 		InputWorkerGeneration = Generation; NextInputCommandId = 1;
 	}
 	catch (...) { return false; }
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	PublishedInputRegistry.store(std::shared_ptr<const Speed::Input::V2::FInputRegistryView>{}, std::memory_order_seq_cst);
 	PublishedInputFrame.store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
 	bInputSessionAdmissionRequested.Store(false); bInputOwnersClosedOnWorker.Store(false);
@@ -724,6 +731,7 @@ void ASpeedPhysicsSimulation::RestartControlledRun()
 ESimulationQuiescence ASpeedPhysicsSimulation::TryPauseOwnedSimulation(const uint32 TimeoutMilliseconds)
 {
 	check(IsInGameThread());
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	bOwnedSimulationPaused.Store(true);
 	if (!SimulationWorker && HasActorBegunPlay()
 		&& GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback)
@@ -741,6 +749,7 @@ ESimulationQuiescence ASpeedPhysicsSimulation::TryPauseOwnedSimulation(const uin
 ESimulationQuiescence ASpeedPhysicsSimulation::TrySuspendOwnedBoundaryService(const uint32 TimeoutMilliseconds)
 {
 	check(IsInGameThread());
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread)
 		return ESimulationQuiescence::Failed;
 	if (OwnedBoundarySuspendDepth)
@@ -779,6 +788,7 @@ bool ASpeedPhysicsSimulation::IsOwnedBoundaryServiceSuspended() const
 
 void ASpeedPhysicsSimulation::PauseOwnedSimulation()
 {
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	bOwnedSimulationPaused.Store(true);
 	if (SimulationWorker)
 	{
@@ -813,6 +823,7 @@ bool ASpeedPhysicsSimulation::JoinOwnedSimulationForInputTeardown()
 	// An async callback (or absent driver) cannot grant an owned-thread fence.
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread) return false;
 	bInputOwnerRetired.Store(true);
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	bOwnedSimulationPaused.Store(true); bOwnedWorkerTerminal.Store(true);
 	StopOwnedWorker();
 	if (SimulationWorker) return false;
@@ -1271,6 +1282,15 @@ float ASpeedPhysicsSimulation::GetWarningFrameFraction() const
 
 bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 {
+    // Failure can occur before MarkTerminal exists (world lookup/admission).
+    // Keep the previous completed pair during work, but retire current access
+    // on every unsuccessful exit. Retained immutable historical reads survive.
+    bool bCompletedPublicationFrameSucceeded = false;
+    ON_SCOPE_EXIT
+    {
+        if (!bCompletedPublicationFrameSucceeded)
+            PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+    };
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::OwnedFrameAudit::FCanonicalPhaseScope OwnedPhases(Context.NumFrame);
 #endif
@@ -1293,6 +1313,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	catch (...)
 	{
 		bCanonicalPublicationTerminal.Store(true);
+		PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 		bOwnedWorkerTerminal.Store(true);
 		UE_LOG(LogTemp, Error, TEXT("[CanonicalAdmissionExceptionTerminal] Frame=%llu"), Context.NumFrame);
 		return false; // BeginCanonicalFrame sets its active flag only after validation returns.
@@ -1340,6 +1361,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	};
 	const auto MarkTerminal = [this]()
 	{
+		PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 		if (InputSessionRegistry) InputSessionRegistry->AbortFrame();
 		PublishedInputFrame.store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
 		bCanonicalPublicationTerminal.Store(true);
@@ -1549,6 +1571,31 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #if !UE_BUILD_SHIPPING
         ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Publish);
 #endif
+        // Reserve/copy all common-view storage before either irreversible commit.
+        // The captured registry/Installed endpoint belongs to THIS canonical frame.
+        std::shared_ptr<Speed::FCompletedSimulationPublication> CompletedDraft;
+        if (bPublishCompletedWorldInput)
+        {
+            ExceptionStage = TEXT("CompletedWorldInputPrepare");
+            const auto Installed = bHasInputSessions ? InputSessionRegistry->ReadInstalled() : nullptr;
+            // ReadRegistry() produces an observation copy. Bind the common view to
+            // the exact registry retained by PrepareFrame, never a later sample.
+            const auto CapturedRegistry = Installed ? Installed->Registry : InputView;
+            if (!Speed::FCompletedSimulationPublication::CanPrepare(Snapshot, CapturedRegistry, Installed))
+                throw std::runtime_error("completed world/input preparation rejected");
+            CompletedDraft.reset(new Speed::FCompletedSimulationPublication(Snapshot, CapturedRegistry, Installed));
+        }
+        const auto PublishCompletedWorldInput = [&](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)
+        {
+            if (!CompletedDraft) return true;
+            if (!CompletedDraft->MatchesCompleted(Completed)
+                || !CompletedDraft->BindPublicationSerial(SnapshotBuffer.PublishedSerial())) return false;
+            // No allocation, callbacks or separate endpoint loads in this store.
+            // Moving consumes the only mutable alias; readers retain one object.
+            std::shared_ptr<const Speed::FCompletedSimulationPublication> Sealed = std::move(CompletedDraft);
+            PublishedCompletedWorldInput.store(std::move(Sealed), std::memory_order_seq_cst);
+            return true;
+        };
 		IAMSPEED_FRAME_PHASE(Publish);
 		ExceptionStage = TEXT("CanonicalPublish");
 		const ECanonicalPublicationResult Publication = SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame, [&]()
@@ -1588,6 +1635,12 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 				return false;
 			}
 			const auto Completed = InputSessionRegistry->ReadLatest();
+            // A failed/mismatched completion never produces a common publication.
+            if (!Completed || Completed->Frame != Context.NumFrame || !PublishCompletedWorldInput(Completed))
+            {
+                MarkTerminal();
+                return false;
+            }
 			PublishedInputFrame.store(Completed, std::memory_order_seq_cst);
 			for (const auto& Input : Completed->Inputs)
 			{
@@ -1599,6 +1652,11 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 				}
 			}
 		}
+        if (!bHasInputSessions && !PublishCompletedWorldInput({}))
+        {
+            MarkTerminal();
+            return false;
+        }
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputComplete);
 #endif
@@ -1719,6 +1777,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         ParallelTimingScope.MarkCommitted(Snapshot.StateHash, Snapshot.InputJournalHash, ParallelWork);
 #endif
 		IAMSPEED_FRAME_PHASE(Finalize);
+		bCompletedPublicationFrameSucceeded = true;
 		return true;
 	}
 	catch (const std::exception& Exception)
@@ -1782,6 +1841,9 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 		PendingRollbackRequest.Reset();
 	}
 
+	// Legacy restore is not a completed world/input transaction. Invalidate the
+	// optional common view before any restore mutation; retained reads are historical.
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	// Recheck on the worker: an input binding may have arrived since admission.
 	const auto InputView = ReadInputRegistryView();
 	if (InputView && !InputView->Bindings.empty()) return false;

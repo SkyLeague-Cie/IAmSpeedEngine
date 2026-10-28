@@ -125,7 +125,8 @@ auto RunOne=[&](uint64 Epoch,int32 Expected,bool Reset)
 for (uint32 Replacement=0;Replacement<2;++Replacement)
 {
     const uint64 Epoch=2443001+Replacement;
-    FInputActionContractDescription Description; Description.Revision={1}; Description.Actions=FInputActionContract::BaseActions();
+    // Keep the real stock car camera action schema (slots5/6); this raw fixture only drives throttle.
+    FInputActionContractDescription Description=Speed::Driving::MakeContract(Speed::Driving::FBindings{})->GetDescription();
     Description.Physical={{0,EPhysicalDestination::Throttle},{1,EPhysicalDestination::Brake},{2,EPhysicalDestination::Steering}};
     Description.Mapping={{{ERawControlKind::KeyboardUsage,4},Throttle,1}};
     FSessionDescriptor Binding; Binding.Id=2443; Binding.Controller=2443; Binding.Epoch=Epoch;

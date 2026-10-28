@@ -134,15 +134,15 @@ namespace Speed
         /** Joined empty-registry boundary; stable identities stay monotonic. */
         bool ResetEmptyCollisionMatrixEpisodeForTesting()
         {
-            if (!Adapters.IsEmpty()) return false;
+            if (IsRestoreBoundaryReserved() || !Adapters.IsEmpty()) return false;
             RebuildOrderedAdapters();
             if (!OrderedAdapters.IsEmpty() || !Bodies.IsEmpty()
                 || !ProjectionSpheres.IsEmpty() || !ProjectionBoxes.IsEmpty()) return false;
-            DynamicContactPairs.Reset();
-            PendingRollingContactPairs.Reset();
-            DynamicContactPairIndices.Reset();
-            PendingRollingContactPairIndices.Reset();
-            DynamicContactPairKeysByBody.Reset();
+            ContactStorage->DynamicContactPairs.Reset();
+            ContactStorage->PendingRollingContactPairs.Reset();
+            ContactStorage->DynamicContactPairIndices.Reset();
+            ContactStorage->PendingRollingContactPairIndices.Reset();
+            ContactStorage->DynamicContactPairKeysByBody.Reset();
             StaticCollisionWorld.Reset();
             return true;
         }
