@@ -70,6 +70,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
 bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	using namespace Speed::Input;
+	if (Parameters == TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle"))
+	{
+#include "CompletedPublicationCanonicalLifecycle.inl"
+	}
 	if (Parameters == TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"))
 	{
 #include "ControllerDeviceV2Lifecycle2443.inl"
@@ -408,4 +412,32 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("EndPlay has no acquisition"), EndSource->Calls.load(), uint32(0));
 	return true;
 }
+
+// An independent registration delegates to the existing friend method. This
+// introduces no production friend/setter, no actor ABI, and leaves the existing
+// simple legacy test registration and its empty command unchanged.
+class FIAmSpeedCompletedPublicationCanonicalLifecycleTest final : public FIAmSpeedControllerInputLifecycleTest
+{
+public:
+    explicit FIAmSpeedCompletedPublicationCanonicalLifecycleTest(const FString& Name)
+        : FIAmSpeedControllerInputLifecycleTest(Name) {}
+protected:
+    void GetTests(TArray<FString>& Names, TArray<FString>& Commands) const override
+    {
+        Names.Add(TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle"));
+        Commands.Add(FString());
+    }
+    FString GetBeautifiedTestName() const override
+    { return TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle"); }
+    bool RunTest(const FString&) override
+    { return FIAmSpeedControllerInputLifecycleTest::RunTest(TEXT("IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle")); }
+};
+#if WITH_AUTOMATION_WORKER
+namespace
+{
+FIAmSpeedCompletedPublicationCanonicalLifecycleTest CompletedPublicationCanonicalLifecycleInstance(
+    TEXT("FIAmSpeedCompletedPublicationCanonicalLifecycleTest"));
+}
+#endif
+
 #endif

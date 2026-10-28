@@ -54,12 +54,27 @@ std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ASpeedSimulation::Re
 std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ASpeedSimulation::ReadCompletedInputFrame() const
 { return PublishedInputFrame.load(std::memory_order_seq_cst); }
 
+std::shared_ptr<const Speed::FCompletedSimulationPublication> ASpeedSimulation::ReadCompletedWorldAndInputFrame() const
+{
+    if (!bPublishCompletedWorldInput || bCanonicalPublicationTerminal.Load() || bOwnedWorkerTerminal.Load()
+        || bOwnedSimulationPaused.Load() || bInputOwnerRetired.Load()) return {};
+    const auto Frame = PublishedCompletedWorldInput.load(std::memory_order_seq_cst);
+    // A pause request may race an already-running frame. Never return a freshly
+    // republished pointer while pause/retirement/terminal is already visible.
+    if (bOwnedSimulationPaused.Load() || bInputOwnerRetired.Load()
+        || bCanonicalPublicationTerminal.Load() || bOwnedWorkerTerminal.Load()) return {};
+    return Frame;
+}
+
 ESimulationBoundaryResult ASpeedSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
     if (SpeedWorldSubsystem && !SpeedWorldSubsystem->ServiceInputRetirementsAtBoundary())
         return ESimulationBoundaryResult::Failed;
     using namespace Speed::Input::V2;
+    if (bPauseRequested) PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
     if (!bInputSessionAdmissionRequested.Load()) return ESimulationBoundaryResult::Ready;
+    // Any registry/lifecycle change invalidates a current common endpoint.
+    PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
     try
     {
         if (!InputSessionRegistry)
@@ -120,6 +135,7 @@ ESimulationBoundaryResult ASpeedSimulation::ServiceInputSessionBoundary(bool bPa
 
 void ASpeedSimulation::CloseInputSessionsOnWorker()
 {
+    PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
     if (SpeedWorldSubsystem && !SpeedWorldSubsystem->RetireInputProcessingOnWorker())
         bCanonicalPublicationTerminal.Store(true);
     using namespace Speed::Input::V2;

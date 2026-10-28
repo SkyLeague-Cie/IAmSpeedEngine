@@ -115,6 +115,7 @@ void ASpeedSimulation::BeginPlay()
 	Super::BeginPlay();
 	// Fixed before the worker starts; diagnostics never change the canonical payload.
 	bPublishPresentation = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
+	bPublishCompletedWorldInput = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishCompletedWorldInput"));
 	RefreshExecutionMode();
 }
 
@@ -486,6 +487,8 @@ void ASpeedSimulation::StopOwnedWorker()
 		SimulationWorker->StopAndJoin();
 		SimulationWorker.Reset();
 	}
+	// After join, no in-flight frame can republish an endpoint.
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 }
 
 bool ASpeedSimulation::PrepareControlledInputRun()
@@ -511,6 +514,7 @@ bool ASpeedSimulation::PrepareControlledInputRun()
 		InputWorkerGeneration = Generation; NextInputCommandId = 1;
 	}
 	catch (...) { return false; }
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	PublishedInputRegistry.store(std::shared_ptr<const Speed::Input::V2::FInputRegistryView>{}, std::memory_order_seq_cst);
 	PublishedInputFrame.store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
 	bInputSessionAdmissionRequested.Store(false); bInputOwnersClosedOnWorker.Store(false);
@@ -537,6 +541,7 @@ void ASpeedSimulation::RestartControlledRun()
 ESimulationQuiescence ASpeedSimulation::TryPauseOwnedSimulation(const uint32 TimeoutMilliseconds)
 {
 	check(IsInGameThread());
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	bOwnedSimulationPaused.Store(true);
 	if (!SimulationWorker && HasActorBegunPlay()
 		&& GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback)
@@ -554,6 +559,7 @@ ESimulationQuiescence ASpeedSimulation::TryPauseOwnedSimulation(const uint32 Tim
 ESimulationQuiescence ASpeedSimulation::TrySuspendOwnedBoundaryService(const uint32 TimeoutMilliseconds)
 {
 	check(IsInGameThread());
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread)
 		return ESimulationQuiescence::Failed;
 	if (OwnedBoundarySuspendDepth)
@@ -592,6 +598,7 @@ bool ASpeedSimulation::IsOwnedBoundaryServiceSuspended() const
 
 void ASpeedSimulation::PauseOwnedSimulation()
 {
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	bOwnedSimulationPaused.Store(true);
 	if (SimulationWorker)
 	{
@@ -1134,6 +1141,7 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 	};
 	const auto MarkTerminal = [this]()
 	{
+		PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 		if (InputSessionRegistry) InputSessionRegistry->AbortFrame();
 		PublishedInputFrame.store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
 		bCanonicalPublicationTerminal.Store(true);
@@ -1343,6 +1351,28 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 #if !UE_BUILD_SHIPPING
         ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Publish);
 #endif
+        // Reserve/copy all common-view storage before either irreversible commit.
+        // The captured registry/Installed endpoint belongs to THIS canonical frame.
+        std::shared_ptr<Speed::FCompletedSimulationPublication> CompletedDraft;
+        if (bPublishCompletedWorldInput)
+        {
+            ExceptionStage = TEXT("CompletedWorldInputPrepare");
+            const auto Installed = bHasInputSessions ? InputSessionRegistry->ReadInstalled() : nullptr;
+            if (!Speed::FCompletedSimulationPublication::CanPrepare(Snapshot, InputView, Installed))
+                throw std::runtime_error("completed world/input preparation rejected");
+            CompletedDraft.reset(new Speed::FCompletedSimulationPublication(Snapshot, InputView, Installed));
+        }
+        const auto PublishCompletedWorldInput = [&](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)
+        {
+            if (!CompletedDraft) return true;
+            if (!CompletedDraft->MatchesCompleted(Completed)
+                || !CompletedDraft->BindPublicationSerial(SnapshotBuffer.PublishedSerial())) return false;
+            // No allocation, callbacks or separate endpoint loads in this store.
+            // Moving consumes the only mutable alias; readers retain one object.
+            std::shared_ptr<const Speed::FCompletedSimulationPublication> Sealed = std::move(CompletedDraft);
+            PublishedCompletedWorldInput.store(std::move(Sealed), std::memory_order_seq_cst);
+            return true;
+        };
 		IAMSPEED_FRAME_PHASE(Publish);
 		ExceptionStage = TEXT("CanonicalPublish");
 		const ECanonicalPublicationResult Publication = SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame, [&]()
@@ -1382,6 +1412,12 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 				return false;
 			}
 			const auto Completed = InputSessionRegistry->ReadLatest();
+            // A failed/mismatched completion never produces a common publication.
+            if (!Completed || Completed->Frame != Context.NumFrame || !PublishCompletedWorldInput(Completed))
+            {
+                MarkTerminal();
+                return false;
+            }
 			PublishedInputFrame.store(Completed, std::memory_order_seq_cst);
 			for (const auto& Input : Completed->Inputs)
 			{
@@ -1393,6 +1429,11 @@ bool ASpeedSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 				}
 			}
 		}
+        if (!bHasInputSessions && !PublishCompletedWorldInput({}))
+        {
+            MarkTerminal();
+            return false;
+        }
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputComplete);
 #endif
@@ -1573,6 +1614,9 @@ bool ASpeedSimulation::ProcessPendingRollbackRequest()
 		PendingRollbackRequest.Reset();
 	}
 
+	// Legacy restore is not a completed world/input transaction. Invalidate the
+	// optional common view before any restore mutation; retained reads are historical.
+	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
 	// Recheck on the worker: an input binding may have arrived since admission.
 	const auto InputView = ReadInputRegistryView();
 	if (InputView && !InputView->Bindings.empty()) return false;
