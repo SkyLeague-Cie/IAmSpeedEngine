@@ -26,6 +26,7 @@
 #include "HAL/IConsoleManager.h"
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
+#include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
 #include "EngineUtils.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/Camera/SpeedCarCameraPresentation.h"
@@ -859,8 +860,29 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 	}
 	// =========> END OVERLOAD Chaos pediction here
 
-	// only create data history in game
-	if (World->IsGameWorld())
+    // This immutable process opt-in belongs to the dedicated canonical Demo
+    // host only. Never unregister an already active history or borrow its state.
+    const auto RemotePolicy = Speed::Netcode::QueryExactRemoteHostPolicy(World);
+    const bool bExactDedicatedHost = World->IsGameWorld()
+        && RemotePolicy == Speed::Netcode::EExactRemoteHostPolicy::IsolatedDedicated;
+    if (World->IsGameWorld() && RemotePolicy == Speed::Netcode::EExactRemoteHostPolicy::Invalid)
+    { UE_LOG(SpeedInputLog, Fatal, TEXT("Invalid ExactRemote dedicated host policy; legacy fallback forbidden")); return; }
+    bLegacyNetworkHistoryExcluded = false;
+    if (bExactDedicatedHost)
+    {
+        if ((SNetworkSettings && SNetworkSettings->IsRegistered())
+            || !SNetworkPhysicsComponent || !WheeledNetworkPhysicsComponent
+            || SNetworkPhysicsComponent->IsRegistered() || WheeledNetworkPhysicsComponent->IsRegistered()
+            || SNetworkPhysicsComponent->GetStateHistory_External() || SNetworkPhysicsComponent->GetInputHistory_External()
+            || WheeledNetworkPhysicsComponent->GetStateHistory_External() || WheeledNetworkPhysicsComponent->GetInputHistory_External())
+            { UE_LOG(SpeedInputLog, Fatal, TEXT("ExactRemote refuses an already active or missing legacy history component")); return; }
+        SNetworkPhysicsComponent->SetIsReplicated(false);
+        WheeledNetworkPhysicsComponent->SetIsReplicated(false);
+        bLegacyNetworkHistoryExcluded = true;
+        UE_LOG(SpeedInputLog, Display, TEXT("[ExactRemoteLegacyHistoryExcluded] Speed=1 Wheeled=1 BeforeRegistration=1"));
+    }
+    // Default standalone and SL behavior remains the existing legacy route.
+	if (World->IsGameWorld() && !bExactDedicatedHost)
 	{
 		if (SNetworkSettings && !SNetworkSettings->IsRegistered())
 		{
@@ -5157,6 +5179,16 @@ HandbrakeLowSlipYawCorrectionScaleCurve = {
 	SteeringInputRate.InputCurveFunction = EInputFunctionType::LinearFunction;
 	bEnableCenterOfMassOverride = true;
 	SteeringSetup.SteeringType = ESteeringType::Ackermann;
+}
+
+bool USpeedWheeledComponent::IsLegacyNetworkHistoryExcluded() const
+{
+    check(IsInGameThread());
+    return bLegacyNetworkHistoryExcluded && SNetworkPhysicsComponent && WheeledNetworkPhysicsComponent
+        && (!SNetworkSettings || !SNetworkSettings->IsRegistered())
+        && !SNetworkPhysicsComponent->IsRegistered() && !WheeledNetworkPhysicsComponent->IsRegistered()
+        && !SNetworkPhysicsComponent->GetStateHistory_External() && !SNetworkPhysicsComponent->GetInputHistory_External()
+        && !WheeledNetworkPhysicsComponent->GetStateHistory_External() && !WheeledNetworkPhysicsComponent->GetInputHistory_External();
 }
 
 void USpeedWheeledComponent::InitNetwork()

@@ -1,5 +1,6 @@
 #include "SpeedPhysicsSimulation.h"
 #include "Misc/ScopeLock.h"
+#include "IAmSpeed/Netcode/remote-input/ExactRemoteDedicatedHost.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 
 Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionCommand(
@@ -52,7 +53,8 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionC
 bool ASpeedPhysicsSimulation::ConfigureExactRemoteInputHost(uint32 RequiredSessions)
 {
     check(IsInGameThread());
-    if (GetNetMode() != NM_DedicatedServer || !RequiredSessions || RequiredSessions > 16
+    if (Speed::Netcode::QueryExactRemoteHostPolicy(GetWorld()) != Speed::Netcode::EExactRemoteHostPolicy::IsolatedDedicated
+        || GetNetMode() != NM_DedicatedServer || !RequiredSessions || RequiredSessions > 16
         || RequiredExactRemoteInputSessions || SimulationWorker || InputSessionRegistry
         || bInputSessionAdmissionRequested.Load() || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()) return false;
     RequiredExactRemoteInputSessions = RequiredSessions;

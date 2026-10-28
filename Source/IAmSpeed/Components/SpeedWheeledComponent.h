@@ -128,6 +128,8 @@ public:
 	// Investigation hook for local deterministic probes that intentionally
 	// bypass the network-alignment startup countdown.
 	void SetImmediateMovementForTesting();
+    /** GT witness only: both legacy network components were excluded before registration. */
+    bool IsLegacyNetworkHistoryExcluded() const;
 	// Mass to use for physics simulation
 	float GetPhysMass() const override;
 	// Center-of-mass state and its fixed local offset from the component origin.
@@ -894,6 +896,7 @@ private:
 
 	// ========== Netcode variables ==========
 	UPROPERTY()
+    bool bLegacyNetworkHistoryExcluded = false; // GT lifecycle only, default legacy path unchanged
 	TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent = nullptr;
 	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> WheeledNetworkPhysicsComponent = nullptr;
