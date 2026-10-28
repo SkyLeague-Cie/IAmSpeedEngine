@@ -307,7 +307,7 @@ FString USpeedAnalyticAuthoredImport::DescribeContactPolicy(UPrimitiveComponent*
 	return Result;
 }
 
-bool USpeedAnalyticAuthoredImport::CopyExplicitContactPolicy(UPrimitiveComponent* Actual, UStaticMeshComponent* ContactTemplate)
+bool USpeedAnalyticAuthoredImport::CopyExplicitContactPolicy(UPrimitiveComponent* Actual, UPrimitiveComponent* ContactTemplate)
 {
 	if (!IsInGameThread() || !IsValid(Actual) || !IsValid(ContactTemplate) || Actual->IsTemplate() ||
 		!Actual->IsRegistered() || !Actual->GetWorld() || Actual->GetWorld()->WorldType != EWorldType::Editor ||
@@ -315,7 +315,7 @@ bool USpeedAnalyticAuthoredImport::CopyExplicitContactPolicy(UPrimitiveComponent
 	const FString Before = DescribeContactPolicy(Actual);
 	if (Before.IsEmpty()) return false;
 	ContactTemplate->Modify();
-	ContactTemplate->bUseDefaultCollision = false;
+	if (auto* MeshTemplate = Cast<UStaticMeshComponent>(ContactTemplate)) MeshTemplate->bUseDefaultCollision = false;
 	ContactTemplate->SetCollisionEnabled(Actual->GetCollisionEnabled());
 	ContactTemplate->SetCollisionObjectType(Actual->GetCollisionObjectType());
 	ContactTemplate->SetCollisionResponseToChannels(Actual->GetCollisionResponseToChannels());
