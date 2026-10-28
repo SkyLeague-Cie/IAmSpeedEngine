@@ -34,16 +34,16 @@ namespace SpeedAuthoredImport
 	using FValues = TArray<TSharedPtr<FJsonValue>>;
 	struct FInputPin { const TCHAR* RelativePath; int64 Bytes; const TCHAR* Sha256; };
 	// These identify already-produced files, not an execution grant or epoch.
-	constexpr FInputPin RecipePin{ TEXT("RLDimension/C2Assembled/stadium-v1/recipe.json"), 4897532,
-		TEXT("0167d7e66a9438e5ee236dddbc07dea140fb964c701a6c985db545e4f73421c6") };
-	constexpr FInputPin GeometryPin{ TEXT("RLDimension/C2NumericTransfer/stadium-v1/geometry.json"), 2701734,
-		TEXT("c350772d584da3e1665d72f54c13c09ce88c17888c633104162ccd76fa7a5c8e") };
-	constexpr FInputPin BoundsPin{ TEXT("RLDimension/C2NumericTransfer/stadium-v1/conversion-bounds.json"), 6586809,
-		TEXT("e99a3d5c8cc793dffb9cdaea3420af1b849851f8efea2f978165d7f03888f46b") };
+	constexpr FInputPin RecipePin{ TEXT("RLDimension/OctagonalV2/Numeric2/recipe.json"), 7362866,
+		TEXT("e369f7e28f7124d069b0d023761ebd0081ddbf73f8d8786688b1655b0cba660a") };
+	constexpr FInputPin GeometryPin{ TEXT("RLDimension/OctagonalV2/Numeric2/geometry.json"), 2324463,
+		TEXT("b3a9f7de034381508e63aa5d1431051dd3ff7518b55c2e48e509c475b8994b3c") };
+	constexpr FInputPin BoundsPin{ TEXT("RLDimension/OctagonalV2/Numeric2/conversion-bounds.json"), 8297208,
+		TEXT("4d53fd9cafa563418178ca1b5647c12868c17e712cc4d8be956e766b082a06ae") };
 	constexpr int64 MaxInputBytes = 8600000;
-	constexpr int32 TensorCount = 662, PlaneCount = 16, DomainVertexCount = 146;
-	constexpr const TCHAR* RecipeId = TEXT("C2_ASSEMBLED_STADIUM_V1");
-	constexpr const TCHAR* RecipeSchema = TEXT("skyleague.analytic-c2-assembled-stadium/v1");
+	constexpr int32 TensorCount = 1078, PlaneCount = 16, DomainVertexCount = 210;
+	constexpr const TCHAR* RecipeId = TEXT("C2_ASSEMBLED_STADIUM_OCTAGONAL_V2");
+	constexpr const TCHAR* RecipeSchema = TEXT("skyleague.analytic-c2-assembled-stadium/v2");
 	constexpr const TCHAR* Frame = TEXT("SL_Xlong_YminusRLX_Zup_cm_v1");
 
 	bool Fail(FString& Reason, const FString& Message) { Reason = Message; return false; }
@@ -396,9 +396,9 @@ USpeedAnalyticCollisionAsset* USpeedAnalyticAuthoredImport::StageStadiumV1(
 			!VectorField(G, *Fields, TEXT("origin_cm"), Plane.Origin) || !VectorField(G, *Fields, TEXT("normal"), Plane.Normal) ||
 			!VectorField(G, *Fields, TEXT("axis_u"), Plane.AxisU) || !VectorField(G, *Fields, TEXT("axis_v"), Plane.AxisV) ||
 			!Coordinates(G->TryGetField(TEXT("half_extents_cm")), (*Fields)->TryGetField(TEXT("half_extents_cm")), 2, Half) ||
-			!Array(G, TEXT("domain_vertices_cm"), Domain) || Domain->Num() < 3 || Domain->Num() > 44 ||
+			!Array(G, TEXT("domain_vertices_cm"), Domain) || Domain->Num() < 3 || Domain->Num() > 76 ||
 			!Array(B, TEXT("domain_binary64_be_hex"), HexDomain, Domain->Num()) ||
-			!Int(B, TEXT("vertex_count_preserved"), PreservedVertices, 3, 44) || PreservedVertices != Domain->Num())
+			!Int(B, TEXT("vertex_count_preserved"), PreservedVertices, 3, 76) || PreservedVertices != Domain->Num())
 		{ OutReason = FString::Printf(TEXT("Finite plane %d frame/domain mismatch."), I); return nullptr; }
 		Plane.HalfExtents = FVector2D(Half[0], Half[1]);
 		for (int32 J = 0; J < Domain->Num(); ++J)
@@ -533,7 +533,7 @@ bool FSpeedAuthoredImportPinnedStadiumTest::RunTest(const FString&)
 	if (!Candidate.IsValid()) { AddError(Reason); return false; }
 	TestTrue(TEXT("candidate is transient"), Candidate->HasAnyFlags(RF_Transient));
 	TestFalse(TEXT("candidate is not a registered persistent asset"), Candidate->HasAnyFlags(RF_Public | RF_Standalone));
-	TestEqual(TEXT("all tensors imported"), Candidate->TensorBezierPatches.Num(), 662);
+	TestEqual(TEXT("all tensors imported"), Candidate->TensorBezierPatches.Num(), 1078);
 	TestEqual(TEXT("all finite planes imported"), Candidate->BoundedPlanes.Num(), 16);
 	TestTrue(TEXT("no fabricated mesh/triangles"), Candidate->MeshSources.IsEmpty() && Candidate->Triangles.IsEmpty() &&
 		Candidate->IndexedTriangles.IsEmpty() && Candidate->VertexPositions.IsEmpty() && Candidate->VertexNormals.IsEmpty());
@@ -542,7 +542,7 @@ bool FSpeedAuthoredImportPinnedStadiumTest::RunTest(const FString&)
 	int32 Vertices = 0;
 	for (const auto& Plane : Candidate->BoundedPlanes) { Vertices += Plane.DomainVertices.Num(); TestFalse(TEXT("plane not admitted"), Plane.bAuthorityEligible); }
 	for (const auto& Patch : Candidate->TensorBezierPatches) TestFalse(TEXT("tensor not admitted"), Patch.bAuthorityEligible);
-	TestEqual(TEXT("all finite domain vertices retained"), Vertices, 146);
+	TestEqual(TEXT("all finite domain vertices retained"), Vertices, 210);
 	TestEqual(TEXT("block mask captured"), Candidate->AuthoredSources[0].BlockingChannels, uint64(1) << ECC_PhysicsBody);
 	TestEqual(TEXT("overlap mask captured"), Candidate->AuthoredSources[0].OverlapChannels, uint64(1) << ECC_Pawn);
 	FString RepeatedManifest;

@@ -7,9 +7,9 @@
 
 namespace SpeedAuthoredImport
 {
-	constexpr FInputPin RenderPin{ TEXT("RLDimension/C2CompleteRender/stadium-2cm-v1/render.wavefront"), 8437481,
-		TEXT("65a48c1d8d52b4d7073eaab4061d25a912987b3d4f07de9bd17f3273c238ebd8") };
-	constexpr int32 RenderPositions = 55666, RenderNormals = 22714, RenderTriangles = 111328;
+	constexpr FInputPin RenderPin{ TEXT("RLDimension/OctagonalV2/PostAudit2/render.wavefront"), 8201306,
+		TEXT("65e7f46b9bad29db1fc1c1a4a0ec29cf3b99899791cacea7b0d00e67b7fc61d0") };
+	constexpr int32 RenderPositions = 53480, RenderNormals = 21660, RenderTriangles = 106956;
 	struct FRenderFace { int32 V[3]{}, N[3]{}, Role = INDEX_NONE; };
 	struct FRenderInput
 	{
@@ -131,7 +131,7 @@ namespace SpeedAuthoredImport
 			const auto Group = Mesh.CreatePolygonGroup(); Groups.Add(Group);
 			// Roles stay distinct polygon groups, all mapped to one unassigned slot.
 			// A Wavefront `g` is not evidence of a material assignment.
-			Attr.GetPolygonGroupMaterialSlotNames()[Group] = NAME_None;
+			Attr.GetPolygonGroupMaterialSlotNames()[Group] = FName(TEXT("Unassigned"));
 		}
 		for (const auto& Face : Input.Faces)
 		{
@@ -169,7 +169,7 @@ UStaticMesh* USpeedAnalyticAuthoredImport::StageStadiumRenderV1(FString& OutMani
 	FMeshDescription Description; double MaxPositionCastL1;
 	if (!DescribeRender(Input, Description, MaxPositionCastL1, OutReason)) return nullptr;
 	TStrongObjectPtr<UStaticMesh> Candidate(NewObject<UStaticMesh>(GetTransientPackage(), NAME_None, RF_Transient));
-	Candidate->GetStaticMaterials().Add(FStaticMaterial(nullptr, NAME_None, NAME_None));
+	Candidate->GetStaticMaterials().Add(FStaticMaterial(nullptr, FName(TEXT("Unassigned")), FName(TEXT("Unassigned"))));
 	Candidate->MarkAsNotHavingNavigationData();
 	Candidate->CreateBodySetup();
 	Candidate->GetBodySetup()->CollisionTraceFlag = CTF_UseSimpleAsComplex;
@@ -186,7 +186,8 @@ UStaticMesh* USpeedAnalyticAuthoredImport::StageStadiumRenderV1(FString& OutMani
 	for (int32 I = 0; I < Candidate->GetRenderData()->LODResources[0].Sections.Num(); ++I)
 	{
 		Candidate->GetRenderData()->LODResources[0].Sections[I].bEnableCollision = false;
-		FMeshSectionInfo Info = Candidate->GetSectionInfoMap().Get(0, I); Info.bEnableCollision = false;
+		Candidate->GetRenderData()->LODResources[0].Sections[I].MaterialIndex = 0;
+		FMeshSectionInfo Info = Candidate->GetSectionInfoMap().Get(0, I); Info.bEnableCollision = false; Info.MaterialIndex = 0;
 		Candidate->GetSectionInfoMap().Set(0, I, Info); Candidate->GetOriginalSectionInfoMap().Set(0, I, Info);
 	}
 	auto& BuildSettings = Candidate->GetSourceModel(0).BuildSettings;

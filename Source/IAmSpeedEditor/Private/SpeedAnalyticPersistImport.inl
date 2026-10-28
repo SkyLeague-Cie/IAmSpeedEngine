@@ -1,5 +1,6 @@
 // Shares the bounded staging implementation in SpeedAnalyticAuthoredImport.cpp.
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "StaticMeshCompiler.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectHash.h"
@@ -99,6 +100,23 @@ void USpeedAnalyticAuthoredImport::PersistStadiumV1(USpeedAnalyticSourceComponen
 		SavedMesh->GetNumTriangles(0) != RenderTriangles || !SavedMesh->GetMeshDescription(0) ||
 		SavedMesh->GetMeshDescription(0)->Vertices().Num() != RenderPositions)
 		{ Fail(OutReason, TEXT("Persistent copy failed structural validation; no Blueprint changed.")); return; }
+	// Finish only this new owned mesh. Duplication/regular rebuild may reconstruct
+	// default section settings; explicitly author both maps before validating.
+	TArray<UStaticMesh*> OwnedMeshes{ SavedMesh.Get() };
+	FStaticMeshCompilingManager::Get().FinishCompilation(OwnedMeshes);
+	if (SavedMesh->GetRenderData() && SavedMesh->GetRenderData()->LODResources.Num() == 1)
+	{
+		const int32 Sections = SavedMesh->GetRenderData()->LODResources[0].Sections.Num();
+		for (int32 I = 0; I < Sections; ++I)
+		{
+			FMeshSectionInfo Info = SavedMesh->GetSectionInfoMap().Get(0, I);
+			Info.bEnableCollision = false;
+			Info.MaterialIndex = 0;
+			SavedMesh->GetSectionInfoMap().Set(0, I, Info);
+			SavedMesh->GetOriginalSectionInfoMap().Set(0, I, Info);
+		}
+		SavedMesh->GetRenderData()->ResolveSectionInfo(SavedMesh.Get());
+	}
 	if (!SavedMesh->GetRenderData() || SavedMesh->GetRenderData()->LODResources.Num() != 1 ||
 		!SavedMesh->GetRenderData()->LODResources[0].VertexBuffers.StaticMeshVertexBuffer.GetUseHighPrecisionTangentBasis() ||
 		!SavedMesh->GetBodySetup() || SavedMesh->GetBodySetup()->AggGeom.GetElementCount() != 0 ||
@@ -178,4 +196,70 @@ void USpeedAnalyticAuthoredImport::PersistStadiumAnalyticV1(USpeedAnalyticSource
 	if (!bSaved) return;
 	OutAnalyticAsset = Saved.Get(); OutSuccess = true;
 	OutReason = TEXT("Analytic asset saved; render unchanged. Blueprint binding and cold read remain separate.");
+}
+
+
+void USpeedAnalyticAuthoredImport::ValidateStadiumRenderV2(UStaticMesh* Mesh,
+    bool& OutSuccess, FString& OutManifestJson, FString& OutReason)
+{
+    using namespace SpeedAuthoredImport;
+    OutSuccess = false; OutManifestJson.Reset(); OutReason.Reset();
+    if (!IsInGameThread() || !IsValid(Mesh)) { Fail(OutReason, TEXT("Valid render asset on editor game thread required.")); return; }
+    TArray<UStaticMesh*> OwnedMeshes{ Mesh };
+    FStaticMeshCompilingManager::Get().FinishCompilation(OwnedMeshes);
+    const auto* Data = Mesh->GetRenderData();
+    const auto* Description = Mesh->GetMeshDescription(0);
+    if (!Data || Data->LODResources.Num() != 1 || !Description || !Mesh->GetBodySetup())
+        { Fail(OutReason, TEXT("Saved render data/description/body setup missing.")); return; }
+    const auto& LOD = Data->LODResources[0];
+    const int32 Triangles = Mesh->GetNumTriangles(0), Positions = Description->Vertices().Num();
+    bool bSectionsDisabled = true;
+    bool bMaterialIndicesValid = Mesh->GetStaticMaterials().Num() == 1 &&
+        Mesh->GetStaticMaterials()[0].MaterialSlotName == FName(TEXT("Unassigned")) &&
+        Mesh->GetStaticMaterials()[0].ImportedMaterialSlotName == FName(TEXT("Unassigned"));
+    TArray<TSharedPtr<FJsonValue>> Sections;
+    for (int32 I = 0; I < LOD.Sections.Num(); ++I)
+    {
+        const bool Actual = LOD.Sections[I].bEnableCollision;
+        const bool Authored = Mesh->GetSectionInfoMap().Get(0, I).bEnableCollision;
+        const bool Original = Mesh->GetOriginalSectionInfoMap().Get(0, I).bEnableCollision;
+        bSectionsDisabled &= !Actual && !Authored && !Original;
+        bMaterialIndicesValid &= LOD.Sections[I].MaterialIndex == 0 &&
+            Mesh->GetSectionInfoMap().Get(0, I).MaterialIndex == 0 &&
+            Mesh->GetOriginalSectionInfoMap().Get(0, I).MaterialIndex == 0;
+        const auto Section = MakeShared<FJsonObject>();
+        Section->SetNumberField(TEXT("index"), I);
+        Section->SetNumberField(TEXT("actual_material_index"), LOD.Sections[I].MaterialIndex);
+        Section->SetNumberField(TEXT("map_material_index"), Mesh->GetSectionInfoMap().Get(0, I).MaterialIndex);
+        Section->SetNumberField(TEXT("original_material_index"), Mesh->GetOriginalSectionInfoMap().Get(0, I).MaterialIndex);
+        Section->SetBoolField(TEXT("actual_collision"), Actual);
+        Section->SetBoolField(TEXT("section_map_collision"), Authored);
+        Section->SetBoolField(TEXT("original_map_collision"), Original);
+        Sections.Add(MakeShared<FJsonValueObject>(Section));
+    }
+    const auto Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("schema"), TEXT("sl.stadium.saved-render-structure/v2"));
+    Json->SetStringField(TEXT("asset"), Mesh->GetPathName());
+    Json->SetNumberField(TEXT("triangles"), Triangles);
+    Json->SetNumberField(TEXT("source_description_positions"), Positions);
+    Json->SetNumberField(TEXT("render_vertices"), Mesh->GetNumVertices(0));
+    Json->SetNumberField(TEXT("sections"), LOD.Sections.Num());
+    Json->SetArrayField(TEXT("section_collision_observations"), Sections);
+    Json->SetBoolField(TEXT("all_section_collision_disabled"), bSectionsDisabled);
+    Json->SetBoolField(TEXT("structural_material_indices_valid"), bMaterialIndicesValid);
+    Json->SetBoolField(TEXT("empty_simple_collision"), Mesh->GetBodySetup()->AggGeom.GetElementCount() == 0);
+    Json->SetBoolField(TEXT("body_default_no_collision"), Mesh->GetBodySetup()->DefaultInstance.GetCollisionEnabled() == ECollisionEnabled::NoCollision);
+    Json->SetBoolField(TEXT("high_precision_normals"), LOD.VertexBuffers.StaticMeshVertexBuffer.GetUseHighPrecisionTangentBasis());
+    Json->SetBoolField(TEXT("physical_admission"), false);
+    if (!FJsonSerializer::Serialize(Json, TJsonWriterFactory<>::Create(&OutManifestJson)))
+        { Fail(OutReason, TEXT("Could not serialize saved render structure.")); return; }
+    if (Triangles != RenderTriangles || Positions != RenderPositions ||
+        !LOD.VertexBuffers.StaticMeshVertexBuffer.GetUseHighPrecisionTangentBasis() ||
+        Mesh->GetBodySetup()->AggGeom.GetElementCount() != 0 ||
+        Mesh->GetBodySetup()->DefaultInstance.GetCollisionEnabled() != ECollisionEnabled::NoCollision)
+        { Fail(OutReason, TEXT("Saved render counts/precision/empty collision contract differs.")); return; }
+    if (!bSectionsDisabled) { Fail(OutReason, TEXT("Saved render section collision remains enabled.")); return; }
+    if (!bMaterialIndicesValid) { Fail(OutReason, TEXT("Saved render structural slot/index contract differs.")); return; }
+    OutReason = TEXT("Saved render structure only; no materials/UV/physical admission.");
+    OutSuccess = true;
 }
