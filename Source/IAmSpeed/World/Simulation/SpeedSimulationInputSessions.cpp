@@ -84,6 +84,12 @@ std::shared_ptr<const Speed::FCompletedSimulationPublication> ASpeedPhysicsSimul
 
 ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(bool bPauseRequested)
 {
+    if (CompleteOwnedWorkerAtBoundary())
+    {
+        bOwnedWorkerTerminal.Store(true);
+        PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+        return ESimulationBoundaryResult::Complete;
+    }
     if (SpeedWorldSubsystem && !SpeedWorldSubsystem->ServiceInputRetirementsAtBoundary())
         return ESimulationBoundaryResult::Failed;
     using namespace Speed::Input::V2;

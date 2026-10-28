@@ -131,7 +131,7 @@ for(int32 Surface=0;Surface<3;++Surface)
    ++Steps;return ESimulationWorkerResult::Advanced;
   },[](FSimulationWorkerWaitContext&){},[&](bool Paused)
   {
-   if(Steps==FrameCount)return ESimulationBoundaryResult::Ready; // bounded test completion precedes next-frame admission
+   if(Steps==FrameCount)return bRemote?ESimulationBoundaryResult::Complete:ESimulationBoundaryResult::Ready; // complete without inventing a next remote frame
    const auto Result=Driver->ServiceInputSessionBoundary(Paused);
    if(bRemote&&Result==ESimulationBoundaryResult::Waiting)
    {

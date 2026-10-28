@@ -213,6 +213,8 @@ protected:
 	/** Executes one driver pulse on whichever thread currently owns simulation. */
 	virtual ESimulationWorkerResult DriveSimulation(float DeltaTime, float SimTime)
 		PURE_VIRTUAL(ASpeedPhysicsSimulation::DriveSimulation, return ESimulationWorkerResult::Failed;);
+    /** Owner-only completion request at a quiescent boundary, before input admission. */
+    virtual bool CompleteOwnedWorkerAtBoundary() { return false; }
 	/** Executes one interruptible worker pulse; FastSimulation specializes its granularity. */
 	virtual ESimulationWorkerResult DriveOwnedWorkerPulse(float DeltaTime, float SimTime)
 	{
