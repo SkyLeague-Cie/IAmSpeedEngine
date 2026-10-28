@@ -82,7 +82,7 @@ for(int32 Surface=0;Surface<3;++Surface)
   }
   if(!TestTrue(TEXT("claim produced canonical authority"),C->SetFrameInputStreamV2(nullptr)))return false;
   std::shared_ptr<Speed::Netcode::FExactRemoteInputIngress> RemoteIngress;
-  std::vector<FInputFrame> ReceivedFrames;
+  std::vector<Speed::Input::V2::FInputFrame> ReceivedFrames; // legacy Input::FInputFrame is also visible in this fixture
   if(bRemote)
   {
    // Test-only friend setup. The production setter refuses this standalone
