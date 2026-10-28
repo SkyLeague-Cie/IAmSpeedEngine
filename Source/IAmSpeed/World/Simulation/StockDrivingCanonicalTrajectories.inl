@@ -3,6 +3,7 @@
 // Stock drive/steering profile is never retuned. This is not Demo asset, hardware,
 // real-time pacing, server/client, restore or fullstate qualification.
 using namespace Speed::Input::V2;
+const bool bRemote=Parameters==TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories");
 constexpr uint32 FrameCount=121,FirstHeld=31,FirstReleased=91;
 if(!TestEqual(TEXT("fixed native physical rate remains300Hz"),ASpeedPhysicsSimulation::EngineFPS,uint32(300)))return false;
 if(!TestTrue(TEXT("stock physical fixture on GT"),IsInGameThread()))return false;
@@ -11,7 +12,7 @@ if(!TestTrue(TEXT("unchanged stock seven action contract"),Contract&&Contract->G
 struct FStimulus { int32 Action; int16 Value; };
 const FStimulus Stimuli[]={{-1,0},{0,255},{1,255},{2,-127},{2,127}};
 struct FPhysicalRow { SKinematic K;uint32 Grounded=0;uint64 Frame=0,Serial=0;int16 Applied=0; };
-const FString EvidenceRoot=FPaths::Combine(FPaths::ProjectSavedDir(),TEXT("IAmSpeed/StockAtomicTrajectories"),FGuid::NewGuid().ToString(EGuidFormats::Digits));
+const FString EvidenceRoot=FPaths::Combine(FPaths::ProjectSavedDir(),bRemote?TEXT("IAmSpeed/StockRemoteAtomicTrajectories"):TEXT("IAmSpeed/StockAtomicTrajectories"),FGuid::NewGuid().ToString(EGuidFormats::Digits));
 if(!TestTrue(TEXT("new private evidence directory"),!IFileManager::Get().DirectoryExists(*EvidenceRoot)))return false;
 AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="),ELogVerbosity::Warning,EAutomationExpectedMessageFlags::Contains,15);
 for(int32 Surface=0;Surface<3;++Surface)
@@ -80,9 +81,40 @@ for(int32 Surface=0;Surface<3;++Surface)
    Binding.Scenario.emplace_back(Contract,D);if(!TestTrue(TEXT("complete exact stock action frame valid"),Binding.Scenario.back().IsValidFor(*Contract)))return false;
   }
   if(!TestTrue(TEXT("claim produced canonical authority"),C->SetFrameInputStreamV2(nullptr)))return false;
+  std::shared_ptr<Speed::Netcode::FExactRemoteInputIngress> RemoteIngress;
+  std::vector<FInputFrame> ReceivedFrames;
+  if(bRemote)
+  {
+   // Test-only friend setup. The production setter refuses this standalone
+   // fixture and permits only a dedicated authority before worker creation.
+   if(!TestFalse(TEXT("production remote host setter refuses standalone"),Driver->ConfigureExactRemoteInputHost(1)))return false;
+   Driver->RequiredExactRemoteInputSessions=1;
+   Binding.Kind=EProducerContract::ExactRemote;Binding.Journal=9101;
+   ReceivedFrames=std::move(Binding.Scenario);Binding.Scenario.clear();
+   RemoteIngress=Speed::Netcode::FExactRemoteInputIngress::Create(Contract,{1},{Speed::Input::EProducerKind::Device,9101},0);
+   if(!TestTrue(TEXT("inert remote acquisition service exists without a source"),RemoteIngress&&RemoteIngress->GetState()==Speed::Netcode::ERemoteIngressState::Unbound))return false;
+  }
   FBoundaryCommandDescriptor Command;Command.Id=Driver->AllocateInputCommandId();Command.WorkerGeneration=Driver->GetInputWorkerGeneration();Command.RegistryVersion=0;Command.Binding=Binding;
-  if(!TestTrue(TEXT("actual exact timeline queued before owner"),Driver->SubmitInputSessionCommand(Command)==ECommandAdmission::Enqueued))return false;
+  if(!TestTrue(TEXT("actual exact timeline queued before owner"),Driver->SubmitInputSessionCommand(Command,{},{},{},RemoteIngress)==ECommandAdmission::Enqueued))return false;
   Driver->ResumeOwnedSimulation();TArray<FPhysicalRow> Rows;Rows.SetNum(FrameCount);uint32 Steps=0,OwnerThread=0;int32 FailureLine=0;bool Failed=false;
+  std::atomic<bool> AbortAcquisition{false},InitialWaitObserved{false};std::atomic<uint32> WaitBoundaries{0};
+  uint32 AcquisitionThread=0,SubmittedFrames=0;bool SubmissionFailed=false;std::thread Acquisition;
+  ON_SCOPE_EXIT{AbortAcquisition.store(true);if(Acquisition.joinable())Acquisition.join();};
+  if(bRemote)Acquisition=std::thread([&]
+  {
+   AcquisitionThread=FPlatformTLS::GetCurrentThreadId();
+   while(!AbortAcquisition.load()&&(RemoteIngress->GetState()==Speed::Netcode::ERemoteIngressState::Unbound||WaitBoundaries.load()<2))std::this_thread::yield();
+   for(const auto& Received:ReceivedFrames)
+   {
+    if(AbortAcquisition.load())return;
+    auto Result=RemoteIngress->SubmitFrame(Received);
+    while(Result==Speed::Netcode::ERemoteSubmission::TooFar&&!AbortAcquisition.load())
+    {std::this_thread::yield();Result=RemoteIngress->SubmitFrame(Received);}
+    if(AbortAcquisition.load())return;
+    if(Result!=Speed::Netcode::ERemoteSubmission::Accepted){SubmissionFailed=true;return;}
+    ++SubmittedFrames;
+   }
+  });
   Driver->SimulationWorker=MakeUnique<FSimulationWorker>([&]
   {
    OwnerThread=FPlatformTLS::GetCurrentThreadId();if(Steps==FrameCount)return ESimulationWorkerResult::Complete;
@@ -97,13 +129,28 @@ for(int32 Surface=0;Surface<3;++Surface)
    if(R.K.Location.ContainsNaN()||R.K.Velocity.ContainsNaN()||R.K.AngularVelocity.ContainsNaN()||!R.K.Rotation.IsNormalized())
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    ++Steps;return ESimulationWorkerResult::Advanced;
-  },[](FSimulationWorkerWaitContext&){},[&](bool Paused){return Driver->ServiceInputSessionBoundary(Paused);},[&]{Driver->CloseInputSessionsOnWorker();});
+  },[](FSimulationWorkerWaitContext&){},[&](bool Paused)
+  {
+   if(Steps==FrameCount)return ESimulationBoundaryResult::Ready; // bounded test completion precedes next-frame admission
+   const auto Result=Driver->ServiceInputSessionBoundary(Paused);
+   if(bRemote&&Result==ESimulationBoundaryResult::Waiting)
+   {
+    const uint32 Count=++WaitBoundaries;
+    if(Count<=2&&Steps==0&&Driver->CanonicalNumFrame==0&&Driver->InputSessionRegistry&&Driver->InputSessionRegistry->PollCount(9101)==0)InitialWaitObserved.store(true);
+   }
+   return Result;
+  },[&]{Driver->CloseInputSessionsOnWorker();});
   if(!TestTrue(TEXT("physical worker starts"),Driver->SimulationWorker->Start()))return false;
   ON_SCOPE_EXIT{Driver->StopOwnedWorker();};
   const double Deadline=FPlatformTime::Seconds()+30;
   while(Driver->SimulationWorker->IsRunning()&&FPlatformTime::Seconds()<Deadline)FPlatformProcess::SleepNoStats(.001f);
   const bool Completed=!Driver->SimulationWorker->IsRunning();Driver->StopOwnedWorker();
+  AbortAcquisition.store(true);if(Acquisition.joinable())Acquisition.join();
+  if(bRemote&&!TestTrue(TEXT("separate acquisition submitted every exact frame after owner waited without polling; owner retired source"),
+    !SubmissionFailed&&SubmittedFrames==FrameCount&&AcquisitionThread!=GGameThreadId&&AcquisitionThread!=OwnerThread
+    &&WaitBoundaries.load()>=2&&InitialWaitObserved.load()&&RemoteIngress->GetState()==Speed::Netcode::ERemoteIngressState::Retired))return false;
   if(!TestTrue(FString::Printf(TEXT("all actual physical frames complete surface%d case%d failureline%d"),Surface,Case,FailureLine),Completed&&!Failed&&Steps==FrameCount&&OwnerThread!=GGameThreadId))return false;
+  if(bRemote)AddInfo(FString::Printf(TEXT("[StockRemoteAcquisition] Frames=%u PhysicalOwner=%u AcquisitionThread=%u InitialAbsentWaitBoundaries=%u SourceRetired=1 Sockets=NONE"),SubmittedFrames,OwnerThread,AcquisitionThread,WaitBoundaries.load()));
   uint32 SupportedHeld=0;FString Csv=TEXT("N,serial,grounded,applied,x,y,z,vx,vy,vz\n");
   for(uint32 N=0;N<FrameCount;++N)
   {

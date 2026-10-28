@@ -142,7 +142,10 @@ public:
 		const Speed::Input::V2::FBoundaryCommandDescriptor& Command,
 		std::shared_ptr<Speed::Input::V2::FRawAcquisitionJournal> Journal = {},
 		std::shared_ptr<Speed::Input::V2::FInputObservationChannel> Observation = {},
-		std::shared_ptr<Speed::Input::V2::FAIInputCommands> AI = {});
+		std::shared_ptr<Speed::Input::V2::FAIInputCommands> AI = {},
+        std::shared_ptr<Speed::Netcode::FExactRemoteInputIngress> Remote = {});
+    /** Dedicated authority only, frozen before any worker or input admission. */
+    bool ConfigureExactRemoteInputHost(uint32 RequiredSessions);
 	uint64 AllocateInputCommandId() { check(IsInGameThread()); return NextInputCommandId == MAX_uint64 ? 0 : NextInputCommandId++; }
 	std::optional<Speed::Input::V2::FBoundaryReceipt> ReadInputSessionReceipt(uint64 Id) const;
 	bool AcknowledgeInputSessionReceipt(uint64 Id) { return InputSessionCommands->Acknowledge(Id); }
@@ -224,6 +227,8 @@ protected:
 	virtual void OnOwnedWorkerStarting() {}
 	virtual void OnOwnedSimulationPaused() {}
 	virtual void OnOwnedSimulationResumed() {}
+    /** Rebase wall-clock pacing after input starvation; physical time stays fixed. */
+    virtual void OnOwnedInputWaitEnded() {}
 	virtual bool ShouldMeasureCallback() const { return true; }
 	/** Optional pure camera evaluator hook; false leaves the sample unpublished. */
 	virtual bool BuildCanonicalCameraSample(const FSimulationSnapshot& Snapshot,
@@ -331,6 +336,9 @@ private:
 	std::vector<std::pair<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>>> PendingInputObservations;
 	uint64 InputWorkerGeneration = 0, NextInputCommandId = 1;
 	TAtomic<bool> bInputSessionAdmissionRequested = false;
+    uint32 RequiredExactRemoteInputSessions = 0; // frozen GT configuration before worker creation
+    bool bExactRemoteInputWaiting = false; // worker only
+    bool bInputCommandBoundaryDirty = false; // protected by InputSessionAdmissionMutex
 	TAtomic<bool> bInputOwnersClosedOnWorker = false;
 	uint64 NeutralizedInputRegistryVersion = MAX_uint64;
 	bool bInputNeutralizedDuringPause = false;

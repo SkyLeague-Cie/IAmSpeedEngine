@@ -27,6 +27,7 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include <atomic>
+#include <thread>
 
 namespace
 {
@@ -77,7 +78,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
 bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	using namespace Speed::Input;
-	if (Parameters == TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories"))
+	if (Parameters == TEXT("IAmSpeed.Netcode.DrivingActions.StockCanonicalTrajectories")
+        || Parameters == TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories"))
 	{
 #include "StockDrivingCanonicalTrajectories.inl"
 	}
@@ -489,6 +491,20 @@ protected:
 };
 #if WITH_AUTOMATION_WORKER
 namespace { FIAmSpeedStockCanonicalTrajectoriesTest StockCanonicalTrajectoriesInstance(TEXT("FIAmSpeedStockCanonicalTrajectoriesTest")); }
+#endif
+
+class FIAmSpeedRemoteCanonicalTrajectoriesTest final : public FIAmSpeedControllerInputLifecycleTest
+{
+public:
+ explicit FIAmSpeedRemoteCanonicalTrajectoriesTest(const FString& Name):FIAmSpeedControllerInputLifecycleTest(Name){}
+protected:
+ void GetTests(TArray<FString>& Names,TArray<FString>& Commands)const override
+ {Names.Add(TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories"));Commands.Add(FString());}
+ FString GetBeautifiedTestName()const override{return TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories");}
+ bool RunTest(const FString&)override{return FIAmSpeedControllerInputLifecycleTest::RunTest(TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories"));}
+};
+#if WITH_AUTOMATION_WORKER
+namespace { FIAmSpeedRemoteCanonicalTrajectoriesTest RemoteCanonicalTrajectoriesInstance(TEXT("FIAmSpeedRemoteCanonicalTrajectoriesTest")); }
 #endif
 
 #endif

@@ -77,23 +77,37 @@ public:
         std::optional<FToken> Token;
     };
     static std::unique_ptr<FSameFrameInputOwner> Create(std::unique_ptr<IInputProducer> Producer,
-        FOwnerInputBinding Binding, FFrameNumber FirstFrame = 0)
+        FOwnerInputBinding Binding, FFrameNumber FirstFrame = 0,
+        EExactRemoteAdmission RemoteAdmission = EExactRemoteAdmission::Closed)
     {
         if (FPresentationInputScope::IsActive()) return {};
         try
         {
-            if (!ValidBinding(Producer.get(), Binding))
+            if (!ValidBinding(Producer.get(), Binding, RemoteAdmission))
             { if (Producer) Producer->CancelLifecycle(); return {}; }
             auto Fingerprint = FingerprintFor(Binding);
             auto Filter = MakeFilter(Producer.get());
             return std::unique_ptr<FSameFrameInputOwner>(new FSameFrameInputOwner(
-                std::move(Producer), std::move(Binding), FirstFrame, std::move(Fingerprint), std::move(Filter)));
+                std::move(Producer), std::move(Binding), FirstFrame, std::move(Fingerprint), std::move(Filter), RemoteAdmission));
         }
         catch (...) { if (Producer) { try { Producer->CancelLifecycle(); } catch (...) {} } return {}; }
     }
     FSameFrameInputOwner(const FSameFrameInputOwner&) = delete;
     FSameFrameInputOwner& operator=(const FSameFrameInputOwner&) = delete;
 
+    EInputFrameReadiness QueryFrameReadiness(FFrameNumber N)
+    {
+        if (!IsOwner() || FPresentationInputScope::IsActive() || CallingSource || ResumePending || ReplayStart
+            || Phase != EOwnerInputPhase::Idle || Exhausted || PollSerial == UINT64_MAX
+            || N != (Replay ? ReplayNext : NextFrame)) return EInputFrameReadiness::Rejected;
+        if (Replay || Initial || Binding.ProducerContract != EProducerContract::ExactRemote)
+            return EInputFrameReadiness::Ready;
+        CallingSource = true;
+        EInputFrameReadiness Result = EInputFrameReadiness::Rejected;
+        try { Result = Source->QueryFrameReadiness(N); } catch (...) {}
+        CallingSource = false;
+        return Phase == EOwnerInputPhase::Idle ? Result : EInputFrameReadiness::Rejected;
+    }
     FPreparation Poll(FFrameNumber N)
     {
         if (!IsOwner()) return {EOwnerInputStatus::WrongOwner, {}};
@@ -307,7 +321,7 @@ public:
         bool Valid = false;
         FContractFingerprint NewFingerprint;
         std::unique_ptr<FFilterState> NewFilter;
-        try { Valid = ValidBinding(Producer.get(), NewBinding); if (Valid) { NewFingerprint = FingerprintFor(NewBinding); NewFilter = MakeFilter(Producer.get()); } }
+        try { Valid = ValidBinding(Producer.get(), NewBinding, RemoteAdmission); if (Valid) { NewFingerprint = FingerprintFor(NewBinding); NewFilter = MakeFilter(Producer.get()); } }
         catch (...) { Valid = false; }
         CallingSource = false;
         if (!Valid || Phase != PriorPhase || FaultSerial != PriorFault || Pending) return false;
@@ -393,9 +407,9 @@ private:
         std::shared_ptr<const FHistoryEntry> Entry;
     };
     FSameFrameInputOwner(std::unique_ptr<IInputProducer> Producer, FOwnerInputBinding InBinding, FFrameNumber First,
-        FContractFingerprint InFingerprint, std::unique_ptr<FFilterState> InFilter) noexcept
+        FContractFingerprint InFingerprint, std::unique_ptr<FFilterState> InFilter, EExactRemoteAdmission InRemoteAdmission) noexcept
         : Source(std::move(Producer)), Binding(std::move(InBinding)), Fingerprint(std::move(InFingerprint)),
-          Owner(std::this_thread::get_id()), NextFrame(First), Filter(std::move(InFilter)) {}
+          Owner(std::this_thread::get_id()), RemoteAdmission(InRemoteAdmission), NextFrame(First), Filter(std::move(InFilter)) {}
     bool IsOwner() const noexcept { return std::this_thread::get_id() == Owner; }
     bool Matches(const FToken& T) const noexcept { return Pending && T.Identity && Pending->Identity == T.Identity; }
     bool Allowed(const FToken& T, EOwnerInputPhase Required) const noexcept
@@ -408,12 +422,14 @@ private:
         if (FaultSerial != UINT64_MAX) ++FaultSerial;
     }
     FPreparation Reject(EOwnerInputStatus S) noexcept { Quarantine(); return {S, {}}; }
-    static bool ValidBinding(const IInputProducer* Source, const FOwnerInputBinding& B)
+    static bool ValidBinding(const IInputProducer* Source, const FOwnerInputBinding& B, EExactRemoteAdmission Admission)
     {
-        // AI is admitted only through its explicit exact command contract; network V2 stays excluded.
+        // Network admission is explicit and preserves an original Device identity.
+        // The default stays closed; exact streams never inherit device filtering.
 		if (!Source || !Source->SupportsPollFence() || !B.AdapterId || !B.Producer.Id || B.Producer.Kind != (B.ProducerContract == EProducerContract::AI ? EProducerKind::AI : EProducerKind::Device)
             || !B.Epoch.Value || !B.Contract || B.ProducerContract != Source->GetProducerContract()
-            || (Source->GetProducerContract() != EProducerContract::Device && Source->GetProducerContract() != EProducerContract::ExactScenario && Source->GetProducerContract() != EProducerContract::AI)) return false;
+            || (Source->GetProducerContract() != EProducerContract::Device && Source->GetProducerContract() != EProducerContract::ExactScenario && Source->GetProducerContract() != EProducerContract::AI
+                && !(Admission == EExactRemoteAdmission::OriginalDeviceExact && Source->GetProducerContract() == EProducerContract::ExactRemote))) return false;
         try
         {
             const auto C = Source->GetContract();
@@ -480,6 +496,7 @@ private:
     FOwnerInputBinding Binding;
     FContractFingerprint Fingerprint;
     const std::thread::id Owner;
+    const EExactRemoteAdmission RemoteAdmission;
     EOwnerInputPhase Phase = EOwnerInputPhase::Idle;
     bool CallingSource = false, RequireBaseline = true, Exhausted = false;
     FFrameNumber NextFrame = 0;

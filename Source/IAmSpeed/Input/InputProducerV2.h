@@ -7,6 +7,8 @@
 namespace Speed::Input::V2
 {
 enum class EProducerContract : std::uint8_t { Unknown, Device, ExactScenario, ExactRemote, AI };
+// Initial host opt-in preserves original Device identity; other remote origins stay closed.
+enum class EExactRemoteAdmission : std::uint8_t { Closed, OriginalDeviceExact };
 enum class EInputFrameReadiness : std::uint8_t { Ready, Waiting, Rejected };
 enum class ELifecycleResult : std::uint8_t { Applied, Unaffected, Rejected };
 class IInputProducer
