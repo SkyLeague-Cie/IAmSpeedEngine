@@ -74,6 +74,10 @@ public:
 		bool& OutSuccess, UStaticMesh*& OutRenderMesh, USpeedAnalyticCollisionAsset*& OutAnalyticAsset,
 		FString& OutManifestJson, FString& OutReason);
 
+	/** Inspect actual buffers and persisted section maps; never promotes physics. */
+	UFUNCTION(BlueprintCallable, Category = "IAmSpeed|Analytic Import")
+	static void ValidateStadiumRenderV2(UStaticMesh* Mesh, bool& OutSuccess, FString& OutManifestJson, FString& OutReason);
+
 	/** Revalidate the saved source/contact record after Blueprint reconstruction.
 	 * This checks binding only, never physical primitive eligibility/admission.
 	 */
