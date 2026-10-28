@@ -54,6 +54,24 @@ public:
 		USpeedAnalyticSourceComponent* Source, UPrimitiveComponent* Contact,
 		FString& OutManifestJson, FString& OutReason);
 
+	/** Stage the current complete stadium from three separately pinned Native transport files.
+	 * Identity manifest is distinct from the external rational recipe. Preserves the
+	 * actual SourceId and legacy face namespace. No binding, save or authority admission.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "IAmSpeed|Analytic Import")
+	static USpeedAnalyticCollisionAsset* StageStadiumCurrentV1(
+		USpeedAnalyticSourceComponent* Source, UPrimitiveComponent* Contact,
+		FString& OutManifestJson, FString& OutReason);
+
+	/** Save a fresh current analytic DA only in the explicitly selected project.
+	 * Preserves render/BP and authority; records partial save/package on failure.
+	 * Blueprint binding and a new-process cold read remain separate operations.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "IAmSpeed|Analytic Import")
+	static void PersistStadiumAnalyticCurrentV1(USpeedAnalyticSourceComponent* Source, UPrimitiveComponent* Contact,
+		const FString& ExpectedProjectDirectory, const FString& PackageRoot, bool& OutSuccess,
+		USpeedAnalyticCollisionAsset*& OutAnalyticAsset, FString& OutManifestJson, FString& OutReason);
+
 	/** Builds a transient render-only mesh from the pinned derived Wavefront.
 	 * Keeps shared position IDs and supplied analytic corner normals. No world,
 	 * component, material asset, physics source, package or saved asset is changed.
