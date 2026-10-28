@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--vc',type=Path,default=Path('C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.38.33130'))
     parser.add_argument('--windows-kits',type=Path,default=Path('C:/Program Files (x86)/Windows Kits/10'))
     parser.add_argument('--sdk-version',default='10.0.22621.0')
-    parser.add_argument('--suite',choices=['all','world','registry'],default='all')
+    parser.add_argument('--suite',choices=['all','world','registry','driving'],default='all')
     args=parser.parse_args()
     tests=Path(__file__).resolve().parent
     repo=tests.parents[2]
@@ -48,6 +48,8 @@ def main():
     flags=policy+['/I'+str(p) for p in include]
     def execute(label,argv,expected=0):
         t=time.monotonic()
+        if label.endswith('-compile'):
+            argv=list(argv)+['/sourceDependencies',str(out/(label+'.dependencies.json'))]
         try:
             p=subprocess.run([str(a) for a in argv],cwd=repo,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60)
             raw=p.stdout;code=p.returncode
@@ -64,7 +66,7 @@ def main():
             ('consumed',tests/'consumed-command-v2/ConsumedTests.cpp'),('authority',tests/'authoritative-owner-v2/AuthoritativeOwnerTests.cpp'),
             ('envelope',tests/'state-authority-envelope-v2/StateEnvelopeTests.cpp'),('remote',tests/'remote-input/ExactRemoteInputProducerTests.cpp'),
             ('registry',repo/'Tests/Netcode/EmptyInputFrameTests.cpp'),
-            ('world',repo/'Tests/Netcode/WorldTokenGuardTests.cpp')]
+            ('world',repo/'Tests/Netcode/WorldTokenGuardTests.cpp'),('driving',tests/'DrivingActionsTests.cpp')]
     if args.suite!='all':suites=[s for s in suites if s[0]==args.suite]
     for n,(name,cpp) in enumerate(suites):
         if not ok:break
@@ -76,6 +78,7 @@ def main():
         ok=execute(name+'-compile',[cl]+suite_flags+['/c','/Fo:'+str(obj),cpp])
         if ok:ok=execute(name+'-link',[link,'/nologo','/out:'+str(exe),obj,out/'p.obj'])
         if ok:ok=execute(name+'-run',[exe]+([out] if name=='registry' else []))
+    if ok and args.suite in ('all','driving'):ok=execute('driving-wire-run',[out/'driving.exe','--wire'])
     if ok and args.suite in ('all','registry'):ok=execute('registry-lifetime',[out/'registry.exe','--boundary-reservation-live-destruction'],86)
     if ok and args.suite in ('all','registry'):
         for mode in ('submit','stop'):
@@ -86,12 +89,13 @@ def main():
             if not ok:break
             ok=execute('world-probe-'+mode,[out/'world.exe','--probe-'+mode],86 if mode in ('finalize','release') else 0)
     trace=set()
-    for p in out.glob('*-compile.raw.txt'):
-        for line in p.read_text(errors='replace').splitlines():
-            match=re.search(r'including file:\s*(.*)',line)
-            if match:
-                inc=Path(match.group(1).strip())
-                if inc.exists():trace.add(inc.resolve())
+    for p in out.glob('*.dependencies.json'):
+        data=json.loads(p.read_text(encoding='utf-8-sig'))['Data']
+        for item in data.get('Includes',[]):
+            trace.add(Path(item).resolve())
+    dependency_trace_complete=all((out/(op['label']+'.dependencies.json')).is_file()
+        for op in operations if op['label'].endswith('-compile') and op['actual_exit']==0)
+    if not trace or not dependency_trace_complete:ok=False
     for p in trace:
         if str(p) not in pins:pin(p)
     unchanged=all(sha(Path(e['path']).read_bytes())==e['sha256'] for e in pins.values())
@@ -103,7 +107,8 @@ def main():
     receipt=dict(schema='netcode-consolidated-repository-ordinary-tests/v1',utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),selected_suite=args.suite,
         repository=str(repo),qualification_exit=0 if ok else 1,operations=operations,results=results,elapsed_seconds=time.monotonic()-start,temporary_directory=str(scratch),
         inputs=str(out/'inputs.json'),inputs_unchanged=unchanged,repository_includes=sorted(str(p) for p in trace if p.is_relative_to(repo)),
-        historical_artifact_includes=outside,not_run=[name for name,_ in suites if name+'-run' not in results],
+        historical_artifact_includes=outside,dependency_trace_complete=dependency_trace_complete,
+        not_run=[name for name in [n for n,_ in suites]+(['driving-wire'] if args.suite in ('all','driving') else []) if name+'-run' not in results],
         scope='Actual current rebased Input implementations/protocol headers; world token and transaction INC under explicit ordinary World/UE shims, own protected-page negative probes. Synthetic mechanics/gameplay/ledger and native lifetime providers remain unqualified; no native integration/restore verdict.',
         Engine_SDK_UBT_Editor_jobs=0,socket_peer_jobs=0,full_state_v3=False,old_PASS_transferred=False,
         toolchain_headers='Compiler-discovered header hashes observed after compilation; not a frozen native toolchain admission.')
