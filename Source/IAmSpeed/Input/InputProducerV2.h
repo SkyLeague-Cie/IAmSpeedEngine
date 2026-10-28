@@ -7,6 +7,7 @@
 namespace Speed::Input::V2
 {
 enum class EProducerContract : std::uint8_t { Unknown, Device, ExactScenario, ExactRemote, AI };
+enum class EInputFrameReadiness : std::uint8_t { Ready, Waiting, Rejected };
 enum class ELifecycleResult : std::uint8_t { Applied, Unaffected, Rejected };
 class IInputProducer
 {
@@ -15,6 +16,9 @@ public:
 	virtual IInputProducerPollFence* PollFence() noexcept { return nullptr; }
 	virtual bool SupportsPollFence() const noexcept { return false; }
 	virtual EProducerContract GetProducerContract() const noexcept { return EProducerContract::Unknown; }
+	// Owner admission hint only: no freeze, consume, synthetic input or processing ACK.
+	// Ordinary producers retain their existing synchronous poll behavior.
+	virtual EInputFrameReadiness QueryFrameReadiness(FFrameNumber) const { return EInputFrameReadiness::Ready; }
 	virtual std::optional<FInputFrame> InspectBaseline(FFrameNumber) const { return {}; }
 	virtual std::unique_ptr<IPreparedInputResume> PrepareResumeAtBoundary(FFrameNumber) { return {}; }
 	virtual std::optional<FInputFrame> Produce(FFrameNumber Frame) = 0;

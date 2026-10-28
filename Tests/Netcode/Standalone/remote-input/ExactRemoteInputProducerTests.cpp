@@ -1,4 +1,6 @@
 #include "ExactRemoteInputProducer.h"
+#include "ExactRemoteInputIngress.h"
+#include <atomic>
 #include "IAmSpeed/Input/SameFrameInputOwner.h"
 #include "../transport/TransportFixture.h"
 #include <iostream>
@@ -188,11 +190,101 @@ static void BaselineInspectionRejectsStaleResetWithoutMutation()
         else { CHECK(Lease); CHECK(P->Produce(1)); CHECK(P->CloseFrozenCutoff(*Lease)); }
     }
 }
+static void ReadinessDoesNotConsumeOrForge()
+{
+    using R = V2::EInputFrameReadiness;
+    auto P = Producer();
+    for (int N = 0; N < 4; ++N) CHECK(P->QueryFrameReadiness(0) == R::Waiting);
+    CHECK(P->QueryFrameReadiness(1) == R::Rejected);
+    CHECK(P->SubmitFrame(Frame(1)) == ERemoteSubmission::Accepted);
+    CHECK(P->QueryFrameReadiness(0) == R::Waiting);
+    CHECK(P->SubmitFrame(Frame(0)) == ERemoteSubmission::Accepted);
+    for (int N = 0; N < 4; ++N) CHECK(P->QueryFrameReadiness(0) == R::Ready);
+    auto Cut = P->FreezeForOwner(0); CHECK(Cut);
+    CHECK(P->QueryFrameReadiness(0) == R::Rejected);
+    CHECK(P->Produce(0)); CHECK(P->CloseFrozenCutoff(*Cut));
+    CHECK(P->QueryFrameReadiness(1) == R::Ready);
+    CHECK(P->SetLifecyclePaused(true) == V2::ELifecycleResult::Applied);
+    CHECK(P->QueryFrameReadiness(1) == R::Rejected);
+    CHECK(P->SetLifecyclePaused(false) == V2::ELifecycleResult::Applied);
+    CHECK(P->QueryFrameReadiness(1) == R::Ready); Consume(*P, 1);
+    CHECK(P->QueryFrameReadiness(2) == R::Waiting);
+    CHECK(P->CancelLifecycle() == V2::ELifecycleResult::Applied);
+    CHECK(P->QueryFrameReadiness(2) == R::Rejected);
+    auto Bad = Producer(); auto Packet = Fixture::Packet(0); Packet.Input.Reset = false;
+    CHECK(Bad->SubmitFrame(*ToV2(Packet, Fixture::Contract())) == ERemoteSubmission::Accepted);
+    CHECK(Bad->QueryFrameReadiness(0) == R::Rejected);
+    CHECK(Bad->QueryFrameReadiness(0) == R::Rejected);
+    // Inspection has not quarantined/consumed the received record.
+    CHECK(Bad->SubmitFrame(*ToV2(Packet, Fixture::Contract())) == ERemoteSubmission::Duplicate);
+}
+static void IngressOwnsNoPhysicalSourceBeforeWorkerBind()
+{
+    std::shared_ptr<FExactRemoteInputIngress> Ingress;
+    std::thread Acquirer([&] { Ingress = FExactRemoteInputIngress::Create(Fixture::Contract(), {7},
+        {Speed::Input::EProducerKind::Device, 99}, 0); }); Acquirer.join();
+    CHECK(Ingress && Ingress->GetState() == ERemoteIngressState::Unbound);
+    CHECK(Ingress->SubmitFrame(Frame(0)) == ERemoteSubmission::Closed);
+    CHECK(Ingress->MatchesBinding(*Fixture::Contract(), {7}, {Speed::Input::EProducerKind::Device, 99}, 0));
+    CHECK(!Ingress->MatchesBinding(*Fixture::Contract(), {8}, {Speed::Input::EProducerKind::Device, 99}, 0));
+    CHECK(!Ingress->MatchesBinding(*Fixture::Contract(), {7}, {Speed::Input::EProducerKind::AI, 99}, 0));
+    CHECK(!Ingress->MatchesBinding(*Fixture::Contract(), {7}, {Speed::Input::EProducerKind::Device, 100}, 0));
+    CHECK(!Ingress->MatchesBinding(*Fixture::Contract(), {7}, {Speed::Input::EProducerKind::Device, 99}, 1));
+    auto Source = Ingress->CreateProducerForCurrentOwner(); CHECK(Source);
+    CHECK(Ingress->GetState() == ERemoteIngressState::Bound && !Ingress->CreateProducerForCurrentOwner());
+    CHECK(Source->GetProducerContract() == V2::EProducerContract::ExactRemote);
+    CHECK(Source->QueryFrameReadiness(0) == V2::EInputFrameReadiness::Waiting);
+    auto Received = Frame(0); ERemoteSubmission Result = ERemoteSubmission::Invalid;
+    std::thread Transport([&] { Result = Ingress->SubmitFrame(Received); }); Transport.join();
+    CHECK(Result == ERemoteSubmission::Accepted);
+    CHECK(Source->QueryFrameReadiness(0) == V2::EInputFrameReadiness::Ready);
+    bool ForeignRejected = false;
+    std::thread Foreign([&] {
+        ForeignRejected = Source->QueryFrameReadiness(0) == V2::EInputFrameReadiness::Rejected
+            && !Source->InspectBaseline(0) && !Source->PollFence()->FreezeForOwner(0) && !Source->Produce(0)
+            && Source->SetLifecyclePaused(true) == V2::ELifecycleResult::Rejected
+            && Source->CancelLifecycle() == V2::ELifecycleResult::Rejected;
+    }); Foreign.join(); CHECK(ForeignRejected);
+    auto Cut = Source->PollFence()->FreezeForOwner(0); CHECK(Cut);
+    CHECK(!Source->AppendExactScenarioFrame(Received));
+    CHECK(Ingress->SubmitFrame(Frame(1)) == ERemoteSubmission::Accepted);
+    CHECK(Ingress->SubmitFrame(Received) == ERemoteSubmission::Duplicate);
+    auto F = Source->Produce(0); CHECK(F && F->GetData().Producer.Kind == Speed::Input::EProducerKind::Device);
+    CHECK(F->GetData().Producer.Id == 99 && F->GetData().StreamEpoch.Value == 7);
+    CHECK(Source->PollFence()->CloseFrozenCutoff(*Cut));
+    CHECK(Source->QueryFrameReadiness(1) == V2::EInputFrameReadiness::Ready);
+    Source.reset();
+    CHECK(Ingress->GetState() == ERemoteIngressState::Retired);
+    CHECK(Ingress->SubmitFrame(Frame(1)) == ERemoteSubmission::Closed);
+    CHECK(!Ingress->CreateProducerForCurrentOwner()); // same epoch/service never resurrects
+}
+static void IngressSubmissionSerializesWithOwnerRetirement()
+{
+    auto Ingress = FExactRemoteInputIngress::Create(Fixture::Contract(), {7},
+        {Speed::Input::EProducerKind::Device, 99}, 0);
+    auto Source = Ingress->CreateProducerForCurrentOwner(); CHECK(Source);
+    const auto Received = Frame(0);
+    std::atomic<bool> Started{false}, Bad{false};
+    std::thread Transport([&] {
+        Started.store(true);
+        for (int N = 0; N < 2048; ++N)
+        {
+            const auto Result = Ingress->SubmitFrame(Received);
+            if (Result != ERemoteSubmission::Accepted && Result != ERemoteSubmission::Duplicate
+                && Result != ERemoteSubmission::Closed) Bad.store(true);
+        }
+    });
+    while (!Started.load()) std::this_thread::yield();
+    Source.reset(); Transport.join();
+    CHECK(!Bad.load() && Ingress->GetState() == ERemoteIngressState::Retired);
+    CHECK(Ingress->SubmitFrame(Received) == ERemoteSubmission::Closed);
+}
 int main()
 {
     try
     {
-        for (auto Test : {ExactFramesAndImmutableCutoff, ForeignCallsCannotReleaseLease,
+        for (auto Test : {ReadinessDoesNotConsumeOrForge, IngressOwnsNoPhysicalSourceBeforeWorkerBind,
+            IngressSubmissionSerializesWithOwnerRetirement, ExactFramesAndImmutableCutoff, ForeignCallsCannotReleaseLease,
             FailedCloseQuarantinesAndPauseDoesNotForge, SourceContinuityAndAddress, CurrentOwnerAdmissionStillRefuses,
             FullEdgesAndStaleLeaseSerial, GenerationChangeRequiresFreshReset,
             ExplicitLaterBaselinePreservesSameEpochAndHistory, BaselineInspectionRejectsStaleResetWithoutMutation}) Test();
