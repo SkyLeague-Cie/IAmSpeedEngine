@@ -218,7 +218,24 @@ bool Audit(Scope& S,UWorld& World,AGameModeBase& Mode,FString& Why)
                 }
             }
             if(!IsValid(C)||!S.Components.Contains(FObjectKey(C))||C->IsPhysicsStateCreated()||C->IsComponentTickEnabled()||C->IsActive()||C->bAutoActivate||C->bWantsInitializeComponent)
-            {Why=TEXT("inert replay original component set/physics/tick changed");return Failure(S,World,Why);}
+            {
+                // Preserve the first violating original and each refusal bit.
+                // This changes diagnostics only; no post-registration repair,
+                // component exemption or liveness predicate is introduced.
+                const bool Valid=IsValid(C);
+                Why=FString::Printf(TEXT("inert replay original component set/physics/tick changed: owner=%s component=%s class=%s valid=%d known=%d physics=%d tick=%d active=%d autoActivate=%d wantsInitialize=%d registered=%d preRegistered=%d preRegistering=%d autoRegister=%d deferred=%d"),
+                    *A->GetPathName().Left(768),Valid?*C->GetPathName().Left(768):TEXT("invalid"),
+                    Valid?*C->GetClass()->GetPathName().Left(512):TEXT("invalid"),
+                    int32(Valid),int32(Valid&&S.Components.Contains(FObjectKey(C))),
+                    Valid?int32(C->IsPhysicsStateCreated()):-1,
+                    Valid?int32(C->IsComponentTickEnabled()):-1,
+                    Valid?int32(C->IsActive()):-1,Valid?int32(C->bAutoActivate):-1,
+                    Valid?int32(C->bWantsInitializeComponent):-1,
+                    Valid?int32(C->IsRegistered()):-1,Valid?int32(C->IsPreRegistered()):-1,
+                    Valid?int32(C->IsPreRegistering()):-1,Valid?int32(C->bAutoRegister):-1,
+                    int32(Valid&&S.DeferredOriginalComponents.Contains(FObjectKey(C))));
+                return Failure(S,World,Why);
+            }
             if(auto* Primitive=Cast<UPrimitiveComponent>(C))
                 if(Primitive->bAlwaysCreatePhysicsState||Primitive->GetCollisionEnabled()!=ECollisionEnabled::NoCollision||Primitive->IsSimulatingPhysics())
                 {Why=FString::Printf(TEXT("inert replay original primitive collision changed: %s class=%s registered=%d physics=%d always=%d collision=%d sim=%d"),*C->GetPathName(),*C->GetClass()->GetPathName(),int32(C->IsRegistered()),int32(C->IsPhysicsStateCreated()),int32(Primitive->bAlwaysCreatePhysicsState),int32(Primitive->GetCollisionEnabled()),int32(Primitive->IsSimulatingPhysics()));return Failure(S,World,Why);}
