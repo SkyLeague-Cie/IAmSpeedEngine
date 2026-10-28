@@ -54,6 +54,13 @@ public:
 		USpeedAnalyticSourceComponent* Source, UPrimitiveComponent* Contact,
 		FString& OutManifestJson, FString& OutReason);
 
+	/** Current geometry-only temporary probe: both tags and null child classes before
+	 * deferred construction, followed by strict post-construction validation.
+	 * A non-null result with a nonempty reason means cleanup failed: stop authoring.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "IAmSpeed|Analytic Import")
+	static AActor* SpawnStadiumCurrentEditorProbe(UBlueprint* Blueprint, UWorld* World, FString& OutReason);
+
 	/** Stage the current complete stadium from three separately pinned Native transport files.
 	 * Identity manifest is distinct from the external rational recipe. Preserves the
 	 * actual SourceId and legacy face namespace. No binding, save or authority admission.

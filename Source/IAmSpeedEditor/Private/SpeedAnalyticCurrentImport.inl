@@ -1,3 +1,4 @@
+#include "Components/ChildActorComponent.h"
 // Separate current transport contract. Numeric2 / StageStadiumV1 stay unchanged.
 // Included after PersistImport so only the established bounded IO/save helpers are shared.
 namespace SpeedAuthoredCurrent
@@ -167,6 +168,49 @@ namespace SpeedAuthoredCurrent
         return SourceKey(A) == SourceKey(B) && A.bQueryCollisionEnabled == B.bQueryCollisionEnabled &&
             A.RecipeSchema == B.RecipeSchema && A.RecipeSha256 == B.RecipeSha256 && A.PayloadSha256 == B.PayloadSha256;
     }
+}
+
+AActor* USpeedAnalyticAuthoredImport::SpawnStadiumCurrentEditorProbe(UBlueprint* Blueprint, UWorld* World, FString& OutReason)
+{
+    OutReason.Reset();
+    if (!IsInGameThread() || !IsValid(World) || World->WorldType != EWorldType::Editor || World->IsGameWorld() ||
+        World->HasBegunPlay() || !IsValid(World->PersistentLevel) || !IsValid(Blueprint) || Blueprint->bBeingCompiled ||
+        !Blueprint->IsUpToDate() || !IsValid(Blueprint->GeneratedClass) ||
+        Blueprint->GeneratedClass->ClassGeneratedBy != Blueprint || !Blueprint->GeneratedClass->IsChildOf(AActor::StaticClass()) ||
+        Blueprint->GeneratedClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+    { OutReason = TEXT("Expected a compiled actor Blueprint and an inactive Editor world for the current probe."); return nullptr; }
+    FActorSpawnParameters Params;
+    Params.ObjectFlags = RF_Transient; Params.bTemporaryEditorActor = true; Params.bCreateActorPackage = false;
+    Params.OverrideLevel = World->PersistentLevel; Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    Params.bDeferConstruction = true; Params.TransformScaleMethod = ESpawnActorScaleMethod::OverrideRootScale;
+    AActor* Actor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, FTransform::Identity, Params);
+    if (!Actor) { OutReason = TEXT("Current transient Editor probe spawn failed."); return nullptr; }
+    Actor->Tags.AddUnique(TEXT("SLAnalyticStadiumEditorProbe"));
+    Actor->Tags.AddUnique(TEXT("Stadium.AnalyticOnly"));
+    TArray<UChildActorComponent*> Children;
+    Actor->GetComponents(Children);
+    // Own transient instance only. Never change a Blueprint template/CDO/map actor.
+    // Constructors have already run; this is not a proof of no earlier registration.
+    for (UChildActorComponent* Child : Children) if (Child) Child->SetChildActorClass(nullptr);
+    Actor->FinishSpawning(FTransform::Identity, true, nullptr, ESpawnActorScaleMethod::OverrideRootScale);
+    bool bValid = IsValid(Actor) && Actor->GetWorld() == World && Actor->GetLevel() == World->PersistentLevel &&
+        Actor->GetClass() == Blueprint->GeneratedClass && Actor->HasAnyFlags(RF_Transient) &&
+        Actor->ActorHasTag(TEXT("SLAnalyticStadiumEditorProbe")) && Actor->ActorHasTag(TEXT("Stadium.AnalyticOnly")) &&
+        IsValid(Actor->GetRootComponent()) && Actor->GetRootComponent()->IsRegistered() &&
+        Actor->GetActorTransform().Equals(FTransform::Identity, 0.0);
+    if (bValid)
+    {
+        Children.Reset(); Actor->GetComponents(Children);
+        for (const UChildActorComponent* Child : Children)
+            bValid &= IsValid(Child) && Child->GetOwner() == Actor && !Child->GetChildActorClass() && !Child->GetChildActor();
+    }
+    if (!bValid)
+    {
+        if (IsValid(Actor) && !DestroyStadiumEditorProbe(Actor))
+        { OutReason = TEXT("Invalid current probe cleanup failed; preserve this actor and stop authoring."); return Actor; }
+        OutReason = TEXT("Current deferred construction restored child actors or invalidated probe identity."); return nullptr;
+    }
+    return Actor;
 }
 
 USpeedAnalyticCollisionAsset* USpeedAnalyticAuthoredImport::StageStadiumCurrentV1(
