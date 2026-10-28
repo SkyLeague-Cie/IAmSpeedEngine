@@ -385,6 +385,9 @@ protected:
 	// Vehicle presets may snapshot the rigid/wheel state immediately before the
 	// suspension update without replacing the component tick ordering.
 	virtual void BeforeSuspensionUpdate(float DeltaTime) {}
+	// Optional vehicle policy. False preserves the generic application exactly.
+	virtual bool TryApplyWheelSuspensionForce(const USWheelSubBody& Wheel,
+        float Load) { return false; }
 	virtual void HandlePhysicsAutoRecover();
 	virtual void HandleAcceleration();
 	virtual void HandleSteering(const float& delta);
@@ -787,6 +790,9 @@ private:
 
 		return UChaosVehicleMovementComponent::CreatePhysicsVehicle();
 	}
+
+	// Shared fixed-COM authoring rule for initial setup and BeginPlay.
+	void ResolveFixedCenterOfMassFromConfiguration();
 
 	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
 	// Rebind wheel sub-bodies whenever Chaos recreates the vehicle. The

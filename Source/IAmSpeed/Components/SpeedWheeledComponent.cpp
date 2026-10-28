@@ -467,15 +467,9 @@ void USpeedWheeledComponent::OnRegister()
     }
 }
 
-void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
+void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
 {
-	if (NewOwner == nullptr)
-	{
-		return;
-	}
-	SpeedCarOwner = Cast<ASpeedCar>(NewOwner);
-	// Resolve the fixed local COM before placing the origin. The canonical
-	// kinematic state is COM-based, while the actor starts at its mesh origin.
+	// Keep the same precedence and zero fallback as SetOwner.
 	if (!CenterOfMassOverride.IsNearlyZero())
 	{
 		CenterOfMass = CenterOfMassOverride;
@@ -484,8 +478,17 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	{
 		CenterOfMassOverride = CenterOfMass;
 	}
-
 	bEnableCenterOfMassOverride = true;
+}
+
+void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
+{
+	if (NewOwner == nullptr)
+	{
+		return;
+	}
+	SpeedCarOwner = Cast<ASpeedCar>(NewOwner);
+	ResolveFixedCenterOfMassFromConfiguration();
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
 	SetPhysLocation(NewOwner->GetActorLocation());	// init sub-bodies
 	if (SubBodies.Num() > 0)
@@ -829,6 +832,8 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 		{
 		if (FChaosVehicleManager::GetVehicleManagerFromScene(PhysScene))
 		{
+			// CreateVehicle builds suspension load caches before BeginPlay/SetOwner.
+			ResolveFixedCenterOfMassFromConfiguration();
 			CreateVehicle();
 			BindWheelSimulationPointers();
 			FixupSkeletalMesh();
@@ -3034,6 +3039,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 				if (!W.IsOnGround())
 					return;
 
+                if (TryApplyWheelSuspensionForce(W, W.GetSuspensionForce())) return;
 				const FVector SuspensionDir = GetPhysUpVector().GetSafeNormal();
 				const FVector ContactNormal = W.GetHitContactNormal().GetSafeNormal();
 				const float Load = W.GetSuspensionForce();

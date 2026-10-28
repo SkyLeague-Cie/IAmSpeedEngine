@@ -151,6 +151,9 @@ public:
 	virtual void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) = 0;
 	/** Explicit prescribed solids are prepared before ordinary force owners. */
 	virtual bool IsPrescribedMotion() const { return false; }
+	/** Setup-latched native integration policy; generic components retain the existing
+	 * velocity grid. The codec, identity cache and pose/support rules remain unchanged. */
+	virtual bool ShouldPreserveNativeVelocitiesForIntegration() const { return false; }
 	/** Applies an opaque, frame-latched input payload addressed by FSimulationWorld. */
 	virtual bool ApplySimulationInput(TConstArrayView<uint8> Payload) { return false; }
 	/** Appends deterministic mechanic state not covered by the common kinematic snapshot. */
