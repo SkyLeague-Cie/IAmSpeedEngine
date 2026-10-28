@@ -42,7 +42,7 @@ public:
 
 	/** Explicit Editor authoring: copy actual policy onto its template, without a BodyInstance/handle copy. */
 	UFUNCTION(BlueprintCallable, Category = "IAmSpeed|Analytic Import")
-	static bool CopyExplicitContactPolicy(UPrimitiveComponent* Actual, UStaticMeshComponent* ContactTemplate);
+	static bool CopyExplicitContactPolicy(UPrimitiveComponent* Actual, UPrimitiveComponent* ContactTemplate);
 	/** Reads the three pinned v1 inputs under this project's Saved/RLDimension.
 	 * Returns a transient diagnostic candidate and its identity/domain manifest.
 	 * Retain the returned object explicitly; nothing is installed or saved.
