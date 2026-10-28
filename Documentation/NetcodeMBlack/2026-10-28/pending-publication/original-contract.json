@@ -1,0 +1,23 @@
+{
+  "state": "NATIVE_SOURCE_CANDIDATE_NOT_COMPILED_NOT_TESTED",
+  "prepared_before_irreversible_commits": true,
+  "publish_after_world_and_exact_input_completion": true,
+  "common_read": "One private-constructed immutable object stores legacy physical snapshot, exact completed produced-input endpoint and its captured registry. One atomic shared_ptr store; separate legacy APIs remain separate.",
+  "invalidation": [
+    "terminal",
+    "controlled input-run replacement",
+    "pause/boundary mutation",
+    "input owner retirement",
+    "legacy rollback before mutation"
+  ],
+  "default": "Opt-in -SpeedPublishCompletedWorldInput; fixed at BeginPlay before worker. Default false. No network/restore guard opened.",
+  "limits": [
+    "Existing legacy physical bytes remain incomplete mechanical/gameplay fullstate.",
+    "No current live-device input sample, real world branch, lifecycle-composite restore capability or causal rollback proof supplied.",
+    "Empty produced registry endpoint does not prove absence of legacy journal/game-owned input.",
+    "Native source has not compiled or executed. Source-order checks and proposed UE value tests are not a physics/match PASS.",
+    "No change to active Skycar/Inputs/official/Engine sources; no source imports or rebase from unannounced candidate."
+  ],
+  "proposed_test": "IAmSpeed.Netcode.CompletedPublication.ValueAndEndpointIdentity tests pointer identity, frame/registry mismatch, copied world data, one serial bind, paired atomic retained reads and invalidation; NOT_RUN.",
+  "next_native_test": "Build exact private candidate, run the value test and real StepCanonicalFrame fixture with opt-in flag, assert exact consumed frame/physical publication pair across success/failure/pause/retirement. Then qualify actual complete native state/current input/branch and restore provider."
+}

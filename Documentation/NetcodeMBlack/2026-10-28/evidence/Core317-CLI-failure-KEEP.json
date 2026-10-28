@@ -1,0 +1,9 @@
+{
+  "state": "CLI_PREFLIGHT_FAIL_BEFORE_TUPLE_READ_OR_CLAIM",
+  "path": "E:\\UELeadPrivate\\Netcode\\Builds\\OwnCoreIl\\analysis317\\controller.py",
+  "error": "RuntimeError('Exact local tuple path and SHA required')",
+  "source_line": 36,
+  "reason": "Invocation omitted mandatory2arguments;guardexecutesbeforetuple/planread,claimorSDKactor. Correct subsequent invocation consumed317exacttupleonceandclosed. This is an additional Python launcher failure, not a second317actorattempt.",
+  "costs": "Python invocation/tool walltime/startup/controlimport/wrapper actual costs retained;no per-process measurement available;UNKNOWN tail not zero/refund",
+  "observed_tool_exit": 1
+}

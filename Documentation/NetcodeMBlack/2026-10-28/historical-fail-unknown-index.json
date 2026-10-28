@@ -1,0 +1,3121 @@
+{
+  "scope": "Indexonly;originalraws/preimages/costsnotdeletedandremaincentral. Activeproduct/buildunknownssummarizedinREADME. Centralabsoluteoriginsareprovenance,notMBlackrequirements.",
+  "checkpoint": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\checkpoint.json",
+    "bytes": 2055659,
+    "sha256": "181ac808990195cde3e9dea96dff76ede840eb93a2590785e7d51cec1377ca6c"
+  },
+  "entries": [
+    {
+      "checkpoint_field": "checkpoint.native_controller_reference",
+      "state": "Own suspended-original/descendant/timeout/rejection and readlock selftests qualified only; native launcher/admission still pending",
+      "refs": []
+    },
+    {
+      "checkpoint_field": "checkpoint.optimization_disabled_actor_question",
+      "state": "PENDING_TARGETED_SOURCE_CONSULTATION",
+      "refs": []
+    },
+    {
+      "checkpoint_field": "checkpoint.prior_catalogue03_closed_state",
+      "state": "CLOSED_RESOURCE_FAIL_CONSUMED",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\native-preparation2883\\catalog03-v3-closure-report.json",
+          "bytes": 5456,
+          "sha256": "f0d202eae3331aa5cf9ba5aba72543df5143e1bbaa422d793f5d6528ddbe8cc1"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.prior_catalogue04_closed_state",
+      "state": "CONSUMED_FAIL_CONTROL_CLOCK_ORDER_CLOSED",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\catalog-cpu-wait-candidate\\catalog04\\catalog04-closure-report.json",
+          "bytes": 3772,
+          "sha256": "67d0d806dab3e1ed654f9eb00b559f907a3ddc6651e649046e2a400481deb512"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.shadow_construction_state",
+      "state": "ATTEMPT_CONSUMED_CPU_GUARD_FAIL_ALL_OWN_ACTORS_CLOSED_NO_SHADOW_CREATED",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\02\\01a0fb7e-62fc-7630-94df-209e9fed85a1\\manager-Netcode-shadow-construction01-grant-current-20261025.json",
+          "bytes": 2510,
+          "sha256": "734f299e2030e2d94cfe8445566e956babef73e7af3c5ad9e56de6a9f4466c96"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\native-shadow-route-source488\\construction01\\closure-report.json",
+          "bytes": 9490,
+          "sha256": "3887db196342c336fc50eee1350f85ed3cce998a90aa4782dd892f8c63cb329d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.construction02_state",
+      "state": "CONSTRUCTION02_CONSUMED_FAIL_READY_TIMEOUT_CLOSED",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\02\\01a0fb7e-62fc-7630-94df-209e9fed85a1\\manager-Netcode-construction02-CPU-wait-fresh-window02-current-20261025.json",
+          "bytes": 3308,
+          "sha256": "c4955c52241a0226c2042312dffb81514feace3ede88626cd2e816aec355af11"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\construction-wait02-source\\construction02-preflight-fresh-window02.json",
+          "bytes": 1982,
+          "sha256": "20263b78bd7815ce11f6e1bf94bfe556381fd8948d3420557384556340aba95e"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\construction-wait02-source\\engine-construction02-cpuwait.PROPOSED.json",
+          "bytes": 151271,
+          "sha256": "bdc3c38090da0f0cf0ab989892a33be6791db456149a268e5e15e7dfcfc5ae8f"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\construction-wait02-source\\construction-claims\\c4955c52241a0226c2042312dffb81514feace3ede88626cd2e816aec355af11.json",
+          "bytes": 2304,
+          "sha256": "adff2b5b68ac6f081c4b11851f207699136820311a14e893ac0f3e434f0ac707"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\construction-wait02-source\\construction02-closure-report.json",
+          "bytes": 6072,
+          "sha256": "e546ac90e41c07d55e7a0ede831789b6dda63b0af5d2d620fa1ca424c7745672"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.construction03_state",
+      "state": "CONSTRUCTION_ONLY_SUCCESS_CLOSED_NATIVE_NOT_RUN",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\02\\01a0fb7e-62fc-7630-94df-209e9fed85a1\\manager-Netcode-construction03-CPU-wait-distinct-grant-current-20261025.json",
+          "bytes": 3215,
+          "sha256": "04fb80460492a528c8a9763aff06c6759385b4a11343acddcd2038f7f142551d"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\construction-wait03-source\\construction03-preflight.json",
+          "bytes": 1979,
+          "sha256": "95d4d3ca5a7792d819b35acedacaecf6fc38c655e7566083e1821897194f5fc5"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\construction-wait03-source\\engine-construction03-cpuwait.PROPOSED.json",
+          "bytes": 151517,
+          "sha256": "016bd669961ec9ba512560163c7658a3f729bee11189b213861cd722ea7f2434"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\construction-wait03-source\\construction03-closed-audit\\progress-receipt.json",
+          "bytes": 13579,
+          "sha256": "729a0abec110a963649b4f4389383ee2bce2a453311416dde3fb23efd3c4f37c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.slot4_initial_RO_state",
+      "state": "FAIL_CONSUMED_CLOSED_BEFORE_ANY_ENGINE_SOURCE_OPEN",
+      "refs": []
+    },
+    {
+      "checkpoint_field": "checkpoint.slot4_RO_CPUWAIT_source04_state",
+      "state": "CONSUMED_FAIL_CLOSED_PARENT_NO_RETRY",
+      "refs": []
+    },
+    {
+      "checkpoint_field": "checkpoint.slot4_source16_QA_request",
+      "state": "GRANT_CONSUMED_FAIL_NO_RETRY",
+      "refs": []
+    },
+    {
+      "checkpoint_field": "checkpoint.slot4_source65_preparation_history[0]",
+      "state": "V1_NOT_RUN_NO_GRANT_MISSING_PARENT64_PRECONDITION",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\slot4-log-file-metadata-source65\\source-review-and-RO-request.json",
+          "bytes": 8897,
+          "sha256": "fdb9a5ba5d44774825092c324cc4d597aebe90d876bbfa5738e9bdc842f0703b"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\slot4-log-file-metadata-source65\\METADATA.PROPOSED.json",
+          "bytes": 7678,
+          "sha256": "b63b67ca79313a7d9613e9fab0f031dc9b78fb7c90c84994fa081a387b51c6bc"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\slot4-log-file-metadata-source65\\source-delta.json",
+          "bytes": 15608,
+          "sha256": "5bf280414990692084454fc86b6231529e4a794ef0c571c8094382af11f8ebee"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.source_preparation_history[117]",
+      "state": "REFUSED_FRESH_HUMAN_PAUSE_BEFORE_BODY",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-sourcef8b-9b243-guard01\\bounded-shared-build01-preparation-close.json",
+          "bytes": 1580,
+          "sha256": "74c3076a24734a3f0711af6dec0a29c257b421240c9285cbcd48704e2c6869da"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.CPP87_role_ledger[1]",
+      "state": "ROOT88_FAIL_CLOSED",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-input-preparation-source01\\post-step-retirement01\\portable-qualification87-SOURCE\\v5-root88-3d945\\qa88\\QA.PROPOSED.json",
+          "bytes": 18013,
+          "sha256": "1a12cba1c8c0e67580f56d1085ee7229372475b7d94683a13ef4abffa7a79748"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\02\\01a0fb7e-62fc-7630-94df-209e9fed85a1\\manager-Netcode-ROOT88-six-pure-one-OWN-QA-prospective-current-20261026.json",
+          "bytes": 16385,
+          "sha256": "1f20398ebdc77039d31437378717594762242da4f934b9a0f972db41beececa0"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-input-preparation-source01\\post-step-retirement01\\portable-qualification87-SOURCE\\v5-root88-3d945\\qa88\\run-qa01\\receipt.json",
+          "bytes": 4135,
+          "sha256": "8aaa0e6b23c8c473584fa252c37244a271f6a7b1462127a60d46c0f9e2c52c7d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.CPP87_role_ledger[17]",
+      "state": "DATA92_FAIL_CLOSED",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-input-preparation-source01\\post-step-retirement01\\portable-qualification87-SOURCE\\v17-data96-3d945\\qa88\\CAP.PROPOSED.json",
+          "bytes": 18564,
+          "sha256": "5f9fe91e59099870202117586bfafe54fe4ed489bbad109ccdc768781af30fe2"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\02\\01a0fb7e-62fc-7630-94df-209e9fed85a1\\manager-Netcode-DATA96-one-current-UBT-project-capture-prospective-20261027.json",
+          "bytes": 18907,
+          "sha256": "2e3ec9cb0a4b0127aa4de36a93cf47af55dc21bd624875c1ba40c212fad7d4e7"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-input-preparation-source01\\post-step-retirement01\\portable-qualification87-SOURCE\\v17-data96-3d945\\qa88\\run-capture01\\receipt.json",
+          "bytes": 4747,
+          "sha256": "d1e35b6df166bbbabf7e91d694bbe314f2792726af618f485eb093949faacd38"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[0]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\csharp-harness-local02\\build01\\authorizations\\LOCAL01.json",
+          "bytes": 704,
+          "sha256": "249bc77aa88eebb631a4f25d6d3969bd192e00d10e7c8ab5697bd4857623c509"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[6]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run02\\authorizations\\LOCAL01.json",
+          "bytes": 652,
+          "sha256": "6d654b87dc76e1ce0af7838f8a1bc70a3a4e7141a54c4d302d5ca4a51981e2bd"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[7]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run03\\authorizations\\LOCAL01.json",
+          "bytes": 652,
+          "sha256": "3bf0392712732de9e51b2e13a6c6dac8c9887409752976ee50c49cf4e6e54eb6"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[9]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run05\\authorizations\\LOCAL01.json",
+          "bytes": 652,
+          "sha256": "a35d174ebc4c9dd5ad7d7786583fa1290096770a3a51fdc4d860cd8b9ef82d39"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[12]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-native6d01\\build-shared03\\authorizations\\LOCAL01.json",
+          "bytes": 676,
+          "sha256": "a370a5fdb1771bf4e265e5c943b2fa40340fe939cb2d10952aa77c83645d1d36"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[13]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-native6d01\\build-shared04\\authorizations\\LOCAL01.json",
+          "bytes": 676,
+          "sha256": "4c3c7a1bec8b297e4563d5927227d84264f3d0137ca09b185e9899074a3f2603"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[23]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-native6d01\\build-ubt03\\authorizations\\LOCAL01.json",
+          "bytes": 674,
+          "sha256": "3c8fdb35963c85134a093fbbe827c75819c73b359dc4bdb92dcce4f6e0a8f826"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[24]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-native6d01\\build-ubt04\\authorizations\\LOCAL01.json",
+          "bytes": 674,
+          "sha256": "9146db08781694ccc41d1477eb5cb45b2c6d54834628b2a86e350a09625d9990"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[25]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-native6d01\\build-ubt05\\authorizations\\LOCAL01.json",
+          "bytes": 674,
+          "sha256": "e2b6e8d6fec30331c573726c603f8047354fadcf93ec8a6d1d24ff926a17eabc"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[26]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-native6d01\\build-ubt06\\authorizations\\LOCAL01.json",
+          "bytes": 674,
+          "sha256": "52b8e47dc54aa11de5890deef287a13a5376b5864413720399127085f354037c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[31]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-native6d01\\document-probe-parse-descriptors01\\authorizations\\LOCAL01.json",
+          "bytes": 697,
+          "sha256": "eaa7757564d366483763198ca081c9271a07f94b5e0c79f11255265a68b3adb8"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[34]",
+      "state": "CPP_TOOLCHAIN_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\msvc-toolchain-current6d01\\headerless-cpp-smoke02\\authorizations\\LOCAL01.json",
+          "bytes": 672,
+          "sha256": "0955745f9ad6e9ad9b1772aff62ed618ff6a27888cfc5ef6a1d85ca7e281e7a3"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[52]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-sdk-payload-mapping-native-e15e85\\build-canary01\\authorizations\\LOCAL01.json",
+          "bytes": 679,
+          "sha256": "303c49226c2bc01df32e72af01f8740a6582da1d0608f356bf78a51e890389b0"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[73]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\ubt02\\authorizations\\LOCAL01.json",
+          "bytes": 586,
+          "sha256": "4e346f682c1d9ef16ccc31780ca991d77d63e6dc499c6e1826bd8533cf2c9b11"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[75]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\canary01\\authorizations\\LOCAL01.json",
+          "bytes": 588,
+          "sha256": "d4006576780ac57a155bf3b59b417c0092121e96297d92ad77680ccebcd1b825"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[83]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\run-stock01\\authorizations\\LOCAL01.json",
+          "bytes": 591,
+          "sha256": "6137ec956e3a29101c1f1f2429b7e6af54d0f289c1e194439b76e39698000442"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[94]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\xml-run-present01\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "79cec18eafc494efd91746b98474a12ac2fd1b9ec2908a5c32995010ff52d6ae"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[96]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\xml-run-present02\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "4fcafff896bd307df85f73e71368d22cc2a0d268990bc4a4b0334ce5788f8d47"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[100]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\xml-run-stock03\\authorizations\\LOCAL01.json",
+          "bytes": 595,
+          "sha256": "257a590da34f3235b418513e6592d553b04c795e42f5a9a1b87fcf1146bd49d2"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[106]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\platform-run-standard08\\authorizations\\LOCAL01.json",
+          "bytes": 603,
+          "sha256": "3c68d74ae46ff3bd247d264b1f38645f40aa231e4ab61f971637e8cf77419ee6"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[113]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\allten-ddpi-canary375\\authorizations\\LOCAL01.json",
+          "bytes": 601,
+          "sha256": "f7d398d9e828c712616586a0108f56f441872cd0f94cdfe9f1922291fcb876f1"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[141]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\rules-assembly-run12-01\\authorizations\\LOCAL01.json",
+          "bytes": 603,
+          "sha256": "296739794482f47fcd2a4df55f1e62412c75f7d2ee9468bba3e21450298d8e98"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[147]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\plugin-consumer-run21-01\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "f21b730d2af3fdf73684f4e198444b7a3875af1901a623887da27e3cdd2ba5bf"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[149]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\plugin-consumer-run22-01\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "40f12945f2450e1120347c8acdcc9037f46b2dca31b21de1f02f3dd5db0b3037"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[151]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\plugin-consumer-run23-01\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "0aaeeb7446cab88b5ef8fd523013b9e4d63a2b8c41824a24355c0fd2757a9f11"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[153]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\plugin-consumer-run24-01\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "5bbd4f13b9fe7965f83dc3724090a3bbe19e187b9878097abd0cae25fc8416fd"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[154]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\plugin-consumer-run26-01\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "fe7823187e2ad5c387db8ab92297237d6c4679989b0b20d8490b9f9825f92327"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[169]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\engine-rules-run62-01\\authorizations\\LOCAL01.json",
+          "bytes": 602,
+          "sha256": "a0eefa7968a1faa87cdc7af1d922a6b498babdbc7ae009482741f7ce5cec7714"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[174]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\MainRunsCases75\\run-bound-present\\authorizations\\LOCAL01.json",
+          "bytes": 599,
+          "sha256": "e661c89b181c9d1732fa91a8444ca3412261ae77979874b45c3acdecc83551ec"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[179]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\MainWriterRun81\\authorizations\\LOCAL01.json",
+          "bytes": 580,
+          "sha256": "33f56dc006b55b6a7a8fd5dd6e38cdbf52c49134c882a8df9a61344d7ae3c562"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[180]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\MainWriterRun83\\authorizations\\LOCAL01.json",
+          "bytes": 580,
+          "sha256": "10b439bb1c4ee542b2589c9689c1b9974643f9790d27e666dea6415ac8fe0b70"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[182]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\RealMainWarmup88\\authorizations\\LOCAL01.json",
+          "bytes": 582,
+          "sha256": "9fbfe66ede11e0ef5f40bf120ea4ec986fb0bd2d769005eabfd3a915524fbc36"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[184]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PointMetadata\\config-redirects-canary92\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "1f7716b113a1578522794da7e8578ecd7a4515b3c974dedab4b1761db43fe4bf"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[186]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\ConfigRedirectsCases96\\run-mapped\\authorizations\\LOCAL01.json",
+          "bytes": 599,
+          "sha256": "8cc7722394f4b6911bcf3487398d9f5a28d52cb08aa1ae8262aba690688312a7"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[193]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\RealMainWarmup102\\authorizations\\LOCAL01.json",
+          "bytes": 583,
+          "sha256": "903e660b6280b9f0f052b83c69aab988c2b2d0d6329d1c34b0faac13f40d8573"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[204]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\ClientHost135\\QueryTargets148\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "da10236d2f05f884d589bb88b50ac223d3afc77748376c98df0c175fbc538c46"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[208]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\EmptyExtensionQualification157\\authorizations\\LOCAL01.json",
+          "bytes": 595,
+          "sha256": "583fdfa071227f9ce2f8bbf4e02146f3d7458a32cb9b9eee82b7f90c8f28cbb1"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[211]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\ClientHost135\\QueryTargets163\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "2c99eb7daa0be079e24467cacf700f99f60504f26548996b1dbf8afcf362ae75"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.csharp_native_ledger[222]",
+      "state": "CSHARP_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\canary276\\authorizations\\LOCAL01.json",
+          "bytes": 592,
+          "sha256": "2d0e2d579c7fb591c00df6652795a01f346affd9a2ffd727f4919c0678a0d3a2"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_base_source_current",
+      "state": "CONSUMED_FAILURE_CLOSED_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\sdk-base-source-current9b01\\capture01\\PLAN.json",
+          "bytes": 4041,
+          "sha256": "784583b3c84eb670347092bb2c8f103cf8711687f2b821b7bb5f2540f9a227c2"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\sdk-base-source-current9b01\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 659,
+          "sha256": "82e880aa349c34409dbcb90832e50bd95bbb3c02e0a6d0aeb08ebe22b4aedc82"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.ROOT94_baseline_current",
+      "state": "CONSUMED_FAILURE_CLOSED_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run02\\PLAN.json",
+          "bytes": 36379,
+          "sha256": "eab679527a017096d0fa8447c055a69425ad226fed52f2558805a9c1cd59ed82"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run02\\authorizations\\LOCAL01.json",
+          "bytes": 652,
+          "sha256": "6d654b87dc76e1ce0af7838f8a1bc70a3a4e7141a54c4d302d5ca4a51981e2bd"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run02\\baseline-source-contract.json",
+          "bytes": 5407,
+          "sha256": "954747f9e02c7da86f0fa291f2d4281ac8bd7f4b4fef253663ebe906d2766fdc"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.ROOT94_baseline02_current",
+      "state": "CONSUMED_CONTROLLER_DELIVERY_FAILURE_CHILD0_CLOSED_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run03\\PLAN.json",
+          "bytes": 36965,
+          "sha256": "d15e84da1da8044281f0d9dc81a03aa8d78a7b1863f0541e147f93aa16172476"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run03\\authorizations\\LOCAL01.json",
+          "bytes": 652,
+          "sha256": "3bf0392712732de9e51b2e13a6c6dac8c9887409752976ee50c49cf4e6e54eb6"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run03\\baseline-source-contract.json",
+          "bytes": 3953,
+          "sha256": "62d4739391416d8896411c8dfc68e679804035b7b4f06d88931280ab563749e0"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.ROOT94_control_A_current",
+      "state": "CONSUMED_CONTROLLER_HELPER_FAILURE_CHILD0_CLOSED_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run05\\PLAN.json",
+          "bytes": 37041,
+          "sha256": "1bfdb9108a57e095ce2546c2f02b89aa1929344ec146d294fa6d4e33ef5b6e9d"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-ubt-current9b01\\run05\\authorizations\\LOCAL01.json",
+          "bytes": 652,
+          "sha256": "a35d174ebc4c9dd5ad7d7786583fa1290096770a3a51fdc4d860cd8b9ef82d39"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.installed_foundation_documents_current",
+      "state": "CONSUMED_FAILURE_CLOSED_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\installed-foundation-documents-current9b02\\capture01\\PLAN.json",
+          "bytes": 7799,
+          "sha256": "d1b6ec6316cf18f99a4dd720be969e1f9e2f260678806f9fc8f8960ccc6b4667"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\installed-foundation-documents-current9b02\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 674,
+          "sha256": "90d03822cf62dd9dd272a7e3e5ba042ca18b4cece5aa9f2e9d6b1ecb2adef926"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.completed_native_fixture_source_revalidation_current",
+      "state": "SOURCE_SUCCESS_CLOSED_NOT_COMPILED_NOT_RUN",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-native-fixture-source01\\source-success-closed-audit04.json",
+          "bytes": 3342,
+          "sha256": "44b1223e33a7f332fddac4ddddf9927428200954c9d575f7cc287fcac5ee9e62"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.private_bounded_build_route_source_current",
+      "state": "SOURCE_SUCCESS_CLOSED_NOT_COMPILED_NOT_RUN",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-source02\\manifest.json",
+          "bytes": 9968,
+          "sha256": "602dbdadaa57e55c0f922ce600f6ddf6e1b7a419176b4b2ceba4899e0463f675"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-bounded-build-route-source02\\source-success-closed-audit05.json",
+          "bytes": 2140,
+          "sha256": "effe0451fd02994f82b4eb355b477d22e03b822b959907789074fd9a894f0b0d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.consumed_cpp_unknown_history_KEEP[0].prior_claim",
+      "state": "UNKNOWN_BLOCKS_FAMILY",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\msvc-toolchain-current6d01\\headerless-cpp-smoke01\\PLAN.json",
+          "bytes": 10986,
+          "sha256": "bc3964f55795eee7eaa73c12e557b67b8c0e549a38a432401a6c55c2a8cfbab9"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\msvc-toolchain-current6d01\\headerless-cpp-smoke01\\authorizations\\LOCAL01.json",
+          "bytes": 672,
+          "sha256": "6269c0b7721d2416de545c1e2543f63d8eccbf293885d5abf5eb8ffb05c2cbad"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\msvc-toolchain-current6d01\\headerless-cpp-smoke01\\attempt01\\receipt.json",
+          "bytes": 37775,
+          "sha256": "0704498b375ff9ce8f827793faecd541a16f4aa1d0f5b821fd5eb3ffb6469f6b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[0]",
+      "state": "SDK_TWO_FINITE_DIRECTORY_METADATA_CAPTURED_ALL_SDK_HANDLES_CLOSED_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\sdk-config-directory-metadata-e15e85\\capture02\\authorizations\\LOCAL01.json",
+          "bytes": 668,
+          "sha256": "4d8d3deab0c77d73b2de8c47c9ee7b8a1033fb3e2b49880de959ef4ce843c471"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\sdk-config-directory-metadata-e15e85\\capture02\\PLAN.json",
+          "bytes": 6359,
+          "sha256": "5be6451d99cb3885c58b74dad61ffcf789eb8000c4efed8c335a0c4fdfa58230"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[1]",
+      "state": "SDK85_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\HierarchyPointMetadata\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 601,
+          "sha256": "d5a216857bcbc22dfca7905140fcb15ed338ff6fc668c984322dadfb1b2f6bd5"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\HierarchyPointMetadata\\capture01\\PLAN.json",
+          "bytes": 15586,
+          "sha256": "337bd1f5cbae0a257b3e7c2a2184e086a9835ed6ccbe55a8620d33ff3578aab5"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[2]",
+      "state": "SDK9_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\InstallednessPointMetadata\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 604,
+          "sha256": "40a65fcfe35cd5a63a6c803148d69c35ae3a8ca0a3a9024219bdf1357940374c"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\InstallednessPointMetadata\\capture01\\PLAN.json",
+          "bytes": 3059,
+          "sha256": "c5cd8696aecb4fecf52211e55a33ae621e94552bf902b088e49917f22b7ae4b3"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[3]",
+      "state": "SDK13_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\XmlConfigPointMetadata\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "1c4eea095978c093fc927f4a9217d7a770b8a1f082961a58b27e67489d706abf"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\XmlConfigPointMetadata\\capture01\\PLAN.json",
+          "bytes": 3276,
+          "sha256": "5c2e657f8d697e7133ad35ed91f4a6d94090419fa0f4887e5f755bc6bfd16b09"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[4]",
+      "state": "SDK14_FINITE_DIRECTORY_METADATA_CAPTURED_ALL_SDK_HANDLES_CLOSED_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Config14Metadata375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "2aab2ea3d7f4e47e4b8f9fbdbbfe7fa7a4575edf5d975c8b53a100ad63591974"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Config14Metadata375\\capture01\\PLAN.json",
+          "bytes": 5670,
+          "sha256": "90312b4805056d0a71abc364d12a27e5b6a10f14ce2069132fc24562b902c2bc"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[5]",
+      "state": "SDK7_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExtensionPoints375\\capture02\\authorizations\\LOCAL01.json",
+          "bytes": 596,
+          "sha256": "c3e733a9fc08c2b32a6ac42323d0004f9e7e170e4484bf69fe4015f112a0d6eb"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExtensionPoints375\\capture02\\PLAN.json",
+          "bytes": 4740,
+          "sha256": "bf9300cf81dd4d954b72b1f9631368e93cda1d2f8875f3531727f81c1bac589c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[6]",
+      "state": "SDK_PLATFORM_ROOT_FINITE_DIRECTORY_METADATA_CAPTURED_ALL_SDK_HANDLES_CLOSED_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PlatformsRootMetadata375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 602,
+          "sha256": "ba8fdc73bc40eabab078dfb397130a5e5dacf7efdb37321326d5d43becb58ad8"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PlatformsRootMetadata375\\capture01\\PLAN.json",
+          "bytes": 4881,
+          "sha256": "12593e728b17398e30e98051beba373c871fb8b0fed44dae60df21496f5d77ea"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[7]",
+      "state": "SDK15_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExtensionConfigPoints375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 602,
+          "sha256": "ec0a91694acc6d99eb9f4cc284ff8b72ecbaf8ec7e66a8f1bb773344223a858d"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExtensionConfigPoints375\\capture01\\PLAN.json",
+          "bytes": 9900,
+          "sha256": "ef1a393a5017da31ba8bd1f635fa12dd71e9da80738ebb4aa0dc42397a6c7144"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[8]",
+      "state": "SDK_VISIONOS_CONFIG_FINITE_DIRECTORY_METADATA_CAPTURED_ALL_SDK_HANDLES_CLOSED_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\VisionConfigMetadata375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 601,
+          "sha256": "cf9b498640bed30831b470711ea39ed526dbf4c29c51b6ad53a7d8cdd0ed5272"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\VisionConfigMetadata375\\capture01\\PLAN.json",
+          "bytes": 4916,
+          "sha256": "ad8956811f4a9a780e332d97ba31e3a506d7d22bbb717c56cc1468ecd0ddb784"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[9]",
+      "state": "SDK42_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Sdk7JsonPoints375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 596,
+          "sha256": "539927e1a713f36f76bd361f13e61c53e5ca121c5c6c208276e0d584b1321629"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Sdk7JsonPoints375\\capture01\\PLAN.json",
+          "bytes": 19057,
+          "sha256": "a50efe4ad9ffb1cd7601ddb29df4ea8a4adc08cd83594dd55c5a816dde21c695"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[10]",
+      "state": "SDK10_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SdkParentPoints375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 596,
+          "sha256": "7527d3b3be6af4910003880bd76ead342df5b4f674d4fc1fd68228f1038124ae"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SdkParentPoints375\\capture01\\PLAN.json",
+          "bytes": 8019,
+          "sha256": "7537e33dc0cc7bfd0d1b46b4f484c6b849d8161e55bfdd67a551c26f85a07ce6"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[11]",
+      "state": "WINSDK5_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdk5Points375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 598,
+          "sha256": "4b0b881aaaada4ca151d3c6f38311cae81ec85bff8dc7fd18b2331942440f8d3"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdk5Points375\\capture01\\PLAN.json",
+          "bytes": 4414,
+          "sha256": "b1c37a407d258a7248595e7e0ecffca5608ed93bc2cf55ddc7c7aea196ad8b87"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[12]",
+      "state": "WINDOWS_SDK_INCLUDE_FINITE_DIRECTORY_METADATA_CAPTURED_ALL_SDK_HANDLES_CLOSED_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdkIncludeMetadata375\\capture02\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "4387579d03897752acad012e2b1211bb40a2e6f56fcbcc41fd246c986cafeb1c"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdkIncludeMetadata375\\capture02\\PLAN.json",
+          "bytes": 5103,
+          "sha256": "34cf912c31ab6b4d05fd158ee81677712cc18527695c7241aa0ff7773d504c06"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[13]",
+      "state": "FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdkHeader15Points375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "d83983b393eadd0749a2c31f9686e19f75500b162fe66d27a1b49210085c96b9"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdkHeader15Points375\\capture01\\PLAN.json",
+          "bytes": 8838,
+          "sha256": "ff789f92e24cd2eef8b373a2513cb905fd1cd2104d2e21d33d510a375f85104a"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[14]",
+      "state": "WINSDK_HEADERS15_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdkHeader15Points375\\capture04\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "ec08d6e7b0b8a795d7365d77dcee420e3a17ce7a8e6f16d41076f34ea0c041ef"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdkHeader15Points375\\capture04\\PLAN.json",
+          "bytes": 8838,
+          "sha256": "8b59b46949e63416713cfc860e23b1546b489804bce713dfd5d5819aa0ed8a1e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[15]",
+      "state": "ENGINE_RULES11_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRules11Points09\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 599,
+          "sha256": "56c760a5d5405b13b373ccc3229189c04d0364cf6c5c7ab255541394a821ecc4"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRules11Points09\\capture01\\PLAN.json",
+          "bytes": 5268,
+          "sha256": "c4c687fff1b68b4bb582887a6da17ce6d6ca180e5fe7f38311d7416e8d6f4af0"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[16]",
+      "state": "PROGRAM_MANIFEST9_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ProgramRuleManifest9Points15\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "fd21bc68a02318546d07dc8e7270a90ced1574c5e6095b5fcaee0d09bd88f7a2"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ProgramRuleManifest9Points15\\capture01\\PLAN.json",
+          "bytes": 4876,
+          "sha256": "2cb8246e2656bb4449f2c3344eaf03f93ba3a81c0514d8ef8cf87b9c3ea0ccb4"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[17]",
+      "state": "PROGRAM_COORDINATES16_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ProgramRuleCoordinates16\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 603,
+          "sha256": "bd7909567fde94b62b3650b668df3cc3041b7df4d1e7f300dfd405c1d9eda378"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ProgramRuleCoordinates16\\capture01\\PLAN.json",
+          "bytes": 81527,
+          "sha256": "c1f88b8c1a10b305e5d48a15d89eddaa50d200e509ad91471f7f24f82da1cb20"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[18]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice00\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "6dcf52da1a5cc444354b5c7680cc84cb21771403f4effbfa28dad848dc4d046f"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice00\\PLAN.json",
+          "bytes": 50859,
+          "sha256": "3560e0177cd1eed0845deb7759177ceb5b6fa6b7e9a54131e609bea65b9a92fe"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[19]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice01\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "d08e2d2830983d19f7a8f86c54589064cd92def13ff0d3d7bc5192e960e6d0b1"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice01\\PLAN.json",
+          "bytes": 47839,
+          "sha256": "d9a85b3cfb46648839df86d650581bdf5cb7c1550a7df8801af5efccac64949f"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[20]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice02\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "9c4c2632531f49ec12b3208a9b8b23a494a99e2bf9b810f42125b0b3f98b5c17"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice02\\PLAN.json",
+          "bytes": 49444,
+          "sha256": "ea41f9b3640d729dda6698698d62bd86c67ebd7067600f493fc52f673b0d8462"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[21]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice03\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "0827c32cd67145f91108ba4fcb60dac0df27b4e624acc6455bf3ee1248c5124c"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice03\\PLAN.json",
+          "bytes": 47636,
+          "sha256": "265af312bd4de51c84f1189408cc5c4fe8269ad771676d672755b082c8c12ed0"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[22]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice04\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "71929c40e2720f4f31faf248d3ccfc9f569bc95df485f855f89df8e7cbe1e7ee"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice04\\PLAN.json",
+          "bytes": 45612,
+          "sha256": "e2e1da4e5bba61e9a0f8cbe2c38c80238502d1982f1014146b38daa2b09d0875"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[23]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice05\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "731ed212ad59cb5656021eee11cfd6481e24e57af59331ac513b8f75e0af679d"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice05\\PLAN.json",
+          "bytes": 43949,
+          "sha256": "e2aa17f58ad2a9c77c74efdbdbaa87dbe0dd9de81b52168af6f44e9b79fdae35"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[24]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice06\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "f3876ee2f6daa02199bc907b08abec756c16c24c2ee92c8d8c0abdc2fa37dffc"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice06\\PLAN.json",
+          "bytes": 63368,
+          "sha256": "94ce95461e1ccfdada9e839c92197314c4de72783d21dc41b72af7b28e81438f"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[25]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice07\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "7b194590218b2bf63a3109e1a0fce60db82f493d1f810d33da6a2d1c103e6c20"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice07\\PLAN.json",
+          "bytes": 75426,
+          "sha256": "f04b4712b2eeba86840c2d9c9b684caf8935d5f768464ed399fff32d8949f946"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[26]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice08\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "aa8ac9b2b02ae0d77aa87bb5c1c93b042dfb865ff5faaee680ca23450e3e32e4"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice08\\PLAN.json",
+          "bytes": 71608,
+          "sha256": "0bd0f1e296e90df4b9cc461d8d18f25b032f4d8d7ed7d2b88707839da80cdcd4"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[27]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice09\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "08540ca0df62f53d5a2f5843580381b3cf53373b851780f3891847e02867534b"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice09\\PLAN.json",
+          "bytes": 75876,
+          "sha256": "c0853f10eef9236be63dd0874d3774fb4b7eb0dfa1eeaafb0410040db0f57869"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[28]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice10\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "87322db8b8531dbfcc11732bfa30905b86c05d336a02595247c2f0c2f501743b"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice10\\PLAN.json",
+          "bytes": 74176,
+          "sha256": "d7b95aa908ea02c97a2a396c12895633506d9d9cc47c0b6c20c6df988030461a"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[29]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice11\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "9c1a0c596667850d46219957a0f6d7daffcb42ca078abff93edec599d56be89e"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice11\\PLAN.json",
+          "bytes": 74197,
+          "sha256": "345b0a73eba07975e23768129ee0a12cbfaf143df0793ec14bfe9bf635be4842"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[30]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice12\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "c852c3b8553f9d29a776e8f8871751493fa6124f023b62c7d9f00bbe707e17a3"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice12\\PLAN.json",
+          "bytes": 73561,
+          "sha256": "d1fd5fcaaba32d3a33beca6d14de1668049551e5835d885b40285eef29e16490"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[31]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice13\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "2e9c63abf764bd6836059dd12c3e3b556a5d46d632666b1a687abb6a7759edf0"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice13\\PLAN.json",
+          "bytes": 65142,
+          "sha256": "a41d559ba2b13b890de360e10d44276efa1df784e99ba5abf91003a21fcfe300"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[32]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice14\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "dbd143d2cbd013598aff6095b271b4b4f3c86494847cfe9d63a19bf3a29920b0"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice14\\PLAN.json",
+          "bytes": 67243,
+          "sha256": "d5c79fba99e19614b782f8c13d011bace7289adf975b8f58b3fc74298efd00fb"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[33]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice15\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "fbbc24c98ac7749ce57d3bbefeae06e5e18c387a8b475bea027926e8beac550d"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice15\\PLAN.json",
+          "bytes": 72979,
+          "sha256": "eb40ce4399059371f6e4767fa0280762a992630b041f4b4d30f439501a4ddf70"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[34]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice16\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "3696e9fdc0c8f2f606945b63a4d23f7947c9865212e5a6118991e0cb72ba0295"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice16\\PLAN.json",
+          "bytes": 68029,
+          "sha256": "57bdcdcaf2855bdd1e0a08dbd4dfe9dbb3e09579f4cc9726e908fc0e793cfe38"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[35]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice17\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "f70d7a69677c4e5643133a213b919a64f1c5ee52f73baf6194b3cc88c3464d34"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice17\\PLAN.json",
+          "bytes": 69563,
+          "sha256": "da5de12a08c22408dacefae56cdb363107862d43f3c6ee94e8117382e9d10e0a"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[36]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice18\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "b051ab9712835658082f77226a3c42c2da43e3030d6c2ad15fb3c8747410458f"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice18\\PLAN.json",
+          "bytes": 68739,
+          "sha256": "df4614acda1bafa4f8ff05a1390b5abe2bdac8ee55810f8110a2c46e15337161"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[37]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice19\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "e3c149cd1d3998d02e2a21df5734c66318270d3518a6aca1df5b44c8bdc8385a"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice19\\PLAN.json",
+          "bytes": 72922,
+          "sha256": "db8a2c9ef634945b51ed36879351eb349413d92b0d54d7034925b59cf795ddc9"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[38]",
+      "state": "ENGINE_COORDINATES17_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice20\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "05b166959dafeb9014af12f20553684c1fd30c75be05906e961c870aa7b315c4"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRuleCoordinates17\\slice20\\PLAN.json",
+          "bytes": 36416,
+          "sha256": "ed3651894e75f6e0ec8a8fd6c8d7e65b04f0fd3888e1039deb7be2ed729a373e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[39]",
+      "state": "PLUGIN_COORDINATES18_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice00\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "65c0e0c3a0abb9853ea9b53676d426813752c8cc94b21f06a926f4702bcdf6e4"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice00\\PLAN.json",
+          "bytes": 49226,
+          "sha256": "f39af7038c65e9e9d46c83c15205261bc2ca28a92d814860b1b7db28010bde31"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[40]",
+      "state": "PLUGIN_COORDINATES18_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice01\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "25451ba0c489f070ba4f575d6188449a8e1dd6f13c0810028d24775313498791"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice01\\PLAN.json",
+          "bytes": 49764,
+          "sha256": "dd436b95414682d7f7d35569114f123c0a7395296387aab44d43051ee8f7d70b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[41]",
+      "state": "PLUGIN_COORDINATES18_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice02\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "e60b1049e19c790a1b9397b58244d431c4364098063b4bbc9058e96d521ba794"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice02\\PLAN.json",
+          "bytes": 50101,
+          "sha256": "9d960c97088f014cd8c2609796799553573a7264796cef4fae1dfba0342ee631"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[42]",
+      "state": "PLUGIN_COORDINATES18_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice03\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "9ed1b90672800fe071900bedf2a5c06dea564830e9f889a1cfe0a97ece81df16"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice03\\PLAN.json",
+          "bytes": 49001,
+          "sha256": "4841cf90dc82b147765bd2e62929ec8f14319b2078f601f32bc3417a03064936"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[43]",
+      "state": "PLUGIN_COORDINATES18_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice04\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "f37e358368e1b807c9051fd741b45c0b9e1dcc9096e0e1f6e554605ad8a53256"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice04\\PLAN.json",
+          "bytes": 47686,
+          "sha256": "00d7b62901fb179fab56e5826a23c323f7c25dc7340e60eb3a94feb966051af0"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[44]",
+      "state": "PLUGIN_COORDINATES18_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice05\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "956f9266c0658c6216a550df0c9cb4c54a03bbf6bc2014adca732ceda7214624"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice05\\PLAN.json",
+          "bytes": 48122,
+          "sha256": "0076d7912b92365c2cf0483e201e38c98b21176e401d8938f5f22b44b4c4c3cf"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[45]",
+      "state": "PLUGIN_COORDINATES18_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice06\\authorizations\\LOCAL01.json",
+          "bytes": 606,
+          "sha256": "ca43cb381bc9c61b37620013bfe42589b431574adb4a06260f71205236167da7"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorCoordinates18\\slice06\\PLAN.json",
+          "bytes": 49031,
+          "sha256": "8221ae48a8f1ec177f62e1aa818f12bfeefb1032093af3f99d5ef3bd34877aec"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[46]",
+      "state": "MAIN_BUILD_MARKER9_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\MainBuildMarker9Points36\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 602,
+          "sha256": "59578aa9196cd3b750e21631ae7004a754634c0bde2026f79492464d6e582a00"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\MainBuildMarker9Points36\\capture01\\PLAN.json",
+          "bytes": 4950,
+          "sha256": "ce67282fccdd7156a88531518e86e8a9206277f9f3242bbfac9f0bc83e2026ae"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[47]",
+      "state": "MAIN_BUILD_MARKER9_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\MainBuildMarker9Points37\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 602,
+          "sha256": "3dd04ea6b7b7f369cb975e76e4a889670521cf0203df8e2bd0b9ee3bf324910a"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\MainBuildMarker9Points37\\capture01\\PLAN.json",
+          "bytes": 4950,
+          "sha256": "fffea3bac353ab49c7368198135fc46728eff8f5f1b4a809c07497dfac04cd78"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[48]",
+      "state": "MAIN_ROUTE39_POINTS43_EXACT_POINTS_CAPTURED_HANDLES_CLOSED_PENDING_SOURCE_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\MainRoute39Points43\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "ecd2cc8c3b82db560a2c51bb088439f7f6f86f059497b387073a6e3543f4a046"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\MainRoute39Points43\\capture01\\PLAN.json",
+          "bytes": 9078,
+          "sha256": "54a8b5b0ac14eec01c79f2181df3f1542345eb21388c34af269443f1f09595be"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[49]",
+      "state": "SDK_EXTENSION_PLUGIN_SIX45_FINITE_DIRECTORY_METADATA_CAPTURED_ALL_SDK_HANDLES_CLOSED_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExtensionPluginSix45\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 598,
+          "sha256": "a07505b18bd52b8c481d41b730e66355ea8ff5cee7544dd8280f49d53f400669"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExtensionPluginSix45\\capture01\\PLAN.json",
+          "bytes": 8599,
+          "sha256": "59fa2bb54ed770cb593c35d11d9637f97e88873877718fba91a1ad35eecd8029"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[50]",
+      "state": "CAPTURE149_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\QueryHierarchyMetadata140\\authorizations\\LOCAL01.json",
+          "bytes": 592,
+          "sha256": "1a3b24fde9477b3a9277ded79d8df8a941d5c22851d91c5b7a3f51669cfd24df"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[51]",
+      "state": "CAPTURE3_PAYLOAD_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\QueryHierarchyPayload143\\authorizations\\LOCAL01.json",
+          "bytes": 591,
+          "sha256": "13530e93ccb89c70495c0f8f18b5f00c033888cd67f05c094f34269c7f10698e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[52]",
+      "state": "FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ToolchainMetadataCapture182\\authorizations\\LOCAL01.json",
+          "bytes": 594,
+          "sha256": "1232a9dd7e7663b2d697a2392e7bf266e6e8de7423eacd7d9c5b21ed806ddb0b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[53]",
+      "state": "FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnDirectoryApiProbe183\\authorizations\\LOCAL01.json",
+          "bytes": 590,
+          "sha256": "065005eb2cb321fe5223607a2ff65adef5c84867a9ea31b0699ba34fc45ced72"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[54]",
+      "state": "OWN_DIRECTORY183_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnDirectoryApiProbe185\\authorizations\\LOCAL01.json",
+          "bytes": 590,
+          "sha256": "05dd591d1457444a3fd1af926690708752094212e213ea844f0240f9a30b4764"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[55]",
+      "state": "CAPTURE182_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ToolchainMetadataCapture187\\authorizations\\LOCAL01.json",
+          "bytes": 594,
+          "sha256": "8dd2d88fb80bb37c143c60c500b92b51cda29e8607bcccc37adb894cf88f710f"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[56]",
+      "state": "FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerMetadataCapture190\\authorizations\\LOCAL01.json",
+          "bytes": 593,
+          "sha256": "bde5513044484c41f45d56e6239e50244d808ecc6a55a299c9616aca10d36588"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[57]",
+      "state": "DIAGNOSTIC192_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerDiagnosticCapture192\\authorizations\\LOCAL01.json",
+          "bytes": 595,
+          "sha256": "6d333f9b52ff39d69a4d4eeaa16908947a9049ffe8d1a0288ed6de4a1f9ad1f8"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[58]",
+      "state": "RAW194_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerRawCapture194\\authorizations\\LOCAL01.json",
+          "bytes": 588,
+          "sha256": "c38859633a0240d3d0fb53a3c33bf514ed1bb0574c73bb2298b3377b1214097e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[59]",
+      "state": "COMPILER_PAYLOAD199_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerPayloadCapture199\\authorizations\\LOCAL01.json",
+          "bytes": 592,
+          "sha256": "cc76378f9c562c0bcf16bd2065493cc8be2772648c1cac3a4138387f543d518d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[60]",
+      "state": "NATIVE_RAW215_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeRawCapture215\\authorizations\\LOCAL01.json",
+          "bytes": 586,
+          "sha256": "6cde67fabf6dc1e1421f0fc44b50153472f6910080711ce4094a418cc3321718"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[61]",
+      "state": "NATIVE_BOUND217_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeBoundCapture217\\authorizations\\LOCAL01.json",
+          "bytes": 588,
+          "sha256": "8b4b11b000fad8a43ceba32969181ca6f296a487443f47c54bb4c4239f868aa6"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[62]",
+      "state": "NATIVE_PAYLOAD219_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativePayloadCapture219\\authorizations\\LOCAL01.json",
+          "bytes": 590,
+          "sha256": "587b18884faf46ce5c80dc7364d6e256c55a007c9f46eac67da269e01b1d049c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[63]",
+      "state": "NATIVE_IMPORT_RAW231_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeImportRawCapture231\\authorizations\\LOCAL01.json",
+          "bytes": 592,
+          "sha256": "e67aae3b258afac9706c8907b8531a8de4a9a971d8cbb1e183b72d514be28ebf"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[64]",
+      "state": "NATIVE_IMPORT_BOUND236_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeImportBoundCapture236\\authorizations\\LOCAL01.json",
+          "bytes": 594,
+          "sha256": "2c0391bde1f423f823016846506712e16b1f993d3d8353c2e190537eca334900"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[65]",
+      "state": "NATIVE_IMPORT_PAYLOAD239_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeImportPayloadCapture239\\authorizations\\LOCAL01.json",
+          "bytes": 596,
+          "sha256": "cdaeba9377a2c1367d0e5b8cfb0c19b6453c2f6c02403323752476ff62625ef3"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[66]",
+      "state": "NATIVE_COMPANION_RAW246_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeCompanionRawCapture246\\authorizations\\LOCAL01.json",
+          "bytes": 595,
+          "sha256": "783701e06bb6204661927fc014c4009b4dff24d3f5d5874b1c3f0bde082e593e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[67]",
+      "state": "NATIVE_COMPANION_BOUND248_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeCompanionBoundCapture248\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "be7e937afc38820841e74e7fef394a3dcd6e01104e5e0a14e9ffd7fd97016b72"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[68]",
+      "state": "NATIVE_COMPANION_PAYLOAD250_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeCompanionPayloadCapture250\\authorizations\\LOCAL01.json",
+          "bytes": 599,
+          "sha256": "873abd1f646342369347b9e817d651c86b64e6d9167b6d6497e2cc3d74796249"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[69]",
+      "state": "NATIVE_RUNTIME_RAW261_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeRuntimeRawCapture261\\authorizations\\LOCAL01.json",
+          "bytes": 593,
+          "sha256": "4a24de4851f210f0ca8e1c6f34c4b2abc1102368a3c008e2e73392d242a2120c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[70]",
+      "state": "RUNTIME_STREAM265_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeRuntimeStreamCapture265\\authorizations\\LOCAL01.json",
+          "bytes": 596,
+          "sha256": "d4c2d77ccce4b7615daa1f6474b7846883cae5683298039a94e8170eb78f9eab"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_metadata_observation_history_KEEP[71]",
+      "state": "SELECTED_REDIST285_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SelectedRedistCapture285\\authorizations\\LOCAL01.json",
+          "bytes": 591,
+          "sha256": "5aadb5e75f2e80dad64fc8b155b79d4b9efa0972ea4a2f525427e5e8a723ed2c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_config_payload_capture_history_KEEP[0]",
+      "state": "SDK_THREE_CONFIG_PAYLOADS_CAPTURED_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\sdk-config-payload-source-e15e85\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 664,
+          "sha256": "5264856a864e53c54aa68a8e8d5349ac2d67ba9ef5e79b76602ab09f2fb308a2"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_config_payload_capture_history_KEEP[1]",
+      "state": "SDK_ONE_CONFIG_REDIRECTS_CAPTURED_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\sdk-config-redirects-source-e15e85\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 666,
+          "sha256": "f8233a900c2c6e9b8427addc5ddd16603f4f50b5b38a80e02ab67ed769f8a2c9"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_config_payload_capture_history_KEEP[2]",
+      "state": "SDK_THREE_ENGINE_HIERARCHY_PAYLOADS_CAPTURED_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\sdk-engine-hierarchy-source-e15e85\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 666,
+          "sha256": "367a4bde94e25e439e24e152c3ce9e62c29a0bffc4e7352305d8e7512c4e1f4b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_config_payload_capture_history_KEEP[3]",
+      "state": "SDK_ONE_CONFIG_REDIRECTS_CAPTURED_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\sdk-vulkan-parent-source-e15e85\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 663,
+          "sha256": "1dee57a10bde8cc622903f187c74b30a5e2f6c08311cff49b2490f20e51cbf62"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_payload_parser_canary_build_history[0]",
+      "state": "CONSUMED_FAIL_CLOSED_FIXTURE_CS0507_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-sdk-payload-mapping-native-e15e85\\build-canary01\\attempt01\\receipt.json",
+          "bytes": 13991,
+          "sha256": "3f2011cb1466d83501dd9819a32b9099f46d69aa705f0078bc81e4b6812b7eb2"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-sdk-payload-mapping-native-e15e85\\build-canary01\\attempt01\\stdout-stderr.raw",
+          "bytes": 1442,
+          "sha256": "4459f3bfc1eb89f9c3e967249029f505f32705120b912237c08272f30204486b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.SDK_payload_parser_canary_build_history[1]",
+      "state": "CONSUMED_FAIL_CLOSED_FIXTURE_CS0507_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-sdk-payload-mapping-native-e15e85\\build-canary01\\attempt01\\receipt.json",
+          "bytes": 13991,
+          "sha256": "3f2011cb1466d83501dd9819a32b9099f46d69aa705f0078bc81e4b6812b7eb2"
+        },
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\private-sdk-payload-mapping-native-e15e85\\build-canary01\\attempt01\\stdout-stderr.raw",
+          "bytes": 1442,
+          "sha256": "4459f3bfc1eb89f9c3e967249029f505f32705120b912237c08272f30204486b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.source_preparation_refusals_KEEP[0]",
+      "state": "SOURCE_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-sourceceabb-e15e85-guard02\\vulkan-parent-payload01-source-close.json",
+          "bytes": 3489,
+          "sha256": "dfee2d21dfb712bea29a9cdf95f5ec6ed8473b33ce5db8fa2552b25844acd063"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.source_preparation_refusals_KEEP[1]",
+      "state": "SOURCE_FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-sourceceabb-e15e85-guard02\\vulkan-parent-payload02-source-close.json",
+          "bytes": 3559,
+          "sha256": "5c64b2276896076163fa979945857069a74216d9c3d8ce8470a649a06b74b54e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.source_preparation_refusals_KEEP[2]",
+      "state": "SOURCE02_FINAL_CPU_REFUSAL_KEEP",
+      "refs": [
+        {
+          "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-sourceceabb-e15e85-guard02\\sdk-payload-mapping-source02-close.json",
+          "bytes": 3550,
+          "sha256": "8074598782aadbba3f9990fe5f94f355bcf0a97ec367ade11a5bb39807d5e21d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_owner_migration_inventory_history_KEEP[0]",
+      "state": "FAIL_OR_UNKNOWN_KEEP",
+      "refs": []
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[0]",
+      "state": "OWN_PAYLOAD_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PayloadHelperQualification01\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 605,
+          "sha256": "500314f1f37045a7d40ef21e01273cf6b94a9f42c21b7009004c34866935338d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[1]",
+      "state": "SDK_BUILD_VERSION_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\BuildVersionPayload01\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 599,
+          "sha256": "eb676a96085c8026271d1927ab6def8b5de8ff51bfc48e6eddf27247a77fbe27"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[2]",
+      "state": "SDK_XML_CONFIG_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\XmlConfigSavedPayload01\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 601,
+          "sha256": "8b969e151bcd4007f480bec1c98ef3deeb0d08b7c848db3e4f5659476b481af7"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[3]",
+      "state": "OWN_DDPI_PAYLOAD_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Ddpi9Payload375\\own-QA02\\authorizations\\LOCAL01.json",
+          "bytes": 592,
+          "sha256": "513433db9ac53b54ac0ec4eac6f9f8da196d5226aa7e383e89fa303a2a59963a"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[4]",
+      "state": "SDK_DDPI_NINE_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Ddpi9Payload375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 594,
+          "sha256": "4238adfe4542c519fa7c67cc64abb0e0f2f5332eb1a0ea4d1093a9cdfdaa9389"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[5]",
+      "state": "OWN_VISIONOS_DDPI_PAYLOAD_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\VisionosDdpiPayload375\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 599,
+          "sha256": "0eb8adbdfb079d6ad7788b7d8e69b26424416d7e3806a9fb3fbf324919ffa3a9"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[6]",
+      "state": "SDK_VISIONOS_DDPI_ONE_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\VisionosDdpiPayload375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "cecd3764d94cd27e3a4da79305e6548b5afae4155be95091a6f971907b29d13a"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[7]",
+      "state": "OWN_SDK7_JSON_PAYLOAD_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Sdk7JsonPayload375\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 595,
+          "sha256": "8ca264535b17e61c13e136724d4af962138e9fa48eab52df98801a9384732008"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[8]",
+      "state": "SDK_JSON_SEVEN_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Sdk7JsonPayload375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "6311a3ba8d32e6957bc924b5f7ce44c4107ff96cf198a763ca16dd7cac628555"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[9]",
+      "state": "OWN_SDK_PARENT_JSON_PAYLOAD_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SdkParentJsonPayload375\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 600,
+          "sha256": "c7211f6725ff7f5041a70619f16a7d6ae00793db3912694fb182ec8ddcdb6622"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[10]",
+      "state": "SDK_JSON_PARENTS_TWO_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SdkParentJsonPayload375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 601,
+          "sha256": "8e41f73ddafb10cfcb9bd42a7a8cb1f689de4918b5f5cb67d3ad92ded098749f"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[11]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRulesPayload09\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "4752a47b4a3f646ed90b93f21d9193984c554fb1de24660b34908d0f17a3bdf4"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[12]",
+      "state": "SDK_RULES_THREE_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRulesPayload09\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 598,
+          "sha256": "c7457f5a72fe29ef4c0385ac69f00fa4b89a23d0f4bfa7600cf099206cc85d07"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[13]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ProgramManifestPayload15\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 601,
+          "sha256": "31ce5757f67006647c474b76797db39a8f68b9166e060dff80d662aba8c01e74"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[14]",
+      "state": "SDK_PROGRAM_MANIFEST_ONE_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ProgramManifestPayload15\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 602,
+          "sha256": "dcacf1bf9a8bd633ce68e308dcf388c0f3f367981cf4505cee559abe162fc0ea"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[15]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch00\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 611,
+          "sha256": "96c92b2f13c8c91b6a1be3923d003879cc442d3f94b37d550f87f34869346f80"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[16]",
+      "state": "SDK_PLUGIN_DESCRIPTOR_BATCH_00_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch00\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 614,
+          "sha256": "f4d9920076bb47f7431446ab2f5603c6d475514f883b76206f0ef2ef76698a87"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[17]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch01\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 611,
+          "sha256": "de7983dcc7a6ac89efa764b796d65fcb461548d0da97add57344708e6fb1b6c8"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[18]",
+      "state": "SDK_PLUGIN_DESCRIPTOR_BATCH_01_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch01\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 614,
+          "sha256": "ab89fc8715df4a2a7da6e473bb387049fbe68c63e946755eb68ea49bb217643e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[19]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch02\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 611,
+          "sha256": "de6bd66fdaaa675bb64cc7d0be20fdb1706c42f00b972613be97476b8e3e0264"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[20]",
+      "state": "SDK_PLUGIN_DESCRIPTOR_BATCH_02_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch02\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 614,
+          "sha256": "ba5801337681e9b88103b927a5adedcf1054cfb6979359240031625716ac0e68"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[21]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch03\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 611,
+          "sha256": "c6b690c116658392cb6e1f7a626a1d2cc6e3327d8ede9e9d37fbaa930f031344"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[22]",
+      "state": "SDK_PLUGIN_DESCRIPTOR_BATCH_03_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch03\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 614,
+          "sha256": "2c57ad2203c70558cb4994bb1ffe9745a898b3fc732106b79d6cbf8cf971d6cb"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[23]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch04\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 611,
+          "sha256": "fa5dbfe0425af47b80dad5fcb935dafdebf5fa7aea61e04cac0985ccc1822242"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[24]",
+      "state": "SDK_PLUGIN_DESCRIPTOR_BATCH_04_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch04\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 614,
+          "sha256": "74ea6f099d6bd50f5081630d102a28e1a843002c6f68cfc511db48ab64923a0b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[25]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch05\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 611,
+          "sha256": "dec83f34e310bdced1d4e3c6d9193ab396b7877739ec375d46869f302caca78d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[26]",
+      "state": "SDK_PLUGIN_DESCRIPTOR_BATCH_05_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch05\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 614,
+          "sha256": "d6db8850db53dcfc1069910790279a901b1afffa5ec340567b8cb4198cb7616c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[27]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch06\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 611,
+          "sha256": "6184b143c4bd866e901a8db12e7121a14079c7ecd2e3dc456206f4644290f882"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[28]",
+      "state": "SDK_PLUGIN_DESCRIPTOR_BATCH_06_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginDescriptorPayload19\\batch06\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 614,
+          "sha256": "1c7c9f6820b830367342c9efc177135b579e337a2f4e52fc33fe7a380af7e297"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[29]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\MainBuildVersionPayload38\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 602,
+          "sha256": "d4e55bcba1743eaac29170162e6046cf4eb1aa26e4694ed14cc5970a851dfe23"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[30]",
+      "state": "SDK_BUILD_VERSION_ONE_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\MainBuildVersionPayload38\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 603,
+          "sha256": "eca335e252c99d3d0a23bdd1fbab3d10fb718c053caffa3f54dbaa56082eeecf"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[31]",
+      "state": "OWN_RULES_STREAM02_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExtensionPluginPayload47\\own-QA01\\authorizations\\LOCAL01.json",
+          "bytes": 601,
+          "sha256": "8d566737aad59a223ad36e0fe1cf3ec3ec55b6f8d995fbc02aa7c43330afa665"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.small_payload_context_history_KEEP[32]",
+      "state": "SDK_SIX_EXTENSION_DESCRIPTORS47_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExtensionPluginPayload47\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 603,
+          "sha256": "9a608380d89ace69808601811463fdec2868b5362b316b44c9c3d1e61d5a23e5"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_platform_SDK_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PlatformSdkRuntime08\\manifest.json",
+          "bytes": 106103,
+          "sha256": "4ec0ecd24c42d6e2cc1cd9a101c102fef4e12d55c847da8b255cbf6bb63ef5d0"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_allten_DDPI_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\AllTenDdpiRuntime375\\manifest.json",
+          "bytes": 107227,
+          "sha256": "724268f7d8fef413172f3c40d1efde57efabb69cd12987f8b486b59dae3991bb"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_sdk_json_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\AllSdkJsonRuntime375\\manifest.json",
+          "bytes": 106324,
+          "sha256": "bcee4ceb319fd0102ddf52e6efbec50e55f7aa09924df8899b3b5bacfb82df4d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.registry_point_context_history_KEEP[0]",
+      "state": "OWN_REGISTRY17_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Registry17Points375\\own-QA02\\authorizations\\LOCAL01.json",
+          "bytes": 596,
+          "sha256": "042af62112a4d105157e53454a83d8f760bebdd151b37a9ce2fe7f6549102a81"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.registry_point_context_history_KEEP[1]",
+      "state": "OWN_REGISTRY17_HELPER_QA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Registry17Points375\\own-QA03\\authorizations\\LOCAL01.json",
+          "bytes": 596,
+          "sha256": "cf5900f8d867aeac73d9965b6a3dbcaff809b535577c4a53f38930651894cb29"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.registry_point_context_history_KEEP[2]",
+      "state": "REGISTRY17_POINTS_DATA_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Registry17Points375\\capture01\\authorizations\\LOCAL01.json",
+          "bytes": 597,
+          "sha256": "94713d0db26a01c41be4692625ec0cada2be12f12f8529894113689594477f24"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_windows_SDK_discovery_current",
+      "state": "REGISTRY17_INCLUDE2_HEADERS4_CLOSED_DATA_ONLY_ORIGINAL_SELECTOR_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdkDiscovery375\\captured-windows-SDK-discovery-data-index.json",
+          "bytes": 34566,
+          "sha256": "2a0025f10146737305ee1d0cf915a31e077d3b12e1139cca08cca986798946ce"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\WindowsSdkDiscovery375\\registry-Include-header-data-success-closed-audit.json",
+          "bytes": 4304,
+          "sha256": "8660dff25c9638a87bc173d00d6d303c77733d80c06de5b035bb0036e9f5090d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_windows_SDK_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\WindowsSdkRuntime09\\manifest.json",
+          "bytes": 106491,
+          "sha256": "64aee96a555527faf6214ab3b5832823a62e59294cf18d44f002b591f2603279"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_windows_SDK_init_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\WindowsSdkInitRuntime09\\manifest.json",
+          "bytes": 107878,
+          "sha256": "ca56c21f18621240b944e4ee8f8cecce448dcd9b67fdf33d40d690bca8e029cc"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_ddpi_regression09_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_NEW_ACTUAL_QA",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\AllTenDdpiRuntime09\\manifest.json",
+          "bytes": 104713,
+          "sha256": "e86b4c8d192a612a09f35c8471903a2e8904b845c9c1705766f539f9d4dbfb9c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_xml_regression09_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_NEW_ACTUAL_QA",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\XmlConfigRuntime09\\manifest.json",
+          "bytes": 104513,
+          "sha256": "4c52ff27bc4f77cb1e57296ea7372123bb251f241acdc3a4b1d0108273161464"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_rules_metadata_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\RulesMetadataRuntime09\\manifest.json",
+          "bytes": 107421,
+          "sha256": "ce5854853e68b2515a16de40129cee2cc9f50e65f162f0cb5135160d7378e8e5"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_rules_member_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\RulesMemberRuntime10\\manifest.json",
+          "bytes": 106801,
+          "sha256": "f3bf1faf41088fd2e46154e6b53517ced686701e405db3059bc28acdfad07d3b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.rule_alias_context_history_KEEP[0]",
+      "state": "OWN_RULE_ALIASES_MATERIALIZED_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\RulesAliases10\\materialize01\\authorizations\\LOCAL01.json",
+          "bytes": 596,
+          "sha256": "90bdc0a888288274fc8440e11b4ca2fb35de6f8fc90ef431c3784923c865e828"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.rule_alias_context_history_KEEP[1]",
+      "state": "OWN_RULE_ALIASES_MATERIALIZED_PENDING_ACTUAL_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\RulesAssemblyAliases12\\materialize01\\authorizations\\LOCAL01.json",
+          "bytes": 604,
+          "sha256": "ded85467869eddb96b32589a46eeaa2eb5efbde46bdae545d16b7d11ceddef9d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_rules_load_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\RulesLoadRuntime10\\manifest.json",
+          "bytes": 106181,
+          "sha256": "960caa6bcaaec8df34aed921634c8c7b32e4f4bcf81d4f3ec5b78d9ccd616f98"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_rules_original_loader_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\RulesOriginalLoaderRuntime11\\manifest.json",
+          "bytes": 109428,
+          "sha256": "70396ac9e44eb1a03cf48c5520e064caf8a70be78f9c5ef2f0f0ddbad488dafc"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_rules_assembly_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\RulesDefaultOffRuntime14\\manifest.json",
+          "bytes": 108041,
+          "sha256": "a2076df0ddadb13aa7a3738859be2b2364001ddddc69908b568224ceeb2b895b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_plugin_consumer_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PluginConsumerRuntime24\\manifest.json",
+          "bytes": 107755,
+          "sha256": "1b5714402b7c4e0abfbed44fd968a8b26eaac27f3fd18c8fef3966bbeac53ce5"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_publication_host_current",
+      "state": "OWN501_E_SOURCE_DERIVATION_SUCCESS_CLOSED_NOT_BUILT_NOT_RUN",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeHost31\\source-manifest.json",
+          "bytes": 951093,
+          "sha256": "2aca7af84c56ed7de3932c7edae54f5c47c2587335259037f88733d8ec2f2b93"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_rule_manifest_maps_source_current",
+      "state": "SOURCE_PENDING_ACTUAL_CLOSE_NOT_COMPILED_NOT_RUN",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\RuleManifestMaps32\\map-inputs.json",
+          "bytes": 4256,
+          "sha256": "fec3553a1b795389e487181fdc79d2e379be2a7df1357a24d3ffdf61678e7a03"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\RulesManifestCanary32.cs.txt",
+          "bytes": 20272,
+          "sha256": "08d59ea1a27858aa2e0f3c0a1c238d19d40fdd0ebc6e4d50bd002bd24095cad1"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_rule_manifest_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\RuleManifestRuntime32\\manifest.json",
+          "bytes": 107123,
+          "sha256": "f8956bb8ee48d155ddc8813135e4659b17f7908975434d0038180e1cfc2cbc1d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_live_plugin_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\LivePluginRuntime33\\manifest.json",
+          "bytes": 106539,
+          "sha256": "43a5c61ba42e1a8c0ece70153f04dae836f9f93738c09be6cd89ef63afc8aa97"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_source10_regression_runtime_current",
+      "state": "COPY_PENDING_ACTUAL_CLOSE_NEW_EXECUTION_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\Source10RegressionRuntime35\\manifest.json",
+          "bytes": 113781,
+          "sha256": "cf3dc84a7ec583b74fa942d0e9f0f128a1b867a5b8c4261bf86b66878ea3bac4"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_selected901_plugin_aggregate_source_current",
+      "state": "SOURCE49_PENDING_ACTUAL_SOURCE_CLOSE_NOT_COMPILED_NOT_RUN",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginAggregateSource49\\selected901-live-read-whitelist.NOT_ADMITTED.json",
+          "bytes": 917749,
+          "sha256": "3cdb72bea7143136c788c4405daf8116c5a2f2a39c0e9b095749a2b555361f84"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginAggregateSource49\\selected-plugin-route.DATA_ONLY.json",
+          "bytes": 113888,
+          "sha256": "2973136a40ad3f1b402e78b98bd0112c14ad0b4d919ae50a93e790432f1ed8f9"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\PluginAggregateCanary49.cs.txt",
+          "bytes": 20683,
+          "sha256": "1a89b5deb20d62b23a48517ca9fea57447f22cf12fa42a5071b4758a9571a704"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PluginAggregateSource49\\source-contract.json",
+          "bytes": 1944,
+          "sha256": "c5928a85e504339aefca8a5e641b8c1145df61328d38176c27ea2dbe03f7d137"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\sdk_plugin_read_reference49.py",
+          "bytes": 5630,
+          "sha256": "371ea60dadf03a8c4106abca32a544270b46f644f2be192d3a016ef4bd253e99"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_selected901_plugin_aggregate_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\PluginAggregateRuntime51\\manifest.json",
+          "bytes": 108041,
+          "sha256": "c408db34aafdf5f8fe03cc11b361f1b9bad3e69ee51b2d820ddf1793a88eb66b"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_engine_rules_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\EngineRulesRuntime65\\manifest.json",
+          "bytes": 106801,
+          "sha256": "a2de17668d7ef0dfd11171b3ce24d3119e131254f260cea93c10b1ccdc9fc583"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_original_engine_rules_attempt_history[0]",
+      "state": "OWN_METADATA_QA_FAIL_KEEP_NO_SDK_OR_CHILD",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\HeldMetadataSource61\\consumed60-failure-and-prospective-fix.json",
+          "bytes": 1720,
+          "sha256": "12fde5f06627e2a6c770aff47752c1fe4bd3f2d458888ca7152c48af39096d8e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_original_engine_rules_attempt_history[1]",
+      "state": "CANARY_TYPE_CASING_ASSERTION_FAIL_KEEP_ALL_CLOSED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EngineRulesSource63\\consumed62-failure-and-exact-type-casing-correction.json",
+          "bytes": 6237,
+          "sha256": "2f70ce72d3d44bb9f559b0c252645b13d850bb7941e8d549315ed858e608626c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_Main_runs_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\MainRunsRuntime74\\manifest.json",
+          "bytes": 105871,
+          "sha256": "48f15531c19fe7b435b89956071e4da15035f8393a7a3e013bd0aeac38002590"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_Main_writer_runtime_current",
+      "state": "DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NEW_QA_REQUIRED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\MainWriterRuntime80\\manifest.json",
+          "bytes": 106491,
+          "sha256": "c2d77aebd377dc64c69bfe3674ae4b58549661370ebd74e3b372629e088e9528"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_project_rules_precompiled_current",
+      "state": "OWN_DLL137_MATERIALIZED_PENDING_ACTUAL_CLOSE_NOT_LOADED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ProjectRulesQualification137\\five-OWN-project-rules-compile-and-materialization-success-closed.json",
+          "bytes": 3336,
+          "sha256": "042b6c4d6e6f4522c1b5f51a64f5e7159d3b9a7d5e676bad70979e118683ca9e"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\ClientHost135\\project\\Intermediate\\Build\\BuildRules\\IAmSpeedHostProjectModuleRules.dll",
+          "bytes": 7680,
+          "sha256": "edf628686477edb9aa60004c809bbae6e5a2e00093c5423a3e0a397624e45429"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_empty_extension_shared_source_current",
+      "state": "SOURCE152_NOT_COMPILED_NOT_QUALIFIED",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EmptyExtensionSource152\\empty-selector-complete-validation.NOT_QUALIFIED.json",
+          "bytes": 1649,
+          "sha256": "d8e63a0268fb64a5b4080e002cbc1c2bd065457f3b20b1f01f8127df5c6a220d"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\EmptyExtensionSource152\\shared.csproj",
+          "bytes": 29679,
+          "sha256": "4e06e1126dbc501a06c504feb32a9eba339289db865f8baeabcbc33d7a096a2f"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_empty_extension_runtime_current",
+      "state": "DATA_PACKAGE160_PENDING_ACTUAL_CLOSE_NOT_RUN",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\EmptyExtensionRuntime160\\manifest.json",
+          "bytes": 142428,
+          "sha256": "6890131d772bfb60740ac6f37a2dfcc514bb2d28e2f800bbb799290695554012"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_compiler_metadata_capture_current",
+      "state": "190_FAILED_NATIVE_DIRECTORY_LITERAL_PREDICATE_CLOSED_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerMetadataCapture190\\PLAN.json",
+          "bytes": 2552,
+          "sha256": "2083c9b0aeca6125e81a8a7687d99c25799772b74b6669d6ba4e0bca35ffe60d"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerMetadataCapture190\\authorizations\\LOCAL01.json",
+          "bytes": 593,
+          "sha256": "bde5513044484c41f45d56e6239e50244d808ecc6a55a299c9616aca10d36588"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerMetadataCapture190\\final-result.json",
+          "bytes": 24152,
+          "sha256": "19a7cc9cd62fa1f0faf6cccc4bde54886d554e6dbfc4027c69801ea72a4190a9"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_compiler_PE_source_current",
+      "state": "202_SOURCE_ONLY_QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerPESource202\\bounded-PE-fixed-version-parser.SOURCE_ONLY.json",
+          "bytes": 2113,
+          "sha256": "7a90a9ba73357eedcb127176b76051d0e9c2268d031f71a392444c8ecf0a3c9e"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[0]",
+      "state": "PE203_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CompilerPEAnalysis203\\authorizations\\LOCAL01.json",
+          "bytes": 588,
+          "sha256": "1bec9eba166dae2675757505ea310077f46efaa533ecf041024b717d8d041e84"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[1]",
+      "state": "FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativePEAnalysis225\\authorizations\\LOCAL01.json",
+          "bytes": 586,
+          "sha256": "e03cc235ac50cd2d9b3d0b7bab64cf78e26d50fc1585965b95bf16492f19dba3"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[1].source_close",
+      "state": "SOURCE_FAIL_OR_UNKNOWN_KEEP",
+      "refs": []
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[2]",
+      "state": "PE226_DIAGNOSTIC_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativePEDiagnostic226\\authorizations\\LOCAL01.json",
+          "bytes": 588,
+          "sha256": "62442d243e77bfa76a08dc63a203dbe2c2399de2c79d5fcd6a9e2f3f29757e4a"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[3]",
+      "state": "PE228_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativePEAnalysis228\\authorizations\\LOCAL01.json",
+          "bytes": 586,
+          "sha256": "56fc25be64cba9674fe812e0b3168b013dc6dd72ae360c12d965e58a00933b1f"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[4]",
+      "state": "PE243_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeImportPEAnalysis243\\authorizations\\LOCAL01.json",
+          "bytes": 593,
+          "sha256": "a0fa3750a25a091b27229a25034a6e10fdf48b22460ccd4241df02041bbca02d"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[5]",
+      "state": "PE252_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeCompanionPEAnalysis252\\authorizations\\LOCAL01.json",
+          "bytes": 595,
+          "sha256": "5f2a0ae97a7a1a234489adf0b28a00e789360730e721a6ae333eab824c2afa94"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[6]",
+      "state": "FAIL_OR_UNKNOWN_KEEP",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ModuleLiteralScan256\\authorizations\\LOCAL01.json",
+          "bytes": 588,
+          "sha256": "3ddba080924544077a6304e39f0e9bc136e006490655e4716625d4c272fd7ba9"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[6].source_close",
+      "state": "SOURCE_FAIL_OR_UNKNOWN_KEEP",
+      "refs": []
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[7]",
+      "state": "LITERAL258_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ModuleLiteralScan258\\authorizations\\LOCAL01.json",
+          "bytes": 588,
+          "sha256": "23f0d0cc421e8c562c126ac4ce614578c3f8dab2e59ff28f85d6246c2f2550b8"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_PE_analysis_history_KEEP[8]",
+      "state": "PE267_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeRuntimePEAnalysis267\\authorizations\\LOCAL01.json",
+          "bytes": 594,
+          "sha256": "4c73c9b67c17c947ce5fe4afd021dba281fdd7ac0bd38106651df06b6321974c"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_manual_toolchain_catalog_source_current",
+      "state": "205_SOURCE_ONLY_QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ToolchainCatalogSource205\\catalogue-policy-model.SOURCE_ONLY.json",
+          "bytes": 1426,
+          "sha256": "b25c7e3804496191643d8d0cb215339026975c22bdfabe14ad2e31cd662d471f"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.OWN_toolchain_catalog_analysis_history_KEEP[0]",
+      "state": "CATALOG206_SUCCESS_PENDING_GUARD_CLOSE",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ToolchainCatalogAnalysis206\\authorizations\\LOCAL01.json",
+          "bytes": 594,
+          "sha256": "16451119ae27f597b98b86e02ab6c6d3b624740d444db240aadb71971ee6d730"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_original_toolchain_canary_source_current",
+      "state": "208_SOURCE_ONLY_NOT_COMPILED_OR_RUN",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OriginalToolchainSource208\\original-toolchain-own-canary.SOURCE_ONLY.json",
+          "bytes": 1923,
+          "sha256": "88db80119cff543ad5f940895af229479ea5d92772b71957d2ed90bae4f8c5da"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_original_toolchain_runtime_current",
+      "state": "210_DATA_PACKAGE_PENDING_ACTUAL_CLOSE_NOT_RUN",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Builds\\OriginalToolchainRuntime210\\manifest.json",
+          "bytes": 143698,
+          "sha256": "a37e7dd689038ecfa5572faf18e4a2701f4546606a6bd491c23f88fab5986186"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_RAW53_source_current",
+      "state": "214_SOURCE_ONLY_QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeRawSource214\\native-environment-raw-diagnostic.SOURCE_ONLY.json",
+          "bytes": 2190,
+          "sha256": "416d30a62621b0b740b7854e87ccb98790bbfbfdafae7c0702a8961ec24254b8"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_bound53_source_current",
+      "state": "216_SOURCE_ONLY_QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeMetadataQualification216\\strict-native53-bound-controls.SOURCE_ONLY.json",
+          "bytes": 1277,
+          "sha256": "7121f8ca58bee0230b79a85534308ef196f855732a1ab66285a0c5a93bff42e3"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeMetadataQualification216\\next-five-native-tool-bodies.PROPOSAL_NOT_GRANT.json",
+          "bytes": 4789,
+          "sha256": "466178f93d5b0dcb1c7392894b3a95212455689fcf68eaae94901275996d668f"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeMetadataQualification216\\cross-architecture-UBA-presence.DATA_ONLY.json",
+          "bytes": 3534,
+          "sha256": "b26d4711a1d0287327933f390309ad44759c96dd0bab82fc4e08ddc4887993a9"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_five_body_source_current",
+      "state": "218_SOURCE_ONLY_QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativePayloadSource218\\five-body-fourMiB-native-stream-controls.SOURCE_ONLY.json",
+          "bytes": 7621,
+          "sha256": "1bab544cf7f388f2a78477818973fe8eac69b6892d4dea7b1a5e832dad685dc1"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_PE_import_source_current",
+      "state": "227_SOURCE_ONLY_117QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativePESource227\\VERSION-exact-four-zero-padding-and-imports.SOURCE_ONLY.json",
+          "bytes": 1708,
+          "sha256": "f063c0ffb096b4235fd6a17dc7eea5d57d6362e4af39ce98fd2de9b47a301789"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_import_RAW_source_current",
+      "state": "230_SOURCE_ONLY_40QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeImportRawSource230\\nine-import-candidates-RAW27.SOURCE_ONLY.json",
+          "bytes": 1865,
+          "sha256": "5e9725bd018451d9ac6517b9b304062f3bb4725722fc693864362c28261c53ad"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_import_bound_source_current",
+      "state": "234_ALLPOSITIVE_SOURCE_ONLY_50QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeImportBoundSource234\\strict-native27-allpositive-QA.SOURCE_ONLY.json",
+          "bytes": 2117,
+          "sha256": "565a94405676e143ef24617bf06109d50aef8971fb98c8426af9a5bda3585a25"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeImportMetadataQualification232\\next-nine-DLL-bodies.PROPOSAL_NOT_GRANT.json",
+          "bytes": 7791,
+          "sha256": "5f47dfd7c248e00ac15b331cd41d22733bb9e88dce90da21fa5a6d5c802eca93"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_import_payload_source_current",
+      "state": "238_SOURCE_ONLY_92QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeImportPayloadSource238\\nine-DLL-stream-controls.SOURCE_ONLY.json",
+          "bytes": 11242,
+          "sha256": "221f0fa704848e69b89cced5b8a29a21487a8564353778f341bdefa6fbf91188"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_companion_RAW_source_current",
+      "state": "245_SOURCE_ONLY_40QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeCompanionRawSource245\\two-companion-RAW20-controls.SOURCE_ONLY.json",
+          "bytes": 1576,
+          "sha256": "d0b56420c84c3923ab6063cdf952fe3cb4b114771f9d8f1b27b72693f0a6b2ec"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_companion_bound_source_current",
+      "state": "247_SOURCE_ONLY_41QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeCompanionMetadataQualification247\\strict-companion20-no-alias-controls.SOURCE_ONLY.json",
+          "bytes": 1236,
+          "sha256": "a20f9c90fde5f1a764a9cddde1664478bcb7ffe2e6bc451f75dd52372ae2ea37"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeCompanionMetadataQualification247\\next-two-companion-bodies.PROPOSAL_NOT_GRANT.json",
+          "bytes": 2577,
+          "sha256": "06e0a82c182b068c2e7e70af99c495f0f8c4f3ec7df32cea57cc6bdbeb4f3cf9"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_companion_payload_source_current",
+      "state": "249_SOURCE_ONLY_83QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeCompanionPayloadSource249\\two-companion-stream-controls.SOURCE_ONLY.json",
+          "bytes": 5302,
+          "sha256": "512ee798bd95b0b59152b637da7e57c49d1be2fd5ddee3c8bd35a1ad66fbf795"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_module_literal_source_current",
+      "state": "257_SOURCE_ONLY_29QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ModuleLiteralSource257\\bounded1024file4096global-module-literals.SOURCE_ONLY.json",
+          "bytes": 2845,
+          "sha256": "9a4dcf91d77dadf691cc8677aa7035a7b328546884abfafdff136fe5fdcfaf27"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_native_runtime_RAW_source_current",
+      "state": "260_SOURCE_ONLY_40QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\NativeRuntimeRawSource260\\nine-runtime-hypotheses21RAW-controls.SOURCE_ONLY.json",
+          "bytes": 1700,
+          "sha256": "4e7371700307883e9b3987ddaddd309ce16237f328eaa8f62c3309b5288a3c95"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_selected_provider_run_controls_current",
+      "state": "279_SOURCE64QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SelectedRunControls279\\single-process-managed-run-controls.SOURCE_ONLY.json",
+          "bytes": 4968,
+          "sha256": "08ef8a07d4fbc39cb2c11f5a3bd204c39ffc43f8e5dd0c664771e5d251d08bf7"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_executor_boundary_current",
+      "state": "307_SOURCE_NoUBA_STILL_UBA_EXECUTOR_UTILS_NATIVE_REACHABILITY_UNKNOWN",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExecutorBoundarySource307\\NoUBA-is-no-detour-not-no-executor.SOURCE_EVIDENCE.json",
+          "bytes": 9857,
+          "sha256": "784f3e7389b158ae633d5cf05d0f6842f4e0d4ffc0d67289b1a4f8ddfc49876f"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExecutorBoundarySource307\\next-OWN-PEReader-Utils-callsite-closure.PROPOSAL_NOT_GRANT.json",
+          "bytes": 2139,
+          "sha256": "ac0be213b0cd7853e8a83a3a1766c4d80bdc8d51ebcdb410b298b093a22cd107"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExecutorBoundarySource307\\targeted-Optimisation-question-sent.DATA_ONLY.json",
+          "bytes": 373,
+          "sha256": "632058ecbaacbd957a017425243a7c3347cbd57cf7714af3c1a6512655f33d67"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_OWN_UBA_IL_qualification_current",
+      "state": "313_7MANAGED_IL_METHODS_DIRECT_PINVOKE_FALSE_TRANSITIVE_NATIVE_UNKNOWN",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnUbaIlQualification313\\Utils-seven-managed-IL-methods17QA64control-success-closed.DATA_ONLY.json",
+          "bytes": 51436,
+          "sha256": "b9e7c485eab846dec3901c83e2dce32bce825064fd518b4d6c1f2f5501260ae3"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnUbaIlQualification313\\native-label-correction-and-early-precreate.SOURCE_EVIDENCE.json",
+          "bytes": 2626,
+          "sha256": "9e27542c68ddb449c9f66b522a12108c293709705afa2acc912245c937b4c42f"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnUbaIlQualification313\\next-one-OWN-Core-FindCorrectCase-metadata.PROPOSAL_NOT_GRANT.json",
+          "bytes": 1751,
+          "sha256": "3255afe01e08433fe0222c97657995830a52815fb4d2b46c0ea9fe6426eb1090"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_OWN_Core_IL_qualification_current",
+      "state": "318_DIRECTORYREFERENCE_ROOT_MANAGED_DIRECTORYUTILS_CALLEE_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnCoreIlQualification318\\DirectoryReference-four-managed-methods17QA64control-success-closed.DATA_ONLY.json",
+          "bytes": 30930,
+          "sha256": "c110a7d02c968dfa3d9efef36c358ff3f12588188034441569323d24aa97752f"
+        },
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnCoreIlQualification318\\next-one-OWN-DirectoryUtils-FindCorrectCase.PROPOSAL_NOT_GRANT.json",
+          "bytes": 1718,
+          "sha256": "44b4ef71e05dcff824308193c8e8ca4fea073c984855b16af35a785ff8ca68f7"
+        }
+      ]
+    },
+    {
+      "checkpoint_field": "checkpoint.netcode_E_OWN_DirectoryUtils_IL_source_current",
+      "state": "319_UNCOMPILED_SOURCE17QA_PENDING",
+      "refs": [
+        {
+          "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnDirectoryUtilsIlSource319\\OWN-DirectoryUtils-FindCorrectCase-IL-reader.SOURCE_ONLY.json",
+          "bytes": 2047,
+          "sha256": "5d731aeeddb7af47a667c08e8628c9c60c07269fee8c46cfe35a0ad52973ba02"
+        }
+      ]
+    }
+  ]
+}

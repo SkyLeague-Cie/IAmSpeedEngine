@@ -1,0 +1,174 @@
+{
+  "schema": "netcode-mblack-source-handoff/v1",
+  "parent_base": "b2d96feaa4f3dfe7673307389495aad41afd0d4f",
+  "IAS_base": "3e6fb10d2b5e40710ca644b296c5188960a6f855",
+  "IAS_rebased_code_tip": "f9b7af801939c34aa19c711aded871e14e69814b",
+  "IAS_original_tip": "1a716931d801b38d11a2173b45398c5c630ed825",
+  "IAS_archive_tip": "be5fd5e67b4a3953b4ef51b2e0269f0ddf65a71a",
+  "branches": {
+    "common": "codex/netcode-common",
+    "archive": "codex/netcode-central-20261028-prebase"
+  },
+  "remotes": {
+    "parent": "https://github.com/SkyLeague-Cie/SkyLeague.git",
+    "IAS": "https://github.com/SkyLeague-Cie/IAmSpeedEngine",
+    "Core": "https://github.com/SkyLeague-Cie/SLCorePhysics",
+    "Module": "https://github.com/SkyLeague-Cie/SkyLeagueModule",
+    "SDK": "https://github.com/SkyLeague-Cie/SkyClientSDK"
+  },
+  "Core": "dfcb792e37cba1a639a7c26599c3fcffc5226bf6",
+  "Module": "df324ebb98e0ad11b1af1cf9f26720575b5f25d3",
+  "SDK": "45edc0068500f8f865786a8823df8695babaeb65",
+  "rebased_commits": [
+    {
+      "before": "faeacbce491e1e70e0828e594fca4612b380c070",
+      "after": "fbae6308be6f18e75f3639ad306ce959c1a5de26"
+    },
+    {
+      "before": "cce2821a5da7abc2ae267ca6012c92ba38102e73",
+      "after": "a7498ca45d771862054ea665c9fa2e249187e8fb"
+    },
+    {
+      "before": "68e951ef9198abdd4c05ed664896d343a4f8e67f",
+      "after": "d23b2ce5f220c760d630f2006fe402472f644898"
+    },
+    {
+      "before": "a8bbf04ff503e666b4415e1b510c48aff3e37063",
+      "after": "b7a51c88a4b1606c0443712e2f2f691099bf443c"
+    },
+    {
+      "before": "15baa64d4498eec84b457141a78a28c53d382e1f",
+      "after": "2361a62c8248d1d400ec99c720c7b8c5742d6ecf"
+    },
+    {
+      "before": "5b1106b90fd6bfc0ac0b39708e99adc35e7ccfe3",
+      "after": "b05e08be1b79602c6b94ea8a2dd6ebd2b7bfd5c6"
+    },
+    {
+      "before": "186b46f6a53a23ceb23deccb31d92f155fc6b172",
+      "after": "90c8f2376ff66feb891c5431a274faf7b2c74cfc"
+    },
+    {
+      "before": "ea507eb45c992ef871d56e121cfb581437f2f085",
+      "after": "ca647231dcba12f6e677ee465f0b9e72b14b0ffa"
+    },
+    {
+      "before": "1a716931d801b38d11a2173b45398c5c630ed825",
+      "after": "f9b7af801939c34aa19c711aded871e14e69814b"
+    }
+  ],
+  "changed_source_paths": [
+    "Source/IAmSpeed/Base/KinematicQuantizationCache.h",
+    "Source/IAmSpeed/Components/ISpeedComponent.h",
+    "Source/IAmSpeed/EmptyInputFrameReceipt.inc",
+    "Source/IAmSpeed/EmptyInputPeriodEvidence.inc",
+    "Source/IAmSpeed/GroupReplayStart.inc",
+    "Source/IAmSpeed/Input/CanonicalInputFrameReceipt.h",
+    "Source/IAmSpeed/Input/InputProducerV2.h",
+    "Source/IAmSpeed/Input/InputSessionRegistry.h",
+    "Source/IAmSpeed/Input/SameFrameInputOwner.h",
+    "Source/IAmSpeed/Input/Testing/TestInputProducerV2.h",
+    "Source/IAmSpeed/Netcode/Common/CommonComponentState.h",
+    "Source/IAmSpeed/Netcode/Common/NativeCommonCacheAccess.h",
+    "Source/IAmSpeed/Netcode/Common/NativeCommonComponentAccess.h",
+    "Source/IAmSpeed/Netcode/authoritative-owner-v2/AuthoritativeBatch.h",
+    "Source/IAmSpeed/Netcode/authoritative-owner-v2/AuthoritativeDecisionOwner.h",
+    "Source/IAmSpeed/Netcode/consumed-command-v2/ConsumedCommand.h",
+    "Source/IAmSpeed/Netcode/consumed-command-v2/OwnerSnapshotBridge.h",
+    "Source/IAmSpeed/Netcode/game-declared-state/GameDeclaredState.h",
+    "Source/IAmSpeed/Netcode/pad-state/DeclaredPadState.h",
+    "Source/IAmSpeed/Netcode/registry-boundary-wire/RegistryBoundaryMetadata.h",
+    "Source/IAmSpeed/Netcode/registry-boundary-wire/RegistryBoundaryWireAdapter.h",
+    "Source/IAmSpeed/Netcode/remote-input/ExactRemoteInputProducer.h",
+    "Source/IAmSpeed/Netcode/state-authority-envelope-v2/StateAuthorityEnvelope.h",
+    "Source/IAmSpeed/Netcode/state-authority-envelope-v2/StateFragmentsV2.h",
+    "Source/IAmSpeed/Netcode/transport/CanonicalActorState.h",
+    "Source/IAmSpeed/Netcode/transport/NetInputTransport.h",
+    "Source/IAmSpeed/Netcode/transport/NetInputV2Bridge.h",
+    "Source/IAmSpeed/Netcode/transport/NetStateTransport.h",
+    "Source/IAmSpeed/Netcode/transport/RollbackIslandPlan.h",
+    "Source/IAmSpeed/OwnerResumeMethods.inc",
+    "Source/IAmSpeed/PreparedInputResume.h",
+    "Source/IAmSpeed/PreparedReplayStart.inc",
+    "Source/IAmSpeed/PreparedScenarioResume.inc",
+    "Source/IAmSpeed/RegistryBoundaryCapture.inc",
+    "Source/IAmSpeed/RegistryBoundaryReservation.inc",
+    "Source/IAmSpeed/RegistryResumeMethods.inc",
+    "Source/IAmSpeed/World/Simulation/PreparedAccessComposition.inc",
+    "Source/IAmSpeed/World/Simulation/PreparedAccessRanges.h",
+    "Source/IAmSpeed/World/Simulation/PreparedLeaseView.h",
+    "Source/IAmSpeed/World/Simulation/PreparedRestoreToken.inc",
+    "Source/IAmSpeed/World/Simulation/PreparedSimulationRestore.h",
+    "Source/IAmSpeed/World/Simulation/PreparedWorldCore.h",
+    "Source/IAmSpeed/World/Simulation/PreparedWorldRestore.inc",
+    "Source/IAmSpeed/World/Simulation/SimulationSleepState.h",
+    "Source/IAmSpeed/World/Simulation/SimulationWorld.cpp",
+    "Source/IAmSpeed/World/Simulation/SimulationWorld.h",
+    "Tests/Netcode/CaptureEntryTests.inc",
+    "Tests/Netcode/EmptyInputFrameTests.cpp",
+    "Tests/Netcode/EmptyInputPeriodTests.inc",
+    "Tests/Netcode/ReservationObservationTests.inc",
+    "Tests/Netcode/Standalone/authoritative-owner-v2/AuthoritativeOwnerTests.cpp",
+    "Tests/Netcode/Standalone/authoritative-owner-v2/AuthoritativeOwnerTests.inc",
+    "Tests/Netcode/Standalone/authoritative-owner-v2/BranchTests.inc",
+    "Tests/Netcode/Standalone/consumed-command-v2/ConsumedTests.cpp",
+    "Tests/Netcode/Standalone/consumed-command-v2/RevisionTests.inc",
+    "Tests/Netcode/Standalone/game-declared-state/TypedTransportFixture.h",
+    "Tests/Netcode/Standalone/registry-boundary-wire/BoundaryCaptureTests.inc",
+    "Tests/Netcode/Standalone/registry-boundary-wire/BoundaryReservationTests.inc",
+    "Tests/Netcode/Standalone/registry-boundary-wire/BoundaryWireTests.inc",
+    "Tests/Netcode/Standalone/registry-boundary-wire/GroupReplayStart.inc",
+    "Tests/Netcode/Standalone/registry-boundary-wire/GroupReplayTests.inc",
+    "Tests/Netcode/Standalone/registry-boundary-wire/RegistryBoundaryCapture.inc",
+    "Tests/Netcode/Standalone/registry-boundary-wire/RegistryBoundaryReservation.inc",
+    "Tests/Netcode/Standalone/registry-boundary-wire/RegistryReplayTests.cpp",
+    "Tests/Netcode/Standalone/remote-input/ExactRemoteInputProducerTests.cpp",
+    "Tests/Netcode/Standalone/retained-replay/OwnerResumeMethods.inc",
+    "Tests/Netcode/Standalone/retained-replay/PreparedReplayStart.inc",
+    "Tests/Netcode/Standalone/retained-replay/ReplayStartTests.cpp",
+    "Tests/Netcode/Standalone/retained-replay/ReplayStartTests.inc",
+    "Tests/Netcode/Standalone/run_standalone.py",
+    "Tests/Netcode/Standalone/state-authority-envelope-v2/FragmentTests.h",
+    "Tests/Netcode/Standalone/state-authority-envelope-v2/StateEnvelopeTests.cpp",
+    "Tests/Netcode/Standalone/transport/StateFixture.h",
+    "Tests/Netcode/Standalone/transport/StateTransportTests.cpp",
+    "Tests/Netcode/Standalone/transport/TransportFixture.h",
+    "Tests/Netcode/Standalone/transport/TransportTests.cpp",
+    "Tests/Netcode/WorldSupport/NativePlanControlFlowTests.cpp",
+    "Tests/Netcode/WorldSupport/PreparedWorldCoreTests.cpp",
+    "Tests/Netcode/WorldSupport/test-shim/CoreMinimal.h",
+    "Tests/Netcode/WorldSupport/test-shim/IAmSpeed/Base/Kinematic.h",
+    "Tests/Netcode/WorldSupport/test-shim/WorldPlanDeclaration.inc",
+    "Tests/Netcode/WorldTokenGuardTests.cpp"
+  ],
+  "conflicts": [
+    {
+      "commit": "cce2821a5da7abc2ae267ca6012c92ba38102e73",
+      "path": "Source/IAmSpeed/World/Simulation/SimulationWorld.cpp",
+      "decision": "Keep017CaptureReplayStateFields thenappendbothpreparedincludes"
+    },
+    {
+      "commit": "be5fd5e67b4a3953b4ef51b2e0269f0ddf65a71a",
+      "paths": [
+        "SpeedSimulation.cpp",
+        "SpeedSimulation.h",
+        "SpeedSimulationInputSessions.cpp"
+      ],
+      "decision": "DEFER entire7-fileuncompiledcandidate;keep017ASpeedSimulation/ASpeedPhysicsSimulationarchitecture;completepatch+archivepreserved"
+    }
+  ],
+  "validation": {
+    "source_rebase": "COMPLETE",
+    "range_diff": "8equal1contextadapted",
+    "new_native_build": "NOT_RUN",
+    "new_standalone_tests": "NOT_RUN",
+    "native_match": "NOT_ACQUIRED",
+    "old_PASS_transferred": false
+  },
+  "source501_delta": {
+    "path": "evidence/source501-delta-audit.json",
+    "unexpected_changes": 0,
+    "deferred_files": 7
+  },
+  "all_FAIL_UNKNOWN_costs_KEEP": true
+}

@@ -1,0 +1,21 @@
+ 1:  faeacbc =  1:  fbae630 Preserve Netcode input resume replay and genuine registry boundary reservations
+ 2:  cce2821 !  2:  a7498ca Preserve prepared world transaction with reentrancy and access composition guards
+    @@ Source/IAmSpeed/World/Simulation/SimulationWorld.cpp: namespace Speed
+      			}
+      		}
+      	}
+    +@@ Source/IAmSpeed/World/Simulation/SimulationWorld.cpp: bool Speed::FSimulationWorld::CaptureReplayStateFields(
+    +     }
+    +     Out=MoveTemp(Prepared); UnsupportedStableId=0; return true;
+      }
+    -+
+     +#include "PreparedWorldRestore.inc"
+     +
+     +#include "PreparedAccessComposition.inc"
+ 3:  68e951e =  3:  d23b2ce Compose partial common state access with prepared restore source
+ 4:  a8bbf04 =  4:  b7a51c8 Prepare explicit empty INPUT cohorts without native driver activation
+ 5:  15baa64 =  5:  2361a62 Consolidate ordinary Netcode core and tests against rebased input implementations
+ 6:  5b1106b =  6:  b05e08b Reject foreign restore tokens before accessing worker-owned world state
+ 7:  186b46f =  7:  90c8f23 Retain genuine empty input history evidence under an exact registry reservation
+ 8:  ea507eb =  8:  ca64723 Bind prepared Input metadata to the exact live reservation
+ 9:  1a71693 =  9:  f9b7af8 Keep Input boundary capture allocations outside the command mutex

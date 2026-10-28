@@ -1,0 +1,118 @@
+{
+  "scope": "DISTINCT_FINITE74_OWN_RUNTIME_DATA_COPY_NO_SDK_ACCESS",
+  "opened": 37,
+  "closed": 37,
+  "bytes": 13604953,
+  "read_calls": 117,
+  "hash_bytes": 13597218,
+  "written_bytes": 4731775,
+  "CPU_WAIT_samples": 0,
+  "resources": [
+    {
+      "cpu_percent_ceil": 2,
+      "cpu_raw_uint64_samples": [
+        [
+          95652074375000,
+          106378505312500,
+          10671490312500
+        ],
+        [
+          95652154531250,
+          106378585781250,
+          10671491406250
+        ]
+      ],
+      "logical_processors": 32,
+      "available_physical_bytes": 66119106560,
+      "free_commit_bytes": 36743213056,
+      "disk_available_bytes": {
+        "C:/": 105256202240,
+        "E:/": 115447820288
+      },
+      "monotonic": 365782.046,
+      "observation_only_not_reservation": true
+    }
+  ],
+  "errors": [],
+  "tail_costs": "Receipt/closure/runtime wrapper tail UNKNOWN extra, retained; no zero or refund",
+  "owner_cache": {
+    "version_checks": 123,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 2055659,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "canonical_cache": {
+    "version_checks": 123,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 134992,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "runtime": {
+    "volume_decimal": "865290207709154448",
+    "file_id_128_hex": "ee071200000008000000000000000000",
+    "physical_path": "\\\\?\\C:\\Users\\User\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+    "bytes": 107312,
+    "mtime_ticks_decimal": "134375121180000000",
+    "change_ticks_decimal": "134376113703584725",
+    "attributes": 32,
+    "links": 1
+  },
+  "original": {
+    "pid": 81888,
+    "birth_ticks_decimal": "134376757579440543",
+    "CPU_seconds": 0.046875,
+    "RSS_bytes": 22564864,
+    "peak_RSS_bytes": 23130112,
+    "private_bytes": 14118912,
+    "IO": {
+      "read_ops": 132,
+      "write_ops": 0,
+      "other_ops": 1512,
+      "read_bytes": 1306717,
+      "write_bytes": 0,
+      "other_bytes": 364180
+    }
+  },
+  "metrics": {
+    "pid": 81888,
+    "birth_ticks_decimal": "134376757579440543",
+    "CPU_seconds": 0.3125,
+    "RSS_bytes": 33746944,
+    "peak_RSS_bytes": 38395904,
+    "private_bytes": 24489984,
+    "IO": {
+      "read_ops": 400,
+      "write_ops": 29,
+      "other_ops": 14705,
+      "read_bytes": 17148133,
+      "write_bytes": 4731775,
+      "other_bytes": 1187338
+    }
+  },
+  "state": "SOURCE_SUCCESS_CLOSED",
+  "primary_close": {
+    "attempts": 123,
+    "opened": 123,
+    "closed": 123,
+    "read_calls": 123,
+    "read_bytes": 177981,
+    "hash_calls": 0,
+    "hash_bytes": 0,
+    "ancestor_stats": 1230,
+    "info_calls": 738,
+    "failures": 0,
+    "remaining": 0,
+    "errors": []
+  },
+  "error": null,
+  "elapsed": 0.8899999999557622,
+  "closure_policy": "Independent current context: postclaim control/resource-only WAIT, same original30+5 clocks, unchanged source runtime/caps; no SDK/native actor admission or prior failure/PASS transfer."
+}

@@ -1,0 +1,19 @@
+{
+  "state": "ACTUAL_FRAME_INTEGRATION_FIXTURE_SOURCE_NOT_COMPILED_NOT_RUN",
+  "selector": "IAmSpeed.Netcode.CompletedPublication.CanonicalLifecycle",
+  "existing_friend": "FIAmSpeedControllerInputLifecycleTest",
+  "production_friend_or_ABI_or_runtime_setter_added": false,
+  "production_source02_unchanged": true,
+  "tests": [
+    "Independent simple automation registration delegates to the existing friend method; existing legacy simple test still gets its original empty command.",
+    "Actual existing UWorld/ASpeedController/device acquisition/V2 registry/real wheeled component/immutable empty collision world/worker RunCanonicalFrames path,16 physical canonical frames, existing2 sessions and6 pause/resume cycles unchanged.",
+    "At every actual completed frame require the SAME FRegistryFrame pointer and captured registry pointer, same historical frame, legacy physical bytes/hash/input-journal hash/publication serial matching actual world buffer.",
+    "Actual pause acknowledgement must clear both stored current common pointer and getter; retain one immutable pair per real frame and compare after subsequent frames and real input owner retirement."
+  ],
+  "limits": [
+    "Source-only proposal. The existing authored raw-device reports and empty analytical contact world do not qualify hardware, contacts, ball/pads/all actors, full gameplay state, real world branch or rollback.",
+    "Test-only existing friend field opt-in mirrors BeginPlay field selection but does not prove the production BeginPlay/bootstrap path; that remains required.",
+    "Terminal producer/publication failure path remains a separate real-frame fixture to add and run.",
+    "No native source compilation/execution/PASS transfer; unchanged default-off product flag/fullstate/restore/ExactRemote guards remain closed."
+  ]
+}

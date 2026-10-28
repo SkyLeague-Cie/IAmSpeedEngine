@@ -1,0 +1,85 @@
+{
+  "previous_source_candidate": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source01\\manifest.json",
+    "bytes": 4505,
+    "sha256": "40397ba3988d8c7725eaddc04a4165e71dc19f8acecf1622962a7a7058bf4ef9"
+  },
+  "state": "OWN_PARTIAL_COMMON_PUBLICATION_SOURCE_READY_NOT_NATIVE_QUALIFIED",
+  "utc": "2026-10-27T10:56:39.334873+00:00",
+  "generator": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ordinary-source7a-fd341-guard01\\prepare_completed_publication02.py",
+    "bytes": 15578,
+    "sha256": "3cdcc95c1660158bde8425e9c9966f89bb36ad6838b4d5c2512c2f7819e8fb36"
+  },
+  "preimage_files": [
+    {
+      "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\SpeedSimulation.h",
+      "bytes": 17273,
+      "sha256": "520bf7f2353bc231cab5a89da5100fd579b8a1d8fa574b54192e77669268021c"
+    },
+    {
+      "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\SpeedSimulation.cpp",
+      "bytes": 70249,
+      "sha256": "d5bca67b7eb1e5335d5c79d9dbb6f97557c93f0f1d4862beaab9ce52813ed883"
+    },
+    {
+      "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\SpeedSimulationInputSessions.cpp",
+      "bytes": 8106,
+      "sha256": "b20e538ef4797f04ffc638db0a75aadec8ae7dbd22414035dffb17b40e3fb8a3"
+    }
+  ],
+  "unchanged_input_registry": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\InputSessionRegistry.h",
+    "bytes": 45646,
+    "sha256": "bee4d64044f731239243d732a0934a0d713a5c9e60d08117408a7a76ce3074d4"
+  },
+  "unchanged_physical_snapshot_buffer": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\SimulationFrameJournal.cpp",
+    "bytes": 12412,
+    "sha256": "2b01c5b36b6bb2a1c4c11809a87e9b086367b85d556600090426f939d49e2ac4"
+  },
+  "candidate_files": [
+    {
+      "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\candidate\\Source\\IAmSpeed\\World\\Simulation\\SpeedSimulation.h",
+      "bytes": 17810,
+      "sha256": "5b2cd1ed047286e281ad0d551f9171647cb3bc8bf79a75fa475c1534fd90a0a8"
+    },
+    {
+      "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\candidate\\Source\\IAmSpeed\\World\\Simulation\\SpeedSimulation.cpp",
+      "bytes": 73014,
+      "sha256": "e885fb1f6b6e3fca26ecbef1801f40f4776122152b9cf35f9bb9ef92bd871308"
+    },
+    {
+      "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\candidate\\Source\\IAmSpeed\\World\\Simulation\\SpeedSimulationInputSessions.cpp",
+      "bytes": 9152,
+      "sha256": "3da3976346f64cfb9727542512c3cc55fe08885529e26a075510c7ed544943cc"
+    },
+    {
+      "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\candidate\\Source\\IAmSpeed\\World\\Simulation\\CompletedSimulationPublication.h",
+      "bytes": 3098,
+      "sha256": "25380bc9025a02f66eefe9959fcf035f27856a64274eef77a534c1e82add319d"
+    },
+    {
+      "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\candidate\\Source\\IAmSpeed\\World\\Simulation\\CompletedSimulationPublicationTests.cpp",
+      "bytes": 4676,
+      "sha256": "6f94ffbe89ae64e5886e1fb1ea6fd52130a290e1d1662318b807c65194b278a9"
+    }
+  ],
+  "patch": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\candidate.patch",
+    "bytes": 18434,
+    "sha256": "e4755ef060010d770db6235614ab7c018b4b0e9ff5699afe6eff62c9e6e71c65"
+  },
+  "contract": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\source-contract.json",
+    "bytes": 1845,
+    "sha256": "d9b0cbbf2c89be3dbe5f5a23b7a8d5183e86b7feac1c85bb8fd0b4650c7693cd"
+  },
+  "shared_hunks_announced_to": [
+    "Inputs",
+    "Skycar"
+  ],
+  "external_review_requested": false,
+  "task_complete": false,
+  "all_historical_FAIL_UNKNOWN_costs_KEEP": true
+}

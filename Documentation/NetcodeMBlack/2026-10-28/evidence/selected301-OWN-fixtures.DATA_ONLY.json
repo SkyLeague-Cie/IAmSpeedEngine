@@ -1,0 +1,453 @@
+{
+  "state": "NEW294_293_IMAGES_ORIGINAL_REDIST_OWN_FIXTURE_MODES_QUALIFIED_NOT_ACTUAL_SDK_PROVIDER",
+  "records": [
+    {
+      "mode": "default-off",
+      "receipt": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\defaultoff298\\attempt01\\receipt.json",
+        "bytes": 325932,
+        "sha256": "cd88d361ca3e372b720ddd24d46fdd8eb3c8ff85a22dd0357307aeb034d2554e"
+      },
+      "report": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\defaultoff298\\fixture\\owner\\selected-provider-report.json",
+        "bytes": 7166,
+        "sha256": "331759f428d661435bbf57c67af8467a93343ad06a9c7cbb977b6fab669bf81b"
+      },
+      "assertions": 127,
+      "control_QA": 64,
+      "Job": {
+        "active": 0,
+        "total": 1,
+        "terminated": 0,
+        "members": [],
+        "active_limit": 1,
+        "memory_bytes": 536870912,
+        "peak_job_memory_bytes": 15687680,
+        "cpu_rate": 1250,
+        "cpu_flags": 5,
+        "flags": 8728,
+        "affinity_mask_decimal": "3"
+      },
+      "Job_CPU_seconds": 0.140625,
+      "closures": {
+        "process_closure": {
+          "opened": 5,
+          "closed": 5,
+          "remaining": 0,
+          "remaining_kinds": [],
+          "errors": [],
+          "pid": 83812,
+          "birth_ticks_decimal": "134376721068318649",
+          "observed_exit": 0,
+          "pipe_counts": {
+            "peeks": 5,
+            "read_calls": 1,
+            "read_bytes": 431
+          },
+          "native_environment": {
+            "bytes": 3230,
+            "sha256": "d8916a4aa9d2f053f1ce811a5c2b46a983b9c4cabbc8da4f9363a05bca9463a4",
+            "keys": [
+              "APPDATA",
+              "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH",
+              "DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER",
+              "DOTNET_CLI_HOME",
+              "DOTNET_CLI_HOME_NO_PROMPT",
+              "DOTNET_CLI_TELEMETRY_OPTOUT",
+              "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE",
+              "DOTNET_GENERATE_ASPNET_CERTIFICATE",
+              "DOTNET_MULTILEVEL_LOOKUP",
+              "DOTNET_NOLOGO",
+              "DOTNET_ROOT",
+              "DOTNET_SKIP_FIRST_TIME_EXPERIENCE",
+              "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT",
+              "LOCALAPPDATA",
+              "MSBUILDDISABLENODEREUSE",
+              "MSBuildEnableWorkloadResolver",
+              "NUGET_HTTP_CACHE_PATH",
+              "NUGET_PACKAGES",
+              "NUGET_SCRATCH",
+              "PATH",
+              "ProgramData",
+              "ProgramFiles",
+              "PYTHONIOENCODING",
+              "SystemDrive",
+              "SystemRoot",
+              "TEMP",
+              "TMP",
+              "USERPROFILE",
+              "WINDIR"
+            ],
+            "inherit_parent_environment": false,
+            "creation_flags": 541708,
+            "handle_list_count": 2,
+            "attribute_buffer_bytes": 48,
+            "child_environment_readback": "UNKNOWN; retained native lpEnvironment input, not remote process observation",
+            "buffer_equal_after_native_call": true
+          },
+          "attribute_lists_initialized": 1,
+          "attribute_lists_deleted": 1,
+          "Python_buffer_reclaim": "OS/provider timing UNKNOWN; explicit attribute-list delete calls counted"
+        },
+        "pins_closure": {
+          "opened": 116,
+          "closed": 116,
+          "remaining": 0,
+          "errors": [],
+          "read_calls": 685,
+          "read_bytes": 71001702,
+          "partial_errors": []
+        },
+        "primary_closure": {
+          "attempts": 2429,
+          "opened": 2429,
+          "closed": 2429,
+          "read_calls": 2429,
+          "read_bytes": 3514763,
+          "hash_calls": 0,
+          "hash_bytes": 0,
+          "ancestor_stats": 24290,
+          "info_calls": 14574,
+          "failures": 0,
+          "remaining": 0,
+          "errors": []
+        }
+      },
+      "elapsed_seconds": 4.875
+    },
+    {
+      "mode": "selected-private",
+      "receipt": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\private299\\attempt01\\receipt.json",
+        "bytes": 331158,
+        "sha256": "7adb971f1a2a12a7f425d83b64b32c096d7d8fbac0409cb7c57d36e3c305778e"
+      },
+      "report": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\private299\\fixture\\owner\\selected-provider-report.json",
+        "bytes": 9108,
+        "sha256": "48532bbbe5f67a82147542a670d44861ca74542c01f0874d87143796ead5af75"
+      },
+      "assertions": 190,
+      "control_QA": 64,
+      "Job": {
+        "active": 0,
+        "total": 1,
+        "terminated": 0,
+        "members": [],
+        "active_limit": 1,
+        "memory_bytes": 536870912,
+        "peak_job_memory_bytes": 22155264,
+        "cpu_rate": 1250,
+        "cpu_flags": 5,
+        "flags": 8728,
+        "affinity_mask_decimal": "3"
+      },
+      "Job_CPU_seconds": 0.3125,
+      "closures": {
+        "process_closure": {
+          "opened": 5,
+          "closed": 5,
+          "remaining": 0,
+          "remaining_kinds": [],
+          "errors": [],
+          "pid": 57332,
+          "birth_ticks_decimal": "134376721619060876",
+          "observed_exit": 0,
+          "pipe_counts": {
+            "peeks": 11,
+            "read_calls": 1,
+            "read_bytes": 433
+          },
+          "native_environment": {
+            "bytes": 3164,
+            "sha256": "91e3c8117d0a1695a677aedadc4753da50fee84606364857c7c0d43f9144ca53",
+            "keys": [
+              "APPDATA",
+              "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH",
+              "DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER",
+              "DOTNET_CLI_HOME",
+              "DOTNET_CLI_HOME_NO_PROMPT",
+              "DOTNET_CLI_TELEMETRY_OPTOUT",
+              "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE",
+              "DOTNET_GENERATE_ASPNET_CERTIFICATE",
+              "DOTNET_MULTILEVEL_LOOKUP",
+              "DOTNET_NOLOGO",
+              "DOTNET_ROOT",
+              "DOTNET_SKIP_FIRST_TIME_EXPERIENCE",
+              "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT",
+              "LOCALAPPDATA",
+              "MSBUILDDISABLENODEREUSE",
+              "MSBuildEnableWorkloadResolver",
+              "NUGET_HTTP_CACHE_PATH",
+              "NUGET_PACKAGES",
+              "NUGET_SCRATCH",
+              "PATH",
+              "ProgramData",
+              "ProgramFiles",
+              "PYTHONIOENCODING",
+              "SystemDrive",
+              "SystemRoot",
+              "TEMP",
+              "TMP",
+              "USERPROFILE",
+              "WINDIR"
+            ],
+            "inherit_parent_environment": false,
+            "creation_flags": 541708,
+            "handle_list_count": 2,
+            "attribute_buffer_bytes": 48,
+            "child_environment_readback": "UNKNOWN; retained native lpEnvironment input, not remote process observation",
+            "buffer_equal_after_native_call": true
+          },
+          "attribute_lists_initialized": 1,
+          "attribute_lists_deleted": 1,
+          "Python_buffer_reclaim": "OS/provider timing UNKNOWN; explicit attribute-list delete calls counted"
+        },
+        "pins_closure": {
+          "opened": 117,
+          "closed": 117,
+          "remaining": 0,
+          "errors": [],
+          "read_calls": 691,
+          "read_bytes": 71661884,
+          "partial_errors": []
+        },
+        "primary_closure": {
+          "attempts": 2456,
+          "opened": 2456,
+          "closed": 2456,
+          "read_calls": 2456,
+          "read_bytes": 3553832,
+          "hash_calls": 0,
+          "hash_bytes": 0,
+          "ancestor_stats": 24560,
+          "info_calls": 14736,
+          "failures": 0,
+          "remaining": 0,
+          "errors": []
+        }
+      },
+      "elapsed_seconds": 5.375
+    },
+    {
+      "mode": "missing-capability",
+      "receipt": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\missing300\\attempt01\\receipt.json",
+        "bytes": 327350,
+        "sha256": "1dfb60df5d0808f3addc42c1bf546c8e64bd505d77cd91b3c28c7126061ffa11"
+      },
+      "report": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\missing300\\fixture\\owner\\selected-provider-report.json",
+        "bytes": 4110,
+        "sha256": "a433b27a21cfa8d9b82c6a2480646e3c7dfebaf491bfe6de38179f32def5a6e5"
+      },
+      "assertions": 89,
+      "control_QA": 64,
+      "Job": {
+        "active": 0,
+        "total": 1,
+        "terminated": 0,
+        "members": [],
+        "active_limit": 1,
+        "memory_bytes": 536870912,
+        "peak_job_memory_bytes": 13197312,
+        "cpu_rate": 1250,
+        "cpu_flags": 5,
+        "flags": 8728,
+        "affinity_mask_decimal": "3"
+      },
+      "Job_CPU_seconds": 0.125,
+      "closures": {
+        "process_closure": {
+          "opened": 5,
+          "closed": 5,
+          "remaining": 0,
+          "remaining_kinds": [],
+          "errors": [],
+          "pid": 62632,
+          "birth_ticks_decimal": "134376721962993659",
+          "observed_exit": 0,
+          "pipe_counts": {
+            "peeks": 4,
+            "read_calls": 1,
+            "read_bytes": 434
+          },
+          "native_environment": {
+            "bytes": 3164,
+            "sha256": "5280cb908ec30cc03257046f729ee4d44f9f90ed23379b2e3690b6a36b44ee77",
+            "keys": [
+              "APPDATA",
+              "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH",
+              "DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER",
+              "DOTNET_CLI_HOME",
+              "DOTNET_CLI_HOME_NO_PROMPT",
+              "DOTNET_CLI_TELEMETRY_OPTOUT",
+              "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE",
+              "DOTNET_GENERATE_ASPNET_CERTIFICATE",
+              "DOTNET_MULTILEVEL_LOOKUP",
+              "DOTNET_NOLOGO",
+              "DOTNET_ROOT",
+              "DOTNET_SKIP_FIRST_TIME_EXPERIENCE",
+              "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT",
+              "LOCALAPPDATA",
+              "MSBUILDDISABLENODEREUSE",
+              "MSBuildEnableWorkloadResolver",
+              "NUGET_HTTP_CACHE_PATH",
+              "NUGET_PACKAGES",
+              "NUGET_SCRATCH",
+              "PATH",
+              "ProgramData",
+              "ProgramFiles",
+              "PYTHONIOENCODING",
+              "SystemDrive",
+              "SystemRoot",
+              "TEMP",
+              "TMP",
+              "USERPROFILE",
+              "WINDIR"
+            ],
+            "inherit_parent_environment": false,
+            "creation_flags": 541708,
+            "handle_list_count": 2,
+            "attribute_buffer_bytes": 48,
+            "child_environment_readback": "UNKNOWN; retained native lpEnvironment input, not remote process observation",
+            "buffer_equal_after_native_call": true
+          },
+          "attribute_lists_initialized": 1,
+          "attribute_lists_deleted": 1,
+          "Python_buffer_reclaim": "OS/provider timing UNKNOWN; explicit attribute-list delete calls counted"
+        },
+        "pins_closure": {
+          "opened": 118,
+          "closed": 118,
+          "remaining": 0,
+          "errors": [],
+          "read_calls": 697,
+          "read_bytes": 72309130,
+          "partial_errors": []
+        },
+        "primary_closure": {
+          "attempts": 2470,
+          "opened": 2470,
+          "closed": 2470,
+          "read_calls": 2470,
+          "read_bytes": 3574090,
+          "hash_calls": 0,
+          "hash_bytes": 0,
+          "ancestor_stats": 24700,
+          "info_calls": 14820,
+          "failures": 0,
+          "remaining": 0,
+          "errors": []
+        }
+      },
+      "elapsed_seconds": 5.032000000006519
+    }
+  ],
+  "assertions_by_mode": {
+    "default_off": 127,
+    "selected_private": 190,
+    "missing_capability": 89
+  },
+  "new_original_redist_assertions": 39,
+  "redist_policy": {
+    "assertions": 39,
+    "original_FindVisualStudioRedistForToolChain": true,
+    "original_VersionNumber_parser_and_ordering": true,
+    "private_metadata_dispatch": true,
+    "catalog_names": [
+      "14.38.33130",
+      "14.44.35112",
+      "14.50.35710",
+      "14.51.36231",
+      "v145"
+    ],
+    "requested": "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Redist\\MSVC\\14.50.35717",
+    "baseline_result": "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Redist\\MSVC\\14.51.36231",
+    "isolated_reflection_route_bindings_restored": true,
+    "live_SDK": false
+  },
+  "actual_target_MVIDs": {
+    "UBT": "d40651e2-89f8-484c-bbd9-55353601489d",
+    "shared": "a4ac1baa-1a02-4944-a823-a59d23e44749"
+  },
+  "images": [
+    {
+      "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\runtime297\\app\\UnrealBuildTool.dll",
+      "bytes": 3228672,
+      "sha256": "2a6f8ae611c31f30c9f0a5a117abd7173e6fcb411e7741690de383156e05b3da",
+      "native": {
+        "volume_decimal": "13296387618662110866",
+        "file_id_128_hex": "87a48d00000003000000000000000000",
+        "physical_path": "\\\\?\\E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\runtime297\\app\\UnrealBuildTool.dll",
+        "bytes": 3228672,
+        "mtime_ticks_decimal": "134376718320719662",
+        "change_ticks_decimal": "134376720499180800",
+        "attributes": 32,
+        "links": 1
+      },
+      "MVID": "d40651e2-89f8-484c-bbd9-55353601489d"
+    },
+    {
+      "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\runtime297\\app\\EpicGames.Build.dll",
+      "bytes": 201728,
+      "sha256": "dcd62df2912b972f16e2b3e0863e228852d62440fea16af4911a1fa574eae5cb",
+      "native": {
+        "volume_decimal": "13296387618662110866",
+        "file_id_128_hex": "d2a48d00000003000000000000000000",
+        "physical_path": "\\\\?\\E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\runtime297\\app\\EpicGames.Build.dll",
+        "bytes": 201728,
+        "mtime_ticks_decimal": "134376717750497240",
+        "change_ticks_decimal": "134376720578195887",
+        "attributes": 32,
+        "links": 1
+      },
+      "MVID": "a4ac1baa-1a02-4944-a823-a59d23e44749"
+    },
+    {
+      "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\runtime297\\app\\SelectedProviderCanary295.dll",
+      "bytes": 73216,
+      "sha256": "1f5d5e14c084dfb380ece4866b59fef64d2d88f08447a41766ec7bb0a7f444fb",
+      "native": {
+        "volume_decimal": "13296387618662110866",
+        "file_id_128_hex": "d3a48d00000003000000000000000000",
+        "physical_path": "\\\\?\\E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\runtime297\\app\\SelectedProviderCanary295.dll",
+        "bytes": 73216,
+        "mtime_ticks_decimal": "134376720257071954",
+        "change_ticks_decimal": "134376720581761501",
+        "attributes": 32,
+        "links": 1
+      },
+      "MVID": "CALLER_HASH_NATIVE_PINNED_MVID_NOT_USED_AS_TARGET_ORACLE"
+    }
+  ],
+  "runtime": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\runtime297\\manifest.json",
+    "bytes": 142617,
+    "sha256": "78b644342ba30b3a9559657dec16cccdc8b55bc02148ff1f37099a6a8d2c6461"
+  },
+  "source": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SelectedToolchainSource292\\selected-explicit-MSVC-candidate.SOURCE_ONLY.json",
+    "bytes": 6224,
+    "sha256": "4c704068463e6469c9498ee905384f5daaa25b420924e4cfa045faf20aa93420"
+  },
+  "separate_real_scalar_observation": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SelectedToolchainSource292\\two-selected-lookups47QA64control-success-closed.DATA_ONLY.json",
+    "bytes": 7795,
+    "sha256": "a6c349c36afa6dd5602908df65db412148d201276a0531c85b2711954ffac043"
+  },
+  "separate_real_Redist_metadata": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SelectedScalarSource286\\fresh-one-redist-root67QA-success-closed.DATA_ONLY.json",
+    "bytes": 19469,
+    "sha256": "4019e40067a483181ad2dd00b26fdcaf626451bab5b6234aec321891d5ebafb2"
+  },
+  "owner_notice": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SelectedProviderQualification301\\common-hunks-source292-owner-notices.DATA_ONLY.json",
+    "bytes": 875,
+    "sha256": "00da4bc61e8b2dcc7a78fd3717509e5ef5003a20b48c09931a65e136d945a0e9"
+  },
+  "scope": "All3independentcontexts reran64authority/WAIT/native/singleprocesschecks. Defaultoff127original4OWNclpolicy/VersionInfo;private190includingactualoriginalRedisthelperdispatch39assertions(8isolatedvalidatedauthoredroutevariants/18invalidcatalogs),exact-familypositiveoverride/highestnumeric14.51vsnearest14.50/numeric14.9-vs14.51/shuffle/nonnumeric/declared-resultmismatch/fullnativecoherence/refusal/restoration. Missing89explicitno-capabilityrefusals. All75runtimehash/fullnativebeforeafterJob0/realprocess/pins/primaryclosures andcurrent3imagecontinuity. ThisOWNfixturedataisnotliveinstalledprovider/loaderclosure/nativecompiler/Main/UEphysics/fullstate/rollback/privateClient1v1 proof. Separate291IsPrereleasefalse/285exactRedist14.50.35717nativeabsenceareclosedobservationdata,neveractiveSDKlease.290preflightFileNotFoundError+secondaryNameErrorFAILandallcostsKEEP;notresourcefailure. Source292fixqualifiedonlybythesecontextualproofs,noold270/273/274/283PASStransfer.",
+  "all_FAIL_UNKNOWN_costs_KEEP": true,
+  "task_complete": false,
+  "review_requested": false
+}

@@ -1,0 +1,151 @@
+{
+  "files": [
+    {
+      "relative": "evidence/migration327-legacy-large-scope-refusal-closed.json",
+      "bytes": 3202,
+      "sha256": "7610963d45c43b50f3752384bc3509f4f28518ea35865ed8b54782edf8730cfb",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\migration327-portable-capsule-close.json"
+    },
+    {
+      "relative": "evidence/source501-delta-audit.json",
+      "bytes": 294778,
+      "sha256": "d0aa065061e8123dd2a53c52fa3e61ab351779a1595292b709e766264598ea11",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\MigrationMBlack20261028\\source326\\delta-audit.json"
+    },
+    {
+      "relative": "pending-publication/publication501-vs-central1a71693.patch",
+      "bytes": 42310,
+      "sha256": "ba73da87315334946dff2c95b4c025024a1283705880cfb2f3ec175a5441e195",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\MigrationMBlack20261028\\source326\\publication501-vs-central1a71693.patch"
+    },
+    {
+      "relative": "evidence/migration324-decode-failure-closed.json",
+      "bytes": 14077,
+      "sha256": "3bb8c0776d9e8eab73e51c93a6175a3948f178e58a83ab9e102ab258901777f4",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\migration324-source-delta-preparation-close.json"
+    },
+    {
+      "relative": "evidence/migration325-sparse-binary-refusal-closed.json",
+      "bytes": 3221,
+      "sha256": "9612bd9334b72f976c2ce29c5f7ca9f80bb0312d8a4fb6015eebec9b94c6ef67",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\migration325-byte-source-delta-preparation-close.json"
+    },
+    {
+      "relative": "evidence/migration326-source-close.json",
+      "bytes": 4346,
+      "sha256": "b23947c5609abb458038dbb11c048456a3cb11989d6f8527010bf9773b4a2636",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\migration326-Gitblob-source-delta-preparation-close.json"
+    },
+    {
+      "relative": "evidence/Main304-receipt.DATA_ONLY.json",
+      "bytes": 3328370,
+      "sha256": "8c0dab9a63dd5ab9236812eed4c66f716571d6db7523bf06b64cf95ff3bac966",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Builds\\ClientHost135\\QueryTargets304\\attempt01\\receipt.json"
+    },
+    {
+      "relative": "evidence/Main306-adoption.DATA_ONLY.json",
+      "bytes": 6334,
+      "sha256": "c49d20e783362b7426a806c2ae5a72b86126add62b5419864277e849cf2680a6",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CurrentMainQualification306\\current294-shared293-Main-two-targets-success-closed.DATA_ONLY.json"
+    },
+    {
+      "relative": "evidence/selected301-OWN-fixtures.DATA_ONLY.json",
+      "bytes": 17145,
+      "sha256": "64d31765e9278ce6a095f485c94b4764459b7a9573dbcc9d684440f5addaecac",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\SelectedProviderQualification301\\new-images-three-OWN-modes406-assertions-success-closed.DATA_ONLY.json"
+    },
+    {
+      "relative": "evidence/NoUBA307-source-facts.json",
+      "bytes": 9857,
+      "sha256": "784f3e7389b158ae633d5cf05d0f6842f4e0d4ffc0d67289b1a4f8ddfc49876f",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\ExecutorBoundarySource307\\NoUBA-is-no-detour-not-no-executor.SOURCE_EVIDENCE.json"
+    },
+    {
+      "relative": "evidence/NoUBA313-managed-root-correction.json",
+      "bytes": 2626,
+      "sha256": "9e27542c68ddb449c9f66b522a12108c293709705afa2acc912245c937b4c42f",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnUbaIlQualification313\\native-label-correction-and-early-precreate.SOURCE_EVIDENCE.json"
+    },
+    {
+      "relative": "evidence/UBA312-IL-receipt.DATA_ONLY.json",
+      "bytes": 337241,
+      "sha256": "95cc142c80b1d99aeb27b7693405da591dc369b6819b85a8dd60d0c8fe84e454",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Builds\\OwnUbaIl\\analysis312\\attempt01\\receipt.json"
+    },
+    {
+      "relative": "evidence/Core317-IL-receipt.DATA_ONLY.json",
+      "bytes": 309444,
+      "sha256": "207401832c5010cf18011cc81c4d83d7fb90d949169c2801cc962a83bb5ca765",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Builds\\OwnCoreIl\\analysis317\\attempt01\\receipt.json"
+    },
+    {
+      "relative": "evidence/Core318-adoption.DATA_ONLY.json",
+      "bytes": 30930,
+      "sha256": "c110a7d02c968dfa3d9efef36c358ff3f12588188034441569323d24aa97752f",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnCoreIlQualification318\\DirectoryReference-four-managed-methods17QA64control-success-closed.DATA_ONLY.json"
+    },
+    {
+      "relative": "evidence/Core317-CLI-failure-KEEP.json",
+      "bytes": 679,
+      "sha256": "ff35bbde817fc278c69d578f9fda71cd35e39979e4577a84443a348ce8a38304",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnCoreIlQualification318\\controller-missing-arguments-PREFLIGHT_FAIL_KEEP.json"
+    },
+    {
+      "relative": "evidence/historical-ordinary2883-not-current-validation.json",
+      "bytes": 13337,
+      "sha256": "2d68bbcfedf1a11d91d25913b0d12571952fb15cb1382a7f8a643d7434d39135",
+      "central_source": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\rebase-preparation-20261025\\progress-receipt.json"
+    },
+    {
+      "relative": "pending-publication/original-candidate-manifest.json",
+      "bytes": 4797,
+      "sha256": "46613ab10ea9bf9586d795f116c1e349a6a9d6b7adc1a2bb11e8b883883c1a17",
+      "central_source": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\manifest.json"
+    },
+    {
+      "relative": "pending-publication/original-contract.json",
+      "bytes": 1845,
+      "sha256": "d9b0cbbf2c89be3dbe5f5a23b7a8d5183e86b7feac1c85bb8fd0b4650c7693cd",
+      "central_source": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-source02\\source-contract.json"
+    },
+    {
+      "relative": "pending-publication/original-native-fixture-manifest.json",
+      "bytes": 4530,
+      "sha256": "ed983a91c595cff5e9f2b5646bdde41c2076f50c283f5c9ee43f3d1092c70f6a",
+      "central_source": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-native-fixture-source01\\manifest.json"
+    },
+    {
+      "relative": "pending-publication/original-native-fixture-contract.json",
+      "bytes": 1819,
+      "sha256": "3496a110cc4cedbccbea1484000c1d57125b8b91b782e2cfe5932ca37746e5a8",
+      "central_source": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\completed-publication-native-fixture-source01\\source-contract.json"
+    },
+    {
+      "relative": "rebase-preimages/01-SimulationWorld.cpp.CONFLICT",
+      "bytes": 31990,
+      "sha256": "e58decbce8b0fed7e5c173315bf228463fc6e3b0d5a1e575dfb9ef9c4f666819",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\MigrationMBlack20261028\\conflicts01\\SimulationWorld.cpp.CONFLICT"
+    },
+    {
+      "relative": "rebase-preimages/02-SpeedSimulation.cpp.CONFLICT",
+      "bytes": 70867,
+      "sha256": "e6ab93132c024b80b695859758cdc55bdce3ec1bbd29d18ddf4bf68f04b05576",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\MigrationMBlack20261028\\conflicts02\\SpeedSimulation.cpp.CONFLICT"
+    },
+    {
+      "relative": "rebase-preimages/02-SpeedSimulation.h.CONFLICT",
+      "bytes": 19940,
+      "sha256": "e066422b1c14a2221faaed2ea98e2efe59a3547eeb6aea3627a3fc57c73d11e2",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\MigrationMBlack20261028\\conflicts02\\SpeedSimulation.h.CONFLICT"
+    },
+    {
+      "relative": "rebase-preimages/02-SpeedSimulationInputSessions.cpp.CONFLICT",
+      "bytes": 17576,
+      "sha256": "5e5eab781dffe1f9e694866b535120aa97f2655fedbe94326a6cf35a0e3996e2",
+      "central_source": "E:\\UELeadPrivate\\Netcode\\MigrationMBlack20261028\\conflicts02\\SpeedSimulationInputSessions.cpp.CONFLICT"
+    }
+  ],
+  "scope": "PortablecopieddataevidencewithSHA256;noEngine/SDK/binaries/caches/grantsincluded",
+  "source_guard_receipt": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\migration328-portable-capsule-close.json",
+  "native_MBlack_qualification": false
+}

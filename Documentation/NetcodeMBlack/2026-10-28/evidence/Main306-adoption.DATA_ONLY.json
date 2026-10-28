@@ -1,0 +1,187 @@
+{
+  "state": "CURRENT294_SHARED293_ORIGINAL_MAIN_QUERYTARGETS_GAME_EDITOR_SUCCESS_CLOSED",
+  "receipt": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\ClientHost135\\QueryTargets304\\attempt01\\receipt.json",
+    "bytes": 3328370,
+    "sha256": "8c0dab9a63dd5ab9236812eed4c66f716571d6db7523bf06b64cf95ff3bac966"
+  },
+  "plan": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\ClientHost135\\QueryTargets304\\PLAN.json",
+    "bytes": 1038060,
+    "sha256": "872a10d5e723c231893124b34f2470710a0c826154c90f8e8118924be4f019ef"
+  },
+  "actual_preparation_close": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\Control\\main304-current294-combined-query-preparation-close.json",
+    "bytes": 4345,
+    "sha256": "900e365dc8c80337dce85247cfe6528a2b5cb334ecf8095df24d951c2d1d5e3a"
+  },
+  "report": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\ClientHost135\\QueryTargets304\\owner\\TargetInfo.json",
+    "bytes": 306,
+    "sha256": "941778e7391a151707068ff5c095de9a68b345e2dbd9346b5044fd109de068f0"
+  },
+  "targets": [
+    {
+      "Name": "IAmSpeedHostProject",
+      "Path": "..\\..\\project\\Source\\IAmSpeedHostProject.Target.cs",
+      "Type": "Game"
+    },
+    {
+      "Name": "IAmSpeedHostProjectEditor",
+      "Path": "..\\..\\project\\Source\\IAmSpeedHostProjectEditor.Target.cs",
+      "Type": "Editor"
+    }
+  ],
+  "images": [
+    {
+      "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\main-runtime302\\app\\UnrealBuildTool.dll",
+      "bytes": 3228672,
+      "sha256": "2a6f8ae611c31f30c9f0a5a117abd7173e6fcb411e7741690de383156e05b3da",
+      "native": {
+        "volume_decimal": "13296387618662110866",
+        "file_id_128_hex": "62a68d00000003000000000000000000",
+        "physical_path": "\\\\?\\E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\main-runtime302\\app\\UnrealBuildTool.dll",
+        "bytes": 3228672,
+        "mtime_ticks_decimal": "134376718320719662",
+        "change_ticks_decimal": "134376725027583063",
+        "attributes": 32,
+        "links": 1
+      }
+    },
+    {
+      "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\main-runtime302\\app\\EpicGames.Build.dll",
+      "bytes": 201728,
+      "sha256": "dcd62df2912b972f16e2b3e0863e228852d62440fea16af4911a1fa574eae5cb",
+      "native": {
+        "volume_decimal": "13296387618662110866",
+        "file_id_128_hex": "61a68d00000003000000000000000000",
+        "physical_path": "\\\\?\\E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\main-runtime302\\app\\EpicGames.Build.dll",
+        "bytes": 201728,
+        "mtime_ticks_decimal": "134376717750497240",
+        "change_ticks_decimal": "134376725026426144",
+        "attributes": 32,
+        "links": 1
+      }
+    }
+  ],
+  "target_MVIDs_from301_same_hash_OWN_components": {
+    "UBT": "d40651e2-89f8-484c-bbd9-55353601489d",
+    "shared": "a4ac1baa-1a02-4944-a823-a59d23e44749"
+  },
+  "loaded_module_or_OS_loader_census": "UNKNOWN_NOT_CLAIMED",
+  "SDK_files": 922,
+  "SDK_nominal_bytes": 1141055,
+  "metadata": {
+    "attempts": 674,
+    "native_calls": 1418,
+    "metadata_transfer_bytes": 40002,
+    "opened": 62,
+    "closed": 62,
+    "READ_DATA_calls": 0,
+    "SDK_hash_calls": 0,
+    "enumerations": 0,
+    "recursive_calls": 0,
+    "remaining": 0,
+    "errors": [],
+    "before_verified": true,
+    "after_verified": true
+  },
+  "registry": {
+    "native_calls": 96,
+    "opened": 3,
+    "closed": 3,
+    "value_queries": 18,
+    "value_bytes": 1440,
+    "enumerations": 0,
+    "writes": 0,
+    "expanded_strings": 0,
+    "remaining": 0,
+    "errors": [],
+    "before_verified": true,
+    "after_verified": true
+  },
+  "Include_Find": {
+    "native_calls": 6,
+    "opened": 1,
+    "closed": 1,
+    "records_loaded": 4,
+    "dot_records": 2,
+    "named_children": 2,
+    "potential_extra_sentinels": 0,
+    "terminal_NoMoreFiles": 1,
+    "metadata_transfer_bytes": 2368,
+    "SDK_READ_DATA_calls": 0,
+    "recursive_calls": 0,
+    "remaining": 0,
+    "errors": []
+  },
+  "file_pins": {
+    "opened": 1069,
+    "closed": 1069,
+    "remaining": 0,
+    "errors": [],
+    "read_calls": 4515,
+    "read_bytes": 80060958,
+    "partial_errors": []
+  },
+  "file_observations": 2138,
+  "native_operations": 20792,
+  "primary": {
+    "attempts": 23329,
+    "opened": 23329,
+    "closed": 23329,
+    "read_calls": 23329,
+    "read_bytes": 33757063,
+    "hash_calls": 0,
+    "hash_bytes": 0,
+    "ancestor_stats": 233290,
+    "info_calls": 139974,
+    "failures": 0,
+    "remaining": 0,
+    "errors": []
+  },
+  "Job0": {
+    "active": 0,
+    "total": 1,
+    "terminated": 0,
+    "members": [],
+    "active_limit": 1,
+    "memory_bytes": 1073741824,
+    "peak_job_memory_bytes": 99041280,
+    "cpu_rate": 1250,
+    "cpu_flags": 5,
+    "flags": 8728,
+    "affinity_mask_decimal": "3"
+  },
+  "controller_cpu_seconds": 32.90625,
+  "elapsed_seconds": 52.59299999999348,
+  "QA": {
+    "current_epoch": 15,
+    "QueryTargets_scope": 13,
+    "scalar_counts": {
+      "prelaunch": 11,
+      "bounded": 10,
+      "metadata": 7,
+      "SDK_combined_reference": 939,
+      "SDK_creation": 4,
+      "expanded266_spec": 8,
+      "exact_physical_names": 9,
+      "RUN_terminal_profile": 7,
+      "large_RUN_profile": 31,
+      "QueryTargets_oracle": 8,
+      "primary_attempts": 8
+    },
+    "held_metadata_OWN": 18,
+    "held_registry": 20,
+    "Include_Find": 10
+  },
+  "documentary_erratum": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\CurrentMainQualification306\\source303-profile-QA-count-label-erratum.KEEP.json",
+    "bytes": 759,
+    "sha256": "0c762d24aca3fb5287440f31b5b5c577bfac55f9cd83b12917acb356bcfc2a5b"
+  },
+  "qualification": "NewactualMain304ofhash-pinned294UBT293shared:startup/XML/hostWindowsSDKregistration/EngineandOWNprecompiledprojectrulesloading/2actualGame+Editortargetconstructors.922actualSDKfiles/266metadata/12registry/Include2completechildrenheldandfullhash/native/creationverifiedafterJob0;1069datahandlesand23329physicalprimaryreadsclosed. SelectedMsvcABSENT/WindowsKits10only,soNoMSVC/COM/Redist/nativeUBA/C++Build/UEexecutionadmitted. CurrentMainnotold166PASStransfer;406OWNsemanticassertionsremainseparateproofs. NoUEphysics/fullstatev3/restore/causalrollback/current+consumedatomicworld/playableprivateClient1v1proof.",
+  "all_FAIL_UNKNOWN_costs_KEEP": true,
+  "review_requested": false,
+  "task_complete": false
+}

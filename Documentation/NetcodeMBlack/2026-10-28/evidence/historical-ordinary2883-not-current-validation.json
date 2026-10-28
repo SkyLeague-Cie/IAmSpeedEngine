@@ -1,0 +1,146 @@
+{
+  "schema": "netcode-actual-opt2883-private-rebase-progress/v1",
+  "utc": "2026-10-24T22:33:03.447246+00:00",
+  "state": "ACTUAL_SOURCE_REBASE_AND_FRESH_TARGETED_ORDINARY_VALIDATION_COMPLETE",
+  "old_synthetic_import": {
+    "synthetic_import_commit": "b4a27f08cb4c79123580e1abc93e3d547110a315",
+    "tree": "14aeb79e4f4e8638e8bf2491ad4f9d9794910d03",
+    "exact_own_source_files": 422,
+    "historical_native_HEAD": false,
+    "native_qualification": "NOT_RUN"
+  },
+  "before_head": "68c595acfca95e7a90a310e25a5a7a05ef9b9307",
+  "new_base": {
+    "commit": "c0f56e6112664ab7a4898186cb2675f1e8d720db",
+    "tree": "6447737d7cb4a66cd57488472c49c930699bb526",
+    "manifest_sha256": "bb2ea669635e559bc4886df9dec5fe2f7438eff0a99c04fa1c5d58314c517915",
+    "verified_source_blobs": 449
+  },
+  "head": "68e951ef9198abdd4c05ed664896d343a4f8e67f",
+  "tree": "2f5d7171ccc2411101d564597ccf996dfdf33556",
+  "repository": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883",
+  "source_manifest": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\rebase-preparation-20261025\\rebased-source-manifest.json",
+    "bytes": 83253,
+    "sha256": "e7934ef64ae0da574c1a4c0c2a32d3df73133278ace5036dc4e4093f9f772ff4"
+  },
+  "git_bundle": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\rebase-preparation-20261025\\netcode-opt2883.bundle",
+    "bytes": 3907060,
+    "sha256": "c195a47537128816da9b870875a1bfa14b40d16748de57a62c609d91dfb9d08c"
+  },
+  "source_patch": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\rebase-preparation-20261025\\netcode-vs-opt2883.patch",
+    "bytes": 167673,
+    "sha256": "60ff016098b4db9113acd387c0ff286c1494754766c625efdc5b262eeaa2b94f"
+  },
+  "git_rebase": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\rebase-preparation-20261025\\rebase-result.json",
+    "bytes": 21032,
+    "sha256": "888f6628622efadf2c22783ece3a1e8543df9fd3773a02cf51a0902baddda2d8"
+  },
+  "raw_git": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\rebase-preparation-20261025\\git-operation.raw.json",
+    "bytes": 223739,
+    "sha256": "2bfda79c63494ac7210b8d34ab585e85b95bb35fb2f53e9a58541f96b9810d2c"
+  },
+  "textual_conflicts": [],
+  "semantic_resolutions": [
+    {
+      "kind": "prototype include closure",
+      "paths": [
+        "Source/IAmSpeed/Input/InputSessionRegistry.h"
+      ],
+      "change": "Three registry .inc files moved from prototype root to Source/IAmSpeed; ../../ includes become ../. Bodies unchanged."
+    },
+    {
+      "kind": "two preserved private ISpeedComponent variants",
+      "paths": [
+        "Source/IAmSpeed/Components/ISpeedComponent.h"
+      ],
+      "change": "Keep complete prepared-restore default-deny virtual method and add common-field access forward declaration/friend; neither variant overwrites the other. No body/cadence/CCD/quantizer edit."
+    },
+    {
+      "kind": "partial common helper layout",
+      "paths": [
+        "Source/IAmSpeed/Netcode/Common"
+      ],
+      "change": "Copy three preserved common helper headers into plugin; explicit IAmSpeed/World/Simulation includes replace prototype parent-relative paths. Helper stays partial, unwired and unqualified natively."
+    }
+  ],
+  "existing_native_modified_count": 9,
+  "upstream_scope_blobs": 449,
+  "upstream_untouched_verified": 440,
+  "source_scope_files": 466,
+  "preserved_preimage_and_patch_rows_rehashed": 509,
+  "targeted_validation": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\rebase-validation2883\\20261024T223130.564967Z\\receipt.json",
+    "bytes": 29008,
+    "sha256": "638fb0f2bbfeb77b33fc2b12f5792c8a1809b303e551e242b350b0ecf3e399f5"
+  },
+  "wire_inspection": {
+    "path": "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\rebase-validation2883\\20261024T223130.564967Z\\wire-observations.json",
+    "bytes": 52217,
+    "sha256": "604550c5e1285b1db368a4871629f6f0218fa824979fbdea954123b62843e469"
+  },
+  "actual_test_outputs": {
+    "registry": "PASS 2244 checks; real registry/owner derivative, sealed local scenarios; INPUT publication only; native guards closed\nBOUNDARY_METADATA_ALLOCATIONS 11; all preparation failures preserve actual consumed/current input state\nBOUNDARY_RESERVATION_ALLOCATIONS 2; each failure/reentrant allocation preserves consumed input\nBOUNDARY_CAPTURE_ALLOCATIONS 7; source/registry unchanged at each failure\nPASS 11654 checks; real registry+owner group retained replay; INPUT-only; native guards closed",
+    "world-core": "allocation failure budgets exhausted cleanly: 50\nPreparedWorldCore: 2525 checks PASS; real frozen2776-format parser/indexes, fixture bytes only; native NOT_COMPILED/RUN/ADMITTED",
+    "world-plan": "allocation failure budgets exhausted cleanly: 50\nPreparedWorldCore: 2525 checks PASS; real frozen2776-format parser/indexes, fixture bytes only; native NOT_COMPILED/RUN/ADMITTED\nactual plan INC under ORDINARY SHIMS: 173 failure budgets; full UE/native world remains NOT_COMPILED/RUN/ADMITTED\nPreparedWorld combined ordinary checks: 3258 PASS; SHIM fence/actors are fixture-only, zero native qualification",
+    "common-values": "CommonState 874 checks PASS: real source cache algorithms + exact value codec/access spans; fixture quantizer only; native NOT_COMPILED/RUN/ADMITTED",
+    "common-body": "CommonState 874 checks PASS: real source cache algorithms + exact value codec/access spans; fixture quantizer only; native NOT_COMPILED/RUN/ADMITTED\nActual common-component helper BODY under ORDINARY SHIMS: 19 clean allocation-failure budgets; no native UE qualification\nCommonState combined ordinary checks: 913 PASS; native complete classes/resolvers/lifetimes/quantizer NOT_COMPILED/RUN/ADMITTED"
+  },
+  "actual_rebased_include_files": [
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Base\\Kinematic.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Base\\KinematicQuantizationCache.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Base\\PhysicalContactConstraint.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\GroupReplayStart.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\AIInputProducer.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\ActionMapping.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\InputActionContract.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\InputFrame.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\InputFrameV2.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\InputPresentationScope.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\InputProducerPollFence.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\InputProducerV2.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\InputSessionRegistry.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\RawAcquisitionJournal.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\RawInput.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\SameFrameInputOwner.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Input\\Testing\\TestInputProducerV2.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Netcode\\Common\\CommonComponentState.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\Netcode\\Common\\NativeCommonCacheAccess.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\OwnerResumeMethods.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\PreparedInputResume.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\PreparedReplayStart.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\PreparedScenarioResume.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\RegistryBoundaryCapture.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\RegistryBoundaryReservation.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\RegistryResumeMethods.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\PreparedAccessComposition.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\PreparedAccessRanges.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\PreparedLeaseView.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\PreparedSimulationRestore.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\PreparedWorldCore.h",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\PreparedWorldRestore.inc",
+    "C:\\Users\\User\\.codex\\visualizations\\2026\\10\\23\\01a16994-634c-7b32-83d8-d569c1ec7d72\\ias05-private-rebase2883\\Source\\IAmSpeed\\World\\Simulation\\SimulationSleepState.h"
+  ],
+  "historical_plugin_include_files": [],
+  "notes": [
+    "Repeated core counters inside combined executables are not added as independent test counts.",
+    "Compiler trace proves actual rebased ordinary includes. World/common full UE classes and runtime providers are not compiled by these shims.",
+    "9 distinct existing production files touched. Earlier coordination count11 double-counted private variants; corrected here.",
+    "No old PASS transferred; all RAW failures/costs/preimages and old branches retained.",
+    "Toolchain includes discovered by compiler are recorded after compilation; this ordinary test is not a frozen native toolchain admission."
+  ],
+  "ordinary_development_rebase_condition_satisfied": true,
+  "complete_netcode": false,
+  "native_admission": false,
+  "native_Engine_SDK_jobs": 0,
+  "ExactRemote_owner_registry_guard_open": false,
+  "active_binding_rollback_guard_open": false,
+  "full_physical_restore": false,
+  "current_known_next": "Join an explicitly completed empty input cohort when no sessions exist, and reserve one genuine input/world/lifecycle boundary before native joint publication; complete native providers/roster and exact native grant still required.",
+  "public_push_or_official_write": false,
+  "active_Optimisation_worktree_write": false
+}

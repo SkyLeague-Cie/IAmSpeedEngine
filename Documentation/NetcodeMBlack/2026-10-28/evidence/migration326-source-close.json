@@ -1,0 +1,167 @@
+{
+  "scope": "DISTINCT_FINITE74_OWN_RUNTIME_DATA_COPY_NO_SDK_ACCESS",
+  "opened": 505,
+  "closed": 505,
+  "bytes": 17735282,
+  "read_calls": 1030,
+  "hash_bytes": 15680482,
+  "written_bytes": 2667068,
+  "CPU_WAIT_samples": 0,
+  "resources": [
+    {
+      "cpu_percent_ceil": 18,
+      "cpu_raw_uint64_samples": [
+        [
+          95550930000000,
+          106261062968750,
+          10658026093750
+        ],
+        [
+          95550996250000,
+          106261135156250,
+          10658033750000
+        ]
+      ],
+      "logical_processors": 32,
+      "available_physical_bytes": 65839730688,
+      "free_commit_bytes": 36898230272,
+      "disk_available_bytes": {
+        "C:/": 105307074560,
+        "E:/": 115637284864
+      },
+      "monotonic": 365372.937,
+      "observation_only_not_reservation": true
+    },
+    {
+      "cpu_percent_ceil": 21,
+      "cpu_raw_uint64_samples": [
+        [
+          95551515937500,
+          106261769843750,
+          10658157656250
+        ],
+        [
+          95551584375000,
+          106261846093750,
+          10658167343750
+        ]
+      ],
+      "logical_processors": 32,
+      "available_physical_bytes": 65610670080,
+      "free_commit_bytes": 36608811008,
+      "disk_available_bytes": {
+        "C:/": 105313087488,
+        "E:/": 115637280768
+      },
+      "monotonic": 365375.562,
+      "observation_only_not_reservation": true
+    },
+    {
+      "cpu_percent_ceil": 16,
+      "cpu_raw_uint64_samples": [
+        [
+          95551806562500,
+          106262117656250,
+          10658212968750
+        ],
+        [
+          95551872031250,
+          106262190468750,
+          10658217656250
+        ]
+      ],
+      "logical_processors": 32,
+      "available_physical_bytes": 65591533568,
+      "free_commit_bytes": 36704059392,
+      "disk_available_bytes": {
+        "C:/": 105307238400,
+        "E:/": 115634577408
+      },
+      "monotonic": 365376.812,
+      "observation_only_not_reservation": true
+    }
+  ],
+  "errors": [],
+  "tail_costs": "Receipt/closure/runtime wrapper tail UNKNOWN extra, retained; no zero or refund",
+  "owner_cache": {
+    "version_checks": 552,
+    "body_read_attempts": 2,
+    "body_reads": 2,
+    "body_read_failures": 0,
+    "bytes_read": 4110459,
+    "handles_opened": 2,
+    "handles_closed": 2,
+    "coherence_retries": 0
+  },
+  "canonical_cache": {
+    "version_checks": 551,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 134992,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "runtime": {
+    "volume_decimal": "865290207709154448",
+    "file_id_128_hex": "ee071200000008000000000000000000",
+    "physical_path": "\\\\?\\C:\\Users\\User\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+    "bytes": 107312,
+    "mtime_ticks_decimal": "134375121180000000",
+    "change_ticks_decimal": "134376113703584725",
+    "attributes": 32,
+    "links": 1
+  },
+  "original": {
+    "pid": 67824,
+    "birth_ticks_decimal": "134376753488137026",
+    "CPU_seconds": 0.0625,
+    "RSS_bytes": 22937600,
+    "peak_RSS_bytes": 22937600,
+    "private_bytes": 14655488,
+    "IO": {
+      "read_ops": 133,
+      "write_ops": 0,
+      "other_ops": 1549,
+      "read_bytes": 1381169,
+      "write_bytes": 0,
+      "other_bytes": 364948
+    }
+  },
+  "metrics": {
+    "pid": 67824,
+    "birth_ticks_decimal": "134376753488137026",
+    "CPU_seconds": 1.171875,
+    "RSS_bytes": 45039616,
+    "peak_RSS_bytes": 53690368,
+    "private_bytes": 36159488,
+    "IO": {
+      "read_ops": 3416,
+      "write_ops": 16,
+      "other_ops": 76691,
+      "read_bytes": 37117873,
+      "write_bytes": 4751511,
+      "other_bytes": 5756150
+    }
+  },
+  "state": "SOURCE_SUCCESS_CLOSED",
+  "closure_CPU_WAIT_samples": 0,
+  "primary_close": {
+    "attempts": 551,
+    "opened": 551,
+    "closed": 551,
+    "read_calls": 551,
+    "read_bytes": 797297,
+    "hash_calls": 0,
+    "hash_bytes": 0,
+    "ancestor_stats": 5510,
+    "info_calls": 3306,
+    "failures": 0,
+    "remaining": 0,
+    "errors": []
+  },
+  "error": null,
+  "elapsed": 4.64100000000326,
+  "closure_policy": "Independent current context: postclaim control/resource-only WAIT, same original30+5 clocks, unchanged source runtime/caps; no SDK/native actor admission or prior failure/PASS transfer."
+}

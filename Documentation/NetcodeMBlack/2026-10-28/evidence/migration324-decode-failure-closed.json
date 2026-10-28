@@ -1,0 +1,118 @@
+{
+  "scope": "DISTINCT_FINITE74_OWN_RUNTIME_DATA_COPY_NO_SDK_ACCESS",
+  "opened": 62,
+  "closed": 62,
+  "bytes": 1395389,
+  "read_calls": 65,
+  "hash_bytes": 1254726,
+  "written_bytes": 0,
+  "CPU_WAIT_samples": 0,
+  "resources": [
+    {
+      "cpu_percent_ceil": 12,
+      "cpu_raw_uint64_samples": [
+        [
+          95524542968750,
+          106231307968750,
+          10654987187500
+        ],
+        [
+          95524610000000,
+          106231377343750,
+          10654993593750
+        ]
+      ],
+      "logical_processors": 32,
+      "available_physical_bytes": 66837389312,
+      "free_commit_bytes": 37954670592,
+      "disk_available_bytes": {
+        "C:/": 105793503232,
+        "E:/": 115637530624
+      },
+      "monotonic": 365270.437,
+      "observation_only_not_reservation": true
+    }
+  ],
+  "errors": [],
+  "tail_costs": "Receipt/closure/runtime wrapper tail UNKNOWN extra, retained; no zero or refund",
+  "owner_cache": {
+    "version_checks": 52,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 2054800,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "canonical_cache": {
+    "version_checks": 52,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 134992,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "runtime": {
+    "volume_decimal": "865290207709154448",
+    "file_id_128_hex": "ee071200000008000000000000000000",
+    "physical_path": "\\\\?\\C:\\Users\\User\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+    "bytes": 107312,
+    "mtime_ticks_decimal": "134375121180000000",
+    "change_ticks_decimal": "134376113703584725",
+    "attributes": 32,
+    "links": 1
+  },
+  "original": {
+    "pid": 50348,
+    "birth_ticks_decimal": "134376752463416686",
+    "CPU_seconds": 0.0625,
+    "RSS_bytes": 21934080,
+    "peak_RSS_bytes": 21934080,
+    "private_bytes": 14508032,
+    "IO": {
+      "read_ops": 122,
+      "write_ops": 0,
+      "other_ops": 1449,
+      "read_bytes": 1153704,
+      "write_bytes": 0,
+      "other_bytes": 359568
+    }
+  },
+  "metrics": {
+    "pid": 50348,
+    "birth_ticks_decimal": "134376752463416686",
+    "CPU_seconds": 0.15625,
+    "RSS_bytes": 28831744,
+    "peak_RSS_bytes": 31465472,
+    "private_bytes": 20893696,
+    "IO": {
+      "read_ops": 236,
+      "write_ops": 0,
+      "other_ops": 7862,
+      "read_bytes": 4675095,
+      "write_bytes": 0,
+      "other_bytes": 776836
+    }
+  },
+  "state": "SOURCE_FAIL_OR_UNKNOWN_KEEP",
+  "primary_close": {
+    "attempts": 52,
+    "opened": 52,
+    "closed": 52,
+    "read_calls": 52,
+    "read_bytes": 75244,
+    "hash_calls": 0,
+    "hash_bytes": 0,
+    "ancestor_stats": 520,
+    "info_calls": 312,
+    "failures": 0,
+    "remaining": 0,
+    "errors": []
+  },
+  "error": "UnicodeDecodeError('utf-8', b\"# Windows acquisition adapter \\xe2\\x80\\x94 isolated native candidate\\r\\n\\r\\n`Source/IAmSpeed/Input/Windows/GameInputAcquisition.h` is an optional Windows\\r\\nleaf targeting the GameInput v3 header bundled with UE 5.8.2 (package declared\\r\\nas 3.1.26100.6879). No portable header includes it, no module dependency or\\r\\nplugin activation is added, and no production caller constructs it yet.\\r\\n\\r\\nThe production header at source checkpoint `188b38e` compiled against the local\\r\\nGameInput v3 SDK with MSVC 14.38 C++17 /W4 /WX. The isolated fake-API fixture\\r\\npassed **125 checks**, including an isolated terminate-handler subprocess.\\r\\nNo real GameInput runtime, hardware, Unreal build or activation was used.\\r\\nCP2's earlier 946 native checks qualify the portable lifecycle separately.\\r\\n\\r\\n## Ownership and operation\\r\\n\\r\\nThe host supplies a retained GameInput interface, one explicitly selected\\r\\ndevice, exactly Keyboard or Gamepad kind, a producer identity, digital-action\\r\\nmask and a pure bounded nonthrowing mapping function. The adapter takes COM\\r\\nreferences and privately owns a portable DeviceInputSession. It is itself an\\r\\nIInputProducer, so a future host can configure it through the existing boundary.\\r\\nThe mapping converts Windows virtual-key state or gamepad buttons/axes into\\r\\ncomplete canonical values. This leaf does not choose game action mappings.\\r\\n\\r\\nForward Produce/Skip calls traverse current/next readings, bounded to 64\\r\\nreadings per poll. All reports retain SDK order; a separate integer sequence\\r\\nidentifies commits even when SDK timestamps are equal. A backwards timestamp,\\r\\nmapping rejection, edge overflow or excessive backlog neutralizes\\r\\nand resynchronizes, with an explicit status. After a discontinuity the next\\r\\npoll establishes a fresh baseline, without synthetic Start/Stop. Replay and\\r\\ninvalid frame-gap requests do not query live hardware.\\r\\n\\r\\nConnection registration uses blocking enumeration plus callbacks on the\\r\\nselected device. Callbacks only update connected state and a monotonic epoch\\r\\nunder a separate mailbox mutex. Polling checks the epoch through sample commit\\r\\nand again at the physical latch. A disconnect/reconnect pair between polls\\r\\ntherefore still creates a new baseline. Mapper execution never owns that\\r\\nmailbox mutex. API lifetime is held by COM references. Explicit `Shutdown()`\\r\\nmust succeed before the host releases ownership. On false, registration/token,\\r\\nAPI/device/context and object storage remain alive for retry, while new reads,\\r\\nskips and pause calls are rejected. Successful shutdown is idempotent.\\r\\nUnregister runs without the mailbox lock; holding Gate is safe because the\\r\\ncallback never takes Gate. Shutdown/destruction from the callback is forbidden.\\r\\nThe destructor retries shutdown; if registration still cannot be cleared it\\r\\ncalls `std::terminate` rather than freeing a possibly live callback context.\\r\\nThis last resort is not graceful recovery: the host must retain ownership and\\r\\nresolve explicit shutdown failure before destruction. It requires a separate\\r\\ndeath-test subprocess before activation, never the main test runner.\\r\\n\\r\\nSDK error policy is explicit and `GetLastError()` preserves the HRESULT:\\r\\n\\r\\n| SDK outcome | Policy |\\r\\n| --- | --- |\\r\\n| READING_NOT_FOUND | Normal end, NoChange or Updated; no reset |\\r\\n| REFERENCE_READING_TOO_OLD | Neutralize and Resynchronized; fresh baseline next poll |\\r\\n| DEVICE_DISCONNECTED | Neutralize immediately, Disconnected; no reads until a new callback epoch |\\r\\n| DEVICE_NOT_FOUND / OBJECT_NO_LONGER_EXISTS / INPUT_KIND_NOT_PRESENT | Failed latched, no further OS reads |\\r\\n| Other failed HRESULT / success with null reading | Failed latched, exact error or E_UNEXPECTED |\\r\\n\\r\\nOnly reconstruction recovers a permanent failure. Existing immutable replay\\r\\nremains readable until shutdown. A read-side disconnect does not forge a new\\r\\ncallback event; the mailbox remains authoritative for subsequent reconnection.\\r\\n\\r\\nPermanent failure disables OS polling, not canonical production. After the\\r\\nneutral reset is prepared, forward Produce continues yielding neutral frames\\r\\nand the first true consumption receives RequiresReset. Skip advances the\\r\\nneutral session while preserving its pending marker across overrides.\\r\\nLastStatus remains Failed and the exact HRESULT remains available, including\\r\\nafter later hotplug notifications. Following frames stay neutral until explicit\\r\\nreconstruction; retained pre-failure replay remains unchanged. If the portable\\r\\nreset itself cannot be prepared (for example sequence exhaustion), the source\\r\\nreturns no frame and requires replacement instead of claiming neutral output.\\r\\n\\r\\nGate serializes Produce, Skip and pause transitions. Lock order is Gate ->\\r\\nMailboxMutex -> portable session mutex; callbacks take MailboxMutex only.\\r\\nDestruction must occur after all caller handles stop using the instance and\\r\\nmust never run from the SDK callback. Mapper must not reenter acquisition or\\r\\nlifecycle methods. The SDK may dispatch hotplug on its own internal thread;\\r\\nthis candidate creates no collector thread.\\r\\n\\r\\nSetPaused resets the portable session and reading cursor. Resume accepts the\\r\\nfirst newly fetched held state immediately, without synthetic triggers. This\\r\\nmethod still needs host pause wiring outside presentation-observation callbacks.\\r\\nThe reset marker must reach real game consumers before this source is enabled.\\r\\n\\r\\n## Native evidence and remaining gates\\r\\n\\r\\n`Tests/WindowsGameInputProbe.cpp` implements fake COM interfaces using the real\\r\\nv3 declarations. `Tests/RunWindowsGameInputProbe.ps1` builds/runs it in a fresh\\r\\nartifact directory and summarizes raw logs. The successful fixture covers SDK\\r\\nHRESULT policies, 64/65 bound, equal/backwards timestamps, keyboard/gamepad\\r\\nmapping, epoch changes during mapping and the physical latch, pause/resume,\\r\\nunregister false/retry with retained ownership, in-flight callback waiting,\\r\\nidempotent shutdown, isolated fail-fast, fatal reset before consumption and\\r\\nacross multiple skips, no further OS calls after fatal, and immutable replay.\\r\\n\\r\\nFirst run: 125 PASS in 2.4716673 seconds, no source fix or retry.\\r\\nSDK header SHA256 `AC1F091174A9B80BA60F16A7F90A9B6B71208B490AAEAFDBF1004F2025B03C60`.\\r\\nFixture SHA256 `F3525EE2A7CA5D8EF60BC52575F4F221AF3632C4E45B46F1AC16FD230C7EA225`.\\r\\nExecutable SHA256 `BF97341665ADA09E6CE4CA43254FDFFDF633282CB31D24ACC1E94BB923AA6583`.\\r\\nHost artifact: `Artifacts/InputProducersCP2/windows-native-188b38e-v1/`.\\r\\nMetadata uses the generic package summary schema; no Unreal package was built.\\r\\nFake failures prove adapter responses to those simulated outcomes, not actual\\r\\nSDK delivery/lifetime timing. Production header remained byte-identical to the\\r\\napproved source candidate throughout the run.\\r\\n\\r\\nStill unfinished:\\r\\n\\r\\n- Register an all-device discovery service for arrival of new device identities.\\r\\n  The current factory requires a selected device; it handles that device's\\r\\n  connection notifications, not discovery/selection of a different new device.\\r\\n- Define host single-player keyboard/gamepad coexistence/selection; no silent\\r\\n  first-callback or last-UE-frame arbitration is introduced.\\r\\n- Establish runtime redistributable provenance and package dependency wiring.\\r\\n  SDK presence in the engine is not runtime/package compatibility evidence.\\r\\n- Hardware exercise for available keyboard/gamepad, unplug/replug, repeated\\r\\n  initialization/shutdown and history loss. No hardware support claim yet.\\r\\n- UE Windows include wrappers/build integration, pause/focus/possession wiring,\\r\\n  physical digital cancellation and exact-tuple runtime qualification.\\r\\n\\r\\nNo DualSense-specific mapping, raw-HID support, Sony SDK dependency or console\\r\\nimplementation is included. Those can be implemented behind another platform\\r\\nleaf without introducing platform handles into the portable session.\\r\\n\\r\\n## Primary references\\r\\n\\r\\n- [GameInput callbacks and unregister lifetime](https://learn.microsoft.com/en-us/gaming/gdk/docs/features/common/input/advanced/input-callbacks)\\r\\n- [Ordered reading traversal and bounded history](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/input/gameinput/interfaces/igameinput/methods/igameinput_getnextreading)\\r\\n- Local UE 5.8.2 GameInputWindowsLibrary.Build.cs, ThirdParty/GameInput.h and\\r\\n  GameInputBaseIncludes.h. API signatures checked by inspection only.\\r\\n\\r\\n## Q419 private respawn correction \\x97 12 October 2026\\r\\n\\r\\nThe current host retains a controller-owned warm catalogue while every new car\\r\\nsession constructs a fresh activity policy. A readable startup-preferred pad is\\r\\nprovisional: it has no real activity claim. Same-kind mirror retention now requires\\r\\nthe existing LastClaimTimestamp before refusing another pad's actual command.\\r\\nExplicit locks, fresh baselines without synthetic edges, pause neutrality and\\r\\nkeyboard handoff retain their existing contracts. No global flag or forced device\\r\\nselection is added. A first held baseline still does not fabricate activity.\\r\\n\\r\\nDeviceActivityProbe reproduces two fresh sessions with two readable pads, actual\\r\\nthrottle reclamation, later mirror suppression, keyboard, pause and explicit lock.\\r\\nWindowsActivitySourceProbe additionally exercises twenty real source/journal\\r\\nrecreations over the same fake v3 catalogue, using the product thresholds. It checks\\r\\nthat the fresh chosen pad's throttle reaches the raw journal without synthetic\\r\\nbutton edges, old views retire and only one persistent callback remains.\\r\\n\\r\\nNon-shipping native hosts emit InputSelectedDevice only when an installed source\\r\\nchanges its opaque device ID. The receipt includes acquisition session, kind and\\r\\nvendor/product; it only reads the existing diagnostic accessor. It performs no\\r\\nadditional device poll, action injection, selection or focus mutation.\\r\\n\\r\\nEvidence is private under AudioVfx-Q419-Central and the replacement Son chat.\\r\\nThe original portable baseline failed the new throttle assertion; the corrected\\r\\nportable suite passed138 checks, preexisting Windows source90 and catalogue55.\\r\\nThese are software/fake-API witnesses. Candidate05 lacked selected-device IDs,\\r\\nso attribution to its hardware symptom remains pending an authorized human retest.\\r\\nNo whole-candidate, full-CI, network, runtime hardware or publication claim follows.\\r\\n\", 8349, 8350, 'invalid start byte')",
+  "elapsed": 0.6100000000442378,
+  "closure_policy": "Independent current context: postclaim control/resource-only WAIT, same original30+5 clocks, unchanged source runtime/caps; no SDK/native actor admission or prior failure/PASS transfer."
+}

@@ -1,0 +1,118 @@
+{
+  "scope": "DISTINCT_FINITE74_OWN_RUNTIME_DATA_COPY_NO_SDK_ACCESS",
+  "opened": 66,
+  "closed": 66,
+  "bytes": 1410783,
+  "read_calls": 69,
+  "hash_bytes": 1269291,
+  "written_bytes": 141492,
+  "CPU_WAIT_samples": 0,
+  "resources": [
+    {
+      "cpu_percent_ceil": 18,
+      "cpu_raw_uint64_samples": [
+        [
+          95532183750000,
+          106239705000000,
+          10655680781250
+        ],
+        [
+          95532252031250,
+          106239777656250,
+          10655690781250
+        ]
+      ],
+      "logical_processors": 32,
+      "available_physical_bytes": 66786312192,
+      "free_commit_bytes": 37839286272,
+      "disk_available_bytes": {
+        "C:/": 105791520768,
+        "E:/": 115637510144
+      },
+      "monotonic": 365298.859,
+      "observation_only_not_reservation": true
+    }
+  ],
+  "errors": [],
+  "tail_costs": "Receipt/closure/runtime wrapper tail UNKNOWN extra, retained; no zero or refund",
+  "owner_cache": {
+    "version_checks": 104,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 2054800,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "canonical_cache": {
+    "version_checks": 104,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 134992,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "runtime": {
+    "volume_decimal": "865290207709154448",
+    "file_id_128_hex": "ee071200000008000000000000000000",
+    "physical_path": "\\\\?\\C:\\Users\\User\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+    "bytes": 107312,
+    "mtime_ticks_decimal": "134375121180000000",
+    "change_ticks_decimal": "134376113703584725",
+    "attributes": 32,
+    "links": 1
+  },
+  "original": {
+    "pid": 42228,
+    "birth_ticks_decimal": "134376752747504836",
+    "CPU_seconds": 0.0625,
+    "RSS_bytes": 21839872,
+    "peak_RSS_bytes": 21839872,
+    "private_bytes": 13938688,
+    "IO": {
+      "read_ops": 122,
+      "write_ops": 0,
+      "other_ops": 1449,
+      "read_bytes": 1153734,
+      "write_bytes": 0,
+      "other_bytes": 359922
+    }
+  },
+  "metrics": {
+    "pid": 42228,
+    "birth_ticks_decimal": "134376752747504836",
+    "CPU_seconds": 0.234375,
+    "RSS_bytes": 29003776,
+    "peak_RSS_bytes": 31363072,
+    "private_bytes": 20434944,
+    "IO": {
+      "read_ops": 292,
+      "write_ops": 25,
+      "other_ops": 12944,
+      "read_bytes": 4765763,
+      "write_bytes": 141492,
+      "other_bytes": 1083922
+    }
+  },
+  "state": "SOURCE_FAIL_OR_UNKNOWN_KEEP",
+  "primary_close": {
+    "attempts": 104,
+    "opened": 104,
+    "closed": 104,
+    "read_calls": 104,
+    "read_bytes": 150488,
+    "hash_calls": 0,
+    "hash_bytes": 0,
+    "ancestor_stats": 1040,
+    "info_calls": 624,
+    "failures": 0,
+    "remaining": 0,
+    "errors": []
+  },
+  "error": "RuntimeError('Binarydelta needs explicitscope Resources/Icon128.png')",
+  "elapsed": 0.7029999999795109,
+  "closure_policy": "Independent current context: postclaim control/resource-only WAIT, same original30+5 clocks, unchanged source runtime/caps; no SDK/native actor admission or prior failure/PASS transfer."
+}

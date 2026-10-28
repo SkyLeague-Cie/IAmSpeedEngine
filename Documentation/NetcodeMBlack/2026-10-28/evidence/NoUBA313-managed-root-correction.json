@@ -1,0 +1,48 @@
+{
+  "state": "DIRECT_REGISTRATION_IS_MANAGED_IL_TRANSITIVE_REACHABILITY_UNKNOWN_EARLY_EXECUTOR_UNQUALIFIED",
+  "actual_IL": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnUbaIlQualification313\\Utils-seven-managed-IL-methods17QA64control-success-closed.DATA_ONLY.json",
+    "bytes": 51436,
+    "sha256": "b9e7c485eab846dec3901c83e2dce32bce825064fd518b4d6c1f2f5501260ae3"
+  },
+  "compiled294_plan": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\ubt294\\PLAN.json",
+    "bytes": 344613,
+    "sha256": "dea278f07e36b9cd3c41c58158355d659564940da425cf10a9f18f1aa17e4486"
+  },
+  "compiled_sources": {
+    "BuildMode": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\085.cs",
+      "bytes": 74129,
+      "sha256": "c36cd4304544eded32e5a46c525be0c6160ecc199efa84b8c9daecf93c412201"
+    },
+    "Executor": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\075.cs",
+      "bytes": 52038,
+      "sha256": "cfc02e8da06174ba9ce67922b2d52493e704d67b2d47a9501a7bbae8b2c9a3eb"
+    },
+    "ExecutorFactory": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\070.cs",
+      "bytes": 4831,
+      "sha256": "5e9a74b619529f0764550ed66667f0859416e586f76dc51f03ad7cd0b443265d"
+    },
+    "TargetMakefile": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\286.cs",
+      "bytes": 48746,
+      "sha256": "4c79d251d26960b9612e4be0326eed8eea33429ce56219f7320b0db47d4c4487"
+    }
+  },
+  "source_facts": [
+    "BuildMode085callsPrecreateExecutorbeforeprocessingbSkipBuildandbeforeActionGraph.ExportJson. ThusSkipBuild/WriteActionsflagsalonearenotproofthatnoexecutorwasprecreated.",
+    "ExecutorFactory070fallsbacktoGetUBAExecutorevenwithNoUBAfalse(detouringdisabledonly);availabilitycanrefuse,notanimplicitnativelessfallback.",
+    "UBAExecutor075constructorstartsaLongRunningInitTask;Initcontainsserver/storage/sessionfactorycalls. Thisisconditionalcallsiteevidence,notanactualnativeactivationobservation.",
+    "TargetMakefile286registershandlerswhichrecorddirectories/hashes;completeactualsubscriber/lifetimeclosurestillrequired."
+  ],
+  "ordered_source_offsets": {
+    "precreate": 7099,
+    "SkipBuild": 9024,
+    "ExportJson": 33220
+  },
+  "correction": "Historicalcategoricalnativehelperlabelisnotproven:actualUtilsrootis63BmanagedIL,notPInvoke. ItsFindCorrectCaseanddynamiccallbackreachabilityandearlyUBAbackendremainindependentunqualifiededges. Keepalloldpreimages/labelswiththiserratum;nevertranslateunknownintofalseabsenceorzero-nativeproof.",
+  "task_complete": false
+}

@@ -1,0 +1,1138 @@
+{
+  "state": "317_DIRECTORYREFERENCE_4_METHODS_IL_DATA_SUCCESS_CLOSED",
+  "receipt": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\OwnCoreIl\\analysis317\\attempt01\\receipt.json",
+    "bytes": 309444,
+    "sha256": "207401832c5010cf18011cc81c4d83d7fb90d949169c2801cc962a83bb5ca765"
+  },
+  "report": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\OwnCoreIl\\analysis317\\owner\\own-core-il-report.json",
+    "bytes": 16946,
+    "sha256": "5c77979aca11f62a829f3214078ee851ba1534373c57a66cb9ed835f436afef7"
+  },
+  "image": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\main-runtime302\\app\\EpicGames.Core.dll",
+    "bytes": 637952,
+    "sha256": "5d388f05cfd0998a6f7ecfeb6a5256d9dd3ba1400f286e019cf13e78ab6f8391"
+  },
+  "MVID": "c11e32ec-27bb-4cf7-bbc0-70547e9dc3d1",
+  "methods": [
+    {
+      "name": "FindCorrectCase",
+      "token": "0x060002b8",
+      "attributes": "Public, Static, HideBySig",
+      "implementation": "IL",
+      "PInvoke": false,
+      "body_RVA": 46162,
+      "IL_bytes": 17,
+      "IL_sha256": "2fe040acbc0215c67c865a665a465e541abd19a0ead4e05e3ef8cb8e91398084",
+      "IL_hex": "026FB902000628D6020006739E0200062A",
+      "instructions": [
+        {
+          "Offset": 0,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 1,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 100663993
+        },
+        {
+          "Offset": 6,
+          "Opcode": "call",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 100664022
+        },
+        {
+          "Offset": 11,
+          "Opcode": "newobj",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 100663966
+        },
+        {
+          "Offset": 16,
+          "Opcode": "ret",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        }
+      ],
+      "references": [
+        {
+          "Offset": 1,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MethodDefinition",
+            "token": "0x060002b9",
+            "owner": "EpicGames.Core.DirectoryReference",
+            "name": "ToDirectoryInfo",
+            "PInvoke": false,
+            "implementation": "IL",
+            "import": null
+          }
+        },
+        {
+          "Offset": 6,
+          "Opcode": "call",
+          "detail": {
+            "kind": "MethodDefinition",
+            "token": "0x060002d6",
+            "owner": "EpicGames.Core.DirectoryUtils",
+            "name": "FindCorrectCase",
+            "PInvoke": false,
+            "implementation": "IL",
+            "import": null
+          }
+        },
+        {
+          "Offset": 11,
+          "Opcode": "newobj",
+          "detail": {
+            "kind": "MethodDefinition",
+            "token": "0x0600029e",
+            "owner": "EpicGames.Core.DirectoryReference",
+            "name": ".ctor",
+            "PInvoke": false,
+            "implementation": "IL",
+            "import": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "ToDirectoryInfo",
+      "token": "0x060002b9",
+      "attributes": "Public, HideBySig",
+      "implementation": "IL",
+      "PInvoke": false,
+      "body_RVA": 46180,
+      "IL_bytes": 12,
+      "IL_sha256": "bef8f57a3b56a043995ff365f1edc57fba5e790589875358c1d6803221c8ad7f",
+      "IL_hex": "0228C403000673A900000A2A",
+      "instructions": [
+        {
+          "Offset": 0,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 1,
+          "Opcode": "call",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 100664260
+        },
+        {
+          "Offset": 6,
+          "Opcode": "newobj",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772329
+        },
+        {
+          "Offset": 11,
+          "Opcode": "ret",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        }
+      ],
+      "references": [
+        {
+          "Offset": 1,
+          "Opcode": "call",
+          "detail": {
+            "kind": "MethodDefinition",
+            "token": "0x060003c4",
+            "owner": "EpicGames.Core.FileSystemReference",
+            "name": "get_FullName",
+            "PInvoke": false,
+            "implementation": "IL",
+            "import": null
+          }
+        },
+        {
+          "Offset": 6,
+          "Opcode": "newobj",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a0000a9",
+            "owner": "System.IO.DirectoryInfo",
+            "name": ".ctor",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        }
+      ]
+    },
+    {
+      "name": ".ctor",
+      "token": "0x0600029e",
+      "attributes": "Public, HideBySig, SpecialName, RTSpecialName",
+      "implementation": "IL",
+      "PInvoke": false,
+      "body_RVA": 44931,
+      "IL_bytes": 20,
+      "IL_sha256": "bf5a03782f56f4ad904cb9fe0eeba4225514f87ad0b295744915faefb78236c8",
+      "IL_hex": "02036F3403000A28A002000628C703000600002A",
+      "instructions": [
+        {
+          "Offset": 0,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 1,
+          "Opcode": "ldarg.1",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 2,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772980
+        },
+        {
+          "Offset": 7,
+          "Opcode": "call",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 100663968
+        },
+        {
+          "Offset": 12,
+          "Opcode": "call",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 100664263
+        },
+        {
+          "Offset": 17,
+          "Opcode": "nop",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 18,
+          "Opcode": "nop",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 19,
+          "Opcode": "ret",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        }
+      ],
+      "references": [
+        {
+          "Offset": 2,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000334",
+            "owner": "System.IO.FileSystemInfo",
+            "name": "get_FullName",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 7,
+          "Opcode": "call",
+          "detail": {
+            "kind": "MethodDefinition",
+            "token": "0x060002a0",
+            "owner": "EpicGames.Core.DirectoryReference",
+            "name": "FixTrailingPathSeparator",
+            "PInvoke": false,
+            "implementation": "IL",
+            "import": null
+          }
+        },
+        {
+          "Offset": 12,
+          "Opcode": "call",
+          "detail": {
+            "kind": "MethodDefinition",
+            "token": "0x060003c7",
+            "owner": "EpicGames.Core.FileSystemReference",
+            "name": ".ctor",
+            "PInvoke": false,
+            "implementation": "IL",
+            "import": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "FixTrailingPathSeparator",
+      "token": "0x060002a0",
+      "attributes": "Private, Static, HideBySig",
+      "implementation": "IL",
+      "PInvoke": false,
+      "body_RVA": 44964,
+      "IL_bytes": 163,
+      "IL_sha256": "5558a2306bd22b8f3de16ba51e16a4f87f1e050f1671cb53875088ab6e53d57c",
+      "IL_hex": "00026F8902000A18330D02176FAF02000A1F3AFE012B01160A062C1C0002283503000A7E3603000A0B1201733703000A283803000A0C2B69026F8902000A19331B02176FAF02000A1F3A331002186FAF02000A7E3603000AFE012B01160D092C0500020C2B3B026F8902000A17311702256F8902000A17596FAF02000A7E3603000AFE012B0116130411042C0F00027E3603000A6F3903000A0C2B0500020C2B00082A",
+      "instructions": [
+        {
+          "Offset": 0,
+          "Opcode": "nop",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 1,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 2,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772809
+        },
+        {
+          "Offset": 7,
+          "Opcode": "ldc.i4.2",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 8,
+          "Opcode": "bne.un.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 10,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 11,
+          "Opcode": "ldc.i4.1",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 12,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772847
+        },
+        {
+          "Offset": 17,
+          "Opcode": "ldc.i4.s",
+          "OperandType": "ShortInlineI",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 19,
+          "Opcode": "ceq",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 21,
+          "Opcode": "br.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 23,
+          "Opcode": "ldc.i4.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 24,
+          "Opcode": "stloc.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 25,
+          "Opcode": "ldloc.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 26,
+          "Opcode": "brfalse.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 28,
+          "Opcode": "nop",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 29,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 30,
+          "Opcode": "call",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772981
+        },
+        {
+          "Offset": 35,
+          "Opcode": "ldsfld",
+          "OperandType": "InlineField",
+          "OperandBytes": 4,
+          "Token": 167772982
+        },
+        {
+          "Offset": 40,
+          "Opcode": "stloc.1",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 41,
+          "Opcode": "ldloca.s",
+          "OperandType": "ShortInlineVar",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 43,
+          "Opcode": "newobj",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772983
+        },
+        {
+          "Offset": 48,
+          "Opcode": "call",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772984
+        },
+        {
+          "Offset": 53,
+          "Opcode": "stloc.2",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 54,
+          "Opcode": "br.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 56,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 57,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772809
+        },
+        {
+          "Offset": 62,
+          "Opcode": "ldc.i4.3",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 63,
+          "Opcode": "bne.un.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 65,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 66,
+          "Opcode": "ldc.i4.1",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 67,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772847
+        },
+        {
+          "Offset": 72,
+          "Opcode": "ldc.i4.s",
+          "OperandType": "ShortInlineI",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 74,
+          "Opcode": "bne.un.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 76,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 77,
+          "Opcode": "ldc.i4.2",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 78,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772847
+        },
+        {
+          "Offset": 83,
+          "Opcode": "ldsfld",
+          "OperandType": "InlineField",
+          "OperandBytes": 4,
+          "Token": 167772982
+        },
+        {
+          "Offset": 88,
+          "Opcode": "ceq",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 90,
+          "Opcode": "br.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 92,
+          "Opcode": "ldc.i4.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 93,
+          "Opcode": "stloc.3",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 94,
+          "Opcode": "ldloc.3",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 95,
+          "Opcode": "brfalse.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 97,
+          "Opcode": "nop",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 98,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 99,
+          "Opcode": "stloc.2",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 100,
+          "Opcode": "br.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 102,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 103,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772809
+        },
+        {
+          "Offset": 108,
+          "Opcode": "ldc.i4.1",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 109,
+          "Opcode": "ble.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 111,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 112,
+          "Opcode": "dup",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 113,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772809
+        },
+        {
+          "Offset": 118,
+          "Opcode": "ldc.i4.1",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 119,
+          "Opcode": "sub",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 120,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772847
+        },
+        {
+          "Offset": 125,
+          "Opcode": "ldsfld",
+          "OperandType": "InlineField",
+          "OperandBytes": 4,
+          "Token": 167772982
+        },
+        {
+          "Offset": 130,
+          "Opcode": "ceq",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 132,
+          "Opcode": "br.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 134,
+          "Opcode": "ldc.i4.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 135,
+          "Opcode": "stloc.s",
+          "OperandType": "ShortInlineVar",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 137,
+          "Opcode": "ldloc.s",
+          "OperandType": "ShortInlineVar",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 139,
+          "Opcode": "brfalse.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 141,
+          "Opcode": "nop",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 142,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 143,
+          "Opcode": "ldsfld",
+          "OperandType": "InlineField",
+          "OperandBytes": 4,
+          "Token": 167772982
+        },
+        {
+          "Offset": 148,
+          "Opcode": "callvirt",
+          "OperandType": "InlineMethod",
+          "OperandBytes": 4,
+          "Token": 167772985
+        },
+        {
+          "Offset": 153,
+          "Opcode": "stloc.2",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 154,
+          "Opcode": "br.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 156,
+          "Opcode": "nop",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 157,
+          "Opcode": "ldarg.0",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 158,
+          "Opcode": "stloc.2",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 159,
+          "Opcode": "br.s",
+          "OperandType": "ShortInlineBrTarget",
+          "OperandBytes": 1,
+          "Token": null
+        },
+        {
+          "Offset": 161,
+          "Opcode": "ldloc.2",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        },
+        {
+          "Offset": 162,
+          "Opcode": "ret",
+          "OperandType": "InlineNone",
+          "OperandBytes": 0,
+          "Token": null
+        }
+      ],
+      "references": [
+        {
+          "Offset": 2,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000289",
+            "owner": "System.String",
+            "name": "get_Length",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 12,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a0002af",
+            "owner": "System.String",
+            "name": "get_Chars",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 30,
+          "Opcode": "call",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000335",
+            "owner": "System.String",
+            "name": "op_Implicit",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 35,
+          "Opcode": "ldsfld",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000336",
+            "owner": "System.IO.Path",
+            "name": "DirectorySeparatorChar",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 43,
+          "Opcode": "newobj",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000337",
+            "owner": "Generic(System.ReadOnlySpan`1) signature=151180A10103",
+            "name": ".ctor",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 48,
+          "Opcode": "call",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000338",
+            "owner": "System.String",
+            "name": "Concat",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 57,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000289",
+            "owner": "System.String",
+            "name": "get_Length",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 67,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a0002af",
+            "owner": "System.String",
+            "name": "get_Chars",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 78,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a0002af",
+            "owner": "System.String",
+            "name": "get_Chars",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 83,
+          "Opcode": "ldsfld",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000336",
+            "owner": "System.IO.Path",
+            "name": "DirectorySeparatorChar",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 103,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000289",
+            "owner": "System.String",
+            "name": "get_Length",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 113,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000289",
+            "owner": "System.String",
+            "name": "get_Length",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 120,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a0002af",
+            "owner": "System.String",
+            "name": "get_Chars",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 125,
+          "Opcode": "ldsfld",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000336",
+            "owner": "System.IO.Path",
+            "name": "DirectorySeparatorChar",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 143,
+          "Opcode": "ldsfld",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000336",
+            "owner": "System.IO.Path",
+            "name": "DirectorySeparatorChar",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        },
+        {
+          "Offset": 148,
+          "Opcode": "callvirt",
+          "detail": {
+            "kind": "MemberReference",
+            "token": "0x0a000339",
+            "owner": "System.String",
+            "name": "TrimEnd",
+            "native_reachability": "UNKNOWN_EXTERNAL_MEMBER"
+          }
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "Instructions": 94,
+    "Methods": 4,
+    "DescriptorBytes": 875,
+    "FileOpens": 1,
+    "FileCloses": 1,
+    "ReadCalls": 4,
+    "ReadBytes": 637952,
+    "ExtraBytes": 0,
+    "PartialMethods": [
+      "FindCorrectCase",
+      "ToDirectoryInfo",
+      ".ctor",
+      "FixTrailingPathSeparator"
+    ]
+  },
+  "QA": 17,
+  "parent_control_QA": 64,
+  "Job": {
+    "active": 0,
+    "total": 1,
+    "terminated": 0,
+    "members": [],
+    "active_limit": 1,
+    "memory_bytes": 536870912,
+    "peak_job_memory_bytes": 14766080,
+    "cpu_rate": 1250,
+    "cpu_flags": 5,
+    "flags": 8728,
+    "affinity_mask_decimal": "3"
+  },
+  "closures": {
+    "process_closure": {
+      "opened": 5,
+      "closed": 5,
+      "remaining": 0,
+      "remaining_kinds": [],
+      "errors": [],
+      "pid": 74428,
+      "birth_ticks_decimal": "134376748305013660",
+      "observed_exit": 0,
+      "pipe_counts": {
+        "peeks": 3,
+        "read_calls": 1,
+        "read_bytes": 276
+      },
+      "native_environment": {
+        "bytes": 3032,
+        "sha256": "978868a9c5b402244e7328922f635372cdea1e1ba1e7fbbe99c600371ceca37c",
+        "keys": [
+          "APPDATA",
+          "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH",
+          "DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER",
+          "DOTNET_CLI_HOME",
+          "DOTNET_CLI_HOME_NO_PROMPT",
+          "DOTNET_CLI_TELEMETRY_OPTOUT",
+          "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE",
+          "DOTNET_GENERATE_ASPNET_CERTIFICATE",
+          "DOTNET_MULTILEVEL_LOOKUP",
+          "DOTNET_NOLOGO",
+          "DOTNET_ROOT",
+          "DOTNET_SKIP_FIRST_TIME_EXPERIENCE",
+          "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT",
+          "LOCALAPPDATA",
+          "MSBUILDDISABLENODEREUSE",
+          "MSBuildEnableWorkloadResolver",
+          "NUGET_HTTP_CACHE_PATH",
+          "NUGET_PACKAGES",
+          "NUGET_SCRATCH",
+          "PATH",
+          "ProgramData",
+          "ProgramFiles",
+          "PYTHONIOENCODING",
+          "SystemDrive",
+          "SystemRoot",
+          "TEMP",
+          "TMP",
+          "USERPROFILE",
+          "WINDIR"
+        ],
+        "inherit_parent_environment": false,
+        "creation_flags": 541708,
+        "handle_list_count": 2,
+        "attribute_buffer_bytes": 48,
+        "child_environment_readback": "UNKNOWN; retained native lpEnvironment input, not remote process observation",
+        "buffer_equal_after_native_call": true
+      },
+      "attribute_lists_initialized": 1,
+      "attribute_lists_deleted": 1,
+      "Python_buffer_reclaim": "OS/provider timing UNKNOWN; explicit attribute-list delete calls counted"
+    },
+    "pins_closure": {
+      "opened": 102,
+      "closed": 102,
+      "remaining": 0,
+      "errors": [],
+      "read_calls": 613,
+      "read_bytes": 65944192,
+      "partial_errors": []
+    },
+    "primary_closure": {
+      "attempts": 2157,
+      "opened": 2157,
+      "closed": 2157,
+      "read_calls": 2157,
+      "read_bytes": 3121179,
+      "hash_calls": 0,
+      "hash_bytes": 0,
+      "ancestor_stats": 21570,
+      "info_calls": 12942,
+      "failures": 0,
+      "remaining": 0,
+      "errors": []
+    }
+  },
+  "additional_preflight_failure": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\OwnCoreIlQualification318\\controller-missing-arguments-PREFLIGHT_FAIL_KEEP.json",
+    "bytes": 679,
+    "sha256": "ff35bbde817fc278c69d578f9fda71cd35e39979e4577a84443a348ce8a38304"
+  },
+  "scope": "One637952BOWNPEasdata;DirectoryReference.FindCorrectCase17BmanagedILcallsToDirectoryInfo,DirectoryUtils.FindCorrectCase,DirectoryReferencector. Fourmethods94instructions212ILbytes;noDirectoryReferencecctorpresentinmetadata. ExternalDirectoryUtils.FindCorrectCaseandbase/BCL/typeinitializer/lazy/eventreachabilityremainUNKNOWN. FileStreamactual1open1close4logicalreads637952B/fullnativehashbeforeafter/17freshQA64controls/Job0closed. NoTargetAssembly.Load/Invoke;globalmoduleloadstateUNKNOWN_NOT_ENUMERATED. NotSDKfilesystembehaviororUBA/nativecompiler/UE/gameproof.",
+  "all_FAIL_UNKNOWN_costs_KEEP": true,
+  "task_complete": false
+}

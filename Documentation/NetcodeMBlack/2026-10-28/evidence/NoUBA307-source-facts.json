@@ -1,0 +1,222 @@
+{
+  "state": "COMPILED294_OWN_SOURCE_EVIDENCE_NO_NATIVE_EXECUTION_PROOF",
+  "recorded_utc": "2026-10-28T15:03:06.019196+00:00",
+  "compiled_source_plan": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\ubt294\\PLAN.json",
+    "bytes": 344613,
+    "sha256": "dea278f07e36b9cd3c41c58158355d659564940da425cf10a9f18f1aa17e4486"
+  },
+  "sources": {
+    "BuildConfiguration": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\012.cs",
+      "bytes": 12159,
+      "sha256": "f4b9bf6414fbcd270b775e61b97666b1094ab12623e23e65beb0f70c0bdfa8a7"
+    },
+    "ExecutorFactory": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\070.cs",
+      "bytes": 4831,
+      "sha256": "5e9a74b619529f0764550ed66667f0859416e586f76dc51f03ad7cd0b443265d"
+    },
+    "FASTBuild": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\071.cs",
+      "bytes": 51276,
+      "sha256": "c8af49325eb6bec01abe46511c9bb705828c25b5c09c67724f9343d25c0f9c1a"
+    },
+    "UBAExecutor": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\075.cs",
+      "bytes": 52038,
+      "sha256": "cfc02e8da06174ba9ce67922b2d52493e704d67b2d47a9501a7bbae8b2c9a3eb"
+    },
+    "VCEnvironment": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\180.cs",
+      "bytes": 27900,
+      "sha256": "6e63f8debbef56b2acc5b5dbe857715b1275465b02d0f7f8b037d919e5fe208e"
+    },
+    "TargetMakefile": {
+      "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\286.cs",
+      "bytes": 48746,
+      "sha256": "4c79d251d26960b9612e4be0326eed8eea33429ce56219f7320b0db47d4c4487"
+    }
+  },
+  "exact_source_lines": [
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\012.cs",
+        "bytes": 12159,
+        "sha256": "f4b9bf6414fbcd270b775e61b97666b1094ab12623e23e65beb0f70c0bdfa8a7"
+      },
+      "line": 54,
+      "text": "[CommandLine(\"-NoUBA\", Value = \"false\")]"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\012.cs",
+        "bytes": 12159,
+        "sha256": "f4b9bf6414fbcd270b775e61b97666b1094ab12623e23e65beb0f70c0bdfa8a7"
+      },
+      "line": 55,
+      "text": "public bool bAllowUBAExecutor { get; set; } = true;"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\012.cs",
+        "bytes": 12159,
+        "sha256": "f4b9bf6414fbcd270b775e61b97666b1094ab12623e23e65beb0f70c0bdfa8a7"
+      },
+      "line": 64,
+      "text": "get => bAllowUBAExecutor;"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\070.cs",
+        "bytes": 4831,
+        "sha256": "5e9a74b619529f0764550ed66667f0859416e586f76dc51f03ad7cd0b443265d"
+      },
+      "line": 36,
+      "text": "return GetUBAExecutor(buildConfiguration, targetDescriptors, logger);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\070.cs",
+        "bytes": 4831,
+        "sha256": "5e9a74b619529f0764550ed66667f0859416e586f76dc51f03ad7cd0b443265d"
+      },
+      "line": 89,
+      "text": "return GetUBAExecutor(buildConfiguration, targetDescriptors, logger);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\070.cs",
+        "bytes": 4831,
+        "sha256": "5e9a74b619529f0764550ed66667f0859416e586f76dc51f03ad7cd0b443265d"
+      },
+      "line": 95,
+      "text": "return GetUBAExecutor(buildConfiguration, targetDescriptors, logger);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\070.cs",
+        "bytes": 4831,
+        "sha256": "5e9a74b619529f0764550ed66667f0859416e586f76dc51f03ad7cd0b443265d"
+      },
+      "line": 137,
+      "text": "return GetUBAExecutor(buildConfiguration, targetDescriptors, logger);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\070.cs",
+        "bytes": 4831,
+        "sha256": "5e9a74b619529f0764550ed66667f0859416e586f76dc51f03ad7cd0b443265d"
+      },
+      "line": 50,
+      "text": "Config.bAllowDetour = false;"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\070.cs",
+        "bytes": 4831,
+        "sha256": "5e9a74b619529f0764550ed66667f0859416e586f76dc51f03ad7cd0b443265d"
+      },
+      "line": 53,
+      "text": "return new UBAExecutor("
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\071.cs",
+        "bytes": 51276,
+        "sha256": "c8af49325eb6bec01abe46511c9bb705828c25b5c09c67724f9343d25c0f9c1a"
+      },
+      "line": 172,
+      "text": "Config.bDisableRemote = true;"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\071.cs",
+        "bytes": 51276,
+        "sha256": "c8af49325eb6bec01abe46511c9bb705828c25b5c09c67724f9343d25c0f9c1a"
+      },
+      "line": 177,
+      "text": "Config.bAllowDetour = false;"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\071.cs",
+        "bytes": 51276,
+        "sha256": "c8af49325eb6bec01abe46511c9bb705828c25b5c09c67724f9343d25c0f9c1a"
+      },
+      "line": 179,
+      "text": "LocalExecutor = new UBAExecutor("
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\180.cs",
+        "bytes": 27900,
+        "sha256": "6e63f8debbef56b2acc5b5dbe857715b1275465b02d0f7f8b037d919e5fe208e"
+      },
+      "line": 157,
+      "text": "RegisterCrossArchitectureToolPaths(WindowsSdkDir, WindowsSdkVersion);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\180.cs",
+        "bytes": 27900,
+        "sha256": "6e63f8debbef56b2acc5b5dbe857715b1275465b02d0f7f8b037d919e5fe208e"
+      },
+      "line": 328,
+      "text": "EpicGames.UBA.Utils.RegisterCrossArchitecturePath(HostBinDir, CrossBinDir);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\286.cs",
+        "bytes": 48746,
+        "sha256": "4c79d251d26960b9612e4be0326eed8eea33429ce56219f7320b0db47d4c4487"
+      },
+      "line": 569,
+      "text": "EpicGames.UBA.Utils.RegisterDisallowedPaths([.. UbaDisallowedPaths.Where(x => x.Exists).Select(x => x.Location)]);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\286.cs",
+        "bytes": 48746,
+        "sha256": "4c79d251d26960b9612e4be0326eed8eea33429ce56219f7320b0db47d4c4487"
+      },
+      "line": 572,
+      "text": "EpicGames.UBA.Utils.RegisterCrossArchitecturePath(item.Key.Location, item.Value.Location);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\286.cs",
+        "bytes": 48746,
+        "sha256": "4c79d251d26960b9612e4be0326eed8eea33429ce56219f7320b0db47d4c4487"
+      },
+      "line": 576,
+      "text": "EpicGames.UBA.Utils.RegisterPathHash(item.Key.Location, item.Value);"
+    },
+    {
+      "source": {
+        "path": "E:\\UELeadPrivate\\Netcode\\Artifacts\\PointMetadataSource02\\ubt\\075.cs",
+        "bytes": 52038,
+        "sha256": "cfc02e8da06174ba9ce67922b2d52493e704d67b2d47a9501a7bbae8b2c9a3eb"
+      },
+      "line": 353,
+      "text": "// SessionServerImpl iterates Utils.CrossArchitecturePaths in its constructor,"
+    }
+  ],
+  "facts": [
+    "BuildConfiguration.NoUBAsetsbAllowUBAExecutorfalse;deprecatedlocalpropertyaliasesit.",
+    "ExecutorFactory.GetExecutorandPrecreateExecutorfallthroughstillcallGetUBAExecutor;GetUBAExecutoralwaysconstructsUBAExecutorandonlysetsbAllowDetourfalsewhenflagfalse.",
+    "FASTBuildconstructoralsoallocatesalocalUBAExecutoranddisablesremote/detouraccordingtoitsactualconfig.",
+    "VCEnvironmentconstructorunconditionallyenterscross-pathregistration;TargetMakefiledeserializationreplaysUtilsregistrationcalls. TheirnativeimplementationreachabilityisNOTestablishedbythenamespace/callsitesalone."
+  ],
+  "risk": "AplanwhichskipsoneVCEnvironmentregistrationorassumes-NoUBA removesUBAisnotafinitequalifiedlocalnativeBuildroute. Actualexecutionbackend/nativeSessionServer/readset/resource/child/writeclosurestillneedsqualification;newsourceevidencenotanactualrun.",
+  "callee_classification_erratum": "Historicalnotes242/305/306calledUtils.RegisterCrossArchitecturePathnativewithoutitsmethodimplementationinthisreadset. Keepthosepreimages;currentclassificationisIMPLEMENTATION/NATIVE_REACHABILITY_UNKNOWNuntilOWNassemblyILornewfiniteexactsourceobservationprovesit. UBAExecutor.cscommentthatSessionServerImpllateriteratesUtils.CrossArchitecturePathssuggestsmanagedregistrybutisnotproof. NoPInvoke/helperabsenceorzero-nativeclaiminferred. Main304onlytargetquerydidnotqualifyBuildbackend.",
+  "target_OWN_assembly_for_next_metadata_only_analysis": {
+    "path": "E:\\UELeadPrivate\\Netcode\\Builds\\SelectedProvider\\main-runtime302\\app\\EpicGames.UBA.dll",
+    "bytes": 49152,
+    "sha256": "911920d1fb836760e0e2a479302dc53d4686006f104c4404bc9a873f3904b90b"
+  },
+  "scope": "Read/hashonlysixexactOWNcompiledsourceinputsandOWNruntimeJSONmanifest;noSDK/assemblyloading/PInvoke/helper/executor/child/Enginewrite/foreignworkspaceaccess. NoNoNativeHelperpatch/import/rebaseapplied. NewsourcefindingdoesnotinvalidatetheactualQueryTargets304/OWN406scopedresults,butchangesnextBuildplan.",
+  "all_FAIL_UNKNOWN_costs_KEEP": true,
+  "task_complete": false,
+  "review_requested": false
+}

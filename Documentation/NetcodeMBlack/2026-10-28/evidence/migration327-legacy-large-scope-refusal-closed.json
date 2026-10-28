@@ -1,0 +1,118 @@
+{
+  "scope": "DISTINCT_FINITE74_OWN_RUNTIME_DATA_COPY_NO_SDK_ACCESS",
+  "opened": 26,
+  "closed": 26,
+  "bytes": 4572870,
+  "read_calls": 40,
+  "hash_bytes": 4572870,
+  "written_bytes": 4401358,
+  "CPU_WAIT_samples": 0,
+  "resources": [
+    {
+      "cpu_percent_ceil": 7,
+      "cpu_raw_uint64_samples": [
+        [
+          95640545000000,
+          106366168281250,
+          10670813906250
+        ],
+        [
+          95640617343750,
+          106366242343750,
+          10670817500000
+        ]
+      ],
+      "logical_processors": 32,
+      "available_physical_bytes": 65976508416,
+      "free_commit_bytes": 36600659968,
+      "disk_available_bytes": {
+        "C:/": 105266294784,
+        "E:/": 115452313600
+      },
+      "monotonic": 365741.343,
+      "observation_only_not_reservation": true
+    }
+  ],
+  "errors": [],
+  "tail_costs": "Receipt/closure/runtime wrapper tail UNKNOWN extra, retained; no zero or refund",
+  "owner_cache": {
+    "version_checks": 32,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 2055659,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "canonical_cache": {
+    "version_checks": 32,
+    "body_read_attempts": 1,
+    "body_reads": 1,
+    "body_read_failures": 0,
+    "bytes_read": 134992,
+    "handles_opened": 1,
+    "handles_closed": 1,
+    "coherence_retries": 0
+  },
+  "runtime": {
+    "volume_decimal": "865290207709154448",
+    "file_id_128_hex": "ee071200000008000000000000000000",
+    "physical_path": "\\\\?\\C:\\Users\\User\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+    "bytes": 107312,
+    "mtime_ticks_decimal": "134375121180000000",
+    "change_ticks_decimal": "134376113703584725",
+    "attributes": 32,
+    "links": 1
+  },
+  "original": {
+    "pid": 82432,
+    "birth_ticks_decimal": "134376757172484317",
+    "CPU_seconds": 0.0625,
+    "RSS_bytes": 22474752,
+    "peak_RSS_bytes": 22872064,
+    "private_bytes": 13910016,
+    "IO": {
+      "read_ops": 132,
+      "write_ops": 0,
+      "other_ops": 1512,
+      "read_bytes": 1306363,
+      "write_bytes": 0,
+      "other_bytes": 363838
+    }
+  },
+  "metrics": {
+    "pid": 82432,
+    "birth_ticks_decimal": "134376757172484317",
+    "CPU_seconds": 0.15625,
+    "RSS_bytes": 25968640,
+    "peak_RSS_bytes": 32636928,
+    "private_bytes": 16891904,
+    "IO": {
+      "read_ops": 201,
+      "write_ops": 14,
+      "other_ops": 5230,
+      "read_bytes": 7977154,
+      "write_bytes": 4401358,
+      "other_bytes": 594214
+    }
+  },
+  "state": "SOURCE_FAIL_OR_UNKNOWN_KEEP",
+  "primary_close": {
+    "attempts": 32,
+    "opened": 32,
+    "closed": 32,
+    "read_calls": 32,
+    "read_bytes": 46304,
+    "hash_calls": 0,
+    "hash_bytes": 0,
+    "ancestor_stats": 320,
+    "info_calls": 192,
+    "failures": 0,
+    "remaining": 0,
+    "errors": []
+  },
+  "error": "RuntimeError('Only explicitly declared OWN runtime images')",
+  "elapsed": 0.39000000001396984,
+  "closure_policy": "Independent current context: postclaim control/resource-only WAIT, same original30+5 clocks, unchanged source runtime/caps; no SDK/native actor admission or prior failure/PASS transfer."
+}
