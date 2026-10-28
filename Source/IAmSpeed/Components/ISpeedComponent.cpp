@@ -101,10 +101,11 @@ void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& Pre
 		State.Location = SupportedLocation;
 		State.Rotation = SupportedRotation;
 	}
-	if (bPreserveSupportedPose)
+	if (bPreserveSupportedPose || ShouldPreserveNativeVelocitiesForIntegration())
 	{
-		// Edge support couples normal COM velocity and angular velocity. Rounding
-		// them independently breaks the constraint even if pose precision is kept.
+		// Edge support couples the velocities; an explicit native-precision policy
+		// also preserves their integrator values. Restore only after the unchanged
+		// cache and pose checks; neither codec nor support admission is bypassed.
 		State.Velocity = SupportedVelocity;
 		State.AngularVelocity = SupportedAngularVelocity;
 	}
