@@ -7,6 +7,7 @@
 #include "GameFramework/Actor.h"
 #include "CanonicalFrameDriver.h"
 #include "SimulationFrameJournal.h"
+#include "CompletedSimulationPublication.h"
 #include "SimulationWorker.h"
 #include "IAmSpeed/World/Analytic/AnalyticCaseSatDiagnostics.h"
 #include "FrameParallelTiming.h"
@@ -147,6 +148,8 @@ public:
 	bool AcknowledgeInputSessionReceipt(uint64 Id) { return InputSessionCommands->Acknowledge(Id); }
 	std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ReadInputRegistryView() const;
 	std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ReadCompletedInputFrame() const;
+	/** Retain one immutable completed world/input pair; no fullstate, branch, current-input or restore capability. */
+	std::shared_ptr<const Speed::FCompletedSimulationPublication> ReadCompletedWorldAndInputFrame() const;
 	uint64 GetInputWorkerGeneration() const { return InputWorkerGeneration; }
 	bool InputOwnersRetiredAfterJoin(uint64 Generation) const
 	{ return Generation == InputWorkerGeneration && bInputOwnerRetired.Load() && bInputOwnersClosedOnWorker.Load() && !SimulationWorker; }
@@ -289,6 +292,8 @@ private:
     Speed::Diagnostics::CaseCoverage276::FDriverLedger IndependentFastCoverage276;
 #endif
 	bool bPublishPresentation = false;
+	// Immutable after BeginPlay, before worker creation. Native qualification remains separate.
+	bool bPublishCompletedWorldInput = false;
 	TSharedRef<TAtomic<bool>, ESPMode::ThreadSafe> PresentationRetiredAfterJoin = MakeShared<TAtomic<bool>, ESPMode::ThreadSafe>(false);
 	bool bPresentationBindingClosed = false;
 	TAtomic<bool> bReplayCaptureRequested{false};
@@ -319,6 +324,7 @@ private:
 	std::unique_ptr<Speed::Input::V2::FInputSessionRegistry> InputSessionRegistry;
 	Speed::Concurrency::TAtomicSharedPtr<const Speed::Input::V2::FInputRegistryView> PublishedInputRegistry{};
 	Speed::Concurrency::TAtomicSharedPtr<const Speed::Input::V2::FRegistryFrame> PublishedInputFrame{};
+	Speed::Concurrency::TAtomicSharedPtr<const Speed::FCompletedSimulationPublication> PublishedCompletedWorldInput{};
 	FCriticalSection InputSessionAdmissionMutex;
 	std::vector<Speed::Input::V2::FInputSessionRegistry::FJournalService> PendingInputJournals;
 	std::map<uint64, std::shared_ptr<Speed::Input::V2::FInputObservationChannel>> InputObservations;
