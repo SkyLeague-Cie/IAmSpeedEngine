@@ -191,7 +191,6 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
  const int32 OldLane=LaneVar->GetInt(),OldMin=MinVar->GetInt(),OldWave=WaveVar->GetInt(),OldBackend=Backend->GetInt();
  ON_SCOPE_EXIT{LaneVar->Set(OldLane,ECVF_SetByCode);MinVar->Set(OldMin,ECVF_SetByCode);WaveVar->Set(OldWave,ECVF_SetByCode);Backend->Set(OldBackend,ECVF_SetByCode);};
  if(!TestTrue(TEXT("native private workers available"),EnsurePrivateFrameWorkers(FFrameParallelPolicy::MaximumLanes-1)>0))return false;
- AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="),ELogVerbosity::Warning,EAutomationExpectedMessageFlags::Contains,CarCount*60);
  const uint32 OldFPS=ASpeedPhysicsSimulation::EngineFPS;ASpeedPhysicsSimulation::EngineFPS=300;
  ON_SCOPE_EXIT{ASpeedPhysicsSimulation::EngineFPS=OldFPS;};
  FContactCVar1368 Canonical(TEXT("p.IAmSpeed.CanonicalFrame.Enabled"),1),Host(TEXT("p.IAmSpeed.Simulation.ExecutionMode"),2);

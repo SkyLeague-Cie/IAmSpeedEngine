@@ -129,8 +129,6 @@ bool FIAmSpeedProducedDeviceLifecycleTest::RunTest(const FString& Parameters)
 	Component->VehicleSimulationPT = MakeUnique<USpeedSimulation>();
 	Component->SkySimulation = static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
 	Component->SkySimulation->Init(Vehicle);
-	AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="), ELogVerbosity::Warning,
-		EAutomationExpectedMessageFlags::Contains, 1);
 	Component->BindWheelSimulationPointers();
 	ON_SCOPE_EXIT
 	{

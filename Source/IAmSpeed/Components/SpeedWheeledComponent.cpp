@@ -603,9 +603,19 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 		WheelSubBodies.Num(),
 		PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num());
-	UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
+	UE_LOG(LogTemp, Display, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
 		WheelSubBodies.Num(), PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num(), NumBindings, Wheels.Num());
+	// This message describes ordinary setup, including the earlier stage where
+	// Chaos storage exists before component wheel configurations. Only an actual
+	// storage-count mismatch is a warning; canonical admission still validates
+	// every final index/pointer/configuration without relaxation.
+	if (WheelSubBodies.Num() <= 0 || PVehicle->Wheels.Num() != WheelSubBodies.Num()
+		|| PVehicle->Suspension.Num() != WheelSubBodies.Num())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBindingIncomplete] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d"),
+			WheelSubBodies.Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
+	}
 	for (int32 WheelIdx = 0; WheelIdx < WheelSubBodies.Num(); ++WheelIdx)
 	{
 		USWheelSubBody* WheelSubBody = WheelSubBodies[WheelIdx].Get();

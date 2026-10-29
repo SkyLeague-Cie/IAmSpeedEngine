@@ -14,7 +14,6 @@ const FStimulus Stimuli[]={{-1,0},{0,255},{1,255},{2,-127},{2,127}};
 struct FPhysicalRow { SKinematic K;uint32 Grounded=0;uint64 Frame=0,Serial=0;int16 Applied=0; };
 const FString EvidenceRoot=FPaths::Combine(FPaths::ProjectSavedDir(),bRemote?TEXT("IAmSpeed/StockRemoteAtomicTrajectories"):TEXT("IAmSpeed/StockAtomicTrajectories"),FGuid::NewGuid().ToString(EGuidFormats::Digits));
 if(!TestTrue(TEXT("new private evidence directory"),!IFileManager::Get().DirectoryExists(*EvidenceRoot)))return false;
-AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="),ELogVerbosity::Warning,EAutomationExpectedMessageFlags::Contains,15);
 for(int32 Surface=0;Surface<3;++Surface)
 {
  TArray<FPhysicalRow> Neutral;double LateralNegative=0,LateralPositive=0;

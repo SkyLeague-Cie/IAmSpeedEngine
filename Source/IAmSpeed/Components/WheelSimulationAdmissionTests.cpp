@@ -95,14 +95,22 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 	Component->VehicleSimulationPT = MakeUnique<USpeedSimulation>();
 	Component->SkySimulation = static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
 	Component->SkySimulation->Init(Vehicle);
-	AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="), ELogVerbosity::Warning,
-		EAutomationExpectedMessageFlags::Contains, 18);
 	Component->BindWheelSimulationPointers();
 	const auto ExpectValid = [&]
 	{
 		FString Reason;
 		TestTrue(TEXT("all four complete storage bindings admitted"), Component->ValidateSimulationBindings(Reason));
 	};
+	ExpectValid();
+	// A genuinely incomplete storage set still warns and cannot be admitted.
+	Component->SkySimulation->PVehicle->Suspension.RemoveAt(3);
+	AddExpectedMessagePlain(TEXT("[WheelSuspensionBindingIncomplete]"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
+	Component->BindWheelSimulationPointers();
+	FString IncompleteReason;
+	TestFalse(TEXT("incomplete suspension storage remains rejected"), Component->ValidateSimulationBindings(IncompleteReason));
+	Component->SkySimulation->PVehicle->Suspension.Emplace(&SuspensionConfig);
+	Component->BindWheelSimulationPointers();
 	ExpectValid();
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
