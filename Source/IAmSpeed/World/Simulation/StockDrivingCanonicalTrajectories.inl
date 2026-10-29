@@ -97,6 +97,13 @@ for(int32 Surface=0;Surface<3;++Surface)
    RemoteIngress=Speed::Netcode::FExactRemoteInputIngress::Create(Contract,{1},{Speed::Input::EProducerKind::Device,9101},0);
    if(!TestTrue(TEXT("inert remote acquisition service exists without a source"),RemoteIngress&&RemoteIngress->GetState()==Speed::Netcode::ERemoteIngressState::Unbound))return false;
   }
+  if(!bRemote)
+  {
+   // The production command/history bound remains256. This test-only owner
+   // streams its already-authored scenario through the existing append API.
+   ReceivedFrames=std::move(Binding.Scenario);Binding.Scenario.push_back(ReceivedFrames.front());
+   Binding.AllowScenarioAppend=true;
+  }
   FBoundaryCommandDescriptor Command;Command.Id=Driver->AllocateInputCommandId();Command.WorkerGeneration=Driver->GetInputWorkerGeneration();Command.RegistryVersion=0;Command.Binding=Binding;
   if(!TestTrue(TEXT("actual exact timeline queued before owner"),Driver->SubmitInputSessionCommand(Command,{},{},{},RemoteIngress)==ECommandAdmission::Enqueued))return false;
   Driver->ResumeOwnedSimulation();TArray<FPhysicalRow> Rows;Rows.SetNum(FrameCount);uint32 Steps=0,OwnerThread=0;int32 FailureLine=0;bool Failed=false;
@@ -123,7 +130,10 @@ for(int32 Surface=0;Surface<3;++Surface)
   Driver->SimulationWorker=MakeUnique<FSimulationWorker>([&]
   {
    OwnerThread=FPlatformTLS::GetCurrentThreadId();if(Steps==FrameCount)return ESimulationWorkerResult::Complete;
-   const uint32 N=Steps;if(!Driver->RunCanonicalFrames(1)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   const uint32 N=Steps;
+   if(!bRemote&&N>0&&(!Driver->InputSessionRegistry||!Driver->InputSessionRegistry->AppendExactScenarioFrame(9101,1,9101,ReceivedFrames[N])))
+   {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   if(!Driver->RunCanonicalFrames(1)){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    const auto Pair=Driver->ReadCompletedWorldAndInputFrame();const auto Input=Driver->ReadCompletedInputFrame();
    if(!Pair||!Input||Pair->ConsumedInputs()!=Input||Input->Frame!=N||Input->Inputs.size()!=1||!Input->Inputs[0].Snapshot||Pair->World().NumFrame!=N||Pair->RegistryAtFrame()!=Input->Registry)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
