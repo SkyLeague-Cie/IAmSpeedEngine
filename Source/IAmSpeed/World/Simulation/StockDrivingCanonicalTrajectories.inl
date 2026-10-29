@@ -109,9 +109,11 @@ for(int32 Surface=0;Surface<3;++Surface)
     auto Result=RemoteIngress->SubmitFrame(Received);
     while(Result==Speed::Netcode::ERemoteSubmission::TooFar&&!AbortAcquisition.load())
     {std::this_thread::yield();Result=RemoteIngress->SubmitFrame(Received);}
+    // Record actual acceptance before observing teardown. The owner may consume
+    // the final accepted frame and finish before this acquisition thread resumes.
+    if(Result==Speed::Netcode::ERemoteSubmission::Accepted){++SubmittedFrames;continue;}
     if(AbortAcquisition.load())return;
-    if(Result!=Speed::Netcode::ERemoteSubmission::Accepted){SubmissionFailed=true;return;}
-    ++SubmittedFrames;
+    SubmissionFailed=true;return;
    }
   });
   Driver->SimulationWorker=MakeUnique<FSimulationWorker>([&]
@@ -145,6 +147,9 @@ for(int32 Surface=0;Surface<3;++Surface)
   while(Driver->SimulationWorker->IsRunning()&&FPlatformTime::Seconds()<Deadline)FPlatformProcess::SleepNoStats(.001f);
   const bool Completed=!Driver->SimulationWorker->IsRunning();Driver->StopOwnedWorker();
   AbortAcquisition.store(true);if(Acquisition.joinable())Acquisition.join();
+  if(bRemote)AddInfo(FString::Printf(TEXT("[StockRemoteAcquisitionWitness] Surface=%d Case=%d Submitted=%u Required=%u SubmissionFailed=%u Acquisition=%u Owner=%u GT=%u WaitBoundaries=%u InitialWait=%u IngressState=%u Completed=%u Steps=%u PhysicalFailed=%u FailureLine=%d"),
+    Surface,Case,SubmittedFrames,FrameCount,SubmissionFailed?1u:0u,AcquisitionThread,OwnerThread,GGameThreadId,
+    WaitBoundaries.load(),InitialWaitObserved.load()?1u:0u,static_cast<uint32>(RemoteIngress->GetState()),Completed?1u:0u,Steps,Failed?1u:0u,FailureLine));
   if(bRemote&&!TestTrue(TEXT("separate acquisition submitted every exact frame after owner waited without polling; owner retired source"),
     !SubmissionFailed&&SubmittedFrames==FrameCount&&AcquisitionThread!=GGameThreadId&&AcquisitionThread!=OwnerThread
     &&WaitBoundaries.load()>=2&&InitialWaitObserved.load()&&RemoteIngress->GetState()==Speed::Netcode::ERemoteIngressState::Retired))return false;
