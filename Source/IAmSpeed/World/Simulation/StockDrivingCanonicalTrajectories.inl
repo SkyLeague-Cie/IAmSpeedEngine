@@ -4,7 +4,8 @@
 // real-time pacing, server/client, restore or fullstate qualification.
 using namespace Speed::Input::V2;
 const bool bRemote=Parameters==TEXT("IAmSpeed.Netcode.DrivingActions.RemoteCanonicalTrajectories");
-constexpr uint32 FrameCount=121,FirstHeld=31,FirstReleased=91;
+// Five seconds includes a long post-release coast; the original held stimulus stays unchanged.
+constexpr uint32 FrameCount=1501,FirstHeld=31,FirstReleased=91;
 if(!TestEqual(TEXT("fixed native physical rate remains300Hz"),ASpeedPhysicsSimulation::EngineFPS,uint32(300)))return false;
 if(!TestTrue(TEXT("stock physical fixture on GT"),IsInGameThread()))return false;
 const auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});
@@ -127,6 +128,13 @@ for(int32 Surface=0;Surface<3;++Surface)
    if(!Pair||!Input||Pair->ConsumedInputs()!=Input||Input->Frame!=N||Input->Inputs.size()!=1||!Input->Inputs[0].Snapshot||Pair->World().NumFrame!=N||Pair->RegistryAtFrame()!=Input->Registry)
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    const auto& Snapshot=*Input->Inputs[0].Snapshot;const auto& Applied=Snapshot.Applied;
+   // Verify all driving axes against the authored timeline, not only against a
+   // second view of the consumed snapshot. An omission or held release fails.
+   for(int32 Action=0;Action<3;++Action)
+   {
+    const int16 Expected=(N>=FirstHeld&&N<FirstReleased&&Stimuli[Case].Action==Action)?Stimuli[Case].Value:0;
+    if(Applied[Action]!=Expected){Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
+   }
    if(C->GetWheeledPhysicalInputForWitness().Throttle!=Applied[0]||C->GetWheeledPhysicalInputForWitness().Brake!=Applied[1]||C->GetWheeledPhysicalInputForWitness().Steer!=Applied[2])
    {Failed=true;FailureLine=__LINE__;return ESimulationWorkerResult::Failed;}
    auto& R=Rows[N];R.K=C->GetKinematicState();R.Grounded=C->NumWheelsOnGround();R.Frame=N;R.Serial=Pair->World().PublicationSerial;R.Applied=Case?Applied[Stimuli[Case].Action]:0;
@@ -158,7 +166,7 @@ for(int32 Surface=0;Surface<3;++Surface)
     &&WaitBoundaries.load()>=2&&InitialWaitObserved.load()&&RemoteIngress->GetState()==Speed::Netcode::ERemoteIngressState::Retired))return false;
   if(!TestTrue(FString::Printf(TEXT("all actual physical frames complete surface%d case%d failureline%d"),Surface,Case,FailureLine),Completed&&!Failed&&Steps==FrameCount&&OwnerThread!=GGameThreadId))return false;
   if(bRemote)AddInfo(FString::Printf(TEXT("[StockRemoteAcquisition] Frames=%u PhysicalOwner=%u AcquisitionThread=%u InitialAbsentWaitBoundaries=%u SourceRetired=1 Sockets=NONE"),SubmittedFrames,OwnerThread,AcquisitionThread,WaitBoundaries.load()));
-  uint32 SupportedHeld=0;FString Csv=TEXT("N,serial,grounded,applied,x,y,z,vx,vy,vz\n");
+  uint32 SupportedHeld=0;FString Csv=TEXT("N,serial,grounded,applied,x,y,z,vx,vy,vz,qx,qy,qz,qw,wx,wy,wz\n");
   for(uint32 N=0;N<FrameCount;++N)
   {
    const auto& R=Rows[N];if(!TestTrue(TEXT("real frame and serial retained"),R.Frame==N&&R.Serial==N+1))return false;
@@ -169,7 +177,7 @@ for(int32 Surface=0;Surface<3;++Surface)
     if(!TestTrue(TEXT("independent neutral physical trajectory matches when no traction or action absent"),R.K.Location==Ref.K.Location&&R.K.Velocity==Ref.K.Velocity&&R.K.Rotation==Ref.K.Rotation))return false;
    if(N>=FirstReleased&&!TestEqual(TEXT("release consumed physically without held action"),R.Applied,int16(0)))return false;
   }
-  for(const auto& R:Rows)Csv+=FString::Printf(TEXT("%llu,%llu,%u,%d,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n"),R.Frame,R.Serial,R.Grounded,int(R.Applied),R.K.Location.X,R.K.Location.Y,R.K.Location.Z,R.K.Velocity.X,R.K.Velocity.Y,R.K.Velocity.Z);
+  for(const auto& R:Rows)Csv+=FString::Printf(TEXT("%llu,%llu,%u,%d,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n"),R.Frame,R.Serial,R.Grounded,int(R.Applied),R.K.Location.X,R.K.Location.Y,R.K.Location.Z,R.K.Velocity.X,R.K.Velocity.Y,R.K.Velocity.Z,R.K.Rotation.X,R.K.Rotation.Y,R.K.Rotation.Z,R.K.Rotation.W,R.K.AngularVelocity.X,R.K.AngularVelocity.Y,R.K.AngularVelocity.Z);
   IFileManager::Get().MakeDirectory(*EvidenceRoot,true);const FString File=FPaths::Combine(EvidenceRoot,FString::Printf(TEXT("surface%d-case%d.csv"),Surface,Case));
   if(!TestTrue(TEXT("fresh authored physical evidence saved"),!IFileManager::Get().FileExists(*File)&&FFileHelper::SaveStringToFile(Csv,*File)))return false;
   if(!Surface){if(!TestTrue(TEXT("air fixture actually falls and remains unsupported"),SupportedHeld==0&&Rows.Last().K.Location.Z<Initial.Location.Z&&Rows.Last().K.Velocity.Z<0))return false;}
