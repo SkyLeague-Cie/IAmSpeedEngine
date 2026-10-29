@@ -8,6 +8,7 @@
 #include "ChaosVehicleWheel.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "UObject/UnrealType.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 #include "HAL/PlatformProcess.h"
@@ -35,6 +36,12 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 	USpeedWheeledComponent* Component = Cast<USpeedWheeledComponent>(Car->GetVehicleMovement());
 	USpeedWorldSubsystem* Bridge = World->GetSubsystem<USpeedWorldSubsystem>();
 	if (!TestNotNull(TEXT("vehicle component"), Component) || !TestNotNull(TEXT("bridge"), Bridge)) return false;
+	// Both owned network subobjects must remain visible to UHT/GC even when
+	// the dedicated policy deliberately prevents their legacy registration.
+	TestNotNull(TEXT("speed network pointer is a reflected object reference"),
+		FindFProperty<FObjectPropertyBase>(USpeedWheeledComponent::StaticClass(), TEXT("SNetworkPhysicsComponent")));
+	TestNotNull(TEXT("wheeled network pointer is a reflected object reference"),
+		FindFProperty<FObjectPropertyBase>(USpeedWheeledComponent::StaticClass(), TEXT("WheeledNetworkPhysicsComponent")));
 	Driver->SpeedWorldSubsystem = Bridge;
 	Component->SetOwner(Car);
 	ON_SCOPE_EXIT { Bridge->UnregisterSpeedComponent(Component); Bridge->ApplyPendingOps(); };

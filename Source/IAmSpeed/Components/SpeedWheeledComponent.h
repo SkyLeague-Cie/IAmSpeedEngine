@@ -895,8 +895,8 @@ private:
 	TArray<SWheelGroundContact> PendingWheelContacts; // array of pending wheel ground contacts to be registered at the end of the frame
 
 	// ========== Netcode variables ==========
-	UPROPERTY()
     bool bLegacyNetworkHistoryExcluded = false; // GT lifecycle only, default legacy path unchanged
+	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> SNetworkPhysicsComponent = nullptr;
 	UPROPERTY()
 	TObjectPtr<UNetworkPhysicsComponent> WheeledNetworkPhysicsComponent = nullptr;
