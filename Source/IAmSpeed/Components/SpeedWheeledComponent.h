@@ -636,6 +636,12 @@ public:
 	// the existing per-vehicle curve path; positive uses actual hardpoints.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0"))
 	float WheelFrameSteeringReferenceWheelbaseCm = 0.0f;
+	// Optional normal-steering endpoint fractions. Negative preserves inherited calibration.
+	// Console overrides remain available; active/residual handbrake bypasses the normal helper.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameNormalInputFullFraction = -1.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
+	float WheelFrameNormalHalfInputFraction = -1.0f;
 	// Scales the forward/backward component produced by wheel-frame lateral friction.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameLateralForwardLossScale = 1.0f;
