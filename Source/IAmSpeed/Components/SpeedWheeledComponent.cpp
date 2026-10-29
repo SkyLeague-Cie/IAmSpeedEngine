@@ -37,7 +37,13 @@ DEFINE_LOG_CATEGORY(SpeedInputLog);
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameNormalInputFullFraction(
 	TEXT("p.IAmSpeed.WheelFrame.NormalInputFullFraction"),
 	-1.0f,
-	TEXT("Experimental normal wheel-angle fraction at full input. Negative keeps the current path. Nonnegative endpoints clamp between the inherited three-quarter-input fraction and 1. Active and residual handbrake bypass this option. Set only at a quiescent physics boundary."),
+	TEXT("Normal wheel-angle fraction at full input. Negative uses the component property; two negative values preserve inherited calibration. Nonnegative endpoints clamp between the inherited three-quarter-input fraction and 1. Active and residual handbrake bypass this option. Set only at a quiescent physics boundary."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameNormalHalfInputFraction(
+	TEXT("p.IAmSpeed.WheelFrame.NormalHalfInputFraction"),
+	-1.0f,
+	TEXT("Normal wheel-angle fraction at half input. Negative uses the component property; two negative values preserve inherited calibration. Nonnegative values clamp to [0.50,0.60]. Active and residual handbrake bypass this option. Change only at a quiescent physics boundary."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameSteeringRearLateralFrictionReverseScale(
@@ -3768,7 +3774,9 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 		const float Input = FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f);
 		const float RawFraction = Input * SteeringInputCalibrationScale(GetPhysSteeringInput());
 		float NormalFraction = RawFraction;
-		const float FullFractionOverride = CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread();
+		const float FullFractionCVar = CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread();
+		const float FullFractionOverride = FMath::IsFinite(FullFractionCVar) && FullFractionCVar < 0.0f
+			? WheelFrameNormalInputFullFraction : FullFractionCVar;
 		if (FMath::IsFinite(FullFractionOverride) && FullFractionOverride >= 0.0f && FMath::Abs(Input) > 0.75f)
 		{
 			// Use the accepted normal input endpoints at either end of the blend.
@@ -5188,8 +5196,15 @@ void USpeedWheeledComponent::InitNetwork()
 
 bool USpeedWheeledComponent::TryComputeWheelFrameNormalSteeringInputFraction(float& OutFraction) const
 {
-	const float FullFractionOverride = CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread();
-	if (!FMath::IsFinite(FullFractionOverride) || FullFractionOverride < 0.0f)
+	const float FullFractionCVar = CVarIAmSpeedWheelFrameNormalInputFullFraction.GetValueOnAnyThread();
+	const float FullFractionOverride = FMath::IsFinite(FullFractionCVar) && FullFractionCVar < 0.0f
+		? WheelFrameNormalInputFullFraction : FullFractionCVar;
+	const float HalfFractionCVar = CVarIAmSpeedWheelFrameNormalHalfInputFraction.GetValueOnAnyThread();
+	const float HalfFractionOverride = FMath::IsFinite(HalfFractionCVar) && HalfFractionCVar < 0.0f
+		? WheelFrameNormalHalfInputFraction : HalfFractionCVar;
+	const bool bUseFullFraction = FMath::IsFinite(FullFractionOverride) && FullFractionOverride >= 0.0f;
+	const bool bUseHalfFraction = FMath::IsFinite(HalfFractionOverride) && HalfFractionOverride >= 0.0f;
+	if (!bUseFullFraction && !bUseHalfFraction)
 		return false;
 
 	// Use the same handbrake phase as the wheel-angle law. The raw request also
@@ -5201,8 +5216,23 @@ bool USpeedWheeledComponent::TryComputeWheelFrameNormalSteeringInputFraction(flo
 	if (!FMath::IsFinite(Input))
 		return false;
 	const float A = FMath::Abs(FMath::Clamp(Input, -1.0f, 1.0f));
-	if (A <= 0.75f)
-		return false; // Keep the inherited expression through three-quarter input.
+	if (bUseHalfFraction && A > 0.25f && A < 0.75f)
+	{
+		const float ReferenceHalfFraction = 0.5f * SteeringInputCalibrationScale(0.5f);
+		const float HalfFraction = FMath::Clamp(HalfFractionOverride, 0.50f, 0.60f);
+		const float Delta = HalfFraction - ReferenceHalfFraction;
+		// The reference value falls through to the unchanged inherited expression.
+		if (Delta != 0.0f)
+		{
+			const float Weight = 1.0f - FMath::Abs((A - 0.5f) * 4.0f);
+			const float ReferenceFraction = A * SteeringInputCalibrationScale(Input);
+			const float Fraction = ReferenceFraction + Delta * Weight;
+			OutFraction = Input < 0.0f ? -Fraction : Fraction;
+			return true;
+		}
+	}
+	if (!bUseFullFraction || A <= 0.75f)
+		return false; // Keep the inherited expression outside an admitted override.
 
 	const float ThreeQuarterFraction = 0.75f * SteeringInputCalibrationScale(0.75f);
 	const float FullFraction = FMath::Clamp(FullFractionOverride, ThreeQuarterFraction, 1.0f);
