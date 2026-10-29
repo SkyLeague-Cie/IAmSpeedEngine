@@ -87,6 +87,9 @@ for(int32 Surface=0;Surface<3;++Surface)
    // Test-only friend setup. The production setter refuses this standalone
    // fixture and permits only a dedicated authority before worker creation.
    if(!TestFalse(TEXT("production remote host setter refuses standalone"),Driver->ConfigureExactRemoteInputHost(1)))return false;
+   // Synthetic non-dedicated fixture: freeze the explicit exact/direct mode
+   // alongside its cohort size, without weakening the production host gate.
+   Driver->ConfiguredRemoteInputAdmission=EExactRemoteAdmission::OriginalDeviceExact;
    Driver->RequiredExactRemoteInputSessions=1;
    Binding.Kind=EProducerContract::ExactRemote;Binding.Journal=9101;
    ReceivedFrames=std::move(Binding.Scenario);Binding.Scenario.clear();
