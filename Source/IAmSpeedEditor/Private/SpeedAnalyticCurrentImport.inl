@@ -46,7 +46,7 @@ namespace SpeedAuthoredCurrent
         if (!Value.IsValid() || !Value->TryGetArray(Pair) || !Pair || Pair->Num() != 2 ||
             !(*Pair)[0].IsValid() || (*Pair)[0]->Type != EJson::String ||
             !(*Pair)[1].IsValid() || (*Pair)[1]->Type != EJson::Number) return false;
-        FString Mantissa; uint64 M; double E;
+        FString Mantissa; uint64 M = 0; double E = 0.0;
         if (!(*Pair)[0]->TryGetString(Mantissa) || !StrictUint64(Mantissa, M) ||
             !(*Pair)[1]->TryGetNumber(E) || !FMath::IsFinite(E) || E < -4096 || E > 4096 ||
             E != FMath::FloorToDouble(E)) return false;
@@ -64,7 +64,7 @@ namespace SpeedAuthoredCurrent
     {
         const FValues* Values = nullptr;
         if (Hex.Len() != 48 || !Point.IsValid() || !Point->TryGetArray(Values) || !Values || Values->Num() != 3) return false;
-        double V[3];
+        double V[3]{};
         for (int32 K = 0; K < 3; ++K)
         {
             if (!(*Values)[K].IsValid() || (*Values)[K]->Type != EJson::Number ||
@@ -131,7 +131,7 @@ namespace SpeedAuthoredCurrent
     }
     bool ConversionContract(const FObject& Bounds)
     {
-        int32 Bits; const FValues* Order = nullptr;
+        int32 Bits = 0; const FValues* Order = nullptr;
         if (!Int(Bounds, TEXT("upper_bound_significand_bits"), Bits, 64, 64) ||
             !TextIs(Bounds, TEXT("tensor_hex_encoding"), TEXT("packed-binary64-be-xyz-u-major-v-minor/v1")) ||
             !TextIs(Bounds, TEXT("upper_bound_encoding"), TEXT("nonnegative-uint64-decimal-mantissa-times-two-power-signed-exponent/v1")) ||
@@ -141,7 +141,7 @@ namespace SpeedAuthoredCurrent
             !BoolIs(Bounds, TEXT("physical_admission"), false) || !TextIs(Bounds, TEXT("Native"), TEXT("NOT_RUN"))) return false;
         for (int32 I = 0; I < 9; ++I)
         {
-            const FValues* Pair = nullptr; double U, V;
+            const FValues* Pair = nullptr; double U = 0.0, V = 0.0;
             if (!(*Order)[I].IsValid() || !(*Order)[I]->TryGetArray(Pair) || !Pair || Pair->Num() != 2 ||
                 !(*Pair)[0].IsValid() || (*Pair)[0]->Type != EJson::Number || !(*Pair)[0]->TryGetNumber(U) ||
                 !(*Pair)[1].IsValid() || (*Pair)[1]->Type != EJson::Number || !(*Pair)[1]->TryGetNumber(V) ||
@@ -224,7 +224,7 @@ USpeedAnalyticCollisionAsset* USpeedAnalyticAuthoredImport::StageStadiumCurrentV
     FObject Identity, Geometry, Bounds;
     if (!ReadPinned(IdentityPin, Identity, OutReason) || !ReadPinned(NumericPin, Geometry, OutReason) ||
         !ReadPinned(ConversionPin, Bounds, OutReason)) return nullptr;
-    int32 SourceBytes, CertificateBytes, CountT, CountP, CountV;
+    int32 SourceBytes = 0, CertificateBytes = 0, CountT = 0, CountP = 0, CountV = 0;
     const auto SourceRecipe = Child(Identity, TEXT("source_recipe"));
     const auto SourceCertificate = Child(Identity, TEXT("source_C2_certificate"));
     if (!TextIs(Identity, TEXT("schema"), TEXT("skyleague.analytic-source-identity-manifest/v1")) ||
@@ -248,7 +248,7 @@ USpeedAnalyticCollisionAsset* USpeedAnalyticAuthoredImport::StageStadiumCurrentV
         !TextIs(Bounds, TEXT("source_recipe_sha256"), ExactSourceSha) ||
         !TextIs(Bounds, TEXT("geometry_payload_sha256"), NumericPin.Sha256) || !ConversionContract(Bounds))
     { OutReason = TEXT("Current identity/geometry/bounds provenance, identity namespace or qualification contract differs."); return nullptr; }
-    const FValues *Tensors, *Planes, *IdentityTensors, *IdentityPlanes, *BoundTensors, *BoundPlanes;
+    const FValues *Tensors = nullptr, *Planes = nullptr, *IdentityTensors = nullptr, *IdentityPlanes = nullptr, *BoundTensors = nullptr, *BoundPlanes = nullptr;
     if (!Array(Geometry, TEXT("tensor_patches"), Tensors, CurrentTensors) ||
         !Array(Geometry, TEXT("bounded_planes"), Planes, CurrentPlanes) ||
         !Array(Identity, TEXT("patches"), IdentityTensors, CurrentTensors) ||
@@ -263,8 +263,8 @@ USpeedAnalyticCollisionAsset* USpeedAnalyticAuthoredImport::StageStadiumCurrentV
     {
         const auto G = ObjectAt(*Tensors, I), R = ObjectAt(*IdentityTensors, I), B = ObjectAt(*BoundTensors, I);
         FSpeedAnalyticTensorBezierPatchRecord Patch;
-        int32 RU, RV, Controls; FString Packed;
-        const FValues *Points, *UnitDomain;
+        int32 RU = 0, RV = 0, Controls = 0; FString Packed;
+        const FValues *Points = nullptr, *UnitDomain = nullptr;
         if (!FaceMetadata(R, G, B, false) ||
             !Int(G, TEXT("degree_u"), Patch.DegreeU, 1, 10) || !Int(G, TEXT("degree_v"), Patch.DegreeV, 1, 10) ||
             !Int(R, TEXT("degree_u"), RU, 1, 10) || !Int(R, TEXT("degree_v"), RV, 1, 10) ||
@@ -298,7 +298,7 @@ USpeedAnalyticCollisionAsset* USpeedAnalyticAuthoredImport::StageStadiumCurrentV
     {
         const auto G = ObjectAt(*Planes, I), R = ObjectAt(*IdentityPlanes, I), B = ObjectAt(*BoundPlanes, I);
         FSpeedAnalyticBoundedPlaneRecord Plane;
-        int32 IdentityVertices, PreservedVertices; double Half[2]; const FValues *Domain, *HexDomain;
+        int32 IdentityVertices = 0, PreservedVertices = 0; double Half[2]{}; const FValues *Domain = nullptr, *HexDomain = nullptr;
         if (!FaceMetadata(R, G, B, true))
         { OutReason = TEXT("Current finite plane metadata identity differs."); return nullptr; }
         const auto Fields = Child(B, TEXT("field_binary64_be_hex"));
@@ -318,7 +318,7 @@ USpeedAnalyticCollisionAsset* USpeedAnalyticAuthoredImport::StageStadiumCurrentV
         Plane.HalfExtents = FVector2D(Half[0], Half[1]);
         for (int32 J = 0; J < Domain->Num(); ++J)
         {
-            double V[2];
+            double V[2]{};
             if (!Coordinates((*Domain)[J], (*HexDomain)[J], 2, V))
             { OutReason = FString::Printf(TEXT("Current plane %d vertex %d bits differ."), I, J); return nullptr; }
             Plane.DomainVertices.Emplace(V[0], V[1]);
