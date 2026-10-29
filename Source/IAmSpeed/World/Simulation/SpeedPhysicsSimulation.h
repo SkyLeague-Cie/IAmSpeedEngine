@@ -146,6 +146,8 @@ public:
         std::shared_ptr<Speed::Netcode::FExactRemoteInputIngress> Remote = {});
     /** Dedicated authority only, frozen before any worker or input admission. */
     bool ConfigureExactRemoteInputHost(uint32 RequiredSessions);
+    /** Explicit policy mode for original Device frames; no default activation or client-selected policy. */
+    bool ConfigureOriginalDeviceRemoteInputHost(uint32 RequiredSessions, Speed::Input::V2::EExactRemoteAdmission Admission);
 	uint64 AllocateInputCommandId() { check(IsInGameThread()); return NextInputCommandId == MAX_uint64 ? 0 : NextInputCommandId++; }
 	std::optional<Speed::Input::V2::FBoundaryReceipt> ReadInputSessionReceipt(uint64 Id) const;
 	bool AcknowledgeInputSessionReceipt(uint64 Id) { return InputSessionCommands->Acknowledge(Id); }
@@ -339,6 +341,7 @@ private:
 	uint64 InputWorkerGeneration = 0, NextInputCommandId = 1;
 	TAtomic<bool> bInputSessionAdmissionRequested = false;
     uint32 RequiredExactRemoteInputSessions = 0; // frozen GT configuration before worker creation
+    Speed::Input::V2::EExactRemoteAdmission ConfiguredRemoteInputAdmission = Speed::Input::V2::EExactRemoteAdmission::Closed;
     bool bExactRemoteInputWaiting = false; // worker only
     bool bInputCommandBoundaryDirty = false; // protected by InputSessionAdmissionMutex
 	TAtomic<bool> bInputOwnersClosedOnWorker = false;

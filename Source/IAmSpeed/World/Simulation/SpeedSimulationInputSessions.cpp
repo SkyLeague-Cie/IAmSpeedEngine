@@ -52,11 +52,18 @@ Speed::Input::V2::ECommandAdmission ASpeedPhysicsSimulation::SubmitInputSessionC
 
 bool ASpeedPhysicsSimulation::ConfigureExactRemoteInputHost(uint32 RequiredSessions)
 {
+    return ConfigureOriginalDeviceRemoteInputHost(RequiredSessions, Speed::Input::V2::EExactRemoteAdmission::OriginalDeviceExact);
+}
+
+bool ASpeedPhysicsSimulation::ConfigureOriginalDeviceRemoteInputHost(uint32 RequiredSessions, Speed::Input::V2::EExactRemoteAdmission Admission)
+{
     check(IsInGameThread());
+    if (!Speed::Input::V2::AdmitsOriginalDeviceRemote(Admission)) return false;
     if (Speed::Netcode::QueryExactRemoteHostPolicy(GetWorld()) != Speed::Netcode::EExactRemoteHostPolicy::IsolatedDedicated
         || GetNetMode() != NM_DedicatedServer || !RequiredSessions || RequiredSessions > 16
         || RequiredExactRemoteInputSessions || SimulationWorker || InputSessionRegistry
         || bInputSessionAdmissionRequested.Load() || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()) return false;
+    ConfiguredRemoteInputAdmission = Admission;
     RequiredExactRemoteInputSessions = RequiredSessions;
     return true;
 }
@@ -102,7 +109,7 @@ ESimulationBoundaryResult ASpeedPhysicsSimulation::ServiceInputSessionBoundary(b
         if (!InputSessionRegistry)
             InputSessionRegistry = std::make_unique<FInputSessionRegistry>(InputSessionCommands, InputWorkerGeneration,
                 std::vector<FInputSessionRegistry::FJournalService>{}, RequiredExactRemoteInputSessions
-                    ? EExactRemoteAdmission::OriginalDeviceExact : EExactRemoteAdmission::Closed);
+                    ? ConfiguredRemoteInputAdmission : EExactRemoteAdmission::Closed);
         bool Ready = false;
         {
             FScopeLock Lock(&InputSessionAdmissionMutex);

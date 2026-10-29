@@ -1,6 +1,6 @@
 #pragma once
 
-#include "InputProducerV2.h"
+#include "InputProcessingPolicy.h"
 #include "InputProducerPollFence.h"
 #include <thread>
 #include <exception>
@@ -17,11 +17,6 @@ enum class EOwnerPollFailure : std::uint8_t
 {
     None, ReplayHistory, MissingFence, FreezeCutoff, Produce, CutoffMismatch,
     CloseCutoff, InvalidFrame, Continuity, ReplayMismatch, Exception
-};
-struct FInputProcessingPolicy
-{
-    // Zero means direct. Nonzero means maximum quantized change in this step.
-    std::array<std::uint16_t, ActionCount> Step{};
 };
 struct FOwnerInputBinding
 {
@@ -85,8 +80,8 @@ public:
         {
             if (!ValidBinding(Producer.get(), Binding, RemoteAdmission))
             { if (Producer) Producer->CancelLifecycle(); return {}; }
-            auto Fingerprint = FingerprintFor(Binding);
-            auto Filter = MakeFilter(Producer.get());
+            auto Fingerprint = FingerprintFor(Binding, RemoteAdmission);
+            auto Filter = MakeFilter(Producer.get(), RemoteAdmission);
             return std::unique_ptr<FSameFrameInputOwner>(new FSameFrameInputOwner(
                 std::move(Producer), std::move(Binding), FirstFrame, std::move(Fingerprint), std::move(Filter), RemoteAdmission));
         }
@@ -321,7 +316,7 @@ public:
         bool Valid = false;
         FContractFingerprint NewFingerprint;
         std::unique_ptr<FFilterState> NewFilter;
-        try { Valid = ValidBinding(Producer.get(), NewBinding, RemoteAdmission); if (Valid) { NewFingerprint = FingerprintFor(NewBinding); NewFilter = MakeFilter(Producer.get()); } }
+        try { Valid = ValidBinding(Producer.get(), NewBinding, RemoteAdmission); if (Valid) { NewFingerprint = FingerprintFor(NewBinding, RemoteAdmission); NewFilter = MakeFilter(Producer.get(), RemoteAdmission); } }
         catch (...) { Valid = false; }
         CallingSource = false;
         if (!Valid || Phase != PriorPhase || FaultSerial != PriorFault || Pending) return false;
@@ -425,30 +420,24 @@ private:
     static bool ValidBinding(const IInputProducer* Source, const FOwnerInputBinding& B, EExactRemoteAdmission Admission)
     {
         // Network admission is explicit and preserves an original Device identity.
-        // The default stays closed; exact streams never inherit device filtering.
+        // The default stays closed; remote processing requires its separate explicit opt-in.
 		if (!Source || !Source->SupportsPollFence() || !B.AdapterId || !B.Producer.Id || B.Producer.Kind != (B.ProducerContract == EProducerContract::AI ? EProducerKind::AI : EProducerKind::Device)
             || !B.Epoch.Value || !B.Contract || B.ProducerContract != Source->GetProducerContract()
             || (Source->GetProducerContract() != EProducerContract::Device && Source->GetProducerContract() != EProducerContract::ExactScenario && Source->GetProducerContract() != EProducerContract::AI
-                && !(Admission == EExactRemoteAdmission::OriginalDeviceExact && Source->GetProducerContract() == EProducerContract::ExactRemote))) return false;
+                && !(AdmitsOriginalDeviceRemote(Admission) && Source->GetProducerContract() == EProducerContract::ExactRemote))) return false;
         try
         {
             const auto C = Source->GetContract();
             if (!C || C->GetFingerprint() != B.Contract->GetFingerprint()) return false;
         }
         catch (...) { return false; }
-        for (std::size_t I = 0; I < ActionCount; ++I)
-        {
-            const auto* A = B.Contract->Find(static_cast<FActionId>(I));
-            if (B.Processing.Step[I] && (Source->GetProducerContract() != EProducerContract::Device || !A || A->Wiring != EActionWiring::Wired || A->Type != EActionType::Axis1D
-                || B.Processing.Step[I] > static_cast<std::uint16_t>(2 * A->Quantization))) return false;
-        }
-        return true;
+        return ValidInputProcessingPolicy(B.ProducerContract, B.Processing, *B.Contract, Admission);
     }
-    static FContractFingerprint FingerprintFor(const FOwnerInputBinding& B)
+    static FContractFingerprint FingerprintFor(const FOwnerInputBinding& B, EExactRemoteAdmission Admission)
     {
         FContractFingerprint F = B.Contract->GetFingerprint();
         const auto Add = [&](std::uint64_t V) { for (unsigned I = 0; I < 8; ++I) F.push_back(static_cast<std::uint8_t>(V >> (8 * I))); };
-        Add(2); Add(B.AdapterId); Add(static_cast<std::uint64_t>(B.Producer.Kind)); Add(B.Producer.Id); Add(B.Epoch.Value);
+        Add(B.ProducerContract == EProducerContract::ExactRemote && Admission == EExactRemoteAdmission::OriginalDeviceAuthoritativeProcessing ? 3 : 2); Add(B.AdapterId); Add(static_cast<std::uint64_t>(B.Producer.Kind)); Add(B.Producer.Id); Add(B.Epoch.Value);
         Add(static_cast<std::uint64_t>(B.ProducerContract));
         for (const auto S : B.Processing.Step) Add(S);
         return F;
@@ -481,16 +470,8 @@ private:
     }
     FActionValues Process(const FInputFrame& Input, const FActionValues& Before) const noexcept
     {
-        auto Result = Input.GetData().Values;
-        if (!Filter || Input.GetData().Reset) return Result; // first fresh held baseline is immediate
-        for (std::size_t I = 0; I < ActionCount; ++I)
-        {
-            const int Step = Binding.Processing.Step[I];
-            if (!Step) continue;
-            const int Delta = int(Result[I]) - int(Before[I]);
-            Result[I] = static_cast<std::int16_t>(int(Before[I]) + std::clamp(Delta, -Step, Step));
-        }
-        return Result;
+        return Filter ? ProcessAuthoritativeInputValues(Binding.Processing, Input.GetData().Values, Before, Input.GetData().Reset)
+            : Input.GetData().Values;
     }
     std::unique_ptr<IInputProducer> Source;
     FOwnerInputBinding Binding;
@@ -503,8 +484,8 @@ private:
     std::uint64_t PollSerial = 0;
     std::uint64_t FaultSerial = 0;
     EOwnerPollFailure LastPollFailure = EOwnerPollFailure::None;
-    static std::unique_ptr<FFilterState> MakeFilter(const IInputProducer* P)
-    { return P->GetProducerContract() == EProducerContract::Device ? std::make_unique<FFilterState>() : nullptr; }
+    static std::unique_ptr<FFilterState> MakeFilter(const IInputProducer* P, EExactRemoteAdmission Admission)
+    { return UsesAuthoritativeDeviceProcessing(P->GetProducerContract(), Admission) ? std::make_unique<FFilterState>() : nullptr; }
     std::unique_ptr<FFilterState> Filter;
     std::optional<FPending> Pending;
     std::array<std::shared_ptr<const FHistoryEntry>, HistoryCapacity> History{};

@@ -382,11 +382,12 @@ static void RegistryRemoteDefaultsAndMismatchStayClosed()
         CHECK(Ingress->GetState() == ERemoteIngressState::Unbound && !Registry.IsTerminal());
     }
 }
+#include "AuthoritativeRemoteProcessingTests.inc"
 int main()
 {
     try
     {
-        for (auto Test : {RegistryRemoteOptInAndCompleteCohort, RegistryRemoteDefaultsAndMismatchStayClosed,
+        for (auto Test : {ZeroStepRemoteProcessingHasDistinctFingerprintAndState, OriginalRawFramesHaveLocalAndRemoteProcessingParity, RemoteProcessingRequiresExplicitOptInAndValidPolicy, RegistryRemoteOptInAndCompleteCohort, RegistryRemoteDefaultsAndMismatchStayClosed,
             ReadinessDoesNotConsumeOrForge, IngressOwnsNoPhysicalSourceBeforeWorkerBind,
             IngressSubmissionSerializesWithOwnerRetirement, ExactFramesAndImmutableCutoff, ForeignCallsCannotReleaseLease,
             FailedCloseQuarantinesAndPauseDoesNotForge, SourceContinuityAndAddress, CurrentOwnerAdmissionStillRefuses,

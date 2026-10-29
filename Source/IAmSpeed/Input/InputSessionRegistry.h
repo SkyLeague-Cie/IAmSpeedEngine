@@ -217,7 +217,7 @@ public:
         std::set<std::uint64_t> Ids;
         std::set<const void*> Raw;
         for (const auto& J : Journals)
-            if (!J.Id || (unsigned(bool(J.Journal))+unsigned(bool(J.AI))+unsigned(bool(J.Remote)) != 1 || (J.Remote && RemoteAdmission != EExactRemoteAdmission::OriginalDeviceExact)) || !Ids.insert(J.Id).second || !Raw.insert(J.Journal ? static_cast<const void*>(J.Journal.get()) : (J.AI ? static_cast<const void*>(J.AI.get()) : J.Remote.get())).second)
+            if (!J.Id || (unsigned(bool(J.Journal))+unsigned(bool(J.AI))+unsigned(bool(J.Remote)) != 1 || (J.Remote && !AdmitsOriginalDeviceRemote(RemoteAdmission))) || !Ids.insert(J.Id).second || !Raw.insert(J.Journal ? static_cast<const void*>(J.Journal.get()) : (J.AI ? static_cast<const void*>(J.AI.get()) : J.Remote.get())).second)
                 throw std::invalid_argument("journal alias");
         if (!Commands->Limits.Frames) throw std::invalid_argument("history capacity");
         History.resize(Commands->Limits.Frames);
@@ -255,7 +255,7 @@ public:
     // native device handles. Called only at a worker boundary before Bind.
     bool RegisterJournalAtBoundary(FJournalService Service)
     {
-        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending || Terminal || !Service.Id || (unsigned(bool(Service.Journal))+unsigned(bool(Service.AI))+unsigned(bool(Service.Remote)) != 1 || (Service.Remote && RemoteAdmission != EExactRemoteAdmission::OriginalDeviceExact))) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending || Terminal || !Service.Id || (unsigned(bool(Service.Journal))+unsigned(bool(Service.AI))+unsigned(bool(Service.Remote)) != 1 || (Service.Remote && !AdmitsOriginalDeviceRemote(RemoteAdmission)))) return false;
         for (const auto& J : Journals)
             if (J.Id == Service.Id || (J.Journal && J.Journal == Service.Journal) || (J.AI && J.AI == Service.AI) || (J.Remote && J.Remote == Service.Remote))
                 return J.Id == Service.Id && J.Journal == Service.Journal && J.AI == Service.AI && J.Remote == Service.Remote;
@@ -546,13 +546,10 @@ public:
                     const auto B = std::find_if(F->Registry->Bindings.begin(), F->Registry->Bindings.end(), [&](const auto& D) { return D.Id == Input.Session && D.Epoch == Input.Epoch; });
                     if (B == F->Registry->Bindings.end() || !Input.Snapshot) return false;
                     auto Expected = Input.Snapshot->Requested;
-                    if (B->Kind == EProducerContract::Device)
+                    if (UsesAuthoritativeDeviceProcessing(B->Kind, RemoteAdmission))
                     {
                         if (!Input.FilterBefore) return false;
-                        if (!Input.Snapshot->Input.GetData().Reset)
-                            for (std::size_t A=0; A<ActionCount; ++A)
-                                if (const int Step = B->Processing.Step[A])
-                                    Expected[A] = std::int16_t(int((*Input.FilterBefore)[A]) + std::clamp(int(Expected[A])-int((*Input.FilterBefore)[A]),-Step,Step));
+                        Expected = ProcessAuthoritativeInputValues(B->Processing, Expected, *Input.FilterBefore, Input.Snapshot->Input.GetData().Reset);
                     }
                     else if (!FInputSessionCommands::ExactPolicy(B->Kind,B->Processing) || Input.FilterBefore) return false;
                     if (Expected != Input.Snapshot->Applied) return false;
@@ -702,11 +699,11 @@ private:
             || Sessions.size() >= Commands->Limits.Sessions || Sessions.count(D.Id)
             || (LastEpoch.count(D.Id) && D.Epoch <= LastEpoch.at(D.Id))
             || (D.Kind != EProducerContract::Device && D.Kind != EProducerContract::ExactScenario && D.Kind != EProducerContract::AI
-                && !(D.Kind == EProducerContract::ExactRemote && RemoteAdmission == EExactRemoteAdmission::OriginalDeviceExact))
+                && !(D.Kind == EProducerContract::ExactRemote && AdmitsOriginalDeviceRemote(RemoteAdmission)))
             || (D.Kind == EProducerContract::ExactRemote && !D.Scenario.empty())
             || (D.AllowScenarioAppend && D.Kind != EProducerContract::ExactScenario)
             || (D.ResumeRearmMask && D.Kind != EProducerContract::Device)
-            || ((D.Kind == EProducerContract::ExactScenario || D.Kind == EProducerContract::AI || D.Kind == EProducerContract::ExactRemote) && !FInputSessionCommands::ExactPolicy(D.Kind, D.Processing)))
+            || !ValidInputProcessingPolicy(D.Kind, D.Processing, *D.Contract, RemoteAdmission))
         { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         std::sort(D.Actors.begin(), D.Actors.end());
         std::set<std::uint64_t> ActorIds;
