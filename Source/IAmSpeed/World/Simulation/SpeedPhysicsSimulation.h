@@ -54,6 +54,7 @@ class IAMSPEED_API ASpeedPhysicsSimulation : public ASpeedSimulation
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FIAmSpeedWheelSimulationAdmissionTest;
 	friend class FIAmSpeedProducedInputWorkerOrderTest;
+	friend class FIAmSpeedPresentationClientPendingWorldTest;
 	friend class FIAmSpeedNativeCarsCamera1217;
  friend class FIAmSpeedNativeAnalyticContacts1221;
 	friend class FIAmSpeedNativeAnalyticGrounded1368;
@@ -156,6 +157,7 @@ public:
 	/** Retain one immutable completed world/input pair; no fullstate, branch, current-input or restore capability. */
 	std::shared_ptr<const Speed::FCompletedSimulationPublication> ReadCompletedWorldAndInputFrame() const;
 	uint64 GetInputWorkerGeneration() const { return InputWorkerGeneration; }
+	bool HasOwnedWorkerForPresentationAdmission() const { check(IsInGameThread()); return SimulationWorker != nullptr; }
 	bool InputOwnersRetiredAfterJoin(uint64 Generation) const
 	{ return Generation == InputWorkerGeneration && bInputOwnerRetired.Load() && bInputOwnersClosedOnWorker.Load() && !SimulationWorker; }
 	/** Pauses the owned execution lane without changing the canonical frame. */

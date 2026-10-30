@@ -1,3 +1,4 @@
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
@@ -78,6 +79,7 @@ void ASpeedGameMode::EndPlay(const EEndPlayReason::Type Reason)
 
 void ASpeedGameMode::BeginPlay()
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
     Super::BeginPlay();
 
     if (!HasAuthority()) return;

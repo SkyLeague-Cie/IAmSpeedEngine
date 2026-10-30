@@ -1,3 +1,4 @@
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "SpeedPhysicsSimulation.h"
 #include "ReplayPhysicalFrameScope.h"
 #include "ReplayLifecycleBoundary.h"
@@ -255,6 +256,7 @@ ASpeedPhysicsSimulation::ASpeedPhysicsSimulation()
 
 void ASpeedPhysicsSimulation::BeginPlay()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	Super::BeginPlay();
 	// Fixed before the worker starts; diagnostics never change the canonical payload.
 	bPublishPresentation = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
@@ -528,6 +530,7 @@ void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
 
 void ASpeedPhysicsSimulation::RefreshExecutionMode()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	const ESimulationExecutionMode DesiredMode =
 		Speed::CanonicalFrameDriver::IsEnabled()
 		? Speed::CanonicalFrameDriver::GetExecutionMode()
@@ -562,6 +565,7 @@ void ASpeedPhysicsSimulation::TransitionExecutionMode(
 
 void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
     if(HasReplayStartupHoldOnGameThread(this))return;
 	if (SimulationWorker || bOwnedWorkerTerminal.Load() ||
 		!EnsureSimulationWorldReady())
@@ -987,6 +991,7 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 
 bool ASpeedPhysicsSimulation::EnsureSimulationWorldReady()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
 	if (!SpeedWorldSubsystem)
 	{
 		SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());

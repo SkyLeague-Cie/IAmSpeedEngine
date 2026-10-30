@@ -50,6 +50,7 @@ public:
 #endif
 	void InitNetwork();
 	/** Used to create any physics engine information for this component */
+	virtual void OnRegister() override;
 	virtual void OnCreatePhysicsState() override;
 	bool ShouldCreatePhysicsState() const override;
 	/** Used to shut down and physics engine structure for this component */
