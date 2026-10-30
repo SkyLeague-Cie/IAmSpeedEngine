@@ -261,7 +261,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
 	if (Config.WarmContext && !Warm)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: warm context already closed")); return {}; }
-	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm));
+	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm), std::nullopt);
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
 	Host->AcquisitionStartupTimeout = Config.StartupTimeout;
 	if (!Host->Acquisition->Start(Config.Cadence))
