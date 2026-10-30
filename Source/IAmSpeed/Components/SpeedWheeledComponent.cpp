@@ -959,7 +959,7 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 
 void USpeedWheeledComponent::BeginPlay()
 {
-	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::BeginPlay(); return; }
 	bWheeledEndPlayTeardown = false;
 	bSpeedWorldAdapterRetiredForTeardown = false;
 	Super::BeginPlay();

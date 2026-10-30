@@ -623,7 +623,7 @@ FString USpeedMovementComponent::GetRole() const
 
 void USpeedMovementComponent::BeginPlay()
 {
-	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::BeginPlay(); return; }
 	Super::BeginPlay();
 
 	AActor* NewOwner = GetOwner();

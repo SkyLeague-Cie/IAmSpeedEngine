@@ -79,7 +79,7 @@ void ASpeedGameMode::EndPlay(const EEndPlayReason::Type Reason)
 
 void ASpeedGameMode::BeginPlay()
 {
-    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { AActor::BeginPlay(); return; }
     Super::BeginPlay();
 
     if (!HasAuthority()) return;
