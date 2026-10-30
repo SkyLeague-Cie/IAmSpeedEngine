@@ -77,6 +77,23 @@ public:
                 ? Windows::FGameInputSelectedSource::CreateRaw(Catalogue, Producer, Automatic, true)
                 : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Automatic, true);
             if (Raw && Selection && !Raw->RequestSelection(Selection)) Raw.reset();
+#if !UE_BUILD_SHIPPING
+            if (Raw && Selection)
+            {
+                const auto Devices = Raw->Snapshot();
+                bool Found = false, Capable = false;
+                for (const auto& D : Devices)
+                {
+                    if (D.Id == Selection->first && D.Connected)
+                    { Found = true; Capable = (D.SupportedKinds & uint8(Selection->second)) != 0; }
+                    if (!D.Connected) continue;
+                    FString IdText; for (const auto Byte : D.Id) IdText.Appendf(TEXT("%02X"), unsigned(Byte));
+                    UE_LOG(LogTemp, Display, TEXT("[InputExactDeviceCandidate] Session=%llu KindMask=%u Device=%s Scope=CURRENT_APPLICATION_LOCAL_CATALOGUE_ONLY"), Producer, unsigned(D.SupportedKinds), *IdText);
+                }
+                UE_LOG(LogTemp, Display, TEXT("[InputExactDeviceRequestAudit] Session=%llu RequestedKind=%u CatalogueEntries=%llu ExactIdConnected=%d ExactKindCapable=%d CaptureNotYetProved=1"), Producer, unsigned(Selection->second), uint64(Devices.size()), int32(Found), int32(Capable));
+            }
+#endif
+
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_exit source=%d"), Producer, int32(bool(Raw)));
             if (!Raw)
             { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
@@ -87,6 +104,15 @@ public:
 #endif
         }
 		const auto Result = Source->Pump();
+#if !UE_BUILD_SHIPPING
+        if (Selection && !ExactFirstPumpReported)
+        {
+            const auto Selected = Source->ReadSelectedRawDeviceDiagnostic();
+            UE_LOG(LogTemp, Display, TEXT("[InputExactDeviceFirstPump] Session=%llu Result=%u SelectedTicketObserved=%d Scope=SELECTION_NOT_INPUT_ACTUATION"), Producer, unsigned(Result), int32(bool(Selected)));
+            ExactFirstPumpReported = true;
+        }
+#endif
+
 		if (const auto Diagnostic = Source->TakeNeutralizeDiagnostic())
 		{
 			UE_LOG(LogTemp, Warning, TEXT("Independent input acquisition neutralized; cause=%u poll_status=%u raw_reject=%u raw_error=0x%08X sink_reject=%u acquisition_tick=%llu session=%llu journal_serial=%llu barrier_before=%llu barrier_after=%llu"),
@@ -140,6 +166,7 @@ private:
     std::unique_ptr<Windows::FGameInputRawAcquisition> Source;
 #if !UE_BUILD_SHIPPING
     std::optional<FDeviceId> LastReportedDevice;
+    bool ExactFirstPumpReported = false;
 #endif
     const std::optional<std::pair<FDeviceId, EDeviceKind>> Selection;
     bool Closed=false;

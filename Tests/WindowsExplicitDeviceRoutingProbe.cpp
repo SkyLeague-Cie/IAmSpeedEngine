@@ -39,15 +39,16 @@ public:
 };
 // Two independent backend catalogues see the same two fake devices. These
 // are authored API fakes: this proves routing, never two real physical pads.
-int main()
+static void RunRoutes(bool UseWarm)
 {
  using namespace Speed::Input::Windows;
  using namespace Speed::Input::V2;
  ComPtr<HistoryApi> ApiA,ApiB;ApiA.Attach(new HistoryApi);ApiB.Attach(new HistoryApi);
  auto Pad1=MakeDevice(1),Pad2=MakeDevice(2),Other=MakeDevice(3);
  ApiA->Initial={{Pad1,1,true},{Pad2,1,true},{Other,1,true}};ApiB->Initial=ApiA->Initial;
- auto A=FGameInputSelectedSource::CreateRaw(ApiA.Get(),1001);
- auto B=FGameInputSelectedSource::CreateRaw(ApiB.Get(),1002);
+ FGameInputWarmContext WarmA,WarmB;
+ auto A=UseWarm?FGameInputSelectedSource::CreateRaw(WarmA.GetOrCreate(ApiA.Get()),1001):FGameInputSelectedSource::CreateRaw(ApiA.Get(),1001);
+ auto B=UseWarm?FGameInputSelectedSource::CreateRaw(WarmB.GetOrCreate(ApiB.Get()),1002):FGameInputSelectedSource::CreateRaw(ApiB.Get(),1002);
  Check(bool(A)&&bool(B),"two independent raw sources constructed without Activity arbiter");
  Check(A->RequestSelection(std::make_pair(Key(1),EDeviceKind::Gamepad)),"client A exact request accepted");
  Check(B->RequestSelection(std::make_pair(Key(2),EDeviceKind::Gamepad)),"client B exact request accepted");
@@ -77,6 +78,11 @@ int main()
  Check(FA&&FA->FinalState.size()>19&&FA->Generation.Value>Before&&FA->FinalState[19].Value==0,"exact ID reconnect creates new generation and fresh neutral baseline");
  Check(OwnerA.ReadSelectedRawDeviceDiagnostic()->Id==Key(1),"obsolete object disconnect cannot retire replacement");
  Check(OwnerA.Close()&&OwnerB.Close(),"both acquisition owners close without worker remnants");
- std::cout<<"PASS WindowsExplicitDeviceRoutingProbe checks="<<Checks<<" hardware=none\n";
+ Check(WarmA.Close()&&WarmB.Close(),"warm catalogues close after exact route owners retire");
+}
+int main()
+{
+ RunRoutes(false);RunRoutes(true);
+ std::cout<<"PASS WindowsExplicitDeviceRoutingProbe checks="<<Checks<<" hardware=none cold_and_warm=1\n";
  return 0;
 }
