@@ -205,7 +205,13 @@ for(int32 Surface=0;Surface<3;++Surface)
    if(Case>=5&&!TestEqual(TEXT("long ground/ramp stimulus stays supported for its entire held interval"),SupportedHeld,Stimuli[Case].Release-FirstHeld))return false;
    const auto& End=Rows[Stimuli[Case].Release-1];
    if((Case==1||Case==5)&&!TestTrue(TEXT("throttle increases physical forward velocity versus separate neutral control"),FVector::DotProduct(End.K.Velocity-Neutral[Stimuli[Case].Release-1].K.Velocity,Forward)>1))return false;
-   if((Case==2||Case==6)&&!TestTrue(TEXT("brake reduces physical forward velocity versus separate neutral control"),FVector::DotProduct(End.K.Velocity-Neutral[Stimuli[Case].Release-1].K.Velocity,Forward)<-1))return false;
+   if(Case==2||Case==6)
+   {
+    const bool bBrakeOraclePassed=TestTrue(TEXT("brake reduces physical forward velocity versus separate neutral control"),FVector::DotProduct(End.K.Velocity-Neutral[Stimuli[Case].Release-1].K.Velocity,Forward)<-1);
+    // Keep the native Error/FAIL. Continue only the new long-brake case so later
+    // independent slope/alternating trajectories remain observable in this run.
+    if(!bBrakeOraclePassed&&Case!=6)return false;
+   }
    if(Case==3)LateralNegative=End.K.Location.Y-Neutral[Stimuli[Case].Release-1].K.Location.Y;
    if(Case==4)LateralPositive=End.K.Location.Y-Neutral[Stimuli[Case].Release-1].K.Location.Y;
   }
