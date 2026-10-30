@@ -28,7 +28,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 	const bool bUsedAnalyticAuthority =
 		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
-		Start, End, KS.Rotation, GetCollisionShape(),
+		Start, End, KS.Rotation, GetWorldStaticCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit,
 		&AnalyticHit,0,0,0,FVector::ZeroVector,-1.f,false,bTorusTrajectory ? &Trajectory : nullptr);
 	if (!bUsedAnalyticAuthority)
@@ -37,9 +37,9 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(
 			Hit, Start, End, KS.Rotation, GetCollisionChannel(),
-			GetCollisionShape(), Params, GetResponseParams());
+			GetWorldStaticCollisionShape(), Params, GetResponseParams());
 	}
-	else if (bHit && GetCollisionShape().IsBox() &&
+	else if (bHit && GetWorldStaticCollisionShape().IsBox() &&
 		Speed::Analytic::FStaticWorldQueryAudit::IsAuthorityChaosShadowEnabled())
 	{
 		// Explicit one-shot diagnostic. This UWorld query never changes authority
@@ -54,11 +54,11 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 			Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 			const bool bChaosShadowHit = World->SweepSingleByChannel(
 				ChaosShadowHit, Start, End, KS.Rotation, GetCollisionChannel(),
-				GetCollisionShape(), Params, GetResponseParams());
+				GetWorldStaticCollisionShape(), Params, GetResponseParams());
 			UE_LOG(SpeedPhysicsLog, Display,
 				TEXT("[AnalyticAuthorityChaosBoxShadow] Start=%s End=%s Rotation=%s HalfExtent=%s AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX ChaosHit=%d ChaosTime=%.9g ChaosPoint=%s ChaosNormal=%s ChaosStartPenetrating=%d ChaosPenetrationDepth=%.9g"),
 				*Start.ToString(), *End.ToString(), *KS.Rotation.ToString(),
-				*GetCollisionShape().GetBox().ToString(),
+				*GetWorldStaticCollisionShape().GetBox().ToString(),
 				AnalyticHit.Time, *AnalyticHit.Point.ToString(), *AnalyticHit.Normal.ToString(),
 				AnalyticHit.bStartPenetrating ? 1 : 0, AnalyticHit.PenetrationDepth,
 				AnalyticHit.SurfaceId, AnalyticHit.FeatureId, AnalyticHit.PrimitiveId,
@@ -69,7 +69,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::SolidSweep,
-		Start, End, KS.Rotation, GetCollisionShape(),
+		Start, End, KS.Rotation, GetWorldStaticCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, Hit);
 
     OutHit = SHitResult();
