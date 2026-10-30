@@ -46,6 +46,18 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameNormalHalfInputFraction
 	TEXT("Normal wheel-angle fraction at half input. Negative uses the component property; two negative values preserve inherited calibration. Nonnegative values clamp to [0.50,0.60]. Active and residual handbrake bypass this option. Change only at a quiescent physics boundary."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeHalfInputFraction(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeHalfInputFraction"),
+	-1.0f,
+	TEXT("Experimental handbrake angle fraction at decoded input 64/127. Negative or nonfinite preserves the current path. Nonnegative values clamp to [0.50,0.60]; correction vanishes at input 32/127 and 95/127. Only the handbrake endpoint of blend model 1 changes. Set before physics admission."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeQuarterInputFraction(
+	TEXT("p.IAmSpeed.WheelFrame.HandbrakeQuarterInputFraction"),
+	-1.0f,
+	TEXT("Experimental handbrake angle fraction at decoded input 32/127. Negative or nonfinite preserves the current path. Nonnegative values clamp to [0.25,0.45]; correction vanishes at zero and input 64/127. Only the handbrake endpoint of blend model 1 changes. Set before physics admission."),
+	ECVF_Default);
+
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameSteeringRearLateralFrictionReverseScale(
 	TEXT("p.IAmSpeed.WheelFrame.SteeringRearLateralFrictionReverseScale"),
 	-1.0f,
@@ -3789,6 +3801,58 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 		const float NormalInputScale = FMath::Abs(RawFraction) > KINDA_SMALL_NUMBER
 			? NormalFraction / RawFraction : 1.0f;
 		const float HandbrakeAngle = EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurve, AbsForwardSpeed, NormalSteerAngle);
+		const float HalfFractionOverride = CVarIAmSpeedWheelFrameHandbrakeHalfInputFraction.GetValueOnAnyThread();
+		const float AbsInput = FMath::Abs(Input);
+		constexpr float QuarterInput = 32.0f / 127.0f;
+		constexpr float HalfInput = 64.0f / 127.0f;
+		constexpr float ThreeQuarterInput = 95.0f / 127.0f;
+		const float QuarterFractionOverride = CVarIAmSpeedWheelFrameHandbrakeQuarterInputFraction.GetValueOnAnyThread();
+		if (CVarIAmSpeedWheelFrameHandbrakeSteeringBlendModel.GetValueOnAnyThread() == 1
+			&& FMath::IsFinite(QuarterFractionOverride) && QuarterFractionOverride >= 0.0f
+			&& AbsInput > 0.0f && AbsInput < HalfInput)
+		{
+			const float ReferenceQuarterFraction = QuarterInput * SteeringInputCalibrationScale(QuarterInput);
+			const float QuarterFraction = FMath::Clamp(QuarterFractionOverride, 0.25f, 0.45f);
+			const float QuarterDelta = QuarterFraction - ReferenceQuarterFraction;
+			const float AbsRawFraction = FMath::Abs(RawFraction);
+			if (QuarterDelta != 0.0f && AbsRawFraction > 0.0f)
+			{
+				float CommandFraction = AbsRawFraction;
+				if (FMath::IsFinite(HalfFractionOverride) && HalfFractionOverride >= 0.0f && AbsInput > QuarterInput)
+				{
+					const float ReferenceHalfFraction = HalfInput * SteeringInputCalibrationScale(HalfInput);
+					const float HalfFraction = FMath::Clamp(HalfFractionOverride, 0.50f, 0.60f);
+					const float HalfWeight = (AbsInput - QuarterInput) / (HalfInput - QuarterInput);
+					CommandFraction = AbsRawFraction + (HalfFraction - ReferenceHalfFraction) * HalfWeight;
+				}
+				const float QuarterWeight = AbsInput <= QuarterInput
+					? AbsInput / QuarterInput
+					: (HalfInput - AbsInput) / (HalfInput - QuarterInput);
+				CommandFraction += QuarterDelta * QuarterWeight;
+				const float AdjustedHandbrakeAngle = HandbrakeAngle * (CommandFraction / AbsRawFraction);
+				return FMath::Lerp(NormalSteerAngle * NormalInputScale, AdjustedHandbrakeAngle, WheelFrameHandbrakeValue);
+			}
+		}
+
+		if (CVarIAmSpeedWheelFrameHandbrakeSteeringBlendModel.GetValueOnAnyThread() == 1
+			&& FMath::IsFinite(HalfFractionOverride) && HalfFractionOverride >= 0.0f
+			&& AbsInput > QuarterInput && AbsInput < ThreeQuarterInput)
+		{
+			const float ReferenceHalfFraction = HalfInput * SteeringInputCalibrationScale(HalfInput);
+			const float HalfFraction = FMath::Clamp(HalfFractionOverride, 0.50f, 0.60f);
+			const float Delta = HalfFraction - ReferenceHalfFraction;
+			const float AbsRawFraction = FMath::Abs(RawFraction);
+			if (Delta != 0.0f && AbsRawFraction > KINDA_SMALL_NUMBER)
+			{
+				const float Weight = AbsInput <= HalfInput
+					? (AbsInput - QuarterInput) / (HalfInput - QuarterInput)
+					: (ThreeQuarterInput - AbsInput) / (ThreeQuarterInput - HalfInput);
+				const float CommandFraction = AbsRawFraction + Delta * Weight;
+				const float AdjustedHandbrakeAngle = HandbrakeAngle * (CommandFraction / AbsRawFraction);
+				return FMath::Lerp(NormalSteerAngle * NormalInputScale, AdjustedHandbrakeAngle, WheelFrameHandbrakeValue);
+			}
+		}
+
 		// Optional compensatory ablation, not a claim that the inherited speed
 		// basis is wrong: RocketSim also evaluates steering at forward speed.
 		// Keep the inherited return below literal for default0 and low inputs.
