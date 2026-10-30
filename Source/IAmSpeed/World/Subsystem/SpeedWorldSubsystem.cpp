@@ -1,3 +1,4 @@
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 // USpeedWorldSubsystem.cpp
@@ -137,6 +138,7 @@ namespace
 
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(&InWorld)) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(&InWorld)) return;
 
 	Super::OnWorldBeginPlay(InWorld);
@@ -808,6 +810,7 @@ bool USpeedWorldSubsystem::ShouldAcquireUnilateralRollingPair(
 
 void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
     if (!Comp) return;
     FScopeLock Lock(&PendingCS);
     PendingOps.Add({ true, Comp });
@@ -820,8 +823,16 @@ void USpeedWorldSubsystem::UnregisterSpeedComponent(ISpeedComponent* Comp)
     PendingOps.Add({ false, Comp });
 }
 
+bool USpeedWorldSubsystem::HasPhysicalRegistrationsForPresentationAdmission()
+{
+    check(IsInGameThread());
+    FScopeLock Lock(&PendingCS);
+    return PendingOps.Num()!=0 || !SimulationWorld.GetAdapters().IsEmpty();
+}
+
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	FScopedGameThreadAdapterAccess Access(GetWorld());
 	if (!Access.IsValid())
 	{

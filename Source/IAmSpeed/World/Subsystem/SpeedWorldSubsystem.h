@@ -91,6 +91,7 @@ public:
     void RegisterSpeedComponent(ISpeedComponent* Comp);
     void UnregisterSpeedComponent(ISpeedComponent* Comp);
     void ApplyPendingOps();
+    bool HasPhysicalRegistrationsForPresentationAdmission();
 	#if !UE_BUILD_SHIPPING
 	void RegisterFramePointerWitnessForTesting(Speed::FFramePointerRegistry& Registry,int32& ExpectedActors) const;
     void FrameAdapterCensusForTesting(TArray<FString>& OutRows) const;

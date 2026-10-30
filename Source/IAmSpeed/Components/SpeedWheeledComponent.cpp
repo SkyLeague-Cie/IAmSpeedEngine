@@ -1,3 +1,4 @@
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
@@ -453,6 +454,7 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 
 void USpeedWheeledComponent::OnRegister()
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::OnRegister(); return; }
     Super::OnRegister();
     AActor* Actor=GetOwner();
     if(!Actor || Actor->IsTemplate() || !Actor->GetRootComponent())return;
@@ -484,6 +486,7 @@ void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
 
 void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (NewOwner == nullptr)
 	{
 		return;
@@ -823,11 +826,13 @@ ASpeedCar* USpeedWheeledComponent::GetSpeedCarOwner() const
 
 bool USpeedWheeledComponent::ShouldCreatePhysicsState() const
 {
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
     if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
     return Super::ShouldCreatePhysicsState();
 }
 void USpeedWheeledComponent::OnCreatePhysicsState()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS wheeled physics-state creation in inert replay")); return; }
 	// =========> START OVERLOAD Chaos prediction here
@@ -954,6 +959,7 @@ void USpeedWheeledComponent::OnCreatePhysicsState()
 
 void USpeedWheeledComponent::BeginPlay()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	bWheeledEndPlayTeardown = false;
 	bSpeedWorldAdapterRetiredForTeardown = false;
 	Super::BeginPlay();

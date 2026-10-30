@@ -1,3 +1,4 @@
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "DeviceInputHost.h"
 #include <atomic>
 #include <exception>
@@ -198,6 +199,7 @@ FStreamEpoch AllocateInputStreamEpoch()
 
 std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostConfig& Config)
 {
+    if (Speed::Netcode::PresentationClient::IsSelected()) return {}; // Raw transport acquisition remains separate.
 #if PLATFORM_WINDOWS && !UE_SERVER
 	if (!Config.Contract)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract missing")); return {}; }

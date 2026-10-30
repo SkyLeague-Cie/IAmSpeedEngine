@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--vc',type=Path,default=Path('C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.38.33130'))
     parser.add_argument('--windows-kits',type=Path,default=Path('C:/Program Files (x86)/Windows Kits/10'))
     parser.add_argument('--sdk-version',default='10.0.22621.0')
-    parser.add_argument('--suite',choices=['all','world','registry','driving','remote','contract'],default='all')
+    parser.add_argument('--suite',choices=['all','world','registry','driving','remote','contract','presentation-client'],default='all')
     args=parser.parse_args()
     tests=Path(__file__).resolve().parent
     repo=tests.parents[2]
@@ -62,7 +62,7 @@ def main():
             results[label]=raw.decode(errors='replace').strip();print(results[label],flush=True)
         return code==expected
     ok=execute('presentation-compile',[cl]+flags+['/c','/Fo:'+str(out/'p.obj'),source/'IAmSpeed/Input/InputPresentationScope.cpp'])
-    suites=[('contract',tests/'contract-offer/ActionContractOfferCodecTests.cpp'),('input',tests/'transport/TransportTests.cpp'),('state',tests/'transport/StateTransportTests.cpp'),
+    suites=[('presentation-client',tests/'presentation-client/PresentationClientGateTests.cpp'),('contract',tests/'contract-offer/ActionContractOfferCodecTests.cpp'),('input',tests/'transport/TransportTests.cpp'),('state',tests/'transport/StateTransportTests.cpp'),
             ('consumed',tests/'consumed-command-v2/ConsumedTests.cpp'),('authority',tests/'authoritative-owner-v2/AuthoritativeOwnerTests.cpp'),
             ('envelope',tests/'state-authority-envelope-v2/StateEnvelopeTests.cpp'),('remote',tests/'remote-input/ExactRemoteInputProducerTests.cpp'),
             ('registry',repo/'Tests/Netcode/EmptyInputFrameTests.cpp'),
