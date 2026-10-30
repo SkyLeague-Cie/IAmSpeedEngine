@@ -32,7 +32,7 @@ bool FIAmSpeedPresentationClientPendingWorldTest::RunTest(const FString&)
  if(!TestNotNull(TEXT("placed-style car"),Wheeled)||!TestNotNull(TEXT("driver fixture"),Driver)||!TestNotNull(TEXT("world registry"),Bridge))return false;
  TestFalse(TEXT("movement physics-state excluded before history creation"),Movement->IsPhysicsStateCreated());
  TestFalse(TEXT("wheeled physics-state excluded before Chaos vehicle/history creation"),Wheeled->IsPhysicsStateCreated());
- Movement->SetOwner(Actor);Wheeled->SetOwner(Car);
+ Wheeled->SetOwner(Car); // Movement registration/late registration tested without private API access.
  Bridge->RegisterSpeedComponent(Movement);Bridge->RegisterSpeedComponent(Wheeled);Bridge->ApplyPendingOps();
  TestFalse(TEXT("no pending or active physical registrations"),Bridge->HasPhysicalRegistrationsForPresentationAdmission());
  TestFalse(TEXT("world readiness cannot admit a physical owner"),Driver->EnsureSimulationWorldReady());
