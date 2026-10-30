@@ -47,6 +47,7 @@ public:
         using B=Speed::FEpisodeStateBytesForTesting;
         B::Add(Out,bProductionNonpenetratingBoxContacts);
         B::Add(Out,Radius);
+        B::Add(Out,GetWorldStaticContactOffsetCm());
         B::Add(Out,MinSlopCm);
         B::Add(Out,SphereBoxTangentialContactArmScale);
         B::Add(Out,SphereBoxTangentialContactArmStartSpeed);
@@ -89,6 +90,14 @@ public:
 	static bool IsSphereBoxProjectionEnabled();
 	static bool IsWorldStaticProjectionEnabled();
     float GetRadius() const { return Radius; }
+    // Geometric skin against immutable world surfaces, separate from CCD epsilon.
+    virtual float GetWorldStaticContactOffsetCm() const { return 0.0f; }
+    // Static impact Coulomb cone; dynamic pair mixing remains independent.
+    virtual float GetWorldStaticImpactFriction() const { return GetStaticFriction(); }
+    double GetWorldStaticSupportRadius() const
+    {
+        return double(GetRadius()) + double(GetWorldStaticContactOffsetCm());
+    }
 	void SetRadiusForConfiguration(float NewRadius)
 	{
 		SetRadius(NewRadius);
@@ -135,6 +144,10 @@ protected:
 		const SKinematic& SphereState,
 		const SKinematic& BoxState) const;
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const override;
+    FCollisionShape GetWorldStaticCollisionShape() const override
+    {
+        return FCollisionShape::MakeSphere(GetWorldStaticSupportRadius() + CollisionMargin());
+    }
 
     virtual void ResolveCurrentHitPrv(const float& delta, const float& SimTime) override;
     void ResolveHitVsGround(const float& delta, const float& SimTime);
