@@ -26,8 +26,9 @@ class FNativeGameInputAcquisition final : public IInputAcquisition
 {
 public:
     FNativeGameInputAcquisition(uint64_t Id, FActivityConfig Config, std::shared_ptr<FRawAcquisitionJournal> J,
-        std::shared_ptr<Windows::FGameInputWarmContext> InWarm)
-        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)) {}
+        std::shared_ptr<Windows::FGameInputWarmContext> InWarm,
+        std::optional<std::pair<FDeviceId, EDeviceKind>> InSelection)
+        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)), Selection(InSelection) {}
     EAcquisitionPumpResult Pump() override
     {
         if (Closed) return EAcquisitionPumpResult::Closed;
@@ -68,9 +69,14 @@ public:
             };
             ReportWarmFailure();
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_enter"), Producer);
+            // Exact mode never constructs the automatic activity arbiter. Queue
+            // the request before the first real acquisition Pump/baseline.
+            const auto Automatic = Selection ? std::optional<FActivityConfig>{}
+                : std::optional<FActivityConfig>{Activity};
             auto Raw = Warm
-                ? Windows::FGameInputSelectedSource::CreateRaw(Catalogue, Producer, Activity, true)
-                : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Activity, true);
+                ? Windows::FGameInputSelectedSource::CreateRaw(Catalogue, Producer, Automatic, true)
+                : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Automatic, true);
+            if (Raw && Selection && !Raw->RequestSelection(Selection)) Raw.reset();
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_exit source=%d"), Producer, int32(bool(Raw)));
             if (!Raw)
             { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
@@ -135,6 +141,7 @@ private:
 #if !UE_BUILD_SHIPPING
     std::optional<FDeviceId> LastReportedDevice;
 #endif
+    const std::optional<std::pair<FDeviceId, EDeviceKind>> Selection;
     bool Closed=false;
 };
 }
@@ -174,6 +181,8 @@ std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t Prod
 #if PLATFORM_WINDOWS && !UE_SERVER
     if (!ProducerId || !Journal || Journal->BeginAcquisition().Session != ProducerId
         || !FDeviceActivityPolicy::ValidConfig(Config.Activity)
+        || (Config.SelectedDevice && Config.SelectedDevice->second != EDeviceKind::Keyboard
+            && Config.SelectedDevice->second != EDeviceKind::Gamepad)
         || FPresentationInputScope::IsActive()) return {};
     auto Warm = Config.WarmContext
         ? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
@@ -181,7 +190,7 @@ std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t Prod
     // The concrete source defers GameInput creation and all native access to
     // Pump on its acquisition worker, exactly as in the existing device host.
     return std::make_shared<FNativeGameInputAcquisition>(ProducerId, Config.Activity,
-        std::move(Journal), std::move(Warm));
+        std::move(Journal), std::move(Warm), Config.SelectedDevice);
 #else
     (void)ProducerId; (void)Journal; (void)Config;
     return {};

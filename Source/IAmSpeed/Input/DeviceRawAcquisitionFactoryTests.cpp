@@ -35,6 +35,15 @@ bool FDeviceRawAcquisitionFactoryTest::RunTest(const FString&)
     Config.WarmContext = Warm;
     TestFalse(TEXT("closed catalogue cannot be reused"), bool(CreateDeviceRawAcquisition(901, Journal, Config)));
     Config.WarmContext.reset();
+    Config.SelectedDevice = std::make_pair(FDeviceId{}, static_cast<EDeviceKind>(0));
+    TestFalse(TEXT("explicit invalid device kind cannot fall back to automatic acquisition"),
+        bool(CreateDeviceRawAcquisition(901, Journal, Config)));
+    Config.SelectedDevice = std::make_pair(FDeviceId{}, EDeviceKind::Gamepad);
+    auto ExactJournal = std::make_shared<FRawAcquisitionJournal>(903);
+    auto Exact = CreateDeviceRawAcquisition(903, ExactJournal, Config);
+    TestTrue(TEXT("exact request constructs without polling or inventing a connected device"), bool(Exact));
+    if (Exact) TestTrue(TEXT("unused explicit source closes normally"), Exact->Close());
+    Config.SelectedDevice.reset();
     auto Source = CreateDeviceRawAcquisition(901, Journal, Config);
     if (!TestTrue(TEXT("acquisition-only source can be constructed without physical host"), bool(Source))) return false;
     TestFalse(TEXT("construction does not publish or poll a device"), bool(Journal->ReadControlBaseline()));
