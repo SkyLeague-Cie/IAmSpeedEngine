@@ -4,6 +4,8 @@
 #include "Misc/ScopeExit.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h"
+#include "Physics/NetworkPhysicsComponent.h"
+#include "UObject/UObjectIterator.h"
 #include "GameFramework/Actor.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedMovementComponent.h"
@@ -37,6 +39,14 @@ bool FIAmSpeedPresentationClientPendingWorldTest::RunTest(const FString&)
  TestFalse(TEXT("no pending or active physical registrations"),Bridge->HasPhysicalRegistrationsForPresentationAdmission());
  TestFalse(TEXT("world readiness cannot admit a physical owner"),Driver->EnsureSimulationWorldReady());
  Driver->StartOwnedWorkerIfReady();TestFalse(TEXT("no physical worker started"),Driver->HasOwnedWorkerForPresentationAdmission());
+ for(TObjectIterator<UNetworkPhysicsComponent> It;It;++It)
+  if(!It->IsTemplate()&&It->GetWorld()==World)
+  {
+   AddInfo(FString::Printf(TEXT("[PendingHistoryCensus] %s class=%s registered=%d state=%d input=%d"),*It->GetPathName(),*It->GetClass()->GetPathName(),It->IsRegistered()?1:0,It->GetStateHistory_External()?1:0,It->GetInputHistory_External()?1:0));
+   TestFalse(TEXT("every original native network component remains unregistered"),It->IsRegistered());
+   TestFalse(TEXT("no original native state history"),bool(It->GetStateHistory_External()));
+   TestFalse(TEXT("no original native input history"),bool(It->GetInputHistory_External()));
+  }
  TestTrue(TEXT("actual pristine world audit, static query scene permitted"),P::Audit(*World,Why));
  // Repeat re-registration after the initial load: the same guards still apply.
  Movement->UnregisterComponent();Movement->RegisterComponent();

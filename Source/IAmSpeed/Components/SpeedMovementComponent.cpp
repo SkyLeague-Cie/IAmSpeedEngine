@@ -1087,6 +1087,8 @@ void USpeedMovementComponent::InitNetwork()
 {
 	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
 	SNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
+    if(Speed::Netcode::PresentationClient::IsSelected())
+    { SNetworkPhysicsComponent->bAutoRegister=false;SNetworkPhysicsComponent->SetAutoActivate(false);SNetworkPhysicsComponent->SetIsReplicated(false); }
 	SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
 	SNetworkPhysicsComponent->SetIsReplicated(true);
 

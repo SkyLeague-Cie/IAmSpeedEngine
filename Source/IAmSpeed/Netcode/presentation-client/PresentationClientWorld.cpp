@@ -82,7 +82,7 @@ bool Audit(UWorld& World,FString& Why)
     for(TObjectIterator<UNetworkPhysicsComponent> It;It;++It)
         if(!It->IsTemplate()&&It->GetWorld()==&World&&(It->IsRegistered()
             ||It->GetStateHistory_External()||It->GetInputHistory_External()))
-        {Why=TEXT("Existing network physics registration/history; retroactive removal forbidden");Fail(World,Why);return false;}
+        {Why=FString::Printf(TEXT("Existing network physics registration/history: %s class=%s registered=%d state=%d input=%d; retroactive removal forbidden"),*It->GetPathName(),*It->GetClass()->GetPathName(),It->IsRegistered()?1:0,It->GetStateHistory_External()?1:0,It->GetInputHistory_External()?1:0);Fail(World,Why);return false;}
     for(TObjectIterator<UPrimitiveComponent> It;It;++It)
         if(!It->IsTemplate()&&It->GetWorld()==&World&&It->IsRegistered()&&It->IsSimulatingPhysics())
         {Why=TEXT("Uninventoried simulating Chaos body; host must reject its Blueprint/spawn path");Fail(World,Why);return false;}
