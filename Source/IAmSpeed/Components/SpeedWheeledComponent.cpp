@@ -426,6 +426,12 @@ float GetSmishTurnTargetSpeed(
 USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer)
 {
+    // Chaos can construct a THIRD network component in Super when prediction is
+    // enabled. Keep that original DSO inert before registration too; no removal
+    // of an already registered/history-bearing component is allowed.
+    if(Speed::Netcode::PresentationClient::IsSelected()&&NetworkPhysicsComponent)
+    { NetworkPhysicsComponent->bAutoRegister=false;NetworkPhysicsComponent->SetAutoActivate(false);NetworkPhysicsComponent->SetIsReplicated(false); }
+
 	SetIsReplicatedByDefault(true);
 
 	InitChaosVehicle();
