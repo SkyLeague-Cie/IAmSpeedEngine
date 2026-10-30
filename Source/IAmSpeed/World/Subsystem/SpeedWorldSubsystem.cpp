@@ -138,7 +138,7 @@ namespace
 
 void USpeedWorldSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
-	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(&InWorld)) return;
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(&InWorld)) { Super::OnWorldBeginPlay(InWorld); return; }
 	if (Speed::ReplayIsolation::IsInertReplayWorld(&InWorld)) return;
 
 	Super::OnWorldBeginPlay(InWorld);

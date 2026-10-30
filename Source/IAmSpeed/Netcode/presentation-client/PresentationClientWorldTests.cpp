@@ -47,6 +47,8 @@ bool FIAmSpeedPresentationClientPendingWorldTest::RunTest(const FString&)
    TestFalse(TEXT("no original native state history"),bool(It->GetStateHistory_External()));
    TestFalse(TEXT("no original native input history"),bool(It->GetInputHistory_External()));
   }
+ World->BeginPlay(); // Real Engine path enforces each WorldSubsystem Super bookkeeping.
+ AddInfo(TEXT("[PendingWorldBeginPlay] RealEngineWorldBeginPlayCompleted=1"));
  TestTrue(TEXT("actual pristine world audit, static query scene permitted"),P::Audit(*World,Why));
  // Repeat re-registration after the initial load: the same guards still apply.
  Movement->UnregisterComponent();Movement->RegisterComponent();
