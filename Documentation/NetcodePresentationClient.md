@@ -39,3 +39,9 @@ Required native validation remains NOT_RUN: preplaced car/ball/driver, late spaw
 seamless travel, static query allowance, hostile Blueprint dynamic body, pending connection before
 NetDriver, authentic admission and transport capture, wrong/replaced connection, disconnect and
 standalone fallback, conflicting Replay/Dedicated intent, and actual two-client dedicated session.
+
+Allocation scope: existing constructor recording buffers remain allocated but inert. This profile
+claims no active network history, recording, physical consumption or worker; it does not claim zero
+allocation of every recording-storage container. Zero-allocation is NOT qualified. Actor/component
+BeginPlay bookkeeping is preserved through the non-physical UE base; generic car live kinematic
+and camera Tick work is suppressed. Host-derived lifecycle overrides require their own guards.

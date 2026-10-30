@@ -256,7 +256,7 @@ ASpeedPhysicsSimulation::ASpeedPhysicsSimulation()
 
 void ASpeedPhysicsSimulation::BeginPlay()
 {
-	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { AActor::BeginPlay(); return; }
 	Super::BeginPlay();
 	// Fixed before the worker starts; diagnostics never change the canonical payload.
 	bPublishPresentation = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
