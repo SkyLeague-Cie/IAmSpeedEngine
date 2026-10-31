@@ -16,6 +16,19 @@ PRAGMA_POP_PLATFORM_DEFAULT_PACKING
 
 namespace Speed::Input::V2
 {
+namespace { std::atomic<FDeviceRawAcquisitionBridge> ProductRawBridge{nullptr}; }
+bool RegisterDeviceRawAcquisitionBridge(FDeviceRawAcquisitionBridge Bridge)
+{
+    check(IsInGameThread());
+    if (!Bridge) return false;
+    FDeviceRawAcquisitionBridge Expected = nullptr;
+    return ProductRawBridge.compare_exchange_strong(Expected, Bridge);
+}
+void UnregisterDeviceRawAcquisitionBridge(FDeviceRawAcquisitionBridge Bridge)
+{
+    check(IsInGameThread());
+    ProductRawBridge.compare_exchange_strong(Bridge, nullptr);
+}
 #if PLATFORM_WINDOWS && !UE_SERVER
 namespace
 {
@@ -167,7 +180,7 @@ std::shared_ptr<FDeviceInputWarmContext> CreateDeviceInputWarmContext()
 {
     return FDeviceInputWarmContext::Create();
 }
-std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t ProducerId,
+static std::shared_ptr<IInputAcquisition> CreateNativeDeviceRawAcquisition(std::uint64_t ProducerId,
     std::shared_ptr<FRawAcquisitionJournal> Journal, const FDeviceRawAcquisitionConfig& Config)
 {
 #if PLATFORM_WINDOWS && !UE_SERVER
@@ -185,6 +198,14 @@ std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t Prod
     (void)ProducerId; (void)Journal; (void)Config;
     return {};
 #endif
+}
+
+std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t ProducerId,
+    std::shared_ptr<FRawAcquisitionJournal> Journal, const FDeviceRawAcquisitionConfig& Config)
+{
+    if (const auto Bridge = ProductRawBridge.load())
+        return Bridge(ProducerId, std::move(Journal), Config, &CreateNativeDeviceRawAcquisition);
+    return CreateNativeDeviceRawAcquisition(ProducerId, std::move(Journal), Config);
 }
 
 FStreamEpoch AllocateInputStreamEpoch()
@@ -250,7 +271,10 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
 	if (Config.WarmContext && !Warm)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: warm context already closed")); return {}; }
-	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm));
+	FDeviceRawAcquisitionConfig RawConfig;
+    RawConfig.Activity = Config.Activity; RawConfig.WarmContext = Config.WarmContext;
+    auto Acquisition = CreateDeviceRawAcquisition(Identity.Id, Journal, RawConfig);
+    if (!Acquisition) return {};
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
 	Host->AcquisitionStartupTimeout = Config.StartupTimeout;
 	if (!Host->Acquisition->Start(Config.Cadence))

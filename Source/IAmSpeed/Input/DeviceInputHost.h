@@ -48,6 +48,16 @@ struct FDeviceRawAcquisitionConfig
     FActivityConfig Activity{};
     std::shared_ptr<FDeviceInputWarmContext> WarmContext;
 };
+// The product may bridge an additional platform transport on the SAME acquisition
+// worker and journal. The native factory supplied to it bypasses this hook;
+// neither registration nor construction may poll hardware or produce a frame.
+using FDeviceRawAcquisitionFactory = std::shared_ptr<IInputAcquisition>(*)(
+    std::uint64_t, std::shared_ptr<FRawAcquisitionJournal>, const FDeviceRawAcquisitionConfig&);
+using FDeviceRawAcquisitionBridge = std::shared_ptr<IInputAcquisition>(*)(
+    std::uint64_t, std::shared_ptr<FRawAcquisitionJournal>, const FDeviceRawAcquisitionConfig&,
+    FDeviceRawAcquisitionFactory);
+IAMSPEED_API bool RegisterDeviceRawAcquisitionBridge(FDeviceRawAcquisitionBridge Bridge);
+IAMSPEED_API void UnregisterDeviceRawAcquisitionBridge(FDeviceRawAcquisitionBridge Bridge);
 IAMSPEED_API std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(
     std::uint64_t ProducerId, std::shared_ptr<FRawAcquisitionJournal> Journal,
     const FDeviceRawAcquisitionConfig& Config);
