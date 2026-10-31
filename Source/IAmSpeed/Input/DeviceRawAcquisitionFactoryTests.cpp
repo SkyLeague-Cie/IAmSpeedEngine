@@ -1,4 +1,5 @@
 #include "DeviceInputHost.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
 
@@ -28,6 +29,13 @@ bool FDeviceRawAcquisitionFactoryTest::RunTest(const FString&)
         FPresentationInputScope Scope;
         TestFalse(TEXT("presentation cannot create another acquisition path"),
             bool(CreateDeviceRawAcquisition(901, Journal, Config)));
+    }
+    if (!Speed::Netcode::PresentationClient::IsSelected())
+    {
+        Config.EnableBackgroundInput = true;
+        TestFalse(TEXT("background opt-in requires explicit presentation-client process profile"),bool(CreateDeviceRawAcquisition(901,Journal,Config)));
+        TestFalse(TEXT("rejected background construction did not publish or poll"),bool(Journal->ReadControlBaseline()));
+        Config.EnableBackgroundInput = false;
     }
     auto Warm = CreateDeviceInputWarmContext();
     if (!TestTrue(TEXT("inert warm context constructed"), bool(Warm))) return false;

@@ -1,4 +1,5 @@
 #include "DeviceInputHost.h"
+#include "DeviceFocusPolicy.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include <atomic>
 #include <exception>
@@ -20,6 +21,7 @@ namespace Speed::Input::V2
 #if PLATFORM_WINDOWS && !UE_SERVER
 namespace
 {
+FDeviceProcessFocusPolicyLatch ProcessFocusPolicy;
 // The host passes inert configuration. Native creation, polling and successful
 // destruction all occur on the acquisition worker, independently of UE ticks.
 class FNativeGameInputAcquisition final : public IInputAcquisition
@@ -27,13 +29,15 @@ class FNativeGameInputAcquisition final : public IInputAcquisition
 public:
     FNativeGameInputAcquisition(uint64_t Id, FActivityConfig Config, std::shared_ptr<FRawAcquisitionJournal> J,
         std::shared_ptr<Windows::FGameInputWarmContext> InWarm,
-        std::optional<std::pair<FDeviceId, EDeviceKind>> InSelection)
-        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)), Selection(InSelection) {}
+        std::optional<std::pair<FDeviceId, EDeviceKind>> InSelection, bool InBackgroundInput)
+        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)), Selection(InSelection), EnableBackgroundInput(InBackgroundInput) {}
     EAcquisitionPumpResult Pump() override
     {
         if (Closed) return EAcquisitionPumpResult::Closed;
         if (!Source)
         {
+            if (!ProcessFocusPolicy.TryBind(EnableBackgroundInput))
+            { UE_LOG(LogTemp, Error, TEXT("GameInput process focus-policy conflict; no native acquisition change")); return EAcquisitionPumpResult::Rejected; }
 #if !UE_BUILD_SHIPPING
             const double StartedAt = FPlatformTime::Seconds();
 #endif
@@ -47,8 +51,9 @@ public:
                 UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=create_enter"), Producer);
                 const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
                 UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=create_exit hresult=0x%08X"), Producer, uint32(Created));
-                if (FAILED(Created))
+                if (FAILED(Created) || !Api)
                 { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
+                Api->SetFocusPolicy(EnableBackgroundInput?GameInput::v3::GameInputEnableBackgroundInput:GameInput::v3::GameInputDefaultFocusPolicy);
             }
 #if !UE_BUILD_SHIPPING
             const double CreatedAt = FPlatformTime::Seconds();
@@ -60,6 +65,7 @@ public:
                 Catalogue = Warm->GetOrCreate(Api.Get(), &Registration);
                 UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=catalogue_exit hresult=0x%08X catalogue=%d"), Producer, uint32(Registration), int32(bool(Catalogue)));
             }
+            UE_LOG(LogTemp, Display, TEXT("[InputFocusPolicy] Session=%llu Background=%d IASPolicyImmutable=1 NativeSetterAtApiCreation=%d"),Producer,int32(EnableBackgroundInput),int32(!Reused));
             const auto ReportWarmFailure = [&]()
             {
                 if (!Catalogue) return;
@@ -169,6 +175,7 @@ private:
     bool ExactFirstPumpReported = false;
 #endif
     const std::optional<std::pair<FDeviceId, EDeviceKind>> Selection;
+    const bool EnableBackgroundInput;
     bool Closed=false;
 };
 }
@@ -210,6 +217,7 @@ std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t Prod
         || !FDeviceActivityPolicy::ValidConfig(Config.Activity)
         || (Config.SelectedDevice && Config.SelectedDevice->second != EDeviceKind::Keyboard
             && Config.SelectedDevice->second != EDeviceKind::Gamepad)
+        || (Config.EnableBackgroundInput && !Speed::Netcode::PresentationClient::IsSelected())
         || FPresentationInputScope::IsActive()) return {};
     auto Warm = Config.WarmContext
         ? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
@@ -217,7 +225,7 @@ std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t Prod
     // The concrete source defers GameInput creation and all native access to
     // Pump on its acquisition worker, exactly as in the existing device host.
     return std::make_shared<FNativeGameInputAcquisition>(ProducerId, Config.Activity,
-        std::move(Journal), std::move(Warm), Config.SelectedDevice);
+        std::move(Journal), std::move(Warm), Config.SelectedDevice, Config.EnableBackgroundInput);
 #else
     (void)ProducerId; (void)Journal; (void)Config;
     return {};
@@ -288,7 +296,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
 	if (Config.WarmContext && !Warm)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: warm context already closed")); return {}; }
-	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm), std::nullopt);
+	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm), std::nullopt, false);
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
 	Host->AcquisitionStartupTimeout = Config.StartupTimeout;
 	if (!Host->Acquisition->Start(Config.Cadence))
