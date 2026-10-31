@@ -42,7 +42,7 @@ enum class ESimulationWorkerResult : uint8
 
 // Waiting keeps the lane alive to service lifecycle commands, but forbids physics
 // and pause acknowledgment until the requested boundary has actually completed.
-enum class ESimulationBoundaryResult : uint8 { Ready, Waiting, Failed };
+enum class ESimulationBoundaryResult : uint8 { Ready, Waiting, Failed, Complete };
 
 enum class ESimulationWaitResult : uint8
 {

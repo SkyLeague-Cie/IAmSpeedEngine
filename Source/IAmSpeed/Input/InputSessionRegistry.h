@@ -1,5 +1,6 @@
 #pragma once
 #include "AIInputProducer.h"
+#include "../Netcode/remote-input/ExactRemoteInputIngress.h"
 
 #include "SameFrameInputOwner.h"
 #include "RawAcquisitionJournal.h"
@@ -189,7 +190,7 @@ struct FRegistryFrame
     std::vector<FInstalledSessionInput> Inputs;
 };
 enum class ERegistryFrameFailure : std::uint8_t
-{ None, PrepareAdmission, SessionInactive, OwnerPoll, PrepareException, InstallAdmission, TokenInstall, SnapshotRead };
+{ None, PrepareAdmission, SessionInactive, OwnerPoll, PrepareException, InstallAdmission, TokenInstall, SnapshotRead, InputUnavailable };
 struct FRegistryFrameFailure
 {
     ERegistryFrameFailure Reason = ERegistryFrameFailure::None;
@@ -206,17 +207,17 @@ struct FRegistryFrameFailure
 class FInputSessionRegistry final
 {
 public:
-    struct FJournalService { std::uint64_t Id = 0; std::shared_ptr<FRawAcquisitionJournal> Journal; std::shared_ptr<FAIInputCommands> AI; };
+    struct FJournalService { std::uint64_t Id = 0; std::shared_ptr<FRawAcquisitionJournal> Journal; std::shared_ptr<FAIInputCommands> AI; std::shared_ptr<Netcode::FExactRemoteInputIngress> Remote; };
     FInputSessionRegistry(std::shared_ptr<FInputSessionCommands> InCommands, std::uint64_t Generation,
-        std::vector<FJournalService> InJournals = {})
-        : Commands(std::move(InCommands)), Worker(std::this_thread::get_id()), WorkerGeneration(Generation), Journals(std::move(InJournals))
+        std::vector<FJournalService> InJournals = {}, EExactRemoteAdmission InRemoteAdmission = EExactRemoteAdmission::Closed)
+        : Commands(std::move(InCommands)), Worker(std::this_thread::get_id()), WorkerGeneration(Generation), RemoteAdmission(InRemoteAdmission), Journals(std::move(InJournals))
     {
         if (!Commands || !Generation) throw std::invalid_argument("registry");
         PublishView(std::make_shared<FInputRegistryView>(FInputRegistryView{0, Generation, false, {}}));
         std::set<std::uint64_t> Ids;
         std::set<const void*> Raw;
         for (const auto& J : Journals)
-            if (!J.Id || (bool(J.Journal)==bool(J.AI)) || !Ids.insert(J.Id).second || !Raw.insert(J.Journal ? static_cast<const void*>(J.Journal.get()) : J.AI.get()).second)
+            if (!J.Id || (unsigned(bool(J.Journal))+unsigned(bool(J.AI))+unsigned(bool(J.Remote)) != 1 || (J.Remote && !AdmitsOriginalDeviceRemote(RemoteAdmission))) || !Ids.insert(J.Id).second || !Raw.insert(J.Journal ? static_cast<const void*>(J.Journal.get()) : (J.AI ? static_cast<const void*>(J.AI.get()) : J.Remote.get())).second)
                 throw std::invalid_argument("journal alias");
         if (!Commands->Limits.Frames) throw std::invalid_argument("history capacity");
         History.resize(Commands->Limits.Frames);
@@ -254,10 +255,10 @@ public:
     // native device handles. Called only at a worker boundary before Bind.
     bool RegisterJournalAtBoundary(FJournalService Service)
     {
-        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending || Terminal || !Service.Id || (bool(Service.Journal)==bool(Service.AI))) return false;
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending || Terminal || !Service.Id || (unsigned(bool(Service.Journal))+unsigned(bool(Service.AI))+unsigned(bool(Service.Remote)) != 1 || (Service.Remote && !AdmitsOriginalDeviceRemote(RemoteAdmission)))) return false;
         for (const auto& J : Journals)
-            if (J.Id == Service.Id || (J.Journal && J.Journal == Service.Journal) || (J.AI && J.AI == Service.AI))
-                return J.Id == Service.Id && J.Journal == Service.Journal && J.AI == Service.AI;
+            if (J.Id == Service.Id || (J.Journal && J.Journal == Service.Journal) || (J.AI && J.AI == Service.AI) || (J.Remote && J.Remote == Service.Remote))
+                return J.Id == Service.Id && J.Journal == Service.Journal && J.AI == Service.AI && J.Remote == Service.Remote;
         if (Journals.size() >= Commands->Limits.Sessions) return false;
         Journals.push_back(std::move(Service)); return true;
     }
@@ -376,12 +377,34 @@ public:
         return !Terminal && !Waiting;
     }
     #include "../EmptyInputFrameReceipt.inc"
+    // Complete cohort admission BEFORE any irreversible Poll. A missing exact
+    // remote frame stays absent; callers may wait at the same physical boundary.
+    EInputFrameReadiness QueryFrameReadiness(FFrameNumber N, std::size_t MinimumRemoteSessions = 0)
+    {
+        if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup || Pending || Terminal || Waiting || Replaying)
+            return EInputFrameReadiness::Rejected;
+        struct FGuard { bool& Flag; explicit FGuard(bool& F) : Flag(F) { Flag = true; } ~FGuard() { Flag = false; } } Guard(InspectingFrameReadiness);
+        std::size_t RemoteCount = 0;
+        bool Missing = false;
+        for (auto& P : Sessions)
+        {
+            auto& S = P.second;
+            if (S.Description.Kind == EProducerContract::ExactRemote) ++RemoteCount;
+            if (S.Phase != ESessionPhase::Active || !S.Owner) return EInputFrameReadiness::Rejected;
+            const auto Ready = S.Owner->QueryFrameReadiness(N);
+            if (Ready == EInputFrameReadiness::Rejected) return Ready;
+            Missing = Missing || Ready == EInputFrameReadiness::Waiting;
+        }
+        return Missing || RemoteCount < MinimumRemoteSessions ? EInputFrameReadiness::Waiting : EInputFrameReadiness::Ready;
+    }
     bool PrepareFrame(FFrameNumber N)
     {
         if (!IsWorker() || BoundaryMutationBlocked() || ResumeGroup || ReplayGroup) return false;
         LastFrameFailure = {};
         if (Terminal || Pending || Waiting || Replaying || Sessions.empty())
         { RecordFrameFailure(ERegistryFrameFailure::PrepareAdmission, N); return false; }
+        if (RemoteAdmission != EExactRemoteAdmission::Closed && QueryFrameReadiness(N) != EInputFrameReadiness::Ready)
+        { RecordFrameFailure(ERegistryFrameFailure::InputUnavailable, N); return false; }
         // Readiness is checked for ALL sessions before any source is touched.
         for (const auto& P : Sessions)
             if (P.second.Phase != ESessionPhase::Active || !P.second.Owner)
@@ -523,13 +546,10 @@ public:
                     const auto B = std::find_if(F->Registry->Bindings.begin(), F->Registry->Bindings.end(), [&](const auto& D) { return D.Id == Input.Session && D.Epoch == Input.Epoch; });
                     if (B == F->Registry->Bindings.end() || !Input.Snapshot) return false;
                     auto Expected = Input.Snapshot->Requested;
-                    if (B->Kind == EProducerContract::Device)
+                    if (UsesAuthoritativeDeviceProcessing(B->Kind, RemoteAdmission))
                     {
                         if (!Input.FilterBefore) return false;
-                        if (!Input.Snapshot->Input.GetData().Reset)
-                            for (std::size_t A=0; A<ActionCount; ++A)
-                                if (const int Step = B->Processing.Step[A])
-                                    Expected[A] = std::int16_t(int((*Input.FilterBefore)[A]) + std::clamp(int(Expected[A])-int((*Input.FilterBefore)[A]),-Step,Step));
+                        Expected = ProcessAuthoritativeInputValues(B->Processing, Expected, *Input.FilterBefore, Input.Snapshot->Input.GetData().Reset);
                     }
                     else if (!FInputSessionCommands::ExactPolicy(B->Kind,B->Processing) || Input.FilterBefore) return false;
                     if (Expected != Input.Snapshot->Applied) return false;
@@ -678,10 +698,12 @@ private:
         if (!D.Id || !D.Epoch || !D.Controller || !D.Producer || !D.Contract || D.Actors.empty()
             || Sessions.size() >= Commands->Limits.Sessions || Sessions.count(D.Id)
             || (LastEpoch.count(D.Id) && D.Epoch <= LastEpoch.at(D.Id))
-            || (D.Kind != EProducerContract::Device && D.Kind != EProducerContract::ExactScenario && D.Kind != EProducerContract::AI)
+            || (D.Kind != EProducerContract::Device && D.Kind != EProducerContract::ExactScenario && D.Kind != EProducerContract::AI
+                && !(D.Kind == EProducerContract::ExactRemote && AdmitsOriginalDeviceRemote(RemoteAdmission)))
+            || (D.Kind == EProducerContract::ExactRemote && !D.Scenario.empty())
             || (D.AllowScenarioAppend && D.Kind != EProducerContract::ExactScenario)
             || (D.ResumeRearmMask && D.Kind != EProducerContract::Device)
-            || ((D.Kind == EProducerContract::ExactScenario || D.Kind == EProducerContract::AI) && !FInputSessionCommands::ExactPolicy(D.Kind, D.Processing)))
+            || !ValidInputProcessingPolicy(D.Kind, D.Processing, *D.Contract, RemoteAdmission))
         { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         std::sort(D.Actors.begin(), D.Actors.end());
         std::set<std::uint64_t> ActorIds;
@@ -716,6 +738,16 @@ private:
             for (const auto& P : Sessions)
                 if (P.second.Description.Journal == D.Journal) { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         }
+        std::shared_ptr<Netcode::FExactRemoteInputIngress> Remote;
+        if (D.Kind == EProducerContract::ExactRemote)
+        {
+            for (const auto& J : Journals) if (J.Id == D.Journal) Remote = J.Remote;
+            if (!Remote || Remote->GetState() != Netcode::ERemoteIngressState::Unbound
+                || !Remote->MatchesBinding(*D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First))
+            { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
+            for (const auto& P : Sessions)
+                if (P.second.Description.Journal == D.Journal) { R.Receipt.Status = EBoundaryStatus::Rejected; return; }
+        }
         // Allocate ledger/registry storage before constructing a mutable source.
         auto Failed = std::make_shared<FInputRegistryView>(*Next); Failed->Terminal = true;
         auto EpochSlot = LastEpoch.try_emplace(D.Id,0).first;
@@ -727,11 +759,13 @@ private:
             Source = FTestInputProducer::Create(D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First, D.Scenario);
         else if (D.Kind == EProducerContract::AI)
             Source = FAIInputProducer::Create(AI, D.Contract, {D.Epoch}, {EProducerKind::AI,D.Producer}, D.First);
+        else if (D.Kind == EProducerContract::ExactRemote)
+            Source = Remote->CreateProducerForCurrentOwner();
         else Source = FDeviceInputProducer::Create(Journal, D.Contract, {D.Epoch}, {EProducerKind::Device,D.Producer}, D.First, D.ResumeRearmMask);
         if (!Source) { Sessions.erase(Slot); R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         ++Constructed;
         FOwnerInputBinding Binding{D.Id, {D.Kind == EProducerContract::AI ? EProducerKind::AI : EProducerKind::Device,D.Producer}, {D.Epoch}, D.Contract, D.Processing, D.Kind};
-        S.Owner = FSameFrameInputOwner::Create(std::move(Source), Binding, D.First);
+        S.Owner = FSameFrameInputOwner::Create(std::move(Source), Binding, D.First, RemoteAdmission);
         if (!S.Owner) { ++Destroyed; Sessions.erase(Slot); R.Receipt.Status = EBoundaryStatus::Rejected; return; }
         if (Journal && !S.Owner->PauseAtBoundary())
         {
@@ -744,6 +778,8 @@ private:
     std::shared_ptr<FInputSessionCommands> Commands;
     const std::thread::id Worker;
     const std::uint64_t WorkerGeneration;
+    const EExactRemoteAdmission RemoteAdmission;
+    bool InspectingFrameReadiness = false;
     std::vector<FJournalService> Journals;
     std::map<std::uint64_t, FSession> Sessions;
     std::map<std::uint64_t, std::uint64_t> LastEpoch;

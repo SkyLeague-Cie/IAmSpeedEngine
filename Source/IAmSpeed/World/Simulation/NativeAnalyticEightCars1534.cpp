@@ -255,7 +255,6 @@ bool FIAmSpeedNativeAnalyticEightCars1534::RunTest(const FString&)
  ON_SCOPE_EXIT{LaneVar->Set(OldLane,ECVF_SetByCode);MinVar->Set(OldMin,ECVF_SetByCode);WaveVar->Set(OldWave,ECVF_SetByCode);Backend->Set(OldBackend,ECVF_SetByCode);};
  const int32 AvailablePrivate1534=EnsurePrivateFrameWorkers(7);
  if(AvailablePrivate1534<7){AddError(FString::Printf(TEXT("[NativeEightCars1534TopologyUnavailable] RequiredTotal=8 AvailablePrivate=%d Status=UNKNOWN_TOPOLOGY_NOT_EXECUTION"),AvailablePrivate1534));return false;}
- AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="),ELogVerbosity::Warning,EAutomationExpectedMessageFlags::Contains,CarCount*4);
  const uint32 OldFPS=ASpeedPhysicsSimulation::EngineFPS;ASpeedPhysicsSimulation::EngineFPS=300;
  ON_SCOPE_EXIT{ASpeedPhysicsSimulation::EngineFPS=OldFPS;};
  FEightCarCVar1534 Canonical(TEXT("p.IAmSpeed.CanonicalFrame.Enabled"),1),Host(TEXT("p.IAmSpeed.Simulation.ExecutionMode"),2);

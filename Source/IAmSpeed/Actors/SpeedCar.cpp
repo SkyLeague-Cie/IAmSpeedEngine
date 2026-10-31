@@ -2,6 +2,7 @@
 
 
 #include "SpeedCar.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "TimerManager.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
@@ -54,6 +55,7 @@ void ASpeedCar::PawnClientRestart()
 void ASpeedCar::Tick(float Delta)
 {
 	Super::Tick(Delta);
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 #if !UE_BUILD_SHIPPING
 	AuditPresentationFrameCadence(Delta);
 #endif
@@ -117,6 +119,7 @@ void ASpeedCar::FreezeMovement()
 
 void ASpeedCar::HandleKinematics()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (CameraArm->UsesGenericOwnerSnapshot())
 	{
 		FSimulationPoseConsumption Consumption;

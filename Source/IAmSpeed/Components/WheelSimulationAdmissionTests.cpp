@@ -8,6 +8,7 @@
 #include "ChaosVehicleWheel.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "UObject/UnrealType.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 #include "HAL/PlatformProcess.h"
@@ -35,6 +36,12 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 	USpeedWheeledComponent* Component = Cast<USpeedWheeledComponent>(Car->GetVehicleMovement());
 	USpeedWorldSubsystem* Bridge = World->GetSubsystem<USpeedWorldSubsystem>();
 	if (!TestNotNull(TEXT("vehicle component"), Component) || !TestNotNull(TEXT("bridge"), Bridge)) return false;
+	// Both owned network subobjects must remain visible to UHT/GC even when
+	// the dedicated policy deliberately prevents their legacy registration.
+	TestNotNull(TEXT("speed network pointer is a reflected object reference"),
+		FindFProperty<FObjectPropertyBase>(USpeedWheeledComponent::StaticClass(), TEXT("SNetworkPhysicsComponent")));
+	TestNotNull(TEXT("wheeled network pointer is a reflected object reference"),
+		FindFProperty<FObjectPropertyBase>(USpeedWheeledComponent::StaticClass(), TEXT("WheeledNetworkPhysicsComponent")));
 	Driver->SpeedWorldSubsystem = Bridge;
 	Component->SetOwner(Car);
 	ON_SCOPE_EXIT { Bridge->UnregisterSpeedComponent(Component); Bridge->ApplyPendingOps(); };
@@ -95,14 +102,22 @@ bool FIAmSpeedWheelSimulationAdmissionTest::RunTest(const FString& Parameters)
 	Component->VehicleSimulationPT = MakeUnique<USpeedSimulation>();
 	Component->SkySimulation = static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
 	Component->SkySimulation->Init(Vehicle);
-	AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="), ELogVerbosity::Warning,
-		EAutomationExpectedMessageFlags::Contains, 18);
 	Component->BindWheelSimulationPointers();
 	const auto ExpectValid = [&]
 	{
 		FString Reason;
 		TestTrue(TEXT("all four complete storage bindings admitted"), Component->ValidateSimulationBindings(Reason));
 	};
+	ExpectValid();
+	// A genuinely incomplete storage set still warns and cannot be admitted.
+	Component->SkySimulation->PVehicle->Suspension.RemoveAt(3);
+	AddExpectedMessagePlain(TEXT("[WheelSuspensionBindingIncomplete]"), ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains, 1);
+	Component->BindWheelSimulationPointers();
+	FString IncompleteReason;
+	TestFalse(TEXT("incomplete suspension storage remains rejected"), Component->ValidateSimulationBindings(IncompleteReason));
+	Component->SkySimulation->PVehicle->Suspension.Emplace(&SuspensionConfig);
+	Component->BindWheelSimulationPointers();
 	ExpectValid();
 	for (int32 Index = 0; Index < 4; ++Index)
 	{

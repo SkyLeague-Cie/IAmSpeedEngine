@@ -2,6 +2,7 @@
 
 
 #include "SpeedMovementComponent.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/World/ReplayInertWorld.h"
 #include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
 #include "IAmSpeed/World/Simulation/ReplayBaseStateFields.h"
@@ -82,6 +83,7 @@ USpeedMovementComponent::USpeedMovementComponent(const FObjectInitializer& Objec
 
 void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (NewOwner == nullptr)
 	{
 		return;
@@ -98,8 +100,15 @@ void USpeedMovementComponent::SetOwner(AActor* NewOwner)
 	UpdateSubBodiesKinematics();
 }
 
+void USpeedMovementComponent::OnRegister()
+{
+    if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::OnRegister(); return; }
+    Super::OnRegister();
+}
+
 void USpeedMovementComponent::OnCreatePhysicsState()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld()))
 	{ Speed::ReplayIsolation::FailInertReplayBootstrap(*GetWorld(),TEXT("unexpected IAS movement physics-state creation in inert replay")); return; }
 	Super::OnCreatePhysicsState();
@@ -126,6 +135,7 @@ void USpeedMovementComponent::OnCreatePhysicsState()
 
 bool USpeedMovementComponent::ShouldCreatePhysicsState() const
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
 	if (Speed::ReplayIsolation::IsInertReplayWorld(GetWorld())) return false;
 	if (!IsRegistered() || IsBeingDestroyed())
 	{
@@ -613,6 +623,7 @@ FString USpeedMovementComponent::GetRole() const
 
 void USpeedMovementComponent::BeginPlay()
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { UActorComponent::BeginPlay(); return; }
 	Super::BeginPlay();
 
 	AActor* NewOwner = GetOwner();
@@ -1076,6 +1087,8 @@ void USpeedMovementComponent::InitNetwork()
 {
 	static const FName SpeedNetPCName(TEXT("PC_SpeedNetPCName"));
 	SNetworkPhysicsComponent = CreateDefaultSubobject<USafeNetworkPhysicsComponent, USafeNetworkPhysicsComponent>(SpeedNetPCName);
+    if(Speed::Netcode::PresentationClient::IsSelected())
+    { SNetworkPhysicsComponent->bAutoRegister=false;SNetworkPhysicsComponent->SetAutoActivate(false);SNetworkPhysicsComponent->SetIsReplicated(false); }
 	SNetworkPhysicsComponent->SetNetAddressable(); // Make DSO components net addressable
 	SNetworkPhysicsComponent->SetIsReplicated(true);
 

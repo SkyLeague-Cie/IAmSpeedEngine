@@ -46,7 +46,6 @@ for (int32 I=0;I<4;++I)
 Component->VehicleSimulationPT=MakeUnique<USpeedSimulation>();
 Component->SkySimulation=static_cast<USpeedSimulation*>(Component->VehicleSimulationPT.Get());
 Component->SkySimulation->Init(Vehicle);
-AddExpectedMessagePlain(TEXT("[WheelSuspensionBinding] subbodies="),ELogVerbosity::Warning,EAutomationExpectedMessageFlags::Contains,1);
 Component->BindWheelSimulationPointers();
 ON_SCOPE_EXIT { Component->ClearWheelSimulationPointers(); Component->SkySimulation=nullptr; Component->VehicleSimulationPT.Reset(); };
 FString BindingReason;

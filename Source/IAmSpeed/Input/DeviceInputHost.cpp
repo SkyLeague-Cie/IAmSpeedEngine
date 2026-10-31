@@ -1,4 +1,6 @@
 #include "DeviceInputHost.h"
+#include "DeviceFocusPolicy.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include <atomic>
 #include <exception>
 #include "HAL/PlatformTime.h"
@@ -19,19 +21,23 @@ namespace Speed::Input::V2
 #if PLATFORM_WINDOWS && !UE_SERVER
 namespace
 {
+FDeviceProcessFocusPolicyLatch ProcessFocusPolicy;
 // The host passes inert configuration. Native creation, polling and successful
 // destruction all occur on the acquisition worker, independently of UE ticks.
 class FNativeGameInputAcquisition final : public IInputAcquisition
 {
 public:
     FNativeGameInputAcquisition(uint64_t Id, FActivityConfig Config, std::shared_ptr<FRawAcquisitionJournal> J,
-        std::shared_ptr<Windows::FGameInputWarmContext> InWarm)
-        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)) {}
+        std::shared_ptr<Windows::FGameInputWarmContext> InWarm,
+        std::optional<std::pair<FDeviceId, EDeviceKind>> InSelection, bool InBackgroundInput)
+        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)), Selection(InSelection), EnableBackgroundInput(InBackgroundInput) {}
     EAcquisitionPumpResult Pump() override
     {
         if (Closed) return EAcquisitionPumpResult::Closed;
         if (!Source)
         {
+            if (!ProcessFocusPolicy.TryBind(EnableBackgroundInput))
+            { UE_LOG(LogTemp, Error, TEXT("GameInput process focus-policy conflict; no native acquisition change")); return EAcquisitionPumpResult::Rejected; }
 #if !UE_BUILD_SHIPPING
             const double StartedAt = FPlatformTime::Seconds();
 #endif
@@ -45,8 +51,9 @@ public:
                 UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=create_enter"), Producer);
                 const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
                 UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=create_exit hresult=0x%08X"), Producer, uint32(Created));
-                if (FAILED(Created))
+                if (FAILED(Created) || !Api)
                 { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
+                Api->SetFocusPolicy(EnableBackgroundInput?GameInput::v3::GameInputEnableBackgroundInput:GameInput::v3::GameInputDefaultFocusPolicy);
             }
 #if !UE_BUILD_SHIPPING
             const double CreatedAt = FPlatformTime::Seconds();
@@ -58,6 +65,7 @@ public:
                 Catalogue = Warm->GetOrCreate(Api.Get(), &Registration);
                 UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=catalogue_exit hresult=0x%08X catalogue=%d"), Producer, uint32(Registration), int32(bool(Catalogue)));
             }
+            UE_LOG(LogTemp, Display, TEXT("[InputFocusPolicy] Session=%llu Background=%d IASPolicyImmutable=1 NativeSetterAtApiCreation=%d"),Producer,int32(EnableBackgroundInput),int32(!Reused));
             const auto ReportWarmFailure = [&]()
             {
                 if (!Catalogue) return;
@@ -67,9 +75,31 @@ public:
             };
             ReportWarmFailure();
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_enter"), Producer);
+            // Exact mode never constructs the automatic activity arbiter. Queue
+            // the request before the first real acquisition Pump/baseline.
+            const auto Automatic = Selection ? std::optional<FActivityConfig>{}
+                : std::optional<FActivityConfig>{Activity};
             auto Raw = Warm
-                ? Windows::FGameInputSelectedSource::CreateRaw(Catalogue, Producer, Activity, true)
-                : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Activity, true);
+                ? Windows::FGameInputSelectedSource::CreateRaw(Catalogue, Producer, Automatic, true)
+                : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Automatic, true);
+            if (Raw && Selection && !Raw->RequestSelection(Selection)) Raw.reset();
+#if !UE_BUILD_SHIPPING
+            if (Raw && Selection)
+            {
+                const auto Devices = Raw->Snapshot();
+                bool Found = false, Capable = false;
+                for (const auto& D : Devices)
+                {
+                    if (D.Id == Selection->first && D.Connected)
+                    { Found = true; Capable = (D.SupportedKinds & uint8(Selection->second)) != 0; }
+                    if (!D.Connected) continue;
+                    FString IdText; for (const auto Byte : D.Id) IdText.Appendf(TEXT("%02X"), unsigned(Byte));
+                    UE_LOG(LogTemp, Display, TEXT("[InputExactDeviceCandidate] Session=%llu KindMask=%u Device=%s Scope=CURRENT_APPLICATION_LOCAL_CATALOGUE_ONLY"), Producer, unsigned(D.SupportedKinds), *IdText);
+                }
+                UE_LOG(LogTemp, Display, TEXT("[InputExactDeviceRequestAudit] Session=%llu RequestedKind=%u CatalogueEntries=%llu ExactIdConnected=%d ExactKindCapable=%d CaptureNotYetProved=1"), Producer, unsigned(Selection->second), uint64(Devices.size()), int32(Found), int32(Capable));
+            }
+#endif
+
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_exit source=%d"), Producer, int32(bool(Raw)));
             if (!Raw)
             { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
@@ -80,6 +110,15 @@ public:
 #endif
         }
 		const auto Result = Source->Pump();
+#if !UE_BUILD_SHIPPING
+        if (Selection && !ExactFirstPumpReported)
+        {
+            const auto Selected = Source->ReadSelectedRawDeviceDiagnostic();
+            UE_LOG(LogTemp, Display, TEXT("[InputExactDeviceFirstPump] Session=%llu Result=%u SelectedTicketObserved=%d Scope=SELECTION_NOT_INPUT_ACTUATION"), Producer, unsigned(Result), int32(bool(Selected)));
+            ExactFirstPumpReported = true;
+        }
+#endif
+
 		if (const auto Diagnostic = Source->TakeNeutralizeDiagnostic())
 		{
 			UE_LOG(LogTemp, Warning, TEXT("Independent input acquisition neutralized; cause=%u poll_status=%u raw_reject=%u raw_error=0x%08X sink_reject=%u acquisition_tick=%llu session=%llu journal_serial=%llu barrier_before=%llu barrier_after=%llu"),
@@ -133,7 +172,10 @@ private:
     std::unique_ptr<Windows::FGameInputRawAcquisition> Source;
 #if !UE_BUILD_SHIPPING
     std::optional<FDeviceId> LastReportedDevice;
+    bool ExactFirstPumpReported = false;
 #endif
+    const std::optional<std::pair<FDeviceId, EDeviceKind>> Selection;
+    const bool EnableBackgroundInput;
     bool Closed=false;
 };
 }
@@ -173,6 +215,9 @@ std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t Prod
 #if PLATFORM_WINDOWS && !UE_SERVER
     if (!ProducerId || !Journal || Journal->BeginAcquisition().Session != ProducerId
         || !FDeviceActivityPolicy::ValidConfig(Config.Activity)
+        || (Config.SelectedDevice && Config.SelectedDevice->second != EDeviceKind::Keyboard
+            && Config.SelectedDevice->second != EDeviceKind::Gamepad)
+        || (Config.EnableBackgroundInput && !Speed::Netcode::PresentationClient::IsSelected())
         || FPresentationInputScope::IsActive()) return {};
     auto Warm = Config.WarmContext
         ? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
@@ -180,7 +225,7 @@ std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(std::uint64_t Prod
     // The concrete source defers GameInput creation and all native access to
     // Pump on its acquisition worker, exactly as in the existing device host.
     return std::make_shared<FNativeGameInputAcquisition>(ProducerId, Config.Activity,
-        std::move(Journal), std::move(Warm));
+        std::move(Journal), std::move(Warm), Config.SelectedDevice, Config.EnableBackgroundInput);
 #else
     (void)ProducerId; (void)Journal; (void)Config;
     return {};
@@ -198,6 +243,7 @@ FStreamEpoch AllocateInputStreamEpoch()
 
 std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostConfig& Config)
 {
+    if (Speed::Netcode::PresentationClient::IsSelected()) return {}; // Raw transport acquisition remains separate.
 #if PLATFORM_WINDOWS && !UE_SERVER
 	if (!Config.Contract)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract missing")); return {}; }
@@ -250,7 +296,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 		? std::static_pointer_cast<Windows::FGameInputWarmContext>(Config.WarmContext->PlatformState()) : nullptr;
 	if (Config.WarmContext && !Warm)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: warm context already closed")); return {}; }
-	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm));
+	auto Acquisition = std::make_shared<FNativeGameInputAcquisition>(Identity.Id, Config.Activity, Journal, std::move(Warm), std::nullopt, false);
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
 	Host->AcquisitionStartupTimeout = Config.StartupTimeout;
 	if (!Host->Acquisition->Start(Config.Cadence))

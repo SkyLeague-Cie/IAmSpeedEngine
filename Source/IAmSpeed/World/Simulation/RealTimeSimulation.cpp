@@ -381,6 +381,13 @@ void ARealTimeSimulation::OnOwnedSimulationPaused()
 	ResetFramePacing();
 }
 
+void ARealTimeSimulation::OnOwnedInputWaitEnded()
+{
+    // Input starvation is an admission wait, not physical simulation debt.
+    // Preserve the canonical frame and fixed delta; only discard wall-clock history.
+    ResetFramePacing();
+}
+
 void ARealTimeSimulation::OnOwnedSimulationResumed()
 {
 	ResetFramePacing();

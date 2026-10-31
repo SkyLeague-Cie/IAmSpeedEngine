@@ -49,6 +49,16 @@ public:
         return !Closed && !Quarantined && !Paused && !Exhausted && N == Next && Pending[N % Capacity]
             && Pending[N % Capacity]->GetData().ConsumptionFrame == N;
     }
+    V2::EInputFrameReadiness QueryFrameReadiness(Input::FFrameNumber N) const override
+    {
+        if (Input::FPresentationInputScope::IsActive()) return V2::EInputFrameReadiness::Rejected;
+        std::lock_guard<std::mutex> Lock(Gate);
+        if ((Owner && !IsOwner()) || Closed || Quarantined || Paused || Exhausted || Frozen || N != Next
+            || LeaseSerial == UINT64_MAX) return V2::EInputFrameReadiness::Rejected;
+        const auto& P = Pending[N % Capacity];
+        if (!P || P->GetData().ConsumptionFrame != N) return V2::EInputFrameReadiness::Waiting;
+        return Continuity(*P) ? V2::EInputFrameReadiness::Ready : V2::EInputFrameReadiness::Rejected;
+    }
     std::optional<V2::FInputFrame> InspectBaseline(Input::FFrameNumber N) const override
     {
         if (Input::FPresentationInputScope::IsActive()) return {};

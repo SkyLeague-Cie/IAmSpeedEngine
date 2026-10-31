@@ -1,5 +1,8 @@
 #include "ExactRemoteInputProducer.h"
+#include "ExactRemoteInputIngress.h"
+#include <atomic>
 #include "IAmSpeed/Input/SameFrameInputOwner.h"
+#include "IAmSpeed/Input/InputSessionRegistry.h"
 #include "../transport/TransportFixture.h"
 #include <iostream>
 #include <stdexcept>
@@ -188,15 +191,209 @@ static void BaselineInspectionRejectsStaleResetWithoutMutation()
         else { CHECK(Lease); CHECK(P->Produce(1)); CHECK(P->CloseFrozenCutoff(*Lease)); }
     }
 }
+static void ReadinessDoesNotConsumeOrForge()
+{
+    using R = V2::EInputFrameReadiness;
+    auto P = Producer();
+    for (int N = 0; N < 4; ++N) CHECK(P->QueryFrameReadiness(0) == R::Waiting);
+    CHECK(P->QueryFrameReadiness(1) == R::Rejected);
+    CHECK(P->SubmitFrame(Frame(1)) == ERemoteSubmission::Accepted);
+    CHECK(P->QueryFrameReadiness(0) == R::Waiting);
+    CHECK(P->SubmitFrame(Frame(0)) == ERemoteSubmission::Accepted);
+    for (int N = 0; N < 4; ++N) CHECK(P->QueryFrameReadiness(0) == R::Ready);
+    auto Cut = P->FreezeForOwner(0); CHECK(Cut);
+    CHECK(P->QueryFrameReadiness(0) == R::Rejected);
+    CHECK(P->Produce(0)); CHECK(P->CloseFrozenCutoff(*Cut));
+    CHECK(P->QueryFrameReadiness(1) == R::Ready);
+    CHECK(P->SetLifecyclePaused(true) == V2::ELifecycleResult::Applied);
+    CHECK(P->QueryFrameReadiness(1) == R::Rejected);
+    CHECK(P->SetLifecyclePaused(false) == V2::ELifecycleResult::Applied);
+    CHECK(P->QueryFrameReadiness(1) == R::Ready); Consume(*P, 1);
+    CHECK(P->QueryFrameReadiness(2) == R::Waiting);
+    CHECK(P->CancelLifecycle() == V2::ELifecycleResult::Applied);
+    CHECK(P->QueryFrameReadiness(2) == R::Rejected);
+    auto Bad = Producer(); auto Packet = Fixture::Packet(0); Packet.Input.Reset = false;
+    CHECK(Bad->SubmitFrame(*ToV2(Packet, Fixture::Contract())) == ERemoteSubmission::Accepted);
+    CHECK(Bad->QueryFrameReadiness(0) == R::Rejected);
+    CHECK(Bad->QueryFrameReadiness(0) == R::Rejected);
+    // Inspection has not quarantined/consumed the received record.
+    CHECK(Bad->SubmitFrame(*ToV2(Packet, Fixture::Contract())) == ERemoteSubmission::Duplicate);
+}
+static void IngressOwnsNoPhysicalSourceBeforeWorkerBind()
+{
+    std::shared_ptr<FExactRemoteInputIngress> Ingress;
+    std::thread Acquirer([&] { Ingress = FExactRemoteInputIngress::Create(Fixture::Contract(), {7},
+        {Speed::Input::EProducerKind::Device, 99}, 0); }); Acquirer.join();
+    CHECK(Ingress && Ingress->GetState() == ERemoteIngressState::Unbound);
+    CHECK(Ingress->SubmitFrame(Frame(0)) == ERemoteSubmission::Closed);
+    CHECK(Ingress->MatchesBinding(*Fixture::Contract(), {7}, {Speed::Input::EProducerKind::Device, 99}, 0));
+    CHECK(!Ingress->MatchesBinding(*Fixture::Contract(), {8}, {Speed::Input::EProducerKind::Device, 99}, 0));
+    CHECK(!Ingress->MatchesBinding(*Fixture::Contract(), {7}, {Speed::Input::EProducerKind::AI, 99}, 0));
+    CHECK(!Ingress->MatchesBinding(*Fixture::Contract(), {7}, {Speed::Input::EProducerKind::Device, 100}, 0));
+    CHECK(!Ingress->MatchesBinding(*Fixture::Contract(), {7}, {Speed::Input::EProducerKind::Device, 99}, 1));
+    auto Source = Ingress->CreateProducerForCurrentOwner(); CHECK(Source);
+    CHECK(Ingress->GetState() == ERemoteIngressState::Bound && !Ingress->CreateProducerForCurrentOwner());
+    CHECK(Source->GetProducerContract() == V2::EProducerContract::ExactRemote);
+    CHECK(Source->QueryFrameReadiness(0) == V2::EInputFrameReadiness::Waiting);
+    auto Received = Frame(0); ERemoteSubmission Result = ERemoteSubmission::Invalid;
+    std::thread Transport([&] { Result = Ingress->SubmitFrame(Received); }); Transport.join();
+    CHECK(Result == ERemoteSubmission::Accepted);
+    CHECK(Source->QueryFrameReadiness(0) == V2::EInputFrameReadiness::Ready);
+    bool ForeignRejected = false;
+    std::thread Foreign([&] {
+        ForeignRejected = Source->QueryFrameReadiness(0) == V2::EInputFrameReadiness::Rejected
+            && !Source->InspectBaseline(0) && !Source->PollFence()->FreezeForOwner(0) && !Source->Produce(0)
+            && Source->SetLifecyclePaused(true) == V2::ELifecycleResult::Rejected
+            && Source->CancelLifecycle() == V2::ELifecycleResult::Rejected;
+    }); Foreign.join(); CHECK(ForeignRejected);
+    auto Cut = Source->PollFence()->FreezeForOwner(0); CHECK(Cut);
+    CHECK(!Source->AppendExactScenarioFrame(Received));
+    CHECK(Ingress->SubmitFrame(Frame(1)) == ERemoteSubmission::Accepted);
+    CHECK(Ingress->SubmitFrame(Received) == ERemoteSubmission::Duplicate);
+    auto F = Source->Produce(0); CHECK(F && F->GetData().Producer.Kind == Speed::Input::EProducerKind::Device);
+    CHECK(F->GetData().Producer.Id == 99 && F->GetData().StreamEpoch.Value == 7);
+    CHECK(Source->PollFence()->CloseFrozenCutoff(*Cut));
+    CHECK(Source->QueryFrameReadiness(1) == V2::EInputFrameReadiness::Ready);
+    Source.reset();
+    CHECK(Ingress->GetState() == ERemoteIngressState::Retired);
+    CHECK(Ingress->SubmitFrame(Frame(1)) == ERemoteSubmission::Closed);
+    CHECK(!Ingress->CreateProducerForCurrentOwner()); // same epoch/service never resurrects
+}
+static void IngressSubmissionSerializesWithOwnerRetirement()
+{
+    auto Ingress = FExactRemoteInputIngress::Create(Fixture::Contract(), {7},
+        {Speed::Input::EProducerKind::Device, 99}, 0);
+    auto Source = Ingress->CreateProducerForCurrentOwner(); CHECK(Source);
+    const auto Received = Frame(0);
+    std::atomic<bool> Started{false}, Bad{false};
+    std::thread Transport([&] {
+        Started.store(true);
+        for (int N = 0; N < 2048; ++N)
+        {
+            const auto Result = Ingress->SubmitFrame(Received);
+            if (Result != ERemoteSubmission::Accepted && Result != ERemoteSubmission::Duplicate
+                && Result != ERemoteSubmission::Closed) Bad.store(true);
+        }
+    });
+    while (!Started.load()) std::this_thread::yield();
+    Source.reset(); Transport.join();
+    CHECK(!Bad.load() && Ingress->GetState() == ERemoteIngressState::Retired);
+    CHECK(Ingress->SubmitFrame(Received) == ERemoteSubmission::Closed);
+}
+static V2::FSessionDescriptor RemoteDescriptor(std::uint64_t Id)
+{
+    V2::FSessionDescriptor D; D.Id = Id; D.Epoch = 7; D.Controller = Id + 100;
+    D.Producer = Id + 98; D.Journal = Id + 200; D.First = 0;
+    D.Kind = V2::EProducerContract::ExactRemote; D.Contract = Fixture::Contract(); D.Actors = {{Id * 10, 1}};
+    return D;
+}
+static V2::FInputFrame RemoteFrame(std::uint64_t Id, std::uint64_t N)
+{
+    auto Data = Frame(N).GetData(); Data.Producer.Id = Id + 98;
+    return V2::FInputFrame(Fixture::Contract(), std::move(Data));
+}
+static std::shared_ptr<FExactRemoteInputIngress> RemoteService(const V2::FSessionDescriptor& D)
+{ return FExactRemoteInputIngress::Create(D.Contract, {D.Epoch}, {Speed::Input::EProducerKind::Device,D.Producer}, D.First); }
+static V2::FBoundaryCommandDescriptor RemoteBind(const V2::FSessionDescriptor& D, std::uint64_t Id, std::uint64_t Version)
+{
+    V2::FBoundaryCommandDescriptor C; C.Id = Id; C.WorkerGeneration = 7;
+    C.RegistryVersion = Version; C.Operation = V2::EBoundaryOperation::Bind; C.Binding = D; return C;
+}
+static void RegistryRemoteOptInAndCompleteCohort()
+{
+    using R = V2::EInputFrameReadiness;
+    const auto D1 = RemoteDescriptor(1), D2 = RemoteDescriptor(2);
+    auto A = RemoteService(D1), B = RemoteService(D2);
+    auto Commands = std::make_shared<V2::FInputSessionCommands>();
+    V2::FInputSessionRegistry Registry(Commands, 7, {}, V2::EExactRemoteAdmission::OriginalDeviceExact);
+    CHECK(Registry.QueryFrameReadiness(0, 2) == R::Waiting);
+    CHECK(Registry.RegisterJournalAtBoundary({D1.Journal, {}, {}, A}));
+    CHECK(Registry.RegisterJournalAtBoundary({D1.Journal, {}, {}, A})); // idempotent exact service
+    CHECK(!Registry.RegisterJournalAtBoundary({D1.Journal + 1, {}, {}, A}));
+    CHECK(!Registry.RegisterJournalAtBoundary({D1.Journal, {}, {}, B}));
+    CHECK(Commands->Submit(RemoteBind(D1, 1, 0)) == V2::ECommandAdmission::Enqueued);
+    CHECK(Registry.ServiceBoundary(0) && Commands->Read(1)->Status == V2::EBoundaryStatus::Applied);
+    CHECK(A->GetState() == ERemoteIngressState::Bound && Registry.ConstructionCount() == 1);
+    CHECK(A->SubmitFrame(RemoteFrame(1, 0)) == ERemoteSubmission::Accepted);
+    CHECK(Registry.QueryFrameReadiness(0, 2) == R::Waiting && Registry.PollCount(1) == 0);
+    CHECK(Registry.RegisterJournalAtBoundary({D2.Journal, {}, {}, B}));
+    CHECK(Commands->Submit(RemoteBind(D2, 2, 1)) == V2::ECommandAdmission::Enqueued);
+    CHECK(Registry.ServiceBoundary(0) && Commands->Read(2)->Status == V2::EBoundaryStatus::Applied);
+    for (int N = 0; N < 5; ++N)
+    {
+        CHECK(Registry.QueryFrameReadiness(0, 2) == R::Waiting);
+        CHECK(!Registry.PrepareFrame(0));
+        CHECK(Registry.ReadLastFrameFailure().Reason == V2::ERegistryFrameFailure::InputUnavailable);
+        CHECK(Registry.PollCount(1) == 0 && Registry.PollCount(2) == 0 && !Registry.IsTerminal());
+    }
+    CHECK(B->SubmitFrame(RemoteFrame(2, 0)) == ERemoteSubmission::Accepted);
+    for (std::uint64_t N = 0; N < 2; ++N)
+    {
+        CHECK(Registry.QueryFrameReadiness(N, 2) == R::Ready);
+        CHECK(Registry.PrepareFrame(N) && Registry.InstallAll() && Registry.BeginAll());
+        const auto Installed = Registry.ReadInstalled(); CHECK(Installed && Installed->Inputs.size() == 2);
+        for (const auto& S : Installed->Inputs)
+        {
+            CHECK(S.Snapshot && S.Snapshot->Input.GetData().ConsumptionFrame == N);
+            CHECK(S.Snapshot->Input.GetData().Producer.Kind == Speed::Input::EProducerKind::Device);
+            CHECK(S.Snapshot->Input.GetData().Producer.Id == S.Session + 98);
+            CHECK(S.Snapshot->Applied == S.Snapshot->Input.GetData().Values);
+        }
+        CHECK(Registry.ValidateComplete() && Registry.CompleteAll());
+        CHECK(Registry.ReadLatest() == Installed && Registry.PollCount(1) == N + 1 && Registry.PollCount(2) == N + 1);
+        if (N == 0)
+        {
+            CHECK(A->SubmitFrame(RemoteFrame(1, 1)) == ERemoteSubmission::Accepted);
+            CHECK(Registry.QueryFrameReadiness(1, 2) == R::Waiting && !Registry.PrepareFrame(1));
+            CHECK(Registry.PollCount(1) == 1 && Registry.PollCount(2) == 1);
+            CHECK(B->SubmitFrame(RemoteFrame(2, 1)) == ERemoteSubmission::Accepted);
+        }
+    }
+    const auto Before = Registry.ReadLatest();
+    CHECK(A->SubmitFrame(RemoteFrame(1, 2)) == ERemoteSubmission::Accepted);
+    auto Data = RemoteFrame(2, 2).GetData(); Data.DeviceGeneration.Value = 2; // no Reset => invalid continuity
+    CHECK(B->SubmitFrame(V2::FInputFrame(D2.Contract, Data)) == ERemoteSubmission::Accepted);
+    CHECK(Registry.QueryFrameReadiness(2, 2) == R::Rejected && !Registry.PrepareFrame(2));
+    CHECK(Registry.PollCount(1) == 2 && Registry.PollCount(2) == 2 && Registry.ReadLatest() == Before);
+    CHECK(Registry.CloseWorkerLedger());
+    CHECK(A->GetState() == ERemoteIngressState::Retired && B->GetState() == ERemoteIngressState::Retired);
+    CHECK(Registry.ConstructionCount() == 2 && Registry.DestructionCount() == 2);
+}
+static void RegistryRemoteDefaultsAndMismatchStayClosed()
+{
+    for (int Case = 0; Case < 8; ++Case)
+    {
+        auto D = RemoteDescriptor(1); auto Ingress = RemoteService(D);
+        auto Commands = std::make_shared<V2::FInputSessionCommands>();
+        V2::FInputSessionRegistry Registry(Commands, 7, {}, Case == 0 ? V2::EExactRemoteAdmission::Closed : V2::EExactRemoteAdmission::OriginalDeviceExact);
+        const bool Registered = Registry.RegisterJournalAtBoundary({D.Journal, {}, {}, Ingress});
+        CHECK(Registered == (Case != 0));
+        if (Case == 1) D.Processing.Step[0] = 1;
+        if (Case == 2) D.AllowScenarioAppend = true;
+        if (Case == 3) D.Scenario.push_back(RemoteFrame(1, 0));
+        if (Case == 4) ++D.Producer;
+        if (Case == 5) ++D.Epoch;
+        if (Case == 6) ++D.First;
+        if (Case == 7) ++D.Journal;
+        CHECK(Commands->Submit(RemoteBind(D, 1, 0)) == V2::ECommandAdmission::Enqueued);
+        CHECK(Registry.ServiceBoundary(0));
+        CHECK(Commands->Read(1)->Status == V2::EBoundaryStatus::Rejected);
+        CHECK(Registry.ConstructionCount() == 0 && Registry.PollCount(1) == 0);
+        CHECK(Ingress->GetState() == ERemoteIngressState::Unbound && !Registry.IsTerminal());
+    }
+}
+#include "AuthoritativeRemoteProcessingTests.inc"
 int main()
 {
     try
     {
-        for (auto Test : {ExactFramesAndImmutableCutoff, ForeignCallsCannotReleaseLease,
+        for (auto Test : {ZeroStepRemoteProcessingHasDistinctFingerprintAndState, OriginalRawFramesHaveLocalAndRemoteProcessingParity, RemoteProcessingRequiresExplicitOptInAndValidPolicy, RegistryRemoteOptInAndCompleteCohort, RegistryRemoteDefaultsAndMismatchStayClosed,
+            ReadinessDoesNotConsumeOrForge, IngressOwnsNoPhysicalSourceBeforeWorkerBind,
+            IngressSubmissionSerializesWithOwnerRetirement, ExactFramesAndImmutableCutoff, ForeignCallsCannotReleaseLease,
             FailedCloseQuarantinesAndPauseDoesNotForge, SourceContinuityAndAddress, CurrentOwnerAdmissionStillRefuses,
             FullEdgesAndStaleLeaseSerial, GenerationChangeRequiresFreshReset,
             ExplicitLaterBaselinePreservesSameEpochAndHistory, BaselineInspectionRejectsStaleResetWithoutMutation}) Test();
-        std::cout << "PASS checks=" << Checks << " scope=portable_V2_remote_producer_fence_no_owner_admission_no_UE_no_physics\n"; return 0;
+        std::cout << "PASS checks=" << Checks << " scope=portable_optin_remote_registry_default_closed_no_UE_no_physics\n"; return 0;
     }
     catch (const std::exception& E) { std::cerr << "FAIL " << E.what() << '\n'; return 1; }
 }

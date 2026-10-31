@@ -327,6 +327,11 @@ uint32 FSimulationWorker::Run()
 			const bool bPauseAtBoundary = bPaused.Load();
 			const ESimulationBoundaryResult Boundary = ServiceBoundary
 				? ServiceBoundary(bPauseAtBoundary) : ESimulationBoundaryResult::Ready;
+			if (Boundary == ESimulationBoundaryResult::Complete)
+			{
+				ExitCode = 0;
+				break; // owner closes its ledger even when the next input is absent
+			}
 			if (Boundary == ESimulationBoundaryResult::Failed)
 			{
 				ExitCode = 1;

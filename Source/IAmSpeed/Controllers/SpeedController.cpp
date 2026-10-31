@@ -1,4 +1,5 @@
 #include "SpeedController.h"
+#include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -15,6 +16,7 @@ ASpeedController::ASpeedController()
 
 void ASpeedController::Tick(float DeltaSeconds)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
 	Super::Tick(DeltaSeconds);
 	if (bInputSessionPendingV2 && !bInputLifecycleFault) RefreshInputSessionV2();
 	if (InputSessionV2)
@@ -46,6 +48,7 @@ void ASpeedController::HandleInputs(const Speed::Input::FPublishedInputFrame& Sn
 
 bool ASpeedController::ConfigureInputProducer(std::shared_ptr<Speed::Input::IInputProducer> Producer)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
 	check(IsInGameThread());
 	if (SpeedCar || InputSessionV2 || Speed::Input::FPresentationInputScope::IsActive()) return false;
 	InputProducer = MoveTemp(Producer);
@@ -60,6 +63,7 @@ void ASpeedController::SetupInputComponent()
 
 void ASpeedController::OnPossess(APawn* InPawn)
 {
+	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { if (GetWorld()) Speed::Netcode::PresentationClient::Fail(*GetWorld(),TEXT("Local IAS possession forbidden in presentation client")); return; }
 	ESimulationQuiescence InputBoundary = ESimulationQuiescence::AlreadyStopped;
 	if (SpeedCar && (InputSessionV2 || InputSessionRestartCompletionV2))
 	{

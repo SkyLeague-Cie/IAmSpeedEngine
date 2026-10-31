@@ -47,6 +47,16 @@ struct FDeviceRawAcquisitionConfig
 {
     FActivityConfig Activity{};
     std::shared_ptr<FDeviceInputWarmContext> WarmContext;
+    // Exact backend/application-local device identity and kind. This selects
+    // acquisition only; it is never a player/session or physical-instance proof.
+    // Missing/disconnected requests remain neutral, without automatic fallback.
+    // Activity must still be valid; in exact mode its arbitration is unused.
+    // Kind must match the actual device capability; mismatch remains neutral.
+    std::optional<std::pair<FDeviceId, EDeviceKind>> SelectedDevice;
+    // Explicit presentation-client transport opt-in only. Default stays foreground.
+    // First Pump binds this choice for the process lifetime; conflicting later
+    // acquisitions reject before native calls. This changes no action contract.
+    bool EnableBackgroundInput = false;
 };
 IAMSPEED_API std::shared_ptr<IInputAcquisition> CreateDeviceRawAcquisition(
     std::uint64_t ProducerId, std::shared_ptr<FRawAcquisitionJournal> Journal,
