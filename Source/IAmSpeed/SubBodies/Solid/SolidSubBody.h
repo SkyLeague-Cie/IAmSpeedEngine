@@ -110,6 +110,10 @@ public:
 	float GetSphereBoxFrictionOverride() const { return SphereBoxFrictionOverride; }
 	float GetSphereBoxManifoldFrictionOverride() const { return SphereBoxManifoldFrictionOverride; }
 	bool UsesCoupledContactImpulse() const { return bUseCoupledContactImpulse; }
+    // Startup policy shared only by the gameplay ball and car hitbox.
+    // Generic solid bodies retain their existing collision/inertia laws.
+    static bool IsAerialShotContactModelEnabled();
+    virtual bool UsesAerialShotContactModel() const { return false; }
 	bool UsesPostNormalFrictionImpulse() const { return bUsePostNormalFrictionImpulse; }
 	bool UsesPersistentBilateralContact() const { return bUsePersistentBilateralContact; }
 	bool AllowsCoupledContactImpulseFor(const SKinematic& State) const

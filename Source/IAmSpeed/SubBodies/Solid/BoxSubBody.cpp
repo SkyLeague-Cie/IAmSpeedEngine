@@ -19,6 +19,7 @@
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "IAmSpeed/World/Collision/CollisionResponseMask.h"
 #include "SphereSubBody.h"
+#include "CarBallContactImpulse.h"
 #include "SWheelSubBody.h"
 #include "Configs/SubBodyConfig.h"
 #include "PhysicsEngine/BoxElem.h"
@@ -2100,7 +2101,9 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 		IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHit.ImpactPoint),
 		CurrentHit.ImpactNormal.GetSafeNormal()));
 
-    const bool bUsePostNormalFriction =
+    const bool bAerialContact = UsesAerialShotContactModel() &&
+        Sphere.UsesAerialShotContactModel();
+    const bool bUsePostNormalFriction = bAerialContact ||
         UsesPostNormalFrictionImpulse() || Sphere.UsesPostNormalFrictionImpulse();
     const SKinematic& ImpulseBoxKS = bUsePostNormalFriction
         ? FakePhysicsContext.SelfParentKinematics
@@ -2121,14 +2124,29 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         ImpThis,
         ImpOther,
         GetImpactThreshold(),
-        (UsesCoupledContactImpulse() || Sphere.UsesCoupledContactImpulse()) &&
+        bAerialContact || ((UsesCoupledContactImpulse() || Sphere.UsesCoupledContactImpulse()) &&
         Sphere.AllowsCoupledContactImpulseFor(SphereKS0) &&
-        AllowsCoupledContactNormal(BoxLocalContactNormal),
-        bUsePostNormalFriction
+        AllowsCoupledContactNormal(BoxLocalContactNormal)),
+        bUsePostNormalFriction && !bAerialContact
     );
 
     if (!ok)
         return;
+
+    if (bAerialContact && ParentComponent && Sphere.GetParentComponent())
+    {
+        Speed::CarBallContact::FCapAware576Diagnostic Diagnostic;
+        if (Speed::CarBallContact::CapAwareFullStick576(
+            ImpulseBoxKS, GetMass(), ComputeWorldInvInertiaTensor(),
+            ParentComponent->GetPhysMaxAngularSpeed(),
+            ImpulseSphereKS, Sphere.GetMass(), Sphere.ComputeWorldInvInertiaTensor(),
+            Sphere.GetParentComponent()->GetPhysMaxAngularSpeed(),
+            CurrentHit.ImpactPoint, -CurrentHit.ImpactNormal.GetSafeNormal(),
+            MixedRestitution, MixedFriction, ImpOther, Diagnostic))
+        {
+            ImpThis = -ImpOther;
+        }
+    }
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
@@ -5545,7 +5563,8 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
         SSBox::ComputeInertiaTensor(BoxExtent, GetMass(), InertiaScale);
 
     const FMatrix I_atCOM =
-        SSBox::ConvertBoxInertiaToCOM(Idiag, d_in_box, GetMass());
+        SSBox::ConvertBoxInertiaToCOM(Idiag,
+            UsesAerialShotContactModel() ? FVector::ZeroVector : d_in_box, GetMass());
 
     return I_atCOM.InverseFast();
 }

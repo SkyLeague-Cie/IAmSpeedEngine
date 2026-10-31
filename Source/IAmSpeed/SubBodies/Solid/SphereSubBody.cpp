@@ -2,6 +2,7 @@
 
 
 #include "SphereSubBody.h"
+#include "CarBallContactImpulse.h"
 #include "Engine/World.h"
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
@@ -418,8 +419,12 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         *this,
         OtherBox,
         MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max));
+    const bool bAerialContact = UsesAerialShotContactModel() &&
+        OtherBox.UsesAerialShotContactModel();
     const float MixedFriction = ResolveSphereBoxFriction(*this, OtherBox,
-        MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
+        bAerialContact
+            ? MixFriction(GetDynamicFriction(), OtherBox.GetDynamicFriction(), EMixMode::E_Max)
+            : MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
 	const FVector PreSpherePointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
 		SphereKS, CurrentHit.ImpactPoint);
 	const FVector PreBoxPointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
@@ -429,7 +434,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 		CurrentHit.ImpactNormal.GetSafeNormal()));
 
 	// Compute collision impulse at TOI
-    const bool bUsePostNormalFriction =
+    const bool bUsePostNormalFriction = bAerialContact ||
         UsesPostNormalFrictionImpulse() || OtherBox.UsesPostNormalFrictionImpulse();
     const SKinematic& ImpulseSphereKS = bUsePostNormalFriction
         ? FakePhysicsContext.SelfParentKinematics
@@ -451,14 +456,28 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         ImpThis,
         ImpOther,
         GetImpactThreshold(),
-        (UsesCoupledContactImpulse() || OtherBox.UsesCoupledContactImpulse()) &&
+        bAerialContact || ((UsesCoupledContactImpulse() || OtherBox.UsesCoupledContactImpulse()) &&
         AllowsCoupledContactImpulseFor(SphereKS) &&
-        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal),
-        bUsePostNormalFriction
+        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal)),
+        bUsePostNormalFriction && !bAerialContact
     );
 
     if (ok)
     {
+        if (bAerialContact && ParentComponent && OtherBox.GetParentComponent())
+        {
+            Speed::CarBallContact::FCapAware576Diagnostic Diagnostic;
+            if (Speed::CarBallContact::CapAwareFullStick576(
+                ImpulseBoxKS, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
+                OtherBox.GetParentComponent()->GetPhysMaxAngularSpeed(),
+                ImpulseSphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
+                ParentComponent->GetPhysMaxAngularSpeed(),
+                CurrentHit.ImpactPoint, CurrentHit.ImpactNormal.GetSafeNormal(),
+                MixedRestitution, MixedFriction, ImpThis, Diagnostic))
+            {
+                ImpOther = -ImpThis;
+            }
+        }
 #if !UE_BUILD_SHIPPING
         if (IAmSpeedSphereBoxImpulseDebugEnabled())
         {
@@ -1099,7 +1118,10 @@ void USphereSubBody::ApplySphereBoxImpulse(
 {
 	// SphereState can alias this subbody's live kinematics. Snapshot eligibility
 	// before applying the rigid impulse.
-	const bool bEligible = IsTangentialContactArmEligible(SphereState, BoxState);
+	// The Aerial solve already uses the full physical contact arm and native
+    // angular limits. Do not apply the old fitted torque reduction afterwards.
+    const bool bEligible = !UsesAerialShotContactModel() &&
+        IsTangentialContactArmEligible(SphereState, BoxState);
 
 	ApplyImpulse(LinearImpulse, WorldPoint);
 
