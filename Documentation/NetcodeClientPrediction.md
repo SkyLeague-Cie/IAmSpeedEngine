@@ -40,3 +40,10 @@ raw edge or reset. Only earlier received server commands may seed them. Late cha
 even within-frame taps with unchanged final values invalidate the affected historical frame. The host
 must then restore/replay through the native transaction; the helper cannot acknowledge that operation.
 Confirmed data and speculation have finite capacity; no silent eviction of commands needed for correction.
+
+RollbackReplayCoordinator now implements correction ordering and bounded replay through a mandatory
+native adapter interface: authenticated origin token, same-frame historical comparison, current target
+and replay budget, prepare before mutation, restore/read-back equality, consecutive canonical steps,
+history replacement and one final presentation release. Adapter failure after mutation retires the
+timeline; there is no partial-world fallback. Portable coordinator tests use an arithmetic world fixture.
+No real native adapter/provider is supplied or qualified yet, so this is NOT working client rollback.

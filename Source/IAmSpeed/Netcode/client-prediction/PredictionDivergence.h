@@ -152,6 +152,12 @@ public:
         for (const auto& E:Entries) if (E.State.State.Frame==S.State.Frame) return Compare(E.State,S);
         R.Result=EComparison::MissingHistory;return R;
     }
+    // Caller may truncate only after the native transaction has restored its
+    // completed publication. This is historical storage, not a restore receipt.
+    void TruncateFrom(U64 Frame)
+    {while (!Entries.empty() && Entries.back().State.State.Frame>=Frame) {Bytes-=Entries.back().Bytes;Entries.pop_back();}}
+    std::optional<U64> LastFrame() const noexcept
+    {return Entries.empty()?std::optional<U64>{}:std::optional<U64>{Entries.back().State.State.Frame};}
     std::size_t Count() const noexcept {return Entries.size();}
     std::size_t RetainedBytes() const noexcept {return Bytes;}
 };
