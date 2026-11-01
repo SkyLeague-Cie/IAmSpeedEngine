@@ -58,7 +58,7 @@ bool Measure(unsigned Depth,unsigned Impairment,const std::vector<FSample>& Samp
     const auto& First=Samples.front().Owner;
     FBinding B;B.Session=First.Session;B.Epoch=First.Epoch;B.Actor=First.Actor;B.Incarnation=First.Incarnation;
     B.Contract=First.Contract;B.OwnerPeer=4;B.ServerPeer=5;B.SourceProducer=First.Input.ProducerId;B.SourceKind=First.Input.ProducerKind;
-    const auto Game=[](const FFrame& F){for(std::size_t A=3;A<ActionCount;++A)if(F.Values[A])return false;return true;};
+    const auto Game=[](const Speed::Netcode::FFrame& F){for(std::size_t A=3;A<ActionCount;++A)if(F.Values[A])return false;return true;};
     FExactInbox OwnerInbox(B,EKind::OwnerInput,0,Game),RemoteInbox(B,EKind::AuthorityInput,0,Game);
     FStateReceiver OwnerState(StateBinding),RemoteState(StateBinding);
     U64 OwnerStates=0,RemoteStates=0;FCounts Counts[4];
