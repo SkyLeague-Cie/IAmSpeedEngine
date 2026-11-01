@@ -19,6 +19,8 @@ struct FActivityConfig
 	// One local player retains a healthy gamepad owner when an emulator
 	// mirrors its activity as another GameInput gamepad.
 	bool RetainSameKindOwner = false;
+    // Explicit product policy: readable gamepads precede keyboard fallback.
+    bool GamepadPriority = false;
 };
 struct FActivityState
 {
@@ -166,6 +168,22 @@ public:
 				}
 			}
 		}
+        if (!Paused && !Locked && Config.GamepadPriority)
+        {
+            // Keep an available pad stable. After removal choose another readable
+            // pad, then a readable keyboard; never retain a vanished owner ID.
+            const auto Pick=[&](EDeviceKind Kind)->std::optional<FDeviceId>
+            {
+                if (Remembered)
+                    if (const auto I=Trackers.find(*Remembered); I!=Trackers.end()
+                        && I->second.Kind==Kind && I->second.HasBaseline) return I->first;
+                for (const auto& I:Trackers)
+                    if (I.second.Kind==Kind && I.second.HasBaseline) return I.first;
+                return {};
+            };
+            Winner=Pick(EDeviceKind::Gamepad);
+            if (!Winner) Winner=Pick(EDeviceKind::Keyboard);
+        }
 		if (Winner && !StartupChoice && (!Remembered || *Winner != *Remembered)) LastSwitch = Frame;
 		if (Winner && Trackers.at(*Winner).Pending
 			&& (!LastClaimTimestamp || *Trackers.at(*Winner).Pending > *LastClaimTimestamp)) LastClaimTimestamp = Trackers.at(*Winner).Pending;
