@@ -15,7 +15,9 @@ struct FSample {FPacket Owner,Authority;std::vector<std::uint8_t> State;FRedunda
 bool Source(std::vector<FSample>& Samples,FStateBinding& StateBinding,FAutomationTestBase& Test)
 {
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
-    P::FPrivateRoadCarSeed Seed;Seed.Actor=101;Seed.Incarnation=3;Seed.Contract=Contract;
+    // This finite source is retired before the socket-only unit. It does
+    // not participate in the original-process startup agreement or game admission.
+    P::FPrivateRoadCarSeed Seed;Seed.StartPolicy=P::EPrivateRoadStartPolicy::ExplicitUnitRecipe;Seed.Actor=101;Seed.Incarnation=3;Seed.Contract=Contract;
     Seed.Local={Speed::Input::EProducerKind::Device,42};Seed.LocalEpoch={3};
     auto& B=Seed.Remote;B.Session=1;B.Epoch=2;B.Actor=101;B.Incarnation=3;B.OwnerPeer=4;B.ServerPeer=5;
     B.SourceProducer=42;B.SourceKind=0;B.Contract[0]=7;
@@ -33,7 +35,11 @@ bool Source(std::vector<FSample>& Samples,FStateBinding& StateBinding,FAutomatio
         Q.Input.SourceSequence=N+1;Q.Input.DeviceGeneration=1;Q.Input.ProducerId=B.SourceProducer;
         Q.Input.ProducerKind=B.SourceKind;Q.Input.Reset=N==0;Q.Input.Values[0]=int16(32+N*7);Q.Input.ActiveMask=1;
         S.Authority=Q;S.Authority.Kind=EKind::AuthorityInput;
-        if(History.Confirm(5,S.Authority).Status!=EResult::Accepted||!World->Step({{101,3,History.Predict(N)}},false,Why))return false;
+        const auto Confirm=History.Confirm(5,S.Authority).Status;
+        if(Confirm!=EResult::Accepted||!World->Step({{101,3,History.Predict(N)}},false,Why))
+        {
+            Test.AddError(FString::Printf(TEXT("grouped native source frame=%llu confirm=%d before sockets: %s"),N,int(Confirm),*Why));return false;
+        }
         const auto Actual=World->ReadLatest();if(!Actual||Actual->Frame!=N||Actual->Physics.Payload.IsEmpty())return false;
         // Transfer exact ACTUAL published bytes as an observational opaque subset.
         // Native IDs inside these bytes are NOT a semantic cross-process restore
