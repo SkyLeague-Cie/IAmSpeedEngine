@@ -18,6 +18,7 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     bool HasIsolatedNativeConstruction() const;
     bool IsInitialSynchronizationComplete() const override;
     void UpdateInputs() override;
+    void RcvImpactOnSubBody(const USSubBody&,const FVector&) override;
     void OnRegister() override;
     void OnCreatePhysicsState() override;
     void OnDestroyPhysicsState() override;

@@ -267,3 +267,17 @@ replays170frames: this is intentionally NOT a localized-replay success claim.
 It exercises interaction-sensitive reconstruction before any island admission;
 no coefficients, tolerances, presets or demolition rules change. Native result
 NOT_RUN on this source until a new frozen candidate executes.
+
+Native30 preserved a real regression failure: the new contact test incorrectly
+required dynamic component constraints, but the stock solid-subbody profile
+disables their optional registration. Absence of those constraints does not
+prove absence of physical impacts. The new source records values from the real
+private component RcvImpactOnSubBody callback after invoking the unchanged
+super implementation exactly once. Only two genuine members of the same active
+native roster/frame can form a dependency pair. Fixed-roster pair capacity is
+reserved before physics; overflow explicitly marks the observation incomplete.
+No constraint flag, impulse, collision rule or tolerance changes. The retained
+interaction test now requires actual cross-car callbacks and their replayed
+per-frame dependency sequence to match the independent reference. This is
+contact observation, not complete contact restoration or localized admission.
+Native31 execution is required; Native30 FAIL remains intact.

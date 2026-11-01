@@ -28,11 +28,13 @@ namespace Speed::Netcode::Prediction
 // legacy snapshot. Native lifetime/restore certification remains separate.
 struct FPrivateRoadAccess
 {
-    struct FSlot {std::shared_ptr<const FBranchProcessedInput> Input;bool Consumed=false;};
+    struct FSlot {std::shared_ptr<const FBranchProcessedInput> Input;bool Consumed=false;U64 Actor=0,Incarnation=0;};
     UWorld* World=nullptr;
     bool Active=false,RequiresInitialPublication=true,InitialPublicationReleased=false;
     U64 Frame=0;
     TMap<const USpeedBranchWheeledComponent*,FSlot> Slots;
+    std::vector<FPrivateRoadImpactPair> Impacts;
+    bool ImpactOverflow=false;
 };
 namespace
 {
@@ -146,6 +148,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(!Node->Filter){Refuse(Why,TEXT("private input filter configuration refused"));return {};}
         I.Cars.push_back(std::move(Node));
     }
+    I.Access->Impacts.reserve(I.Cars.size()*(I.Cars.size()-1)/2);
     const auto Options=UWorld::InitializationValues().InitializeScenes(false).CreateFXSystem(false).AllowAudioPlayback(false).CreatePhysicsScene(false)
         .RequiresHitProxies(false).CreateNavigation(false).CreateAISystem(false).ShouldSimulatePhysics(false).SetTransactional(false);
     I.World.Reset(UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Options));
@@ -278,7 +281,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
     if(Frame>=uint64(MAX_int32-1)||Chaos::FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled()||!NoNetworkOwner(I.World.Get()))return Refuse(Why,TEXT("private step native domain changed"));
     std::vector<FBranchInputFilter::FPrepared> Plans;Plans.reserve(I.Cars.size());
-    I.Access->Slots.Empty();
+    I.Access->Slots.Empty();I.Access->Impacts.clear();I.Access->ImpactOverflow=false;
     ON_SCOPE_EXIT{I.Access->Active=false;I.Access->Slots.Empty();};
     for(const auto& N:I.Cars)
     {
@@ -302,7 +305,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         {for(const auto& E:(*Local)->GetData().Transitions)if(UnsupportedEdge(E.Action))return Refuse(Why,TEXT("private road local command edge unsupported"));}
         if(const auto* Authority=std::get_if<std::shared_ptr<const FPacket>>(&Processed->Evidence))
         {for(const auto& E:(*Authority)->Input.Edges)if(UnsupportedEdge(E.Action))return Refuse(Why,TEXT("private road authority command edge unsupported"));}
-        I.Access->Slots.Add(N->Component,{Processed,false});Plans.push_back(std::move(*Plan));
+        I.Access->Slots.Add(N->Component,{Processed,false,N->Seed.Actor,N->Seed.Incarnation});Plans.push_back(std::move(*Plan));
     }
     I.Access->Frame=Frame;I.Access->Active=true;
     // No rollback claim: any physical failure retires this private branch.
@@ -317,6 +320,10 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     }
     auto Out=std::make_shared<FPrivateRoadPublication>();Out->LocalKernelLifetime=I.Lifetime;Out->Frame=Frame;
     Out->AwaitingInitialPublication=I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased;
+    Out->ImpactObservationComplete=!I.Access->ImpactOverflow;
+    std::sort(I.Access->Impacts.begin(),I.Access->Impacts.end(),[](const auto& A,const auto& B)
+        {return A.ActorA==B.ActorA?A.ActorB<B.ActorB:A.ActorA<B.ActorA;});
+    Out->ImpactPairs=I.Access->Impacts;
     Out->NativeNetworkComponents=NativeNetworkComponentCount(I.World.Get());
     Out->RenderScenePresent=I.World->Scene!=nullptr;Out->PhysicsScenePresent=I.World->GetPhysicsScene()!=nullptr;
     for(const auto& N:I.Cars)if(AHUD::OnShowDebugInfo.IsBoundToObject(N->Component))++Out->NativeDebugDelegateBindings;
@@ -445,6 +452,27 @@ void USpeedBranchWheeledComponent::UpdateInputs()
     WheeledPhysicalInput.Camera={};WheeledPhysicalInput.Camera.Flags=1;
     WheeledPhysicalInput.Camera.Yaw=int8(Applied[5]);WheeledPhysicalInput.Camera.Pitch=int8(Applied[6]);
     SyncWheeledPhysicalInputToState();bInputFrameRejectedV2=false;
+}
+void USpeedBranchWheeledComponent::RcvImpactOnSubBody(const USSubBody& SubBody,const FVector& Location)
+{
+    // Preserve the existing native impact/game-state path exactly once.
+    Super::RcvImpactOnSubBody(SubBody,Location);
+    const auto A=Access.lock();
+    if(!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||SubBody.GetParentComponent()!=this)return;
+    const auto& Hit=SubBody.GetHit();const auto* Other=Hit.Component.Get();
+    if(!Hit.bBlockingHit||!Other||Other->GetWorld()!=A->World||Other->GetOwner()==GetOwner())return;
+    const auto* Car=Cast<ASpeedBranchCar>(Other->GetOwner());
+    const auto* C=Car?Cast<USpeedBranchWheeledComponent>(Car->GetVehicleMovement()):nullptr;
+    const auto* Self=A->Slots.Find(this);const auto* Peer=C?A->Slots.Find(C):nullptr;
+    if(!Self||!Peer||!Self->Input||!Peer->Input||Self->Input->Frame!=A->Frame||Peer->Input->Frame!=A->Frame
+        ||!Self->Actor||!Peer->Actor||Self->Actor==Peer->Actor)return;
+    const auto Low=FMath::Min(Self->Actor,Peer->Actor),High=FMath::Max(Self->Actor,Peer->Actor);
+    for(auto& P:A->Impacts)if(P.ActorA==Low&&P.ActorB==High)
+    {if(P.Callbacks==MAX_uint32)A->ImpactOverflow=true;else ++P.Callbacks;return;}
+    // Fixed finite roster has at most120 unordered pairs. Never grow beyond
+    // the actual reserved roster capacity inside a canonical physical call.
+    if(A->Impacts.size()>=A->Impacts.capacity()){A->ImpactOverflow=true;return;}
+    A->Impacts.push_back({Low,High,1});
 }
 bool USpeedBranchWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
 {

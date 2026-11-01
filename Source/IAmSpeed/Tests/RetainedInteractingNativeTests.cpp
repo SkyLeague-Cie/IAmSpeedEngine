@@ -45,17 +45,10 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
         if(N&&V!=Value(A,N-1))Q.Input.Edges.push_back({1,std::uint8_t(V?0:1),std::int16_t(V),N+1,0});
         return Q;
     };
-    FString Why;TSet<FObjectKey> Before;
-    for(TObjectIterator<UWorld> It;It;++It)if(!It->IsTemplate())Before.Add(FObjectKey(*It));
+    FString Why;
     auto Reference=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
-    UWorld* ReferenceWorld=nullptr;
-    for(TObjectIterator<UWorld> It;It;++It)if(!It->IsTemplate()&&!Before.Contains(FObjectKey(*It)))ReferenceWorld=*It;
     auto Live=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why),Retained=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
-    if(!TestTrue(*Why,Reference&&Live&&Retained&&ReferenceWorld))return false;
-    TArray<USpeedBranchWheeledComponent*> ActualComponents;
-    for(TActorIterator<ASpeedBranchCar> It(ReferenceWorld);It;++It)
-        if(auto* C=Cast<USpeedBranchWheeledComponent>(It->GetVehicleMovement()))ActualComponents.Add(C);
-    if(!TestEqual(TEXT("actual same-world component roster"),ActualComponents.Num(),3))return false;
+    if(!TestTrue(*Why,Reference&&Live&&Retained))return false;
     const auto Same=[&](const auto& X,const auto& Y)
     {
         if(!X||!Y||X->Frame!=Y->Frame||X->Actors.size()!=3||Y->Actors.size()!=3)return false;
@@ -76,6 +69,7 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
     {std::vector<P::FPrivateRoadRequest> Out;for(size_t A=0;A<3;++A)Out.push_back({Seeds[A].Actor,3,Hist[A]->Predict(N)});return Out;};
     uint64 DynamicContactFrames=0,FirstContact=0;
     std::shared_ptr<const P::FPrivateRoadPublication> OriginalCut;
+    std::vector<std::vector<P::FPrivateRoadImpactPair>> ActualReferenceImpacts;
     for(U64 N=0;N<=Last;++N)
     {
         for(size_t A=0;A<3;++A)
@@ -93,14 +87,15 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
             if(!Reference->ReleaseInitialPublication(R,Why)||!Live->ReleaseInitialPublication(L,Why)||!Retained->ReleaseInitialPublication(K,Why))return false;
         }
         if(N==Cut){OriginalCut=Retained->ReadLatest();if(!Same(Reference->ReadLatest(),OriginalCut))return false;}
+        const auto Actual=Reference->ReadLatest();
+        if(!TestTrue(TEXT("actual native impact observation remains complete"),Actual&&Actual->ImpactObservationComplete))return false;
+        ActualReferenceImpacts.push_back(Actual->ImpactPairs);
         bool Contact=false;
-        for(const auto* C:ActualComponents)for(const auto& Constraint:C->GetPhysicalConstraints())
-            if(Constraint.FramesSinceSeen==0&&Constraint.OtherComponent.IsValid()
-                &&Constraint.OtherComponent->GetOwner()!=C->GetOwner()
-                &&Cast<ASpeedBranchCar>(Constraint.OtherComponent->GetOwner()))Contact=true;
+        for(const auto& Pair:Actual->ImpactPairs)
+            if(Pair.ActorA==101&&Pair.ActorB==102&&Pair.Callbacks>0)Contact=true;
         if(Contact){if(!DynamicContactFrames)FirstContact=N;++DynamicContactFrames;}
     }
-    if(!TestTrue(TEXT("actual native contact between different cars, not floor contact"),DynamicContactFrames>0))return false;
+    if(!TestTrue(TEXT("actual native impact callback between different cars, not optional constraints or floor contact"),DynamicContactFrames>0))return false;
     const auto BeforeCorrection=Live->ReadLatest(),Truth=Reference->ReadLatest();
     double MaximumBefore=0;
     for(size_t A=0;A<3;++A)
@@ -111,11 +106,16 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
     }
     if(!TestTrue(TEXT("withheld oscillating input caused measurable native divergence"),MaximumBefore>0))return false;
     if(!TestTrue(TEXT("actual retained graph stayed at original K without stepping"),Retained->ReadLatest()==OriginalCut))return false;
-    for(U64 N=Cut+1;N<=Last;++N)if(!Retained->Step(Requests(KH,N),true,Why))return false;
+    for(U64 N=Cut+1;N<=Last;++N)
+    {
+        if(!Retained->Step(Requests(KH,N),true,Why))return false;
+        const auto Actual=Retained->ReadLatest();
+        if(!TestTrue(TEXT("actual corrected native impact dependency sequence matches independent reference"),Actual&&Actual->ImpactObservationComplete&&Actual->ImpactPairs==ActualReferenceImpacts[size_t(N)]))return false;
+    }
     if(!TestTrue(TEXT("same original native lifetime, three actors exact after K+1..N"),Retained->ReadLatest()->LocalKernelLifetime==OriginalCut->LocalKernelLifetime&&Same(Truth,Retained->ReadLatest())))return false;
     // ALL THREE actors stepped during this experiment, including the distant
     // same-world spectator. This must NOT be reported as localized replay.
-    AddInfo(FString::Printf(TEXT("[IASRetainedInteracting] native=1 actors=3 held_frame=%llu through_frame=%llu replayed_frames=%llu dynamic_contact_frames=%llu first_dynamic_contact=%llu before_max_position_cm=%.17g exact_six_com_and_filters=1 spectator_replay_frames=%llu same_world_localized=0 full_state_certificate=0 network=0"),Cut,Last,Last-Cut,DynamicContactFrames,FirstContact,MaximumBefore,Last-Cut));
+    AddInfo(FString::Printf(TEXT("[IASRetainedInteracting] native=1 actors=3 held_frame=%llu through_frame=%llu replayed_frames=%llu actual_impact_frames=%llu first_actual_impact=%llu before_max_position_cm=%.17g exact_six_com_and_filters=1 spectator_replay_frames=%llu same_world_localized=0 full_state_certificate=0 network=0"),Cut,Last,Last-Cut,DynamicContactFrames,FirstContact,MaximumBefore,Last-Cut));
     return !HasAnyErrors();
 }
 #endif
