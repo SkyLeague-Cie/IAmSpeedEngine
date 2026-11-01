@@ -1,6 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "BranchInputFilter.h"
+#include "IAmSpeed/Netcode/Common/CommonComponentState.h"
 #include "IAmSpeed/Base/Kinematic.h"
 #include "IAmSpeed/World/Simulation/SimulationFrameJournal.h"
 #include <atomic>
@@ -37,6 +38,11 @@ struct FPrivateRoadActorFrame
     std::shared_ptr<const FBranchProcessedInput> Input;
     bool CanMove=false,Frozen=false;
     uint16 CountdownFrames=0; // actual native values, diagnostics only
+    // Declared PARTIAL observation only. Missing is UNKNOWN, never zero/full.
+    bool NativePartialValuesAvailable=false;
+    CommonState::FSleepValues NativeSleep;
+    CommonState::FQuantizationValues NativeQuantization;
+    std::vector<uint8> NativeWheelSuspensionValues; // normalized config references
     FVector NativeHitboxHalfExtent=FVector::ZeroVector;
     FVector NativeHitboxCenter=FVector::ZeroVector; // actual queried child storage, not reconstructed COM
 };

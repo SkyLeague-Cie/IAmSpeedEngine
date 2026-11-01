@@ -335,3 +335,16 @@ still FROM BIRTH and global: this is a required real-network coupling test, NOT
 localized K rollback or hardware admission. Default separated fixture stays
 available. Source40's aggregate motion diagnostic label is corrected; its old
 raw output and distinct exact CausalControl counters remain preserved.
+
+
+Source42 adds actual owner-lane values for a DECLARED PARTIAL native subset:
+sleep/identity-quantization caches and all named wheel/suspension values in the
+existing diagnostic enumerators, with actual owned configuration values and
+normalized setup aliases. Unknown pointers, nonfinite values, missing native
+storage or unsupported nonempty slip graph yield UNAVAILABLE, never zero.
+Atomic/oscillating units report unknown/differing/neutral-response frame counts;
+the retained graph compares this declared subset in addition to six COM fields.
+The observer does NOT call guarded common Capture with a fake lease and does
+NOT serialize complete subbody/contact/world/configuration/lifecycle state.
+It is not a complete causal fingerprint, authoritative checkpoint, reader
+exclusion or restore provider. All restore/lifetime guards remain closed.

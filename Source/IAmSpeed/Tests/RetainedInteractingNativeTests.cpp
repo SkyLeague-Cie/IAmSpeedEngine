@@ -2,6 +2,7 @@
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPhysicsWorld.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadPartialStateComparison.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
 #include "Misc/AutomationTest.h"
 #include "Engine/World.h"
@@ -65,7 +66,8 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
         for(size_t A=0;A<3;++A)
         {
             const auto& L=X->Actors[A];const auto& R=Y->Actors[A];
-            if(L.Actor!=R.Actor||L.Incarnation!=R.Incarnation||!(L.Filter==R.Filter)||!L.Input||!R.Input
+            if(P::ComparePrivateRoadPartialValues(L,R)!=P::EPrivateRoadPartialComparison::Equal
+                ||L.Actor!=R.Actor||L.Incarnation!=R.Incarnation||!(L.Filter==R.Filter)||!L.Input||!R.Input
                 ||L.Input->Requested!=R.Input->Requested||L.Input->Applied!=R.Input->Applied
                 ||L.NativeHitboxHalfExtent!=R.NativeHitboxHalfExtent||L.NativeHitboxCenter!=R.NativeHitboxCenter
                 ||L.CanMove!=R.CanMove||L.Frozen!=R.Frozen||L.CountdownFrames!=R.CountdownFrames)return false;

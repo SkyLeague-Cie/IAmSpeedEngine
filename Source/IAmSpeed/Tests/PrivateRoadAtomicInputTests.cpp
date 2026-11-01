@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPhysicsWorld.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadPartialStateComparison.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
 #include "Misc/AutomationTest.h"
 
@@ -46,6 +47,7 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     // the original121-frame campaign. Never evict history or relax its guards.
     const size_t Retention=FMath::Max<size_t>(512,size_t(Case.FrameCount));
     P::FRemoteRequestHistory H(Seed.Remote,Actions,256,Retention),Z(Seed.Remote,Actions,256,Retention);
+    uint32 PartialMissing=0,PartialDifferent=0,PartialResponse=0;
     FMaxima Difference,Response;uint32 FilterDifferences=0,StartupDifferences=0;int64 FirstLocalCanMove=-1,FirstAuthorityCanMove=-1;
     const auto Body=[](const P::FPrivateRoadPublication& Pub)->const FSimulationPresentationBody*
     {return Pub.Actors.size()==1?Pub.Physics.PresentationBodies.FindByPredicate([&](const auto& X){return X.StableId==Pub.Actors[0].NativeStableId;}):nullptr;};
@@ -88,6 +90,10 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
         if(!L||!A||!B||L->Frame!=N||A->Frame!=N||B->Frame!=N||!Body(*L)||!Body(*A)||!Body(*B))return false;
         if(!Difference.Add(Body(*L)->COMState,Body(*A)->COMState,N)||!Response.Add(Body(*A)->COMState,Body(*B)->COMState,N))return false;
         const auto& LF=L->Actors[0];const auto& AF=A->Actors[0];
+        const auto Partial=P::ComparePrivateRoadPartialValues(LF,AF);
+        const auto Control=P::ComparePrivateRoadPartialValues(AF,B->Actors[0]);
+        if(Partial==P::EPrivateRoadPartialComparison::Unknown||Control==P::EPrivateRoadPartialComparison::Unknown)++PartialMissing;
+        else {if(Partial==P::EPrivateRoadPartialComparison::Different)++PartialDifferent;if(Control==P::EPrivateRoadPartialComparison::Different)++PartialResponse;}
         if(!(LF.Filter==AF.Filter)||LF.Input->Requested!=AF.Input->Requested||LF.Input->Applied!=AF.Input->Applied)++FilterDifferences;
         if(LF.CanMove!=AF.CanMove||LF.Frozen!=AF.Frozen||LF.CountdownFrames!=AF.CountdownFrames)++StartupDifferences;
         if(LF.CanMove&&FirstLocalCanMove<0)FirstLocalCanMove=int64(N);
@@ -97,7 +103,9 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
         Case.HalfPeriod?TEXT("[OscillatingInputMeasure]"):TEXT("[AtomicInputMeasure]"),Case.Name,Case.Action,int(Case.Value),uint32(Case.FrameCount),uint32(Case.HalfPeriod),Case.HalfPeriod?300.0/(2.0*Case.HalfPeriod):0.0,Case.LocalCountdown,Case.AuthorityCountdown,FirstLocalCanMove,FirstAuthorityCanMove,
         Difference.FirstDifferent,Difference.DifferentFrames,FilterDifferences,StartupDifferences,Difference.Position,Difference.Velocity,Difference.Acceleration,
         Difference.Rotation,Difference.AngularVelocity,Difference.AngularAcceleration,Response.Position,Response.Velocity,Response.Rotation));
-    bool OK=Test.TestEqual(TEXT("same requested input has identical processed state for both roles"),FilterDifferences,uint32(0));
+    Test.AddInfo(FString::Printf(TEXT("[NativePartialStateMeasure] case=%s action=%u frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u complete_causal_state=0 sockets=0 hardware=0"),Case.Name,Case.Action,uint32(Case.FrameCount),PartialMissing,PartialDifferent,PartialResponse));
+    bool OK=Test.TestEqual(TEXT("actual declared native cache/wheel subset observed; missing is unknown"),PartialMissing,uint32(0));
+    OK=Test.TestEqual(TEXT("same requested input has identical processed state for both roles"),FilterDifferences,uint32(0))&&OK;
     if(Case.ExpectMismatch)
     {
         OK=Test.TestTrue(TEXT("countdown mismatch positive control produces actual physical difference"),Difference.DifferentFrames>0)&&OK;

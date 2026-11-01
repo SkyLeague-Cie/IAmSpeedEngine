@@ -1,5 +1,6 @@
 #include "PrivateRoadPhysicsWorld.h"
 #include "PrivateRoadNativeObjects.h"
+#include "PrivateRoadPartialStateObservation.h"
 #include "IAmSpeed/Driving/StockRoadCar.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -347,6 +348,12 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         if(!Hitbox)return Fail(TEXT("native hitbox diagnostics missing"));
         Out->Actors.back().NativeHitboxHalfExtent=Hitbox->GetBoxExtent();
         Out->Actors.back().NativeHitboxCenter=Hitbox->GetKinematicState().Location;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        // This is a read-only declared-subset observation, not a complete-state
+        // capture through the guarded restore provider. Unknown remains false.
+        PartialObservation::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
+            N->WheelConfig,N->SuspensionConfig,Out->Actors.back());
+#endif
     }
     if(I.Access->RequiresInitialPublication)for(const auto& A:Out->Actors)
     {
