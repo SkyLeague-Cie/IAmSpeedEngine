@@ -6,10 +6,10 @@ namespace Speed::Netcode::Prediction
 {
 namespace
 {
-bool Refuse(FString& Why,const TCHAR* Reason) {Why=Reason;return false;}
+bool SessionRefuse(FString& Why,const TCHAR* Reason) {Why=Reason;return false;}
 // Same continuity rules as the original same-frame owner. This validates
 // already-retained raw frames without polling/reacquiring or forging receipts.
-bool Continues(const BranchV2::FInputFrame& Frame,const std::shared_ptr<const BranchV2::FInputFrame>& Previous)
+bool SessionContinues(const BranchV2::FInputFrame& Frame,const std::shared_ptr<const BranchV2::FInputFrame>& Previous)
 {
     const auto& D=Frame.GetData();if(!Previous)return D.Reset;
     const auto& Old=Previous->GetData();if(D.SourceSequence<Old.SourceSequence)return false;
@@ -25,7 +25,7 @@ bool Continues(const BranchV2::FInputFrame& Frame,const std::shared_ptr<const Br
     }
     return Active==D.ActiveMask;
 }
-std::array<Consumed::FActionPolicy,ActionCount> Actions(const BranchV2::FInputActionContract& Contract)
+std::array<Consumed::FActionPolicy,ActionCount> SessionActionPolicies(const BranchV2::FInputActionContract& Contract)
 {
     std::array<Consumed::FActionPolicy,ActionCount> Out{};
     for(size_t I=0;I<ActionCount;++I)if(const auto* A=Contract.Find(Speed::Input::FActionId(I)))
@@ -77,18 +77,18 @@ FPrivateRoadPredictionSession::~FPrivateRoadPredictionSession()
 std::unique_ptr<FPrivateRoadPredictionSession> FPrivateRoadPredictionSession::Create(std::vector<FPrivateRoadCarSeed> Seeds,U64 MaximumFrames,FString& Why)
 {
     Why.Empty();if(!IsInGameThread()||Seeds.size()<2||Seeds.size()>16||!MaximumFrames||MaximumFrames>4096
-        ||Speed::Input::FPresentationInputScope::IsActive()) {Refuse(Why,TEXT("native prediction finite GT domain refused"));return {};}
+        ||Speed::Input::FPresentationInputScope::IsActive()) {SessionRefuse(Why,TEXT("native prediction finite GT domain refused"));return {};}
     std::sort(Seeds.begin(),Seeds.end(),[](const auto& A,const auto& B){return A.Actor<B.Actor;});
     auto Session=std::unique_ptr<FPrivateRoadPredictionSession>(new FPrivateRoadPredictionSession);auto& I=*Session->Impl;
     size_t Locals=0;
     for(size_t A=0;A<Seeds.size();++A)if(Seeds[A].Role==EBranchFilterRole::LocalDevice){++Locals;I.Local=A;}
-    if(Locals!=1){Refuse(Why,TEXT("native prediction requires one genuine local input domain"));return {};}
+    if(Locals!=1){SessionRefuse(Why,TEXT("native prediction requires one genuine local input domain"));return {};}
     I.Seeds=std::move(Seeds);I.Maximum=MaximumFrames;I.LocalFrames.reserve(size_t(MaximumFrames));
     I.Histories.resize(I.Seeds.size());
     for(size_t A=0;A<I.Seeds.size();++A)if(A!=I.Local)
     {
-        if(!I.Seeds[A].Contract){Refuse(Why,TEXT("native remote contract missing"));return {};}
-        I.Histories[A]=std::make_unique<FRemoteRequestHistory>(I.Seeds[A].Remote,Actions(*I.Seeds[A].Contract),I.Seeds[A].PredictionHorizon,size_t(MaximumFrames));
+        if(!I.Seeds[A].Contract){SessionRefuse(Why,TEXT("native remote contract missing"));return {};}
+        I.Histories[A]=std::make_unique<FRemoteRequestHistory>(I.Seeds[A].Remote,SessionActionPolicies(*I.Seeds[A].Contract),I.Seeds[A].PredictionHorizon,size_t(MaximumFrames));
     }
     I.Live=FPrivateRoadPhysicsWorld::Create(I.Seeds,Why);if(!I.Live)return {};
     return Session;
@@ -128,29 +128,29 @@ FConfirmation FPrivateRoadPredictionSession::ConfirmRemote(U64 Peer,const FPacke
 }
 bool FPrivateRoadPredictionSession::AdvanceLocal(std::shared_ptr<const BranchV2::FInputFrame> Frame,FString& Why)
 {
-    Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("native local advance requires GT"));
+    Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return SessionRefuse(Why,TEXT("native local advance requires GT"));
     auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
-    if(!Lock.owns_lock()||I.Closed||I.Failed||!Frame||I.LocalFrames.size()>=I.Maximum)return Refuse(Why,TEXT("native local owner/history unavailable or exhausted"));
+    if(!Lock.owns_lock()||I.Closed||I.Failed||!Frame||I.LocalFrames.size()>=I.Maximum)return SessionRefuse(Why,TEXT("native local owner/history unavailable or exhausted"));
     const auto& S=I.Seeds[I.Local];const auto& D=Frame->GetData();const U64 N=I.LocalFrames.size();
     if(!Frame->IsValidFor(*S.Contract)||D.ConsumptionFrame!=N||D.Producer.Kind!=S.Local.Kind||D.Producer.Id!=S.Local.Id
-        ||D.StreamEpoch.Value!=S.LocalEpoch.Value||!Continues(*Frame,I.LocalFrames.empty()?nullptr:I.LocalFrames.back()))
-        return Refuse(Why,TEXT("retained local frame identity/continuity refused"));
+        ||D.StreamEpoch.Value!=S.LocalEpoch.Value||!SessionContinues(*Frame,I.LocalFrames.empty()?nullptr:I.LocalFrames.back()))
+        return SessionRefuse(Why,TEXT("retained local frame identity/continuity refused"));
     try
     {
         std::vector<FPrivateRoadRequest> Requests;
         if(!I.Requests(N,Frame,I.Histories,Requests)||!I.Live->Step(Requests,false,Why))
-        {I.Fail();return Refuse(Why,TEXT("native prediction input/physical step failed; branch retired"));}
+        {I.Fail();return SessionRefuse(Why,TEXT("native prediction input/physical step failed; branch retired"));}
         I.LocalFrames.push_back(std::move(Frame));I.Published.store(I.Live->ReadLatest());return true;
     }
-    catch(...) {I.Fail();return Refuse(Why,TEXT("native prediction advance exception; branch retired"));}
+    catch(...) {I.Fail();return SessionRefuse(Why,TEXT("native prediction advance exception; branch retired"));}
 }
 EPrivateRoadCorrection FPrivateRoadPredictionSession::AdvanceCorrection(U64 Budget,FString& Why)
 {
-    Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive()) {Refuse(Why,TEXT("native correction requires GT"));return EPrivateRoadCorrection::Failed;}
+    Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive()) {SessionRefuse(Why,TEXT("native correction requires GT"));return EPrivateRoadCorrection::Failed;}
     auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
-    if(!Lock.owns_lock()||I.Closed||I.Failed||!Budget||Budget>256){Refuse(Why,TEXT("native correction owner/budget refused"));return EPrivateRoadCorrection::Failed;}
+    if(!Lock.owns_lock()||I.Closed||I.Failed||!Budget||Budget>256){SessionRefuse(Why,TEXT("native correction owner/budget refused"));return EPrivateRoadCorrection::Failed;}
     if(!I.Invalidated)return EPrivateRoadCorrection::Idle;
-    const auto Fail=[&](const TCHAR* Reason){I.Fail();Refuse(Why,Reason);return EPrivateRoadCorrection::Failed;};
+    const auto Fail=[&](const TCHAR* Reason){I.Fail();SessionRefuse(Why,Reason);return EPrivateRoadCorrection::Failed;};
     try
     {
         if(I.Staged&&(I.StagedNeedsRestart||I.StagedRevision!=I.AuthorityRevision))
