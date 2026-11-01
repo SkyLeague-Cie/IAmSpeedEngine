@@ -75,3 +75,15 @@ their causal state. Its child commit does not publish an atomic component/world;
 whole-world ownership, Common/subbody/contact/input providers and integration remain
 required. Fresh native tests on each exact candidate are mandatory; source assertions
 and an earlier suspension test do not qualify this new storage participant.
+
+
+BranchInputFilter adds a separate replayable input-processing domain. Local requests
+retain their original immutable V2 Device frame; confirmed remote requests retain
+the received packet; speculative holds retain only FSpeculativeRequest. No V2 frame,
+Device generation, source sequence, raw reset/edge or transport credit is invented
+for a forecast. The same pure authoritative quantized processing function executes
+once from the restored Applied baseline toward the held Requested values. Frame
+order, immutable local/remote role, contract/policy, horizon, owner thread, revision
+and native filter lifetime are checked. Restoring this filter state alone neither
+authenticates a server nor restores/adopts a physical world or an active registry.
+The new native unit fixture is NOT_RUN until the exact next candidate is built.
