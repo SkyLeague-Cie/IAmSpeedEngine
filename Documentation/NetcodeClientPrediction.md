@@ -128,3 +128,37 @@ the exact generic movement class. The specialized private movement constructor
 now explicitly adopts the same existing ApplyStockRoadCar recipe. The rejection
 and failed test remain recorded; no coefficients were retuned, and the corrected
 source requires its own native execution before any kernel PASS is claimed.
+
+
+## Finite native predicted session and late-request reconciliation
+
+The private road kernel is now verified on IAS e504d18:37 native tests plus the
+separate Pending1 cohort passed, zero runtime errors/warnings, genuine modules,
+natural Job0 twice and final audits clean. The kernel test ran actual two-car
+graphs, independent exact trajectories, GC and fresh-origin replay. The earlier
+f62d779 construction failure remains preserved.
+
+`FPrivateRoadPredictionSession` now owns a real native predicted graph with one
+retained local Device domain and remote hold-last-REQUEST histories. Local raw
+identity, baseline, generation, sequence and active-edge continuity are validated
+without polling. Later remote requests can invalidate actual consumed forecasts.
+A correction creates another real graph from the original seeds, replays retained
+commands in bounded pulses, accepts new confirmations while staged, restarts a
+stale staged version, catches the current live tail, then adopts its immutable
+publication and corresponding histories together. Original Device history and
+incoming confirmation high-waters are retained. No fabricated raw metadata, ACK
+or completed registry receipt is generated.
+
+This is a finite native prototype: at most4096 original frames, no silent history
+eviction, GT physical ownership, original-seed reconstruction rather than an
+arbitrary-frame fullstate snapshot restore. The numerical peer supplied to its
+ingress is a binding check, not authentication. It does not admit a connected
+PredictedClient profile, restore a complete server snapshot or qualify hardware,
+network loss/delay, full-game state, cameras or effects. Those acceptance gates
+remain open; no old restore guard or complete-coverage flag has been changed.
+
+The new native regression deliberately withholds opponent changes, measures a
+same-frame physical error, delivers late requests during bounded staged replay,
+advances the live local tail, and requires exact corrected kinematics against an
+independently simulated reference. This new code/test requires its own frozen
+native build and execution; preceding37 PASS cannot qualify it.

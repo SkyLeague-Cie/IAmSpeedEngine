@@ -83,7 +83,9 @@ FPrivateRoadPhysicsWorld::~FPrivateRoadPhysicsWorld()
     // This finite prototype has no worker. Its UObject graph is constructed
     // and destroyed on the GT; a later async owner needs its own real join.
     checkf(IsInGameThread(),TEXT("Private road world must retire on the game thread"));
-    checkf(Close(),TEXT("Private road world cannot retire during an active step"));
+    const bool Retired=Close();
+    checkf(Retired,TEXT("Private road world cannot retire during an active step"));
+    if(!Retired)std::terminate(); // retirement must execute in Shipping too
 }
 std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why)
 {
