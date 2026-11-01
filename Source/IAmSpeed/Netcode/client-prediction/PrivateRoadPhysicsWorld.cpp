@@ -1,5 +1,6 @@
 #include "PrivateRoadPhysicsWorld.h"
 #include "PrivateRoadNativeObjects.h"
+#include "IAmSpeed/Driving/StockRoadCar.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
@@ -270,6 +271,10 @@ bool FPrivateRoadPhysicsWorld::Close()
 
 USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer):Super(Initializer)
 {
+    // ASpeedCar deliberately applies its generic road recipe only to the
+    // exact generic component class. This specialized native owner explicitly
+    // adopts that SAME existing recipe at construction, without retuning it.
+    Speed::Driving::ApplyStockRoadCar(*this);
     PrimaryComponentTick.bCanEverTick=false;PrimaryComponentTick.bStartWithTickEnabled=false;
     SetAsyncPhysicsTickEnabled(false);
     // Default subobjects already exist after the base constructor. Freeze the

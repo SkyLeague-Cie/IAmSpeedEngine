@@ -120,3 +120,11 @@ does not manufacture completed V2 world/input receipts or legacy Requested input
 from already filtered Applied values. Physical failure retires the branch;
 there is no partial or pose-only fallback. This is a concrete native execution
 building block, not completion of the requested dedicated/two-client rollback.
+
+
+The first native private-road execution on f62d779 failed before its first
+physical frame because ASpeedCar intentionally applies the road profile only to
+the exact generic movement class. The specialized private movement constructor
+now explicitly adopts the same existing ApplyStockRoadCar recipe. The rejection
+and failed test remain recorded; no coefficients were retuned, and the corrected
+source requires its own native execution before any kernel PASS is claimed.
