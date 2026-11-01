@@ -131,7 +131,7 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
         if(Box)++BoxContactFrames;if(BoxWheel)++BoxWheelFrames;if(Wheel)++WheelRegistrationFrames;
         if(Contact){if(!DynamicContactFrames)FirstContact=N;++DynamicContactFrames;}
     }
-    AddInfo(FString::Printf(TEXT("[IASInteractingFixtureMotion] native=1 default_sync_gate=1 throttle_after_release=1 nearest_com_cm=%.17g max_actor0_travel_cm=%.17g actual_box_contact_dispatch_frames=%llu"),NearestCOM,MaximumTravel,DynamicContactFrames));
+    AddInfo(FString::Printf(TEXT("[IASInteractingFixtureMotion] native=1 default_sync_gate=1 throttle_after_release=1 nearest_com_cm=%.17g max_actor0_travel_cm=%.17g actual_vehicle_event_frames=%llu"),NearestCOM,MaximumTravel,DynamicContactFrames));
     if(!TestTrue(TEXT("real post-release throttle moves native car"),MaximumTravel>1))return false;
     const auto BeforeCorrection=Live->ReadLatest(),Truth=Reference->ReadLatest();
     double MaximumBefore=0;
@@ -147,6 +147,7 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
     if(!TestTrue(TEXT("same actor/inputs show physical coupling versus native distant-neighbor control"),MaximumControlDifference>1))return false;
     if(!TestTrue(TEXT("withheld oscillating input caused measurable native divergence"),MaximumBefore>0))return false;
     if(!TestTrue(TEXT("actual retained graph stayed at original K without stepping"),Retained->ReadLatest()==OriginalCut))return false;
+    const double ReplayStarted=FPlatformTime::Seconds();
     for(U64 N=Cut+1;N<=Last;++N)
     {
         if(!Retained->Step(Requests(KH,N),true,Why))return false;
@@ -154,6 +155,9 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
         if(!TestTrue(TEXT("actual corrected native blocking contact dispatch sequence matches independent reference"),Actual&&Actual->ContactDispatchObservationComplete&&Actual->ContactDispatchPairs==ActualReferenceContactDispatches[size_t(N)]))return false;
     }
     if(!TestTrue(TEXT("same original native lifetime, three actors exact after K+1..N"),Retained->ReadLatest()->LocalKernelLifetime==OriginalCut->LocalKernelLifetime&&Same(Truth,Retained->ReadLatest())))return false;
+    const double ReplayWallSeconds=FPlatformTime::Seconds()-ReplayStarted;
+    if(!TestTrue(TEXT("actual native replay wall time is finite and positive"),FMath::IsFinite(ReplayWallSeconds)&&ReplayWallSeconds>0))return false;
+    AddInfo(FString::Printf(TEXT("[IASNativeFastReplayTiming] frames=%llu physical_seconds=%.17g wall_seconds=%.17g nominal_to_wall_ratio=%.17g wait_policy_bypassed=1 same_world_localized=0"),Last-Cut,double(Last-Cut)/300.,ReplayWallSeconds,(double(Last-Cut)/300.)/ReplayWallSeconds));
     // ALL THREE actors stepped during this experiment, including the distant
     // same-world spectator. This must NOT be reported as localized replay.
     AddInfo(FString::Printf(TEXT("[IASRetainedInteracting] native=1 actors=3 held_frame=%llu through_frame=%llu replayed_frames=%llu actual_vehicle_event_frames=%llu first_actual_vehicle_event=%llu before_max_position_cm=%.17g exact_six_com_and_filters=1 spectator_replay_frames=%llu same_world_localized=0 full_state_certificate=0 network=0"),Cut,Last,Last-Cut,DynamicContactFrames,FirstContact,MaximumBefore,Last-Cut));

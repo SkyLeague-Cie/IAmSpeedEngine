@@ -5,9 +5,11 @@
 namespace Speed::Netcode::Prediction {struct FPrivateRoadPublication;}
 namespace Speed::Netcode
 {
+enum class ENativeProbeScenario : std::uint8_t {SeparatedInputFixture,InteractingInputFixture};
 struct FNativePredictionProbeOptions
 {
     FLocalSessionConfig Launcher;
+    ENativeProbeScenario Scenario=ENativeProbeScenario::SeparatedInputFixture; // finite unit source only
     std::string ReportPath,ReleasePath;
     std::uint32_t MaxReplayFramesPerPulse=16; // work budget; physical delta remains1/300s
 };

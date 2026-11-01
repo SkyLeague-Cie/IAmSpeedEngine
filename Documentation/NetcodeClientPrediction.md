@@ -322,3 +322,16 @@ over1cm actor101 difference versus that control before accepting vehicle couplin
 Then the original retained graph must replay890frames and match all3actors and
 the independently observed event sequence. All3 replay, so this is NOT localized.
 The old test/source FAIL is not reclassified. No restore/borrow guard opens.
+
+
+Source41 selects a separate finite interacting network fixture explicitly.
+Two stationary native cars activate through the same actual0→1 synchronization
+gate, approach using unit-authored throttle/brake requests, and BOTH clients
+measure same-frame170 divergence before withheld remote requests are delivered.
+The final actual native graph of each of the3 processes must contain observed
+different-car box/wheel contact event frames. Registration remains distinct from
+impulse; these counters are not complete contact/state certificates. Replay is
+still FROM BIRTH and global: this is a required real-network coupling test, NOT
+localized K rollback or hardware admission. Default separated fixture stays
+available. Source40's aggregate motion diagnostic label is corrected; its old
+raw output and distinct exact CausalControl counters remain preserved.

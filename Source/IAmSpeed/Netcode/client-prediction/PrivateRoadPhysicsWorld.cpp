@@ -100,7 +100,7 @@ struct FPrivateRoadPhysicsWorld::FImpl
     std::shared_ptr<FPrivateRoadAccess> Access=std::make_shared<FPrivateRoadAccess>();
     mutable std::mutex Gate;
     std::atomic<std::shared_ptr<const FPrivateRoadPublication>> Published;
-    U64 Lifetime=0;
+    U64 Lifetime=0,VehicleContactFrameCount=0;
     bool Closed=false,Failed=false;
     void Pin(UObject* Object) {if(Object)Pins.Emplace(Object);}
     void PinTree(UObject* Object)
@@ -326,6 +326,12 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     std::sort(I.Access->ContactDispatches.begin(),I.Access->ContactDispatches.end(),[](const auto& A,const auto& B)
         {return A.ActorA==B.ActorA?A.ActorB<B.ActorB:A.ActorA<B.ActorA;});
     Out->ContactDispatchPairs=I.Access->ContactDispatches;
+    if(!Out->ContactDispatchPairs.empty())
+    {
+        if(I.VehicleContactFrameCount==MAX_uint64)return Fail(TEXT("native contact diagnostic exhausted"));
+        ++I.VehicleContactFrameCount;
+    }
+    Out->VehicleContactFrameCount=I.VehicleContactFrameCount;
     Out->NativeNetworkComponents=NativeNetworkComponentCount(I.World.Get());
     Out->RenderScenePresent=I.World->Scene!=nullptr;Out->PhysicsScenePresent=I.World->GetPhysicsScene()!=nullptr;
     for(const auto& N:I.Cars)if(AHUD::OnShowDebugInfo.IsBoundToObject(N->Component))++Out->NativeDebugDelegateBindings;

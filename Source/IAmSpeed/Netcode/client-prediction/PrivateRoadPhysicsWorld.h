@@ -56,6 +56,7 @@ struct FPrivateRoadPublication
     uint32 NativeNetworkComponents=0; // actual object census, not just history
     uint32 NativeDebugDelegateBindings=0; // bound entries; not an in-flight-reader drain certificate
     bool RenderScenePresent=false,PhysicsScenePresent=false; // actual private world scene pointers
+    U64 VehicleContactFrameCount=0; // actual events in this original graph, diagnostic only
     bool ContactDispatchObservationComplete=false; // bounded event storage only, not complete physical coverage
     std::vector<FPrivateRoadContactDispatchPair> ContactDispatchPairs;
     FSimulationSnapshot Physics;
