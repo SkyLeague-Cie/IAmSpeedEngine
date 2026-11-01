@@ -51,7 +51,8 @@ bool FIASRetainedNativeBoundary::RunTest(const FString&)
     std::shared_ptr<const P::FPrivateRoadPublication> OriginalCut;
     const auto SameObservable=[&](const P::FPrivateRoadPublication& A,const P::FPrivateRoadPublication& B)
     {
-        if(A.Frame!=B.Frame||A.Actors.size()!=B.Actors.size()||A.NativeNetworkComponents||B.NativeNetworkComponents||A.NativeDebugDelegateBindings||B.NativeDebugDelegateBindings)return false;
+        if(A.Frame!=B.Frame||A.Actors.size()!=B.Actors.size()||A.NativeNetworkComponents||B.NativeNetworkComponents||A.NativeDebugDelegateBindings||B.NativeDebugDelegateBindings
+            ||A.RenderScenePresent||B.RenderScenePresent||A.PhysicsScenePresent||B.PhysicsScenePresent)return false;
         for(size_t N=0;N<A.Actors.size();++N)
         {
             const auto& X=A.Actors[N];const auto& Y=B.Actors[N];

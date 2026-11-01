@@ -74,7 +74,9 @@ uint32 NativeNetworkComponentCount(UWorld* World)
         if(!It->IsTemplate()&&It->GetWorld()==World)++Count;
     return Count;
 }
-bool NoNetworkOwner(UWorld* World) {return World&&!World->GetNetDriver()&&NativeNetworkComponentCount(World)==0;}
+bool NoNetworkOwner(UWorld* World)
+{return World&&!World->Scene&&!World->GetPhysicsScene()&&!World->bShouldSimulatePhysics
+    &&!World->GetNetDriver()&&NativeNetworkComponentCount(World)==0;}
 }
 struct FPrivateRoadPhysicsWorld::FImpl
 {
@@ -144,10 +146,15 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(!Node->Filter){Refuse(Why,TEXT("private input filter configuration refused"));return {};}
         I.Cars.push_back(std::move(Node));
     }
-    const auto Options=UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false)
+    const auto Options=UWorld::InitializationValues().InitializeScenes(false).CreateFXSystem(false).AllowAudioPlayback(false).CreatePhysicsScene(false)
         .RequiresHitProxies(false).CreateNavigation(false).CreateAISystem(false).ShouldSimulatePhysics(false).SetTransactional(false);
     I.World.Reset(UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Options));
     if(!I.World.IsValid()){Refuse(Why,TEXT("private world creation failed"));return {};}
+    // InitWorld assigns this tick flag only inside its scene-initialization
+    // branch. Set it explicitly for the deliberately scene-less private world.
+    I.World->bShouldSimulatePhysics=false;
+    if(I.World->Scene||I.World->GetPhysicsScene())
+    {Refuse(Why,TEXT("renderer or physics scene escaped private construction policy"));return {};}
     // Deliberately no Engine world context, BeginPlay, normal tick or scene.
     I.Access->World=I.World.Get();I.Bridge=I.World->GetSubsystem<USpeedWorldSubsystem>();
     if(!I.Bridge){Refuse(Why,TEXT("private native bridge missing"));return {};}
@@ -290,8 +297,9 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     auto Out=std::make_shared<FPrivateRoadPublication>();Out->LocalKernelLifetime=I.Lifetime;Out->Frame=Frame;
     Out->AwaitingInitialPublication=I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased;
     Out->NativeNetworkComponents=NativeNetworkComponentCount(I.World.Get());
+    Out->RenderScenePresent=I.World->Scene!=nullptr;Out->PhysicsScenePresent=I.World->GetPhysicsScene()!=nullptr;
     for(const auto& N:I.Cars)if(AHUD::OnShowDebugInfo.IsBoundToObject(N->Component))++Out->NativeDebugDelegateBindings;
-    if(Out->NativeNetworkComponents||Out->NativeDebugDelegateBindings)return Fail(TEXT("external network/debug binding appeared in private native graph"));
+    if(Out->NativeNetworkComponents||Out->NativeDebugDelegateBindings||Out->RenderScenePresent||Out->PhysicsScenePresent)return Fail(TEXT("external network/debug binding appeared in private native graph"));
     if(!I.Driver->ReadLatestSimulationSnapshot(Out->Physics)||Out->Physics.NumFrame!=Frame
         ||Out->Physics.PresentationBodies.Num()!=int32(I.Cars.size()))return Fail(TEXT("private native publication mismatch"));
     for(const auto& N:I.Cars)

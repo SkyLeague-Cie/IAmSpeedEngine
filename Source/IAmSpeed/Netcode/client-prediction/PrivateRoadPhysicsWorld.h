@@ -44,6 +44,7 @@ struct FPrivateRoadPublication
     bool AwaitingInitialPublication=false;
     uint32 NativeNetworkComponents=0; // actual object census, not just history
     uint32 NativeDebugDelegateBindings=0; // bound entries; not an in-flight-reader drain certificate
+    bool RenderScenePresent=false,PhysicsScenePresent=false; // actual private world scene pointers
     FSimulationSnapshot Physics;
     std::vector<FPrivateRoadActorFrame> Actors;
 };
