@@ -14,7 +14,7 @@ struct FNativeEndpoint
     std::array<std::uint8_t,4> Address{127,0,0,1};std::uint16_t Port=0;
     bool operator==(const FNativeEndpoint&) const noexcept=default;
 };
-enum class ENativeDatagram { Ready,WouldBlock,Closed,TooLarge,Invalid,Unsupported,Error };
+enum class ENativeDatagram { Ready,WouldBlock,Closed,TooLarge,Invalid,Unsupported,Error,PeerUnavailable };
 class IAMSPEED_API FNativeDatagramSocket final
 {
     struct FImpl;std::unique_ptr<FImpl> Impl;
@@ -26,6 +26,9 @@ public:
     ENativeDatagram Bind(const FNativeEndpoint& Requested);
     FNativeEndpoint LocalEndpoint() const;
     ENativeDatagram Send(const FNativeEndpoint& Destination,const std::vector<std::uint8_t>& Bytes);
+    // On Windows a previous UDP send to an unbound port can surface as an
+    // ICMP Port Unreachable notification here. PeerUnavailable contains no
+    // message and does not prove that the original peer process has exited.
     ENativeDatagram Receive(FNativeEndpoint& ActualSource,std::vector<std::uint8_t>& Bytes);
     void Close() noexcept;
 };

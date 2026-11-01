@@ -196,7 +196,7 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
             for(unsigned Work=0;Work<512;++Work)
             {
                 FLocalSessionMessage M;const auto Status=Channel->Receive(M);TraceTransport=int(Status);if(Status==ELocalSession::WouldBlock)break;
-                if(Status==ELocalSession::Pending||Status==ELocalSession::Duplicate||Status==ELocalSession::Stale||Status==ELocalSession::UnknownPeer)continue;
+                if(Status==ELocalSession::PeerUnavailable||Status==ELocalSession::Pending||Status==ELocalSession::Duplicate||Status==ELocalSession::Stale||Status==ELocalSession::UnknownPeer)continue;
                 if(Status!=ELocalSession::Ready|| (M.Peer!=PeerA&&M.Peer!=PeerB))return Fail(__LINE__);
                 const unsigned A=M.Peer==PeerA?0:1;
                 if(M.Kind==Hello||M.Kind==ObservedError90||M.Kind==ClientDone)
@@ -320,7 +320,7 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
         for(unsigned Work=0;Work<512;++Work)
         {
             FLocalSessionMessage M;const auto Status=Channel->Receive(M);TraceTransport=int(Status);if(Status==ELocalSession::WouldBlock)break;
-            if(Status==ELocalSession::Pending||Status==ELocalSession::Duplicate||Status==ELocalSession::Stale||Status==ELocalSession::UnknownPeer)continue;
+            if(Status==ELocalSession::PeerUnavailable||Status==ELocalSession::Pending||Status==ELocalSession::Duplicate||Status==ELocalSession::Stale||Status==ELocalSession::UnknownPeer)continue;
             if(Status!=ELocalSession::Ready||M.Peer!=Server)return Fail(__LINE__);
             if(M.Kind==RetentionAck||M.Kind==AuthorityInput)
             {

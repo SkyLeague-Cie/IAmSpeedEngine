@@ -93,6 +93,9 @@ ELocalSession FNativeLocalSession::Receive(FLocalSessionMessage& Message)
     if(!I.Alive()){I.Retire();return ELocalSession::PeerDead;}
     FNativeEndpoint Source;std::vector<std::uint8_t> Bytes;const auto Status=I.Socket.Receive(Source,Bytes);
     if(Status==ENativeDatagram::WouldBlock)return ELocalSession::WouldBlock;
+    // Keep the original process pins and bound socket. A late native module
+    // may not have bound its assigned port yet; no packet/ACK is invented.
+    if(Status==ENativeDatagram::PeerUnavailable)return ELocalSession::PeerUnavailable;
     if(Status!=ENativeDatagram::Ready)return ELocalSession::SocketError;
     auto P=std::find_if(I.Peers.begin(),I.Peers.end(),[&](const auto& V){return V.Assigned.Endpoint==Source;});
     if(P==I.Peers.end()||!P->Pin->MatchesObservedLoopbackEndpoint(Source))return ELocalSession::UnknownPeer;

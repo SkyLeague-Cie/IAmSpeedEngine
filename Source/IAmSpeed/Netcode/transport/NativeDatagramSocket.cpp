@@ -80,7 +80,7 @@ ENativeDatagram FNativeDatagramSocket::Receive(FNativeEndpoint& ActualSource,std
     std::array<char,NativeDatagramBudget+1> Buffer{};sockaddr_in A{};int Size=sizeof(A);
     const int Got=recvfrom(Impl->Handle,Buffer.data(),int(Buffer.size()),0,reinterpret_cast<sockaddr*>(&A),&Size);
     if(Got==SOCKET_ERROR)
-    {const int Error=WSAGetLastError();return Error==WSAEWOULDBLOCK?ENativeDatagram::WouldBlock:Error==WSAEMSGSIZE?ENativeDatagram::TooLarge:ENativeDatagram::Error;}
+    {const int Error=WSAGetLastError();return Error==WSAEWOULDBLOCK?ENativeDatagram::WouldBlock:Error==WSAEMSGSIZE?ENativeDatagram::TooLarge:Error==WSAECONNRESET?ENativeDatagram::PeerUnavailable:ENativeDatagram::Error;}
     if(Got<=0||A.sin_family!=AF_INET)return ENativeDatagram::Invalid;
     if(std::size_t(Got)>NativeDatagramBudget)return ENativeDatagram::TooLarge;
     ActualSource=FImpl::Endpoint(A);Bytes.assign(reinterpret_cast<const std::uint8_t*>(Buffer.data()),reinterpret_cast<const std::uint8_t*>(Buffer.data()+Got));return ENativeDatagram::Ready;

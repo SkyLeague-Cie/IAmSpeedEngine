@@ -16,7 +16,7 @@ struct FLocalSessionConfig
     FNativeEndpoint Endpoint;
     std::vector<FLocalSessionPeer> Peers;
 };
-enum class ELocalSession {Ready,Pending,Duplicate,Stale,WouldBlock,Closed,WrongOwner,Invalid,UnknownPeer,PeerDead,Full,SocketError};
+enum class ELocalSession {Ready,Pending,Duplicate,Stale,WouldBlock,Closed,WrongOwner,Invalid,UnknownPeer,PeerDead,Full,SocketError,PeerUnavailable};
 struct FLocalSessionMessage
 {std::uint64_t Peer=0,Sequence=0;std::uint8_t Kind=0;std::vector<std::uint8_t> Bytes;};
 // Controlled SAME-HOST launcher session. Config MUST come from the trusted
