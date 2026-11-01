@@ -42,7 +42,10 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};
     Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
     Actions[5]={true,true,true,127};Actions[6]={true,true,true,127};
-    P::FRemoteRequestHistory H(Seed.Remote,Actions,256,512),Z(Seed.Remote,Actions,256,512);
+    // Retain the complete finite scenario: oscillations run613frames, unlike
+    // the original121-frame campaign. Never evict history or relax its guards.
+    const size_t Retention=FMath::Max<size_t>(512,size_t(Case.FrameCount));
+    P::FRemoteRequestHistory H(Seed.Remote,Actions,256,Retention),Z(Seed.Remote,Actions,256,Retention);
     FMaxima Difference,Response;uint32 FilterDifferences=0,StartupDifferences=0;int64 FirstLocalCanMove=-1,FirstAuthorityCanMove=-1;
     const auto Body=[](const P::FPrivateRoadPublication& Pub)->const FSimulationPresentationBody*
     {return Pub.Actors.size()==1?Pub.Physics.PresentationBodies.FindByPredicate([&](const auto& X){return X.StableId==Pub.Actors[0].NativeStableId;}):nullptr;};
@@ -72,7 +75,12 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
                 Q.Input.Edges.push_back({uint8(Case.Action),uint8(Value?0:1),Value,N+1,0});
             return Q;
         };
-        if(H.Confirm(5,Packet(false)).Status!=EResult::Accepted||Z.Confirm(5,Packet(true)).Status!=EResult::Accepted)return false;
+        const auto HC=H.Confirm(5,Packet(false)).Status,ZC=Z.Confirm(5,Packet(true)).Status;
+        if(HC!=EResult::Accepted||ZC!=EResult::Accepted)
+        {
+            Test.AddError(FString::Printf(TEXT("%s frame=%llu retained=%llu remoteConfirm=%d neutralConfirm=%d: no physical comparison inferred"),
+                Case.Name,N,uint64(Retention),int(HC),int(ZC)));return false;
+        }
         if(!Local->Step({{101,3,Input}},false,Why)||!Authority->Step({{101,3,H.Predict(N)}},false,Why)
             ||!Neutral->Step({{101,3,Z.Predict(N)}},false,Why))
         {Test.AddError(FString::Printf(TEXT("%s native step %llu: %s"),Case.Name,N,*Why));return false;}
