@@ -19,7 +19,7 @@ bool FIASNativeLatePeerDatagram::RunTest(const FString&)
     {
         if(!TestTrue(TEXT("unbound destination accepts a datagram send, not an ACK"),Sender.Send(Destination,Payload)==ENativeDatagram::Ready))return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        FNativeEndpoint From;std::vector<std::uint8_t> Bytes;const auto Status=Sender.Receive(From,Bytes);
+        FNativeEndpoint From=Destination;std::vector<std::uint8_t> Bytes{99,98};const auto Status=Sender.Receive(From,Bytes);
         if(Status==ENativeDatagram::PeerUnavailable)++Notices;
         else if(!TestTrue(TEXT("no delivered message from the still unbound endpoint"),Status==ENativeDatagram::WouldBlock))return false;
         if(!TestTrue(TEXT("unavailable notification carries no source or input bytes"),From.Port==0&&Bytes.empty()))return false;

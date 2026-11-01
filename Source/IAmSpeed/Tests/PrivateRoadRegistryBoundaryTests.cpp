@@ -6,13 +6,37 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
+#include "UObject/ObjectKey.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASPrivateRoadRegistryBoundary,"IAmSpeed.Netcode.Prediction.PrivateRoadRegistryBoundary",
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
 bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
 {
     namespace P=Speed::Netcode::Prediction;using namespace Speed::Netcode;
-    TSet<UWorld*> Before;for(TObjectIterator<UWorld> It;It;++It)if(!It->IsTemplate())Before.Add(*It);
+    TSet<FObjectKey> Before;for(TObjectIterator<UWorld> It;It;++It)if(!It->IsTemplate())Before.Add(FObjectKey(*It));
+    UWorld* CallbackWorld=nullptr;USpeedBranchWheeledComponent* CallbackComponent=nullptr;
+    int32 ActualCleanupCallbacks=0;bool ActualCleanupRead=false;
+    const auto CreationHandle=FWorldDelegates::OnPostWorldCreation.AddLambda([&](UWorld* Created)
+    {
+        // Real callback registered BEFORE private native birth. Do not inspect
+        // partially initialized world internals or run on a foreign thread.
+        if(IsInGameThread()&&Created&&!Before.Contains(FObjectKey(Created)))CallbackWorld=Created;
+    });
+    const auto CleanupHandle=FWorldDelegates::OnWorldCleanup.AddLambda([&](UWorld* Retiring,bool,bool)
+    {
+        if(!IsInGameThread()||Retiring!=CallbackWorld)return;
+        ++ActualCleanupCallbacks;
+        if(IsValid(CallbackComponent))
+        {
+            // A real supported native read through the retained original
+            // component, DURING actual owner retirement. This is a remaining
+            // external reader, never an invented exclusion/drain receipt.
+            const SKinematic Copy=CallbackComponent->GetKinematicState();
+            ActualCleanupRead=!Copy.Location.ContainsNaN()&&!Copy.Velocity.ContainsNaN();
+        }
+    });
+    ON_SCOPE_EXIT{FWorldDelegates::OnPostWorldCreation.Remove(CreationHandle);FWorldDelegates::OnWorldCleanup.Remove(CleanupHandle);};
     P::FPrivateRoadCarSeed Seed;Seed.Actor=101;Seed.Incarnation=3;
     Seed.Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});
     Seed.Local={Speed::Input::EProducerKind::Device,42};Seed.LocalEpoch={3};
@@ -23,13 +47,15 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     // Use the REAL global enumeration path, not a private owner test accessor.
     // Finding it is evidence that this negative test does NOT close that path.
     UWorld* EscapedWorld=nullptr;
-    for(TObjectIterator<UWorld> It;It;++It)if(!It->IsTemplate()&&!Before.Contains(*It))
+    for(TObjectIterator<UWorld> It;It;++It)if(!It->IsTemplate()&&!Before.Contains(FObjectKey(*It)))
     {if(!TestTrue(TEXT("one actual new native world"),!EscapedWorld))return false;EscapedWorld=*It;}
     if(!TestTrue(TEXT("actual world remains globally discoverable"),bool(EscapedWorld)))return false;
+    if(!TestTrue(TEXT("actual global birth callback retained the SAME original world"),CallbackWorld==EscapedWorld))return false;
     ASpeedBranchCar* Car=nullptr;for(TActorIterator<ASpeedBranchCar> It(EscapedWorld);It;++It)Car=*It;
     auto* Component=Car?Cast<USpeedBranchWheeledComponent>(Car->GetVehicleMovement()):nullptr;
     auto* Bridge=EscapedWorld->GetSubsystem<USpeedWorldSubsystem>();
     if(!TestTrue(TEXT("actual component and registry escaped via supported Engine enumeration"),Component&&Bridge))return false;
+    CallbackComponent=Component;
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
     P::FRemoteRequestHistory History(B,Actions,8,8);
     FPacket Packet;Packet.Kind=EKind::AuthorityInput;Packet.Session=B.Session;Packet.Epoch=B.Epoch;Packet.Actor=B.Actor;Packet.Incarnation=B.Incarnation;Packet.Contract=B.Contract;Packet.Sequence=1;
@@ -49,7 +75,8 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestFalse(TEXT("materialized roster drift refused before native advance"),Owner->Step(First,false,Why));
     TestTrue(TEXT("original frozen publication retained after both actual failures"),Owner->ReadLatest()==Baseline&&!Baseline->Actors[0].CanMove);
     TestTrue(TEXT("actual owning graph retires on original GT"),Owner->Close());
-    AddInfo(TEXT("[IASPrivateRegistryBoundary] actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 global_engine_enumeration_still_open=1 complete_lease=0"));
+    TestTrue(TEXT("original owner retirement actually invoked retained global world callback"),ActualCleanupCallbacks>0);
+    AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead)));
     return !HasAnyErrors();
 }
 #endif
