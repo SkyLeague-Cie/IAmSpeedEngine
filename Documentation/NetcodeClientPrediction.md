@@ -226,3 +226,22 @@ correction. A game host, real acquisition, complete native restore, interaction
 closure and real two-playable-client/dedicated-server tests are still required.
 This cooperative source is NOT_RUN until its own native build and three-process
 qualification; preceding native53 or54 results do not qualify it.
+
+### Private native mutation and retirement refusals (source, not admitted restore)
+
+The private native subtype rejects the public legacy snapshot entry before any
+common cache, static-support, pose, frozen, mechanic or sub-body write, even
+when checks are disabled. The ordinary valid legacy path retains its existing
+behavior. The world legacy caller validates every component before its first
+mutation; private components reject that preflight too. The void compatibility
+entry is not a success receipt, a complete restore provider or an atomic cohort.
+The native negative now uses the actual component-captured, successfully decoded
+mechanic payload rather than only an invalid empty envelope. Development
+automation alone does not constitute a checks-disabled native lane.
+
+Private phase-observer installation is refused before writing the actual base
+storage. This does not revoke a previously retained view or drain a callback
+already in flight. Original native wheel and suspension storage remains alive
+through synchronous world cleanup callbacks, then surviving UObject bindings
+are cleared before storage retirement. Future escaped readers and writers are
+still unqualified; complete restore admission remains closed.

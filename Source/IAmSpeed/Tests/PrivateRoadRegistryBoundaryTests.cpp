@@ -10,6 +10,7 @@
 #include "UObject/ObjectKey.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "WheelSystem.h"
+#include "IAmSpeed/Base/CarBumpSnapshot.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 
 namespace
@@ -83,8 +84,12 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestFalse(TEXT("actual base observer storage remains empty"),Adapter.ISpeedComponent::IsPhysicsPhaseObservationEnabled());
     const SKinematic BeforeLegacy=Adapter.GetKinematicState();const bool FrozenBeforeLegacy=Adapter.IsFrozen();
     SKinematic WrongLegacy=BeforeLegacy;WrongLegacy.Location.X+=999;
-    TestFalse(TEXT("private component declares all legacy snapshot payloads inadmissible"),Adapter.CanRestoreSimulationSnapshot({}));
-    Adapter.RestoreSimulationSnapshot(WrongLegacy,!FrozenBeforeLegacy,{});
+    TArray<uint8> ActualMechanicPayload;Adapter.AppendSimulationSnapshot(ActualMechanicPayload);
+    std::uint16_t ActualCooldown=0;std::uint64_t ActualVictim=0;
+    TestTrue(TEXT("real native captured mechanic payload decodes, not an invalid empty envelope"),
+        Speed::Collision::DecodeCarBumpSnapshot(ActualMechanicPayload.GetData(),ActualMechanicPayload.Num(),ActualCooldown,ActualVictim));
+    TestFalse(TEXT("private component refuses even its genuine captured legacy snapshot payload"),Adapter.CanRestoreSimulationSnapshot(ActualMechanicPayload));
+    Adapter.RestoreSimulationSnapshot(WrongLegacy,!FrozenBeforeLegacy,ActualMechanicPayload);
     const auto Refused=P::MeasurePrivateRoadKinematics(BeforeLegacy,Adapter.GetKinematicState());
     TestTrue(TEXT("real direct legacy restore is refused before native kinematic/frozen writes"),Refused.Valid&&!Refused.Different&&Adapter.IsFrozen()==FrozenBeforeLegacy);
     const auto& InitialWheels=Component->GetWheelSubBodies();
