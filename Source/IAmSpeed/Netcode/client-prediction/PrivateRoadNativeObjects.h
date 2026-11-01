@@ -7,6 +7,7 @@
 #include <memory>
 #include "PrivateRoadNativeObjects.generated.h"
 namespace Speed::Netcode::Prediction { struct FPrivateRoadAccess;class FPrivateRoadPhysicsWorld; }
+namespace Speed::CommonState {struct FSleepValues;struct FQuantizationValues;}
 
 // Only the private physical factory selects this default subobject subtype.
 // Observe the real native dispatch; do not add impulses or optional constraints.
@@ -26,6 +27,12 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
     bool HasIsolatedNativeConstruction() const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    // Copies only the declared cache subset during this original native step.
+    // No mutable reference, restore authority or complete coverage is returned.
+    bool CopyActualCacheDiagnosticValues(Speed::CommonState::FSleepValues&,
+        Speed::CommonState::FQuantizationValues&) const;
+#endif
     bool IsInitialSynchronizationComplete() const override;
     void UpdateInputs() override;
     friend class USpeedBranchBoxSubBody;

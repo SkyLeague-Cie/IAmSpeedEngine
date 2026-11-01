@@ -1,4 +1,5 @@
 #pragma once
+#include "PrivateRoadPhysicsWorld.h"
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
 #include "IAmSpeed/Netcode/Common/NativeCommonCacheAccess.h"
@@ -113,8 +114,8 @@ template<class Component>bool Capture(Component& C,uint64 Actor,uint64 Incarnati
 {
     Out.NativePartialValuesAvailable=false;
     if(!IsInGameThread()||!Actor||!Incarnation||C.GetWheelSubBodies().Num()!=4)return false;
-    const auto Sleep=FCommonCacheValueAccess::Capture(C.SleepState);
-    const auto Quantization=FCommonCacheValueAccess::Capture(C.KinematicQuantizationCache);
+    const auto Sleep=Out.NativeSleep;
+    const auto Quantization=Out.NativeQuantization;
     if(!CommonState::ValidCaches(Sleep,Quantization))return false;
     FFramePointerRegistry Registry;
     FFramePointerKey Key;Key.Domain=72;Key.Owner=Actor;Key.Generation=Incarnation;Key.Role=1;Key.Membership={0,1,2,3};
@@ -126,8 +127,9 @@ template<class Component>bool Capture(Component& C,uint64 Actor,uint64 Incarnati
     FCheckedWriter::Add(Raw,uint32(1));
     if(!AppendCheckedWheelConfig(Raw,WheelConfig))return false;
     AppendCheckedSuspensionConfig(Raw,SuspensionConfig);
-    for(const auto* Body:C.GetWheelSubBodies())
+    for(const auto& Entry:C.GetWheelSubBodies())
     {
+        const auto* Body=Entry.Get();
         if(!Body||!Body->GetWheelSim()||!Body->GetSuspensionSim())return false;
         AppendCheckedWheel(Raw,*Body->GetWheelSim());
         const FCheckedSuspensionCopy Copy(*Body->GetSuspensionSim());Copy.Append(Raw);

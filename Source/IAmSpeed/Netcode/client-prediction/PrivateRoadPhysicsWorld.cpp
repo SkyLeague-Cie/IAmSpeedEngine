@@ -351,8 +351,10 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         // This is a read-only declared-subset observation, not a complete-state
         // capture through the guarded restore provider. Unknown remains false.
-        PartialObservation::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
-            N->WheelConfig,N->SuspensionConfig,Out->Actors.back());
+        auto& Observation=Out->Actors.back();
+        if(N->Component->CopyActualCacheDiagnosticValues(Observation.NativeSleep,Observation.NativeQuantization))
+            PartialObservation::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
+                N->WheelConfig,N->SuspensionConfig,Observation);
 #endif
     }
     if(I.Access->RequiresInitialPublication)for(const auto& A:Out->Actors)
@@ -452,6 +454,18 @@ bool USpeedBranchWheeledComponent::HasIsolatedNativeConstruction() const
 #endif
         ;
 }
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedBranchWheeledComponent::CopyActualCacheDiagnosticValues(
+    Speed::CommonState::FSleepValues& Sleep,Speed::CommonState::FQuantizationValues& Quantization) const
+{
+    const auto A=Access.lock();
+    if(!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||!A->Slots.Contains(this))return false;
+    const auto S=Speed::FCommonCacheValueAccess::Capture(SleepState);
+    const auto Q=Speed::FCommonCacheValueAccess::Capture(KinematicQuantizationCache);
+    if(!Speed::CommonState::ValidCaches(S,Q))return false;
+    Sleep=S;Quantization=Q;return true;
+}
+#endif
 bool USpeedBranchWheeledComponent::IsInitialSynchronizationComplete() const
 {
     const auto A=Access.lock();return A&&(!A->RequiresInitialPublication||A->InitialPublicationReleased);
