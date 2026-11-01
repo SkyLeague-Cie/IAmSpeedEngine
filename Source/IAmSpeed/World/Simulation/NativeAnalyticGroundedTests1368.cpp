@@ -614,7 +614,9 @@ bool FIAmSpeedNativeAnalyticGrounded1368::RunTest(const FString&)
      W::Add(RawStates,bool(Value));if(!Value)return;
      Testing1368::AppendInput(RawStates,Value->Requested);W::Add(RawStates,Value->LocalFrame);W::Add(RawStates,Value->SinceCanMove);
     };
-    AppendNetworkInput(std::atomic_load_explicit(&C->PreparedWheeledNetworkInput,std::memory_order_acquire));
+    // Prepared scratch is read here on its original canonical worker after
+    // DriveOwnedWorkerPulse; the separate published mailbox below is atomic.
+    AppendNetworkInput(C->PreparedWheeledNetworkInput);
     AppendNetworkInput(C->PublishedWheeledNetworkInput.load(std::memory_order_acquire));
     W::Add(RawStates,C->bGenericCameraInputEnabled.load(std::memory_order_acquire));
     W::Add(RawStates,C->PendingCameraInput.load(std::memory_order_acquire));
