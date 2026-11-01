@@ -423,8 +423,11 @@ float GetSmishTurnTargetSpeed(
 }
 }
 
-USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer) :
-	Super(ObjectInitializer)
+USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer)
+    :USpeedWheeledComponent(ObjectInitializer,ESpeedWheeledNetworkConstruction::Legacy) {}
+
+USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer,ESpeedWheeledNetworkConstruction Policy) :
+	Super(ObjectInitializer),NetworkConstruction(Policy)
 {
     // Chaos can construct a THIRD network component in Super when prediction is
     // enabled. Keep that original DSO inert before registration too; no removal
@@ -436,6 +439,12 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 
 	InitChaosVehicle();
 	InitNetwork();
+
+    // Physical recorded slots are independent of any UE network component.
+    RecordedBaseFrames.Init(INDEX_NONE, SpeedConstants::RecordedHistorySize);
+    RecordedBaseFrames.SetNum(SpeedConstants::RecordedHistorySize);
+    RecordedBaseStates.SetNum(SpeedConstants::RecordedHistorySize);
+    RecordedWheeledStates.SetNum(SpeedConstants::RecordedHistorySize);
 
 	SetEngineFPS(Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize));
 	GravityZ = GetDefault<UPhysicsSettings>()->DefaultGravityZ;
@@ -5215,6 +5224,7 @@ bool USpeedWheeledComponent::IsLegacyNetworkHistoryExcluded() const
 
 void USpeedWheeledComponent::InitNetwork()
 {
+    if(NetworkConstruction==ESpeedWheeledNetworkConstruction::IAmSpeedOnly)return;
 	static const FName SpeedNetSettingsName(TEXT("PC_SpeedNetSettingsName"));
 	SNetworkSettings = CreateDefaultSubobject<UNetworkPhysicsSettingsComponent, UNetworkPhysicsSettingsComponent>(SpeedNetSettingsName);
 	NetDataAsset = CreateDefaultSubobject<UNetworkPhysicsSettingsDataAsset, UNetworkPhysicsSettingsDataAsset>(TEXT("SpeedSettingsDataAsset"));
@@ -5234,10 +5244,6 @@ void USpeedWheeledComponent::InitNetwork()
 	WheeledNetworkPhysicsComponent->SetIsReplicated(true);
 	WheeledNetworkPhysicsComponent->bAutoRegister = false;
 
-	RecordedBaseFrames.Init(INDEX_NONE, SpeedConstants::RecordedHistorySize);
-	RecordedBaseFrames.SetNum(SpeedConstants::RecordedHistorySize);
-	RecordedBaseStates.SetNum(SpeedConstants::RecordedHistorySize);
-	RecordedWheeledStates.SetNum(SpeedConstants::RecordedHistorySize);
 }
 
 bool USpeedWheeledComponent::TryComputeWheelFrameNormalSteeringInputFraction(float& OutFraction) const

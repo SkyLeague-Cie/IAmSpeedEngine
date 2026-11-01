@@ -42,6 +42,7 @@ struct FPrivateRoadPublication
 {
     U64 LocalKernelLifetime=0,Frame=0;
     bool AwaitingInitialPublication=false;
+    uint32 NativeNetworkComponents=0; // actual native object census, not history-only
     FSimulationSnapshot Physics;
     std::vector<FPrivateRoadActorFrame> Actors;
 };

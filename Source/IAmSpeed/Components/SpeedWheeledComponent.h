@@ -20,6 +20,9 @@ namespace Speed::Replay { class FFieldWriter; }
 namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;}
 class USpeedBranchWheeledComponent;
 
+// Explicit construction policy; never inferred from role, time or a packet.
+enum class ESpeedWheeledNetworkConstruction : uint8 { Legacy, IAmSpeedOnly };
+
 DECLARE_LOG_CATEGORY_EXTERN(WheelNetcodeLog, Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(SpeedInputLog, Log, All);
 
@@ -335,6 +338,8 @@ private:
 	void HandleWheelTimers();
 	// End Timer methods
 protected:
+    USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer,ESpeedWheeledNetworkConstruction Policy);
+    const ESpeedWheeledNetworkConstruction NetworkConstruction;
 	virtual void InitChaosVehicle();
 	void InitNetwork();
 	void SetSubBodies(const TArray<USSubBody*>& NewSubBodies);

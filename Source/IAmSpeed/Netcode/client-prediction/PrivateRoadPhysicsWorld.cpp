@@ -8,6 +8,7 @@
 #include "Engine/World.h"
 #include "Components/BoxComponent.h"
 #include "Physics/NetworkPhysicsComponent.h"
+#include "Chaos/Framework/PhysicsSolverBase.h"
 #include "ChaosVehicleWheel.h"
 #include "SimpleVehicle.h"
 #include "SuspensionSystem.h"
@@ -65,13 +66,14 @@ bool Finite(const SKinematic& K)
         &&!K.AngularVelocity.ContainsNaN()&&!K.AngularAcceleration.ContainsNaN()
         &&K.Rotation.IsNormalized();
 }
-bool NoNetworkOwner(UWorld* World)
+uint32 NativeNetworkComponentCount(UWorld* World)
 {
+    uint32 Count=0;
     for(TObjectIterator<UNetworkPhysicsComponent> It;It;++It)
-        if(!It->IsTemplate()&&It->GetWorld()==World&&(It->IsRegistered()
-            ||It->GetStateHistory_External()||It->GetInputHistory_External()))return false;
-    return true;
+        if(!It->IsTemplate()&&It->GetWorld()==World)++Count;
+    return Count;
 }
+bool NoNetworkOwner(UWorld* World) {return World&&!World->GetNetDriver()&&NativeNetworkComponentCount(World)==0;}
 }
 struct FPrivateRoadPhysicsWorld::FImpl
 {
@@ -115,8 +117,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
 {
     Why.Empty();
     if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive()
-        ||Speed::Netcode::PresentationClient::IsSelected()||Seeds.empty()||Seeds.size()>16)
-    {Refuse(Why,TEXT("private native world requires GT, physical profile and finite nonempty roster"));return {};}
+        ||Speed::Netcode::PresentationClient::IsSelected()||Seeds.empty()||Seeds.size()>16
+        ||Chaos::FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled())
+    {Refuse(Why,TEXT("private native world requires GT, IAS-only physical profile, disabled Chaos prediction and finite roster"));return {};}
     std::sort(Seeds.begin(),Seeds.end(),[](const auto& A,const auto& B){return A.Actor<B.Actor;});
     for(const auto& Seed:Seeds)if(!Seed.Contract||!PrivateRoadSupportedContract(*Seed.Contract))
     {Refuse(Why,TEXT("unsupported private road action contract"));return {};}
@@ -244,7 +247,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     const U64 Frame=I.Driver->NextPrivate();
     if(Frame&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
         return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
-    if(Frame>=uint64(MAX_int32-1)||!NoNetworkOwner(I.World.Get()))return Refuse(Why,TEXT("private step native domain changed"));
+    if(Frame>=uint64(MAX_int32-1)||Chaos::FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled()||!NoNetworkOwner(I.World.Get()))return Refuse(Why,TEXT("private step native domain changed"));
     std::vector<FBranchInputFilter::FPrepared> Plans;Plans.reserve(I.Cars.size());
     I.Access->Slots.Empty();
     ON_SCOPE_EXIT{I.Access->Active=false;I.Access->Slots.Empty();};
@@ -284,6 +287,8 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     }
     auto Out=std::make_shared<FPrivateRoadPublication>();Out->LocalKernelLifetime=I.Lifetime;Out->Frame=Frame;
     Out->AwaitingInitialPublication=I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased;
+    Out->NativeNetworkComponents=NativeNetworkComponentCount(I.World.Get());
+    if(Out->NativeNetworkComponents)return Fail(TEXT("UE NetworkPhysics object appeared in IAS-only native graph"));
     if(!I.Driver->ReadLatestSimulationSnapshot(Out->Physics)||Out->Physics.NumFrame!=Frame
         ||Out->Physics.PresentationBodies.Num()!=int32(I.Cars.size()))return Fail(TEXT("private native publication mismatch"));
     for(const auto& N:I.Cars)
@@ -350,7 +355,8 @@ bool FPrivateRoadPhysicsWorld::Close()
 }
 }
 
-USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer):Super(Initializer)
+USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer)
+    :Super(Initializer,ESpeedWheeledNetworkConstruction::IAmSpeedOnly)
 {
     // ASpeedCar deliberately applies its generic road recipe only to the
     // exact generic component class. This specialized native owner explicitly
@@ -358,13 +364,9 @@ USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitiali
     Speed::Driving::ApplyStockRoadCar(*this);
     PrimaryComponentTick.bCanEverTick=false;PrimaryComponentTick.bStartWithTickEnabled=false;
     SetAsyncPhysicsTickEnabled(false);
-    // Default subobjects already exist after the base constructor. Freeze the
-    // actual network subobject's registration policy BEFORE actor registration.
-    ForEachObjectWithOuter(this,[](UObject* Object)
-    {
-        if(auto* Network=Cast<UNetworkPhysicsComponent>(Object))
-        {Network->bAutoRegister=false;Network->PrimaryComponentTick.bCanEverTick=false;}
-    },true);
+    // No IAS legacy network DSOs are constructed. The factory also requires
+    // Chaos prediction disabled before construction, and censuses zero actual
+    // UE NetworkPhysics objects before every private canonical transition.
 }
 void USpeedBranchWheeledComponent::OnRegister() {UPawnMovementComponent::OnRegister();}
 void USpeedBranchWheeledComponent::OnCreatePhysicsState() {UActorComponent::OnCreatePhysicsState();}
