@@ -29,7 +29,8 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     bool IsInitialSynchronizationComplete() const override;
     void UpdateInputs() override;
     friend class USpeedBranchBoxSubBody;
-    void ObserveBoxContactDispatch(const USSubBody&,const UBoxSubBody&);
+    void ObserveContactPair(const USSubBody&,const USSubBody&,uint8 Kind);
+    void RegisterWheelGroundContact(const SWheelGroundContact&) override;
     void OnRegister() override;
     void OnCreatePhysicsState() override;
     void OnDestroyPhysicsState() override;

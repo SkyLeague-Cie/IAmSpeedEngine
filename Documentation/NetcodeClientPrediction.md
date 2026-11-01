@@ -309,3 +309,16 @@ countdown, warmup or adopted production horizon. Per-actor COM/velocity and
 actual hitbox center/extent values at completed cuts diagnose approach versus
 vertical/support motion. Contact remains mandatory, full native reconstruction
 still replays all3actors, and no complete state or localized claim is added.
+
+
+Source40 preserves native35's box-only FAIL (zero box/box dispatch over3s).
+The NEW RetainedVehicleInteractionNativeExperiment observes actual private
+box/solid resolution dispatch and actual wheel/other-car-box contact registration,
+with distinct bounded counters. Super runs once; no impulse/geometry/input/startup
+change. Registration is not an impulse or complete-contact certificate. A fourth
+genuine control world changes only the opponent's lateral proximity; actor101's
+original seed/input/gate are unchanged. Require a real different-car event AND
+over1cm actor101 difference versus that control before accepting vehicle coupling.
+Then the original retained graph must replay890frames and match all3actors and
+the independently observed event sequence. All3 replay, so this is NOT localized.
+The old test/source FAIL is not reclassified. No restore/borrow guard opens.

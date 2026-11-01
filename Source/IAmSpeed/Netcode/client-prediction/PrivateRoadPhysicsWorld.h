@@ -40,14 +40,14 @@ struct FPrivateRoadActorFrame
     FVector NativeHitboxHalfExtent=FVector::ZeroVector;
     FVector NativeHitboxCenter=FVector::ZeroVector; // actual queried child storage, not reconstructed COM
 };
-// Conservative dependency witness from actual native blocking box/box
-// resolution dispatch, including contacts whose impulse is zero. This is NOT
-// an impulse receipt, complete contact state, or gameplay-effect certificate.
+// Observed actual private native box dispatches and wheel contact registrations.
+// Counts are conservative dependencies, including zero impulse. Registration is
+// not proof of impulse; these events do not certify complete contact coverage.
 struct FPrivateRoadContactDispatchPair
 {
-    U64 ActorA=0,ActorB=0;uint32 Dispatches=0;
+    U64 ActorA=0,ActorB=0;uint32 Dispatches=0,BoxWheelDispatches=0,WheelRegistrations=0;
     bool operator==(const FPrivateRoadContactDispatchPair& R) const noexcept
-    {return ActorA==R.ActorA&&ActorB==R.ActorB&&Dispatches==R.Dispatches;}
+    {return ActorA==R.ActorA&&ActorB==R.ActorB&&Dispatches==R.Dispatches&&BoxWheelDispatches==R.BoxWheelDispatches&&WheelRegistrations==R.WheelRegistrations;}
 };
 struct FPrivateRoadPublication
 {
@@ -56,7 +56,7 @@ struct FPrivateRoadPublication
     uint32 NativeNetworkComponents=0; // actual object census, not just history
     uint32 NativeDebugDelegateBindings=0; // bound entries; not an in-flight-reader drain certificate
     bool RenderScenePresent=false,PhysicsScenePresent=false; // actual private world scene pointers
-    bool ContactDispatchObservationComplete=false;
+    bool ContactDispatchObservationComplete=false; // bounded event storage only, not complete physical coverage
     std::vector<FPrivateRoadContactDispatchPair> ContactDispatchPairs;
     FSimulationSnapshot Physics;
     std::vector<FPrivateRoadActorFrame> Actors;

@@ -9,10 +9,10 @@
 #include "UObject/ObjectKey.h"
 #include "Components/PrimitiveComponent.h"
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASRetainedInteractingNative,
-    "IAmSpeed.Netcode.Prediction.RetainedInteractingNativeExperiment",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASRetainedVehicleInteractionNative,
+    "IAmSpeed.Netcode.Prediction.RetainedVehicleInteractionNativeExperiment",
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
-bool FIASRetainedInteractingNative::RunTest(const FString&)
+bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
 {
     namespace P=Speed::Netcode::Prediction;using namespace Speed::Netcode;
     constexpr U64 Cut=10,Change=20,Last=900; // 3s observation, never startup warmup
@@ -35,7 +35,7 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
     Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
     using H=std::vector<std::unique_ptr<P::FRemoteRequestHistory>>;
     const auto Histories=[&]{H Out;for(const auto& S:Seeds)Out.push_back(std::make_unique<P::FRemoteRequestHistory>(S.Remote,Actions,1024,2048));return Out;};
-    auto RH=Histories(),LH=Histories(),KH=Histories();
+    auto RH=Histories(),LH=Histories(),KH=Histories(),UH=Histories();
     const auto Value=[](U64 A,U64 N){return A==0&&N>=Change&&((N-Change)/10)%2==0?255:0;};
     const auto Packet=[&](U64 A,U64 N)
     {
@@ -53,7 +53,12 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
     FString Why;
     auto Reference=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
     auto Live=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why),Retained=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
-    if(!TestTrue(*Why,Reference&&Live&&Retained))return false;
+    // A separate genuine native world controls only the neighbor's proximity.
+    // Actor101 retains exactly the reference seed/inputs/gate; actor102 moves
+    // laterally 100m away. This is a causal comparison, not rollback locality.
+    auto UncoupledSeeds=Seeds;UncoupledSeeds[1].Initial.Location.Y=10000;
+    auto Uncoupled=P::FPrivateRoadPhysicsWorld::Create(UncoupledSeeds,Why);
+    if(!TestTrue(*Why,Reference&&Live&&Retained&&Uncoupled))return false;
     const auto Same=[&](const auto& X,const auto& Y)
     {
         if(!X||!Y||X->Frame!=Y->Frame||X->Actors.size()!=3||Y->Actors.size()!=3)return false;
@@ -73,7 +78,8 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
     };
     const auto Requests=[&](H& Hist,U64 N)
     {std::vector<P::FPrivateRoadRequest> Out;for(size_t A=0;A<3;++A)Out.push_back({Seeds[A].Actor,3,Hist[A]->Predict(N)});return Out;};
-    uint64 DynamicContactFrames=0,FirstContact=0;
+    uint64 DynamicContactFrames=0,FirstContact=0,BoxContactFrames=0,WheelRegistrationFrames=0,BoxWheelFrames=0;
+    double MaximumControlDifference=0;
     double NearestCOM=MAX_dbl,MaximumTravel=0;
     FVector StartCOM=FVector::ZeroVector;
     std::shared_ptr<const P::FPrivateRoadPublication> OriginalCut;
@@ -83,16 +89,16 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
         for(size_t A=0;A<3;++A)
         {
             const auto Q=Packet(A,N);
-            if(RH[A]->Confirm(9,Q).Status!=EResult::Accepted||KH[A]->Confirm(9,Q).Status!=EResult::Accepted)return false;
+            if(RH[A]->Confirm(9,Q).Status!=EResult::Accepted||KH[A]->Confirm(9,Q).Status!=EResult::Accepted||UH[A]->Confirm(9,Q).Status!=EResult::Accepted)return false;
             if((A!=0||N<Change)&&LH[A]->Confirm(9,Q).Status!=EResult::Accepted)return false;
         }
-        if(!Reference->Step(Requests(RH,N),false,Why)||!Live->Step(Requests(LH,N),false,Why))return false;
+        if(!Reference->Step(Requests(RH,N),false,Why)||!Live->Step(Requests(LH,N),false,Why)||!Uncoupled->Step(Requests(UH,N),false,Why))return false;
         if(N<=Cut&&!Retained->Step(Requests(KH,N),false,Why))return false;
         if(N==0)
         {
-            const auto R=Reference->ReadLatest(),L=Live->ReadLatest(),K=Retained->ReadLatest();
+            const auto R=Reference->ReadLatest(),L=Live->ReadLatest(),K=Retained->ReadLatest(),U=Uncoupled->ReadLatest();
             if(!TestTrue(TEXT("actual synchronized frozen native baseline"),Same(R,L)&&Same(R,K)))return false;
-            if(!Reference->ReleaseInitialPublication(R,Why)||!Live->ReleaseInitialPublication(L,Why)||!Retained->ReleaseInitialPublication(K,Why))return false;
+            if(!Reference->ReleaseInitialPublication(R,Why)||!Live->ReleaseInitialPublication(L,Why)||!Retained->ReleaseInitialPublication(K,Why)||!Uncoupled->ReleaseInitialPublication(U,Why))return false;
         }
         if(N==Cut){OriginalCut=Retained->ReadLatest();if(!Same(Reference->ReadLatest(),OriginalCut))return false;}
         const auto Actual=Reference->ReadLatest();
@@ -100,7 +106,13 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
         ActualReferenceContactDispatches.push_back(Actual->ContactDispatchPairs);
         const auto* BA=Actual->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Actual->Actors[0].NativeStableId;});
         const auto* BB=Actual->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Actual->Actors[1].NativeStableId;});
-        if(!BA||!BB)return false;
+        const auto U=Uncoupled->ReadLatest();
+        const auto* UB=U->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==U->Actors[0].NativeStableId;});
+        if(!BA||!BB||!UB)return false;
+        const auto Control=P::MeasurePrivateRoadKinematics(BA->COMState,UB->COMState);
+        if(!Control.Valid)return false;
+        if(N==0&&!TestTrue(TEXT("controlled actor has exact synchronized baseline before neighboring motion"),!Control.Different))return false;
+        MaximumControlDifference=FMath::Max(MaximumControlDifference,Control.Position);
         if(N==0)StartCOM=BA->COMState.Location;
         NearestCOM=FMath::Min(NearestCOM,FVector::Distance(BA->COMState.Location,BB->COMState.Location));
         MaximumTravel=FMath::Max(MaximumTravel,FVector::Distance(StartCOM,BA->COMState.Location));
@@ -112,9 +124,11 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
                 if(!Body)return false;const auto& K=Body->COMState;
                 AddInfo(FString::Printf(TEXT("[IASInteractionTrajectory] frame=%llu actor=%llu x=%.17g y=%.17g z=%.17g vx=%.17g vy=%.17g vz=%.17g hitbox_x=%.17g hitbox_y=%.17g hitbox_z=%.17g half_x=%.17g half_y=%.17g half_z=%.17g can_move=%d frozen=%d"),N,F.Actor,K.Location.X,K.Location.Y,K.Location.Z,K.Velocity.X,K.Velocity.Y,K.Velocity.Z,F.NativeHitboxCenter.X,F.NativeHitboxCenter.Y,F.NativeHitboxCenter.Z,F.NativeHitboxHalfExtent.X,F.NativeHitboxHalfExtent.Y,F.NativeHitboxHalfExtent.Z,int(F.CanMove),int(F.Frozen)));
             }
-        bool Contact=false;
+        bool Contact=false,Box=false,BoxWheel=false,Wheel=false;
         for(const auto& Pair:Actual->ContactDispatchPairs)
-            if(Pair.ActorA==101&&Pair.ActorB==102&&Pair.Dispatches>0)Contact=true;
+            if(Pair.ActorA==101&&Pair.ActorB==102)
+            {Box=Pair.Dispatches>0;BoxWheel=Pair.BoxWheelDispatches>0;Wheel=Pair.WheelRegistrations>0;Contact=Box||BoxWheel||Wheel;}
+        if(Box)++BoxContactFrames;if(BoxWheel)++BoxWheelFrames;if(Wheel)++WheelRegistrationFrames;
         if(Contact){if(!DynamicContactFrames)FirstContact=N;++DynamicContactFrames;}
     }
     AddInfo(FString::Printf(TEXT("[IASInteractingFixtureMotion] native=1 default_sync_gate=1 throttle_after_release=1 nearest_com_cm=%.17g max_actor0_travel_cm=%.17g actual_box_contact_dispatch_frames=%llu"),NearestCOM,MaximumTravel,DynamicContactFrames));
@@ -128,7 +142,9 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
         if(!B||!C)return false;MaximumBefore=FMath::Max(MaximumBefore,P::MeasurePrivateRoadKinematics(B->COMState,C->COMState).Position);
     }
     AddInfo(FString::Printf(TEXT("[IASInteractionBeforeCorrection] frame=%llu max_position_cm=%.17g"),Last,MaximumBefore));
-    if(!TestTrue(TEXT("actual native blocking box/box dispatch between different cars, not optional constraints or floor contact"),DynamicContactFrames>0))return false;
+    AddInfo(FString::Printf(TEXT("[IASInteractionCausalControl] frame=%llu actual_box_contact_dispatch_frames=%llu actual_box_wheel_dispatch_frames=%llu actual_wheel_registration_frames=%llu actual_vehicle_event_frames=%llu first_vehicle_event=%llu uncoupled_actor0_max_position_cm=%.17g box_only_failure35_preserved=1 complete_contact_coverage=0"),Last,BoxContactFrames,BoxWheelFrames,WheelRegistrationFrames,DynamicContactFrames,FirstContact,MaximumControlDifference));
+    if(!TestTrue(TEXT("real different-car box/wheel event, not optional constraints or floor contact"),DynamicContactFrames>0))return false;
+    if(!TestTrue(TEXT("same actor/inputs show physical coupling versus native distant-neighbor control"),MaximumControlDifference>1))return false;
     if(!TestTrue(TEXT("withheld oscillating input caused measurable native divergence"),MaximumBefore>0))return false;
     if(!TestTrue(TEXT("actual retained graph stayed at original K without stepping"),Retained->ReadLatest()==OriginalCut))return false;
     for(U64 N=Cut+1;N<=Last;++N)
@@ -140,7 +156,7 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
     if(!TestTrue(TEXT("same original native lifetime, three actors exact after K+1..N"),Retained->ReadLatest()->LocalKernelLifetime==OriginalCut->LocalKernelLifetime&&Same(Truth,Retained->ReadLatest())))return false;
     // ALL THREE actors stepped during this experiment, including the distant
     // same-world spectator. This must NOT be reported as localized replay.
-    AddInfo(FString::Printf(TEXT("[IASRetainedInteracting] native=1 actors=3 held_frame=%llu through_frame=%llu replayed_frames=%llu actual_box_contact_dispatch_frames=%llu first_actual_box_contact_dispatch=%llu before_max_position_cm=%.17g exact_six_com_and_filters=1 spectator_replay_frames=%llu same_world_localized=0 full_state_certificate=0 network=0"),Cut,Last,Last-Cut,DynamicContactFrames,FirstContact,MaximumBefore,Last-Cut));
+    AddInfo(FString::Printf(TEXT("[IASRetainedInteracting] native=1 actors=3 held_frame=%llu through_frame=%llu replayed_frames=%llu actual_vehicle_event_frames=%llu first_actual_vehicle_event=%llu before_max_position_cm=%.17g exact_six_com_and_filters=1 spectator_replay_frames=%llu same_world_localized=0 full_state_certificate=0 network=0"),Cut,Last,Last-Cut,DynamicContactFrames,FirstContact,MaximumBefore,Last-Cut));
     return !HasAnyErrors();
 }
 #endif

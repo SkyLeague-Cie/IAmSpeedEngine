@@ -464,7 +464,7 @@ void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float
     // Capture the genuine dispatch participant before Super can update caches.
     // Weak validity after the synchronous call never invents a lifetime lease.
     const bool Blocking=CurrentHit.bBlockingHit;
-    const TWeakObjectPtr<UBoxSubBody> Peer=Cast<UBoxSubBody>(CurrentHit.Component.Get());
+    const TWeakObjectPtr<USolidSubBody> Peer=Cast<USolidSubBody>(CurrentHit.Component.Get());
     Super::ResolveCurrentHitPrv(Delta,SimTime); // unchanged native solver, once
     if(Blocking&&Peer.IsValid())
     {
@@ -474,13 +474,19 @@ void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float
         const auto* Car=Cast<ASpeedBranchCar>(GetOwner());
         auto* Owner=Car?Cast<USpeedBranchWheeledComponent>(Car->GetVehicleMovement()):nullptr;
         if(Owner&&GetParentComponent()==static_cast<ISpeedComponent*>(Owner))
-            Owner->ObserveBoxContactDispatch(*this,*Peer.Get());
+            Owner->ObserveContactPair(*this,*Peer.Get(),Cast<UBoxSubBody>(Peer.Get())?0:1);
     }
 }
-void USpeedBranchWheeledComponent::ObserveBoxContactDispatch(const USSubBody& SubBody,const UBoxSubBody& Other)
+void USpeedBranchWheeledComponent::RegisterWheelGroundContact(const SWheelGroundContact& Contact)
+{
+    Super::RegisterWheelGroundContact(Contact); // preserve genuine registration, once
+    const auto* Other=Cast<UBoxSubBody>(Contact.SurfaceComponent.Get());
+    if(Contact.Wheel&&Other)ObserveContactPair(*Contact.Wheel,*Other,2);
+}
+void USpeedBranchWheeledComponent::ObserveContactPair(const USSubBody& SubBody,const USSubBody& Other,uint8 Kind)
 {
     const auto A=Access.lock();
-    if(!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||SubBody.GetParentComponent()!=this
+    if(Kind>2||!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||SubBody.GetParentComponent()!=this
         ||Other.GetWorld()!=A->World||Other.GetOwner()==GetOwner())return;
     const auto* OtherCar=Cast<ASpeedBranchCar>(Other.GetOwner());
     const auto* C=OtherCar?Cast<USpeedBranchWheeledComponent>(OtherCar->GetVehicleMovement()):nullptr;
@@ -489,12 +495,16 @@ void USpeedBranchWheeledComponent::ObserveBoxContactDispatch(const USSubBody& Su
     if(!Self||!Peer||!Self->Input||!Peer->Input||Self->Input->Frame!=A->Frame||Peer->Input->Frame!=A->Frame
         ||!Self->Actor||!Peer->Actor||Self->Actor==Peer->Actor)return;
     const auto Low=FMath::Min(Self->Actor,Peer->Actor),High=FMath::Max(Self->Actor,Peer->Actor);
-    for(auto& P:A->ContactDispatches)if(P.ActorA==Low&&P.ActorB==High)
-    {if(P.Dispatches==MAX_uint32)A->ContactDispatchOverflow=true;else ++P.Dispatches;return;}
+    const auto Increment=[&](auto& P)
+    {
+        uint32& Count=Kind==0?P.Dispatches:(Kind==1?P.BoxWheelDispatches:P.WheelRegistrations);
+        if(Count==MAX_uint32)A->ContactDispatchOverflow=true;else ++Count;
+    };
+    for(auto& P:A->ContactDispatches)if(P.ActorA==Low&&P.ActorB==High){Increment(P);return;}
     // Fixed finite roster has at most120 unordered pairs. Never grow beyond
     // the actual reserved roster capacity inside a canonical physical call.
     if(A->ContactDispatches.size()>=A->ContactDispatches.capacity()){A->ContactDispatchOverflow=true;return;}
-    A->ContactDispatches.push_back({Low,High,1});
+    A->ContactDispatches.push_back({Low,High,0,0,0});Increment(A->ContactDispatches.back());
 }
 bool USpeedBranchWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) const
 {
