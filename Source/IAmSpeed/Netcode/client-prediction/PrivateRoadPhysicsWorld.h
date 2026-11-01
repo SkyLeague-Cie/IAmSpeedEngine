@@ -42,14 +42,15 @@ struct FPrivateRoadPublication
 {
     U64 LocalKernelLifetime=0,Frame=0;
     bool AwaitingInitialPublication=false;
-    uint32 NativeNetworkComponents=0;
-    uint32 NativeDebugDelegateBindings=0; // actual bound entries; NOT an in-flight-reader drain certificate // actual native object census, not history-only
+    uint32 NativeNetworkComponents=0; // actual object census, not just history
+    uint32 NativeDebugDelegateBindings=0; // bound entries; not an in-flight-reader drain certificate
     FSimulationSnapshot Physics;
     std::vector<FPrivateRoadActorFrame> Actors;
 };
 // Experimental finite native flat-road kernel. Creates actual, private native
 // cars and runs the unchanged canonical IAmSpeed solver at300Hz on the GT.
-// Public outputs are immutable VALUES; no UObject/native graph view escapes.
+// This public API returns immutable VALUES. Engine/global enumeration and
+// previously escaped native views require separate exclusion qualification.
 // This factory does not authenticate seeds/input, select a connected client,
 // supply a complete restore provider or certify lifecycle/view exclusion for
 // an ISimulationRestoreBoundaryLease. Unsupported scene/game domains stay closed.
