@@ -58,12 +58,25 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
         const auto A=std::find_if(Pub.Actors.begin(),Pub.Actors.end(),[&](const auto& X){return X.Actor==Actor;});
         return A==Pub.Actors.end()?nullptr:Pub.Physics.PresentationBodies.FindByPredicate([&](const auto& X){return X.StableId==A->NativeStableId;});
     };
+    std::shared_ptr<const P::FPrivateRoadPublication> Reference60;
+    const auto Observe=[](const P::FPrivateRoadPublication& Actual)
+    {
+        P::FPrivateRoadObservedFrame Out;Out.Frame=Actual.Frame;
+        for(const auto& A:Actual.Actors)
+        {
+            const auto* Body=Actual.Physics.PresentationBodies.FindByPredicate([&](const auto& B){return B.StableId==A.NativeStableId;});
+            if(!Body)return P::FPrivateRoadObservedFrame{};
+            Out.Actors.push_back({A.Actor,A.Incarnation,Body->COMState});
+        }
+        return Out;
+    };
     const auto Step=[&](U64 N)
     {
         auto F=Local(N);
         if(!Client->AdvanceLocal(F,Why))return false;
         std::vector<P::FPrivateRoadRequest> Requests={{101,3,F},{102,3,Known.Predict(N)}};
-        return Reference->Step(Requests,false,Why);
+        if(!Reference->Step(Requests,false,Why))return false;
+        if(N==60)Reference60=Reference->ReadLatest();return true;
     };
     for(U64 N=0;N<=90;++N)
     {
@@ -74,6 +87,13 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
     if(!Original||!Authority90||!Pose(*Original,102)||!Pose(*Authority90,102))return false;
     const double BeforeError=FVector::Dist(Pose(*Original,102)->COMState.Location,Pose(*Authority90,102)->COMState.Location);
     if(!TestTrue(TEXT("wrong held remote request creates measured same-frame native divergence"),BeforeError>1))return false;
+    if(!Reference60)return false;
+    const auto Historical=Client->CompareObservedKinematics(Observe(*Reference60));
+    TestTrue(TEXT("late observation compares exact retained native frame60, not latest90"),Historical.Frame==60&&Historical.Status==P::EPrivateRoadPoseComparison::Different&&Historical.Actors.size()==2&&Historical.Actors[1].Position>1);
+    auto Future=Observe(*Authority90);Future.Frame=91;
+    TestTrue(TEXT("unpredicted future has its own result"),Client->CompareObservedKinematics(Future).Status==P::EPrivateRoadPoseComparison::Future);
+    auto WrongRoster=Observe(*Reference60);WrongRoster.Actors[1].Incarnation=4;
+    TestTrue(TEXT("wrong incarnation cannot be compared to another history"),Client->CompareObservedKinematics(WrongRoster).Status==P::EPrivateRoadPoseComparison::RosterMismatch);
     const auto Receipt=Client->ConfirmRemote(5,Late30);
     TestTrue(TEXT("late original request invalidates earliest actual predicted frame"),Receipt.Status==EResult::Accepted&&Receipt.EarliestInvalidatedFrame==30);
     auto Status=Client->AdvanceCorrection(7,Why);
@@ -101,6 +121,9 @@ bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
         TestTrue(TEXT("corrected native velocity exactly matches independent authority-input reference"),X->COMState.Velocity==Y->COMState.Velocity);
         TestTrue(TEXT("corrected native rotation and angular velocity match"),X->COMState.Rotation==Y->COMState.Rotation&&X->COMState.AngularVelocity==Y->COMState.AngularVelocity);
     }
+    const auto HistoricalCorrected=Client->CompareObservedKinematics(Observe(*Reference60));
+    TestTrue(TEXT("adoption replaces coherent native history; original frame60 observation now matches"),HistoricalCorrected.Frame==60&&HistoricalCorrected.Status==P::EPrivateRoadPoseComparison::Equal);
+    TestTrue(TEXT("latest actual authority-input frame also matches without frame retiming"),Client->CompareObservedKinematics(Observe(*Expected)).Status==P::EPrivateRoadPoseComparison::Equal);
     const auto Witness=Client->ReadLastCorrection();
     TestTrue(TEXT("actual reconciliation records native change and complete replay count"),Witness&&Witness->FirstInvalidated==8&&Witness->ReplayedFrames==Last+1&&Witness->ThroughFrame==Last&&Witness->MaximumPositionChange>1&&Witness->Corrections==1);
     TestTrue(TEXT("received authority is retained across adoption"),Client->ConfirmRemote(5,Late60).Status==EResult::Duplicate);

@@ -44,6 +44,7 @@ struct FPrivateRoadPredictionSession::FImpl
     std::optional<U64> Invalidated;
     std::optional<FPrivateRoadCorrectionWitness> Witness;
     std::vector<std::shared_ptr<const BranchV2::FInputFrame>> LocalFrames;
+    std::vector<std::shared_ptr<const FPrivateRoadPublication>> PhysicalHistory,StagedPhysicalHistory;
     std::vector<std::unique_ptr<FRemoteRequestHistory>> Histories,StagedHistories;
     std::unique_ptr<FPrivateRoadPhysicsWorld> Live,Staged;
     std::atomic<std::shared_ptr<const FPrivateRoadPublication>> Published;
@@ -83,7 +84,7 @@ std::unique_ptr<FPrivateRoadPredictionSession> FPrivateRoadPredictionSession::Cr
     size_t Locals=0;
     for(size_t A=0;A<Seeds.size();++A)if(Seeds[A].Role==EBranchFilterRole::LocalDevice){++Locals;I.Local=A;}
     if(Locals!=1){SessionRefuse(Why,TEXT("native prediction requires one genuine local input domain"));return {};}
-    I.Seeds=std::move(Seeds);I.Maximum=MaximumFrames;I.LocalFrames.reserve(size_t(MaximumFrames));
+    I.Seeds=std::move(Seeds);I.Maximum=MaximumFrames;I.LocalFrames.reserve(size_t(MaximumFrames));I.PhysicalHistory.reserve(size_t(MaximumFrames));I.StagedPhysicalHistory.reserve(size_t(MaximumFrames));
     I.Histories.resize(I.Seeds.size());
     for(size_t A=0;A<I.Seeds.size();++A)if(A!=I.Local)
     {
@@ -140,7 +141,9 @@ bool FPrivateRoadPredictionSession::AdvanceLocal(std::shared_ptr<const BranchV2:
         std::vector<FPrivateRoadRequest> Requests;
         if(!I.Requests(N,Frame,I.Histories,Requests)||!I.Live->Step(Requests,false,Why))
         {I.Fail();return SessionRefuse(Why,TEXT("native prediction input/physical step failed; branch retired"));}
-        I.LocalFrames.push_back(std::move(Frame));I.Published.store(I.Live->ReadLatest());return true;
+        const auto Actual=I.Live->ReadLatest();
+        if(!Actual||Actual->Frame!=N||I.PhysicalHistory.size()!=N){I.Fail();return SessionRefuse(Why,TEXT("native physical history publication mismatch"));}
+        I.LocalFrames.push_back(std::move(Frame));I.PhysicalHistory.push_back(Actual);I.Published.store(Actual);return true;
     }
     catch(...) {I.Fail();return SessionRefuse(Why,TEXT("native prediction advance exception; branch retired"));}
 }
@@ -154,7 +157,7 @@ EPrivateRoadCorrection FPrivateRoadPredictionSession::AdvanceCorrection(U64 Budg
     try
     {
         if(I.Staged&&(I.StagedNeedsRestart||I.StagedRevision!=I.AuthorityRevision))
-        {if(!I.Staged->Close())return Fail(TEXT("superseded staged native graph did not retire"));I.Staged.reset();I.StagedHistories.clear();}
+        {if(!I.Staged->Close())return Fail(TEXT("superseded staged native graph did not retire"));I.Staged.reset();I.StagedHistories.clear();I.StagedPhysicalHistory.clear();}
         if(!I.Staged)
         {
             I.Staged=FPrivateRoadPhysicsWorld::Create(I.Seeds,Why);if(!I.Staged)return Fail(TEXT("fresh native correction graph creation failed"));
@@ -166,7 +169,7 @@ EPrivateRoadCorrection FPrivateRoadPredictionSession::AdvanceCorrection(U64 Budg
                 // This is original-seed reconstruction, not a claimed snapshot restore.
                 I.StagedHistories[A]->DiscardSpeculationFrom(0);
             }
-            I.ReplayNext=0;I.StagedRevision=I.AuthorityRevision;I.StagedNeedsRestart=false;
+            I.ReplayNext=0;I.StagedRevision=I.AuthorityRevision;I.StagedNeedsRestart=false;I.StagedPhysicalHistory.clear();
         }
         U64 Done=0;
         while(I.ReplayNext<I.LocalFrames.size()&&Done<Budget)
@@ -174,7 +177,9 @@ EPrivateRoadCorrection FPrivateRoadPredictionSession::AdvanceCorrection(U64 Budg
             std::vector<FPrivateRoadRequest> Requests;
             if(!I.Requests(I.ReplayNext,I.LocalFrames[size_t(I.ReplayNext)],I.StagedHistories,Requests)
                 ||!I.Staged->Step(Requests,true,Why))return Fail(TEXT("native corrected replay failed; no fallback"));
-            ++I.ReplayNext;++Done;
+            const auto Actual=I.Staged->ReadLatest();
+            if(!Actual||Actual->Frame!=I.ReplayNext||I.StagedPhysicalHistory.size()!=I.ReplayNext)return Fail(TEXT("native staged physical history mismatch"));
+            I.StagedPhysicalHistory.push_back(Actual);++I.ReplayNext;++Done;
         }
         if(I.ReplayNext<I.LocalFrames.size())return EPrivateRoadCorrection::Replaying;
         const auto Old=I.Published.load(),New=I.Staged->ReadLatest();
@@ -193,10 +198,10 @@ EPrivateRoadCorrection FPrivateRoadPredictionSession::AdvanceCorrection(U64 Budg
         }
         // Opaque native graph and its real history change together on their one
         // GT owner. No native pointer or mutable view has been published.
-        I.Live.swap(I.Staged);I.Histories.swap(I.StagedHistories);
+        I.Live.swap(I.Staged);I.Histories.swap(I.StagedHistories);I.PhysicalHistory.swap(I.StagedPhysicalHistory);
         I.Witness=Witness;++I.CorrectionCount;I.Invalidated.reset();I.Published.store(New);
         if(!I.Staged->Close())return Fail(TEXT("old native graph retirement failed after adoption"));
-        I.Staged.reset();I.StagedHistories.clear();return EPrivateRoadCorrection::Adopted;
+        I.Staged.reset();I.StagedHistories.clear();I.StagedPhysicalHistory.clear();return EPrivateRoadCorrection::Adopted;
     }
     catch(...) {return Fail(TEXT("native correction exception; timeline retired"));}
 }
@@ -206,11 +211,49 @@ std::optional<FPrivateRoadCorrectionWitness> FPrivateRoadPredictionSession::Read
     if(!IsInGameThread())return {};auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
     return Lock.owns_lock()?I.Witness:std::optional<FPrivateRoadCorrectionWitness>{};
 }
+FPrivateRoadPoseComparison FPrivateRoadPredictionSession::CompareObservedKinematics(const FPrivateRoadObservedFrame& Observed) const
+{
+    FPrivateRoadPoseComparison Out;Out.Frame=Observed.Frame;
+    if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Out;
+    auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock()||I.Closed||I.Failed||Observed.Frame>=I.Maximum)return Out;
+    if(Observed.Actors.size()!=I.Seeds.size()){Out.Status=EPrivateRoadPoseComparison::RosterMismatch;return Out;}
+    for(size_t A=0;A<I.Seeds.size();++A)
+    {
+        if(Observed.Actors[A].Actor!=I.Seeds[A].Actor||Observed.Actors[A].Incarnation!=I.Seeds[A].Incarnation)
+        {Out.Status=EPrivateRoadPoseComparison::RosterMismatch;return Out;}
+        const auto& K=Observed.Actors[A].COMState;
+        if(K.Location.ContainsNaN()||K.Velocity.ContainsNaN()||K.Acceleration.ContainsNaN()||K.AngularVelocity.ContainsNaN()||K.AngularAcceleration.ContainsNaN()||!K.Rotation.IsNormalized())return Out;
+    }
+    if(Observed.Frame>=I.PhysicalHistory.size()){Out.Status=EPrivateRoadPoseComparison::Future;return Out;}
+    const auto& Actual=I.PhysicalHistory[size_t(Observed.Frame)];
+    if(!Actual||Actual->Frame!=Observed.Frame||Actual->Actors.size()!=I.Seeds.size())
+    {Out.Status=EPrivateRoadPoseComparison::MissingHistory;return Out;}
+    bool Different=false;Out.Actors.reserve(I.Seeds.size());
+    for(size_t A=0;A<I.Seeds.size();++A)
+    {
+        if(Actual->Actors[A].Actor!=Observed.Actors[A].Actor||Actual->Actors[A].Incarnation!=Observed.Actors[A].Incarnation){Out.Status=EPrivateRoadPoseComparison::Invalid;Out.Actors.clear();return Out;}
+        const auto* Body=Actual->Physics.PresentationBodies.FindByPredicate([&](const auto& B){return B.StableId==Actual->Actors[A].NativeStableId;});
+        if(!Body){Out.Status=EPrivateRoadPoseComparison::MissingHistory;Out.Actors.clear();return Out;}
+        const auto& X=Body->COMState;const auto& Y=Observed.Actors[A].COMState;
+        FPrivateRoadPoseError E;E.Actor=Observed.Actors[A].Actor;E.Incarnation=Observed.Actors[A].Incarnation;
+        E.Position=FVector::Dist(X.Location,Y.Location);E.Velocity=FVector::Dist(X.Velocity,Y.Velocity);
+        E.Acceleration=FVector::Dist(X.Acceleration,Y.Acceleration);E.AngularVelocity=FVector::Dist(X.AngularVelocity,Y.AngularVelocity);E.AngularAcceleration=FVector::Dist(X.AngularAcceleration,Y.AngularAcceleration);
+        const auto& Q=X.Rotation;const auto& R=Y.Rotation;
+        const bool Same=Q==R||(Q.X==-R.X&&Q.Y==-R.Y&&Q.Z==-R.Z&&Q.W==-R.W);
+        const double Dot=Q.X*R.X+Q.Y*R.Y+Q.Z*R.Z+Q.W*R.W;
+        E.RotationRadians=Same?0.:2.*FMath::Acos(FMath::Clamp(FMath::Abs(Dot),0.,1.));
+        if(!FMath::IsFinite(E.Position)||!FMath::IsFinite(E.Velocity)||!FMath::IsFinite(E.Acceleration)||!FMath::IsFinite(E.RotationRadians)||!FMath::IsFinite(E.AngularVelocity)||!FMath::IsFinite(E.AngularAcceleration)) {Out.Status=EPrivateRoadPoseComparison::Invalid;Out.Actors.clear();return Out;}
+        Different|=E.Position!=0||E.Velocity!=0||E.Acceleration!=0||E.RotationRadians!=0||E.AngularVelocity!=0||E.AngularAcceleration!=0;
+        Out.Actors.push_back(E);
+    }
+    Out.Status=Different?EPrivateRoadPoseComparison::Different:EPrivateRoadPoseComparison::Equal;return Out;
+}
 bool FPrivateRoadPredictionSession::Close()
 {
     if(!IsInGameThread())return false;auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
     if(!Lock.owns_lock())return false;if(I.Closed)return true;
     if(I.Staged&&!I.Staged->Close())return false;if(I.Live&&!I.Live->Close())return false;
-    I.Closed=true;I.Published.store({});I.Staged.reset();I.Live.reset();I.StagedHistories.clear();I.Histories.clear();return true;
+    I.Closed=true;I.Published.store({});I.Staged.reset();I.Live.reset();I.StagedHistories.clear();I.Histories.clear();I.StagedPhysicalHistory.clear();I.PhysicalHistory.clear();return true;
 }
 }

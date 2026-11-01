@@ -175,3 +175,21 @@ Native regression fixtures preserve generic contract validity, cover both
 physical/camera counterexamples and require rejection before world allocation.
 This correction requires its own frozen native test result; no earlier PASS
 qualifies the revised admission code.
+
+
+The native session now retains its actual immutable per-frame physical
+publications beside original local inputs. Read-only CompareObservedKinematics
+selects the exact observed historical frame, validates the complete semantic
+roster/incarnations and completed COM coordinates, then reports position,
+velocity, acceleration, quaternion-angle, angular-velocity and angular-acceleration
+errors per actor. Nonfinite observations or overflowed diagnostics are refused. Future and
+missing history are distinct results; visual-origin positions are not silently
+converted or retimed. The caller must authenticate observations before use.
+This is kinematic observation only, not a complete canonical-state comparison,
+authority admission or pose-only correction fallback.
+
+Staged reconstruction retains its own native physical history and swaps it with
+the corrected graph/input histories at adoption. The native late-input regression
+now also compares an actual reference frame60 while the client is at90, and
+requires that same unchanged historical observation to match after correction.
+This extension is NOT_RUN until its own exact source has been compiled/executed.
