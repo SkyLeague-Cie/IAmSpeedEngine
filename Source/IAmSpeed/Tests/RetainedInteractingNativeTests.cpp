@@ -15,13 +15,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASRetainedInteractingNative,
 bool FIASRetainedInteractingNative::RunTest(const FString&)
 {
     namespace P=Speed::Netcode::Prediction;using namespace Speed::Netcode;
-    constexpr U64 Cut=10,Change=20,Last=180;
+    constexpr U64 Cut=10,Change=20,Last=900; // 3s observation, never startup warmup
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
     std::vector<P::FPrivateRoadCarSeed> Seeds;
     for(U64 A=0;A<3;++A)
     {
         P::FPrivateRoadCarSeed S;S.Actor=101+A;S.Incarnation=3;S.Contract=Contract;
-        S.Local={Speed::Input::EProducerKind::Device,42+A};S.LocalEpoch={3};
+        S.Local={Speed::Input::EProducerKind::Device,42+A};S.LocalEpoch={3};S.PredictionHorizon=1024;
         auto& B=S.Remote;B.Session=11;B.Epoch=3;B.Actor=S.Actor;B.Incarnation=3;
         B.OwnerPeer=4+A;B.ServerPeer=9;B.SourceProducer=42+A;B.SourceKind=0;B.Contract[0]=7;
         S.Initial.Location=FVector(A==0?-70:70,A==2?5000:0,45);
@@ -34,7 +34,7 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};
     Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
     using H=std::vector<std::unique_ptr<P::FRemoteRequestHistory>>;
-    const auto Histories=[&]{H Out;for(const auto& S:Seeds)Out.push_back(std::make_unique<P::FRemoteRequestHistory>(S.Remote,Actions,256,512));return Out;};
+    const auto Histories=[&]{H Out;for(const auto& S:Seeds)Out.push_back(std::make_unique<P::FRemoteRequestHistory>(S.Remote,Actions,1024,2048));return Out;};
     auto RH=Histories(),LH=Histories(),KH=Histories();
     const auto Value=[](U64 A,U64 N){return A==0&&N>=Change&&((N-Change)/10)%2==0?255:0;};
     const auto Packet=[&](U64 A,U64 N)
@@ -62,6 +62,7 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
             const auto& L=X->Actors[A];const auto& R=Y->Actors[A];
             if(L.Actor!=R.Actor||L.Incarnation!=R.Incarnation||!(L.Filter==R.Filter)||!L.Input||!R.Input
                 ||L.Input->Requested!=R.Input->Requested||L.Input->Applied!=R.Input->Applied
+                ||L.NativeHitboxHalfExtent!=R.NativeHitboxHalfExtent||L.NativeHitboxCenter!=R.NativeHitboxCenter
                 ||L.CanMove!=R.CanMove||L.Frozen!=R.Frozen||L.CountdownFrames!=R.CountdownFrames)return false;
             const auto* B=X->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==L.NativeStableId;});
             const auto* C=Y->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==R.NativeStableId;});
@@ -103,6 +104,14 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
         if(N==0)StartCOM=BA->COMState.Location;
         NearestCOM=FMath::Min(NearestCOM,FVector::Distance(BA->COMState.Location,BB->COMState.Location));
         MaximumTravel=FMath::Max(MaximumTravel,FVector::Distance(StartCOM,BA->COMState.Location));
+        if(N==0||N==10||N==20||N==60||N==120||N==180||N==360||N==600||N==Last)
+            for(size_t A=0;A<Actual->Actors.size();++A)
+            {
+                const auto& F=Actual->Actors[A];
+                const auto* Body=Actual->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==F.NativeStableId;});
+                if(!Body)return false;const auto& K=Body->COMState;
+                AddInfo(FString::Printf(TEXT("[IASInteractionTrajectory] frame=%llu actor=%llu x=%.17g y=%.17g z=%.17g vx=%.17g vy=%.17g vz=%.17g hitbox_x=%.17g hitbox_y=%.17g hitbox_z=%.17g half_x=%.17g half_y=%.17g half_z=%.17g can_move=%d frozen=%d"),N,F.Actor,K.Location.X,K.Location.Y,K.Location.Z,K.Velocity.X,K.Velocity.Y,K.Velocity.Z,F.NativeHitboxCenter.X,F.NativeHitboxCenter.Y,F.NativeHitboxCenter.Z,F.NativeHitboxHalfExtent.X,F.NativeHitboxHalfExtent.Y,F.NativeHitboxHalfExtent.Z,int(F.CanMove),int(F.Frozen)));
+            }
         bool Contact=false;
         for(const auto& Pair:Actual->ContactDispatchPairs)
             if(Pair.ActorA==101&&Pair.ActorB==102&&Pair.Dispatches>0)Contact=true;
@@ -110,7 +119,6 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
     }
     AddInfo(FString::Printf(TEXT("[IASInteractingFixtureMotion] native=1 default_sync_gate=1 throttle_after_release=1 nearest_com_cm=%.17g max_actor0_travel_cm=%.17g actual_box_contact_dispatch_frames=%llu"),NearestCOM,MaximumTravel,DynamicContactFrames));
     if(!TestTrue(TEXT("real post-release throttle moves native car"),MaximumTravel>1))return false;
-    if(!TestTrue(TEXT("actual native blocking box/box dispatch between different cars, not optional constraints or floor contact"),DynamicContactFrames>0))return false;
     const auto BeforeCorrection=Live->ReadLatest(),Truth=Reference->ReadLatest();
     double MaximumBefore=0;
     for(size_t A=0;A<3;++A)
@@ -119,6 +127,8 @@ bool FIASRetainedInteractingNative::RunTest(const FString&)
         const auto* C=Truth->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Truth->Actors[A].NativeStableId;});
         if(!B||!C)return false;MaximumBefore=FMath::Max(MaximumBefore,P::MeasurePrivateRoadKinematics(B->COMState,C->COMState).Position);
     }
+    AddInfo(FString::Printf(TEXT("[IASInteractionBeforeCorrection] frame=%llu max_position_cm=%.17g"),Last,MaximumBefore));
+    if(!TestTrue(TEXT("actual native blocking box/box dispatch between different cars, not optional constraints or floor contact"),DynamicContactFrames>0))return false;
     if(!TestTrue(TEXT("withheld oscillating input caused measurable native divergence"),MaximumBefore>0))return false;
     if(!TestTrue(TEXT("actual retained graph stayed at original K without stepping"),Retained->ReadLatest()==OriginalCut))return false;
     for(U64 N=Cut+1;N<=Last;++N)

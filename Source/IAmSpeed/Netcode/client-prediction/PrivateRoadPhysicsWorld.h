@@ -37,6 +37,8 @@ struct FPrivateRoadActorFrame
     std::shared_ptr<const FBranchProcessedInput> Input;
     bool CanMove=false,Frozen=false;
     uint16 CountdownFrames=0; // actual native values, diagnostics only
+    FVector NativeHitboxHalfExtent=FVector::ZeroVector;
+    FVector NativeHitboxCenter=FVector::ZeroVector; // actual queried child storage, not reconstructed COM
 };
 // Conservative dependency witness from actual native blocking box/box
 // resolution dispatch, including contacts whose impulse is zero. This is NOT

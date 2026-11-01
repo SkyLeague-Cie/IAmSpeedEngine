@@ -337,6 +337,10 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         auto State=N->Filter->Capture();if(!State||State->Next!=Frame+1)return Fail(TEXT("private filter publication mismatch"));
         Out->Actors.push_back({N->Seed.Actor,N->Seed.Incarnation,N->StableId,*State,I.Access->Slots.FindChecked(N->Component).Input,
             N->Component->CanMove(),N->Component->IsFrozen(),N->Component->WheeledPhysicsState.nbFramesbeforeCanMove});
+        const auto* Hitbox=N->Component->GetHitboxSubBodyForConfiguration();
+        if(!Hitbox)return Fail(TEXT("native hitbox diagnostics missing"));
+        Out->Actors.back().NativeHitboxHalfExtent=Hitbox->GetBoxExtent();
+        Out->Actors.back().NativeHitboxCenter=Hitbox->GetKinematicState().Location;
     }
     if(I.Access->RequiresInitialPublication)for(const auto& A:Out->Actors)
     {

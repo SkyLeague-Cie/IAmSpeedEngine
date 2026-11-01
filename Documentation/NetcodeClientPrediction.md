@@ -296,3 +296,16 @@ The new scenario starts at rest with the default closed synchronization gate,
 then supplies real throttle from frame1 and withholds only later brake changes.
 Native trajectory diagnostics precede assertions. All three actors still replay;
 no full-state lease, localized rollback or network qualification is inferred.
+
+
+Native33 genuinely moved the cars, but its0.6s interaction observation found
+nearest COM distance131.24427900637943cm from an initial140cm, actor0 maximum
+3D travel83.794849641695194cm, and zero actual blocking box contact dispatch.
+The hard contact requirement failed; this is not an impact success. Native34
+therefore observes the SAME geometry/inputs/default synchronization for3s,
+with explicit1024prediction/2048retained-frame UNIT bounds and no eviction.
+CanMove still releases at common1; the longer observation is NOT a freeze,
+countdown, warmup or adopted production horizon. Per-actor COM/velocity and
+actual hitbox center/extent values at completed cuts diagnose approach versus
+vertical/support motion. Contact remains mandatory, full native reconstruction
+still replays all3actors, and no complete state or localized claim is added.
