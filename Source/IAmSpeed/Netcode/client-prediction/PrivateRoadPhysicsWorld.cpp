@@ -463,15 +463,24 @@ void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float
     const TWeakObjectPtr<UBoxSubBody> Peer=Cast<UBoxSubBody>(CurrentHit.Component.Get());
     Super::ResolveCurrentHitPrv(Delta,SimTime); // unchanged native solver, once
     if(Blocking&&Peer.IsValid())
-        if(auto* Owner=Cast<USpeedBranchWheeledComponent>(GetParentComponent()))
+    {
+        // ISpeedComponent is native C++, NOT a UObject/UInterface. Resolve
+        // through the genuine owning actor, then verify the adjusted native
+        // base address rather than performing an invalid Unreal Cast.
+        const auto* Car=Cast<ASpeedBranchCar>(GetOwner());
+        auto* Owner=Car?Cast<USpeedBranchWheeledComponent>(Car->GetVehicleMovement()):nullptr;
+        if(Owner&&GetParentComponent()==static_cast<ISpeedComponent*>(Owner))
             Owner->ObserveBoxContactDispatch(*this,*Peer.Get());
+    }
 }
 void USpeedBranchWheeledComponent::ObserveBoxContactDispatch(const USSubBody& SubBody,const UBoxSubBody& Other)
 {
     const auto A=Access.lock();
     if(!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||SubBody.GetParentComponent()!=this
         ||Other.GetWorld()!=A->World||Other.GetOwner()==GetOwner())return;
-    const auto* C=Cast<USpeedBranchWheeledComponent>(Other.GetParentComponent());
+    const auto* OtherCar=Cast<ASpeedBranchCar>(Other.GetOwner());
+    const auto* C=OtherCar?Cast<USpeedBranchWheeledComponent>(OtherCar->GetVehicleMovement()):nullptr;
+    if(!C||Other.GetParentComponent()!=static_cast<const ISpeedComponent*>(C))return;
     const auto* Self=A->Slots.Find(this);const auto* Peer=C?A->Slots.Find(C):nullptr;
     if(!Self||!Peer||!Self->Input||!Peer->Input||Self->Input->Frame!=A->Frame||Peer->Input->Frame!=A->Frame
         ||!Self->Actor||!Peer->Actor||Self->Actor==Peer->Actor)return;
