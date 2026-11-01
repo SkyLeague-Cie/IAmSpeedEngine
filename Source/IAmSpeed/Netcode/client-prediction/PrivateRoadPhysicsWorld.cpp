@@ -100,7 +100,7 @@ struct FPrivateRoadPhysicsWorld::FImpl
     void Pin(UObject* Object) {if(Object)Pins.Emplace(Object);}
     void PinTree(UObject* Object)
     {
-        Pin(Object);ForEachObjectWithOuter(Object,[this](UObject* Child){Pin(Child);},true);
+        Pin(Object);ForEachObjectWithOuter(Object,[this](UObject* Child){Pin(Child);},EGetObjectsFlags::IncludeNestedObjects);
     }
 };
 FPrivateRoadPhysicsWorld::FPrivateRoadPhysicsWorld():Impl(std::make_unique<FImpl>()){}
