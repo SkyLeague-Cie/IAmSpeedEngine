@@ -177,7 +177,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         auto& N=*Node;N.Actor=I.World->SpawnActor<ASpeedBranchCar>();
         N.Component=N.Actor?Cast<USpeedBranchWheeledComponent>(N.Actor->GetVehicleMovement()):nullptr;
         auto* C=N.Component;
-        if(!C||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass())
+        if(!C||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->HasIsolatedNativeConstruction())
         {Refuse(Why,TEXT("private native component subtype missing"));return {};}
         C->Access=I.Access;C->SetOwner(N.Actor);C->SetAsyncPhysicsTickEnabled(false);
         N.SuspensionConfig.SetSuspensionMaxRaise(10);N.SuspensionConfig.SetSuspensionMaxDrop(25);
@@ -254,6 +254,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     ON_SCOPE_EXIT{I.Access->Active=false;I.Access->Slots.Empty();};
     for(const auto& N:I.Cars)
     {
+        if(!N->Component||!N->Component->HasIsolatedNativeConstruction())return Refuse(Why,TEXT("private native construction changed before step"));
         const FPrivateRoadRequest* Found=nullptr;
         for(const auto& R:Requests)if(R.Actor==N->Seed.Actor)
         {if(Found||R.Incarnation!=N->Seed.Incarnation)return Refuse(Why,TEXT("private request duplicate/incarnation mismatch"));Found=&R;}
@@ -324,7 +325,7 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
         const auto* C=N->Component;
         if(!IsValid(N->Actor)||!IsValid(C)||N->Actor->IsActorBeingDestroyed()||N->Actor->HasActorBegunPlay()
             ||N->Actor->GetWorld()!=I.World.Get()||C->GetOwner()!=N->Actor||N->Actor->GetVehicleMovement()!=C
-            ||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->IsFrozen()||C->CanMove()
+            ||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->HasIsolatedNativeConstruction()||!C->IsFrozen()||C->CanMove()
             ||C->WheeledPhysicsState.bStartCountdown||C->WheeledPhysicsState.nbFramesbeforeCanMove!=1)
             return Refuse(Why,TEXT("startup native identity or closed gate changed"));
     }
@@ -378,6 +379,14 @@ void USpeedBranchWheeledComponent::OnRegister() {UPawnMovementComponent::OnRegis
 void USpeedBranchWheeledComponent::OnCreatePhysicsState() {UActorComponent::OnCreatePhysicsState();}
 void USpeedBranchWheeledComponent::OnDestroyPhysicsState() {UActorComponent::OnDestroyPhysicsState();}
 void USpeedBranchWheeledComponent::BeginPlay() {UActorComponent::BeginPlay();}
+bool USpeedBranchWheeledComponent::HasIsolatedNativeConstruction() const
+{
+    // Check actual stored pointers as well as the world's object census: an
+    // inherited CDO reference is not an absent native network participant.
+    return NetworkConstruction==ESpeedWheeledNetworkConstruction::IAmSpeedOnly
+        &&!NetworkPhysicsComponent&&!SNetworkPhysicsComponent&&!WheeledNetworkPhysicsComponent
+        &&!SNetworkSettings&&!NetDataAsset&&!AHUD::OnShowDebugInfo.IsBoundToObject(this);
+}
 bool USpeedBranchWheeledComponent::IsInitialSynchronizationComplete() const
 {
     const auto A=Access.lock();return A&&(!A->RequiresInitialPublication||A->InitialPublicationReleased);

@@ -15,6 +15,7 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     GENERATED_BODY()
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
+    bool HasIsolatedNativeConstruction() const;
     bool IsInitialSynchronizationComplete() const override;
     void UpdateInputs() override;
     void OnRegister() override;
