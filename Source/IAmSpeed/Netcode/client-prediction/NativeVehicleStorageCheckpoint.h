@@ -110,6 +110,7 @@ public:
         }
         Write(V.bSuspensionEnabled);Write(V.bMechanicalSimEnabled);Write(V.bWheelFrictionEnabled);
         Write(V.bLegacyWheelFrictionPosition);Write(V.NumDrivenWheels);Read(V.Wheels);Read(V.Suspension);Read(P.After);
+        Write(P.Origin);Read(P.WheelConfig);Read(P.SuspensionConfig);Read(P.AfterWheels);Read(P.AfterSuspensions);
         Out.push_back(std::move(A));return true;
     }
     // Child convenience commit. A whole-world transaction must stage/revalidate
