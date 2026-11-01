@@ -245,3 +245,13 @@ already in flight. Original native wheel and suspension storage remains alive
 through synchronous world cleanup callbacks, then surviving UObject bindings
 are cleared before storage retirement. Future escaped readers and writers are
 still unqualified; complete restore admission remains closed.
+
+The cooperative probe now exposes an original-GT Cancel operation with a
+distinct Cancelled result. It clears the immutable publication and marks the
+pump active before detaching/destroying the actual coroutine handle. Native
+cleanup callbacks can query values, but cannot resume the retiring coroutine.
+Actual ClientDone attempt/datagram counters are values-only diagnostics, not
+process-exit or Job-drain evidence. The new unit covers before-first-pulse and
+foreign-thread refusal; the real suspended-native-world cleanup case still
+requires an actual process/Game harness. This source is not native-qualified
+until its own fresh candidate runs.

@@ -170,13 +170,14 @@ struct FNativeProbeTask
     explicit FNativeProbeTask(FHandle H):Handle(H){}
     FNativeProbeTask(FNativeProbeTask&& Other) noexcept:Handle(std::exchange(Other.Handle,{})){}
     FNativeProbeTask(const FNativeProbeTask&)=delete;
-    ~FNativeProbeTask(){if(Handle)Handle.destroy();}
+    void Reset() noexcept {if(Handle){const auto Old=std::exchange(Handle,{});Old.destroy();}}
+    ~FNativeProbeTask(){Reset();}
 };
 FNativeProbeTask FNativeProbeTask::promise_type::get_return_object() noexcept
 {return FNativeProbeTask(FNativeProbeTask::FHandle::from_promise(*this));}
 // Copy options into the coroutine frame: no caller stack/config reference may
 // outlive its original call while the actual game thread is back in its host.
-FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O)
+FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,std::shared_ptr<FNativeProbePumpDiagnostics> Diagnostics)
 {
     using namespace ProcessProbeDetail;namespace P=Prediction;
     FString Why;U64 TraceNext=0,TracePacket=0;int TraceTransport=-1,TraceInput=-1;const TCHAR* Phase=TEXT("open");
@@ -191,7 +192,12 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O)
     auto Channel=FNativeLocalSession::Open(O.Launcher);if(!Channel)co_return Fail(__LINE__);
     const auto Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(90);
     const auto Send=[&](U64 Peer,std::uint8_t Kind,const std::vector<std::uint8_t>& Bytes)
-    {const auto S=Channel->Send(Peer,Kind,Bytes);TraceTransport=int(S);return S==ELocalSession::Ready||S==ELocalSession::WouldBlock;};
+    {
+        if(Kind==ClientDone)++Diagnostics->ClientDoneSendAttempts;
+        const auto S=Channel->Send(Peer,Kind,Bytes);TraceTransport=int(S);
+        if(Kind==ClientDone&&S==ELocalSession::Ready)++Diagnostics->ClientDoneDatagrams;
+        return S==ELocalSession::Ready||S==ELocalSession::WouldBlock;
+    };
     const auto SendPackets=[&](U64 Peer,std::uint8_t Kind,const std::vector<FPacket>& Packets)
     {
         if(Packets.empty())return true;FRedundantRecords Records;
@@ -476,10 +482,11 @@ struct FNativePredictionProbePump::FImpl
     ENativeProbePumpStep State=ENativeProbePumpStep::Running;
     std::string Error;
     bool Active=false;
+    const std::shared_ptr<FNativeProbePumpDiagnostics> Diagnostics=std::make_shared<FNativeProbePumpDiagnostics>();
     // Destroy the coroutine and its real native graph FIRST. World cleanup
     // callbacks may query the still-live pump value publication during unwind.
     FNativeProbeTask Task;
-    explicit FImpl(FNativePredictionProbeOptions O):Task(MakeNativePredictionProbeTask(std::move(O))){}
+    explicit FImpl(FNativePredictionProbeOptions O):Task(MakeNativePredictionProbeTask(std::move(O),Diagnostics)){}
 };
 FNativePredictionProbePump::FNativePredictionProbePump(FNativePredictionProbeOptions O):Impl(std::make_unique<FImpl>(std::move(O))){}
 FNativePredictionProbePump::~FNativePredictionProbePump()
@@ -517,6 +524,23 @@ ENativeProbePumpStep FNativePredictionProbePump::Tick()
         if(I.State==ENativeProbePumpStep::Failed){I.Published.store({});if(I.Error.empty())I.Error="native probe reported failure";}
     }
     return I.State;
+}
+ENativeProbePumpStep FNativePredictionProbePump::Cancel()
+{
+    auto& I=*Impl;
+    if(!IsInGameThread()||std::this_thread::get_id()!=I.Owner)return ENativeProbePumpStep::WrongOwner;
+    if(I.Active)return ENativeProbePumpStep::Reentrant;
+    if(I.State!=ENativeProbePumpStep::Running)return I.State;
+    I.Active=true;ON_SCOPE_EXIT{I.Active=false;};
+    I.State=ENativeProbePumpStep::Cancelled;I.Error="native probe cancelled by its original owner";I.Published.store({});
+    // Detach the handle BEFORE native cleanup can call back into this pump.
+    // State/counters/owner remain alive through the actual RAII unwind.
+    I.Task.Reset();return I.State;
+}
+std::optional<FNativeProbePumpDiagnostics> FNativePredictionProbePump::Diagnostics() const
+{
+    if(!IsInGameThread()||std::this_thread::get_id()!=Impl->Owner)return {};
+    return *Impl->Diagnostics;
 }
 std::shared_ptr<const Prediction::FPrivateRoadPublication> FNativePredictionProbePump::ReadLatest() const noexcept
 {return Impl->Published.load();}
