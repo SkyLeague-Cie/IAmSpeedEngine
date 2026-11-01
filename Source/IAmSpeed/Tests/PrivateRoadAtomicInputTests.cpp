@@ -9,7 +9,7 @@ namespace IASAtomicRoadCampaign
 namespace P=Speed::Netcode::Prediction;
 namespace V=Speed::Input::V2;
 using namespace Speed::Netcode;
-struct FCase { const TCHAR* Name; unsigned Action; int16 Value; uint16 LocalCountdown=0,AuthorityCountdown=0; bool ExpectMismatch=false; bool FromRest=false; };
+struct FCase { const TCHAR* Name; unsigned Action; int16 Value; uint16 LocalCountdown=0,AuthorityCountdown=0; bool ExpectMismatch=false; bool FromRest=false; uint16 HalfPeriod=0,FrameCount=121; };
 struct FMaxima
 {
     double Position=0,Velocity=0,Acceleration=0,Rotation=0,AngularVelocity=0,AngularAcceleration=0;
@@ -46,19 +46,31 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     FMaxima Difference,Response;uint32 FilterDifferences=0,StartupDifferences=0;int64 FirstLocalCanMove=-1,FirstAuthorityCanMove=-1;
     const auto Body=[](const P::FPrivateRoadPublication& Pub)->const FSimulationPresentationBody*
     {return Pub.Actors.size()==1?Pub.Physics.PresentationBodies.FindByPredicate([&](const auto& X){return X.StableId==Pub.Actors[0].NativeStableId;}):nullptr;};
-    for(U64 N=0;N<121;++N)
+    const auto ValueAt=[&](U64 N)->int16
+    {
+        if(!Case.HalfPeriod)return N>=6&&N<90?Case.Value:0;
+        if(N<6||N>=U64(Case.FrameCount-6))return 0;
+        const int16 Minimum=Case.Action==0||Case.Action==1?0:int16(-Case.Value);
+        return ((N-6)/Case.HalfPeriod)%2?Minimum:Case.Value;
+    };
+    for(U64 N=0;N<Case.FrameCount;++N)
     {
         // Six neutral frames, onset, held analog level, release: no mixing axes.
-        const int16 Value=N>=6&&N<90?Case.Value:0;const uint32 Mask=Value?(uint32(1)<<Case.Action):0;
+        const int16 Value=ValueAt(N);const uint32 Mask=Value?(uint32(1)<<Case.Action):0;
         V::FInputFrameData D;D.ConsumptionFrame=N;D.SourceSequence=N+1;D.DeviceGeneration={1};D.Producer=Seed.Local;
         D.StreamEpoch=Seed.LocalEpoch;D.Reset=N==0;D.Values[Case.Action]=Value;D.ActiveMask=Mask;
+        if(Case.HalfPeriod&&N&&bool(ValueAt(N-1))!=bool(Value))
+            D.Transitions.push_back({Speed::Input::FActionId(Case.Action),Value?V::ETransition::Started:V::ETransition::Completed,Value,{N+1,0}});
         auto Input=std::make_shared<const V::FInputFrame>(Contract,D);
         const auto Packet=[&](bool Zero)
         {
             const auto& B=Seed.Remote;FPacket Q;Q.Kind=EKind::AuthorityInput;Q.Session=B.Session;Q.Epoch=B.Epoch;
             Q.Actor=B.Actor;Q.Incarnation=B.Incarnation;Q.Contract=B.Contract;Q.Frame=N;Q.Sequence=N+1;
             Q.Input.SourceSequence=N+1;Q.Input.DeviceGeneration=1;Q.Input.ProducerId=B.SourceProducer;Q.Input.ProducerKind=B.SourceKind;
-            Q.Input.Reset=N==0;Q.Input.Values[Case.Action]=Zero?0:Value;Q.Input.ActiveMask=Zero?0:Mask;return Q;
+            Q.Input.Reset=N==0;Q.Input.Values[Case.Action]=Zero?0:Value;Q.Input.ActiveMask=Zero?0:Mask;
+            if(Case.HalfPeriod&&!Zero&&N&&bool(ValueAt(N-1))!=bool(Value))
+                Q.Input.Edges.push_back({uint8(Case.Action),uint8(Value?0:1),Value,N+1,0});
+            return Q;
         };
         if(H.Confirm(5,Packet(false)).Status!=EResult::Accepted||Z.Confirm(5,Packet(true)).Status!=EResult::Accepted)return false;
         if(!Local->Step({{101,3,Input}},false,Why)||!Authority->Step({{101,3,H.Predict(N)}},false,Why)
@@ -73,8 +85,8 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
         if(LF.CanMove&&FirstLocalCanMove<0)FirstLocalCanMove=int64(N);
         if(AF.CanMove&&FirstAuthorityCanMove<0)FirstAuthorityCanMove=int64(N);
     }
-    Test.AddInfo(FString::Printf(TEXT("[AtomicInputMeasure] case=%s action=%u quantized=%d frames=121 localCountdown=%u authorityCountdown=%u firstLocalCanMove=%lld firstAuthorityCanMove=%lld firstDifferent=%lld differentFrames=%u filterDifferentFrames=%u startupDifferentFrames=%u maxPositionCm=%.17g maxVelocityCmS=%.17g maxAccelerationCmSS=%.17g maxRotationRadians=%.17g maxAngularVelocity=%.17g maxAngularAcceleration=%.17g responsePositionCm=%.17g responseVelocityCmS=%.17g responseRotationRadians=%.17g sockets=0 completeHiddenState=0"),
-        Case.Name,Case.Action,int(Case.Value),Case.LocalCountdown,Case.AuthorityCountdown,FirstLocalCanMove,FirstAuthorityCanMove,
+    Test.AddInfo(FString::Printf(TEXT("%s case=%s action=%u quantized=%d frames=%u halfPeriod=%u frequencyHz=%.17g localCountdown=%u authorityCountdown=%u firstLocalCanMove=%lld firstAuthorityCanMove=%lld firstDifferent=%lld differentFrames=%u filterDifferentFrames=%u startupDifferentFrames=%u maxPositionCm=%.17g maxVelocityCmS=%.17g maxAccelerationCmSS=%.17g maxRotationRadians=%.17g maxAngularVelocity=%.17g maxAngularAcceleration=%.17g responsePositionCm=%.17g responseVelocityCmS=%.17g responseRotationRadians=%.17g sockets=0 completeHiddenState=0"),
+        Case.HalfPeriod?TEXT("[OscillatingInputMeasure]"):TEXT("[AtomicInputMeasure]"),Case.Name,Case.Action,int(Case.Value),uint32(Case.FrameCount),uint32(Case.HalfPeriod),Case.HalfPeriod?300.0/(2.0*Case.HalfPeriod):0.0,Case.LocalCountdown,Case.AuthorityCountdown,FirstLocalCanMove,FirstAuthorityCanMove,
         Difference.FirstDifferent,Difference.DifferentFrames,FilterDifferences,StartupDifferences,Difference.Position,Difference.Velocity,Difference.Acceleration,
         Difference.Rotation,Difference.AngularVelocity,Difference.AngularAcceleration,Response.Position,Response.Velocity,Response.Rotation));
     bool OK=Test.TestEqual(TEXT("same requested input has identical processed state for both roles"),FilterDifferences,uint32(0));
@@ -95,6 +107,20 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     // Always retire all worlds, including a failed comparison; no short-circuit.
     const bool LC=Local->Close(),AC=Authority->Close(),NC=Neutral->Close();
     return Test.TestTrue(TEXT("all three actual native worlds retired"),LC&&AC&&NC)&&OK;
+}
+bool RunOscillating(FAutomationTestBase& Test,unsigned Action,const TCHAR* Name,int16 Maximum)
+{
+    bool OK=true;
+    // At the actual canonical300Hz: 1,2,5,10,25,50,150Hz. Includes slew
+    // saturation, rapid reversals and release, with no simultaneous axis mixing.
+    for(const uint16 HalfPeriod:{uint16(150),uint16(75),uint16(30),uint16(15),uint16(6),uint16(3),uint16(1)})
+    {
+        const FString CaseName=FString::Printf(TEXT("%s-halfperiod-%u"),Name,uint32(HalfPeriod));
+        FCase C{*CaseName,Action,Maximum};C.HalfPeriod=HalfPeriod;C.FrameCount=613;
+        if(!RunCase(Test,C))OK=false;
+    }
+    Test.AddInfo(TEXT("Oscillation compares real native local/confirmed-remote COM and processing per frame, with a third neutral native control. Unit-authored inputs, no sockets/hardware or full-state equality. Pause/Reset remain separate lifecycle domain, not silently covered."));
+    return OK&&!Test.HasAnyErrors();
 }
 }
 
@@ -130,4 +156,29 @@ bool FIASNativeStartupCountdown::RunTest(const FString&)
     AddInfo(TEXT("Actual native CanMove/countdown/freeze comparison. Same initial native graph/config except explicitly mismatched countdown control. No tuning and no conclusion about actual Demo/network initialization."));
     return OK&&!HasAnyErrors();
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASOscillatingThrottle,"IAmSpeed.Netcode.Prediction.OscillatingInputs.Throttle",
+    EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
+bool FIASOscillatingThrottle::RunTest(const FString&)
+{return IASAtomicRoadCampaign::RunOscillating(*this,0,TEXT("throttle"),255);}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASOscillatingBrake,"IAmSpeed.Netcode.Prediction.OscillatingInputs.Brake",
+    EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
+bool FIASOscillatingBrake::RunTest(const FString&)
+{return IASAtomicRoadCampaign::RunOscillating(*this,1,TEXT("brake"),255);}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASOscillatingSteering,"IAmSpeed.Netcode.Prediction.OscillatingInputs.Steering",
+    EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
+bool FIASOscillatingSteering::RunTest(const FString&)
+{return IASAtomicRoadCampaign::RunOscillating(*this,2,TEXT("steering"),127);}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASOscillatingCameraYaw,"IAmSpeed.Netcode.Prediction.OscillatingInputs.CameraYaw",
+    EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
+bool FIASOscillatingCameraYaw::RunTest(const FString&)
+{return IASAtomicRoadCampaign::RunOscillating(*this,5,TEXT("camera-yaw"),127);}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASOscillatingCameraPitch,"IAmSpeed.Netcode.Prediction.OscillatingInputs.CameraPitch",
+    EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
+bool FIASOscillatingCameraPitch::RunTest(const FString&)
+{return IASAtomicRoadCampaign::RunOscillating(*this,6,TEXT("camera-pitch"),127);}
 #endif
