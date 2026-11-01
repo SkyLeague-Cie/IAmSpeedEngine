@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPredictionSession.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/GarbageCollection.h"
@@ -10,6 +11,23 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASPrivateRoadLateInputReconciliation,
 bool FIASPrivateRoadLateInputReconciliation::RunTest(const FString&)
 {
     namespace P=Speed::Netcode::Prediction;namespace V=Speed::Input::V2;using namespace Speed::Netcode;
+    // Numerical regressions exercise the SAME production metric/verdict helper
+    // used below on real retained native publications. No physical coverage is
+    // inferred from these arithmetic counterexamples alone.
+    {
+        SKinematic A,B;auto D=P::MeasurePrivateRoadKinematics(A,B);
+        TestTrue(TEXT("identical kinematics compare equal"),D.Valid&&!D.Different&&D.RotationRadians==0);
+        B.Rotation=FQuat(0,0,0,-1);D=P::MeasurePrivateRoadKinematics(A,B);
+        TestTrue(TEXT("antipodal quaternion has the same orientation"),D.Valid&&!D.Different&&D.RotationRadians==0);
+        B=A;B.Rotation=FQuat(1e-9,0,0,1);
+        TestTrue(TEXT("tiny-angle counterexample satisfies native quaternion normalization"),B.Rotation.IsNormalized());
+        D=P::MeasurePrivateRoadKinematics(A,B);
+        TestTrue(TEXT("tiny real rotation remains Different with nonzero stable angle"),D.Valid&&D.Different&&D.RotationRadians>0&&D.RotationRadians<3e-9);
+        B=A;B.Location.X=1e-200;D=P::MeasurePrivateRoadKinematics(A,B);
+        TestTrue(TEXT("vector difference cannot vanish through squared-norm underflow"),D.Valid&&D.Different&&D.Position>0);
+        B=A;B.Acceleration.Y=1e-200;B.AngularAcceleration.Z=1e-200;D=P::MeasurePrivateRoadKinematics(A,B);
+        TestTrue(TEXT("small acceleration field differences are independently retained"),D.Valid&&D.Different&&D.Acceleration>0&&D.AngularAcceleration>0);
+    }
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
     std::vector<P::FPrivateRoadCarSeed> Seeds;
     for(U64 A=0;A<2;++A)

@@ -1,4 +1,5 @@
 #include "PrivateRoadPredictionSession.h"
+#include "PrivateRoadKinematicDiagnostics.h"
 #include <algorithm>
 #include <mutex>
 
@@ -237,14 +238,11 @@ FPrivateRoadPoseComparison FPrivateRoadPredictionSession::CompareObservedKinemat
         if(!Body){Out.Status=EPrivateRoadPoseComparison::MissingHistory;Out.Actors.clear();return Out;}
         const auto& X=Body->COMState;const auto& Y=Observed.Actors[A].COMState;
         FPrivateRoadPoseError E;E.Actor=Observed.Actors[A].Actor;E.Incarnation=Observed.Actors[A].Incarnation;
-        E.Position=FVector::Dist(X.Location,Y.Location);E.Velocity=FVector::Dist(X.Velocity,Y.Velocity);
-        E.Acceleration=FVector::Dist(X.Acceleration,Y.Acceleration);E.AngularVelocity=FVector::Dist(X.AngularVelocity,Y.AngularVelocity);E.AngularAcceleration=FVector::Dist(X.AngularAcceleration,Y.AngularAcceleration);
-        const auto& Q=X.Rotation;const auto& R=Y.Rotation;
-        const bool Same=Q==R||(Q.X==-R.X&&Q.Y==-R.Y&&Q.Z==-R.Z&&Q.W==-R.W);
-        const double Dot=Q.X*R.X+Q.Y*R.Y+Q.Z*R.Z+Q.W*R.W;
-        E.RotationRadians=Same?0.:2.*FMath::Acos(FMath::Clamp(FMath::Abs(Dot),0.,1.));
-        if(!FMath::IsFinite(E.Position)||!FMath::IsFinite(E.Velocity)||!FMath::IsFinite(E.Acceleration)||!FMath::IsFinite(E.RotationRadians)||!FMath::IsFinite(E.AngularVelocity)||!FMath::IsFinite(E.AngularAcceleration)) {Out.Status=EPrivateRoadPoseComparison::Invalid;Out.Actors.clear();return Out;}
-        Different|=E.Position!=0||E.Velocity!=0||E.Acceleration!=0||E.RotationRadians!=0||E.AngularVelocity!=0||E.AngularAcceleration!=0;
+        const auto D=MeasurePrivateRoadKinematics(X,Y);
+        if(!D.Valid){Out.Status=EPrivateRoadPoseComparison::Invalid;Out.Actors.clear();return Out;}
+        E.Position=D.Position;E.Velocity=D.Velocity;E.Acceleration=D.Acceleration;
+        E.RotationRadians=D.RotationRadians;E.AngularVelocity=D.AngularVelocity;E.AngularAcceleration=D.AngularAcceleration;
+        Different|=D.Different; // exact field verdict, independent of rounded diagnostic magnitudes
         Out.Actors.push_back(E);
     }
     Out.Status=Different?EPrivateRoadPoseComparison::Different:EPrivateRoadPoseComparison::Equal;return Out;

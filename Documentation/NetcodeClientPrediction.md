@@ -193,3 +193,16 @@ the corrected graph/input histories at adoption. The native late-input regressio
 now also compares an actual reference frame60 while the client is at90, and
 requires that same unchanged historical observation to match after correction.
 This extension is NOT_RUN until its own exact source has been compiled/executed.
+
+
+A second public SL source review found that exact pose equality must not be
+inferred from rounded diagnostic norms/acos. The native historical comparison now
+uses separate exact kinematic field equality, treating antipodal quaternions as
+the same orientation. Vector diagnostics use hypot; rotation uses validated,
+normalized copies and a stable quaternion chord atan2 expression. No tolerance
+is invented and no captured state is modified. The existing fixture now checks
+identical poses, antipodal rotation, normalized tiny nonzero rotation and vector
+differences whose naive squared norm underflows. These numerical checks alone
+do not qualify native physics; the same production helper is used by the actual
+native historical/reconciliation test. Revised source is NOT_RUN until its own
+exact native cohort executes.
