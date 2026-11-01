@@ -23,7 +23,11 @@ public class IAmSpeed : ModuleRules
 		}
 
 		// Direct OS datagrams; no UE Networking/Sockets/NetDriver dependency.
-		if (Target.Platform == UnrealTargetPlatform.Win64) PublicSystemLibraries.Add("ws2_32.lib");
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PublicSystemLibraries.Add("ws2_32.lib");
+			PublicSystemLibraries.Add("iphlpapi.lib");
+		}
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore",
 			"EnhancedInput", "ChaosVehicles", "PhysicsCore", "Chaos", "ChaosVehiclesCore", "Landscape"});
