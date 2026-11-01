@@ -281,3 +281,18 @@ interaction test now requires actual cross-car callbacks and their replayed
 per-frame dependency sequence to match the independent reference. This is
 contact observation, not complete contact restoration or localized admission.
 Native31 execution is required; Native30 FAIL remains intact.
+
+
+### Contact fixture correction after native31 (source only)
+
+Native31 preserves the original failure. Its scenario supplied initial velocity
+before SetCannotMoveLocal, whose actual FreezeMovement zeros all velocities;
+brake-only packets therefore did not drive the approaching cars. RcvImpactOnSubBody
+also is not called by the actual box/box solve. The new private hitbox subtype
+observes genuine blocking box/box resolution dispatch and calls Super once,
+without changing forces or enabling optional constraints. This is a conservative
+dependency witness, including zero-impulse contacts, not an impulse receipt.
+The new scenario starts at rest with the default closed synchronization gate,
+then supplies real throttle from frame1 and withholds only later brake changes.
+Native trajectory diagnostics precede assertions. All three actors still replay;
+no full-state lease, localized rollback or network qualification is inferred.

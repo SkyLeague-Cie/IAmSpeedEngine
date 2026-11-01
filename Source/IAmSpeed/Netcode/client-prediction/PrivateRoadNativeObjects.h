@@ -3,10 +3,20 @@
 #include "IAmSpeed/Actors/SpeedCar.h"
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
+#include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include <memory>
 #include "PrivateRoadNativeObjects.generated.h"
 namespace Speed::Netcode::Prediction { struct FPrivateRoadAccess;class FPrivateRoadPhysicsWorld; }
 
+// Only the private physical factory selects this default subobject subtype.
+// Observe the real native dispatch; do not add impulses or optional constraints.
+UCLASS(NotBlueprintable,Transient)
+class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
+{
+    GENERATED_BODY()
+protected:
+    void ResolveCurrentHitPrv(const float&,const float&) override;
+};
 // A real subtype whose lifecycle never creates a Chaos/network physics owner.
 // Its manually owned wheel/suspension storage belongs to the private factory.
 UCLASS(NotBlueprintable,Transient)
@@ -18,7 +28,8 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     bool HasIsolatedNativeConstruction() const;
     bool IsInitialSynchronizationComplete() const override;
     void UpdateInputs() override;
-    void RcvImpactOnSubBody(const USSubBody&,const FVector&) override;
+    friend class USpeedBranchBoxSubBody;
+    void ObserveBoxContactDispatch(const USSubBody&,const UBoxSubBody&);
     void OnRegister() override;
     void OnCreatePhysicsState() override;
     void OnDestroyPhysicsState() override;
