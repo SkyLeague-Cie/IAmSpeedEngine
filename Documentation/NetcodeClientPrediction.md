@@ -89,7 +89,7 @@ authenticates a server nor restores/adopts a physical world or an active registr
 The new native unit fixture is NOT_RUN until the exact next candidate is built.
 
 
-## Private native road kernel — source prototype, native tests not yet run
+## Private native road kernel â€” source prototype, native tests not yet run
 
 `FPrivateRoadPhysicsWorld` now constructs actual private native cars, four native
 wheel/suspension systems per car, and an authored finite analytical road. It
@@ -206,3 +206,23 @@ differences whose naive squared norm underflows. These numerical checks alone
 do not qualify native physics; the same production helper is used by the actual
 native historical/reconciliation test. Revised source is NOT_RUN until its own
 exact native cohort executes.
+
+
+The finite native transport probe now has a cooperative C++20 pump for a game
+host. Each Tick returns at a completed native publication or protocol wait;
+the actual original road graph, retained inputs and OS session stay owned by
+the suspended coroutine. Options are copied into that frame. Tick/destruction
+require the original GT, reentrant resume is refused, and destruction unwinds
+real native RAII owners before publication/status storage retires. Cancellation
+cannot emit success, ClientDone or a Job-drain receipt. ReadLatest returns only
+the immutable actual value publication. The old commandlet entry point drives
+the same pump to completion; it no longer owns a separate protocol algorithm.
+
+Correction work per pulse is bounded to16frames by default, with an explicit
+1..256work-budget option. Physical delta remains1/300s. This is scheduling work,
+not an elapsed-frame startup gate, a larger timestep or localized resimulation.
+The protocol still has finite240-frame unit-authored inputs and original-birth
+correction. A game host, real acquisition, complete native restore, interaction
+closure and real two-playable-client/dedicated-server tests are still required.
+This cooperative source is NOT_RUN until its own native build and three-process
+qualification; preceding native53 or54 results do not qualify it.

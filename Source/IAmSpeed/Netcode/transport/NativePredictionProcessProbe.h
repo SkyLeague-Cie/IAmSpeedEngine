@@ -1,16 +1,38 @@
 #pragma once
 #include "NativeLocalSession.h"
 #include <string>
+namespace Speed::Netcode::Prediction {struct FPrivateRoadPublication;}
 namespace Speed::Netcode
 {
 struct FNativePredictionProbeOptions
 {
     FLocalSessionConfig Launcher;
     std::string ReportPath,ReleasePath;
+    std::uint32_t MaxReplayFramesPerPulse=16; // work budget; physical delta remains1/300s
 };
 // Finite commandlet/process probe, NOT game-client admission. Uses unit-authored
 // local input frames and the real private native road kernel. Reconciliation is
 // from original birth, not localized fullstate restore. No hardware/UI/real-Demo
 // or complete hidden-state coverage may be inferred from a successful probe.
+enum class ENativeProbePumpStep { Running,Succeeded,Failed,WrongOwner,Reentrant };
+// Cooperative finite, unit-authored native probe. Tick returns at a completed
+// publication or transport wait boundary, retaining actual native ownership.
+// A game host can keep rendering between Tick calls. This API does not admit
+// live device input, a game-client profile, complete state or localized replay.
+class IAMSPEED_API FNativePredictionProbePump final
+{
+    struct FImpl;std::unique_ptr<FImpl> Impl;
+    explicit FNativePredictionProbePump(FNativePredictionProbeOptions);
+public:
+    ~FNativePredictionProbePump();
+    FNativePredictionProbePump(const FNativePredictionProbePump&)=delete;
+    FNativePredictionProbePump& operator=(const FNativePredictionProbePump&)=delete;
+    static std::unique_ptr<FNativePredictionProbePump> Create(FNativePredictionProbeOptions,std::string& Why);
+    ENativeProbePumpStep Tick(); // original GT only; one bounded protocol pulse
+    std::shared_ptr<const Prediction::FPrivateRoadPublication> ReadLatest() const noexcept;
+    std::string FailureReason() const; // values only, original GT only
+    // GT destruction unwinds the suspended native stack and closes its real
+    // graph/socket. It never reports ClientDone, success or Job drain on cancel.
+};
 IAMSPEED_API bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& Options);
 }
