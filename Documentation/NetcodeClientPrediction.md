@@ -162,3 +162,16 @@ same-frame physical error, delivers late requests during bounded staged replay,
 advances the live local tail, and requires exact corrected kinematics against an
 independently simulated reference. This new code/test requires its own frozen
 native build and execution; preceding37 PASS cannot qualify it.
+
+
+The public SL source review identified valid generic contracts that the fixed
+road kernel could misinterpret: swapped physical throttle/brake destinations,
+and wider or different camera semantics under slots5/6. The factory now checks
+its exact seven supported action semantics, versions, types, signs, ranges and
+identity physical destinations BEFORE allocating a native world. Unsupported
+extensions are refused, without clamping values or retuning coefficients.
+Legitimate raw control rebinding and mapping revisions remain independent.
+Native regression fixtures preserve generic contract validity, cover both
+physical/camera counterexamples and require rejection before world allocation.
+This correction requires its own frozen native test result; no earlier PASS
+qualifies the revised admission code.

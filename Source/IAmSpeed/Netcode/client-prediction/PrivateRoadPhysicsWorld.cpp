@@ -35,6 +35,30 @@ struct FPrivateRoadAccess
 namespace
 {
 bool Refuse(FString& Why,const TCHAR* Message) {Why=Message;return false;}
+// This fixed native subtype consumes exactly the stock road semantic slots.
+// Generic contract validity alone permits other physical destinations and wider
+// extension axes. Refuse those recipes before allocating any native graph.
+bool PrivateRoadSupportedContract(const BranchV2::FInputActionContract& Contract)
+{
+    const auto& D=Contract.GetDescription();
+    if(D.Actions.size()!=7||D.Physical.size()!=3)return false;
+    const char* Names[]={"Throttle","Brake","Steering","Pause","ResetWorld","CameraYaw","CameraPitch"};
+    for(size_t I=0;I<7;++I)
+    {
+        const auto* A=Contract.Find(Speed::Input::FActionId(I));
+        const bool Axis=I<3||I>=5,Signed=I==2||I>=5;
+        const int16 Quantization=I<2?255:(I==2||I>=5?127:1);
+        if(!A||A->Owner!="IAmSpeed"||A->Name!=Names[I]||A->Version!=1
+            ||A->Wiring!=BranchV2::EActionWiring::Wired
+            ||A->Type!=(Axis?BranchV2::EActionType::Axis1D:BranchV2::EActionType::Bool)
+            ||A->Signed!=Signed||A->Quantization!=Quantization)return false;
+    }
+    for(const auto& B:D.Physical)
+        if(B.Action!=static_cast<Speed::Input::FActionId>(B.Destination))return false;
+    // Raw controls, mapping revision and scalar transforms may legitimately
+    // differ between clients. They do not change these consumed semantics.
+    return true;
+}
 bool Finite(const SKinematic& K)
 {
     return !K.Location.ContainsNaN()&&!K.Velocity.ContainsNaN()&&!K.Acceleration.ContainsNaN()
@@ -94,6 +118,8 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         ||Speed::Netcode::PresentationClient::IsSelected()||Seeds.empty()||Seeds.size()>16)
     {Refuse(Why,TEXT("private native world requires GT, physical profile and finite nonempty roster"));return {};}
     std::sort(Seeds.begin(),Seeds.end(),[](const auto& A,const auto& B){return A.Actor<B.Actor;});
+    for(const auto& Seed:Seeds)if(!Seed.Contract||!PrivateRoadSupportedContract(*Seed.Contract))
+    {Refuse(Why,TEXT("unsupported private road action contract"));return {};}
     auto Owner=std::unique_ptr<FPrivateRoadPhysicsWorld>(new FPrivateRoadPhysicsWorld);
     auto& I=*Owner->Impl;
     U64 Last=0;
