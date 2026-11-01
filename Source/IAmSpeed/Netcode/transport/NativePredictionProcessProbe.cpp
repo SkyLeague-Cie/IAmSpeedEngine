@@ -7,6 +7,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <thread>
 
 namespace Speed::Netcode
@@ -133,9 +135,13 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
     if(!InitialSynchronized||OwnerAuthorityCount!=Frames||RemoteAuthorityCount!=Frames)return false;
     const auto Path=std::filesystem::path(O.ReportPath),Temp=std::filesystem::path(O.ReportPath+".tmp");
     std::ofstream S(Temp,std::ios::trunc);if(!S)return false;
+    std::ostringstream Error;Error<<std::setprecision(17)<<MaximumError;
+    const auto PositionError=O.Launcher.SelfPeer==Server?std::string("null"):Error.str();
     S<<"{\"scope\":\"three_process_native_road_probe_only\",\"session\":"<<O.Launcher.Session<<",\"peer\":"<<O.Launcher.SelfPeer
         <<",\"original_pid\":"<<O.Launcher.OriginalSelf.Pid<<",\"original_birth\":"<<O.Launcher.OriginalSelf.BirthTicks
-        <<",\"through_frame\":"<<Through<<",\"corrections\":"<<Corrections<<",\"maximum_position_error_cm\":"<<MaximumError
+        <<",\"through_frame\":"<<Through<<",\"corrections\":"<<Corrections<<",\"maximum_position_error_cm\":"<<PositionError
+        <<",\"position_error_observation_frame\":"<<(O.Launcher.SelfPeer==Server?"null":"90")
+        <<",\"position_error_scope\":\"actors_at_observation_frame_only\""
         <<",\"final_exact_comparison\":"<<(O.Launcher.SelfPeer==Server?"null":Equal?"true":"false")
         <<",\"clients_reported_final_exact\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
         <<",\"owner_authority_input_count\":"<<(O.Launcher.SelfPeer==Server?"null":std::to_string(OwnerAuthorityCount))
