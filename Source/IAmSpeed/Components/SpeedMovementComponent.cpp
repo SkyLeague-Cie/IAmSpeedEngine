@@ -1109,7 +1109,7 @@ thread_local bool TestingPrepareActive=false,TestingPrepareResimulation=false;
 Speed::FCanonicalEpisodeTestingScope::FCanonicalEpisodeTestingScope(const FCanonicalFrameContext& C)
  :PreviousFrame(TestingPrepareFrame),PreviousActive(TestingPrepareActive),PreviousResimulation(TestingPrepareResimulation)
 {
- TestingPrepareFrame=C.NumFrame;TestingPrepareResimulation=C.bResimulationForTesting;
+ TestingPrepareFrame=C.NumFrame;TestingPrepareResimulation=C.IsResimulation();
  TestingPrepareActive=!PreviousActive; // nested/re-entrant prepare never admits
 }
 Speed::FCanonicalEpisodeTestingScope::~FCanonicalEpisodeTestingScope()

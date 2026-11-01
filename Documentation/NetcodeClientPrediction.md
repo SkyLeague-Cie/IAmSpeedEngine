@@ -47,3 +47,10 @@ and replay budget, prepare before mutation, restore/read-back equality, consecut
 history replacement and one final presentation release. Adapter failure after mutation retires the
 timeline; there is no partial-world fallback. Portable coordinator tests use an arithmetic world fixture.
 No real native adapter/provider is supplied or qualified yet, so this is NOT working client rollback.
+
+The next native candidate adds a production Forward/Resimulation purpose to the canonical frame
+context, independent of Shipping/test builds. It leaves frame, fixed delta, physical time and every
+restore admission guard unchanged. Existing fixture tags are preserved. Pacing diagnostics consume
+the purpose to distinguish unpaced replay from real-time starts. SL external effects may inspect
+the same purpose, but physical gameplay must still execute during replay. This tag is not an
+authority, ownership, lifetime, world-restore or event-deduplication certificate.

@@ -292,7 +292,7 @@ void ARealTimeSimulation::AuditPhysicalFrameStart(
 Speed::PublicationCadence::FTiming ARealTimeSimulation::GetCanonicalPublicationTiming(
     const FCanonicalFrameContext& Context) const
 {
-    if (!ActivePublicationTiming.Present || Context.bResimulationForTesting) return {};
+    if (!ActivePublicationTiming.Present || Context.IsResimulation()) return {};
     auto Timing = ActivePublicationTiming;
     Timing.Epoch = PacingEpoch.load(std::memory_order_relaxed);
     return Timing;

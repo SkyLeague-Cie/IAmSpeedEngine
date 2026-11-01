@@ -1609,7 +1609,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 			if (SnapshotBuffer.PublishedSerial() == MAX_uint64) return false;
 #if !UE_BUILD_SHIPPING
             // Replay publications do not represent paced real-time starts.
-            return Context.bResimulationForTesting ? SnapshotBuffer.Publish(Snapshot) :
+            return Context.IsResimulation() ? SnapshotBuffer.Publish(Snapshot) :
                 SnapshotBuffer.PublishWithCadenceTiming(Snapshot, GetCanonicalPublicationTiming(Context));
 #else
             return SnapshotBuffer.Publish(Snapshot);
@@ -1906,9 +1906,7 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 	{
 		const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
         FCanonicalFrameContext ReplayContext(CanonicalNumFrame);
-#if !UE_BUILD_SHIPPING
-        ReplayContext.bResimulationForTesting=true;
-#endif
+        ReplayContext.Purpose=ECanonicalFramePurpose::Resimulation;
 #if WITH_DEV_AUTOMATION_TESTS
         const auto OwnedReplayStep = Speed::OwnedFrameAudit::BeginStep(ReplayContext.NumFrame, true);
 #endif
