@@ -56,12 +56,14 @@ int main()
     P::FHistory Tiny(A.Timeline,3,1);Check(Tiny.Store(A)==P::EStore::CapacityExceeded && Tiny.Count()==0,"byte budget enforced");
     P::FHistory Bad(A.Timeline,0,1024);Check(Bad.Store(A)==P::EStore::Invalid,"zero retention rejected");
     FBinding Binding;Binding.Session=1;Binding.Epoch=2;Binding.Actor=101;Binding.Incarnation=3;Binding.OwnerPeer=4;Binding.ServerPeer=5;Binding.SourceProducer=6;Binding.SourceKind=0;Binding.Contract[0]=7;
+    std::array<Consumed::FActionPolicy,ActionCount> Policies{};
+    Policies[0]={true,true,false,255};Policies[1]={true,true,false,255};Policies[2]={true,true,true,127};
     auto Packet=[&](U64 Frame,int16_t Throttle)
     {
         FPacket V;V.Kind=EKind::AuthorityInput;V.Session=1;V.Epoch=2;V.Actor=101;V.Incarnation=3;V.Contract=Binding.Contract;V.Sequence=Frame+1;V.Frame=Frame;
         V.Input.SourceSequence=Frame+1;V.Input.DeviceGeneration=1;V.Input.ProducerId=6;V.Input.ProducerKind=0;V.Input.Values[0]=Throttle;V.Input.ActiveMask=Throttle?1u:0u;return V;
     };
-    P::FRemoteRequestHistory Remote(Binding,10,32);
+    P::FRemoteRequestHistory Remote(Binding,Policies,10,32);
     Check(Remote.Predict(1).Status==P::EPredict::NoEarlierAuthority,"no implicit neutral opponent");
     auto V=Packet(10,255);
     Check(Remote.Confirm(4,V).Status==EResult::WrongPeer && Remote.Retained()==0,"owner cannot impersonate server");
@@ -77,15 +79,25 @@ int main()
     Remote.DiscardSpeculationFrom(11);
     Check(Remote.Predict(11).Status==P::EPredict::Confirmed,"original authoritative frame preserved for replay");
     Pred=Remote.Predict(12);Check(Pred.Status==P::EPredict::Predicted && Pred.Request.Requested[0]==0 && Pred.Request.ActiveMask==0,"replay future uses newly known request");
-    P::FRemoteRequestHistory Horizon(Binding,1,4);Check(Horizon.Confirm(5,Packet(0,0)).Status==EResult::Accepted,"frame zero anchor allowed");
+    P::FRemoteRequestHistory Horizon(Binding,Policies,1,4);Check(Horizon.Confirm(5,Packet(0,0)).Status==EResult::Accepted,"frame zero anchor allowed");
     Check(Horizon.Predict(1).Status==P::EPredict::Predicted && Horizon.Predict(2).Status==P::EPredict::HorizonExceeded,"bounded prediction lead");
-    P::FRemoteRequestHistory Edge(Binding,10,8);Check(Edge.Confirm(5,Packet(0,0)).Status==EResult::Accepted && Edge.Predict(1).Status==P::EPredict::Predicted,"edge test setup");
+    P::FRemoteRequestHistory Edge(Binding,Policies,10,8);Check(Edge.Confirm(5,Packet(0,0)).Status==EResult::Accepted && Edge.Predict(1).Status==P::EPredict::Predicted,"edge test setup");
     V=Packet(1,0);V.Input.Edges={{0,0,255,2,0},{0,1,0,2,1}};
     Check(Edge.Confirm(5,V).EarliestInvalidatedFrame==1,"within-frame tap invalidates even same final axis");
-    P::FRemoteRequestHistory Bound(Binding,10,1);Check(Bound.Confirm(5,Packet(0,0)).Status==EResult::Accepted && Bound.Predict(1).Status==P::EPredict::CapacityExceeded,"no silent eviction of needed commands");
-    P::FRemoteRequestHistory Mixed(Binding,10,16);
+    P::FRemoteRequestHistory Bound(Binding,Policies,10,1);Check(Bound.Confirm(5,Packet(0,0)).Status==EResult::Accepted && Bound.Predict(1).Status==P::EPredict::CapacityExceeded,"no silent eviction of needed commands");
+    P::FRemoteRequestHistory Mixed(Binding,Policies,10,16);
     Check(Mixed.Confirm(5,Packet(0,0)).Status==EResult::Accepted && Mixed.Confirm(5,Packet(2,1)).Status==EResult::Accepted,"mixed exact/speculative setup");
     Check(Mixed.Predict(1).Status==P::EPredict::Predicted && Mixed.Predict(2).Status==P::EPredict::Confirmed && Mixed.Predict(3).Status==P::EPredict::Predicted,"confirmed frame advances prediction cursor");
     Check(Mixed.Confirm(5,Packet(1,0)).Status==EResult::Accepted && Mixed.Retained()==4,"confirmation replaces speculative entry within budget");
+    auto Invalid=Packet(4,0);Invalid.Input.Values[7]=1;
+    Check(Mixed.Confirm(5,Invalid).Status==EResult::Invalid,"unwired axis request rejected");
+    Invalid=Packet(4,0);Invalid.Input.ActiveMask=(1u<<7);
+    Check(Mixed.Confirm(5,Invalid).Status==EResult::Invalid,"unwired active action rejected");
+    Invalid=Packet(4,0);Invalid.Input.ProducerId++;
+    Check(Mixed.Confirm(5,Invalid).Status==EResult::Invalid,"different original producer rejected");
+    Invalid=Packet(4,0);Invalid.Contract[1]=1;
+    Check(Mixed.Confirm(5,Invalid).Status==EResult::Invalid,"different frozen action contract rejected");
+    Invalid=Packet(4,0);Invalid.Input.Edges={{7,0,1,5,0}};Invalid.Input.ActiveMask=(1u<<7);
+    Check(Mixed.Confirm(5,Invalid).Status==EResult::Invalid,"unwired event rejected");
     std::cout<<"PASS "<<Checks<<" historical divergence checks; no native restore or network qualification\n";
 }

@@ -1,5 +1,5 @@
 #pragma once
-#include "../transport/NetInputTransport.h"
+#include "../consumed-command-v2/ConsumedCommand.h"
 #include <map>
 
 namespace Speed::Netcode::Prediction
@@ -30,6 +30,7 @@ struct FConfirmation
 class FRemoteRequestHistory
 {
     FBinding Binding;
+    std::array<Consumed::FActionPolicy,ActionCount> Actions;
     U64 Horizon=0;
     std::size_t Capacity=0;
     std::map<U64,FPacket> Confirmed;
@@ -45,8 +46,9 @@ class FRemoteRequestHistory
             && B.Input.Edges.empty() && !B.Input.Reset;
     }
 public:
-    FRemoteRequestHistory(FBinding In,U64 MaximumPredictionFrames,std::size_t MaximumRetainedFrames)
-        :Binding(In),Horizon(MaximumPredictionFrames),Capacity(MaximumRetainedFrames) {}
+    FRemoteRequestHistory(FBinding In,std::array<Consumed::FActionPolicy,ActionCount> FrozenActions,
+        U64 MaximumPredictionFrames,std::size_t MaximumRetainedFrames)
+        :Binding(In),Actions(FrozenActions),Horizon(MaximumPredictionFrames),Capacity(MaximumRetainedFrames) {}
     FConfirmation Confirm(U64 AuthenticatedSender,const FPacket& Packet)
     {
         FConfirmation Out;
@@ -54,6 +56,10 @@ public:
             || Packet.Kind!=EKind::AuthorityInput || !Binding.Matches(Packet)
             || Packet.Input.ProducerId!=Binding.SourceProducer || Packet.Input.ProducerKind!=Binding.SourceKind) return Out;
         if (AuthenticatedSender!=Binding.ServerPeer) {Out.Status=EResult::WrongPeer;return Out;}
+        for (std::size_t I=0;I<ActionCount;++I)
+            if (!Actions[I].Accepts(Packet.Input.Values[I]) || (!Actions[I].Wired && (Packet.Input.ActiveMask&(std::uint32_t{1}<<I)))) return Out;
+        for (const auto& E:Packet.Input.Edges)
+            if (!Actions[E.Action].Wired || !Actions[E.Action].Accepts(E.Value)) return Out;
         auto Existing=Confirmed.find(Packet.Frame);
         if (Existing!=Confirmed.end())
         {Out.Status=Same(Existing->second,Packet)?EResult::Duplicate:EResult::Conflict;return Out;}
