@@ -255,3 +255,15 @@ process-exit or Job-drain evidence. The new unit covers before-first-pulse and
 foreign-thread refusal; the real suspended-native-world cleanup case still
 requires an actual process/Game harness. This source is not native-qualified
 until its own fresh candidate runs.
+
+A new native-only retained-graph experiment uses three actors in one correction
+world: two initially approaching cars and a distant moving third actor. A real
+oscillating brake request is withheld on the live branch. The test requires an
+actual cross-car native constraint (not floor support), measures the same-frame
+kinematic error, and advances the original graph held atK10 through11..180 with
+the retained authority requests. All three actors must match the independent
+reference in six COM fields, filters and startup gates. The third actor also
+replays170frames: this is intentionally NOT a localized-replay success claim.
+It exercises interaction-sensitive reconstruction before any island admission;
+no coefficients, tolerances, presets or demolition rules change. Native result
+NOT_RUN on this source until a new frozen candidate executes.
