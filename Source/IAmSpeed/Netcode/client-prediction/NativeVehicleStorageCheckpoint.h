@@ -21,12 +21,14 @@ class FNativeVehicleStorageCheckpoint
     };
     static bool Supported(const Chaos::FSimpleWheeledVehicle& V) noexcept
     {
-        return V.Wheels.Num()==4&&V.Suspension.Num()==4
+        if(!(V.Wheels.Num()==4&&V.Suspension.Num()==4
             &&V.Engine.IsEmpty()&&V.Transmission.IsEmpty()&&V.Differential.IsEmpty()
             &&V.Steering.IsEmpty()&&V.Aerodynamics.IsEmpty()&&V.Aerofoils.IsEmpty()
             &&V.Thrusters.IsEmpty()&&V.Axles.IsEmpty()&&V.TorqueControlSim.IsEmpty()
             &&V.TargetRotationControlSim.IsEmpty()&&V.StabilizeControlSim.IsEmpty()
-            &&V.NumDrivenWheels<=4;
+            &&V.NumDrivenWheels<=4))return false;
+        for(int32 I=0;I<4;++I)if(!V.Wheels[I].SetupPtr||!V.Suspension[I].SetupPtr)return false;
+        return true;
     }
     static FFlags Flags(const Chaos::FSimpleWheeledVehicle& V) noexcept
     {return {V.bSuspensionEnabled,V.bMechanicalSimEnabled,V.bWheelFrictionEnabled,V.bLegacyWheelFrictionPosition,V.NumDrivenWheels};}
@@ -111,13 +113,16 @@ public:
         Write(V.bSuspensionEnabled);Write(V.bMechanicalSimEnabled);Write(V.bWheelFrictionEnabled);
         Write(V.bLegacyWheelFrictionPosition);Write(V.NumDrivenWheels);Read(V.Wheels);Read(V.Suspension);Read(P.After);
         Write(P.Origin);Read(P.WheelConfig);Read(P.SuspensionConfig);Read(P.AfterWheels);Read(P.AfterSuspensions);
+        Read(P.Wheels);Read(P.Suspensions);Read(P.Before);
+        if(!P.Before.empty())A.ReadOnly.push_back({reinterpret_cast<std::uintptr_t>(P.Before.data()),P.Before.size()});
+        Read(V.Engine);Read(V.Transmission);Read(V.Differential);Read(V.Steering);Read(V.Aerodynamics);
+        Read(V.Aerofoils);Read(V.Thrusters);Read(V.Axles);Read(V.TorqueControlSim);
+        Read(V.TargetRotationControlSim);Read(V.StabilizeControlSim);
         Out.push_back(std::move(A));return true;
     }
-    // Child convenience commit. A whole-world transaction must stage/revalidate
-    // every domain first; this API alone does not publish an atomic world.
-    static bool Commit(Chaos::FSimpleWheeledVehicle& V,FPrepared& P)
+private:
+    static void ApplyPrepared(Chaos::FSimpleWheeledVehicle& V,FPrepared& P) noexcept
     {
-        if(!CanCommit(V,P))return false;
         static_assert(std::is_nothrow_copy_assignable_v<Chaos::FSimpleWheelSim>);
         static_assert(std::is_nothrow_copy_assignable_v<Chaos::FSimpleSuspensionSim>);
         for(int32 I=0;I<4;++I)
@@ -132,7 +137,49 @@ public:
         }
         V.bSuspensionEnabled=P.After.Suspension;V.bMechanicalSimEnabled=P.After.Mechanical;
         V.bWheelFrictionEnabled=P.After.Friction;V.bLegacyWheelFrictionPosition=P.After.LegacyPosition;V.NumDrivenWheels=P.After.Driven;
-        P.Origin=nullptr;return true;
+        P.Origin=nullptr;
     }
+public:
+    // Move-only owner of the prepared clones, not a native world/lifecycle
+    // capability. The parent's real retained lease must exclude all mutation
+    // between PrepareFinalization and Finalize and pin the original graph.
+    class FFinalization
+    {
+        friend class FNativeVehicleStorageCheckpoint;
+        std::unique_ptr<FPrepared> Plan;
+        Chaos::FSimpleWheeledVehicle* Target=nullptr;
+        bool Applied=false;
+        FFinalization(Chaos::FSimpleWheeledVehicle& V,std::unique_ptr<FPrepared> P) noexcept
+            :Plan(std::move(P)),Target(&V){}
+    public:
+        FFinalization(FFinalization&&)=default;
+        FFinalization& operator=(FFinalization&&)=delete;
+        FFinalization(const FFinalization&)=delete;
+        FFinalization& operator=(const FFinalization&)=delete;
+        bool AppendPreparedAccess(uint64 Identity,std::vector<Speed::PreparedAccess::FParticipantAccess>& Out) const
+        {
+            if(Applied||!Plan||!Target||!FNativeVehicleStorageCheckpoint::AppendPreparedAccess(*Target,*Plan,Identity,Out))return false;
+            auto& A=Out.back();A.Writes.push_back({reinterpret_cast<std::uintptr_t>(&Applied),sizeof(Applied)});
+            A.ReadOnly.push_back({reinterpret_cast<std::uintptr_t>(&Plan),sizeof(Plan)});
+            A.ReadOnly.push_back({reinterpret_cast<std::uintptr_t>(&Target),sizeof(Target)});return true;
+        }
+        // Exact native field copies only, no Capture, allocation, virtual query,
+        // callback, reset or destruction. Retain this token through common
+        // publication; retire it later on the owner's actual retirement lane.
+        void Finalize() noexcept
+        {
+            if(Applied||!Plan||!Target)std::terminate();
+            FNativeVehicleStorageCheckpoint::ApplyPrepared(*Target,*Plan);Applied=true;
+        }
+    };
+    static std::optional<FFinalization> PrepareFinalization(Chaos::FSimpleWheeledVehicle& V,std::unique_ptr<FPrepared> P)
+    {
+        if(!P||!CanCommit(V,*P))return {};
+        return FFinalization(V,std::move(P));
+    }
+    // Child convenience commit performs all fallible work before its first
+    // native write. Whole-world plans use the retained finalization token.
+    static bool Commit(Chaos::FSimpleWheeledVehicle& V,FPrepared& P)
+    {if(!CanCommit(V,P))return false;ApplyPrepared(V,P);return true;}
 };
 }

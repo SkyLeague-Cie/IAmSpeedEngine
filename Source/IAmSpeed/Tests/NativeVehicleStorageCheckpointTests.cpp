@@ -11,7 +11,7 @@ bool FIASNativeVehicleStorageCheckpoint::RunTest(const FString&)
     Chaos::FSimpleWheelConfig WC;Chaos::FSimpleSuspensionConfig SC;
     SC.SetSuspensionMaxRaise(10);SC.SetSuspensionMaxDrop(25);SC.SuspensionSmoothing=7;
     SC.SpringRate=5000;SC.CompressionDamping=1000;SC.ReboundDamping=1200;
-    Chaos::FSimpleWheeledVehicle Native,Reference;
+    Chaos::FSimpleWheeledVehicle Native,Reference;Native.NumDrivenWheels=Reference.NumDrivenWheels=2;
     for(int32 I=0;I<4;++I)
     {
         auto& W=Native.Wheels.Emplace_GetRef(&WC);
@@ -39,12 +39,18 @@ bool FIASNativeVehicleStorageCheckpoint::RunTest(const FString&)
     auto* const WheelPointer=&Native.Wheels[2];auto* const SuspensionPointer=&Native.Suspension[2];
     const auto* const OriginalWheelConfig=WheelPointer->SetupPtr;const auto* const OriginalSuspensionConfig=SuspensionPointer->SetupPtr;
     for(int32 N=41;N<64;++N)Step(Native,N);
+    Native.NumDrivenWheels=4;Native.bSuspensionEnabled=false;Native.bLegacyWheelFrictionPosition=true;
     const auto Changed=Codec::Capture(Native);TestTrue(TEXT("real physical target diverged"),Changed!=Historical);
     auto Plan=Codec::Prepare(Native,*Historical);if(!TestTrue(TEXT("all eight native child restores staged"),bool(Plan)))return false;
     TestTrue(TEXT("preparation leaves live native storage untouched"),Codec::Capture(Native)==Changed);
     std::vector<Speed::PreparedAccess::FParticipantAccess> Access;
     TestTrue(TEXT("actual base storage access declarations"),Codec::AppendPreparedAccess(Native,*Plan,51,Access));
     TestTrue(TEXT("no target/config or target/plan alias"),Speed::PreparedAccess::ValidateGlobalAccess(Access));
+    TestEqual(TEXT("eight base objects, five flags and consumed plan origin all declared"),int32(Access.front().Writes.size()),14);
+    uint8 OtherStorage=0;auto ReadOrigin=Access.front();ReadOrigin.Participant=53;
+    ReadOrigin.ReadOnly={Access.front().Writes.back()};ReadOrigin.Writes={{reinterpret_cast<std::uintptr_t>(&OtherStorage),sizeof(OtherStorage)}};
+    auto OriginAlias=Access;OriginAlias.push_back(ReadOrigin);
+    TestFalse(TEXT("alias on consumed plan origin blocks global finalization"),Speed::PreparedAccess::ValidateGlobalAccess(OriginAlias));
     auto Alias=Access.front();Alias.Participant=52;Alias.ReadOnly.clear();Alias.Writes={Access.front().ReadOnly.front()};Access.push_back(Alias);
     TestFalse(TEXT("configuration alias prevents transaction"),Speed::PreparedAccess::ValidateGlobalAccess(Access));
     TestFalse(TEXT("different live vehicle rejects plan"),Codec::CanCommit(Reference,*Plan));
@@ -71,6 +77,21 @@ bool FIASNativeVehicleStorageCheckpoint::RunTest(const FString&)
     Bad=*Final;Bad.push_back(0);TestFalse(TEXT("trailing bytes refused"),bool(Codec::Prepare(Native,Bad)));
     for(size_t N=0;N<Final->size();N+=17)
         TestFalse(TEXT("truncated native storage checkpoint refused"),bool(Codec::Prepare(Native,Speed::Replay::FBytes(Final->begin(),Final->begin()+N))));
+    auto FinalPlan=Codec::Prepare(Native,*Final);if(!FinalPlan)return false;
+    auto Tail=Codec::PrepareFinalization(Native,std::move(FinalPlan));if(!TestTrue(TEXT("fallible finalization prepared before native writes"),bool(Tail)))return false;
+    TestFalse(TEXT("finalization exclusively owns the prepared clones"),bool(FinalPlan));
+    std::vector<Speed::PreparedAccess::FParticipantAccess> TailAccess;
+    TestTrue(TEXT("retained finalization declares own writes and reads"),Tail->AppendPreparedAccess(61,TailAccess));
+    TestTrue(TEXT("finalization ranges globally valid"),Speed::PreparedAccess::ValidateGlobalAccess(TailAccess));
+    TestEqual(TEXT("finalization includes its applied flag"),int32(TailAccess.front().Writes.size()),15);
+    Tail->Finalize();TestTrue(TEXT("no-fail tail restores native bytes"),Codec::Capture(Native)==Final);
+    TestFalse(TEXT("applied finalization cannot prepare again"),Tail->AppendPreparedAccess(61,TailAccess));Tail.reset();
+    auto* SavedWC=Native.Wheels[0].SetupPtr;Native.Wheels[0].SetupPtr=nullptr;
+    TestFalse(TEXT("null wheel config refused before native clone"),bool(Codec::Capture(Native)));
+    TestFalse(TEXT("null wheel config cannot enter restore prepare"),bool(Codec::Prepare(Native,*Final)));Native.Wheels[0].SetupPtr=SavedWC;
+    auto* SavedSC=Native.Suspension[0].SetupPtr;Native.Suspension[0].SetupPtr=nullptr;
+    TestFalse(TEXT("null suspension config refused before native clone"),bool(Codec::Capture(Native)));Native.Suspension[0].SetupPtr=SavedSC;
+    TestTrue(TEXT("null-config refusals did not change other physical state"),Codec::Capture(Native)==Final);
     Chaos::FSimpleEngineConfig EC;Native.Engine.Emplace(&EC);
     TestFalse(TEXT("additional live subsystem cannot be silently omitted"),bool(Codec::Capture(Native)));
     AddInfo(TEXT("Actual base native storage only; original wheel/suspension addresses/configuration survive correction and plan destruction. Component/subbody/contact/input/world restoration and real lifecycle lease remain required; no whole-world or network claim."));
