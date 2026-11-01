@@ -26,6 +26,29 @@ bool SessionContinues(const BranchV2::FInputFrame& Frame,const std::shared_ptr<c
     }
     return Active==D.ActiveMask;
 }
+// Replaying a transition is not minting a new remote authority. Keep the
+// actual immutable original baseline and require the new native graph to reach
+// the same observable startup state before replaying that retained transition.
+// Native IDs/lifetimes differ across graphs and are never copied or retagged.
+// This deliberately does not certify complete hidden-state equivalence.
+bool SameInitialObservablePublication(const FPrivateRoadPublication& A,const FPrivateRoadPublication& B)
+{
+    if(A.Frame!=0||B.Frame!=0||!A.AwaitingInitialPublication||!B.AwaitingInitialPublication
+        ||A.Actors.size()!=B.Actors.size()||A.Actors.empty())return false;
+    for(size_t N=0;N<A.Actors.size();++N)
+    {
+        const auto& X=A.Actors[N];const auto& Y=B.Actors[N];
+        if(X.Actor!=Y.Actor||X.Incarnation!=Y.Incarnation||X.CanMove||Y.CanMove||!X.Frozen||!Y.Frozen
+            ||X.CountdownFrames!=1||Y.CountdownFrames!=1||!(X.Filter==Y.Filter)||!X.Input||!Y.Input
+            ||X.Input->Frame!=0||Y.Input->Frame!=0||X.Input->Requested!=Y.Input->Requested
+            ||X.Input->Applied!=Y.Input->Applied)return false;
+        const auto* P=A.Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==X.NativeStableId;});
+        const auto* Q=B.Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Y.NativeStableId;});
+        if(!P||!Q)return false;
+        const auto D=MeasurePrivateRoadKinematics(P->COMState,Q->COMState);if(!D.Valid||D.Different)return false;
+    }
+    return true;
+}
 std::array<Consumed::FActionPolicy,ActionCount> SessionActionPolicies(const BranchV2::FInputActionContract& Contract)
 {
     std::array<Consumed::FActionPolicy,ActionCount> Out{};
@@ -49,6 +72,7 @@ struct FPrivateRoadPredictionSession::FImpl
     std::vector<std::unique_ptr<FRemoteRequestHistory>> Histories,StagedHistories;
     std::unique_ptr<FPrivateRoadPhysicsWorld> Live,Staged;
     std::atomic<std::shared_ptr<const FPrivateRoadPublication>> Published;
+    std::shared_ptr<const FPrivateRoadPublication> OriginalInitialBaseline;
     mutable std::mutex Gate;
     bool Closed=false,Failed=false,StagedNeedsRestart=false,InitialPublicationReleased=false;
     void Fail() noexcept {Failed=true;Published.store({});}
@@ -134,8 +158,10 @@ bool FPrivateRoadPredictionSession::ReleaseInitialPublication(FString& Why)
     auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
     if(!Lock.owns_lock()||I.Closed||I.Failed||I.InitialPublicationReleased||I.LocalFrames.size()!=1
         ||I.Staged||!I.Live)return SessionRefuse(Why,TEXT("startup session boundary refused"));
-    if(!I.Live->ReleaseInitialPublication(I.Live->ReadLatest(),Why))return false;
-    I.InitialPublicationReleased=true;return true;
+    const auto Baseline=I.Live->ReadLatest();
+    if(!Baseline||I.PhysicalHistory.size()!=1||Baseline!=I.PhysicalHistory[0]
+        ||!I.Live->ReleaseInitialPublication(Baseline,Why))return false;
+    I.OriginalInitialBaseline=Baseline;I.InitialPublicationReleased=true;return true;
 }
 bool FPrivateRoadPredictionSession::AdvanceLocal(std::shared_ptr<const BranchV2::FInputFrame> Frame,FString& Why)
 {
@@ -184,8 +210,14 @@ EPrivateRoadCorrection FPrivateRoadPredictionSession::AdvanceCorrection(U64 Budg
         U64 Done=0;
         while(I.ReplayNext<I.LocalFrames.size()&&Done<Budget)
         {
-            if(I.ReplayNext==1&&I.InitialPublicationReleased
-                &&!I.Staged->ReleaseInitialPublication(I.Staged->ReadLatest(),Why))return Fail(TEXT("native replay startup boundary refused"));
+            if(I.ReplayNext==1&&I.InitialPublicationReleased)
+            {
+                const auto ActualInitial=I.Staged->ReadLatest();
+                if(!I.OriginalInitialBaseline||!ActualInitial
+                    ||!SameInitialObservablePublication(*I.OriginalInitialBaseline,*ActualInitial)
+                    ||!I.Staged->ReleaseInitialPublication(ActualInitial,Why))
+                    return Fail(TEXT("native replay retained startup agreement/boundary refused"));
+            }
             std::vector<FPrivateRoadRequest> Requests;
             if(!I.Requests(I.ReplayNext,I.LocalFrames[size_t(I.ReplayNext)],I.StagedHistories,Requests)
                 ||!I.Staged->Step(Requests,true,Why))return Fail(TEXT("native corrected replay failed; no fallback"));
