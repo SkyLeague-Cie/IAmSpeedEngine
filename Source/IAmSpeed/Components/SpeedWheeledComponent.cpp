@@ -3465,7 +3465,7 @@ float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 
 bool USpeedWheeledComponent::CanMove() const
 {
-	return WheeledPhysicsState.nbFramesbeforeCanMove == 0;
+	return IsInitialSynchronizationComplete() && WheeledPhysicsState.nbFramesbeforeCanMove == 0;
 }
 
 bool USpeedWheeledComponent::CountdownHasStarted() const

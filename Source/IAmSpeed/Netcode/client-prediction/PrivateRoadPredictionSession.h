@@ -50,6 +50,9 @@ public:
     // Caller supplies the actual authenticated original ingress peer. Numeric
     // equality here is binding validation, NOT an authentication mechanism.
     FConfirmation ConfirmRemote(U64 OriginalAuthenticatedPeer,const FPacket& Packet);
+    // Session validates the actual original-server startup values before calling.
+    // Complete native hidden-state/restore admission remains a separate gate.
+    bool ReleaseInitialPublication(FString& Why);
     bool AdvanceLocal(std::shared_ptr<const BranchV2::FInputFrame> OriginalFrame,FString& Why);
     EPrivateRoadCorrection AdvanceCorrection(U64 MaximumFramesThisPulse,FString& Why);
     std::shared_ptr<const FPrivateRoadPublication> ReadLatest() const noexcept;

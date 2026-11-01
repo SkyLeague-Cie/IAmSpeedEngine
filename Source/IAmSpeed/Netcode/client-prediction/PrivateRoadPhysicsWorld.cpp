@@ -28,7 +28,7 @@ struct FPrivateRoadAccess
 {
     struct FSlot {std::shared_ptr<const FBranchProcessedInput> Input;bool Consumed=false;};
     UWorld* World=nullptr;
-    bool Active=false;
+    bool Active=false,RequiresInitialPublication=true,InitialPublicationReleased=false;
     U64 Frame=0;
     TMap<const USpeedBranchWheeledComponent*,FSlot> Slots;
 };
@@ -120,8 +120,14 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     std::sort(Seeds.begin(),Seeds.end(),[](const auto& A,const auto& B){return A.Actor<B.Actor;});
     for(const auto& Seed:Seeds)if(!Seed.Contract||!PrivateRoadSupportedContract(*Seed.Contract))
     {Refuse(Why,TEXT("unsupported private road action contract"));return {};}
+    const auto StartPolicy=Seeds.front().StartPolicy;
+    if(StartPolicy>EPrivateRoadStartPolicy::ExplicitUnitRecipe)return {};
+    for(const auto& S:Seeds)if(S.StartPolicy!=StartPolicy
+        ||(StartPolicy==EPrivateRoadStartPolicy::AwaitInitialPublication&&S.CountdownFrames))
+    {Refuse(Why,TEXT("mixed startup policy or countdown substituted for initial publication"));return {};}
     auto Owner=std::unique_ptr<FPrivateRoadPhysicsWorld>(new FPrivateRoadPhysicsWorld);
     auto& I=*Owner->Impl;
+    I.Access->RequiresInitialPublication=StartPolicy==EPrivateRoadStartPolicy::AwaitInitialPublication;
     U64 Last=0;
     for(auto& Seed:Seeds)
     {
@@ -194,10 +200,18 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         {Refuse(Why,TEXT("stock native driving profile differs"));return {};}
         C->SetEngineFPS(300);C->SetKinematicState(N.Seed.Initial);
         // Declared fresh-world initial countdown, never a historical restore.
-        C->WheeledPhysicsState.nbFramesbeforeCanMove=N.Seed.CountdownFrames;
-        C->WheeledPhysicsState.bStartCountdown=N.Seed.CountdownFrames>0;
-        C->SinceCanMoveFrame=N.Seed.CountdownFrames?INDEX_NONE:0;
-        if(N.Seed.CountdownFrames)C->FreezeMovement();else C->UnFreezeMovement();
+        if(I.Access->RequiresInitialPublication)
+        {
+            // Closed state, not a timer: no expiry or decrement can release it.
+            C->SetCannotMoveLocal();
+        }
+        else
+        {
+            C->WheeledPhysicsState.nbFramesbeforeCanMove=N.Seed.CountdownFrames;
+            C->WheeledPhysicsState.bStartCountdown=N.Seed.CountdownFrames>0;
+            C->SinceCanMoveFrame=N.Seed.CountdownFrames?INDEX_NONE:0;
+            if(N.Seed.CountdownFrames)C->FreezeMovement();else C->UnFreezeMovement();
+        }
         C->bPublishWheelPresentation=true;I.PinTree(N.Actor);I.PinTree(C);
     }
     I.Bridge->ApplyPendingOps();
@@ -228,6 +242,8 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             return Refuse(Why,TEXT("private native actor/component lifetime changed"));
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("private native graph object invalidated"));
     const U64 Frame=I.Driver->NextPrivate();
+    if(Frame&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
+        return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
     if(Frame>=uint64(MAX_int32-1)||!NoNetworkOwner(I.World.Get()))return Refuse(Why,TEXT("private step native domain changed"));
     std::vector<FBranchInputFilter::FPrepared> Plans;Plans.reserve(I.Cars.size());
     I.Access->Slots.Empty();
@@ -267,6 +283,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         if(!Slot||!Slot->Consumed||!I.Cars[N]->Filter->Commit(Plans[N]))return Fail(TEXT("private consumed-input/filter commit failed"));
     }
     auto Out=std::make_shared<FPrivateRoadPublication>();Out->LocalKernelLifetime=I.Lifetime;Out->Frame=Frame;
+    Out->AwaitingInitialPublication=I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased;
     if(!I.Driver->ReadLatestSimulationSnapshot(Out->Physics)||Out->Physics.NumFrame!=Frame
         ||Out->Physics.PresentationBodies.Num()!=int32(I.Cars.size()))return Fail(TEXT("private native publication mismatch"));
     for(const auto& N:I.Cars)
@@ -275,11 +292,46 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         Out->Actors.push_back({N->Seed.Actor,N->Seed.Incarnation,N->StableId,*State,I.Access->Slots.FindChecked(N->Component).Input,
             N->Component->CanMove(),N->Component->IsFrozen(),N->Component->WheeledPhysicsState.nbFramesbeforeCanMove});
     }
+    if(I.Access->RequiresInitialPublication)for(const auto& A:Out->Actors)
+    {
+        if(Frame==0&&(A.CanMove||!A.Frozen||A.CountdownFrames!=1))return Fail(TEXT("initial publication moved before synchronization"));
+        if(Frame>0&&(!A.CanMove||A.Frozen||A.CountdownFrames))return Fail(TEXT("common startup activation not applied"));
+    }
     I.Published.store(std::move(Out));return true;
     }
     catch(...) {return Fail(TEXT("private native branch retired after step/publication exception"));}
 }
 std::shared_ptr<const FPrivateRoadPublication> FPrivateRoadPhysicsWorld::ReadLatest() const noexcept {return Impl->Published.load();}
+bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why)
+{
+    Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("startup release requires original GT owner"));
+    auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock()||I.Closed||I.Failed||I.Access->Active||!I.Access->RequiresInitialPublication
+        ||I.Access->InitialPublicationReleased||!Baseline||Baseline!=I.Published.load()
+        ||!Baseline->AwaitingInitialPublication||Baseline->Frame!=0||Baseline->LocalKernelLifetime!=I.Lifetime
+        ||!I.World.IsValid()||I.World->bIsTearingDown||!I.Driver||!IsValid(I.Driver)
+        ||I.Driver->NextPrivate()!=1||Baseline->Actors.size()!=I.Cars.size())return Refuse(Why,TEXT("startup original baseline/boundary unavailable"));
+    for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("startup native graph invalidated"));
+    for(const auto& N:I.Cars)
+    {
+        const auto* C=N->Component;
+        if(!IsValid(N->Actor)||!IsValid(C)||N->Actor->IsActorBeingDestroyed()||N->Actor->HasActorBegunPlay()
+            ||N->Actor->GetWorld()!=I.World.Get()||C->GetOwner()!=N->Actor||N->Actor->GetVehicleMovement()!=C
+            ||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->IsFrozen()||C->CanMove()
+            ||C->WheeledPhysicsState.bStartCountdown||C->WheeledPhysicsState.nbFramesbeforeCanMove!=1)
+            return Refuse(Why,TEXT("startup native identity or closed gate changed"));
+    }
+    // Same established physical countdown-release operations, at a common
+    // explicit boundary instead of an arbitrary elapsed frame count.
+    for(const auto& N:I.Cars)
+    {
+        auto* C=N->Component;C->WheeledPhysicsState.nbFramesbeforeCanMove=0;C->WheeledPhysicsState.bStartCountdown=false;
+        C->SinceCanMoveFrame=C->NumFrame()+1;C->bSimTimelineWasCanMove=true;
+        C->bSimTimelineHasGroundState=true;C->bSimTimelineWasGrounded=C->IsOnTheGround();
+        C->ResetWheelTransientStateForCurrentPose(false);C->UnFreezeMovement();
+    }
+    I.Access->InitialPublicationReleased=true;return true;
+}
 bool FPrivateRoadPhysicsWorld::Close()
 {
     if(!IsInGameThread())return false;
@@ -318,6 +370,10 @@ void USpeedBranchWheeledComponent::OnRegister() {UPawnMovementComponent::OnRegis
 void USpeedBranchWheeledComponent::OnCreatePhysicsState() {UActorComponent::OnCreatePhysicsState();}
 void USpeedBranchWheeledComponent::OnDestroyPhysicsState() {UActorComponent::OnDestroyPhysicsState();}
 void USpeedBranchWheeledComponent::BeginPlay() {UActorComponent::BeginPlay();}
+bool USpeedBranchWheeledComponent::IsInitialSynchronizationComplete() const
+{
+    const auto A=Access.lock();return A&&(!A->RequiresInitialPublication||A->InitialPublicationReleased);
+}
 void USpeedBranchWheeledComponent::UpdateInputs()
 {
     const auto A=Access.lock();bInputFrameRejectedV2=true;

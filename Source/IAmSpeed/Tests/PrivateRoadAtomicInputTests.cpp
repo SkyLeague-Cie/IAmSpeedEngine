@@ -26,7 +26,7 @@ struct FMaxima
 bool RunCase(FAutomationTestBase& Test,const FCase& Case)
 {
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
-    P::FPrivateRoadCarSeed Seed;Seed.Actor=101;Seed.Incarnation=3;Seed.Contract=Contract;
+    P::FPrivateRoadCarSeed Seed;Seed.StartPolicy=P::EPrivateRoadStartPolicy::ExplicitUnitRecipe;Seed.Actor=101;Seed.Incarnation=3;Seed.Contract=Contract;
     Seed.Local={Speed::Input::EProducerKind::Device,42};Seed.LocalEpoch={3};
     Seed.Remote.Session=1;Seed.Remote.Epoch=2;Seed.Remote.Actor=101;Seed.Remote.Incarnation=3;
     Seed.Remote.OwnerPeer=4;Seed.Remote.ServerPeer=5;Seed.Remote.SourceProducer=42;Seed.Remote.SourceKind=0;Seed.Remote.Contract[0]=7;
@@ -181,4 +181,52 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASOscillatingCameraPitch,"IAmSpeed.Netcode.Pr
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
 bool FIASOscillatingCameraPitch::RunTest(const FString&)
 {return IASAtomicRoadCampaign::RunOscillating(*this,6,TEXT("camera-pitch"),127);}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASNativeInitialPublicationGate,"IAmSpeed.Netcode.Prediction.InitialPublicationCanMoveGate",
+    EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
+bool FIASNativeInitialPublicationGate::RunTest(const FString&)
+{
+    namespace P=Speed::Netcode::Prediction;namespace V=Speed::Input::V2;
+    using namespace Speed::Netcode;
+    auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
+    P::FPrivateRoadCarSeed Seed; // Default policy MUST remain closed.
+    Seed.Actor=101;Seed.Incarnation=3;Seed.Contract=Contract;Seed.Role=P::EBranchFilterRole::LocalDevice;
+    Seed.Local={Speed::Input::EProducerKind::Device,42};Seed.LocalEpoch={3};
+    Seed.Remote.Session=1;Seed.Remote.Epoch=2;Seed.Remote.Actor=101;Seed.Remote.Incarnation=3;
+    Seed.Remote.OwnerPeer=4;Seed.Remote.ServerPeer=5;Seed.Remote.SourceProducer=42;Seed.Remote.SourceKind=0;Seed.Remote.Contract[0]=7;
+    Seed.Initial.Location=FVector(0,0,45);Seed.Initial.Velocity=FVector(500,0,0);
+    FString Why;auto World=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
+    if(!TestTrue(*FString::Printf(TEXT("actual default-closed native graph: %s"),*Why),bool(World)))return false;
+    const auto Input=[&](U64 Frame)
+    {
+        V::FInputFrameData D;D.ConsumptionFrame=Frame;D.SourceSequence=Frame+1;D.DeviceGeneration={1};
+        D.Producer=Seed.Local;D.StreamEpoch=Seed.LocalEpoch;D.Reset=Frame==0;
+        if(Frame){D.Values[0]=255;D.ActiveMask=1;D.Transitions.push_back({0,V::ETransition::Started,255,{Frame+1,0}});}
+        return std::make_shared<const V::FInputFrame>(Contract,D);
+    };
+    bool OK=TestFalse(TEXT("no release before actual baseline publication"),World->ReleaseInitialPublication({},Why));
+    OK=TestTrue(TEXT("actual frozen initial canonical frame"),World->Step({{101,3,Input(0)}},false,Why))&&OK;
+    const auto Baseline=World->ReadLatest();
+    if(!Baseline||Baseline->Actors.size()!=1){World->Close();AddError(TEXT("actual baseline unavailable"));return false;}
+    OK=TestTrue(TEXT("default awaiting actual startup publication"),Baseline->AwaitingInitialPublication&&!Baseline->Actors[0].CanMove
+        &&Baseline->Actors[0].Frozen&&Baseline->Actors[0].CountdownFrames==1)&&OK;
+    auto Copy=std::make_shared<const P::FPrivateRoadPublication>(*Baseline);
+    OK=TestFalse(TEXT("value-identical caller copy is not the retained original publication"),World->ReleaseInitialPublication(Copy,Why))&&OK;
+    const auto Next=Input(1);bool AllBlocked=true;
+    for(unsigned Attempt=0;Attempt<512;++Attempt)
+        if(World->Step({{101,3,Next}},false,Why)||World->ReadLatest()!=Baseline)AllBlocked=false;
+    OK=TestTrue(TEXT("512 attempted frames cannot expire the gate or mutate the physical publication"),AllBlocked)&&OK;
+    OK=TestTrue(TEXT("explicit owner releases the actual retained initial publication"),World->ReleaseInitialPublication(Baseline,Why))&&OK;
+    OK=TestFalse(TEXT("duplicate release is refused"),World->ReleaseInitialPublication(Baseline,Why))&&OK;
+    OK=TestTrue(TEXT("common activation advances the next actual physical frame"),World->Step({{101,3,Next}},false,Why))&&OK;
+    const auto Activated=World->ReadLatest();
+    OK=TestTrue(TEXT("actual CanMove and freeze state reflect explicit activation"),Activated&&Activated->Frame==1
+        &&!Activated->AwaitingInitialPublication&&Activated->Actors[0].CanMove&&!Activated->Actors[0].Frozen
+        &&Activated->Actors[0].CountdownFrames==0)&&OK;
+    OK=TestTrue(TEXT("retained old baseline remains immutable and closed"),Baseline->Frame==0&&Baseline->AwaitingInitialPublication
+        &&!Baseline->Actors[0].CanMove)&&OK;
+    const bool Closed=World->Close();
+    AddInfo(TEXT("[InitialPublicationGate] actualNative=1 blockedAttempts=512 initialFrame=0 activationFrame=1 timerRelease=0 fullHiddenStateCertificate=0 networkAuthenticationQualified=0. Tests physical local-owner gate only; original-process session comparison is separately required by the process probe."));
+    return TestTrue(TEXT("actual native startup graph retired"),Closed)&&OK&&!HasAnyErrors();
+}
 #endif

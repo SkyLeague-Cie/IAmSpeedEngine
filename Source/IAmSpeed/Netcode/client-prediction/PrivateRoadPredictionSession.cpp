@@ -50,7 +50,7 @@ struct FPrivateRoadPredictionSession::FImpl
     std::unique_ptr<FPrivateRoadPhysicsWorld> Live,Staged;
     std::atomic<std::shared_ptr<const FPrivateRoadPublication>> Published;
     mutable std::mutex Gate;
-    bool Closed=false,Failed=false,StagedNeedsRestart=false;
+    bool Closed=false,Failed=false,StagedNeedsRestart=false,InitialPublicationReleased=false;
     void Fail() noexcept {Failed=true;Published.store({});}
     bool Requests(U64 Frame,const std::shared_ptr<const BranchV2::FInputFrame>& LocalFrame,
         std::vector<std::unique_ptr<FRemoteRequestHistory>>& Source,std::vector<FPrivateRoadRequest>& Out)
@@ -128,6 +128,15 @@ FConfirmation FPrivateRoadPredictionSession::ConfirmRemote(U64 Peer,const FPacke
     }
     return Result;
 }
+bool FPrivateRoadPredictionSession::ReleaseInitialPublication(FString& Why)
+{
+    Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return SessionRefuse(Why,TEXT("startup session owner refused"));
+    auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock()||I.Closed||I.Failed||I.InitialPublicationReleased||I.LocalFrames.size()!=1
+        ||I.Staged||!I.Live)return SessionRefuse(Why,TEXT("startup session boundary refused"));
+    if(!I.Live->ReleaseInitialPublication(I.Live->ReadLatest(),Why))return false;
+    I.InitialPublicationReleased=true;return true;
+}
 bool FPrivateRoadPredictionSession::AdvanceLocal(std::shared_ptr<const BranchV2::FInputFrame> Frame,FString& Why)
 {
     Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return SessionRefuse(Why,TEXT("native local advance requires GT"));
@@ -175,6 +184,8 @@ EPrivateRoadCorrection FPrivateRoadPredictionSession::AdvanceCorrection(U64 Budg
         U64 Done=0;
         while(I.ReplayNext<I.LocalFrames.size()&&Done<Budget)
         {
+            if(I.ReplayNext==1&&I.InitialPublicationReleased
+                &&!I.Staged->ReleaseInitialPublication(I.Staged->ReadLatest(),Why))return Fail(TEXT("native replay startup boundary refused"));
             std::vector<FPrivateRoadRequest> Requests;
             if(!I.Requests(I.ReplayNext,I.LocalFrames[size_t(I.ReplayNext)],I.StagedHistories,Requests)
                 ||!I.Staged->Step(Requests,true,Why))return Fail(TEXT("native corrected replay failed; no fallback"));

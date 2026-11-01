@@ -265,6 +265,11 @@ public:
 	void ResetWheelTransientStateForCurrentPose(bool bUseGroundContactGeometry = false);
 	float GetSuspensionOffset(int WheelIndex) override;
 
+protected:
+    // A selected physical network owner can keep startup closed independently
+    // of a product countdown. Legacy/offline components retain their own timer.
+    virtual bool IsInitialSynchronizationComplete() const { return true; }
+public:
 	bool CanMove() const;
 	void RequestCanonicalSupportStartupInitialization()
 	{

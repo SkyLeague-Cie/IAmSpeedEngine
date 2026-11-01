@@ -14,7 +14,7 @@ namespace ProcessProbeDetail
 {
 namespace P=Prediction;namespace V=Speed::Input::V2;
 constexpr U64 Frames=240,Server=5,PeerA=4,PeerB=7;
-enum :std::uint8_t {Hello=1,OwnerInput=2,AuthorityInput=3,Observed=4,RetentionAck=5,ClientDone=6,ObservedError90=8};
+enum :std::uint8_t {Hello=1,OwnerInput=2,AuthorityInput=3,Observed=4,RetentionAck=5,ClientDone=6,ObservedError90=8,InitialPublication=9,StartupReady=10,StartActivation=11};
 struct FSample {FPacket Packet;std::shared_ptr<const V::FInputFrame> Local;};
 bool GameValues(const Speed::Netcode::FFrame& F)
 {if(F.Values[0]<0||F.Values[0]>255||F.Values[1]<0||F.Values[1]>255||F.Values[2]<-127||F.Values[2]>127)return false;for(std::size_t A=3;A<ActionCount;++A)if(F.Values[A])return false;return true;}
@@ -29,7 +29,7 @@ std::vector<P::FPrivateRoadCarSeed> Seeds(U64 Self)
     {
         auto B=Binding(A);P::FPrivateRoadCarSeed S;S.Actor=B.Actor;S.Incarnation=B.Incarnation;S.Remote=B;S.Contract=Contract;
         S.Role=Self==B.OwnerPeer?P::EBranchFilterRole::LocalDevice:P::EBranchFilterRole::RemoteRequests;
-        S.Local={Speed::Input::EProducerKind::Device,B.SourceProducer};S.LocalEpoch={3};S.CountdownFrames=15;
+        S.Local={Speed::Input::EProducerKind::Device,B.SourceProducer};S.LocalEpoch={3}; // default closed initial-publication gate, no warmup countdown
         S.Initial.Location=FVector(0,A?1000:-1000,45);S.Initial.Velocity=FVector(500,0,0);
         S.Processing.Step[0]=17;S.Processing.Step[1]=17;S.Processing.Step[2]=9;Out.push_back(S);
     }
@@ -68,6 +68,26 @@ std::vector<std::uint8_t> Observe(const P::FPrivateRoadPublication& Actual)
     }
     return Bytes;
 }
+// Exact observable startup values from each REAL completed native graph.
+// The original-process channel authenticates the controlled local sender.
+// This is deliberately NOT a complete hidden-state or restore certificate.
+std::vector<std::uint8_t> StartupPublication(const P::FPrivateRoadPublication& Actual)
+{
+    if(Actual.Frame!=0||!Actual.AwaitingInitialPublication||Actual.Actors.size()!=2)return {};
+    auto Bytes=Observe(Actual);if(Bytes.empty())return {};
+    Wire::Put(Bytes,1,8);Wire::Put(Bytes,300,4); // closed road recipe version/rate
+    for(const auto& A:Actual.Actors)
+    {
+        if(A.CanMove||!A.Frozen||A.CountdownFrames!=1||!A.Input||A.Input->Frame!=0||A.Filter.Next!=1)return {};
+        Wire::Put(Bytes,A.CanMove,1);Wire::Put(Bytes,A.Frozen,1);Wire::Put(Bytes,A.CountdownFrames,2);
+        Wire::Put(Bytes,A.Filter.Next,8);Wire::Put(Bytes,A.Filter.ActiveMask,4);
+        for(const auto& Values:{A.Filter.Applied,A.Input->Requested,A.Input->Applied})
+            for(const auto Value:Values)Wire::Put(Bytes,U64(Value),2);
+    }
+    return Bytes;
+}
+std::vector<std::uint8_t> Activation(const std::vector<std::uint8_t>& Initial)
+{std::vector<std::uint8_t> Out;Wire::Put(Out,1,8);Out.insert(Out.end(),Initial.begin(),Initial.end());return Out;}
 std::optional<P::FPrivateRoadObservedFrame> ReadObservation(const std::vector<std::uint8_t>& Bytes)
 {
     Wire::FReader R{Bytes.data(),Bytes.size()};P::FPrivateRoadObservedFrame Out;Out.Frame=R.Get(8);const auto Count=R.Get(1);if(Count!=2)return {};
@@ -94,8 +114,9 @@ bool WaitRelease(const FNativePredictionProbeOptions& O,FNativeLocalSession& Cha
     }
     return false;
 }
-bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal)
+bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized)
 {
+    if(!InitialSynchronized)return false;
     const auto Path=std::filesystem::path(O.ReportPath),Temp=std::filesystem::path(O.ReportPath+".tmp");
     std::ofstream S(Temp,std::ios::trunc);if(!S)return false;
     S<<"{\"scope\":\"three_process_native_road_probe_only\",\"session\":"<<O.Launcher.Session<<",\"peer\":"<<O.Launcher.SelfPeer
@@ -103,7 +124,7 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
         <<",\"through_frame\":"<<Through<<",\"corrections\":"<<Corrections<<",\"maximum_position_error_cm\":"<<MaximumError
         <<",\"final_exact_comparison\":"<<(O.Launcher.SelfPeer==Server?"null":Equal?"true":"false")
         <<",\"clients_reported_final_exact\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
-        <<",\"hardware\":false,\"real_demo_game_client\":false,\"complete_state_restore\":false,\"localized_rollback\":false}\n";
+        <<",\"initial_publication_matched\":true,\"initial_publication_frame\":0,\"activation_frame\":1,\"startup_full_hidden_state_certificate\":false,\"hardware\":false,\"real_demo_game_client\":false,\"complete_state_restore\":false,\"localized_rollback\":false}\n";
     S.close();if(!S)return false;std::error_code Error;std::filesystem::rename(Temp,Path,Error);return !Error;
 }
 }
@@ -141,7 +162,7 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
         std::array<Consumed::FActionPolicy,ActionCount> Actions{};Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
         P::FRemoteRequestHistory HA(Binding(0),Actions,512,512),HB(Binding(1),Actions,512,512);
         std::unique_ptr<P::FPrivateRoadPhysicsWorld> World;std::vector<FPacket> History[2];
-        bool HelloSeen[2]{},ErrorSeen[2]{},Done[2]{};U64 Next=0;std::vector<std::uint8_t> LastObservation;
+        bool HelloSeen[2]{},ErrorSeen[2]{},Done[2]{},StartupAck[2]{},Started=false;U64 Next=0;std::vector<std::uint8_t> LastObservation,Initial;
         while(std::chrono::steady_clock::now()<Deadline)
         {
             Phase=TEXT("server-receive");TraceNext=Next;
@@ -158,6 +179,11 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                     else if(M.Kind==ObservedError90)ErrorSeen[A]=true;
                     else Done[A]=true;
                 }
+                else if(M.Kind==StartupReady)
+                {
+                    if(Initial.empty()||M.Bytes!=Initial)return Fail(__LINE__);
+                    StartupAck[A]=true;
+                }
                 else if(M.Kind==OwnerInput)
                 {
                     auto Packets=IsPacketGroup(M);if(!Packets)return Fail(__LINE__);
@@ -173,7 +199,13 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
             }
             Phase=TEXT("server-physics");
             if(HelloSeen[0]&&HelloSeen[1]&&!World){World=P::FPrivateRoadPhysicsWorld::Create(Seeds(Server),Why);if(!World)return Fail(__LINE__);}
-            const bool Barrier=Next==91&&!(ErrorSeen[0]&&ErrorSeen[1]);
+            if(World&&Next==1&&!Started&&StartupAck[0]&&StartupAck[1])
+            {
+                Phase=TEXT("server-start-activation");
+                if(!World->ReleaseInitialPublication(World->ReadLatest(),Why))return Fail(__LINE__);
+                Started=true;
+            }
+            const bool Barrier=(Next==1&&!Started)||(Next==91&&!(ErrorSeen[0]&&ErrorSeen[1]));
             if(World&&Next<Frames&&!Barrier)
             {
                 // Transport cursors may advance independently; their completed
@@ -186,10 +218,14 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                     if(HA.Confirm(Server,A->Packet).Status!=EResult::Accepted||HB.Confirm(Server,B->Packet).Status!=EResult::Accepted)return Fail(__LINE__);
                     if(!World->Step({{101,3,HA.Predict(Next)},{102,3,HB.Predict(Next)}},false,Why))return Fail(__LINE__);
                     History[0].push_back(A->Packet);History[1].push_back(B->Packet);
-                    auto Actual=World->ReadLatest();if(!Actual||Actual->Frame!=Next)return Fail(__LINE__);LastObservation=Observe(*Actual);if(LastObservation.empty())return Fail(__LINE__);++Next;
+                    auto Actual=World->ReadLatest();if(!Actual||Actual->Frame!=Next)return Fail(__LINE__);LastObservation=Observe(*Actual);if(LastObservation.empty())return Fail(__LINE__);
+                    if(Next==0){Initial=StartupPublication(*Actual);if(Initial.empty())return Fail(__LINE__);}
+                    ++Next;
                 }
             }
             Phase=TEXT("server-publish");TraceNext=Next;
+            if(!Initial.empty())for(U64 Peer:{PeerA,PeerB})
+                if(!Send(Peer,Started?StartActivation:InitialPublication,Started?Activation(Initial):Initial))return Fail(__LINE__);
             if(!LastObservation.empty())for(U64 Peer:{PeerA,PeerB})if(!Send(Peer,Observed,LastObservation))return Fail(__LINE__);
             for(unsigned A=0;A<2;++A)
             {
@@ -203,7 +239,7 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
             }
             if(Next==Frames&&Done[0]&&Done[1])
             {
-                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true))return Fail(__LINE__);
+                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started))return Fail(__LINE__);
                 const bool Released=WaitRelease(O,*Channel,Deadline);Channel->Close();return Released;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -213,7 +249,7 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
     const unsigned Own=O.Launcher.SelfPeer==PeerA?0:1,Other=1-Own;
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return Fail(__LINE__);
     FReliableOutbox Outbox(Binding(Own),Server);auto Baseline=Sample(Own,0,Contract);if(Outbox.Queue(Baseline.Packet)!=EResult::Accepted)return Fail(__LINE__);
-    std::unique_ptr<P::FPrivateRoadPredictionSession> Client;U64 Next=0,Corrections=0;bool ErrorMeasured=false,Done=false;double MaximumError=0;
+    std::unique_ptr<P::FPrivateRoadPredictionSession> Client;U64 Next=0,Corrections=0;bool ErrorMeasured=false,Done=false,StartupReadySent=false,Started=false;double MaximumError=0;std::vector<std::uint8_t> Initial,LocalInitial;
     std::optional<P::FPrivateRoadObservedFrame> Final;
     while(std::chrono::steady_clock::now()<Deadline)
     {
@@ -254,6 +290,22 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                     if(Result.Status!=EResult::Accepted&&Result.Status!=EResult::Duplicate&&Result.Status!=EResult::Stale)return Fail(__LINE__);
                 }
             }
+            else if(M.Kind==InitialPublication)
+            {
+                if(M.Bytes.empty()||(!Initial.empty()&&Initial!=M.Bytes))return Fail(__LINE__);
+                Initial=M.Bytes;
+            }
+            else if(M.Kind==StartActivation)
+            {
+                if(Initial.empty()||M.Bytes!=Activation(Initial))return Fail(__LINE__);
+                if(!Started)
+                {
+                    Phase=TEXT("client-start-activation");
+                    if(!Client||Next!=1||!StartupReadySent||LocalInitial!=Initial
+                        ||!Client->ReleaseInitialPublication(Why))return Fail(__LINE__);
+                    Started=true;
+                }
+            }
             else if(M.Kind==Observed)
             {
                 const auto Obs=ReadObservation(M.Bytes);if(!Obs||Obs->Frame>=Frames)return Fail(__LINE__);
@@ -271,11 +323,19 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
             else return Fail(__LINE__);
         }
         Phase=TEXT("client-physics");
-        if(Client&&Next<Frames&&(Next==0||Outbox.Size()<64))
+        if(Client&&Next<Frames&&(Next==0||Started)&&Outbox.Size()<64)
         {
             auto S=Next==0?Baseline:Sample(Own,Next,Contract);
             if(!Client->AdvanceLocal(S.Local,Why))return Fail(__LINE__);
             if(Next&&Outbox.Queue(S.Packet)!=EResult::Accepted)return Fail(__LINE__);++Next;
+        }
+        if(Client&&Next==1&&!Started&&!Initial.empty())
+        {
+            const auto Actual=Client->ReadLatest();if(!Actual)return Fail(__LINE__);
+            LocalInitial=StartupPublication(*Actual);
+            if(LocalInitial.empty()||LocalInitial!=Initial)return Fail(__LINE__);
+            if(!Send(Server,StartupReady,LocalInitial))return Fail(__LINE__);
+            StartupReadySent=true;
         }
         if(Client)
         {
@@ -295,7 +355,7 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
         if(Done)
         {
             if(!Send(Server,ClientDone,{1}))return Fail(__LINE__);
-            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true))return Fail(__LINE__);
+            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started))return Fail(__LINE__);
             std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
             if(Release>>Session>>Epoch)
             {

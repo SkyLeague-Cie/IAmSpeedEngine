@@ -15,7 +15,7 @@ bool FIASPrivateRoadNativeWorld::RunTest(const FString&)
     std::vector<P::FPrivateRoadCarSeed> Seeds;
     for(U64 A=0;A<2;++A)
     {
-        P::FPrivateRoadCarSeed S;S.Actor=101+A;S.Incarnation=3;S.Contract=Contract;
+        P::FPrivateRoadCarSeed S;S.StartPolicy=P::EPrivateRoadStartPolicy::ExplicitUnitRecipe;S.Actor=101+A;S.Incarnation=3;S.Contract=Contract;
         S.Local={Speed::Input::EProducerKind::Device,42+A};S.LocalEpoch={3};
         S.Remote.Session=1;S.Remote.Epoch=2;S.Remote.Actor=S.Actor;S.Remote.Incarnation=3;
         S.Remote.OwnerPeer=4;S.Remote.ServerPeer=5;S.Remote.SourceProducer=6+A;S.Remote.SourceKind=0;S.Remote.Contract[0]=7;

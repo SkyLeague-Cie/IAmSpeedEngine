@@ -9,10 +9,13 @@
 
 namespace Speed::Netcode::Prediction
 {
+enum class EPrivateRoadStartPolicy : uint8 { AwaitInitialPublication, ExplicitUnitRecipe };
 struct FPrivateRoadCarSeed
 {
     U64 Actor=0,Incarnation=0;
     SKinematic Initial;
+    // Network profile starts closed; countdown is only an explicit unit recipe.
+    EPrivateRoadStartPolicy StartPolicy=EPrivateRoadStartPolicy::AwaitInitialPublication;
     uint16 CountdownFrames=0;
     EBranchFilterRole Role=EBranchFilterRole::RemoteRequests;
     std::shared_ptr<const BranchV2::FInputActionContract> Contract;
@@ -38,6 +41,7 @@ struct FPrivateRoadActorFrame
 struct FPrivateRoadPublication
 {
     U64 LocalKernelLifetime=0,Frame=0;
+    bool AwaitingInitialPublication=false;
     FSimulationSnapshot Physics;
     std::vector<FPrivateRoadActorFrame> Actors;
 };
@@ -59,6 +63,10 @@ public:
     static std::unique_ptr<FPrivateRoadPhysicsWorld> Create(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why);
     bool Step(const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why);
     std::shared_ptr<const FPrivateRoadPublication> ReadLatest() const noexcept;
+    // Local-owner transition after the session has compared its ACTUAL startup
+    // publication with the original server and received the common activation.
+    // This is NOT a complete hidden-state/restore certificate or source admission.
+    bool ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& OriginalBaseline,FString& Why);
     bool Close(); // GT only; never destroys native storage in a physical/publication tail
 };
 }
