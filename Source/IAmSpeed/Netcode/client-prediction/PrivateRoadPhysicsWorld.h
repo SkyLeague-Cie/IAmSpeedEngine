@@ -32,6 +32,8 @@ struct FPrivateRoadActorFrame
     U64 Actor=0,Incarnation=0,NativeStableId=0;
     FBranchFilterState Filter;
     std::shared_ptr<const FBranchProcessedInput> Input;
+    bool CanMove=false,Frozen=false;
+    uint16 CountdownFrames=0; // actual native values, diagnostics only
 };
 struct FPrivateRoadPublication
 {

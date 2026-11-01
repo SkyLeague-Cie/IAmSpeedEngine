@@ -272,7 +272,8 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     for(const auto& N:I.Cars)
     {
         auto State=N->Filter->Capture();if(!State||State->Next!=Frame+1)return Fail(TEXT("private filter publication mismatch"));
-        Out->Actors.push_back({N->Seed.Actor,N->Seed.Incarnation,N->StableId,*State,I.Access->Slots.FindChecked(N->Component).Input});
+        Out->Actors.push_back({N->Seed.Actor,N->Seed.Incarnation,N->StableId,*State,I.Access->Slots.FindChecked(N->Component).Input,
+            N->Component->CanMove(),N->Component->IsFrozen(),N->Component->WheeledPhysicsState.nbFramesbeforeCanMove});
     }
     I.Published.store(std::move(Out));return true;
     }

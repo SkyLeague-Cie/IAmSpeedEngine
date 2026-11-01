@@ -27,8 +27,11 @@ struct FCommonComponentValueAccess
         const ISpeedComponent& C, const FSimulationWorld& World, const ISimulationRestoreBoundaryLease& Lease,
         const PreparedWorld::FAddress& At, const PreparedWorld::FActorBinding& Actor, Resolver& Resolve)
     {
-        if (!At.Valid() || !Actor.Valid() || C.GetPublishedSimulationStableId() != Actor.StableId
-            || !Lease.ProtectsEscapedMutableViews() || !Lease.HoldsExactBoundary(World, At)
+        // Refuse before the first component read. The outer owner must already
+        // have acquired and pinned this exact native boundary before calling.
+        if (!At.Valid() || !Actor.Valid() || !Lease.ProtectsEscapedMutableViews()
+            || !Lease.HoldsExactBoundary(World, At)) return {};
+        if (C.GetPublishedSimulationStableId() != Actor.StableId
             || !Resolve.ValidateComponentBinding(C, Actor)) return {};
         CommonState::FComponentValues O; O.Address = SourceAddress(At); O.Actor = Actor;
         O.Sleep = FCommonCacheValueAccess::Capture(C.SleepState);
@@ -97,8 +100,8 @@ struct FCommonComponentValueAccess
     {
         if constexpr (!std::is_nothrow_swappable_v<TArray<FPhysicalContactConstraint>>) return {};
         if (!ParticipantIdentity || !At.Valid() || !CommonState::Valid(Values) || !(Values.Address == SourceAddress(At))
-            || C.GetPublishedSimulationStableId() != Values.Actor.StableId
-            || !Lease.ProtectsEscapedMutableViews() || !Lease.HoldsExactBoundary(World, At)
+            || !Lease.ProtectsEscapedMutableViews() || !Lease.HoldsExactBoundary(World, At)) return {};
+        if (C.GetPublishedSimulationStableId() != Values.Actor.StableId
             || !Resolve.ValidateComponentBinding(C, Values.Actor)) return {};
         auto Caches = FCommonCacheValueAccess::Prepare(Values.Sleep, Values.Quantization);
         if (!Caches) return {};
