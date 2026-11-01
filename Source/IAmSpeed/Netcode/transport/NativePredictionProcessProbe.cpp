@@ -1,5 +1,6 @@
 #include "NativePredictionProcessProbe.h"
 #include "RedundantDatagram.h"
+#include "AuthorityInputJournal.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPredictionSession.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
 #include <bit>
@@ -14,7 +15,7 @@ namespace ProcessProbeDetail
 {
 namespace P=Prediction;namespace V=Speed::Input::V2;
 constexpr U64 Frames=240,Server=5,PeerA=4,PeerB=7;
-enum :std::uint8_t {Hello=1,OwnerInput=2,AuthorityInput=3,Observed=4,RetentionAck=5,ClientDone=6,ObservedError90=8,InitialPublication=9,StartupReady=10,StartActivation=11};
+enum :std::uint8_t {Hello=1,OwnerInput=2,AuthorityInput=3,Observed=4,RetentionAck=5,ClientDone=6,ObservedError90=8,InitialPublication=9,StartupReady=10,StartActivation=11,AuthorityRetained=12};
 struct FSample {FPacket Packet;std::shared_ptr<const V::FInputFrame> Local;};
 bool GameValues(const Speed::Netcode::FFrame& F)
 {if(F.Values[0]<0||F.Values[0]>255||F.Values[1]<0||F.Values[1]>255||F.Values[2]<-127||F.Values[2]>127)return false;for(std::size_t A=3;A<ActionCount;++A)if(F.Values[A])return false;return true;}
@@ -53,6 +54,19 @@ FSample Sample(unsigned Actor,U64 N,const std::shared_ptr<const V::FInputActionC
         }
     }
     S.Local=std::make_shared<const V::FInputFrame>(Contract,D);return S;
+}
+// Called only AFTER the real native canonical step has committed every input.
+// Never publish an inbox retention ACK as proof of physical consumption.
+bool ActualConsumedPacket(const P::FPrivateRoadPublication& Actual,const FPacket& Packet)
+{
+    if(Actual.Frame!=Packet.Frame)return false;
+    for(const auto& A:Actual.Actors)if(A.Actor==Packet.Actor&&A.Incarnation==Packet.Incarnation)
+    {
+        if(!A.Input||A.Input->Frame!=Packet.Frame||A.Input->Origin!=P::EBranchRequestOrigin::ReceivedAuthorityRequest)return false;
+        const auto* Original=std::get_if<std::shared_ptr<const FPacket>>(&A.Input->Evidence);
+        return Original&&*Original&&Encode(**Original)==Encode(Packet);
+    }
+    return false;
 }
 std::vector<std::uint8_t> Observe(const P::FPrivateRoadPublication& Actual)
 {
@@ -114,9 +128,9 @@ bool WaitRelease(const FNativePredictionProbeOptions& O,FNativeLocalSession& Cha
     }
     return false;
 }
-bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized)
+bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount)
 {
-    if(!InitialSynchronized)return false;
+    if(!InitialSynchronized||OwnerAuthorityCount!=Frames||RemoteAuthorityCount!=Frames)return false;
     const auto Path=std::filesystem::path(O.ReportPath),Temp=std::filesystem::path(O.ReportPath+".tmp");
     std::ofstream S(Temp,std::ios::trunc);if(!S)return false;
     S<<"{\"scope\":\"three_process_native_road_probe_only\",\"session\":"<<O.Launcher.Session<<",\"peer\":"<<O.Launcher.SelfPeer
@@ -124,6 +138,11 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
         <<",\"through_frame\":"<<Through<<",\"corrections\":"<<Corrections<<",\"maximum_position_error_cm\":"<<MaximumError
         <<",\"final_exact_comparison\":"<<(O.Launcher.SelfPeer==Server?"null":Equal?"true":"false")
         <<",\"clients_reported_final_exact\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
+        <<",\"owner_authority_input_count\":"<<(O.Launcher.SelfPeer==Server?"null":std::to_string(OwnerAuthorityCount))
+        <<",\"remote_authority_input_count\":"<<(O.Launcher.SelfPeer==Server?"null":std::to_string(RemoteAuthorityCount))
+        <<",\"authority_input_prefix_through\":"<<(O.Launcher.SelfPeer==Server?"null":std::to_string(Frames-1))
+        <<",\"authority_retention_is_consumption_ack\":false,\"server_completed_input_sources_checked\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
+        <<",\"both_clients_retained_both_actor_journals\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
         <<",\"initial_publication_matched\":true,\"initial_publication_frame\":0,\"activation_frame\":1,\"startup_full_hidden_state_certificate\":false,\"hardware\":false,\"real_demo_game_client\":false,\"complete_state_restore\":false,\"localized_rollback\":false}\n";
     S.close();if(!S)return false;std::error_code Error;std::filesystem::rename(Temp,Path,Error);return !Error;
 }
@@ -162,6 +181,8 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
         std::array<Consumed::FActionPolicy,ActionCount> Actions{};Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
         P::FRemoteRequestHistory HA(Binding(0),Actions,512,512),HB(Binding(1),Actions,512,512);
         std::unique_ptr<P::FPrivateRoadPhysicsWorld> World;std::vector<FPacket> History[2];
+        // Independent delivery retention for each original client and each actor.
+        bool AuthorityAck[2][2][Frames]{};
         bool HelloSeen[2]{},ErrorSeen[2]{},Done[2]{},StartupAck[2]{},Started=false;U64 Next=0;std::vector<std::uint8_t> LastObservation,Initial;
         while(std::chrono::steady_clock::now()<Deadline)
         {
@@ -183,6 +204,17 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                 {
                     if(Initial.empty()||M.Bytes!=Initial)return Fail(__LINE__);
                     StartupAck[A]=true;
+                }
+                else if(M.Kind==AuthorityRetained)
+                {
+                    const auto Packets=IsPacketGroup(M);if(!Packets)return Fail(__LINE__);
+                    for(const auto& Ack:*Packets)
+                    {
+                        if(Ack.Actor<101||Ack.Actor>102)return Fail(__LINE__);
+                        const unsigned Actor=unsigned(Ack.Actor-101);
+                        if(Ack.Frame>=History[Actor].size()||Encode(Ack)!=Encode(AckFor(History[Actor][size_t(Ack.Frame)])))return Fail(__LINE__);
+                        AuthorityAck[A][Actor][Ack.Frame]=true; // retention ONLY
+                    }
                 }
                 else if(M.Kind==OwnerInput)
                 {
@@ -217,8 +249,10 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                     A->Packet.Kind=B->Packet.Kind=EKind::AuthorityInput;
                     if(HA.Confirm(Server,A->Packet).Status!=EResult::Accepted||HB.Confirm(Server,B->Packet).Status!=EResult::Accepted)return Fail(__LINE__);
                     if(!World->Step({{101,3,HA.Predict(Next)},{102,3,HB.Predict(Next)}},false,Why))return Fail(__LINE__);
+                    auto Actual=World->ReadLatest();
+                    if(!Actual||Actual->Frame!=Next||!ActualConsumedPacket(*Actual,A->Packet)||!ActualConsumedPacket(*Actual,B->Packet))return Fail(__LINE__);
                     History[0].push_back(A->Packet);History[1].push_back(B->Packet);
-                    auto Actual=World->ReadLatest();if(!Actual||Actual->Frame!=Next)return Fail(__LINE__);LastObservation=Observe(*Actual);if(LastObservation.empty())return Fail(__LINE__);
+                    LastObservation=Observe(*Actual);if(LastObservation.empty())return Fail(__LINE__);
                     if(Next==0){Initial=StartupPublication(*Actual);if(Initial.empty())return Fail(__LINE__);}
                     ++Next;
                 }
@@ -227,19 +261,25 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
             if(!Initial.empty())for(U64 Peer:{PeerA,PeerB})
                 if(!Send(Peer,Started?StartActivation:InitialPublication,Started?Activation(Initial):Initial))return Fail(__LINE__);
             if(!LastObservation.empty())for(U64 Peer:{PeerA,PeerB})if(!Send(Peer,Observed,LastObservation))return Fail(__LINE__);
-            for(unsigned A=0;A<2;++A)
+            bool BothAuthorityJournalsRetained=Next==Frames;
+            for(unsigned Receiver=0;Receiver<2;++Receiver)for(unsigned A=0;A<2;++A)
             {
-                const auto& H=History[A];if(H.empty())continue;
+                const auto& H=History[A];
                 const bool Released=ErrorSeen[0]&&ErrorSeen[1];
-                const std::size_t Available=Released?H.size():std::min<std::size_t>(H.size(),30);
-                const auto First=Available>4?Available-4:0;
-                std::vector<FPacket> Packets(H.begin()+First,H.begin()+Available);
-                if(Released&&Next<=95&&H.size()>30)Packets.assign(H.begin()+30,H.end());
-                if(!SendPackets(A?PeerA:PeerB,AuthorityInput,Packets))return Fail(__LINE__);
+                // Preserve deliberate REMOTE withholding for the divergence
+                // scenario; the owner also receives its actual consumed journal.
+                const std::size_t Available=Receiver==A||Released?H.size():std::min<std::size_t>(H.size(),30);
+                std::vector<FPacket> Packets;
+                for(std::size_t N=0;N<H.size();++N)if(!AuthorityAck[Receiver][A][N])
+                {
+                    BothAuthorityJournalsRetained=false;
+                    if(N<Available&&Packets.size()<16)Packets.push_back(H[N]);
+                }
+                if(!SendPackets(Receiver?PeerB:PeerA,AuthorityInput,Packets))return Fail(__LINE__);
             }
-            if(Next==Frames&&Done[0]&&Done[1])
+            if(Next==Frames&&Done[0]&&Done[1]&&BothAuthorityJournalsRetained)
             {
-                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started))return Fail(__LINE__);
+                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started,Frames,Frames))return Fail(__LINE__);
                 const bool Released=WaitRelease(O,*Channel,Deadline);Channel->Close();return Released;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -250,6 +290,10 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return Fail(__LINE__);
     FReliableOutbox Outbox(Binding(Own),Server);auto Baseline=Sample(Own,0,Contract);if(Outbox.Queue(Baseline.Packet)!=EResult::Accepted)return Fail(__LINE__);
     std::unique_ptr<P::FPrivateRoadPredictionSession> Client;U64 Next=0,Corrections=0;bool ErrorMeasured=false,Done=false,StartupReadySent=false,Started=false;double MaximumError=0;std::vector<std::uint8_t> Initial,LocalInitial;
+    auto AuthorityJournal=FAuthorityInputJournal::Create({Binding(0),Binding(1)},Frames);if(!AuthorityJournal)return Fail(__LINE__);
+    // Exact original owner frames remain Device evidence. A received server
+    // record is checked against them; it is never relabelled as a Device frame.
+    std::vector<FPacket> OriginalOwnerPackets{Baseline.Packet};
     std::optional<P::FPrivateRoadObservedFrame> Final;
     while(std::chrono::steady_clock::now()<Deadline)
     {
@@ -284,10 +328,22 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                             &&(Pkt.Kind!=EKind::Ack||!Binding(Own).Matches(Pkt)||Pkt.Frame>=std::max<U64>(1,Next)||Pkt.Sequence!=Pkt.Frame+1))return Fail(__LINE__);
                         continue;
                     }
-                    if(Pkt.Actor!=101+Other||Pkt.Frame>=Frames)return Fail(__LINE__);
-                    if(!Client){if(Pkt.Frame!=0)continue;Client=P::FPrivateRoadPredictionSession::Create(Seeds(O.Launcher.SelfPeer),512,Why);if(!Client)return Fail(__LINE__);}
-                    const auto Result=Client->ConfirmRemote(Server,Pkt);TraceInput=int(Result.Status);
-                    if(Result.Status!=EResult::Accepted&&Result.Status!=EResult::Duplicate&&Result.Status!=EResult::Stale)return Fail(__LINE__);
+                    if((Pkt.Actor!=101+Own&&Pkt.Actor!=101+Other)||Pkt.Frame>=Frames||!GameValues(Pkt.Input))return Fail(__LINE__);
+                    if(Pkt.Actor==101+Own)
+                    {
+                        if(Pkt.Frame>=OriginalOwnerPackets.size())return Fail(__LINE__);
+                        auto Original=OriginalOwnerPackets[size_t(Pkt.Frame)];Original.Kind=EKind::AuthorityInput;
+                        if(Encode(Original)!=Encode(Pkt))return Fail(__LINE__);
+                    }
+                    else
+                    {
+                        if(!Client){if(Pkt.Frame!=0)continue;Client=P::FPrivateRoadPredictionSession::Create(Seeds(O.Launcher.SelfPeer),512,Why);if(!Client)return Fail(__LINE__);}
+                        const auto Result=Client->ConfirmRemote(Server,Pkt);TraceInput=int(Result.Status);
+                        if(Result.Status!=EResult::Accepted&&Result.Status!=EResult::Duplicate&&Result.Status!=EResult::Stale)return Fail(__LINE__);
+                    }
+                    const auto Retained=AuthorityJournal->Retain(Server,Pkt);
+                    if(Retained!=EResult::Accepted&&Retained!=EResult::Duplicate)return Fail(__LINE__);
+                    if(!SendPackets(Server,AuthorityRetained,{AckFor(Pkt)}))return Fail(__LINE__);
                 }
             }
             else if(M.Kind==InitialPublication)
@@ -327,7 +383,12 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
         {
             auto S=Next==0?Baseline:Sample(Own,Next,Contract);
             if(!Client->AdvanceLocal(S.Local,Why))return Fail(__LINE__);
-            if(Next&&Outbox.Queue(S.Packet)!=EResult::Accepted)return Fail(__LINE__);++Next;
+            if(Next)
+            {
+                if(OriginalOwnerPackets.size()!=Next||Outbox.Queue(S.Packet)!=EResult::Accepted)return Fail(__LINE__);
+                OriginalOwnerPackets.push_back(S.Packet);
+            }
+            ++Next;
         }
         if(Client&&Next==1&&!Started&&!Initial.empty())
         {
@@ -345,7 +406,7 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
             if(Final&&Next==Frames)
             {
                 const auto Compare=Client->CompareObservedKinematics(*Final);
-                if(Compare.Status==P::EPrivateRoadPoseComparison::Equal&&Corrections&&ErrorMeasured)Done=true;
+                if(Compare.Status==P::EPrivateRoadPoseComparison::Equal&&Corrections&&ErrorMeasured&&AuthorityJournal->CommonContiguousCount()==Frames)Done=true;
             }
         }
         Phase=TEXT("client-send");
@@ -355,7 +416,7 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
         if(Done)
         {
             if(!Send(Server,ClientDone,{1}))return Fail(__LINE__);
-            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started))return Fail(__LINE__);
+            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started,AuthorityJournal->ContiguousCount(101+Own),AuthorityJournal->ContiguousCount(101+Other)))return Fail(__LINE__);
             std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
             if(Release>>Session>>Epoch)
             {
