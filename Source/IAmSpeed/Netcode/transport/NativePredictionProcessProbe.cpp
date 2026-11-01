@@ -531,8 +531,12 @@ ENativeProbePumpStep FNativePredictionProbePump::Cancel()
     if(!IsInGameThread()||std::this_thread::get_id()!=I.Owner)return ENativeProbePumpStep::WrongOwner;
     if(I.Active)return ENativeProbePumpStep::Reentrant;
     if(I.State!=ENativeProbePumpStep::Running)return I.State;
+    // Allocate the diagnostic BEFORE the first cancellation mutation. A failed
+    // allocation must leave a still-owned running coroutine, not a Cancelled
+    // state whose native graph has not actually unwound.
+    I.Error="native probe cancelled by its original owner";
     I.Active=true;ON_SCOPE_EXIT{I.Active=false;};
-    I.State=ENativeProbePumpStep::Cancelled;I.Error="native probe cancelled by its original owner";I.Published.store({});
+    I.State=ENativeProbePumpStep::Cancelled;I.Published.store({});
     // Detach the handle BEFORE native cleanup can call back into this pump.
     // State/counters/owner remain alive through the actual RAII unwind.
     I.Task.Reset();return I.State;
