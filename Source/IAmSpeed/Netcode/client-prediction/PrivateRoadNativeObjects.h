@@ -25,6 +25,10 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
 public:
     explicit USpeedBranchWheeledComponent(const FObjectInitializer& Initializer=FObjectInitializer::Get());
     bool AllowsExternalNetworkStateRestore() const override {return false;}
+    bool CanRestoreSimulationSnapshot(TConstArrayView<uint8>) const override {return false;}
+#if !UE_BUILD_SHIPPING
+    bool AllowsPhysicsPhaseObserverInstallation() const override {return false;}
+#endif
     bool InstallCanonicalInput(uint64,std::shared_ptr<const Speed::Input::V2::FOwnerInputSnapshot>) override {return false;}
     bool ValidateCanonicalFrameCommit(uint64 Frame) const override;
     bool CommitCanonicalFrame(uint64 Frame) noexcept override;

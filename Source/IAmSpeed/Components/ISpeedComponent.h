@@ -108,9 +108,12 @@ public:
 	{
 		if (PhysicsPhaseObserver) PhysicsPhaseObserver->Observe(*this, Phase, Delta);
 	}
-	/** Return false on a conflicting observer; never replace another fixture. */
+    /** Permanent native profiles can forbid external callbacks by construction. */
+    virtual bool AllowsPhysicsPhaseObserverInstallation() const { return true; }
+	/** Return false on a forbidden/conflicting observer; never replace a fixture. */
 	bool TryInstallPhysicsPhaseObserver(ISpeedPhysicsPhaseObserver& Observer)
 	{
+        if (!AllowsPhysicsPhaseObserverInstallation()) return false;
 		if (PhysicsPhaseObserver && PhysicsPhaseObserver != &Observer) return false;
 		PhysicsPhaseObserver = &Observer;
 		return true;

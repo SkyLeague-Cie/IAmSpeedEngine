@@ -420,7 +420,11 @@ bool USpeedBranchWheeledComponent::HasIsolatedNativeConstruction() const
     // inherited CDO reference is not an absent native network participant.
     return NetworkConstruction==ESpeedWheeledNetworkConstruction::IAmSpeedOnly
         &&!NetworkPhysicsComponent&&!SNetworkPhysicsComponent&&!WheeledNetworkPhysicsComponent
-        &&!SNetworkSettings&&!NetDataAsset&&!AHUD::OnShowDebugInfo.IsBoundToObject(this);
+        &&!SNetworkSettings&&!NetDataAsset&&!AHUD::OnShowDebugInfo.IsBoundToObject(this)
+#if !UE_BUILD_SHIPPING
+        &&!ISpeedComponent::IsPhysicsPhaseObservationEnabled() // actual base stored observer, no masked count
+#endif
+        ;
 }
 bool USpeedBranchWheeledComponent::IsInitialSynchronizationComplete() const
 {

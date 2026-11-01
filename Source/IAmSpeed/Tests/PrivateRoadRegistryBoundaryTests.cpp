@@ -1,4 +1,4 @@
-#if WITH_DEV_AUTOMATION_TESTS
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPhysicsWorld.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
@@ -10,7 +10,16 @@
 #include "UObject/ObjectKey.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "WheelSystem.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 
+namespace
+{
+struct FForbiddenPrivatePhaseObserver final : ISpeedPhysicsPhaseObserver
+{
+    int32 Calls=0;
+    void Observe(const ISpeedComponent&,ESpeedPhysicsObservationPhase,float) override {++Calls;}
+};
+}
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASPrivateRoadRegistryBoundary,"IAmSpeed.Netcode.Prediction.PrivateRoadRegistryBoundary",
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
 bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
@@ -67,6 +76,17 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     auto* Bridge=EscapedWorld->GetSubsystem<USpeedWorldSubsystem>();
     if(!TestTrue(TEXT("actual component and registry escaped via supported Engine enumeration"),Component&&Bridge))return false;
     CallbackComponent=Component;
+    // Exercise the actual BASE entry, including its inline/native dispatch;
+    // hiding a same-named method in the subtype would not protect this call.
+    ISpeedComponent& Adapter=*Component;FForbiddenPrivatePhaseObserver ForbiddenObserver;
+    TestFalse(TEXT("actual private base entry refuses installing an external physical-phase callback"),Adapter.TryInstallPhysicsPhaseObserver(ForbiddenObserver));
+    TestFalse(TEXT("actual base observer storage remains empty"),Adapter.ISpeedComponent::IsPhysicsPhaseObservationEnabled());
+    const SKinematic BeforeLegacy=Adapter.GetKinematicState();const bool FrozenBeforeLegacy=Adapter.IsFrozen();
+    SKinematic WrongLegacy=BeforeLegacy;WrongLegacy.Location.X+=999;
+    TestFalse(TEXT("private component declares all legacy snapshot payloads inadmissible"),Adapter.CanRestoreSimulationSnapshot({}));
+    Adapter.RestoreSimulationSnapshot(WrongLegacy,!FrozenBeforeLegacy,{});
+    const auto Refused=P::MeasurePrivateRoadKinematics(BeforeLegacy,Adapter.GetKinematicState());
+    TestTrue(TEXT("real direct legacy restore is refused before native kinematic/frozen writes"),Refused.Valid&&!Refused.Different&&Adapter.IsFrozen()==FrozenBeforeLegacy);
     const auto& InitialWheels=Component->GetWheelSubBodies();
     if(!TestTrue(TEXT("four genuine originally bound native wheels"),InitialWheels.Num()==4))return false;
     for(int32 W=0;W<4;++W)
@@ -82,6 +102,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     const std::vector<P::FPrivateRoadRequest> First{{101,3,History.Predict(0)}};
     if(!TestTrue(TEXT("actual frozen native publication0 completed"),Owner->Step(First,false,Why)))return false;
     const auto Baseline=Owner->ReadLatest();if(!Baseline)return false;
+    TestEqual(TEXT("refused observer was never invoked by the real native step"),ForbiddenObserver.Calls,0);
     Bridge->UnregisterSpeedComponent(Component); // real pending mutation
     TestFalse(TEXT("pending native unregister blocks initial CanMove release"),Owner->ReleaseInitialPublication(Baseline,Why));
     TestTrue(TEXT("pending mutation explicitly identified"),Why.Contains(TEXT("pending mutation")));
@@ -99,7 +120,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
         TestTrue(TEXT("surviving native UObject has wheel/suspension pointers cleared AFTER callback returned"),!Wheel->GetWheelSim()&&!Wheel->GetSuspensionSim());
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
-    AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));
+    AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));
     return !HasAnyErrors();
 }
 #endif

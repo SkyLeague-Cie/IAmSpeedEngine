@@ -36,7 +36,10 @@ void ISpeedComponent::RestoreSimulationSnapshot(
 	const bool bFrozen,
 	const TConstArrayView<uint8> MechanicPayload)
 {
-	check(CanRestoreSimulationSnapshot(MechanicPayload));
+    // This public entry may be reached without FSimulationWorld prevalidation.
+    // A debug-only check cannot enforce the same refusal in Shipping. Refuse
+    // BEFORE any common cache, pose, frozen flag or native sub-body mutation.
+    if (!CanRestoreSimulationSnapshot(MechanicPayload)) return;
 	SleepState.Reset();
 	SetStaticCollisionWorldForFrame(nullptr);
 	KinematicQuantizationCache.Reset();
