@@ -1,5 +1,6 @@
 #pragma once
 #include "NativeCommonCacheAccess.h"
+#include "NativeOwnedArrayExchange.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/SubBodies/SSubBody.h"
 #include "Components/PrimitiveComponent.h"
@@ -8,9 +9,10 @@
 
 namespace Speed
 {
-// Source-only partial common-field helper. NOT a complete component restore
-// provider and NOT wired into PrepareCompleteSimulationRestore. Native type,
-// resolver, actual lifetime fences and TArray exchange remain unqualified.
+// Partial common-field helper, NOT a complete component restore provider and
+// NOT wired into PrepareCompleteSimulationRestore. Default-heap TArray storage
+// exchange has a dedicated native test. The actual resolver, source/configuration
+// closure, lifetime fences and full component/world admission remain separate.
 struct FCommonComponentValueAccess
 {
     struct FCapturedReference { CommonState::FReference Identity; uint32 NativeObjectId = 0; };
@@ -76,14 +78,13 @@ struct FCommonComponentValueAccess
         void FinalizeTo(ISpeedComponent& C) noexcept
         {
             if (Finalized || Released || &C != Target || C.GetPublishedSimulationStableId() != PublishedStableId) std::terminate();
-            if constexpr (!std::is_nothrow_swappable_v<TArray<FPhysicalContactConstraint>>) std::terminate();
-            else
-            {
-                using std::swap; swap(C.PhysicalConstraints, Constraints);
-                Caches.CopyTo(C.SleepState, C.KinematicQuantizationCache);
-                C.StaticRestingWorld = StaticAuthority; C.StaticSupportFrameHorizon = Horizon;
-                Finalized = true;
-            }
+            // The exact UE default allocator supports header-only ownership
+            // exchange. Keep the old buffer in this plan through publication;
+            // no element reset, reconstruction or retirement happens here.
+            NativeState::ExchangeOwnedDefaultArrays(C.PhysicalConstraints, Constraints);
+            Caches.CopyTo(C.SleepState, C.KinematicQuantizationCache);
+            C.StaticRestingWorld = StaticAuthority; C.StaticSupportFrameHorizon = Horizon;
+            Finalized = true;
         }
         void ReleaseAfterCommonPublication() noexcept
         { if (!Finalized || Released) std::terminate(); Released = true; }
@@ -98,7 +99,6 @@ struct FCommonComponentValueAccess
         const PreparedWorld::FAddress& At, const CommonState::FComponentValues& Values,
         uint64 ParticipantIdentity, Resolver& Resolve)
     {
-        if constexpr (!std::is_nothrow_swappable_v<TArray<FPhysicalContactConstraint>>) return {};
         if (!ParticipantIdentity || !At.Valid() || !CommonState::Valid(Values) || !(Values.Address == SourceAddress(At))
             || !Lease.ProtectsEscapedMutableViews() || !Lease.HoldsExactBoundary(World, At)) return {};
         if (C.GetPublishedSimulationStableId() != Values.Actor.StableId
