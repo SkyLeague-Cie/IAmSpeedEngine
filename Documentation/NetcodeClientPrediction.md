@@ -348,3 +348,34 @@ The observer does NOT call guarded common Capture with a fake lease and does
 NOT serialize complete subbody/contact/world/configuration/lifecycle state.
 It is not a complete causal fingerprint, authoritative checkpoint, reader
 exclusion or restore provider. All restore/lifetime guards remain closed.
+
+
+Source44 begins a PARTIAL separation of physical storage from its Unreal facade.
+Five component value blocks (base game/physics, wheeled game/physics/input) are
+freshly default-initialized once by the original private component after native
+construction; no mutable facade field is imported into the new storage. Only
+the original explicit seed/policy and subsequent real steps initialize/evolve it.
+Class-owned native operations route through virtual storage hooks; legacy
+components keep their original fields and behavior. The private factory, step
+and initial-publication release install the original routing scope under their
+gate. Outside that scope, native getters/setters reach separate facade values.
+No publication contains a mutable view of the owned blocks.
+
+The proposed native boundary experiment retains a facade reference obtained by
+Engine enumeration and writes pose/inputs/allowed angular velocity through
+normal entries. It also registers a real FOutputDevice, enables the existing
+UpdateFrameState physical debug log, then attempts another pose write and view
+retention from its actual synchronous callback within the original Step call.
+That debug output site formats immutable native values before suspending the
+private routing for its external output devices. Physical1 and2 compare against
+a genuine unattacked graph, including declared partial cache/wheel values.
+Until executed this is only proposed source evidence. Other callback sites are
+not qualified by this one site's guard or test.
+
+This is NOT a complete causal owner or boundary lease. Configuration/public
+properties, shared common caches, subbodies/contact/world state, timeline fields,
+callbacks that might run within an original scope, registry/lifecycle/source
+closure and previously escaped views from other domains remain unqualified.
+The scope is routing, not a certificate of exclusion. No restore provider is
+admitted and ProtectsEscapedMutableViews stays false. Global/from-birth replay
+is unchanged; no localized, hardware or complete-state claim is added.

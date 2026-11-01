@@ -449,8 +449,8 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 	SetEngineFPS(Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize));
 	GravityZ = GetDefault<UPhysicsSettings>()->DefaultGravityZ;
 	MinNbFramesBeforeCanMove = TimeBeforeCanMove * EngineFPS;
-	WheeledPhysicsState.nbFramesbeforeCanMove = MinNbFramesBeforeCanMove;
-	BasePhysicsState.bIsFrozen = true;
+	WheeledPhysicsStateStorage().nbFramesbeforeCanMove = MinNbFramesBeforeCanMove;
+	BasePhysicsStateStorage().bIsFrozen = true;
 
 	SetSubBodies(CreateSubBodies());
 	if (SubBodies.Num() > 0)
@@ -554,7 +554,7 @@ bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) cons
 {
 	const Chaos::FSimpleWheeledVehicle* Vehicle = SkySimulation ? SkySimulation->PVehicle.Get() : nullptr;
 	const int32 Count = WheelSubBodies.Num();
-	if (!Vehicle || Count <= 0 || Count > int32(UE_ARRAY_COUNT(WheeledPhysicsState.SuspensionLastDisplacement))
+	if (!Vehicle || Count <= 0 || Count > int32(UE_ARRAY_COUNT(WheeledPhysicsStateStorage().SuspensionLastDisplacement))
 		|| Count != WheelSetups.Num() || Count != Wheels.Num()
 		|| Count != Vehicle->Wheels.Num() || Count != Vehicle->Suspension.Num())
 	{
@@ -562,7 +562,7 @@ bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) cons
 			TEXT("component=%s ordinal=-1 idx=-1 vehicle=%p subbodies=%d setups=%d configurations=%d wheel_sims=%d suspension_sims=%d state_capacity=%d"),
 			*GetPathName(), Vehicle, Count, WheelSetups.Num(), Wheels.Num(),
 			Vehicle ? Vehicle->Wheels.Num() : 0, Vehicle ? Vehicle->Suspension.Num() : 0,
-			int32(UE_ARRAY_COUNT(WheeledPhysicsState.SuspensionLastDisplacement)));
+			int32(UE_ARRAY_COUNT(WheeledPhysicsStateStorage().SuspensionLastDisplacement)));
 		return false;
 	}
 	for (int32 Ordinal = 0; Ordinal < Count; ++Ordinal)
@@ -1147,7 +1147,7 @@ void USpeedWheeledComponent::SetSubBodies(const TArray<USSubBody*>& NewSubBodies
 
 unsigned int USpeedWheeledComponent::NumFrame() const
 {
-	return BaseGameState.NumFrame;
+	return BaseGameStateStorage().NumFrame;
 }
 
 uint16 USpeedWheeledComponent::GetMinNbFramesBeforeCanMove() const
@@ -1159,8 +1159,8 @@ void USpeedWheeledComponent::SetImmediateMovementForTesting()
 {
 	TimeBeforeCanMove = 0.0f;
 	MinNbFramesBeforeCanMove = 0;
-	WheeledPhysicsState.nbFramesbeforeCanMove = 0;
-	WheeledPhysicsState.bStartCountdown = false;
+	WheeledPhysicsStateStorage().nbFramesbeforeCanMove = 0;
+	WheeledPhysicsStateStorage().bStartCountdown = false;
 	SinceCanMoveFrame = NumFrame();
 	UnFreezeMovement();
 }
@@ -1172,7 +1172,7 @@ float USpeedWheeledComponent::GetPhysMass() const
 
 const FVector& USpeedWheeledComponent::GetPhysCOM() const
 {
-	return BasePhysicsState.Kinematic.Location;
+	return BasePhysicsStateStorage().Kinematic.Location;
 }
 
 const FVector& USpeedWheeledComponent::GetPhysCenterOfMassLocal() const
@@ -1230,7 +1230,7 @@ FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensorOfSubBody(const USSu
 
 const SKinematic& USpeedWheeledComponent::GetKinematicState() const
 {
-	return BasePhysicsState.Kinematic;
+	return BasePhysicsStateStorage().Kinematic;
 }
 
 const SKinematic& USpeedWheeledComponent::GetKinematicStateForFrame(const unsigned int& LocalFrame) const
@@ -1240,7 +1240,7 @@ const SKinematic& USpeedWheeledComponent::GetKinematicStateForFrame(const unsign
 	{
 		return RecordedBaseStates[Idx].Kinematic;
 	}
-	return BasePhysicsState.Kinematic;
+	return BasePhysicsStateStorage().Kinematic;
 }
 
 float USpeedWheeledComponent::GetPhysMaxSpeed() const
@@ -1272,12 +1272,12 @@ void USpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 
 void USpeedWheeledComponent::SetIsUpsideDown(bool bUpsideDown)
 {
-	WheeledGameState.bIsUpsideDown = bUpsideDown;
+	WheeledGameStateStorage().bIsUpsideDown = bUpsideDown;
 }
 
 bool USpeedWheeledComponent::IsUpsideDown() const
 {
-	return WheeledGameState.bIsUpsideDown;
+	return WheeledGameStateStorage().bIsUpsideDown;
 }
 
 bool USpeedWheeledComponent::IsInAutoRecover() const
@@ -1301,12 +1301,12 @@ void USpeedWheeledComponent::RcvImpactOnSubBody(const USSubBody& SubBody, const 
 	{
 		SpeedCarOwner->SetPhysSparkleLocation(Location);
 	}
-	WheeledPhysicsState.FramesSinceLastImpact = 0;
+	WheeledPhysicsStateStorage().FramesSinceLastImpact = 0;
 }
 
 void USpeedWheeledComponent::SetKinematicState(const SKinematic& NewKinematicState)
 {
-	BasePhysicsState.Kinematic = NewKinematicState;
+	BasePhysicsStateStorage().Kinematic = NewKinematicState;
 }
 
 void USpeedWheeledComponent::RegisterTestVelocity(const FVector& InitialVelocity)
@@ -1316,24 +1316,24 @@ void USpeedWheeledComponent::RegisterTestVelocity(const FVector& InitialVelocity
 
 void USpeedWheeledComponent::RegisterTestVelocity(const FVector& InitialVelocity, const FVector& InitialAngularVelocity)
 {
-	BaseGameState.TestVelocity = InitialVelocity;
-	BaseGameState.TestAngularVelocity = InitialAngularVelocity;
-	BaseGameState.bHasTestVelocity = !InitialVelocity.IsZero() || !InitialAngularVelocity.IsZero();
+	BaseGameStateStorage().TestVelocity = InitialVelocity;
+	BaseGameStateStorage().TestAngularVelocity = InitialAngularVelocity;
+	BaseGameStateStorage().bHasTestVelocity = !InitialVelocity.IsZero() || !InitialAngularVelocity.IsZero();
 }
 
 void USpeedWheeledComponent::ApplyTestVelocity()
 {
-	if (!BaseGameState.bHasTestVelocity || !CanMove())
+	if (!BaseGameStateStorage().bHasTestVelocity || !CanMove())
 	{
 		return;
 	}
-	SetPhysCOMVelocity(BaseGameState.TestVelocity);
-	SetPhysAngularVelocity(BaseGameState.TestAngularVelocity);
+	SetPhysCOMVelocity(BaseGameStateStorage().TestVelocity);
+	SetPhysAngularVelocity(BaseGameStateStorage().TestAngularVelocity);
 	UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][TestInitialKinematics] At Frame = %d, Kinematics: %s"),
-		*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
-	BaseGameState.TestVelocity = FVector::ZeroVector;
-	BaseGameState.TestAngularVelocity = FVector::ZeroVector;
-	BaseGameState.bHasTestVelocity = false;
+		*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
+	BaseGameStateStorage().TestVelocity = FVector::ZeroVector;
+	BaseGameStateStorage().TestAngularVelocity = FVector::ZeroVector;
+	BaseGameStateStorage().bHasTestVelocity = false;
 }
 
 void USpeedWheeledComponent::AsyncPhysicsTickComponent(float DeltaTime, float SimTime)
@@ -1422,12 +1422,12 @@ void USpeedWheeledComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 bool USpeedWheeledComponent::IsFrozen() const
 {
-	return BasePhysicsState.bIsFrozen;
+	return BasePhysicsStateStorage().bIsFrozen;
 }
 
 void USpeedWheeledComponent::SetIsFrozen(bool bFrozen)
 {
-	BasePhysicsState.bIsFrozen = bFrozen;
+	BasePhysicsStateStorage().bIsFrozen = bFrozen;
 }
 
 void USpeedWheeledComponent::SetEngineFPS(const unsigned int& FPS)
@@ -1524,7 +1524,7 @@ bool USpeedWheeledComponent::NeutralizeCanonicalInputAtBoundary()
 	if (bCanonicalInputPending || InputReservationV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
 	CanonicalInputSnapshot.reset(); PreparedCanonicalInputFrame.Reset();
 	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
-	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+	WheeledPhysicalInputStorage().Throttle = 0; WheeledPhysicalInputStorage().Brake = 0; WheeledPhysicalInputStorage().Steer = 0;
 	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
 	return PublishInputCancellationAtBoundary();
 }
@@ -1545,7 +1545,7 @@ bool USpeedWheeledComponent::PrepareCanonicalInputs(const FCanonicalFrameContext
 {
 	PreparedCanonicalInputFrame.Reset();
 	if (Context.NumFrame >= TNumericLimits<uint32>::Max()) return false;
-	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
+	BaseGameStateStorage().NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
 	// Preserve countdown eligibility at this N before evaluating input edges.
 	HandleCountdownTimer();
 	UpdateInputs();
@@ -1563,7 +1563,7 @@ void USpeedWheeledComponent::PrepareCanonicalFrame(
 	// canonical simulation frame is zero-based and authoritative.
 	checkf(PreparedCanonicalInputFrame.IsSet() && PreparedCanonicalInputFrame.GetValue() == Context.NumFrame,
 		TEXT("Canonical gameplay requires successful input admission for this frame."));
-	BaseGameState.NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
+	BaseGameStateStorage().NumFrame = static_cast<uint32>(Context.NumFrame) + 1u;
 	PreparePhysicsFrame(Context.PhysicalDeltaTime, Context.SimTime);
 }
 
@@ -1573,9 +1573,9 @@ void USpeedWheeledComponent::PreparePhysicsFrame(
 	UpdateFrameState();
     // RecoverWheelState in UpdateFrameState may restore a predicted frame.
     // Advance the restored cooldown once, rather than decrementing stale state.
-    if (!WheeledPhysicsState.LastCarBumpVictim.IsValid()) ResetCarBumpCooldown();
+    if (!WheeledPhysicsStateStorage().LastCarBumpVictim.IsValid()) ResetCarBumpCooldown();
     Speed::Collision::AdvanceCarBumpCooldown(
-        WheeledPhysicsState.LastCarBumpVictim, WheeledPhysicsState.CarBumpCooldownFrames);
+        WheeledPhysicsStateStorage().LastCarBumpVictim, WheeledPhysicsStateStorage().CarBumpCooldownFrames);
 	// A test's initial state must be visible from the first movable frame, before any gameplay force can modify it.
 	ApplyTestVelocity();
 #if !UE_BUILD_SHIPPING
@@ -1669,7 +1669,7 @@ void USpeedWheeledComponent::UpdateFrameState()
 			FVector::DotProduct(AngularVelocity, Forward),
 			FVector::DotProduct(AngularVelocity, Right),
 			FVector::DotProduct(AngularVelocity, Up));
-		UE_LOG(SpeedPhysicsLog, Log,
+		const FString PhysicalDebugMessage=FString::Printf(
 			TEXT("[%s(%s)][UpdateFrameState] SinceCanMove=%d Wheels=%d Mask=0x%X COM=%s COMV=%s COMA=%s W=%s LocalW=%s Alpha=%s Forward=%s Right=%s Up=%s"),
 			*GetOwner()->GetName(),
 			*GetRole(),
@@ -1685,6 +1685,8 @@ void USpeedWheeledComponent::UpdateFrameState()
 			*Forward.ToString(),
 			*Right.ToString(),
 			*Up.ToString());
+        FScopedExternalObservationRouting ExternalObservers(*this);
+        UE_LOG(SpeedPhysicsLog,Log,TEXT("%s"),*PhysicalDebugMessage);
 	}
 }
 void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
@@ -1692,11 +1694,11 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 	const int32 CandidateFrame =
 		FMath::RoundToInt32(double(SimTime) * double(EngineFPS)) + 1;
 
-	const int32 PreviousFrame = int32(BaseGameState.NumFrame);
+	const int32 PreviousFrame = int32(BaseGameStateStorage().NumFrame);
 
 	if (PreviousFrame <= 0)
 	{
-		BaseGameState.NumFrame = CandidateFrame;
+		BaseGameStateStorage().NumFrame = CandidateFrame;
 		return;
 	}
 
@@ -1706,27 +1708,27 @@ void USpeedWheeledComponent::UpdateNumFrame(const float& SimTime)
 		const int32 RollbackFrames = PreviousFrame - CandidateFrame;
 		if (!HasAuthority() && RollbackFrames >= MinRollbackFramesForResim)
 		{
-			BaseGameState.NumFrame = CandidateFrame;
+			BaseGameStateStorage().NumFrame = CandidateFrame;
 			return;
 		}
 
-		BaseGameState.NumFrame = PreviousFrame + 1;
+		BaseGameStateStorage().NumFrame = PreviousFrame + 1;
 		return;
 	}
 
 	if (CandidateFrame == PreviousFrame)
 	{
-		BaseGameState.NumFrame = PreviousFrame + 1;
+		BaseGameStateStorage().NumFrame = PreviousFrame + 1;
 		return;
 	}
 
 	if (CandidateFrame > PreviousFrame + 1)
 	{
-		BaseGameState.NumFrame = PreviousFrame + 1;
+		BaseGameStateStorage().NumFrame = PreviousFrame + 1;
 		return;
 	}
 
-	BaseGameState.NumFrame = CandidateFrame;
+	BaseGameStateStorage().NumFrame = CandidateFrame;
 }
 
 
@@ -1744,9 +1746,9 @@ void USpeedWheeledComponent::UpdateInputs()
 			|| !ValidateProducedInputFrameV2(S.Input))
 		{ bInputFrameRejectedV2 = true; return; }
 		if (S.Input.GetData().Reset) ResetProducedInputState();
-		WheeledPhysicalInput.Throttle = static_cast<uint8>(S.Applied[Throttle]);
-		WheeledPhysicalInput.Brake = static_cast<uint8>(S.Applied[Brake]);
-		WheeledPhysicalInput.Steer = static_cast<int8>(S.Applied[Steering]);
+		WheeledPhysicalInputStorage().Throttle = static_cast<uint8>(S.Applied[Throttle]);
+		WheeledPhysicalInputStorage().Brake = static_cast<uint8>(S.Applied[Brake]);
+		WheeledPhysicalInputStorage().Steer = static_cast<int8>(S.Applied[Steering]);
 		SyncWheeledPhysicalInputToState();
 		bInputFrameRejectedV2 = !ApplyProducedInputFrameV2(S.Input);
 		// Camera has its own already-stamped IAmSpeed queue. Consume it at this
@@ -1769,9 +1771,9 @@ void USpeedWheeledComponent::UpdateInputs()
 	if (!CanonicalFrame && bProducedInputFrameOwned)
 	{
 		ConsumedFrameInputStream.reset();
-		WheeledPhysicalInput.Throttle = 0;
-		WheeledPhysicalInput.Brake = 0;
-		WheeledPhysicalInput.Steer = 0;
+		WheeledPhysicalInputStorage().Throttle = 0;
+		WheeledPhysicalInputStorage().Brake = 0;
+		WheeledPhysicalInputStorage().Steer = 0;
 		ResetProducedInputState();
 	}
 	if (!bProducedInputFrameOwned)
@@ -1779,7 +1781,7 @@ void USpeedWheeledComponent::UpdateInputs()
 		// No GameThread driving-input mailbox remains.
 	}
 
-	WheeledPhysicalInput.bCanMove = CanMove();
+	WheeledPhysicalInputStorage().bCanMove = CanMove();
 	SyncWheeledPhysicalInputToState();
 	ConsumeQueuedCameraInputsForFrame(CurrentFrame);
 }
@@ -1815,9 +1817,9 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 		ResetProducedInputState();
 		if (!IsTestInputOverrideEnabled())
 		{
-			WheeledPhysicalInput.Throttle = 0;
-			WheeledPhysicalInput.Brake = 0;
-			WheeledPhysicalInput.Steer = 0;
+			WheeledPhysicalInputStorage().Throttle = 0;
+			WheeledPhysicalInputStorage().Brake = 0;
+			WheeledPhysicalInputStorage().Steer = 0;
 		}
 
 	}
@@ -1838,16 +1840,16 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputs(uint64 CanonicalFrame)
 	// Fail closed instead of falling back to an unrelated live action/clock.
 	if (bValid)
 	{
-		WheeledPhysicalInput.Throttle = Targets.ThrottleValue;
-		WheeledPhysicalInput.Brake = Targets.BrakeValue;
-		WheeledPhysicalInput.Steer = Targets.SteeringValue;
+		WheeledPhysicalInputStorage().Throttle = Targets.ThrottleValue;
+		WheeledPhysicalInputStorage().Brake = Targets.BrakeValue;
+		WheeledPhysicalInputStorage().Steer = Targets.SteeringValue;
 		bValid = ApplyProducedInputFrame(*Frame);
 	}
 	if (!bValid)
 	{
-		WheeledPhysicalInput.Throttle = 0;
-		WheeledPhysicalInput.Brake = 0;
-		WheeledPhysicalInput.Steer = 0;
+		WheeledPhysicalInputStorage().Throttle = 0;
+		WheeledPhysicalInputStorage().Brake = 0;
+		WheeledPhysicalInputStorage().Steer = 0;
 		ResetProducedInputState();
 		Stream->Deactivate();
 	}
@@ -1880,7 +1882,7 @@ bool USpeedWheeledComponent::NeutralizeProducedInputAtBoundary()
 	// stopped or missing worker. The controller owns that distinction.
 	if (Speed::Input::FPresentationInputScope::IsActive() || InputReservationV2
 		|| ReservedInputFrameV2 || ConsumedFrameInputStreamV2 || !CanNeutralizeProducedInputStateAtBoundary()) return false;
-	WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+	WheeledPhysicalInputStorage().Throttle = 0; WheeledPhysicalInputStorage().Brake = 0; WheeledPhysicalInputStorage().Steer = 0;
 
 	PublishedWheeledNetworkInput.store(std::shared_ptr<const FCompletedWheeledInput>{}, std::memory_order_seq_cst);
 	SyncWheeledPhysicalInputToState(); ResetProducedInputState();
@@ -1915,9 +1917,9 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputsV2(uint64 Frame,
 	if (Valid)
 	{
 		if (Input.Frame->GetData().Reset) ResetProducedInputState();
-		WheeledPhysicalInput.Throttle = Input.Targets.ThrottleValue;
-		WheeledPhysicalInput.Brake = Input.Targets.BrakeValue;
-		WheeledPhysicalInput.Steer = Input.Targets.SteeringValue;
+		WheeledPhysicalInputStorage().Throttle = Input.Targets.ThrottleValue;
+		WheeledPhysicalInputStorage().Brake = Input.Targets.BrakeValue;
+		WheeledPhysicalInputStorage().Steer = Input.Targets.SteeringValue;
 		Valid = ApplyProducedInputFrameV2(*Input.Frame);
 	}
 	if (Valid) Valid = Stream->ConfirmPhysicalCommit(*Input.Reservation, true)
@@ -1927,7 +1929,7 @@ bool USpeedWheeledComponent::ConsumeProducedWheeledInputsV2(uint64 Frame,
 		if (Input.Reservation) Stream->Abort(*Input.Reservation, EAbortReason::ApplicationFailed);
 		InputReservationV2.reset(); ReservedInputFrameV2.reset(); ConsumedFrameInputStreamV2.reset();
 		Stream->RequestStop(); bInputFrameRejectedV2 = true;
-		WheeledPhysicalInput.Throttle = 0; WheeledPhysicalInput.Brake = 0; WheeledPhysicalInput.Steer = 0;
+		WheeledPhysicalInputStorage().Throttle = 0; WheeledPhysicalInputStorage().Brake = 0; WheeledPhysicalInputStorage().Steer = 0;
 		ResetProducedInputState(); return true;
 	}
 	return true;
@@ -2108,7 +2110,7 @@ void USpeedWheeledComponent::ConsumeQueuedCameraInputsForFrame(int32 CurrentFram
 	// Whole held value, once, after wheel processing. Multiple overdue captures
 	// select the latest frame; no second GT read and no camera slew/state hash.
 	const auto Input = PendingCameraInputCommands[LastDue].Input;
-	WheeledPhysicalInput.Camera = Input;
+	WheeledPhysicalInputStorage().Camera = Input;
 	PendingCameraInputCommands.RemoveAt(0, LastDue + 1);
 #if WITH_DEV_AUTOMATION_TESTS
 	++CameraInputApplyCount;
@@ -2134,7 +2136,7 @@ bool USpeedWheeledComponent::ApplyProducedInputFrameV2(const Speed::Input::V2::F
     if(bGenericCameraInputEnabled.load(std::memory_order_acquire))Camera.Flags=1;
     else {Camera.Yaw=0;Camera.Pitch=0;}
     if(!Camera.IsValid())return false;
-    WheeledPhysicalInput.Camera=Camera;
+    WheeledPhysicalInputStorage().Camera=Camera;
     return true;
 }
 
@@ -2152,20 +2154,20 @@ void USpeedWheeledComponent::AppendWheelPresentationSnapshot(TArray<FSimulationW
         V.SteeringRotation=R.SteerRotation;V.RollingRotation=R.RollRotation;
         V.bGrounded=Wheel->IsOnGround();
         V.bLandedThisFrame=V.bGrounded && !Wheel->WasOnGroundPreviousFrame();
-        V.Throttle=float(WheeledPhysicalInput.Throttle)/255.f;
-        V.Brake=float(WheeledPhysicalInput.Brake)/255.f;
+        V.Throttle=float(WheeledPhysicalInputStorage().Throttle)/255.f;
+        V.Brake=float(WheeledPhysicalInputStorage().Brake)/255.f;
     }
 }
 
 void USpeedWheeledComponent::AppendPresentationSnapshot(TArray<uint8>& OutPayload) const
 {
 	OutPayload.Reset();
-	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || !WheeledPhysicalInput.Camera.IsValid()) return;
+	if (!bGenericCameraInputEnabled.load(std::memory_order_acquire) || !WheeledPhysicalInputStorage().Camera.IsValid()) return;
 	FSpeedCarCameraInputSnapshot Snapshot;
 	Snapshot.bOnGround = IsOnTheGround();
-	Snapshot.bBackCamera = WheeledPhysicalInput.Camera.IsBack();
-	Snapshot.CameraYaw = static_cast<float>(WheeledPhysicalInput.Camera.Yaw) / 127.0f;
-	Snapshot.CameraPitch = static_cast<float>(WheeledPhysicalInput.Camera.Pitch) / 127.0f;
+	Snapshot.bBackCamera = WheeledPhysicalInputStorage().Camera.IsBack();
+	Snapshot.CameraYaw = static_cast<float>(WheeledPhysicalInputStorage().Camera.Yaw) / 127.0f;
+	Snapshot.CameraPitch = static_cast<float>(WheeledPhysicalInputStorage().Camera.Pitch) / 127.0f;
 	Snapshot.Write(OutPayload);
 }
 
@@ -2173,17 +2175,17 @@ void USpeedWheeledComponent::AppendPresentationSnapshot(TArray<uint8>& OutPayloa
 
 void USpeedWheeledComponent::RestoreWheeledPhysicalInputFromState()
 {
-	WheeledPhysicalInput.bCanMove = CanMove();
-	WheeledPhysicalInput.Throttle = WheeledPhysicsState.PhysicalThrottleInput;
-	WheeledPhysicalInput.Brake = WheeledPhysicsState.PhysicalBrakeInput;
-	WheeledPhysicalInput.Steer = WheeledPhysicsState.PhysicalSteerInput;
+	WheeledPhysicalInputStorage().bCanMove = CanMove();
+	WheeledPhysicalInputStorage().Throttle = WheeledPhysicsStateStorage().PhysicalThrottleInput;
+	WheeledPhysicalInputStorage().Brake = WheeledPhysicsStateStorage().PhysicalBrakeInput;
+	WheeledPhysicalInputStorage().Steer = WheeledPhysicsStateStorage().PhysicalSteerInput;
 }
 
 void USpeedWheeledComponent::SyncWheeledPhysicalInputToState()
 {
-	WheeledPhysicsState.PhysicalThrottleInput = WheeledPhysicalInput.Throttle;
-	WheeledPhysicsState.PhysicalBrakeInput = WheeledPhysicalInput.Brake;
-	WheeledPhysicsState.PhysicalSteerInput = WheeledPhysicalInput.Steer;
+	WheeledPhysicsStateStorage().PhysicalThrottleInput = WheeledPhysicalInputStorage().Throttle;
+	WheeledPhysicsStateStorage().PhysicalBrakeInput = WheeledPhysicalInputStorage().Brake;
+	WheeledPhysicsStateStorage().PhysicalSteerInput = WheeledPhysicalInputStorage().Steer;
 }
 
 
@@ -2217,14 +2219,14 @@ void USpeedWheeledComponent::RecordPhysicsState()
 	SyncWheeledPhysicalInputToState();
 
 	RecordedBaseFrames[Idx] = LF;
-	RecordedBaseStates[Idx] = BasePhysicsState;
-	RecordedWheeledStates[Idx] = WheeledPhysicsState;
+	RecordedBaseStates[Idx] = BasePhysicsStateStorage();
+	RecordedWheeledStates[Idx] = WheeledPhysicsStateStorage();
 
 	// Print Kinematic state for debugging for the first 3 frames after can move
 	/*if (CanMove() && NumFrame() - SinceCanMoveFrame < 3)
 	{
 		// Print kinematic state here
-		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] Recorded Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), LF, *BasePhysicsState.Kinematic.ToString());
+		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] Recorded Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), LF, *BasePhysicsStateStorage().Kinematic.ToString());
 	}*/
 }
 
@@ -2892,7 +2894,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		}
 		const FVector UpVector = GetNormalFromWheels();
 		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
-		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsState.AllowedAngularVelocity, UpVector);
+		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedAngularVelocity, UpVector);
 		const float Radius = FMath::Abs(YawRate) > KINDA_SMALL_NUMBER ? AbsForwardSpeed / FMath::Abs(YawRate) : 0.0f;
 		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
 		ForwardDir.Normalize();
@@ -3015,7 +3017,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 		// Dampen side velocity
 		if (!bUseWheelFrameLateralFriction && SideSpeed != 0.0f)
 		{
-			float allowedSideSpeed = WheeledPhysicsState.AllowedSideVelocity.Dot(RightVector);
+			float allowedSideSpeed = WheeledPhysicsStateStorage().AllowedSideVelocity.Dot(RightVector);
 			float overSpeed = FMath::Sign(SideSpeed) * (SideSpeed - allowedSideSpeed);
 			if (overSpeed <= 0.0f)
 			{
@@ -3121,7 +3123,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 					SpeedPhysicsLog,
 					Warning,
 					TEXT("[ApplyWheelSuspension] For Frame=%d on wheel=%d. Force=%s, ApplicationPoint=%s, Kinematic=%s"), NumFrame(), W.Idx(),
-					*Force.ToString(), *ApplicationPoint.ToString(), *BasePhysicsState.Kinematic.ToString());
+					*Force.ToString(), *ApplicationPoint.ToString(), *BasePhysicsStateStorage().Kinematic.ToString());
 					if (W.Idx() == 0)
 					{
 						UE_LOG(
@@ -3150,7 +3152,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 
 void USpeedWheeledComponent::HandleAngularDamping(const float& delta)
 {
-	const auto AngularVelocityToDampen = GetPhysAngularVelocity() - WheeledPhysicsState.AllowedAngularVelocity;
+	const auto AngularVelocityToDampen = GetPhysAngularVelocity() - WheeledPhysicsStateStorage().AllowedAngularVelocity;
 	if (!OneWheelOnGround())
 	{
 		DampenAirAngularVelocity(AngularVelocityToDampen, delta);
@@ -3251,7 +3253,7 @@ void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToD
 
 void USpeedWheeledComponent::SetDampenedAirAngularVelocity(const FVector& TargetAngularVelocity, const FVector& AngVelocityToSetNow, const float& delta)
 {
-	const FVector VelocityToSet = AngVelocityToSetNow + WheeledPhysicsState.AllowedAngularVelocity;
+	const FVector VelocityToSet = AngVelocityToSetNow + WheeledPhysicsStateStorage().AllowedAngularVelocity;
 	SetPhysAngularVelocity(VelocityToSet);
 	const FVector TorqueToApply = (TargetAngularVelocity - AngVelocityToSetNow) / delta;
 	AddPhysAngularAcceleration(TorqueToApply);
@@ -3316,12 +3318,12 @@ void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& del
 }
 void USpeedWheeledComponent::PostGameplayTick(const float& DeltaTime, const float& SimTime)
 {
-	WheeledPhysicalInput.bCanMove = CanMove();
+	WheeledPhysicalInputStorage().bCanMove = CanMove();
 	/*// Print Kinematic state for debugging for the first 3 frames after can move
 	if (CanMove() && NumFrame() - GetSinceCanMoveFrame() < 3)
 	{
 		// Print kinematic state here
-		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] PostGameplayTick Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+		UE_LOG(LogTemp, Log, TEXT("[%s(%s)] PostGameplayTick Kinematic State at frame %d: %s"), *GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
 	}*/
 }
 
@@ -3389,7 +3391,7 @@ FString USpeedWheeledComponent::GetRole() const
 
 unsigned char USpeedWheeledComponent::NumWheelsOnGround() const
 {
-	return static_cast<unsigned char>(WheeledGameState.NbWheelsOnGround);
+	return static_cast<unsigned char>(WheeledGameStateStorage().NbWheelsOnGround);
 }
 
 const TArray<TObjectPtr<USWheelSubBody>>& USpeedWheeledComponent::GetWheelSubBodies() const
@@ -3419,11 +3421,11 @@ void USpeedWheeledComponent::RecoverWheelState()
 			UE_LOG(LogTemp, Error, TEXT("[WheelSuspensionBinding] missing suspension sim for wheel %d during RecoverWheelState"), W->Idx());
 			continue;
 		}
-		// float rollAngle = WheeledPhysicsState.WheelsAngularPosition[W->Idx()];
+		// float rollAngle = WheeledPhysicsStateStorage().WheelsAngularPosition[W->Idx()];
 		// W->SetRollAngle(rollAngle);
-		// float omega = WheeledPhysicsState.WheelsOmega[W->Idx()];
+		// float omega = WheeledPhysicsStateStorage().WheelsOmega[W->Idx()];
 		// W->SetAngularVelocity(omega);
-		float lastDisplacement = WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()];
+		float lastDisplacement = WheeledPhysicsStateStorage().SuspensionLastDisplacement[W->Idx()];
 		W->SetLastDisplacement(lastDisplacement);
 	}
 }
@@ -3432,16 +3434,16 @@ void USpeedWheeledComponent::RegisterWheelState()
 {
 	for (auto& W : WheelSubBodies)
 	{
-		WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()] = W->GetLastDisplacement();
+		WheeledPhysicsStateStorage().SuspensionLastDisplacement[W->Idx()] = W->GetLastDisplacement();
 	}
 }
 
 void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose(
 	const bool bUseGroundContactGeometry)
 {
-	WheeledPhysicsState.AllowedSideVelocity = FVector::ZeroVector;
-	WheeledPhysicsState.AllowedAngularVelocity = FVector::ZeroVector;
-	WheeledPhysicsState.FramesSinceLastImpact = 0;
+	WheeledPhysicsStateStorage().AllowedSideVelocity = FVector::ZeroVector;
+	WheeledPhysicsStateStorage().AllowedAngularVelocity = FVector::ZeroVector;
+	WheeledPhysicsStateStorage().FramesSinceLastImpact = 0;
 
 	for (auto& W : WheelSubBodies)
 	{
@@ -3455,7 +3457,7 @@ void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose(
 			: W->SpringDisplacement();
 		W->SetLastDisplacement(CurrentDisplacement);
 		W->SetAngularVelocity(0.0f);
-		WheeledPhysicsState.SuspensionLastDisplacement[W->Idx()] = CurrentDisplacement;
+		WheeledPhysicsStateStorage().SuspensionLastDisplacement[W->Idx()] = CurrentDisplacement;
 	}
 }
 
@@ -3474,12 +3476,12 @@ float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 
 bool USpeedWheeledComponent::CanMove() const
 {
-	return IsInitialSynchronizationComplete() && WheeledPhysicsState.nbFramesbeforeCanMove == 0;
+	return IsInitialSynchronizationComplete() && WheeledPhysicsStateStorage().nbFramesbeforeCanMove == 0;
 }
 
 bool USpeedWheeledComponent::CountdownHasStarted() const
 {
-	return WheeledPhysicsState.bStartCountdown;
+	return WheeledPhysicsStateStorage().bStartCountdown;
 }
 
 void USpeedWheeledComponent::StartConfrontationInSec(const float& Time)
@@ -3496,10 +3498,10 @@ void USpeedWheeledComponent::StartConfrontationLocal(const float& TimeSec)
 	FreezeMovement();
 	const uint32 Now = NumFrame();
 	uint16 BaseNbFrame = FMath::RoundToInt(TimeSec * EngineFPS);
-	WheeledPhysicsState.nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
-	WheeledPhysicsState.bStartCountdown = WheeledPhysicsState.nbFramesbeforeCanMove > 0;
+	WheeledPhysicsStateStorage().nbFramesbeforeCanMove = FMath::Max(BaseNbFrame, MinNbFramesBeforeCanMove);
+	WheeledPhysicsStateStorage().bStartCountdown = WheeledPhysicsStateStorage().nbFramesbeforeCanMove > 0;
 	SinceCanMoveFrame = INDEX_NONE;
-	if (!WheeledPhysicsState.bStartCountdown)
+	if (!WheeledPhysicsStateStorage().bStartCountdown)
 	{
 		SinceCanMoveFrame = NumFrame();
 		UnFreezeMovement();
@@ -3557,8 +3559,8 @@ void USpeedWheeledComponent::SetCannotMove()
 void USpeedWheeledComponent::SetCannotMoveLocal()
 {
 	FreezeMovement();
-	WheeledPhysicsState.bStartCountdown = false;
-	WheeledPhysicsState.nbFramesbeforeCanMove = 1;
+	WheeledPhysicsStateStorage().bStartCountdown = false;
+	WheeledPhysicsStateStorage().nbFramesbeforeCanMove = 1;
 	SinceCanMoveFrame = INDEX_NONE;
 	bSimTimelineWasCanMove = false;
 }
@@ -3571,29 +3573,29 @@ void USpeedWheeledComponent::SetCannotMoveMulti_Implementation()
 
 void USpeedWheeledComponent::UpdateWheelOnGroundStates()
 {
-	WheeledGameState.NbWheelsOnGround = 0;
+	WheeledGameStateStorage().NbWheelsOnGround = 0;
 	for (const auto& W : WheelSubBodies)
 	{
 		if (W->IsOnGround())
 		{
-			WheeledGameState.NbWheelsOnGround++;
+			WheeledGameStateStorage().NbWheelsOnGround++;
 		}
 	}
 }
 
 float USpeedWheeledComponent::GetPhysThrottleInput() const
 {
-	return static_cast<float>(WheeledPhysicalInput.Throttle) / 255.0f;
+	return static_cast<float>(WheeledPhysicalInputStorage().Throttle) / 255.0f;
 }
 
 float USpeedWheeledComponent::GetPhysBrakeInput() const
 {
-	return static_cast<float>(WheeledPhysicalInput.Brake) / 255.0f;
+	return static_cast<float>(WheeledPhysicalInputStorage().Brake) / 255.0f;
 }
 
 float USpeedWheeledComponent::GetPhysSteeringInput() const
 {
-	return static_cast<float>(WheeledPhysicalInput.Steer) / 127.0f;
+	return static_cast<float>(WheeledPhysicalInputStorage().Steer) / 127.0f;
 }
 
 void USpeedWheeledComponent::SetPhysThrottleInput(const float& Throttle)
@@ -3707,22 +3709,22 @@ void USpeedWheeledComponent::HandleGroundAirState()
 
 void USpeedWheeledComponent::SetGroundState()
 {
-	bool WasInAir = !WheeledGameState.bGroundState;
+	bool WasInAir = !WheeledGameStateStorage().bGroundState;
 	if (WasInAir)
 	{
 		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, FString::Printf(TEXT("[%s] Time in air: %fs"), *GetRole(),
-			WheeledGameState.NbFrameSinceInAir * (1.0 / EngineFPS)));
+			WheeledGameStateStorage().NbFrameSinceInAir * (1.0 / EngineFPS)));
 #if !(UE_BUILD_SHIPPING)
 		// UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][GROUND LANDING] At Frame = %d, Time in air: %fs"),
-		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), WheeledGameState.NbFrameSinceInAir * (1.0 / EngineFPS));
+		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), WheeledGameStateStorage().NbFrameSinceInAir * (1.0 / EngineFPS));
 #endif
 		// PrintKinematics();
 	}
 
 	// update ground state
-	WheeledGameState.bGroundState = true;
-	WheeledPhysicsState.NbFramesSinceGroundContact = 0;
-	WheeledGameState.NbFrameSinceInAir = 0;
+	WheeledGameStateStorage().bGroundState = true;
+	WheeledPhysicsStateStorage().NbFramesSinceGroundContact = 0;
+	WheeledGameStateStorage().NbFrameSinceInAir = 0;
 
 	SetGroundStatePrv(WasInAir);
 }
@@ -3730,18 +3732,18 @@ void USpeedWheeledComponent::SetGroundState()
 void USpeedWheeledComponent::SetAirState()
 {
 	// if car was on ground, store current date
-	bool WasOnGround = WheeledGameState.bGroundState;
+	bool WasOnGround = WheeledGameStateStorage().bGroundState;
 	if (WasOnGround)
 	{
 #if !(UE_BUILD_SHIPPING)
 		// UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][AIR TAKEOFF] At Frame = %d, Kinematics: %s"),
-		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
 #endif
 	}
 	// update ground state
-	WheeledGameState.bGroundState = false;
-	WheeledPhysicsState.NbFramesSinceGroundContact++;
-	WheeledGameState.NbFrameSinceInAir++;
+	WheeledGameStateStorage().bGroundState = false;
+	WheeledPhysicsStateStorage().NbFramesSinceGroundContact++;
+	WheeledGameStateStorage().NbFrameSinceInAir++;
 
 	SetAirStatePrv();
 }
@@ -4069,7 +4071,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 	{
 		const FVector UpVector = GetNormalFromWheels();
 		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
-		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsState.AllowedAngularVelocity, UpVector);
+		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedAngularVelocity, UpVector);
 		const float Radius = FMath::Abs(YawRate) > KINDA_SMALL_NUMBER ? AbsForwardSpeed / FMath::Abs(YawRate) : 0.0f;
 		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
 		ForwardDir.Normalize();
@@ -4190,10 +4192,10 @@ void USpeedWheeledComponent::HandleCountdownTimer()
 {
 	if (!CanMove() && CountdownHasStarted())
 	{
-		WheeledPhysicsState.nbFramesbeforeCanMove--;
+		WheeledPhysicsStateStorage().nbFramesbeforeCanMove--;
 		if (CanMove())
 		{
-			WheeledPhysicsState.bStartCountdown = false;
+			WheeledPhysicsStateStorage().bStartCountdown = false;
 			SinceCanMoveFrame = NumFrame();
 			bSimTimelineWasCanMove = true;
 			bSimTimelineHasGroundState = true;
@@ -4204,7 +4206,7 @@ void USpeedWheeledComponent::HandleCountdownTimer()
 			ResetWheelTransientStateForCurrentPose(false);
 			UnFreezeMovement();
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
-				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
+				*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
 		}
 	}
 }
@@ -4225,15 +4227,15 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// Wheel-frame friction owns steering in the RocketSim-like model. Do not let the legacy velocity controller inject a second yaw response.
 	if (bUseWheelFrameLateralFriction && !bUseLegacySteeringVelocityState)
 	{
-		WheeledPhysicsState.AllowedSideVelocity = FVector::ZeroVector;
-		WheeledPhysicsState.AllowedAngularVelocity = FVector::ZeroVector;
+		WheeledPhysicsStateStorage().AllowedSideVelocity = FVector::ZeroVector;
+		WheeledPhysicsStateStorage().AllowedAngularVelocity = FVector::ZeroVector;
 		return;
 	}
 
 	if (NoWheelOnGround())
 	{
-		WheeledPhysicsState.AllowedSideVelocity = FVector::ZeroVector;
-		WheeledPhysicsState.AllowedAngularVelocity = FVector::ZeroVector;
+		WheeledPhysicsStateStorage().AllowedSideVelocity = FVector::ZeroVector;
+		WheeledPhysicsStateStorage().AllowedAngularVelocity = FVector::ZeroVector;
 		return;
 	}
 
@@ -4241,11 +4243,11 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	if (MustReduceAllowedVelocityForSteering())
 	{
 		const float ReleaseInterpSpeed = FMath::Max(0.01f, CVarSkyLeagueSteeringReleaseInterpSpeed.GetValueOnAnyThread());
-		WheeledPhysicsState.AllowedSideVelocity = FMath::VInterpTo(
-			WheeledPhysicsState.AllowedSideVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
+		WheeledPhysicsStateStorage().AllowedSideVelocity = FMath::VInterpTo(
+			WheeledPhysicsStateStorage().AllowedSideVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
 		);
-		WheeledPhysicsState.AllowedAngularVelocity = FMath::VInterpTo(
-			WheeledPhysicsState.AllowedAngularVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
+		WheeledPhysicsStateStorage().AllowedAngularVelocity = FMath::VInterpTo(
+			WheeledPhysicsStateStorage().AllowedAngularVelocity, FVector::ZeroVector, delta, ReleaseInterpSpeed
 		);
 		return;
 	}
@@ -4404,11 +4406,11 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	FVector newAccel = GetPhysAcceleration();
 	FVector deltaAccel = newAccel - oldAccel;
-	WheeledPhysicsState.AllowedSideVelocity += deltaAccel * delta * steerGain;
+	WheeledPhysicsStateStorage().AllowedSideVelocity += deltaAccel * delta * steerGain;
 
 	const float SteeringTimeConstant = FMath::Clamp(CVarSkyLeagueSteeringTimeConstant.GetValueOnAnyThread(), 0.005f, 0.25f);
 	const float alpha = 1.f - FMath::Exp(-delta / SteeringTimeConstant);
-	WheeledPhysicsState.AllowedAngularVelocity = FMath::Lerp(WheeledPhysicsState.AllowedAngularVelocity, TargetAngularVelocity, alpha);
+	WheeledPhysicsStateStorage().AllowedAngularVelocity = FMath::Lerp(WheeledPhysicsStateStorage().AllowedAngularVelocity, TargetAngularVelocity, alpha);
 
 	// -------------------------------------
 	// Clamp AllowedSideVelocity (surface tangent, not ground frame)
@@ -4424,27 +4426,27 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 		RightSurface = FVector::CrossProduct(UpVector, FwdProj).GetSafeNormal();
 	}
 
-	float allowedSideScalar = FVector::DotProduct(WheeledPhysicsState.AllowedSideVelocity, RightSurface);
+	float allowedSideScalar = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedSideVelocity, RightSurface);
 	float sideSign = FMath::Sign(allowedSideScalar);
 	float allowedSideAbs = FMath::Min(FMath::Abs(allowedSideScalar), sideSpeedTarget);
 	float clampedSide = sideSign * allowedSideAbs;
 
-	WheeledPhysicsState.AllowedSideVelocity += (clampedSide - allowedSideScalar) * RightSurface;
+	WheeledPhysicsStateStorage().AllowedSideVelocity += (clampedSide - allowedSideScalar) * RightSurface;
 
 	// -------------------------------------
 	// Clamp AllowedAngularVelocity (yaw)
 	// -------------------------------------
-	float allowedYaw = FVector::DotProduct(WheeledPhysicsState.AllowedAngularVelocity, UpVector);
+	float allowedYaw = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedAngularVelocity, UpVector);
 	float yawSign = FMath::Sign(allowedYaw);
 	float allowedYawAbs = FMath::Min(FMath::Abs(allowedYaw), GetSteeringAllowedYawClamp(absTargetYawRate));
 	float clampedYaw = yawSign * allowedYawAbs;
 
-	WheeledPhysicsState.AllowedAngularVelocity += (clampedYaw - allowedYaw) * UpVector;
+	WheeledPhysicsStateStorage().AllowedAngularVelocity += (clampedYaw - allowedYaw) * UpVector;
 
 	// Override yaw angular velocity along Up
 	{
 		FVector currentAngVel = GetPhysAngularVelocity();
-		FVector correctedAngVel = WheeledPhysicsState.AllowedAngularVelocity - FVector::DotProduct(currentAngVel, UpVector) * UpVector;
+		FVector correctedAngVel = WheeledPhysicsStateStorage().AllowedAngularVelocity - FVector::DotProduct(currentAngVel, UpVector) * UpVector;
 		const float YawCorrectionTimeConstant = GetSteeringYawCorrectionTimeConstant();
 		if (YawCorrectionTimeConstant > KINDA_SMALL_NUMBER)
 		{
@@ -4468,7 +4470,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 			UE_LOG(SpeedPhysicsLog, Log,
 				TEXT("[%s(%s)][Steering] NumFrame=%d, ForwardSpeed=%.1f cm/s, upDot=%.2f, SteeringInput=%.2f, YawRate=%.3f rad/s, AllowedSideSpeed=%f, AllowedYaw=%f, Actual Radius=%.1f cm, Desired Radius=%.1f cm"),
 				*GetOwner()->GetName(), *GetRole(), NumFrame(), forwardVelocity, upDot, steeringInput, yawRate,
-				FVector::DotProduct(WheeledPhysicsState.AllowedSideVelocity, RightSurface),
+				FVector::DotProduct(WheeledPhysicsStateStorage().AllowedSideVelocity, RightSurface),
 				allowedYaw, radius, desiredRadiusWall);
 		}
 	}
@@ -4725,8 +4727,8 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	if (bNewTarget && (WheeledTarget.WheeledState.bStartCountdown != PastPredictedWheeledState.bStartCountdown))
 	{
 		UE_LOG(WheelNetcodeLog, Verbose, TEXT("[%s(%s)][COUNTDOWN MISMATCH] Countdown mismatch: Target=%d, PastPred=%d, NbFramesBeforeCanMove=%d, NumPredictedFrames=%d"), *GetOwner()->GetName(), *GetRole(),
-			WheeledTarget.WheeledState.bStartCountdown, PastPredictedWheeledState.bStartCountdown, WheeledPhysicsState.nbFramesbeforeCanMove, NumPredictedFrames);
-		WheeledPhysicsState.bStartCountdown = WheeledTarget.WheeledState.bStartCountdown;
+			WheeledTarget.WheeledState.bStartCountdown, PastPredictedWheeledState.bStartCountdown, WheeledPhysicsStateStorage().nbFramesbeforeCanMove, NumPredictedFrames);
+		WheeledPhysicsStateStorage().bStartCountdown = WheeledTarget.WheeledState.bStartCountdown;
 	}
 	/*else
 	{
@@ -4735,20 +4737,20 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 
 	// check nbFramesbeforeCanMove alignment
 	if (bNewTarget && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != PastPredictedWheeledState.nbFramesbeforeCanMove)
-		// && (WheeledPhysicsState.nbFramesbeforeCanMove > WheeledNumPredictedFrames - 1)
-		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsState.nbFramesbeforeCanMove - NumPredictedFrames - 1)
-		&& (WheeledPhysicsState.nbFramesbeforeCanMove != FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames)))
+		// && (WheeledPhysicsStateStorage().nbFramesbeforeCanMove > WheeledNumPredictedFrames - 1)
+		// && (WheeledTarget.WheeledState.nbFramesbeforeCanMove != WheeledPhysicsStateStorage().nbFramesbeforeCanMove - NumPredictedFrames - 1)
+		&& (WheeledPhysicsStateStorage().nbFramesbeforeCanMove != FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames)))
 	{
-		if (WheeledTarget.WheeledState.nbFramesbeforeCanMove == 0 && WheeledPhysicsState.nbFramesbeforeCanMove != 0)
+		if (WheeledTarget.WheeledState.nbFramesbeforeCanMove == 0 && WheeledPhysicsStateStorage().nbFramesbeforeCanMove != 0)
 		{
-			WheeledPhysicsState.nbFramesbeforeCanMove = 0;
-			WheeledPhysicsState.bStartCountdown = false;
+			WheeledPhysicsStateStorage().nbFramesbeforeCanMove = 0;
+			WheeledPhysicsStateStorage().bStartCountdown = false;
 			ResetWheelTransientStateForCurrentPose();
 			UnFreezeMovement();
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove);
 			UE_LOG(SpeedPhysicsLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
-				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsState.Kinematic.ToString());
+				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsStateStorage().Kinematic.ToString());
 #endif
 		}
 		else
@@ -4763,16 +4765,16 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			const int32 CorrectedFramesBeforeCanMove = bStartupCountdownCatchup
 				? int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove)
 				: FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames);
-			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
-			if (!WheeledPhysicsState.bStartCountdown && WheeledPhysicsState.nbFramesbeforeCanMove == 0)
+			WheeledPhysicsStateStorage().nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
+			if (!WheeledPhysicsStateStorage().bStartCountdown && WheeledPhysicsStateStorage().nbFramesbeforeCanMove == 0)
 			{
 				// If countdown has not started, we cannot start to move immediately
-				WheeledPhysicsState.nbFramesbeforeCanMove = 1;
+				WheeledPhysicsStateStorage().nbFramesbeforeCanMove = 1;
 			}
 
 			if (CanMove())
 			{
-				WheeledPhysicsState.bStartCountdown = false;
+				WheeledPhysicsStateStorage().bStartCountdown = false;
 				ResetWheelTransientStateForCurrentPose();
 				UnFreezeMovement();
 			}
@@ -4786,13 +4788,13 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 		const int32 CorrectedFramesBeforeCanMove = FMath::Max(0, int32(WheeledTarget.WheeledState.nbFramesbeforeCanMove) - WheeledNumPredictedFrames);
 		if (CorrectedFramesBeforeCanMove > 0)
 		{
-			WheeledPhysicsState.nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
-			WheeledPhysicsState.bStartCountdown = true;
+			WheeledPhysicsStateStorage().nbFramesbeforeCanMove = static_cast<uint16>(CorrectedFramesBeforeCanMove);
+			WheeledPhysicsStateStorage().bStartCountdown = true;
 			SinceCanMoveFrame = INDEX_NONE;
 			FreezeMovement();
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Warning, TEXT("[%s(%s)][EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"), *GetOwner()->GetName(), *GetRole(),
-				WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove, WheeledPhysicsState.nbFramesbeforeCanMove);
+				WheeledTarget.WheeledState.nbFramesbeforeCanMove, PastPredictedWheeledState.nbFramesbeforeCanMove, WheeledPhysicsStateStorage().nbFramesbeforeCanMove);
 #endif
 		}
 	}
@@ -4862,7 +4864,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	}
 
 	const bool bStableContact = (NetCorr_StableNFrames > 6); // ~6 frames = 20ms @300Hz
-	const bool bPersistentContact = bStableContact || (IsOnTheGround() && (WheeledPhysicsState.FramesSinceLastImpact > NumPredictedFrames));
+	const bool bPersistentContact = bStableContact || (IsOnTheGround() && (WheeledPhysicsStateStorage().FramesSinceLastImpact > NumPredictedFrames));
 	const FVector ContactN = bPersistentContact ? NetCorr_LastContactN : FVector::ZeroVector;
 	const bool bHasN = bPersistentContact && !ContactN.IsNearlyZero(1e-3f);
 
@@ -4977,7 +4979,7 @@ void USpeedWheeledComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 #if !(UE_BUILD_SHIPPING)
 			UE_LOG(WheelNetcodeLog, Log, TEXT("[%s(%s)][CORR] ServerFrame=%d NumPredictedFrames=%d ErrVel=%.2f AppliedVelCorr=%.4fcm/s TargetVel=%fcm/s GroundN.Z=%.2f StableNFrames=%d "
 				"NbWheelOnGround=%d"), *GetOwner()->GetName(), *GetRole(), Target.ServerFrame, NumPredictedFrames, NetCorrAccum.RemVel.Size(), dV.Size(),
-				Target.BaseState.Kinematic.Velocity.Size(), GroundN.Z, NetCorr_StableNFrames, WheeledGameState.NbWheelsOnGround);
+				Target.BaseState.Kinematic.Velocity.Size(), GroundN.Z, NetCorr_StableNFrames, WheeledGameStateStorage().NbWheelsOnGround);
 #endif
 		}
 	}
@@ -5063,14 +5065,14 @@ void USpeedWheeledComponent::QuantizePhysicalState()
 		return;
 
 	// Quantize kinematic state to reduce precision errors on client and server
-	QuantizeKinematicState(BasePhysicsState.Kinematic, GetKinematicStateForFrame(NumFrame() - 1).Rotation);
+	QuantizeKinematicState(BasePhysicsStateStorage().Kinematic, GetKinematicStateForFrame(NumFrame() - 1).Rotation);
 
 	// round trip on last suspension length to avoid precision drift on client and server
 	for (const auto& W : WheelSubBodies)
 	{
 		const int32 WheelIdx = W->Idx();
-		const float QuantizedDisplacement = WheeledPhysicsState.DequantizeLastSuspensionDisplacement(WheeledPhysicsState.QuantizeLastSuspensionDisplacement(WheelIdx));
-		WheeledPhysicsState.SuspensionLastDisplacement[WheelIdx] = QuantizedDisplacement;
+		const float QuantizedDisplacement = WheeledPhysicsStateStorage().DequantizeLastSuspensionDisplacement(WheeledPhysicsStateStorage().QuantizeLastSuspensionDisplacement(WheelIdx));
+		WheeledPhysicsStateStorage().SuspensionLastDisplacement[WheelIdx] = QuantizedDisplacement;
 		W->SetLastDisplacement(QuantizedDisplacement);
 	}
 }
@@ -5314,11 +5316,11 @@ float USpeedWheeledComponent::ComputeFullHandbrakeGroundEngineAccel() const
 void USpeedWheeledComponent::AppendReplayWheeledFields(Speed::Replay::FFieldWriter& W) const
 {
     // Wheeled derives from Chaos movement, independently of USpeedMovementComponent.
-    Speed::Replay::Fields::BasePhysics(W, BasePhysicsState);
-    Speed::Replay::Fields::BaseGame(W, BaseGameState);
+    Speed::Replay::Fields::BasePhysics(W, BasePhysicsStateStorage());
+    Speed::Replay::Fields::BaseGame(W, BaseGameStateStorage());
     W.Scalar(MinNbFramesBeforeCanMove);
     W.Scalar(SinceCanMoveFrame);
-    Speed::Replay::Fields::WheeledGame(W, WheeledGameState);
-    Speed::Replay::Fields::WheeledPhysics(W, WheeledPhysicsState);
-    Speed::Replay::Fields::WheeledInput(W, WheeledPhysicalInput);
+    Speed::Replay::Fields::WheeledGame(W, WheeledGameStateStorage());
+    Speed::Replay::Fields::WheeledPhysics(W, WheeledPhysicsStateStorage());
+    Speed::Replay::Fields::WheeledInput(W, WheeledPhysicalInputStorage());
 }

@@ -78,7 +78,7 @@ public:
 #endif
 #if !UE_BUILD_SHIPPING
     // Joined owner-lane diagnostics only; returns the actual applied input.
-    const FWheeledInputState& GetWheeledPhysicalInputForWitness() const { return WheeledPhysicalInput; }
+    const FWheeledInputState& GetWheeledPhysicalInputForWitness() const { return WheeledPhysicalInputStorage(); }
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -272,6 +272,36 @@ protected:
     // A selected physical network owner can keep startup closed independently
     // of a product countdown. Legacy/offline components retain their own timer.
     virtual bool IsInitialSynchronizationComplete() const { return true; }
+
+    // Native debug output can synchronously call arbitrary registered output
+    // devices. A specialized storage owner suspends its routing around that
+    // external call, after formatting immutable values from the physical cut.
+    virtual void* SuspendStorageRoutingForExternalObservation() const {return nullptr;}
+    virtual void ResumeStorageRoutingAfterExternalObservation(void*) const {}
+    class FScopedExternalObservationRouting
+    {
+        const USpeedWheeledComponent& Owner;
+        void* Token;
+    public:
+        explicit FScopedExternalObservationRouting(const USpeedWheeledComponent& In)
+            :Owner(In),Token(In.SuspendStorageRoutingForExternalObservation()){}
+        ~FScopedExternalObservationRouting(){Owner.ResumeStorageRoutingAfterExternalObservation(Token);}
+        FScopedExternalObservationRouting(const FScopedExternalObservationRouting&)=delete;
+        FScopedExternalObservationRouting& operator=(const FScopedExternalObservationRouting&)=delete;
+    };
+    // Legacy owns these fields directly. A private physical subtype may route
+    // its own native calls to separate storage; this is not a restore lease.
+    virtual SBaseGameState& BaseGameStateStorage() {return BaseGameState;}
+    virtual const SBaseGameState& BaseGameStateStorage() const {return BaseGameState;}
+    virtual FBasePhysicsState& BasePhysicsStateStorage() {return BasePhysicsState;}
+    virtual const FBasePhysicsState& BasePhysicsStateStorage() const {return BasePhysicsState;}
+    virtual FWheeledGameState& WheeledGameStateStorage() {return WheeledGameState;}
+    virtual const FWheeledGameState& WheeledGameStateStorage() const {return WheeledGameState;}
+    virtual FWheeledPhysicsState& WheeledPhysicsStateStorage() {return WheeledPhysicsState;}
+    virtual const FWheeledPhysicsState& WheeledPhysicsStateStorage() const {return WheeledPhysicsState;}
+    virtual FWheeledInputState& WheeledPhysicalInputStorage() {return WheeledPhysicalInput;}
+    virtual const FWheeledInputState& WheeledPhysicalInputStorage() const {return WheeledPhysicalInput;}
+
 public:
 	bool CanMove() const;
 	void RequestCanonicalSupportStartupInitialization()
@@ -352,8 +382,8 @@ protected:
 	unsigned int NbFramesSinceCanMove() const;
 	// Get the current frame number for this component (e.g. to be used for network replication)
 	unsigned int GetCurrentFrame() const;
-	FVector GetAllowedAngularVelocity() const { return WheeledPhysicsState.AllowedAngularVelocity; }
-	void SetAllowedAngularVelocity(const FVector& NewAllowedAngularVelocity) { WheeledPhysicsState.AllowedAngularVelocity = NewAllowedAngularVelocity; }
+	FVector GetAllowedAngularVelocity() const { return WheeledPhysicsStateStorage().AllowedAngularVelocity; }
+	void SetAllowedAngularVelocity(const FVector& NewAllowedAngularVelocity) { WheeledPhysicsStateStorage().AllowedAngularVelocity = NewAllowedAngularVelocity; }
 
 	// Update Inputs
 	virtual void UpdateInputs();

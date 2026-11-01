@@ -24,25 +24,25 @@ USpeedWheeledComponent* ResolveBumpVictim(const UWorld* World,uint64 Id)
 bool USpeedWheeledComponent::IsCarBumpInCooldown(const USpeedWheeledComponent& Victim) const
 {
     return Speed::Collision::IsCarBumpInCooldown(
-        WheeledPhysicsState.LastCarBumpVictim.Get(),&Victim,WheeledPhysicsState.CarBumpCooldownFrames);
+        WheeledPhysicsStateStorage().LastCarBumpVictim.Get(),&Victim,WheeledPhysicsStateStorage().CarBumpCooldownFrames);
 }
 bool USpeedWheeledComponent::TryBeginCarBump(USpeedWheeledComponent& Victim)
 {
     if(&Victim==this || IsCarBumpInCooldown(Victim)) return false;
-    WheeledPhysicsState.LastCarBumpVictim=&Victim;
-    WheeledPhysicsState.CarBumpCooldownFrames=static_cast<uint16>(FMath::Clamp(
+    WheeledPhysicsStateStorage().LastCarBumpVictim=&Victim;
+    WheeledPhysicsStateStorage().CarBumpCooldownFrames=static_cast<uint16>(FMath::Clamp(
         FMath::CeilToInt(GetEngineFPS()*0.25f),1,65535));
     return true;
 }
 void USpeedWheeledComponent::ResetCarBumpCooldown()
 {
-    WheeledPhysicsState.LastCarBumpVictim.Reset();
-    WheeledPhysicsState.CarBumpCooldownFrames=0;
+    WheeledPhysicsStateStorage().LastCarBumpVictim.Reset();
+    WheeledPhysicsStateStorage().CarBumpCooldownFrames=0;
 }
 void USpeedWheeledComponent::AppendSimulationSnapshot(TArray<uint8>& Out) const
 {
-    USpeedWheeledComponent* Victim=WheeledPhysicsState.LastCarBumpVictim.Get();
-    const uint16 Frames=Victim?WheeledPhysicsState.CarBumpCooldownFrames:0;
+    USpeedWheeledComponent* Victim=WheeledPhysicsStateStorage().LastCarBumpVictim.Get();
+    const uint16 Frames=Victim?WheeledPhysicsStateStorage().CarBumpCooldownFrames:0;
     const uint64 Id=Frames?Victim->GetPublishedSimulationStableId():0;
     checkf(!Frames || Id!=0,TEXT("Bump victim must belong to the canonical registry before capture"));
     const auto Bytes=Speed::Collision::EncodeCarBumpSnapshot(Frames,Id);
@@ -63,6 +63,6 @@ void USpeedWheeledComponent::RestoreSimulationSnapshotPayload(TConstArrayView<ui
     const bool bRead=ReadBumpPayload(Payload,Frames,Id);
     check(bRead);
     if(!bRead) return;
-    WheeledPhysicsState.LastCarBumpVictim=ResolveBumpVictim(GetWorld(),Id);
-    WheeledPhysicsState.CarBumpCooldownFrames=Frames;
+    WheeledPhysicsStateStorage().LastCarBumpVictim=ResolveBumpVictim(GetWorld(),Id);
+    WheeledPhysicsStateStorage().CarBumpCooldownFrames=Frames;
 }

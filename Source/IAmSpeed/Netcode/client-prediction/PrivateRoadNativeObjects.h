@@ -27,6 +27,34 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
     bool HasIsolatedNativeConstruction() const;
+
+    // Established after original construction, before its first physical step.
+    // External calls route to legacy facade storage. Other native domains are
+    // still unclosed; never infer complete owner/restore authority from this.
+    struct FOwnedComponentValues
+    {
+        SBaseGameState BaseGameState;
+        FBasePhysicsState BasePhysicsState;
+        FWheeledGameState WheeledGameState;
+        FWheeledPhysicsState WheeledPhysicsState;
+        FWheeledInputState WheeledPhysicalInput;
+    };
+    std::unique_ptr<FOwnedComponentValues> OwnedComponentValues;
+    bool UsesOriginalComponentStorage() const;
+    void* SuspendStorageRoutingForExternalObservation() const override;
+    void ResumeStorageRoutingAfterExternalObservation(void*) const override;
+    void EstablishOriginalComponentStorage();
+    SBaseGameState& BaseGameStateStorage() override;
+    const SBaseGameState& BaseGameStateStorage() const override;
+    FBasePhysicsState& BasePhysicsStateStorage() override;
+    const FBasePhysicsState& BasePhysicsStateStorage() const override;
+    FWheeledGameState& WheeledGameStateStorage() override;
+    const FWheeledGameState& WheeledGameStateStorage() const override;
+    FWheeledPhysicsState& WheeledPhysicsStateStorage() override;
+    const FWheeledPhysicsState& WheeledPhysicsStateStorage() const override;
+    FWheeledInputState& WheeledPhysicalInputStorage() override;
+    const FWheeledInputState& WheeledPhysicalInputStorage() const override;
+
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     // Copies only the declared cache subset during this original native step.
     // No mutable reference, restore authority or complete coverage is returned.

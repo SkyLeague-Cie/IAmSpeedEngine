@@ -39,6 +39,18 @@ struct FPrivateRoadAccess
 };
 namespace
 {
+// This routing scope can only be installed by this translation unit, under
+// the original factory/step/startup gate. It is NOT a complete boundary lease:
+// caches, subbodies, configurations and callback/lifetime closure remain work.
+thread_local const FPrivateRoadAccess* OriginalComponentStorageOwner=nullptr;
+struct FOriginalComponentStorageScope
+{
+    explicit FOriginalComponentStorageScope(const FPrivateRoadAccess& Owner)
+        {OriginalComponentStorageOwner=&Owner;}
+    ~FOriginalComponentStorageScope(){OriginalComponentStorageOwner=nullptr;}
+    FOriginalComponentStorageScope(const FOriginalComponentStorageScope&)=delete;
+    FOriginalComponentStorageScope& operator=(const FOriginalComponentStorageScope&)=delete;
+};
 bool Refuse(FString& Why,const TCHAR* Message) {Why=Message;return false;}
 // This fixed native subtype consumes exactly the stock road semantic slots.
 // Generic contract validity alone permits other physical destinations and wider
@@ -122,7 +134,7 @@ FPrivateRoadPhysicsWorld::~FPrivateRoadPhysicsWorld()
 std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why)
 {
     Why.Empty();
-    if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive()
+    if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive()
         ||Speed::Netcode::PresentationClient::IsSelected()||Seeds.empty()||Seeds.size()>16
         ||Chaos::FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled())
     {Refuse(Why,TEXT("private native world requires GT, IAS-only physical profile, disabled Chaos prediction and finite roster"));return {};}
@@ -215,6 +227,8 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(!C->ValidateSimulationBindings(Why))return {};
         if(C->ThrottleAccel!=750||C->BrakeAccel!=1100||C->PhysDamping!=0||C->AirForwardThrottle!=0||C->AirBackwardThrottle!=0)
         {Refuse(Why,TEXT("stock native driving profile differs"));return {};}
+        C->EstablishOriginalComponentStorage();
+        FOriginalComponentStorageScope OriginalStorage(*I.Access);
         C->SetEngineFPS(300);C->SetKinematicState(N.Seed.Initial);
         // Declared fresh-world initial countdown, never a historical restore.
         if(I.Access->RequiresInitialPublication)
@@ -224,13 +238,14 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         }
         else
         {
-            C->WheeledPhysicsState.nbFramesbeforeCanMove=N.Seed.CountdownFrames;
-            C->WheeledPhysicsState.bStartCountdown=N.Seed.CountdownFrames>0;
+            C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove=N.Seed.CountdownFrames;
+            C->WheeledPhysicsStateStorage().bStartCountdown=N.Seed.CountdownFrames>0;
             C->SinceCanMoveFrame=N.Seed.CountdownFrames?INDEX_NONE:0;
             if(N.Seed.CountdownFrames)C->FreezeMovement();else C->UnFreezeMovement();
         }
         C->bPublishWheelPresentation=true;I.PinTree(N.Actor);I.PinTree(C);
     }
+    FOriginalComponentStorageScope OriginalInitialization(*I.Access);
     I.Bridge->ApplyPendingOps();
     for(auto& N:I.Cars)
     {
@@ -266,7 +281,7 @@ bool FPrivateRoadPhysicsWorld::HasExactRegisteredRoster(FString& Why) const
 }
 bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why)
 {
-    Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("private step requires GT physical caller"));
+    Why.Empty();if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("private step requires GT physical caller"));
     auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
     if(!Lock.owns_lock()||I.Closed||I.Failed||!I.World.IsValid()||I.World->bIsTearingDown
         ||!I.Driver||Requests.size()!=I.Cars.size())return Refuse(Why,TEXT("private step owner/roster unavailable"));
@@ -279,6 +294,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             return Refuse(Why,TEXT("private native actor/component lifetime changed"));
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("private native graph object invalidated"));
     if(!HasExactRegisteredRoster(Why))return false;
+    FOriginalComponentStorageScope OriginalStorage(*I.Access);
     const U64 Frame=I.Driver->NextPrivate();
     if(Frame&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
         return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
@@ -343,7 +359,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     {
         auto State=N->Filter->Capture();if(!State||State->Next!=Frame+1)return Fail(TEXT("private filter publication mismatch"));
         Out->Actors.push_back({N->Seed.Actor,N->Seed.Incarnation,N->StableId,*State,I.Access->Slots.FindChecked(N->Component).Input,
-            N->Component->CanMove(),N->Component->IsFrozen(),N->Component->WheeledPhysicsState.nbFramesbeforeCanMove});
+            N->Component->CanMove(),N->Component->IsFrozen(),N->Component->WheeledPhysicsStateStorage().nbFramesbeforeCanMove});
         const auto* Hitbox=N->Component->GetHitboxSubBodyForConfiguration();
         if(!Hitbox)return Fail(TEXT("native hitbox diagnostics missing"));
         Out->Actors.back().NativeHitboxHalfExtent=Hitbox->GetBoxExtent();
@@ -369,7 +385,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
 std::shared_ptr<const FPrivateRoadPublication> FPrivateRoadPhysicsWorld::ReadLatest() const noexcept {return Impl->Published.load();}
 bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why)
 {
-    Why.Empty();if(!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("startup release requires original GT owner"));
+    Why.Empty();if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("startup release requires original GT owner"));
     auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
     if(!Lock.owns_lock()||I.Closed||I.Failed||I.Access->Active||!I.Access->RequiresInitialPublication
         ||I.Access->InitialPublicationReleased||!Baseline||Baseline!=I.Published.load()
@@ -378,20 +394,21 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
         ||I.Driver->NextPrivate()!=1||Baseline->Actors.size()!=I.Cars.size())return Refuse(Why,TEXT("startup original baseline/boundary unavailable"));
     if(!HasExactRegisteredRoster(Why))return false;
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("startup native graph invalidated"));
+    FOriginalComponentStorageScope OriginalStorage(*I.Access);
     for(const auto& N:I.Cars)
     {
         const auto* C=N->Component;
         if(!IsValid(N->Actor)||!IsValid(C)||N->Actor->IsActorBeingDestroyed()||N->Actor->HasActorBegunPlay()
             ||N->Actor->GetWorld()!=I.World.Get()||C->GetOwner()!=N->Actor||N->Actor->GetVehicleMovement()!=C
             ||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->HasIsolatedNativeConstruction()||!C->IsFrozen()||C->CanMove()
-            ||C->WheeledPhysicsState.bStartCountdown||C->WheeledPhysicsState.nbFramesbeforeCanMove!=1)
+            ||C->WheeledPhysicsStateStorage().bStartCountdown||C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove!=1)
             return Refuse(Why,TEXT("startup native identity or closed gate changed"));
     }
     // Same established physical countdown-release operations, at a common
     // explicit boundary instead of an arbitrary elapsed frame count.
     for(const auto& N:I.Cars)
     {
-        auto* C=N->Component;C->WheeledPhysicsState.nbFramesbeforeCanMove=0;C->WheeledPhysicsState.bStartCountdown=false;
+        auto* C=N->Component;C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove=0;C->WheeledPhysicsStateStorage().bStartCountdown=false;
         C->SinceCanMoveFrame=C->NumFrame()+1;C->bSimTimelineWasCanMove=true;
         C->bSimTimelineHasGroundState=true;C->bSimTimelineWasGrounded=C->IsOnTheGround();
         C->ResetWheelTransientStateForCurrentPose(false);C->UnFreezeMovement();
@@ -466,6 +483,74 @@ bool USpeedBranchWheeledComponent::CopyActualCacheDiagnosticValues(
     Sleep=S;Quantization=Q;return true;
 }
 #endif
+bool USpeedBranchWheeledComponent::UsesOriginalComponentStorage() const
+{
+    const auto A=Access.lock();
+    return OwnedComponentValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
+}
+void* USpeedBranchWheeledComponent::SuspendStorageRoutingForExternalObservation() const
+{
+    if(!UsesOriginalComponentStorage())return nullptr;
+    auto* Original=const_cast<Speed::Netcode::Prediction::FPrivateRoadAccess*>(
+        Speed::Netcode::Prediction::OriginalComponentStorageOwner);
+    Speed::Netcode::Prediction::OriginalComponentStorageOwner=nullptr;
+    return Original;
+}
+void USpeedBranchWheeledComponent::ResumeStorageRoutingAfterExternalObservation(void* Token) const
+{
+    if(!Token)return;
+    if(Speed::Netcode::Prediction::OriginalComponentStorageOwner)std::terminate();
+    Speed::Netcode::Prediction::OriginalComponentStorageOwner=
+        static_cast<const Speed::Netcode::Prediction::FPrivateRoadAccess*>(Token);
+}
+void USpeedBranchWheeledComponent::EstablishOriginalComponentStorage()
+{
+    if(OwnedComponentValues)std::terminate(); // once at real birth, never restore
+    // Never import a mutable facade value into the physical owner. Default
+    // values are native type defaults; the original factory explicitly applies
+    // its seed/countdown/freeze, then the real physical steps evolve them.
+    OwnedComponentValues=std::make_unique<FOwnedComponentValues>();
+}
+SBaseGameState& USpeedBranchWheeledComponent::BaseGameStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->BaseGameState:USpeedWheeledComponent::BaseGameStateStorage();
+}
+const SBaseGameState& USpeedBranchWheeledComponent::BaseGameStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->BaseGameState:USpeedWheeledComponent::BaseGameStateStorage();
+}
+FBasePhysicsState& USpeedBranchWheeledComponent::BasePhysicsStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->BasePhysicsState:USpeedWheeledComponent::BasePhysicsStateStorage();
+}
+const FBasePhysicsState& USpeedBranchWheeledComponent::BasePhysicsStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->BasePhysicsState:USpeedWheeledComponent::BasePhysicsStateStorage();
+}
+FWheeledGameState& USpeedBranchWheeledComponent::WheeledGameStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledGameState:USpeedWheeledComponent::WheeledGameStateStorage();
+}
+const FWheeledGameState& USpeedBranchWheeledComponent::WheeledGameStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledGameState:USpeedWheeledComponent::WheeledGameStateStorage();
+}
+FWheeledPhysicsState& USpeedBranchWheeledComponent::WheeledPhysicsStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicsState:USpeedWheeledComponent::WheeledPhysicsStateStorage();
+}
+const FWheeledPhysicsState& USpeedBranchWheeledComponent::WheeledPhysicsStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicsState:USpeedWheeledComponent::WheeledPhysicsStateStorage();
+}
+FWheeledInputState& USpeedBranchWheeledComponent::WheeledPhysicalInputStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicalInput:USpeedWheeledComponent::WheeledPhysicalInputStorage();
+}
+const FWheeledInputState& USpeedBranchWheeledComponent::WheeledPhysicalInputStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicalInput:USpeedWheeledComponent::WheeledPhysicalInputStorage();
+}
 bool USpeedBranchWheeledComponent::IsInitialSynchronizationComplete() const
 {
     const auto A=Access.lock();return A&&(!A->RequiresInitialPublication||A->InitialPublicationReleased);
@@ -480,10 +565,10 @@ void USpeedBranchWheeledComponent::UpdateInputs()
         ||HasProducedInputAuthority()||HasLegacyRemoteInputAuthority())return;
     const auto& Applied=Slot->Input->Applied;
     bProducedInputFrameOwned=true; // actual frame ownership, no Device authority.
-    WheeledPhysicalInput.Throttle=uint8(Applied[0]);WheeledPhysicalInput.Brake=uint8(Applied[1]);WheeledPhysicalInput.Steer=int8(Applied[2]);
-    WheeledPhysicalInput.bCanMove=CanMove();
-    WheeledPhysicalInput.Camera={};WheeledPhysicalInput.Camera.Flags=1;
-    WheeledPhysicalInput.Camera.Yaw=int8(Applied[5]);WheeledPhysicalInput.Camera.Pitch=int8(Applied[6]);
+    WheeledPhysicalInputStorage().Throttle=uint8(Applied[0]);WheeledPhysicalInputStorage().Brake=uint8(Applied[1]);WheeledPhysicalInputStorage().Steer=int8(Applied[2]);
+    WheeledPhysicalInputStorage().bCanMove=CanMove();
+    WheeledPhysicalInputStorage().Camera={};WheeledPhysicalInputStorage().Camera.Flags=1;
+    WheeledPhysicalInputStorage().Camera.Yaw=int8(Applied[5]);WheeledPhysicalInputStorage().Camera.Pitch=int8(Applied[6]);
     SyncWheeledPhysicalInputToState();bInputFrameRejectedV2=false;
 }
 void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float& SimTime)

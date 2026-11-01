@@ -39,16 +39,16 @@ bool USpeedWheeledComponent::PrepareLegacyWheeledInput(uint64 Frame)
 		std::array<uint16, ActionCount> Steps{};
 		Steps[Throttle] = Steps[Brake] = Steps[Steering] = 16;
 		FActionValues Initial{};
-		Initial[Throttle] = WheeledPhysicalInput.Throttle; Initial[Brake] = WheeledPhysicalInput.Brake; Initial[Steering] = WheeledPhysicalInput.Steer;
+		Initial[Throttle] = WheeledPhysicalInputStorage().Throttle; Initial[Brake] = WheeledPhysicalInputStorage().Brake; Initial[Steering] = WheeledPhysicalInputStorage().Steer;
 		LegacyWheeledOwner = std::make_unique<FLegacyWheeledOwner>(Ingress, Frame, Steps, Initial);
 	}
 	const auto Input = LegacyWheeledOwner->Poll(Frame);
 	if (!Input) return false;
-	WheeledPhysicalInput.Throttle = uint8(Input->Applied[Throttle]);
-	WheeledPhysicalInput.Brake = uint8(Input->Applied[Brake]);
-	WheeledPhysicalInput.Steer = int8(Input->Applied[Steering]);
-	WheeledPhysicalInput.bCanMove = CanMove();
-	if (Input->Packet) WheeledPhysicalInput.Camera = Input->Packet->Wire.Camera;
+	WheeledPhysicalInputStorage().Throttle = uint8(Input->Applied[Throttle]);
+	WheeledPhysicalInputStorage().Brake = uint8(Input->Applied[Brake]);
+	WheeledPhysicalInputStorage().Steer = int8(Input->Applied[Steering]);
+	WheeledPhysicalInputStorage().bCanMove = CanMove();
+	if (Input->Packet) WheeledPhysicalInputStorage().Camera = Input->Packet->Wire.Camera;
 	SyncWheeledPhysicalInputToState();
 	return true;
 }

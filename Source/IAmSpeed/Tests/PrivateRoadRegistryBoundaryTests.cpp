@@ -11,10 +11,35 @@
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "WheelSystem.h"
 #include "IAmSpeed/Base/CarBumpSnapshot.h"
+#include "Misc/OutputDevice.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "HAL/IConsoleManager.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadPartialStateComparison.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 
 namespace
 {
+// Actual GLog output device, registered through the supported Engine entry.
+// The existing physical UpdateFrameState debug log is the triggering call;
+// no new native callback/hook or private-field access is invented for the test.
+struct FActualPhysicalLogFacadeAttack final : FOutputDevice
+{
+    USpeedBranchWheeledComponent* Component=nullptr;
+    bool WithinOriginalStepCall=false;
+    int32 Calls=0;
+    const SKinematic* RetainedView=nullptr;
+    double WrittenX=0;
+    bool CanBeUsedOnAnyThread() const override {return true;}
+    void Serialize(const TCHAR* Text,ELogVerbosity::Type,const FName&) override
+    {
+        if(Calls||!Component||!IsInGameThread()||!WithinOriginalStepCall
+            ||!FCString::Strstr(Text,TEXT("[UpdateFrameState]")))return;
+        ++Calls;RetainedView=&Component->GetKinematicState();
+        SKinematic Intrusion=*RetainedView;Intrusion.Location.X+=864200;WrittenX=Intrusion.Location.X;
+        Component->SetKinematicState(Intrusion);
+        Component->SetAllowedAngularVelocity(FVector(1000,2000,3000));
+    }
+};
 struct FForbiddenPrivatePhaseObserver final : ISpeedPhysicsPhaseObserver
 {
     int32 Calls=0;
@@ -123,6 +148,76 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestTrue(TEXT("actual original native wheel storage stays readable through the synchronous cleanup callback"),ActualCleanupBoundWheels==4);
     for(const auto& Weak:OriginalWheelObjects)if(const auto* Wheel=Weak.Get())
         TestTrue(TEXT("surviving native UObject has wheel/suspension pointers cleared AFTER callback returned"),!Wheel->GetWheelSim()&&!Wheel->GetSuspensionSim());
+    // The earlier callbacks measured the genuine original retirement. Remove
+    // them before constructing this independent storage-isolation scenario.
+    FWorldDelegates::OnPostWorldCreation.Remove(CreationHandle);
+    FWorldDelegates::OnWorldCleanup.Remove(CleanupHandle);
+    TSet<FObjectKey> ExistingWorlds;
+    for(TObjectIterator<UWorld> It;It;++It)if(!It->IsTemplate())ExistingWorlds.Add(FObjectKey(*It));
+    auto Isolated=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
+    if(!TestTrue(TEXT("separate original component-storage graph created"),bool(Isolated)))return false;
+    USpeedBranchWheeledComponent* EscapedFacade=nullptr;
+    for(TObjectIterator<USpeedBranchWheeledComponent> It;It;++It)
+        if(!It->IsTemplate()&&It->GetWorld()&&!ExistingWorlds.Contains(FObjectKey(It->GetWorld())))
+        {if(EscapedFacade)return false;EscapedFacade=*It;}
+    if(!TestTrue(TEXT("real native enumeration obtains the isolated facade"),bool(EscapedFacade)))return false;
+    auto Control=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
+    if(!Control||!Isolated->Step(First,false,Why)||!Control->Step(First,false,Why))return false;
+    const auto OriginalZero=Isolated->ReadLatest(),ControlZero=Control->ReadLatest();
+    if(!OriginalZero||!ControlZero)return false;
+    ISpeedComponent& FacadeBase=*EscapedFacade;
+    const SKinematic& RetainedFacadeView=FacadeBase.GetKinematicState();
+    SKinematic Intrusion=RetainedFacadeView;Intrusion.Location.X+=123456;
+    static_cast<USpeedWheeledComponent&>(*EscapedFacade).SetKinematicState(Intrusion);
+    EscapedFacade->SetPhysThrottleInput(1);EscapedFacade->SetPhysBrakeInput(1);
+    EscapedFacade->SetPhysSteeringInput(-1);EscapedFacade->SetAllowedAngularVelocity(FVector(100,200,300));
+    TestEqual(TEXT("escaped base setter writes only its facade view"),RetainedFacadeView.Location.X,Intrusion.Location.X);
+    if(!TestTrue(TEXT("actual synchronization release reads original physical storage"),
+        Isolated->ReleaseInitialPublication(OriginalZero,Why)&&Control->ReleaseInitialPublication(ControlZero,Why)))return false;
+    FPacket Next=Packet;Next.Frame=1;Next.Sequence=2;Next.Input.SourceSequence=2;Next.Input.Reset=false;
+    if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
+    const std::vector<P::FPrivateRoadRequest> Second{{101,3,History.Predict(1)}};
+    auto* DebugKinematics=IConsoleManager::Get().FindConsoleVariable(TEXT("p.IAmSpeed.DebugKinematics"));
+    if(!DebugKinematics||!GLog)return false;
+    const int32 OriginalDebug=DebugKinematics->GetInt();
+    FActualPhysicalLogFacadeAttack LogAttack;LogAttack.Component=EscapedFacade;
+    GLog->AddOutputDevice(&LogAttack);
+    ON_SCOPE_EXIT{GLog->RemoveOutputDevice(&LogAttack);DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);};
+    DebugKinematics->Set(1,ECVF_SetByCode);
+    if(DebugKinematics->GetInt()!=1)return false;
+    LogAttack.WithinOriginalStepCall=true;
+    const bool IsolatedAdvanced=Isolated->Step(Second,false,Why);
+    LogAttack.WithinOriginalStepCall=false;
+    if(!TestTrue(TEXT("genuine next physical step executes its real debug output callback"),IsolatedAdvanced&&Control->Step(Second,false,Why)))return false;
+    TestEqual(TEXT("actual synchronous output callback reached inside original physical Step"),LogAttack.Calls,1);
+    if(!LogAttack.RetainedView)return false;
+
+    const auto Actual=Isolated->ReadLatest(),Reference=Control->ReadLatest();
+    if(!Actual||!Reference||Actual->Frame!=1||Reference->Frame!=1)return false;
+    const auto* Body=Actual->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Actual->Actors[0].NativeStableId;});
+    const auto* Ref=Reference->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Reference->Actors[0].NativeStableId;});
+    if(!Body||!Ref)return false;
+    const auto PhysicalDifference=P::MeasurePrivateRoadKinematics(Body->COMState,Ref->COMState);
+    if(!TestTrue(TEXT("actual forward native kinematics stay exact versus unattacked control"),PhysicalDifference.Valid&&!PhysicalDifference.Different))return false;
+    if(!TestTrue(TEXT("declared native cache/wheel subset also exact after the real callback attack"),
+        P::ComparePrivateRoadPartialValues(Actual->Actors[0],Reference->Actors[0])==P::EPrivateRoadPartialComparison::Equal))return false;
+    TestEqual(TEXT("reference borrowed inside actual callback aliases facade only"),LogAttack.RetainedView->Location.X,LogAttack.WrittenX);
+    TestEqual(TEXT("previous facade view observes only the callback facade write"),RetainedFacadeView.Location.X,LogAttack.WrittenX);
+    Next.Frame=2;Next.Sequence=3;Next.Input.SourceSequence=3;
+    if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
+    const std::vector<P::FPrivateRoadRequest> Third{{101,3,History.Predict(2)}};
+    if(!Isolated->Step(Third,false,Why)||!Control->Step(Third,false,Why))return false;
+    const auto Later=Isolated->ReadLatest(),LaterRef=Control->ReadLatest();
+    const auto* LaterBody=Later?Later->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Later->Actors[0].NativeStableId;}):nullptr;
+    const auto* LaterControl=LaterRef?LaterRef->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==LaterRef->Actors[0].NativeStableId;}):nullptr;
+    if(!LaterBody||!LaterControl)return false;
+    const auto LaterDifference=P::MeasurePrivateRoadKinematics(LaterBody->COMState,LaterControl->COMState);
+    if(!TestTrue(TEXT("next real physical frame remains exact with callback view retained"),LaterDifference.Valid&&!LaterDifference.Different))return false;
+    TestEqual(TEXT("retained callback view still never aliases native advance"),LogAttack.RetainedView->Location.X,LogAttack.WrittenX);
+    DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
+
+    TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
+    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_input_attack=1 exact_six_com=1 component_value_blocks=5 complete_lease=0 localized=0"));
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
     AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));
