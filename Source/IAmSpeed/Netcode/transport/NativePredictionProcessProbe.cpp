@@ -110,25 +110,31 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
 bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
 {
     using namespace ProcessProbeDetail;namespace P=Prediction;
+    FString Why;U64 TraceNext=0,TracePacket=0;int TraceTransport=-1,TraceInput=-1;const TCHAR* Phase=TEXT("open");
+    const auto Fail=[&](int Line)
+    {
+        UE_LOG(LogTemp,Display,TEXT("[IASNativeProbeFailure] peer=%llu phase=%s line=%d next=%llu packet=%llu transport=%d input=%d reason=%s"),
+            O.Launcher.SelfPeer,Phase,Line,TraceNext,TracePacket,TraceTransport,TraceInput,*Why);
+        return false;
+    };
     if(!IsInGameThread()||O.ReportPath.empty()||O.ReleasePath.empty()||O.Launcher.Peers.size()!=2
-        ||(O.Launcher.SelfPeer!=Server&&O.Launcher.SelfPeer!=PeerA&&O.Launcher.SelfPeer!=PeerB))return false;
-    auto Channel=FNativeLocalSession::Open(O.Launcher);if(!Channel)return false;
+        ||(O.Launcher.SelfPeer!=Server&&O.Launcher.SelfPeer!=PeerA&&O.Launcher.SelfPeer!=PeerB))return Fail(__LINE__);
+    auto Channel=FNativeLocalSession::Open(O.Launcher);if(!Channel)return Fail(__LINE__);
     const auto Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(90);
     const auto Send=[&](U64 Peer,std::uint8_t Kind,const std::vector<std::uint8_t>& Bytes)
-    {const auto S=Channel->Send(Peer,Kind,Bytes);return S==ELocalSession::Ready||S==ELocalSession::WouldBlock;};
+    {const auto S=Channel->Send(Peer,Kind,Bytes);TraceTransport=int(S);return S==ELocalSession::Ready||S==ELocalSession::WouldBlock;};
     const auto SendPackets=[&](U64 Peer,std::uint8_t Kind,const std::vector<FPacket>& Packets)
     {
         if(Packets.empty())return true;FRedundantRecords Records;
-        for(const auto& Pkt:Packets){auto Encoded=Encode(Pkt);if(!Encoded)return false;Records.push_back(std::move(*Encoded));}
-        const auto Groups=PackRedundantDatagrams(ERedundantFamily::Input,Records);if(!Groups)return false;
-        for(const auto& Group:*Groups)if(!Send(Peer,Kind,Group))return false;return true;
+        for(const auto& Pkt:Packets){auto Encoded=Encode(Pkt);if(!Encoded)return Fail(__LINE__);Records.push_back(std::move(*Encoded));}
+        const auto Groups=PackRedundantDatagrams(ERedundantFamily::Input,Records);if(!Groups)return Fail(__LINE__);
+        for(const auto& Group:*Groups)if(!Send(Peer,Kind,Group))return Fail(__LINE__);return true;
     };
     const auto IsPacketGroup=[](const FLocalSessionMessage& M)->std::optional<std::vector<FPacket>>
     {
         const auto G=DecodeRedundantDatagram(M.Bytes.data(),M.Bytes.size());if(!G||G->Family!=ERedundantFamily::Input)return {};
         std::vector<FPacket> Out;for(const auto& B:G->Records){auto Pkt=Decode(B.data(),B.size());if(!Pkt)return {};Out.push_back(std::move(*Pkt));}return Out;
     };
-    FString Why;
     if(O.Launcher.SelfPeer==Server)
     {
         FExactInbox IA(Binding(0),EKind::OwnerInput,0,GameValues),IB(Binding(1),EKind::OwnerInput,0,GameValues);
@@ -138,33 +144,35 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
         bool HelloSeen[2]{},ErrorSeen[2]{},Done[2]{};U64 Next=0;std::vector<std::uint8_t> LastObservation;
         while(std::chrono::steady_clock::now()<Deadline)
         {
+            Phase=TEXT("server-receive");TraceNext=Next;
             for(unsigned Work=0;Work<512;++Work)
             {
-                FLocalSessionMessage M;const auto Status=Channel->Receive(M);if(Status==ELocalSession::WouldBlock)break;
+                FLocalSessionMessage M;const auto Status=Channel->Receive(M);TraceTransport=int(Status);if(Status==ELocalSession::WouldBlock)break;
                 if(Status==ELocalSession::Pending||Status==ELocalSession::Duplicate||Status==ELocalSession::Stale||Status==ELocalSession::UnknownPeer)continue;
-                if(Status!=ELocalSession::Ready|| (M.Peer!=PeerA&&M.Peer!=PeerB))return false;
+                if(Status!=ELocalSession::Ready|| (M.Peer!=PeerA&&M.Peer!=PeerB))return Fail(__LINE__);
                 const unsigned A=M.Peer==PeerA?0:1;
                 if(M.Kind==Hello||M.Kind==ObservedError90||M.Kind==ClientDone)
                 {
-                    if(M.Bytes!=std::vector<std::uint8_t>{1})return false;
+                    if(M.Bytes!=std::vector<std::uint8_t>{1})return Fail(__LINE__);
                     if(M.Kind==Hello)HelloSeen[A]=true;
                     else if(M.Kind==ObservedError90)ErrorSeen[A]=true;
                     else Done[A]=true;
                 }
                 else if(M.Kind==OwnerInput)
                 {
-                    auto Packets=IsPacketGroup(M);if(!Packets)return false;
+                    auto Packets=IsPacketGroup(M);if(!Packets)return Fail(__LINE__);
                     for(const auto& Pkt:*Packets)
                     {
-                        auto& Inbox=A?IB:IA;const auto Result=Inbox.Receive(M.Peer,Pkt);
-                        if(Result!=EResult::Accepted&&Result!=EResult::Duplicate&&Result!=EResult::Stale&&Result!=EResult::TooFar)return false;
+                        TracePacket=Pkt.Frame;auto& Inbox=A?IB:IA;const auto Result=Inbox.Receive(M.Peer,Pkt);TraceInput=int(Result);
+                        if(Result!=EResult::Accepted&&Result!=EResult::Duplicate&&Result!=EResult::Stale&&Result!=EResult::TooFar)return Fail(__LINE__);
                         if(Result==EResult::Accepted||Result==EResult::Duplicate)
-                            if(!SendPackets(M.Peer,RetentionAck,{AckFor(Pkt)}))return false;
+                            if(!SendPackets(M.Peer,RetentionAck,{AckFor(Pkt)}))return Fail(__LINE__);
                     }
                 }
-                else return false;
+                else return Fail(__LINE__);
             }
-            if(HelloSeen[0]&&HelloSeen[1]&&!World){World=P::FPrivateRoadPhysicsWorld::Create(Seeds(Server),Why);if(!World)return false;}
+            Phase=TEXT("server-physics");
+            if(HelloSeen[0]&&HelloSeen[1]&&!World){World=P::FPrivateRoadPhysicsWorld::Create(Seeds(Server),Why);if(!World)return Fail(__LINE__);}
             const bool Barrier=Next==91&&!(ErrorSeen[0]&&ErrorSeen[1]);
             if(World&&Next<Frames&&!Barrier)
             {
@@ -175,13 +183,14 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                 if(A&&B)
                 {
                     A->Packet.Kind=B->Packet.Kind=EKind::AuthorityInput;
-                    if(HA.Confirm(Server,A->Packet).Status!=EResult::Accepted||HB.Confirm(Server,B->Packet).Status!=EResult::Accepted)return false;
-                    if(!World->Step({{101,3,HA.Predict(Next)},{102,3,HB.Predict(Next)}},false,Why))return false;
+                    if(HA.Confirm(Server,A->Packet).Status!=EResult::Accepted||HB.Confirm(Server,B->Packet).Status!=EResult::Accepted)return Fail(__LINE__);
+                    if(!World->Step({{101,3,HA.Predict(Next)},{102,3,HB.Predict(Next)}},false,Why))return Fail(__LINE__);
                     History[0].push_back(A->Packet);History[1].push_back(B->Packet);
-                    auto Actual=World->ReadLatest();if(!Actual||Actual->Frame!=Next)return false;LastObservation=Observe(*Actual);if(LastObservation.empty())return false;++Next;
+                    auto Actual=World->ReadLatest();if(!Actual||Actual->Frame!=Next)return Fail(__LINE__);LastObservation=Observe(*Actual);if(LastObservation.empty())return Fail(__LINE__);++Next;
                 }
             }
-            if(!LastObservation.empty())for(U64 Peer:{PeerA,PeerB})if(!Send(Peer,Observed,LastObservation))return false;
+            Phase=TEXT("server-publish");TraceNext=Next;
+            if(!LastObservation.empty())for(U64 Peer:{PeerA,PeerB})if(!Send(Peer,Observed,LastObservation))return Fail(__LINE__);
             for(unsigned A=0;A<2;++A)
             {
                 const auto& H=History[A];if(H.empty())continue;
@@ -190,20 +199,20 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                 const auto First=Available>4?Available-4:0;
                 std::vector<FPacket> Packets(H.begin()+First,H.begin()+Available);
                 if(Released&&Next<=95&&H.size()>30)Packets.assign(H.begin()+30,H.end());
-                if(!SendPackets(A?PeerA:PeerB,AuthorityInput,Packets))return false;
+                if(!SendPackets(A?PeerA:PeerB,AuthorityInput,Packets))return Fail(__LINE__);
             }
             if(Next==Frames&&Done[0]&&Done[1])
             {
-                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true))return false;
+                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true))return Fail(__LINE__);
                 const bool Released=WaitRelease(O,*Channel,Deadline);Channel->Close();return Released;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        return false;
+        return Fail(__LINE__);
     }
     const unsigned Own=O.Launcher.SelfPeer==PeerA?0:1,Other=1-Own;
-    auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
-    FReliableOutbox Outbox(Binding(Own),Server);auto Baseline=Sample(Own,0,Contract);if(Outbox.Queue(Baseline.Packet)!=EResult::Accepted)return false;
+    auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return Fail(__LINE__);
+    FReliableOutbox Outbox(Binding(Own),Server);auto Baseline=Sample(Own,0,Contract);if(Outbox.Queue(Baseline.Packet)!=EResult::Accepted)return Fail(__LINE__);
     std::unique_ptr<P::FPrivateRoadPredictionSession> Client;U64 Next=0,Corrections=0;bool ErrorMeasured=false,Done=false;double MaximumError=0;
     std::optional<P::FPrivateRoadObservedFrame> Final;
     while(std::chrono::steady_clock::now()<Deadline)
@@ -216,36 +225,38 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
             std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
             if(Release>>Session>>Epoch)
             {
-                if(Session!=O.Launcher.Session||Epoch!=O.Launcher.Epoch||!Client->Close())return false;
+                if(Session!=O.Launcher.Session||Epoch!=O.Launcher.Epoch||!Client->Close())return Fail(__LINE__);
                 Channel->Close();return true;
             }
         }
-        if(!Send(Server,Hello,{1}))return false;
+        Phase=TEXT("client-receive");TraceNext=Next;
+        if(!Send(Server,Hello,{1}))return Fail(__LINE__);
         for(unsigned Work=0;Work<512;++Work)
         {
-            FLocalSessionMessage M;const auto Status=Channel->Receive(M);if(Status==ELocalSession::WouldBlock)break;
+            FLocalSessionMessage M;const auto Status=Channel->Receive(M);TraceTransport=int(Status);if(Status==ELocalSession::WouldBlock)break;
             if(Status==ELocalSession::Pending||Status==ELocalSession::Duplicate||Status==ELocalSession::Stale||Status==ELocalSession::UnknownPeer)continue;
-            if(Status!=ELocalSession::Ready||M.Peer!=Server)return false;
+            if(Status!=ELocalSession::Ready||M.Peer!=Server)return Fail(__LINE__);
             if(M.Kind==RetentionAck||M.Kind==AuthorityInput)
             {
-                auto Packets=IsPacketGroup(M);if(!Packets)return false;
+                auto Packets=IsPacketGroup(M);if(!Packets)return Fail(__LINE__);
                 for(const auto& Pkt:*Packets)
                 {
+                    TracePacket=Pkt.Frame;
                     if(M.Kind==RetentionAck)
                     {
                         if(!Outbox.Acknowledge(Server,Pkt)
-                            &&(Pkt.Kind!=EKind::Ack||!Binding(Own).Matches(Pkt)||Pkt.Frame>=std::max<U64>(1,Next)||Pkt.Sequence!=Pkt.Frame+1))return false;
+                            &&(Pkt.Kind!=EKind::Ack||!Binding(Own).Matches(Pkt)||Pkt.Frame>=std::max<U64>(1,Next)||Pkt.Sequence!=Pkt.Frame+1))return Fail(__LINE__);
                         continue;
                     }
-                    if(Pkt.Actor!=101+Other||Pkt.Frame>=Frames)return false;
-                    if(!Client){if(Pkt.Frame!=0)continue;Client=P::FPrivateRoadPredictionSession::Create(Seeds(O.Launcher.SelfPeer),512,Why);if(!Client)return false;}
-                    const auto Result=Client->ConfirmRemote(Server,Pkt);
-                    if(Result.Status!=EResult::Accepted&&Result.Status!=EResult::Duplicate&&Result.Status!=EResult::Stale)return false;
+                    if(Pkt.Actor!=101+Other||Pkt.Frame>=Frames)return Fail(__LINE__);
+                    if(!Client){if(Pkt.Frame!=0)continue;Client=P::FPrivateRoadPredictionSession::Create(Seeds(O.Launcher.SelfPeer),512,Why);if(!Client)return Fail(__LINE__);}
+                    const auto Result=Client->ConfirmRemote(Server,Pkt);TraceInput=int(Result.Status);
+                    if(Result.Status!=EResult::Accepted&&Result.Status!=EResult::Duplicate&&Result.Status!=EResult::Stale)return Fail(__LINE__);
                 }
             }
             else if(M.Kind==Observed)
             {
-                const auto Obs=ReadObservation(M.Bytes);if(!Obs||Obs->Frame>=Frames)return false;
+                const auto Obs=ReadObservation(M.Bytes);if(!Obs||Obs->Frame>=Frames)return Fail(__LINE__);
                 if(Obs->Frame==Frames-1)Final=*Obs;
                 if(Client&&Obs->Frame==90)
                 {
@@ -257,17 +268,19 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                     }
                 }
             }
-            else return false;
+            else return Fail(__LINE__);
         }
+        Phase=TEXT("client-physics");
         if(Client&&Next<Frames&&(Next==0||Outbox.Size()<64))
         {
             auto S=Next==0?Baseline:Sample(Own,Next,Contract);
-            if(!Client->AdvanceLocal(S.Local,Why))return false;
-            if(Next&&Outbox.Queue(S.Packet)!=EResult::Accepted)return false;++Next;
+            if(!Client->AdvanceLocal(S.Local,Why))return Fail(__LINE__);
+            if(Next&&Outbox.Queue(S.Packet)!=EResult::Accepted)return Fail(__LINE__);++Next;
         }
         if(Client)
         {
-            const auto State=Client->AdvanceCorrection(256,Why);if(State==P::EPrivateRoadCorrection::Failed)return false;
+            Phase=TEXT("client-correction");TraceNext=Next;
+            const auto State=Client->AdvanceCorrection(256,Why);if(State==P::EPrivateRoadCorrection::Failed)return Fail(__LINE__);
             if(State==P::EPrivateRoadCorrection::Adopted)++Corrections;
             if(Final&&Next==Frames)
             {
@@ -275,21 +288,22 @@ bool RunNativePredictionProcessProbe(const FNativePredictionProbeOptions& O)
                 if(Compare.Status==P::EPrivateRoadPoseComparison::Equal&&Corrections&&ErrorMeasured)Done=true;
             }
         }
+        Phase=TEXT("client-send");
         std::vector<FPacket> Pending;Outbox.Retry([&](const FPacket& Pkt){Pending.push_back(Pkt);});
-        if(!SendPackets(Server,OwnerInput,Pending))return false;
-        if(ErrorMeasured&&!Send(Server,ObservedError90,{1}))return false;
+        if(!SendPackets(Server,OwnerInput,Pending))return Fail(__LINE__);
+        if(ErrorMeasured&&!Send(Server,ObservedError90,{1}))return Fail(__LINE__);
         if(Done)
         {
-            if(!Send(Server,ClientDone,{1}))return false;
-            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true))return false;
+            if(!Send(Server,ClientDone,{1}))return Fail(__LINE__);
+            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true))return Fail(__LINE__);
             std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
             if(Release>>Session>>Epoch)
             {
-                if(Session!=O.Launcher.Session||Epoch!=O.Launcher.Epoch||!Client->Close())return false;Channel->Close();return true;
+                if(Session!=O.Launcher.Session||Epoch!=O.Launcher.Epoch||!Client->Close())return Fail(__LINE__);Channel->Close();return true;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    return false;
+    return Fail(__LINE__);
 }
 }
