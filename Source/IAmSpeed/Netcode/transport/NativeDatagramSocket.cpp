@@ -40,7 +40,7 @@ ENativeDatagram FNativeDatagramSocket::Bind(const FNativeEndpoint& Requested)
     WSADATA W{};if(WSAStartup(MAKEWORD(2,2),&W)!=0)return ENativeDatagram::Error;Impl->Runtime=true;
     Impl->Handle=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
     if(Impl->Handle==INVALID_SOCKET){Impl->Retire();return ENativeDatagram::Error;}
-    const BOOL Exclusive=TRUE;const int BufferBytes=1024*1024;u_long NonBlocking=1;
+    const BOOL Exclusive=1;const int BufferBytes=1024*1024;u_long NonBlocking=1;
     if(setsockopt(Impl->Handle,SOL_SOCKET,SO_EXCLUSIVEADDRUSE,reinterpret_cast<const char*>(&Exclusive),sizeof(Exclusive))!=0
         ||setsockopt(Impl->Handle,SOL_SOCKET,SO_RCVBUF,reinterpret_cast<const char*>(&BufferBytes),sizeof(BufferBytes))!=0
         ||setsockopt(Impl->Handle,SOL_SOCKET,SO_SNDBUF,reinterpret_cast<const char*>(&BufferBytes),sizeof(BufferBytes))!=0
