@@ -46,7 +46,7 @@ bool FIASPrivateRoadNativeWorld::RunTest(const FString&)
     std::vector<std::shared_ptr<const P::FPrivateRoadPublication>> Expected;
     const auto Equivalent=[&](const P::FPrivateRoadPublication& L,const P::FPrivateRoadPublication& R)
     {
-        if(L.NativeNetworkComponents||R.NativeNetworkComponents||L.Frame!=R.Frame||L.Actors.size()!=2||R.Actors.size()!=2||L.Physics.NumFrame!=R.Physics.NumFrame
+        if(L.NativeNetworkComponents||R.NativeNetworkComponents||L.NativeDebugDelegateBindings||R.NativeDebugDelegateBindings||L.Frame!=R.Frame||L.Actors.size()!=2||R.Actors.size()!=2||L.Physics.NumFrame!=R.Physics.NumFrame
             ||L.Physics.PresentationBodies.Num()!=2||R.Physics.PresentationBodies.Num()!=2)return false;
         for(size_t C=0;C<2;++C)
         {
@@ -94,7 +94,7 @@ bool FIASPrivateRoadNativeWorld::RunTest(const FString&)
     TestFalse(TEXT("closed graph cannot consume another frame"),A->Step(Retained.back(),false,Why));
     CollectGarbage(RF_NoFlags,true);
     TestTrue(TEXT("retained immutable values survive graph retirement and GC"),Last->Frame==180&&Last->Actors[0].Filter.Next==181&&Last->Actors[0].Input->Requested[0]==255);
-    AddInfo(FString::Printf(TEXT("[PrivateRoadNetworkIsolation] actualNative=1 networkComponents=%u legacyNetworkConstruction=0 physicsPrediction=0"),Last->NativeNetworkComponents));
+    AddInfo(FString::Printf(TEXT("[PrivateRoadNetworkIsolation] actualNative=1 networkComponents=%u debugDelegateBindings=%u legacyNetworkConstruction=0 physicsPrediction=0 completeReaderExclusion=0"),Last->NativeNetworkComponents,Last->NativeDebugDelegateBindings));
     AddInfo(TEXT("Three actual private native worlds, two cars each, 181 frames each, independent reference and fresh-origin replay. No sockets, source authentication, arbitrary snapshot restore, lifecycle lease certificate or connected client prediction qualification."));
     return !HasAnyErrors();
 }

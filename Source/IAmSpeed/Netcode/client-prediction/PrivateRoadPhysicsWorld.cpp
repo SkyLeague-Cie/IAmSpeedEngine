@@ -6,6 +6,7 @@
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "Engine/World.h"
+#include "GameFramework/HUD.h"
 #include "Components/BoxComponent.h"
 #include "Physics/NetworkPhysicsComponent.h"
 #include "Chaos/Framework/PhysicsSolverBase.h"
@@ -288,7 +289,8 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     auto Out=std::make_shared<FPrivateRoadPublication>();Out->LocalKernelLifetime=I.Lifetime;Out->Frame=Frame;
     Out->AwaitingInitialPublication=I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased;
     Out->NativeNetworkComponents=NativeNetworkComponentCount(I.World.Get());
-    if(Out->NativeNetworkComponents)return Fail(TEXT("UE NetworkPhysics object appeared in IAS-only native graph"));
+    for(const auto& N:I.Cars)if(AHUD::OnShowDebugInfo.IsBoundToObject(N->Component))++Out->NativeDebugDelegateBindings;
+    if(Out->NativeNetworkComponents||Out->NativeDebugDelegateBindings)return Fail(TEXT("external network/debug binding appeared in private native graph"));
     if(!I.Driver->ReadLatestSimulationSnapshot(Out->Physics)||Out->Physics.NumFrame!=Frame
         ||Out->Physics.PresentationBodies.Num()!=int32(I.Cars.size()))return Fail(TEXT("private native publication mismatch"));
     for(const auto& N:I.Cars)
@@ -358,6 +360,10 @@ bool FPrivateRoadPhysicsWorld::Close()
 USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer)
     :Super(Initializer,ESpeedWheeledNetworkConstruction::IAmSpeedOnly)
 {
+    // Super registers this native object with the global HUD debug multicast.
+    // Revoke that unrelated callback before the private factory registers it.
+    // Bound-entry removal is not a certificate for every possible escaped view.
+    AHUD::OnShowDebugInfo.RemoveAll(this);
     // ASpeedCar deliberately applies its generic road recipe only to the
     // exact generic component class. This specialized native owner explicitly
     // adopts that SAME existing recipe at construction, without retuning it.

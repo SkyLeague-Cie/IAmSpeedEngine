@@ -87,7 +87,7 @@ std::vector<std::uint8_t> Observe(const P::FPrivateRoadPublication& Actual)
 // This is deliberately NOT a complete hidden-state or restore certificate.
 std::vector<std::uint8_t> StartupPublication(const P::FPrivateRoadPublication& Actual)
 {
-    if(Actual.Frame!=0||!Actual.AwaitingInitialPublication||Actual.Actors.size()!=2||Actual.NativeNetworkComponents)return {};
+    if(Actual.Frame!=0||!Actual.AwaitingInitialPublication||Actual.Actors.size()!=2||Actual.NativeNetworkComponents||Actual.NativeDebugDelegateBindings)return {};
     auto Bytes=Observe(Actual);if(Bytes.empty())return {};
     Wire::Put(Bytes,1,8);Wire::Put(Bytes,300,4); // closed road recipe version/rate
     for(const auto& A:Actual.Actors)
