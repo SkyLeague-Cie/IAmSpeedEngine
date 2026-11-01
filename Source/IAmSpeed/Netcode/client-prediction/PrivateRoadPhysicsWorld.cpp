@@ -235,8 +235,28 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     {Refuse(Why,TEXT("private native lifecycle/driver admission failed"));return {};}
     static U64 NextLifetime=1; // GT-only mint at actual successful birth.
     if(NextLifetime==MAX_uint64){Refuse(Why,TEXT("private native lifetime exhausted"));return {};}
+    if(!Owner->HasExactRegisteredRoster(Why))return {};
     I.Lifetime=NextLifetime++;
     return Owner;
+}
+bool FPrivateRoadPhysicsWorld::HasExactRegisteredRoster(FString& Why) const
+{
+    const auto& I=*Impl;
+    if(!I.Bridge)return Refuse(Why,TEXT("private native registry bridge missing"));
+    // Inspect the actual pending queue under its original lock. This check
+    // detects queued/committed topology drift BEFORE private input preparation
+    // or physics. It is not a lease excluding later/global native mutations.
+    FScopeLock PendingLock(&I.Bridge->PendingCS);
+    if(I.Bridge->bCanonicalFrameActive||!I.Bridge->PendingOps.IsEmpty())
+        return Refuse(Why,TEXT("private native registry has an active frame or pending mutation"));
+    const auto& Actual=I.Bridge->SimulationWorld.GetAdapters();
+    if(Actual.Num()!=int32(I.Cars.size()))return Refuse(Why,TEXT("private native registered roster changed"));
+    for(const auto& N:I.Cars)
+        if(!N->StableId||!Actual.Contains(N->Component)
+            ||I.Bridge->SimulationWorld.FindAdapterByStableId(N->StableId)!=N->Component
+            ||N->Component->GetPublishedSimulationStableId()!=N->StableId)
+            return Refuse(Why,TEXT("private native registered identity changed"));
+    return true;
 }
 bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why)
 {
@@ -252,6 +272,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             ||N->Actor->GetVehicleMovement()!=N->Component||N->Component->GetClass()!=USpeedBranchWheeledComponent::StaticClass())
             return Refuse(Why,TEXT("private native actor/component lifetime changed"));
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("private native graph object invalidated"));
+    if(!HasExactRegisteredRoster(Why))return false;
     const U64 Frame=I.Driver->NextPrivate();
     if(Frame&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
         return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
@@ -327,6 +348,7 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
         ||!Baseline->AwaitingInitialPublication||Baseline->Frame!=0||Baseline->LocalKernelLifetime!=I.Lifetime
         ||!I.World.IsValid()||I.World->bIsTearingDown||!I.Driver||!IsValid(I.Driver)
         ||I.Driver->NextPrivate()!=1||Baseline->Actors.size()!=I.Cars.size())return Refuse(Why,TEXT("startup original baseline/boundary unavailable"));
+    if(!HasExactRegisteredRoster(Why))return false;
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("startup native graph invalidated"));
     for(const auto& N:I.Cars)
     {

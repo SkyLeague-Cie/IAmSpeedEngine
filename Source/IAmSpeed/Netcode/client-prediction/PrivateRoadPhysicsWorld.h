@@ -60,6 +60,7 @@ class IAMSPEED_API FPrivateRoadPhysicsWorld final
     struct FImpl;
     std::unique_ptr<FImpl> Impl;
     FPrivateRoadPhysicsWorld();
+    bool HasExactRegisteredRoster(FString& Why) const;
 public:
     ~FPrivateRoadPhysicsWorld();
     FPrivateRoadPhysicsWorld(const FPrivateRoadPhysicsWorld&)=delete;
