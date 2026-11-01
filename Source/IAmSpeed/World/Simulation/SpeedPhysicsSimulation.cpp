@@ -1809,6 +1809,7 @@ bool ASpeedPhysicsSimulation::RequestRollbackAndResimulation(
 	const FSimulationSnapshot& Snapshot,
 	const uint64 TargetFrameInclusive)
 {
+    if (!AllowsLegacySnapshotRollback()) return false;
 	if (!Speed::CanonicalFrameDriver::IsEnabled() || !InputJournal.IsSealed() ||
 		Snapshot.InputJournalHash != InputJournal.StableHash() ||
 		Snapshot.NumFrame > TargetFrameInclusive ||

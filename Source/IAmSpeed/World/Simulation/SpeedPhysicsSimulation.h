@@ -23,6 +23,7 @@
 #include <memory>
 #include "SpeedSimulation.h"
 #include "SpeedPhysicsSimulation.generated.h"
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;}
 
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
@@ -43,6 +44,7 @@ UCLASS(Abstract)
 class IAMSPEED_API ASpeedPhysicsSimulation : public ASpeedSimulation
 {
 	GENERATED_BODY()
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 	friend struct FLocalFastBatchFixtureAccess;
@@ -210,6 +212,9 @@ public:
 	bool ShouldTickIfViewportsOnly() const override { return true; }
 	static unsigned int GetEngineFPS() { return EngineFPS; }
 protected:
+    // Subtypes with independently owned physical/input state never accept the
+    // old pose/mechanics-only snapshot rollback, even without a V2 registry.
+    virtual bool AllowsLegacySnapshotRollback() const {return true;}
 #if !UE_BUILD_SHIPPING
     virtual Speed::PublicationCadence::FTiming GetCanonicalPublicationTiming(
         const FCanonicalFrameContext& Context) const { return {}; }

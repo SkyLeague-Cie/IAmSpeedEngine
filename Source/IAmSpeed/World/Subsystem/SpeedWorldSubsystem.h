@@ -10,6 +10,7 @@
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
 #include "SpeedWorldSubsystem.generated.h"
 
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;}
 class ISpeedComponent;
 #if !UE_BUILD_SHIPPING
 namespace Speed { class FFramePointerRegistry; }
@@ -63,6 +64,7 @@ UCLASS()
 class IAMSPEED_API USpeedWorldSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 	friend class FIAmSpeedCollisionMatrix042Test;

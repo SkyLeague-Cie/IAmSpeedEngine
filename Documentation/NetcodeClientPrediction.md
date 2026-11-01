@@ -87,3 +87,36 @@ order, immutable local/remote role, contract/policy, horizon, owner thread, revi
 and native filter lifetime are checked. Restoring this filter state alone neither
 authenticates a server nor restores/adopts a physical world or an active registry.
 The new native unit fixture is NOT_RUN until the exact next candidate is built.
+
+
+## Private native road kernel — source prototype, native tests not yet run
+
+`FPrivateRoadPhysicsWorld` now constructs actual private native cars, four native
+wheel/suspension systems per car, and an authored finite analytical road. It
+consumes the typed branch filter output through a dedicated native movement
+subtype and the unchanged canonical 300 Hz solver. Its public outputs contain
+immutable values; no actor/component/world pointer is returned. The factory
+retains graph/configuration ownership and checks native lifetime before a step.
+This experimental kernel is GT-only, has no Engine world context, normal tick,
+BeginPlay or Chaos physical owner, and rejects presentation-client mode. The
+network subobject registration policy is disabled at construction, before
+registration; any actual registered network component/history makes admission
+fail. The subtype permanently refuses external state projection and the legacy
+pose/mechanics rollback. These guards do not change the existing client profile.
+
+The native test exercises two independent two-car worlds and a third fresh
+world replaying retained commands, including steering changes, throttle/brake,
+GC while alive, wheel values, graph retirement and retained immutable values.
+Fresh-origin reconstruction is explicitly distinct from authenticated historical
+snapshot restore. Native build/test is NOT_RUN on this new source until its own
+frozen tuple has been compiled and executed. Native36 belongs to the preceding
+input-history/filter source and cannot qualify this kernel.
+
+The kernel does not authenticate a local Device frame or received authority
+packet, implement source continuity admission, supply a complete restore lease,
+adopt a corrected connected-client branch, or implement an SL world. It refuses
+menu/reset and unknown game-action values/edges. The private subtype deliberately
+does not manufacture completed V2 world/input receipts or legacy Requested input
+from already filtered Applied values. Physical failure retires the branch;
+there is no partial or pose-only fallback. This is a concrete native execution
+building block, not completion of the requested dedicated/two-client rollback.

@@ -17,6 +17,8 @@ namespace Speed::Replay { class FFieldWriter; }
 #include "IAmSpeed/Input/LegacyRemotePreSlew.h"
 
 #include "SpeedWheeledComponent.generated.h"
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;}
+class USpeedBranchWheeledComponent;
 
 DECLARE_LOG_CATEGORY_EXTERN(WheelNetcodeLog, Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(SpeedInputLog, Log, All);
@@ -52,6 +54,8 @@ UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
 	GENERATED_BODY()
+    friend class USpeedBranchWheeledComponent;
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 #endif
@@ -97,7 +101,7 @@ public:
 	bool ServiceInputRetirementAtBoundary() override;
 	// Transitional network input is forward-only. State restore cannot leave
 	// its separate filter running against a corrected/replayed component state.
-	bool AllowsExternalNetworkStateRestore() const { return !HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority(); }
+	virtual bool AllowsExternalNetworkStateRestore() const { return !HasProducedInputAuthority() && !HasLegacyRemoteInputAuthority(); }
 protected:
 	// Shared arbitration for both native wire payloads. No live input mailbox.
 	bool ClaimLegacyRemoteInputAuthority();
