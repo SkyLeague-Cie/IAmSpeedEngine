@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "IAmSpeed/Netcode/client-prediction/RestorableSuspension.h"
 #include "Misc/AutomationTest.h"
+#include <new>
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASNativeSuspensionCheckpoint,
     "IAmSpeed.Netcode.Prediction.NativeSuspensionCheckpoint",
@@ -54,6 +55,23 @@ bool FIASNativeSuspensionCheckpoint::RunTest(const FString&)
     Restored.SetLastDisplacement(-0.f);
     TestFalse(TEXT("native state mutation invalidates prepared state"),Restored.CommitPrepared(*Stale));
     TestFalse(TEXT("token from another native object refused"),Original.CommitPrepared(*Stale));
+    auto UnsafeConfig=Config;UnsafeConfig.SuspensionSmoothing=NUM_SUS_AVERAGING+1;
+    FRestorableSuspension Unsafe(UnsafeConfig);TestFalse(TEXT("out-of-bounds Engine smoothing config cannot be checkpointed"),bool(Unsafe.CaptureCheckpoint()));
+    UnsafeConfig=Config;UnsafeConfig.SpringRate=std::numeric_limits<float>::quiet_NaN();
+    FRestorableSuspension Nonfinite(UnsafeConfig);TestFalse(TEXT("nonfinite configuration rejected"),bool(Nonfinite.CaptureCheckpoint()));
+    FRestorableSuspension Declared(Config);const auto DeclaredBytes=Declared.CaptureCheckpoint();if(!DeclaredBytes)return false;
+    const auto DeclaredPlan=Declared.PrepareRestore(*DeclaredBytes);if(!DeclaredPlan)return false;
+    std::vector<Speed::PreparedAccess::FParticipantAccess> Access;
+    TestTrue(TEXT("actual complete suspension field ranges declared"),Declared.AppendPreparedAccess(*DeclaredPlan,17,Access));
+    TestTrue(TEXT("all real mutable ranges disjoint from retained config"),Speed::PreparedAccess::ValidateGlobalAccess(Access));
+    auto Alias=Access.front();Alias.Participant=18;Alias.Writes={Access.front().ReadOnly.front()};Alias.ReadOnly.clear();Access.push_back(Alias);
+    TestFalse(TEXT("writer into immutable configuration rejected globally"),Speed::PreparedAccess::ValidateGlobalAccess(Access));
+    alignas(FRestorableSuspension) uint8 Storage[sizeof(FRestorableSuspension)];
+    auto* First=new(Storage)FRestorableSuspension(Config);const auto FirstBytes=First->CaptureCheckpoint();if(!FirstBytes)return false;
+    const auto OldPlan=First->PrepareRestore(*FirstBytes);if(!OldPlan)return false;
+    First->~FRestorableSuspension();auto* Replacement=new(Storage)FRestorableSuspension(Config);
+    TestFalse(TEXT("same-address native lifetime ABA cannot accept old token"),Replacement->CommitPrepared(*OldPlan));
+    Replacement->~FRestorableSuspension();
     AddInfo(TEXT("Native suspension subplan only: original Engine algorithm, fixed delta, full hidden state and smoothing. No client physics world, world restore lease, input transaction or network match qualification."));
     return !HasAnyErrors();
 }

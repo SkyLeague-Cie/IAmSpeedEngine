@@ -2,6 +2,8 @@
 #include "SuspensionSystem.h"
 #include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
 #include <optional>
+#include <memory>
+#include "IAmSpeed/World/Simulation/PreparedAccessRanges.h"
 #include <cmath>
 
 namespace Speed::Netcode::Prediction
@@ -29,6 +31,7 @@ public:
 private:
     Chaos::FSimpleSuspensionConfig OwnedConfiguration,FrozenConfiguration;
     uint64 RestoreRevision=1;
+    const std::shared_ptr<const uint8> LifetimeIdentity=std::make_shared<const uint8>(uint8(0));
     template<class Archive,class Config> static void ConfigurationFields(Archive& A,Config& S)
     {
         A.Vector(S.SuspensionAxis);A.Vector(S.SuspensionForceOffset);
@@ -47,6 +50,14 @@ private:
     {static_assert(std::is_arithmetic_v<T>);return std::memcmp(&A,&B,sizeof(T))==0;}
     static bool VectorBits(const FVector& A,const FVector& B) noexcept
     {return Bits(A.X,B.X)&&Bits(A.Y,B.Y)&&Bits(A.Z,B.Z);}
+    static bool ValidConfiguration(const Chaos::FSimpleSuspensionConfig& C) noexcept
+    {
+        const float Values[]={C.SuspensionMaxRaise,C.SuspensionMaxDrop,C.MaxLength,C.SpringRate,C.SpringPreload,
+            C.CompressionDamping,C.ReboundDamping,C.RestingForce,C.Swaybar,C.DampingRatio,C.WheelLoadRatio,C.RaycastSafetyMargin};
+        for(float V:Values)if(!std::isfinite(V))return false;
+        return !C.SuspensionAxis.ContainsNaN()&&!C.SuspensionForceOffset.ContainsNaN()
+            &&C.SuspensionSmoothing>=0&&C.SuspensionSmoothing<=NUM_SUS_AVERAGING;
+    }
     static bool SameConfiguration(const Chaos::FSimpleSuspensionConfig& A,const Chaos::FSimpleSuspensionConfig& B) noexcept
     {
         return VectorBits(A.SuspensionAxis,B.SuspensionAxis)&&VectorBits(A.SuspensionForceOffset,B.SuspensionForceOffset)
@@ -73,7 +84,7 @@ private:
         return true;
     }
     bool ConfigurationIntact() const noexcept
-    {return SetupPtr==&OwnedConfiguration&&SameConfiguration(OwnedConfiguration,FrozenConfiguration);}
+    {return SetupPtr==&OwnedConfiguration&&ValidConfiguration(OwnedConfiguration)&&SameConfiguration(OwnedConfiguration,FrozenConfiguration);}
     FState CaptureFields() const noexcept
     {
         FState S;S.Displacement=DisplacementInput;S.LastDisplacement=LastDisplacement;S.LocalVelocity=LocalVelocity;S.Force=SuspensionForce;
@@ -87,8 +98,9 @@ public:
         friend class FRestorableSuspension;
         const FRestorableSuspension* Origin=nullptr;
         uint64 Revision=0;
+        std::shared_ptr<const uint8> Lifetime;
         FState Before,After;
-        FPreparedState(const FRestorableSuspension* O,uint64 R,FState B,FState A):Origin(O),Revision(R),Before(B),After(A){}
+        FPreparedState(const FRestorableSuspension* O,uint64 R,std::shared_ptr<const uint8> I,FState B,FState A):Origin(O),Revision(R),Lifetime(std::move(I)),Before(B),After(A){}
     public:
         FPreparedState(const FPreparedState&)=default;
     };
@@ -116,13 +128,29 @@ public:
             Chaos::FSimpleSuspensionConfig Configuration;ConfigurationFields(R,Configuration);
             FState State;StateFields(R,State);
             if(!R.AtEnd()||!SameConfiguration(Configuration,FrozenConfiguration)||!ValidState(State))return {};
-            return FPreparedState(this,RestoreRevision,CaptureFields(),State);
+            const auto Before=CaptureFields();if(!ValidState(Before))return {};
+            return FPreparedState(this,RestoreRevision,LifetimeIdentity,Before,State);
         }
         catch(const Replay::FFieldError&){return {};}
     }
     // Child-level preconditions only; not a native world lease or frame proof.
     bool CanCommit(const FPreparedState& P) const noexcept
-    {return P.Origin==this&&P.Revision==RestoreRevision&&ConfigurationIntact()&&SameState(P.Before,CaptureFields());}
+    {return P.Lifetime==LifetimeIdentity&&P.Origin==this&&P.Revision==RestoreRevision&&ConfigurationIntact()&&SameState(P.Before,CaptureFields());}
+    // Exact child ranges for the native world's global alias validation.
+    // The parent must hold actual object/config/lifecycle pins; declarations
+    // alone never certify exclusion of escaped mutable consumers.
+    bool AppendPreparedAccess(const FPreparedState& P,uint64 Participant,
+        std::vector<Speed::PreparedAccess::FParticipantAccess>& Out) const
+    {
+        if(!Participant||!CanCommit(P))return false;
+        Speed::PreparedAccess::FParticipantAccess A;A.Participant=Participant;
+        const auto Write=[&A](const auto& V){A.Writes.push_back({reinterpret_cast<std::uintptr_t>(&V),sizeof(V)});};
+        const auto Read=[&A](const auto& V){A.ReadOnly.push_back({reinterpret_cast<std::uintptr_t>(&V),sizeof(V)});};
+        Write(DisplacementInput);Write(LastDisplacement);Write(LocalVelocity);Write(SuspensionForce);Write(LocalOffset);
+        Write(SpringDisplacement);Write(SpringIndex);Write(LastSpringLength);Write(AveragingLength);Write(AveragingCount);Write(AveragingNum);Write(RestoreRevision);
+        Read(OwnedConfiguration);Read(FrozenConfiguration);Read(SetupPtr);Read(LifetimeIdentity);
+        Out.push_back(std::move(A));return true;
+    }
     bool CommitPrepared(const FPreparedState& P) noexcept
     {
         if(!CanCommit(P))return false;
