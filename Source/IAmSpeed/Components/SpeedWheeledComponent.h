@@ -339,7 +339,7 @@ private:
 	// End Timer methods
 protected:
     USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer,ESpeedWheeledNetworkConstruction Policy);
-    const ESpeedWheeledNetworkConstruction NetworkConstruction;
+    const ESpeedWheeledNetworkConstruction NetworkConstruction=ESpeedWheeledNetworkConstruction::Legacy;
 	virtual void InitChaosVehicle();
 	void InitNetwork();
 	void SetSubBodies(const TArray<USSubBody*>& NewSubBodies);
