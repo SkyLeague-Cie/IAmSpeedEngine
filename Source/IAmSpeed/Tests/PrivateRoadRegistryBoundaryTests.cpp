@@ -8,6 +8,8 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 #include "UObject/ObjectKey.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "WheelSystem.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASPrivateRoadRegistryBoundary,"IAmSpeed.Netcode.Prediction.PrivateRoadRegistryBoundary",
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
@@ -16,7 +18,10 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     namespace P=Speed::Netcode::Prediction;using namespace Speed::Netcode;
     TSet<FObjectKey> Before;for(TObjectIterator<UWorld> It;It;++It)if(!It->IsTemplate())Before.Add(FObjectKey(*It));
     UWorld* CallbackWorld=nullptr;USpeedBranchWheeledComponent* CallbackComponent=nullptr;
-    int32 ActualCleanupCallbacks=0;bool ActualCleanupRead=false;
+    int32 ActualCleanupCallbacks=0,ActualCleanupBoundWheels=0;bool ActualCleanupRead=false;
+    const Chaos::FSimpleWheelSim* OriginalWheelPointers[4]{};
+    const Chaos::FSimpleSuspensionSim* OriginalSuspensionPointers[4]{};
+    TWeakObjectPtr<USWheelSubBody> OriginalWheelObjects[4];
     const auto CreationHandle=FWorldDelegates::OnPostWorldCreation.AddLambda([&](UWorld* Created)
     {
         // Real callback registered BEFORE private native birth. Do not inspect
@@ -34,6 +39,12 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
             // external reader, never an invented exclusion/drain receipt.
             const SKinematic Copy=CallbackComponent->GetKinematicState();
             ActualCleanupRead=!Copy.Location.ContainsNaN()&&!Copy.Velocity.ContainsNaN();
+            const auto& Wheels=CallbackComponent->GetWheelSubBodies();
+            for(int32 W=0;W<Wheels.Num()&&W<4;++W)
+                if(Wheels[W]&&Wheels[W]->GetWheelSim()==OriginalWheelPointers[W]
+                    &&Wheels[W]->GetSuspensionSim()==OriginalSuspensionPointers[W]
+                    &&OriginalWheelPointers[W]&&OriginalSuspensionPointers[W]
+                    &&FMath::IsFinite(OriginalWheelPointers[W]->GetAngularVelocity()))++ActualCleanupBoundWheels;
         }
     });
     ON_SCOPE_EXIT{FWorldDelegates::OnPostWorldCreation.Remove(CreationHandle);FWorldDelegates::OnWorldCleanup.Remove(CleanupHandle);};
@@ -56,6 +67,13 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     auto* Bridge=EscapedWorld->GetSubsystem<USpeedWorldSubsystem>();
     if(!TestTrue(TEXT("actual component and registry escaped via supported Engine enumeration"),Component&&Bridge))return false;
     CallbackComponent=Component;
+    const auto& InitialWheels=Component->GetWheelSubBodies();
+    if(!TestTrue(TEXT("four genuine originally bound native wheels"),InitialWheels.Num()==4))return false;
+    for(int32 W=0;W<4;++W)
+    {
+        OriginalWheelObjects[W]=InitialWheels[W];OriginalWheelPointers[W]=InitialWheels[W]->GetWheelSim();OriginalSuspensionPointers[W]=InitialWheels[W]->GetSuspensionSim();
+        if(!TestTrue(TEXT("actual original wheel/suspension storage, not a copied pointer tag"),OriginalWheelPointers[W]&&OriginalSuspensionPointers[W]))return false;
+    }
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
     P::FRemoteRequestHistory History(B,Actions,8,8);
     FPacket Packet;Packet.Kind=EKind::AuthorityInput;Packet.Session=B.Session;Packet.Epoch=B.Epoch;Packet.Actor=B.Actor;Packet.Incarnation=B.Incarnation;Packet.Contract=B.Contract;Packet.Sequence=1;
@@ -76,7 +94,12 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestTrue(TEXT("original frozen publication retained after both actual failures"),Owner->ReadLatest()==Baseline&&!Baseline->Actors[0].CanMove);
     TestTrue(TEXT("actual owning graph retires on original GT"),Owner->Close());
     TestTrue(TEXT("original owner retirement actually invoked retained global world callback"),ActualCleanupCallbacks>0);
-    AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead)));
+    TestTrue(TEXT("actual original native wheel storage stays readable through the synchronous cleanup callback"),ActualCleanupBoundWheels==4);
+    for(const auto& Weak:OriginalWheelObjects)if(const auto* Wheel=Weak.Get())
+        TestTrue(TEXT("surviving native UObject has wheel/suspension pointers cleared AFTER callback returned"),!Wheel->GetWheelSim()&&!Wheel->GetSuspensionSim());
+    // Never dereference OriginalWheelPointers after Close: storage has retired.
+    // The unknown future borrowers remain unclosed; complete_lease stays0.
+    AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));
     return !HasAnyErrors();
 }
 #endif

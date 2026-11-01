@@ -380,10 +380,15 @@ bool FPrivateRoadPhysicsWorld::Close()
         for(const auto& N:I.Cars)if(N->Component)I.Bridge->UnregisterSpeedComponent(N->Component);
         I.Bridge->ApplyPendingOps();
     }
-    for(const auto& N:I.Cars)if(auto* C=N->Component)
-    {C->Access.reset();C->ClearWheelSimulationPointers();C->SkySimulation=nullptr;C->VehicleSimulationPT.Reset();}
+    for(const auto& N:I.Cars)if(auto* C=N->Component)C->Access.reset();
     if(I.Driver)I.Driver->Access.reset();
+    // The actual synchronous WorldCleanup/PostWorldCleanup callbacks can still
+    // query their retained native components. Keep original wheel/suspension
+    // storage and its configuration owners alive until those calls RETURN.
+    // This is not exclusion of future escaped views or a complete lease.
     if(I.World.IsValid())I.World->DestroyWorld(false);
+    for(const auto& N:I.Cars)if(auto* C=N->Component)
+    {C->ClearWheelSimulationPointers();C->SkySimulation=nullptr;C->VehicleSimulationPT.Reset();}
     I.Pins.Empty();I.World.Reset();I.Cars.clear();I.Bridge=nullptr;I.Driver=nullptr;return true;
 }
 }
