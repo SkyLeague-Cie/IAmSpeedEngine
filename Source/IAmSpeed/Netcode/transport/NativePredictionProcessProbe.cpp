@@ -135,8 +135,8 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
     if(!InitialSynchronized||OwnerAuthorityCount!=Frames||RemoteAuthorityCount!=Frames)return false;
     const auto Path=std::filesystem::path(O.ReportPath),Temp=std::filesystem::path(O.ReportPath+".tmp");
     std::ofstream S(Temp,std::ios::trunc);if(!S)return false;
-    std::ostringstream Error;Error<<std::setprecision(17)<<MaximumError;
-    const auto PositionError=O.Launcher.SelfPeer==Server?std::string("null"):Error.str();
+    std::ostringstream PositionErrorText;PositionErrorText<<std::setprecision(17)<<MaximumError;
+    const auto PositionError=O.Launcher.SelfPeer==Server?std::string("null"):PositionErrorText.str();
     S<<"{\"scope\":\"three_process_native_road_probe_only\",\"session\":"<<O.Launcher.Session<<",\"peer\":"<<O.Launcher.SelfPeer
         <<",\"original_pid\":"<<O.Launcher.OriginalSelf.Pid<<",\"original_birth\":"<<O.Launcher.OriginalSelf.BirthTicks
         <<",\"through_frame\":"<<Through<<",\"corrections\":"<<Corrections<<",\"maximum_position_error_cm\":"<<PositionError
