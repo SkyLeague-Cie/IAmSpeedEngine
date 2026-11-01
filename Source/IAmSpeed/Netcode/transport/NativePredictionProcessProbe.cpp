@@ -62,7 +62,8 @@ std::vector<std::uint8_t> Observe(const P::FPrivateRoadPublication& Actual)
     {
         const auto* B=Actual.Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==A.NativeStableId;});if(!B)return {};
         Wire::Put(Bytes,A.Actor,8);Wire::Put(Bytes,A.Incarnation,8);const auto& K=B->COMState;
-        for(const auto& V:{K.Location,K.Velocity,K.Acceleration,K.AngularVelocity,K.AngularAcceleration}){Number(V.X);Number(V.Y);Number(V.Z);}
+        const auto Vector=[&](const auto& V){Number(V.X);Number(V.Y);Number(V.Z);};
+        Vector(K.Location);Vector(K.Velocity);Vector(K.Acceleration);Vector(K.AngularVelocity);Vector(K.AngularAcceleration);
         for(double X:{K.Rotation.X,K.Rotation.Y,K.Rotation.Z,K.Rotation.W})Number(X);
     }
     return Bytes;
