@@ -140,7 +140,7 @@ private:
         P.Origin=nullptr;
     }
 public:
-    // Move-only owner of the prepared clones, not a native world/lifecycle
+    // Address-stable owner of the prepared clones, not a native world/lifecycle
     // capability. The parent's real retained lease must exclude all mutation
     // between PrepareFinalization and Finalize and pin the original graph.
     class FFinalization
@@ -152,7 +152,7 @@ public:
         FFinalization(Chaos::FSimpleWheeledVehicle& V,std::unique_ptr<FPrepared> P) noexcept
             :Plan(std::move(P)),Target(&V){}
     public:
-        FFinalization(FFinalization&&)=default;
+        FFinalization(FFinalization&&)=delete;
         FFinalization& operator=(FFinalization&&)=delete;
         FFinalization(const FFinalization&)=delete;
         FFinalization& operator=(const FFinalization&)=delete;
@@ -172,10 +172,12 @@ public:
             FNativeVehicleStorageCheckpoint::ApplyPrepared(*Target,*Plan);Applied=true;
         }
     };
-    static std::optional<FFinalization> PrepareFinalization(Chaos::FSimpleWheeledVehicle& V,std::unique_ptr<FPrepared> P)
+    static std::unique_ptr<FFinalization> PrepareFinalization(Chaos::FSimpleWheeledVehicle& V,std::unique_ptr<FPrepared> P)
     {
         if(!P||!CanCommit(V,*P))return {};
-        return FFinalization(V,std::move(P));
+        // Allocation occurs only here, before any native write. The pointee
+        // cannot move, even when the parent's vector of unique_ptrs reallocates.
+        return std::unique_ptr<FFinalization>(new FFinalization(V,std::move(P)));
     }
     // Child convenience commit performs all fallible work before its first
     // native write. Whole-world plans use the retained finalization token.

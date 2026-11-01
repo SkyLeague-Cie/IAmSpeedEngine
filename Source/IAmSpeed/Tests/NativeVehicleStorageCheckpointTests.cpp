@@ -84,6 +84,14 @@ bool FIASNativeVehicleStorageCheckpoint::RunTest(const FString&)
     TestTrue(TEXT("retained finalization declares own writes and reads"),Tail->AppendPreparedAccess(61,TailAccess));
     TestTrue(TEXT("finalization ranges globally valid"),Speed::PreparedAccess::ValidateGlobalAccess(TailAccess));
     TestEqual(TEXT("finalization includes its applied flag"),int32(TailAccess.front().Writes.size()),15);
+    static_assert(!std::is_move_constructible_v<Codec::FFinalization>);
+    auto* const StableAddress=Tail.get();auto MovedOwner=std::move(Tail);
+    TestFalse(TEXT("moving ownership leaves no old token"),bool(Tail));
+    TestTrue(TEXT("token and all declared field addresses stay fixed after owner move"),MovedOwner.get()==StableAddress);
+    std::vector<Speed::PreparedAccess::FParticipantAccess> MovedAccess;
+    TestTrue(TEXT("same retained token can export declarations after owner move"),MovedOwner->AppendPreparedAccess(61,MovedAccess));
+    TestTrue(TEXT("all global declarations remain exactly identical"),Speed::PreparedAccess::SameDeclarations(TailAccess,MovedAccess));
+    Tail=std::move(MovedOwner);
     Tail->Finalize();TestTrue(TEXT("no-fail tail restores native bytes"),Codec::Capture(Native)==Final);
     TestFalse(TEXT("applied finalization cannot prepare again"),Tail->AppendPreparedAccess(61,TailAccess));Tail.reset();
     auto* SavedWC=Native.Wheels[0].SetupPtr;Native.Wheels[0].SetupPtr=nullptr;
