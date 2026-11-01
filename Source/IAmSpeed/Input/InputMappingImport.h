@@ -11,4 +11,9 @@ namespace Speed::Input::V2
 IAMSPEED_API bool ImportInputMappings(const UInputMappingContext* Context,
 	const TMap<const UInputAction*, FActionId>& Actions,
 	FInputActionContractDescription& Description, FString& Error);
+// GT-only presentation axes. Validates the same authored mapping transforms,
+// refuses physical destinations, and creates no physical contract or mapper.
+IAMSPEED_API bool ImportPresentationInputMappings(const UInputMappingContext* Context,
+    const TMap<const UInputAction*, FActionId>& Actions,
+    FInputActionContractDescription& Description, FString& Error);
 }
