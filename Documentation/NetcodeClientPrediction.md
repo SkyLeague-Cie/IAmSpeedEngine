@@ -54,3 +54,24 @@ restore admission guard unchanged. Existing fixture tags are preserved. Pacing d
 the purpose to distinguish unpaced replay from real-time starts. SL external effects may inspect
 the same purpose, but physical gameplay must still execute during replay. This tag is not an
 authority, ownership, lifetime, world-restore or event-deduplication certificate.
+
+
+Native storage implementation is advancing separately from that portable coordinator.
+RestorableSuspension uses a genuine derived Engine object, owns its configuration,
+and serializes every protected spring/smoothing field without calling mutating getters.
+RestorableWheel covers all44 native dynamic fields and frozen configuration. Its current
+recipe explicitly refuses a nonempty opaque Engine FGraph; it never approximates that
+configuration. Staged tokens reject native mutation, wrong targets, repeated commits,
+configuration mutation and same-address lifetime replacement. The native fixture also
+checks600 subsequent original Engine wheel steps after correction. These are child
+providers; none establishes an exclusive world/lifecycle lease or a network admission.
+
+NativeVehicleStorageCheckpoint additionally stages four wheel and four suspension
+states and installs them into the original native BASE objects via legal complete
+copy assignment, retaining the original configuration pointers. Existing subbody
+bindings therefore keep their exact addresses, including after preparation objects
+are retired. This fixed recipe refuses other vehicle subsystems rather than omitting
+their causal state. Its child commit does not publish an atomic component/world;
+whole-world ownership, Common/subbody/contact/input providers and integration remain
+required. Fresh native tests on each exact candidate are mandatory; source assertions
+and an earlier suspension test do not qualify this new storage participant.
