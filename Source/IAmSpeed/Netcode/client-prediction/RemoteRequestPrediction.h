@@ -35,7 +35,8 @@ class FRemoteRequestHistory
     std::size_t Capacity=0;
     std::map<U64,FPacket> Confirmed;
     std::map<U64,FSpeculativeRequest> Speculated;
-    std::optional<U64> LastPredicted;
+    std::optional<U64> NextPrediction;
+    bool PredictionExhausted=false;
     static bool Same(const FPacket& A,const FPacket& B)
     {return Encode(A)==Encode(B);}
     static bool MatchesPrediction(const FSpeculativeRequest& A,const FPacket& B)
@@ -44,6 +45,11 @@ class FRemoteRequestHistory
         // held value is unchanged requires exact historical reconciliation.
         return A.Requested==B.Input.Values && A.ActiveMask==B.Input.ActiveMask
             && B.Input.Edges.empty() && !B.Input.Reset;
+    }
+    void AdvanceCursor(U64 Frame) noexcept
+    {
+        PredictionExhausted=Frame==std::numeric_limits<U64>::max();
+        NextPrediction=PredictionExhausted?std::optional<U64>{}:std::optional<U64>{Frame+1};
     }
 public:
     FRemoteRequestHistory(FBinding In,std::array<Consumed::FActionPolicy,ActionCount> FrozenActions,
@@ -85,17 +91,17 @@ public:
     FPrediction Predict(U64 Frame)
     {
         FPrediction Out;
-        if (LastPredicted && (*LastPredicted==std::numeric_limits<U64>::max() || Frame!=*LastPredicted+1))
+        if (PredictionExhausted || (NextPrediction && Frame!=*NextPrediction))
         {Out.Status=EPredict::OutOfOrder;return Out;}
         auto Exact=Confirmed.find(Frame);
-        if (Exact!=Confirmed.end()) {Out.Status=EPredict::Confirmed;Out.ConfirmedPacket=Exact->second;LastPredicted=Frame;return Out;}
+        if (Exact!=Confirmed.end()) {Out.Status=EPredict::Confirmed;Out.ConfirmedPacket=Exact->second;AdvanceCursor(Frame);return Out;}
         auto Anchor=Confirmed.upper_bound(Frame);
         if (Anchor==Confirmed.begin()) return Out;
         --Anchor;
         if (Frame-Anchor->first>Horizon) {Out.Status=EPredict::HorizonExceeded;return Out;}
         if (Confirmed.size()+Speculated.size()>=Capacity) {Out.Status=EPredict::CapacityExceeded;return Out;}
         Out.Request={Frame,Anchor->first,Anchor->second.Input.Values,Anchor->second.Input.ActiveMask};
-        Out.Status=EPredict::Predicted;Speculated.emplace(Frame,Out.Request);LastPredicted=Frame;return Out;
+        Out.Status=EPredict::Predicted;Speculated.emplace(Frame,Out.Request);AdvanceCursor(Frame);return Out;
     }
     // Only after the caller observes successful native restore/resimulation may
     // it discard speculative future requests and produce them again. This does
@@ -103,7 +109,11 @@ public:
     void DiscardSpeculationFrom(U64 Frame)
     {
         Speculated.erase(Speculated.lower_bound(Frame),Speculated.end());
-        LastPredicted=Speculated.empty()?std::optional<U64>{}:std::optional<U64>{Speculated.rbegin()->first};
+        // Frame is the actual FIRST frame to replay after native restoration.
+        // Confirmed history includes arrivals that may or may not have been
+        // consumed; speculative history omits confirmed consumptions entirely.
+        // Neither collection can reconstruct this causal cursor.
+        NextPrediction=Frame;PredictionExhausted=false;
     }
     std::size_t Retained() const noexcept {return Confirmed.size()+Speculated.size();}
 };

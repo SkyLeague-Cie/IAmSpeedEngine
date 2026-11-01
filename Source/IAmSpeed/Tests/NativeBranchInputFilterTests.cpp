@@ -65,6 +65,21 @@ bool FIASBranchInputFilter::RunTest(const FString&)
     auto BadPolicy=Policy;BadPolicy.Step[Speed::Driving::PauseAction]=1;
     TestFalse(TEXT("boolean action cannot receive analog slew"),bool(P::FBranchInputFilter::Create(P::EBranchFilterRole::RemoteRequests,Contract,BadPolicy,Local,{3},B,10,Baseline)));
     TestTrue(TEXT("retained processed values survive staging token retirement"),Observed->Applied[0]==17&&RemoteObserved->Applied[0]==17);
+    std::array<Consumed::FActionPolicy,ActionCount> Actions{};
+    Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
+    auto PacketAt=[&](U64 N,int16 Value)
+    {
+        auto Q=Packet;Q.Frame=N;Q.Sequence=N+1;Q.Input.SourceSequence=N+1;Q.Input.Reset=false;
+        Q.Input.Values={};Q.Input.Values[0]=Value;Q.Input.ActiveMask=Value?1u:0u;return Q;
+    };
+    P::FRemoteRequestHistory Mixed(B,Actions,10,16);
+    TestTrue(TEXT("mixed branch history anchors accepted"),Mixed.Confirm(5,PacketAt(9,255)).Status==EResult::Accepted&&Mixed.Confirm(5,PacketAt(11,0)).Status==EResult::Accepted);
+    TestTrue(TEXT("branch consumes speculation then actual confirmation then speculation"),Mixed.Predict(10).Status==P::EPredict::Predicted&&Mixed.Predict(11).Status==P::EPredict::Confirmed&&Mixed.Predict(12).Status==P::EPredict::Predicted);
+    Mixed.DiscardSpeculationFrom(12);auto Replayed=Mixed.Predict(12);
+    TestTrue(TEXT("rewind restores actual first-replay cursor including consumed confirmation"),Replayed.Status==P::EPredict::Predicted&&Replayed.Request.EvidenceFrame==11&&Replayed.Request.Requested[0]==0);
+    Mixed.DiscardSpeculationFrom(0);
+    TestTrue(TEXT("exact zero-frame cursor cannot skip ahead"),Mixed.Predict(1).Status==P::EPredict::OutOfOrder);
+    TestTrue(TEXT("confirmed frame zero can replay after exact rewind"),Mixed.Confirm(5,PacketAt(0,0)).Status==EResult::Accepted&&Mixed.Predict(0).Status==P::EPredict::Confirmed);
     AddInfo(TEXT("Input processing domain only, using original pure authoritative policy. Unit-authored input evidence; no hardware, native physical world, transport ACK, native fullstate restore or connected prediction qualification."));
     return !HasAnyErrors();
 }
