@@ -670,3 +670,22 @@ Native60:46Success/10FAIL with all warnings/errors retained. Actual birth GC
 returned, eight prepared wheels were reachable, facade callback ran and actual
 driver destruction+GC refused construction. Those scoped observations are not
 full callback/lifetime/restore or localized qualification. Later stages NOT_RUN.
+
+
+Source66 fixes actual native61 retry02 process startup: the local-session
+reassembly mask was uint8 even though the explicit recipe admitted32768bytes,
+more than eight1232-byte datagrams. It now uses uint64 with a compile-time
+capacity proof for the fixed admitted maximum. CRC, exact part size/count,
+original process pins, replay window, duplicate mismatch refusal and message
+budget stay enforced. The previous three real commandlet exits1 and startup
+transport Invalid/PeerDead observations remain failed; no Game followed.
+Fresh same-source65 native retry02 independently passed56tests0errors/warnings,
+then genuine Pending BeginPlay1test0errors/warnings, actual Job0twice/audits0.
+These results do not transfer to66. Its transport regression requires the real
+three-process full-recipe startup exchange, not only the earlier small packets.
+Commandlet boot also loaded an unrelated sports presentation asset without its
+Editor import modules:11warnings per child are preserved. The next commandlet
+launch selects the existing private procedural harness flag before CDO birth;
+normal Device/render gameplay retains its original asset selection.
+Complete epoch capture/lease, authoritative restoreK and localized rollback
+remain unimplemented/closed. Current correction is global replay from birth.

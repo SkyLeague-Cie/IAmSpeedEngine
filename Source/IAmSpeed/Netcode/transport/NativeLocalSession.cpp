@@ -10,6 +10,10 @@ namespace Speed::Netcode
 namespace LocalSessionDetail
 {
 constexpr std::size_t Header=60,Chunk=NativeDatagramBudget-Header,MaxMessage=32768,ReplayWindow=64,PendingLimit=32;
+// The original startup recipe may occupy more than eight real datagrams.
+// Track every permitted part; never accept a truncated/wrapped complete mask.
+static_assert((MaxMessage+Chunk-1)/Chunk<64);
+
 struct FClaimRegistry
 {std::mutex Gate;std::vector<std::array<std::uint64_t,6>> Tuples;};
 bool ClaimOnce(const FLocalSessionConfig& C)
@@ -23,7 +27,7 @@ bool Loopback(const FNativeEndpoint& E)
 {return E.Port&&E.Address==std::array<std::uint8_t,4>{127,0,0,1};}
 struct FAssembly
 {
-    std::uint64_t Sequence=0;std::uint8_t Kind=0,Mask=0;std::uint16_t Total=0,Count=0;std::uint32_t Crc=0;
+    std::uint64_t Sequence=0;std::uint8_t Kind=0;std::uint64_t Mask=0;std::uint16_t Total=0,Count=0;std::uint32_t Crc=0;
     std::vector<std::uint8_t> Bytes;
 };
 struct FPeer
@@ -126,10 +130,10 @@ ELocalSession FNativeLocalSession::Receive(FLocalSessionMessage& Message)
         A=std::prev(P->Partial.end());
     }
     if(!Compatible(*A)){I.Retire();return ELocalSession::Invalid;}
-    const auto Bit=std::uint8_t(1u<<Index);
+    const auto Bit=std::uint64_t{1}<<Index;
     if(A->Mask&Bit){if(SamePart(*A))return ELocalSession::Pending;I.Retire();return ELocalSession::Invalid;}
     std::copy(Bytes.begin()+Header,Bytes.end(),A->Bytes.begin()+Index*Chunk);A->Mask|=Bit;
-    if(A->Mask!=std::uint8_t((1u<<Count)-1))return ELocalSession::Pending;
+    if(A->Mask!=((std::uint64_t{1}<<Count)-1))return ELocalSession::Pending;
     if(StateCrc(A->Bytes)!=A->Crc){I.Retire();return ELocalSession::Invalid;}
     Message={P->Assigned.Peer,Sequence,std::uint8_t(Kind),A->Bytes};P->High=std::max(P->High,Sequence);
     P->Completed.push_back(std::move(*A));P->Partial.erase(A);
