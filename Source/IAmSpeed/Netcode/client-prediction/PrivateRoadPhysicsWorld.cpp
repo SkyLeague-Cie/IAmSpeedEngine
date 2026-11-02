@@ -377,6 +377,21 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         if(N->Component->CopyActualCacheDiagnosticValues(Observation.NativeSleep,Observation.NativeQuantization))
             PartialObservation::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
                 N->WheelConfig,N->SuspensionConfig,Observation);
+        if(Observation.NativePartialValuesAvailable)
+        {
+            TArray<uint8> RuntimeValues;
+            for(const auto& Entry:N->Component->GetWheelSubBodies())
+            {
+                const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Entry.Get());
+                if(!Wheel||!Wheel->UsesOriginalBodyStorage()||!Wheel->OwnedWheelRuntime
+                    ||!PartialObservation::AppendWheelRuntime(RuntimeValues,*Wheel->OwnedWheelRuntime))
+                {Observation.NativePartialValuesAvailable=false;break;}
+                Observation.NativeWheelRenderRotations.push_back(Wheel->OwnedWheelRuntime->RenderData.RollRotation);
+            }
+            if(Observation.NativePartialValuesAvailable&&!RuntimeValues.IsEmpty())
+                Observation.NativeWheelRuntimeValues.assign(RuntimeValues.GetData(),RuntimeValues.GetData()+RuntimeValues.Num());
+            else Observation.NativePartialValuesAvailable=false;
+        }
 #endif
     }
     if(I.Access->RequiresInitialPublication)for(const auto& A:Out->Actors)
@@ -508,7 +523,7 @@ SHitResult const& USpeedBranchBoxSubBody::WheelHitStorage() const
     return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
 }
 USpeedBranchWheelSubBody::USpeedBranchWheelSubBody(const FObjectInitializer& Initializer)
-    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()){}
+    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedWheelRuntime(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()){}
 bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
 {
     const auto A=StorageAccess.lock();
@@ -569,6 +584,126 @@ SHitResult& USpeedBranchWheelSubBody::WheelHitStorage()
 SHitResult const& USpeedBranchWheelSubBody::WheelHitStorage() const
 {
     return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionForceRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->SuspensionForce:USWheelSubBody::SuspensionForceRuntimeStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionForceRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->SuspensionForce:USWheelSubBody::SuspensionForceRuntimeStorage();
+}
+uint8& USpeedBranchWheelSubBody::bIsJumpingRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bIsJumping:USWheelSubBody::bIsJumpingRuntimeStorage();
+}
+uint8 const& USpeedBranchWheelSubBody::bIsJumpingRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bIsJumping:USWheelSubBody::bIsJumpingRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bJumpUnilateralSupportRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bJumpUnilateralSupport:USWheelSubBody::bJumpUnilateralSupportRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bJumpUnilateralSupportRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bJumpUnilateralSupport:USWheelSubBody::bJumpUnilateralSupportRuntimeStorage();
+}
+uint8& USpeedBranchWheelSubBody::ConsecutiveGroundFramesRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->ConsecutiveGroundFrames:USWheelSubBody::ConsecutiveGroundFramesRuntimeStorage();
+}
+uint8 const& USpeedBranchWheelSubBody::ConsecutiveGroundFramesRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->ConsecutiveGroundFrames:USWheelSubBody::ConsecutiveGroundFramesRuntimeStorage();
+}
+float& USpeedBranchWheelSubBody::SteeringAngleRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->SteeringAngle:USWheelSubBody::SteeringAngleRuntimeStorage();
+}
+float const& USpeedBranchWheelSubBody::SteeringAngleRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->SteeringAngle:USWheelSubBody::SteeringAngleRuntimeStorage();
+}
+float& USpeedBranchWheelSubBody::OmegaRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->Omega:USWheelSubBody::OmegaRuntimeStorage();
+}
+float const& USpeedBranchWheelSubBody::OmegaRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->Omega:USWheelSubBody::OmegaRuntimeStorage();
+}
+float& USpeedBranchWheelSubBody::RollAngleRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RollAngle:USWheelSubBody::RollAngleRuntimeStorage();
+}
+float const& USpeedBranchWheelSubBody::RollAngleRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RollAngle:USWheelSubBody::RollAngleRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bWasOnGroundPrevFrameRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bWasOnGroundPrevFrame:USWheelSubBody::bWasOnGroundPrevFrameRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bWasOnGroundPrevFrameRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bWasOnGroundPrevFrame:USWheelSubBody::bWasOnGroundPrevFrameRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bCountedGroundFrameRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bCountedGroundFrame:USWheelSubBody::bCountedGroundFrameRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bCountedGroundFrameRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bCountedGroundFrame:USWheelSubBody::bCountedGroundFrameRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bContactVelocityLockedRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bContactVelocityLocked:USWheelSubBody::bContactVelocityLockedRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bContactVelocityLockedRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bContactVelocityLocked:USWheelSubBody::bContactVelocityLockedRuntimeStorage();
+}
+bool& USpeedBranchWheelSubBody::bCrossedIntoCompressionThisFrameRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bCrossedIntoCompressionThisFrame:USWheelSubBody::bCrossedIntoCompressionThisFrameRuntimeStorage();
+}
+bool const& USpeedBranchWheelSubBody::bCrossedIntoCompressionThisFrameRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->bCrossedIntoCompressionThisFrame:USWheelSubBody::bCrossedIntoCompressionThisFrameRuntimeStorage();
+}
+FVector& USpeedBranchWheelSubBody::ForwardAxisRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->ForwardAxis:USWheelSubBody::ForwardAxisRuntimeStorage();
+}
+FVector const& USpeedBranchWheelSubBody::ForwardAxisRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->ForwardAxis:USWheelSubBody::ForwardAxisRuntimeStorage();
+}
+FVector& USpeedBranchWheelSubBody::RightAxisRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RightAxis:USWheelSubBody::RightAxisRuntimeStorage();
+}
+FVector const& USpeedBranchWheelSubBody::RightAxisRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RightAxis:USWheelSubBody::RightAxisRuntimeStorage();
+}
+FVector& USpeedBranchWheelSubBody::UpAxisRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->UpAxis:USWheelSubBody::UpAxisRuntimeStorage();
+}
+FVector const& USpeedBranchWheelSubBody::UpAxisRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->UpAxis:USWheelSubBody::UpAxisRuntimeStorage();
+}
+SWheelRenderData& USpeedBranchWheelSubBody::RenderDataRuntimeStorage()
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RenderData:USWheelSubBody::RenderDataRuntimeStorage();
+}
+SWheelRenderData const& USpeedBranchWheelSubBody::RenderDataRuntimeStorage() const
+{
+    return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RenderData:USWheelSubBody::RenderDataRuntimeStorage();
 }
 USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer)
     :Super(Initializer.SetDefaultSubobjectClass<USpeedBranchBoxSubBody>(HitboxName).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[0]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[1]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[2]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[3]),ESpeedWheeledNetworkConstruction::IAmSpeedOnly)

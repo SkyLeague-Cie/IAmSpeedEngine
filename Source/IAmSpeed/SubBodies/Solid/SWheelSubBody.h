@@ -74,21 +74,21 @@ public:
         B::Add(Out,SuspensionMaxRaiseOverride);
         B::Add(Out,SuspensionMaxDropOverride);
         B::Add(Out,ConfiguredStaticSpringCompression);
-        B::Add(Out,SuspensionForce);
-        B::Add(Out,bIsJumping);
-        B::Add(Out,bJumpUnilateralSupport);
-        B::Add(Out,ConsecutiveGroundFrames);
-        B::Add(Out,SteeringAngle);
-        B::Add(Out,Omega);
-        B::Add(Out,RollAngle);
-        B::Add(Out,bWasOnGroundPrevFrame);
-        B::Add(Out,bCountedGroundFrame);
-        B::Add(Out,bContactVelocityLocked);
-        B::Add(Out,bCrossedIntoCompressionThisFrame);
-        B::Add(Out,ForwardAxis);
-        B::Add(Out,RightAxis);
-        B::Add(Out,UpAxis);
-        B::Add(Out,RenderData.RollRotation);B::Add(Out,RenderData.SteerRotation);B::Add(Out,RenderData.WorldPosition);B::Add(Out,RenderData.RightAxis);B::Add(Out,RenderData.UpAxis);B::Add(Out,RenderData.ForwardAxis);B::Add(Out,RenderData.SpringOffset);
+        B::Add(Out,SuspensionForceRuntimeStorage());
+        B::Add(Out,bIsJumpingRuntimeStorage());
+        B::Add(Out,bJumpUnilateralSupportRuntimeStorage());
+        B::Add(Out,ConsecutiveGroundFramesRuntimeStorage());
+        B::Add(Out,SteeringAngleRuntimeStorage());
+        B::Add(Out,OmegaRuntimeStorage());
+        B::Add(Out,RollAngleRuntimeStorage());
+        B::Add(Out,bWasOnGroundPrevFrameRuntimeStorage());
+        B::Add(Out,bCountedGroundFrameRuntimeStorage());
+        B::Add(Out,bContactVelocityLockedRuntimeStorage());
+        B::Add(Out,bCrossedIntoCompressionThisFrameRuntimeStorage());
+        B::Add(Out,ForwardAxisRuntimeStorage());
+        B::Add(Out,RightAxisRuntimeStorage());
+        B::Add(Out,UpAxisRuntimeStorage());
+        B::Add(Out,RenderDataRuntimeStorage().RollRotation);B::Add(Out,RenderDataRuntimeStorage().SteerRotation);B::Add(Out,RenderDataRuntimeStorage().WorldPosition);B::Add(Out,RenderDataRuntimeStorage().RightAxis);B::Add(Out,RenderDataRuntimeStorage().UpAxis);B::Add(Out,RenderDataRuntimeStorage().ForwardAxis);B::Add(Out,RenderDataRuntimeStorage().SpringOffset);
     }
 #endif
 
@@ -262,6 +262,37 @@ protected:
     float SuspensionMaxDropOverride = -1.0f;
     float ConfiguredStaticSpringCompression = 0.0f;
 
+    // Private owners may separate these runtime values from facade views.
+    virtual float& SuspensionForceRuntimeStorage() {return SuspensionForce;}
+    virtual float const& SuspensionForceRuntimeStorage() const {return SuspensionForce;}
+    virtual uint8& bIsJumpingRuntimeStorage() {return bIsJumping;}
+    virtual uint8 const& bIsJumpingRuntimeStorage() const {return bIsJumping;}
+    virtual bool& bJumpUnilateralSupportRuntimeStorage() {return bJumpUnilateralSupport;}
+    virtual bool const& bJumpUnilateralSupportRuntimeStorage() const {return bJumpUnilateralSupport;}
+    virtual uint8& ConsecutiveGroundFramesRuntimeStorage() {return ConsecutiveGroundFrames;}
+    virtual uint8 const& ConsecutiveGroundFramesRuntimeStorage() const {return ConsecutiveGroundFrames;}
+    virtual float& SteeringAngleRuntimeStorage() {return SteeringAngle;}
+    virtual float const& SteeringAngleRuntimeStorage() const {return SteeringAngle;}
+    virtual float& OmegaRuntimeStorage() {return Omega;}
+    virtual float const& OmegaRuntimeStorage() const {return Omega;}
+    virtual float& RollAngleRuntimeStorage() {return RollAngle;}
+    virtual float const& RollAngleRuntimeStorage() const {return RollAngle;}
+    virtual bool& bWasOnGroundPrevFrameRuntimeStorage() {return bWasOnGroundPrevFrame;}
+    virtual bool const& bWasOnGroundPrevFrameRuntimeStorage() const {return bWasOnGroundPrevFrame;}
+    virtual bool& bCountedGroundFrameRuntimeStorage() {return bCountedGroundFrame;}
+    virtual bool const& bCountedGroundFrameRuntimeStorage() const {return bCountedGroundFrame;}
+    virtual bool& bContactVelocityLockedRuntimeStorage() {return bContactVelocityLocked;}
+    virtual bool const& bContactVelocityLockedRuntimeStorage() const {return bContactVelocityLocked;}
+    virtual bool& bCrossedIntoCompressionThisFrameRuntimeStorage() {return bCrossedIntoCompressionThisFrame;}
+    virtual bool const& bCrossedIntoCompressionThisFrameRuntimeStorage() const {return bCrossedIntoCompressionThisFrame;}
+    virtual FVector& ForwardAxisRuntimeStorage() {return ForwardAxis;}
+    virtual FVector const& ForwardAxisRuntimeStorage() const {return ForwardAxis;}
+    virtual FVector& RightAxisRuntimeStorage() {return RightAxis;}
+    virtual FVector const& RightAxisRuntimeStorage() const {return RightAxis;}
+    virtual FVector& UpAxisRuntimeStorage() {return UpAxis;}
+    virtual FVector const& UpAxisRuntimeStorage() const {return UpAxis;}
+    virtual SWheelRenderData& RenderDataRuntimeStorage() {return RenderData;}
+    virtual SWheelRenderData const& RenderDataRuntimeStorage() const {return RenderData;}
     // --- State variables ---
     float SuspensionForce = 0.0; // suspension force to apply this frame
     uint8 bIsJumping = 0; // 0 = not jumping else countdown of frames before wheel is in max drop position

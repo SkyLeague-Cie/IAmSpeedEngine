@@ -335,8 +335,8 @@ void USWheelSubBody::ResetForFrame(const float& Delta)
     // CurrentHit = SHitResult(); // do not reset current hit, because netcode needs it to know if wheel is transitionning on wall/ground
     FutureHitStorage() = SHitResult();
     ResetIgnoredComponents();
-    bWasOnGroundPrevFrame = IsOnGround();
-    bCountedGroundFrame = false;
+    bWasOnGroundPrevFrameRuntimeStorage() = IsOnGround();
+    bCountedGroundFrameRuntimeStorage() = false;
 }
 
 void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
@@ -861,7 +861,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
     if (delta <= KINDA_SMALL_NUMBER)
         return;
 
-    bCrossedIntoCompressionThisFrame = false;
+    bCrossedIntoCompressionThisFrameRuntimeStorage() = false;
 
     FTransform ChassisTM(ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
     const FVector Up = ChassisTM.GetUnitAxis(EAxis::Z);
@@ -883,14 +883,14 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         const float SuspensionDelta = QuantizeSuspensionDelta(delta);
         PSuspension->Simulate(SuspensionDelta);
         const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
-        bCrossedIntoCompressionThisFrame = LastDisplacement < 0.0f &&
+        bCrossedIntoCompressionThisFrameRuntimeStorage() = LastDisplacement < 0.0f &&
             CurrentDisplacement >= 0.0f;
         FSuspensionForceDebugData ForceDebugData;
 		FVector RelativePointVelocity=ParentComponent->GetPhysVelocityAtPoint(CurrentHitStorage().ImpactPoint);
         FVector SurfaceVelocity;
         if(TryGetPrescribedSupportVelocity(CurrentHitStorage().ImpactPoint,SurfaceVelocity))RelativePointVelocity-=SurfaceVelocity;
         const float ProjectedVelocity = RelativePointVelocity.Dot(CurrentHitStorage().ImpactNormal);
-        SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement,
+        SuspensionForceRuntimeStorage() = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement,
             CurrentDisplacement, ProjectedVelocity, ClampsSuspensionForceToPositive(),
             bUseIncreasingDisplacementAsCompression,
             SuspensionStiffnessForceScale,
@@ -904,7 +904,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 			*this, LastDisplacement, CurrentDisplacement, ProjectedVelocity,
 			SuspensionForceOverride))
 		{
-			SuspensionForce = QuantizeSuspensionForce(SuspensionForceOverride);
+			SuspensionForceRuntimeStorage() = QuantizeSuspensionForce(SuspensionForceOverride);
 		}
         PSuspension->SetLastDisplacement(CurrentDisplacement);
 
@@ -920,7 +920,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 		const float SuspensionScale = FMath::SmoothStep(0.0f, 1.0f, CeilingFadeAlpha);
 
         // apply suspension scale
-        SuspensionForce *= SuspensionScale;
+        SuspensionForceRuntimeStorage() *= SuspensionScale;
         const float SuspensionMaxValue = MaxSuspensionForce;
         /*if (FMath::Abs(SuspensionForce) > SuspensionMaxValue)
         {
@@ -947,17 +947,17 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
             : (bCappedAttractionSupport && MaxAttractiveForce > 0.0f
                 ? -FMath::Min(MaxAttractiveForce, SuspensionMaxValue)
                 : -SuspensionMaxValue);
-        SuspensionForce = FMath::Clamp(
-            SuspensionForce, MinSuspensionForce, SuspensionMaxValue);
+        SuspensionForceRuntimeStorage() = FMath::Clamp(
+            SuspensionForceRuntimeStorage(), MinSuspensionForce, SuspensionMaxValue);
 		// Special Actor case: if we do not hit the ground but an other actor, we keep suspension force only for positive values
         // to avoid wheel to stick to it too much and create unrealistic behavior.
         if (CurrentHitStorage().Component.IsValid() &&
             CurrentHitStorage().Component->Mobility !=
             EComponentMobility::Static)
         {
-            SuspensionForce = FMath::Max(0.0f, SuspensionForce);
+            SuspensionForceRuntimeStorage() = FMath::Max(0.0f, SuspensionForceRuntimeStorage());
         }
-        SuspensionForce = QuantizeSuspensionForce(SuspensionForce);
+        SuspensionForceRuntimeStorage() = QuantizeSuspensionForce(SuspensionForceRuntimeStorage());
 #if !(UE_BUILD_SHIPPING)
         if (CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread() != 0)
         {
@@ -987,7 +987,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
                 ForceDebugData.UnclampedForce,
                 ForceDebugData.QuantizedForce,
                 SuspensionScale,
-                SuspensionForce,
+                SuspensionForceRuntimeStorage(),
                 ParentVelocity.Z,
                 *CurrentHitStorage().ImpactNormal.ToString(),
                 *CurrentHitStorage().Location.ToString());
@@ -996,7 +996,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
     }
     else
     {
-        SuspensionForce = 0.0;
+        SuspensionForceRuntimeStorage() = 0.0;
 
         const float LastDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
         const float NextAirLength = ComputeNextAirLength(delta);
@@ -1168,9 +1168,9 @@ float USWheelSubBody::ComputeNextAirLength(const float& DeltaTime) const
 
 void USWheelSubBody::HandleTimers()
 {
-    if (bIsJumping > 0)
+    if (bIsJumpingRuntimeStorage() > 0)
     {
-        bIsJumping--;
+        bIsJumpingRuntimeStorage()--;
     }
 }
 
@@ -1181,38 +1181,38 @@ void USWheelSubBody::UpdatePhysicsState(const float& delta)
     const FVector CarFwd = ParentComponent->GetPhysForwardVector();
     const FVector CarRight = ParentComponent->GetPhysRightVector();
 
-    UpAxis = CarUp; // stays constant
+    UpAxisRuntimeStorage() = CarUp; // stays constant
 
     // --- 2. Compute steering rotation around UpAxis ---
     // SteeringAngle in radians
-    FQuat SteerQuat(UpAxis, SteeringAngle);
+    FQuat SteerQuat(UpAxisRuntimeStorage(), SteeringAngleRuntimeStorage());
 
     // --- 3. Apply steering to forward axis ---
-    ForwardAxis = SteerQuat.RotateVector(CarFwd).GetSafeNormal();
+    ForwardAxisRuntimeStorage() = SteerQuat.RotateVector(CarFwd).GetSafeNormal();
 
     // --- 4. Right axis = orthogonal ---
-    RightAxis = FVector::CrossProduct(UpAxis, ForwardAxis).GetSafeNormal();
+    RightAxisRuntimeStorage() = FVector::CrossProduct(UpAxisRuntimeStorage(), ForwardAxisRuntimeStorage()).GetSafeNormal();
 
     // --- 5. Update rolling angle (rotation around RightAxis) ---
     // update omega
-    Omega = ParentComponent->GetPhysForwardSpeed() / FMath::Max(Radius(), KINDA_SMALL_NUMBER);
+    OmegaRuntimeStorage() = ParentComponent->GetPhysForwardSpeed() / FMath::Max(Radius(), KINDA_SMALL_NUMBER);
     float angVel = AngularVelocity(); // rad/s
-    RollAngle += angVel * delta;
-    RollAngle = FMath::Fmod(RollAngle, 2.f * PI);
+    RollAngleRuntimeStorage() += angVel * delta;
+    RollAngleRuntimeStorage() = FMath::Fmod(RollAngleRuntimeStorage(), 2.f * PI);
 
     // --- 6. World position from suspension ---
     FVector pos = WorldPos();
 
     // --- 7. Fill render data struct for the visual thread ---
-    RenderData.WorldPosition = pos;
-    RenderData.UpAxis = UpAxis;
-    RenderData.ForwardAxis = ForwardAxis;
-    RenderData.RightAxis = RightAxis;
+    RenderDataRuntimeStorage().WorldPosition = pos;
+    RenderDataRuntimeStorage().UpAxis = UpAxisRuntimeStorage();
+    RenderDataRuntimeStorage().ForwardAxis = ForwardAxisRuntimeStorage();
+    RenderDataRuntimeStorage().RightAxis = RightAxisRuntimeStorage();
 
-    RenderData.SpringOffset = SuspensionRestLength() - SpringLength();
+    RenderDataRuntimeStorage().SpringOffset = SuspensionRestLength() - SpringLength();
 
-    RenderData.SteerRotation = FQuat(UpAxis, SteeringAngle);
-    RenderData.RollRotation = FQuat(RightAxis, RollAngle);
+    RenderDataRuntimeStorage().SteerRotation = FQuat(UpAxisRuntimeStorage(), SteeringAngleRuntimeStorage());
+    RenderDataRuntimeStorage().RollRotation = FQuat(RightAxisRuntimeStorage(), RollAngleRuntimeStorage());
 }
 
 void USWheelSubBody::UpdateSteerAngle(const float& delta)
@@ -1239,11 +1239,11 @@ void USWheelSubBody::UpdateSteerAngle(const float& delta)
             steerFactor *= 1.2f; // +20%
 
         // final angle
-        SteeringAngle = FMath::DegreesToRadians(MaxSteeringAngle() * steerInput * steerFactor);
+        SteeringAngleRuntimeStorage() = FMath::DegreesToRadians(MaxSteeringAngle() * steerInput * steerFactor);
     }
     else
     {
-        SteeringAngle = 0.0f;
+        SteeringAngleRuntimeStorage() = 0.0f;
     }
 }
 
@@ -1298,12 +1298,12 @@ float USWheelSubBody::ChaosEffectiveRadius() const
 
 float USWheelSubBody::AngularVelocity() const
 {
-    return Omega;
+    return OmegaRuntimeStorage();
 }
 
 void USWheelSubBody::SetAngularVelocity(const float& InOmega)
 {
-    Omega = InOmega;
+    OmegaRuntimeStorage() = InOmega;
 }
 
 float USWheelSubBody::SpringDisplacement() const
@@ -1405,7 +1405,7 @@ bool USWheelSubBody::IsAtSuspensionBumpStop() const
 {
     if (bUseCompressionCrossingContactImpulse)
     {
-        return bCrossedIntoCompressionThisFrame;
+        return bCrossedIntoCompressionThisFrameRuntimeStorage();
     }
     return ContactSpringDisplacement() >= FMath::Max(
         0.0f, CVarSkyLeagueSuspensionBumpStopStartCompression.GetValueOnAnyThread());
@@ -1443,7 +1443,7 @@ bool USWheelSubBody::ClampsSuspensionForceToPositive() const
 {
     return bUseSuspensionForceModelOverride &&
 		(bClampSuspensionForceToPositive ||
-			(bClampPositiveUntilFirstCompression && !bContactVelocityLocked));
+			(bClampPositiveUntilFirstCompression && !bContactVelocityLockedRuntimeStorage()));
 }
 
 void USWheelSubBody::ConfigureSuspensionForceModel(const float SpringRateCm,
@@ -1540,17 +1540,17 @@ float USWheelSubBody::GetSuspensionDampingCompressionRatio() const
 
 float USWheelSubBody::GetSuspensionForce() const
 {
-    return SuspensionForce;
+    return SuspensionForceRuntimeStorage();
 }
 
 bool USWheelSubBody::IsContactVelocityLocked() const
 {
-    return bContactVelocityLocked;
+    return bContactVelocityLockedRuntimeStorage();
 }
 
 bool USWheelSubBody::WasOnGroundPreviousFrame() const
 {
-    return bWasOnGroundPrevFrame;
+    return bWasOnGroundPrevFrameRuntimeStorage();
 }
 
 bool USWheelSubBody::IsOnGround() const
@@ -1594,16 +1594,16 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
     // RegisterWheelContact
     if (on_ground)
     {
-        if (!bCountedGroundFrame)
+        if (!bCountedGroundFrameRuntimeStorage())
         {
-            ConsecutiveGroundFrames = FMath::Min<uint8>(ConsecutiveGroundFrames + 1, 31);
-            bCountedGroundFrame = true;
+            ConsecutiveGroundFramesRuntimeStorage() = FMath::Min<uint8>(ConsecutiveGroundFramesRuntimeStorage() + 1, 31);
+            bCountedGroundFrameRuntimeStorage() = true;
         }
         ApplyImpulse(FVector::UpVector, CurrentHitStorage().ImpactPoint);
     }
     else
     {
-        ConsecutiveGroundFrames = 0;
+        ConsecutiveGroundFramesRuntimeStorage() = 0;
         ResetContactVelocityLock();
     }
 
@@ -1612,50 +1612,50 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
 
 void USWheelSubBody::SetIsJumping(const uint8 NbFrames)
 {
-    bIsJumping = NbFrames;
+    bIsJumpingRuntimeStorage() = NbFrames;
     if (NbFrames > 0)
     {
-        ConsecutiveGroundFrames = 0;
+        ConsecutiveGroundFramesRuntimeStorage() = 0;
         ResetContactVelocityLock();
     }
 }
 
 uint8 USWheelSubBody::IsJumping() const
 {
-    return bIsJumping;
+    return bIsJumpingRuntimeStorage();
 }
 
 void USWheelSubBody::SetJumpUnilateralSupport(const bool bEnabled)
 {
-    bJumpUnilateralSupport = bEnabled;
+    bJumpUnilateralSupportRuntimeStorage() = bEnabled;
 }
 
 bool USWheelSubBody::HasJumpUnilateralSupport() const
 {
-    return bJumpUnilateralSupport;
+    return bJumpUnilateralSupportRuntimeStorage();
 }
 
 uint8 USWheelSubBody::GetConsecutiveGroundFrames() const
 {
-    return ConsecutiveGroundFrames;
+    return ConsecutiveGroundFramesRuntimeStorage();
 }
 
 void USWheelSubBody::SetConsecutiveGroundFrames(const uint8 Frames)
 {
-    ConsecutiveGroundFrames = FMath::Min<uint8>(Frames, 31);
+    ConsecutiveGroundFramesRuntimeStorage() = FMath::Min<uint8>(Frames, 31);
 }
 
 void USWheelSubBody::UpdateContactVelocityLock()
 {
     if (QuantizeSuspensionDisplacement(SpringDisplacement()) >= 0.0f)
     {
-        bContactVelocityLocked = true;
+        bContactVelocityLockedRuntimeStorage() = true;
     }
 }
 
 void USWheelSubBody::ResetContactVelocityLock()
 {
-    bContactVelocityLocked = false;
+    bContactVelocityLockedRuntimeStorage() = false;
 }
 
 bool USWheelSubBody::IsSteeringEnabled() const
@@ -1702,19 +1702,19 @@ void USWheelSubBody::SetHitContactNormal(const FVector& ImpactNormal)
 
 const SWheelRenderData& USWheelSubBody::GetRenderData() const
 {
-    return RenderData;
+    return RenderDataRuntimeStorage();
 }
 
 void USWheelSubBody::SetRollAngle(const float& angle)
 {
-    FRotator RollRot(RenderData.RollRotation);
+    FRotator RollRot(RenderDataRuntimeStorage().RollRotation);
     RollRot.Roll = FMath::RadiansToDegrees(angle);
-    RenderData.RollRotation = FQuat(RollRot);
+    RenderDataRuntimeStorage().RollRotation = FQuat(RollRot);
 }
 
 float USWheelSubBody::GetRollAngle() const
 {
-    FRotator RollRot(RenderData.RollRotation);
+    FRotator RollRot(RenderDataRuntimeStorage().RollRotation);
     return FMath::DegreesToRadians(RollRot.Roll);
 }
 

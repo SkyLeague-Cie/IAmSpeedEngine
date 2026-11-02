@@ -33,6 +33,9 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
     const Speed::FKinematicState* RetainedBodyView=nullptr;
     const SHitResult* RetainedBodyHit=nullptr;
     double WrittenBodyX=0;
+    USWheelSubBody* EscapedWheel=nullptr;
+    const SWheelRenderData* RetainedWheelRender=nullptr;
+    FQuat WrittenWheelRoll=FQuat::Identity,BeforeWheelRoll=FQuat::Identity;
 
     bool CanBeUsedOnAnyThread() const override {return true;}
     bool CanBeUsedOnMultipleThreads() const override {return true;}
@@ -43,6 +46,17 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
         if(!IsInGameThread())return;
         if(Calls||!Component||!WithinOriginalStepCall
             ||!FCString::Strstr(Text,TEXT("[UpdateFrameState]")))return;
+        if(Component->GetWheelSubBodies().Num()==4)
+        {
+            EscapedWheel=Component->GetWheelSubBodies()[0];
+            if(EscapedWheel)
+            {
+                RetainedWheelRender=&EscapedWheel->GetRenderData();BeforeWheelRoll=RetainedWheelRender->RollRotation;
+                EscapedWheel->SetIsJumping(255);EscapedWheel->SetConsecutiveGroundFrames(31);
+                EscapedWheel->SetJumpUnilateralSupport(true);EscapedWheel->SetAngularVelocity(12345);
+                EscapedWheel->SetRollAngle(57);WrittenWheelRoll=RetainedWheelRender->RollRotation;
+            }
+        }
         ++Calls;RetainedView=&Component->GetKinematicState();
         SKinematic Intrusion=*RetainedView;Intrusion.Location.X+=864200;WrittenX=Intrusion.Location.X;
         Component->SetKinematicState(Intrusion);
@@ -199,6 +213,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     if(!TestTrue(TEXT("actual synchronization release reads original physical storage"),
         Isolated->ReleaseInitialPublication(OriginalZero,Why)&&Control->ReleaseInitialPublication(ControlZero,Why)))return false;
     FPacket Next=Packet;Next.Frame=1;Next.Sequence=2;Next.Input.SourceSequence=2;Next.Input.Reset=false;
+    Next.Input.Values[0]=255;Next.Input.ActiveMask=1;Next.Input.Edges.push_back({0,0,255,2,0});
     if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
     const std::vector<P::FPrivateRoadRequest> Second{{101,3,History.Predict(1)}};
     auto* DebugKinematics=IConsoleManager::Get().FindConsoleVariable(TEXT("p.IAmSpeed.DebugKinematics"));
@@ -238,7 +253,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestTrue(TEXT("actual native hitbox center exact versus unattacked control"),Actual->Actors[0].NativeHitboxCenter==Reference->Actors[0].NativeHitboxCenter);
 
     TestEqual(TEXT("previous facade view observes only the callback facade write"),RetainedFacadeView.Location.X,LogAttack.WrittenX);
-    Next.Frame=2;Next.Sequence=3;Next.Input.SourceSequence=3;
+    Next.Frame=2;Next.Sequence=3;Next.Input.SourceSequence=3;Next.Input.Edges.clear();
     if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
     const std::vector<P::FPrivateRoadRequest> Third{{101,3,History.Predict(2)}};
     if(!Isolated->Step(Third,false,Why)||!Control->Step(Third,false,Why))return false;
@@ -252,11 +267,23 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestEqual(TEXT("body view retained across next physical frame remains facade only"),LogAttack.RetainedBodyView->Location.X,LogAttack.WrittenBodyX);
     TestEqual(TEXT("native ResetForFrame never resets the old facade hit reference"),LogAttack.RetainedBodyHit->TOI,0.875f);
     TestTrue(TEXT("next native hitbox center exact versus untouched control"),Later->Actors[0].NativeHitboxCenter==LaterRef->Actors[0].NativeHitboxCenter);
+    if(!TestTrue(TEXT("real callback retained public wheel render reference"),LogAttack.EscapedWheel&&LogAttack.RetainedWheelRender))return false;
+    TestEqual(TEXT("old wheel jump timer remains facade value across native steps"),LogAttack.EscapedWheel->IsJumping(),uint8(255));
+    TestEqual(TEXT("old wheel ground count remains facade value"),LogAttack.EscapedWheel->GetConsecutiveGroundFrames(),uint8(31));
+    TestTrue(TEXT("old wheel unilateral support remains facade value"),LogAttack.EscapedWheel->HasJumpUnilateralSupport());
+    TestEqual(TEXT("old wheel angular velocity remains facade value"),LogAttack.EscapedWheel->AngularVelocity(),12345.0f);
+    TestTrue(TEXT("public SetRollAngle actually changed the retained facade render field"),LogAttack.BeforeWheelRoll!=LogAttack.WrittenWheelRoll);
+    if(!TestTrue(TEXT("actual native render observations present at original0 and later2"),
+        OriginalZero->Actors[0].NativeWheelRenderRotations.size()==4&&Later->Actors[0].NativeWheelRenderRotations.size()==4))return false;
+    TestTrue(TEXT("actual native render field really advanced after original throttle input"),
+        OriginalZero->Actors[0].NativeWheelRenderRotations[0]!=Later->Actors[0].NativeWheelRenderRotations[0]);
+    TestTrue(TEXT("old wheel render reference cannot observe native writes"),LogAttack.RetainedWheelRender->RollRotation==LogAttack.WrittenWheelRoll);
+
 
     DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
 
     TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
-    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 complete_lease=0 localized=0"));
+    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 wheel_runtime_value_blocks=15 complete_lease=0 localized=0"));
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
     AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));

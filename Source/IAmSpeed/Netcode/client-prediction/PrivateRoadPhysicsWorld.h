@@ -43,6 +43,8 @@ struct FPrivateRoadActorFrame
     CommonState::FSleepValues NativeSleep;
     CommonState::FQuantizationValues NativeQuantization;
     std::vector<uint8> NativeWheelSuspensionValues; // normalized config references
+    std::vector<FQuat> NativeWheelRenderRotations; // actual per-wheel diagnostic copies
+    std::vector<uint8> NativeWheelRuntimeValues; // fifteen declared runtime blocks only
     FVector NativeHitboxHalfExtent=FVector::ZeroVector;
     FVector NativeHitboxCenter=FVector::ZeroVector; // actual queried child storage, not reconstructed COM
 };

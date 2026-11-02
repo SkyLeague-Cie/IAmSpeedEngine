@@ -23,6 +23,26 @@ struct FPrivateRoadSubBodyValues
     SHitResult SphereHit;
     SHitResult WheelHit;
  };
+// Declared runtime values only, not configuration or a complete wheel checkpoint.
+struct FPrivateRoadWheelRuntimeValues
+{
+    float SuspensionForce=0.0f;
+    uint8 bIsJumping=0;
+    bool bJumpUnilateralSupport=false;
+    uint8 ConsecutiveGroundFrames=0;
+    float SteeringAngle=0.0f;
+    float Omega=0.0f;
+    float RollAngle=0.0f;
+    bool bWasOnGroundPrevFrame=false;
+    bool bCountedGroundFrame=false;
+    bool bContactVelocityLocked=false;
+    bool bCrossedIntoCompressionThisFrame=false;
+    FVector ForwardAxis=FVector::ForwardVector;
+    FVector RightAxis=FVector::RightVector;
+    FVector UpAxis=FVector::UpVector;
+    SWheelRenderData RenderData;
+};
+
 }
 
 
@@ -65,6 +85,38 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
     std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
+    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues> OwnedWheelRuntime;
+    float& SuspensionForceRuntimeStorage() override;
+    float const& SuspensionForceRuntimeStorage() const override;
+    uint8& bIsJumpingRuntimeStorage() override;
+    uint8 const& bIsJumpingRuntimeStorage() const override;
+    bool& bJumpUnilateralSupportRuntimeStorage() override;
+    bool const& bJumpUnilateralSupportRuntimeStorage() const override;
+    uint8& ConsecutiveGroundFramesRuntimeStorage() override;
+    uint8 const& ConsecutiveGroundFramesRuntimeStorage() const override;
+    float& SteeringAngleRuntimeStorage() override;
+    float const& SteeringAngleRuntimeStorage() const override;
+    float& OmegaRuntimeStorage() override;
+    float const& OmegaRuntimeStorage() const override;
+    float& RollAngleRuntimeStorage() override;
+    float const& RollAngleRuntimeStorage() const override;
+    bool& bWasOnGroundPrevFrameRuntimeStorage() override;
+    bool const& bWasOnGroundPrevFrameRuntimeStorage() const override;
+    bool& bCountedGroundFrameRuntimeStorage() override;
+    bool const& bCountedGroundFrameRuntimeStorage() const override;
+    bool& bContactVelocityLockedRuntimeStorage() override;
+    bool const& bContactVelocityLockedRuntimeStorage() const override;
+    bool& bCrossedIntoCompressionThisFrameRuntimeStorage() override;
+    bool const& bCrossedIntoCompressionThisFrameRuntimeStorage() const override;
+    FVector& ForwardAxisRuntimeStorage() override;
+    FVector const& ForwardAxisRuntimeStorage() const override;
+    FVector& RightAxisRuntimeStorage() override;
+    FVector const& RightAxisRuntimeStorage() const override;
+    FVector& UpAxisRuntimeStorage() override;
+    FVector const& UpAxisRuntimeStorage() const override;
+    SWheelRenderData& RenderDataRuntimeStorage() override;
+    SWheelRenderData const& RenderDataRuntimeStorage() const override;
+
     Speed::FKinematicState& KinematicsStorage() override;
     Speed::FKinematicState const& KinematicsStorage() const override;
     SHitResult& FutureHitStorage() override;

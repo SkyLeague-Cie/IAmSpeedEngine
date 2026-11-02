@@ -108,6 +108,35 @@ inline void AppendCheckedSuspensionConfig(TArray<uint8>& O,const Chaos::FSimpleS
  FCheckedWriter::Add(O,C.SpringRate);FCheckedWriter::Add(O,C.SpringPreload);FCheckedWriter::Add(O,C.CompressionDamping);FCheckedWriter::Add(O,C.ReboundDamping);FCheckedWriter::Add(O,C.RestingForce);
  FCheckedWriter::Add(O,C.Swaybar);FCheckedWriter::Add(O,C.DampingRatio);FCheckedWriter::Add(O,C.WheelLoadRatio);FCheckedWriter::Add(O,C.RaycastSafetyMargin);FCheckedWriter::Add(O,C.SuspensionSmoothing);
 }
+// Read only the original owned wheel values at the actual native boundary.
+// No pointer/configuration/lifetime completeness follows from these values.
+template<class Runtime>bool AppendWheelRuntime(TArray<uint8>& Out,const Runtime& V)
+{
+    bool Finite=true;bool* Previous=FCheckedWriter::Finite;FCheckedWriter::Finite=&Finite;
+    struct FReset{bool* Previous;~FReset(){FCheckedWriter::Finite=Previous;}} Reset{Previous};
+    FCheckedWriter::Add(Out,V.SuspensionForce);
+    FCheckedWriter::Add(Out,V.bIsJumping);
+    FCheckedWriter::Add(Out,V.bJumpUnilateralSupport);
+    FCheckedWriter::Add(Out,V.ConsecutiveGroundFrames);
+    FCheckedWriter::Add(Out,V.SteeringAngle);
+    FCheckedWriter::Add(Out,V.Omega);
+    FCheckedWriter::Add(Out,V.RollAngle);
+    FCheckedWriter::Add(Out,V.bWasOnGroundPrevFrame);
+    FCheckedWriter::Add(Out,V.bCountedGroundFrame);
+    FCheckedWriter::Add(Out,V.bContactVelocityLocked);
+    FCheckedWriter::Add(Out,V.bCrossedIntoCompressionThisFrame);
+    FCheckedWriter::Add(Out,V.ForwardAxis);
+    FCheckedWriter::Add(Out,V.RightAxis);
+    FCheckedWriter::Add(Out,V.UpAxis);
+    FCheckedWriter::Add(Out,V.RenderData.RollRotation);
+    FCheckedWriter::Add(Out,V.RenderData.SteerRotation);
+    FCheckedWriter::Add(Out,V.RenderData.WorldPosition);
+    FCheckedWriter::Add(Out,V.RenderData.RightAxis);
+    FCheckedWriter::Add(Out,V.RenderData.UpAxis);
+    FCheckedWriter::Add(Out,V.RenderData.ForwardAxis);
+    FCheckedWriter::Add(Out,V.RenderData.SpringOffset);
+    return Finite;
+}
 template<class Component>bool Capture(Component& C,uint64 Actor,uint64 Incarnation,
     const Chaos::FSimpleWheelConfig& WheelConfig,const Chaos::FSimpleSuspensionConfig& SuspensionConfig,
     FPrivateRoadActorFrame& Out)

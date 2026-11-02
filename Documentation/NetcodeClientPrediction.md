@@ -437,3 +437,19 @@ and all other callback/lifecycle closure remain incomplete. No complete causal
 fingerprint, restore provider/lease, localized replay or hardware admission is
 introduced. ProtectsEscapedMutableViews remains false. Native43's scoped
 success is retained independently and cannot qualify these new subtypes.
+
+
+Source48 separates fifteen declared wheel runtime values through const/nonconst
+storage hooks. Legacy fields/defaults and physics laws are retained. Actual
+private wheel subtypes allocate fresh values; native steps select those blocks,
+while outside calls and retained render references reach the facade. The real
+existing GLog callback additionally writes wheel jump/ground-count/unilateral-
+support/angular velocity/render entries, and retains the render reference.
+Actual native frames1/2 compare both COM/cache and the newly enumerated runtime
+values with an untouched graph. Missing/nonfinite runtime observations are
+UNKNOWN, not zero. This proposed experiment requires fresh native execution.
+
+This hunk does not own wheel setup pointers, solid/body configuration, all
+contact/scene/world/source domains or all synchronous callbacks. It does not
+admit a complete fingerprint, boundary lease or localized restoration. All
+historical failures remain; no existing native result qualifies this new hunk.
