@@ -833,3 +833,31 @@ checks and counter deltas remain outside that owner scope. This is only a test
 profile read probe; it does not admit arbitrary callbacks/GC/teardown, a complete
 lifetime lease, authoritativeK restoration or localized rollback. Source72
 requires a fresh native build and real process tests; none are claimed here.
+
+
+Source72/native68 actually completed: 56 native tests with zero errors/warnings,
+Pending1, three commandlets, two actual Game clients and a dedicated process,
+expected cancellation9/10, natural Job0 twice and all final audits0. Its corrected
+one-car observer measured birth214/step164/control1/null48/unique41/no overflow
+or recursion. These are diagnostic read events, not complete lifetime, source
+coverage, authoritativeK restoration or localized resimulation. The old census66
+UNKNOWN and compile67 FAIL remain preserved; no PASS transfers to source73.
+
+Source73 preserves the ordinary raw FromAnalyticHit implementation and exact
+callback ordering. A new overload copies an existing valid weak reference and
+normalizes invalid references to null, matching the previous .Get() conversion.
+It calls the raw null Reset path for the same geometric fields without creating
+another tracked object read. Analytic support conversions, the static hitcount
+map and selected wheel support hits reuse actual weak identities. No weak index
+or serial is invented. IgnoredComponents stores raw pointers and is unchanged.
+
+The existing three-car interaction experiment now explicitly selects the real
+178-value recipe before all four native world births. A real read callback
+observes sixty original subbodies and four actual floor components during the
+native contact trajectory and retained replay, with an individual ordinary Get
+positive control for every target. Birth and other object types are outside this
+specific witness; counts do not certify non-escape or a complete restore lease.
+This changes the test profile and requires fresh compilation and runtime results.
+The physical correction remains GLOBAL FROM BIRTH; full causal capture, retained
+authoritativeK restore, localized contact-island replay, network loss redundancy
+and fresh two-client Device/render acceptance remain unfinished.

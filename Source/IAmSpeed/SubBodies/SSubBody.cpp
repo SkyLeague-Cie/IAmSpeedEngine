@@ -277,7 +277,7 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
     if (bHit)
     {
 		OutHit = bUsedAnalyticAuthority
-			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component.Get())
+			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component)
 			: SHitResult::FromUnrealHit(Hit, delta);
     }
 	return bHit;

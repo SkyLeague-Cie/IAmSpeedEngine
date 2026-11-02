@@ -727,7 +727,7 @@ bool UBoxSubBody::PublishExactStaticSupport()
     // A stationary query can correctly report no sweep impact at an exterior
     // representable pose. The four finite support witnesses still establish
     // a passive contact. Publish that fact without an impulse or gameplay hit.
-    GroundHitStorage() = SHitResult::FromAnalyticHit(Support.ProviderWitness, 0, Source.Get(), ParentComponentBodyDomainStorage()->NumFrame());
+    GroundHitStorage() = SHitResult::FromAnalyticHit(Support.ProviderWitness, 0, Source, ParentComponentBodyDomainStorage()->NumFrame());
     GroundHitStorage().ContactFeatureThis = Speed::EContactFeatureKind::Face;
     GroundPlaneNBoxDomainStorage() = Support.Normal;
     GroundPlanePointWSBoxDomainStorage() = Support.Points[0];
@@ -901,7 +901,7 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
     }
 
     SHitResult RefreshedHit =
-        SHitResult::FromAnalyticHit(AnalyticHit, Delta, GroundCompBoxDomainStorage().Get());
+        SHitResult::FromAnalyticHit(AnalyticHit, Delta, GroundCompBoxDomainStorage());
     // This is already an admitted analytic witness. Keep its point, normal,
     // time and error bound together, just as for the initial CCD contact.
     // Absolute-coordinate rounding would move a translated support surface.
@@ -1116,7 +1116,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
             // Velocity feasibility must use the same fresh witness as the pose
             // projection, without overwriting the pending collision event.
             const SHitResult ProjectedHit = SHitResult::FromAnalyticHit(
-                Projection.Hit, 0.0f, ProjectionSeed.Component.Get());
+                Projection.Hit, 0.0f, ProjectionSeed.Component);
             TGuardValue<SHitResult> ProjectedEvent(CurrentHitStorage(), ProjectedHit);
             TryResolveExactPlanarImpact(false);
         }
@@ -1143,7 +1143,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     }
 
     SHitResult ProjectedHit = SHitResult::FromAnalyticHit(
-        Projection.Hit, Delta, GroundCompBoxDomainStorage().Get());
+        Projection.Hit, Delta, GroundCompBoxDomainStorage());
     // Preserve the projected analytic witness as a coherent geometric tuple.
     // A world-coordinate grid moves its support point relative to the body.
     ProjectedHit.PenetrationDepth =
@@ -1217,7 +1217,7 @@ void UBoxSubBody::AcceptHit()
     UPrimitiveComponent* Comp = CurrentHitStorage().Component.Get();
     if (CurrentHitStorage().Component.IsValid() && CurrentHitStorage().Component->GetMobility() == EComponentMobility::Static)
     {
-        uint32& Count = HitCountThisFrameBoxDomainStorage().FindOrAdd(Comp);
+        uint32& Count = HitCountThisFrameBoxDomainStorage().FindOrAdd(CurrentHitStorage().Component);
         Count++;
 
         // Exact vertex identities already use the World per-pair resolution budget.
@@ -1563,7 +1563,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
             // FromAnalyticHit intentionally discards misses. Broad-phase
             // descriptors are not hits yet, so carry only their plane identity.
             SHitResult Refined;
-            Refined.Component = Source.Get();
+            Refined.Component = Source;
             Refined.ImpactNormal = Candidate.Normal; Refined.ImpactPoint = Candidate.Point;
             Refined.SourceId = Candidate.SourceId; Refined.SurfaceId = Candidate.SurfaceId;
             Refined.FeatureId = Candidate.FeatureId; Refined.PrimitiveId = Candidate.PrimitiveId;

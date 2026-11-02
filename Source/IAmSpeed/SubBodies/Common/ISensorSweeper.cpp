@@ -43,7 +43,7 @@ bool ISensorSweeper::InternalSweep(UWorld* World, const FVector& Start, const FV
     if (bHit)
     {
 		OutHit = bUsedAnalyticAuthority
-			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component.Get())
+			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component)
 			: SHitResult::FromUnrealHit(Hit, delta);
 		OutHit.bBlockingHit = false;
     }

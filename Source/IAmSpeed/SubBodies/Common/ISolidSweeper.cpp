@@ -79,7 +79,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
     if (bHit)
     {
 		OutHit = bUsedAnalyticAuthority
-			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component.Get())
+			? SHitResult::FromAnalyticHit(AnalyticHit, delta, Hit.Component)
 			: SHitResult::FromUnrealHit(Hit, delta);
     }
     return bHit;

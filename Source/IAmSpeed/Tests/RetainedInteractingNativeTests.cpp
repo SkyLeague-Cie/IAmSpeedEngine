@@ -9,6 +9,13 @@
 #include "EngineUtils.h"
 #include "UObject/ObjectKey.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/BoxComponent.h"
+#include "IAmSpeed/SubBodies/SSubBody.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadConformanceProfile.h"
+#include "UObject/ObjectHandleTracking.h"
+#include "UObject/UObjectHash.h"
+#include "Misc/ScopeExit.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASRetainedVehicleInteractionNative,
     "IAmSpeed.Netcode.Prediction.RetainedVehicleInteractionNativeExperiment",
@@ -18,10 +25,12 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
     namespace P=Speed::Netcode::Prediction;using namespace Speed::Netcode;
     constexpr U64 Cut=10,Change=20,Last=900; // 3s observation, never startup warmup
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
+    const auto DeclaredSettings=Speed::RoadSettings::MakeDeclaredRoadConformanceProfile();
+    if(!DeclaredSettings)return false;
     std::vector<P::FPrivateRoadCarSeed> Seeds;
     for(U64 A=0;A<3;++A)
     {
-        P::FPrivateRoadCarSeed S;S.Actor=101+A;S.Incarnation=3;S.Contract=Contract;
+        P::FPrivateRoadCarSeed S;S.DeclaredSettings=DeclaredSettings;S.Actor=101+A;S.Incarnation=3;S.Contract=Contract;
         S.Local={Speed::Input::EProducerKind::Device,42+A};S.LocalEpoch={3};S.PredictionHorizon=1024;
         auto& B=S.Remote;B.Session=11;B.Epoch=3;B.Actor=S.Actor;B.Incarnation=3;
         B.OwnerPeer=4+A;B.ServerPeer=9;B.SourceProducer=42+A;B.SourceKind=0;B.Contract[0]=7;
@@ -52,14 +61,48 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
         return Q;
     };
     FString Why;
-    auto Reference=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
-    auto Live=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why),Retained=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
-    // A separate genuine native world controls only the neighbor's proximity.
-    // Actor101 retains exactly the reference seed/inputs/gate; actor102 moves
-    // laterally 100m away. This is a causal comparison, not rollback locality.
-    auto UncoupledSeeds=Seeds;UncoupledSeeds[1].Initial.Location.Y=10000;
-    auto Uncoupled=P::FPrivateRoadPhysicsWorld::Create(UncoupledSeeds,Why);
+    std::unique_ptr<P::FPrivateRoadPhysicsWorld> Reference,Live,Retained,Uncoupled;
+    TArray<TWeakObjectPtr<UWorld>> ActualWorlds;
+    {
+        // Save real birth identities outside all original recipe/math scopes.
+        const auto CreationHandle=FWorldDelegates::OnPostWorldCreation.AddLambda(
+            [&](UWorld* World){if(IsInGameThread())ActualWorlds.Add(World);});
+        ON_SCOPE_EXIT{FWorldDelegates::OnPostWorldCreation.Remove(CreationHandle);};
+        Reference=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
+        Live=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
+        Retained=P::FPrivateRoadPhysicsWorld::Create(Seeds,Why);
+        // Only the neighbor's proximity differs in this real native control.
+        auto UncoupledSeeds=Seeds;UncoupledSeeds[1].Initial.Location.Y=10000;
+        Uncoupled=P::FPrivateRoadPhysicsWorld::Create(UncoupledSeeds,Why);
+    }
     if(!TestTrue(*Why,Reference&&Live&&Retained&&Uncoupled))return false;
+    struct FReadTarget {TWeakObjectPtr<UPrimitiveComponent> Original;bool Floor=false;uint64 Scoped=0,Outside=0;};
+    std::vector<FReadTarget> ReadTargets;
+    if(!TestEqual(TEXT("four actual native fixture worlds created"),ActualWorlds.Num(),4))return false;
+    for(const auto& WeakWorld:ActualWorlds)
+    {
+        auto* World=WeakWorld.Get();if(!World)return false;
+        ForEachObjectWithOuter(World,[&](UObject* Object)
+        {
+            if(auto* Body=Cast<USSubBody>(Object))ReadTargets.push_back({Body,false});
+            else if(auto* Floor=Cast<UBoxComponent>(Object))ReadTargets.push_back({Floor,true});
+        },EGetObjectsFlags::IncludeNestedObjects);
+    }
+    if(!TestEqual(TEXT("sixty real subbodies and four actual floor components captured before observer"),ReadTargets.size(),size_t(64)))return false;
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+    const auto ReadHandle=UE::CoreUObject::AddObjectHandleReadCallback(
+        [&](TArrayView<const UObject* const> Objects)
+        {
+            if(!IsInGameThread())return;
+            for(const auto* Object:Objects)for(auto& Target:ReadTargets)
+                if(Object&&Object==Target.Original.Get())
+                {
+                    if(Speed::RoadSettings::SelectedOriginalRoadSettings())++Target.Scoped;
+                    else ++Target.Outside;
+                }
+        });
+    ON_SCOPE_EXIT{UE::CoreUObject::RemoveObjectHandleReadCallback(ReadHandle);};
+#endif
     const auto Same=[&](const auto& X,const auto& Y)
     {
         if(!X||!Y||X->Frame!=Y->Frame||X->Actors.size()!=3||Y->Actors.size()!=3)return false;
@@ -160,6 +203,22 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
     const double ReplayWallSeconds=FPlatformTime::Seconds()-ReplayStarted;
     if(!TestTrue(TEXT("actual native replay wall time is finite and positive"),FMath::IsFinite(ReplayWallSeconds)&&ReplayWallSeconds>0))return false;
     AddInfo(FString::Printf(TEXT("[IASNativeFastReplayTiming] frames=%llu physical_seconds=%.17g wall_seconds=%.17g nominal_to_wall_ratio=%.17g wait_policy_bypassed=1 same_world_localized=0"),Last-Cut,double(Last-Cut)/300.,ReplayWallSeconds,(double(Last-Cut)/300.)/ReplayWallSeconds));
+    uint64 ScopedBodyReads=0,ScopedFloorReads=0,PositiveReads=0;
+    for(auto& Target:ReadTargets)
+    {
+        auto* Original=Target.Original.Get();
+        if(!TestTrue(TEXT("observed physical target retains real original identity"),Original!=nullptr))return false;
+        const uint64 Before=Target.Outside;
+        TObjectPtr<UPrimitiveComponent> Positive=Original;
+        if(!TestTrue(TEXT("ordinary positive Get returns this actual target"),Positive.Get()==Original))return false;
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+        if(!TestTrue(TEXT("ordinary positive Get invokes the hook for this specific target"),Target.Outside>Before))return false;
+#endif
+        PositiveReads+=Target.Outside-Before;
+        if(Target.Floor)ScopedFloorReads+=Target.Scoped;else ScopedBodyReads+=Target.Scoped;
+    }
+    AddInfo(FString::Printf(TEXT("[ActualInteractingObjectReadWitness] trackingCompiled=%d targets=%u actualWorlds=4 carsPerWorld=3 observedVehicleEventFrames=%llu scopedBodyReads=%llu scopedFloorReads=%llu ordinaryPositiveReads=%llu birthObserved=0 unknownOtherObjects=1 completeCallbackClosure=0 completeRestoreLease=0"),
+        int(UE_WITH_OBJECT_HANDLE_TRACKING),uint32(ReadTargets.size()),DynamicContactFrames,ScopedBodyReads,ScopedFloorReads,PositiveReads));
     // ALL THREE actors stepped during this experiment, including the distant
     // same-world spectator. This must NOT be reported as localized replay.
     AddInfo(FString::Printf(TEXT("[IASRetainedInteracting] native=1 actors=3 held_frame=%llu through_frame=%llu replayed_frames=%llu actual_vehicle_event_frames=%llu first_actual_vehicle_event=%llu before_max_position_cm=%.17g exact_six_com_and_filters=1 spectator_replay_frames=%llu same_world_localized=0 full_state_certificate=0 network=0"),Cut,Last,Last-Cut,DynamicContactFrames,FirstContact,MaximumBefore,Last-Cut));

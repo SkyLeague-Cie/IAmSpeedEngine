@@ -510,7 +510,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 
 	OutHit = bUsedAnalyticAuthority
 		? SHitResult::FromAnalyticHit(
-			AnalyticHit, Delta, UnrealHit.Component.Get())
+			AnalyticHit, Delta, UnrealHit.Component)
 		: SHitResult::FromUnrealHit(UnrealHit, Delta);
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     return true;
@@ -624,7 +624,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 
 	OutHit = bUsedAnalyticAuthority
 		? SHitResult::FromAnalyticHit(
-			AnalyticHit, Delta, UnrealHit.Component.Get())
+			AnalyticHit, Delta, UnrealHit.Component)
 		: SHitResult::FromUnrealHit(UnrealHit, Delta);
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     return true;
@@ -765,8 +765,16 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
     OutHit = BestHit;
     // Geometric intersections do not carry the selected support component.
     // UpdateSuspension needs it to clamp attraction on non-static supports.
-    OutHit.Component = BestSphere.Get();
-    OutHit.SubBody = BestSphere.Get();
+    if(BestSphere.IsValid())
+    {
+        OutHit.Component = BestSphere;
+        OutHit.SubBody = BestSphere;
+    }
+    else
+    {
+        OutHit.Component.Reset();
+        OutHit.SubBody.Reset();
+    }
     OutHit.FrameTag = ParentComponentBodyDomainStorage()->NumFrame();
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     OutHit.Location = OutHit.ImpactPoint + Radius() * OutHit.ImpactNormal;
@@ -842,8 +850,16 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
 
     OutHit = BestHit;
     // Preserve the selected support for suspension and contact classification.
-    OutHit.Component = BestBox.Get();
-    OutHit.SubBody = BestBox.Get();
+    if(BestBox.IsValid())
+    {
+        OutHit.Component = BestBox;
+        OutHit.SubBody = BestBox;
+    }
+    else
+    {
+        OutHit.Component.Reset();
+        OutHit.SubBody.Reset();
+    }
     OutHit.FrameTag = ParentComponentBodyDomainStorage()->NumFrame();
     OutHit.ImpactNormal = Speed::QuantizeUnitNormal(OutHit.ImpactNormal);
     OutHit.Location = OutHit.ImpactPoint + Radius() * OutHit.ImpactNormal;
