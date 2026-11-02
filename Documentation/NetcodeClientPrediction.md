@@ -1291,3 +1291,30 @@ config change, native physical witness and GC/stale/negative-birth/isolation
 controls and the full finite three-Game chain. No79 pass transfers. Factory
 owner/tick/registration/gravity/driver/service callbacks remain open; full
 lifetime, authoritativeK restore and localized admission guards stay closed.
+
+
+Source85/native81 compiled and linked with genuine BuildId and completed the
+query. All56 tests reported Success and0 errors, but2 LogHttp timeout warnings
+to the Editor Home Screen's Google connectivity-check URL caused strict native
+qualification to be REJECTED. Original20920/coordinators closed1, native process
+exit0 with actual job0 twice and empty final audits. Pending, commandlets and
+Game/cancellation were NOT_RUN. Raw35 oscillation messages remain unqualified;
+their values are not promoted to zero-divergence acceptance or historical PASS.
+
+Source86 reuses a genuinely retained original strong root when its original
+weak birth identity still resolves to the same current object. It avoids
+reacquiring duplicate roots through Pin, retains first acquisitions and the
+PinTree traversal/readbacks, and does not reconstruct identity from raw address
+alone. New first acquisitions remain callback-capable. Duplicate-root counts
+and final release ordering can change, so actual GC/stale/destruction/negative
+birth/config-lifetime/retirement/native-witness tests and the complete finite
+three-Game chain must be rerun; no source-only count or performance effect is
+claimed. This is not whole factory, service/module/deleter or restoration closure.
+
+The next isolated host profile will disable the unrelated Editor Home Screen
+at startup using its supported HomeScreen.EnableHomeScreen=0 config variable.
+It will retain the2 warnings/rejection81 and all strict warning validation;
+it will not filter LogHttp, disable IAS sockets, retune physics or patch Engine.
+The actual startup value must be observed in the new process. No pending change
+to a test profile grants runtime qualification. Full-state restoreK and localized
+rollback remain unfinished and all incomplete admission guards stay closed.

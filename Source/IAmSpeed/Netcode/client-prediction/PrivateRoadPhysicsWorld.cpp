@@ -272,7 +272,17 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
 
     std::vector<std::shared_ptr<FNativeConfigurationLifetimeTrace>> NativeConfigurationLifetime;
     bool Closed=false,Failed=false;
-    void Pin(UObject* Object) {if(Object)Pins.Emplace(Object);}
+    void Pin(UObject* Object)
+    {
+        if(!Object)return;
+        // This factory already owns the actual strong root and its weak birth
+        // identity. Reusing that live original root does not mint a new weak
+        // identity or register another strong reference during late PinTree.
+        // Weak Get checks the captured original serial; a stale/reused raw
+        // address alone cannot make an old root count as the current object.
+        for(const auto& Existing:Pins)if(Existing.Get()==Object)return;
+        Pins.Emplace(Object); // genuine first acquisition; remains callback-capable
+    }
     // Original role identities are captured from the real default graph before
     // SetOwner/Initialize callbacks. This is a pre-math equality check, not a
     // replacement for GC exclusion or a complete restoration lease.
