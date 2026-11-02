@@ -38,9 +38,26 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
         FWheeledGameState WheeledGameState;
         FWheeledPhysicsState WheeledPhysicsState;
         FWheeledInputState WheeledPhysicalInput;
+        TArray<FPhysicalContactConstraint> PhysicalConstraints;
+        Speed::FSimulationSleepState SleepState;
+        Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
+        const Speed::IStaticCollisionWorld* StaticRestingWorld=nullptr;
+        float StaticSupportFrameHorizon=0;
+
     };
     std::unique_ptr<FOwnedComponentValues> OwnedComponentValues;
     bool UsesOriginalComponentStorage() const;
+    TArray<FPhysicalContactConstraint>& PhysicalConstraintsStorage() override;
+    TArray<FPhysicalContactConstraint> const& PhysicalConstraintsStorage() const override;
+    Speed::FSimulationSleepState& SleepStateStorage() override;
+    Speed::FSimulationSleepState const& SleepStateStorage() const override;
+    Speed::FIdentityKinematicQuantizationCache& KinematicQuantizationCacheStorage() override;
+    Speed::FIdentityKinematicQuantizationCache const& KinematicQuantizationCacheStorage() const override;
+    const Speed::IStaticCollisionWorld*& StaticRestingWorldStorage() override;
+    const Speed::IStaticCollisionWorld* const& StaticRestingWorldStorage() const override;
+    float& StaticSupportFrameHorizonStorage() override;
+    float const& StaticSupportFrameHorizonStorage() const override;
+
     void* SuspendStorageRoutingForExternalObservation() const override;
     void ResumeStorageRoutingAfterExternalObservation(void*) const override;
     void EstablishOriginalComponentStorage();

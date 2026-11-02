@@ -379,3 +379,24 @@ closure and previously escaped views from other domains remain unqualified.
 The scope is routing, not a certificate of exclusion. No restore provider is
 admitted and ProtectsEscapedMutableViews stays false. Global/from-birth replay
 is unchanged; no localized, hardware or complete-state claim is added.
+
+
+Source45 extends the PARTIAL private value routing to five common blocks:
+ordered physical constraints, sleep, identity quantization, the borrowed
+static-world pointer and its frame horizon. Original native operations use
+private default-initialized blocks; facade calls use legacy storage. Actual
+private cache diagnostics read the routed original values during their step.
+The real output-device experiment additionally calls the supported public COM
+velocity setter between calls and inside the existing synchronous log callback.
+Source41 compilation failed because the test attempted a protected allowed-
+angular-velocity setter. These unsupported calls are removed; no field/method
+visibility is changed. Source41 runtime remains NOT_RUN, failure preserved.
+
+This does NOT supply complete state/reference/configuration coverage, exclude
+all other callbacks or lifecycle operations, or authorize guarded common
+capture/restore. Existing guarded common providers still require a genuine
+complete boundary lease before their first native address read. Their legacy
+field access must be integrated with an actual future owner/provider before
+admission; no current private lease/provider can bypass that gate. Subbody,
+world, configuration, timeline/source and old-view closure remain incomplete.
+ProtectsEscapedMutableViews stays false; no localized/hardware claim is added.

@@ -37,7 +37,7 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
         ++Calls;RetainedView=&Component->GetKinematicState();
         SKinematic Intrusion=*RetainedView;Intrusion.Location.X+=864200;WrittenX=Intrusion.Location.X;
         Component->SetKinematicState(Intrusion);
-        Component->SetAllowedAngularVelocity(FVector(1000,2000,3000));
+        Component->SetPhysCOMVelocity(FVector(1000000,2000000,3000000));
     }
 };
 struct FForbiddenPrivatePhaseObserver final : ISpeedPhysicsPhaseObserver
@@ -170,7 +170,8 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     SKinematic Intrusion=RetainedFacadeView;Intrusion.Location.X+=123456;
     static_cast<USpeedWheeledComponent&>(*EscapedFacade).SetKinematicState(Intrusion);
     EscapedFacade->SetPhysThrottleInput(1);EscapedFacade->SetPhysBrakeInput(1);
-    EscapedFacade->SetPhysSteeringInput(-1);EscapedFacade->SetAllowedAngularVelocity(FVector(100,200,300));
+    EscapedFacade->SetPhysSteeringInput(-1);
+    FacadeBase.SetPhysCOMVelocity(FVector(1000000,0,0));
     TestEqual(TEXT("escaped base setter writes only its facade view"),RetainedFacadeView.Location.X,Intrusion.Location.X);
     if(!TestTrue(TEXT("actual synchronization release reads original physical storage"),
         Isolated->ReleaseInitialPublication(OriginalZero,Why)&&Control->ReleaseInitialPublication(ControlZero,Why)))return false;
@@ -217,7 +218,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
 
     TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
-    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_input_attack=1 exact_six_com=1 component_value_blocks=5 complete_lease=0 localized=0"));
+    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_input_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 complete_lease=0 localized=0"));
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
     AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));

@@ -477,8 +477,8 @@ bool USpeedBranchWheeledComponent::CopyActualCacheDiagnosticValues(
 {
     const auto A=Access.lock();
     if(!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||!A->Slots.Contains(this))return false;
-    const auto S=Speed::FCommonCacheValueAccess::Capture(SleepState);
-    const auto Q=Speed::FCommonCacheValueAccess::Capture(KinematicQuantizationCache);
+    const auto S=Speed::FCommonCacheValueAccess::Capture(SleepStateStorage());
+    const auto Q=Speed::FCommonCacheValueAccess::Capture(KinematicQuantizationCacheStorage());
     if(!Speed::CommonState::ValidCaches(S,Q))return false;
     Sleep=S;Quantization=Q;return true;
 }
@@ -550,6 +550,46 @@ FWheeledInputState& USpeedBranchWheeledComponent::WheeledPhysicalInputStorage()
 const FWheeledInputState& USpeedBranchWheeledComponent::WheeledPhysicalInputStorage() const
 {
     return UsesOriginalComponentStorage()?OwnedComponentValues->WheeledPhysicalInput:USpeedWheeledComponent::WheeledPhysicalInputStorage();
+}
+TArray<FPhysicalContactConstraint>& USpeedBranchWheeledComponent::PhysicalConstraintsStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->PhysicalConstraints:ISpeedComponent::PhysicalConstraintsStorage();
+}
+TArray<FPhysicalContactConstraint> const& USpeedBranchWheeledComponent::PhysicalConstraintsStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->PhysicalConstraints:ISpeedComponent::PhysicalConstraintsStorage();
+}
+Speed::FSimulationSleepState& USpeedBranchWheeledComponent::SleepStateStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->SleepState:ISpeedComponent::SleepStateStorage();
+}
+Speed::FSimulationSleepState const& USpeedBranchWheeledComponent::SleepStateStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->SleepState:ISpeedComponent::SleepStateStorage();
+}
+Speed::FIdentityKinematicQuantizationCache& USpeedBranchWheeledComponent::KinematicQuantizationCacheStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->KinematicQuantizationCache:ISpeedComponent::KinematicQuantizationCacheStorage();
+}
+Speed::FIdentityKinematicQuantizationCache const& USpeedBranchWheeledComponent::KinematicQuantizationCacheStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->KinematicQuantizationCache:ISpeedComponent::KinematicQuantizationCacheStorage();
+}
+const Speed::IStaticCollisionWorld*& USpeedBranchWheeledComponent::StaticRestingWorldStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->StaticRestingWorld:ISpeedComponent::StaticRestingWorldStorage();
+}
+const Speed::IStaticCollisionWorld* const& USpeedBranchWheeledComponent::StaticRestingWorldStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->StaticRestingWorld:ISpeedComponent::StaticRestingWorldStorage();
+}
+float& USpeedBranchWheeledComponent::StaticSupportFrameHorizonStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->StaticSupportFrameHorizon:ISpeedComponent::StaticSupportFrameHorizonStorage();
+}
+float const& USpeedBranchWheeledComponent::StaticSupportFrameHorizonStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->StaticSupportFrameHorizon:ISpeedComponent::StaticSupportFrameHorizonStorage();
 }
 bool USpeedBranchWheeledComponent::IsInitialSynchronizationComplete() const
 {

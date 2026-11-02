@@ -40,9 +40,9 @@ void ISpeedComponent::RestoreSimulationSnapshot(
     // A debug-only check cannot enforce the same refusal in Shipping. Refuse
     // BEFORE any common cache, pose, frozen flag or native sub-body mutation.
     if (!CanRestoreSimulationSnapshot(MechanicPayload)) return;
-	SleepState.Reset();
+	SleepStateStorage().Reset();
 	SetStaticCollisionWorldForFrame(nullptr);
-	KinematicQuantizationCache.Reset();
+	KinematicQuantizationCacheStorage().Reset();
 	SetKinematicState(KinematicState);
 	SetIsFrozen(bFrozen);
 	RestoreSimulationSnapshotPayload(MechanicPayload);
@@ -59,7 +59,7 @@ void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& Pre
 	// pose of an ALREADY geometrically certified, non-rotating face (including
 	// its material's admissible tangent slide), never round motion into rest.
 	bool bPreserveSupportedPose = HasExactStaticFaceSupport();
-	if (!bPreserveSupportedPose && StaticRestingWorld)
+	if (!bPreserveSupportedPose && StaticRestingWorldStorage())
 	{
 		for (const USSubBody* Body : GetSubBodies())
 			if (Body && Body->RequiresUnquantizedContactPose()) { bPreserveSupportedPose = true; break; }
@@ -68,7 +68,7 @@ void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& Pre
 	const FQuat SupportedRotation = State.Rotation;
 	const FVector SupportedVelocity = State.Velocity;
 	const FVector SupportedAngularVelocity = State.AngularVelocity;
-	KinematicQuantizationCache.Quantize(State, PreviousRotation);
+	KinematicQuantizationCacheStorage().Quantize(State, PreviousRotation);
 	// Preserve the integrator's affine trajectory on unforced axes. Snapping
 	// the position every frame changes an otherwise constant velocity by a
 	// rate-dependent amount (80/1440 -> .06, but 80/60 -> 1.33 cm per frame).
@@ -87,11 +87,11 @@ void ISpeedComponent::QuantizeKinematicState(SKinematic& State, const FQuat& Pre
 	if (State.AngularAcceleration.IsZero())
 		State.Rotation = SupportedRotation;
 	bool bRejectedQuantizedPose = false;
-	if (!bPreserveSupportedPose && StaticRestingWorld &&
+	if (!bPreserveSupportedPose && StaticRestingWorldStorage() &&
 		(State.Location != SupportedLocation || State.Rotation != SupportedRotation))
 	{
 		for (const USSubBody* Body : GetSubBodies())
-			if (Body && !Body->CanApplyQuantizedPose(*StaticRestingWorld, State))
+			if (Body && !Body->CanApplyQuantizedPose(*StaticRestingWorldStorage(), State))
 			{
 				bRejectedQuantizedPose = true;
 				break;
@@ -132,7 +132,7 @@ void ISpeedComponent::IntegrateKinematicsPrv(const float& SubDelta)
 
 bool ISpeedComponent::IsPhysicsSleeping() const
 {
-	return !IsFrozen() && SleepState.CanSleep(GetKinematicState(), HasStableSleepSupport());
+	return !IsFrozen() && SleepStateStorage().CanSleep(GetKinematicState(), HasStableSleepSupport());
 }
 
 bool ISpeedComponent::HasExactStaticRestingSupport() const
@@ -142,20 +142,20 @@ bool ISpeedComponent::HasExactStaticRestingSupport() const
 
 bool ISpeedComponent::HasExactStaticFaceSupport() const
 {
-	if (!StaticRestingWorld || IsFrozen()) return false;
+	if (!StaticRestingWorldStorage() || IsFrozen()) return false;
 	const SKinematic& State = GetKinematicState();
 	if (!State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero()) return false;
 	const FVector Load = GetNominalGravityAcceleration();
 	if (Load.IsZero() || FVector::DotProduct(State.Velocity, Load) != 0) return false;
 	for (const USSubBody* Body : GetSubBodies())
-		if (Body && Body->HasExactStaticRestingSupport(*StaticRestingWorld, Load)) return true;
+		if (Body && Body->HasExactStaticRestingSupport(*StaticRestingWorldStorage(), Load)) return true;
 	return false;
 }
 
 float ISpeedComponent::GetMaximumCanonicalSupportInterval(float Remaining) const
 {
     if(IsPrescribedMotion())return Remaining;
-	if (!StaticRestingWorld || IsFrozen()) return Remaining;
+	if (!StaticRestingWorldStorage() || IsFrozen()) return Remaining;
 	double Candidate = TNumericLimits<double>::Max();
 	for (const USSubBody* Body : GetSubBodies())
 		if (Body) Candidate = FMath::Min(Candidate, Body->GetStaticSupportStopTimeCandidate());
@@ -175,9 +175,9 @@ FVector ISpeedComponent::GetStaticRestingReaction(double* StopAfterSeconds) cons
 	{
 		if (bObserveStaticRestingReaction) ObserveStaticRestingReaction(Status);
 	};
-	if (!StaticRestingWorld) { Observe(EStaticRestingReactionStatus::NoWorld); return FVector::ZeroVector; }
+	if (!StaticRestingWorldStorage()) { Observe(EStaticRestingReactionStatus::NoWorld); return FVector::ZeroVector; }
 #else
-	if (!StaticRestingWorld) return FVector::ZeroVector;
+	if (!StaticRestingWorldStorage()) return FVector::ZeroVector;
 #endif
 	const SKinematic& State = GetKinematicState();
 	// Shape-independent rejection is cheap in the ordinary moving-body path.
@@ -200,7 +200,7 @@ FVector ISpeedComponent::GetStaticRestingReaction(double* StopAfterSeconds) cons
 	{
 		if (SubBody)
 		{
-			const FVector Reaction = SubBody->GetStaticRestingReaction(*StaticRestingWorld, StopAfterSeconds);
+			const FVector Reaction = SubBody->GetStaticRestingReaction(*StaticRestingWorldStorage(), StopAfterSeconds);
 			if (!Reaction.IsZero())
 			{
 #if !UE_BUILD_SHIPPING
@@ -218,7 +218,7 @@ FVector ISpeedComponent::GetStaticRestingReaction(double* StopAfterSeconds) cons
 
 bool ISpeedComponent::IsSpeedLimitPreservedByExactSupport(float Delta) const
 {
-	if (!StaticRestingWorld || Delta <= 0 || StaticSupportFrameHorizon < Delta) return false;
+	if (!StaticRestingWorldStorage() || Delta <= 0 || StaticSupportFrameHorizonStorage() < Delta) return false;
 	const SKinematic& State = GetKinematicState();
 	const double MaxSpeedSquared = FMath::Square(double(GetPhysMaxSpeed()));
 	// Squaring a normalized/clamped oblique vector can exceed the squared cap
@@ -241,7 +241,7 @@ bool ISpeedComponent::IsSpeedLimitPreservedByExactSupport(float Delta) const
 void ISpeedComponent::GetStaticContactAcceleration(FVector& Linear, FVector& Angular) const
 {
 	Linear = Angular = FVector::ZeroVector;
-	if (!StaticRestingWorld || IsFrozen()) return;
+	if (!StaticRestingWorldStorage() || IsFrozen()) return;
 	for (const USSubBody* Body : GetSubBodies())
 		if (Body && Body->TryGetStaticContactAcceleration(Linear, Angular)) return;
 }
@@ -402,13 +402,13 @@ SKinematic ISpeedComponent::GetOriginKinematicStateForFrame(const unsigned int& 
 
 void ISpeedComponent::ResetForFrame(const float& Delta)
 {
-	for (int32 ConstraintIdx = PhysicalConstraints.Num() - 1; ConstraintIdx >= 0; --ConstraintIdx)
+	for (int32 ConstraintIdx = PhysicalConstraintsStorage().Num() - 1; ConstraintIdx >= 0; --ConstraintIdx)
 	{
-		FPhysicalContactConstraint& Constraint = PhysicalConstraints[ConstraintIdx];
+		FPhysicalContactConstraint& Constraint = PhysicalConstraintsStorage()[ConstraintIdx];
 
 		if (!Constraint.bPersistent)
 		{
-			PhysicalConstraints.RemoveAtSwap(ConstraintIdx);
+			PhysicalConstraintsStorage().RemoveAtSwap(ConstraintIdx);
 			continue;
 		}
 
@@ -416,7 +416,7 @@ void ISpeedComponent::ResetForFrame(const float& Delta)
 		if (Constraint.FramesSinceSeen > MaxConstraintPersistenceFrames ||
 			!IsPhysicalConstraintStillRelevant(Constraint))
 		{
-			PhysicalConstraints.RemoveAtSwap(ConstraintIdx);
+			PhysicalConstraintsStorage().RemoveAtSwap(ConstraintIdx);
 		}
 	}
 
@@ -545,7 +545,7 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
             Best.PairKey = Speed::Analytic::CombineStableIds(
                 Best.PairKey, ProviderId);
         }
-        if (StaticRestingWorld && HR.SurfaceId != 0 && !HR.bSurfaceNormalMayVary &&
+        if (StaticRestingWorldStorage() && HR.SurfaceId != 0 && !HR.bSurfaceNormalMayVary &&
             HR.ContactFeatureThis == Speed::EContactFeatureKind::Vertex && HR.ContactFeatureIndexThis >= 0)
         {
             // A newly arriving vertex is a new event on the same plane, not
@@ -599,7 +599,7 @@ void ISpeedComponent::PostPhysicsUpdate(const float& delta)
 	}
 
     PostPhysicsUpdatePrv(delta);
-	SleepState.ObserveCompletedPose(GetKinematicState());
+	SleepStateStorage().ObserveCompletedPose(GetKinematicState());
 }
 
 // ===================== Kinematics getters and setters =================
@@ -945,7 +945,7 @@ void ISpeedComponent::RegisterPhysicalConstraint(const FPhysicalContactConstrain
 		return;
 	}
 
-	for (FPhysicalContactConstraint& ExistingConstraint : PhysicalConstraints)
+	for (FPhysicalContactConstraint& ExistingConstraint : PhysicalConstraintsStorage())
 	{
 		if (!AreSimilarPhysicalConstraints(ExistingConstraint, NewConstraint))
 		{
@@ -963,17 +963,17 @@ void ISpeedComponent::RegisterPhysicalConstraint(const FPhysicalContactConstrain
 		return;
 	}
 
-	PhysicalConstraints.Add(NewConstraint);
+	PhysicalConstraintsStorage().Add(NewConstraint);
 }
 
 void ISpeedComponent::ClearPhysicalConstraints()
 {
-	PhysicalConstraints.Reset();
+	PhysicalConstraintsStorage().Reset();
 }
 
 bool ISpeedComponent::HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const
 {
-	for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
+	for (const FPhysicalContactConstraint& Constraint : PhysicalConstraintsStorage())
 		if (Constraint.SourceSubBody.Get() != Source && IsPhysicalConstraintStillRelevant(Constraint))
 			return true;
 	return false;
@@ -1017,7 +1017,7 @@ void ISpeedComponent::ProjectLinearDeltaAgainstConstraints(FVector& DeltaLinear)
 	for (int32 PassIdx = 0; PassIdx < ConstraintProjectionPasses; ++PassIdx)
 	{
 		bool bChanged = false;
-		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
+		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraintsStorage())
 		{
 			if (!IsPhysicalConstraintStillRelevant(Constraint))
 			{
@@ -1051,7 +1051,7 @@ void ISpeedComponent::ProjectAngularDeltaAgainstConstraints(FVector& DeltaAngula
 	for (int32 PassIdx = 0; PassIdx < ConstraintProjectionPasses; ++PassIdx)
 	{
 		bool bChanged = false;
-		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
+		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraintsStorage())
 		{
 			if (!IsPhysicalConstraintStillRelevant(Constraint))
 			{
@@ -1094,7 +1094,7 @@ void ISpeedComponent::ProjectPointDeltaAgainstConstraints(FVector& DeltaLinear, 
 	{
 		bool bChanged = false;
 
-		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraints)
+		for (const FPhysicalContactConstraint& Constraint : PhysicalConstraintsStorage())
 		{
 			if (!IsPhysicalConstraintStillRelevant(Constraint))
 			{

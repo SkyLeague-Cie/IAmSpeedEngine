@@ -322,12 +322,12 @@ public:
 	/** Binds immutable query geometry for this frame; cleared at completion/restore, never snapshotted. */
 	void SetStaticCollisionWorldForFrame(const Speed::IStaticCollisionWorld* World, float FrameHorizon = 0)
 	{
-		StaticRestingWorld = World;
-		StaticSupportFrameHorizon = World ? FrameHorizon : 0;
+		StaticRestingWorldStorage() = World;
+		StaticSupportFrameHorizonStorage() = World ? FrameHorizon : 0;
 	}
 	/** Common conservative horizon for support admission in CCD and integration.
 	 * It must not shorten just because the sweep returned an earlier impact. */
-	float GetStaticSupportFrameHorizon() const { return StaticSupportFrameHorizon; }
+	float GetStaticSupportFrameHorizon() const { return StaticSupportFrameHorizonStorage(); }
 	/** Returns a currently feasible resting reaction, or zero; does not mutate physical state. */
 	FVector GetStaticRestingReaction(double* StopAfterSeconds = nullptr) const;
 	/** True when certified support keeps this whole interval below the speed cap;
@@ -345,7 +345,7 @@ public:
 	 * certifies a torque-free support law; this is not complete mechanical rest. */
 	bool HasExactStaticFaceSupport() const;
 	/** Frame-local immutable geometry, also available during preparation and canonical quantization. */
-	const Speed::IStaticCollisionWorld* GetStaticCollisionWorldForFrame() const { return StaticRestingWorld; }
+	const Speed::IStaticCollisionWorld* GetStaticCollisionWorldForFrame() const { return StaticRestingWorldStorage(); }
 
 	// Called once per physics frame to reset any cached info in the component or its sub-bodies (e.g. hit info)
 	virtual void ResetForFrame(const float& Delta);
@@ -374,7 +374,7 @@ public:
 
 	void RegisterPhysicalConstraint(const FPhysicalContactConstraint& Constraint);
 	void ClearPhysicalConstraints();
-	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PhysicalConstraints; }
+	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PhysicalConstraintsStorage(); }
 	/** True when another sub-body supplies a live constraint: an isolated
 	 * rigid-body contact response must then defer to the coupled solver. */
 	virtual bool HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const;
@@ -418,6 +418,18 @@ protected:
 		check(Payload.IsEmpty());
 	}
 
+    // Legacy fields remain unchanged. Private owners can separate the common
+    // value blocks from facade calls; this grants no restore or borrow lease.
+    virtual TArray<FPhysicalContactConstraint>& PhysicalConstraintsStorage() {return PhysicalConstraints;}
+    virtual TArray<FPhysicalContactConstraint> const& PhysicalConstraintsStorage() const {return PhysicalConstraints;}
+    virtual Speed::FSimulationSleepState& SleepStateStorage() {return SleepState;}
+    virtual Speed::FSimulationSleepState const& SleepStateStorage() const {return SleepState;}
+    virtual Speed::FIdentityKinematicQuantizationCache& KinematicQuantizationCacheStorage() {return KinematicQuantizationCache;}
+    virtual Speed::FIdentityKinematicQuantizationCache const& KinematicQuantizationCacheStorage() const {return KinematicQuantizationCache;}
+    virtual const Speed::IStaticCollisionWorld*& StaticRestingWorldStorage() {return StaticRestingWorld;}
+    virtual const Speed::IStaticCollisionWorld* const& StaticRestingWorldStorage() const {return StaticRestingWorld;}
+    virtual float& StaticSupportFrameHorizonStorage() {return StaticSupportFrameHorizon;}
+    virtual float const& StaticSupportFrameHorizonStorage() const {return StaticSupportFrameHorizon;}
 	TArray<FPhysicalContactConstraint> PhysicalConstraints;
 	Speed::FSimulationSleepState SleepState;
 	Speed::FIdentityKinematicQuantizationCache KinematicQuantizationCache;
