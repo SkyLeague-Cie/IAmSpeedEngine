@@ -299,8 +299,8 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
 
     TestEqual(TEXT("previous facade view observes only the callback facade write"),RetainedFacadeView.Location.X,LogAttack.WrittenX);
     Next.Frame=2;Next.Sequence=3;Next.Input.SourceSequence=3;Next.Input.Edges.clear();
-    if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
-    const std::vector<P::FPrivateRoadRequest> Third{{101,3,History.Predict(2)}};
+    if(IsolatedHistory.Confirm(5,Next).Status!=EResult::Accepted)return false;
+    const std::vector<P::FPrivateRoadRequest> Third{{101,3,IsolatedHistory.Predict(2)}};
     if(!Isolated->Step(Third,false,Why)||!Control->Step(Third,false,Why))return false;
     const auto Later=Isolated->ReadLatest(),LaterRef=Control->ReadLatest();
     const auto* LaterBody=Later?Later->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==Later->Actors[0].NativeStableId;}):nullptr;
@@ -339,8 +339,8 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     while(MotionCut->Actors[0].NativeWheelRenderRotations[0]==OriginalZero->Actors[0].NativeWheelRenderRotations[0]&&MotionFrame<120)
     {
         ++MotionFrame;Next.Frame=MotionFrame;Next.Sequence=MotionFrame+1;Next.Input.SourceSequence=MotionFrame+1;Next.Input.Edges.clear();
-        if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
-        const std::vector<P::FPrivateRoadRequest> Requests{{101,3,History.Predict(MotionFrame)}};
+        if(IsolatedHistory.Confirm(5,Next).Status!=EResult::Accepted)return false;
+        const std::vector<P::FPrivateRoadRequest> Requests{{101,3,IsolatedHistory.Predict(MotionFrame)}};
         if(!Isolated->Step(Requests,false,Why)||!Control->Step(Requests,false,Why))return false;
         MotionCut=Isolated->ReadLatest();MotionReference=Control->ReadLatest();
         if(!MotionCut||!MotionReference||MotionCut->Frame!=MotionFrame||MotionReference->Frame!=MotionFrame

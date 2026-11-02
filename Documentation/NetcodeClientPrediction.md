@@ -603,3 +603,12 @@ fresh real history and confirms frame0/frame1 in order. It does not clear the
 earlier invalidation, forge rollback acknowledgement or relax any filter guard.
 Native56's55Success/1FAIL stays preserved; its512-attempt CanMove gate succeeds.
 The uncommitted root/settings integration draft is separate and not applied.
+
+
+Source62 extends that same independent ingress chain through actual frame2
+and every subsequent motion frame. Four remaining old-history Confirm/Predict
+uses are corrected. Prepared57/source61 was explicitly cancelled by its owner
+BEFORE any Engine/coordinator launch, with matching frozen inputs and original
+preparation34895/exit0 retained. It is NOT_RUN, not a native failure or success,
+and no Job0 observation or native process exit is invented. The last real
+native result remains56/55Success1FAIL. No production filter/ACK guard changes.
