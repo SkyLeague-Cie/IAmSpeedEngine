@@ -41,6 +41,10 @@ struct FPrivateRoadAccess : Speed::NativeEpoch::IOriginalStorageRoute
     bool SelectsOriginalStorage() const noexcept override;
     struct FSlot {std::shared_ptr<const FBranchProcessedInput> Input;bool Consumed=false;U64 Actor=0,Incarnation=0;};
     UWorld* World=nullptr;
+    TWeakObjectPtr<UWorld> OriginalWorldBirth;
+    TWeakObjectPtr<ULevel> OriginalLevelBirth;
+    TWeakObjectPtr<ASpeedBranchSimulation> OriginalDriverBirth;
+    bool OriginalActorWorldStillMatches(const AActor* Actor) const;
     bool Active=false,RequiresInitialPublication=true,InitialPublicationReleased=false;
     U64 Frame=0;
     TMap<const USpeedBranchWheeledComponent*,FSlot> Slots;
@@ -101,7 +105,18 @@ uint32 NativeNetworkComponentCount(UWorld* World)
 }
 bool NoNetworkOwner(UWorld* World)
 {return World&&!World->Scene&&!World->GetPhysicsScene()&&!World->bShouldSimulatePhysics
-    &&!World->GetNetDriver()&&NativeNetworkComponentCount(World)==0;}
+    &&Speed::NativeObjectRead::IsResolvedNull(World->NetDriver)&&NativeNetworkComponentCount(World)==0;}
+}
+bool FPrivateRoadAccess::OriginalActorWorldStillMatches(const AActor* Actor) const
+{
+    const auto* W=OriginalWorldBirth.Get();const auto* L=OriginalLevelBirth.Get();
+    return Actor&&W&&W==World&&L&&!W->bIsTearingDown
+        &&!W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        &&!Actor->HasAnyFlags(RF_ClassDefaultObject|RF_BeginDestroyed|RF_FinishDestroyed)
+        &&!L->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+        &&Actor->GetOuter()==L&&L->GetOuter()==W
+        &&Speed::NativeObjectRead::MatchesOriginalBirth(W->PersistentLevel,OriginalLevelBirth)
+        &&Speed::NativeObjectRead::MatchesOriginalBirth(L->OwningWorld,OriginalWorldBirth);
 }
 bool FPrivateRoadAccess::SelectsOriginalStorage() const noexcept
 {
@@ -258,15 +273,9 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
     }
     bool OriginalActorWorldStillMatches(const AActor* A,const UWorld* W) const
     {
-        // Exact private runtime profile only: genuine SpawnActor uses the
-        // actual persistent ULevel as direct outer; that level's outer is W.
-        // Streamed/reparented/changed topologies are refused, not generalized.
-        const auto* L=OriginalLevelWeak.Get();
-        return A&&W&&L&&!A->HasAnyFlags(RF_ClassDefaultObject|RF_BeginDestroyed|RF_FinishDestroyed)
-            &&!L->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
-            &&A->GetOuter()==L&&L->GetOuter()==W
-            &&Speed::NativeObjectRead::MatchesOriginalBirth(W->PersistentLevel,OriginalLevelWeak)
-            &&Speed::NativeObjectRead::MatchesOriginalBirth(L->OwningWorld,OriginalWorldWeak);
+        // Same genuine private runtime topology predicate, also used by the
+        // native driver's inherited GetWorld calls while the route is active.
+        return W==OriginalWorldWeak.Get()&&Access->OriginalActorWorldStillMatches(A);
     }
     bool AcquiredGraphStillLive() const
     {
@@ -363,6 +372,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     if(!I.World.IsValid()){Refuse(Why,TEXT("private world creation failed"));return {};}
     I.OriginalWorldWeak=I.World.Get();
     I.OriginalLevelWeak=I.World->PersistentLevel.Get();I.Pin(I.OriginalLevelWeak.Get());
+    I.Access->OriginalWorldBirth=I.OriginalWorldWeak;I.Access->OriginalLevelBirth=I.OriginalLevelWeak;
     if(!I.OriginalLevelWeak.IsValid()||!Speed::NativeObjectRead::MatchesOriginalBirth(
         I.OriginalLevelWeak.Get()->OwningWorld,I.OriginalWorldWeak))return {};
     // InitWorld assigns this tick flag only inside its scene-initialization
@@ -400,7 +410,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     I.Driver=I.World->SpawnActor<ASpeedBranchSimulation>();
     if(!I.Driver||ASpeedPhysicsSimulation::GetEngineFPS()!=300)
     {Refuse(Why,TEXT("private driver missing or canonical physical rate differs"));return {};}
-    I.OriginalDriverWeak=I.Driver;
+    I.OriginalDriverWeak=I.Driver;I.Access->OriginalDriverBirth=I.OriginalDriverWeak;
     I.Driver->Access=I.Access;if(!I.Driver->BindOriginalDriverStorage(I.Access)){Refuse(Why,TEXT("original native driver birth storage refused"));return {};}
     I.NativeCppKeepAlive.push_back(I.Driver->OriginalDriverStorage);
     {FOriginalComponentStorageScope OriginalDriver(*I.Access);
@@ -1920,8 +1930,11 @@ bool USpeedBranchWheeledComponent::HasIsolatedNativeConstruction() const
     // Check actual stored pointers as well as the world's object census: an
     // inherited CDO reference is not an absent native network participant.
     return NetworkConstruction==ESpeedWheeledNetworkConstruction::IAmSpeedOnly
-        &&!NetworkPhysicsComponent&&!SNetworkPhysicsComponentWheeledDomainStorage()&&!WheeledNetworkPhysicsComponentWheeledDomainStorage()
-        &&!SNetworkSettingsWheeledDomainStorage()&&!NetDataAssetWheeledDomainStorage()&&!AHUD::OnShowDebugInfo.IsBoundToObject(this)
+        &&Speed::NativeObjectRead::IsResolvedNull(NetworkPhysicsComponent)
+        &&Speed::NativeObjectRead::IsResolvedNull(SNetworkPhysicsComponentWheeledDomainStorage())
+        &&Speed::NativeObjectRead::IsResolvedNull(WheeledNetworkPhysicsComponentWheeledDomainStorage())
+        &&Speed::NativeObjectRead::IsResolvedNull(SNetworkSettingsWheeledDomainStorage())
+        &&Speed::NativeObjectRead::IsResolvedNull(NetDataAssetWheeledDomainStorage())&&!AHUD::OnShowDebugInfo.IsBoundToObject(this)
 #if !UE_BUILD_SHIPPING
         &&!ISpeedComponent::IsPhysicsPhaseObservationEnabled() // actual base stored observer, no masked count
 #endif
@@ -2135,6 +2148,13 @@ void ASpeedBranchCar::BeginPlay() {AActor::BeginPlay();}
 ASpeedBranchSimulation::ASpeedBranchSimulation()
 {bAsyncPhysicsTickEnabled=false;PrimaryActorTick.bCanEverTick=false;PrimaryActorTick.bStartWithTickEnabled=false;SetReplicates(false);}
 void ASpeedBranchSimulation::BeginPlay() {AActor::BeginPlay();}
+UWorld* ASpeedBranchSimulation::GetWorld() const
+{
+    const auto A=Access.lock();
+    if(A&&A->SelectsOriginalStorage())
+        return A->OriginalDriverBirth.Get()==this&&A->OriginalActorWorldStillMatches(this)?A->World:nullptr;
+    return AActor::GetWorld(); // real ordinary Engine facade outside the private route
+}
 bool ASpeedBranchSimulation::InitializePrivate(USpeedWorldSubsystem& Bridge)
 {
     if(!IsInGameThread()||!Access.lock()||GetEngineFPS()!=300)return false;

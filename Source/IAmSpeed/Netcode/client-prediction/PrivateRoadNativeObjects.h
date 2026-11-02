@@ -650,6 +650,7 @@ class IAMSPEED_API ASpeedBranchSimulation final : public ASpeedPhysicsSimulation
     bool AllowsNativeDriverExecution() const override {return HasOriginalDriverExecutionRoute();}
 public:
     ASpeedBranchSimulation();
+    UWorld* GetWorld() const override;
     void BeginPlay() override;
     void Tick(float) override {}
 };

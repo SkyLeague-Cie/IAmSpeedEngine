@@ -994,3 +994,46 @@ transfers. Factory callbacks, full typed causal state, genuine service/module
 participation, authoritativeK restore/readback and localized island resimulation
 remain open. Restoration providers/guards stay closed. Existing fast replay is
 still global, and these NullRHI fixtures are not a fresh Device/render playtest.
+
+
+Source76/native72 completed its own56 native tests with zero errors/warnings,
+Pending1, three commandlets, two actual Game hosts plus dedicated, and expected
+cancellation9/10. Original60492/coordinators20208+40232 exited0, actual Job0
+twice and final audits empty.35 oscillations/21455 frames still measured six
+kinematic differences zero. One-car Step reads fell10 to2 (World), birth177,
+control1/null48/40 identities/depth1/no overflow. No full closure follows.
+
+Crucially, the real ALL collision counter measured81385 scoped reads:56117
+other-object and25268 null reads, while the64 selected body/floor targets still
+measured0 with64 ordinary positive controls. This newly measured scope stays
+OPEN. The target-only zero is not a substitute for all-object coverage.
+
+Source77 adds a readonly resolved-null predicate over actual native handle
+fields. It rejects live/unresolved handles rather than resolving or inventing
+an absent participant. Five actual private network fields and actual public
+World.NetDriver use that predicate. A real null Get remains a tracked positive
+control; the helper is tested on genuine null/live fields with ALL read events
+counted. No fabricated unresolved fixture is used or claimed qualified.
+
+The private native driver reuses the same actual weak Driver/World/Level and
+Outer/PersistentLevel/OwningWorld predicate for its inherited virtual GetWorld
+calls while the genuine original GT route is active. Invalid originals return
+null/refuse, and ordinary Engine behavior remains outside that route. No
+arbitrary remembered world is accepted in place of the real topology fields.
+
+The Windows sampler now observes EVERY scoped GT object/null read before
+selection, with body/floor/other/null categories. Its256 fixed prefixes of24 PCs
+retain explicit capture failures, reentrant sample skips and capacity overflow;
+their sum must reconcile with the ALL counter. The actual system capture entry
+is acquired/pinned before observer registration; module mapping/symbol work
+stays after all math. Prefix suffixes and post-capture loader mapping remain
+unknown, and instrumented timings are not an uninstrumented performance claim.
+
+Source77 needs fresh native/Game qualification. Factory177, SetOwner callbacks
+under GC/math, real service/module/deleter lifetimes, full typed causal capture,
+same-graph authoritativeK restoration and conservative localized island replay
+remain open. Actual service retention must distinguish an admitted internal
+context from callbacks, serialize admission/closing/lazy pool initialization,
+provide nonblocking stop and an explicitly neutral single join coordinator,
+and test irreversible shutdown in a fresh process without a global reset.
+No restoration guard is opened by this diagnostic change; no76 PASS transfers.

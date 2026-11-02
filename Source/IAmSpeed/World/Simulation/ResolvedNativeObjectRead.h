@@ -25,6 +25,13 @@ template<class T> bool MatchesOriginalBirth(const TObjectPtr<T>& Ptr,const TWeak
     return Original&&::IsObjectHandleResolved(Ptr.GetHandle())
         &&ObjectPtr_Private::Friend::NoAccessTrackingGetNoResolve(Ptr)==Original;
 }
+// Actual absence of this resolved field, not an invented missing participant.
+// An unresolved handle refuses; no load/resolve/read callback is dispatched.
+template<class T> bool IsResolvedNull(const TObjectPtr<T>& Ptr)
+{
+    return ::IsObjectHandleResolved(Ptr.GetHandle())
+        &&ObjectPtr_Private::Friend::NoAccessTrackingGetNoResolve(Ptr)==nullptr;
+}
 // Engine exposes only a mutable GetGCPtr accessor. The cast obtains the
 // actual wrapper's handle for a read; neither wrapper nor class is modified.
 template<class T> UClass* ResolvedOriginalClass(const TSubclassOf<T>& Class)

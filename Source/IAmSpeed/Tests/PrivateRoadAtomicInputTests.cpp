@@ -27,6 +27,7 @@
 #include "Components/BoxComponent.h"
 #include "UObject/StrongObjectPtr.h"
 #include "IAmSpeed/World/Simulation/WeakContactReference.h"
+#include "IAmSpeed/World/Simulation/ResolvedNativeObjectRead.h"
 
 namespace
 {
@@ -54,6 +55,28 @@ bool TestActualIgnoredWeakEquality(FAutomationTestBase& Test)
     Garbage=nullptr;CollectGarbage(RF_NoFlags); // no dangling raw pointer is used after real collection
     if(!Test.TestTrue(TEXT("genuine GC leaves the original unretained weak identity stale"),Invalid.IsStale()))return false;
     Check(Invalid,nullptr,true);Check(Invalid,Live.Get(),false);
+    const TObjectPtr<UBoxComponent> ActualNull=nullptr,ActualLive=Live.Get();
+    uint64 ActualNullReads=0,ActualReadEvents=0,OrdinaryNullReadDelta=0,NoResolveNullReadDelta=0,NoResolveAllReadDelta=0;
+    bool OrdinaryNullAccepted=false,ResolvedNullAccepted=false,LiveRejected=false;
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+    const auto NullControlHandle=UE::CoreUObject::AddObjectHandleReadCallback(
+        [&](TArrayView<const UObject* const> Objects){ActualReadEvents+=Objects.Num();for(const auto* Object:Objects)if(!Object)++ActualNullReads;});
+#endif
+    const uint64 BeforeOrdinary=ActualNullReads;OrdinaryNullAccepted=ActualNull.Get()==nullptr;
+    OrdinaryNullReadDelta=ActualNullReads-BeforeOrdinary;
+    const uint64 BeforeNoResolve=ActualNullReads,BeforeAllNoResolve=ActualReadEvents;
+    ResolvedNullAccepted=Speed::NativeObjectRead::IsResolvedNull(ActualNull);
+    LiveRejected=!Speed::NativeObjectRead::IsResolvedNull(ActualLive);
+    NoResolveNullReadDelta=ActualNullReads-BeforeNoResolve;NoResolveAllReadDelta=ActualReadEvents-BeforeAllNoResolve;
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+    UE::CoreUObject::RemoveObjectHandleReadCallback(NullControlHandle);
+    OK=Test.TestEqual(TEXT("ordinary actual null Get remains genuinely tracked"),OrdinaryNullReadDelta,uint64(1))&&OK;
+#endif
+    OK=Test.TestTrue(TEXT("real resolved null accepted and real live object rejected"),OrdinaryNullAccepted&&ResolvedNullAccepted&&LiveRejected)&&OK;
+    OK=Test.TestEqual(TEXT("actual resolved null/live checks dispatch no null read callback"),NoResolveNullReadDelta,uint64(0))&&OK;
+    OK=Test.TestEqual(TEXT("real null and live NoResolve checks dispatch no object read event"),NoResolveAllReadDelta,uint64(0))&&OK;
+    Test.AddInfo(FString::Printf(TEXT("[ActualResolvedNullHandle] trackingCompiled=%d nativeNullAccepted=%d liveRejected=%d ordinaryNullReads=%llu noResolveNullReads=%llu noResolveAllReads=%llu unresolvedCaseNotQualified=1 completeRestoreLease=0"),
+        int(UE_WITH_OBJECT_HANDLE_TRACKING),int(ResolvedNullAccepted),int(LiveRejected),OrdinaryNullReadDelta,NoResolveNullReadDelta,NoResolveAllReadDelta));
     Test.AddInfo(FString::Printf(TEXT("[ActualIgnoredWeakEquality] cases=%u actualGarbage=1 actualGC=1 staleAfterGC=1 noOriginalRecipeScope=1 fullLifetimeLease=0"),Cases));
     return OK;
 }

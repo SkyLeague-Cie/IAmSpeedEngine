@@ -109,10 +109,10 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
     if(!TestTrue(TEXT("actual system PC capture function resolved and pinned before observer"),CapturePinned))return false;
     struct FReadStack
     {
-        bool Floor=false;uint16 Depth=0;uint64 Events=0;
+        bool Floor=false;uint8 ObjectKind=0;uint16 Depth=0;uint64 Events=0;
         std::array<uint64,24> PCs{};
     };
-    std::array<FReadStack,64> ReadStacks{};
+    std::array<FReadStack,256> ReadStacks{};
     uint32 UsedStacks=0,TraceDepth=0,MaxTraceDepth=0;
     uint64 CaptureFailures=0,OverflowStackEvents=0,ReentrantSamplesSkipped=0;
 #endif
@@ -121,51 +121,45 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
         [&](TArrayView<const UObject* const> Objects)
         {
             if(!IsInGameThread())return;
-            if(Speed::RoadSettings::SelectedOriginalRoadSettings())for(const auto* Object:Objects)
+            const bool Scoped=Speed::RoadSettings::SelectedOriginalRoadSettings()!=nullptr;
+            for(const auto* Object:Objects)
             {
+                FReadTarget* Found=nullptr;
+                for(auto& Target:ReadTargets)if(Object&&Object==Target.Original.Get()){Found=&Target;break;}
+                if(!Scoped){if(Found)++Found->Outside;continue;}
                 ++AllScopedObjectReads;
-                if(!Object){++ScopedNullObjectReads;continue;}
-                bool TargetFound=false;
-                for(const auto& Target:ReadTargets)if(Object==Target.Original.Get()){TargetFound=true;break;}
-                if(!TargetFound)++ScopedOtherObjectReads;
-            }
-            for(const auto* Object:Objects)for(auto& Target:ReadTargets)
-                if(Object&&Object==Target.Original.Get())
-                {
-                    if(Speed::RoadSettings::SelectedOriginalRoadSettings())
-                    {
-                        ++Target.Scoped; // ALL actual target events remain counted.
+                const uint8 ObjectKind=Found?(Found->Floor?1:0):(Object?2:3);
+                if(Found)++Found->Scoped;
+                else if(Object)++ScopedOtherObjectReads;
+                else ++ScopedNullObjectReads;
 #if PLATFORM_WINDOWS
-                        ++TraceDepth;MaxTraceDepth=FMath::Max(MaxTraceDepth,TraceDepth);
-                        ON_SCOPE_EXIT{--TraceDepth;};
-                        // A nested observer event is counted above, never
-                        // suppressed. Avoid recursively instrumenting a stack
-                        // sampler; its skipped sample remains explicitly open.
-                        if(TraceDepth>1){++ReentrantSamplesSkipped;continue;}
-                        std::array<void*,24> Captured{};
-                        const uint16 Depth=RawCapture(0,uint32(Captured.size()),Captured.data(),nullptr);
-                        if(!Depth){++CaptureFailures;continue;}
-                        uint32 Index=0;
-                        for(;Index<UsedStacks;++Index)
-                        {
-                            const auto& Stack=ReadStacks[Index];
-                            if(Stack.Floor!=Target.Floor||Stack.Depth!=Depth)continue;
-                            bool Same=true;
-                            for(uint16 Frame=0;Frame<Depth;++Frame)
-                                if(Stack.PCs[Frame]!=reinterpret_cast<uint64>(Captured[Frame])){Same=false;break;}
-                            if(Same)break;
-                        }
-                        if(Index==UsedStacks)
-                        {
-                            if(UsedStacks==ReadStacks.size()){++OverflowStackEvents;continue;}
-                            auto& Stack=ReadStacks[UsedStacks++];Stack.Floor=Target.Floor;Stack.Depth=Depth;
-                            for(uint16 Frame=0;Frame<Depth;++Frame)Stack.PCs[Frame]=reinterpret_cast<uint64>(Captured[Frame]);
-                        }
-                        ++ReadStacks[Index].Events;
-#endif
-                    }
-                    else ++Target.Outside;
+                // Sample EVERY actual event, not just the selected64 targets.
+                // Other objects and nulls have distinct diagnostic categories.
+                ++TraceDepth;MaxTraceDepth=FMath::Max(MaxTraceDepth,TraceDepth);
+                ON_SCOPE_EXIT{--TraceDepth;};
+                if(TraceDepth>1){++ReentrantSamplesSkipped;continue;}
+                std::array<void*,24> Captured{};
+                const uint16 Depth=RawCapture(0,uint32(Captured.size()),Captured.data(),nullptr);
+                if(!Depth){++CaptureFailures;continue;}
+                uint32 Index=0;
+                for(;Index<UsedStacks;++Index)
+                {
+                    const auto& Stack=ReadStacks[Index];
+                    if(Stack.ObjectKind!=ObjectKind||Stack.Depth!=Depth)continue;
+                    bool Same=true;
+                    for(uint16 Frame=0;Frame<Depth;++Frame)
+                        if(Stack.PCs[Frame]!=reinterpret_cast<uint64>(Captured[Frame])){Same=false;break;}
+                    if(Same)break;
                 }
+                if(Index==UsedStacks)
+                {
+                    if(UsedStacks==ReadStacks.size()){++OverflowStackEvents;continue;}
+                    auto& Stack=ReadStacks[UsedStacks++];Stack.ObjectKind=ObjectKind;Stack.Floor=ObjectKind==1;Stack.Depth=Depth;
+                    for(uint16 Frame=0;Frame<Depth;++Frame)Stack.PCs[Frame]=reinterpret_cast<uint64>(Captured[Frame]);
+                }
+                ++ReadStacks[Index].Events;
+#endif
+            }
         });
     ON_SCOPE_EXIT{UE::CoreUObject::RemoveObjectHandleReadCallback(ReadHandle);};
 #endif
@@ -296,14 +290,14 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
         RecordedStackEvents+=ReadStacks[Index].Events;
         if(ReadStacks[Index].Depth==24)DepthCappedEvents+=ReadStacks[Index].Events;
     }
-    AddInfo(FString::Printf(TEXT("[ActualInteractingReadStacks] unique=%u recordedEvents=%llu captureFailures=%llu overflowEvents=%llu reentrantSamplesSkipped=%llu maxObserverDepth=%u depthCappedEvents=%llu frameCap=24 stackCap=64 capturedPrefixOnly=1 addressesOnly=1 timingProfileInstrumented=1 completeCallbackClosure=0"),
+    AddInfo(FString::Printf(TEXT("[ActualInteractingReadStacks] unique=%u recordedEvents=%llu captureFailures=%llu overflowEvents=%llu reentrantSamplesSkipped=%llu maxObserverDepth=%u depthCappedEvents=%llu frameCap=24 stackCap=256 scopeAllObjectsAndNulls=1 capturedPrefixOnly=1 addressesOnly=1 timingProfileInstrumented=1 completeCallbackClosure=0"),
         UsedStacks,RecordedStackEvents,CaptureFailures,OverflowStackEvents,ReentrantSamplesSkipped,MaxTraceDepth,DepthCappedEvents));
-    if(!TestEqual(TEXT("every scoped target event is represented or explicitly incomplete"),
-        RecordedStackEvents+CaptureFailures+OverflowStackEvents+ReentrantSamplesSkipped,ScopedBodyReads+ScopedFloorReads))return false;
+    if(!TestEqual(TEXT("every actual scoped object/null event is represented or explicitly incomplete"),
+        RecordedStackEvents+CaptureFailures+OverflowStackEvents+ReentrantSamplesSkipped,AllScopedObjectReads))return false;
     for(uint32 Index=0;Index<UsedStacks;++Index)
     {
         const auto& Stack=ReadStacks[Index];
-        AddInfo(FString::Printf(TEXT("[ActualInteractingReadStack] ordinal=%u floor=%d events=%llu depth=%u suffixUnknown=%d"),Index,int(Stack.Floor),Stack.Events,uint32(Stack.Depth),int(Stack.Depth==24)));
+        AddInfo(FString::Printf(TEXT("[ActualInteractingReadStack] ordinal=%u floor=%d events=%llu depth=%u suffixUnknown=%d objectKind=%u"),Index,int(Stack.Floor),Stack.Events,uint32(Stack.Depth),int(Stack.Depth==24),uint32(Stack.ObjectKind)));
         for(uint16 Frame=0;Frame<Stack.Depth;++Frame)
         {
             const uint64 PC=Stack.PCs[Frame];HMODULE Module=nullptr;
