@@ -717,3 +717,22 @@ and expected9/10 cancellation. Atframe170 measured position errors were
 3/6 reached exact six-COM comparison at239,215contactframes. Every original
 job naturally drained with final audits0. No Device/render/localized/restoreK
 qualification transfers to67. No earlier FAIL/UNKNOWN is relabeled.
+
+
+Source68 corrects a demonstrated CODEC bounds defect in source67: this Engine
+stores64 collision responses, while ECC_MAX also includes a deprecated marker.
+GetResponse indexes the native array directly, so encoding through ECC_MAX read
+one byte beyond it. The new bound comes from the actual EnumArray extent with
+a compile-time marker/layout check. No physical channel, state or tolerance is
+removed. A native regression varies each of all64 channels independently and
+changes adjacent sentinels while requiring identical encoded response values.
+Source63 native49Success/7FAIL/0warnings and all57 body differences remain kept.
+Their runtime attribution to this defect must be confirmed by a fresh native
+paired run, not inferred from the source fix alone. Old six-COM measures remain
+scoped; complete state/restore/localization admission stays closed.
+
+Source67 also genuinely observed ObjectHandleRead tracking enabled,251 scoped
+target reads and4 original native views distinct from the facade, with no
+physical mutation. This is positive evidence of an OPEN callback/view path,
+not a protection certificate. That path still needs actual closure before a
+complete restore lease can be admitted. Native63 later stages were NOT_RUN.

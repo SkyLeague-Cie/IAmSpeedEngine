@@ -17,6 +17,11 @@
 
 namespace Speed::Netcode::Prediction::OriginalBodyCapture
 {
+inline constexpr std::size_t StoredResponseChannels=std::extent_v<decltype(FCollisionResponseContainer::EnumArray)>;
+// ECC_MAX includes an extra deprecated marker, not a stored channel. Bind to
+// the ACTUAL native array extent and prove that profile boundary at compile.
+static_assert(StoredResponseChannels==std::size_t(ECC_OverlapAll_Deprecated));
+
 enum class EReferenceRole : uint16 {Component=1,Box,Wheel,WheelObject,NativeWheel,NativeSuspension,StaticSource};
 struct FReferenceKey
 {
@@ -86,7 +91,7 @@ public:
         Value(uint32(V.Num()));for(const auto& Item:V)Value(Item);
     }
     void Value(const FCollisionResponseParams& V)
-    {for(int32 I=0;I<ECC_MAX;++I)Value(V.CollisionResponse.GetResponse(ECollisionChannel(I)));}
+    {for(std::size_t I=0;I<StoredResponseChannels;++I)Value(V.CollisionResponse.GetResponse(ECollisionChannel(I)));}
     void Value(const Speed::FKinematicState& V)
     {Value(V.Location);Value(V.Velocity);Value(V.Acceleration);Value(V.Rotation);Value(V.AngularVelocity);Value(V.AngularAcceleration);}
     void Value(const SWheelRenderData& V)

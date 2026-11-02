@@ -2,6 +2,10 @@
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPhysicsWorld.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPartialStateComparison.h"
+#include "IAmSpeed/Netcode/client-prediction/OriginalRoadBodyValueCapture.h"
+#include <array>
+#include <cstddef>
+#include <type_traits>
 #include "IAmSpeed/Driving/DrivingInput.h"
 #include "Misc/AutomationTest.h"
 #include "HAL/IConsoleManager.h"
@@ -128,6 +132,33 @@ struct FMaxima
         if(D.Different){if(FirstDifferent<0)FirstDifferent=int64(Frame);++DifferentFrames;}return true;
     }
 };
+bool TestResponseChannelCapture(FAutomationTestBase& Test)
+{
+    namespace C=Speed::Netcode::Prediction::OriginalBodyCapture;
+    struct FAdjacentResponse
+    {
+        FCollisionResponseParams Params{ECR_Block};
+        std::array<uint8,16> After{};
+    };
+    static_assert(std::is_standard_layout_v<FAdjacentResponse>);
+    static_assert(offsetof(FAdjacentResponse,After)==sizeof(FCollisionResponseParams));
+    FAdjacentResponse A,B;A.After.fill(0x17);B.After.fill(0xe3);
+    C::FReferences NoObjectReferences; // this scalar-only value has no object references
+    C::FWriter X(NoObjectReferences),Y(NoObjectReferences);X.Value(A.Params);Y.Value(B.Params);
+    bool OK=Test.TestEqual(TEXT("native stored collision response channel count"),C::StoredResponseChannels,size_t(64));
+    OK=Test.TestTrue(TEXT("adjacent sentinel bytes cannot affect response encoding"),X.Bytes()==Y.Bytes())&&OK;
+    uint32 Changed=0;
+    for(size_t I=0;I<C::StoredResponseChannels;++I)
+    {
+        B.Params=A.Params;B.Params.CollisionResponse.SetResponse(ECollisionChannel(I),ECR_Ignore);
+        C::FWriter Z(NoObjectReferences);Z.Value(B.Params);
+        if(Z.Bytes()!=X.Bytes())++Changed;
+    }
+    OK=Test.TestEqual(TEXT("EVERY actual collision response channel including63 changes the encoding"),Changed,uint32(C::StoredResponseChannels))&&OK;
+    Test.AddInfo(FString::Printf(TEXT("[ActualResponseChannelCodec] nativeStoredChannels=%llu independentlyChanged=%u adjacentSentinelsExcluded=%d deprecatedMarkerSerialized=0 completeEpoch=0"),
+        uint64(C::StoredResponseChannels),Changed,int(X.Bytes()==Y.Bytes())));
+    return OK;
+}
 bool RunCase(FAutomationTestBase& Test,const FCase& Case)
 {
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
@@ -369,6 +400,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASNativeInitialPublicationGate,"IAmSpeed.Netc
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
 bool FIASNativeInitialPublicationGate::RunTest(const FString&)
 {
+    if(!IASAtomicRoadCampaign::TestResponseChannelCapture(*this))return false;
     namespace P=Speed::Netcode::Prediction;namespace V=Speed::Input::V2;
     using namespace Speed::Netcode;
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
