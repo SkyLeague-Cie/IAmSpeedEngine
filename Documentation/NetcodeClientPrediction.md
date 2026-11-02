@@ -554,3 +554,11 @@ Default legacy local position/rotation access keeps its exact original
 GetRelativeLocation/GetRelativeRotation().Quaternion expressions; private
 epochs consume their separately owned local pose. No numeric tuning or
 restoration capability is introduced.
+
+
+Source57 preserves the free gutter helper's pointer parameter and the two
+actual Speed::SBox value/query fields; these are not UObject body members.
+Native52's actual C2664/C2039, exit6/310.219s, natural Job0 twice/source+protected+
+Engine audits0 and all diagnostics remain preserved. Its separate preparation
+label-check incident stays provisional and is not erased by this correction.
+No native/runtime stage ran; no equation/guard/restore capability changed.

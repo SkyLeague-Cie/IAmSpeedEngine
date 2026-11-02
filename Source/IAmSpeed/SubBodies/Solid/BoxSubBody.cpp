@@ -208,14 +208,14 @@ namespace
     }
 
     void IAmSpeedApplyGutterSlideDamping(
-        ISpeedComponent* ParentComponentBodyDomainStorage(),
+        ISpeedComponent* GutterParentComponent,
         const bool MainSubBodyForDamping,
         const FVector& SupportNormal,
         const float Dt,
         const bool bEnableDamping,
         const TCHAR* Source)
     {
-        if (!ParentComponentBodyDomainStorage() || !MainSubBodyForDamping || !bEnableDamping || Dt <= 0.f)
+        if (!GutterParentComponent || !MainSubBodyForDamping || !bEnableDamping || Dt <= 0.f)
         {
             return;
         }
@@ -227,7 +227,7 @@ namespace
             return;
         }
 
-        const FVector V = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+        const FVector V = GutterParentComponent->GetPhysCOMVelocity();
         const FVector VT = V - FVector::DotProduct(V, N) * N;
         const float TangentSpeed = VT.Size();
         const float MinSpeed = FMath::Max(0.f, CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread());
@@ -282,7 +282,7 @@ namespace
             return;
         }
 
-        ParentComponentBodyDomainStorage()->AddPhysVelocity(DeltaV);
+        GutterParentComponent->AddPhysVelocity(DeltaV);
 
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
@@ -291,7 +291,7 @@ namespace
                 BoxSubBodyLog,
                 Warning,
                 TEXT("[CCDBoxGutterSlideDamping] Frame=%d Source=%s N=%s TangentSpeed=%.2f ClimbSpeed=%.2f DeltaV=%s ClimbDeltaV=%s Damping=%.2f MaxDelta=%.2f MaxClimb=%.2f Velocity=%s"),
-                ParentComponentBodyDomainStorage()->NumFrame(),
+                GutterParentComponent->NumFrame(),
                 Source,
                 *N.ToString(),
                 TangentSpeed,
@@ -4768,7 +4768,7 @@ SSBox UBoxSubBody::MakeBox() const
         CrtKinematics.AngularVelocity,
         CrtKinematics.AngularAcceleration
     );
-    BoxShape.bProductionNonpenetratingSphereContactsBoxDomainStorage() = bProductionNonpenetratingSphereContactsBoxDomainStorage();
+    BoxShape.bProductionNonpenetratingSphereContacts = bProductionNonpenetratingSphereContactsBoxDomainStorage();
     return BoxShape;
 }
 
@@ -4784,7 +4784,7 @@ SSBox UBoxSubBody::MakeBoxFromKS(const SKinematic& BoxKinematicState) const
         CrtKinematics.AngularVelocity,
         CrtKinematics.AngularAcceleration
     );
-    BoxShape.bProductionNonpenetratingSphereContactsBoxDomainStorage() = bProductionNonpenetratingSphereContactsBoxDomainStorage();
+    BoxShape.bProductionNonpenetratingSphereContacts = bProductionNonpenetratingSphereContactsBoxDomainStorage();
     return BoxShape;
 }
 
