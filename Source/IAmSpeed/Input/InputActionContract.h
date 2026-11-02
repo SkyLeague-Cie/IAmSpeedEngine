@@ -116,7 +116,7 @@ public:
                 || !Token(A.Name) || !A.Version || !A.Aliases.empty() || A.Type!=EActionType::Axis1D
                 || A.Wiring>EActionWiring::Wired || A.Quantization<=0
                 || A.Accumulation>EActionAccumulation::HighestAbsolute || !ValidModifiers(A.Modifiers)
-                || !std::isfinite(A.Deadzone) || A.Deadzone<0 || A.Deadzone>=1
+                || !std::isfinite(A.Deadzone) || A.Deadzone<0 || A.Deadzone>1
                 || !std::isfinite(A.Exponent) || A.Exponent<=0
                 || !std::isfinite(A.Sensitivity) || A.Sensitivity<=0) return false;
             const auto Name=A.Owner+":"+A.Name;
