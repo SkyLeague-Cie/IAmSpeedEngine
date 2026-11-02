@@ -16,6 +16,7 @@ struct FNativePredictionProbeOptions
     std::uint32_t ControlledDatagramDropEvery=0;
     // Zero preserves the current fixture batching. Nonzero limits each retry
     // to the oldest N unacknowledged ORIGINAL records; never relabel/skip holes.
+    std::uint32_t ObservationRetryRecordLimit=0; //0=legacy latest-only;1/2/4/8/16=retained observable records
     std::uint32_t InputRetryRecordLimit=0; // supported 1/2/4/8/16
     std::uint32_t MaxReplayFramesPerPulse=16; // work budget; physical delta remains1/300s
 };

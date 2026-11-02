@@ -1,6 +1,7 @@
 #include "NativePredictionProcessProbe.h"
 #include "RedundantDatagram.h"
 #include "OriginalRetryOrder.h"
+#include "ObservationRetention.h"
 #include "AuthorityInputJournal.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadConformanceProfile.h"
@@ -25,7 +26,7 @@ namespace ProcessProbeDetail
 {
 namespace P=Prediction;namespace V=Speed::Input::V2;
 constexpr U64 Frames=240,Server=5,PeerA=4,PeerB=7;
-enum :std::uint8_t {Hello=1,OwnerInput=2,AuthorityInput=3,Observed=4,RetentionAck=5,ClientDone=6,ObservedDivergence=8,InitialPublication=9,StartupReady=10,StartActivation=11,AuthorityRetained=12};
+enum :std::uint8_t {Hello=1,OwnerInput=2,AuthorityInput=3,Observed=4,RetentionAck=5,ClientDone=6,ObservationRetained=7,ObservedDivergence=8,InitialPublication=9,StartupReady=10,StartActivation=11,AuthorityRetained=12};
 struct FSample {FPacket Packet;std::shared_ptr<const V::FInputFrame> Local;};
 bool GameValues(const Speed::Netcode::FFrame& F)
 {if(F.Values[0]<0||F.Values[0]>255||F.Values[1]<0||F.Values[1]>255||F.Values[2]<-127||F.Values[2]>127)return false;for(std::size_t A=3;A<ActionCount;++A)if(F.Values[A])return false;return true;}
@@ -217,7 +218,7 @@ struct FFirstForwardKinematicTrace
         S<<"]}";return bool(S);
     }
 };
-bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount,U64 ActualVehicleContactFrames,const FLocalSessionEgressCounters& Egress,const FFirstForwardKinematicTrace* Trace=nullptr,const FAuthorityInputJournal* Journal=nullptr)
+bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount,U64 ActualVehicleContactFrames,const FLocalSessionEgressCounters& Egress,const FFirstForwardKinematicTrace* Trace=nullptr,const FAuthorityInputJournal* Journal=nullptr,const std::array<U64,2>& RetainedObservationFrames={})
 {
     if(!InitialSynchronized||OwnerAuthorityCount!=Frames||RemoteAuthorityCount!=Frames
         ||(O.Scenario==ENativeProbeScenario::InteractingInputFixture&&!ActualVehicleContactFrames))return false;
@@ -249,6 +250,8 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
             <<",\"os_sent\":"<<C.OsSent<<",\"os_would_block\":"<<C.OsWouldBlock<<'}';
     }
     S<<"]}";
+    S<<",\"native_observation_retention\":{\"scope\":\"observable_value_journal_only_no_restore_or_source_lease\",\"retry_records\":"<<O.ObservationRetryRecordLimit
+        <<",\"retained_frames\":["<<RetainedObservationFrames[0]<<','<<RetainedObservationFrames[1]<<"],\"retention_ack_is_physical_consumption\":false,\"complete_physical_state\":false}";
     if(Trace&&(!Journal||!Trace->Write(S,O.Launcher.SelfPeer==PeerA?101:102,*Journal)))return false;
     S<<"}\n";
     S.close();if(!S)return false;std::error_code Error;std::filesystem::rename(Temp,Path,Error);return !Error;
@@ -299,6 +302,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
     if(O.Launcher.ControlledLossEvery||O.Launcher.ControlledLossKinds
         ||(O.ControlledDatagramDropEvery&&(O.ControlledDatagramDropEvery<2||O.ControlledDatagramDropEvery>1000))
         ||(O.InputRetryRecordLimit&&O.InputRetryRecordLimit!=1&&O.InputRetryRecordLimit!=2&&O.InputRetryRecordLimit!=4&&O.InputRetryRecordLimit!=8&&O.InputRetryRecordLimit!=16))co_return Fail(__LINE__);
+    if(O.ObservationRetryRecordLimit&&O.ObservationRetryRecordLimit!=1&&O.ObservationRetryRecordLimit!=2&&O.ObservationRetryRecordLimit!=4&&O.ObservationRetryRecordLimit!=8&&O.ObservationRetryRecordLimit!=16)co_return Fail(__LINE__);
     auto Launcher=O.Launcher;Launcher.ControlledLossEvery=O.ControlledDatagramDropEvery;
     Launcher.ControlledLossKinds=Launcher.ControlledLossEvery?14:0; // kinds2/3/4 ONLY
     auto Channel=FNativeLocalSession::Open(Launcher);if(!Channel)co_return Fail(__LINE__);
@@ -330,6 +334,15 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
         std::unique_ptr<P::FPrivateRoadPhysicsWorld> World;std::vector<FPacket> History[2];
         // Independent delivery retention for each original client and each actor.
         bool AuthorityAck[2][2][Frames]{};
+        std::unique_ptr<Observation::FJournal> NativeObservations;
+        std::array<std::vector<bool>,2> ObservationAcked;
+        std::array<U64,2> ObservationRetainedCounts{};
+        if(O.ObservationRetryRecordLimit)
+        {
+            NativeObservations=std::make_unique<Observation::FJournal>(O.Launcher.Session,O.Launcher.Epoch,Server,Frames);
+            for(auto& A:ObservationAcked)A.resize(Frames,false);
+        }
+
         bool HelloSeen[2]{},ErrorSeen[2]{},Done[2]{},StartupAck[2]{},Started=false;U64 Next=0;std::vector<std::uint8_t> LastObservation,Initial;
         while(std::chrono::steady_clock::now()<Deadline)
         {
@@ -351,6 +364,13 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
                 {
                     if(Initial.empty()||M.Bytes!=Initial)co_return Fail(__LINE__);
                     StartupAck[A]=true;
+                }
+                else if(M.Kind==ObservationRetained)
+                {
+                    if(!NativeObservations)co_return Fail(__LINE__);const auto Ack=Observation::DecodeAck(M.Bytes);
+                    if(!Ack)co_return Fail(__LINE__);const auto Original=NativeObservations->Read(Ack->Frame);
+                    if(!Original||!Observation::Matches(*Ack,*Original))co_return Fail(__LINE__);
+                    if(!ObservationAcked[A][std::size_t(Ack->Frame)]){ObservationAcked[A][std::size_t(Ack->Frame)]=true;++ObservationRetainedCounts[A];}
                 }
                 else if(M.Kind==AuthorityRetained)
                 {
@@ -400,6 +420,12 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
                     if(!Actual||Actual->Frame!=Next||!ActualConsumedPacket(*Actual,A->Packet)||!ActualConsumedPacket(*Actual,B->Packet))co_return Fail(__LINE__);
                     History[0].push_back(A->Packet);History[1].push_back(B->Packet);
                     LastObservation=Observe(*Actual);if(LastObservation.empty())co_return Fail(__LINE__);
+                    if(NativeObservations)
+                    {
+                        Observation::FRecord Original{O.Launcher.Session,O.Launcher.Epoch,Actual->LocalKernelLifetime,Next+1,Next,LastObservation};
+                        if(NativeObservations->Retain(Server,Original)!=Observation::EKeep::Accepted)co_return Fail(__LINE__);
+                    }
+
                     if(Next==0){Initial=StartupPublication(*Actual);if(Initial.empty())co_return Fail(__LINE__);}
                     ++Next;
                     co_yield Actual; // actual completed native state, no live pointers
@@ -408,7 +434,17 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
             Phase=TEXT("server-publish");TraceNext=Next;
             if(!Initial.empty())for(U64 Peer:{PeerA,PeerB})
                 if(!Send(Peer,Started?StartActivation:InitialPublication,Started?Activation(Initial):Initial))co_return Fail(__LINE__);
-            if(!LastObservation.empty())for(U64 Peer:{PeerA,PeerB})if(!Send(Peer,Observed,LastObservation))co_return Fail(__LINE__);
+            if(NativeObservations)
+            {
+                for(unsigned Receiver=0;Receiver<2;++Receiver)
+                {
+                    const auto Pending=NativeObservations->Pending(ObservationAcked[Receiver],O.ObservationRetryRecordLimit);
+                    if(!Pending)co_return Fail(__LINE__);if(Pending->empty())continue;
+                    const auto Groups=Observation::Pack(*Pending);if(!Groups)co_return Fail(__LINE__);
+                    for(const auto& Group:*Groups)if(!Send(Receiver?PeerB:PeerA,Observed,Group))co_return Fail(__LINE__);
+                }
+            }
+            else if(!LastObservation.empty())for(U64 Peer:{PeerA,PeerB})if(!Send(Peer,Observed,LastObservation))co_return Fail(__LINE__);
             bool BothAuthorityJournalsRetained=Next==Frames;
             for(unsigned Receiver=0;Receiver<2;++Receiver)for(unsigned A=0;A<2;++A)
             {
@@ -425,10 +461,11 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
                 }
                 if(!SendPackets(Receiver?PeerB:PeerA,AuthorityInput,Packets))co_return Fail(__LINE__);
             }
-            if(Next==Frames&&Done[0]&&Done[1]&&BothAuthorityJournalsRetained)
+            if(Next==Frames&&Done[0]&&Done[1]&&BothAuthorityJournalsRetained
+                &&(!NativeObservations||(ObservationRetainedCounts[0]==Frames&&ObservationRetainedCounts[1]==Frames)))
             {
                 const auto FinalNative=World->ReadLatest();if(!FinalNative)co_return Fail(__LINE__);
-                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started,Frames,Frames,FinalNative->VehicleContactFrameCount,Channel->ReadEgressCounters()))co_return Fail(__LINE__);
+                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started,Frames,Frames,FinalNative->VehicleContactFrameCount,Channel->ReadEgressCounters(),nullptr,nullptr,ObservationRetainedCounts))co_return Fail(__LINE__);
                 while(std::chrono::steady_clock::now()<Deadline)
                 {
                     // Destroy file/temporary values before giving the GT back.
@@ -455,6 +492,9 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
     std::vector<FPacket> OriginalOwnerPackets{Baseline.Packet};
     FFirstForwardKinematicTrace KinematicTrace;
     std::optional<P::FPrivateRoadObservedFrame> Final;
+    std::unique_ptr<Observation::FJournal> NativeObservations;
+    if(O.ObservationRetryRecordLimit)NativeObservations=std::make_unique<Observation::FJournal>(O.Launcher.Session,O.Launcher.Epoch,Server,Frames);
+
     while(std::chrono::steady_clock::now()<Deadline)
     {
         // Check the trusted release BEFORE touching a peer that may already be
@@ -524,8 +564,19 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
             }
             else if(M.Kind==Observed)
             {
-                const auto Obs=ReadObservation(M.Bytes);if(!Obs||Obs->Frame>=Frames)co_return Fail(__LINE__);
-                if(!KinematicTrace.CaptureAuthority(Obs->Frame,M.Bytes))co_return Fail(__LINE__);
+                std::vector<Observation::FRecord> Records;
+                if(NativeObservations){auto Decoded=Observation::Unpack(M.Bytes);if(!Decoded)co_return Fail(__LINE__);Records=std::move(*Decoded);}
+                else {Observation::FRecord Legacy;Legacy.Bytes=M.Bytes;Records.push_back(std::move(Legacy));}
+                for(const auto& Original:Records)
+                {
+                const auto Obs=ReadObservation(Original.Bytes);if(!Obs||Obs->Frame>=Frames)co_return Fail(__LINE__);
+                if(NativeObservations)
+                {
+                    if(Obs->Frame!=Original.Frame)co_return Fail(__LINE__);
+                    const auto Kept=NativeObservations->Retain(Server,Original);
+                    if(Kept!=Observation::EKeep::Accepted&&Kept!=Observation::EKeep::Duplicate)co_return Fail(__LINE__);
+                }
+                if(!KinematicTrace.CaptureAuthority(Obs->Frame,Original.Bytes))co_return Fail(__LINE__);
                 if(Obs->Frame==Frames-1)Final=*Obs;
                 if(Client&&Obs->Frame==ObservationFrame(O.Scenario))
                 {
@@ -535,6 +586,8 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
                         for(const auto& A:D.Actors)MaximumError=std::max(MaximumError,A.Position);
                         if(MaximumError>1)ErrorMeasured=true;
                     }
+                }
+                if(NativeObservations&&!Send(Server,ObservationRetained,Observation::Ack(Original)))co_return Fail(__LINE__);
                 }
             }
             else co_return Fail(__LINE__);
@@ -569,7 +622,24 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
             if(Final&&Next==Frames)
             {
                 const auto Compare=Client->CompareObservedKinematics(*Final);
-                if(Compare.Status==P::EPrivateRoadPoseComparison::Equal&&Corrections&&ErrorMeasured&&AuthorityJournal->CommonContiguousCount()==Frames)Done=true;
+                if(Compare.Status==P::EPrivateRoadPoseComparison::Equal&&Corrections&&ErrorMeasured&&AuthorityJournal->CommonContiguousCount()==Frames&&(!NativeObservations||NativeObservations->ContiguousCount()==Frames))Done=true;
+            }
+        }
+        // Retention ACK is independent of local simulation progress. Recheck
+        // the original retained observation after native progress if its first
+        // arrival was Future/Missing. Equal never manufactures a divergence.
+        if(NativeObservations&&!ErrorMeasured&&Client)
+        {
+            const auto Retained=NativeObservations->Read(ObservationFrame(O.Scenario));
+            if(Retained)
+            {
+                const auto Observed=ReadObservation(Retained->Bytes);if(!Observed)co_return Fail(__LINE__);
+                const auto Difference=Client->CompareObservedKinematics(*Observed);
+                if(Difference.Status==P::EPrivateRoadPoseComparison::Different)
+                {
+                    for(const auto& Actor:Difference.Actors)MaximumError=std::max(MaximumError,Actor.Position);
+                    if(MaximumError>1)ErrorMeasured=true;
+                }
             }
         }
         if(Client)co_yield Client->ReadLatest(); // coherent forward/corrected native publication
@@ -582,7 +652,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
         {
             const auto FinalNative=Client->ReadLatest();if(!FinalNative)co_return Fail(__LINE__);
             if(!Send(Server,ClientDone,{1}))co_return Fail(__LINE__);
-            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started,AuthorityJournal->ContiguousCount(101+Own),AuthorityJournal->ContiguousCount(101+Other),FinalNative->VehicleContactFrameCount,Channel->ReadEgressCounters(),&KinematicTrace,&*AuthorityJournal))co_return Fail(__LINE__);
+            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started,AuthorityJournal->ContiguousCount(101+Own),AuthorityJournal->ContiguousCount(101+Other),FinalNative->VehicleContactFrameCount,Channel->ReadEgressCounters(),&KinematicTrace,&*AuthorityJournal,{NativeObservations?NativeObservations->ContiguousCount():0,0}))co_return Fail(__LINE__);
             std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
             if(Release>>Session>>Epoch)
             {

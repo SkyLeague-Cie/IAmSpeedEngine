@@ -2,6 +2,7 @@
 #include "IAmSpeed/Netcode/transport/AuthorityInputJournal.h"
 #include "Misc/AutomationTest.h"
 #include "IAmSpeed/Netcode/transport/OriginalRetryOrder.h"
+#include "IAmSpeed/Netcode/transport/ObservationRetention.h"
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASAuthorityInputJournal,"IAmSpeed.Netcode.Transport.AllActorAuthorityInputJournal",
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
 bool FIASAuthorityInputJournal::RunTest(const FString&)
@@ -59,6 +60,28 @@ bool FIASAuthorityInputJournal::RunTest(const FString&)
     TestTrue(TEXT("sorting caller copy leaves actual retained outbox and ACK semantics intact"),StillOriginal.size()==2&&Encode(StillOriginal[0])==Encode(Q12)&&Encode(StillOriginal[1])==Encode(Q11)
         &&RetryOutbox.Size()==2&&RetryOutbox.Acknowledge(A.ServerPeer,AckFor(Q11))&&RetryOutbox.Size()==1);
     AddInfo(TEXT("[OriginalRetrySlotReuse] realOutbox=1 observedSlotOrder=12,11 boundedPrefix=11 unboundedOrderUnchanged=1 originalBytesAndAckPreserved=1 network=0"));
+    namespace O=Speed::Netcode::Observation;
+    O::FRecord R0{11,3,99,1,0,{1,2}},R1{11,3,99,2,1,{3,4}},R2{11,3,99,3,2,{5,6}};
+    O::FJournal Observed(11,3,5,3);
+    TestTrue(TEXT("observation out of order keeps a real hole"),Observed.Retain(5,R2)==O::EKeep::Accepted&&Observed.ContiguousCount()==0&&!Observed.Read(0));
+    TestTrue(TEXT("observation retention is idempotent"),Observed.Retain(5,R2)==O::EKeep::Duplicate);
+    auto ChangedObservation=R2;ChangedObservation.Bytes[0]^=1;
+    TestTrue(TEXT("conflict cannot overwrite original observed bytes"),Observed.Retain(5,ChangedObservation)==O::EKeep::Conflict&&O::Encode(*Observed.Read(2))==O::Encode(R2));
+    TestTrue(TEXT("foreign source and epoch cannot fill hole"),Observed.Retain(4,R0)==O::EKeep::WrongStream);
+    ChangedObservation=R0;++ChangedObservation.Epoch;
+    TestTrue(TEXT("wrong epoch refused"),Observed.Retain(5,ChangedObservation)==O::EKeep::WrongStream);
+    TestTrue(TEXT("actual observed contiguous prefix closes only after both records"),Observed.Retain(5,R0)==O::EKeep::Accepted&&Observed.ContiguousCount()==1&&Observed.Retain(5,R1)==O::EKeep::Accepted&&Observed.ContiguousCount()==3);
+    ChangedObservation=R2;ChangedObservation.Frame=3;ChangedObservation.Sequence=4;
+    TestTrue(TEXT("finite journal overflow refuses without eviction"),Observed.Retain(5,ChangedObservation)==O::EKeep::TooFar&&Observed.ContiguousCount()==3);
+    const auto Groups=O::Pack({R0,R1,R2});if(!TestTrue(TEXT("observation-only batching structurally valid"),bool(Groups)))return false;
+    std::size_t DecodedCount=0;for(const auto& Group:*Groups){const auto Decoded=O::Unpack(Group);if(!Decoded)return false;DecodedCount+=Decoded->size();}
+    TestEqual(TEXT("all three original observation records retained"),uint64(DecodedCount),uint64(3));
+    auto Corrupt=Groups->front();Corrupt.back()^=1;TestFalse(TEXT("corrupt original observation refused"),bool(O::Unpack(Corrupt)));
+    const auto RetentionAck=O::DecodeAck(O::Ack(R1));
+    TestTrue(TEXT("retention ACK exactly matches original record, not a physical commit"),RetentionAck&&O::Matches(*RetentionAck,R1)&&!O::Matches(*RetentionAck,R2));
+    std::vector<bool> Acked={true,false,false};const auto Pending=Observed.Pending(Acked,1);
+    TestTrue(TEXT("pending observation prefix uses original frame order"),Pending&&Pending->size()==1&&O::Encode(Pending->front())==O::Encode(R1));
+    AddInfo(TEXT("[ObservationRetentionUnit] authoredValueRecords=3 holesAndConflictsRefused=1 boundedOriginalPrefix=1 fullPhysicalState=0 nativeSourceLease=0 network=0"));
     AddInfo(TEXT("Values journal and negative source/roster/hole/conflict checks only. Actual server-consumption provenance requires the separate native process probe; no checkpoint, hidden-state, lifetime, localized rollback or game admission."));
     return !HasAnyErrors();
 }

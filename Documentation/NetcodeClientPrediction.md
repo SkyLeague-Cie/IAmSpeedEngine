@@ -1360,3 +1360,29 @@ NOT_RUN until the new compile/native campaign; no model-only PASS is claimed.
 Periodic fragment loss can phase-lock a multi-fragment message if its fragment
 count is divisible by Every; finite failures must be retained, never assert
 fairness/liveness or add a bypass. Loss profiles remain controlled experiments.
+
+
+Native84 source87 genuinely completed its56/Pending/probe/baseline/cancellation
+and9 actual three-Game controlled-loss profiles, original13508 CLOSED0 consumed.
+All original Jobs drained twice with empty audits. Both clients retained all240
+authority inputs per actor and final COM matched. The legacy latest-only
+observation path retained only192..224 of240 frame pairs under discard schedules;
+those missing values remain UNKNOWN. No earlier PASS transfers to this source.
+
+Source88 proposes a bounded journal for native OBSERVABLE VALUE observations,
+with separate wire magic from full-state/full-roster transport. It does not put
+pose bytes inside FWorldState or assert the full-roster flag. Original session,
+epoch, native kernel value identity, sequence and frame accompany raw observable
+bytes; CRC is integrity only. Duplicate retention is idempotent; conflicts,
+foreign streams, overflow, malformed batches and corrupt records refuse. ACK
+means original bytes retained, never simulation consumption or source/lifetime
+admission. Original frame order selects unacknowledged records for bounded
+grouping. Disabled mode keeps the legacy latest-only protocol. Enabled clients
+and server finish only after actual complete240-frame retention/ACK, with no
+missing-to-zero conversion. Tests and new three-Game profiles remain NOT_RUN.
+
+This is observable state delivery, not complete causal physical snapshots.
+Full authoritativeK capture/restore, real opaque ingress/service/module/lifetime
+participation and conservative localized resimulation remain closed/unqualified.
+Source87's periodic-loss/aggregate-kind/pre-release/single-fixture limitations,
+all historical FAIL/UNKNOWN and the unfinished playable-device goal persist.
