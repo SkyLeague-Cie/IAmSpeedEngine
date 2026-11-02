@@ -1266,7 +1266,7 @@ FPrimitiveSceneProxy* USphereSubBody::CreateSceneProxy()
             : FPrimitiveSceneProxy(InComponent)
             , bDrawOnlyIfSelected(InComponent->bDrawOnlyIfSelected)
             , SphereColor(InComponent->ShapeColor)
-            , SphereRadius(InComponent->LocalSphereRadius)
+            , SphereRadius(InComponent->GetRadius())
             , LineThickness(InComponent->LineThickness)
         {
             bWillEverBeLit = false;
@@ -1343,7 +1343,8 @@ FPrimitiveSceneProxy* USphereSubBody::CreateSceneProxy()
 
 FBoxSphereBounds USphereSubBody::CalcBounds(const FTransform& LocalToWorld) const
 {
-    return FBoxSphereBounds(FVector::ZeroVector, FVector(LocalSphereRadius), LocalSphereRadius).TransformBy(LocalToWorld);
+    const float PhysicalRadius = RadiusSphereDomainStorage();
+    return FBoxSphereBounds(FVector::ZeroVector, FVector(PhysicalRadius), PhysicalRadius).TransformBy(LocalToWorld);
 }
 
 void USphereSubBody::UpdateBodySetup()

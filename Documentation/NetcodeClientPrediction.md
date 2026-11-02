@@ -562,3 +562,11 @@ Native52's actual C2664/C2039, exit6/310.219s, natural Job0 twice/source+protect
 Engine audits0 and all diagnostics remain preserved. Its separate preparation
 label-check incident stays provisional and is not erased by this correction.
 No native/runtime stage ran; no equation/guard/restore capability changed.
+
+
+Source58 confines the sphere body-setup helper local to that helper. The scene
+proxy uses the existing public GetRadius accessor; CalcBounds reads the routed
+physical radius in its own scope. Native53's three actual C2039/C2065 errors,
+original exit6/338.922s and natural Job0 twice with zero source/protected/Engine
+audit drift remain failures. No runtime ran and no native law, value, guard,
+complete restoration capability or localized replay claim changes here.
