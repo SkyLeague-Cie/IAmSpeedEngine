@@ -260,6 +260,11 @@ public:
 	bool RightWheelsAreOnGround() const;
 	unsigned char NumWheelsOnGround() const;
 	const TArray<TObjectPtr<USWheelSubBody>>& GetWheelSubBodies() const override;
+    Speed::NativeObjectRead::TView<USWheelSubBody> ReadWheelSubBodiesForPhysics() const override
+    {return {WheelSubBodiesWheeledDomainStorage(),UsesOriginalWheeledDomain()};}
+    Speed::NativeObjectRead::TRead<UBoxSubBody> ReadHitboxForPhysics() const
+    {return {HitboxSubBodyWheeledDomainStorage(),UsesOriginalWheeledDomain()};}
+
 	// update wheel position, angular velocity etc. in Game Thread
 	virtual void UpdateWheelVisuals();
 	// recover wheel state from network replication
@@ -413,7 +418,7 @@ public:
 	void SetTestInputOverrideEnabled(bool bEnabled);
 	bool IsTestInputOverrideEnabled() const { return bTestInputOverrideEnabledWheeledDomainStorage().load(std::memory_order_acquire); }
 	// Configuration access for native deterministic vehicle profiles.
-	UBoxSubBody* GetHitboxSubBodyForConfiguration() const { return HitboxSubBodyWheeledDomainStorage().Get(); }
+	UBoxSubBody* GetHitboxSubBodyForConfiguration() const { return ReadHitboxForPhysics().Get(); }
 
 protected:
 	// Apply here Gravity, air/ground drag, resting forces and other forces that shoukd be applied before gameplay

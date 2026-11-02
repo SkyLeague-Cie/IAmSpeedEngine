@@ -736,3 +736,32 @@ target reads and4 original native views distinct from the facade, with no
 physical mutation. This is positive evidence of an OPEN callback/view path,
 not a protection certificate. That path still needs actual closure before a
 complete restore lease can be admitted. Native63 later stages were NOT_RUN.
+
+
+Source69 replaces physical wheel/hitbox TObjectPtr reads with routed read views.
+On the original branch, the exact Engine no-resolve/no-read helper is used only
+after checking the actual resolved handle; unknown handles refuse birth/Step.
+Ordinary public getters and the legacy branch retain Engine tracking. Original
+body capture uses the same no-resolve operation. The host records actual weak
+wheel/hitbox role identities before SetOwner/Initialize and checks the current
+original handles against those birth roles before physical frame admission.
+Short GC exclusion and existing original pins are still required.
+
+The genuine Engine callback test covers four wheels plus the hitbox during the
+tested native Step/capture paths. Its positive control measures the delta from
+each deliberate ordinary Get separately for each live target. This does not
+certify all factory/CDO/Engine facade/virtual/backend or module lifetime paths.
+The prefetch path is unreachable behind the existing unconditional closed gate;
+no claim transfers to an enabled prefetch branch. Full escaped-view protection,
+complete restore lease, authoritative K restore and localized rollback remain
+CLOSED. No callback registry/macro/global counter or Engine source is changed.
+
+Exact prior source68 native64 freshly passed56native tests andPending1 with
+zero errors/warnings,3commandlets,2actualGame clients anddedicated server, and
+expected cancellation9/10. All managed original jobs naturally drained and final
+audits were zero. Matched125-body-field/17-plane observations no longer differed
+after the actual64-channel codec bound fix; the intentionally mismatched startup
+still differed121/121. The finite Game fixture ended exact at239 with215contact
+frames and3/6GLOBALFROMBIRTH corrections. This is not playable device/render,
+full causal state, restoreK or localized qualification. All prior FAIL/UNKNOWN
+remain. Source69 itself is not natively compiled or qualified by this receipt.

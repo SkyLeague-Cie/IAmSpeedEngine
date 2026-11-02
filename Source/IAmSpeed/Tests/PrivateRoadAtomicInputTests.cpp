@@ -80,17 +80,18 @@ struct FActualNativeBoundaryLogProbe final : FOutputDevice
 // or claim that original mutable views cannot escape through this path.
 struct FActualHandleReadWitness
 {
-    struct FTarget {TWeakObjectPtr<USpeedBranchWheelSubBody> Body;const Chaos::FSimpleWheelSim* Observed=nullptr;};
+    struct FTarget {TWeakObjectPtr<USSubBody> Body;const Chaos::FSimpleWheelSim* Observed=nullptr;uint64 OutsideReads=0;};
     std::vector<FTarget> Targets;
-    uint64 ScopedTargetReads=0;
+    uint64 ScopedTargetReads=0,OutsideTargetReads=0;
     void Observe(TArrayView<const UObject* const> Objects)
     {
-        if(!IsInGameThread()||!Speed::RoadSettings::SelectedOriginalRoadSettings())return;
+        if(!IsInGameThread())return;
         for(const auto* Object:Objects)for(auto& T:Targets)
         {
             auto* Body=T.Body.Get();if(!Body||Body!=Object)continue;
+            if(!Speed::RoadSettings::SelectedOriginalRoadSettings()){++OutsideTargetReads;++T.OutsideReads;continue;}
             ++ScopedTargetReads;
-            if(!T.Observed)T.Observed=Body->GetWheelSim(); // retain actual view identity, never mutate it
+            if(auto* Wheel=Cast<USWheelSubBody>(Body);Wheel&&!T.Observed)T.Observed=Wheel->GetWheelSim(); // retain actual view identity, never mutate it
         }
     }
 };
@@ -457,13 +458,17 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     BirthOK=TestTrue(TEXT("birth output callback has no native recipe or physical collection scope"),BirthGCProbe.OutsideRecipe&&BirthGCProbe.OutsideCollection)&&BirthOK;
     if(!BirthOK){if(World)World->Close();return false;}
     if(!TestTrue(*FString::Printf(TEXT("actual default-closed native graph: %s"),*Why),bool(World)))return false;
-    FActualHandleReadWitness HandleReads;HandleReads.Targets.reserve(4);
+    FActualHandleReadWitness HandleReads;HandleReads.Targets.reserve(5);
     if(auto* W=BirthGCProbe.World.Get())for(TActorIterator<ASpeedBranchCar> It(W);It;++It)
         if(auto* C=Cast<USpeedBranchWheeledComponent>(It->GetVehicleMovement()))
+        {
             for(int32 Index=0;Index<4;++Index)
                 if(auto* Body=Cast<USpeedBranchWheelSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::WheelNames[Index])))
                     HandleReads.Targets.push_back({Body,nullptr});
-    if(!TestEqual(TEXT("real original fixture wheel targets retained before read callback registration"),HandleReads.Targets.size(),size_t(4)))return false;
+            if(auto* Box=Cast<USpeedBranchBoxSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::HitboxName)))
+                HandleReads.Targets.push_back({Box,nullptr});
+        }
+    if(!TestEqual(TEXT("real original fixture wheel targets retained before read callback registration"),HandleReads.Targets.size(),size_t(5)))return false;
 #if UE_WITH_OBJECT_HANDLE_TRACKING
     const auto ActualReadHandle=UE::CoreUObject::AddObjectHandleReadCallback(
         [&](TArrayView<const UObject* const> Objects){HandleReads.Observe(Objects);});
@@ -506,16 +511,28 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
         &&Activated->Actors[0].CountdownFrames==0)&&OK;
     OK=TestTrue(TEXT("retained old baseline remains immutable and closed"),Baseline->Frame==0&&Baseline->AwaitingInitialPublication
         &&!Baseline->Actors[0].CanMove)&&OK;
-    uint32 OriginalViewsDifferentFromFacade=0;
-    for(const auto& T:HandleReads.Targets)
-        if(auto* Body=T.Body.Get();Body&&T.Observed&&T.Observed!=Body->GetWheelSim())++OriginalViewsDifferentFromFacade;
+    // Genuine tracked reads of the same five live targets, outside the native
+    // route. No callback is removed, suppressed, filtered or counter-adjusted.
+    uint64 DeliberatePositiveReads=0;
+    for(auto& T:HandleReads.Targets)
+    {
+        auto* Body=T.Body.Get();
+        OK=TestTrue(TEXT("ordinary positive-control target retains original birth identity"),Body!=nullptr)&&OK;
+        if(!Body)continue;
+        const uint64 Before=T.OutsideReads;
+        TObjectPtr<USSubBody> Positive=Body;
+        OK=TestTrue(TEXT("ordinary same-target tracked read returns actual object"),Positive.Get()==Body)&&OK;
 #if UE_WITH_OBJECT_HANDLE_TRACKING
-    OK=TestTrue(TEXT("real object-handle callbacks executed against original fixture wheels during native math"),HandleReads.ScopedTargetReads>0)&&OK;
-    // Positive witness of the present unclosed path, not an exclusion claim.
-    OK=TestTrue(TEXT("real read callback observed a distinct original native wheel view"),OriginalViewsDifferentFromFacade>0)&&OK;
+        OK=TestTrue(TEXT("this deliberate Get invokes the actual callback for this specific target"),T.OutsideReads>Before)&&OK;
 #endif
-    AddInfo(FString::Printf(TEXT("[ActualObjectHandleReadWitness] trackingCompiled=%d scopedTargetReads=%llu originalViewsDifferentFromFacade=%u physicalMutationAttempted=0 escapedViewExclusionCertified=0 completeRestoreLease=0"),
-        int(UE_WITH_OBJECT_HANDLE_TRACKING),HandleReads.ScopedTargetReads,OriginalViewsDifferentFromFacade));
+        DeliberatePositiveReads+=T.OutsideReads-Before;
+    }
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+    OK=TestEqual(TEXT("no actual wheel/hitbox read callback enters scoped native step/capture"),HandleReads.ScopedTargetReads,uint64(0))&&OK;
+    OK=TestTrue(TEXT("five deliberate tracked reads still invoke the actual callback"),DeliberatePositiveReads>=5)&&OK;
+#endif
+    AddInfo(FString::Printf(TEXT("[ActualObjectHandleReadWitness] trackingCompiled=%d scopedTargetReads=%llu ordinaryPositiveReads=%llu physicalMutationAttempted=0 targetSet=wheel4_hitbox1 birthCallbackCensus=0 escapedViewExclusionCertified=0 completeRestoreLease=0"),
+        int(UE_WITH_OBJECT_HANDLE_TRACKING),HandleReads.ScopedTargetReads,DeliberatePositiveReads));
     const bool Closed=World->Close();
     FActualNativeBoundaryLogProbe InvalidBirth;InvalidBirth.Case=FActualNativeBoundaryLogProbe::ECase::DestroyBirthDriver;
     const auto InvalidBirthHandle=FWorldDelegates::OnPostWorldCreation.AddLambda([&](UWorld* Created){if(IsInGameThread())InvalidBirth.World=Created;});

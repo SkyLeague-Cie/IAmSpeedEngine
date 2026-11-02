@@ -960,7 +960,7 @@ bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 	{
 		float LargestPenetration = 0.01f;
 		FVector CorrectionNormal = FVector::ZeroVector;
-		for (const USWheelSubBody* Wheel : GetWheelSubBodies())
+		for (const USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 		{
 			if (!Wheel || !Wheel->IsOnGround() || !Wheel->IsAtSuspensionBumpStop())
 			{
@@ -994,7 +994,7 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 		return false;
 	}
 
-	const TArray<TObjectPtr<USWheelSubBody>>& Wheels = GetWheelSubBodies();
+	const auto Wheels = ReadWheelSubBodiesForPhysics();
 	if (Wheels.Num() < 3)
 	{
 		return false;
@@ -1156,7 +1156,7 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 	SetPhysAngularVelocity(bPreserveNormalRotation
 		? FVector::DotProduct(GetPhysAngularVelocity(), PlaneNormal) * PlaneNormal
 		: FVector::ZeroVector);
-	for (const TObjectPtr<USWheelSubBody>& WheelPtr : Wheels)
+	for (const auto WheelPtr : Wheels)
 	{
 		USWheelSubBody* Wheel = WheelPtr.Get();
 		Wheel->SetLastDisplacement(GetCanonicalWheelSupportCompression(*Wheel));
@@ -1168,7 +1168,7 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 FVector ISpeedWheeledComponent::GetNormalFromWheels() const
 {
 	FVector Normal = FVector::ZeroVector;
-	const auto& WheelSubBodies = GetWheelSubBodies();
+	const auto& WheelSubBodies = ReadWheelSubBodiesForPhysics();
 	for (const auto& Wheel : WheelSubBodies)
 	{
 		if (!Wheel) continue;
@@ -1183,7 +1183,7 @@ FVector ISpeedWheeledComponent::GetNormalFromWheels() const
 
 bool ISpeedWheeledComponent::IsOnTheGround() const
 {
-	const auto& WheelSubBodies = GetWheelSubBodies();
+	const auto& WheelSubBodies = ReadWheelSubBodiesForPhysics();
 	for (const auto& Wheel : WheelSubBodies)
 	{
 		if (!Wheel) continue;
@@ -1199,14 +1199,14 @@ bool ISpeedWheeledComponent::HasActivePhysicalConstraintsOtherThan(const USSubBo
 	// if a later pose probe temporarily cleared the wheel's on-ground flag.
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 		if (Contact.Wheel && Contact.Wheel != Source && Contact.SurfaceComponent.IsValid()) return true;
-	for (const USWheelSubBody* Wheel : GetWheelSubBodies())
+	for (const USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 		if (Wheel && Wheel != Source && Wheel->IsOnGround()) return true;
 	return false;
 }
 
 bool ISpeedWheeledComponent::OneWheelOnGround() const
 {
-	const auto& WheelSubBodies = GetWheelSubBodies();
+	const auto& WheelSubBodies = ReadWheelSubBodiesForPhysics();
 	for (const auto& Wheel : WheelSubBodies)
 	{
 		if (!Wheel) continue;
@@ -1228,7 +1228,7 @@ bool ISpeedWheeledComponent::HasCompatibleEstablishedStaticSupport(
 	const bool bHasAnalyticIdentity = SurfaceHit.SourceId != 0 &&
 		SurfaceHit.SurfaceId != 0 && SurfaceHit.FeatureId != 0;
 	int32 CompatibleSupports = 0;
-	for (const TObjectPtr<USWheelSubBody>& WheelPtr : GetWheelSubBodies())
+	for (const auto WheelPtr : ReadWheelSubBodiesForPhysics())
 	{
 		const USWheelSubBody* Wheel = WheelPtr.Get();
 		if (!Wheel || !Wheel->IsOnGround())
@@ -1262,7 +1262,7 @@ bool ISpeedWheeledComponent::NoWheelOnGround() const
 
 bool ISpeedWheeledComponent::WheelIdxIsOnGround(const int32& WheelIdx) const
 {
-	const auto& WheelSubBodies = GetWheelSubBodies();
+	const auto& WheelSubBodies = ReadWheelSubBodiesForPhysics();
 	if (WheelIdx < 0 || WheelIdx >= WheelSubBodies.Num()) return false;
 	return WheelSubBodies[WheelIdx] && WheelSubBodies[WheelIdx]->IsOnGround();
 }
@@ -1290,8 +1290,8 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 		};
 
 		TArray<FGroundProbe, TInlineAllocator<4>> Probes;
-		Probes.Reserve(GetWheelSubBodies().Num());
-		for (USWheelSubBody* Wheel : GetWheelSubBodies())
+		Probes.Reserve(ReadWheelSubBodiesForPhysics().Num());
+		for (USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 		{
 			if (!Wheel)
 			{
@@ -1842,7 +1842,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
         TOptional<Speed::Analytic::FScopedWheelSuspensionPrefetch1075> Prefetch;
         if (Speed::Analytic::IsWheelSuspensionPrefetch1075Enabled())
             Prefetch.Emplace(GetWheelSubBodies(), delta);
-	for (auto& Wheel : GetWheelSubBodies())
+	for (auto Wheel : ReadWheelSubBodiesForPhysics())
 	{
 		if (Wheel)
 		{
@@ -1951,7 +1951,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	bool bWheelPatchesOnGravityAlignedSurface = true;
 	bool bWheelPatchesFaceChassisSupportSide = true;
 	const FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
-	for (USWheelSubBody* Wheel : GetWheelSubBodies())
+	for (USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 	{
 		if (Wheel && Wheel->IsOnGround())
 		{
@@ -2082,7 +2082,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		LastCertifiedCoupledPoseFrame = static_cast<int32>(NumFrame());
 
 		BeginDeferredWheelGroundStateUpdate();
-		for (USWheelSubBody* Wheel : GetWheelSubBodies())
+		for (USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 		{
 			if (!Wheel)
 			{
@@ -2349,7 +2349,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		if (bPoseChanged)
 		{
 			BeginDeferredWheelGroundStateUpdate();
-			for (USWheelSubBody* Wheel : GetWheelSubBodies())
+			for (USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 			{
 				if (!Wheel)
 				{
@@ -2385,7 +2385,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		uint64 DiagnosticPrimitiveId = 0;
 	};
 	TArray<FWheelPatchConstraint, TInlineAllocator<4>> WheelConstraints;
-	for (USWheelSubBody* Wheel : GetWheelSubBodies())
+	for (USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 	{
 		if (!Wheel || !Wheel->IsOnGround())
 		{
@@ -2757,7 +2757,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	if (bPoseChanged)
 	{
 		BeginDeferredWheelGroundStateUpdate();
-		for (USWheelSubBody* Wheel : GetWheelSubBodies())
+		for (USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 		{
 			if (!Wheel)
 			{

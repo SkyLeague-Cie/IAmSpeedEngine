@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ISpeedComponent.h"
+#include "IAmSpeed/World/Simulation/ResolvedNativeObjectRead.h"
 
 struct WheelSubBodyConfig;
 class USWheelSubBody;
@@ -78,6 +79,11 @@ class IAMSPEED_API ISpeedWheeledComponent : public ISpeedComponent
 	// =========== Wheel functions ===========
 	// overload this function to return every wheel sub-bodies owned by this component (e.g. for a car body, this would be the 4 wheel sub-bodies)
 	virtual const TArray<TObjectPtr<USWheelSubBody>>& GetWheelSubBodies() const = 0;
+    // Physical readers use this view; the ordinary public getter keeps normal
+    // Engine tracking. Unknown adapters keep the ordinary tracked path.
+    virtual Speed::NativeObjectRead::TView<USWheelSubBody> ReadWheelSubBodiesForPhysics() const
+    {return {GetWheelSubBodies(),false};}
+
 	// overload this function to return the normal of the ground under the wheels (e.g. for a car body, this would be the normal of the ground under the wheels)
 	virtual FVector GetNormalFromWheels() const;
 	// return true iff every wheel sub-body owned by this component is on the ground (e.g. for a car body, this would be true if all 4 wheels are on the ground)

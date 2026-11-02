@@ -7,6 +7,7 @@
 #include "IAmSpeed/SubBodies/Solid/CylinderSubBody.h"
 #include "IAmSpeed/World/Simulation/ReplayFieldArchive.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
+#include "IAmSpeed/World/Simulation/ResolvedNativeObjectRead.h"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -79,7 +80,7 @@ public:
     {
         const auto K=References.Find(V);if(!K)throw Replay::FFieldError("unknown original graph reference");Key(*K);
     }
-    template<class T>void Value(const TObjectPtr<T>& V){Value(V.Get());}
+    template<class T>void Value(const TObjectPtr<T>& V){Value(Speed::NativeObjectRead::ResolvedOriginal(V));}
     template<class T>void Value(const TWeakObjectPtr<T>& V)
     {
         if(V.IsExplicitlyNull()){Key(FReferenceKey{});return;}

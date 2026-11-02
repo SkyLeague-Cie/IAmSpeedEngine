@@ -169,7 +169,7 @@ template<class Component>bool Capture(Component& C,uint64 Actor,uint64 Incarnati
     FPrivateRoadActorFrame& Out)
 {
     Out.NativePartialValuesAvailable=false;
-    if(!IsInGameThread()||!Actor||!Incarnation||C.GetWheelSubBodies().Num()!=4)return false;
+    if(!IsInGameThread()||!Actor||!Incarnation||C.ReadWheelSubBodiesForPhysics().Num()!=4)return false;
     const auto Sleep=Out.NativeSleep;
     const auto Quantization=Out.NativeQuantization;
     if(!CommonState::ValidCaches(Sleep,Quantization))return false;
@@ -183,7 +183,7 @@ template<class Component>bool Capture(Component& C,uint64 Actor,uint64 Incarnati
     FCheckedWriter::Add(Raw,uint32(1));
     if(!AppendCheckedWheelConfig(Raw,WheelConfig))return false;
     AppendCheckedSuspensionConfig(Raw,SuspensionConfig);
-    for(const auto& Entry:C.GetWheelSubBodies())
+    for(const auto& Entry:C.ReadWheelSubBodiesForPhysics())
     {
         const auto* Body=Entry.Get();
         if(!Body||!Body->GetWheelSim()||!Body->GetSuspensionSim())return false;

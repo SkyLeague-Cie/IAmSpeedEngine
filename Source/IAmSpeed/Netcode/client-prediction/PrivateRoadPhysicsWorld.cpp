@@ -136,6 +136,8 @@ FReferenceSimulation RetiringReferenceSimulation;
         U64 StableId=0;
         bool SolidInitializationWitness=false;
         TArray<TWeakObjectPtr<UChaosVehicleWheel>> OriginalWheelObjects;
+        TWeakObjectPtr<UBoxSubBody> OriginalHitboxBirth;
+        TArray<TWeakObjectPtr<USWheelSubBody>> OriginalWheelBodyBirth;
         USpeedSimulation* OriginalNativeSimulation=nullptr;
         Chaos::FSimpleWheeledVehicle* OriginalNativeVehicle=nullptr;
         Chaos::FSimpleWheelSim* OriginalNativeWheelAllocation=nullptr;
@@ -181,6 +183,24 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
     std::vector<std::shared_ptr<FNativeConfigurationLifetimeTrace>> NativeConfigurationLifetime;
     bool Closed=false,Failed=false;
     void Pin(UObject* Object) {if(Object)Pins.Emplace(Object);}
+    // Original role identities are captured from the real default graph before
+    // SetOwner/Initialize callbacks. This is a pre-math equality check, not a
+    // replacement for GC exclusion or a complete restoration lease.
+    bool OriginalObjectHandlesStillMatch() const
+    {
+        for(const auto& N:Cars)
+        {
+            if(!N->NativeVehicleRoot||!N->NativeVehicleRoot->Domain)return false;
+            const auto& D=*N->NativeVehicleRoot->Domain;
+            if(N->OriginalWheelBodyBirth.Num()!=4||N->OriginalWheelObjects.Num()!=4
+                ||D.WheelSubBodies.Num()!=4||D.Wheels.Num()!=4
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.HitboxSubBody,N->OriginalHitboxBirth))return false;
+            for(int32 Index=0;Index<4;++Index)
+                if(!Speed::NativeObjectRead::MatchesOriginalBirth(D.WheelSubBodies[Index],N->OriginalWheelBodyBirth[Index])
+                    ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.Wheels[Index],N->OriginalWheelObjects[Index]))return false;
+        }
+        return true;
+    }
     bool AcquiredGraphStillLive() const
     {
         auto* W=OriginalWorldWeak.Get();auto* B=OriginalBridgeWeak.Get();auto* D=OriginalDriverWeak.Get();
@@ -344,6 +364,19 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(!C->BindOriginalWheeledDomain(I.Access)){Refuse(Why,TEXT("original native component domain birth refused"));return {};}
         N.ActorWeak=N.Actor;N.ComponentWeak=C;I.OriginalComponentsWeak.Add(C);
         I.PinTree(N.Actor);I.PinTree(C);
+        {
+            FGCScopeGuard CaptureOriginalBirthPins;
+            auto* Box=Cast<UBoxSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::HitboxName));
+            if(!IsValid(Box))return {};
+            N.OriginalHitboxBirth=Box;
+            for(int32 Index=0;Index<4;++Index)
+            {
+                auto* Wheel=Cast<USWheelSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::WheelNames[Index]));
+                if(!IsValid(Wheel))return {};
+                N.OriginalWheelBodyBirth.Add(Wheel);
+            }
+        }
+        if(!I.AcquiredGraphStillLive())return {};
         N.NativeVehicleRoot=std::make_shared<FImpl::FCar::FVehicleRoot>(N.NativeConfiguration,C->OriginalWheeledDomain);
         C->OriginalWheeledDomain=RetirementDraft::AliasExistingPart(N.NativeVehicleRoot,N.NativeVehicleRoot->Domain);
         I.NativeCppKeepAlive.push_back(N.NativeVehicleRoot);
@@ -367,6 +400,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         bool BirthOutboxActive=true;ON_SCOPE_EXIT{if(BirthOutboxActive)I.Diagnostics->End();};
         const bool BirthConfigured=[&]() -> bool
         {
+        try {
         FGCScopeGuard BirthMathOnly;
         Speed::RoadSettings::FOriginalRoadSettingsScope SettingsBirthMath(I.DeclaredSettings);
         C->SetOwner(N.Actor);
@@ -404,9 +438,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         N.NativeConfiguration->Suspension.SpringRate=5000;N.NativeConfiguration->Suspension.RestingForce=250000;
         N.NativeConfiguration->Suspension.CompressionDamping=1000;N.NativeConfiguration->Suspension.ReboundDamping=1000;
         BuildOriginalVehicle(*C,N.ReferenceConfiguration,ReferenceWheels);
-        if(C->GetWheelSubBodies().Num()!=4){Refuse(Why,TEXT("private native wheel topology differs"));return {};}
+        if(C->ReadWheelSubBodiesForPhysics().Num()!=4){Refuse(Why,TEXT("private native wheel topology differs"));return {};}
         for(int32 W=0;W<4;++W)
-        {C->GetWheelSubBodies()[W]->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));C->GetWheelSubBodies()[W]->SetRadiusForConfiguration(30);}
+        {C->ReadWheelSubBodiesForPhysics()[W]->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));C->ReadWheelSubBodiesForPhysics()[W]->SetRadiusForConfiguration(30);}
         if(!C->ValidateSimulationBindings(Why))return {};
         if(C->ThrottleAccelWheeledDomainStorage()!=750||C->BrakeAccelWheeledDomainStorage()!=1100||C->PhysDampingWheeledDomainStorage()!=0||C->AirForwardThrottleWheeledDomainStorage()!=0||C->AirBackwardThrottleWheeledDomainStorage()!=0)
         {Refuse(Why,TEXT("stock native driving profile differs"));return {};}
@@ -452,7 +486,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         N.OriginalNativeSuspensionAllocation=N.OriginalNativeVehicle->Suspension.GetData();
         for(int32 W=0;W<4;++W)
         {
-            auto* Body=C->GetWheelSubBodies()[W].Get();
+            auto* Body=C->ReadWheelSubBodiesForPhysics()[W].Get();
             Body->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));
             Body->SetRadiusForConfiguration(30);
             // Same original authored host travel, stored as original native
@@ -490,7 +524,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(!CaptureOutsideSolidValues(BeforeOther))return {};
 #endif
         for(auto* Body:C->GetSubBodies())Body->Initialize(C);
-        for(int32 W=0;W<C->GetWheelSubBodies().Num();++W)C->GetWheelSubBodies()[W]->SetIdx(W);
+        for(int32 W=0;W<C->ReadWheelSubBodiesForPhysics().Num();++W)C->ReadWheelSubBodiesForPhysics()[W]->SetIdx(W);
         // Real validation AFTER every new initializer, under the same scope.
         if(!C->ValidateSimulationBindings(Why))return {};
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
@@ -524,6 +558,8 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         }
         C->bPublishWheelPresentationWheeledDomainStorage()=true;I.PinTree(N.Actor);I.PinTree(C);
         return true;
+        } catch(const Speed::NativeObjectRead::FUnresolvedOriginal&)
+        {return Refuse(Why,TEXT("unresolved original handle during native birth"));}
         }(); // native route/settings/GC scopes have all ended
         I.Diagnostics->End();BirthOutboxActive=false;
         if(!I.Diagnostics->Flush()||!BirthConfigured)return {};
@@ -565,6 +601,8 @@ bool FPrivateRoadPhysicsWorld::HasExactRegisteredRoster(FString& Why) const
 {
     const auto& I=*Impl;
     if(!I.Bridge)return Refuse(Why,TEXT("private native registry bridge missing"));
+    if(!I.OriginalObjectHandlesStillMatch())
+        return Refuse(Why,TEXT("original wheel/hitbox handle unresolved, stale or different from actual birth role"));
     // Inspect the actual pending queue under its original lock. This check
     // detects queued/committed topology drift BEFORE private input preparation
     // or physics. It is not a lease excluding later/global native mutations.
@@ -708,7 +746,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             ||!BindBodyReference(static_cast<ISpeedWheeledComponent*>(C),*N,BodyRole::Component)
             ||!BindBodyReference(C,*N,BodyRole::Component)||!BindBodyReference(Box,*N,BodyRole::Box))
         {BodyReferencesComplete=false;break;}
-        const auto& Wheels=C->GetWheelSubBodies();
+        const auto& Wheels=C->ReadWheelSubBodiesForPhysics();
         const auto& NativeDomain=N->NativeVehicleRoot->Domain;
         if(!NativeDomain||!NativeDomain->VehicleSimulationPT)
         {BodyReferencesComplete=false;break;}
@@ -791,7 +829,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         if(Observation.NativePartialValuesAvailable)
         {
             TArray<uint8> RuntimeValues;
-            for(const auto& Entry:N->Component->GetWheelSubBodies())
+            for(const auto& Entry:N->Component->ReadWheelSubBodiesForPhysics())
             {
                 const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Entry.Get());
                 if(!Wheel||!Wheel->UsesOriginalBodyStorage()||!Wheel->OwnedWheelRuntime

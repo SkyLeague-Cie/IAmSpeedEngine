@@ -540,14 +540,14 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	BindWheelSimulationPointers();
 
 	// init all sub-bodies with the owner
-	HitboxSubBodyWheeledDomainStorage()->Initialize(this);
-	for (auto& WheelSubBody : WheelSubBodiesWheeledDomainStorage())
+	ReadHitboxForPhysics()->Initialize(this);
+	for (auto WheelSubBody : ReadWheelSubBodiesForPhysics())
 	{
 		WheelSubBody->Initialize(this);
 	}
 	// The hitbox owns the rigid body's inertia convention. Reuse that tensor so
 	// custom hitboxes and the vehicle force solvers cannot disagree.
-	CarLocalInvIWheeledDomainStorage() = HitboxSubBodyWheeledDomainStorage()->ComputeChassisLocalInvInertiaTensor();
+	CarLocalInvIWheeledDomainStorage() = ReadHitboxForPhysics()->ComputeChassisLocalInvInertiaTensor();
 
 	UpdateSubBodiesKinematics();
 
@@ -566,7 +566,7 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) const
 {
 	const Chaos::FSimpleWheeledVehicle* Vehicle = SkySimulationWheeledDomainStorage() ? SkySimulationWheeledDomainStorage()->PVehicle.Get() : nullptr;
-	const int32 Count = WheelSubBodiesWheeledDomainStorage().Num();
+	const int32 Count = ReadWheelSubBodiesForPhysics().Num();
 	if (!Vehicle || Count <= 0 || Count > int32(UE_ARRAY_COUNT(WheeledPhysicsStateStorage().SuspensionLastDisplacement))
 		|| Count != WheelSetupsWheeledDomainStorage().Num() || Count != WheelsWheeledDomainStorage().Num()
 		|| Count != Vehicle->Wheels.Num() || Count != Vehicle->Suspension.Num())
@@ -580,7 +580,7 @@ bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) cons
 	}
 	for (int32 Ordinal = 0; Ordinal < Count; ++Ordinal)
 	{
-		const USWheelSubBody* Wheel = WheelSubBodiesWheeledDomainStorage()[Ordinal].Get();
+		const USWheelSubBody* Wheel = ReadWheelSubBodiesForPhysics()[Ordinal].Get();
 		const auto* ExpectedWheel = &Vehicle->Wheels[Ordinal];
 		const auto* ExpectedSuspension = &Vehicle->Suspension[Ordinal];
 		const UChaosVehicleWheel* ExpectedConfiguration = WheelsWheeledDomainStorage()[Ordinal].Get();
@@ -631,25 +631,25 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 	}
 
 	const int32 NumBindings = FMath::Min3(
-		WheelSubBodiesWheeledDomainStorage().Num(),
+		ReadWheelSubBodiesForPhysics().Num(),
 		PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num());
 	SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
-		WheelSubBodiesWheeledDomainStorage().Num(), PVehicle->Wheels.Num(),
+		ReadWheelSubBodiesForPhysics().Num(), PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num(), NumBindings, WheelsWheeledDomainStorage().Num());
 	// This message describes ordinary setup, including the earlier stage where
 	// Chaos storage exists before component wheel configurations. Only an actual
 	// storage-count mismatch is a warning; canonical admission still validates
 	// every final index/pointer/configuration without relaxation.
-	if (WheelSubBodiesWheeledDomainStorage().Num() <= 0 || PVehicle->Wheels.Num() != WheelSubBodiesWheeledDomainStorage().Num()
-		|| PVehicle->Suspension.Num() != WheelSubBodiesWheeledDomainStorage().Num())
+	if (ReadWheelSubBodiesForPhysics().Num() <= 0 || PVehicle->Wheels.Num() != ReadWheelSubBodiesForPhysics().Num()
+		|| PVehicle->Suspension.Num() != ReadWheelSubBodiesForPhysics().Num())
 	{
 		SPEED_NATIVE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBindingIncomplete] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d"),
-			WheelSubBodiesWheeledDomainStorage().Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
+			ReadWheelSubBodiesForPhysics().Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
 	}
-	for (int32 WheelIdx = 0; WheelIdx < WheelSubBodiesWheeledDomainStorage().Num(); ++WheelIdx)
+	for (int32 WheelIdx = 0; WheelIdx < ReadWheelSubBodiesForPhysics().Num(); ++WheelIdx)
 	{
-		USWheelSubBody* WheelSubBody = WheelSubBodiesWheeledDomainStorage()[WheelIdx].Get();
+		USWheelSubBody* WheelSubBody = ReadWheelSubBodiesForPhysics()[WheelIdx].Get();
 		if (!WheelSubBody)
 		{
 			continue;
@@ -676,7 +676,7 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 
 void USpeedWheeledComponent::ClearWheelSimulationPointers()
 {
-	for (USWheelSubBody* WheelSubBody : WheelSubBodiesWheeledDomainStorage())
+	for (USWheelSubBody* WheelSubBody : ReadWheelSubBodiesForPhysics())
 	{
 		if (!WheelSubBody)
 		{
@@ -689,12 +689,12 @@ void USpeedWheeledComponent::ClearWheelSimulationPointers()
 
 void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle)
 {
-	if (!PVehicle.IsValid() || PVehicle->Suspension.Num() == 0 || WheelSubBodiesWheeledDomainStorage().Num() == 0)
+	if (!PVehicle.IsValid() || PVehicle->Suspension.Num() == 0 || ReadWheelSubBodiesForPhysics().Num() == 0)
 	{
 		return;
 	}
 
-	const int32 NumSuspensions = FMath::Min(PVehicle->Suspension.Num(), WheelSubBodiesWheeledDomainStorage().Num());
+	const int32 NumSuspensions = FMath::Min(PVehicle->Suspension.Num(), ReadWheelSubBodiesForPhysics().Num());
 	TArray<float> SprungMasses;
 	SprungMasses.Init(PhysMassWheeledDomainStorage() / FMath::Max(1, NumSuspensions), NumSuspensions);
 
@@ -707,7 +707,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 		for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
 		{
-			const USWheelSubBody* WheelSubBody = WheelSubBodiesWheeledDomainStorage()[WheelIdx].Get();
+			const USWheelSubBody* WheelSubBody = ReadWheelSubBodiesForPhysics()[WheelIdx].Get();
 			if (!WheelSubBody)
 			{
 				continue;
@@ -726,7 +726,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 			for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
 			{
-				const USWheelSubBody* WheelSubBody = WheelSubBodiesWheeledDomainStorage()[WheelIdx].Get();
+				const USWheelSubBody* WheelSubBody = ReadWheelSubBodiesForPhysics()[WheelIdx].Get();
 				if (!WheelSubBody)
 				{
 					continue;
@@ -774,8 +774,8 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 					const int32 WheelIdxA = AxleWheelIndices[0];
 					const int32 WheelIdxB = AxleWheelIndices[1];
-					const double YA = static_cast<double>(WheelSubBodiesWheeledDomainStorage()[WheelIdxA]->GetLocalOffset().Y);
-					const double YB = static_cast<double>(WheelSubBodiesWheeledDomainStorage()[WheelIdxB]->GetLocalOffset().Y);
+					const double YA = static_cast<double>(ReadWheelSubBodiesForPhysics()[WheelIdxA]->GetLocalOffset().Y);
+					const double YB = static_cast<double>(ReadWheelSubBodiesForPhysics()[WheelIdxB]->GetLocalOffset().Y);
 					const double CenterY = static_cast<double>(CenterOfMassWheeledDomainStorage().Y);
 
 					if (FMath::Abs(YA - YB) <= KINDA_SMALL_NUMBER)
@@ -798,7 +798,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 	for (int32 WheelIdx = 0; WheelIdx < NumSuspensions; ++WheelIdx)
 	{
-		USWheelSubBody* WheelSubBody = WheelSubBodiesWheeledDomainStorage()[WheelIdx].Get();
+		USWheelSubBody* WheelSubBody = ReadWheelSubBodiesForPhysics()[WheelIdx].Get();
 		if (!WheelSubBody)
 		{
 			continue;
@@ -1199,7 +1199,7 @@ const TArray<USSubBody*>& USpeedWheeledComponent::GetSubBodies() const
 
 SubBodyConfig USpeedWheeledComponent::GetSubBodyConfig(const USSubBody& SubBody) const
 {
-	if (HitboxSubBodyWheeledDomainStorage() && &SubBody == HitboxSubBodyWheeledDomainStorage())
+	if (ReadHitboxForPhysics() && &SubBody == ReadHitboxForPhysics())
 	{
 		SubBodyConfig Config;
 		return Config;
@@ -1310,7 +1310,7 @@ bool USpeedWheeledComponent::IsInWheelAutoRecover() const
 
 void USpeedWheeledComponent::RcvImpactOnSubBody(const USSubBody& SubBody, const FVector& Location)
 {
-	if (HitboxSubBodyWheeledDomainStorage() && &SubBody == HitboxSubBodyWheeledDomainStorage())
+	if (ReadHitboxForPhysics() && &SubBody == ReadHitboxForPhysics())
 	{
 		SpeedCarOwnerWheeledDomainStorage()->SetPhysSparkleLocation(Location);
 	}
@@ -1648,7 +1648,7 @@ void USpeedWheeledComponent::UpdateFrameState()
 			// support and its transient length here, after recovery but before gravity
 			// and suspension consume the first movable frame.
 			UpdateSubBodiesKinematics();
-			for (auto& Wheel : WheelSubBodiesWheeledDomainStorage())
+			for (auto Wheel : ReadWheelSubBodiesForPhysics())
 			{
 				if (Wheel)
 				{
@@ -1669,7 +1669,7 @@ void USpeedWheeledComponent::UpdateFrameState()
 		const FVector Right = GetPhysRightVector();
 		const FVector Up = GetPhysUpVector();
 		uint32 WheelMask = 0;
-		for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodiesWheeledDomainStorage())
+		for (const auto Wheel : ReadWheelSubBodiesForPhysics())
 		{
 			if (Wheel && Wheel->IsOnGround() && Wheel->Idx() >= 0
 				&& Wheel->Idx() < 32)
@@ -2157,8 +2157,8 @@ void USpeedWheeledComponent::AppendWheelPresentationSnapshot(TArray<FSimulationW
 {
     Out.Reset();
     if(!bPublishWheelPresentationWheeledDomainStorage())return;
-    Out.Reserve(WheelSubBodiesWheeledDomainStorage().Num());
-    for(const auto& Wheel:WheelSubBodiesWheeledDomainStorage())
+    Out.Reserve(ReadWheelSubBodiesForPhysics().Num());
+    for(const auto Wheel:ReadWheelSubBodiesForPhysics())
     {
         if(!Wheel) {Out.Reset();return;}
         const auto& R=Wheel->GetRenderData();
@@ -2314,20 +2314,20 @@ void USpeedWheeledComponent::HandleDamping(const float& delta)
 }
 void USpeedWheeledComponent::HandleRestForce()
 {
-	if (!HitboxSubBodyWheeledDomainStorage())
+	if (!ReadHitboxForPhysics())
 		return;
 
-	if (!HitboxSubBodyWheeledDomainStorage()->HasPersistentGroundContact())
+	if (!ReadHitboxForPhysics()->HasPersistentGroundContact())
 		return;
 
-	const TArray<FVector>& Contacts = HitboxSubBodyWheeledDomainStorage()->GetGroundContacts();
+	const TArray<FVector>& Contacts = ReadHitboxForPhysics()->GetGroundContacts();
 	if (Contacts.Num() == 0)
 		return;
 
 	const bool bEdgeSupport = (Contacts.Num() == 2);
 
 	// IMPORTANT: use persistent ground plane normal
-	const FVector N = HitboxSubBodyWheeledDomainStorage()->GetGroundPlaneNormal().GetSafeNormal();
+	const FVector N = ReadHitboxForPhysics()->GetGroundPlaneNormal().GetSafeNormal();
 
 	// Total acceleration (world-space)
 	const FVector Accel = GetPhysAcceleration();
@@ -2359,13 +2359,13 @@ void USpeedWheeledComponent::HandleRestForce()
 		const FVector ForcePerContact = RestForce / float(Contacts.Num());
 		for (const FVector& P : Contacts)
 		{
-			AddPhysForceAtPoint(ForcePerContact, P, HitboxSubBodyWheeledDomainStorage());
+			AddPhysForceAtPoint(ForcePerContact, P, ReadHitboxForPhysics());
 		}
 	}
 	else
 	{
 		// Apply at COM: same net force, near-zero artificial torque
-		const FVector COM = HitboxSubBodyWheeledDomainStorage()->GetKinematicsFromOwner(NumFrame() + 1).Location;
+		const FVector COM = ReadHitboxForPhysics()->GetKinematicsFromOwner(NumFrame() + 1).Location;
 		// AddForceOnHitboxAtLocation(RestForce, COM, Delta);
 		AddPhysAcceleration(-aN * N);
 	}
@@ -2377,8 +2377,8 @@ void USpeedWheeledComponent::HandleRestForce()
 	if (!bEdgeSupport)
 	{
 		FVector LockAxisWorld = FVector::ZeroVector;
-		if (HitboxSubBodyWheeledDomainStorage()->ComputeEdgeLockAxis(
-			HitboxSubBodyWheeledDomainStorage()->GetGroundPlaneNormal(),
+		if (ReadHitboxForPhysics()->ComputeEdgeLockAxis(
+			ReadHitboxForPhysics()->GetGroundPlaneNormal(),
 			Contacts,
 			LockAxisWorld))
 		{
@@ -2455,7 +2455,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		{
 			float MinForwardOffset = BIG_NUMBER;
 			float MaxForwardOffset = -BIG_NUMBER;
-			for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodiesWheeledDomainStorage())
+			for (const auto Wheel : ReadWheelSubBodiesForPhysics())
 			{
 				if (!Wheel)
 					continue;
@@ -2507,9 +2507,9 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 	const float HandbrakeFrictionValue = WheelFrameHandbrakeValueWheeledDomainStorage();
 	float DebugSteeringRearReleaseScale = 1.0f;
 
-	for (int32 WheelIndex = 0; WheelIndex < WheelSubBodiesWheeledDomainStorage().Num(); ++WheelIndex)
+	for (int32 WheelIndex = 0; WheelIndex < ReadWheelSubBodiesForPhysics().Num(); ++WheelIndex)
 	{
-		const TObjectPtr<USWheelSubBody>& Wheel = WheelSubBodiesWheeledDomainStorage()[WheelIndex];
+		const auto Wheel = ReadWheelSubBodiesForPhysics()[WheelIndex];
 		if (!Wheel || !Wheel->IsOnGround())
 			continue;
 
@@ -3080,7 +3080,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 	BeforeSuspensionUpdate(delta);
 
 	// 1) Update suspension for each wheel
-	for (auto& Wheel : WheelSubBodiesWheeledDomainStorage())
+	for (auto Wheel : ReadWheelSubBodiesForPhysics())
 	{
 		Wheel->UpdatePhysicsState(delta);
 		Wheel->UpdateSuspension(delta);
@@ -3098,8 +3098,8 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 		uint16 WheelIdxA = Axle.Setup.WheelIndex[0];
 		uint16 WheelIdxB = Axle.Setup.WheelIndex[1];
 
-		auto& WheelA = WheelSubBodiesWheeledDomainStorage()[WheelIdxA];
-		auto& WheelB = WheelSubBodiesWheeledDomainStorage()[WheelIdxB];
+		auto WheelA = ReadWheelSubBodiesForPhysics()[WheelIdxA];
+		auto WheelB = ReadWheelSubBodiesForPhysics()[WheelIdxB];
 
 		// --- Base spring and damping forces ---
 		auto ApplyWheelSuspension = [this, delta](USWheelSubBody& W)
@@ -3414,7 +3414,7 @@ const TArray<TObjectPtr<USWheelSubBody>>& USpeedWheeledComponent::GetWheelSubBod
 
 void USpeedWheeledComponent::UpdateWheelVisuals()
 {
-	for (auto& W : WheelSubBodiesWheeledDomainStorage())
+	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
 		const SWheelRenderData& R = W->GetRenderData();
 
@@ -3427,7 +3427,7 @@ void USpeedWheeledComponent::UpdateWheelVisuals()
 
 void USpeedWheeledComponent::RecoverWheelState()
 {
-	for (auto& W : WheelSubBodiesWheeledDomainStorage())
+	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
 		if (!W->HasSuspensionSim())
 		{
@@ -3445,7 +3445,7 @@ void USpeedWheeledComponent::RecoverWheelState()
 
 void USpeedWheeledComponent::RegisterWheelState()
 {
-	for (auto& W : WheelSubBodiesWheeledDomainStorage())
+	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
 		WheeledPhysicsStateStorage().SuspensionLastDisplacement[W->Idx()] = W->GetLastDisplacement();
 	}
@@ -3458,7 +3458,7 @@ void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose(
 	WheeledPhysicsStateStorage().AllowedAngularVelocity = FVector::ZeroVector;
 	WheeledPhysicsStateStorage().FramesSinceLastImpact = 0;
 
-	for (auto& W : WheelSubBodiesWheeledDomainStorage())
+	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
 		// A support sweep can be published after the suspension simulator last ran
 		// in its airborne state. At a countdown release or authoritative reset,
@@ -3476,7 +3476,7 @@ void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose(
 
 float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 {
-	if (WheelIndex < 0 || WheelIndex >= WheelSubBodiesWheeledDomainStorage().Num())
+	if (WheelIndex < 0 || WheelIndex >= ReadWheelSubBodiesForPhysics().Num())
 	{
 		return 0.0f;
 	}
@@ -3484,7 +3484,7 @@ float USpeedWheeledComponent::GetSuspensionOffset(int WheelIndex)
 	{
 		return 0.0f;
 	}
-	return WheelSubBodiesWheeledDomainStorage()[WheelIndex]->GetSuspensionOffset();
+	return ReadWheelSubBodiesForPhysics()[WheelIndex]->GetSuspensionOffset();
 }
 
 bool USpeedWheeledComponent::CanMove() const
@@ -3587,7 +3587,7 @@ void USpeedWheeledComponent::SetCannotMoveMulti_Implementation()
 void USpeedWheeledComponent::UpdateWheelOnGroundStates()
 {
 	WheeledGameStateStorage().NbWheelsOnGround = 0;
-	for (const auto& W : WheelSubBodiesWheeledDomainStorage())
+	for (const auto W : ReadWheelSubBodiesForPhysics())
 	{
 		if (W->IsOnGround())
 		{
@@ -3915,7 +3915,7 @@ float USpeedWheeledComponent::GetConfiguredWheelbaseCm() const
     double MinX = TNumericLimits<double>::Max();
     double MaxX = -TNumericLimits<double>::Max();
     int32 Count = 0;
-    for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodiesWheeledDomainStorage())
+    for (const auto Wheel : ReadWheelSubBodiesForPhysics())
     {
         if (!Wheel) continue;
         const double X = Wheel->GetLocalOffset().X;
@@ -3970,7 +3970,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		{
 			float MinForwardOffset = BIG_NUMBER;
 			float MaxForwardOffset = -BIG_NUMBER;
-			for (const TObjectPtr<USWheelSubBody>& Wheel : WheelSubBodiesWheeledDomainStorage())
+			for (const auto Wheel : ReadWheelSubBodiesForPhysics())
 			{
 				if (!Wheel)
 					continue;
@@ -4005,9 +4005,9 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 	FVector DebugDriveAppliedAccel = FVector::ZeroVector;
 	float DebugDriveYawTorque = 0.0f;
 
-	for (int32 WheelIndex = 0; WheelIndex < WheelSubBodiesWheeledDomainStorage().Num(); ++WheelIndex)
+	for (int32 WheelIndex = 0; WheelIndex < ReadWheelSubBodiesForPhysics().Num(); ++WheelIndex)
 	{
-		const TObjectPtr<USWheelSubBody>& Wheel = WheelSubBodiesWheeledDomainStorage()[WheelIndex];
+		const auto Wheel = ReadWheelSubBodiesForPhysics()[WheelIndex];
 		if (!Wheel || !Wheel->IsOnGround())
 			continue;
 
@@ -4226,7 +4226,7 @@ void USpeedWheeledComponent::HandleCountdownTimer()
 
 void USpeedWheeledComponent::HandleWheelTimers()
 {
-	for (auto& wheel : WheelSubBodiesWheeledDomainStorage())
+	for (auto wheel : ReadWheelSubBodiesForPhysics())
 	{
 		wheel->HandleTimers();
 	}
@@ -4338,7 +4338,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	{
 	for (int i = 0; i < 4; i++)
 	{
-		auto& W = WheelSubBodiesWheeledDomainStorage()[i];
+		auto W = ReadWheelSubBodiesForPhysics()[i];
 		if (!W->IsOnGround())
 			continue;
 
@@ -5081,7 +5081,7 @@ void USpeedWheeledComponent::QuantizePhysicalState()
 	QuantizeKinematicState(BasePhysicsStateStorage().Kinematic, GetKinematicStateForFrame(NumFrame() - 1).Rotation);
 
 	// round trip on last suspension length to avoid precision drift on client and server
-	for (const auto& W : WheelSubBodiesWheeledDomainStorage())
+	for (const auto W : ReadWheelSubBodiesForPhysics())
 	{
 		const int32 WheelIdx = W->Idx();
 		const float QuantizedDisplacement = WheeledPhysicsStateStorage().DequantizeLastSuspensionDisplacement(WheeledPhysicsStateStorage().QuantizeLastSuspensionDisplacement(WheelIdx));
