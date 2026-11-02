@@ -509,7 +509,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         I.Bridge->AnalyticWorldDataEpochStorage()=Data;
         auto OriginalCollision=MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*Data);
         I.Access->OriginalQueryIdentity=OriginalCollision->GetImmutableQueryIdentity1075();
-        if(!I.Access->OriginalQueryIdentity.IsValid()||I.Access->OriginalQueryIdentity.Data!=Data.Get())return {};
+        if(!I.Access->OriginalQueryIdentity.IsValid()||I.Access->OriginalQueryIdentity.Data!=&Data.Get())return {};
         I.Bridge->SimulationWorldEpochStorage().SetStaticCollisionWorld(MoveTemp(OriginalCollision));
     }
     I.Driver=I.World->SpawnActor<ASpeedBranchSimulation>();

@@ -1107,3 +1107,35 @@ claimed. Factory callbacks and real service/module/deleter participation remain
 open; restoration guards stay closed. Network correction is still global.
 FAIL73, all earlier FAIL/UNKNOWN and the incomplete historical parent-directory
 prechecks15-18 remain durable; later current directory audits do not rewrite them.
+
+
+Source79/native75 FAILED compilation with actual C2679 in the original private
+world birth identity check. MakeShared returns TSharedRef, whose Get() is a
+reference, whereas TSharedPtr.Get() is a pointer. Source80 compares the genuine
+immutable backend Data identity to &Data.Get(), without altering identity,
+geometry, source-map, lifetime or restoration guards. Original23903 and both
+coordinators closed1, UBT6/344.218seconds; real Job0 twice and final source,
+protected and full Engine audits empty. Query/native/Pending/process/Game stages
+were NOT_RUN. This failure remains evidence; source review had missed the type.
+
+Source80 also adds finite per-actor/frame kinematic diagnostic records to the
+programmed original-process probe. For240 frames it copies the real first
+forward publication after AdvanceLocal and before that pulse's correction,
+including actual requested/applied inputs. It keeps original-server observation
+bytes, accepts identical repeats and refuses conflicting authority at one frame.
+Final records pair the same actor/incarnation/frame and actual consumed-server
+request journal. Six COM numerical errors and independent exact verdict are
+emitted for owner and remote separately. Missing local/authority frames and
+matched coverage remain explicit. There is no invented unobserved state or
+whole-session maximum with partial coverage, and input-value association is not
+isolated causal attribution. This is a finite programmed fixture, not player
+hardware or a controlled loss test. First forward may inherit corrections from
+previous pulses; it is not a never-corrected trajectory. Added copies/allocations
+may perturb wallclock and scheduling despite unchanged message content/rate
+parameters and physical step order, so no unchanged timing/loss profile is claimed.
+
+Fresh native76 compilation and complete finite three-Game chain are required.
+No source78/native74 PASS is transferred to80. Full causal state, authoritativeK
+restore, callback/service/module/deleter lifetime admission and localized rollback
+remain open and guarded. Current reconciliation remains GLOBAL_FROM_BIRTH.
+All earlier FAIL/UNKNOWN including73 and75 remain preserved.

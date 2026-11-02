@@ -1,6 +1,7 @@
 #include "NativePredictionProcessProbe.h"
 #include "RedundantDatagram.h"
 #include "AuthorityInputJournal.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadConformanceProfile.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPredictionSession.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
@@ -142,7 +143,80 @@ std::optional<P::FPrivateRoadObservedFrame> ReadObservation(const std::vector<st
     }
     return R.Good&&R.At==Bytes.size()?std::optional<P::FPrivateRoadObservedFrame>(std::move(Out)):std::nullopt;
 }
-bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount,U64 ActualVehicleContactFrames)
+// Diagnostic values ONLY, outside native math. Each first forward publication
+// is copied before that pulse's correction; later graph adoption cannot rewrite
+// this record. Authority slots come from real original-server observations.
+// Missing frames stay explicit; these are not a full-session maximum unless
+// every one of the finite 240 frames was actually observed in both graphs.
+struct FFirstForwardKinematicTrace
+{
+    struct FFrame
+    {
+        std::vector<std::uint8_t> Local,Authority;
+        std::array<std::array<int16,3>,2> Requested{},Applied{};
+    };
+    std::array<FFrame,Frames> History;
+    bool CaptureLocal(const P::FPrivateRoadPublication& Actual)
+    {
+        if(Actual.Frame>=Frames||Actual.Actors.size()!=2)return false;
+        auto& Slot=History[size_t(Actual.Frame)];if(!Slot.Local.empty())return false;
+        for(unsigned A=0;A<2;++A)
+        {
+            const auto& Actor=Actual.Actors[A];
+            if(Actor.Actor!=101+A||Actor.Incarnation!=3||!Actor.Input||Actor.Input->Frame!=Actual.Frame)return false;
+            for(unsigned Action=0;Action<3;++Action)
+            {Slot.Requested[A][Action]=Actor.Input->Requested[Action];Slot.Applied[A][Action]=Actor.Input->Applied[Action];}
+        }
+        auto Bytes=Observe(Actual);if(!ReadObservation(Bytes))return false;
+        Slot.Local=std::move(Bytes);return true;
+    }
+    bool CaptureAuthority(U64 Frame,const std::vector<std::uint8_t>& Bytes)
+    {
+        if(Frame>=Frames)return false;auto& Slot=History[size_t(Frame)].Authority;
+        if(!Slot.empty())return Slot==Bytes; // conflicting same-frame authority refuses
+        Slot=Bytes;return true;
+    }
+    bool Write(std::ostream& S,U64 OwnActor,const FAuthorityInputJournal& Journal) const
+    {
+        U64 Matched=0,MissingLocal=0,MissingAuthority=0;
+        for(const auto& H:History)
+        {MissingLocal+=H.Local.empty();MissingAuthority+=H.Authority.empty();Matched+=!H.Local.empty()&&!H.Authority.empty();}
+        S<<",\"first_forward_divergence\":{\"scope\":\"observed_same_frame_pairs_only_programmed_fixture\","
+            <<"\"first_forward_kept_before_pulse_correction\":true,\"hidden_state_compared\":false,"
+            <<"\"input_association_is_causal_isolation\":false,\"expected_frames\":"<<Frames
+            <<",\"matched_frames\":"<<Matched<<",\"missing_local_frames\":"<<MissingLocal
+            <<",\"missing_authority_frames\":"<<MissingAuthority
+            <<",\"all_finite_frames_observed\":"<<(Matched==Frames?"true":"false")<<",\"samples\":[";
+        bool First=true;S<<std::setprecision(17);
+        for(U64 N=0;N<Frames;++N)
+        {
+            const auto& H=History[size_t(N)];if(H.Local.empty()||H.Authority.empty())continue;
+            const auto Local=ReadObservation(H.Local),Authority=ReadObservation(H.Authority);
+            if(!Local||!Authority||Local->Frame!=N||Authority->Frame!=N)return false;
+            for(unsigned A=0;A<2;++A)
+            {
+                const auto& X=Local->Actors[A];const auto& Y=Authority->Actors[A];
+                const auto Input=Journal.Read(Y.Actor,N);
+                if(X.Actor!=Y.Actor||X.Incarnation!=Y.Incarnation||!Input||Input->Frame!=N||Input->Incarnation!=Y.Incarnation)return false;
+                const auto Error=P::MeasurePrivateRoadKinematics(X.COMState,Y.COMState);if(!Error.Valid)return false;
+                if(!First)S<<',';First=false;
+                S<<"{\"frame\":"<<N<<",\"actor\":"<<Y.Actor<<",\"incarnation\":"<<Y.Incarnation
+                    <<",\"role\":\""<<(Y.Actor==OwnActor?"owner":"remote")<<"\",\"authority_requested\":[";
+                for(unsigned Action=0;Action<3;++Action){if(Action)S<<',';S<<Input->Input.Values[Action];}
+                S<<"],\"first_forward_requested\":[";
+                for(unsigned Action=0;Action<3;++Action){if(Action)S<<',';S<<H.Requested[A][Action];}
+                S<<"],\"first_forward_applied\":[";
+                for(unsigned Action=0;Action<3;++Action){if(Action)S<<',';S<<H.Applied[A][Action];}
+                S<<"],\"different_exact\":"<<(Error.Different?"true":"false")
+                    <<",\"position_cm\":"<<Error.Position<<",\"velocity_cm_s\":"<<Error.Velocity
+                    <<",\"acceleration_cm_s2\":"<<Error.Acceleration<<",\"orientation_rad\":"<<Error.RotationRadians
+                    <<",\"angular_velocity_rad_s\":"<<Error.AngularVelocity<<",\"angular_acceleration_rad_s2\":"<<Error.AngularAcceleration<<'}';
+            }
+        }
+        S<<"]}";return bool(S);
+    }
+};
+bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount,U64 ActualVehicleContactFrames,const FFirstForwardKinematicTrace* Trace=nullptr,const FAuthorityInputJournal* Journal=nullptr)
 {
     if(!InitialSynchronized||OwnerAuthorityCount!=Frames||RemoteAuthorityCount!=Frames
         ||(O.Scenario==ENativeProbeScenario::InteractingInputFixture&&!ActualVehicleContactFrames))return false;
@@ -164,7 +238,9 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
         <<",\"authority_input_prefix_through\":"<<(O.Launcher.SelfPeer==Server?"null":std::to_string(Frames-1))
         <<",\"authority_retention_is_consumption_ack\":false,\"server_completed_input_sources_checked\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
         <<",\"both_clients_retained_both_actor_journals\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
-        <<",\"initial_publication_matched\":true,\"initial_publication_frame\":0,\"activation_frame\":1,\"startup_full_hidden_state_certificate\":false,\"hardware\":false,\"real_demo_game_client\":false,\"complete_state_restore\":false,\"localized_rollback\":false}\n";
+        <<",\"initial_publication_matched\":true,\"initial_publication_frame\":0,\"activation_frame\":1,\"startup_full_hidden_state_certificate\":false,\"hardware\":false,\"real_demo_game_client\":false,\"complete_state_restore\":false,\"localized_rollback\":false";
+    if(Trace&&(!Journal||!Trace->Write(S,O.Launcher.SelfPeer==PeerA?101:102,*Journal)))return false;
+    S<<"}\n";
     S.close();if(!S)return false;std::error_code Error;std::filesystem::rename(Temp,Path,Error);return !Error;
 }
 }
@@ -362,6 +438,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
     // Exact original owner frames remain Device evidence. A received server
     // record is checked against them; it is never relabelled as a Device frame.
     std::vector<FPacket> OriginalOwnerPackets{Baseline.Packet};
+    FFirstForwardKinematicTrace KinematicTrace;
     std::optional<P::FPrivateRoadObservedFrame> Final;
     while(std::chrono::steady_clock::now()<Deadline)
     {
@@ -433,6 +510,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
             else if(M.Kind==Observed)
             {
                 const auto Obs=ReadObservation(M.Bytes);if(!Obs||Obs->Frame>=Frames)co_return Fail(__LINE__);
+                if(!KinematicTrace.CaptureAuthority(Obs->Frame,M.Bytes))co_return Fail(__LINE__);
                 if(Obs->Frame==Frames-1)Final=*Obs;
                 if(Client&&Obs->Frame==ObservationFrame(O.Scenario))
                 {
@@ -451,6 +529,8 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
         {
             auto S=Next==0?Baseline:Sample(Own,Next,Contract,O.Scenario);
             if(!Client->AdvanceLocal(S.Local,Why))co_return Fail(__LINE__);
+            const auto FirstForward=Client->ReadLatest();
+            if(!FirstForward||FirstForward->Frame!=Next||!KinematicTrace.CaptureLocal(*FirstForward))co_return Fail(__LINE__);
             if(Next)
             {
                 if(OriginalOwnerPackets.size()!=Next||Outbox.Queue(S.Packet)!=EResult::Accepted)co_return Fail(__LINE__);
@@ -486,7 +566,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
         {
             const auto FinalNative=Client->ReadLatest();if(!FinalNative)co_return Fail(__LINE__);
             if(!Send(Server,ClientDone,{1}))co_return Fail(__LINE__);
-            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started,AuthorityJournal->ContiguousCount(101+Own),AuthorityJournal->ContiguousCount(101+Other),FinalNative->VehicleContactFrameCount))co_return Fail(__LINE__);
+            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started,AuthorityJournal->ContiguousCount(101+Own),AuthorityJournal->ContiguousCount(101+Other),FinalNative->VehicleContactFrameCount,&KinematicTrace,&*AuthorityJournal))co_return Fail(__LINE__);
             std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
             if(Release>>Session>>Epoch)
             {
