@@ -7,6 +7,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Misc/ScopeExit.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
 #include "EngineUtils.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -41,7 +42,14 @@ struct FActualNativeBoundaryLogProbe final : FOutputDevice
         OutsideCollection=!Speed::NativeEpoch::HasOriginalDiagnosticOutbox();
         if(Case==ECase::DestroyBirthDriver)
         {
-            for(TActorIterator<ASpeedBranchSimulation> It(World.Get());It;++It)
+            auto* ActualWorld=World.Get();
+            if(!GEngine||!ActualWorld)return;
+            const bool AddedContext=GEngine->GetWorldContextFromWorld(ActualWorld)==nullptr;
+            if(AddedContext)GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(ActualWorld);
+            ON_SCOPE_EXIT{if(AddedContext)GEngine->DestroyWorldContext(ActualWorld);};
+            // Real DestroyActor requires a real Engine world context. Supply
+            // that test precondition and remove it BEFORE the genuine GC.
+            for(TActorIterator<ASpeedBranchSimulation> It(ActualWorld);It;++It)
             {ActualDriverDestroyReturned=It->Destroy();break;}
         }
         if(Case!=ECase::ActivationFacade)
@@ -197,9 +205,12 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
         const bool RegistrationUnchanged=LiveStiffness->GetFloat()==ChangedLiveStiffness;
         LiveStiffness->Set(OriginalLiveStiffness,ECVF_SetByCode);
         if(!RegistrationUnchanged||LiveStiffness->GetFloat()!=OriginalLiveStiffness)return false;
-        if(!LocalAdvanced||!Authority->Step({{101,3,H.Predict(N)}},false,Why)
-            ||!Neutral->Step({{101,3,Z.Predict(N)}},false,Why)
-            ||!StiffnessControl->Step({{101,3,Z.Predict(N)}},false,Why))
+        // Predict advances the original ingress cursor. Read ONCE and share
+        // that immutable received evidence between independent physical controls.
+        const auto AuthorityEvidence=H.Predict(N),NeutralEvidence=Z.Predict(N);
+        if(!LocalAdvanced||!Authority->Step({{101,3,AuthorityEvidence}},false,Why)
+            ||!Neutral->Step({{101,3,NeutralEvidence}},false,Why)
+            ||!StiffnessControl->Step({{101,3,NeutralEvidence}},false,Why))
         {Test.AddError(FString::Printf(TEXT("%s native step %llu: %s"),Case.Name,N,*Why));return false;}
         auto L=Local->ReadLatest(),A=Authority->ReadLatest(),B=Neutral->ReadLatest();
         if(!L||!A||!B||L->Frame!=N||A->Frame!=N||B->Frame!=N||!Body(*L)||!Body(*A)||!Body(*B))return false;

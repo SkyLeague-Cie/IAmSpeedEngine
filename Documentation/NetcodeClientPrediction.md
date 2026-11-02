@@ -656,3 +656,17 @@ factory already uses that same exact NativeConfiguration Wheel/Suspension;
 only two obsolete observer member names remained. Native59's C2039/C2672,
 original6/natural Job0 twice and zero audits stay FAIL; no runtime ran. No native
 equation, configured value, assertion, coverage or restoration guard changes.
+
+
+Source65 fixes native60's genuine failures without relaxing input or startup
+guards. Predict advances its ingress cursor, so neutral evidence is read once
+and shared immutably with both native controls. Activation reads actual prepared
+physics while CanMove is STILL closed by its sync bit, then success-only commits
+that bit and verifies real CanMove without an intervening callback. Requiring
+CanMove before that commit was circular. The negative DestroyActor fixture now
+supplies/removes a real temporary Engine world context before genuine GC; the
+earlier context warning remains a FAIL, never filtered or expected away.
+Native60:46Success/10FAIL with all warnings/errors retained. Actual birth GC
+returned, eight prepared wheels were reachable, facade callback ran and actual
+driver destruction+GC refused construction. Those scoped observations are not
+full callback/lifetime/restore or localized qualification. Later stages NOT_RUN.

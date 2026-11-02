@@ -784,13 +784,20 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
         for(const auto& N:I.Cars)
         {
             const auto* C=N->ComponentWeak.Get();
-            if(!C||!C->CanMove()||C->IsFrozen()||C->WheeledPhysicsStateStorage().bStartCountdown
+            // CanMove must STILL be closed by the synchronization bit here.
+            // Check the actual prepared physical state before committing it.
+            if(!C||C->CanMove()||C->IsFrozen()||C->WheeledPhysicsStateStorage().bStartCountdown
                 ||C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove!=0
                 ||C->SinceCanMoveFrameWheeledDomainStorage()!=C->NumFrame()+1)
                 return StartupFailed(TEXT("startup actual physical activation failed read-back"));
         }
+        I.Access->InitialPublicationReleased=true;
+        // Success-only commit, then verify the real combined CanMove result
+        // without any callback or physical step between checks.
+        for(const auto& N:I.Cars)if(!N->ComponentWeak->CanMove())
+        {I.Access->InitialPublicationReleased=false;return StartupFailed(TEXT("startup committed native gate did not open"));}
     }
-    I.Access->InitialPublicationReleased=true;return true;
+    return true;
 }
 std::vector<FNativeConfigurationLifetimeValues> FPrivateRoadPhysicsWorld::ReadNativeConfigurationLifetimeForDiagnostics() const
 {
