@@ -689,3 +689,31 @@ launch selects the existing private procedural harness flag before CDO birth;
 normal Device/render gameplay retains its original asset selection.
 Complete epoch capture/lease, authoritative restoreK and localized rollback
 remain unimplemented/closed. Current correction is global replay from birth.
+
+
+Source67 adds a normalized field-by-field capture of the six retained original
+body value structs (125 fields plus nested hit/render values) and the bound
+original flat plane. Unknown/stale references remain unknown; they never become
+zeroes or complete-state admission. Registration checks actual retained roots,
+weak birth identities, original native allocation addresses and every current
+alias before assigning semantic reference keys. The new paired native measures
+also compare these original body domains against matched and neutral controls.
+This is not a complete component/driver/world/source/configuration capture and
+does not restore any physical object or open a lease.
+
+A real Engine ObjectHandleRead callback fixture records original wheel reads
+under the native scope and retains only their observed view identities. A
+positive distinct-from-facade witness demonstrates the currently OPEN escape
+path, without mutating physics. It cannot certify exclusion. Complete restore
+providers and ProtectsEscapedMutableViews remain closed. Full source/module/
+lifecycle/callback closure and same-graph authoritative restoreK remain work.
+
+Exact previous source66 native62:56 tests and Pending1 passed0errors/warnings.
+Original process launch was refused by a build-sized disk gate before any
+managed job; that NOT_RUN failure is preserved. Fresh same-DLL runtime-only
+continuation passed3 commandlets,2actual Game clients plus dedicated server,
+and expected9/10 cancellation. Atframe170 measured position errors were
+216.0001757046008cm and123.7260579355192cm; actual global from-birth corrections
+3/6 reached exact six-COM comparison at239,215contactframes. Every original
+job naturally drained with final audits0. No Device/render/localized/restoreK
+qualification transfers to67. No earlier FAIL/UNKNOWN is relabeled.

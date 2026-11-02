@@ -1,6 +1,7 @@
 #include "PrivateRoadPhysicsWorld.h"
 #include "PrivateRoadNativeObjects.h"
 #include "PrivateRoadPartialStateObservation.h"
+#include "OriginalRoadBodyValueCapture.h"
 #include "IAmSpeed/Driving/StockRoadCar.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -134,6 +135,11 @@ FReferenceSimulation RetiringReferenceSimulation;
         USpeedBranchWheeledComponent* Component=nullptr;
         U64 StableId=0;
         bool SolidInitializationWitness=false;
+        TArray<TWeakObjectPtr<UChaosVehicleWheel>> OriginalWheelObjects;
+        USpeedSimulation* OriginalNativeSimulation=nullptr;
+        Chaos::FSimpleWheeledVehicle* OriginalNativeVehicle=nullptr;
+        Chaos::FSimpleWheelSim* OriginalNativeWheelAllocation=nullptr;
+        Chaos::FSimpleSuspensionSim* OriginalNativeSuspensionAllocation=nullptr;
         std::unique_ptr<FBranchInputFilter> Filter;
     };
     TStrongObjectPtr<UWorld> World;
@@ -162,6 +168,9 @@ RetirementDraft::EPhase RetirementPhase=RetirementDraft::EPhase::Open;
 TWeakObjectPtr<UWorld> OriginalWorldWeak;
 TWeakObjectPtr<USpeedWorldSubsystem> OriginalBridgeWeak;
 TWeakObjectPtr<ASpeedBranchSimulation> OriginalDriverWeak;
+TWeakObjectPtr<AActor> OriginalFloorActorWeak;
+TWeakObjectPtr<UBoxComponent> OriginalFloorWeak;
+TSharedPtr<const Speed::Analytic::FAnalyticWorldData> OriginalFlatGeometry;
 TArray<TWeakObjectPtr<USpeedBranchWheeledComponent>> OriginalComponentsWeak;
 TArray<TWeakObjectPtr<USpeedBranchBoxSubBody>> OriginalBoxesWeak;
 TArray<TWeakObjectPtr<USpeedBranchWheelSubBody>> OriginalWheelsWeak;
@@ -179,6 +188,13 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
             ||!B||B!=Bridge||B->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
             ||!D||D!=Driver||D->IsActorBeingDestroyed()||D->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return false;
         for(const auto& P:Pins)if(!P.Get())return false;
+        if(!OriginalFloorActorWeak.IsExplicitlyNull()||!OriginalFloorWeak.IsExplicitlyNull())
+        {
+            auto* A=OriginalFloorActorWeak.Get();auto* F=OriginalFloorWeak.Get();
+            if(!A||!F||A->IsActorBeingDestroyed()||A->GetWorld()!=W||F->GetOwner()!=A
+                ||A->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+                ||F->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return false;
+        }
         for(const auto& Weak:OriginalComponentsWeak)if(!Weak.IsValid())return false;
         for(const auto& Weak:OriginalBoxesWeak)if(!Weak.IsValid())return false;
         for(const auto& Weak:OriginalWheelsWeak)if(!Weak.IsValid())return false;
@@ -278,11 +294,13 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     if(!Data->FinalizeAndValidate(&Why))return {};
     // Exact authored plane, not an imported asset authority certificate.
     Data->Planes[0].bAuthorityEligible=true;
+    I.OriginalFlatGeometry=Data;
     auto* FloorActor=I.World->SpawnActor<AActor>();
     if(!FloorActor){Refuse(Why,TEXT("private floor actor missing"));return {};}
     auto* Floor=NewObject<UBoxComponent>(FloorActor);FloorActor->AddInstanceComponent(Floor);
     Floor->SetMobility(EComponentMobility::Static);Floor->SetCollisionObjectType(ECC_WorldStatic);
     Floor->SetCollisionResponseToAllChannels(ECR_Block);I.PinTree(FloorActor);
+    I.OriginalFloorActorWeak=FloorActor;I.OriginalFloorWeak=Floor;
     {
         FOriginalComponentStorageScope OriginalWorldAdmission(*I.Access);
         I.Bridge->AnalyticSourceComponentsEpochStorage().Add(1,Floor);
@@ -344,6 +362,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         };
         const auto ReferenceWheels=PrepareWheelObjects(),OriginalWheels=PrepareWheelObjects();
         if(ReferenceWheels.Num()!=4||OriginalWheels.Num()!=4)return {};
+        for(auto* Wheel:OriginalWheels)N.OriginalWheelObjects.Add(Wheel);
         if(!I.Diagnostics->Begin()){Refuse(Why,TEXT("native birth diagnostics unavailable"));return {};}
         bool BirthOutboxActive=true;ON_SCOPE_EXIT{if(BirthOutboxActive)I.Diagnostics->End();};
         const bool BirthConfigured=[&]() -> bool
@@ -426,6 +445,11 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         }
         C->SetSubBodies(OriginalTopology);C->SetOwner(N.Actor);
         BuildOriginalVehicle(*C,N.NativeConfiguration,OriginalWheels);
+        N.OriginalNativeSimulation=C->SkySimulationWheeledDomainStorage();
+        N.OriginalNativeVehicle=N.OriginalNativeSimulation?N.OriginalNativeSimulation->PVehicle.Get():nullptr;
+        if(!N.OriginalNativeVehicle||N.OriginalNativeVehicle->Wheels.Num()!=4||N.OriginalNativeVehicle->Suspension.Num()!=4)return {};
+        N.OriginalNativeWheelAllocation=N.OriginalNativeVehicle->Wheels.GetData();
+        N.OriginalNativeSuspensionAllocation=N.OriginalNativeVehicle->Suspension.GetData();
         for(int32 W=0;W<4;++W)
         {
             auto* Body=C->GetWheelSubBodies()[W].Get();
@@ -648,11 +672,110 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     if(Out->NativeNetworkComponents||Out->NativeDebugDelegateBindings||Out->RenderScenePresent||Out->PhysicsScenePresent)return Fail(TEXT("external network/debug binding appeared in private native graph"));
     if(!I.Driver->ReadLatestSimulationSnapshot(Out->Physics)||Out->Physics.NumFrame!=Frame
         ||Out->Physics.PresentationBodies.Num()!=int32(I.Cars.size()))return Fail(TEXT("private native publication mismatch"));
+    // Build from actual ORIGINAL roots, not facade addresses captured by an
+    // external caller. Unknown/stale references refuse the observation, and
+    // never become a zero value or a complete-state/lifetime certificate.
+    OriginalBodyCapture::FReferences BodyReferences;
+    bool BodyReferencesComplete=true;
+    using BodyRole=OriginalBodyCapture::EReferenceRole;
+    const auto BindBodyReference=[&](const void* P,const FImpl::FCar& N,BodyRole Role,uint16 Index=0)
+    {return BodyReferences.Add(P,{N.Seed.Actor,N.Seed.Incarnation,uint16(Role),Index});};
+    // The sole static source is the actual retained flat-plane recipe and its
+    // original weak/pinned component, not a numeric alias assigned to a car.
+    const auto& Sources=I.Bridge->AnalyticSourceComponentsEpochStorage();
+    const auto* FloorSource=Sources.Find(1);auto* Floor=I.OriginalFloorWeak.Get();
+    const auto& Geometry=I.Bridge->AnalyticWorldDataEpochStorage();
+    if(!I.AcquiredGraphStillLive()||!Floor||Sources.Num()!=1||!FloorSource||FloorSource->Get()!=Floor
+        ||!Geometry.IsValid()||Geometry!=I.OriginalFlatGeometry||Geometry->Planes.Num()!=1
+        ||Geometry->Planes[0].SourceId!=1||Geometry->Planes[0].SurfaceId!=2
+        ||Geometry->Planes[0].FeatureId!=3||Geometry->Planes[0].PrimitiveId!=4)
+        BodyReferencesComplete=false;
+    if(BodyReferencesComplete&&!BodyReferences.Add(Floor,{0,0,uint16(BodyRole::StaticSource),0,Geometry->Planes[0].SourceId}))
+        BodyReferencesComplete=false;
+    for(const auto& N:I.Cars)
+    {
+        auto* C=N->ComponentWeak.Get();
+        if(!BodyReferencesComplete||!C||!N->NativeVehicleRoot||!N->NativeBoxRoot||N->NativeWheelRoots.size()!=4||N->OriginalWheelObjects.Num()!=4)
+        {BodyReferencesComplete=false;break;}
+        auto* Box=Cast<USpeedBranchBoxSubBody>(C->GetHitboxSubBodyForConfiguration());
+        if(!Box||N->NativeBoxRoot->Vehicle!=N->NativeVehicleRoot
+            ||C->OriginalWheeledDomain.get()!=N->NativeVehicleRoot->Domain.get()
+            ||Box->StorageAccess.lock()!=I.Access
+            ||Box->OwnedBodyValues.get()!=std::get<0>(N->NativeBoxRoot->Parts).get()
+            ||Box->OwnedSolidValues.get()!=std::get<1>(N->NativeBoxRoot->Parts).get()
+            ||Box->OwnedBoxDomain.get()!=std::get<2>(N->NativeBoxRoot->Parts).get()
+            ||!BindBodyReference(static_cast<ISpeedComponent*>(C),*N,BodyRole::Component)
+            ||!BindBodyReference(static_cast<ISpeedWheeledComponent*>(C),*N,BodyRole::Component)
+            ||!BindBodyReference(C,*N,BodyRole::Component)||!BindBodyReference(Box,*N,BodyRole::Box))
+        {BodyReferencesComplete=false;break;}
+        const auto& Wheels=C->GetWheelSubBodies();
+        const auto& NativeDomain=N->NativeVehicleRoot->Domain;
+        if(!NativeDomain||!NativeDomain->VehicleSimulationPT)
+        {BodyReferencesComplete=false;break;}
+        auto* NativeSimulation=static_cast<USpeedSimulation*>(NativeDomain->VehicleSimulationPT.Get());
+        if(NativeSimulation!=N->OriginalNativeSimulation||NativeDomain->SkySimulation!=NativeSimulation)
+        {BodyReferencesComplete=false;break;}
+        auto* NativeVehicle=NativeSimulation->PVehicle.Get();
+        if(Wheels.Num()!=4||!NativeVehicle||NativeVehicle!=N->OriginalNativeVehicle
+            ||NativeVehicle->Wheels.Num()!=4||NativeVehicle->Suspension.Num()!=4
+            ||NativeVehicle->Wheels.GetData()!=N->OriginalNativeWheelAllocation
+            ||NativeVehicle->Suspension.GetData()!=N->OriginalNativeSuspensionAllocation)
+        {BodyReferencesComplete=false;break;}
+        for(uint16 W=0;W<4;++W)
+        {
+            const auto& Root=N->NativeWheelRoots[W];
+            if(!Root){BodyReferencesComplete=false;break;}
+            const auto& Domain=std::get<3>(Root->Parts);
+            auto* OriginalWheelObject=N->OriginalWheelObjects[W].Get();
+            auto* Body=Cast<USpeedBranchWheelSubBody>(Wheels[W].Get());
+            if(Root->Vehicle!=N->NativeVehicleRoot||!Body||Body->OwnedBodyValues.get()!=std::get<0>(Root->Parts).get()
+                ||Body->StorageAccess.lock()!=I.Access
+                ||Body->OwnedSolidValues.get()!=std::get<1>(Root->Parts).get()
+                ||Body->OwnedWheelRuntime.get()!=std::get<2>(Root->Parts).get()
+                ||Body->OwnedWheelDomain.get()!=Domain.get()
+                ||Body->OwnedSphereDomain.get()!=std::get<4>(Root->Parts).get()
+                ||!Domain||!OriginalWheelObject||Domain->ChaosWheel!=OriginalWheelObject
+                ||Domain->PWheel!=&NativeVehicle->Wheels[W]||Domain->PSuspension!=&NativeVehicle->Suspension[W]
+                ||NativeVehicle->Wheels[W].SetupPtr!=&N->NativeConfiguration->Wheel
+                ||NativeVehicle->Suspension[W].SetupPtr!=&N->NativeConfiguration->Suspension
+                ||!BindBodyReference(Wheels[W].Get(),*N,BodyRole::Wheel,W)
+                ||!BindBodyReference(Domain->ChaosWheel,*N,BodyRole::WheelObject,W)
+                ||!BindBodyReference(Domain->PWheel,*N,BodyRole::NativeWheel,W)
+                ||!BindBodyReference(Domain->PSuspension,*N,BodyRole::NativeSuspension,W))
+            {BodyReferencesComplete=false;break;}
+        }
+        if(!BodyReferencesComplete)break;
+    }
+    BodyReferencesComplete=BodyReferencesComplete&&BodyReferences.Seal();
     for(const auto& N:I.Cars)
     {
         auto State=N->Filter->Capture();if(!State||State->Next!=Frame+1)return Fail(TEXT("private filter publication mismatch"));
         Out->Actors.push_back({N->Seed.Actor,N->Seed.Incarnation,N->StableId,*State,I.Access->Slots.FindChecked(N->Component).Input,
             N->Component->CanMove(),N->Component->IsFrozen(),N->Component->WheeledPhysicsStateStorage().nbFramesbeforeCanMove});
+        if(BodyReferencesComplete)
+        {
+            try
+            {
+                OriginalBodyCapture::FWriter W(BodyReferences);
+                W.Value(uint32(0x31424749));W.Value(uint16(1));W.Value(N->Seed.Actor);W.Value(N->Seed.Incarnation);
+                W.Value(Geometry->SchemaVersion);OriginalBodyCapture::AppendPlane(W,Geometry->Planes[0]);
+                const auto AppendPart=[&](const auto& P)
+                {if(!P)throw Replay::FFieldError("missing original body root part");OriginalBodyCapture::Append(W,*P);};
+                W.Value(uint16(BodyRole::Box));W.Value(uint16(0));
+                AppendPart(std::get<0>(N->NativeBoxRoot->Parts));
+                AppendPart(std::get<1>(N->NativeBoxRoot->Parts));
+                AppendPart(std::get<2>(N->NativeBoxRoot->Parts));
+                for(uint16 Index=0;Index<4;++Index)
+                {
+                    const auto& Root=N->NativeWheelRoots[Index];W.Value(uint16(BodyRole::Wheel));W.Value(Index);
+                    AppendPart(std::get<0>(Root->Parts));AppendPart(std::get<1>(Root->Parts));
+                    AppendPart(std::get<2>(Root->Parts));AppendPart(std::get<3>(Root->Parts));AppendPart(std::get<4>(Root->Parts));
+                }
+                Out->Actors.back().OriginalBodyDomainValues=W.Bytes();
+                Out->Actors.back().OriginalBodyDomainsAvailable=true;
+            }
+            catch(const Replay::FFieldError&){} // explicit UNKNOWN, never a full-state admission
+        }
         const auto* Hitbox=N->Component->GetHitboxSubBodyForConfiguration();
         if(!Hitbox)return Fail(TEXT("native hitbox diagnostics missing"));
         Out->Actors.back().NativeHitboxHalfExtent=Hitbox->GetBoxExtent();

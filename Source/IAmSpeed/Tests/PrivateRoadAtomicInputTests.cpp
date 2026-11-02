@@ -17,6 +17,7 @@
 #include "UObject/GarbageCollection.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectArray.h"
+#include "UObject/ObjectHandleTracking.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include <atomic>
 
@@ -68,6 +69,24 @@ struct FActualNativeBoundaryLogProbe final : FOutputDevice
             FacadeFreezeTransition=WasUnfrozen&&C->IsFrozen();
             if(auto* Bridge=W->GetSubsystem<USpeedWorldSubsystem>())
             {Bridge->UnregisterSpeedComponent(C);Bridge->ApplyPendingOps();ActualLegacyQueueReturned=true;}
+        }
+    }
+};
+// Actual Engine read callback witness only. It does NOT authorize restoration
+// or claim that original mutable views cannot escape through this path.
+struct FActualHandleReadWitness
+{
+    struct FTarget {TWeakObjectPtr<USpeedBranchWheelSubBody> Body;const Chaos::FSimpleWheelSim* Observed=nullptr;};
+    std::vector<FTarget> Targets;
+    uint64 ScopedTargetReads=0;
+    void Observe(TArrayView<const UObject* const> Objects)
+    {
+        if(!IsInGameThread()||!Speed::RoadSettings::SelectedOriginalRoadSettings())return;
+        for(const auto* Object:Objects)for(auto& T:Targets)
+        {
+            auto* Body=T.Body.Get();if(!Body||Body!=Object)continue;
+            ++ScopedTargetReads;
+            if(!T.Observed)T.Observed=Body->GetWheelSim(); // retain actual view identity, never mutate it
         }
     }
 };
@@ -158,6 +177,7 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     const size_t Retention=FMath::Max<size_t>(512,size_t(Case.FrameCount));
     P::FRemoteRequestHistory H(Seed.Remote,Actions,256,Retention),Z(Seed.Remote,Actions,256,Retention);
     uint32 PartialMissing=0,PartialDifferent=0,PartialResponse=0;
+    uint32 BodyMissing=0,BodyDifferent=0,BodyNeutralResponse=0;
     FMaxima StiffnessResponse;uint32 StiffnessPartialResponse=0;
     FMaxima Difference,Response;uint32 FilterDifferences=0,StartupDifferences=0;int64 FirstLocalCanMove=-1,FirstAuthorityCanMove=-1;
     const auto Body=[](const P::FPrivateRoadPublication& Pub)->const FSimulationPresentationBody*
@@ -219,6 +239,13 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
         if(!SensitiveCut||!Body(*SensitiveCut)||!StiffnessResponse.Add(Body(*B)->COMState,Body(*SensitiveCut)->COMState,N))return false;
         if(P::ComparePrivateRoadPartialValues(B->Actors[0],SensitiveCut->Actors[0])==P::EPrivateRoadPartialComparison::Different)++StiffnessPartialResponse;
         const auto& LF=L->Actors[0];const auto& AF=A->Actors[0];
+        if(!LF.OriginalBodyDomainsAvailable||!AF.OriginalBodyDomainsAvailable||!B->Actors[0].OriginalBodyDomainsAvailable
+            ||LF.OriginalBodyDomainValues.empty()||AF.OriginalBodyDomainValues.empty()||B->Actors[0].OriginalBodyDomainValues.empty())++BodyMissing;
+        else
+        {
+            if(LF.OriginalBodyDomainValues!=AF.OriginalBodyDomainValues)++BodyDifferent;
+            if(AF.OriginalBodyDomainValues!=B->Actors[0].OriginalBodyDomainValues)++BodyNeutralResponse;
+        }
         const auto Partial=P::ComparePrivateRoadPartialValues(LF,AF);
         const auto Control=P::ComparePrivateRoadPartialValues(AF,B->Actors[0]);
         if(Partial==P::EPrivateRoadPartialComparison::Unknown||Control==P::EPrivateRoadPartialComparison::Unknown)++PartialMissing;
@@ -233,7 +260,15 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
         Difference.FirstDifferent,Difference.DifferentFrames,FilterDifferences,StartupDifferences,Difference.Position,Difference.Velocity,Difference.Acceleration,
         Difference.Rotation,Difference.AngularVelocity,Difference.AngularAcceleration,Response.Position,Response.Velocity,Response.Rotation));
     Test.AddInfo(FString::Printf(TEXT("[NativePartialStateMeasure] case=%s action=%u frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u complete_causal_state=0 sockets=0 hardware=0"),Case.Name,Case.Action,uint32(Case.FrameCount),PartialMissing,PartialDifferent,PartialResponse));
+    Test.AddInfo(FString::Printf(TEXT("[OriginalBodyDomainMeasure] case=%s fieldsPerStructSet=125 frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u completeEpoch=0 restore=0"),
+        Case.Name,uint32(Case.FrameCount),BodyMissing,BodyDifferent,BodyNeutralResponse));
     bool OK=Test.TestEqual(TEXT("actual declared native cache/wheel subset observed; missing is unknown"),PartialMissing,uint32(0));
+    OK=Test.TestEqual(TEXT("actual original six body domains captured without unknown references"),BodyMissing,uint32(0))&&OK;
+    if(!Case.ExpectMismatch)
+        OK=Test.TestEqual(TEXT("matched actual original body domains equal at every paired frame"),BodyDifferent,uint32(0))&&OK;
+    if(Case.Action<3)
+        OK=Test.TestTrue(TEXT("physical input changes actual original body domains against independent neutral graph"),BodyNeutralResponse>0)&&OK;
+
     OK=Test.TestEqual(TEXT("same requested input has identical processed state for both roles"),FilterDifferences,uint32(0))&&OK;
     if(Case.ExpectMismatch)
     {
@@ -390,6 +425,18 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     BirthOK=TestTrue(TEXT("birth output callback has no native recipe or physical collection scope"),BirthGCProbe.OutsideRecipe&&BirthGCProbe.OutsideCollection)&&BirthOK;
     if(!BirthOK){if(World)World->Close();return false;}
     if(!TestTrue(*FString::Printf(TEXT("actual default-closed native graph: %s"),*Why),bool(World)))return false;
+    FActualHandleReadWitness HandleReads;HandleReads.Targets.reserve(4);
+    if(auto* W=BirthGCProbe.World.Get())for(TActorIterator<ASpeedBranchCar> It(W);It;++It)
+        if(auto* C=Cast<USpeedBranchWheeledComponent>(It->GetVehicleMovement()))
+            for(int32 Index=0;Index<4;++Index)
+                if(auto* Body=Cast<USpeedBranchWheelSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::WheelNames[Index])))
+                    HandleReads.Targets.push_back({Body,nullptr});
+    if(!TestEqual(TEXT("real original fixture wheel targets retained before read callback registration"),HandleReads.Targets.size(),size_t(4)))return false;
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+    const auto ActualReadHandle=UE::CoreUObject::AddObjectHandleReadCallback(
+        [&](TArrayView<const UObject* const> Objects){HandleReads.Observe(Objects);});
+    ON_SCOPE_EXIT{UE::CoreUObject::RemoveObjectHandleReadCallback(ActualReadHandle);};
+#endif
     const auto Input=[&](U64 Frame)
     {
         V::FInputFrameData D;D.ConsumptionFrame=Frame;D.SourceSequence=Frame+1;D.DeviceGeneration={1};
@@ -427,6 +474,16 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
         &&Activated->Actors[0].CountdownFrames==0)&&OK;
     OK=TestTrue(TEXT("retained old baseline remains immutable and closed"),Baseline->Frame==0&&Baseline->AwaitingInitialPublication
         &&!Baseline->Actors[0].CanMove)&&OK;
+    uint32 OriginalViewsDifferentFromFacade=0;
+    for(const auto& T:HandleReads.Targets)
+        if(auto* Body=T.Body.Get();Body&&T.Observed&&T.Observed!=Body->GetWheelSim())++OriginalViewsDifferentFromFacade;
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+    OK=TestTrue(TEXT("real object-handle callbacks executed against original fixture wheels during native math"),HandleReads.ScopedTargetReads>0)&&OK;
+    // Positive witness of the present unclosed path, not an exclusion claim.
+    OK=TestTrue(TEXT("real read callback observed a distinct original native wheel view"),OriginalViewsDifferentFromFacade>0)&&OK;
+#endif
+    AddInfo(FString::Printf(TEXT("[ActualObjectHandleReadWitness] trackingCompiled=%d scopedTargetReads=%llu originalViewsDifferentFromFacade=%u physicalMutationAttempted=0 escapedViewExclusionCertified=0 completeRestoreLease=0"),
+        int(UE_WITH_OBJECT_HANDLE_TRACKING),HandleReads.ScopedTargetReads,OriginalViewsDifferentFromFacade));
     const bool Closed=World->Close();
     FActualNativeBoundaryLogProbe InvalidBirth;InvalidBirth.Case=FActualNativeBoundaryLogProbe::ECase::DestroyBirthDriver;
     const auto InvalidBirthHandle=FWorldDelegates::OnPostWorldCreation.AddLambda([&](UWorld* Created){if(IsInGameThread())InvalidBirth.World=Created;});
