@@ -947,3 +947,50 @@ factory callback closure, the remaining World/Component reads, authoritativeK
 restoration and localized rollback still need work. Providers and restoration
 guards remain closed. Source75 requires its own complete fresh native/Game tests;
 no source74 PASS transfers and no zero contact-read result is claimed here.
+
+
+Source75/native71 completed its own full bounded chain: actual56 native tests
+without errors/warnings, Pending1, three commandlets, two actual Game clients
+and a dedicated host, plus expected9/10 cancellation. Original17165 and both
+coordinators exited0; actual managed Job0 was observed twice with final source,
+protected and Engine audits empty. Eight real weak-equality cases included
+MarkAsGarbage, genuine garbage collection and stale identities.35 oscillating
+input scenarios/21455 frames again measured all six kinematic differences zero.
+Default CanMove refused512 attempts until actual initial publication and common
+activation1, with no timer release. These are exact-source programmed fixtures.
+
+The four-world/three-car native collision fixture measured375 contact-event
+frames. Its64 original body/floor targets now produce0 tracked body reads and
+0 tracked floor reads under recipe, while all64 ordinary positive controls
+still fire. No read callback is globally disabled. This is the measured effect
+of the source75 weak-identity changes; other objects are still unmeasured.
+One-car census remains177 birth reads and10 Step reads (World7/Component3).
+
+Source76 keeps the actual topology checks while replacing those ordinary
+World/VehicleMovement reads with genuine native handle readback. PersistentLevel
+and Level.OwningWorld are actual resolved fields, with original weak identities
+and pins. Actor/Level direct outer equality is deliberately limited to this
+private runtime SpawnActor profile; streamed/reparented/replaced graphs refuse.
+The real native VehicleMovementComponent TObjectPtr field is located once using
+authentic FObjectProperty metadata: owner, actual native non-Blueprint class,
+CPF_TObjectPtr, ArrayDim, element size, class containment, alignment and value
+class are checked. No guessed offset, FField pseudo-weak or replacement field
+is used. Only its const actual address is retained, with original container and
+class identities. The ordinary getter is a real birth-time positive read.
+
+All callback-capable weak acquisition, pins, metadata lookup and the ordinary
+getter execute outside GC exclusion and outside recipe/storage routing. Only
+after the last getter does a short GC guard revalidate original weak Actor,
+Component and classes before reading the real cell with NoResolve. Garbage,
+replacement and newer class versions refuse. GetOuter/GetClass remain Engine
+non-access-tracked native getters; arbitrary unresolved/reloaded host paths and
+module/service lifetime are not thereby certified.
+
+The collision fixture now counts every actual scoped object read, including
+other objects and nulls, before selecting its64 targets. Its partition must
+equal body+floor+other+null, and trackingCompiled is reported. No all-object-zero
+result is assumed. Source76 needs a fresh complete native/Game chain; no75 PASS
+transfers. Factory callbacks, full typed causal state, genuine service/module
+participation, authoritativeK restore/readback and localized island resimulation
+remain open. Restoration providers/guards stay closed. Existing fast replay is
+still global, and these NullRHI fixtures are not a fresh Device/render playtest.

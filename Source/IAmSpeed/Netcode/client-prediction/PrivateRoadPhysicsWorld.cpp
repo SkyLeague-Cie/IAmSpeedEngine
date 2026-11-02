@@ -8,6 +8,8 @@
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include "Engine/World.h"
+#include "Engine/Level.h"
+#include "UObject/UnrealType.h"
 #include "GameFramework/HUD.h"
 #include "Components/BoxComponent.h"
 #include "Physics/NetworkPhysicsComponent.h"
@@ -133,6 +135,11 @@ FReferenceSimulation RetiringReferenceSimulation;
 
         ASpeedBranchCar* Actor=nullptr;
         USpeedBranchWheeledComponent* Component=nullptr;
+        // Address of the actual native TObjectPtr field, obtained once through
+        // genuine reflected metadata outside all original recipe/math scopes.
+        // Never a replacement field, guessed offset, setter or lifetime lease.
+        const TObjectPtr<UChaosVehicleMovementComponent>* OriginalMovementCell=nullptr;
+        TWeakObjectPtr<UClass> OriginalActorClassBirth,OriginalMovementOwnerClassBirth;
         U64 StableId=0;
         bool SolidInitializationWitness=false;
         TArray<TWeakObjectPtr<UChaosVehicleWheel>> OriginalWheelObjects;
@@ -169,6 +176,7 @@ FReferenceSimulation RetiringReferenceSimulation;
     U64 Lifetime=0,VehicleContactFrameCount=0;
 RetirementDraft::EPhase RetirementPhase=RetirementDraft::EPhase::Open;
 TWeakObjectPtr<UWorld> OriginalWorldWeak;
+TWeakObjectPtr<ULevel> OriginalLevelWeak;
 TWeakObjectPtr<USpeedWorldSubsystem> OriginalBridgeWeak;
 TWeakObjectPtr<ASpeedBranchSimulation> OriginalDriverWeak;
 TWeakObjectPtr<AActor> OriginalFloorActorWeak;
@@ -204,6 +212,62 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
         }
         return true;
     }
+    bool OriginalMovementStillMatches(const FCar& N) const
+    {
+        auto* A=N.ActorWeak.Get();auto* C=N.ComponentWeak.Get();
+        auto* AC=N.OriginalActorClassBirth.Get();auto* OC=N.OriginalMovementOwnerClassBirth.Get();
+        return A&&A==N.Actor&&C&&C==N.Component&&AC&&OC&&N.OriginalMovementCell
+            &&A->GetClass()==AC&&!AC->HasAnyClassFlags(CLASS_NewerVersionExists)
+            &&!OC->HasAnyClassFlags(CLASS_NewerVersionExists)
+            &&Speed::NativeObjectRead::MatchesOriginalBirth(*N.OriginalMovementCell,
+                TWeakObjectPtr<UChaosVehicleMovementComponent>(N.ComponentWeak));
+    }
+    bool CaptureOriginalMovementCell(FCar& N)
+    {
+        if(OriginalComponentStorageOwner||Speed::RoadSettings::SelectedOriginalRoadSettings())return false;
+        auto* A=N.ActorWeak.Get();auto* C=N.ComponentWeak.Get();if(!A||!C)return false;
+        N.OriginalActorClassBirth=A->GetClass();
+        N.OriginalMovementOwnerClassBirth=AWheeledVehiclePawn::StaticClass();
+        Pin(N.OriginalActorClassBirth.Get());Pin(N.OriginalMovementOwnerClassBirth.Get());
+        const TWeakObjectPtr<UClass> MovementValueClassBirth=UChaosVehicleMovementComponent::StaticClass();
+        Pin(MovementValueClassBirth.Get());
+        auto* AC=N.OriginalActorClassBirth.Get();auto* OC=N.OriginalMovementOwnerClassBirth.Get();
+        if(!AC||!OC||N.ActorWeak.Get()!=A||N.ComponentWeak.Get()!=C||A->GetClass()!=AC
+            ||!AC->HasAnyClassFlags(CLASS_Native)||AC->HasAnyClassFlags(CLASS_CompiledFromBlueprint|CLASS_NewerVersionExists)
+            ||!OC->HasAnyClassFlags(CLASS_Native)||OC->HasAnyClassFlags(CLASS_NewerVersionExists))return false;
+        const auto* Property=FindFProperty<FObjectProperty>(OC,TEXT("VehicleMovementComponent"));
+        if(!Property||Property->GetOwnerClass()!=OC||Property->ArrayDim!=1
+            ||!Property->HasAllPropertyFlags(CPF_TObjectPtr)
+            ||Property->GetElementSize()!=sizeof(TObjectPtr<UChaosVehicleMovementComponent>)
+            ||!Property->IsInContainer(AC)
+            ||!Speed::NativeObjectRead::MatchesOriginalBirth(Property->PropertyClass,MovementValueClassBirth))return false;
+        const auto* Cell=Property->ContainerPtrToValuePtr<TObjectPtr<UChaosVehicleMovementComponent>>(static_cast<const UObject*>(A));
+        if(!Cell||reinterpret_cast<UPTRINT>(Cell)%alignof(TObjectPtr<UChaosVehicleMovementComponent>))return false;
+        const auto* ActualGetter=A->GetVehicleMovement(); // real ordinary read, BEFORE the recipe/route
+        // All actual tracked reads, pins and reflected metadata operations
+        // above execute OUTSIDE GC exclusion. A foreign OnRead callback may
+        // collect/replace/retire objects. Only their ORIGINAL weak identities
+        // and classes may admit the subsequent readonly native field access.
+        FGCScopeGuard FinalActualFieldReadBack;
+        if(N.ActorWeak.Get()!=A||N.ComponentWeak.Get()!=C||N.OriginalActorClassBirth.Get()!=AC
+            ||N.OriginalMovementOwnerClassBirth.Get()!=OC||!MovementValueClassBirth.IsValid()||A->GetClass()!=AC
+            ||AC->HasAnyClassFlags(CLASS_NewerVersionExists)||OC->HasAnyClassFlags(CLASS_NewerVersionExists)||ActualGetter!=C
+            ||!Speed::NativeObjectRead::MatchesOriginalBirth(*Cell,TWeakObjectPtr<UChaosVehicleMovementComponent>(N.ComponentWeak)))return false;
+        N.OriginalMovementCell=Cell;
+        return OriginalMovementStillMatches(N);
+    }
+    bool OriginalActorWorldStillMatches(const AActor* A,const UWorld* W) const
+    {
+        // Exact private runtime profile only: genuine SpawnActor uses the
+        // actual persistent ULevel as direct outer; that level's outer is W.
+        // Streamed/reparented/changed topologies are refused, not generalized.
+        const auto* L=OriginalLevelWeak.Get();
+        return A&&W&&L&&!A->HasAnyFlags(RF_ClassDefaultObject|RF_BeginDestroyed|RF_FinishDestroyed)
+            &&!L->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
+            &&A->GetOuter()==L&&L->GetOuter()==W
+            &&Speed::NativeObjectRead::MatchesOriginalBirth(W->PersistentLevel,OriginalLevelWeak)
+            &&Speed::NativeObjectRead::MatchesOriginalBirth(L->OwningWorld,OriginalWorldWeak);
+    }
     bool AcquiredGraphStillLive() const
     {
         auto* W=OriginalWorldWeak.Get();auto* B=OriginalBridgeWeak.Get();auto* D=OriginalDriverWeak.Get();
@@ -214,7 +278,7 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
         if(!OriginalFloorActorWeak.IsExplicitlyNull()||!OriginalFloorWeak.IsExplicitlyNull())
         {
             auto* A=OriginalFloorActorWeak.Get();auto* F=OriginalFloorWeak.Get();
-            if(!A||!F||A->IsActorBeingDestroyed()||A->GetWorld()!=W||F->GetOwner()!=A
+            if(!A||!F||A->IsActorBeingDestroyed()||!OriginalActorWorldStillMatches(A,W)||F->GetOwner()!=A
                 ||A->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
                 ||F->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return false;
         }
@@ -228,7 +292,7 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
             auto* A=N->ActorWeak.Get();auto* C=N->ComponentWeak.Get();
             if(!A||A!=N->Actor||!C||C!=N->Component||A->IsActorBeingDestroyed()
                 ||A->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)||C->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
-                ||A->GetWorld()!=W||C->GetOwner()!=A||A->GetVehicleMovement()!=C)return false;
+                ||!OriginalActorWorldStillMatches(A,W)||C->GetOwner()!=A||!OriginalMovementStillMatches(*N))return false;
         }
         return true;
     }
@@ -298,6 +362,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     I.World.Reset(UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Options));
     if(!I.World.IsValid()){Refuse(Why,TEXT("private world creation failed"));return {};}
     I.OriginalWorldWeak=I.World.Get();
+    I.OriginalLevelWeak=I.World->PersistentLevel.Get();I.Pin(I.OriginalLevelWeak.Get());
+    if(!I.OriginalLevelWeak.IsValid()||!Speed::NativeObjectRead::MatchesOriginalBirth(
+        I.OriginalLevelWeak.Get()->OwningWorld,I.OriginalWorldWeak))return {};
     // InitWorld assigns this tick flag only inside its scene-initialization
     // branch. Set it explicitly for the deliberately scene-less private world.
     I.World->bShouldSimulatePhysics=false;
@@ -367,6 +434,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(!C->BindOriginalWheeledDomain(I.Access)){Refuse(Why,TEXT("original native component domain birth refused"));return {};}
         N.ActorWeak=N.Actor;N.ComponentWeak=C;I.OriginalComponentsWeak.Add(C);
         I.PinTree(N.Actor);I.PinTree(C);
+        if(!I.CaptureOriginalMovementCell(N))return {};
         {
             FGCScopeGuard CaptureOriginalBirthPins;
             auto* Box=Cast<UBoxSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::HitboxName));
@@ -648,12 +716,12 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
     if(!Lock.owns_lock()||I.Closed||I.Failed||Requests.size()!=I.Cars.size())return Refuse(Why,TEXT("private step owner/roster unavailable"));
     if(!I.AcquiredGraphStillLive())return Refuse(Why,TEXT("original acquired graph unavailable before Step"));
-    if(!IsValid(I.Driver)||I.Driver->GetWorld()!=I.World.Get()||I.Driver->HasActorBegunPlay()
+    if(!IsValid(I.Driver)||!I.OriginalActorWorldStillMatches(I.Driver,I.World.Get())||I.Driver->HasActorBegunPlay()
         ||I.Driver->IsActorBeingDestroyed())return Refuse(Why,TEXT("private driver lifecycle changed"));
     for(const auto& N:I.Cars)
         if(!IsValid(N->Actor)||!IsValid(N->Component)||N->Actor->IsActorBeingDestroyed()||N->Actor->HasActorBegunPlay()
-            ||N->Actor->GetWorld()!=I.World.Get()||N->Component->GetOwner()!=N->Actor
-            ||N->Actor->GetVehicleMovement()!=N->Component||N->Component->GetClass()!=USpeedBranchWheeledComponent::StaticClass())
+            ||!I.OriginalActorWorldStillMatches(N->Actor,I.World.Get())||N->Component->GetOwner()!=N->Actor
+            ||!I.OriginalMovementStillMatches(*N)||N->Component->GetClass()!=USpeedBranchWheeledComponent::StaticClass())
             return Refuse(Why,TEXT("private native actor/component lifetime changed"));
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("private native graph object invalidated"));
     // Waiting for actual synchronization is a non-mutating admission refusal,
@@ -937,7 +1005,7 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
     {
         const auto* C=N->Component;
         if(!IsValid(N->Actor)||!IsValid(C)||N->Actor->IsActorBeingDestroyed()||N->Actor->HasActorBegunPlay()
-            ||N->Actor->GetWorld()!=I.World.Get()||C->GetOwner()!=N->Actor||N->Actor->GetVehicleMovement()!=C
+            ||!I.OriginalActorWorldStillMatches(N->Actor,I.World.Get())||C->GetOwner()!=N->Actor||!I.OriginalMovementStillMatches(*N)
             ||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->HasIsolatedNativeConstruction()||!C->IsFrozen()||C->CanMove()
             ||C->WheeledPhysicsStateStorage().bStartCountdown||C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove!=1)
             return Refuse(Why,TEXT("startup native identity or closed gate changed"));

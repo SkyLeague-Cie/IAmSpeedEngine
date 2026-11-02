@@ -82,6 +82,7 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
     if(!TestTrue(*Why,Reference&&Live&&Retained&&Uncoupled))return false;
     struct FReadTarget {TWeakObjectPtr<UPrimitiveComponent> Original;bool Floor=false;uint64 Scoped=0,Outside=0;};
     std::vector<FReadTarget> ReadTargets;
+    uint64 AllScopedObjectReads=0,ScopedOtherObjectReads=0,ScopedNullObjectReads=0;
     if(!TestEqual(TEXT("four actual native fixture worlds created"),ActualWorlds.Num(),4))return false;
     for(const auto& WeakWorld:ActualWorlds)
     {
@@ -120,6 +121,14 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
         [&](TArrayView<const UObject* const> Objects)
         {
             if(!IsInGameThread())return;
+            if(Speed::RoadSettings::SelectedOriginalRoadSettings())for(const auto* Object:Objects)
+            {
+                ++AllScopedObjectReads;
+                if(!Object){++ScopedNullObjectReads;continue;}
+                bool TargetFound=false;
+                for(const auto& Target:ReadTargets)if(Object==Target.Original.Get()){TargetFound=true;break;}
+                if(!TargetFound)++ScopedOtherObjectReads;
+            }
             for(const auto* Object:Objects)for(auto& Target:ReadTargets)
                 if(Object&&Object==Target.Original.Get())
                 {
@@ -274,6 +283,10 @@ bool FIASRetainedVehicleInteractionNative::RunTest(const FString&)
         PositiveReads+=Target.Outside-Before;
         if(Target.Floor)ScopedFloorReads+=Target.Scoped;else ScopedBodyReads+=Target.Scoped;
     }
+    if(!TestEqual(TEXT("actual ALL scoped events partition exactly into target bodies, floors, other objects and nulls"),
+        AllScopedObjectReads,ScopedBodyReads+ScopedFloorReads+ScopedOtherObjectReads+ScopedNullObjectReads))return false;
+    AddInfo(FString::Printf(TEXT("[ActualInteractingAllObjectReads] trackingCompiled=%d allScopedObjectReads=%llu scopedOtherObjectReads=%llu scopedNullObjectReads=%llu completeCallbackClosure=0 completeRestoreLease=0"),
+        int(UE_WITH_OBJECT_HANDLE_TRACKING),AllScopedObjectReads,ScopedOtherObjectReads,ScopedNullObjectReads));
     AddInfo(FString::Printf(TEXT("[ActualInteractingObjectReadWitness] trackingCompiled=%d targets=%u actualWorlds=4 carsPerWorld=3 observedVehicleEventFrames=%llu scopedBodyReads=%llu scopedFloorReads=%llu ordinaryPositiveReads=%llu birthObserved=0 unknownOtherObjects=1 completeCallbackClosure=0 completeRestoreLease=0"),
         int(UE_WITH_OBJECT_HANDLE_TRACKING),uint32(ReadTargets.size()),DynamicContactFrames,ScopedBodyReads,ScopedFloorReads,PositiveReads));
 #if UE_WITH_OBJECT_HANDLE_TRACKING && PLATFORM_WINDOWS
