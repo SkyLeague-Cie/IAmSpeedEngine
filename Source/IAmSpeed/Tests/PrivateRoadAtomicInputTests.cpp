@@ -95,6 +95,33 @@ struct FActualHandleReadWitness
         }
     }
 };
+// Actual Engine read census of ALL objects, including factory and the native
+// step/capture. This is diagnostic evidence, never callback exclusion authority.
+// Do not resolve/dereference class/name/physical views inside the callback.
+struct FActualRecipeObjectReadCensus
+{
+    struct FEntry {TWeakObjectPtr<const UObject> Birth;uint64 BirthReads=0,StepReads=0;};
+    std::array<FEntry,256> Entries{};
+    uint32 Used=0;bool DuringBirth=true,Overflow=false;
+    uint64 BirthObjects=0,StepObjects=0,NullObjects=0;
+    void Observe(TArrayView<const UObject* const> Objects)
+    {
+        if(!IsInGameThread()||!Speed::RoadSettings::SelectedOriginalRoadSettings())return;
+        for(const auto* Object:Objects)
+        {
+            if(!Object){++NullObjects;continue;}
+            if(DuringBirth)++BirthObjects;else ++StepObjects;
+            uint32 Index=0;
+            for(;Index<Used;++Index)if(Entries[Index].Birth.Get()==Object)break;
+            if(Index==Used)
+            {
+                if(Used==Entries.size()){Overflow=true;continue;}
+                Entries[Used++].Birth=Object; // actual original serial, no fabricated identity
+            }
+            if(DuringBirth)++Entries[Index].BirthReads;else ++Entries[Index].StepReads;
+        }
+    }
+};
 struct FActualBirthReadScopeObserver final : FUObjectArray::FUObjectCreateListener
 {
     std::atomic<bool> InsideOriginalCreate{false};
@@ -421,6 +448,12 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     if(!FMath::IsFinite(OriginalBirthLive)||!FMath::IsFinite(ForeignLive)||ForeignLive==OriginalBirthLive)return false;
     BirthLiveStiffness->Set(ForeignLive,ECVF_SetByCode);
     if(BirthLiveStiffness->GetFloat()!=ForeignLive)return false;
+    FActualRecipeObjectReadCensus AllRecipeReads;
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+    const auto AllRecipeReadHandle=UE::CoreUObject::AddObjectHandleReadCallback(
+        [&](TArrayView<const UObject* const> Objects){AllRecipeReads.Observe(Objects);});
+    ON_SCOPE_EXIT{UE::CoreUObject::RemoveObjectHandleReadCallback(AllRecipeReadHandle);};
+#endif
     FActualBirthReadScopeObserver BirthObserver;
     if(!GLog)return false;
     GUObjectArray.AddUObjectCreateListener(&BirthObserver);
@@ -458,6 +491,7 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     BirthOK=TestTrue(TEXT("birth output callback has no native recipe or physical collection scope"),BirthGCProbe.OutsideRecipe&&BirthGCProbe.OutsideCollection)&&BirthOK;
     if(!BirthOK){if(World)World->Close();return false;}
     if(!TestTrue(*FString::Printf(TEXT("actual default-closed native graph: %s"),*Why),bool(World)))return false;
+    AllRecipeReads.DuringBirth=false;
     FActualHandleReadWitness HandleReads;HandleReads.Targets.reserve(5);
     if(auto* W=BirthGCProbe.World.Get())for(TActorIterator<ASpeedBranchCar> It(W);It;++It)
         if(auto* C=Cast<USpeedBranchWheeledComponent>(It->GetVehicleMovement()))
@@ -533,6 +567,17 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
 #endif
     AddInfo(FString::Printf(TEXT("[ActualObjectHandleReadWitness] trackingCompiled=%d scopedTargetReads=%llu ordinaryPositiveReads=%llu physicalMutationAttempted=0 targetSet=wheel4_hitbox1 birthCallbackCensus=0 escapedViewExclusionCertified=0 completeRestoreLease=0"),
         int(UE_WITH_OBJECT_HANDLE_TRACKING),HandleReads.ScopedTargetReads,DeliberatePositiveReads));
+    AddInfo(FString::Printf(TEXT("[ActualRecipeObjectReadCensus] trackingCompiled=%d birthObjectReads=%llu stepObjectReads=%llu nullReads=%llu uniqueObjects=%u overflow=%d completeCallbackClosure=0 completeRestoreLease=0"),
+        int(UE_WITH_OBJECT_HANDLE_TRACKING),AllRecipeReads.BirthObjects,AllRecipeReads.StepObjects,AllRecipeReads.NullObjects,AllRecipeReads.Used,int(AllRecipeReads.Overflow)));
+    for(uint32 Index=0;Index<AllRecipeReads.Used;++Index)
+    {
+        const auto& Entry=AllRecipeReads.Entries[Index];const auto* Object=Entry.Birth.Get();
+        // All Engine facade/type/name work stays OUTSIDE the recipe/route/math.
+        const FString Name=Object?Object->GetPathName():TEXT("<original identity no longer live>");
+        const FString Type=Object?Object->GetClass()->GetName():TEXT("<unknown>");
+        AddInfo(FString::Printf(TEXT("[ActualRecipeObjectReadTarget] ordinal=%u birthReads=%llu stepReads=%llu originalLive=%d class=%s path=%s"),
+            Index,Entry.BirthReads,Entry.StepReads,int(Object!=nullptr),*Type,*Name));
+    }
     const bool Closed=World->Close();
     FActualNativeBoundaryLogProbe InvalidBirth;InvalidBirth.Case=FActualNativeBoundaryLogProbe::ECase::DestroyBirthDriver;
     const auto InvalidBirthHandle=FWorldDelegates::OnPostWorldCreation.AddLambda([&](UWorld* Created){if(IsInGameThread())InvalidBirth.World=Created;});

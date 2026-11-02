@@ -262,6 +262,8 @@ public:
 	const TArray<TObjectPtr<USWheelSubBody>>& GetWheelSubBodies() const override;
     Speed::NativeObjectRead::TView<USWheelSubBody> ReadWheelSubBodiesForPhysics() const override
     {return {WheelSubBodiesWheeledDomainStorage(),UsesOriginalWheeledDomain()};}
+    Speed::NativeObjectRead::TRead<UChaosVehicleWheel> ReadWheelConfigurationForPhysics(int32 Index) const
+    {return {WheelsWheeledDomainStorage()[Index],UsesOriginalWheeledDomain()};}
     Speed::NativeObjectRead::TRead<UBoxSubBody> ReadHitboxForPhysics() const
     {return {HitboxSubBodyWheeledDomainStorage(),UsesOriginalWheeledDomain()};}
 

@@ -765,3 +765,26 @@ still differed121/121. The finite Game fixture ended exact at239 with215contact
 frames and3/6GLOBALFROMBIRTH corrections. This is not playable device/render,
 full causal state, restoreK or localized qualification. All prior FAIL/UNKNOWN
 remain. Source69 itself is not natively compiled or qualified by this receipt.
+
+
+Source70 applies the same checked no-resolve original read to the two native
+Chaos wheel-configuration reads in validation/binding. The legacy branch keeps
+its genuine tracked Get. The original configuration weak birth pins and role
+checks from source69 remain unchanged. A separate real Engine callback census
+now observes ALL object reads under the declared recipe, from before Create
+through the tested Step/capture. It records actual weak identities, bounded256
+with explicit overflow, and reports names/classes only after math has ended.
+Birth/Step/GT/compiled-tracking limits are explicit. This is a diagnostic to
+identify remaining real edges, not a complete callback exclusion certificate.
+SetOwner/Actor/CDO/virtual/backend/module/service lifetime paths remain open.
+
+Exact prior source69/native65 passed56native tests andPending1,3commandlets,
+2actualGame clients with dedicated server, and expected cancellation9/10. All
+strict severities and source/protected/Engine audits were zero, with actual
+natural original job drains. The genuine wheel4/hitbox1 callback test observed
+zero scoped target reads and five deliberate per-target positive ordinary Gets.
+Matched57body cases remained exact except the deliberately mismatched startup
+control121/121. The Game fixture ended239exact/215contacts with3/6GLOBALFROMBIRTH
+corrections. This is not playable device/render, full causal state, authoritative
+K restore or localized qualification. All prior FAIL/UNKNOWN remain. Source70
+has no native result at this commit and opens no complete restore guard.

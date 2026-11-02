@@ -583,7 +583,7 @@ bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) cons
 		const USWheelSubBody* Wheel = ReadWheelSubBodiesForPhysics()[Ordinal].Get();
 		const auto* ExpectedWheel = &Vehicle->Wheels[Ordinal];
 		const auto* ExpectedSuspension = &Vehicle->Suspension[Ordinal];
-		const UChaosVehicleWheel* ExpectedConfiguration = WheelsWheeledDomainStorage()[Ordinal].Get();
+		const UChaosVehicleWheel* ExpectedConfiguration = ReadWheelConfigurationForPhysics(Ordinal).Get();
 		if (!Wheel || Wheel->Idx() != Ordinal || Wheel->GetParentComponent() != this
 			|| !ExpectedConfiguration || !WheelSetupsWheeledDomainStorage()[Ordinal].WheelClass
 			|| Wheel->GetChaosWheelConfiguration() != ExpectedConfiguration
@@ -660,7 +660,7 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 		{
 			if (WheelsWheeledDomainStorage().IsValidIndex(WheelIdx))
 			{
-				WheelSubBody->SetChaosWheel(WheelsWheeledDomainStorage()[WheelIdx].Get());
+				WheelSubBody->SetChaosWheel(ReadWheelConfigurationForPhysics(WheelIdx).Get());
 			}
 			WheelSubBody->SetWheelSim(&PVehicle->Wheels[WheelIdx]);
 			WheelSubBody->SetSuspensionSim(&PVehicle->Suspension[WheelIdx]);
