@@ -1,5 +1,5 @@
-#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "RealTimeSimulation.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 
 #include "CanonicalFrameDriver.h"
 #include "CanonicalFrameContext.h"

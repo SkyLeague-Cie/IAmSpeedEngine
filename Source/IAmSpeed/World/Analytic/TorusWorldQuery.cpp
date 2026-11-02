@@ -1,5 +1,5 @@
-#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "TorusWorldQuery.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/SubBodies/Solid/TorusSphereSweep.h"
 #include "IAmSpeed/SubBodies/Solid/TorusBoxSweep.h"
 #include "IAmSpeed/SubBodies/Solid/TorusBoxGeometry.h"

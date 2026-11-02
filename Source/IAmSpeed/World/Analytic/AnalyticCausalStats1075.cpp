@@ -1,5 +1,5 @@
-#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "AnalyticCausalStats1075.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "HAL/IConsoleManager.h"
 #include <atomic>
 #include <exception>

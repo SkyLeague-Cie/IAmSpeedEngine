@@ -1,5 +1,5 @@
-#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "JoinedAnalyticQueryPrefetch1075.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include <mutex>
 
 namespace Speed::Analytic

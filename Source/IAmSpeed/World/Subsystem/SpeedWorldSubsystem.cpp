@@ -1,9 +1,9 @@
+#include "SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 // USpeedWorldSubsystem.cpp
 
-#include "SpeedWorldSubsystem.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/World/Analytic/SpeedAnalyticContactComponent.h"
 #include "IAmSpeed/World/Simulation/CcdPoseAudit.h"

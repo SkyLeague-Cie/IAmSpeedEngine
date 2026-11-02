@@ -1,5 +1,5 @@
-#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "FrameParallelTiming.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #if !UE_BUILD_SHIPPING
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTLS.h"

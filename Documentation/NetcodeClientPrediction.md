@@ -520,3 +520,11 @@ CVar reads still require the explicit authoritative immutable epoch recipe;
 a GT capture does not prove equal worker values or exclude foreign writers.
 Complete restore guards and ProtectsEscapedMutableViews remain CLOSED. Even
 successful compilation or partial native equality must not admit restoration.
+
+
+Source53 fixes native build48's actual UHT declaration error: the original
+Sphere Radius UPROPERTY and field are adjacent; storage hooks precede them.
+Corresponding source headers precede deferred-diagnostic includes under the
+existing IWYU policy. No header, guard, compiler severity or runtime test is
+disabled. Native48 original exit6/real Job0 twice/audits0 and all32 warnings
+remain preserved; no native/runtime stage ran on that failed frozen tuple.

@@ -173,10 +173,9 @@ protected:
 protected:
     FMatrix InitInvInertiaTensor() const override;
 
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Shape)
-protected:
     virtual float& RadiusSphereDomainStorage() {return Radius;}
     virtual float const& RadiusSphereDomainStorage() const {return Radius;}
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, export, Category = Shape)
     float Radius = 0.f; // Real radius of the sphere
 	float MinSlopCm = 0.05f; // Minimum allowed penetration depth in cm, used as slop in the solver to prevent jittering when resolving penetrations
 	// Scales only the angular response caused by the tangential sphere/box

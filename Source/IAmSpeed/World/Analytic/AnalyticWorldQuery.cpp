@@ -1,5 +1,5 @@
-#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "AnalyticWorldQuery.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "TorusWorldQuery.h"
 #include "IAmSpeed/World/Collision/StaticQueryBatch.h"
 #include "JoinedPiecewiseProviderWave1075.h"

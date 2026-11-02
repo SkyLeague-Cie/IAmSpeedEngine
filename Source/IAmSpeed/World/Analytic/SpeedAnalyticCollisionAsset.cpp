@@ -1,5 +1,5 @@
-#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "SpeedAnalyticCollisionAsset.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 
 #include "AnalyticWorldData.h"
 #include "Engine/EngineTypes.h"

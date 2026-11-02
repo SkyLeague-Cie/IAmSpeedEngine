@@ -1,8 +1,8 @@
+#include "SpeedPhysicsComponent.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
-#include "SpeedPhysicsComponent.h"
 #include "SpeedMovementComponent.h"
 #include "SpeedWheeledComponent.h"
 
