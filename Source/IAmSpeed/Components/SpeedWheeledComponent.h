@@ -54,6 +54,7 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
 	GENERATED_BODY()
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
+    friend struct FRocketSimGroundHandlingFixtureAccess;
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -399,6 +400,8 @@ protected:
 	float ComputeBrakeAccel() const;
 	float ComputeDriveAccel() const;
 	void ApplyDriveAcceleration(float Accel);
+    void ApplyRocketSimGroundLateralFriction(float Delta);
+    void ApplyRocketSimGroundDriveAcceleration();
 	virtual bool IsAcceleratingForWheelFriction() const;
 	virtual bool HasDriveInputForGroundFriction() const;
 	virtual bool IsHandbrakingForWheelFriction() const;
@@ -465,6 +468,14 @@ protected:
 	virtual void RecordPhysicsState();
 	TObjectPtr<UNetworkPhysicsSettingsDataAsset> NetDataAsset = nullptr;
 public:
+
+    // Version 1 selects the pinned RocketSim ground tire/drive law per instance.
+    // Zero preserves the pre-existing law; set only at an unadmitted/reset boundary.
+    UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0", ClampMax = "1"))
+    int32 RocketSimGroundHandlingVersion = 0;
+    void ConfigureRocketSimGroundHandlingDefaults();
+    // Derived gameplay owners expose their recorded raw boost request and actual fuel.
+    virtual bool HasBoostThrottleForRocketSimGroundHandling() const { return false; }
 
 	//=========== Configuration parameters for the movement component ===========
 	// Time in seconds before the component can move at the start of the simulation or after being reset (e.g. after a respawn)
