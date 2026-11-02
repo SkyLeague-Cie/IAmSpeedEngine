@@ -70,7 +70,7 @@ USphereSubBody::USphereSubBody(const FObjectInitializer& ObjectInitializer):
 {
 	SubBodyType = ESubBodyType::Sphere;
     SetRadius(32.0f);
-    InvInertiaLocal = InitInvInertiaTensor();
+    InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
     ShapeColor = FColor(255, 0, 0, 255);
 
     bUseEditorCompositing = true;
@@ -85,11 +85,11 @@ void USphereSubBody::Initialize(ISpeedComponent* InParentComponent)
         if (Config.bValid)
         {
             SetRadius(FMath::Max(Config.Radius, KINDA_SMALL_NUMBER));
-            InvInertiaLocal = InitInvInertiaTensor();
+            InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
         }
         else
         {
-            InvInertiaLocal = InitInvInertiaTensor();
+            InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
         }
 	}
 }
@@ -1213,7 +1213,7 @@ FMatrix USphereSubBody::InitInvInertiaTensor() const
 
 FMatrix USphereSubBody::ComputeWorldInvInertiaTensor() const
 {
-    return InvInertiaLocal;
+    return InvInertiaLocalSolidStorage();
 }
 
 template <EShapeBodySetupHelper UpdateBodySetupAction, typename BodySetupType>

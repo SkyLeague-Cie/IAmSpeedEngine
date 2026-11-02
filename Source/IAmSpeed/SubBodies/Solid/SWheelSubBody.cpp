@@ -298,7 +298,7 @@ USWheelSubBody::USWheelSubBody(const FObjectInitializer& ObjectInitializer):
 {
 	SubBodyType = ESubBodyType::Wheel;
     IgnoredSubBodyTypes.AddUnique(ESubBodyType::Wheel);
-	bApplyRestForce = false; // wheel apply suspension force directly, so we do not want rest force to interfere with it
+	bApplyRestForceSolidStorage() = false; // wheel apply suspension force directly, so we do not want rest force to interfere with it
     SetMass(WheelMass);
 }
 
@@ -323,7 +323,7 @@ void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
                 SetRadius(PWheel->GetEffectiveRadius());
                 PWheel->SetMassPerWheel(WheelMass);
                 SetMass(WheelMass);
-                InvInertiaLocal = InitInvInertiaTensor();
+                InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
             }
 		}
 	}

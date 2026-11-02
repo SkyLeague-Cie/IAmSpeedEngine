@@ -453,3 +453,20 @@ This hunk does not own wheel setup pointers, solid/body configuration, all
 contact/scene/world/source domains or all synchronous callbacks. It does not
 admit a complete fingerprint, boundary lease or localized restoration. All
 historical failures remain; no existing native result qualifies this new hunk.
+
+
+Source49 separates the twenty-one declared solid scalar/inertia/contact-policy
+values behind inherited storage hooks. Reflected legacy fields and their
+defaults stay in place. Private box/wheel allocations are fresh. The original
+native Initialize routines apply the actual factory setup under the original
+routing scope before first Step; no mutable facade state is imported. Private
+wheel rest-force policy matches its inherited constructor. A free gutter
+helper's same-named boolean parameter is only renamed, preserving its behavior.
+
+The real existing output callback additionally uses public mass/index/contact
+policy setters on the facade. Actual native solid values are copied field by
+field at original Steps and must equal the untouched independent control after
+the attack. Missing/nonfinite diagnostics remain UNKNOWN. This is a declared
+subset, not complete shape/configuration/contact/registry/lifetime coverage.
+Complete owner/restore admission remains closed. No localized or hardware claim
+is introduced; new native qualification is mandatory.

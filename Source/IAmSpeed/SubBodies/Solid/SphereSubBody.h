@@ -92,7 +92,7 @@ public:
 	void SetRadiusForConfiguration(float NewRadius)
 	{
 		SetRadius(NewRadius);
-		InvInertiaLocal = InitInvInertiaTensor();
+		InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
 	}
 	void SetSphereBoxTangentialContactArmScale(float InScale)
 	{

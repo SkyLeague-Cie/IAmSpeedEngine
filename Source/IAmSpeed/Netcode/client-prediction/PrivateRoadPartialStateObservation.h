@@ -137,6 +137,33 @@ template<class Runtime>bool AppendWheelRuntime(TArray<uint8>& Out,const Runtime&
     FCheckedWriter::Add(Out,V.RenderData.SpringOffset);
     return Finite;
 }
+template<class Solid>bool AppendSolidValues(TArray<uint8>& Out,const Solid& V)
+{
+    bool Finite=true;bool* Previous=FCheckedWriter::Finite;FCheckedWriter::Finite=&Finite;
+    struct FReset{bool* Previous;~FReset(){FCheckedWriter::Finite=Previous;}} Reset{Previous};
+    FCheckedWriter::Add(Out,V.Mass);
+    FCheckedWriter::Add(Out,V.bIsMainSubBody);
+    FCheckedWriter::Add(Out,V.bApplyRestForce);
+    FCheckedWriter::Add(Out,V.EnableFakePhysics);
+    FCheckedWriter::Add(Out,V.bEnableConstraintOnSubBodyHit);
+    FCheckedWriter::Add(Out,V.Restitution);
+    FCheckedWriter::Add(Out,V.SphereBoxRestitutionOverride);
+    FCheckedWriter::Add(Out,V.SphereBoxFrictionOverride);
+    FCheckedWriter::Add(Out,V.SphereBoxManifoldFrictionOverride);
+    FCheckedWriter::Add(Out,V.bUseCoupledContactImpulse);
+    FCheckedWriter::Add(Out,V.bUsePostNormalFrictionImpulse);
+    FCheckedWriter::Add(Out,V.bUsePersistentBilateralContact);
+    FCheckedWriter::Add(Out,V.CoupledContactMaxLinearSpeed);
+    FCheckedWriter::Add(Out,V.CoupledContactMaxAngularSpeed);
+    FCheckedWriter::Add(Out,V.CoupledContactMaxAbsLocalNormalY);
+    FCheckedWriter::Add(Out,V.StaticFriction);
+    FCheckedWriter::Add(Out,V.DynamicFriction);
+    FCheckedWriter::Add(Out,V.ImpactThreshold);
+    FCheckedWriter::Add(Out,V.HitDamping);
+    FCheckedWriter::Add(Out,V.InvInertiaLocal);
+    FCheckedWriter::Add(Out,V.idx);
+    return Finite;
+}
 template<class Component>bool Capture(Component& C,uint64 Actor,uint64 Incarnation,
     const Chaos::FSimpleWheelConfig& WheelConfig,const Chaos::FSimpleSuspensionConfig& SuspensionConfig,
     FPrivateRoadActorFrame& Out)

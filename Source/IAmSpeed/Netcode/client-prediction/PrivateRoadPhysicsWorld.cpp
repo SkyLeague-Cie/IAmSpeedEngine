@@ -103,6 +103,7 @@ struct FPrivateRoadPhysicsWorld::FImpl
         ASpeedBranchCar* Actor=nullptr;
         USpeedBranchWheeledComponent* Component=nullptr;
         U64 StableId=0;
+        bool SolidInitializationWitness=false;
         std::unique_ptr<FBranchInputFilter> Filter;
     };
     TStrongObjectPtr<UWorld> World;
@@ -234,7 +235,67 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(C->ThrottleAccel!=750||C->BrakeAccel!=1100||C->PhysDamping!=0||C->AirForwardThrottle!=0||C->AirBackwardThrottle!=0)
         {Refuse(Why,TEXT("stock native driving profile differs"));return {};}
         C->EstablishOriginalComponentStorage();
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        // Witness only: actual legacy values from the original setup. These
+        // are NEVER imported into physical storage or a restore certificate.
+        TArray<uint8> OriginalSolidRecipe;
+        for(auto* Body:C->GetSubBodies())
+        {
+            if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
+            {if(!PartialObservation::AppendSolidValues(OriginalSolidRecipe,Box->ReadLegacySolidDiagnosticValues()))return {};}
+            else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
+            {if(!PartialObservation::AppendSolidValues(OriginalSolidRecipe,Wheel->ReadLegacySolidDiagnosticValues()))return {};}
+            else return {};
+        }
+#endif
         FOriginalComponentStorageScope OriginalStorage(*I.Access);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        const auto CaptureOutsideSolidValues=[&](TArray<uint8>& Bytes)
+        {
+            for(const auto* Body:C->GetSubBodies())
+            {
+                // Explicit BASE witness excludes the newly initialized solid
+                // fields. It retains original parent/type/transform/channel,
+                // core hits and ordered ignored/external lists field by field.
+                Body->USSubBody::AppendEpisodeStateForTesting(Bytes);
+                if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Box->GetBoxExtent());
+                else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
+                {
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetRadiusWithMargin());
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetChaosWheelConfiguration());
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetWheelSim());
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetSuspensionSim());
+                    if(!Wheel->GetWheelSim()||!Wheel->GetSuspensionSim())return false;
+                    PartialObservation::AppendCheckedWheel(Bytes,*Wheel->GetWheelSim());
+                    const PartialObservation::FCheckedSuspensionCopy Suspension(*Wheel->GetSuspensionSim());Suspension.Append(Bytes);
+                }
+                else return false;
+            }
+            return true;
+        };
+        TArray<uint8> BeforeOther,AfterOther,ActualSolidRecipe;
+        if(!CaptureOutsideSolidValues(BeforeOther))return {};
+#endif
+        for(auto* Body:C->GetSubBodies())Body->Initialize(C);
+        for(int32 W=0;W<C->GetWheelSubBodies().Num();++W)C->GetWheelSubBodies()[W]->SetIdx(W);
+        // Real validation AFTER every new initializer, under the same scope.
+        if(!C->ValidateSimulationBindings(Why))return {};
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(!CaptureOutsideSolidValues(AfterOther)||BeforeOther!=AfterOther)
+        {Refuse(Why,TEXT("solid initialization changed non-solid native parent/shape/binding/list/storage witness"));return {};}
+        for(const auto* Body:C->GetSubBodies())
+        {
+            if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
+            {if(!Box->OwnedSolidValues||!PartialObservation::AppendSolidValues(ActualSolidRecipe,*Box->OwnedSolidValues))return {};}
+            else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
+            {if(!Wheel->OwnedSolidValues||!PartialObservation::AppendSolidValues(ActualSolidRecipe,*Wheel->OwnedSolidValues))return {};}
+            else return {};
+        }
+        if(OriginalSolidRecipe.IsEmpty()||OriginalSolidRecipe!=ActualSolidRecipe)
+        {Refuse(Why,TEXT("new private solid values differ from actual original native setup recipe witness"));return {};}
+        N.SolidInitializationWitness=true;
+#endif
         C->SetEngineFPS(300);C->SetKinematicState(N.Seed.Initial);
         // Declared fresh-world initial countdown, never a historical restore.
         if(I.Access->RequiresInitialPublication)
@@ -374,6 +435,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         // This is a read-only declared-subset observation, not a complete-state
         // capture through the guarded restore provider. Unknown remains false.
         auto& Observation=Out->Actors.back();
+        Observation.NativeSolidInitializationWitness=N->SolidInitializationWitness;
         if(N->Component->CopyActualCacheDiagnosticValues(Observation.NativeSleep,Observation.NativeQuantization))
             PartialObservation::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
                 N->WheelConfig,N->SuspensionConfig,Observation);
@@ -390,6 +452,21 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             }
             if(Observation.NativePartialValuesAvailable&&!RuntimeValues.IsEmpty())
                 Observation.NativeWheelRuntimeValues.assign(RuntimeValues.GetData(),RuntimeValues.GetData()+RuntimeValues.Num());
+            else Observation.NativePartialValuesAvailable=false;
+        }
+        if(Observation.NativePartialValuesAvailable)
+        {
+            TArray<uint8> SolidValues;
+            for(const auto* Body:N->Component->GetSubBodies())
+            {
+                const FPrivateRoadSolidValues* Values=nullptr;
+                if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))Values=Box->UsesOriginalBodyStorage()?Box->OwnedSolidValues.get():nullptr;
+                else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))Values=Wheel->UsesOriginalBodyStorage()?Wheel->OwnedSolidValues.get():nullptr;
+                if(!Values||!PartialObservation::AppendSolidValues(SolidValues,*Values))
+                {Observation.NativePartialValuesAvailable=false;break;}
+            }
+            if(Observation.NativePartialValuesAvailable&&!SolidValues.IsEmpty())
+                Observation.NativeSolidValues.assign(SolidValues.GetData(),SolidValues.GetData()+SolidValues.Num());
             else Observation.NativePartialValuesAvailable=false;
         }
 #endif
@@ -460,7 +537,7 @@ bool FPrivateRoadPhysicsWorld::Close()
 }
 
 USpeedBranchBoxSubBody::USpeedBranchBoxSubBody(const FObjectInitializer& Initializer)
-    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()){}
+    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()){}
 bool USpeedBranchBoxSubBody::UsesOriginalBodyStorage() const
 {
     const auto A=StorageAccess.lock();
@@ -523,7 +600,7 @@ SHitResult const& USpeedBranchBoxSubBody::WheelHitStorage() const
     return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
 }
 USpeedBranchWheelSubBody::USpeedBranchWheelSubBody(const FObjectInitializer& Initializer)
-    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedWheelRuntime(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()){}
+    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),OwnedWheelRuntime(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()){OwnedSolidValues->bApplyRestForce=false;}
 bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
 {
     const auto A=StorageAccess.lock();
@@ -705,6 +782,396 @@ SWheelRenderData const& USpeedBranchWheelSubBody::RenderDataRuntimeStorage() con
 {
     return OwnedWheelRuntime&&UsesOriginalBodyStorage()?OwnedWheelRuntime->RenderData:USWheelSubBody::RenderDataRuntimeStorage();
 }
+float& USpeedBranchBoxSubBody::MassSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Mass:USolidSubBody::MassSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::MassSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Mass:USolidSubBody::MassSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bIsMainSubBodySolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bIsMainSubBody:USolidSubBody::bIsMainSubBodySolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bIsMainSubBodySolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bIsMainSubBody:USolidSubBody::bIsMainSubBodySolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bApplyRestForceSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bApplyRestForce:USolidSubBody::bApplyRestForceSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bApplyRestForceSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bApplyRestForce:USolidSubBody::bApplyRestForceSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::EnableFakePhysicsSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->EnableFakePhysics:USolidSubBody::EnableFakePhysicsSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::EnableFakePhysicsSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->EnableFakePhysics:USolidSubBody::EnableFakePhysicsSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bEnableConstraintOnSubBodyHitSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bEnableConstraintOnSubBodyHit:USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bEnableConstraintOnSubBodyHitSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bEnableConstraintOnSubBodyHit:USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+}
+float& USpeedBranchBoxSubBody::RestitutionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Restitution:USolidSubBody::RestitutionSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::RestitutionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Restitution:USolidSubBody::RestitutionSolidStorage();
+}
+float& USpeedBranchBoxSubBody::SphereBoxRestitutionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxRestitutionOverride:USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::SphereBoxRestitutionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxRestitutionOverride:USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+}
+float& USpeedBranchBoxSubBody::SphereBoxFrictionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxFrictionOverride:USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::SphereBoxFrictionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxFrictionOverride:USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+}
+float& USpeedBranchBoxSubBody::SphereBoxManifoldFrictionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxManifoldFrictionOverride:USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::SphereBoxManifoldFrictionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxManifoldFrictionOverride:USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bUseCoupledContactImpulseSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUseCoupledContactImpulse:USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bUseCoupledContactImpulseSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUseCoupledContactImpulse:USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bUsePostNormalFrictionImpulseSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePostNormalFrictionImpulse:USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bUsePostNormalFrictionImpulseSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePostNormalFrictionImpulse:USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+}
+bool& USpeedBranchBoxSubBody::bUsePersistentBilateralContactSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePersistentBilateralContact:USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+}
+bool const& USpeedBranchBoxSubBody::bUsePersistentBilateralContactSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePersistentBilateralContact:USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+}
+float& USpeedBranchBoxSubBody::CoupledContactMaxLinearSpeedSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxLinearSpeed:USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::CoupledContactMaxLinearSpeedSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxLinearSpeed:USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+}
+float& USpeedBranchBoxSubBody::CoupledContactMaxAngularSpeedSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAngularSpeed:USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::CoupledContactMaxAngularSpeedSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAngularSpeed:USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+}
+float& USpeedBranchBoxSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAbsLocalNormalY:USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAbsLocalNormalY:USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+}
+float& USpeedBranchBoxSubBody::StaticFrictionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->StaticFriction:USolidSubBody::StaticFrictionSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::StaticFrictionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->StaticFriction:USolidSubBody::StaticFrictionSolidStorage();
+}
+float& USpeedBranchBoxSubBody::DynamicFrictionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->DynamicFriction:USolidSubBody::DynamicFrictionSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::DynamicFrictionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->DynamicFriction:USolidSubBody::DynamicFrictionSolidStorage();
+}
+float& USpeedBranchBoxSubBody::ImpactThresholdSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->ImpactThreshold:USolidSubBody::ImpactThresholdSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::ImpactThresholdSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->ImpactThreshold:USolidSubBody::ImpactThresholdSolidStorage();
+}
+float& USpeedBranchBoxSubBody::HitDampingSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->HitDamping:USolidSubBody::HitDampingSolidStorage();
+}
+float const& USpeedBranchBoxSubBody::HitDampingSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->HitDamping:USolidSubBody::HitDampingSolidStorage();
+}
+FMatrix& USpeedBranchBoxSubBody::InvInertiaLocalSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->InvInertiaLocal:USolidSubBody::InvInertiaLocalSolidStorage();
+}
+FMatrix const& USpeedBranchBoxSubBody::InvInertiaLocalSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->InvInertiaLocal:USolidSubBody::InvInertiaLocalSolidStorage();
+}
+int& USpeedBranchBoxSubBody::idxSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->idx:USolidSubBody::idxSolidStorage();
+}
+int const& USpeedBranchBoxSubBody::idxSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->idx:USolidSubBody::idxSolidStorage();
+}
+float& USpeedBranchWheelSubBody::MassSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Mass:USolidSubBody::MassSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::MassSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Mass:USolidSubBody::MassSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bIsMainSubBodySolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bIsMainSubBody:USolidSubBody::bIsMainSubBodySolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bIsMainSubBodySolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bIsMainSubBody:USolidSubBody::bIsMainSubBodySolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bApplyRestForceSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bApplyRestForce:USolidSubBody::bApplyRestForceSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bApplyRestForceSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bApplyRestForce:USolidSubBody::bApplyRestForceSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::EnableFakePhysicsSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->EnableFakePhysics:USolidSubBody::EnableFakePhysicsSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::EnableFakePhysicsSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->EnableFakePhysics:USolidSubBody::EnableFakePhysicsSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bEnableConstraintOnSubBodyHitSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bEnableConstraintOnSubBodyHit:USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bEnableConstraintOnSubBodyHitSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bEnableConstraintOnSubBodyHit:USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+}
+float& USpeedBranchWheelSubBody::RestitutionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Restitution:USolidSubBody::RestitutionSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::RestitutionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->Restitution:USolidSubBody::RestitutionSolidStorage();
+}
+float& USpeedBranchWheelSubBody::SphereBoxRestitutionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxRestitutionOverride:USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::SphereBoxRestitutionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxRestitutionOverride:USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+}
+float& USpeedBranchWheelSubBody::SphereBoxFrictionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxFrictionOverride:USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::SphereBoxFrictionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxFrictionOverride:USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+}
+float& USpeedBranchWheelSubBody::SphereBoxManifoldFrictionOverrideSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxManifoldFrictionOverride:USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::SphereBoxManifoldFrictionOverrideSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->SphereBoxManifoldFrictionOverride:USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseCoupledContactImpulseSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUseCoupledContactImpulse:USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseCoupledContactImpulseSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUseCoupledContactImpulse:USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bUsePostNormalFrictionImpulseSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePostNormalFrictionImpulse:USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUsePostNormalFrictionImpulseSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePostNormalFrictionImpulse:USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+}
+bool& USpeedBranchWheelSubBody::bUsePersistentBilateralContactSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePersistentBilateralContact:USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUsePersistentBilateralContactSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->bUsePersistentBilateralContact:USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+}
+float& USpeedBranchWheelSubBody::CoupledContactMaxLinearSpeedSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxLinearSpeed:USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::CoupledContactMaxLinearSpeedSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxLinearSpeed:USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+}
+float& USpeedBranchWheelSubBody::CoupledContactMaxAngularSpeedSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAngularSpeed:USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::CoupledContactMaxAngularSpeedSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAngularSpeed:USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+}
+float& USpeedBranchWheelSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAbsLocalNormalY:USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->CoupledContactMaxAbsLocalNormalY:USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+}
+float& USpeedBranchWheelSubBody::StaticFrictionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->StaticFriction:USolidSubBody::StaticFrictionSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::StaticFrictionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->StaticFriction:USolidSubBody::StaticFrictionSolidStorage();
+}
+float& USpeedBranchWheelSubBody::DynamicFrictionSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->DynamicFriction:USolidSubBody::DynamicFrictionSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::DynamicFrictionSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->DynamicFriction:USolidSubBody::DynamicFrictionSolidStorage();
+}
+float& USpeedBranchWheelSubBody::ImpactThresholdSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->ImpactThreshold:USolidSubBody::ImpactThresholdSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::ImpactThresholdSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->ImpactThreshold:USolidSubBody::ImpactThresholdSolidStorage();
+}
+float& USpeedBranchWheelSubBody::HitDampingSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->HitDamping:USolidSubBody::HitDampingSolidStorage();
+}
+float const& USpeedBranchWheelSubBody::HitDampingSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->HitDamping:USolidSubBody::HitDampingSolidStorage();
+}
+FMatrix& USpeedBranchWheelSubBody::InvInertiaLocalSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->InvInertiaLocal:USolidSubBody::InvInertiaLocalSolidStorage();
+}
+FMatrix const& USpeedBranchWheelSubBody::InvInertiaLocalSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->InvInertiaLocal:USolidSubBody::InvInertiaLocalSolidStorage();
+}
+int& USpeedBranchWheelSubBody::idxSolidStorage()
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->idx:USolidSubBody::idxSolidStorage();
+}
+int const& USpeedBranchWheelSubBody::idxSolidStorage() const
+{
+    return OwnedSolidValues&&UsesOriginalBodyStorage()?OwnedSolidValues->idx:USolidSubBody::idxSolidStorage();
+}
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+Speed::Netcode::Prediction::FPrivateRoadSolidValues USpeedBranchBoxSubBody::ReadLegacySolidDiagnosticValues() const
+{
+    Speed::Netcode::Prediction::FPrivateRoadSolidValues V;
+    V.Mass=USolidSubBody::MassSolidStorage();
+    V.bIsMainSubBody=USolidSubBody::bIsMainSubBodySolidStorage();
+    V.bApplyRestForce=USolidSubBody::bApplyRestForceSolidStorage();
+    V.EnableFakePhysics=USolidSubBody::EnableFakePhysicsSolidStorage();
+    V.bEnableConstraintOnSubBodyHit=USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+    V.Restitution=USolidSubBody::RestitutionSolidStorage();
+    V.SphereBoxRestitutionOverride=USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+    V.SphereBoxFrictionOverride=USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+    V.SphereBoxManifoldFrictionOverride=USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+    V.bUseCoupledContactImpulse=USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+    V.bUsePostNormalFrictionImpulse=USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+    V.bUsePersistentBilateralContact=USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+    V.CoupledContactMaxLinearSpeed=USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+    V.CoupledContactMaxAngularSpeed=USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+    V.CoupledContactMaxAbsLocalNormalY=USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+    V.StaticFriction=USolidSubBody::StaticFrictionSolidStorage();
+    V.DynamicFriction=USolidSubBody::DynamicFrictionSolidStorage();
+    V.ImpactThreshold=USolidSubBody::ImpactThresholdSolidStorage();
+    V.HitDamping=USolidSubBody::HitDampingSolidStorage();
+    V.InvInertiaLocal=USolidSubBody::InvInertiaLocalSolidStorage();
+    V.idx=USolidSubBody::idxSolidStorage();
+    return V; // diagnostic copy only, never physical initialization
+}
+Speed::Netcode::Prediction::FPrivateRoadSolidValues USpeedBranchWheelSubBody::ReadLegacySolidDiagnosticValues() const
+{
+    Speed::Netcode::Prediction::FPrivateRoadSolidValues V;
+    V.Mass=USolidSubBody::MassSolidStorage();
+    V.bIsMainSubBody=USolidSubBody::bIsMainSubBodySolidStorage();
+    V.bApplyRestForce=USolidSubBody::bApplyRestForceSolidStorage();
+    V.EnableFakePhysics=USolidSubBody::EnableFakePhysicsSolidStorage();
+    V.bEnableConstraintOnSubBodyHit=USolidSubBody::bEnableConstraintOnSubBodyHitSolidStorage();
+    V.Restitution=USolidSubBody::RestitutionSolidStorage();
+    V.SphereBoxRestitutionOverride=USolidSubBody::SphereBoxRestitutionOverrideSolidStorage();
+    V.SphereBoxFrictionOverride=USolidSubBody::SphereBoxFrictionOverrideSolidStorage();
+    V.SphereBoxManifoldFrictionOverride=USolidSubBody::SphereBoxManifoldFrictionOverrideSolidStorage();
+    V.bUseCoupledContactImpulse=USolidSubBody::bUseCoupledContactImpulseSolidStorage();
+    V.bUsePostNormalFrictionImpulse=USolidSubBody::bUsePostNormalFrictionImpulseSolidStorage();
+    V.bUsePersistentBilateralContact=USolidSubBody::bUsePersistentBilateralContactSolidStorage();
+    V.CoupledContactMaxLinearSpeed=USolidSubBody::CoupledContactMaxLinearSpeedSolidStorage();
+    V.CoupledContactMaxAngularSpeed=USolidSubBody::CoupledContactMaxAngularSpeedSolidStorage();
+    V.CoupledContactMaxAbsLocalNormalY=USolidSubBody::CoupledContactMaxAbsLocalNormalYSolidStorage();
+    V.StaticFriction=USolidSubBody::StaticFrictionSolidStorage();
+    V.DynamicFriction=USolidSubBody::DynamicFrictionSolidStorage();
+    V.ImpactThreshold=USolidSubBody::ImpactThresholdSolidStorage();
+    V.HitDamping=USolidSubBody::HitDampingSolidStorage();
+    V.InvInertiaLocal=USolidSubBody::InvInertiaLocalSolidStorage();
+    V.idx=USolidSubBody::idxSolidStorage();
+    return V; // diagnostic copy only, never physical initialization
+}
+#endif
 USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer)
     :Super(Initializer.SetDefaultSubobjectClass<USpeedBranchBoxSubBody>(HitboxName).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[0]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[1]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[2]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[3]),ESpeedWheeledNetworkConstruction::IAmSpeedOnly)
 {

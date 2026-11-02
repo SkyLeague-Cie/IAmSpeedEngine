@@ -29,7 +29,7 @@ struct FCylinderRigidTrajectory
 }
 UCylinderSubBody::UCylinderSubBody(const FObjectInitializer& I):Super(I)
 {
-    SubBodyType=ESubBodyType::Cylinder;bApplyRestForce=false;bEnableConstraintOnSubBodyHit=false;EnableFakePhysics=false;
+    SubBodyType=ESubBodyType::Cylinder;bApplyRestForceSolidStorage()=false;bEnableConstraintOnSubBodyHitSolidStorage()=false;EnableFakePhysicsSolidStorage()=false;
     SetCollisionEnabled(ECollisionEnabled::NoCollision);SetCollisionObjectType(ECC_WorldDynamic);SetCollisionResponseToAllChannels(ECR_Block);
 }
 bool UCylinderSubBody::Configure(double R,double H)
@@ -41,19 +41,19 @@ void UCylinderSubBody::Initialize(ISpeedComponent* Owner)
 {
     Super::Initialize(Owner);
     if(!Owner||!Owner->IsPrescribedMotion()||Owner->GetPhysMass()!=0.f||!Geometry().IsValid()||!GetRelativeScale3D().Equals(FVector::OneVector,1.e-12))throw std::runtime_error("Cylinder admission requires a configured prescribed solid with rigid unit scale");
-    bApplyRestForce=false;bEnableConstraintOnSubBodyHit=false;EnableFakePhysics=false;
+    bApplyRestForceSolidStorage()=false;bEnableConstraintOnSubBodyHitSolidStorage()=false;EnableFakePhysicsSolidStorage()=false;
 }
 FMatrix UCylinderSubBody::InitInvInertiaTensor() const
 {
-    if(Mass<=0.f)return FMatrix(ForceInitToZero);
-    const double Side=double(Mass)*(3.*CylinderRadius*CylinderRadius+4.*CylinderHalfHeight*CylinderHalfHeight)/12.;
-    const double Axis=double(Mass)*CylinderRadius*CylinderRadius*.5;
+    if(MassSolidStorage()<=0.f)return FMatrix(ForceInitToZero);
+    const double Side=double(MassSolidStorage())*(3.*CylinderRadius*CylinderRadius+4.*CylinderHalfHeight*CylinderHalfHeight)/12.;
+    const double Axis=double(MassSolidStorage())*CylinderRadius*CylinderRadius*.5;
     FMatrix M(ForceInitToZero);M.M[0][0]=M.M[1][1]=1./Side;M.M[2][2]=1./Axis;M.M[3][3]=1.;return M;
 }
 FMatrix UCylinderSubBody::ComputeWorldInvInertiaTensor() const
 {
     if(ParentComponent&&ParentComponent->IsPrescribedMotion())return FMatrix(ForceInitToZero);
-    const FMatrix R=FQuatRotationMatrix(GetKinematicState().Rotation);return R.GetTransposed()*InvInertiaLocal*R;
+    const FMatrix R=FQuatRotationMatrix(GetKinematicState().Rotation);return R.GetTransposed()*InvInertiaLocalSolidStorage()*R;
 }
 FBoxSphereBounds UCylinderSubBody::CalcBounds(const FTransform& Pose) const
 {

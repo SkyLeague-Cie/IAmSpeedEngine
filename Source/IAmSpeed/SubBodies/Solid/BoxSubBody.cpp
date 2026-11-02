@@ -208,13 +208,13 @@ namespace
 
     void IAmSpeedApplyGutterSlideDamping(
         ISpeedComponent* ParentComponent,
-        const bool bIsMainSubBody,
+        const bool MainSubBodyForDamping,
         const FVector& SupportNormal,
         const float Dt,
         const bool bEnableDamping,
         const TCHAR* Source)
     {
-        if (!ParentComponent || !bIsMainSubBody || !bEnableDamping || Dt <= 0.f)
+        if (!ParentComponent || !MainSubBodyForDamping || !bEnableDamping || Dt <= 0.f)
         {
             return;
         }
@@ -483,11 +483,11 @@ void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
         if (Config.bValid)
         {
             BoxExtent = Config.BoxExtent;
-			InvInertiaLocal = InitInvInertiaTensor();
+			InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
         }
         else
         {
-            InvInertiaLocal = InitInvInertiaTensor();
+            InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
         }
 	}
 }
@@ -5574,7 +5574,7 @@ FMatrix UBoxSubBody::RotateLocalInverseInertia(const FQuat& BoxToFrame) const
     // apply the local tensor, then rotate its angular response back. Avoid an
     // Euler conversion, which snaps finite near-pole inclinations to +/-90deg.
     const FMatrix R = FQuatRotationMatrix(BoxToFrame);
-    return R.GetTransposed() * InvInertiaLocal * R;
+    return R.GetTransposed() * InvInertiaLocalSolidStorage() * R;
 }
 
 

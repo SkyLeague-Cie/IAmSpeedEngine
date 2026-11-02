@@ -33,6 +33,7 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
     const Speed::FKinematicState* RetainedBodyView=nullptr;
     const SHitResult* RetainedBodyHit=nullptr;
     double WrittenBodyX=0;
+    USolidSubBody* EscapedSolid=nullptr;
     USWheelSubBody* EscapedWheel=nullptr;
     const SWheelRenderData* RetainedWheelRender=nullptr;
     FQuat WrittenWheelRoll=FQuat::Identity,BeforeWheelRoll=FQuat::Identity;
@@ -63,6 +64,9 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
         Component->SetPhysCOMVelocity(FVector(1000000,2000000,3000000));
         if(auto* Body=Component->GetHitboxSubBodyForConfiguration())
         {
+            EscapedSolid=Body;Body->SetMass(987654);Body->SetIdx(555);
+            Body->SetSphereBoxRestitutionOverride(1);Body->SetUseCoupledContactImpulse(true);
+            Body->SetSphereBoxFrictionOverride(0.125f);Body->SetUsePersistentBilateralContact(true);
             RetainedBodyView=&Body->GetKinematicState();
             auto BodyIntrusion=*RetainedBodyView;BodyIntrusion.Location.X+=555555;WrittenBodyX=BodyIntrusion.Location.X;
             Body->SetKinematicState(BodyIntrusion);
@@ -272,6 +276,17 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestEqual(TEXT("old wheel ground count remains facade value"),LogAttack.EscapedWheel->GetConsecutiveGroundFrames(),uint8(31));
     TestTrue(TEXT("old wheel unilateral support remains facade value"),LogAttack.EscapedWheel->HasJumpUnilateralSupport());
     TestEqual(TEXT("old wheel angular velocity remains facade value"),LogAttack.EscapedWheel->AngularVelocity(),12345.0f);
+    if(!TestTrue(TEXT("real callback retained solid facade"),bool(LogAttack.EscapedSolid)))return false;
+    TestEqual(TEXT("actual public mass setter changed only facade across native steps"),LogAttack.EscapedSolid->GetMass(),987654.0f);
+    TestEqual(TEXT("actual public index setter changed only facade across native steps"),LogAttack.EscapedSolid->Idx(),555);
+    TestTrue(TEXT("actual public contact response setter changed facade"),LogAttack.EscapedSolid->UsesCoupledContactImpulse()&&LogAttack.EscapedSolid->UsesPersistentBilateralContact());
+    if(!TestTrue(TEXT("native solid diagnostic complete for the declared subset on both control frames"),
+        !Actual->Actors[0].NativeSolidValues.empty()&&!Later->Actors[0].NativeSolidValues.empty()))return false;
+    TestTrue(TEXT("actual original factory recipe, post-init bindings and non-solid pre/post witnesses all matched"),
+        Actual->Actors[0].NativeSolidInitializationWitness&&Reference->Actors[0].NativeSolidInitializationWitness
+        &&Later->Actors[0].NativeSolidInitializationWitness&&LaterRef->Actors[0].NativeSolidInitializationWitness);
+    TestTrue(TEXT("actual native solid values remain equal to untouched control after facade attack"),
+        Actual->Actors[0].NativeSolidValues==Reference->Actors[0].NativeSolidValues&&Later->Actors[0].NativeSolidValues==LaterRef->Actors[0].NativeSolidValues);
     TestTrue(TEXT("public SetRollAngle actually changed the retained facade render field"),LogAttack.BeforeWheelRoll!=LogAttack.WrittenWheelRoll);
     if(!TestTrue(TEXT("actual native render observations present at original0 and later2"),
         OriginalZero->Actors[0].NativeWheelRenderRotations.size()==4&&Later->Actors[0].NativeWheelRenderRotations.size()==4))return false;
@@ -283,7 +298,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
 
     TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
-    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 wheel_runtime_value_blocks=15 complete_lease=0 localized=0"));
+    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 wheel_runtime_value_blocks=15 solid_value_blocks=21 complete_lease=0 localized=0"));
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
     AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));

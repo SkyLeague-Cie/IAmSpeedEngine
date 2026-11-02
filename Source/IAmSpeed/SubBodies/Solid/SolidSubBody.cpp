@@ -54,16 +54,16 @@ void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
 		SubBodyConfig Config = InParentComponent->GetSubBodyConfig(*this);
         if (Config.bValid)
         {
-            Mass = Config.Mass;
-            Restitution = Config.Restitution;
-            StaticFriction = Config.StaticFriction;
-            DynamicFriction = Config.DynamicFriction;
-            ImpactThreshold = Config.ImpactThreshold;
-            bIsMainSubBody = Config.bIsMainSubBody;
-            EnableFakePhysics = Config.bEnableFakePhysics;
-            HitDamping = FMath::Clamp(Config.HitDamping, 0.f, 1.f);
+            MassSolidStorage() = Config.Mass;
+            RestitutionSolidStorage() = Config.Restitution;
+            StaticFrictionSolidStorage() = Config.StaticFriction;
+            DynamicFrictionSolidStorage() = Config.DynamicFriction;
+            ImpactThresholdSolidStorage() = Config.ImpactThreshold;
+            bIsMainSubBodySolidStorage() = Config.bIsMainSubBody;
+            EnableFakePhysicsSolidStorage() = Config.bEnableFakePhysics;
+            HitDampingSolidStorage() = FMath::Clamp(Config.HitDamping, 0.f, 1.f);
         }
-		InvInertiaLocal = InitInvInertiaTensor();
+		InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
 	}
 }
 
@@ -77,7 +77,7 @@ void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& Wo
 
 void USolidSubBody::SetSphereBoxRestitutionOverride(float InRestitution)
 {
-    SphereBoxRestitutionOverride = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
+    SphereBoxRestitutionOverrideSolidStorage() = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
 }
 
 void USolidSubBody::RegisterCurrentHitAsConstraint()
@@ -125,10 +125,10 @@ void USolidSubBody::RegisterContactAsConstraint(
     }
 
     const bool bRegisterThisConstraint =
-        bStaticConstraint || (bDynamicSolidConstraint && bEnableConstraintOnSubBodyHit);
+        bStaticConstraint || (bDynamicSolidConstraint && bEnableConstraintOnSubBodyHitSolidStorage());
     const bool bRegisterOtherConstraint =
         bDynamicSolidConstraint &&
-        OtherSubBody->bEnableConstraintOnSubBodyHit &&
+        OtherSubBody->bEnableConstraintOnSubBodyHitSolidStorage() &&
         OtherSubBody->ParentComponent != ParentComponent;
     if (!bRegisterThisConstraint && !bRegisterOtherConstraint)
     {

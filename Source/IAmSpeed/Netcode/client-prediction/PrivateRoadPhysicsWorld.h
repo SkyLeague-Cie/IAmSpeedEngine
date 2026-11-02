@@ -44,6 +44,8 @@ struct FPrivateRoadActorFrame
     CommonState::FQuantizationValues NativeQuantization;
     std::vector<uint8> NativeWheelSuspensionValues; // normalized config references
     std::vector<FQuat> NativeWheelRenderRotations; // actual per-wheel diagnostic copies
+    bool NativeSolidInitializationWitness=false; // actual same-run recipe/value/binding witness only
+    std::vector<uint8> NativeSolidValues; // twenty-one declared solid fields, not complete configuration
     std::vector<uint8> NativeWheelRuntimeValues; // fifteen declared runtime blocks only
     FVector NativeHitboxHalfExtent=FVector::ZeroVector;
     FVector NativeHitboxCenter=FVector::ZeroVector; // actual queried child storage, not reconstructed COM

@@ -23,6 +23,31 @@ struct FPrivateRoadSubBodyValues
     SHitResult SphereHit;
     SHitResult WheelHit;
  };
+// Declared solid values only. No complete reference/configuration closure.
+struct FPrivateRoadSolidValues
+{
+    float Mass=1.0f;
+    bool bIsMainSubBody=false;
+    bool bApplyRestForce=true;
+    bool EnableFakePhysics=false;
+    bool bEnableConstraintOnSubBodyHit=false;
+    float Restitution=0.0f;
+    float SphereBoxRestitutionOverride=-1.0f;
+    float SphereBoxFrictionOverride=-1.0f;
+    float SphereBoxManifoldFrictionOverride=-1.0f;
+    bool bUseCoupledContactImpulse=false;
+    bool bUsePostNormalFrictionImpulse=false;
+    bool bUsePersistentBilateralContact=false;
+    float CoupledContactMaxLinearSpeed=-1.0f;
+    float CoupledContactMaxAngularSpeed=-1.0f;
+    float CoupledContactMaxAbsLocalNormalY=-1.0f;
+    float StaticFriction=0.0f;
+    float DynamicFriction=0.0f;
+    float ImpactThreshold=0.0f;
+    float HitDamping=1.0f;
+    FMatrix InvInertiaLocal=FMatrix::Identity;
+    int idx=-1;
+};
 // Declared runtime values only, not configuration or a complete wheel checkpoint.
 struct FPrivateRoadWheelRuntimeValues
 {
@@ -56,6 +81,53 @@ class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
     std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
+#endif
+    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSolidValues> OwnedSolidValues;
+    float& MassSolidStorage() override;
+    float const& MassSolidStorage() const override;
+    bool& bIsMainSubBodySolidStorage() override;
+    bool const& bIsMainSubBodySolidStorage() const override;
+    bool& bApplyRestForceSolidStorage() override;
+    bool const& bApplyRestForceSolidStorage() const override;
+    bool& EnableFakePhysicsSolidStorage() override;
+    bool const& EnableFakePhysicsSolidStorage() const override;
+    bool& bEnableConstraintOnSubBodyHitSolidStorage() override;
+    bool const& bEnableConstraintOnSubBodyHitSolidStorage() const override;
+    float& RestitutionSolidStorage() override;
+    float const& RestitutionSolidStorage() const override;
+    float& SphereBoxRestitutionOverrideSolidStorage() override;
+    float const& SphereBoxRestitutionOverrideSolidStorage() const override;
+    float& SphereBoxFrictionOverrideSolidStorage() override;
+    float const& SphereBoxFrictionOverrideSolidStorage() const override;
+    float& SphereBoxManifoldFrictionOverrideSolidStorage() override;
+    float const& SphereBoxManifoldFrictionOverrideSolidStorage() const override;
+    bool& bUseCoupledContactImpulseSolidStorage() override;
+    bool const& bUseCoupledContactImpulseSolidStorage() const override;
+    bool& bUsePostNormalFrictionImpulseSolidStorage() override;
+    bool const& bUsePostNormalFrictionImpulseSolidStorage() const override;
+    bool& bUsePersistentBilateralContactSolidStorage() override;
+    bool const& bUsePersistentBilateralContactSolidStorage() const override;
+    float& CoupledContactMaxLinearSpeedSolidStorage() override;
+    float const& CoupledContactMaxLinearSpeedSolidStorage() const override;
+    float& CoupledContactMaxAngularSpeedSolidStorage() override;
+    float const& CoupledContactMaxAngularSpeedSolidStorage() const override;
+    float& CoupledContactMaxAbsLocalNormalYSolidStorage() override;
+    float const& CoupledContactMaxAbsLocalNormalYSolidStorage() const override;
+    float& StaticFrictionSolidStorage() override;
+    float const& StaticFrictionSolidStorage() const override;
+    float& DynamicFrictionSolidStorage() override;
+    float const& DynamicFrictionSolidStorage() const override;
+    float& ImpactThresholdSolidStorage() override;
+    float const& ImpactThresholdSolidStorage() const override;
+    float& HitDampingSolidStorage() override;
+    float const& HitDampingSolidStorage() const override;
+    FMatrix& InvInertiaLocalSolidStorage() override;
+    FMatrix const& InvInertiaLocalSolidStorage() const override;
+    int& idxSolidStorage() override;
+    int const& idxSolidStorage() const override;
+
     Speed::FKinematicState& KinematicsStorage() override;
     Speed::FKinematicState const& KinematicsStorage() const override;
     SHitResult& FutureHitStorage() override;
@@ -85,6 +157,53 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
     std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
+#endif
+    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSolidValues> OwnedSolidValues;
+    float& MassSolidStorage() override;
+    float const& MassSolidStorage() const override;
+    bool& bIsMainSubBodySolidStorage() override;
+    bool const& bIsMainSubBodySolidStorage() const override;
+    bool& bApplyRestForceSolidStorage() override;
+    bool const& bApplyRestForceSolidStorage() const override;
+    bool& EnableFakePhysicsSolidStorage() override;
+    bool const& EnableFakePhysicsSolidStorage() const override;
+    bool& bEnableConstraintOnSubBodyHitSolidStorage() override;
+    bool const& bEnableConstraintOnSubBodyHitSolidStorage() const override;
+    float& RestitutionSolidStorage() override;
+    float const& RestitutionSolidStorage() const override;
+    float& SphereBoxRestitutionOverrideSolidStorage() override;
+    float const& SphereBoxRestitutionOverrideSolidStorage() const override;
+    float& SphereBoxFrictionOverrideSolidStorage() override;
+    float const& SphereBoxFrictionOverrideSolidStorage() const override;
+    float& SphereBoxManifoldFrictionOverrideSolidStorage() override;
+    float const& SphereBoxManifoldFrictionOverrideSolidStorage() const override;
+    bool& bUseCoupledContactImpulseSolidStorage() override;
+    bool const& bUseCoupledContactImpulseSolidStorage() const override;
+    bool& bUsePostNormalFrictionImpulseSolidStorage() override;
+    bool const& bUsePostNormalFrictionImpulseSolidStorage() const override;
+    bool& bUsePersistentBilateralContactSolidStorage() override;
+    bool const& bUsePersistentBilateralContactSolidStorage() const override;
+    float& CoupledContactMaxLinearSpeedSolidStorage() override;
+    float const& CoupledContactMaxLinearSpeedSolidStorage() const override;
+    float& CoupledContactMaxAngularSpeedSolidStorage() override;
+    float const& CoupledContactMaxAngularSpeedSolidStorage() const override;
+    float& CoupledContactMaxAbsLocalNormalYSolidStorage() override;
+    float const& CoupledContactMaxAbsLocalNormalYSolidStorage() const override;
+    float& StaticFrictionSolidStorage() override;
+    float const& StaticFrictionSolidStorage() const override;
+    float& DynamicFrictionSolidStorage() override;
+    float const& DynamicFrictionSolidStorage() const override;
+    float& ImpactThresholdSolidStorage() override;
+    float const& ImpactThresholdSolidStorage() const override;
+    float& HitDampingSolidStorage() override;
+    float const& HitDampingSolidStorage() const override;
+    FMatrix& InvInertiaLocalSolidStorage() override;
+    FMatrix const& InvInertiaLocalSolidStorage() const override;
+    int& idxSolidStorage() override;
+    int const& idxSolidStorage() const override;
+
     std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues> OwnedWheelRuntime;
     float& SuspensionForceRuntimeStorage() override;
     float const& SuspensionForceRuntimeStorage() const override;
