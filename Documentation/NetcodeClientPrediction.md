@@ -902,3 +902,48 @@ of zero internal OS allocation/locks or physics lifetime protection. Instrumente
 timing is not a pure performance benchmark. This source needs fresh native tests;
 source73 PASS does not transfer. Full causal capture, authoritativeK restoration,
 localized rollback and final playable two-client acceptance remain unfinished.
+
+
+Source74/native70 completed with56 native tests0errors/warnings, Pending1,
+three commandlets, two actual Game clients plus dedicated and expected9/10
+cancellation. Original90574 and both coordinators exited0 with natural Job0
+twice and all final audits0.35 oscillations/21455 frames still measured zero
+six-COM/filter/startup differences. All measurements remain exact-source scoped.
+No localized or fresh playable Device acceptance follows from those fixtures.
+
+Source74 reduced one-car original-recipe Step read callbacks152 to10 (actual
+World7 and Component3); birth reads177. Interacting contacts still generated6176
+subbody and134 floor read events. A real24-PC-prefix sampler accounted for6310
+events in17 prefixes without capture failures, recursion or capacity overflow.
+All prefixes reached the depth cap; deeper callers remain unknown. Offline local
+PDB lookup used actual matching PE/PDB GUID+age and the PDB really loaded by
+DbgHelp, real original-project DLL hashes, and a read-only PE file handle. The
+first two helper results stayed UNKNOWN; no matching guard was weakened. Lookup
+remains conditional because module mapping happened after capture and does not
+prove the loader incarnation during the earlier event. Return PCs can resolve
+to the source line after an actual weak assignment. Exact source inspection
+confirmed the weak reconstruction sites before preparing this change.
+
+Source75 copies real private body weak identities from the already acquired
+birth role references, outside recipe/storage routing and under the actual short
+GC guard. Private getters return only that weak identity and refuse a changed
+or stale original; ordinary base implementations retain normal raw weak creation.
+The resolver, persistent hit and contact observations reuse existing weak values.
+Raw contact API signatures remain available. Weak contact overloads take an
+immutable local snapshot for the full synchronous constraint/manifold loop, so
+later changes to a caller's mutable hit cell cannot change the stored peer.
+No pointer to that local snapshot escapes. Raw physics math/order is unchanged.
+
+The ignored-component lookup uses a raw comparison only for a valid weak
+reference. Null, stale and pending-garbage references keep the actual native weak
+equality, which can equate two invalid references. The existing startup test
+adds real objects, MarkAsGarbage, genuine CollectGarbage and eight validity cases
+before any original recipe math, without dereferencing a destroyed raw pointer.
+These controls qualify reference semantics, not complete physics lifetime.
+
+New private weak metadata is identity/configuration data, not a restoration
+capability or exclusion lease. Full causal capture, module/service participation,
+factory callback closure, the remaining World/Component reads, authoritativeK
+restoration and localized rollback still need work. Providers and restoration
+guards remain closed. Source75 requires its own complete fresh native/Game tests;
+no source74 PASS transfers and no zero contact-read result is claimed here.

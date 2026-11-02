@@ -24,9 +24,39 @@
 #include "UObject/ObjectHandleTracking.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include <atomic>
+#include "Components/BoxComponent.h"
+#include "UObject/StrongObjectPtr.h"
+#include "IAmSpeed/World/Simulation/WeakContactReference.h"
 
 namespace
 {
+bool TestActualIgnoredWeakEquality(FAutomationTestBase& Test)
+{
+    if(!Test.TestFalse(TEXT("weak equality/real GC fixture executes outside original recipe math"),
+        Speed::RoadSettings::SelectedOriginalRoadSettings()!=nullptr))return false;
+    TStrongObjectPtr<UBoxComponent> Live(NewObject<UBoxComponent>(GetTransientPackage()));
+    TStrongObjectPtr<UBoxComponent> Other(NewObject<UBoxComponent>(GetTransientPackage()));
+    auto* Garbage=NewObject<UBoxComponent>(GetTransientPackage());
+    if(!Live.IsValid()||!Other.IsValid()||!Garbage)return false;
+    TWeakObjectPtr<UPrimitiveComponent> Valid=Live.Get(),Invalid=Garbage,Null;
+    Garbage->MarkAsGarbage(); // real Engine validity transition, object memory still present
+    if(!Test.TestFalse(TEXT("actual garbage component is invalid through its original weak identity"),Invalid.IsValid()))return false;
+    bool OK=true;uint32 Cases=0;
+    const auto Check=[&](const TWeakObjectPtr<UPrimitiveComponent>& Reference,UPrimitiveComponent* Raw,bool Expected)
+    {
+        TArray<UPrimitiveComponent*> Ignored{Raw};++Cases;
+        OK=Test.TestEqual(TEXT("ordinary native weak equality has the expected validity semantics"),Ignored.Contains(Reference),Expected)&&OK;
+        OK=Test.TestEqual(TEXT("physical ignored-component lookup preserves those semantics"),Speed::ContainsWeakContactReference(Ignored,Reference),Expected)&&OK;
+    };
+    Check(Valid,Live.Get(),true);Check(Valid,Other.Get(),false);
+    Check(Invalid,Garbage,true);Check(Invalid,nullptr,true);Check(Null,Garbage,true);
+    Check(Invalid,Live.Get(),false);
+    Garbage=nullptr;CollectGarbage(RF_NoFlags); // no dangling raw pointer is used after real collection
+    if(!Test.TestTrue(TEXT("genuine GC leaves the original unretained weak identity stale"),Invalid.IsStale()))return false;
+    Check(Invalid,nullptr,true);Check(Invalid,Live.Get(),false);
+    Test.AddInfo(FString::Printf(TEXT("[ActualIgnoredWeakEquality] cases=%u actualGarbage=1 actualGC=1 staleAfterGC=1 noOriginalRecipeScope=1 fullLifetimeLease=0"),Cases));
+    return OK;
+}
 struct FActualNativeBoundaryLogProbe final : FOutputDevice
 {
     enum class ECase {BirthGC,DestroyBirthDriver,ActivationFacade};
@@ -456,6 +486,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASNativeInitialPublicationGate,"IAmSpeed.Netc
 bool FIASNativeInitialPublicationGate::RunTest(const FString&)
 {
     if(!IASAtomicRoadCampaign::TestResponseChannelCapture(*this))return false;
+    if(!TestActualIgnoredWeakEquality(*this))return false;
     namespace P=Speed::Netcode::Prediction;namespace V=Speed::Input::V2;
     using namespace Speed::Netcode;
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;

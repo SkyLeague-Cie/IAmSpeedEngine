@@ -215,6 +215,17 @@ protected:
 		int32 MaxContacts = 4
 	);
 
+    // Reuse a caller's actual contact weak identity. These values grant no
+    // native storage/lifetime authority. The original raw overloads remain.
+    void RegisterContactAsConstraint(const FVector&,const FVector&,
+        const TWeakObjectPtr<UPrimitiveComponent>&,USolidSubBody*,float,float,bool);
+    void RegisterContactManifoldAsConstraints(const TArray<FVector>&,const FVector&,
+        const TWeakObjectPtr<UPrimitiveComponent>&,float,float,bool,int32);
+    void RegisterContactWithReference(const FVector&,const FVector&,UPrimitiveComponent*,
+        USolidSubBody*,float,float,bool,const TWeakObjectPtr<UPrimitiveComponent>*);
+    void RegisterManifoldWithReference(const TArray<FVector>&,const FVector&,UPrimitiveComponent*,
+        float,float,bool,int32,const TWeakObjectPtr<UPrimitiveComponent>*);
+
 	// Isolated subtypes may own solid values; legacy reflected fields stay unchanged.
     virtual float& MassSolidStorage() {return Mass;}
     virtual float const& MassSolidStorage() const {return Mass;}

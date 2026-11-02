@@ -380,6 +380,18 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
             }
         }
         if(!I.AcquiredGraphStillLive())return {};
+        {
+            FGCScopeGuard BindActualBodyIdentities;
+            auto* Box=Cast<USpeedBranchBoxSubBody>(N.OriginalHitboxBirth.Get());
+            if(!Box||N.OriginalWheelBodyBirth.Num()!=4)return {};
+            Box->OriginalBodyIdentity=N.OriginalHitboxBirth; // actual weak copy, no raw reconstruction
+            for(int32 Index=0;Index<4;++Index)
+            {
+                auto* Wheel=Cast<USpeedBranchWheelSubBody>(N.OriginalWheelBodyBirth[Index].Get());
+                if(!Wheel)return {};
+                Wheel->OriginalBodyIdentity=N.OriginalWheelBodyBirth[Index];
+            }
+        }
         N.NativeVehicleRoot=std::make_shared<FImpl::FCar::FVehicleRoot>(N.NativeConfiguration,C->OriginalWheeledDomain);
         C->OriginalWheeledDomain=RetirementDraft::AliasExistingPart(N.NativeVehicleRoot,N.NativeVehicleRoot->Domain);
         I.NativeCppKeepAlive.push_back(N.NativeVehicleRoot);
@@ -1147,6 +1159,12 @@ bool FPrivateRoadPhysicsWorld::Close()
 
 USpeedBranchBoxSubBody::USpeedBranchBoxSubBody(const FObjectInitializer& Initializer)
     :Super(Initializer),OwnedBodyValues(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),OwnedBoxDomain(std::make_shared<Speed::Netcode::Prediction::FPrivateRoadBoxDomain>()){OwnedBodyValues->SubBodyType=ESubBodyType::Hitbox;}
+TWeakObjectPtr<USSubBody> USpeedBranchBoxSubBody::GetPhysicsWeakIdentity() const
+{
+    if(!UsesOriginalBodyStorage())return Super::GetPhysicsWeakIdentity();
+    if(OriginalBodyIdentity.Get()!=this)throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    return OriginalBodyIdentity; // real original weak serial, not an index minted during math
+}
 bool USpeedBranchBoxSubBody::UsesOriginalBodyStorage() const
 {
     if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
@@ -1221,6 +1239,12 @@ USpeedBranchWheelSubBody::USpeedBranchWheelSubBody(const FObjectInitializer& Ini
     OwnedBodyValues->IgnoredSubBodyTypes.AddUnique(ESubBodyType::Wheel);
     OwnedSolidValues->bApplyRestForce=false;
     OwnedSolidValues->Mass=USWheelSubBody::DefaultWheelMass;
+}
+TWeakObjectPtr<USSubBody> USpeedBranchWheelSubBody::GetPhysicsWeakIdentity() const
+{
+    if(!UsesOriginalBodyStorage())return Super::GetPhysicsWeakIdentity();
+    if(OriginalBodyIdentity.Get()!=this)throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    return OriginalBodyIdentity; // real original weak serial, not an index minted during math
 }
 bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
 {
@@ -1981,9 +2005,10 @@ void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float
     // Capture the genuine dispatch participant before Super can update caches.
     // Weak validity after the synchronous call never invents a lifetime lease.
     const bool Blocking=CurrentHitStorage().bBlockingHit;
-    const TWeakObjectPtr<USolidSubBody> Peer=Cast<USolidSubBody>(CurrentHitStorage().Component.Get());
+    const auto Peer=CurrentHitStorage().Component;
+    const bool WasSolid=Cast<USolidSubBody>(Peer.Get())!=nullptr;
     Super::ResolveCurrentHitPrv(Delta,SimTime); // unchanged native solver, once
-    if(Blocking&&Peer.IsValid())
+    if(Blocking&&WasSolid&&Peer.IsValid())
     {
         // ISpeedComponent is native C++, NOT a UObject/UInterface. Resolve
         // through the genuine owning actor, then verify the adjusted native
@@ -1991,7 +2016,8 @@ void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float
         const auto* Car=Cast<ASpeedBranchCar>(GetOwner());
         auto* Owner=Car?Cast<USpeedBranchWheeledComponent>(Car->GetVehicleMovement()):nullptr;
         if(Owner&&GetParentComponent()==static_cast<ISpeedComponent*>(Owner))
-            Owner->ObserveContactPair(*this,*Peer.Get(),Cast<UBoxSubBody>(Peer.Get())?0:1);
+            if(auto* SolidPeer=Cast<USolidSubBody>(Peer.Get()))
+                Owner->ObserveContactPair(*this,*SolidPeer,Cast<UBoxSubBody>(SolidPeer)?0:1);
     }
 }
 void USpeedBranchWheeledComponent::RegisterWheelGroundContact(const SWheelGroundContact& Contact)

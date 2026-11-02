@@ -145,6 +145,9 @@ public:
     FVector GetCenterOfMassWS() const { return KinematicsStorage().Location; }
 
 	ISpeedComponent* GetParentComponent() const { return ParentComponentBodyDomainStorage(); }
+    // An identity value only, never mutable physics or lifetime authority.
+    // Private born graphs can copy their actual preacquired weak identity.
+    virtual TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const;
 
     // ====== REQUIRED PHYSICS SHAPE AND COLLISION PARAMS ======
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const { return FCollisionShape::MakeSphere(10.f); }

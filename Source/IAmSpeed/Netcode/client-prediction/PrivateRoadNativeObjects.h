@@ -169,6 +169,8 @@ class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
     std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
+    TWeakObjectPtr<USSubBody> OriginalBodyIdentity; // private, copied once by actual birth owner
+    TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const override;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
 #endif
@@ -356,6 +358,8 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
     std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
+    TWeakObjectPtr<USSubBody> OriginalBodyIdentity; // private, copied once by actual birth owner
+    TWeakObjectPtr<USSubBody> GetPhysicsWeakIdentity() const override;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
 #endif

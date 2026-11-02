@@ -27,6 +27,11 @@ USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
 
+TWeakObjectPtr<USSubBody> USSubBody::GetPhysicsWeakIdentity() const
+{
+    return const_cast<USSubBody*>(this); // ordinary raw->weak tracking unchanged
+}
+
 void USSubBody::OnRegister()
 {
     // A nested native component can inherit a Blueprint-template parent

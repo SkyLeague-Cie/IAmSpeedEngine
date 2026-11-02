@@ -505,8 +505,8 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 			SSubBodyTOIDiagnostic& Diagnostic = Best.DiagnosticCandidates.AddDefaulted_GetRef();
 			Diagnostic.SweepOrder = DiagnosticSweepOrder;
 			Diagnostic.TOI = TOI;
-			Diagnostic.Sweeper = Sweeper;
-			Diagnostic.Resolver = DiagnosticResolver;
+			Diagnostic.Sweeper = Sweeper->GetPhysicsWeakIdentity();
+			Diagnostic.Resolver = DiagnosticResolver?DiagnosticResolver->GetPhysicsWeakIdentity():TWeakObjectPtr<USSubBody>{};
 			Diagnostic.Hit = DiagnosticHit;
 			ReorientForResolver(Diagnostic.Hit, Sweeper, DiagnosticResolver);
 		}
@@ -525,7 +525,7 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 
         Best.bHit = true;
         Best.TOI = TOI;
-        Best.Resolver = Resolver;
+        Best.Resolver = Resolver?Resolver->GetPhysicsWeakIdentity():TWeakObjectPtr<USSubBody>{};
         Best.Hit = HR;
 #if !UE_BUILD_SHIPPING
 		if (bCaptureDiagnostics)

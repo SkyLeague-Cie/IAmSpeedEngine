@@ -91,7 +91,7 @@ void USolidSubBody::RegisterCurrentHitAsConstraint()
     RegisterContactAsConstraint(
         CurrentHitStorage().ImpactPoint,
         CurrentHitStorage().ImpactNormal,
-        CurrentHitStorage().Component.Get(),
+        CurrentHitStorage().Component,
         Cast<USolidSubBody>(CurrentHitStorage().SubBody.Get()),
         CurrentHitStorage().PenetrationDepth,
         CurrentHitStorage().TOI,
@@ -100,13 +100,21 @@ void USolidSubBody::RegisterCurrentHitAsConstraint()
 }
 
 void USolidSubBody::RegisterContactAsConstraint(
-    const FVector& ContactPointWS,
-    const FVector& NormalWS,
-    UPrimitiveComponent* OtherComponent,
-    USolidSubBody* OtherSubBody,
-    float PenetrationDepth,
-    float TOI,
-    bool bPersistent)
+    const FVector& P,const FVector& N,UPrimitiveComponent* Other,USolidSubBody* Solid,
+    float Depth,float Time,bool Persistent)
+{RegisterContactWithReference(P,N,Other,Solid,Depth,Time,Persistent,nullptr);}
+void USolidSubBody::RegisterContactAsConstraint(
+    const FVector& P,const FVector& N,const TWeakObjectPtr<UPrimitiveComponent>& Other,
+    USolidSubBody* Solid,float Depth,float Time,bool Persistent)
+{
+    const auto Snapshot=Other; // immutable local copy spans the complete synchronous call
+    RegisterContactWithReference(P,N,Snapshot.Get(),Solid,Depth,Time,Persistent,&Snapshot);
+}
+
+void USolidSubBody::RegisterContactWithReference(
+    const FVector& ContactPointWS,const FVector& NormalWS,UPrimitiveComponent* OtherComponent,
+    USolidSubBody* OtherSubBody,float PenetrationDepth,float TOI,bool bPersistent,
+    const TWeakObjectPtr<UPrimitiveComponent>* ExistingReference)
 {
     if (!ParentComponentBodyDomainStorage() || !OtherComponent)
     {
@@ -145,8 +153,9 @@ void USolidSubBody::RegisterContactAsConstraint(
     FPhysicalContactConstraint Constraint;
     Constraint.Normal = N;
     Constraint.ContactPoint = ContactPointWS;
-    Constraint.OtherComponent = OtherComponent;
-    Constraint.SourceSubBody = this;
+    if(ExistingReference)Constraint.OtherComponent = *ExistingReference;
+    else Constraint.OtherComponent = OtherComponent;
+    Constraint.SourceSubBody = GetPhysicsWeakIdentity();
     Constraint.PenetrationDepth = PenetrationDepth;
     Constraint.TOI = TOI;
     Constraint.PairKey = USSubBody::MakePairKey(this, OtherComponent);
@@ -162,8 +171,8 @@ void USolidSubBody::RegisterContactAsConstraint(
         FPhysicalContactConstraint OtherConstraint;
         OtherConstraint.Normal = -N;
         OtherConstraint.ContactPoint = ContactPointWS;
-        OtherConstraint.OtherComponent = this;
-        OtherConstraint.SourceSubBody = OtherSubBody;
+        OtherConstraint.OtherComponent = GetPhysicsWeakIdentity();
+        OtherConstraint.SourceSubBody = OtherSubBody->GetPhysicsWeakIdentity();
         OtherConstraint.PenetrationDepth = PenetrationDepth;
         OtherConstraint.TOI = TOI;
         OtherConstraint.PairKey = USSubBody::MakePairKey(OtherSubBody, this);
@@ -184,13 +193,21 @@ void USolidSubBody::RegisterContactAsConstraint(
 }
 
 void USolidSubBody::RegisterContactManifoldAsConstraints(
-    const TArray<FVector>& ContactPointsWS,
-    const FVector& NormalWS,
-    UPrimitiveComponent* OtherComponent,
-    float PenetrationDepth,
-    float TOI,
-    bool bPersistent,
-    int32 MaxContacts)
+    const TArray<FVector>& Points,const FVector& N,UPrimitiveComponent* Other,
+    float Depth,float Time,bool Persistent,int32 Max)
+{RegisterManifoldWithReference(Points,N,Other,Depth,Time,Persistent,Max,nullptr);}
+void USolidSubBody::RegisterContactManifoldAsConstraints(
+    const TArray<FVector>& Points,const FVector& N,const TWeakObjectPtr<UPrimitiveComponent>& Other,
+    float Depth,float Time,bool Persistent,int32 Max)
+{
+    const auto Snapshot=Other; // never retain a pointer to a caller's mutable hit cell
+    RegisterManifoldWithReference(Points,N,Snapshot.Get(),Depth,Time,Persistent,Max,&Snapshot);
+}
+
+void USolidSubBody::RegisterManifoldWithReference(
+    const TArray<FVector>& ContactPointsWS,const FVector& NormalWS,UPrimitiveComponent* OtherComponent,
+    float PenetrationDepth,float TOI,bool bPersistent,int32 MaxContacts,
+    const TWeakObjectPtr<UPrimitiveComponent>* ExistingReference)
 {
     if (!ParentComponentBodyDomainStorage() || !OtherComponent || ContactPointsWS.Num() == 0)
     {
@@ -208,7 +225,7 @@ void USolidSubBody::RegisterContactManifoldAsConstraints(
     {
         for (const FVector& P : ContactPointsWS)
         {
-            RegisterContactAsConstraint(P, N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent);
+            RegisterContactWithReference(P, N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent,ExistingReference);
         }
         return;
     }
@@ -226,7 +243,7 @@ void USolidSubBody::RegisterContactManifoldAsConstraints(
     const int32 NumToRegister = FMath::Min(MaxContacts, Sorted.Num());
     for (int32 i = 0; i < NumToRegister; ++i)
     {
-        RegisterContactAsConstraint(Sorted[i], N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent);
+        RegisterContactWithReference(Sorted[i], N, OtherComponent, nullptr, PenetrationDepth, TOI, bPersistent,ExistingReference);
     }
 }
 

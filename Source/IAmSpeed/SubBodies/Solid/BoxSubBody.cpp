@@ -1,4 +1,5 @@
 #include "BoxSubBody.h"
+#include "IAmSpeed/World/Simulation/WeakContactReference.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
@@ -1315,7 +1316,8 @@ bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const
         return false;
     }
 
-    USphereSubBody* OtherSphere = Cast<USphereSubBody>(LastResolvedSphereHitBoxDomainStorage().SubBody.Get());
+    const auto OtherReference=LastResolvedSphereHitBoxDomainStorage().SubBody;
+    USphereSubBody* OtherSphere = Cast<USphereSubBody>(OtherReference.Get());
     if (!OtherSphere || ComponentHasBeenIgnored(*OtherSphere))
     {
         return false;
@@ -1375,8 +1377,8 @@ bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const
         N,
         0.0f);
     OutHit.bBlockingHit = true;
-    OutHit.Component = OtherSphere;
-    OutHit.SubBody = OtherSphere;
+    OutHit.Component = OtherReference;
+    OutHit.SubBody = OtherReference;
     OutTOI = 0.0f;
 
     /*UE_LOG(BoxSubBodyLog, Log,
@@ -1441,7 +1443,7 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
             // DO NOT recreate contact if separating
             if (vN <= 0.f)
             {
-                if (!IgnoredComponentsBodyDomainStorage().Contains(OldGroundHit.Component))
+                if (!Speed::ContainsWeakContactReference(IgnoredComponentsBodyDomainStorage(),OldGroundHit.Component))
                 {
                     OutTOI = 0.0f;
                     FutureHitStorage() = OldGroundHit; // reuse current ground hit
@@ -3082,7 +3084,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         RegisterContactManifoldAsConstraints(
             CurrentGroundContactsWSBoxDomainStorage(),
             N,
-            CurrentHitStorage().Component.Get(),
+            CurrentHitStorage().Component,
             CurrentHitStorage().PenetrationDepth,
             CurrentHitStorage().TOI,
             false,
@@ -3538,7 +3540,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
         RegisterContactManifoldAsConstraints(
             SupportPts,
             N,
-            GroundCompBoxDomainStorage().Get(),
+            GroundCompBoxDomainStorage(),
             0.f,
             0.f,
             true,
