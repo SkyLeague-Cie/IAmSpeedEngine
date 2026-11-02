@@ -7,6 +7,7 @@
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
 #include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
+#include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "Engine/World.h"
 #include "Engine/Level.h"
 #include "UObject/UnrealType.h"
@@ -2105,6 +2106,16 @@ bool USpeedBranchWheeledComponent::UsesOriginalComponentStorage() const
     if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
     const auto A=Access.lock();
     return OwnedComponentValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
+}
+SubBodyConfig USpeedBranchWheeledComponent::GetSubBodyConfig(const USSubBody& SubBody) const
+{
+    if(!UsesOriginalComponentStorage())return Super::GetSubBodyConfig(SubBody);
+    // The exact native base profile returns the same default-invalid config
+    // for every subbody, including the hitbox. Its redundant hitbox handle
+    // reads do not contribute configuration. Preserve those ordinary facade
+    // calls above; original construction uses the unchanged declared value.
+    // This result grants no topology, execution, lifetime or restore authority.
+    return SubBodyConfig{};
 }
 void* USpeedBranchWheeledComponent::SuspendStorageRoutingForExternalObservation() const
 {

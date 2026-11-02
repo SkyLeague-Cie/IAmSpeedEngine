@@ -617,6 +617,7 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     void BeginPlay() override;
 public:
     explicit USpeedBranchWheeledComponent(const FObjectInitializer& Initializer=FObjectInitializer::Get());
+    SubBodyConfig GetSubBodyConfig(const USSubBody& SubBody) const override;
     bool AllowsExternalNetworkStateRestore() const override {return false;}
     bool CanRestoreSimulationSnapshot(TConstArrayView<uint8>) const override {return false;}
 #if !UE_BUILD_SHIPPING

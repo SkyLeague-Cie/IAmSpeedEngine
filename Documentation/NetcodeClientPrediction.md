@@ -1251,3 +1251,33 @@ GC/negativebirth/isolation controls and exact review are still required. Full
 causal restoration, real service/module/deleter participation and localized
 rollback remain guarded and unfinished; current replay is GLOBAL_FROM_BIRTH.
 All earlier FAIL73/75/77 and UNKNOWN remain preserved.
+
+
+Source83/native79 completed the finite programmed chain with actual original
+launcher39653 exit0, both original coordinators0, genuine job drains and empty
+final input/protected/Engine audits. The exact head passed56 native tests and
+one separate pending-world test, three commandlets, two simultaneous actual
+Game clients plus dedicated, and expected cancellation.35 oscillating cases
+cover21455frames with six COM differences0 after initial synchronization.
+The network fixture pairs240frames/client for both actors; its first-forward
+errors remain nonzero under deliberate withholding and contact, with exact
+final compared kinematics only after global-from-birth corrections. These
+results do not qualify full-state restoration, localized rollback or hardware.
+
+Source84 uses the existing GetPhysicsWeakIdentity contract when constructing
+permanent ignored-component lists. Ordinary default behavior still constructs
+the raw pointer's weak identity at the same AddUnique point and preserves list
+order. Original private final bodies copy their genuine preacquired birth weak
+identity after checking that it still denotes this actual body. This introduces
+a virtual dispatch at this initialization callsite; behavior of arbitrary
+external overrides is not proven equivalent and requires a contract review.
+The final private component returns the actual base profile's identical
+default-invalid SubBodyConfig only in its original storage route; facade calls
+still use Super. The full config definition is explicitly included. No mutable
+facade physical values, opaque bytes or invented empty domains are imported.
+
+Netcode SL reviewed exact84r02 before application. Fresh native80, actual GC,
+stale/negative-birth, permanent-list/native-witness, isolated-settings and the
+three-Game/cancellation chain remain required; no79 pass transfers. Factory
+owner/tick/registration/gravity/driver/service callbacks remain open, and full
+lifetime, restoreK and localized admission guards remain closed.
