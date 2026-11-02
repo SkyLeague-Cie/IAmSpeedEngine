@@ -664,7 +664,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         Observation.NativeSolidInitializationWitness=N->SolidInitializationWitness;
         if(N->Component->CopyActualCacheDiagnosticValues(Observation.NativeSleep,Observation.NativeQuantization))
             PartialObservation::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
-                N->WheelConfig,N->SuspensionConfig,Observation);
+                N->NativeConfiguration->Wheel,N->NativeConfiguration->Suspension,Observation);
         if(Observation.NativePartialValuesAvailable)
         {
             TArray<uint8> RuntimeValues;

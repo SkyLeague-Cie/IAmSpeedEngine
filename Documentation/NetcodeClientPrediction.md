@@ -648,3 +648,11 @@ localized dependency closure remain missing. Complete restoration providers,
 ProtectsEscapedMutableViews and lease admission stay CLOSED. No source62 disk
 failure or older native PASS is transferred. Real Device/renderer/local-feel
 and two-client localized resimulation remain required after native validation.
+
+
+Source64 updates the existing partial native observer to read the actual
+retained configuration root after Source63's ownership migration. The physical
+factory already uses that same exact NativeConfiguration Wheel/Suspension;
+only two obsolete observer member names remained. Native59's C2039/C2672,
+original6/natural Job0 twice and zero audits stay FAIL; no runtime ran. No native
+equation, configured value, assertion, coverage or restoration guard changes.
