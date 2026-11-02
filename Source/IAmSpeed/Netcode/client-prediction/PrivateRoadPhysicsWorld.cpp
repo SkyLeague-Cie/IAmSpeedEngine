@@ -701,10 +701,20 @@ SHitResult const& USpeedBranchBoxSubBody::WheelHitStorage() const
     return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
 }
 USpeedBranchWheelSubBody::USpeedBranchWheelSubBody(const FObjectInitializer& Initializer)
-    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),OwnedWheelRuntime(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()){OwnedSolidValues->bApplyRestForce=false;OwnedSolidValues->Mass=USWheelSubBody::DefaultWheelMass;}
-bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const,OwnedWheelDomain(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelDomain>()),OwnedSphereDomain(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSphereDomain>())
+    :Super(Initializer),
+     OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),
+     OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),
+     OwnedWheelRuntime(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()),
+     OwnedWheelDomain(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelDomain>()),
+     OwnedSphereDomain(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSphereDomain>())
 {
-    OwnedBodyValues->SubBodyType=ESubBodyType::Wheel;OwnedBodyValues->IgnoredSubBodyTypes.AddUnique(ESubBodyType::Wheel);
+    OwnedBodyValues->SubBodyType=ESubBodyType::Wheel;
+    OwnedBodyValues->IgnoredSubBodyTypes.AddUnique(ESubBodyType::Wheel);
+    OwnedSolidValues->bApplyRestForce=false;
+    OwnedSolidValues->Mass=USWheelSubBody::DefaultWheelMass;
+}
+bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
+{
     if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
     const auto A=StorageAccess.lock();
     return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
@@ -2283,3 +2293,9 @@ float USpeedBranchWheelSubBody::PhysicalSuspensionRestLength() const
 {
     return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxRaiseOverride:USWheelSubBody::PhysicalSuspensionRestLength();
 }
+
+FVector USpeedBranchBoxSubBody::PhysicalLocalOffset() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetLocation():USSubBody::PhysicalLocalOffset();}
+FQuat USpeedBranchBoxSubBody::PhysicalLocalRotation() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetRotation():USSubBody::PhysicalLocalRotation();}
+
+FVector USpeedBranchWheelSubBody::PhysicalLocalOffset() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetLocation():USSubBody::PhysicalLocalOffset();}
+FQuat USpeedBranchWheelSubBody::PhysicalLocalRotation() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetRotation():USSubBody::PhysicalLocalRotation();}

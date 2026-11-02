@@ -151,8 +151,8 @@ public:
     ECollisionChannel GetCollisionChannel() const { return CollisionChannelBodyDomainStorage(); }
     const FCollisionResponseParams& GetResponseParams() const { return ResponseParamsBodyDomainStorage(); }
 
-	FVector GetLocalOffset() const { return PhysicalLocalPose().GetLocation(); }
-	FQuat GetLocalRotation() const { return PhysicalLocalPose().GetRotation(); }
+	FVector GetLocalOffset() const { return PhysicalLocalOffset(); }
+	FQuat GetLocalRotation() const { return PhysicalLocalRotation(); }
     static uint64 MakePairKey(const USSubBody* A, const UPrimitiveComponent* OtherComp);
     static int32 SubBodyPriority(USSubBody::ESubBodyType T);
     static USSubBody* PickResolver(USSubBody* A, USSubBody* B);
@@ -168,6 +168,8 @@ protected:
 protected:
 
 protected:
+    virtual FVector PhysicalLocalOffset() const {return GetRelativeLocation();}
+    virtual FQuat PhysicalLocalRotation() const {return GetRelativeRotation().Quaternion();}
     virtual FTransform PhysicalLocalPose() const {return GetRelativeTransform();}
     virtual void SetPhysicalLocalOffset(const FVector& V) {SetRelativeLocation(V);}
     virtual ISpeedComponent*& ParentComponentBodyDomainStorage() {return ParentComponent;}

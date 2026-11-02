@@ -543,3 +543,14 @@ through InputJournalDriverStorage(). The recorded qualified-use census has
 exactly this one namespace/enum collision; native member routing remains.
 Native50's actual C2838/C2664, exit6/128.625s, true Job0 twice/audits0 and all
 warnings remain preserved. No native/runtime tests ran on that failed tuple.
+
+
+Source56 places original wheel allocations and constructor-only policies in
+the actual constructor; the const storage selector remains read-only. The
+generator had accidentally attached them to the following method declaration.
+Native51's actual C2761/syntax cascade, exit6/287.907s, original Job0 twice and
+all clean source/protected/Engine audits remain recorded; runtime NOT_RUN.
+Default legacy local position/rotation access keeps its exact original
+GetRelativeLocation/GetRelativeRotation().Quaternion expressions; private
+epochs consume their separately owned local pose. No numeric tuning or
+restoration capability is introduced.

@@ -229,7 +229,9 @@ class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
     SHitResult& SphereHitStorage() override;
     SHitResult const& SphereHitStorage() const override;
     SHitResult& WheelHitStorage() override;
-    SHitResult const& WheelHitStorage() const override;    FTransform PhysicalLocalPose() const override;
+    SHitResult const& WheelHitStorage() const override;    FVector PhysicalLocalOffset() const override;
+    FQuat PhysicalLocalRotation() const override;
+    FTransform PhysicalLocalPose() const override;
     void SetPhysicalLocalOffset(const FVector&) override;
     ISpeedComponent*& ParentComponentBodyDomainStorage() override;
     ISpeedComponent* const& ParentComponentBodyDomainStorage() const override;
@@ -447,6 +449,8 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     SHitResult const& SphereHitStorage() const override;
     SHitResult& WheelHitStorage() override;
     SHitResult const& WheelHitStorage() const override;    float PhysicalSuspensionRestLength() const override;
+    FVector PhysicalLocalOffset() const override;
+    FQuat PhysicalLocalRotation() const override;
     FTransform PhysicalLocalPose() const override;
     void SetPhysicalLocalOffset(const FVector&) override;
     ISpeedComponent*& ParentComponentBodyDomainStorage() override;
