@@ -41,6 +41,8 @@ class IAMSPEED_API USWheelSubBody : public USphereSubBody
 #endif
 	
 public:
+    static constexpr float DefaultWheelMass=18.0f; // native constructor policy, shared with isolated owners
+
 #if !UE_BUILD_SHIPPING
     /** Read-only, same-run owner-state witness; no UObject or array-header copy. */
     void AppendEpisodeStateForTesting(TArray<uint8>& Out) const override
@@ -232,7 +234,7 @@ protected:
     Chaos::FSimpleSuspensionSim* PSuspension = nullptr;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Wheel, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", UIMin = "0.0"))
-    float WheelMass = 18.0f;
+    float WheelMass = DefaultWheelMass;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Suspension, meta = (AllowPrivateAccess = "true", ClampMin = "0.0", UIMin = "0.0"))
     float SuspensionSpringRate = 2750.0f;

@@ -600,7 +600,7 @@ SHitResult const& USpeedBranchBoxSubBody::WheelHitStorage() const
     return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
 }
 USpeedBranchWheelSubBody::USpeedBranchWheelSubBody(const FObjectInitializer& Initializer)
-    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),OwnedWheelRuntime(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()){OwnedSolidValues->bApplyRestForce=false;}
+    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),OwnedWheelRuntime(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()){OwnedSolidValues->bApplyRestForce=false;OwnedSolidValues->Mass=USWheelSubBody::DefaultWheelMass;}
 bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
 {
     const auto A=StorageAccess.lock();

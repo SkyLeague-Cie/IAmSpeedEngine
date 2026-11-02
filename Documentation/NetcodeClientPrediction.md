@@ -470,3 +470,13 @@ the attack. Missing/nonfinite diagnostics remain UNKNOWN. This is a declared
 subset, not complete shape/configuration/contact/registry/lifetime coverage.
 Complete owner/restore admission remains closed. No localized or hardware claim
 is introduced; new native qualification is mandatory.
+
+
+Source50 preserves the inherited native wheel constructor's default mass in the
+fresh private solid block. A single shared DefaultWheelMass constant supplies
+both the unchanged legacy field initializer and the private wheel birth policy;
+no reflected facade value is imported and no numeric setting is retuned. The
+original native stock configuration methods intentionally return invalid, so
+re-running Initialize cannot supply constructor-only defaults. Native45's
+actual factory-guard failure remains recorded. Post-initialization recipe,
+binding and non-solid witnesses stay mandatory; no guard is weakened.
