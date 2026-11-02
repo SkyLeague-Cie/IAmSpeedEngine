@@ -1264,20 +1264,30 @@ errors remain nonzero under deliberate withholding and contact, with exact
 final compared kinematics only after global-from-birth corrections. These
 results do not qualify full-state restoration, localized rollback or hardware.
 
-Source84 uses the existing GetPhysicsWeakIdentity contract when constructing
-permanent ignored-component lists. Ordinary default behavior still constructs
-the raw pointer's weak identity at the same AddUnique point and preserves list
-order. Original private final bodies copy their genuine preacquired birth weak
-identity after checking that it still denotes this actual body. This introduces
-a virtual dispatch at this initialization callsite; behavior of arbitrary
-external overrides is not proven equivalent and requires a contract review.
-The final private component returns the actual base profile's identical
-default-invalid SubBodyConfig only in its original storage route; facade calls
-still use Super. The full config definition is explicitly included. No mutable
-facade physical values, opaque bytes or invented empty domains are imported.
+Source84/native80 FAILED compilation with C2665 in SSubBody.cpp(76,60).
+The permanent ignored-component storage is actually TArray<UPrimitiveComponent*>
+in both the base body and the owned native domain. Its original AddUnique(raw)
+did not reconstruct any weak identity. The attempted weak-return insertion was
+therefore a type error and the raw-to-weak callback attribution was incorrect.
+The implementation review missed this actual container type; that finding and
+the failed source84 cohort remain preserved. Conditional stack attribution to
+a SetOwner caller is not proof that its raw ignored-list insertion is a weak
+construction site.
 
-Netcode SL reviewed exact84r02 before application. Fresh native80, actual GC,
-stale/negative-birth, permanent-list/native-witness, isolated-settings and the
-three-Game/cancellation chain remain required; no79 pass transfers. Factory
-owner/tick/registration/gravity/driver/service callbacks remain open, and full
-lifetime, restoreK and localized admission guards remain closed.
+Source85 restores the entire SSubBody.cpp file byte-for-byte to source83's
+original worktree hash, verified against the frozen native79 vendor with only
+its CRLF line endings normalized to LF. It does not add weak.Get(), conversions,
+identity callbacks,
+changes to list order, null handling or external virtual overrides. The source84
+private-original GetSubBodyConfig override and its explicit full config include
+remain: that profile still returns the actual base's identical default-invalid
+value, while ordinary facade calls use Super. They have not passed native80.
+
+Actual original launcher36047 and both original coordinators closed1, UBTexit6,
+natural drain368.282s, actual job0 twice and final source/protected/Engine audits
+empty. Query,56native tests,PendingWorld,commandlets,Game and cancellation80 were
+NOT_RUN after compile failure. Fresh native81 must verify the current remaining
+config change, native physical witness and GC/stale/negative-birth/isolation
+controls and the full finite three-Game chain. No79 pass transfers. Factory
+owner/tick/registration/gravity/driver/service callbacks remain open; full
+lifetime, authoritativeK restore and localized admission guards stay closed.

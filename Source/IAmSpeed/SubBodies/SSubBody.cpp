@@ -70,10 +70,7 @@ void USSubBody::Initialize(ISpeedComponent* InParentComponent)
         {
             if (SubBody)
             {
-                // The identity hook preserves ordinary raw-to-weak behavior.
-                // Original private bodies return their actual preacquired birth
-                // identity, avoiding reconstruction during native initialization.
-                AlwaysIgnoredComponentsBodyDomainStorage().AddUnique(SubBody->GetPhysicsWeakIdentity());
+                AlwaysIgnoredComponentsBodyDomainStorage().AddUnique(SubBody);
             }
 		}
     }
