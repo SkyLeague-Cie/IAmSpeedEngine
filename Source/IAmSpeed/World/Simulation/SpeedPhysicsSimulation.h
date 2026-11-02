@@ -383,6 +383,8 @@ private:
     bool BindOriginalDriverStorage(const std::shared_ptr<const Speed::NativeEpoch::IOriginalStorageRoute>& Route);
 
 protected:
+    // Selection diagnostic only: exposes neither the private store nor its binder.
+    bool HasOriginalDriverExecutionRoute() const {return UsesOriginalDriverStorage();}
     float& RealDeltaTimeDriverStorage() {return UsesOriginalDriverStorage()?OriginalDriverStorage->RealDeltaTime:RealDeltaTime;}
     float const& RealDeltaTimeDriverStorage() const {return UsesOriginalDriverStorage()?OriginalDriverStorage->RealDeltaTime:RealDeltaTime;}
     USpeedWorldSubsystem*& SpeedWorldSubsystemDriverStorage() {return UsesOriginalDriverStorage()?OriginalDriverStorage->SpeedWorldSubsystem:SpeedWorldSubsystem;}

@@ -528,3 +528,10 @@ Corresponding source headers precede deferred-diagnostic includes under the
 existing IWYU policy. No header, guard, compiler severity or runtime test is
 disabled. Native48 original exit6/real Job0 twice/audits0 and all32 warnings
 remain preserved; no native/runtime stage ran on that failed frozen tuple.
+
+
+Source54 fixes native49's actual C2248: the sealed native driver reads a
+protected selection predicate; the original store/binder remain private.
+This does not issue a lease or permit external StepCanonicalFrame. Native49
+exit6/70.219s, both real Job0 observations, source/protected/Engine audits0,
+compiler diagnostics and all5 warnings remain recorded. Runtime NOT_RUN.

@@ -639,7 +639,7 @@ class IAMSPEED_API ASpeedBranchSimulation final : public ASpeedPhysicsSimulation
     ESimulationWorkerResult DriveSimulation(float,float) override {return ESimulationWorkerResult::Failed;}
     void WaitBetweenFrames(FSimulationWorkerWaitContext&) override {}
     bool AllowsLegacySnapshotRollback() const override {return false;}
-    bool AllowsNativeDriverExecution() const override {return UsesOriginalDriverStorage();}
+    bool AllowsNativeDriverExecution() const override {return HasOriginalDriverExecutionRoute();}
 public:
     ASpeedBranchSimulation();
     void BeginPlay() override;
