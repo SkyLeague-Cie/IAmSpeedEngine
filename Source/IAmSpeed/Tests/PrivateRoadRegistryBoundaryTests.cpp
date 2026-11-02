@@ -225,7 +225,14 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
         {if(EscapedFacade)return false;EscapedFacade=*It;}
     if(!TestTrue(TEXT("real native enumeration obtains the isolated facade"),bool(EscapedFacade)))return false;
     auto Control=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
-    if(!Control||!Isolated->Step(First,false,Why)||!Control->Step(First,false,Why))return false;
+    // This is a NEW independent scenario, not a correction of the previous
+    // owner which already queried a speculative frame1. Retain its own actual
+    // ingress history rather than clearing a legitimate invalidation or
+    // manufacturing a rollback acknowledgement on the earlier history.
+    P::FRemoteRequestHistory IsolatedHistory(B,Actions,256,256);
+    if(IsolatedHistory.Confirm(5,Packet).Status!=EResult::Accepted)return false;
+    const std::vector<P::FPrivateRoadRequest> IsolatedFirst{{101,3,IsolatedHistory.Predict(0)}};
+    if(!Control||!Isolated->Step(IsolatedFirst,false,Why)||!Control->Step(IsolatedFirst,false,Why))return false;
     const auto OriginalZero=Isolated->ReadLatest(),ControlZero=Control->ReadLatest();
     if(!OriginalZero||!ControlZero)return false;
     ISpeedComponent& FacadeBase=*EscapedFacade;
@@ -242,8 +249,11 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
         Isolated->ReleaseInitialPublication(OriginalZero,Why)&&Control->ReleaseInitialPublication(ControlZero,Why)))return false;
     FPacket Next=Packet;Next.Frame=1;Next.Sequence=2;Next.Input.SourceSequence=2;Next.Input.Reset=false;
     Next.Input.Values[0]=255;Next.Input.ActiveMask=1;Next.Input.Edges.push_back({0,0,255,2,0});
-    if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
-    const std::vector<P::FPrivateRoadRequest> Second{{101,3,History.Predict(1)}};
+    if(IsolatedHistory.Confirm(5,Next).Status!=EResult::Accepted)return false;
+    const auto IsolatedConfirmed=IsolatedHistory.Predict(1);
+    if(!TestTrue(TEXT("independent physical callback scenario has actual confirmed frame1 evidence"),
+        IsolatedConfirmed.Status==P::EPredict::Confirmed&&bool(IsolatedConfirmed.ConfirmedPacket)))return false;
+    const std::vector<P::FPrivateRoadRequest> Second{{101,3,IsolatedConfirmed}};
     auto* DebugKinematics=IConsoleManager::Get().FindConsoleVariable(TEXT("p.IAmSpeed.DebugKinematics"));
     if(!DebugKinematics||!GLog)return false;
     const int32 OriginalDebug=DebugKinematics->GetInt();

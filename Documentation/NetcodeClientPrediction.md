@@ -592,3 +592,14 @@ Its 54Success/2FAIL and the separate real physical-callback test failure remain
 preserved. The callback test now records each actual Step result/reason and GC
 return count independently, without short-circuiting the reference Step.
 No assertion, native law, restore guard or lifetime requirement is relaxed.
+
+
+Source61 fixes the independent physical-log callback fixture's ingress history.
+Its earlier owner had actually predicted frame1 before a changed frame1 request
+arrived; reusing that history for a NEW independent graph correctly left a
+pending invalidation. Native56 therefore refused input preparation in BOTH
+graphs, before any physical callback/GC. The new independent scenario owns a
+fresh real history and confirms frame0/frame1 in order. It does not clear the
+earlier invalidation, forge rollback acknowledgement or relax any filter guard.
+Native56's55Success/1FAIL stays preserved; its512-attempt CanMove gate succeeds.
+The uncommitted root/settings integration draft is separate and not applied.
