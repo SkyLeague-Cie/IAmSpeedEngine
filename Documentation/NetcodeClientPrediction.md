@@ -1037,3 +1037,22 @@ context from callbacks, serialize admission/closing/lazy pool initialization,
 provide nonblocking stop and an explicitly neutral single join coordinator,
 and test irreversible shutdown in a fresh process without a global reset.
 No restoration guard is opened by this diagnostic change; no76 PASS transfers.
+
+
+Native73 did NOT qualify source77. Actual compilation failed with C3248:
+AActor::GetWorld is declared final in the genuine Engine Actor.h. The attempted
+override was invalid and should have been caught by source review. Actual UBT6,
+original31163/pipeline/continuation exit1, natural Job0 twice and final audits0
+are retained; no later native/network stage ran. No Engine declaration changed.
+
+Source78 removes that override entirely. ResolveOriginalPhysicalWorld is a
+distinct private nonvirtual method, called only at AdvancePrivate after its GT
+and Access checks. It retains exactly the same genuine original driver and
+World/Level/Outer handle predicate. The Engine/base-driver GetWorld behavior,
+canonical frame context and success-only physical counter are untouched. Other
+World reads can still exist and remain measured; no Step-zero is predicted.
+
+Fresh native74 is required. ALL81385 from source76/native72 and FAIL73 remain
+durable, not transferred to source78. Full restoration guards remain closed;
+callback, service/module lifetime, complete causal state and localized rollback
+still require real implementation and two-client/dedicated qualification.

@@ -2148,7 +2148,7 @@ void ASpeedBranchCar::BeginPlay() {AActor::BeginPlay();}
 ASpeedBranchSimulation::ASpeedBranchSimulation()
 {bAsyncPhysicsTickEnabled=false;PrimaryActorTick.bCanEverTick=false;PrimaryActorTick.bStartWithTickEnabled=false;SetReplicates(false);}
 void ASpeedBranchSimulation::BeginPlay() {AActor::BeginPlay();}
-UWorld* ASpeedBranchSimulation::GetWorld() const
+UWorld* ASpeedBranchSimulation::ResolveOriginalPhysicalWorld() const
 {
     const auto A=Access.lock();
     if(A&&A->SelectsOriginalStorage())
@@ -2164,7 +2164,7 @@ bool ASpeedBranchSimulation::InitializePrivate(USpeedWorldSubsystem& Bridge)
 bool ASpeedBranchSimulation::AdvancePrivate(bool Resimulation)
 {
     const auto A=Access.lock();
-    if(!IsInGameThread()||!A||!A->Active||A->Frame!=CanonicalNumFrameDriverStorage()||A->World!=GetWorld())return false;
+    if(!IsInGameThread()||!A||!A->Active||A->Frame!=CanonicalNumFrameDriverStorage()||A->World!=ResolveOriginalPhysicalWorld())return false;
     FCanonicalFrameContext Context(CanonicalNumFrameDriverStorage());Context.Purpose=Resimulation?ECanonicalFramePurpose::Resimulation:ECanonicalFramePurpose::Forward;
     if(!StepCanonicalFrame(Context))return false;
     ++CanonicalNumFrameDriverStorage();return true; // same success-only counter as RunCanonicalFrames.

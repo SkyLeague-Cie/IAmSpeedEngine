@@ -641,6 +641,7 @@ class IAMSPEED_API ASpeedBranchSimulation final : public ASpeedPhysicsSimulation
     GENERATED_BODY()
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
+    UWorld* ResolveOriginalPhysicalWorld() const;
     bool InitializePrivate(USpeedWorldSubsystem& Bridge);
     bool AdvancePrivate(bool Resimulation);
     uint64 NextPrivate() const {return CanonicalNumFrameDriverStorage();}
@@ -650,7 +651,6 @@ class IAMSPEED_API ASpeedBranchSimulation final : public ASpeedPhysicsSimulation
     bool AllowsNativeDriverExecution() const override {return HasOriginalDriverExecutionRoute();}
 public:
     ASpeedBranchSimulation();
-    UWorld* GetWorld() const override;
     void BeginPlay() override;
     void Tick(float) override {}
 };
