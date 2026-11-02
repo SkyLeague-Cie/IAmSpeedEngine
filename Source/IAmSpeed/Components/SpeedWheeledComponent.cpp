@@ -49,13 +49,13 @@ static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameNormalHalfInputFraction
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeHalfInputFraction(
 	TEXT("p.IAmSpeed.WheelFrame.HandbrakeHalfInputFraction"),
 	-1.0f,
-	TEXT("Experimental handbrake angle fraction at decoded input 64/127. Negative or nonfinite preserves the current path. Nonnegative values clamp to [0.50,0.60]; correction vanishes at input 32/127 and 95/127. Only the handbrake endpoint of blend model 1 changes. Set before physics admission."),
+	TEXT("Handbrake angle fraction at decoded input 64/127. Negative uses the component property; a negative or nonfinite effective value preserves the current path. Nonnegative values clamp to [0.50,0.60]; correction vanishes at input 32/127 and 95/127. Only the handbrake endpoint of blend model 1 changes. Set before physics admission."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeQuarterInputFraction(
 	TEXT("p.IAmSpeed.WheelFrame.HandbrakeQuarterInputFraction"),
 	-1.0f,
-	TEXT("Experimental handbrake angle fraction at decoded input 32/127. Negative or nonfinite preserves the current path. Nonnegative values clamp to [0.25,0.45]; correction vanishes at zero and input 64/127. Only the handbrake endpoint of blend model 1 changes. Set before physics admission."),
+	TEXT("Handbrake angle fraction at decoded input 32/127. Negative uses the component property; a negative or nonfinite effective value preserves the current path. Nonnegative values clamp to [0.25,0.45]; correction vanishes at zero and input 64/127. Only the handbrake endpoint of blend model 1 changes. Set before physics admission."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameSteeringRearLateralFrictionReverseScale(
@@ -92,6 +92,12 @@ static float SteeringInputCalibrationScale(const float Input)
 	// Identity above 75% also preserves the configured full-steer endpoint.
 	return 1.0f;
 }
+
+// Optional component-specific handbrake contact-response denominator.
+static TAutoConsoleVariable<int32> CVarIAmSpeedHBContactResponseModel(
+	TEXT("p.IAmSpeed.WheelFrame.HBContactResponseModel"), -1,
+	TEXT("Overrides WheelFrameHBContactResponseModel: negative uses the component property; 0 legacy, 1 mixed application/contact arms. Other values retain legacy."),
+	ECVF_Default);
 
 #if !UE_BUILD_SHIPPING
 static TAutoConsoleVariable<int32> CVarIAmSpeedCovariantVehicleInertia(
@@ -186,7 +192,7 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameHandbrakeDriveModel(
 static TAutoConsoleVariable<float> CVarIAmSpeedWheelFrameHandbrakeDriveForceScale(
 	TEXT("p.IAmSpeed.WheelFrame.HandbrakeDriveForceScale"),
 	-1.0f,
-	TEXT("Experimental ground-engine traction multiplier at full handbrake, blended by the tire handbrake value while HandbrakeDriveModel is active. Negative keeps inherited force."),
+	TEXT("Ground-engine traction multiplier at full handbrake, blended by the tire handbrake value while HandbrakeDriveModel is active. Negative uses WheelFrameHandbrakeDriveForceScale."),
 	ECVF_Default);
 static TAutoConsoleVariable<int32> CVarIAmSpeedWheelFrameHandbrakeDriveForceBlendModel(
 	TEXT("p.IAmSpeed.WheelFrame.HandbrakeDriveForceBlendModel"),
@@ -2685,7 +2691,23 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const FVector RxAxis = FVector::CrossProduct(WheelArm, LateralDir);
 			const FVector EffectiveMassTerm = FVector::CrossProduct(InvInertia.TransformVector(RxAxis), WheelArm);
 			const float InvEffectiveMass = FMath::Max(KINDA_SMALL_NUMBER, (1.0f / Mass) + FVector::DotProduct(EffectiveMassTerm, LateralDir));
-			const float UnclampedLateralImpulse = (AbsLateralSpeed / InvEffectiveMass) * CombinedFrictionScale;
+			const int32 HBContactResponseOverride = CVarIAmSpeedHBContactResponseModel.GetValueOnAnyThread();
+			const int32 HBContactResponseModel = HBContactResponseOverride < 0
+				? WheelFrameHBContactResponseModel : HBContactResponseOverride;
+			float ResponseInvEffectiveMass = InvEffectiveMass;
+			if (HBContactResponseModel == 1 && HandbrakeFrictionValue > KINDA_SMALL_NUMBER)
+			{
+				// Velocity is measured at contact; the existing force may use a different arm.
+				const FVector ApplicationArm = ForceApplicationPoint - PhysCOM;
+				const FVector ApplicationRxAxis = FVector::CrossProduct(ApplicationArm, LateralDir);
+				const FVector MixedMassTerm = FVector::CrossProduct(InvInertia.TransformVector(ApplicationRxAxis), WheelArm);
+				const float MixedInvEffectiveMass = (1.0f / Mass) + FVector::DotProduct(MixedMassTerm, LateralDir);
+				if (FMath::IsFinite(MixedInvEffectiveMass) && MixedInvEffectiveMass > KINDA_SMALL_NUMBER)
+				{
+					ResponseInvEffectiveMass = MixedInvEffectiveMass;
+				}
+			}
+			const float UnclampedLateralImpulse = (AbsLateralSpeed / ResponseInvEffectiveMass) * CombinedFrictionScale;
 			const float MaxLateralImpulse = MaxLateralAccelPerWheel * Mass * delta;
 			const float LateralImpulse = bClampLateralImpulse && MaxLateralImpulse > 0.0f
 				? FMath::Min(UnclampedLateralImpulse, MaxLateralImpulse)
@@ -3801,12 +3823,16 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 		const float NormalInputScale = FMath::Abs(RawFraction) > KINDA_SMALL_NUMBER
 			? NormalFraction / RawFraction : 1.0f;
 		const float HandbrakeAngle = EvaluateLinearFloatCurve(HandbrakeSteerAngleFromSpeedCurve, AbsForwardSpeed, NormalSteerAngle);
-		const float HalfFractionOverride = CVarIAmSpeedWheelFrameHandbrakeHalfInputFraction.GetValueOnAnyThread();
+		const float HalfFractionCVar = CVarIAmSpeedWheelFrameHandbrakeHalfInputFraction.GetValueOnAnyThread();
+		const float HalfFractionOverride = FMath::IsFinite(HalfFractionCVar) && HalfFractionCVar < 0.0f
+			? WheelFrameHandbrakeHalfInputFraction : HalfFractionCVar;
 		const float AbsInput = FMath::Abs(Input);
 		constexpr float QuarterInput = 32.0f / 127.0f;
 		constexpr float HalfInput = 64.0f / 127.0f;
 		constexpr float ThreeQuarterInput = 95.0f / 127.0f;
-		const float QuarterFractionOverride = CVarIAmSpeedWheelFrameHandbrakeQuarterInputFraction.GetValueOnAnyThread();
+		const float QuarterFractionCVar = CVarIAmSpeedWheelFrameHandbrakeQuarterInputFraction.GetValueOnAnyThread();
+		const float QuarterFractionOverride = FMath::IsFinite(QuarterFractionCVar) && QuarterFractionCVar < 0.0f
+			? WheelFrameHandbrakeQuarterInputFraction : QuarterFractionCVar;
 		if (CVarIAmSpeedWheelFrameHandbrakeSteeringBlendModel.GetValueOnAnyThread() == 1
 			&& FMath::IsFinite(QuarterFractionOverride) && QuarterFractionOverride >= 0.0f
 			&& AbsInput > 0.0f && AbsInput < HalfInput)
@@ -4180,7 +4206,9 @@ float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottl
 	}
 
 	float groundEngineAccel = engineThrottle * ThrottleAccel * driveSpeedScale * groundRatio;
-	const float HandbrakeDriveScale = CVarIAmSpeedWheelFrameHandbrakeDriveForceScale.GetValueOnAnyThread();
+	const float HandbrakeDriveScaleCVar = CVarIAmSpeedWheelFrameHandbrakeDriveForceScale.GetValueOnAnyThread();
+	const float HandbrakeDriveScale = FMath::IsFinite(HandbrakeDriveScaleCVar) && HandbrakeDriveScaleCVar < 0.0f
+		? WheelFrameHandbrakeDriveForceScale : HandbrakeDriveScaleCVar;
 	if (bRetainHandbrakeThrottle && FMath::IsFinite(HandbrakeDriveScale) && HandbrakeDriveScale >= 0.0f)
 	{
 		const float EffectiveScale = CVarIAmSpeedWheelFrameHandbrakeDriveForceBlendModel.GetValueOnAnyThread() != 0
