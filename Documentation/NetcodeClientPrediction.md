@@ -480,3 +480,16 @@ original native stock configuration methods intentionally return invalid, so
 re-running Initialize cannot supply constructor-only defaults. Native45's
 actual factory-guard failure remains recorded. Post-initialization recipe,
 binding and non-solid witnesses stay mandatory; no guard is weakened.
+
+
+Source51 keeps the strict render-reference witness while observing native
+motion over a finite input-driven window. Native46 passed55 tests but this
+witness failed because RollRotation was unchanged at frame2. The test now
+continues actual retained throttle requests, compares native COM and declared
+state with an untouched control at EVERY observed frame, requires both an
+actual native render change and positive physical forward velocity, and checks
+that the retained facade stays unchanged. Missing motion by frame120 fails.
+Reported forward-step counts are actual, not fixed assertions. This observation
+deadline never opens CanMove: its original synchronization activation remains
+frame1 and is checked throughout. No physics law, startup warmup, restore gate
+or numerical comparison tolerance changes. Earlier failures remain preserved.

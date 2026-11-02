@@ -164,7 +164,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
         if(!TestTrue(TEXT("actual original wheel/suspension storage, not a copied pointer tag"),OriginalWheelPointers[W]&&OriginalSuspensionPointers[W]))return false;
     }
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
-    P::FRemoteRequestHistory History(B,Actions,8,8);
+    P::FRemoteRequestHistory History(B,Actions,256,256);
     FPacket Packet;Packet.Kind=EKind::AuthorityInput;Packet.Session=B.Session;Packet.Epoch=B.Epoch;Packet.Actor=B.Actor;Packet.Incarnation=B.Incarnation;Packet.Contract=B.Contract;Packet.Sequence=1;
     Packet.Input.SourceSequence=1;Packet.Input.DeviceGeneration=1;Packet.Input.ProducerId=42;Packet.Input.ProducerKind=0;Packet.Input.Reset=true;
     if(!TestTrue(TEXT("actual baseline authority request retained"),History.Confirm(5,Packet).Status==EResult::Accepted))return false;
@@ -290,15 +290,47 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestTrue(TEXT("public SetRollAngle actually changed the retained facade render field"),LogAttack.BeforeWheelRoll!=LogAttack.WrittenWheelRoll);
     if(!TestTrue(TEXT("actual native render observations present at original0 and later2"),
         OriginalZero->Actors[0].NativeWheelRenderRotations.size()==4&&Later->Actors[0].NativeWheelRenderRotations.size()==4))return false;
-    TestTrue(TEXT("actual native render field really advanced after original throttle input"),
-        OriginalZero->Actors[0].NativeWheelRenderRotations[0]!=Later->Actors[0].NativeWheelRenderRotations[0]);
+    // Observe actual native motion, not an assumed two-frame response. This
+    // finite observation bound NEVER releases CanMove: activation already
+    // happened from the original publication0 synchronization receipt.
+    DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
+    auto MotionCut=Later,MotionReference=LaterRef;uint64 MotionFrame=2;
+    while(MotionCut->Actors[0].NativeWheelRenderRotations[0]==OriginalZero->Actors[0].NativeWheelRenderRotations[0]&&MotionFrame<120)
+    {
+        ++MotionFrame;Next.Frame=MotionFrame;Next.Sequence=MotionFrame+1;Next.Input.SourceSequence=MotionFrame+1;Next.Input.Edges.clear();
+        if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
+        const std::vector<P::FPrivateRoadRequest> Requests{{101,3,History.Predict(MotionFrame)}};
+        if(!Isolated->Step(Requests,false,Why)||!Control->Step(Requests,false,Why))return false;
+        MotionCut=Isolated->ReadLatest();MotionReference=Control->ReadLatest();
+        if(!MotionCut||!MotionReference||MotionCut->Frame!=MotionFrame||MotionReference->Frame!=MotionFrame
+            ||MotionCut->Actors[0].NativeWheelRenderRotations.size()!=4||MotionReference->Actors[0].NativeWheelRenderRotations.size()!=4)return false;
+        if(!TestTrue(TEXT("movement gate stays released by actual synchronization throughout motion observation"),
+            !MotionCut->AwaitingInitialPublication&&!MotionReference->AwaitingInitialPublication
+            &&MotionCut->Actors[0].CanMove&&MotionReference->Actors[0].CanMove))return false;
+        const auto* M=MotionCut->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==MotionCut->Actors[0].NativeStableId;});
+        const auto* R=MotionReference->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==MotionReference->Actors[0].NativeStableId;});
+        if(!M||!R)return false;
+        const auto Difference=P::MeasurePrivateRoadKinematics(M->COMState,R->COMState);
+        if(!TestTrue(TEXT("every actual motion followup keeps native COM and declared state exact to independent control"),
+            Difference.Valid&&!Difference.Different&&P::ComparePrivateRoadPartialValues(MotionCut->Actors[0],MotionReference->Actors[0])==P::EPrivateRoadPartialComparison::Equal))return false;
+    }
+    TestTrue(TEXT("actual native render field really advances under original throttle within finite observation"),
+        OriginalZero->Actors[0].NativeWheelRenderRotations[0]!=MotionCut->Actors[0].NativeWheelRenderRotations[0]);
+    const auto* MovingBody=MotionCut->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==MotionCut->Actors[0].NativeStableId;});
+    if(!MovingBody)return false;
+    const double ActualForwardSpeed=FVector::DotProduct(MovingBody->COMState.Velocity,MovingBody->COMState.Rotation.RotateVector(FVector::ForwardVector));
+    TestTrue(TEXT("native render witness accompanies actual forward physical velocity"),ActualForwardSpeed>0);
+    AddInfo(FString::Printf(TEXT("[IASNativeRenderMotion] actual_frame=%llu actual_forward_speed=%.9f original_sync_activation_frame=1 observation_bound=120"),MotionFrame,ActualForwardSpeed));
+    TestEqual(TEXT("old facade jump timer remains independent after actual native motion"),LogAttack.EscapedWheel->IsJumping(),uint8(255));
+    TestEqual(TEXT("old facade hit remains independent after actual native motion"),LogAttack.RetainedBodyHit->TOI,0.875f);
+
     TestTrue(TEXT("old wheel render reference cannot observe native writes"),LogAttack.RetainedWheelRender->RollRotation==LogAttack.WrittenWheelRoll);
 
 
     DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
 
     TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
-    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 wheel_runtime_value_blocks=15 solid_value_blocks=21 complete_lease=0 localized=0"));
+    AddInfo(FString::Printf(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=%llu initial_controlled_forward_steps=2 render_motion_observation_frame=%llu actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 wheel_runtime_value_blocks=15 solid_value_blocks=21 complete_lease=0 localized=0"),MotionFrame,MotionFrame));
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
     AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));
