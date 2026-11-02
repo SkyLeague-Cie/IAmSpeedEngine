@@ -1056,3 +1056,54 @@ Fresh native74 is required. ALL81385 from source76/native72 and FAIL73 remain
 durable, not transferred to source78. Full restoration guards remain closed;
 callback, service/module lifetime, complete causal state and localized rollback
 still require real implementation and two-client/dedicated qualification.
+
+
+Source78/native74 completed56 native tests0errors/warnings, Pending1,
+three commandlets, two actual Game hosts plus dedicated and expected9/10
+cancellation. Original93118 and coordinators closed0, real Job0 twice/final
+audits empty.35 oscillations/21455frames still measured six kinematic differences
+zero. One-car Step reads are now0 with original world control1; birth177/null45
+remain. Actual ALL interaction74177=52513other+21664null,64body/floor targets0
+with64 ordinary positives,375 contact-event frames. All47 prefixes were sampled
+without loss/overflow/reentrant skip, but all24-PC suffixes remain UNKNOWN.
+
+Actual bounded local lookup74-01 closed0 with real Job0 twice and unchanged
+eleven upstream files.1128 PC candidates and seven genuine current PE/PDB pairs
+matched strict actual loaded-PDB checks. Mapping remains conditional because
+module lookup occurred after capture; loader incarnation is not certified.
+Exact source inspection showed legacy HasAuthority/GetAuthGameMode causing21664
+null reads, the ground-sweep subsystem lookup causing46152 reads, and private
+contact-observation movement getters causing6361. Return PCs can map to the
+following line; the geometric VisitPlanarCandidates math was not blamed/changed.
+
+Source79 reads the actual native World.AuthorityGameMode cell through checked
+birth metadata, with callback-capable operations outside GC/recipe/route and
+short final original-identity/cell readback. Null is an actual required private
+profile condition, not a guessed IAS authority role. A dedicated original hook
+in the true base HasAuthority method validates it; nonnull/unresolved or changed
+origins refuse. Ordinary legacy behavior remains.
+
+The native ground sweep now resolves its genuine IAS epoch/source participant
+against the parent's actual frame StaticWorld. It verifies the original backend
+Data/Index/Generation observation captured from the real constructor before
+ownership transfer, retained original immutable data, original source ID, exact
+single-plane geometry and actual selected epoch source-map/floor binding before
+VisitPlanarCandidates. A changed world installed jointly in both fields refuses.
+The fixed private owner thunk returns only a predicate, no original view. The
+default legacy lookup stays at the same point/order. An observational query
+generation and data retention are NOT backend/service lifetime certificates.
+
+Private collision observations reuse actual born actor/component/class identities
+and readonly movement cells, with genuine C++ adjustment to ISpeedComponent.
+They do not cast a C++ interface as UObject or extend raw-pointer lifetime.
+The solver's Super operation remains once. Original landing diagnostics queue
+one owned frame/time record through the real outbox; no Engine display, GetRole,
+captured callback or physical view is retained. Flush remains after physical
+scope/GC/route exit, with failures preserved. The legacy screen branch is kept.
+
+Fresh native75 is required. No zero-all-read, full callback closure, complete
+causal snapshot, same-graph authoritativeK restore or localized rollback is
+claimed. Factory callbacks and real service/module/deleter participation remain
+open; restoration guards stay closed. Network correction is still global.
+FAIL73, all earlier FAIL/UNKNOWN and the incomplete historical parent-directory
+prechecks15-18 remain durable; later current directory audits do not rewrite them.

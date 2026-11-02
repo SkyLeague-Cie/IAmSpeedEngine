@@ -9,9 +9,10 @@
 #include "UObject/ObjectMacros.h"
 #include "BoxSubBody.generated.h"
 
+class USpeedWorldSubsystem;
 class USphereSubBody;
 class USWheelSubBody;
-namespace Speed { struct FBoxRestingSupport; }
+namespace Speed { class IStaticCollisionWorld; struct FBoxRestingSupport; }
 namespace Speed::Analytic { struct FWorldQuery; }
 
 DECLARE_LOG_CATEGORY_EXTERN(BoxSubBodyLog, Log, All);
@@ -152,6 +153,9 @@ public:
     FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
     void UpdateBodySetup();
 protected:
+    // Legacy default preserves the existing lookup point/order. An original
+    // epoch subtype may resolve its actual frame-bound IAS source participant.
+    virtual const USpeedWorldSubsystem* ResolveEpochBridgeForSweep(UWorld* World,const Speed::IStaticCollisionWorld* StaticWorld) const;
 protected:
     virtual FVector& BoxExtentBoxDomainStorage() {return BoxExtent;}
     virtual FVector const& BoxExtentBoxDomainStorage() const {return BoxExtent;}

@@ -1,6 +1,7 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
+#include "IAmSpeed/World/Simulation/ResolvedNativeObjectRead.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/Engine.h"
@@ -3372,8 +3373,13 @@ void USpeedWheeledComponent::EnableGravity()
 }
 
 
+bool USpeedWheeledComponent::ReadOriginalLegacyGameModePresence() const
+{
+    throw Speed::NativeObjectRead::FUnresolvedOriginal(); // no guessed original authority
+}
 bool USpeedWheeledComponent::HasAuthority() const
 {
+    if(UsesOriginalWheeledDomain())return ReadOriginalLegacyGameModePresence();
 	return GetWorld()->GetAuthGameMode() != nullptr;
 }
 
@@ -3727,8 +3733,20 @@ void USpeedWheeledComponent::SetGroundState()
 	bool WasInAir = !WheeledGameStateStorage().bGroundState;
 	if (WasInAir)
 	{
+        if(UsesOriginalWheeledDomain())
+        {
+            // Exactly one owned value record per native landing. No Engine
+            // display service, role getter, lambda or physical view escapes.
+            if(!Speed::NativeEpoch::HasOriginalDiagnosticOutbox())throw Speed::NativeObjectRead::FUnresolvedOriginal();
+            Speed::NativeEpoch::QueueOriginalDiagnostic(__FILE__,__LINE__,SpeedPhysicsLog.GetCategoryName(),ELogVerbosity::Log,
+                FString::Printf(TEXT("[OriginalLanding] frame=%u timeInAirSeconds=%f"),NumFrame(),
+                    WheeledGameStateStorage().NbFrameSinceInAir*(1.0/EngineFPSWheeledDomainStorage())));
+        }
+        else
+        {
 		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, FString::Printf(TEXT("[%s] Time in air: %fs"), *GetRole(),
 			WheeledGameStateStorage().NbFrameSinceInAir * (1.0 / EngineFPSWheeledDomainStorage())));
+        }
 #if !(UE_BUILD_SHIPPING)
 		// UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][GROUND LANDING] At Frame = %d, Time in air: %fs"),
 		//	*GetOwner()->GetName(), *GetRole(), NumFrame(), WheeledGameStateStorage().NbFrameSinceInAir * (1.0 / EngineFPS));

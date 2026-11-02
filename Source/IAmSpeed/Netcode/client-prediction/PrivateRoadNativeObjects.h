@@ -346,6 +346,7 @@ class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
 public:
     explicit USpeedBranchBoxSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
 protected:
+    const USpeedWorldSubsystem* ResolveEpochBridgeForSweep(UWorld*,const Speed::IStaticCollisionWorld*) const override;
     void ResolveCurrentHitPrv(const float&,const float&) override;
 };
 // Same inherited wheel physics; only the declared core value storage routes.
@@ -550,6 +551,7 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
     bool HasIsolatedNativeConstruction() const;
+    bool ReadOriginalLegacyGameModePresence() const override;
 
     // Established after original construction, before its first physical step.
     // External calls route to legacy facade storage. Other native domains are

@@ -1494,6 +1494,11 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 }
 
 
+const USpeedWorldSubsystem* UBoxSubBody::ResolveEpochBridgeForSweep(UWorld* World,const Speed::IStaticCollisionWorld*) const
+{
+    return World?World->GetSubsystem<USpeedWorldSubsystem>():nullptr;
+}
+
 bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& Delta, float& OutTOI)
 {
     OutTOI = Delta;
@@ -1557,7 +1562,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
         Broad.bApplyCollisionFilter = true; Broad.bAuthorityOnly = true; Broad.bIncludeCompactPatches = true;
         Broad.TraceChannel = static_cast<uint8>(GetCollisionChannel());
         Broad.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
-        const USpeedWorldSubsystem* Bridge = World ? World->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+        const USpeedWorldSubsystem* Bridge = ResolveEpochBridgeForSweep(World,StaticWorld);
         if (Bridge) StaticWorld->VisitPlanarCandidates(Broad, [&](const Speed::Analytic::FWorldHit& Candidate)
         {
             const auto Source = Bridge->FindAnalyticSourceComponent(Candidate.SourceId);

@@ -11,6 +11,7 @@
 #include "Engine/Level.h"
 #include "UObject/UnrealType.h"
 #include "GameFramework/HUD.h"
+#include "GameFramework/GameModeBase.h"
 #include "Components/BoxComponent.h"
 #include "Physics/NetworkPhysicsComponent.h"
 #include "Chaos/Framework/PhysicsSolverBase.h"
@@ -45,6 +46,27 @@ struct FPrivateRoadAccess : Speed::NativeEpoch::IOriginalStorageRoute
     TWeakObjectPtr<ULevel> OriginalLevelBirth;
     TWeakObjectPtr<ASpeedBranchSimulation> OriginalDriverBirth;
     bool OriginalActorWorldStillMatches(const AActor* Actor) const;
+    TWeakObjectPtr<USpeedWorldSubsystem> OriginalBridgeBirth;
+    TWeakObjectPtr<UBoxComponent> OriginalFloorBirth;
+    U64 OriginalStaticSourceId=0;
+    TSharedPtr<const Speed::Analytic::FAnalyticWorldData> OriginalSourceGeometry;
+    Speed::FImmutableStaticQueryIdentity1075 OriginalQueryIdentity; // actual backend observation, NOT lifetime authority
+    using FSourceBindingsRead=bool(*)(const USpeedWorldSubsystem&,const Speed::Analytic::FAnalyticWorldData*,U64,const TWeakObjectPtr<UBoxComponent>&);
+    FSourceBindingsRead MatchesOriginalSourceBindings=nullptr; // fixed native owner thunk, no captured view/delegate
+
+    const TObjectPtr<AGameModeBase>* OriginalGameModeCell=nullptr;
+    TWeakObjectPtr<UClass> OriginalWorldClassBirth;
+    bool OriginalWorldHasNoGameMode() const;
+    struct FActualCarAlias
+    {
+        TWeakObjectPtr<ASpeedBranchCar> Actor;
+        TWeakObjectPtr<USpeedBranchWheeledComponent> Component;
+        TWeakObjectPtr<UClass> ActorClass,MovementOwnerClass;
+        const TObjectPtr<UChaosVehicleMovementComponent>* MovementCell=nullptr;
+    };
+    TMap<const USpeedBranchWheeledComponent*,FActualCarAlias> ActualCarAliases;
+    USpeedBranchWheeledComponent* FindOriginalComponentAlias(const ISpeedComponent* Parent,const AActor* Owner) const;
+    const USpeedWorldSubsystem* OriginalBridgeForFrame(UWorld* World,const Speed::IStaticCollisionWorld* StaticWorld) const;
     bool Active=false,RequiresInitialPublication=true,InitialPublicationReleased=false;
     U64 Frame=0;
     TMap<const USpeedBranchWheeledComponent*,FSlot> Slots;
@@ -117,6 +139,45 @@ bool FPrivateRoadAccess::OriginalActorWorldStillMatches(const AActor* Actor) con
         &&Actor->GetOuter()==L&&L->GetOuter()==W
         &&Speed::NativeObjectRead::MatchesOriginalBirth(W->PersistentLevel,OriginalLevelBirth)
         &&Speed::NativeObjectRead::MatchesOriginalBirth(L->OwningWorld,OriginalWorldBirth);
+}
+bool FPrivateRoadAccess::OriginalWorldHasNoGameMode() const
+{
+    const auto* W=OriginalWorldBirth.Get();const auto* C=OriginalWorldClassBirth.Get();
+    return W&&W==World&&C&&W->GetClass()==C&&!C->HasAnyClassFlags(CLASS_NewerVersionExists)
+        &&OriginalGameModeCell&&Speed::NativeObjectRead::IsResolvedNull(*OriginalGameModeCell);
+}
+USpeedBranchWheeledComponent* FPrivateRoadAccess::FindOriginalComponentAlias(const ISpeedComponent* Parent,const AActor* Owner) const
+{
+    if(!IsInGameThread()||!SelectsOriginalStorage()||!Parent||!Owner)return nullptr;
+    for(const auto& Item:ActualCarAliases)
+    {
+        const auto& R=Item.Value;auto* A=R.Actor.Get();auto* C=R.Component.Get();
+        const auto* AC=R.ActorClass.Get();const auto* OC=R.MovementOwnerClass.Get();
+        if(!A||A!=Owner||!C||C!=Item.Key||!AC||!OC||!R.MovementCell)continue;
+        if(A->GetClass()!=AC||AC->HasAnyClassFlags(CLASS_NewerVersionExists)||OC->HasAnyClassFlags(CLASS_NewerVersionExists)
+            ||C->GetOwner()!=A||!OriginalActorWorldStillMatches(A)
+            ||!Speed::NativeObjectRead::MatchesOriginalBirth(*R.MovementCell,TWeakObjectPtr<UChaosVehicleMovementComponent>(R.Component)))continue;
+        // Real multiple-inheritance adjustment from a verified actual native
+        // component. ISpeedComponent is not a UObject or a guessed raw offset.
+        if(static_cast<const ISpeedComponent*>(C)==Parent)return C;
+    }
+    return nullptr;
+}
+const USpeedWorldSubsystem* FPrivateRoadAccess::OriginalBridgeForFrame(UWorld* W,const Speed::IStaticCollisionWorld* StaticWorld) const
+{
+    if(!IsInGameThread()||!SelectsOriginalStorage()||!Active||!W||W!=OriginalWorldBirth.Get()||!StaticWorld)
+        throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    const auto* B=OriginalBridgeBirth.Get();const auto* F=OriginalFloorBirth.Get();
+    if(!B||B->GetOuter()!=W||!F||!OriginalStaticSourceId||B->GetStaticCollisionWorld()!=StaticWorld
+        ||!OriginalSourceGeometry.IsValid()||!OriginalQueryIdentity.IsValid()
+        ||OriginalQueryIdentity.Data!=OriginalSourceGeometry.Get()
+        ||!(StaticWorld->GetImmutableQueryIdentity1075()==OriginalQueryIdentity)
+        ||!MatchesOriginalSourceBindings
+        ||!MatchesOriginalSourceBindings(*B,OriginalSourceGeometry.Get(),OriginalStaticSourceId,OriginalFloorBirth))
+        throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    // This is the actual IAS epoch/source participant that installed the
+    // parent's frame StaticWorld, NOT a claim about an unchanged UE collection.
+    return B;
 }
 bool FPrivateRoadAccess::SelectsOriginalStorage() const noexcept
 {
@@ -227,6 +288,30 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
         }
         return true;
     }
+    bool CaptureOriginalGameModeAbsence()
+    {
+        if(OriginalComponentStorageOwner||Speed::RoadSettings::SelectedOriginalRoadSettings())return false;
+        auto* W=OriginalWorldWeak.Get();if(!W||W!=World.Get())return false;
+        Access->OriginalWorldClassBirth=W->GetClass();
+        const TWeakObjectPtr<UClass> ValueClassBirth=AGameModeBase::StaticClass();
+        Pin(Access->OriginalWorldClassBirth.Get());Pin(ValueClassBirth.Get());
+        auto* WC=Access->OriginalWorldClassBirth.Get();
+        if(!WC||OriginalWorldWeak.Get()!=W||W->GetClass()!=WC||WC!=UWorld::StaticClass()
+            ||!WC->HasAnyClassFlags(CLASS_Native)||WC->HasAnyClassFlags(CLASS_CompiledFromBlueprint|CLASS_NewerVersionExists))return false;
+        const auto* P=FindFProperty<FObjectProperty>(WC,TEXT("AuthorityGameMode"));
+        if(!P||P->GetOwnerClass()!=WC||P->ArrayDim!=1||!P->HasAllPropertyFlags(CPF_TObjectPtr)
+            ||P->GetElementSize()!=sizeof(TObjectPtr<AGameModeBase>)||!P->IsInContainer(WC)
+            ||!Speed::NativeObjectRead::MatchesOriginalBirth(P->PropertyClass,ValueClassBirth))return false;
+        const auto* Cell=P->ContainerPtrToValuePtr<TObjectPtr<AGameModeBase>>(static_cast<const UObject*>(W));
+        if(!Cell||reinterpret_cast<UPTRINT>(Cell)%alignof(TObjectPtr<AGameModeBase>))return false;
+        const auto* ActualMode=W->GetAuthGameMode(); // actual ordinary positive read, outside GG/recipe/route
+        FGCScopeGuard FinalModeReadBack;
+        if(OriginalWorldWeak.Get()!=W||Access->OriginalWorldClassBirth.Get()!=WC||!ValueClassBirth.IsValid()
+            ||W->GetClass()!=WC||WC->HasAnyClassFlags(CLASS_NewerVersionExists)||ActualMode
+            ||!Speed::NativeObjectRead::IsResolvedNull(*Cell))return false;
+        Access->OriginalGameModeCell=Cell;
+        return Access->OriginalWorldHasNoGameMode();
+    }
     bool OriginalMovementStillMatches(const FCar& N) const
     {
         auto* A=N.ActorWeak.Get();auto* C=N.ComponentWeak.Get();
@@ -283,6 +368,7 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
         if(!W||W!=World.Get()||W->bIsTearingDown||W->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
             ||!B||B!=Bridge||B->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed)
             ||!D||D!=Driver||D->IsActorBeingDestroyed()||D->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))return false;
+        if(!Access->OriginalWorldHasNoGameMode())return false;
         for(const auto& P:Pins)if(!P.Get())return false;
         if(!OriginalFloorActorWeak.IsExplicitlyNull()||!OriginalFloorWeak.IsExplicitlyNull())
         {
@@ -381,13 +467,16 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     if(I.World->Scene||I.World->GetPhysicsScene())
     {Refuse(Why,TEXT("renderer or physics scene escaped private construction policy"));return {};}
     // Deliberately no Engine world context, BeginPlay, normal tick or scene.
-    I.Access->World=I.World.Get();I.Bridge=I.World->GetSubsystem<USpeedWorldSubsystem>();
+    I.Access->World=I.World.Get();
+    if(!I.CaptureOriginalGameModeAbsence()){Refuse(Why,TEXT("original native World GameMode absence binding refused"));return {};}
+    I.Bridge=I.World->GetSubsystem<USpeedWorldSubsystem>();
     if(!I.Bridge){Refuse(Why,TEXT("private native bridge missing"));return {};}
-    I.OriginalBridgeWeak=I.Bridge;I.Pin(I.Bridge);
+    I.OriginalBridgeWeak=I.Bridge;I.Pin(I.Bridge);I.Access->OriginalBridgeBirth=I.OriginalBridgeWeak;
     I.Bridge->BindOriginalEpochStorage(I.Access);
     I.NativeCppKeepAlive.push_back(I.Bridge->OriginalEpochBridgeStorage);
     auto Data=MakeShared<Speed::Analytic::FAnalyticWorldData>();
     auto& P=Data->Planes.AddDefaulted_GetRef();P.SourceId=1;P.SurfaceId=2;P.FeatureId=3;P.PrimitiveId=4;
+    I.Access->OriginalStaticSourceId=P.SourceId;
     P.ObjectType=uint32(ECC_WorldStatic);P.BlockingChannels=MAX_uint64;
     P.Normal=FVector3d::UpVector;P.AxisU=FVector3d::ForwardVector;P.AxisV=FVector3d::RightVector;
     P.HalfExtents=FVector2d(100000,100000);
@@ -395,17 +484,33 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     // Exact authored plane, not an imported asset authority certificate.
     Data->Planes[0].bAuthorityEligible=true;
     I.OriginalFlatGeometry=Data;
+    I.Access->OriginalSourceGeometry=I.OriginalFlatGeometry; // same genuine shared control block, not shared_ptr(raw)
+    I.Access->MatchesOriginalSourceBindings=+[](const USpeedWorldSubsystem& B,const Speed::Analytic::FAnalyticWorldData* Original,U64 SourceId,const TWeakObjectPtr<UBoxComponent>& FloorBirth)
+    {
+        // Lexical owner friend context reads the ACTUAL selected epoch map.
+        // This private fixed thunk returns only a predicate; no reference,
+        // lambda capture, original native view or new authority escapes.
+        if(!B.UsesOriginalEpochStorage())return false;
+        const auto& Geometry=B.AnalyticWorldDataEpochStorage();
+        const auto& Sources=B.AnalyticSourceComponentsEpochStorage();
+        const auto* Floor=FloorBirth.Get();const auto* Source=Sources.Find(SourceId);
+        return Floor&&Original&&Geometry.IsValid()&&Geometry.Get()==Original&&Geometry->Planes.Num()==1
+            &&Geometry->Planes[0].SourceId==SourceId&&Sources.Num()==1&&Source&&Source->Get()==Floor;
+    };
     auto* FloorActor=I.World->SpawnActor<AActor>();
     if(!FloorActor){Refuse(Why,TEXT("private floor actor missing"));return {};}
     auto* Floor=NewObject<UBoxComponent>(FloorActor);FloorActor->AddInstanceComponent(Floor);
     Floor->SetMobility(EComponentMobility::Static);Floor->SetCollisionObjectType(ECC_WorldStatic);
     Floor->SetCollisionResponseToAllChannels(ECR_Block);I.PinTree(FloorActor);
-    I.OriginalFloorActorWeak=FloorActor;I.OriginalFloorWeak=Floor;
+    I.OriginalFloorActorWeak=FloorActor;I.OriginalFloorWeak=Floor;I.Access->OriginalFloorBirth=I.OriginalFloorWeak;
     {
         FOriginalComponentStorageScope OriginalWorldAdmission(*I.Access);
         I.Bridge->AnalyticSourceComponentsEpochStorage().Add(1,Floor);
         I.Bridge->AnalyticWorldDataEpochStorage()=Data;
-        I.Bridge->SimulationWorldEpochStorage().SetStaticCollisionWorld(MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*Data));
+        auto OriginalCollision=MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*Data);
+        I.Access->OriginalQueryIdentity=OriginalCollision->GetImmutableQueryIdentity1075();
+        if(!I.Access->OriginalQueryIdentity.IsValid()||I.Access->OriginalQueryIdentity.Data!=Data.Get())return {};
+        I.Bridge->SimulationWorldEpochStorage().SetStaticCollisionWorld(MoveTemp(OriginalCollision));
     }
     I.Driver=I.World->SpawnActor<ASpeedBranchSimulation>();
     if(!I.Driver||ASpeedPhysicsSimulation::GetEngineFPS()!=300)
@@ -445,6 +550,8 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         N.ActorWeak=N.Actor;N.ComponentWeak=C;I.OriginalComponentsWeak.Add(C);
         I.PinTree(N.Actor);I.PinTree(C);
         if(!I.CaptureOriginalMovementCell(N))return {};
+        I.Access->ActualCarAliases.Add(C,FPrivateRoadAccess::FActualCarAlias{
+            N.ActorWeak,N.ComponentWeak,N.OriginalActorClassBirth,N.OriginalMovementOwnerClassBirth,N.OriginalMovementCell});
         {
             FGCScopeGuard CaptureOriginalBirthPins;
             auto* Box=Cast<UBoxSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::HitboxName));
@@ -1925,6 +2032,13 @@ void USpeedBranchWheeledComponent::OnRegister() {UPawnMovementComponent::OnRegis
 void USpeedBranchWheeledComponent::OnCreatePhysicsState() {UActorComponent::OnCreatePhysicsState();}
 void USpeedBranchWheeledComponent::OnDestroyPhysicsState() {UActorComponent::OnDestroyPhysicsState();}
 void USpeedBranchWheeledComponent::BeginPlay() {UActorComponent::BeginPlay();}
+bool USpeedBranchWheeledComponent::ReadOriginalLegacyGameModePresence() const
+{
+    const auto A=Access.lock();
+    if(!IsInGameThread()||!A||!A->SelectsOriginalStorage()||!A->OriginalWorldHasNoGameMode()
+        ||A->FindOriginalComponentAlias(this,GetOwner())!=this)throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    return false; // actual resolved absence, same legacy predicate; NOT IAS authority role
+}
 bool USpeedBranchWheeledComponent::HasIsolatedNativeConstruction() const
 {
     // Check actual stored pointers as well as the world's object census: an
@@ -2081,6 +2195,15 @@ void USpeedBranchWheeledComponent::UpdateInputs()
     WheeledPhysicalInputStorage().Camera.Yaw=int8(Applied[5]);WheeledPhysicalInputStorage().Camera.Pitch=int8(Applied[6]);
     SyncWheeledPhysicalInputToState();bInputFrameRejectedV2WheeledDomainStorage()=false;
 }
+const USpeedWorldSubsystem* USpeedBranchBoxSubBody::ResolveEpochBridgeForSweep(UWorld* W,const Speed::IStaticCollisionWorld* StaticWorld) const
+{
+    if(!UsesOriginalBodyStorage())return Super::ResolveEpochBridgeForSweep(W,StaticWorld);
+    const auto A=StorageAccess.lock();
+    if(!IsInGameThread()||!A||!A->FindOriginalComponentAlias(GetParentComponent(),GetOwner())
+        ||!GetParentComponent()||GetParentComponent()->GetStaticCollisionWorldForFrame()!=StaticWorld)
+        throw Speed::NativeObjectRead::FUnresolvedOriginal();
+    return A->OriginalBridgeForFrame(W,StaticWorld);
+}
 void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float& SimTime)
 {
     // Capture the genuine dispatch participant before Super can update caches.
@@ -2094,8 +2217,8 @@ void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float
         // ISpeedComponent is native C++, NOT a UObject/UInterface. Resolve
         // through the genuine owning actor, then verify the adjusted native
         // base address rather than performing an invalid Unreal Cast.
-        const auto* Car=Cast<ASpeedBranchCar>(GetOwner());
-        auto* Owner=Car?Cast<USpeedBranchWheeledComponent>(Car->GetVehicleMovement()):nullptr;
+        const auto A=StorageAccess.lock();
+        auto* Owner=A?A->FindOriginalComponentAlias(GetParentComponent(),GetOwner()):nullptr;
         if(Owner&&GetParentComponent()==static_cast<ISpeedComponent*>(Owner))
             if(auto* SolidPeer=Cast<USolidSubBody>(Peer.Get()))
                 Owner->ObserveContactPair(*this,*SolidPeer,Cast<UBoxSubBody>(SolidPeer)?0:1);
@@ -2112,8 +2235,8 @@ void USpeedBranchWheeledComponent::ObserveContactPair(const USSubBody& SubBody,c
     const auto A=Access.lock();
     if(Kind>2||!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||SubBody.GetParentComponent()!=this
         ||Other.GetWorld()!=A->World||Other.GetOwner()==GetOwner())return;
-    const auto* OtherCar=Cast<ASpeedBranchCar>(Other.GetOwner());
-    const auto* C=OtherCar?Cast<USpeedBranchWheeledComponent>(OtherCar->GetVehicleMovement()):nullptr;
+    const auto* C=A->FindOriginalComponentAlias(Other.GetParentComponent(),Other.GetOwner());
+    if(A->FindOriginalComponentAlias(this,GetOwner())!=this)return;
     if(!C||Other.GetParentComponent()!=static_cast<const ISpeedComponent*>(C))return;
     const auto* Self=A->Slots.Find(this);const auto* Peer=C?A->Slots.Find(C):nullptr;
     if(!Self||!Peer||!Self->Input||!Peer->Input||Self->Input->Frame!=A->Frame||Peer->Input->Frame!=A->Frame

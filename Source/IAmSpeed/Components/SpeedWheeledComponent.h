@@ -1073,6 +1073,10 @@ private:
     }
     bool BindOriginalWheeledDomain(const std::shared_ptr<const Speed::NativeEpoch::IOriginalStorageRoute>& Route);
 protected:
+    // Presence of the actual legacy Engine GameMode field, NOT IAS server role.
+    // Only an original native owner with a real readonly field binding can
+    // supply this. Unknown original profiles refuse in the default method.
+    virtual bool ReadOriginalLegacyGameModePresence() const;
     bool& bPublishWheelPresentationWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bPublishWheelPresentation:bPublishWheelPresentation;}
     bool const& bPublishWheelPresentationWheeledDomainStorage() const {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->bPublishWheelPresentation:bPublishWheelPresentation;}
     int32& CanonicalCameraYawActionWheeledDomainStorage() {return UsesOriginalWheeledDomain()?OriginalWheeledDomain->CanonicalCameraYawAction:CanonicalCameraYawAction;}
