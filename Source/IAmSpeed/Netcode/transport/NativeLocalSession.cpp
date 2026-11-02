@@ -34,6 +34,7 @@ struct FPeer
 {
     FLocalSessionPeer Assigned;std::unique_ptr<FNativeLocalPeerPin> Pin;
     std::uint64_t High=0;std::vector<FAssembly> Partial,Completed;
+    std::array<std::uint64_t,16> ControlledAttempts{}; // independent destination+kind schedules
 };
 }
 struct FNativeLocalSession::FImpl
@@ -41,7 +42,7 @@ struct FNativeLocalSession::FImpl
     std::mutex Gate;const std::thread::id Owner=std::this_thread::get_id();
     FLocalSessionConfig Config;FNativeDatagramSocket Socket;
     std::unique_ptr<FNativeLocalPeerPin> Self;std::vector<LocalSessionDetail::FPeer> Peers;
-    std::uint64_t Next=1;bool Closed=false;
+    std::uint64_t Next=1;bool Closed=false;FLocalSessionEgressCounters Egress;
     bool Alive() const
     {if(Closed||!Self||!Self->OriginalProcessAlive())return false;for(const auto& P:Peers)if(!P.Pin->OriginalProcessAlive())return false;return true;}
     void Retire() noexcept {Socket.Close();Closed=true;}
@@ -50,6 +51,8 @@ FNativeLocalSession::FNativeLocalSession():Impl(std::make_unique<FImpl>()){}
 FNativeLocalSession::~FNativeLocalSession(){Close();}
 std::unique_ptr<FNativeLocalSession> FNativeLocalSession::Open(const FLocalSessionConfig& C)
 {
+    if((C.ControlledLossEvery==0)!=(C.ControlledLossKinds==0)
+        ||(C.ControlledLossEvery&&(C.ControlledLossEvery<2||C.ControlledLossEvery>1000)))return {};
     if(!C.Session||!C.Epoch||!C.SelfPeer||!C.SocketNonce||!LocalSessionDetail::Loopback(C.Endpoint)||C.Peers.empty()||C.Peers.size()>2)return {};
     const auto ActualSelf=FNativeLocalPeerPin::InspectCurrent();
     if(!ActualSelf||ActualSelf->Pid!=C.OriginalSelf.Pid||ActualSelf->BirthTicks!=C.OriginalSelf.BirthTicks)return {};
@@ -76,6 +79,7 @@ ELocalSession FNativeLocalSession::Send(std::uint64_t Peer,std::uint8_t Kind,con
     if(!Kind||Kind>16||Bytes.empty()||Bytes.size()>MaxMessage||I.Next==0)return ELocalSession::Invalid;
     const auto Sequence=I.Next;I.Next=Sequence==std::numeric_limits<std::uint64_t>::max()?0:Sequence+1;
     const auto Count=(Bytes.size()+Chunk-1)/Chunk;const auto Crc=StateCrc(Bytes);
+    bool Discarded=false;
     for(std::size_t N=0;N<Count;++N)
     {
         const auto First=N*Chunk,Length=std::min(Chunk,Bytes.size()-First);std::vector<std::uint8_t> Out;Out.reserve(Header+Length);
@@ -83,11 +87,19 @@ ELocalSession FNativeLocalSession::Send(std::uint64_t Peer,std::uint8_t Kind,con
         for(auto V:{I.Config.Session,I.Config.Epoch,I.Config.SelfPeer,I.Config.SocketNonce,Sequence})Wire::Put(Out,V,8);
         Wire::Put(Out,N,2);Wire::Put(Out,Count,2);Wire::Put(Out,Bytes.size(),2);Wire::Put(Out,Length,2);Wire::Put(Out,Crc,4);
         Out.insert(Out.end(),Bytes.begin()+First,Bytes.begin()+First+Length);
+        auto& Stats=I.Egress.Kinds[Kind-1];auto& Ordinal=P->ControlledAttempts[Kind-1];
+        const auto Max=std::numeric_limits<std::uint64_t>::max();
+        if(Stats.Attempted==Max||Stats.DiscardedBeforeOsSend==Max||Stats.OsSent==Max||Stats.OsWouldBlock==Max||Ordinal==Max)return ELocalSession::Full;
+        ++Stats.Attempted;++Ordinal;
+        if(I.Config.ControlledLossEvery&&(I.Config.ControlledLossKinds&(std::uint16_t(1)<<(Kind-1)))
+            &&Ordinal%I.Config.ControlledLossEvery==0)
+        {++Stats.DiscardedBeforeOsSend;Discarded=true;continue;}
         const auto Status=I.Socket.Send(P->Assigned.Endpoint,Out);
-        if(Status==ENativeDatagram::WouldBlock)return ELocalSession::WouldBlock;
+        if(Status==ENativeDatagram::WouldBlock){++Stats.OsWouldBlock;return ELocalSession::WouldBlock;}
         if(Status!=ENativeDatagram::Ready){I.Retire();return ELocalSession::SocketError;}
+        ++Stats.OsSent;
     }
-    return ELocalSession::Ready;
+    return Discarded?ELocalSession::InjectedLoss:ELocalSession::Ready;
 }
 ELocalSession FNativeLocalSession::Receive(FLocalSessionMessage& Message)
 {
@@ -141,6 +153,8 @@ ELocalSession FNativeLocalSession::Receive(FLocalSessionMessage& Message)
     std::erase_if(P->Completed,Old);std::erase_if(P->Partial,Old);
     return ELocalSession::Ready;
 }
+FLocalSessionEgressCounters FNativeLocalSession::ReadEgressCounters() const
+{std::lock_guard Lock(Impl->Gate);return Impl->Egress;}
 bool FNativeLocalSession::OriginalPeersAlive() const
 {std::lock_guard Lock(Impl->Gate);return Impl->Alive();}
 FNativeEndpoint FNativeLocalSession::LocalEndpoint() const

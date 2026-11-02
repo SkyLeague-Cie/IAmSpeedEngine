@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "IAmSpeed/Netcode/transport/AuthorityInputJournal.h"
 #include "Misc/AutomationTest.h"
+#include "IAmSpeed/Netcode/transport/OriginalRetryOrder.h"
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASAuthorityInputJournal,"IAmSpeed.Netcode.Transport.AllActorAuthorityInputJournal",
     EAutomationTestFlags_ApplicationContextMask|EAutomationTestFlags::EngineFilter)
 bool FIASAuthorityInputJournal::RunTest(const FString&)
@@ -41,6 +42,23 @@ bool FIASAuthorityInputJournal::RunTest(const FString&)
     TestTrue(TEXT("own late suffix does not advance remote cut"),J->Retain(5,A2)==EResult::Accepted&&J->CommonContiguousCount()==1);
     TestTrue(TEXT("both genuinely contiguous journals reach finite cut"),J->Retain(5,B1)==EResult::Accepted&&J->CommonContiguousCount()==3);
     TestTrue(TEXT("finite history refuses overflow without eviction"),J->Retain(5,Packet(A,3))==EResult::TooFar&&J->Read(A.Actor,0)==Original);
+    // Real outbox slot reuse: ACK seq10, then seq12 occupies slot0 before
+    // still-unacknowledged seq11 in slot1. This is the review87 counterexample.
+    FReliableOutbox RetryOutbox(A,A.ServerPeer);
+    const auto Q10=Packet(A,9),Q11=Packet(A,10),Q12=Packet(A,11);
+    if(!TestTrue(TEXT("genuine reliable outbox creates a reuse hole"),
+        RetryOutbox.Queue(Q10)==EResult::Accepted&&RetryOutbox.Queue(Q11)==EResult::Accepted
+        &&RetryOutbox.Acknowledge(A.ServerPeer,AckFor(Q10))&&RetryOutbox.Queue(Q12)==EResult::Accepted))return false;
+    std::vector<FPacket> Physical;RetryOutbox.Retry([&](const FPacket& P){Physical.push_back(P);});
+    if(!TestTrue(TEXT("negative control observes actual slot order12 then11"),Physical.size()==2&&Physical[0].Sequence==12&&Physical[1].Sequence==11))return false;
+    auto Unbounded=Physical;OrderOriginalRetryCopy(Unbounded,false);
+    TestTrue(TEXT("zero retry limit preserves original slot iteration"),Encode(Unbounded[0])==Encode(Q12)&&Encode(Unbounded[1])==Encode(Q11));
+    auto Bounded=Physical;OrderOriginalRetryCopy(Bounded,true);
+    TestTrue(TEXT("limited prefix selects oldest original record11 after slot reuse"),Bounded.size()==2&&Encode(Bounded[0])==Encode(Q11)&&Encode(Bounded[1])==Encode(Q12));
+    std::vector<FPacket> StillOriginal;RetryOutbox.Retry([&](const FPacket& P){StillOriginal.push_back(P);});
+    TestTrue(TEXT("sorting caller copy leaves actual retained outbox and ACK semantics intact"),StillOriginal.size()==2&&Encode(StillOriginal[0])==Encode(Q12)&&Encode(StillOriginal[1])==Encode(Q11)
+        &&RetryOutbox.Size()==2&&RetryOutbox.Acknowledge(A.ServerPeer,AckFor(Q11))&&RetryOutbox.Size()==1);
+    AddInfo(TEXT("[OriginalRetrySlotReuse] realOutbox=1 observedSlotOrder=12,11 boundedPrefix=11 unboundedOrderUnchanged=1 originalBytesAndAckPreserved=1 network=0"));
     AddInfo(TEXT("Values journal and negative source/roster/hole/conflict checks only. Actual server-consumption provenance requires the separate native process probe; no checkpoint, hidden-state, lifetime, localized rollback or game admission."));
     return !HasAnyErrors();
 }

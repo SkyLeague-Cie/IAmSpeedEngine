@@ -15,8 +15,18 @@ struct FLocalSessionConfig
     FNativeProcessDescriptor OriginalSelf;
     FNativeEndpoint Endpoint;
     std::vector<FLocalSessionPeer> Peers;
+    // Explicit same-host diagnostic fault profile, disabled by default. A
+    // selected original IAS UDP fragment is discarded BEFORE the OS send.
+    // This is controlled egress loss, never measured external network loss.
+    std::uint32_t ControlledLossEvery=0;
+    std::uint16_t ControlledLossKinds=0; // bit Kind-1; no input/source authority
 };
-enum class ELocalSession {Ready,Pending,Duplicate,Stale,WouldBlock,Closed,WrongOwner,Invalid,UnknownPeer,PeerDead,Full,SocketError,PeerUnavailable};
+enum class ELocalSession {Ready,Pending,Duplicate,Stale,WouldBlock,Closed,WrongOwner,Invalid,UnknownPeer,PeerDead,Full,SocketError,PeerUnavailable,InjectedLoss};
+struct FLocalEgressKindCounters
+{
+    std::uint64_t Attempted=0,DiscardedBeforeOsSend=0,OsSent=0,OsWouldBlock=0;
+};
+struct FLocalSessionEgressCounters {std::array<FLocalEgressKindCounters,16> Kinds{};};
 struct FLocalSessionMessage
 {std::uint64_t Peer=0,Sequence=0;std::uint8_t Kind=0;std::vector<std::uint8_t> Bytes;};
 // Controlled SAME-HOST launcher session. Config MUST come from the trusted
@@ -36,6 +46,7 @@ public:
     static std::unique_ptr<FNativeLocalSession> Open(const FLocalSessionConfig& LauncherAssigned);
     ELocalSession Send(std::uint64_t Peer,std::uint8_t Kind,const std::vector<std::uint8_t>& OriginalBytes);
     ELocalSession Receive(FLocalSessionMessage& Message);
+    FLocalSessionEgressCounters ReadEgressCounters() const; // immutable actual counters, not an admission
     bool OriginalPeersAlive() const;
     FNativeEndpoint LocalEndpoint() const;
     void Close() noexcept;

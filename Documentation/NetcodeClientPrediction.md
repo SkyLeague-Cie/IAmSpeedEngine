@@ -1318,3 +1318,45 @@ it will not filter LogHttp, disable IAS sockets, retune physics or patch Engine.
 The actual startup value must be observed in the new process. No pending change
 to a test profile grants runtime qualification. Full-state restoreK and localized
 rollback remain unfinished and all incomplete admission guards stay closed.
+
+
+Runtime83 freshly qualified source86 using the exact unchanged build82 DLLs as
+inputs, with NO build83/native82 acceptance invented. Real original66497 closed0,
+56 strict native tests and Pending1 passed, three native commandlets, two actual
+Game client processes and one dedicated, and negative cancellation all drained
+their original jobs with empty source/protected/Engine audits. The35 oscillating
+unit cases covered21455 paired frames with all six COM maxima0; this is isolated
+unit evidence, not a network/input-source/full hidden-state certificate. Actual
+startup HomeScreen query returned false. FAIL80/81/82 remain preserved. The
+network correction remains GLOBAL_FROM_BIRTH, not authoritativeK/localized.
+
+The next source adds an explicit, disabled-by-default IAS-only controlled egress
+loss fixture. A selected ORIGINAL UDP fragment is discarded before its OS send;
+that is counted separately from an actual successful send and returns InjectedLoss.
+Schedules advance independently per original destination and kind, so alternating
+two peers cannot systematically sacrifice just one peer. This finite probe selects
+only owner-input, authority-input and observable-kinematics kinds2/3/4; startup,
+retention ACK, close and completion controls are excluded. This is not observed
+external, random, burst, delayed or reordered network loss. It grants no authority.
+
+The optional retry limit1/2/4/8/16 keeps the OLDEST unacknowledged original input
+records first; zero preserves the previous fixture batching. No source/sequence,
+edge, consumed frame or ACK meaning is changed. Effective counts, complete actor
+journals, first-forward divergence and correction counts must be measured in NEW
+three-Game process runs across limits/loss profiles. Configuration alone is not
+coverage. Native compilation/regression and those controlled-loss runs are NOT_RUN
+at this source edit. Observable kinematics are not complete physical state; no
+physical-state redundancy, complete restoreK, service/source/lifetime admission,
+localized rollback or live-device match follows from this egress fixture.
+
+The first loss draft incorrectly treated reliable-outbox slot iteration as
+chronological retry order. SL review supplied a real ACK/reuse counterexample:
+seq10slot0/seq11slot1, ACK10 then Queue12 gives12-before11. Revision02 sorts only
+the caller-owned retry COPY when a bounded limit is enabled, before truncation.
+Zero retains prior order. The existing journal native test now exercises the
+real outbox hole/reuse, negative physical-order control, original encoded bytes,
+bounded oldest prefix and unchanged original outbox/ACK behavior. This test is
+NOT_RUN until the new compile/native campaign; no model-only PASS is claimed.
+Periodic fragment loss can phase-lock a multi-fragment message if its fragment
+count is divisible by Every; finite failures must be retained, never assert
+fairness/liveness or add a bypass. Loss profiles remain controlled experiments.

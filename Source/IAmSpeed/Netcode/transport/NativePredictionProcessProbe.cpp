@@ -1,5 +1,6 @@
 #include "NativePredictionProcessProbe.h"
 #include "RedundantDatagram.h"
+#include "OriginalRetryOrder.h"
 #include "AuthorityInputJournal.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadConformanceProfile.h"
@@ -216,7 +217,7 @@ struct FFirstForwardKinematicTrace
         S<<"]}";return bool(S);
     }
 };
-bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount,U64 ActualVehicleContactFrames,const FFirstForwardKinematicTrace* Trace=nullptr,const FAuthorityInputJournal* Journal=nullptr)
+bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Corrections,double MaximumError,bool Equal,bool InitialSynchronized,U64 OwnerAuthorityCount,U64 RemoteAuthorityCount,U64 ActualVehicleContactFrames,const FLocalSessionEgressCounters& Egress,const FFirstForwardKinematicTrace* Trace=nullptr,const FAuthorityInputJournal* Journal=nullptr)
 {
     if(!InitialSynchronized||OwnerAuthorityCount!=Frames||RemoteAuthorityCount!=Frames
         ||(O.Scenario==ENativeProbeScenario::InteractingInputFixture&&!ActualVehicleContactFrames))return false;
@@ -239,6 +240,15 @@ bool WriteResult(const FNativePredictionProbeOptions& O,U64 Through,U64 Correcti
         <<",\"authority_retention_is_consumption_ack\":false,\"server_completed_input_sources_checked\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
         <<",\"both_clients_retained_both_actor_journals\":"<<(O.Launcher.SelfPeer==Server?"true":"null")
         <<",\"initial_publication_matched\":true,\"initial_publication_frame\":0,\"activation_frame\":1,\"startup_full_hidden_state_certificate\":false,\"hardware\":false,\"real_demo_game_client\":false,\"complete_state_restore\":false,\"localized_rollback\":false";
+    S<<",\"controlled_ias_egress\":{\"scope\":\"selected_original_udp_fragments_discarded_before_os_send_only\",\"drop_every\":"<<O.ControlledDatagramDropEvery
+        <<",\"input_retry_record_limit\":"<<O.InputRetryRecordLimit<<",\"kinds\":[";
+    for(std::size_t K=0;K<Egress.Kinds.size();++K)
+    {
+        const auto& C=Egress.Kinds[K];if(K)S<<',';
+        S<<"{\"kind\":"<<K+1<<",\"attempted\":"<<C.Attempted<<",\"discarded_before_os_send\":"<<C.DiscardedBeforeOsSend
+            <<",\"os_sent\":"<<C.OsSent<<",\"os_would_block\":"<<C.OsWouldBlock<<'}';
+    }
+    S<<"]}";
     if(Trace&&(!Journal||!Trace->Write(S,O.Launcher.SelfPeer==PeerA?101:102,*Journal)))return false;
     S<<"}\n";
     S.close();if(!S)return false;std::error_code Error;std::filesystem::rename(Temp,Path,Error);return !Error;
@@ -286,19 +296,24 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
     };
     if(O.Scenario>ENativeProbeScenario::InteractingInputFixture||!IsInGameThread()||!O.MaxReplayFramesPerPulse||O.MaxReplayFramesPerPulse>256||O.ReportPath.empty()||O.ReleasePath.empty()||O.Launcher.Peers.size()!=2
         ||(O.Launcher.SelfPeer!=Server&&O.Launcher.SelfPeer!=PeerA&&O.Launcher.SelfPeer!=PeerB))co_return Fail(__LINE__);
-    auto Channel=FNativeLocalSession::Open(O.Launcher);if(!Channel)co_return Fail(__LINE__);
+    if(O.Launcher.ControlledLossEvery||O.Launcher.ControlledLossKinds
+        ||(O.ControlledDatagramDropEvery&&(O.ControlledDatagramDropEvery<2||O.ControlledDatagramDropEvery>1000))
+        ||(O.InputRetryRecordLimit&&O.InputRetryRecordLimit!=1&&O.InputRetryRecordLimit!=2&&O.InputRetryRecordLimit!=4&&O.InputRetryRecordLimit!=8&&O.InputRetryRecordLimit!=16))co_return Fail(__LINE__);
+    auto Launcher=O.Launcher;Launcher.ControlledLossEvery=O.ControlledDatagramDropEvery;
+    Launcher.ControlledLossKinds=Launcher.ControlledLossEvery?14:0; // kinds2/3/4 ONLY
+    auto Channel=FNativeLocalSession::Open(Launcher);if(!Channel)co_return Fail(__LINE__);
     const auto Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(90);
     const auto Send=[&](U64 Peer,std::uint8_t Kind,const std::vector<std::uint8_t>& Bytes)
     {
         if(Kind==ClientDone)++Diagnostics->ClientDoneSendAttempts;
         const auto S=Channel->Send(Peer,Kind,Bytes);TraceTransport=int(S);
         if(Kind==ClientDone&&S==ELocalSession::Ready)++Diagnostics->ClientDoneDatagrams;
-        return S==ELocalSession::Ready||S==ELocalSession::WouldBlock;
+        return S==ELocalSession::Ready||S==ELocalSession::WouldBlock||S==ELocalSession::InjectedLoss;
     };
     const auto SendPackets=[&](U64 Peer,std::uint8_t Kind,const std::vector<FPacket>& Packets)
     {
         if(Packets.empty())return true;FRedundantRecords Records;
-        for(const auto& Pkt:Packets){auto Encoded=Encode(Pkt);if(!Encoded)return Fail(__LINE__);Records.push_back(std::move(*Encoded));}
+        for(std::size_t N=0;N<Packets.size()&&(!O.InputRetryRecordLimit||N<O.InputRetryRecordLimit);++N){const auto& Pkt=Packets[N];auto Encoded=Encode(Pkt);if(!Encoded)return Fail(__LINE__);Records.push_back(std::move(*Encoded));}
         const auto Groups=PackRedundantDatagrams(ERedundantFamily::Input,Records);if(!Groups)return Fail(__LINE__);
         for(const auto& Group:*Groups)if(!Send(Peer,Kind,Group))return Fail(__LINE__);return true;
     };
@@ -413,7 +428,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
             if(Next==Frames&&Done[0]&&Done[1]&&BothAuthorityJournalsRetained)
             {
                 const auto FinalNative=World->ReadLatest();if(!FinalNative)co_return Fail(__LINE__);
-                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started,Frames,Frames,FinalNative->VehicleContactFrameCount))co_return Fail(__LINE__);
+                if(!World->Close()||!WriteResult(O,Frames-1,0,0,true,Started,Frames,Frames,FinalNative->VehicleContactFrameCount,Channel->ReadEgressCounters()))co_return Fail(__LINE__);
                 while(std::chrono::steady_clock::now()<Deadline)
                 {
                     // Destroy file/temporary values before giving the GT back.
@@ -560,13 +575,14 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
         if(Client)co_yield Client->ReadLatest(); // coherent forward/corrected native publication
         Phase=TEXT("client-send");
         std::vector<FPacket> Pending;Outbox.Retry([&](const FPacket& Pkt){Pending.push_back(Pkt);});
+        OrderOriginalRetryCopy(Pending,O.InputRetryRecordLimit!=0);
         if(!SendPackets(Server,OwnerInput,Pending))co_return Fail(__LINE__);
         if(ErrorMeasured&&!Send(Server,ObservedDivergence,{1}))co_return Fail(__LINE__);
         if(Done)
         {
             const auto FinalNative=Client->ReadLatest();if(!FinalNative)co_return Fail(__LINE__);
             if(!Send(Server,ClientDone,{1}))co_return Fail(__LINE__);
-            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started,AuthorityJournal->ContiguousCount(101+Own),AuthorityJournal->ContiguousCount(101+Other),FinalNative->VehicleContactFrameCount,&KinematicTrace,&*AuthorityJournal))co_return Fail(__LINE__);
+            if(!std::filesystem::exists(O.ReportPath)&&!WriteResult(O,Frames-1,Corrections,MaximumError,true,Started,AuthorityJournal->ContiguousCount(101+Own),AuthorityJournal->ContiguousCount(101+Other),FinalNative->VehicleContactFrameCount,Channel->ReadEgressCounters(),&KinematicTrace,&*AuthorityJournal))co_return Fail(__LINE__);
             std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
             if(Release>>Session>>Epoch)
             {

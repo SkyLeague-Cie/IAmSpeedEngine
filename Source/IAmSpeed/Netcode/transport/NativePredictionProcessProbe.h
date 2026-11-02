@@ -11,6 +11,12 @@ struct FNativePredictionProbeOptions
     FLocalSessionConfig Launcher;
     ENativeProbeScenario Scenario=ENativeProbeScenario::SeparatedInputFixture; // finite unit source only
     std::string ReportPath,ReleasePath;
+    // Controlled same-host DATA fragment loss only (owner input, authority
+    // input and observable kinematics). Startup/ACK/close controls unaffected.
+    std::uint32_t ControlledDatagramDropEvery=0;
+    // Zero preserves the current fixture batching. Nonzero limits each retry
+    // to the oldest N unacknowledged ORIGINAL records; never relabel/skip holes.
+    std::uint32_t InputRetryRecordLimit=0; // supported 1/2/4/8/16
     std::uint32_t MaxReplayFramesPerPulse=16; // work budget; physical delta remains1/300s
 };
 // Finite commandlet/process probe, NOT game-client admission. Uses unit-authored
