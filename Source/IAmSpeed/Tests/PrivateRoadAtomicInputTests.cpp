@@ -210,7 +210,7 @@ struct FActualRecipeObjectReadCensus
     {
         if(!IsInGameThread())return;
         const bool Recipe=Speed::RoadSettings::SelectedOriginalRoadSettings()!=nullptr;
-        const bool OriginalRoute=P::IsPrivateRoadOriginalStorageRouteForDiagnostics();
+        const bool OriginalRoute=Speed::Netcode::Prediction::IsPrivateRoadOriginalStorageRouteForDiagnostics();
         if(!Recipe&&!OriginalRoute)return;
         const bool RouteOnly=OriginalRoute&&!Recipe;
         ++ObserverDepth;if(ObserverDepth>MaxObserverDepth)MaxObserverDepth=ObserverDepth;
@@ -740,7 +740,7 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     // Freeze this primary birth/step/control census before reporting values.
     // Retirement and the following invalid-birth fixture are NOT observed.
     if(!TestFalse(TEXT("freeze census outside recipe and original storage route"),
-        Speed::RoadSettings::SelectedOriginalRoadSettings()!=nullptr||P::IsPrivateRoadOriginalStorageRouteForDiagnostics()))return false;
+        Speed::RoadSettings::SelectedOriginalRoadSettings()!=nullptr||Speed::Netcode::Prediction::IsPrivateRoadOriginalStorageRouteForDiagnostics()))return false;
     UE::CoreUObject::RemoveObjectHandleReadCallback(AllRecipeReadHandle);
     AllRecipeReadRegistered=false;
 #endif

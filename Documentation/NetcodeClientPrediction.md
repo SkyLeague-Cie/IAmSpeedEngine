@@ -1191,3 +1191,22 @@ does not alter physical math, startup/retirement routing, provider guards or
 restoration admission. Actual factory callback partition, real service/module/
 deleter participation, full typed causal state, authoritativeK restoration and
 localized contact-island replay remain required. Reconciliation remains GLOBAL.
+
+
+Source81/native77 FAILED compilation: actual C2653/C3861 in the newly widened
+observer. The namespace alias P existed only inside RunTest, whereas the observer
+struct lives in the anonymous namespace outside that function. Source82 spells
+the actual full Speed::Netcode::Prediction namespace at both diagnostic queries.
+These are the only two test-code edits; the header declaration/implementation,
+routing, scope/capture/removal logic, physical math and guards are unchanged.
+Original45621 and both original coordinators closed1, actual UBT6, realJob0 twice
+and final source/protected/Engine audits empty. All later query/native/Pending/
+process/Game stages remain NOT_RUN. Source81 reviews had missed this C++ scope
+error; the compile failure and all older FAIL/UNKNOWN remain preserved.
+
+Fresh native78 is required, no76 success transfers. The reviewed helper77 is
+bound to actual77 CLOSED0 and therefore MUST NOT run against failed77 or later78.
+A separate reviewed78 adaptation must bind the genuine new source, original
+closure, metadata and upstream hashes. No runtime factory prefix, complete
+callback/service lifetime, authoritativeK restore or localized rollback is
+claimed from this compile fix. All incomplete restoration guards remain closed.
