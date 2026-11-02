@@ -1,6 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "UObject/ObjectPtr.h"
+#include "Templates/SubclassOf.h"
 #include <stdexcept>
 
 namespace Speed::NativeObjectRead
@@ -24,6 +25,19 @@ template<class T> bool MatchesOriginalBirth(const TObjectPtr<T>& Ptr,const TWeak
     return Original&&::IsObjectHandleResolved(Ptr.GetHandle())
         &&ObjectPtr_Private::Friend::NoAccessTrackingGetNoResolve(Ptr)==Original;
 }
+// Engine exposes only a mutable GetGCPtr accessor. The cast obtains the
+// actual wrapper's handle for a read; neither wrapper nor class is modified.
+template<class T> UClass* ResolvedOriginalClass(const TSubclassOf<T>& Class)
+{
+    const TObjectPtr<UClass>& Handle=const_cast<TSubclassOf<T>&>(Class).GetGCPtr();
+    return ResolvedOriginal(Handle);
+}
+template<class T> bool MatchesOriginalClassBirth(const TSubclassOf<T>& Class,const TWeakObjectPtr<UClass>& Birth)
+{
+    const TObjectPtr<UClass>& Handle=const_cast<TSubclassOf<T>&>(Class).GetGCPtr();
+    return MatchesOriginalBirth(Handle,Birth);
+}
+
 template<class T> class TRead final
 {
     const TObjectPtr<T>& Ptr; bool Original;

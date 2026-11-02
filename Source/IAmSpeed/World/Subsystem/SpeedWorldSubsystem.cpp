@@ -835,6 +835,13 @@ bool USpeedWorldSubsystem::HasPhysicalRegistrationsForPresentationAdmission()
 void USpeedWorldSubsystem::ApplyPendingOps()
 {
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
+    {
+        // Linearize a no-op at this locked empty observation. No adapter or
+        // simulation storage is accessed on this path. A concurrent enqueue
+        // after the observation remains queued for the next boundary.
+        FScopeLock PendingSnapshot(&PendingCSEpochStorage());
+        if(PendingOpsEpochStorage().IsEmpty())return;
+    } // Never wait for worker ACK while holding PendingCS.
 	FScopedGameThreadAdapterAccess Access(GetWorld());
 	if (!Access.IsValid())
 	{

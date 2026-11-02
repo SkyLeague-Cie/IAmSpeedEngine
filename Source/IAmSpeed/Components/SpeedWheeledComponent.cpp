@@ -585,7 +585,9 @@ bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) cons
 		const auto* ExpectedSuspension = &Vehicle->Suspension[Ordinal];
 		const UChaosVehicleWheel* ExpectedConfiguration = ReadWheelConfigurationForPhysics(Ordinal).Get();
 		if (!Wheel || Wheel->Idx() != Ordinal || Wheel->GetParentComponent() != this
-			|| !ExpectedConfiguration || !WheelSetupsWheeledDomainStorage()[Ordinal].WheelClass
+			|| !ExpectedConfiguration || !(UsesOriginalWheeledDomain()
+                ? Speed::NativeObjectRead::ResolvedOriginalClass(WheelSetupsWheeledDomainStorage()[Ordinal].WheelClass)==UChaosVehicleWheel::StaticClass()
+                : bool(WheelSetupsWheeledDomainStorage()[Ordinal].WheelClass))
 			|| Wheel->GetChaosWheelConfiguration() != ExpectedConfiguration
 			|| Wheel->GetWheelSim() != ExpectedWheel || Wheel->GetSuspensionSim() != ExpectedSuspension)
 		{

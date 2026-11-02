@@ -136,6 +136,7 @@ FReferenceSimulation RetiringReferenceSimulation;
         U64 StableId=0;
         bool SolidInitializationWitness=false;
         TArray<TWeakObjectPtr<UChaosVehicleWheel>> OriginalWheelObjects;
+        TWeakObjectPtr<UClass> OriginalWheelClassBirth;
         TWeakObjectPtr<UBoxSubBody> OriginalHitboxBirth;
         TArray<TWeakObjectPtr<USWheelSubBody>> OriginalWheelBodyBirth;
         USpeedSimulation* OriginalNativeSimulation=nullptr;
@@ -193,11 +194,13 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
             if(!N->NativeVehicleRoot||!N->NativeVehicleRoot->Domain)return false;
             const auto& D=*N->NativeVehicleRoot->Domain;
             if(N->OriginalWheelBodyBirth.Num()!=4||N->OriginalWheelObjects.Num()!=4
-                ||D.WheelSubBodies.Num()!=4||D.Wheels.Num()!=4
+                ||D.WheelSubBodies.Num()!=4||D.Wheels.Num()!=4||D.WheelSetups.Num()!=4
                 ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.HitboxSubBody,N->OriginalHitboxBirth))return false;
             for(int32 Index=0;Index<4;++Index)
                 if(!Speed::NativeObjectRead::MatchesOriginalBirth(D.WheelSubBodies[Index],N->OriginalWheelBodyBirth[Index])
-                    ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.Wheels[Index],N->OriginalWheelObjects[Index]))return false;
+                    ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.Wheels[Index],N->OriginalWheelObjects[Index])
+                    ||!Speed::NativeObjectRead::MatchesOriginalClassBirth(D.WheelSetups[Index].WheelClass,N->OriginalWheelClassBirth)
+                    ||N->OriginalWheelObjects[Index].Get()->GetClass()!=N->OriginalWheelClassBirth.Get())return false;
         }
         return true;
     }
@@ -381,6 +384,15 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         C->OriginalWheeledDomain=RetirementDraft::AliasExistingPart(N.NativeVehicleRoot,N.NativeVehicleRoot->Domain);
         I.NativeCppKeepAlive.push_back(N.NativeVehicleRoot);
         C->SetAsyncPhysicsTickEnabled(false);
+        // Retain the actual base-wheel class before any prepared-wheel birth
+        // callback. The original profile authors exactly this class; changed,
+        // stale or unresolved setup handles later refuse admission.
+        N.OriginalWheelClassBirth=UChaosVehicleWheel::StaticClass();
+        I.Pin(N.OriginalWheelClassBirth.Get());
+        // Both weak assignment and Pin can dispatch actual read callbacks.
+        // Revalidate before constructing any child in the acquired component.
+        if(!N.OriginalWheelClassBirth.IsValid()||!I.AcquiredGraphStillLive()||!N.OriginalWheelClassBirth.IsValid())
+        {Refuse(Why,TEXT("original graph/class invalidated before prepared wheel creation"));return {};}
         const auto PrepareWheelObjects=[&]()
         {
             TArray<UChaosVehicleWheel*> Result;

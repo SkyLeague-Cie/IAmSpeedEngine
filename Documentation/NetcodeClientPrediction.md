@@ -861,3 +861,44 @@ This changes the test profile and requires fresh compilation and runtime results
 The physical correction remains GLOBAL FROM BIRTH; full causal capture, retained
 authoritativeK restore, localized contact-island replay, network loss redundancy
 and fresh two-client Device/render acceptance remain unfinished.
+
+
+Source73/native69 completed on its exact frozen source: 56 native tests and one
+Pending test, three commandlets, two actual Game clients with a dedicated process
+and expected cancellation9/10, real natural drains and final audits0. Its35
+oscillation cases covered21455 matched native frames with zero measured six-COM
+differences. These are authored native inputs, not network-loss or Device/render
+qualification. Existing FAIL/UNKNOWN history is unchanged.
+
+The one-car observer reduced Step reads164 to152; its original floor reads no
+longer appeared in that window. The newly explicit three-car recipe nevertheless
+measured6176 subbody and134 floor read callbacks across the four real fixture
+worlds,375 contact-event frames, with64 individual ordinary-read positive
+controls. Thus the old five-target zero-read observation did not cover interacting
+contacts. No complete non-escape/lifetime/restore qualification follows from it.
+
+Source74 returns from ApplyPendingOps only after an actual locked empty queue
+observation, before any adapter access. That lock ends before the existing real
+worker suspension/ACK for nonempty work. Active-frame checks, ACK failure and the
+second locked move remain unchanged. A concurrent enqueue after the empty
+observation stays queued for a later boundary; this does not give callers an
+adapter-exclusion lease after return.
+
+The four original wheel setup classes are checked against the actual base class
+captured and pinned before prepared-wheel callbacks. Original resolved handles
+are read without load/resolve/read hooks; ordinary legacy class bool evaluation
+retains its original short-circuit position. Actual class and graph validity are
+checked after class pin/read callbacks and before the next child construction.
+This is an identity guard, not a complete configuration or lifetime certificate.
+
+A Windows diagnostic captures24-PC prefixes for actual interacting read events
+with a real pre-resolved and pinned system function. All original target events
+remain counted. A fixed64-prefix table reports failed captures, capacity overflow,
+depth truncation and nested sampler omissions explicitly. Prefixes can merge
+deeper callers beyond the cap. Module mapping/output happens after native math;
+PDB resolution is separate, local and requires real DLL/CodeView/PDB identity
+matching. The OS stack capture remains a diagnostic participant, not a guarantee
+of zero internal OS allocation/locks or physics lifetime protection. Instrumented
+timing is not a pure performance benchmark. This source needs fresh native tests;
+source73 PASS does not transfer. Full causal capture, authoritativeK restoration,
+localized rollback and final playable two-client acceptance remain unfinished.
