@@ -623,6 +623,17 @@ public:
 	// Additional impulse relaxation applied to wheel-frame lateral friction while handbraking.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	float WheelFrameHandbrakeLateralImpulseScale = 1.0f;
+	// Per-component handling selections; console values >= 0 explicitly override these.
+	// Model 0 preserves the contact-arm denominator; model 1 uses application/contact arms.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0", ClampMax = "1"))
+	int32 WheelFrameHBContactResponseModel = 0;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "0.0"))
+	float WheelFrameHandbrakeDriveForceScale = 1.0f;
+	// Negative endpoint fractions preserve inherited handbrake calibration.
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "-1.0", ClampMax = "0.60"))
+	float WheelFrameHandbrakeHalfInputFraction = -1.0f;
+	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly, meta = (ClampMin = "-1.0", ClampMax = "0.45"))
+	float WheelFrameHandbrakeQuarterInputFraction = -1.0f;
 	// Optional absolute handbrake impulse scale by lateral slip ratio. Empty preserves the scalar above.
 	UPROPERTY(BlueprintReadWrite, Category = Steering, EditDefaultsOnly)
 	TArray<FVector2D> HandbrakeLateralImpulseScaleCurve;
