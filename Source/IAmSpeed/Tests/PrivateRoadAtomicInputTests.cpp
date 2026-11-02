@@ -595,21 +595,17 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     AddInfo(FString::Printf(TEXT("[ActualObjectHandleReadWitness] trackingCompiled=%d scopedTargetReads=%llu ordinaryPositiveReads=%llu physicalMutationAttempted=0 targetSet=wheel4_hitbox1 birthCallbackCensus=0 escapedViewExclusionCertified=0 completeRestoreLease=0"),
         int(UE_WITH_OBJECT_HANDLE_TRACKING),HandleReads.ScopedTargetReads,DeliberatePositiveReads));
     {
-        UWorld* KnownWorld=BirthGCProbe.World.Get();
-        OK=TestTrue(TEXT("actual known-world read control retains original world"),KnownWorld!=nullptr)&&OK;
-        if(KnownWorld)
+        const uint64 Before=AllRecipeReads.ControlObjects;
+        P::FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe Probe;
         {
-            TObjectPtr<UWorld> DeliberateWorldRead=KnownWorld;
-            const uint64 Before=AllRecipeReads.ControlObjects;
-            bool SameOriginal=false;
-            {
-                FGCScopeGuard KnownWorldReadOnly;
-                AllRecipeReads.DuringControl=true;ON_SCOPE_EXIT{AllRecipeReads.DuringControl=false;};
-                Speed::RoadSettings::FOriginalRoadSettingsScope DeclaredControl(Seed.DeclaredSettings);
-                SameOriginal=DeliberateWorldRead.Get()==KnownWorld;
-            }
-            const uint64 DeliberateReadDelta=AllRecipeReads.ControlObjects-Before;
-            OK=TestTrue(TEXT("deliberate tracked world read returns actual known object"),SameOriginal)&&OK;
+            AllRecipeReads.DuringControl=true;ON_SCOPE_EXIT{AllRecipeReads.DuringControl=false;};
+            Probe=World->ObserveOriginalWorldReadForDiagnostics();
+        }
+        const uint64 DeliberateReadDelta=AllRecipeReads.ControlObjects-Before;
+        OK=TestTrue(TEXT("actual owner admitted the read-only known-world control"),Probe.Admitted)&&OK;
+        if(Probe.Admitted)
+        {
+            OK=TestTrue(TEXT("owner tracked world read returned the actual retained original"),Probe.SameOriginal)&&OK;
 #if UE_WITH_OBJECT_HANDLE_TRACKING
             OK=TestEqual(TEXT("one deliberate tracked world read is observed once without self-amplification"),DeliberateReadDelta,uint64(1))&&OK;
             OK=TestEqual(TEXT("actual observer never reenters itself while recording native identity"),AllRecipeReads.MaxObserverDepth,uint32(1))&&OK;

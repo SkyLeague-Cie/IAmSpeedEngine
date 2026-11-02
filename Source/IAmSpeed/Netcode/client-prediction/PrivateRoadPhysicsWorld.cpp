@@ -968,6 +968,39 @@ std::vector<FNativeConfigurationLifetimeValues> FPrivateRoadPhysicsWorld::ReadNa
     for(const auto& Trace:I.NativeConfigurationLifetime)Values.push_back(Trace->Read());
     return Values;
 }
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe FPrivateRoadPhysicsWorld::ObserveOriginalWorldReadForDiagnostics()
+{
+    FOriginalWorldReadProbe Result;
+    try
+    {
+        if(!Impl||OriginalComponentStorageOwner||!IsInGameThread()
+            ||Speed::RoadSettings::SelectedOriginalRoadSettings()
+            ||Speed::Input::FPresentationInputScope::IsActive())return Result;
+        auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
+        if(!Lock.owns_lock()||I.Closed||I.Failed||!I.Access||I.Access->Active
+            ||!I.DeclaredSettings||!I.AcquiredGraphStillLive())return Result;
+        auto* Expected=I.OriginalWorldWeak.Get();
+        if(!Expected)return Result;
+        TObjectPtr<UWorld> KnownWorld=Expected;
+        {
+            FGCScopeGuard KnownWorldReadOnly;
+            if(!I.AcquiredGraphStillLive())return Result;
+            // Only this real owner can mint its settings scope. This probe never
+            // enters FOriginalComponentStorageScope or advances physical state.
+            Result.Admitted=true;
+            {
+                Speed::RoadSettings::FOriginalRoadSettingsScope OwnRecipe(I.DeclaredSettings);
+                Result.SameOriginal=KnownWorld.Get()==Expected;
+            }
+        }
+        if(!I.AcquiredGraphStillLive())Result.SameOriginal=false;
+        return Result;
+    }
+    catch(...){return FOriginalWorldReadProbe{};}
+}
+#endif
+
 bool FPrivateRoadPhysicsWorld::Close()
 {
     using RetirementDraft::EPhase;

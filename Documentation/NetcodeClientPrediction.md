@@ -813,3 +813,23 @@ Birth/Step reads. Production physics and all full restore guards are unchanged.
 Source71 is not compiled or qualified by this commit. Full causal capture,
 remaining callback/host/module closure, authoritativeK restoration and localized
 rollback plus playable two-client validation remain unfinished.
+
+
+Source71/native67 actually failed compilation C2248: the test tried to construct
+FOriginalRoadSettingsScope, whose constructor is private to the physical owner.
+Actual UBT exit6/345.562s naturally drained with final audits0; original49017
+closed1. No subsequent native/Pending/process/Game test ran. The complete failure
+and the prior census66 UNKNOWN remain preserved; no previous PASS transfers.
+
+Source72 keeps that constructor private and does not add a test friend. A
+development-only, read-only method on the real FPrivateRoadPhysicsWorld owner
+takes no caller recipe, pointer or callback, and returns only two observations:
+whether its diagnostic was admitted and whether the tracked world read matched.
+It checks the actual GT, gate, closed/failed/active state, roots and pins, holds
+the real short GC guard, and enters its OWN declared-settings scope for the
+single known-world Get. It never enters the physical storage route, steps or
+restores physics, flushes an outbox or returns a native view/capability. Framework
+checks and counter deltas remain outside that owner scope. This is only a test
+profile read probe; it does not admit arbitrary callbacks/GC/teardown, a complete
+lifetime lease, authoritativeK restoration or localized rollback. Source72
+requires a fresh native build and real process tests; none are claimed here.

@@ -107,6 +107,12 @@ public:
     bool ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& OriginalBaseline,FString& Why);
     // Immutable actual C++ return-site values; no source/lifetime exclusion or lease follows.
     std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeForDiagnostics() const;
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    struct FOriginalWorldReadProbe {bool Admitted=false,SameOriginal=false;};
+    // Read-only diagnostic executed by the actual owner. No caller recipe,
+    // pointer, callback, native view, physical route or restore authority.
+    FOriginalWorldReadProbe ObserveOriginalWorldReadForDiagnostics();
+#endif
     bool Close(); // GT only; never destroys native storage in a physical/publication tail
 };
 }
