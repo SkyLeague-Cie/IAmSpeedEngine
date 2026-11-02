@@ -1056,7 +1056,7 @@ private:
         decltype(UChaosWheeledVehicleMovementComponent::SteeringInputRate) SteeringInputRate{};
         decltype(UChaosWheeledVehicleMovementComponent::SteeringSetup) SteeringSetup{};
     };
-    std::unique_ptr<FOriginalWheeledDomain> OriginalWheeledDomain;
+    std::shared_ptr<FOriginalWheeledDomain> OriginalWheeledDomain;
     std::weak_ptr<const Speed::NativeEpoch::IOriginalStorageRoute> OriginalWheeledRoute;
     bool UsesOriginalWheeledDomain() const
     {

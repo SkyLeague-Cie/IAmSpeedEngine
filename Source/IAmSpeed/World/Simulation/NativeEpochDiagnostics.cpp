@@ -1,7 +1,8 @@
 #include "NativeEpochDiagnostics.h"
+#include "Misc/ScopeExit.h"
 namespace Speed::NativeEpoch
 {
-namespace {thread_local FDiagnosticOutbox* Current=nullptr;}
+namespace {thread_local FDiagnosticOutbox* Current=nullptr;thread_local uint32 FlushDepth=0;}
 FDiagnosticOutbox::FDiagnosticOutbox() {Records.reserve(4096);}
 FDiagnosticOutbox::~FDiagnosticOutbox() {check(!Active&&Current!=this);}
 bool FDiagnosticOutbox::Begin() noexcept
@@ -15,6 +16,7 @@ void FDiagnosticOutbox::End() noexcept
     Current=nullptr;Active=false;
 }
 bool HasOriginalDiagnosticOutbox() noexcept {return Current!=nullptr;}
+bool IsOriginalDiagnosticFlush() noexcept {return FlushDepth!=0;}
 void QueueOriginalDiagnostic(const ANSICHAR* File,int32 Line,const FLogCategoryName& Category,
     ELogVerbosity::Type Verbosity,FString Message)
 {
@@ -32,6 +34,7 @@ void QueueOriginalDiagnostic(const ANSICHAR* File,int32 Line,const FLogCategoryN
 bool FDiagnosticOutbox::Flush()
 {
     check(IsInGameThread()&&!Active&&!Current);
+    ++FlushDepth;ON_SCOPE_EXIT{--FlushDepth;}; // actual synchronous dispatch, including nested flushes
     for(const auto& R:Records)
         FMsg::Logf_Internal(R.File,R.Line,R.Category,R.Verbosity,TEXT("%s"),*R.Message);
     if(Overflow)UE_LOG(LogTemp,Error,TEXT("[NativeEpochDiagnosticOverflow] Original stage refused; diagnostic coverage UNKNOWN; no successful publication."));

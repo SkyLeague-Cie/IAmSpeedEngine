@@ -2,6 +2,7 @@
 
 
 #include "SolidSubBody.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "Configs/SubBodyConfig.h"
@@ -266,7 +267,7 @@ float USolidSubBody::ResolveSphereBoxFriction(
     const USolidSubBody& Box,
     float FallbackFriction)
 {
-    const float ForcedOverride = CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread();
+    const float ForcedOverride = Speed::RoadSettings::ReadOriginalOrLegacy<24>([](){ return CVarIAmSpeedSphereBoxFrictionOverride.GetValueOnAnyThread(); });
     if (ForcedOverride >= 0.0f)
     {
         return ForcedOverride;
@@ -286,7 +287,7 @@ float USolidSubBody::ResolveSphereBoxManifoldFriction(
     const float FallbackFriction)
 {
     const float ForcedOverride =
-        CVarIAmSpeedSphereBoxManifoldFrictionOverride.GetValueOnAnyThread();
+        Speed::RoadSettings::ReadOriginalOrLegacy<25>([](){ return CVarIAmSpeedSphereBoxManifoldFrictionOverride.GetValueOnAnyThread(); });
     if (ForcedOverride >= 0.0f)
     {
         return ForcedOverride;
@@ -303,7 +304,7 @@ float USolidSubBody::ResolveSphereBoxManifoldFriction(
 
 float USolidSubBody::ResolveSphereBoxRestitution(const USolidSubBody& Sphere, const USolidSubBody& Box, float FallbackRestitution)
 {
-    const float ForcedOverride = CVarIAmSpeedSphereBoxRestitutionOverride.GetValueOnAnyThread();
+    const float ForcedOverride = Speed::RoadSettings::ReadOriginalOrLegacy<29>([](){ return CVarIAmSpeedSphereBoxRestitutionOverride.GetValueOnAnyThread(); });
     if (ForcedOverride >= 0.f)
     {
         return FMath::Clamp(ForcedOverride, 0.f, 1.f);

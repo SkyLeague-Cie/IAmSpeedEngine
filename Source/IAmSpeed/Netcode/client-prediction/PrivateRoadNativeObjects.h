@@ -167,12 +167,12 @@ class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
     GENERATED_BODY()
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
-    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
 #endif
-    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSolidValues> OwnedSolidValues;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSolidValues> OwnedSolidValues;
     float& MassSolidStorage() override;
     float const& MassSolidStorage() const override;
     bool& bIsMainSubBodySolidStorage() override;
@@ -339,7 +339,7 @@ class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
     SHitResult const& LastResolvedSphereHitBoxDomainStorage() const override;
     int32& LastResolvedSphereHitFrameBoxDomainStorage() override;
     int32 const& LastResolvedSphereHitFrameBoxDomainStorage() const override;
-    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadBoxDomain> OwnedBoxDomain;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadBoxDomain> OwnedBoxDomain;
 
 public:
     explicit USpeedBranchBoxSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
@@ -354,12 +354,12 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     GENERATED_BODY()
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
-    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
     bool UsesOriginalBodyStorage() const;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     Speed::Netcode::Prediction::FPrivateRoadSolidValues ReadLegacySolidDiagnosticValues() const;
 #endif
-    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSolidValues> OwnedSolidValues;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSolidValues> OwnedSolidValues;
     float& MassSolidStorage() override;
     float const& MassSolidStorage() const override;
     bool& bIsMainSubBodySolidStorage() override;
@@ -403,7 +403,7 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     int& idxSolidStorage() override;
     int const& idxSolidStorage() const override;
 
-    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues> OwnedWheelRuntime;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues> OwnedWheelRuntime;
     float& SuspensionForceRuntimeStorage() override;
     float const& SuspensionForceRuntimeStorage() const override;
     uint8& bIsJumpingRuntimeStorage() override;
@@ -531,8 +531,8 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     float const& ConfiguredStaticSpringCompressionWheelDomainStorage() const override;
     float& RadiusSphereDomainStorage() override;
     float const& RadiusSphereDomainStorage() const override;
-    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadWheelDomain> OwnedWheelDomain;
-    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSphereDomain> OwnedSphereDomain;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadWheelDomain> OwnedWheelDomain;
+    std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSphereDomain> OwnedSphereDomain;
 
 public:
     explicit USpeedBranchWheelSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
@@ -565,7 +565,7 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
         float StaticSupportFrameHorizon=0;
 
     };
-    std::unique_ptr<FOwnedComponentValues> OwnedComponentValues;
+    std::shared_ptr<FOwnedComponentValues> OwnedComponentValues;
     bool UsesOriginalComponentStorage() const;
     TAtomic<uint64>& PublishedSimulationStableIdStorage() override;
     TAtomic<uint64> const& PublishedSimulationStableIdStorage() const override;

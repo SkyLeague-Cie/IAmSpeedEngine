@@ -1,4 +1,5 @@
 #include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 
 #include "HAL/IConsoleManager.h"
@@ -45,21 +46,21 @@ const Speed::FFrameParallelRuntimeTopology& HostTopology()
     static const Speed::FFrameParallelRuntimeTopology Host = []
     {
         Speed::FFrameParallelRuntimeTopology Captured = Speed::CollectFrameParallelTopology();
-        const int32 Max = FMath::Clamp(CVarFrameParallelMaxLanes.GetValueOnAnyThread(), 1, Speed::FFrameParallelPolicy::MaximumLanes);
-        const int32 Reserved = FMath::Max(0, CVarFrameParallelReservedCores.GetValueOnAnyThread());
+        const int32 Max = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<73>([](){ return CVarFrameParallelMaxLanes.GetValueOnAnyThread(); }), 1, Speed::FFrameParallelPolicy::MaximumLanes);
+        const int32 Reserved = FMath::Max(0, Speed::RoadSettings::ReadOriginalOrLegacy<79>([](){ return CVarFrameParallelReservedCores.GetValueOnAnyThread(); }));
         int32 HardwareCapacity = Captured.Limits.PhysicalCores > 0
             ? FMath::Min(Max,FMath::Max(1,FMath::Min(Captured.Limits.PhysicalCores,Captured.Limits.AvailableLogicalCores)-Reserved)) : 1;
         if(Captured.Limits.bEffectiveCpuRateKnown)
             HardwareCapacity=FMath::Min(HardwareCapacity,FMath::Max(1,int32(int64(Captured.Limits.LogicalCores)*Captured.Limits.EffectiveCpuRate10000/10000)));
-        const auto Executor = Speed::ConfigureFrameParallelExecutor(HardwareCapacity,CVarFrameParallelLanes.GetValueOnAnyThread());
+        const auto Executor = Speed::ConfigureFrameParallelExecutor(HardwareCapacity,Speed::RoadSettings::ReadOriginalOrLegacy<72>([](){ return CVarFrameParallelLanes.GetValueOnAnyThread(); }));
         Captured.TaskGraphWorkers=Executor.TaskGraphWorkers;Captured.PrivateFrameWorkers=Executor.PrivateWorkers;
         Captured.RequestedBackend=Speed::RequestedFrameExecutorBackend();Captured.bPrivateExecutor=Executor.bPrivateSelected;Captured.bExecutorReady=Executor.bReady;
         Captured.Limits.AvailableTaskWorkers=Executor.bReady?Executor.SelectedWorkers:0;
 #if !UE_BUILD_SHIPPING
         const int32 FirstReservedCores = FMath::Max(0,
-            CVarFrameParallelReservedCores.GetValueOnAnyThread());
+            Speed::RoadSettings::ReadOriginalOrLegacy<79>([](){ return CVarFrameParallelReservedCores.GetValueOnAnyThread(); }));
         const int32 FirstMaxLanes = FMath::Clamp(
-            CVarFrameParallelMaxLanes.GetValueOnAnyThread(), 1, Speed::FFrameParallelPolicy::MaximumLanes);
+            Speed::RoadSettings::ReadOriginalOrLegacy<73>([](){ return CVarFrameParallelMaxLanes.GetValueOnAnyThread(); }), 1, Speed::FFrameParallelPolicy::MaximumLanes);
         // Function-local static initialization is thread safe and executes once
         // per module/process lifetime. These are observed runtime fields, not
         // CPU-OS guesses for the Unreal worker pool or enclosing Job hierarchy.
@@ -85,12 +86,12 @@ namespace Speed
 FFrameParallelSettings CaptureFrameParallelSettings()
 {
     FFrameParallelTopology Limits = HostTopology().Limits;
-    Limits.MaxLanes = FMath::Clamp(CVarFrameParallelMaxLanes.GetValueOnAnyThread(), 1, Speed::FFrameParallelPolicy::MaximumLanes);
+    Limits.MaxLanes = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<73>([](){ return CVarFrameParallelMaxLanes.GetValueOnAnyThread(); }), 1, Speed::FFrameParallelPolicy::MaximumLanes);
     Limits.ReservedPhysicalCores = FMath::Max(0,
-        CVarFrameParallelReservedCores.GetValueOnAnyThread());
+        Speed::RoadSettings::ReadOriginalOrLegacy<79>([](){ return CVarFrameParallelReservedCores.GetValueOnAnyThread(); }));
 
     FFrameParallelSettings Settings;
-    Settings.RequestedLanes = CVarFrameParallelLanes.GetValueOnAnyThread();
+    Settings.RequestedLanes = Speed::RoadSettings::ReadOriginalOrLegacy<72>([](){ return CVarFrameParallelLanes.GetValueOnAnyThread(); });
     Settings.Decision = FFrameParallelPolicy::ResolveDecision(Limits, Settings.RequestedLanes);
     Settings.LaneLimit = Settings.Decision.LaneLimit;
     // Decision retains the host/request cap. Actual admission must also keep
@@ -98,13 +99,13 @@ FFrameParallelSettings CaptureFrameParallelSettings()
     if (Settings.LaneLimit > 1 && !AreCurrentFrameFloatingPointExceptionsMasked1213())
         Settings.LaneLimit = 1;
     Settings.MinQueryItems = FMath::Max(1,
-        CVarFrameParallelMinQueryItems.GetValueOnAnyThread());
+        Speed::RoadSettings::ReadOriginalOrLegacy<76>([](){ return CVarFrameParallelMinQueryItems.GetValueOnAnyThread(); }));
     Settings.MinPrepareItems = FMath::Max(1,
-        CVarFrameParallelMinPrepareItems.GetValueOnAnyThread());
+        Speed::RoadSettings::ReadOriginalOrLegacy<75>([](){ return CVarFrameParallelMinPrepareItems.GetValueOnAnyThread(); }));
     Settings.MinFacetItems = FMath::Max(1,
-        CVarFrameParallelMinFacetItems.GetValueOnAnyThread());
+        Speed::RoadSettings::ReadOriginalOrLegacy<74>([](){ return CVarFrameParallelMinFacetItems.GetValueOnAnyThread(); }));
     Settings.bParallelCamera = Settings.LaneLimit > 1 &&
-        CVarFrameParallelCamera.GetValueOnAnyThread() != 0;
+        Speed::RoadSettings::ReadOriginalOrLegacy<69>([](){ return CVarFrameParallelCamera.GetValueOnAnyThread(); }) != 0;
     return Settings;
 }
 

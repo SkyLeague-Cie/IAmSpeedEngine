@@ -191,7 +191,7 @@ private:
         FCriticalSection PendingCS;
         TArray<FPendingOp> PendingOps;
     };
-    std::unique_ptr<FEpochBridgeStorage> OriginalEpochBridgeStorage;
+    std::shared_ptr<FEpochBridgeStorage> OriginalEpochBridgeStorage;
     std::weak_ptr<const Speed::NativeEpoch::IOriginalStorageRoute> OriginalEpochRoute;
     bool UsesOriginalEpochStorage() const
     {
@@ -202,7 +202,7 @@ private:
     void BindOriginalEpochStorage(const std::shared_ptr<const Speed::NativeEpoch::IOriginalStorageRoute>& Owner)
     {
         check(Owner&&!OriginalEpochBridgeStorage&&OriginalEpochRoute.expired());
-        OriginalEpochBridgeStorage=std::make_unique<FEpochBridgeStorage>();
+        OriginalEpochBridgeStorage=std::make_shared<FEpochBridgeStorage>();
         OriginalEpochRoute=Owner; // never copy any legacy/facade state
     }
 #if !UE_BUILD_SHIPPING

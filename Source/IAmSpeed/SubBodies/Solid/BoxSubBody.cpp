@@ -1,4 +1,5 @@
 #include "BoxSubBody.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
@@ -220,7 +221,7 @@ namespace
             return;
         }
 
-        const float Damping = CVarIAmSpeedGutterSlideDamping.GetValueOnAnyThread();
+        const float Damping = Speed::RoadSettings::ReadOriginalOrLegacy<61>([](){ return CVarIAmSpeedGutterSlideDamping.GetValueOnAnyThread(); });
         const FVector N = SupportNormal.GetSafeNormal();
         if (N.IsNearlyZero())
         {
@@ -230,7 +231,7 @@ namespace
         const FVector V = GutterParentComponent->GetPhysCOMVelocity();
         const FVector VT = V - FVector::DotProduct(V, N) * N;
         const float TangentSpeed = VT.Size();
-        const float MinSpeed = FMath::Max(0.f, CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread());
+        const float MinSpeed = FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<65>([](){ return CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread(); }));
         FVector DeltaV = FVector::ZeroVector;
 
         if (Damping > 0.f && TangentSpeed > MinSpeed)
@@ -238,7 +239,7 @@ namespace
             const float Alpha = FMath::Clamp(1.f - FMath::Exp(-Damping * Dt), 0.f, 1.f);
             DeltaV = -Alpha * VT;
 
-            const float MaxDelta = CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread();
+            const float MaxDelta = Speed::RoadSettings::ReadOriginalOrLegacy<64>([](){ return CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(); });
             if (MaxDelta > 0.f)
             {
                 DeltaV = DeltaV.GetClampedToMaxSize(MaxDelta);
@@ -246,9 +247,9 @@ namespace
         }
 
         FVector ClimbDeltaV = FVector::ZeroVector;
-        const float MaxClimbSpeed = CVarIAmSpeedGutterSlideMaxClimbSpeedCmS.GetValueOnAnyThread();
+        const float MaxClimbSpeed = Speed::RoadSettings::ReadOriginalOrLegacy<63>([](){ return CVarIAmSpeedGutterSlideMaxClimbSpeedCmS.GetValueOnAnyThread(); });
         const float MaxClimbBrakeDelta =
-            FMath::Max(0.f, CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS.GetValueOnAnyThread());
+            FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<62>([](){ return CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS.GetValueOnAnyThread(); }));
         const bool bGutterSlope = N.Z > 0.20f && N.Z < 0.98f;
         float ClimbSpeed = 0.f;
         if (MaxClimbSpeed > 0.f && MaxClimbBrakeDelta > 0.f && bGutterSlope)
@@ -266,7 +267,7 @@ namespace
 
                 const FVector CrossGutter = FVector::CrossProduct(N, Uphill).GetSafeNormal();
                 const float CrossDamping =
-                    FMath::Max(0.f, CVarIAmSpeedGutterSlideCrossDamping.GetValueOnAnyThread());
+                    FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<60>([](){ return CVarIAmSpeedGutterSlideCrossDamping.GetValueOnAnyThread(); }));
                 if (!CrossGutter.IsNearlyZero() && CrossDamping > 0.f)
                 {
                     const float CrossSpeed = FVector::DotProduct(V, CrossGutter);
@@ -285,7 +286,7 @@ namespace
         GutterParentComponent->AddPhysVelocity(DeltaV);
 
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -299,7 +300,7 @@ namespace
                 *DeltaV.ToString(),
                 *ClimbDeltaV.ToString(),
                 Damping,
-                CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(),
+                Speed::RoadSettings::ReadOriginalOrLegacy<64>([](){ return CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(); }),
                 MaxClimbSpeed,
                 *V.ToString());
         }
@@ -526,7 +527,7 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
     const auto Decision = [&](bool Accepted, const TCHAR* Reason, double Gap = 0.0, bool GapComputed = false, double Roundoff = 0.0)
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
             SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[CurrentHullContactDecision] frame=%u resolved=%d admitted=%d reason=%s source=%016llX surface=%016llX varying=%d error=%.17g feature=%d component=%d componentType=%d normalNorm=%.17g gapComputed=%d gap=%.17g roundoff=%.17g"),
                 ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : 0u, LastResolvedGroundHitFrameBoxDomainStorage(), Accepted ? 1 : 0, Reason,
                 static_cast<unsigned long long>(GroundHitStorage().SourceId), static_cast<unsigned long long>(GroundHitStorage().SurfaceId),
@@ -783,7 +784,7 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
     }
 
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0 &&
         (bHasGroundContactBoxDomainStorage() ||
             CurrentGroundContactsWSBoxDomainStorage().Num() > 0 ||
             PreviousFrameGroundContactsWSBoxDomainStorage().Num() > 0 ||
@@ -865,7 +866,7 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
     // provider even though the previous-frame contact remains continuous.
     const float ProbeDistanceCm = FMath::Max(
         InitialOverlapShellCm,
-        FMath::Max(0.f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread()) +
+        FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<50>([](){ return CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread(); })) +
             FMath::Max(0.f, GroundHitStorage().GeometricErrorBoundCm) +
             InitialOverlapShellCm + LinearTravelBoundCm + AngularTravelBoundCm);
     const FVector End = Start - PreviousNormal * ProbeDistanceCm;
@@ -943,7 +944,7 @@ bool UBoxSubBody::RequiresEstablishedStaticContactTransport() const
 		return false;
 	}
 
-	return CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread() == 0 ||
+	return Speed::RoadSettings::ReadOriginalOrLegacy<3>([](){ return CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread(); }) == 0 ||
 		!ParentComponentBodyDomainStorage()->HasCompatibleEstablishedStaticSupport(GroundHitStorage());
 }
 
@@ -1179,7 +1180,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     }
     bool bVelocityProjected = false;
     const bool bDeferVelocityTransportToSubordinateSupport =
-		CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread() != 0 &&
+		Speed::RoadSettings::ReadOriginalOrLegacy<3>([](){ return CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread(); }) != 0 &&
 		ParentComponentBodyDomainStorage()->HasCompatibleEstablishedStaticSupport(ProjectedHit);
     if (bProjectVelocity && NormalSpeed < 0.0f &&
 		!bDeferVelocityTransportToSubordinateSupport)
@@ -1693,7 +1694,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     constexpr float DirectSupportUpDot = 0.97f;
     constexpr float CandidateSupportUpDot = 0.85f;
     const float RoofSlideSupportMinUpDot =
-        CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
+        Speed::RoadSettings::ReadOriginalOrLegacy<81>([](){ return CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread(); });
 
     const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
     const bool bSameRoofSurfaceComponent =
@@ -1761,7 +1762,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         FVector::DotProduct(GetVelocityAtPoint(EffectiveHit.ImpactPoint), EffectiveN);
 
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0 &&
         (bIsCandidateSupport ||
             PreviewSupportContacts > 0 ||
             bHasLatchedEdgeSupport ||
@@ -1887,7 +1888,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         LastRoofSurfaceContactFrameBoxDomainStorage() = CurrentFrame;
         RoofSurfaceCompBoxDomainStorage() = EffectiveHit.Component;
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -1966,7 +1967,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
             bUprightHitbox)
         {
 #if !UE_BUILD_SHIPPING
-            if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+            if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
             {
                 SPEED_NATIVE_LOG(
                     BoxSubBodyLog,
@@ -2132,7 +2133,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         return;
 
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<11>([](){ return CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread(); }) != 0)
     {
         const FVector N = CurrentHitStorage().ImpactNormal.GetSafeNormal();
         const FVector BoxVp = IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHitStorage().ImpactPoint);
@@ -2209,7 +2210,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 		BoxKS);
 
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<11>([](){ return CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread(); }) != 0)
     {
         const FVector BoxCOMVPost = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
         const FVector BoxWPost = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() : FVector::ZeroVector;
@@ -2503,7 +2504,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         Hit.bStartPenetrating && Hit.PenetrationDepth > 0.f;
 
     const bool bSupportedStaticTransition =
-        CVarIAmSpeedBoxSupportedTransitionResponse.GetValueOnAnyThread() != 0 &&
+        Speed::RoadSettings::ReadOriginalOrLegacy<5>([](){ return CVarIAmSpeedBoxSupportedTransitionResponse.GetValueOnAnyThread(); }) != 0 &&
         ParentComponentBodyDomainStorage()->HasCompatibleEstablishedStaticSupport(Hit);
 
     const bool bSoftWall =
@@ -2531,7 +2532,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     LastWallOrGutterUpDotBoxDomainStorage() = UpDot;
 
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
     {
         SPEED_NATIVE_LOG(
             BoxSubBodyLog,
@@ -2651,7 +2652,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         TEXT("WallGutter"));
 
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0 &&
         (FMath::Abs(vN) > 5.f || Hit.bStartPenetrating))
     {
         SPEED_NATIVE_LOG(BoxSubBodyLog, Warning,
@@ -2710,9 +2711,9 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
                 if (bUseSoftWallResponse)
                 {
-                    float MaxNormalKill = CVarIAmSpeedSoftWallDepenMaxNormalKillCmS.GetValueOnAnyThread();
+                    float MaxNormalKill = Speed::RoadSettings::ReadOriginalOrLegacy<93>([](){ return CVarIAmSpeedSoftWallDepenMaxNormalKillCmS.GetValueOnAnyThread(); });
                     const float NearVerticalMaxNormalKill =
-                        CVarIAmSpeedNearGutterVerticalDepenMaxNormalKillCmS.GetValueOnAnyThread();
+                        Speed::RoadSettings::ReadOriginalOrLegacy<66>([](){ return CVarIAmSpeedNearGutterVerticalDepenMaxNormalKillCmS.GetValueOnAnyThread(); });
                     if (bIsNearGutterVerticalWall && NearVerticalMaxNormalKill > 0.f)
                     {
                         MaxNormalKill = FMath::Max(MaxNormalKill, NearVerticalMaxNormalKill);
@@ -2735,7 +2736,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
                     if (bCanInjectUpwardVelocity)
                     {
                         const float UpDelta = FVector::DotProduct(DepenVelocityDelta, FVector::UpVector);
-                        const float MaxUpDelta = CVarIAmSpeedGutterDepenMaxUpDeltaCmS.GetValueOnAnyThread();
+                        const float MaxUpDelta = Speed::RoadSettings::ReadOriginalOrLegacy<59>([](){ return CVarIAmSpeedGutterDepenMaxUpDeltaCmS.GetValueOnAnyThread(); });
                         if (MaxUpDelta > 0.f && UpDelta > MaxUpDelta)
                         {
                             DepenScale = FMath::Min(DepenScale, MaxUpDelta / UpDelta);
@@ -2748,7 +2749,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
                 ParentComponentBodyDomainStorage()->AddPhysVelocity(DepenVelocityDelta);
 
 #if !UE_BUILD_SHIPPING
-                if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+                if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0 &&
                     (FMath::Abs(vIn) > 50.f || DepenScale < 0.999f))
                 {
                     SPEED_NATIVE_LOG(BoxSubBodyLog, Warning,
@@ -2796,7 +2797,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     const FVector CenterWS = KinematicsStorage().Location;
     const FQuat BoxRotWS = KinematicsStorage().Rotation;
     const FVector Ext = BoxExtentBoxDomainStorage();
-    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceReleaseDot = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<47>([](){ return CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(); }), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, BoxRotWS);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
     const int32 CurrentFrame = ParentComponentBodyDomainStorage()->NumFrame();
@@ -2816,7 +2817,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     if (bNearlyFaceAligned && bEdgeSupportLatchedBoxDomainStorage())
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -2835,7 +2836,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     TArray<FVector> ContactPtsWS;
     const float SupportContactEps = bNearlyFaceAligned
-        ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        ? FMath::Max(0.5f, Speed::RoadSettings::ReadOriginalOrLegacy<50>([](){ return CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread(); }))
         : 0.5f;
     BuildSupportManifoldFromNormal(N, CenterWS, BoxRotWS, Ext, ContactPtsWS, SupportContactEps);
     if (bRoofSurfaceTraversalActive && !bRoofFaceNearlyAligned)
@@ -2899,7 +2900,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     if (bFreshTwoPointEdgeSupport)
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -2954,7 +2955,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     }
 
     const float RoofSlideSupportMinUpDot =
-        CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread();
+        Speed::RoadSettings::ReadOriginalOrLegacy<81>([](){ return CVarIAmSpeedRoofSlideSupportMinUpDot.GetValueOnAnyThread(); });
     const bool bUpsideDownRoofSlideSupport =
         bRoofFacingSurface &&
         (bRoofSurfaceTraversalActive ||
@@ -3252,7 +3253,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                     }
                 }
             }
-            if (CVarSinglePointGroundCoupled.GetValueOnAnyThread() != 0 && NumC == 1)
+            if (Speed::RoadSettings::ReadOriginalOrLegacy<22>([](){ return CVarSinglePointGroundCoupled.GetValueOnAnyThread(); }) != 0 && NumC == 1)
             {
                 // One actual contact and the existing material/restitution policy.
                 // Friction at an off-centre point alters normal velocity; solve
@@ -3274,7 +3275,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 }
             }
 
-            if (CVarRetireSeparatingOwnGroundConstraints.GetValueOnAnyThread() != 0 && NumC >= 3)
+            if (Speed::RoadSettings::ReadOriginalOrLegacy<14>([](){ return CVarRetireSeparatingOwnGroundConstraints.GetValueOnAnyThread(); }) != 0 && NumC >= 3)
             {
                 // The owner projects impulse increments against cached point
                 // constraints. A separating point does not require that extra
@@ -3371,7 +3372,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     }
 
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedBoxGroundSupportDebug.GetValueOnAnyThread() != 0)
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<2>([](){ return CVarIAmSpeedBoxGroundSupportDebug.GetValueOnAnyThread(); }) != 0)
     {
         const FVector COMVelocityAfterSolve = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
         SPEED_NATIVE_LOG(
@@ -3462,14 +3463,14 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     // This is key: it keeps 2+ points, so you don't pivot on the gutter edge.
     const SKinematic K = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
     TArray<FVector> SupportPts;
-    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceReleaseDot = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<47>([](){ return CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(); }), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
 
     if (bNearlyFaceAligned && bEdgeSupportLatchedBoxDomainStorage())
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -3499,7 +3500,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     else
     {
         const float SupportContactEps = bNearlyFaceAligned
-            ? FMath::Max(0.75f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+            ? FMath::Max(0.75f, Speed::RoadSettings::ReadOriginalOrLegacy<50>([](){ return CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread(); }))
             : 0.75f;
         BuildSupportManifoldFromNormal(
             N, K.Location, K.Rotation, BoxExtentBoxDomainStorage(), SupportPts, SupportContactEps
@@ -3676,7 +3677,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     if (!bGroundPlaneValidBoxDomainStorage() || !GroundCompBoxDomainStorage().IsValid())
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0 &&
             (CurrentGroundContactsWSBoxDomainStorage().Num() > 0 || PrevGroundContactsLSBoxDomainStorage().Num() > 0 || bFreshEdgeRecoverCandidateBoxDomainStorage()))
         {
             SPEED_NATIVE_LOG(
@@ -3700,7 +3701,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     if (GroundPlaneUpDot < 0.5f && !bRoofSurfaceTraversalActive)
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -3720,7 +3721,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     if (IsConcaveGroundContact())
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -3744,7 +3745,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
     const FVector N = GroundPlaneNBoxDomainStorage().GetSafeNormal();
     const SKinematic K = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
-    const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
+    const float FaceReleaseDot = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<47>([](){ return CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(); }), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
     const bool bEdgeRecoverCandidate =
@@ -3758,7 +3759,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     if (bNearlyFaceAligned && bEdgeSupportLatchedBoxDomainStorage())
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -3800,24 +3801,24 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     constexpr float PenTolReject = 2.5f;
     constexpr float SepVelTol = 3.0f;
     const float ActiveContactTol = bNearlyFaceAligned || bRoofSurfaceTraversalActive
-        ? FMath::Max(ContactTol, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        ? FMath::Max(ContactTol, Speed::RoadSettings::ReadOriginalOrLegacy<50>([](){ return CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread(); }))
         : bVertexRecoverCandidate
-        ? FMath::Max(ContactTol, CVarIAmSpeedVertexSupportContactTolCm.GetValueOnAnyThread())
+        ? FMath::Max(ContactTol, Speed::RoadSettings::ReadOriginalOrLegacy<96>([](){ return CVarIAmSpeedVertexSupportContactTolCm.GetValueOnAnyThread(); }))
         : ContactTol;
     const float ActivePenTolSupport = bNearlyFaceAligned || bRoofSurfaceTraversalActive
-        ? FMath::Max(PenTolSupport, CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread())
+        ? FMath::Max(PenTolSupport, Speed::RoadSettings::ReadOriginalOrLegacy<51>([](){ return CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread(); }))
         : bEdgeRecoverCandidate
-        ? FMath::Max(PenTolSupport, CVarIAmSpeedEdgeRecoverPenetrationTolCm.GetValueOnAnyThread())
+        ? FMath::Max(PenTolSupport, Speed::RoadSettings::ReadOriginalOrLegacy<48>([](){ return CVarIAmSpeedEdgeRecoverPenetrationTolCm.GetValueOnAnyThread(); }))
         : PenTolSupport;
     constexpr float RoofTraversalSeparatingSpeedTolerance = 20.f;
     const float ActiveSepVelTol = bRoofSurfaceTraversalActive
         ? FMath::Max(
             RoofTraversalSeparatingSpeedTolerance,
-            CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread())
+            Speed::RoadSettings::ReadOriginalOrLegacy<52>([](){ return CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread(); }))
         : bNearlyFaceAligned
-        ? FMath::Max(SepVelTol, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread())
+        ? FMath::Max(SepVelTol, Speed::RoadSettings::ReadOriginalOrLegacy<52>([](){ return CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread(); }))
         : bEdgeRecoverCandidate
-        ? FMath::Max(SepVelTol, CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS.GetValueOnAnyThread())
+        ? FMath::Max(SepVelTol, Speed::RoadSettings::ReadOriginalOrLegacy<49>([](){ return CVarIAmSpeedEdgeRecoverSeparatingSpeedCmS.GetValueOnAnyThread(); }))
         : SepVelTol;
 
     // Native curved support is unilateral and finite. Its tangent plane can
@@ -3866,7 +3867,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         (SupportSeparatingSpeed <= ActiveSepVelTol);
 
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0 &&
         (CurrentGroundContactsWSBoxDomainStorage().Num() > 0 || PrevGroundContactsLSBoxDomainStorage().Num() > 0 || bFreshEdgeRecoverCandidateBoxDomainStorage()))
     {
         SPEED_NATIVE_LOG(
@@ -3901,7 +3902,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         if ((P1 - P0).SizeSquared() > FMath::Square(1.0f))
         {
 #if !UE_BUILD_SHIPPING
-            if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+            if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
             {
                 SPEED_NATIVE_LOG(
                     BoxSubBodyLog,
@@ -3940,7 +3941,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     if (!(bWithinSupportBand && bStableNormalMotion && bNotExploding))
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -3992,7 +3993,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     // otherwise tiny upward drift erases the single point before it can fall to
     // an edge or face.
     const float VertexSeparatingReleaseSpeed =
-        FMath::Max(0.5f, CVarIAmSpeedVertexSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+        FMath::Max(0.5f, Speed::RoadSettings::ReadOriginalOrLegacy<97>([](){ return CVarIAmSpeedVertexSupportSeparatingSpeedCmS.GetValueOnAnyThread(); }));
     const float SeparatingReleaseSpeed =
         (bNearlyFaceAligned || bRoofSurfaceTraversalActive) ? ActiveSepVelTol :
         bVertexRecoverCandidate ? VertexSeparatingReleaseSpeed :
@@ -4001,7 +4002,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     if (SupportSeparatingSpeed > SeparatingReleaseSpeed)
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
@@ -4037,7 +4038,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
     CurrentGroundContactsWSBoxDomainStorage().Reset();
     const float ContactEps = bNearlyFaceAligned || bRoofSurfaceTraversalActive
-        ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
+        ? FMath::Max(0.5f, Speed::RoadSettings::ReadOriginalOrLegacy<50>([](){ return CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread(); }))
         : 0.5f;
 
     for (const FVector& V : Verts)
@@ -4393,7 +4394,7 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
         if (FirstCorner == INDEX_NONE || Low < FirstTime) { FirstCorner = Corner; FirstTime = Low; }
     }
  #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0 &&
         ParentComponentBodyDomainStorage()->NumFrame() >= 129 && ParentComponentBodyDomainStorage()->NumFrame() <= 132)
         SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarArrival] frame=%u dt=%.17g established=%d mask=%u corner=%d time=%.17g source=%llu primitive=%llu current_primitive=%llu plane_z=%.17g q=%s a=%s alpha=%s gaps=(%.17g,%.17g,%.17g,%.17g;%.17g,%.17g,%.17g,%.17g)"),
             ParentComponentBodyDomainStorage()->NumFrame(), double(Delta), bEstablished ? 1 : 0, EstablishedMask, FirstCorner, double(FirstTime),
@@ -4554,7 +4555,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
     const auto Response = Speed::SolvePlanarCoulombImpulse(MakeArrayView(Points, Count), N,
         State.Location, State.Velocity, State.AngularVelocity, InvMass, InvI, ImpactRestitution, GetDynamicFriction());
 #if !UE_BUILD_SHIPPING
-    if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+    if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarAcquisition] frame=%u impact=%d solved=%d count=%d gap=%.17g pose=%s q=%s v=%s w=%s a=%s alpha=%s dv=%s dw=%s toi=%.17g speed=%.17g spin=%.17g next_spin=%.17g"),
             ParentComponentBodyDomainStorage()->NumFrame(), bNotifyImpact ? 1 : 0, Response.bSolved ? 1 : 0, Count, MinimumGap,
             *State.Location.ToString(), *State.Rotation.ToString(), *State.Velocity.ToString(), *State.AngularVelocity.ToString(),
@@ -4566,7 +4567,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
     if (!Response.bSolved)
     {
 #if !UE_BUILD_SHIPPING
-        if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
         {
             SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolveRejected] frame=%u count=%d iterations=%u v=%s w=%s n=(%.17g,%.17g,%.17g) q=%s"),
                 ParentComponentBodyDomainStorage()->NumFrame(), Count, Response.IterationCount, *State.Velocity.ToString(), *State.AngularVelocity.ToString(),
@@ -4907,7 +4908,7 @@ bool UBoxSubBody::HasRoofSurfaceTraversalSupport() const
     }
 
     const float SeparatingSpeedTolerance = FMath::Max(
-        20.0f, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+        20.0f, Speed::RoadSettings::ReadOriginalOrLegacy<52>([](){ return CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread(); }));
     const float NearestPointNormalSpeed = FVector::DotProduct(K.Velocity, N);
     if (NearestPointNormalSpeed > SeparatingSpeedTolerance)
     {
@@ -4937,9 +4938,9 @@ bool UBoxSubBody::HasRoofSurfaceTraversalSupport() const
     }
 
     const float ContactTolerance = FMath::Max(
-        0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread());
+        0.5f, Speed::RoadSettings::ReadOriginalOrLegacy<50>([](){ return CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread(); }));
     const float PenetrationTolerance = FMath::Max(
-        1.0f, CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread());
+        1.0f, Speed::RoadSettings::ReadOriginalOrLegacy<51>([](){ return CVarIAmSpeedFaceSupportPenetrationTolCm.GetValueOnAnyThread(); }));
     return MinDistance >= -PenetrationTolerance &&
         MinDistance <= ContactTolerance &&
         NearestPointNormalSpeed <= SeparatingSpeedTolerance;
@@ -5451,7 +5452,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     if (bAllowTraversalTorque && !bIsInAutoRecover)
     {
         const float MaxSeparationSpeed =
-            FMath::Max(0.f, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread());
+            FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<52>([](){ return CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread(); }));
         const float SeparationSpeed = FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N);
         if (SeparationSpeed > MaxSeparationSpeed)
         {
@@ -5541,7 +5542,7 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
     FVector d_in_box = HitboxRelRot.UnrotateVector(d_localChassis);
 
 	// 2. Compute inverse inertia tensor at COM, expressed in box local frame
-    const float InertiaScale = FMath::Max(UE_KINDA_SMALL_NUMBER, CVarIAmSpeedBoxInertiaScale.GetValueOnAnyThread());
+    const float InertiaScale = FMath::Max(UE_KINDA_SMALL_NUMBER, Speed::RoadSettings::ReadOriginalOrLegacy<4>([](){ return CVarIAmSpeedBoxInertiaScale.GetValueOnAnyThread(); }));
     const FVector Idiag =
         SSBox::ComputeInertiaTensor(BoxExtentBoxDomainStorage(), GetMass(), InertiaScale);
 

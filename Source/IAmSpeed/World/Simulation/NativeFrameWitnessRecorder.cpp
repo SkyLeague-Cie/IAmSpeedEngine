@@ -1,4 +1,5 @@
 #include "NativeFrameWitnessRecorder.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "FrameWitnessBlob.h"
 #if !UE_BUILD_SHIPPING
 #include "FrameInputWitness.h"
@@ -51,14 +52,14 @@ FNativeFrameWitnessRecorder::FNativeFrameWitnessRecorder(TUniquePtr<FImpl>&& In)
 TUniquePtr<FNativeFrameWitnessRecorder> FNativeFrameWitnessRecorder::Begin(uint64 Frame,float Delta,
  const Input::V2::FRegistryFrame* Installed,USpeedWorldSubsystem& World,const FNativeFrameWitnessCaseIdentity& Case,bool bNoSessionsAdmitted)
 {
- if(!CVarNativeFrameWitness.GetValueOnAnyThread())return {};
+ if(!Speed::RoadSettings::ReadOriginalOrLegacy<58>([](){ return CVarNativeFrameWitness.GetValueOnAnyThread(); }))return {};
  if(ActiveRecorder){UE_LOG(LogTemp,Error,TEXT("[FrameWitnessRejected] nested recorder"));return {};}
  FString Root;FNativeFrameWitnessCaseIdentity ID=Case;ID.CanonicalFrame=Frame;
  if(!FParse::Value(FCommandLine::Get(),TEXT("SLFrameWitnessOutput="),Root)||FPaths::IsRelative(Root)||
    !ID.bConfigured||!ID.DriverKey||!ID.Epoch||ID.NativeCaseId<0)
  {UE_LOG(LogTemp,Error,TEXT("[FrameWitnessRejected] missing absolute output or owned identity Frame=%llu"),Frame);return {};}
  const FString Run(ID.RunUUID);if(!SafeIdentity(Run))return {};
- auto Data=MakeUnique<FImpl>();Data->bCompressed=CVarNativeFrameWitnessCompression.GetValueOnAnyThread()!=0;Data->Frame=Frame;Data->Delta=Delta;Data->Identity=ID;Data->Run=Run;
+ auto Data=MakeUnique<FImpl>();Data->bCompressed=Speed::RoadSettings::ReadOriginalOrLegacy<57>([](){ return CVarNativeFrameWitnessCompression.GetValueOnAnyThread(); })!=0;Data->Frame=Frame;Data->Delta=Delta;Data->Identity=ID;Data->Run=Run;
  Data->Epoch=FString::Printf(TEXT("%s_%llu_%llu_%d"),*Run,ID.DriverKey,ID.Epoch,ID.NativeCaseId);
  if(ReceiptEpoch!=Data->Epoch){ReceiptCursors.Reset();ReceiptEpoch=Data->Epoch;}
  Data->Directory=FPaths::Combine(Root,Data->Epoch,FString::Printf(TEXT("frame_%020llu"),Frame));

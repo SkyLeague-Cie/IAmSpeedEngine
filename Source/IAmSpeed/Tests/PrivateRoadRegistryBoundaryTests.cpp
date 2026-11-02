@@ -207,6 +207,12 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     }
     TestTrue(TEXT("refused direct driver operation preserves the exact original immutable publication"),Owner->ReadLatest()==OriginalOne);
     TestTrue(TEXT("actual original owner closes on GT"),Owner->Close());
+    const auto ActualConfigurationLifetime=Owner->ReadNativeConfigurationLifetimeForDiagnostics();
+    TestEqual(TEXT("both actual original and reference native config lifetimes observed"),uint32(ActualConfigurationLifetime.size()),uint32(2));
+    for(const auto& V:ActualConfigurationLifetime)
+        TestTrue(TEXT("real native base destruction returned before config destruction began"),V.NativeConstructionReturns==1
+            &&V.NativeBaseDestructionReturns==1&&V.ConfigurationDestructionEntries==1&&!V.ConfigurationDestructionBeforeNativeReturn);
+
     TestTrue(TEXT("original owner retirement actually invoked retained global world callback"),ActualCleanupCallbacks>0);
     TestTrue(TEXT("actual original native wheel storage stays readable through the synchronous cleanup callback"),ActualCleanupBoundWheels==4);
     for(const auto& Weak:OriginalWheelObjects)if(const auto* Wheel=Weak.Get())

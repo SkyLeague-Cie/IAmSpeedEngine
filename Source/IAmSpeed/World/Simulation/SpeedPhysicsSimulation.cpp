@@ -1,4 +1,5 @@
 #include "SpeedPhysicsSimulation.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "ReplayPhysicalFrameScope.h"
@@ -240,7 +241,7 @@ static void ObserveCanonicalCameraSample(uint64 Frame) noexcept
 bool ASpeedPhysicsSimulation::BindOriginalDriverStorage(const std::shared_ptr<const Speed::NativeEpoch::IOriginalStorageRoute>& Route)
 {
     if(!IsInGameThread()||!Route||OriginalDriverStorage||!OriginalDriverRoute.expired()||GetEngineFPS()!=300)return false;
-    auto Native=std::make_unique<FOriginalDriverStorage>();
+    auto Native=std::make_shared<FOriginalDriverStorage>();
     Native->RealDeltaTime=1.0f/static_cast<float>(GetEngineFPS());
     Native->InputWorkerGeneration=NextInputWorkerGeneration.fetch_add(1);
     if(!Native->InputWorkerGeneration||Native->InputWorkerGeneration==MAX_uint64)return false;
@@ -590,7 +591,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 	// Admission is checked from the class that owns the private execution mode.
 	const auto OwnedAudit = Speed::OwnedFrameAudit::CreateForHost(this,
 		GetActiveExecutionMode() == ESimulationExecutionMode::IAmSpeedThread &&
-		IsA<ARealTimeSimulation>() && CVarSimulationPerformanceAudit.GetValueOnGameThread() != 0,
+		IsA<ARealTimeSimulation>() && Speed::RoadSettings::ReadOriginalOrLegacy<84>([](){ return CVarSimulationPerformanceAudit.GetValueOnGameThread(); }) != 0,
 		FCommandLine::Get());
 #endif
 	SimulationWorkerDriverStorage() = MakeUnique<FSimulationWorker>(
@@ -651,7 +652,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 		{
 #if WITH_DEV_AUTOMATION_TESTS
 			if (OwnedAudit) Speed::OwnedFrameAudit::OwnerBoundary(OwnedAudit,
-				CVarSimulationPerformanceAudit.GetValueOnAnyThread() != 0);
+				Speed::RoadSettings::ReadOriginalOrLegacy<84>([](){ return CVarSimulationPerformanceAudit.GetValueOnAnyThread(); }) != 0);
 			Speed::OwnedFrameAudit::BeginService(OwnedAudit, bPauseRequested, CanonicalNumFrameDriverStorage());
 #endif
 			const auto Result = ServiceInputSessionBoundary(bPauseRequested);
@@ -956,12 +957,12 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 		const double BudgetMilliseconds =
 			Diagnostics.PhysicalDeltaTimeMilliseconds * FMath::Max(
 				0.0, static_cast<double>(
-					CVarSimulationWarningFrameFraction.GetValueOnAnyThread()));
+					Speed::RoadSettings::ReadOriginalOrLegacy<91>([](){ return CVarSimulationWarningFrameFraction.GetValueOnAnyThread(); })));
 		const bool bSlow = CallbackMilliseconds > BudgetMilliseconds;
 		const bool bDetailed =
-			CVarSimulationPerformanceAudit.GetValueOnAnyThread() != 0;
+			Speed::RoadSettings::ReadOriginalOrLegacy<84>([](){ return CVarSimulationPerformanceAudit.GetValueOnAnyThread(); }) != 0;
 		const bool bReportSlow = bSlow &&
-			CVarSimulationSlowFrameWarnings.GetValueOnAnyThread() != 0 &&
+			Speed::RoadSettings::ReadOriginalOrLegacy<90>([](){ return CVarSimulationSlowFrameWarnings.GetValueOnAnyThread(); }) != 0 &&
 			(SlowFrameReportCountDriverStorage() == 0 ||
 				Diagnostics.Frame >= LastSlowFrameReportDriverStorage() + 300u);
 		if (!bDetailed && !bReportSlow)
@@ -1285,7 +1286,7 @@ void ASpeedPhysicsSimulation::RecordStepPerformance(
 	const double WarningThresholdMilliseconds =
 		Diagnostics.PhysicalDeltaTimeMilliseconds * FMath::Max(
 			0.0, static_cast<double>(
-				CVarSimulationWarningFrameFraction.GetValueOnAnyThread()));
+				Speed::RoadSettings::ReadOriginalOrLegacy<91>([](){ return CVarSimulationWarningFrameFraction.GetValueOnAnyThread(); })));
 	PerformanceWarningFrameCountDriverStorage() +=
 		PhysicalFrameMilliseconds > WarningThresholdMilliseconds ? 1u : 0u;
 	PerformanceIterationLimitCountDriverStorage() +=
@@ -1294,7 +1295,7 @@ void ASpeedPhysicsSimulation::RecordStepPerformance(
 
 float ASpeedPhysicsSimulation::GetWarningFrameFraction() const
 {
-	return CVarSimulationWarningFrameFraction.GetValueOnAnyThread();
+	return Speed::RoadSettings::ReadOriginalOrLegacy<91>([](){ return CVarSimulationWarningFrameFraction.GetValueOnAnyThread(); });
 }
 
 bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)

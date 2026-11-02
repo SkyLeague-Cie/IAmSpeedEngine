@@ -1,4 +1,5 @@
 #include "CanonicalFrameDriver.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 
 #include "HAL/IConsoleManager.h"
 
@@ -41,31 +42,31 @@ namespace Speed::CanonicalFrameDriver
 
 	bool IsEnabled()
 	{
-		return CVarEnabled.GetValueOnAnyThread() != 0;
+		return Speed::RoadSettings::ReadOriginalOrLegacy<6>([](){ return CVarEnabled.GetValueOnAnyThread(); }) != 0;
 	}
 
 	ESimulationExecutionMode GetExecutionMode()
 	{
 		return static_cast<ESimulationExecutionMode>(FMath::Clamp(
-			CVarExecutionMode.GetValueOnAnyThread(),
+			Speed::RoadSettings::ReadOriginalOrLegacy<83>([](){ return CVarExecutionMode.GetValueOnAnyThread(); }),
 			static_cast<int32>(ESimulationExecutionMode::UnrealAsyncCallback),
 			static_cast<int32>(ESimulationExecutionMode::IAmSpeedThread)));
 	}
 
 	bool IsOwnedThreadPaused()
 	{
-		return CVarOwnedThreadPaused.GetValueOnAnyThread() != 0;
+		return Speed::RoadSettings::ReadOriginalOrLegacy<92>([](){ return CVarOwnedThreadPaused.GetValueOnAnyThread(); }) != 0;
 	}
 
 	bool IsFastSimulationEnabled()
 	{
-		return CVarFastEnabled.GetValueOnAnyThread() != 0;
+		return Speed::RoadSettings::ReadOriginalOrLegacy<53>([](){ return CVarFastEnabled.GetValueOnAnyThread(); }) != 0;
 	}
 
 	uint32 GetFastMaxFramesPerRun()
 	{
 		return static_cast<uint32>(FMath::Clamp(
-			CVarFastMaxFramesPerRun.GetValueOnAnyThread(),
+			Speed::RoadSettings::ReadOriginalOrLegacy<54>([](){ return CVarFastMaxFramesPerRun.GetValueOnAnyThread(); }),
 			1,
 			MaxFastFramesPerRun));
 	}
@@ -73,7 +74,7 @@ namespace Speed::CanonicalFrameDriver
 	uint32 GetFastReadyDelayCallbacks()
 	{
 		return static_cast<uint32>(FMath::Clamp(
-			CVarFastReadyDelayCallbacks.GetValueOnAnyThread(),
+			Speed::RoadSettings::ReadOriginalOrLegacy<55>([](){ return CVarFastReadyDelayCallbacks.GetValueOnAnyThread(); }),
 			0,
 			1000));
 	}

@@ -1,4 +1,5 @@
 #include "ISpeedWheeledComponent.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
@@ -410,7 +411,7 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedCoupledPoseSupportedSurfaceContac
 
 float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstantOverride()
 {
-	return CVarIAmSpeedWheelContactNormalVelTimeConstant.GetValueOnAnyThread();
+	return Speed::RoadSettings::ReadOriginalOrLegacy<106>([](){ return CVarIAmSpeedWheelContactNormalVelTimeConstant.GetValueOnAnyThread(); });
 }
 
 void ISpeedWheeledComponent::NotifyWheelOnGroundStateChanged()
@@ -440,7 +441,7 @@ float ISpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstant() const
 
 float ISpeedWheeledComponent::GetWheelContactNormalVelocityDeadzone() const
 {
-	return CVarIAmSpeedWheelContactNormalVelocityDeadzone.GetValueOnAnyThread();
+	return Speed::RoadSettings::ReadOriginalOrLegacy<107>([](){ return CVarIAmSpeedWheelContactNormalVelocityDeadzone.GetValueOnAnyThread(); });
 }
 
 float ISpeedWheeledComponent::GetWheelContactMaxInwardNormalVelocityToSolve() const
@@ -482,20 +483,20 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 	const float NormalVelTimeConstant = FMath::Max(
 		GetWheelContactNormalVelocityTimeConstant(), dt);
 	const float gamma = 1.f - FMath::Exp(-dt / NormalVelTimeConstant);
-	const float LockedSeparatingNormalVelTimeConstant = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant.GetValueOnAnyThread(), 1e-6f);
+	const float LockedSeparatingNormalVelTimeConstant = FMath::Max(Speed::RoadSettings::ReadOriginalOrLegacy<105>([](){ return CVarIAmSpeedWheelContactLockedSeparatingNormalVelTimeConstant.GetValueOnAnyThread(); }), 1e-6f);
 	const float LockedSeparatingGamma = 1.f - FMath::Exp(-dt / LockedSeparatingNormalVelTimeConstant);
-	const float LockedSeparatingMaxNormalVelocity = FMath::Max(CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity.GetValueOnAnyThread(), 0.0f);
+	const float LockedSeparatingMaxNormalVelocity = FMath::Max(Speed::RoadSettings::ReadOriginalOrLegacy<104>([](){ return CVarIAmSpeedWheelContactLockedSeparatingMaxNormalVelocity.GetValueOnAnyThread(); }), 0.0f);
 	const float MaxInwardNormalVelocityToSolve = FMath::Max(
 		GetWheelContactMaxInwardNormalVelocityToSolve(), 0.0f);
 	const bool bLockedSeparatingDampingEnabled =
-		CVarIAmSpeedWheelContactLockedSeparatingDamping.GetValueOnAnyThread() != 0;
+		Speed::RoadSettings::ReadOriginalOrLegacy<103>([](){ return CVarIAmSpeedWheelContactLockedSeparatingDamping.GetValueOnAnyThread(); }) != 0;
 	// --- Deadzones ---
 	const float VNDeadzone = FMath::Max(GetWheelContactNormalVelocityDeadzone(), 0.0f);
-	const float JDeadzone = FMath::Max(CVarIAmSpeedWheelContactImpulseDeadzone.GetValueOnAnyThread(), 0.0f);
+	const float JDeadzone = FMath::Max(Speed::RoadSettings::ReadOriginalOrLegacy<102>([](){ return CVarIAmSpeedWheelContactImpulseDeadzone.GetValueOnAnyThread(); }), 0.0f);
 	// (smaller are those, more network stability)
 
 	const float Softness = FMath::Max(
-		CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread(), 0.0f);
+		Speed::RoadSettings::ReadOriginalOrLegacy<109>([](){ return CVarIAmSpeedWheelContactSoftness.GetValueOnAnyThread(); }), 0.0f);
 
 	// Legacy solves every wheel from the same snapshot. The diagnostic coupled
 	// modes update the virtual rigid state after each impulse so later contacts
@@ -505,7 +506,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 	FVector CurrentV = V0;
 	FVector CurrentW = W0;
 	const int32 SolverMode = FMath::Clamp(
-		CVarIAmSpeedWheelContactSolverMode.GetValueOnAnyThread(), 0, 1);
+		Speed::RoadSettings::ReadOriginalOrLegacy<110>([](){ return CVarIAmSpeedWheelContactSolverMode.GetValueOnAnyThread(); }), 0, 1);
 	TArray<int32, TInlineAllocator<4>> ContactOrder;
 	ContactOrder.Reserve(PendingWheelGroundContacts.Num());
 // BEGIN_WHEEL_MANIFOLD1368
@@ -539,13 +540,13 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 			FMath::Abs(ContactNormal.Y) >= 0.40f &&
 			ContactNormal.Z <= -0.20f;
 		const bool bRequireFinalSupport =
-			CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() != 0 ||
+			Speed::RoadSettings::ReadOriginalOrLegacy<108>([](){ return CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread(); }) != 0 ||
 			bDetachedAnalyticUpperCurveContact;
 		if (bRequireFinalSupport &&
 			(!Contact.Wheel || !Contact.Wheel->IsOnGround()))
 		{
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<101>([](){ return CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[WheelContactSolver] Mode=FinalSupportRejected Frame=%d Wheel=%d SpringDisp=%.3f SurfaceSource=%llu Surface=%llu Feature=%llu Pos=%s Normal=%s"),
@@ -859,7 +860,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 			vN > VNDeadzone;
 
 #if !(UE_BUILD_SHIPPING)
-		if (!bMovingIntoSurface && vN < -VNDeadzone && CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
+		if (!bMovingIntoSurface && vN < -VNDeadzone && Speed::RoadSettings::ReadOriginalOrLegacy<101>([](){ return CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread(); }) != 0)
 		{
 			SPEED_NATIVE_LOG(LogTemp, Log,
 				TEXT("[WheelContactSolver] Mode=PersistentSupportSkipped dt=%.5f vN=%.3f SpringDisp=%.3f Locked=%d Pos=%s Normal=%s"),
@@ -921,7 +922,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 
 #if !(UE_BUILD_SHIPPING)
-		if (CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
+		if (Speed::RoadSettings::ReadOriginalOrLegacy<101>([](){ return CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread(); }) != 0)
 		{
 			SPEED_NATIVE_LOG(LogTemp, Log,
 				TEXT("[WheelContactSolver] Mode=%s Coupling=%d dt=%.5f Tau=%.5f Gamma=%.4f vN=%.3f SolvedVN=%.3f SpringDisp=%.3f Locked=%d InvMassEff=%.6f Softness=%.6f Impulse=%s Pos=%s Normal=%s"),
@@ -988,7 +989,7 @@ bool ISpeedWheeledComponent::ProjectWheelSupportNonPenetration()
 
 bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 {
-	if (CVarIAmSpeedCanonicalWheelSupportPose.GetValueOnAnyThread() == 0)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<100>([](){ return CVarIAmSpeedCanonicalWheelSupportPose.GetValueOnAnyThread(); }) == 0)
 	{
 		return false;
 	}
@@ -1043,9 +1044,9 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 		? TangentialAngularVelocity.Size()
 		: GetPhysAngularVelocity().Size();
 	if (FMath::Abs(NormalSpeed) > FMath::Max(0.0f,
-		CVarIAmSpeedCanonicalWheelSupportMaxNormalSpeed.GetValueOnAnyThread()) ||
+		Speed::RoadSettings::ReadOriginalOrLegacy<99>([](){ return CVarIAmSpeedCanonicalWheelSupportMaxNormalSpeed.GetValueOnAnyThread(); })) ||
 		SupportAngularSpeed > FMath::Max(0.0f,
-			CVarIAmSpeedCanonicalWheelSupportMaxAngularSpeed.GetValueOnAnyThread()))
+			Speed::RoadSettings::ReadOriginalOrLegacy<98>([](){ return CVarIAmSpeedCanonicalWheelSupportMaxAngularSpeed.GetValueOnAnyThread(); })))
 	{
 		return false;
 	}
@@ -1271,7 +1272,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 	TArray<TPair<USWheelSubBody*, SHitResult>, TInlineAllocator<4>> EstablishedSupports;
 	bool bDeferredWheelGroundState = false;
 	const bool bTransactionalProjection =
-		CVarIAmSpeedWheelSupportTransactionalProjection.GetValueOnAnyThread() != 0;
+		Speed::RoadSettings::ReadOriginalOrLegacy<148>([](){ return CVarIAmSpeedWheelSupportTransactionalProjection.GetValueOnAnyThread(); }) != 0;
 	if (bTransactionalProjection)
 	{
 		struct FGroundProbe
@@ -1303,7 +1304,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			Probe.OriginalDisplacement = Wheel->GetLastDisplacement();
 			Probe.bHasProbeHit = Wheel->ProbeSuspensionOnGround(Probe.ProbeHit, delta);
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) >= 3)
 			{
 				FVector DiagnosticStart;
 				Wheel->GetSuspensionSweepSegment(delta, DiagnosticStart, Probe.DiagnosticInitialEnd);
@@ -1314,13 +1315,13 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 
 		TArray<int32, TInlineAllocator<4>> EstablishedMisses;
 		const float MaxGap = FMath::Max(
-			0.0f, CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread());
+			0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<139>([](){ return CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread(); }));
 		const float NormalDot = FMath::Clamp(
-			CVarIAmSpeedWheelSupportProjectionNormalDot.GetValueOnAnyThread(), -1.0f, 1.0f);
+			Speed::RoadSettings::ReadOriginalOrLegacy<142>([](){ return CVarIAmSpeedWheelSupportProjectionNormalDot.GetValueOnAnyThread(); }), -1.0f, 1.0f);
 		const float MinGravityAlignment = FMath::Clamp(
-			CVarIAmSpeedWheelSupportProjectionMinGravityAlignment.GetValueOnAnyThread(), -1.0f, 1.0f);
+			Speed::RoadSettings::ReadOriginalOrLegacy<141>([](){ return CVarIAmSpeedWheelSupportProjectionMinGravityAlignment.GetValueOnAnyThread(); }), -1.0f, 1.0f);
 		const float PatchTravelSlack = FMath::Max(0.0f,
-			CVarIAmSpeedWheelSupportProjectionPatchTravelSlack.GetValueOnAnyThread());
+			Speed::RoadSettings::ReadOriginalOrLegacy<144>([](){ return CVarIAmSpeedWheelSupportProjectionPatchTravelSlack.GetValueOnAnyThread(); }));
 		for (int32 Index = 0; Index < Probes.Num(); ++Index)
 		{
 			const FGroundProbe& Probe = Probes[Index];
@@ -1345,7 +1346,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				Probe.PreviousHit.FeatureId != 0 &&
 				FMath::Abs(PreviousNormal.Z) <= 0.10f;
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0 &&
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) != 0 &&
 				Probe.bWasGrounded && !Probe.bHasProbeHit)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log,
@@ -1355,7 +1356,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					PreviousNormal.Z, Wheel->IsContactVelocityLocked() ? 1 : 0,
 					Wheel->IsJumping() ? 1 : 0,
 					Wheel->HasJumpUnilateralSupport() ? 1 : 0);
-				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 2)
+				if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) >= 2)
 				{
 					SPEED_NATIVE_LOG(LogTemp, Log,
 						TEXT("[WheelSupportProjectionIdentity] Frame=%d Wheel=%d Source=%016llx Surface=%016llx Feature=%016llx Primitive=%016llx Group=%016llx Component=%s Hit=%d HitFrame=%u Point=(%.17g,%.17g,%.17g) Normal=(%.17g,%.17g,%.17g)"),
@@ -1392,7 +1393,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			// currently swept finite certified patch may bypass that admission gate.
 			// Unknown geometry, creases and remote chords retain the original rule.
 			if (bNeedsCertifiedSmoothSupport &&
-				(!bHasLocalPatch || CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() == 0 ||
+				(!bHasLocalPatch || Speed::RoadSettings::ReadOriginalOrLegacy<136>([](){ return CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread(); }) == 0 ||
 				 !HaveCertifiedExtrudedSupport(Wheel->GetWorld(),
 					Probe.PreviousHit.SourceId, Probe.PreviousHit.SurfaceId, Probe.PreviousHit.FeatureId,
 					Probe.PreviousHit.PrimitiveId, LocalPatchHit.PrimitiveId,
@@ -1405,8 +1406,8 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 #if !(UE_BUILD_SHIPPING)
 				// Existing debug mode 2 identifies the rejected real local sweep.
 				// Published-domain logging is read-only and does not admit contact.
-				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 2 &&
-					CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() != 0)
+				if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) >= 2 &&
+					Speed::RoadSettings::ReadOriginalOrLegacy<136>([](){ return CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread(); }) != 0)
 				{
 					SPEED_NATIVE_LOG(LogTemp, Log,
 						TEXT("[WheelSupportCertifiedProjectionRejected] Frame=%d Wheel=%d LocalHit=%d PreviousSource=%016llx LocalSource=%016llx PreviousSurface=%016llx LocalSurface=%016llx PreviousFeature=%016llx LocalFeature=%016llx PreviousPrimitive=%016llx LocalPrimitive=%016llx PreviousGroup=%016llx LocalGroup=%016llx PreviousPoint=%s LocalPoint=%s"),
@@ -1447,7 +1448,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			if (!bSameLocalPatch)
 			{
 #if !(UE_BUILD_SHIPPING)
-				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+				if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) != 0)
 				{
 					SPEED_NATIVE_LOG(LogTemp, Log,
 						TEXT("[WheelSupportPatchRejected] Frame=%d Wheel=%d LocalHit=%d SameComponent=%d NormalDot=%.5f TangentialTravel=%.3f MaxTravel=%.3f PreviousFace=%d LocalFace=%d PreviousPoint=%s LocalPoint=%s"),
@@ -1470,7 +1471,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const float ReachGap = FVector::DotProduct(
 				SweepEnd - LocalPatchHit.ImpactPoint, LocalNormal) - SweepRadius;
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[WheelSupportProjectionCandidateResult] Frame=%d Wheel=%d LocalPatch=1 Gap=%.4f PreviousFace=%d LocalFace=%d NormalDot=%.5f TangentialTravel=%.3f MaxTravel=%.3f"),
@@ -1495,14 +1496,14 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const FVector OriginalCOM = GetPhysCOM();
 			const FQuat OriginalRotation = GetPhysRotation();
 			const float RotationLength = FMath::Max(1.0f,
-				CVarIAmSpeedWheelSupportProjectionRotationLength.GetValueOnAnyThread());
+				Speed::RoadSettings::ReadOriginalOrLegacy<147>([](){ return CVarIAmSpeedWheelSupportProjectionRotationLength.GetValueOnAnyThread(); }));
 			const float RotationLengthSquared = RotationLength * RotationLength;
 			const float ReachSkin = FMath::Max(
-				0.0f, CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+				0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<146>([](){ return CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread(); }));
 			const bool bPreserveProbeHits =
-				CVarIAmSpeedWheelSupportProjectionPreserveProbeHits.GetValueOnAnyThread() != 0;
+				Speed::RoadSettings::ReadOriginalOrLegacy<145>([](){ return CVarIAmSpeedWheelSupportProjectionPreserveProbeHits.GetValueOnAnyThread(); }) != 0;
 			bool bCoherentSpringState = bPreserveProbeHits &&
-				CVarIAmSpeedWheelSupportProjectionCoherentSpringState.GetValueOnAnyThread() != 0;
+				Speed::RoadSettings::ReadOriginalOrLegacy<137>([](){ return CVarIAmSpeedWheelSupportProjectionCoherentSpringState.GetValueOnAnyThread(); }) != 0;
 			for (const FGroundProbe& Probe : Probes)
 			{
 				if (Probe.Wheel->HasJumpUnilateralSupport()) bCoherentSpringState = false;
@@ -1528,7 +1529,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				Probe.Wheel->SetLastDisplacement(Displacement);
 			};
 			const int32 Passes = FMath::Clamp(
-				CVarIAmSpeedWheelSupportProjectionPasses.GetValueOnAnyThread(), 1, 32);
+				Speed::RoadSettings::ReadOriginalOrLegacy<143>([](){ return CVarIAmSpeedWheelSupportProjectionPasses.GetValueOnAnyThread(); }), 1, 32);
 
 #if !(UE_BUILD_SHIPPING)
 			// Bounded read-only solver residuals; emit only when an existing final
@@ -1542,7 +1543,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			TArray<FProjectionPassResidual, TInlineAllocator<128>> DiagnosticResiduals;
 			bool bDiagnosticResidualsTruncated = false;
 			const bool bRecordResiduals = bPreserveProbeHits &&
-				CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 4;
+				Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) >= 4;
 #endif
 
 			auto ApplyConstraint = [this, RotationLengthSquared](
@@ -1661,7 +1662,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			RelativeRotation.ToAxisAndAngle(RotationAxis, RotationAngle);
 			RotationAngle = FMath::Min(RotationAngle, 2.0f * PI - RotationAngle);
 			const float MaxRotationRadians = FMath::DegreesToRadians(FMath::Max(0.0f,
-				CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread()));
+				Speed::RoadSettings::ReadOriginalOrLegacy<140>([](){ return CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread(); })));
 			const bool bWithinBounds =
 				(GetPhysCOM() - OriginalCOM).Size() <= MaxGap &&
 				RotationAngle <= MaxRotationRadians;
@@ -1683,7 +1684,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					if (!Probe.Wheel->ProbeSuspensionOnGround(VerificationHit, delta))
 					{
 #if !(UE_BUILD_SHIPPING)
-						if (Probe.bHasProbeHit && CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+						if (Probe.bHasProbeHit && Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) >= 3)
 						{
 							// The already-executed actual query rejected this proposed pose.
 							// Record it before rollback; never publish the failed hit.
@@ -1774,14 +1775,14 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			}
 
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f CoherentSpring=%d CoherentStateValid=%d"),
 					NumFrame(), EstablishedMisses.Num(), bAcceptProjectedPose ? 1 : 0,
 					(GetPhysCOM() - OriginalCOM).Size(),
 					FMath::RadiansToDegrees(RotationAngle), bCoherentSpringState ? 1 : 0, bCoherentStateValid ? 1 : 0);
-				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 3)
+				if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) >= 3)
 				{
 					// Read-only witnesses for all original probes, including initial hits.
 					// Do not publish these results or manufacture wheel support.
@@ -1916,7 +1917,7 @@ void ISpeedWheeledComponent::PostPhysicsUpdatePrv(const float& delta)
 bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	const float Delta, const bool bStrictHitboxGate)
 {
-	if (CVarIAmSpeedCoupledSubBodyPoseSolver.GetValueOnAnyThread() == 0)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<33>([](){ return CVarIAmSpeedCoupledSubBodyPoseSolver.GetValueOnAnyThread(); }) == 0)
 	{
 		return false;
 	}
@@ -1939,7 +1940,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	const FVector TransactionCOM = GetPhysCOM();
 	const FQuat TransactionRotation = GetPhysRotation();
 	const float ConfiguredSlop = FMath::Max(0.0f,
-		CVarIAmSpeedCoupledPoseHitboxSlopCm.GetValueOnAnyThread());
+		Speed::RoadSettings::ReadOriginalOrLegacy<35>([](){ return CVarIAmSpeedCoupledPoseHitboxSlopCm.GetValueOnAnyThread(); }));
 	const float Slop =
 		bStrictHitboxGate &&
 		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
@@ -1968,7 +1969,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
 		if (Contact.Wheel &&
-			(CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() == 0 ||
+			(Speed::RoadSettings::ReadOriginalOrLegacy<108>([](){ return CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread(); }) == 0 ||
 				Contact.Wheel->IsOnGround()) &&
 			Contact.SurfaceComponent.IsValid()
 			&& Contact.SurfaceComponent->GetMobility() == EComponentMobility::Static
@@ -2017,18 +2018,18 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		&& bWheelPatchesFaceChassisSupportSide
 		&& !bWheelPatchesFormLateralAxle;
 	const float DefaultRotationLength = FMath::Max(1.0f,
-		CVarIAmSpeedCoupledPoseRotationLengthCm.GetValueOnAnyThread());
+		Speed::RoadSettings::ReadOriginalOrLegacy<37>([](){ return CVarIAmSpeedCoupledPoseRotationLengthCm.GetValueOnAnyThread(); }));
 	const float FloorPivotRotationLength = FMath::Max(1.0f,
-		CVarIAmSpeedCoupledPoseFloorPivotRotationLengthCm.GetValueOnAnyThread());
+		Speed::RoadSettings::ReadOriginalOrLegacy<34>([](){ return CVarIAmSpeedCoupledPoseFloorPivotRotationLengthCm.GetValueOnAnyThread(); }));
 	const float WheelManifoldRotationLength = FMath::Max(1.0f,
-		CVarIAmSpeedCoupledPoseWheelManifoldRotationLengthCm.GetValueOnAnyThread());
+		Speed::RoadSettings::ReadOriginalOrLegacy<42>([](){ return CVarIAmSpeedCoupledPoseWheelManifoldRotationLengthCm.GetValueOnAnyThread(); }));
 	const float WheelConstraintRotationLength =
 		bWheelPatchesOnGravityAlignedSurface && bWheelPatchesFaceChassisSupportSide
 			? (bUseWheelManifoldRotationLength
 				? WheelManifoldRotationLength : FloorPivotRotationLength)
 			: DefaultRotationLength;
 	const int32 MaxPasses = FMath::Clamp(
-		CVarIAmSpeedCoupledPosePasses.GetValueOnAnyThread(), 1, 64);
+		Speed::RoadSettings::ReadOriginalOrLegacy<36>([](){ return CVarIAmSpeedCoupledPosePasses.GetValueOnAnyThread(); }), 1, 64);
 
 	struct FHitboxPlaneConstraint
 	{
@@ -2228,8 +2229,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 							FMath::Abs(Constraint.Normal.Z) >= 0.90f &&
 							FMath::Abs(FVector::DotProduct(WheelManifoldNormal,
 								Constraint.Normal)) <= 0.25f) ||
-						CVarIAmSpeedCoupledPoseSupportedSurfaceContactPoint
-							.GetValueOnAnyThread() != 0);
+						Speed::RoadSettings::ReadOriginalOrLegacy<39>([](){ return CVarIAmSpeedCoupledPoseSupportedSurfaceContactPoint
+							.GetValueOnAnyThread(); }) != 0);
 				const float HitboxRotationLength =
 					bUseFreeFloorContactPoint ? FloorPivotRotationLength
 					: (bUseSupportedFloorContactPoint
@@ -2257,7 +2258,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 
 	auto ClampHitboxInwardVelocity = [&]()
 	{
-		if (CVarIAmSpeedCoupledPoseVelocityCorrection.GetValueOnAnyThread() == 0)
+		if (Speed::RoadSettings::ReadOriginalOrLegacy<40>([](){ return CVarIAmSpeedCoupledPoseVelocityCorrection.GetValueOnAnyThread(); }) == 0)
 		{
 			return;
 		}
@@ -2319,7 +2320,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	if (!bHitboxFeasible)
 	{
 #if !(UE_BUILD_SHIPPING)
-		if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0 &&
+		if (Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) != 0 &&
 			InitialMaximumDepth > Slop)
 		{
 			SPEED_NATIVE_LOG(LogTemp, Warning,
@@ -2370,7 +2371,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	const FVector HitboxFeasibleCOM = GetPhysCOM();
 	const FQuat HitboxFeasibleRotation = GetPhysRotation();
 	const float MaxWheelGap = FMath::Max(0.0f,
-		CVarIAmSpeedCoupledPoseWheelGapCm.GetValueOnAnyThread());
+		Speed::RoadSettings::ReadOriginalOrLegacy<41>([](){ return CVarIAmSpeedCoupledPoseWheelGapCm.GetValueOnAnyThread(); }));
 	struct FWheelPatchConstraint
 	{
 		USWheelSubBody* Wheel = nullptr;
@@ -2411,7 +2412,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	for (const SWheelGroundContact& Contact : GetPendingWheelContacts())
 	{
 		if (!Contact.Wheel || !Contact.SurfaceComponent.IsValid() ||
-			(CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread() != 0 &&
+			(Speed::RoadSettings::ReadOriginalOrLegacy<108>([](){ return CVarIAmSpeedWheelContactRequireFinalSupport.GetValueOnAnyThread(); }) != 0 &&
 				!Contact.Wheel->IsOnGround()) ||
 			Contact.SurfaceComponent->GetMobility() != EComponentMobility::Static ||
 			Contact.Normal.IsNearlyZero())
@@ -2494,7 +2495,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		if (!bSamePatch)
 		{
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=LocalPatch HasPatch=%d SameComponent=%d NormalDot=%.6f AnalyticIdentity=%d SameAnalytic=%d SameFace=%d ExpectedSource=%016llx ExpectedSurface=%016llx ExpectedFeature=%016llx ActualSource=%016llx ActualSurface=%016llx ActualFeature=%016llx ExpectedFace=%d ActualFace=%d ExpectedPrimitive=%016llx ActualPrimitive=%016llx ExpectedPoint=%s ActualPoint=%s ExpectedNormal=%s ActualNormal=%s"),
@@ -2535,7 +2536,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		if (Gap > 0.0f)
 		{
 			const float ReachSkin = FMath::Max(0.0f,
-				CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+				Speed::RoadSettings::ReadOriginalOrLegacy<146>([](){ return CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread(); }));
 			bool bAppliedWallTangentProjection = false;
 			// Preserve the active hitbox plane while closing an established wheel
 			// reach gap. Independent inward/outward translations can undo each
@@ -2580,9 +2581,9 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 						const FVector DeltaAngular = Lambda * AngularMobility;
 						const float DeltaAngle = DeltaAngular.Size();
 						const float MaxTranslation = FMath::Max(0.0f,
-							CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread());
+							Speed::RoadSettings::ReadOriginalOrLegacy<139>([](){ return CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread(); }));
 						const float MaxRotation = FMath::DegreesToRadians(FMath::Max(0.0f,
-							CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread()));
+							Speed::RoadSettings::ReadOriginalOrLegacy<140>([](){ return CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread(); })));
 						if (!Translation.ContainsNaN() && !DeltaAngular.ContainsNaN() &&
 							Translation.Size() <= MaxTranslation && DeltaAngle <= MaxRotation)
 						{
@@ -2599,7 +2600,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 				}
 			}
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseWallTangent] Frame=%d Wheel=%d Applied=%d GapCm=%.6f HitboxConstraints=%d Locked=%d Jump=%d Unilateral=%d"),
@@ -2618,7 +2619,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		if (!SolveHitboxFeasibility(MaxPasses))
 		{
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=HitboxFeasibility GapCm=%.6f RadiusCm=%.6f"),
@@ -2637,7 +2638,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		if (FinalGap > MaxWheelGap + 0.01f)
 		{
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=FinalGap GapCm=%.6f FinalGapCm=%.6f MaxGapCm=%.6f RadiusCm=%.6f"),
@@ -2655,7 +2656,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	// On a single established wall plane, one bounded normal translation closes
 	// every remaining reach gap simultaneously, without changing wheel order.
 	// Admission uses real local patches; acceptance requires real final sweeps.
-	if (CVarIAmSpeedCoupledPoseSharedWallPlaneRetention.GetValueOnAnyThread() != 0 &&
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<38>([](){ return CVarIAmSpeedCoupledPoseSharedWallPlaneRetention.GetValueOnAnyThread(); }) != 0 &&
 		!bStrictHitboxGate && WheelConstraints.Num() >= 2)
 	{
 		const FWheelPatchConstraint& First = WheelConstraints[0];
@@ -2699,10 +2700,10 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			MaximumGap = FMath::Max(MaximumGap, static_cast<float>(
 				FVector::DotProduct(End - Patch.ImpactPoint, SharedNormal) - Wheel->GetCollisionShape().GetSphereRadius()));
 		}
-		const float ReachSkin = FMath::Max(0.0f, CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread());
+		const float ReachSkin = FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<146>([](){ return CVarIAmSpeedWheelSupportProjectionReachSkin.GetValueOnAnyThread(); }));
 		const float Translation = MaximumGap + ReachSkin;
 		if (bSharedPlane && MaximumGap > 0.0f &&
-			Translation <= FMath::Max(0.0f, CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread()))
+			Translation <= FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<139>([](){ return CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread(); })))
 		{
 			const FVector BeforeSharedCOM = GetPhysCOM();
 			const FQuat BeforeSharedRotation = GetPhysRotation();
@@ -2728,7 +2729,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 				UpdateSubBodiesKinematics();
 			}
 #if !(UE_BUILD_SHIPPING)
-			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Log, TEXT("[CoupledPoseSharedWallPlane] Frame=%u Wheels=%d GapCm=%.9g TranslationCm=%.9g ActualAllSupport=%d"),
 					NumFrame(), WheelConstraints.Num(), MaximumGap, Translation, bAllRealSupport ? 1 : 0);
@@ -2739,7 +2740,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	ClampHitboxInwardVelocity();
 
 #if !(UE_BUILD_SHIPPING)
-	if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0 &&
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) != 0 &&
 		(!GetPhysCOM().Equals(TransactionCOM, 0.001f) ||
 			GetPhysRotation().AngularDistance(TransactionRotation) > 1.0e-5f))
 	{
@@ -2763,7 +2764,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 				continue;
 			}
 #if !(UE_BUILD_SHIPPING)
-			const bool bTraceFinalQuery = CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() >= 2;
+			const bool bTraceFinalQuery = Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) >= 2;
 			const bool bPreviousGround = Wheel->IsOnGround();
 			const SHitResult PreviousQueryHit = Wheel->GetHit();
 #endif

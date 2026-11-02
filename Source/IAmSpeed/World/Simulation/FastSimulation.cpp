@@ -1,4 +1,5 @@
 #include "FastSimulation.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "SimulationSleepState.h"
 #include "SimulationActorDiagnostics.h"
@@ -80,7 +81,7 @@ void AFastSimulation::BeginRunMetrics()
 	RunStartIterationLimitCount = PerformanceIterationLimitCount;
 	RunStartTotalStepMilliseconds = PerformanceTotalStepMilliseconds;
 #if !UE_BUILD_SHIPPING
-	bMeasureWindows = CVarFastWindowTiming.GetValueOnAnyThread() != 0;
+	bMeasureWindows = Speed::RoadSettings::ReadOriginalOrLegacy<56>([](){ return CVarFastWindowTiming.GetValueOnAnyThread(); }) != 0;
 	bWindowTimingInvalid = false;
 	WindowMilliseconds.Reset();
 	if (bMeasureWindows) WindowMilliseconds.Reserve(65536);

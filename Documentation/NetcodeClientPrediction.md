@@ -612,3 +612,39 @@ BEFORE any Engine/coordinator launch, with matching frozen inputs and original
 preparation34895/exit0 retained. It is NOT_RUN, not a native failure or success,
 and no Job0 observation or native process exit is invented. The last real
 native result remains56/55Success1FAIL. No production filter/ACK guard changes.
+
+
+Source63 integrates the reviewed development epoch hunk, not a completed
+restore provider. Original driver/bridge/component/subbody allocations have
+real shared C++ roots and aliasing members; original and reference native
+vehicle configs are distinct and survive their real native base destructors.
+Retirement uses explicit phases, original weak serials and typed root release,
+never a premature Closed flag or a synthetic worker/source drain. The actual
+constructor/base-destructor/config-destructor entry diagnostics are values,
+not a lease. Native callback/GC/destruction-order assertions are NOT_RUN here.
+
+The controlled conformance host explicitly chooses all178 declared CVar values
+before birth.281 real readers use those immutable values inside native setup,
+Step and activation, without a live getter fallback. Legacy getters remain the
+original lazy expressions elsewhere. UObject allocations occur before that
+scope; real diagnostic callbacks dispatch after math/routing/GC exclusion.
+Acquired graph lifetimes are rechecked after callbacks, including prior cars,
+bridge, driver, body pins and the final registry/counter. Activation reads back
+the actual native CanMove/freeze/countdown/roster before releasing the gate.
+Initial startup comparison includes the full declared-slot canonical bytes;
+the existing IAS fragmentation retains1232-byte datagrams and bounded32768
+assembled messages. Lane1 is mandatory for this original synchronous profile.
+
+Tests add genuine birth output GC and prepared-wheel reachability, an actual
+driver Destroy+GC negative construction, a real optional activation diagnostic
+callback that mutates the legacy facade, and actual native/config destruction
+order. Live stiffness changes only during Local Step; a fourth separately
+configured native graph must show physical sensitivity to changed stiffness.
+These are unexecuted assertions, not qualified results or178-reader coverage.
+
+Complete native configuration/units/source identity, module/lifecycle exclusion,
+all callback and Engine causal-state coverage, authoritative restore atK and
+localized dependency closure remain missing. Complete restoration providers,
+ProtectsEscapedMutableViews and lease admission stay CLOSED. No source62 disk
+failure or older native PASS is transferred. Real Device/renderer/local-feel
+and two-client localized resimulation remain required after native validation.

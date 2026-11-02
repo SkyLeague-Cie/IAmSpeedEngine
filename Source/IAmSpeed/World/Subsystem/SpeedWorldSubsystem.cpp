@@ -1,4 +1,5 @@
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
@@ -613,7 +614,7 @@ void USpeedWorldSubsystem::BuildAnalyticWorldFromLoadedSources()
 		const Speed::Analytic::FFlatLandscapeAdapterOutput Output =
 			Speed::Analytic::BuildFlatLandscapePlane(
 				*Landscape,
-				CVarIAmSpeedAnalyticLandscapeFlatnessTolerance.GetValueOnGameThread());
+				Speed::RoadSettings::ReadOriginalOrLegacy<0>([](){ return CVarIAmSpeedAnalyticLandscapeFlatnessTolerance.GetValueOnGameThread(); }));
 		REPLAY_ANALYTIC_LOG(LogTemp, Display,
 			TEXT("[AnalyticLandscapeAdapter] Source=%s Result=%u ResidualCm=%.9g Detail=%s"),
 			*Landscape->GetPathName(), static_cast<uint8>(Output.Result),
@@ -798,7 +799,7 @@ static TAutoConsoleVariable<int32> CVarIAmSpeedDebugPersistentDynamicPairs(
 
 bool USpeedWorldSubsystem::AreUnilateralRollingPairsEnabled()
 {
-	return CVarIAmSpeedUnilateralRollingPairs.GetValueOnAnyThread() != 0;
+	return Speed::RoadSettings::ReadOriginalOrLegacy<31>([](){ return CVarIAmSpeedUnilateralRollingPairs.GetValueOnAnyThread(); }) != 0;
 }
 
 bool USpeedWorldSubsystem::ShouldAcquireUnilateralRollingPair(
@@ -806,7 +807,7 @@ bool USpeedWorldSubsystem::ShouldAcquireUnilateralRollingPair(
 {
 	return AreUnilateralRollingPairsEnabled() &&
 		RelativeNormalSpeed <= FMath::Max(
-			0.0f, CVarIAmSpeedRollingGentleAcquisitionSpeed.GetValueOnAnyThread());
+			0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<16>([](){ return CVarIAmSpeedRollingGentleAcquisitionSpeed.GetValueOnAnyThread(); }));
 }
 
 void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
@@ -912,7 +913,7 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	const float ImpactRelativeNormalSpeed)
 {
 	unsigned int& CurrentStepFrame = SimulationWorldEpochStorage().GetCurrentStepFrame();
-	if (CVarIAmSpeedPersistentDynamicPairs.GetValueOnAnyThread() == 0)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<13>([](){ return CVarIAmSpeedPersistentDynamicPairs.GetValueOnAnyThread(); }) == 0)
 	{
 		return;
 	}
@@ -956,7 +957,7 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	Pair->LocalAnchorA = CompA->GetPhysRotation().UnrotateVector(ContactPoint - CompA->GetPhysCOM());
 	Pair->LocalAnchorB = CompB->GetPhysRotation().UnrotateVector(ContactPoint - CompB->GetPhysCOM());
 	Pair->LocalNormalB = CompB->GetPhysRotation().UnrotateVector(NormalBToA.GetSafeNormal());
-	if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+	if (Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) != 0)
 	{
 		SPEED_NATIVE_LOG(LogTemp, Warning,
 			TEXT("[PersistentPair][Register] Frame=%u A=%s B=%s Normal=%s Point=%s AcquisitionNormalSpeed=%.6f"),
@@ -1080,7 +1081,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 #endif // IAmSpeed contact witness1075 END
 
 	const float SeparationToleranceCm = FMath::Max(
-		0.0f, CVarIAmSpeedRollingSeparationTolerance.GetValueOnAnyThread());
+		0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<20>([](){ return CVarIAmSpeedRollingSeparationTolerance.GetValueOnAnyThread(); }));
 	const auto LogRollingRelease = [&CurrentStepFrame](
 		const FDynamicContactPair& Pair,
 		const TCHAR* Reason,
@@ -1088,7 +1089,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		const float RelativeNormalVelocity = 0.0f)
 	{
 		if (!Pair.bRollingManifoldReady ||
-			CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() == 0)
+			Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) == 0)
 		{
 			return;
 		}
@@ -1211,7 +1212,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		// previous timeline must never retain ownership of CCD in the new one.
 		if (CurrentStepFrame < Pair.FirstSeenFrame)
 		{
-			if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Warning,
 					TEXT("[PersistentPair][ReleaseFrameRewind] Frame=%u FirstSeenFrame=%u"),
@@ -1284,7 +1285,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				(!bUseRollingManifold &&
 					FVector::DotProduct(CurrentBoxToSphereNormal, StoredBoxToSphereNormal) < 0.5f))
 			{
-				if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+				if (Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) != 0)
 				{
 					SPEED_NATIVE_LOG(LogTemp, Warning,
 						TEXT("[PersistentPair][RejectGeometry] Frame=%u Separation=%.3f CurrentNormal=%s StoredNormal=%s"),
@@ -1326,7 +1327,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				if (FVector::DotProduct(PreviousNormal, N) < 0.995f)
 				{
 					++Pair.FeatureTransitionCount;
-					if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+					if (Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) != 0)
 					{
 						SPEED_NATIVE_LOG(LogTemp, Warning,
 							TEXT("[PersistentPair][FeatureTransition] Frame=%u Separation=%.3f PreviousNormal=%s CurrentNormal=%s"),
@@ -1368,10 +1369,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				CompA->GetPhysAccelerationAtPoint(AnchorA) -
 				CompB->GetPhysAccelerationAtPoint(AnchorB), N);
 		const float PenetrationSlop = FMath::Max(
-			0.0f, CVarIAmSpeedRollingPenetrationSlop.GetValueOnAnyThread());
+			0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<18>([](){ return CVarIAmSpeedRollingPenetrationSlop.GetValueOnAnyThread(); }));
 		if (bUseRollingManifold && Separation >= -PenetrationSlop &&
 			PredictedRelativeNormalVelocity > FMath::Max(
-				0.0f, CVarIAmSpeedRollingReleaseSpeed.GetValueOnAnyThread()))
+				0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<19>([](){ return CVarIAmSpeedRollingReleaseSpeed.GetValueOnAnyThread(); })))
 		{
 			LogRollingRelease(
 				Pair, TEXT("SeparatingVelocity"), Separation,
@@ -1396,7 +1397,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  WitnessOutcome=CO::IdentityOnly;
 #endif // IAmSpeed contact witness1075 END
 
-			if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) != 0)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Warning,
 					TEXT("[PersistentPair][IdentityOnly] Frame=%u Separation=%.6f RelN=%.6f PredictedRelN=%.6f"),
@@ -1415,8 +1416,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		const float TargetRelativeNormalVelocity = bUseRollingManifold &&
 			PenetrationDepth > PenetrationSlop
 			? FMath::Min(
-				FMath::Max(0.0f, CVarIAmSpeedRollingMaxCorrectionSpeed.GetValueOnAnyThread()),
-				FMath::Max(0.0f, CVarIAmSpeedRollingBaumgarte.GetValueOnAnyThread()) *
+				FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<17>([](){ return CVarIAmSpeedRollingMaxCorrectionSpeed.GetValueOnAnyThread(); })),
+				FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<15>([](){ return CVarIAmSpeedRollingBaumgarte.GetValueOnAnyThread(); })) *
 					(PenetrationDepth - PenetrationSlop) / Dt)
 			: 0.0f;
 		const float InvMassA = 1.0f / FMath::Max(CompA->GetPhysMass(), 1.0f);
@@ -1456,7 +1457,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			Pair.PeakNormalActivity = FMath::Max(Pair.PeakNormalActivity, NormalActivity);
 			Pair.PeakNormalSupportActivity = FMath::Max(
 				Pair.PeakNormalSupportActivity, NormalSupportActivity);
-			if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0 &&
+			if (Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) != 0 &&
 				(CurrentStepFrame - Pair.FirstSeenFrame) % 30u == 0u)
 			{
 				SPEED_NATIVE_LOG(LogTemp, Warning,
@@ -1494,12 +1495,12 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				: CompA->GetKinematicState();
 			RollingFakePhysicsContext.FakeImpulseScale = FMath::Max(
 				0.0f,
-				CVarIAmSpeedRollingTangentialFakePhysicsScale.GetValueOnAnyThread());
+				Speed::RoadSettings::ReadOriginalOrLegacy<21>([](){ return CVarIAmSpeedRollingTangentialFakePhysicsScale.GetValueOnAnyThread(); }));
 			RollingFakePhysicsContext.bProjectFakeImpulseOntoContactPlane = true;
 			RollingFakePhysicsContext.FakeTangentialVelocityScale = 1.0f;
 			RollingFakePhysicsContext.bUseContactPointRelativeVelocity = true;
 		}
-		if (CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread() != 0)
+		if (Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) != 0)
 		{
 			SPEED_NATIVE_LOG(LogTemp, Warning,
 				TEXT("[PersistentPair][Impulse] Frame=%u A=%s B=%s J=%s Separation=%.3f RelN=%.3f NormalActivity=%.6f NormalSupportActivity=%.6f AccumulatedNormalActivity=%.6f AccumulatedNormalSupportActivity=%.6f"),
@@ -1893,7 +1894,7 @@ void USpeedWorldSubsystem::PrepareCanonicalFrame(
 		{
 			IAMSPEED_ACTOR_SCOPE(SimulationWorldEpochStorage(), *Component, Prepare);
 			Component->SetStaticCollisionWorldForFrame(
-				CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread() != 0 &&
+				Speed::RoadSettings::ReadOriginalOrLegacy<12>([](){ return CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread(); }) != 0 &&
 				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
 					? SimulationWorldEpochStorage().GetStaticCollisionWorld() : nullptr, Context.PhysicalDeltaTime);
 			Component->PrepareCanonicalFrame(Context);
@@ -2056,7 +2057,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 
 #if !UE_BUILD_SHIPPING
 	const bool bCaptureSolverEventTrace =
-		CVarIAmSpeedSolverEventTraceFrame.GetValueOnAnyThread() == static_cast<int32>(Frame);
+		Speed::RoadSettings::ReadOriginalOrLegacy<23>([](){ return CVarIAmSpeedSolverEventTraceFrame.GetValueOnAnyThread(); }) == static_cast<int32>(Frame);
 	const auto TraceEvent = [&](const TCHAR* Stage, const TCHAR* Disposition,
 		const int32 Iteration, const int32 Order, const uint64 PairKey,
 		const SHitResult& Hit, USSubBody* Resolver, const int32 GenerationBefore,
@@ -2101,7 +2102,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	// A shadow-built analytical payload is not the selected collision authority.
 	// Keep Legacy/Hybrid unchanged, even if analytical diagnostic data is loaded.
 	const Speed::IStaticCollisionWorld* RestingWorld =
-		CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread() != 0 &&
+		Speed::RoadSettings::ReadOriginalOrLegacy<12>([](){ return CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread(); }) != 0 &&
 		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
 			? SimulationWorldEpochStorage().GetStaticCollisionWorld() : nullptr;
 	const Speed::FFrameParallelSettings ParallelPreparationSettings = Speed::CaptureFrameParallelSettings();

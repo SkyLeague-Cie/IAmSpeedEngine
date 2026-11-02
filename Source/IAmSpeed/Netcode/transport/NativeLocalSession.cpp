@@ -9,7 +9,7 @@ namespace Speed::Netcode
 {
 namespace LocalSessionDetail
 {
-constexpr std::size_t Header=60,Chunk=NativeDatagramBudget-Header,MaxMessage=1232,ReplayWindow=64,PendingLimit=32;
+constexpr std::size_t Header=60,Chunk=NativeDatagramBudget-Header,MaxMessage=32768,ReplayWindow=64,PendingLimit=32;
 struct FClaimRegistry
 {std::mutex Gate;std::vector<std::array<std::uint64_t,6>> Tuples;};
 bool ClaimOnce(const FLocalSessionConfig& C)

@@ -1,4 +1,5 @@
 #include "FrameParallelExecutor.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "FrameParallelPolicy.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
@@ -31,7 +32,7 @@ TAutoConsoleVariable<int32> CVarPrivateIdleSpinMicros1403(
     TEXT("Experimental native idle-wait policy:0=condition-variable sleep (default);1..1000=bounded microsecond polling after a job. No callbacks execute while idle."));
 int32 PrivateIdleSpinMicros1403()
 {
-    return FMath::Clamp(CVarPrivateIdleSpinMicros1403.GetValueOnAnyThread(),0,1000);
+    return FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<77>([](){ return CVarPrivateIdleSpinMicros1403.GetValueOnAnyThread(); }),0,1000);
 }
 
 struct FWorkGroup
@@ -202,7 +203,7 @@ struct FDispatchLease
 
 int32 RequestedFrameExecutorBackend()
 {
-    static const int32 Backend = CVarFrameExecutorBackend.GetValueOnAnyThread();
+    static const int32 Backend = Speed::RoadSettings::ReadOriginalOrLegacy<80>([](){ return CVarFrameExecutorBackend.GetValueOnAnyThread(); });
     return Backend; // Startup setting; never switch a live frame's executor.
 }
 int32 EnsurePrivateFrameWorkers(int32 Workers)

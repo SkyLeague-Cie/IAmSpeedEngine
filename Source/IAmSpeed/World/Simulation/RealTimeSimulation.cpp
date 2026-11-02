@@ -1,4 +1,5 @@
 #include "RealTimeSimulation.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 
 #include "CanonicalFrameDriver.h"
@@ -199,7 +200,7 @@ ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(
 	if (Result == ESimulationWorkerResult::Advanced)
 	{
 		const double RecoveryWindowSeconds = FMath::Max(0.0,
-			static_cast<double>(CVarRealTimeRecoveryWindowMilliseconds.GetValueOnAnyThread()) /
+			static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<89>([](){ return CVarRealTimeRecoveryWindowMilliseconds.GetValueOnAnyThread(); })) /
 			1000.0);
 #if !UE_BUILD_SHIPPING
 		const FRealTimeFramePacer::FFrameStartSample Sample = FramePacer.BeginFrame(
@@ -237,7 +238,7 @@ void ARealTimeSimulation::WaitBetweenFrames(
 			static_cast<double>(RealDeltaTime);
 	}
 	const double PrecisionWindowSeconds = FMath::Max(0.0,
-		static_cast<double>(CVarRealTimePrecisionWindowMilliseconds.GetValueOnAnyThread()) /
+		static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<88>([](){ return CVarRealTimePrecisionWindowMilliseconds.GetValueOnAnyThread(); })) /
 		1000.0);
 	if (WaitContext.WaitUntil(DeadlineSeconds, PrecisionWindowSeconds) ==
 		ESimulationWaitResult::Interrupted)
@@ -251,18 +252,18 @@ void ARealTimeSimulation::AuditPhysicalFrameStart(
 	const FRealTimeFramePacer::FFrameStartSample& Sample)
 {
 	if (!Sample.bHasPreviousStart ||
-		CVarRealTimeCadenceWarnings.GetValueOnAnyThread() == 0)
+		Speed::RoadSettings::ReadOriginalOrLegacy<87>([](){ return CVarRealTimeCadenceWarnings.GetValueOnAnyThread(); }) == 0)
 	{
 		return;
 	}
 
 	const double ExpectedSeconds = Sample.TargetIntervalSeconds;
 	const double ToleranceSeconds = FMath::Max(0.0,
-		static_cast<double>(CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread()) /
+		static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<85>([](){ return CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread(); })) /
 		1000.0);
 	const double NowSeconds = FPlatformTime::Seconds();
 	const double CooldownSeconds = FMath::Max(0.0,
-		static_cast<double>(CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnAnyThread()));
+		static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<86>([](){ return CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnAnyThread(); })));
 	if (Sample.IntervalSeconds + ToleranceSeconds < ExpectedSeconds &&
 		NowSeconds - LastPhysicalFastWarningSeconds >= CooldownSeconds)
 	{
@@ -310,7 +311,7 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
         return;
     }
     const double ToleranceSeconds = FMath::Max(0.0,
-        static_cast<double>(CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread()) / 1000.0);
+        static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<85>([](){ return CVarRealTimeCadenceToleranceMilliseconds.GetValueOnAnyThread(); })) / 1000.0);
     // Availability at this read, not the packet previously frozen by an actor latch.
     // The unchanged pacer supplies actual starts/deadlines; visibility has its own
     // monotone clock. GameDelta cannot define the interval between these reads.
@@ -327,9 +328,9 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
     }
     const double NowSeconds = Observation.ObservationSeconds;
     if (NowSeconds < SuppressPresentationWarningsUntilSeconds ||
-        CVarRealTimeCadenceWarnings.GetValueOnGameThread() == 0) return;
+        Speed::RoadSettings::ReadOriginalOrLegacy<87>([](){ return CVarRealTimeCadenceWarnings.GetValueOnGameThread(); }) == 0) return;
     const double CooldownSeconds = FMath::Max(0.0,
-        static_cast<double>(CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnGameThread()));
+        static_cast<double>(Speed::RoadSettings::ReadOriginalOrLegacy<86>([](){ return CVarRealTimeCadenceWarningCooldownSeconds.GetValueOnGameThread(); })));
     if (Result.Rebased) return;
     const auto& Early = Result.FirstEarlyStart;
     const auto& Late = Result.FirstLateStart;

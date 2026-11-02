@@ -1,4 +1,5 @@
 #include "JoinedActorKinematics1213.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "JoinedActorBaseWitness1534.h"
 #include "FrameParallelExecutor.h"
 #include "FrameParallelSettings.h"
@@ -103,7 +104,7 @@ bool SameJoinedActorNumericContext1213(const FFrameFloatingPointContext& A,const
  return A.bValid&&B.bValid&&A.VectorControl==B.VectorControl
   &&FMemory::Memcmp(&A.Environment,&B.Environment,sizeof(A.Environment))==0;
 }
-bool IsJoinedActorKinematicWaveEnabled1213(){return CVarJoinedActors1213.GetValueOnAnyThread()!=0;}
+bool IsJoinedActorKinematicWaveEnabled1213(){return Speed::RoadSettings::ReadOriginalOrLegacy<68>([](){ return CVarJoinedActors1213.GetValueOnAnyThread(); })!=0;}
 bool FJoinedActorKinematics1213::CaptureAndCompute(TConstArrayView<ISpeedComponent*> Actors,
  const int32 LaneLimit,const int32 MinParallelActors)
 {
@@ -112,7 +113,7 @@ bool FJoinedActorKinematics1213::CaptureAndCompute(TConstArrayView<ISpeedCompone
  #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
  WitnessWave1534=0;
  #endif
- ActiveActor1430=nullptr;bHasBase1430=CVarJoinedBaseConsume1430.GetValueOnAnyThread()!=0;
+ ActiveActor1430=nullptr;bHasBase1430=Speed::RoadSettings::ReadOriginalOrLegacy<67>([](){ return CVarJoinedBaseConsume1430.GetValueOnAnyThread(); })!=0;
  if(IsInsideFrameParallelTask()||LaneLimit<2||LaneLimit>FFrameParallelPolicy::MaximumLanes||Actors.Num()<2||Actors.Num()>256)return false;
  const auto Numeric=CaptureFrameFloatingPointContext();if(!Speed::AreFrameFloatingPointExceptionsMasked1213(Numeric))return false;
  FScopedFrameFloatingPointContext OwnerGuard(Numeric);
@@ -290,7 +291,7 @@ bool FJoinedActorKinematics1213::TryInstall(ISpeedComponent& Actor,TFunctionRef<
  // One synchronous owner scope; workers never inherit or read this TLS.
  // Exact-body checks occur AFTER the native local conversion/cache access.
  const bool AllowBase1430=bHasBase1430&&Found->bShadowComplete&&InputsMatch
-  &&CVarJoinedBaseConsume1430.GetValueOnAnyThread()!=0&&!GJoinedBaseOwner1430&&!IsInsideFrameParallelTask();
+  &&Speed::RoadSettings::ReadOriginalOrLegacy<67>([](){ return CVarJoinedBaseConsume1430.GetValueOnAnyThread(); })!=0&&!GJoinedBaseOwner1430&&!IsInsideFrameParallelTask();
  if(AllowBase1430)
  {
   ActiveActor1430=Found;GJoinedBaseOwner1430=this;

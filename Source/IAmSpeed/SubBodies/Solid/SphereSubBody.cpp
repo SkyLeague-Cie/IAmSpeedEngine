@@ -1,4 +1,5 @@
 #include "SphereSubBody.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
@@ -106,12 +107,12 @@ void USphereSubBody::ResetForFrame(const float& Delta)
 
 bool USphereSubBody::IsSphereBoxProjectionEnabled()
 {
-	return CVarIAmSpeedSphereBoxProjection.GetValueOnAnyThread() != 0;
+	return Speed::RoadSettings::ReadOriginalOrLegacy<28>([](){ return CVarIAmSpeedSphereBoxProjection.GetValueOnAnyThread(); }) != 0;
 }
 
 bool USphereSubBody::IsWorldStaticProjectionEnabled()
 {
-	return CVarIAmSpeedSphereWorldProjection.GetValueOnAnyThread() != 0;
+	return Speed::RoadSettings::ReadOriginalOrLegacy<30>([](){ return CVarIAmSpeedSphereWorldProjection.GetValueOnAnyThread(); }) != 0;
 }
 
 void USphereSubBody::PostPhysicsUpdate()

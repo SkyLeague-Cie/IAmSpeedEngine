@@ -1,5 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
+#include "NativeConfigurationLifetimeDiagnostics.h"
 #include "BranchInputFilter.h"
 #include "IAmSpeed/Netcode/Common/CommonComponentState.h"
 #include "IAmSpeed/Base/Kinematic.h"
@@ -7,6 +8,7 @@
 #include <atomic>
 #include <memory>
 #include <variant>
+#include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadSettingsRecipe.h"
 
 namespace Speed::Netcode::Prediction
 {
@@ -18,6 +20,8 @@ struct FPrivateRoadCarSeed
     // Network profile starts closed; countdown is only an explicit unit recipe.
     EPrivateRoadStartPolicy StartPolicy=EPrivateRoadStartPolicy::AwaitInitialPublication;
     uint16 CountdownFrames=0;
+    // Explicit supplied values; null preserves the older unqualified live-settings experiment.
+    std::shared_ptr<const Speed::RoadSettings::FDeclaredRecipe> DeclaredSettings;
     EBranchFilterRole Role=EBranchFilterRole::RemoteRequests;
     std::shared_ptr<const BranchV2::FInputActionContract> Contract;
     BranchV2::FInputProcessingPolicy Processing;
@@ -63,6 +67,7 @@ struct FPrivateRoadPublication
 {
     U64 LocalKernelLifetime=0,Frame=0;
     bool AwaitingInitialPublication=false;
+    std::vector<uint8> DeclaredSettingsIdentity; // full canonical declared-slot bytes, not full config
     uint32 NativeNetworkComponents=0; // actual object census, not just history
     uint32 NativeDebugDelegateBindings=0; // bound entries; not an in-flight-reader drain certificate
     bool RenderScenePresent=false,PhysicsScenePresent=false; // actual private world scene pointers
@@ -96,6 +101,8 @@ public:
     // publication with the original server and received the common activation.
     // This is NOT a complete hidden-state/restore certificate or source admission.
     bool ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& OriginalBaseline,FString& Why);
+    // Immutable actual C++ return-site values; no source/lifetime exclusion or lease follows.
+    std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeForDiagnostics() const;
     bool Close(); // GT only; never destroys native storage in a physical/publication tail
 };
 }

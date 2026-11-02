@@ -8,6 +8,8 @@ namespace Speed::NativeEpoch
 // Values only. No UObject, mutable native reference or arbitrary callback is
 // retained in the physical phase. This is diagnostic routing, NOT a lease.
 IAMSPEED_API bool HasOriginalDiagnosticOutbox() noexcept;
+// Read-only real output-dispatch context, never an exclusion/authority token.
+IAMSPEED_API bool IsOriginalDiagnosticFlush() noexcept;
 IAMSPEED_API void QueueOriginalDiagnostic(const ANSICHAR* File,int32 Line,
     const FLogCategoryName& Category,ELogVerbosity::Type Verbosity,FString Message);
 class IAMSPEED_API FDiagnosticOutbox final

@@ -4,6 +4,83 @@
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPartialStateComparison.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
 #include "Misc/AutomationTest.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/ScopeExit.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
+#include "Misc/OutputDevice.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "UObject/GarbageCollection.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/UObjectArray.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
+#include <atomic>
+
+namespace
+{
+struct FActualNativeBoundaryLogProbe final : FOutputDevice
+{
+    enum class ECase {BirthGC,DestroyBirthDriver,ActivationFacade};
+    ECase Case=ECase::BirthGC;
+    TWeakObjectPtr<UWorld> World;
+    int32 Calls=0,ActualGCReturns=0,LivePreparedWheelObjects=0;
+    bool OutsideRecipe=false,OutsideCollection=false,ActualDriverDestroyReturned=false;
+    bool FacadeFreezeTransition=false,ActualLegacyQueueReturned=false;
+    bool CanBeUsedOnAnyThread() const override {return true;}
+    bool CanBeUsedOnMultipleThreads() const override {return true;}
+    void Serialize(const TCHAR* Text,ELogVerbosity::Type,const FName&) override
+    {
+        if(!IsInGameThread()||Calls||!World.IsValid()||!Speed::NativeEpoch::IsOriginalDiagnosticFlush())return;
+        const TCHAR* Marker=Case==ECase::ActivationFacade?TEXT("[IASOriginalActivationCompleted]"):TEXT("[WheelSuspensionBinding]");
+        if(!FCString::Strstr(Text,Marker))return;
+        ++Calls;
+        OutsideRecipe=!Speed::RoadSettings::SelectedOriginalRoadSettings();
+        OutsideCollection=!Speed::NativeEpoch::HasOriginalDiagnosticOutbox();
+        if(Case==ECase::DestroyBirthDriver)
+        {
+            for(TActorIterator<ASpeedBranchSimulation> It(World.Get());It;++It)
+            {ActualDriverDestroyReturned=It->Destroy();break;}
+        }
+        if(Case!=ECase::ActivationFacade)
+        {
+            CollectGarbage(RF_NoFlags);++ActualGCReturns;
+            // Reacquire after genuine GC; never use a pre-callback raw actor.
+            if(auto* W=World.Get())for(TActorIterator<ASpeedBranchCar> It(W);It;++It)
+                if(auto* C=Cast<USpeedBranchWheeledComponent>(It->GetVehicleMovement()))
+                    ForEachObjectWithOuter(C,[&](UObject* Child)
+                    {if(Child->IsA<UChaosVehicleWheel>())++LivePreparedWheelObjects;},EGetObjectsFlags::IncludeNestedObjects);
+        }
+        else if(auto* W=World.Get())for(TActorIterator<ASpeedBranchCar> It(W);It;++It)
+        {
+            auto* C=Cast<USpeedBranchWheeledComponent>(It->GetVehicleMovement());if(!C)continue;
+            C->UnFreezeMovement();const bool WasUnfrozen=!C->IsFrozen();C->FreezeMovement();
+            FacadeFreezeTransition=WasUnfrozen&&C->IsFrozen();
+            if(auto* Bridge=W->GetSubsystem<USpeedWorldSubsystem>())
+            {Bridge->UnregisterSpeedComponent(C);Bridge->ApplyPendingOps();ActualLegacyQueueReturned=true;}
+        }
+    }
+};
+struct FActualBirthReadScopeObserver final : FUObjectArray::FUObjectCreateListener
+{
+    std::atomic<bool> InsideOriginalCreate{false};
+    std::atomic<uint64> ActualObjectCreationCalls{0},RecipeScopeCreationCalls{0};
+    void NotifyUObjectCreated(const UObjectBase*,int32) override
+    {
+        // Actual Engine allocation callback, no access to a partially
+        // constructed UObject. Observe only this thread's immutable scope.
+        if(!IsInGameThread()||!InsideOriginalCreate.load(std::memory_order_acquire))return;
+        ActualObjectCreationCalls.fetch_add(1,std::memory_order_relaxed);
+        if(Speed::RoadSettings::SelectedOriginalRoadSettings())
+            RecipeScopeCreationCalls.fetch_add(1,std::memory_order_relaxed);
+    }
+    void OnUObjectArrayShutdown() override {}
+};
+}
+
+#include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadConformanceProfile.h"
 
 namespace IASAtomicRoadCampaign
 {
@@ -27,7 +104,7 @@ struct FMaxima
 bool RunCase(FAutomationTestBase& Test,const FCase& Case)
 {
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
-    P::FPrivateRoadCarSeed Seed;Seed.StartPolicy=P::EPrivateRoadStartPolicy::ExplicitUnitRecipe;Seed.Actor=101;Seed.Incarnation=3;Seed.Contract=Contract;
+    P::FPrivateRoadCarSeed Seed;Seed.DeclaredSettings=Speed::RoadSettings::MakeDeclaredRoadConformanceProfile();Seed.StartPolicy=P::EPrivateRoadStartPolicy::ExplicitUnitRecipe;Seed.Actor=101;Seed.Incarnation=3;Seed.Contract=Contract;
     Seed.Local={Speed::Input::EProducerKind::Device,42};Seed.LocalEpoch={3};
     Seed.Remote.Session=1;Seed.Remote.Epoch=2;Seed.Remote.Actor=101;Seed.Remote.Incarnation=3;
     Seed.Remote.OwnerPeer=4;Seed.Remote.ServerPeer=5;Seed.Remote.SourceProducer=42;Seed.Remote.SourceKind=0;Seed.Remote.Contract[0]=7;
@@ -35,10 +112,35 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     // Identical processing, including real slew state, on each genuine role.
     Seed.Processing.Step[0]=17;Seed.Processing.Step[1]=17;Seed.Processing.Step[2]=9;
     Seed.Role=P::EBranchFilterRole::LocalDevice;Seed.CountdownFrames=Case.LocalCountdown;
+    auto* LiveStiffness=IConsoleManager::Get().FindConsoleVariable(TEXT("p.SkyLeague.Suspension.StiffnessScale"));
+    if(!LiveStiffness||!LiveStiffness->IsVariableFloat())return false;
+    const float OriginalLiveStiffness=LiveStiffness->GetFloat();
+    if(!FMath::IsFinite(OriginalLiveStiffness))return false;
+    ON_SCOPE_EXIT{LiveStiffness->Set(OriginalLiveStiffness,ECVF_SetByCode);};
     FString Why;auto Local=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
     Seed.Role=P::EBranchFilterRole::RemoteRequests;Seed.CountdownFrames=Case.AuthorityCountdown;
     auto Authority=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
     auto Neutral=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
+    std::vector<Speed::RoadSettings::FDeclaredValue> SensitiveValues;
+    for(const auto& Key:Speed::RoadSettings::Catalog)
+    {
+        if(Key.Kind==Speed::RoadSettings::EKind::Integer)
+        {
+            const auto Value=Seed.DeclaredSettings->Read<int32>(Key);if(!Value)return false;
+            SensitiveValues.push_back({Key,*Value});
+        }
+        else
+        {
+            const auto Value=Seed.DeclaredSettings->Read<float>(Key);if(!Value)return false;
+            SensitiveValues.push_back({Key,Key.Index==177?*Value+17.0f:*Value});
+        }
+    }
+    Speed::RoadSettings::ERefusal SensitiveWhy;
+    auto SensitiveSeed=Seed;
+    SensitiveSeed.DeclaredSettings=Speed::RoadSettings::FDeclaredRecipe::Create("declared-road-stiffness-sensitive-control.1",SensitiveValues,SensitiveWhy);
+    if(!SensitiveSeed.DeclaredSettings)return false;
+    auto StiffnessControl=P::FPrivateRoadPhysicsWorld::Create({SensitiveSeed},Why);
+    if(!StiffnessControl)return false;
     if(!Test.TestTrue(*FString::Printf(TEXT("%s native three-world creation: %s"),Case.Name,*Why),bool(Local)&&bool(Authority)&&bool(Neutral)))return false;
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};
     Actions[0]={true,true,false,255};Actions[1]={true,true,false,255};Actions[2]={true,true,true,127};
@@ -48,6 +150,7 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     const size_t Retention=FMath::Max<size_t>(512,size_t(Case.FrameCount));
     P::FRemoteRequestHistory H(Seed.Remote,Actions,256,Retention),Z(Seed.Remote,Actions,256,Retention);
     uint32 PartialMissing=0,PartialDifferent=0,PartialResponse=0;
+    FMaxima StiffnessResponse;uint32 StiffnessPartialResponse=0;
     FMaxima Difference,Response;uint32 FilterDifferences=0,StartupDifferences=0;int64 FirstLocalCanMove=-1,FirstAuthorityCanMove=-1;
     const auto Body=[](const P::FPrivateRoadPublication& Pub)->const FSimulationPresentationBody*
     {return Pub.Actors.size()==1?Pub.Physics.PresentationBodies.FindByPredicate([&](const auto& X){return X.StableId==Pub.Actors[0].NativeStableId;}):nullptr;};
@@ -83,12 +186,27 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
             Test.AddError(FString::Printf(TEXT("%s frame=%llu retained=%llu remoteConfirm=%d neutralConfirm=%d: no physical comparison inferred"),
                 Case.Name,N,uint64(Retention),int(HC),int(ZC)));return false;
         }
-        if(!Local->Step({{101,3,Input}},false,Why)||!Authority->Step({{101,3,H.Predict(N)}},false,Why)
-            ||!Neutral->Step({{101,3,Z.Predict(N)}},false,Why))
+        // Real native read-path test: only the local physical step sees a
+        // deliberately different LIVE CVar. Its immutable original profile
+        // must retain the chosen stiffness; the real authority/control graphs
+        // run after the original registration value has been restored.
+        const float ChangedLiveStiffness=OriginalLiveStiffness+17.0f;
+        LiveStiffness->Set(ChangedLiveStiffness,ECVF_SetByCode);
+        if(LiveStiffness->GetFloat()!=ChangedLiveStiffness)return false;
+        const bool LocalAdvanced=Local->Step({{101,3,Input}},false,Why);
+        const bool RegistrationUnchanged=LiveStiffness->GetFloat()==ChangedLiveStiffness;
+        LiveStiffness->Set(OriginalLiveStiffness,ECVF_SetByCode);
+        if(!RegistrationUnchanged||LiveStiffness->GetFloat()!=OriginalLiveStiffness)return false;
+        if(!LocalAdvanced||!Authority->Step({{101,3,H.Predict(N)}},false,Why)
+            ||!Neutral->Step({{101,3,Z.Predict(N)}},false,Why)
+            ||!StiffnessControl->Step({{101,3,Z.Predict(N)}},false,Why))
         {Test.AddError(FString::Printf(TEXT("%s native step %llu: %s"),Case.Name,N,*Why));return false;}
         auto L=Local->ReadLatest(),A=Authority->ReadLatest(),B=Neutral->ReadLatest();
         if(!L||!A||!B||L->Frame!=N||A->Frame!=N||B->Frame!=N||!Body(*L)||!Body(*A)||!Body(*B))return false;
         if(!Difference.Add(Body(*L)->COMState,Body(*A)->COMState,N)||!Response.Add(Body(*A)->COMState,Body(*B)->COMState,N))return false;
+        const auto SensitiveCut=StiffnessControl->ReadLatest();
+        if(!SensitiveCut||!Body(*SensitiveCut)||!StiffnessResponse.Add(Body(*B)->COMState,Body(*SensitiveCut)->COMState,N))return false;
+        if(P::ComparePrivateRoadPartialValues(B->Actors[0],SensitiveCut->Actors[0])==P::EPrivateRoadPartialComparison::Different)++StiffnessPartialResponse;
         const auto& LF=L->Actors[0];const auto& AF=A->Actors[0];
         const auto Partial=P::ComparePrivateRoadPartialValues(LF,AF);
         const auto Control=P::ComparePrivateRoadPartialValues(AF,B->Actors[0]);
@@ -120,9 +238,12 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
         OK=Test.TestTrue(TEXT("isolated physical input has measurable response against neutral control"),Response.DifferentFrames>0)&&OK;
     else
         OK=Test.TestEqual(TEXT("camera input does not alter COM trajectory"),Response.DifferentFrames,uint32(0))&&OK;
+    Test.AddInfo(FString::Printf(TEXT("[OriginalSettingsStiffnessSensitivity] case=%s frames=%u changedKinematicFrames=%u changedDeclaredNativeFrames=%u maxPositionCm=%.17g maxVelocityCmS=%.17g fullReaderCoverage=0"),
+        Case.Name,uint32(Case.FrameCount),StiffnessResponse.DifferentFrames,StiffnessPartialResponse,StiffnessResponse.Position,StiffnessResponse.Velocity));
+    OK=Test.TestTrue(TEXT("actual selected stiffness changes native physical state in a separately configured control"),StiffnessResponse.DifferentFrames>0||StiffnessPartialResponse>0)&&OK;
     // Always retire all worlds, including a failed comparison; no short-circuit.
-    const bool LC=Local->Close(),AC=Authority->Close(),NC=Neutral->Close();
-    return Test.TestTrue(TEXT("all three actual native worlds retired"),LC&&AC&&NC)&&OK;
+    const bool LC=Local->Close(),AC=Authority->Close(),NC=Neutral->Close(),SC=StiffnessControl->Close();
+    return Test.TestTrue(TEXT("all four actual native worlds retired"),LC&&AC&&NC&&SC)&&OK;
 }
 bool RunOscillating(FAutomationTestBase& Test,unsigned Action,const TCHAR* Name,int16 Maximum)
 {
@@ -206,12 +327,57 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     using namespace Speed::Netcode;
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
     P::FPrivateRoadCarSeed Seed; // Default policy MUST remain closed.
+    Seed.DeclaredSettings=Speed::RoadSettings::MakeDeclaredRoadConformanceProfile();
+    if(!TestTrue(TEXT("actual host explicitly selected all declared settings before birth"),bool(Seed.DeclaredSettings)))return false;
     Seed.Actor=101;Seed.Incarnation=3;Seed.Contract=Contract;Seed.Role=P::EBranchFilterRole::LocalDevice;
     Seed.Local={Speed::Input::EProducerKind::Device,42};Seed.LocalEpoch={3};
     Seed.Remote.Session=1;Seed.Remote.Epoch=2;Seed.Remote.Actor=101;Seed.Remote.Incarnation=3;
     Seed.Remote.OwnerPeer=4;Seed.Remote.ServerPeer=5;Seed.Remote.SourceProducer=42;Seed.Remote.SourceKind=0;Seed.Remote.Contract[0]=7;
     Seed.Initial.Location=FVector(0,0,45);Seed.Initial.Velocity=FVector(500,0,0);
+    auto* BirthLiveStiffness=IConsoleManager::Get().FindConsoleVariable(TEXT("p.SkyLeague.Suspension.StiffnessScale"));
+    if(!BirthLiveStiffness||!BirthLiveStiffness->IsVariableFloat())return false;
+    const float OriginalBirthLive=BirthLiveStiffness->GetFloat();
+    ON_SCOPE_EXIT{BirthLiveStiffness->Set(OriginalBirthLive,ECVF_SetByCode);};
+    const float ForeignLive=OriginalBirthLive+17.0f;
+    if(!FMath::IsFinite(OriginalBirthLive)||!FMath::IsFinite(ForeignLive)||ForeignLive==OriginalBirthLive)return false;
+    BirthLiveStiffness->Set(ForeignLive,ECVF_SetByCode);
+    if(BirthLiveStiffness->GetFloat()!=ForeignLive)return false;
+    FActualBirthReadScopeObserver BirthObserver;
+    if(!GLog)return false;
+    GUObjectArray.AddUObjectCreateListener(&BirthObserver);
+    ON_SCOPE_EXIT{GUObjectArray.RemoveUObjectCreateListener(&BirthObserver);};
+    FActualNativeBoundaryLogProbe BirthGCProbe;
+    GLog->AddOutputDevice(&BirthGCProbe);
+    ON_SCOPE_EXIT{GLog->RemoveOutputDevice(&BirthGCProbe);};
+    uint32 ActualWorldCallbacks=0;bool LegacyWorldReadStayedLive=true;
+    const auto CreationHandle=FWorldDelegates::OnPostWorldCreation.AddLambda([&](UWorld* Created)
+    {
+        if(!IsInGameThread()||!BirthObserver.InsideOriginalCreate.load())return;
+        ++ActualWorldCallbacks;
+        BirthGCProbe.World=Created;
+        const float Read=Speed::RoadSettings::ReadOriginalOrLegacy<177>([&](){return BirthLiveStiffness->GetFloat();});
+        LegacyWorldReadStayedLive=LegacyWorldReadStayedLive&&!Speed::RoadSettings::SelectedOriginalRoadSettings()&&Read==ForeignLive;
+    });
+    ON_SCOPE_EXIT
+    {
+        BirthObserver.InsideOriginalCreate.store(false,std::memory_order_release);
+        FWorldDelegates::OnPostWorldCreation.Remove(CreationHandle);
+    };
+    BirthObserver.InsideOriginalCreate.store(true,std::memory_order_release);
     FString Why;auto World=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
+    BirthObserver.InsideOriginalCreate.store(false,std::memory_order_release);
+    BirthLiveStiffness->Set(OriginalBirthLive,ECVF_SetByCode);
+    bool BirthOK=TestEqual(TEXT("actual original world creation callback returned"),ActualWorldCallbacks,uint32(1));
+    BirthOK=TestTrue(TEXT("real foreign legacy work in birth callback retains distinct live settings"),LegacyWorldReadStayedLive)&&BirthOK;
+    BirthOK=TestTrue(TEXT("real Engine object creation callbacks executed"),BirthObserver.ActualObjectCreationCalls.load()>0)&&BirthOK;
+    BirthOK=TestEqual(TEXT("no actual UObject constructor callback inherits original settings scope"),BirthObserver.RecipeScopeCreationCalls.load(),uint64(0))&&BirthOK;
+    AddInfo(FString::Printf(TEXT("[OriginalSettingsBirthCallback] actualWorldCallbacks=%u actualObjectCallbacks=%llu objectCallbacksInsideRecipe=%llu legacyLiveRead=%d fullCallbackCensus=0"),
+        ActualWorldCallbacks,BirthObserver.ActualObjectCreationCalls.load(),BirthObserver.RecipeScopeCreationCalls.load(),int(LegacyWorldReadStayedLive)));
+    BirthOK=TestEqual(TEXT("actual birth output dispatch reached"),BirthGCProbe.Calls,1)&&BirthOK;
+    BirthOK=TestEqual(TEXT("genuine birth diagnostic GC returned"),BirthGCProbe.ActualGCReturns,1)&&BirthOK;
+    BirthOK=TestEqual(TEXT("all eight actual prepared native/reference wheel UObjects remain reachable after GC"),BirthGCProbe.LivePreparedWheelObjects,8)&&BirthOK;
+    BirthOK=TestTrue(TEXT("birth output callback has no native recipe or physical collection scope"),BirthGCProbe.OutsideRecipe&&BirthGCProbe.OutsideCollection)&&BirthOK;
+    if(!BirthOK){if(World)World->Close();return false;}
     if(!TestTrue(*FString::Printf(TEXT("actual default-closed native graph: %s"),*Why),bool(World)))return false;
     const auto Input=[&](U64 Frame)
     {
@@ -226,13 +392,22 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     if(!Baseline||Baseline->Actors.size()!=1){World->Close();AddError(TEXT("actual baseline unavailable"));return false;}
     OK=TestTrue(TEXT("default awaiting actual startup publication"),Baseline->AwaitingInitialPublication&&!Baseline->Actors[0].CanMove
         &&Baseline->Actors[0].Frozen&&Baseline->Actors[0].CountdownFrames==1)&&OK;
+    OK=TestTrue(TEXT("actual initial publication retains full selected declared settings bytes"),
+        Baseline->DeclaredSettingsIdentity==Seed.DeclaredSettings->CanonicalIdentity())&&OK;
     auto Copy=std::make_shared<const P::FPrivateRoadPublication>(*Baseline);
     OK=TestFalse(TEXT("value-identical caller copy is not the retained original publication"),World->ReleaseInitialPublication(Copy,Why))&&OK;
     const auto Next=Input(1);bool AllBlocked=true;
     for(unsigned Attempt=0;Attempt<512;++Attempt)
         if(World->Step({{101,3,Next}},false,Why)||World->ReadLatest()!=Baseline)AllBlocked=false;
     OK=TestTrue(TEXT("512 attempted frames cannot expire the gate or mutate the physical publication"),AllBlocked)&&OK;
+    FActualNativeBoundaryLogProbe ActivationProbe;ActivationProbe.Case=FActualNativeBoundaryLogProbe::ECase::ActivationFacade;ActivationProbe.World=BirthGCProbe.World;
+    const auto OldLogTempVerbosity=LogTemp.GetVerbosity();LogTemp.SetVerbosity(ELogVerbosity::Verbose);
+    GLog->AddOutputDevice(&ActivationProbe);
+    ON_SCOPE_EXIT{GLog->RemoveOutputDevice(&ActivationProbe);LogTemp.SetVerbosity(OldLogTempVerbosity);};
     OK=TestTrue(TEXT("explicit owner releases the actual retained initial publication"),World->ReleaseInitialPublication(Baseline,Why))&&OK;
+    OK=TestEqual(TEXT("real optional activation diagnostic dispatched before commit read-back"),ActivationProbe.Calls,1)&&OK;
+    OK=TestTrue(TEXT("genuine activation callback changes facade freeze and executes legacy queue path"),ActivationProbe.FacadeFreezeTransition&&ActivationProbe.ActualLegacyQueueReturned)&&OK;
+    OK=TestTrue(TEXT("activation callback has no original recipe/physical collection scope"),ActivationProbe.OutsideRecipe&&ActivationProbe.OutsideCollection)&&OK;
     OK=TestFalse(TEXT("duplicate release is refused"),World->ReleaseInitialPublication(Baseline,Why))&&OK;
     OK=TestTrue(TEXT("common activation advances the next actual physical frame"),World->Step({{101,3,Next}},false,Why))&&OK;
     const auto Activated=World->ReadLatest();
@@ -242,6 +417,16 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     OK=TestTrue(TEXT("retained old baseline remains immutable and closed"),Baseline->Frame==0&&Baseline->AwaitingInitialPublication
         &&!Baseline->Actors[0].CanMove)&&OK;
     const bool Closed=World->Close();
+    FActualNativeBoundaryLogProbe InvalidBirth;InvalidBirth.Case=FActualNativeBoundaryLogProbe::ECase::DestroyBirthDriver;
+    const auto InvalidBirthHandle=FWorldDelegates::OnPostWorldCreation.AddLambda([&](UWorld* Created){if(IsInGameThread())InvalidBirth.World=Created;});
+    GLog->AddOutputDevice(&InvalidBirth);
+    ON_SCOPE_EXIT{GLog->RemoveOutputDevice(&InvalidBirth);FWorldDelegates::OnPostWorldCreation.Remove(InvalidBirthHandle);};
+    auto RefusedBirth=P::FPrivateRoadPhysicsWorld::Create({Seed},Why);
+    OK=TestTrue(TEXT("genuine driver destruction in birth callback refuses original construction"),!RefusedBirth)&&OK;
+    OK=TestTrue(TEXT("actual invalidating callback destroyed driver and genuine GC returned"),InvalidBirth.Calls==1&&InvalidBirth.ActualDriverDestroyReturned&&InvalidBirth.ActualGCReturns==1)&&OK;
+    if(RefusedBirth)OK=TestTrue(TEXT("unexpected accepted negative world still retires"),RefusedBirth->Close())&&OK;
+    AddInfo(FString::Printf(TEXT("[ActualNativeBoundaryCallbacks] birthGC=%d livePreparedWheels=%d activationFacade=%d invalidBirthDestroy=%d invalidBirthGC=%d fullCallbackCensus=0"),
+        BirthGCProbe.ActualGCReturns,BirthGCProbe.LivePreparedWheelObjects,ActivationProbe.Calls,int(InvalidBirth.ActualDriverDestroyReturned),InvalidBirth.ActualGCReturns));
     AddInfo(TEXT("[InitialPublicationGate] actualNative=1 blockedAttempts=512 initialFrame=0 activationFrame=1 timerRelease=0 fullHiddenStateCertificate=0 networkAuthenticationQualified=0. Tests physical local-owner gate only; original-process session comparison is separately required by the process probe."));
     return TestTrue(TEXT("actual native startup graph retired"),Closed)&&OK&&!HasAnyErrors();
 }

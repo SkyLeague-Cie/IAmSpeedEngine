@@ -1,6 +1,7 @@
 #include "NativePredictionProcessProbe.h"
 #include "RedundantDatagram.h"
 #include "AuthorityInputJournal.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadConformanceProfile.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPredictionSession.h"
 #include "IAmSpeed/Driving/DrivingInput.h"
 #include <bit>
@@ -43,9 +44,11 @@ std::array<int16,3> Values(unsigned Actor,U64 N,ENativeProbeScenario Scenario)
 std::vector<P::FPrivateRoadCarSeed> Seeds(U64 Self,ENativeProbeScenario Scenario)
 {
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});std::vector<P::FPrivateRoadCarSeed> Out;
+    const auto ChosenSettings=Speed::RoadSettings::MakeDeclaredRoadConformanceProfile();
+    if(!ChosenSettings)return {};
     for(unsigned A=0;A<2;++A)
     {
-        auto B=Binding(A);P::FPrivateRoadCarSeed S;S.Actor=B.Actor;S.Incarnation=B.Incarnation;S.Remote=B;S.Contract=Contract;
+        auto B=Binding(A);P::FPrivateRoadCarSeed S;S.DeclaredSettings=ChosenSettings;S.Actor=B.Actor;S.Incarnation=B.Incarnation;S.Remote=B;S.Contract=Contract;
         S.Role=Self==B.OwnerPeer?P::EBranchFilterRole::LocalDevice:P::EBranchFilterRole::RemoteRequests;
         S.Local={Speed::Input::EProducerKind::Device,B.SourceProducer};S.LocalEpoch={3}; // default closed initial-publication gate, no warmup countdown
         S.Initial.Location=Scenario==ENativeProbeScenario::InteractingInputFixture?FVector(A?70:-70,0,45):FVector(0,A?1000:-1000,45);
@@ -107,7 +110,10 @@ std::vector<std::uint8_t> Observe(const P::FPrivateRoadPublication& Actual)
 std::vector<std::uint8_t> StartupPublication(const P::FPrivateRoadPublication& Actual)
 {
     if(Actual.Frame!=0||!Actual.AwaitingInitialPublication||Actual.Actors.size()!=2||Actual.NativeNetworkComponents||Actual.NativeDebugDelegateBindings||Actual.RenderScenePresent||Actual.PhysicsScenePresent)return {};
+    if(Actual.DeclaredSettingsIdentity.empty()||Actual.DeclaredSettingsIdentity.size()>32768)return {};
     auto Bytes=Observe(Actual);if(Bytes.empty())return {};
+    Wire::Put(Bytes,Actual.DeclaredSettingsIdentity.size(),2);
+    Bytes.insert(Bytes.end(),Actual.DeclaredSettingsIdentity.begin(),Actual.DeclaredSettingsIdentity.end());
     Wire::Put(Bytes,1,8);Wire::Put(Bytes,300,4); // closed road recipe version/rate
     for(const auto& A:Actual.Actors)
     {

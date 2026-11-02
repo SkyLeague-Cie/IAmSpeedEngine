@@ -1,4 +1,5 @@
 #include "FrameParallelTiming.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #if !UE_BUILD_SHIPPING
 #include "HAL/IConsoleManager.h"
@@ -52,8 +53,8 @@ void FCaseRecorder::ConfigureAfterJoin(uint64 InDriver,int32 InCase,int32 InBatc
     if(bOpen){bInvalid=true;return;}
     bJoinedCaseLogClosed=false;
     JoinedCaseContext = FString::Printf(TEXT("d%llu-c%d-b%d-g%llu"),InDriver,InCase,InBatch,WorldGeneration);
-    Mode=CVarFrameTiming.GetValueOnAnyThread();bConfigured=false;
-    bPhaseTiming=Mode==1 && CVarFrameCostPhases.GetValueOnAnyThread()==1;
+    Mode=Speed::RoadSettings::ReadOriginalOrLegacy<71>([](){ return CVarFrameTiming.GetValueOnAnyThread(); });bConfigured=false;
+    bPhaseTiming=Mode==1 && Speed::RoadSettings::ReadOriginalOrLegacy<70>([](){ return CVarFrameCostPhases.GetValueOnAnyThread(); })==1;
     if(Mode==0)return;
     FString Candidate;
     FParse::Value(FCommandLine::Get(),TEXT("SLParallelTimingRunUUID="),Candidate);

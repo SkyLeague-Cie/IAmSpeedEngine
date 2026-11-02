@@ -1,4 +1,5 @@
 #include "StaticCollisionWorld.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Analytic/AnalyticCausalStats1075.h"
 #include "IAmSpeed/World/Simulation/FrameParallelExecutor.h"
 #include "HAL/PlatformTLS.h"
@@ -211,7 +212,7 @@ bool FAnalyticStaticCollisionWorld::SweepIndependentBatchImpl1075(
     } Release{IndependentBatchBusy};
     Stats.DispatchedLogicalLanes = FMath::Min(IndependentQueryLanes, Queries.Num());
     Stats.bWorkCountsKnown1075 = true;
-    const int32 ChunkItems = FMath::Clamp(CVarIndependentQueryChunkItems1075.GetValueOnAnyThread(), 0, 256);
+    const int32 ChunkItems = FMath::Clamp(Speed::RoadSettings::ReadOriginalOrLegacy<78>([](){ return CVarIndependentQueryChunkItems1075.GetValueOnAnyThread(); }), 0, 256);
     std::atomic<int32> NextQuery{0};
     TArray<Analytic::FWorldHit, TInlineAllocator<8>> PrivateHits;
     PrivateHits.SetNum(Queries.Num());

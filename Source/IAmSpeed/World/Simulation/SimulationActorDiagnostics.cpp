@@ -1,4 +1,5 @@
 #include "SimulationActorDiagnostics.h"
+#include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 
 #if !UE_BUILD_SHIPPING
 #include "SimulationWorld.h"
@@ -21,7 +22,7 @@ namespace Speed::ActorDiagnostics
 
 	void BeginRun()
 	{
-		bEnabled = CVarActorProfile.GetValueOnAnyThread() != 0;
+		bEnabled = Speed::RoadSettings::ReadOriginalOrLegacy<82>([](){ return CVarActorProfile.GetValueOnAnyThread(); }) != 0;
 		if (!bEnabled) return;
 		for (FActor& Actor : Actors) Actor = FActor();
 		for (FSample& Phase : FramePhases) Phase = FSample();

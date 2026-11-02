@@ -372,7 +372,7 @@ private:
         uint64 CollisionMatrixTestFirstFrame= 0;
 #endif
     };
-    std::unique_ptr<FOriginalDriverStorage> OriginalDriverStorage;
+    std::shared_ptr<FOriginalDriverStorage> OriginalDriverStorage;
     std::weak_ptr<const Speed::NativeEpoch::IOriginalStorageRoute> OriginalDriverRoute;
     bool UsesOriginalDriverStorage() const
     {
