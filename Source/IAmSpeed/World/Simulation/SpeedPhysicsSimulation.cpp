@@ -1480,7 +1480,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 			return false;
 		}
 #if WITH_DEV_AUTOMATION_TESTS
-    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputJournalDriverStorage());
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputJournal);
 #endif
 		ExceptionStage = TEXT("CanonicalInputPrepare");
 		if (!SpeedWorldSubsystemDriverStorage()->PrepareCanonicalInputs(Context))

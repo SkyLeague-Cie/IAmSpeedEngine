@@ -535,3 +535,11 @@ protected selection predicate; the original store/binder remain private.
 This does not issue a lease or permit external StepCanonicalFrame. Native49
 exit6/70.219s, both real Job0 observations, source/protected/Engine audits0,
 compiler diagnostics and all5 warnings remain recorded. Runtime NOT_RUN.
+
+
+Source55 preserves the actual ECanonicalEdge::InputJournal enum identity.
+That audit label is not the homonymous driver data member and must never route
+through InputJournalDriverStorage(). The recorded qualified-use census has
+exactly this one namespace/enum collision; native member routing remains.
+Native50's actual C2838/C2664, exit6/128.625s, true Job0 twice/audits0 and all
+warnings remain preserved. No native/runtime tests ran on that failed tuple.
