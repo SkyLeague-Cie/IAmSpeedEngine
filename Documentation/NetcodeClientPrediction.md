@@ -581,3 +581,14 @@ compiled/loaded/query0, then genuinely crashed3 in the first oscillating case:
 SetOwner hitbox inertia queried frame0 against an empty original history array.
 All raw diagnostics/drains/audits and the incomplete suite remain FAIL; subsequent
 network/Game stages did not run. No restore/localized capability is admitted.
+
+
+Source60 preserves a closed startup publication across rejected movement
+attempts: the actual Next/Requires/Released gate is read under original routing
+before any native diagnostic stage opens. No physics/input counter/publication
+changes occur and no elapsed attempts release CanMove. Native55's 512-attempt
+failure previously retired the branch through the generic failed-stage tail.
+Its 54Success/2FAIL and the separate real physical-callback test failure remain
+preserved. The callback test now records each actual Step result/reason and GC
+return count independently, without short-circuiting the reference Step.
+No assertion, native law, restore guard or lifetime requirement is relaxed.

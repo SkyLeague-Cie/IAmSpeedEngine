@@ -424,6 +424,14 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             ||N->Actor->GetVehicleMovement()!=N->Component||N->Component->GetClass()!=USpeedBranchWheeledComponent::StaticClass())
             return Refuse(Why,TEXT("private native actor/component lifetime changed"));
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("private native graph object invalidated"));
+    // Waiting for actual synchronization is a non-mutating admission refusal,
+    // not a failed physical step. Refuse BEFORE opening the native stage, so
+    // repeated caller attempts cannot retire or erase the original baseline.
+    {
+        FOriginalComponentStorageScope OriginalStartupRead(*I.Access);
+        if(I.Driver->NextPrivate()&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
+            return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
+    }
     if(!I.Diagnostics||!I.Diagnostics->Begin())return Refuse(Why,TEXT("native diagnostic owner unavailable"));
     std::shared_ptr<const FPrivateRoadPublication> Completed;
     bool DiagnosticActive=true;ON_SCOPE_EXIT{if(DiagnosticActive)I.Diagnostics->End();};

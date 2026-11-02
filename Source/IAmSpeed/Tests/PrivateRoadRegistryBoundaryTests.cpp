@@ -256,8 +256,13 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     if(DebugKinematics->GetInt()!=1)return false;
     LogAttack.WithinOriginalStepCall=true;
     const bool IsolatedAdvanced=Isolated->Step(Second,false,Why);
+    const FString IsolatedReason=Why;
     LogAttack.WithinOriginalStepCall=false;
-    if(!TestTrue(TEXT("genuine next physical step executes its real debug output callback"),IsolatedAdvanced&&Control->Step(Second,false,Why)))return false;
+    const bool ControlAdvanced=Control->Step(Second,false,Why);
+    const FString ControlReason=Why;
+    AddInfo(FString::Printf(TEXT("[IASActualPhysicalStepResult] isolated=%d isolatedReason=%s control=%d controlReason=%s actualCallbacks=%d actualGCReturns=%d"),
+        int(IsolatedAdvanced),*IsolatedReason,int(ControlAdvanced),*ControlReason,LogAttack.Calls,LogAttack.ActualCollectionsReturned));
+    if(!TestTrue(TEXT("genuine next physical step executes its real debug output callback"),IsolatedAdvanced&&ControlAdvanced))return false;
     const auto ActualLogCut=Isolated->ReadLatest();
     AddInfo(FString::Printf(TEXT("[IASActualPhysicalLogContext] frame=%llu actualCanMove=%d debugCVar=%d categoryVerbosity=%d synchronousCalls=%d"),
         ActualLogCut?ActualLogCut->Frame:MAX_uint64,ActualLogCut&&!ActualLogCut->Actors.empty()?int(ActualLogCut->Actors[0].CanMove):-1,
