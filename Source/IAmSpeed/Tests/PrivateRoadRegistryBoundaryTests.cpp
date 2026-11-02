@@ -14,6 +14,7 @@
 #include "Misc/OutputDevice.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "HAL/IConsoleManager.h"
+#include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPartialStateComparison.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 
@@ -30,9 +31,13 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
     const SKinematic* RetainedView=nullptr;
     double WrittenX=0;
     bool CanBeUsedOnAnyThread() const override {return true;}
+    bool CanBeUsedOnMultipleThreads() const override {return true;}
     void Serialize(const TCHAR* Text,ELogVerbosity::Type,const FName&) override
     {
-        if(Calls||!Component||!IsInGameThread()||!WithinOriginalStepCall
+        // Unbuffered Engine dispatch can arrive concurrently. Only the GT
+        // ever reads/writes the fixture fields; foreign calls return first.
+        if(!IsInGameThread())return;
+        if(Calls||!Component||!WithinOriginalStepCall
             ||!FCString::Strstr(Text,TEXT("[UpdateFrameState]")))return;
         ++Calls;RetainedView=&Component->GetKinematicState();
         SKinematic Intrusion=*RetainedView;Intrusion.Location.X+=864200;WrittenX=Intrusion.Location.X;
@@ -169,9 +174,11 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     const SKinematic& RetainedFacadeView=FacadeBase.GetKinematicState();
     SKinematic Intrusion=RetainedFacadeView;Intrusion.Location.X+=123456;
     static_cast<USpeedWheeledComponent&>(*EscapedFacade).SetKinematicState(Intrusion);
-    EscapedFacade->SetPhysThrottleInput(1);EscapedFacade->SetPhysBrakeInput(1);
-    EscapedFacade->SetPhysSteeringInput(-1);
+    // The legacy live-input setters intentionally ensure/refuse. Do not call
+    // or weaken them; physical inputs still come only from retained evidence.
+    FacadeBase.UnFreezeMovement();
     FacadeBase.SetPhysCOMVelocity(FVector(1000000,0,0));
+    TestTrue(TEXT("supported public velocity mutation actually changed facade values"),FacadeBase.GetPhysCOMVelocity().Size()>1000);
     TestEqual(TEXT("escaped base setter writes only its facade view"),RetainedFacadeView.Location.X,Intrusion.Location.X);
     if(!TestTrue(TEXT("actual synchronization release reads original physical storage"),
         Isolated->ReleaseInitialPublication(OriginalZero,Why)&&Control->ReleaseInitialPublication(ControlZero,Why)))return false;
@@ -181,15 +188,21 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     auto* DebugKinematics=IConsoleManager::Get().FindConsoleVariable(TEXT("p.IAmSpeed.DebugKinematics"));
     if(!DebugKinematics||!GLog)return false;
     const int32 OriginalDebug=DebugKinematics->GetInt();
+    const ELogVerbosity::Type OriginalLogVerbosity=SpeedPhysicsLog.GetVerbosity();
     FActualPhysicalLogFacadeAttack LogAttack;LogAttack.Component=EscapedFacade;
     GLog->AddOutputDevice(&LogAttack);
-    ON_SCOPE_EXIT{GLog->RemoveOutputDevice(&LogAttack);DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);};
+    ON_SCOPE_EXIT{GLog->RemoveOutputDevice(&LogAttack);DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);SpeedPhysicsLog.SetVerbosity(OriginalLogVerbosity);};
+    SpeedPhysicsLog.SetVerbosity(ELogVerbosity::Log); // enable existing diagnostic, including all higher severities
     DebugKinematics->Set(1,ECVF_SetByCode);
     if(DebugKinematics->GetInt()!=1)return false;
     LogAttack.WithinOriginalStepCall=true;
     const bool IsolatedAdvanced=Isolated->Step(Second,false,Why);
     LogAttack.WithinOriginalStepCall=false;
     if(!TestTrue(TEXT("genuine next physical step executes its real debug output callback"),IsolatedAdvanced&&Control->Step(Second,false,Why)))return false;
+    const auto ActualLogCut=Isolated->ReadLatest();
+    AddInfo(FString::Printf(TEXT("[IASActualPhysicalLogContext] frame=%llu actualCanMove=%d debugCVar=%d categoryVerbosity=%d synchronousCalls=%d"),
+        ActualLogCut?ActualLogCut->Frame:MAX_uint64,ActualLogCut&&!ActualLogCut->Actors.empty()?int(ActualLogCut->Actors[0].CanMove):-1,
+        DebugKinematics->GetInt(),int(SpeedPhysicsLog.GetVerbosity()),LogAttack.Calls));
     TestEqual(TEXT("actual synchronous output callback reached inside original physical Step"),LogAttack.Calls,1);
     if(!LogAttack.RetainedView)return false;
 
@@ -218,7 +231,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
 
     TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
-    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_input_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 complete_lease=0 localized=0"));
+    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 complete_lease=0 localized=0"));
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
     AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));

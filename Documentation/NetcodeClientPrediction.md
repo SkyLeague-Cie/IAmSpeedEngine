@@ -400,3 +400,16 @@ field access must be integrated with an actual future owner/provider before
 admission; no current private lease/provider can bypass that gate. Subbody,
 world, configuration, timeline/source and old-view closure remain incomplete.
 ProtectsEscapedMutableViews stays false; no localized/hardware claim is added.
+
+
+Source46 corrects the fixture after native42 failed (55Success/1Fail, all
+original drains/audits clean). The deprecated live throttle/brake/steering
+setters intentionally emit ensures and refuse; these guards remain untouched.
+The test uses supported public pose/unfreeze/velocity entries on the facade,
+while actual native input still comes only from retained input evidence.
+The real output device opts into Engine's unbuffered dispatch through
+CanBeUsedOnMultipleThreads; Serialize returns on foreign threads BEFORE reading
+fixture state. The existing diagnostic category is enabled at Log and restored,
+which keeps warnings/errors visible. Actual callback count must still be1;
+missing/deferred output remains FAIL, never a synthetic callback invocation.
+No complete state, lifetime, localized or hardware admission is introduced.
