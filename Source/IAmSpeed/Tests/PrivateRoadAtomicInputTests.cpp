@@ -100,25 +100,52 @@ struct FActualHandleReadWitness
 // Do not resolve/dereference class/name/physical views inside the callback.
 struct FActualRecipeObjectReadCensus
 {
-    struct FEntry {TWeakObjectPtr<const UObject> Birth;uint64 BirthReads=0,StepReads=0;};
+    struct FEntry
+    {
+        const UObject* OriginalAddress=nullptr; // identity only; never dereference without serial/pointer read-back
+        int32 ObjectIndex=INDEX_NONE,ObjectSerial=0;
+        uint64 BirthReads=0,StepReads=0,ControlReads=0;
+    };
     std::array<FEntry,256> Entries{};
-    uint32 Used=0;bool DuringBirth=true,Overflow=false;
-    uint64 BirthObjects=0,StepObjects=0,NullObjects=0;
+    uint32 Used=0,ObserverDepth=0,MaxObserverDepth=0;bool DuringBirth=true,DuringControl=false,Overflow=false;
+    uint64 BirthObjects=0,StepObjects=0,ControlObjects=0,NullObjects=0,NativeSerialAllocationCalls=0,UnknownIdentities=0;
     void Observe(TArrayView<const UObject* const> Objects)
     {
         if(!IsInGameThread()||!Speed::RoadSettings::SelectedOriginalRoadSettings())return;
+        ++ObserverDepth;if(ObserverDepth>MaxObserverDepth)MaxObserverDepth=ObserverDepth;
+        ON_SCOPE_EXIT{--ObserverDepth;}; // observe depth; never skip a callback
         for(const auto* Object:Objects)
         {
             if(!Object){++NullObjects;continue;}
-            if(DuringBirth)++BirthObjects;else ++StepObjects;
+            if(DuringBirth)++BirthObjects;else if(DuringControl)++ControlObjects;else ++StepObjects;
+            // Weak assignment itself calls FObjectPtr.Get in this exact Engine,
+            // recursively entering the real read callback. Use the actual object
+            // array identity operations that Weak assignment ultimately uses,
+            // without constructing/resolving a tracked pointer in this observer.
+            const int32 ActualIndex=GUObjectArray.ObjectToIndex(Object);
+            if(ActualIndex<0){++UnknownIdentities;continue;}
+            auto* Item=GUObjectArray.IndexToObject(ActualIndex,false);
+            if(!Item||Item->IsUnreachable()||Item->GetObject()!=static_cast<const UObjectBase*>(Object))
+            {++UnknownIdentities;continue;}
+            int32 ActualSerial=Item->GetSerialNumber();
+            if(!ActualSerial)
+            {
+                ++NativeSerialAllocationCalls; // real Engine metadata operation, not a fabricated generation
+                ActualSerial=GUObjectArray.AllocateSerialNumber(ActualIndex);
+            }
+            if(ActualSerial<=0||Item->GetSerialNumber()!=ActualSerial||Item->GetObject()!=static_cast<const UObjectBase*>(Object))
+            {++UnknownIdentities;continue;}
             uint32 Index=0;
-            for(;Index<Used;++Index)if(Entries[Index].Birth.Get()==Object)break;
+            for(;Index<Used;++Index)
+                if(Entries[Index].ObjectIndex==ActualIndex&&Entries[Index].ObjectSerial==ActualSerial
+                    &&Entries[Index].OriginalAddress==Object)break;
             if(Index==Used)
             {
                 if(Used==Entries.size()){Overflow=true;continue;}
-                Entries[Used++].Birth=Object; // actual original serial, no fabricated identity
+                Entries[Index].OriginalAddress=Object;Entries[Index].ObjectIndex=ActualIndex;
+                Entries[Index].ObjectSerial=ActualSerial;++Used;
             }
-            if(DuringBirth)++Entries[Index].BirthReads;else ++Entries[Index].StepReads;
+            if(DuringBirth)++Entries[Index].BirthReads;else if(DuringControl)++Entries[Index].ControlReads;else ++Entries[Index].StepReads;
         }
     }
 };
@@ -567,16 +594,49 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
 #endif
     AddInfo(FString::Printf(TEXT("[ActualObjectHandleReadWitness] trackingCompiled=%d scopedTargetReads=%llu ordinaryPositiveReads=%llu physicalMutationAttempted=0 targetSet=wheel4_hitbox1 birthCallbackCensus=0 escapedViewExclusionCertified=0 completeRestoreLease=0"),
         int(UE_WITH_OBJECT_HANDLE_TRACKING),HandleReads.ScopedTargetReads,DeliberatePositiveReads));
-    AddInfo(FString::Printf(TEXT("[ActualRecipeObjectReadCensus] trackingCompiled=%d birthObjectReads=%llu stepObjectReads=%llu nullReads=%llu uniqueObjects=%u overflow=%d completeCallbackClosure=0 completeRestoreLease=0"),
-        int(UE_WITH_OBJECT_HANDLE_TRACKING),AllRecipeReads.BirthObjects,AllRecipeReads.StepObjects,AllRecipeReads.NullObjects,AllRecipeReads.Used,int(AllRecipeReads.Overflow)));
+    {
+        UWorld* KnownWorld=BirthGCProbe.World.Get();
+        OK=TestTrue(TEXT("actual known-world read control retains original world"),KnownWorld!=nullptr)&&OK;
+        if(KnownWorld)
+        {
+            TObjectPtr<UWorld> DeliberateWorldRead=KnownWorld;
+            const uint64 Before=AllRecipeReads.ControlObjects;
+            bool SameOriginal=false;
+            {
+                FGCScopeGuard KnownWorldReadOnly;
+                AllRecipeReads.DuringControl=true;ON_SCOPE_EXIT{AllRecipeReads.DuringControl=false;};
+                Speed::RoadSettings::FOriginalRoadSettingsScope DeclaredControl(Seed.DeclaredSettings);
+                SameOriginal=DeliberateWorldRead.Get()==KnownWorld;
+            }
+            const uint64 DeliberateReadDelta=AllRecipeReads.ControlObjects-Before;
+            OK=TestTrue(TEXT("deliberate tracked world read returns actual known object"),SameOriginal)&&OK;
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+            OK=TestEqual(TEXT("one deliberate tracked world read is observed once without self-amplification"),DeliberateReadDelta,uint64(1))&&OK;
+            OK=TestEqual(TEXT("actual observer never reenters itself while recording native identity"),AllRecipeReads.MaxObserverDepth,uint32(1))&&OK;
+#endif
+        }
+    }
+    AddInfo(FString::Printf(TEXT("[ActualRecipeObjectReadCensus] trackingCompiled=%d birthObjectReads=%llu stepObjectReads=%llu controlObjectReads=%llu nullReads=%llu uniqueObjects=%u overflow=%d unknownIdentities=%llu nativeSerialAllocationCalls=%llu maxObserverDepth=%u completeCallbackClosure=0 completeRestoreLease=0"),
+        int(UE_WITH_OBJECT_HANDLE_TRACKING),AllRecipeReads.BirthObjects,AllRecipeReads.StepObjects,AllRecipeReads.ControlObjects,AllRecipeReads.NullObjects,AllRecipeReads.Used,int(AllRecipeReads.Overflow),AllRecipeReads.UnknownIdentities,AllRecipeReads.NativeSerialAllocationCalls,AllRecipeReads.MaxObserverDepth));
     for(uint32 Index=0;Index<AllRecipeReads.Used;++Index)
     {
-        const auto& Entry=AllRecipeReads.Entries[Index];const auto* Object=Entry.Birth.Get();
-        // All Engine facade/type/name work stays OUTSIDE the recipe/route/math.
-        const FString Name=Object?Object->GetPathName():TEXT("<original identity no longer live>");
-        const FString Type=Object?Object->GetClass()->GetName():TEXT("<unknown>");
-        AddInfo(FString::Printf(TEXT("[ActualRecipeObjectReadTarget] ordinal=%u birthReads=%llu stepReads=%llu originalLive=%d class=%s path=%s"),
-            Index,Entry.BirthReads,Entry.StepReads,int(Object!=nullptr),*Type,*Name));
+        const auto& Entry=AllRecipeReads.Entries[Index];bool OriginalLive=false;
+        FString Name=TEXT("<original identity no longer live>"),Type=TEXT("<unknown>");
+        {
+            // Actual short GC exclusion for read-back; never infer a pin/lease
+            // from the saved pair. All names/classes stay outside recipe/math.
+            FGCScopeGuard DiagnosticIdentityReadBack;
+            const auto* Item=Entry.ObjectIndex>=0?GUObjectArray.IndexToObject(Entry.ObjectIndex,false):nullptr;
+            if(Item&&!Item->IsUnreachable()&&Entry.ObjectSerial>0&&Item->GetSerialNumber()==Entry.ObjectSerial
+                &&Item->GetObject()==static_cast<const UObjectBase*>(Entry.OriginalAddress))
+            {
+                const auto* Object=static_cast<const UObject*>(Item->GetObject());
+                if(Object&&!Object->HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))
+                {Name=Object->GetPathName();Type=Object->GetClass()->GetName();OriginalLive=true;}
+            }
+        }
+        AddInfo(FString::Printf(TEXT("[ActualRecipeObjectReadTarget] ordinal=%u birthReads=%llu stepReads=%llu controlReads=%llu originalLive=%d class=%s path=%s"),
+            Index,Entry.BirthReads,Entry.StepReads,Entry.ControlReads,int(OriginalLive),*Type,*Name));
     }
     const bool Closed=World->Close();
     FActualNativeBoundaryLogProbe InvalidBirth;InvalidBirth.Case=FActualNativeBoundaryLogProbe::ECase::DestroyBirthDriver;

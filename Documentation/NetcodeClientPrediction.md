@@ -788,3 +788,28 @@ control121/121. The Game fixture ended239exact/215contacts with3/6GLOBALFROMBIRT
 corrections. This is not playable device/render, full causal state, authoritative
 K restore or localized qualification. All prior FAIL/UNKNOWN remain. Source70
 has no native result at this commit and opens no complete restore guard.
+
+
+Source70/native66 freshly passed56native tests,Pending1,3commandlets,2actualGame
+clients anddedicated, and expected9/10cancellation; original58246 closed0 with
+natural managed Job0twice and final audits0. The independent wheel4/hitbox1
+witness stayed0scoped/5deliberate positives and matched body values stayed exact.
+The new ALL-object census was INCOMPLETE: weak assignment in its callback calls
+FObjectPtr.Get in this Engine and reenters the observer. It filled256duplicate
+entries and overflowed. Counts470/164 are not qualified physical-read counts.
+The raw report and explicit UNKNOWN receipt are preserved; neither native suite
+success nor the earlier source review qualifies that diagnostic or a lease.
+
+Source71 fixes only the observer. It records the actual object index, address
+identity and actual Engine serial without Weak/FObjectKey/resolve construction
+inside the callback. If the real serial is absent it invokes the real Engine
+AllocateSerialNumber operation, explicitly counting that metadata call. Index,
+pointer, serial, Garbage and Unreachable checks precede use; this creates no pin
+or lifetime certificate. Descriptions are read back under a real short GC guard
+outside the recipe/math, copied before framework logging. A separate known-world
+tracked-read control checks one event and maximum observer depth1 in this exact
+profile. It never suppresses a callback, resets a counter or demands zero
+Birth/Step reads. Production physics and all full restore guards are unchanged.
+Source71 is not compiled or qualified by this commit. Full causal capture,
+remaining callback/host/module closure, authoritativeK restoration and localized
+rollback plus playable two-client validation remain unfinished.
