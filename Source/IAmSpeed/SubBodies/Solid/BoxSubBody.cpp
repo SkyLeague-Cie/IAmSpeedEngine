@@ -528,27 +528,27 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
             UE_LOG(BoxSubBodyLog, Display, TEXT("[CurrentHullContactDecision] frame=%u resolved=%d admitted=%d reason=%s source=%016llX surface=%016llX varying=%d error=%.17g feature=%d component=%d componentType=%d normalNorm=%.17g gapComputed=%d gap=%.17g roundoff=%.17g"),
                 ParentComponent ? ParentComponent->NumFrame() : 0u, LastResolvedGroundHitFrame, Accepted ? 1 : 0, Reason,
-                static_cast<unsigned long long>(GroundHit.SourceId), static_cast<unsigned long long>(GroundHit.SurfaceId),
-                GroundHit.bSurfaceNormalMayVary ? 1 : 0, double(GroundHit.GeometricErrorBoundCm),
-                static_cast<int32>(GroundHit.ContactFeatureOther), GroundHit.Component.IsValid() ? 1 : 0,
-                GroundHit.Component.IsValid() ? static_cast<int32>(GroundHit.Component->GetCollisionObjectType()) : -1,
-                GroundHit.ImpactNormal.SizeSquared(), GapComputed ? 1 : 0, Gap, Roundoff);
+                static_cast<unsigned long long>(GroundHitStorage().SourceId), static_cast<unsigned long long>(GroundHitStorage().SurfaceId),
+                GroundHitStorage().bSurfaceNormalMayVary ? 1 : 0, double(GroundHitStorage().GeometricErrorBoundCm),
+                static_cast<int32>(GroundHitStorage().ContactFeatureOther), GroundHitStorage().Component.IsValid() ? 1 : 0,
+                GroundHitStorage().Component.IsValid() ? static_cast<int32>(GroundHitStorage().Component->GetCollisionObjectType()) : -1,
+                GroundHitStorage().ImpactNormal.SizeSquared(), GapComputed ? 1 : 0, Gap, Roundoff);
 #endif
         return Accepted;
     };
     if (!ParentComponent || LastResolvedGroundHitFrame < 0) return Decision(false, TEXT("no_owner_or_resolved_frame"));
     const int32 Frame = static_cast<int32>(ParentComponent->NumFrame());
     if (LastResolvedGroundHitFrame > Frame ||
-        GroundHit.SourceId == 0 || GroundHit.SurfaceId == 0 ||
-        GroundHit.bSurfaceNormalMayVary || GroundHit.GeometricErrorBoundCm != 0 ||
-        GroundHit.ContactFeatureOther != Speed::EContactFeatureKind::Face ||
-        !GroundHit.Component.IsValid() || GroundHit.Component->GetCollisionObjectType() != ECC_WorldStatic)
+        GroundHitStorage().SourceId == 0 || GroundHitStorage().SurfaceId == 0 ||
+        GroundHitStorage().bSurfaceNormalMayVary || GroundHitStorage().GeometricErrorBoundCm != 0 ||
+        GroundHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face ||
+        !GroundHitStorage().Component.IsValid() || GroundHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic)
         return Decision(false, TEXT("frame_or_provider_metadata"));
     const auto* World = ParentComponent->GetStaticCollisionWorldForFrame();
     if (!World) return Decision(false, TEXT("no_static_world"));
     const auto Query = MakeSupportBoxQuery(ParentComponent->GetKinematicState());
-    const FVector N = GroundHit.ImpactNormal;
-    if (N.ContainsNaN() || GroundHit.ImpactPoint.ContainsNaN() ||
+    const FVector N = GroundHitStorage().ImpactNormal;
+    if (N.ContainsNaN() || GroundHitStorage().ImpactPoint.ContainsNaN() ||
         !FMath::IsNearlyEqual(N.SizeSquared(), 1.0, 32 * DBL_EPSILON)) return Decision(false, TEXT("nonfinite_or_nonunit_plane"));
     const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + BoxExtent.GetMax());
     const double Roundoff = 64.0 * DBL_EPSILON * Scale;
@@ -560,7 +560,7 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
             (Corner & 1) ? BoxExtent.X : -BoxExtent.X,
             (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y,
             (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z));
-        Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - GroundHit.ImpactPoint, N);
+        Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - GroundHitStorage().ImpactPoint, N);
         if (!FMath::IsFinite(Gaps[Corner])) return Decision(false, TEXT("nonfinite_corner_gap"));
         MinimumGap = FMath::Min(MinimumGap, Gaps[Corner]);
     }
@@ -568,8 +568,8 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
     if (FMath::Abs(MinimumGap) > Roundoff) return Decision(false, TEXT("finite_separation_or_penetration"), MinimumGap, true, Roundoff);
     auto Probe = Query;
     Probe.Shape = Speed::Analytic::EQueryShape::Ray;
-    Probe.RequiredSourceId = GroundHit.SourceId;
-    Probe.RequiredSurfaceId = GroundHit.SurfaceId;
+    Probe.RequiredSourceId = GroundHitStorage().SourceId;
+    Probe.RequiredSurfaceId = GroundHitStorage().SurfaceId;
     for (int32 Corner = 0; Corner < 8; ++Corner)
     {
         if (Gaps[Corner] - MinimumGap > Roundoff) continue;
@@ -579,7 +579,7 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
         const auto Witness = World->SweepSingle(Probe);
         if (Witness.bHit && !Witness.bStartPenetrating && !Witness.bSurfaceNormalMayVary &&
             Witness.GeometricErrorBoundCm == 0 && Witness.SurfaceFeatureKind == Speed::EContactFeatureKind::Face &&
-            Witness.SourceId == GroundHit.SourceId && Witness.SurfaceId == GroundHit.SurfaceId &&
+            Witness.SourceId == GroundHitStorage().SourceId && Witness.SurfaceId == GroundHitStorage().SurfaceId &&
             Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return Decision(true, TEXT("exact_current_provider_contact"), MinimumGap, true, Roundoff);
     }
     return Decision(false, TEXT("finite_provider_witness_rejected"), MinimumGap, true, Roundoff);
@@ -725,8 +725,8 @@ bool UBoxSubBody::PublishExactStaticSupport()
     // A stationary query can correctly report no sweep impact at an exterior
     // representable pose. The four finite support witnesses still establish
     // a passive contact. Publish that fact without an impulse or gameplay hit.
-    GroundHit = SHitResult::FromAnalyticHit(Support.ProviderWitness, 0, Source.Get(), ParentComponent->NumFrame());
-    GroundHit.ContactFeatureThis = Speed::EContactFeatureKind::Face;
+    GroundHitStorage() = SHitResult::FromAnalyticHit(Support.ProviderWitness, 0, Source.Get(), ParentComponent->NumFrame());
+    GroundHitStorage().ContactFeatureThis = Speed::EContactFeatureKind::Face;
     GroundPlaneN = Support.Normal;
     GroundPlanePointWS = Support.Points[0];
     GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, GroundPlaneN);
@@ -742,7 +742,7 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
     Super::ResetForFrame(Delta);
 
     const bool bVariableNormalSupportReady =
-        !GroundHit.bSurfaceNormalMayVary ||
+        !GroundHitStorage().bSurfaceNormalMayVary ||
         RefreshVariableNormalGroundSupport(Delta);
     const bool bContinueRoofTraversalSupport =
         bVariableNormalSupportReady &&
@@ -768,11 +768,11 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
         }
     }
 
-    if (bContinueRoofTraversalSupport && GroundHit.SourceId != 0 &&
-        GroundHit.SurfaceId != 0)
+    if (bContinueRoofTraversalSupport && GroundHitStorage().SourceId != 0 &&
+        GroundHitStorage().SurfaceId != 0)
     {
-        EstablishedSupportSourceId = GroundHit.SourceId;
-        EstablishedSupportSurfaceId = GroundHit.SurfaceId;
+        EstablishedSupportSourceId = GroundHitStorage().SourceId;
+        EstablishedSupportSurfaceId = GroundHitStorage().SurfaceId;
     }
 
     PreviousFrameGroundContactsWS.Reset();
@@ -818,18 +818,18 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
 
 bool UBoxSubBody::UsesNativeAnalyticEstablishedContact() const
 {
-    return GroundHit.bSurfaceNormalMayVary &&
-        GroundHit.SourceId != 0 && GroundHit.SurfaceId != 0 &&
-        GroundHit.CanonicalGroupId != 0 &&
+    return GroundHitStorage().bSurfaceNormalMayVary &&
+        GroundHitStorage().SourceId != 0 && GroundHitStorage().SurfaceId != 0 &&
+        GroundHitStorage().CanonicalGroupId != 0 &&
         Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend();
 }
 
 bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
 {
     if (!ParentComponent ||
-        !GroundHit.bSurfaceNormalMayVary ||
-        GroundHit.SourceId == 0 || GroundHit.SurfaceId == 0 ||
-        GroundHit.CanonicalGroupId == 0 ||
+        !GroundHitStorage().bSurfaceNormalMayVary ||
+        GroundHitStorage().SourceId == 0 || GroundHitStorage().SurfaceId == 0 ||
+        GroundHitStorage().CanonicalGroupId == 0 ||
         !GroundComp.IsValid())
     {
         return false;
@@ -865,7 +865,7 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
     const float ProbeDistanceCm = FMath::Max(
         InitialOverlapShellCm,
         FMath::Max(0.f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread()) +
-            FMath::Max(0.f, GroundHit.GeometricErrorBoundCm) +
+            FMath::Max(0.f, GroundHitStorage().GeometricErrorBoundCm) +
             InitialOverlapShellCm + LinearTravelBoundCm + AngularTravelBoundCm);
     const FVector End = Start - PreviousNormal * ProbeDistanceCm;
 
@@ -883,15 +883,15 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
             Start, End, State.Rotation, GetCollisionShape(),
 			static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
 			UnrealAdapterHit, bHit, &AnalyticHit,
-            GroundHit.SourceId, GroundHit.SurfaceId,
-            GroundHit.CanonicalGroupId, PreviousNormal,
+            GroundHitStorage().SourceId, GroundHitStorage().SurfaceId,
+            GroundHitStorage().CanonicalGroupId, PreviousNormal,
 			MinimumEstablishedNormalDot);
     Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
         Speed::Analytic::EStaticQuerySite::BoxPersistentSupportProbe,
         Start, End, State.Rotation, GetCollisionShape(),
         static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
-        bHit, UnrealAdapterHit, GroundHit.SourceId, GroundHit.SurfaceId,
-        GroundHit.CanonicalGroupId);
+        bHit, UnrealAdapterHit, GroundHitStorage().SourceId, GroundHitStorage().SurfaceId,
+        GroundHitStorage().CanonicalGroupId);
     if (!bUsedAnalyticAuthority || !bHit ||
         !AnalyticHit.bSurfaceNormalMayVary)
     {
@@ -908,7 +908,7 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
         return false;
     }
 
-    GroundHit = RefreshedHit;
+    GroundHitStorage() = RefreshedHit;
     GroundPlaneN = RefreshedHit.ImpactNormal;
     GroundPlanePointWS = RefreshedHit.ImpactPoint;
     GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, GroundPlaneN);
@@ -925,16 +925,16 @@ bool UBoxSubBody::RequiresUnquantizedContactPose() const
 {
     return ParentComponent && ParentComponent->GetStaticCollisionWorldForFrame() &&
         LastResolvedGroundHitFrame == static_cast<int32>(ParentComponent->NumFrame()) &&
-        GroundComp.IsValid() && GroundHit.SourceId != 0 &&
-        !GroundHit.bSurfaceNormalMayVary && GroundHit.GeometricErrorBoundCm == 0 &&
-        GroundHit.ContactFeatureOther == Speed::EContactFeatureKind::Face;
+        GroundComp.IsValid() && GroundHitStorage().SourceId != 0 &&
+        !GroundHitStorage().bSurfaceNormalMayVary && GroundHitStorage().GeometricErrorBoundCm == 0 &&
+        GroundHitStorage().ContactFeatureOther == Speed::EContactFeatureKind::Face;
 }
 
 bool UBoxSubBody::RequiresEstablishedStaticContactTransport() const
 {
 	const bool bHasEstablishedAnalyticContact = ParentComponent && bHasGroundContact &&
-		GroundHit.bSurfaceNormalMayVary && GroundHit.SourceId != 0 &&
-		GroundHit.SurfaceId != 0 && GroundHit.CanonicalGroupId != 0 &&
+		GroundHitStorage().bSurfaceNormalMayVary && GroundHitStorage().SourceId != 0 &&
+		GroundHitStorage().SurfaceId != 0 && GroundHitStorage().CanonicalGroupId != 0 &&
 		GroundComp.IsValid() &&
 		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend();
 	if (!bHasEstablishedAnalyticContact)
@@ -943,7 +943,7 @@ bool UBoxSubBody::RequiresEstablishedStaticContactTransport() const
 	}
 
 	return CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread() == 0 ||
-		!ParentComponent->HasCompatibleEstablishedStaticSupport(GroundHit);
+		!ParentComponent->HasCompatibleEstablishedStaticSupport(GroundHitStorage());
 }
 
 bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
@@ -967,10 +967,10 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
                 (bExactPlanarEnabled && !Hit.bSurfaceNormalMayVary && Hit.GeometricErrorBoundCm == 0 &&
                     Hit.ContactFeatureOther == Speed::EContactFeatureKind::Face));
     };
-    const bool bHasPersistentSeed = bHasGroundContact && IsUsableSeed(GroundHit) && GroundComp.IsValid();
+    const bool bHasPersistentSeed = bHasGroundContact && IsUsableSeed(GroundHitStorage()) && GroundComp.IsValid();
     const bool bHasTransientSeed = !bHasPersistentSeed &&
-        CurrentHit.bHit && IsUsableSeed(CurrentHit) && CurrentHit.Component.IsValid() &&
-        CurrentHit.Component->GetMobility() == EComponentMobility::Static;
+        CurrentHitStorage().bHit && IsUsableSeed(CurrentHitStorage()) && CurrentHitStorage().Component.IsValid() &&
+        CurrentHitStorage().Component->GetMobility() == EComponentMobility::Static;
     if (!bHasPersistentSeed && !bHasTransientSeed)
     {
         if (bExactPlanarEnabled)
@@ -991,8 +991,8 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         return false;
     }
     const SHitResult& ProjectionSeed = bHasPersistentSeed
-        ? GroundHit
-        : CurrentHit;
+        ? GroundHitStorage()
+        : CurrentHitStorage();
     const bool bExactPlanarSeed = !ProjectionSeed.bSurfaceNormalMayVary;
 
     UWorld* World = GetWorld();
@@ -1115,7 +1115,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
             // projection, without overwriting the pending collision event.
             const SHitResult ProjectedHit = SHitResult::FromAnalyticHit(
                 Projection.Hit, 0.0f, ProjectionSeed.Component.Get());
-            TGuardValue<SHitResult> ProjectedEvent(CurrentHit, ProjectedHit);
+            TGuardValue<SHitResult> ProjectedEvent(CurrentHitStorage(), ProjectedHit);
             TryResolveExactPlanarImpact(false);
         }
         return bHasCorrection;
@@ -1153,7 +1153,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     }
 
 	const FVector PreviousNormal = GroundPlaneN.GetSafeNormal();
-    GroundHit = ProjectedHit;
+    GroundHitStorage() = ProjectedHit;
     GroundPlaneN = Normal;
     GroundPlanePointWS = ProjectedHit.ImpactPoint;
     GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, GroundPlaneN);
@@ -1199,21 +1199,21 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
 
 void UBoxSubBody::AcceptHit()
 {
-    CurrentHit = FutureHit;
-    FutureHit = SHitResult();
+    CurrentHitStorage() = FutureHitStorage();
+    FutureHitStorage() = SHitResult();
 
-    if (!CurrentHit.Component.IsValid())
+    if (!CurrentHitStorage().Component.IsValid())
         return;
 
-    if (Cast<USphereSubBody>(CurrentHit.SubBody.Get()))
+    if (Cast<USphereSubBody>(CurrentHitStorage().SubBody.Get()))
     {
-        SphereHit = CurrentHit;
-        LastResolvedSphereHit = CurrentHit;
+        SphereHitStorage() = CurrentHitStorage();
+        LastResolvedSphereHit = CurrentHitStorage();
         LastResolvedSphereHitFrame = ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE;
     }
 
-    UPrimitiveComponent* Comp = CurrentHit.Component.Get();
-    if (CurrentHit.Component.IsValid() && CurrentHit.Component->GetMobility() == EComponentMobility::Static)
+    UPrimitiveComponent* Comp = CurrentHitStorage().Component.Get();
+    if (CurrentHitStorage().Component.IsValid() && CurrentHitStorage().Component->GetMobility() == EComponentMobility::Static)
     {
         uint32& Count = HitCountThisFrame.FindOrAdd(Comp);
         Count++;
@@ -1221,7 +1221,7 @@ void UBoxSubBody::AcceptHit()
         // Exact vertex identities already use the World per-pair resolution budget.
         // Keep counting every hit; all other contacts retain the component cap.
         if (Count >= MaxHitsPerComponentPerFrame &&
-            !(CanInitializeRepeatedContact(CurrentHit) || CanResolveRepeatedContact(CurrentHit)))
+            !(CanInitializeRepeatedContact(CurrentHitStorage()) || CanResolveRepeatedContact(CurrentHitStorage())))
         {
             IgnoredComponents.AddUnique(Comp);
         }
@@ -1231,10 +1231,10 @@ void UBoxSubBody::AcceptHit()
         IgnoredComponents.AddUnique(Comp);
     }
 
-    if (CurrentHit.SubBody.IsValid())
+    if (CurrentHitStorage().SubBody.IsValid())
     {
         // if Other sub-body will hit, accept the hit for it too to ensure both sides are in sync and won't try to resolve the same hit again
-        auto OtherSubBody = CurrentHit.SubBody.Get();
+        auto OtherSubBody = CurrentHitStorage().SubBody.Get();
         if (OtherSubBody->WillHit())
         {
             OtherSubBody->AcceptHit();
@@ -1404,8 +1404,8 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
     float TOI_Sphere = RemainingDelta;
     float TOI_Box = RemainingDelta;
     float TOI_Wheel = RemainingDelta;
-    FutureHit = SHitResult();
-    SHitResult OldGroundHit = GroundHit;
+    FutureHitStorage() = SHitResult();
+    SHitResult OldGroundHit = GroundHitStorage();
 
     SHitResult GroundHitresult;
     SHitResult BoxHitresult;
@@ -1442,14 +1442,14 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
                 if (!IgnoredComponents.Contains(OldGroundHit.Component))
                 {
                     OutTOI = 0.0f;
-                    FutureHit = OldGroundHit; // reuse current ground hit
-                    GroundHit = OldGroundHit;
-                    FutureHit.TOI = 0.0f;
+                    FutureHitStorage() = OldGroundHit; // reuse current ground hit
+                    GroundHitStorage() = OldGroundHit;
+                    FutureHitStorage().TOI = 0.0f;
                     return true;
                 }
                 else
                 {
-                    GroundHit = OldGroundHit;
+                    GroundHitStorage() = OldGroundHit;
                 }
             }
         }
@@ -1461,29 +1461,29 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
     if (bHitGround && TOI_ground <= OutTOI)
     {
         OutTOI = TOI_ground;
-		GroundHit = GroundHitresult;
-        FutureHit = GroundHit;
+		GroundHitStorage() = GroundHitresult;
+        FutureHitStorage() = GroundHitStorage();
     }
 
     if (bHitSphere && (TOI_Sphere < OutTOI || (bPersistentSphereContact && FMath::IsNearlyEqual(TOI_Sphere, OutTOI))))
     {
         OutTOI = TOI_Sphere;
-		SphereHit = SphereHitresult;
-        FutureHit = SphereHit;
+		SphereHitStorage() = SphereHitresult;
+        FutureHitStorage() = SphereHitStorage();
     }
 
     if (bHitBox && TOI_Box < OutTOI)
     {
         OutTOI = TOI_Box;
-		BoxHit = BoxHitresult;
-        FutureHit = BoxHit;
+		BoxHitStorage() = BoxHitresult;
+        FutureHitStorage() = BoxHitStorage();
     }
 
     if (bHitWheel && TOI_Wheel < OutTOI)
     {
         OutTOI = TOI_Wheel;
-		WheelHit = WheelHitresult;
-        FutureHit = WheelHit;
+		WheelHitStorage() = WheelHitresult;
+        FutureHitStorage() = WheelHitStorage();
     }
 
     return true;
@@ -1495,12 +1495,12 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
     OutTOI = Delta;
     // GroundHit = SHitResult();
 
-    const FVector Start = Kinematics.Location;
+    const FVector Start = KinematicsStorage().Location;
 
     const FVector End =
         Start +
-        Kinematics.Velocity * Delta +
-        0.5f * Kinematics.Acceleration * Delta * Delta;
+        KinematicsStorage().Velocity * Delta +
+        0.5f * KinematicsStorage().Acceleration * Delta * Delta;
 
     SHitResult Hit;
     bGroundHitFromSweep = false;
@@ -1511,10 +1511,10 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
     {
         // An established plane still matters when the translational query
         // misses: rotation can bring a different vertex into contact.
-        if (ParentComponent->GetStaticCollisionWorldForFrame() && CurrentHit.bBlockingHit &&
-            !CurrentHit.bSurfaceNormalMayVary && CurrentHit.SourceId != 0 &&
+        if (ParentComponent->GetStaticCollisionWorldForFrame() && CurrentHitStorage().bBlockingHit &&
+            !CurrentHitStorage().bSurfaceNormalMayVary && CurrentHitStorage().SourceId != 0 &&
             LastResolvedGroundHitFrame == static_cast<int32>(ParentComponent->NumFrame()))
-        { Hit = CurrentHit; bFoundGroundHit = true; }
+        { Hit = CurrentHitStorage(); bFoundGroundHit = true; }
     }
 
     auto AddGroundNormal = [&](const FVector& Nnew)
@@ -1621,18 +1621,18 @@ bool UBoxSubBody::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& D
 
 void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 {
-    if (!CurrentHit.bBlockingHit || !ParentComponent)
+    if (!CurrentHitStorage().bBlockingHit || !ParentComponent)
         return;
 
-    if(auto* Other=Cast<USolidSubBody>(CurrentHit.SubBody.Get()))
-        if(ResolvePrescribedContact(*this,*Other,CurrentHit,CurrentHit.PenetrationDepth))return;
+    if(auto* Other=Cast<USolidSubBody>(CurrentHitStorage().SubBody.Get()))
+        if(ResolvePrescribedContact(*this,*Other,CurrentHitStorage(),CurrentHitStorage().PenetrationDepth))return;
     if (TryResolveExactFaceImpact()) return;
     if (TryResolveExactPlanarImpact()) return;
 
 	RegisterCurrentHitAsConstraint();
 
-    USphereSubBody* Sphere = Cast<USphereSubBody>(CurrentHit.Component.Get());
-    UBoxSubBody* Box = Cast<UBoxSubBody>(CurrentHit.Component.Get());
+    USphereSubBody* Sphere = Cast<USphereSubBody>(CurrentHitStorage().Component.Get());
+    UBoxSubBody* Box = Cast<UBoxSubBody>(CurrentHitStorage().Component.Get());
 
     if (Sphere)
     {
@@ -1642,8 +1642,8 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
     {
         ResolveHitVsBox(*Box, delta);
     }
-    else if (CurrentHit.Component.IsValid() &&
-        CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic)
+    else if (CurrentHitStorage().Component.IsValid() &&
+        CurrentHitStorage().Component->GetCollisionObjectType() == ECC_WorldStatic)
     {
         ResolveHitVsGround(delta);
     }
@@ -1664,12 +1664,12 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     CompositeGroundNormal = BuildCompositeGroundNormal();
 
-    const FVector RawN = CurrentHit.ImpactNormal.GetSafeNormal();
+    const FVector RawN = CurrentHitStorage().ImpactNormal.GetSafeNormal();
     const float RawUpDot = FVector::DotProduct(RawN, FVector::UpVector);
     const FVector VelBeforeResolve = ParentComponent->GetPhysCOMVelocity();
     const FVector AngBeforeResolve = ParentComponent->GetPhysAngularVelocity();
 
-    SHitResult EffectiveHit = CurrentHit;
+    SHitResult EffectiveHit = CurrentHitStorage();
     FVector EffectiveN = RawN;
     float EffectiveUpDot = RawUpDot;
 
@@ -1680,7 +1680,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         SHitResult PromotedHit;
 		// Check if we can promote this wall/gutter hit to a support contact by reclassifying
         // it with a more vertical normal (composite of current hit normal and other ground contacts normals)
-        if (ShouldPromoteWallHitToSupport(CurrentHit, RawN, RawUpDot, Dt, PromotedHit))
+        if (ShouldPromoteWallHitToSupport(CurrentHitStorage(), RawN, RawUpDot, Dt, PromotedHit))
         {
             EffectiveHit = PromotedHit;
             EffectiveN = EffectiveHit.ImpactNormal.GetSafeNormal();
@@ -1711,7 +1711,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         EffectiveUpDot = FVector::DotProduct(EffectiveN, FVector::UpVector);
     }
     const bool bIsDirectSupportNormal = EffectiveUpDot >= DirectSupportUpDot;
-    const FVector HitboxUpVector = Kinematics.Rotation.GetUpVector();
+    const FVector HitboxUpVector = KinematicsStorage().Rotation.GetUpVector();
     const bool bRoofFacingSurface =
         FVector::DotProduct(HitboxUpVector, EffectiveN) < -0.45f;
     const bool bUpsideDownRoofSlideCandidate =
@@ -1735,8 +1735,8 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     {
         BuildSupportManifoldFromNormal(
             EffectiveN,
-            Kinematics.Location,
-            Kinematics.Rotation,
+            KinematicsStorage().Location,
+            KinematicsStorage().Rotation,
             BoxExtent,
             PreviewPts,
             0.5f
@@ -1869,7 +1869,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         // makes the result depend on solver iteration count. The remaining
         // substep is instead handled by the native established-contact
         // projection in IntegrateKinematics.
-        GroundHit = EffectiveHit;
+        GroundHitStorage() = EffectiveHit;
         GroundPlaneN = EffectiveN;
         GroundPlanePointWS = EffectiveHit.ImpactPoint;
         GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, GroundPlaneN);
@@ -2032,7 +2032,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 {
     // --- Box kinematics at TOI ---
     // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
-    const SKinematic& BoxKS = Kinematics; // already correct
+    const SKinematic& BoxKS = KinematicsStorage(); // already correct
     SSBox BBox = MakeBox();
 
     // --- Sphere kinematics at TOI ---
@@ -2087,8 +2087,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         }
     }*/
 
-    const FVector BoxLocalContactPoint = BoxKS.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKS.Location);
-    const FVector BoxLocalContactNormal = BoxKS.Rotation.UnrotateVector(CurrentHit.ImpactNormal.GetSafeNormal());
+    const FVector BoxLocalContactPoint = BoxKS.Rotation.UnrotateVector(CurrentHitStorage().ImpactPoint - BoxKS.Location);
+    const FVector BoxLocalContactNormal = BoxKS.Rotation.UnrotateVector(CurrentHitStorage().ImpactNormal.GetSafeNormal());
     const float MixedRestitution = ResolveSphereBoxRestitution(
         Sphere,
         *this,
@@ -2096,9 +2096,9 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     const float MixedFriction = ResolveSphereBoxFriction(Sphere, *this,
         MixFriction(Sphere.GetDynamicFriction(), GetDynamicFriction(), EMixMode::E_Max));
 	const float RelativeNormalSpeedForSphere = FMath::Abs(FVector::DotProduct(
-		IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHit.ImpactPoint) -
-		IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHit.ImpactPoint),
-		CurrentHit.ImpactNormal.GetSafeNormal()));
+		IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHitStorage().ImpactPoint) -
+		IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHitStorage().ImpactPoint),
+		CurrentHitStorage().ImpactNormal.GetSafeNormal()));
 
     const bool bUsePostNormalFriction =
         UsesPostNormalFrictionImpulse() || Sphere.UsesPostNormalFrictionImpulse();
@@ -2110,8 +2110,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         : SphereKS0;
     FVector ImpThis, ImpOther;
     bool ok = Speed::SImpulseSolver::ComputeCollisionImpulse(
-        CurrentHit.ImpactPoint,
-		CurrentHit.ImpactNormal,   // Sphere -> Box
+        CurrentHitStorage().ImpactPoint,
+		CurrentHitStorage().ImpactNormal,   // Sphere -> Box
 
         ImpulseBoxKS, GetMass(), ComputeWorldInvInertiaTensor(),
         ImpulseSphereKS, Sphere.GetMass(), Sphere.ComputeWorldInvInertiaTensor(),
@@ -2133,9 +2133,9 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
     {
-        const FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
-        const FVector BoxVp = IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHit.ImpactPoint);
-        const FVector SphereVp = IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHit.ImpactPoint);
+        const FVector N = CurrentHitStorage().ImpactNormal.GetSafeNormal();
+        const FVector BoxVp = IAmSpeedVelocityAtPointFromKS(BoxKS, CurrentHitStorage().ImpactPoint);
+        const FVector SphereVp = IAmSpeedVelocityAtPointFromKS(SphereKS0, CurrentHitStorage().ImpactPoint);
         const FVector RelVp = BoxVp - SphereVp;
         const float RelNormalSpeed = FVector::DotProduct(RelVp, N);
         const FVector LocalNormal = BoxLocalContactNormal;
@@ -2149,10 +2149,10 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
             TEXT("[SphereBoxImpulse][BoxResolve] Frame=%d Delta=%.6f TOI=%.6f Box=%s Sphere=%s Point=%s LocalPoint=%s Normal(SphereToBox)=%s LocalNormal=%s Restitution=%.3f Friction=%.3f Threshold=%.3f RelN(BoxMinusSphere)=%.3f RelVp=%s BoxImpulse=%s SphereImpulse=%s BoxLoc=%s BoxRot=%s BoxForward=%s BoxRight=%s BoxUp=%s BoxV=%s BoxW=%s SphereLoc=%s SphereV=%s SphereW=%s BoxVp=%s SphereVp=%s BoxMass=%.3f SphereMass=%.3f"),
             ParentComponent ? ParentComponent->NumFrame() : -1,
             delta,
-            CurrentHit.TOI,
+            CurrentHitStorage().TOI,
             GetOwner() ? *GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
             Sphere.GetOwner() ? *Sphere.GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
-            *CurrentHit.ImpactPoint.ToString(),
+            *CurrentHitStorage().ImpactPoint.ToString(),
             *BoxLocalContactPoint.ToString(),
             *N.ToString(),
             *LocalNormal.ToString(),
@@ -2198,11 +2198,11 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     const FVector SphereWPre = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
 #endif
         // --- Apply impulses ---
-    ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
+    ApplyImpulse(ImpThis, CurrentHitStorage().ImpactPoint);
 	Sphere.ApplySphereBoxImpulse(
 		ImpOther,
-		CurrentHit.ImpactPoint,
-		CurrentHit.ImpactNormal,
+		CurrentHitStorage().ImpactPoint,
+		CurrentHitStorage().ImpactNormal,
 		RelativeNormalSpeedForSphere,
 		SphereKS0,
 		BoxKS);
@@ -2222,7 +2222,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
             ParentComponent ? ParentComponent->NumFrame() : -1,
             GetOwner() ? *GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
             Sphere.GetOwner() ? *Sphere.GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
-            *CurrentHit.ImpactPoint.ToString(),
+            *CurrentHitStorage().ImpactPoint.ToString(),
             *BoxCOMVPost.ToString(),
             *BoxWPost.ToString(),
             *SphereCOMVPost.ToString(),
@@ -2240,13 +2240,13 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     {
 		// (ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
 		// Sphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        ApplyFakePhysicsOn(Sphere, CurrentHit, delta, &FakePhysicsContext);
+        ApplyFakePhysicsOn(Sphere, CurrentHitStorage(), delta, &FakePhysicsContext);
     }
     if (Sphere.IsFakePhysicsEnabled())
     {
         // UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
         // Sphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        SHitResult InvertedHit = CurrentHit;
+        SHitResult InvertedHit = CurrentHitStorage();
         InvertedHit.ImpactNormal *= -1.f;
         const FFakePhysicsImpactContext InvertedContext = FakePhysicsContext.Inverted();
         Sphere.ApplyFakePhysicsOn(*this, InvertedHit, delta, &InvertedContext);
@@ -2257,7 +2257,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 	Sphere.ProjectOutOfBox(*this);
 	if (Sphere.ShouldMaintainSphereBoxContact(
 		RelativeNormalSpeedForSphere,
-		CurrentHit.ImpactNormal,
+		CurrentHitStorage().ImpactNormal,
 		FakePhysicsContext.OtherParentKinematics,
 		FakePhysicsContext.SelfParentKinematics))
 	{
@@ -2266,14 +2266,14 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 			if (USpeedWorldSubsystem* SpeedWorld = World->GetSubsystem<USpeedWorldSubsystem>())
 			{
 				SpeedWorld->RegisterDynamicContactPair(
-					Sphere, *this, CurrentHit.ImpactPoint, -CurrentHit.ImpactNormal,
+					Sphere, *this, CurrentHitStorage().ImpactPoint, -CurrentHitStorage().ImpactNormal,
 					RelativeNormalSpeedForSphere);
 			}
 		}
 	}
 
     // --- Gameplay hooks ---
-    ParentComponent->RcvImpactOnSubBody(*this, CurrentHit.ImpactPoint);
+    ParentComponent->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
 }
 
 void UBoxSubBody::ResolveHitVsBox(
@@ -2281,13 +2281,13 @@ void UBoxSubBody::ResolveHitVsBox(
     const float& delta
 )
 {
-    const SKinematic& KA = Kinematics; // current
+    const SKinematic& KA = KinematicsStorage(); // current
 
     // KB courant
-    const SKinematic& KB = OtherBox.Kinematics; // si sync (sinon GetKinematicsFromOwner(frame))
+    const SKinematic& KB = OtherBox.KinematicsStorage(); // si sync (sinon GetKinematicsFromOwner(frame))
 
-    const FVector P = CurrentHit.ImpactPoint;
-    const FVector N = CurrentHit.ImpactNormal.GetSafeNormal(); // Other -> This (entrant dans This)
+    const FVector P = CurrentHitStorage().ImpactPoint;
+    const FVector N = CurrentHitStorage().ImpactNormal.GetSafeNormal(); // Other -> This (entrant dans This)
 
     // Snapshot both chassis before rigid/overlap impulses and either fake
     // callback. Role exchange must not sample a state modified by callback1.
@@ -2301,7 +2301,7 @@ void UBoxSubBody::ResolveHitVsBox(
     // Both callbacks describe this one contact, even when the reciprocal
     // body's cached hit is empty or belongs to another pair/frame.
     const SHitResult InverseHit = Speed::Collision::MakeReciprocalBoxContact(
-        CurrentHit, this, this);
+        CurrentHitStorage(), this, this);
 
     const auto EnforceNonclosingContact = [&]()
     {
@@ -2335,7 +2335,7 @@ void UBoxSubBody::ResolveHitVsBox(
                 P, N, pen, Slop, bCarPair?1.f:0.8f, bCarPair?0.f:GetImpactThreshold());
             if (IsFakePhysicsEnabled())
             {
-                ApplyFakePhysicsOn(OtherBox, CurrentHit, delta, &FakePhysicsContext);
+                ApplyFakePhysicsOn(OtherBox, CurrentHitStorage(), delta, &FakePhysicsContext);
             }
             if (OtherBox.IsFakePhysicsEnabled())
             {
@@ -2372,7 +2372,7 @@ void UBoxSubBody::ResolveHitVsBox(
     {
         // UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics to current frame before applying fake physics
 		// OtherBox.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        ApplyFakePhysicsOn(OtherBox, CurrentHit, delta, &FakePhysicsContext);
+        ApplyFakePhysicsOn(OtherBox, CurrentHitStorage(), delta, &FakePhysicsContext);
     }
     if (OtherBox.IsFakePhysicsEnabled())
     {
@@ -2409,10 +2409,10 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     const FVector COM = GetCOM();
     const float FaceAlignment = FMath::Max(
-        FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisX(), N)),
+        FMath::Abs(FVector::DotProduct(KinematicsStorage().Rotation.GetAxisX(), N)),
         FMath::Max(
-            FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisY(), N)),
-            FMath::Abs(FVector::DotProduct(Kinematics.Rotation.GetAxisZ(), N))));
+            FMath::Abs(FVector::DotProduct(KinematicsStorage().Rotation.GetAxisY(), N)),
+            FMath::Abs(FVector::DotProduct(KinematicsStorage().Rotation.GetAxisZ(), N))));
     const bool bFaceOnPlaneContact = FaceAlignment >= 0.98f;
 
     // A face-on box/plane impact is a contact manifold in every orientation,
@@ -2456,8 +2456,8 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         TArray<FVector> PreviewPts;
         BuildSupportManifoldFromNormal(
             N,
-            Kinematics.Location,
-            Kinematics.Rotation,
+            KinematicsStorage().Location,
+            KinematicsStorage().Rotation,
             BoxExtent,
             PreviewPts,
             0.5f
@@ -2539,7 +2539,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             ParentComponent->NumFrame(),
             *P.ToString(),
             *N.ToString(),
-            *Kinematics.ToString());
+            *KinematicsStorage().ToString());
     }
 #endif
 
@@ -2669,7 +2669,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             Hit.TOI,
             Hit.bStartPenetrating ? 1 : 0,
             Hit.PenetrationDepth,
-            *Kinematics.ToString());
+            *KinematicsStorage().ToString());
     }
 #endif
 
@@ -2761,7 +2761,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
                         bIsGutterLikeWall ? 1 : 0,
                         UpDot,
                         Hit.PenetrationDepth,
-                        *Kinematics.ToString());
+                        *KinematicsStorage().ToString());
                 }
 #endif
             }
@@ -2792,8 +2792,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     // Build manifold from current pose (TOI pose).
     // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
-    const FVector CenterWS = Kinematics.Location;
-    const FQuat BoxRotWS = Kinematics.Rotation;
+    const FVector CenterWS = KinematicsStorage().Location;
+    const FQuat BoxRotWS = KinematicsStorage().Rotation;
     const FVector Ext = BoxExtent;
     const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, BoxRotWS);
@@ -3075,14 +3075,14 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     if (NumC <= 0) return;
 
 	// Register constraints for this manifold
-    if (CurrentHit.Component.IsValid())
+    if (CurrentHitStorage().Component.IsValid())
     {
         RegisterContactManifoldAsConstraints(
             CurrentGroundContactsWS,
             N,
-            CurrentHit.Component.Get(),
-            CurrentHit.PenetrationDepth,
-            CurrentHit.TOI,
+            CurrentHitStorage().Component.Get(),
+            CurrentHitStorage().PenetrationDepth,
+            CurrentHitStorage().TOI,
             false,
             4
         );
@@ -3301,7 +3301,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 for (const auto& Constraint : OriginalConstraints)
                 {
                     if (!Constraint.IsValid() || Constraint.FramesSinceSeen != 0 || Constraint.bPersistent ||
-                        Constraint.SourceSubBody.Get() != this || Constraint.OtherComponent != CurrentHit.Component ||
+                        Constraint.SourceSubBody.Get() != this || Constraint.OtherComponent != CurrentHitStorage().Component ||
                         Constraint.Normal != RegisteredGroundNormal)
                     {
                         bCertifiedScope = false;
@@ -3550,7 +3550,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
 
     // Debug
-    Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    KinematicsStorage() = GetKinematicsFromOwner(ParentComponent->NumFrame());
     // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d, ImpactNormal = %s, Kinematic = %s"),
     //     ParentComponent->NumFrame(), *N.ToString(), *Kinematics.ToString());
 
@@ -3657,7 +3657,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
 
 void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDirectSupportSolved)
 {
-    const SHitResult SupportSourceHit = GroundHit;
+    const SHitResult SupportSourceHit = GroundHitStorage();
     const auto PreserveSupportProvider = [&SupportSourceHit](SHitResult& Hit)
     {
         Hit.GeometricErrorBoundCm = SupportSourceHit.GeometricErrorBoundCm;
@@ -3925,13 +3925,13 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
             PrevGroundContactsLS.Add(LatchedEdgeContactsLS[0]);
             PrevGroundContactsLS.Add(LatchedEdgeContactsLS[1]);
 
-            GroundHit = SHitResult();
-            GroundHit.bBlockingHit = true;
-            GroundHit.Component = GroundComp;
-            GroundHit.ImpactNormal = GroundPlaneN;
-            GroundHit.TOI = 0.f;
-            GroundHit.ImpactPoint = 0.5f * (P0 + P1);
-            PreserveSupportProvider(GroundHit);
+            GroundHitStorage() = SHitResult();
+            GroundHitStorage().bBlockingHit = true;
+            GroundHitStorage().Component = GroundComp;
+            GroundHitStorage().ImpactNormal = GroundPlaneN;
+            GroundHitStorage().TOI = 0.f;
+            GroundHitStorage().ImpactPoint = 0.5f * (P0 + P1);
+            PreserveSupportProvider(GroundHitStorage());
             return;
         }
     }
@@ -4175,14 +4175,14 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     const float dist = PlaneSignedDist(Pbox, GroundPlaneN, GroundPlanePointWS);
     const FVector Pplane = Pbox - dist * GroundPlaneN;
 
-    GroundHit = SHitResult();
-    GroundHit.bBlockingHit = true;
-    GroundHit.Component = GroundComp;
-    GroundHit.ImpactNormal = GroundPlaneN;
-    GroundHit.TOI = 0.f;
+    GroundHitStorage() = SHitResult();
+    GroundHitStorage().bBlockingHit = true;
+    GroundHitStorage().Component = GroundComp;
+    GroundHitStorage().ImpactNormal = GroundPlaneN;
+    GroundHitStorage().TOI = 0.f;
     // GroundHit.Location = K.Location;
-    GroundHit.ImpactPoint = Pplane;
-    PreserveSupportProvider(GroundHit);
+    GroundHitStorage().ImpactPoint = Pplane;
+    PreserveSupportProvider(GroundHitStorage());
 }
 
 bool UBoxSubBody::CanResolveRepeatedContact(const SHitResult& Hit) const
@@ -4204,12 +4204,12 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
     Linear = Angular = FVector::ZeroVector;
     if (ParentComponent && ParentComponent->HasActivePhysicalConstraintsOtherThan(this)) return false;
     const Speed::IStaticCollisionWorld* World = ParentComponent ? ParentComponent->GetStaticCollisionWorldForFrame() : nullptr;
-    if (!World || !HasToApplyRestForce() || !CurrentHit.bBlockingHit ||
-        CurrentHit.SourceId == 0 || CurrentHit.bSurfaceNormalMayVary || CurrentHit.GeometricErrorBoundCm != 0 ||
-        CurrentHit.ContactFeatureOther != Speed::EContactFeatureKind::Face || !CurrentHit.Component.IsValid() ||
-        CurrentHit.Component->GetCollisionObjectType() != ECC_WorldStatic) return false;
+    if (!World || !HasToApplyRestForce() || !CurrentHitStorage().bBlockingHit ||
+        CurrentHitStorage().SourceId == 0 || CurrentHitStorage().bSurfaceNormalMayVary || CurrentHitStorage().GeometricErrorBoundCm != 0 ||
+        CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face || !CurrentHitStorage().Component.IsValid() ||
+        CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic) return false;
     const SKinematic& State = ParentComponent->GetKinematicState();
-    const FVector N = CurrentHit.ImpactNormal;
+    const FVector N = CurrentHitStorage().ImpactNormal;
     const FVector Center = State.Location + State.Rotation.RotateVector(GetLocalOffset() - ParentComponent->GetPhysCenterOfMassLocal());
     const FQuat Q = State.Rotation * GetLocalRotation();
     const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0, Center.GetAbsMax() + BoxExtent.GetMax());
@@ -4221,7 +4221,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
     FVector CommonCentripetal = FVector::ZeroVector;
     Speed::Analytic::FWorldQuery Probe;
     Probe.Shape = Speed::Analytic::EQueryShape::Ray;
-    Probe.RequiredSourceId = CurrentHit.SourceId; Probe.RequiredSurfaceId = CurrentHit.SurfaceId;
+    Probe.RequiredSourceId = CurrentHitStorage().SourceId; Probe.RequiredSurfaceId = CurrentHitStorage().SurfaceId;
     Probe.bAuthorityOnly = true; Probe.bIncludeCompactPatches = true; Probe.bApplyCollisionFilter = true;
     Probe.TraceChannel = static_cast<uint8>(GetCollisionChannel());
     Probe.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
@@ -4230,7 +4230,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
     {
         const FVector P = Center + Q.RotateVector(FVector((I & 1) ? BoxExtent.X : -BoxExtent.X,
             (I & 2) ? BoxExtent.Y : -BoxExtent.Y, (I & 4) ? BoxExtent.Z : -BoxExtent.Z));
-        const double Gap = FVector::DotProduct(P - CurrentHit.ImpactPoint, N);
+        const double Gap = FVector::DotProduct(P - CurrentHitStorage().ImpactPoint, N);
         if (Gap < -Roundoff) return false;
         if (Gap > Roundoff) continue;
         const FVector R = P - State.Location;
@@ -4330,12 +4330,12 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
     // event would win over the next arriving vertex, then be pair-suppressed
     // by the world and hide that real collision. Only identify exact coplanar
     // geometry here; each arriving corner still needs its finite-domain ray.
-    const bool bEstablished = CurrentHit.bBlockingHit &&
+    const bool bEstablished = CurrentHitStorage().bBlockingHit &&
         LastResolvedGroundHitFrame == static_cast<int32>(ParentComponent->NumFrame()) &&
-        CurrentHit.SourceId != 0 && !CurrentHit.bSurfaceNormalMayVary && CurrentHit.GeometricErrorBoundCm == 0 &&
-        CurrentHit.ContactFeatureOther == Speed::EContactFeatureKind::Face &&
-        CurrentHit.ImpactNormal.Equals(N, 32 * DBL_EPSILON) &&
-        FMath::Abs(FVector::DotProduct(CurrentHit.ImpactPoint - Hit.ImpactPoint, N)) <= Roundoff;
+        CurrentHitStorage().SourceId != 0 && !CurrentHitStorage().bSurfaceNormalMayVary && CurrentHitStorage().GeometricErrorBoundCm == 0 &&
+        CurrentHitStorage().ContactFeatureOther == Speed::EContactFeatureKind::Face &&
+        CurrentHitStorage().ImpactNormal.Equals(N, 32 * DBL_EPSILON) &&
+        FMath::Abs(FVector::DotProduct(CurrentHitStorage().ImpactPoint - Hit.ImpactPoint, N)) <= Roundoff;
     for (int32 I = 0; I < 8; ++I)
     {
         Corners[I] = FVector((I & 1) ? BoxExtent.X : -BoxExtent.X,
@@ -4396,7 +4396,7 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
         ParentComponent->NumFrame() >= 129 && ParentComponent->NumFrame() <= 132)
         UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarArrival] frame=%u dt=%.17g established=%d mask=%u corner=%d time=%.17g source=%llu primitive=%llu current_primitive=%llu plane_z=%.17g q=%s a=%s alpha=%s gaps=(%.17g,%.17g,%.17g,%.17g;%.17g,%.17g,%.17g,%.17g)"),
             ParentComponent->NumFrame(), double(Delta), bEstablished ? 1 : 0, EstablishedMask, FirstCorner, double(FirstTime),
-            Hit.SourceId, Hit.PrimitiveId, CurrentHit.PrimitiveId, double(Hit.ImpactPoint.Z), *Initial.Rotation.ToString(),
+            Hit.SourceId, Hit.PrimitiveId, CurrentHitStorage().PrimitiveId, double(Hit.ImpactPoint.Z), *Initial.Rotation.ToString(),
             *Initial.Acceleration.ToString(), *Initial.AngularAcceleration.ToString(),
             InitialGaps[4], InitialGaps[5], InitialGaps[6], InitialGaps[7],
             GapAt(4, Delta), GapAt(5, Delta), GapAt(6, Delta), GapAt(7, Delta));
@@ -4494,17 +4494,17 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
     // applied after committing an incompatible independent box impulse.
     if (ParentComponent->HasActivePhysicalConstraintsOtherThan(this)) return false;
     const Speed::IStaticCollisionWorld* World = ParentComponent->GetStaticCollisionWorldForFrame();
-    if (!World || !HasToApplyRestForce() || CurrentHit.SourceId == 0 ||
-        CurrentHit.bSurfaceNormalMayVary || CurrentHit.GeometricErrorBoundCm != 0 ||
-        CurrentHit.ContactFeatureOther != Speed::EContactFeatureKind::Face ||
-        !CurrentHit.Component.IsValid() || CurrentHit.Component->GetCollisionObjectType() != ECC_WorldStatic)
+    if (!World || !HasToApplyRestForce() || CurrentHitStorage().SourceId == 0 ||
+        CurrentHitStorage().bSurfaceNormalMayVary || CurrentHitStorage().GeometricErrorBoundCm != 0 ||
+        CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face ||
+        !CurrentHitStorage().Component.IsValid() || CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic)
         return false;
     SKinematic State = ParentComponent->GetKinematicState();
-    if (bNotifyImpact) ProjectPlanarEventRoundoff(State, CurrentHit);
+    if (bNotifyImpact) ProjectPlanarEventRoundoff(State, CurrentHitStorage());
     const FVector BoxCenter = State.Location - State.Rotation.RotateVector(ParentComponent->GetPhysCenterOfMassLocal()) +
         State.Rotation.RotateVector(GetLocalOffset());
     const FQuat BoxQ = State.Rotation * GetLocalRotation();
-    const FVector N = CurrentHit.ImpactNormal;
+    const FVector N = CurrentHitStorage().ImpactNormal;
     const double Scale = FMath::Max(1.0, BoxCenter.GetAbsMax() + BoxExtent.GetMax());
     const double Roundoff = 64.0 * DBL_EPSILON * Scale;
     FVector Vertices[8];
@@ -4514,15 +4514,15 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         const FVector P((Corner & 1) ? BoxExtent.X : -BoxExtent.X,
             (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y, (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z);
         Vertices[Corner] = BoxCenter + BoxQ.RotateVector(P);
-        Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - CurrentHit.ImpactPoint, N);
+        Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - CurrentHitStorage().ImpactPoint, N);
         MinimumGap = FMath::Min(MinimumGap, Gaps[Corner]);
     }
     FVector Points[4];
     int32 Count = 0;
     Speed::Analytic::FWorldQuery Probe;
     Probe.Shape = Speed::Analytic::EQueryShape::Ray;
-    Probe.RequiredSourceId = CurrentHit.SourceId;
-    Probe.RequiredSurfaceId = CurrentHit.SurfaceId;
+    Probe.RequiredSourceId = CurrentHitStorage().SourceId;
+    Probe.RequiredSurfaceId = CurrentHitStorage().SurfaceId;
     Probe.TraceChannel = static_cast<uint8>(GetCollisionChannel());
     Probe.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
     Probe.bApplyCollisionFilter = true;
@@ -4558,7 +4558,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
             ParentComponent->NumFrame(), bNotifyImpact ? 1 : 0, Response.bSolved ? 1 : 0, Count, MinimumGap,
             *State.Location.ToString(), *State.Rotation.ToString(), *State.Velocity.ToString(), *State.AngularVelocity.ToString(),
             *State.Acceleration.ToString(), *State.AngularAcceleration.ToString(),
-            *Response.DeltaVelocity.ToString(), *Response.DeltaAngularVelocity.ToString(), double(CurrentHit.TOI),
+            *Response.DeltaVelocity.ToString(), *Response.DeltaAngularVelocity.ToString(), double(CurrentHitStorage().TOI),
             State.Velocity.Size(), State.AngularVelocity.Size(), (State.AngularVelocity + Response.DeltaAngularVelocity).Size());
 #endif
 
@@ -4624,17 +4624,17 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
     ParentComponent->SetPhysCOMVelocity(State.Velocity);
     ParentComponent->SetPhysAngularVelocity(State.AngularVelocity);
     ParentComponent->UpdateSubBodiesKinematics();
-    GroundHit = CurrentHit;
+    GroundHitStorage() = CurrentHitStorage();
     GroundPlaneN = N;
     GroundPlanePointWS = Points[0];
     GroundPlaneD = FVector::DotProduct(Points[0], N);
-    GroundComp = CurrentHit.Component;
+    GroundComp = CurrentHitStorage().Component;
     bGroundPlaneValid = true;
     bHasGroundContact = true;
     CurrentGroundContactsWS.Reset(Count);
     for (int32 I = 0; I < Count; ++I) CurrentGroundContactsWS.Add(Points[I]);
     LastResolvedGroundHitFrame = ParentComponent->NumFrame();
-    if (bNotifyImpact) ParentComponent->RcvImpactOnSubBody(*this, CurrentHit.ImpactPoint);
+    if (bNotifyImpact) ParentComponent->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
     return true;
 }
 
@@ -4642,13 +4642,13 @@ bool UBoxSubBody::TryResolveExactFaceImpact()
 {
     if (ParentComponent->HasActivePhysicalConstraintsOtherThan(this)) return false;
     const Speed::IStaticCollisionWorld* World = ParentComponent->GetStaticCollisionWorldForFrame();
-    if (!World || !HasToApplyRestForce() || CurrentHit.SourceId == 0 ||
-        CurrentHit.bSurfaceNormalMayVary || CurrentHit.GeometricErrorBoundCm != 0 ||
-        CurrentHit.ContactFeatureOther != Speed::EContactFeatureKind::Face ||
-        !CurrentHit.Component.IsValid() || CurrentHit.Component->GetCollisionObjectType() != ECC_WorldStatic)
+    if (!World || !HasToApplyRestForce() || CurrentHitStorage().SourceId == 0 ||
+        CurrentHitStorage().bSurfaceNormalMayVary || CurrentHitStorage().GeometricErrorBoundCm != 0 ||
+        CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face ||
+        !CurrentHitStorage().Component.IsValid() || CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic)
         return false;
     const SKinematic State = ParentComponent->GetKinematicState();
-    const FVector N = CurrentHit.ImpactNormal;
+    const FVector N = CurrentHitStorage().ImpactNormal;
     const double VN = FVector::DotProduct(State.Velocity, N);
     if (VN >= 0 || !State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero() ||
         !(State.Velocity - VN * N).IsZero()) return false;
@@ -4661,10 +4661,10 @@ bool UBoxSubBody::TryResolveExactFaceImpact()
     {
         const FVector P((Corner & 1) ? BoxExtent.X : -BoxExtent.X,
             (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y, (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z);
-        Gap = FMath::Min(Gap, FVector::DotProduct(Box.Location + Box.Rotation.RotateVector(P) - CurrentHit.ImpactPoint, N));
+        Gap = FMath::Min(Gap, FVector::DotProduct(Box.Location + Box.Rotation.RotateVector(P) - CurrentHitStorage().ImpactPoint, N));
     }
     const double Scale = FMath::Max(1.0, Box.Location.GetAbsMax() + BoxExtent.GetMax());
-    const double EventRoundoff = 4.0 * FLT_EPSILON * FMath::Abs(CurrentHit.TOI * VN) + 64.0 * DBL_EPSILON * Scale;
+    const double EventRoundoff = 4.0 * FLT_EPSILON * FMath::Abs(CurrentHitStorage().TOI * VN) + 64.0 * DBL_EPSILON * Scale;
     // This is only the residual of representing the CCD event time as float,
     // not a contact skin or a general-purpose depenetration/acquisition band.
     if (Gap < 0 || Gap > EventRoundoff) return false;
@@ -4703,14 +4703,14 @@ bool UBoxSubBody::TryResolveExactFaceImpact()
     GroundPlaneN = N;
     GroundPlanePointWS = Support.Points[0];
     GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, N);
-    GroundComp = CurrentHit.Component;
-    GroundHit = CurrentHit;
+    GroundComp = CurrentHitStorage().Component;
+    GroundHitStorage() = CurrentHitStorage();
     bGroundPlaneValid = true;
     bHasGroundContact = true;
     CurrentGroundContactsWS.Reset(4);
     for (const FVector& P : Support.Points) CurrentGroundContactsWS.Add(P);
     LastResolvedGroundHitFrame = ParentComponent->NumFrame();
-    ParentComponent->RcvImpactOnSubBody(*this, CurrentHit.ImpactPoint);
+    ParentComponent->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
     return true;
 }
 
@@ -4757,7 +4757,7 @@ SKinematic UBoxSubBody::GetKinematicsFromOwnerKS(const SKinematic& CarKinematicS
 
 SSBox UBoxSubBody::MakeBox() const
 {
-    const auto& CrtKinematics = Kinematics;
+    const auto& CrtKinematics = KinematicsStorage();
     SSBox BoxShape(
         CrtKinematics.Location,
         BoxExtent,
@@ -5302,8 +5302,8 @@ bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVe
 
     // Velocity normal to the support plane.
     const FVector Pbox = ComputeBoxSupportPointWS(
-        Kinematics.Location,
-        Kinematics.Rotation,
+        KinematicsStorage().Location,
+        KinematicsStorage().Rotation,
         BoxExtent,
         PlaneN
     );

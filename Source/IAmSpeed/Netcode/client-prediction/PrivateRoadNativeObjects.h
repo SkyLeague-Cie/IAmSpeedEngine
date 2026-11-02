@@ -4,10 +4,27 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
+#include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include <memory>
 #include "PrivateRoadNativeObjects.generated.h"
 namespace Speed::Netcode::Prediction { struct FPrivateRoadAccess;class FPrivateRoadPhysicsWorld; }
 namespace Speed::CommonState {struct FSleepValues;struct FQuantizationValues;}
+namespace Speed::Netcode::Prediction
+{
+// Seven declared value blocks only. Shape configuration, parent/registry,
+// ignored/external lists, solid/wheel/suspension extra state remain separate.
+struct FPrivateRoadSubBodyValues
+{
+    Speed::FKinematicState Kinematics;
+    SHitResult FutureHit;
+    SHitResult CurrentHit;
+    SHitResult GroundHit;
+    SHitResult BoxHit;
+    SHitResult SphereHit;
+    SHitResult WheelHit;
+ };
+}
+
 
 // Only the private physical factory selects this default subobject subtype.
 // Observe the real native dispatch; do not add impulses or optional constraints.
@@ -15,8 +32,55 @@ UCLASS(NotBlueprintable,Transient)
 class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
 {
     GENERATED_BODY()
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
+    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
+    bool UsesOriginalBodyStorage() const;
+    Speed::FKinematicState& KinematicsStorage() override;
+    Speed::FKinematicState const& KinematicsStorage() const override;
+    SHitResult& FutureHitStorage() override;
+    SHitResult const& FutureHitStorage() const override;
+    SHitResult& CurrentHitStorage() override;
+    SHitResult const& CurrentHitStorage() const override;
+    SHitResult& GroundHitStorage() override;
+    SHitResult const& GroundHitStorage() const override;
+    SHitResult& BoxHitStorage() override;
+    SHitResult const& BoxHitStorage() const override;
+    SHitResult& SphereHitStorage() override;
+    SHitResult const& SphereHitStorage() const override;
+    SHitResult& WheelHitStorage() override;
+    SHitResult const& WheelHitStorage() const override;
+public:
+    explicit USpeedBranchBoxSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
 protected:
     void ResolveCurrentHitPrv(const float&,const float&) override;
+};
+// Same inherited wheel physics; only the declared core value storage routes.
+// Exact-class parallel query admission remains closed until separately checked.
+UCLASS(NotBlueprintable,Transient)
+class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
+{
+    GENERATED_BODY()
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
+    std::unique_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
+    bool UsesOriginalBodyStorage() const;
+    Speed::FKinematicState& KinematicsStorage() override;
+    Speed::FKinematicState const& KinematicsStorage() const override;
+    SHitResult& FutureHitStorage() override;
+    SHitResult const& FutureHitStorage() const override;
+    SHitResult& CurrentHitStorage() override;
+    SHitResult const& CurrentHitStorage() const override;
+    SHitResult& GroundHitStorage() override;
+    SHitResult const& GroundHitStorage() const override;
+    SHitResult& BoxHitStorage() override;
+    SHitResult const& BoxHitStorage() const override;
+    SHitResult& SphereHitStorage() override;
+    SHitResult const& SphereHitStorage() const override;
+    SHitResult& WheelHitStorage() override;
+    SHitResult const& WheelHitStorage() const override;
+public:
+    explicit USpeedBranchWheelSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
 };
 // A real subtype whose lifecycle never creates a Chaos/network physics owner.
 // Its manually owned wheel/suspension storage belongs to the private factory.

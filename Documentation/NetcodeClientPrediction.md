@@ -413,3 +413,27 @@ fixture state. The existing diagnostic category is enabled at Log and restored,
 which keeps warnings/errors visible. Actual callback count must still be1;
 missing/deferred output remains FAIL, never a synthetic callback invocation.
 No complete state, lifetime, localized or hardware admission is introduced.
+
+
+Source47 begins PARTIAL subbody core value separation. Seven values (kinematics
+and the future/current/ground/box/sphere/wheel hit caches) route through virtual
+storage hooks. Legacy adapters keep their fields. Actual private final box AND
+wheel subtypes allocate fresh values without facade import; the original
+factory binds their access before the first physical step. Wheel setup/native
+configuration lifetime is unchanged. Unknown exact wheel subtype prefetch stays
+opted out; no parallel-query/performance qualification is inferred.
+
+The existing actual unbuffered physical log callback now additionally obtains
+the hitbox through its real public configuration entry, mutates facade pose/hit
+through ordinary subbody setters, and retains both references. Real physical1/2
+and hitbox centers compare with an untouched graph; the native per-frame hit
+reset must not reset the retained facade hit. The deliberately invalid facade
+hit is an ATTACK, never a real-contact/impulse/coverage witness. Until a new
+native run executes this experiment it remains proposed source only.
+
+Parent/registry association, geometry/scene transforms, ignored/external lists,
+additional solid/wheel/suspension state and configuration, world/timeline/source
+and all other callback/lifecycle closure remain incomplete. No complete causal
+fingerprint, restore provider/lease, localized replay or hardware admission is
+introduced. ProtectsEscapedMutableViews remains false. Native43's scoped
+success is retained independently and cannot qualify these new subtypes.

@@ -203,6 +203,12 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(!C||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->HasIsolatedNativeConstruction())
         {Refuse(Why,TEXT("private native component subtype missing"));return {};}
         C->Access=I.Access;C->SetOwner(N.Actor);C->SetAsyncPhysicsTickEnabled(false);
+        for(auto* Body:C->GetSubBodies())
+        {
+            if(auto* Box=Cast<USpeedBranchBoxSubBody>(Body))Box->StorageAccess=I.Access;
+            else if(auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))Wheel->StorageAccess=I.Access;
+            else {Refuse(Why,TEXT("private subbody storage subtype missing"));return {};}
+        }
         if(!C->GetHitboxSubBodyForConfiguration()||C->GetHitboxSubBodyForConfiguration()->GetClass()!=USpeedBranchBoxSubBody::StaticClass())
         {Refuse(Why,TEXT("private native contact dispatch subtype missing"));return {};}
         N.SuspensionConfig.SetSuspensionMaxRaise(10);N.SuspensionConfig.SetSuspensionMaxDrop(25);
@@ -438,8 +444,134 @@ bool FPrivateRoadPhysicsWorld::Close()
 }
 }
 
+USpeedBranchBoxSubBody::USpeedBranchBoxSubBody(const FObjectInitializer& Initializer)
+    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()){}
+bool USpeedBranchBoxSubBody::UsesOriginalBodyStorage() const
+{
+    const auto A=StorageAccess.lock();
+    return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
+}
+Speed::FKinematicState& USpeedBranchBoxSubBody::KinematicsStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
+}
+Speed::FKinematicState const& USpeedBranchBoxSubBody::KinematicsStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::FutureHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->FutureHit:USSubBody::FutureHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::FutureHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->FutureHit:USSubBody::FutureHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::CurrentHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CurrentHit:USSubBody::CurrentHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::CurrentHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CurrentHit:USSubBody::CurrentHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::GroundHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->GroundHit:USSubBody::GroundHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::GroundHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->GroundHit:USSubBody::GroundHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::BoxHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->BoxHit:USSubBody::BoxHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::BoxHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->BoxHit:USSubBody::BoxHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::SphereHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SphereHit:USSubBody::SphereHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::SphereHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SphereHit:USSubBody::SphereHitStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::WheelHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::WheelHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
+USpeedBranchWheelSubBody::USpeedBranchWheelSubBody(const FObjectInitializer& Initializer)
+    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()){}
+bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
+{
+    const auto A=StorageAccess.lock();
+    return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
+}
+Speed::FKinematicState& USpeedBranchWheelSubBody::KinematicsStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
+}
+Speed::FKinematicState const& USpeedBranchWheelSubBody::KinematicsStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::FutureHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->FutureHit:USSubBody::FutureHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::FutureHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->FutureHit:USSubBody::FutureHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::CurrentHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CurrentHit:USSubBody::CurrentHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::CurrentHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CurrentHit:USSubBody::CurrentHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::GroundHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->GroundHit:USSubBody::GroundHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::GroundHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->GroundHit:USSubBody::GroundHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::BoxHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->BoxHit:USSubBody::BoxHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::BoxHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->BoxHit:USSubBody::BoxHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::SphereHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SphereHit:USSubBody::SphereHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::SphereHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SphereHit:USSubBody::SphereHitStorage();
+}
+SHitResult& USpeedBranchWheelSubBody::WheelHitStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
+SHitResult const& USpeedBranchWheelSubBody::WheelHitStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->WheelHit:USSubBody::WheelHitStorage();
+}
 USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer)
-    :Super(Initializer.SetDefaultSubobjectClass<USpeedBranchBoxSubBody>(HitboxName),ESpeedWheeledNetworkConstruction::IAmSpeedOnly)
+    :Super(Initializer.SetDefaultSubobjectClass<USpeedBranchBoxSubBody>(HitboxName).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[0]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[1]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[2]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[3]),ESpeedWheeledNetworkConstruction::IAmSpeedOnly)
 {
     // Super registers this native object with the global HUD debug multicast.
     // Revoke that unrelated callback before the private factory registers it.
@@ -615,8 +747,8 @@ void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float
 {
     // Capture the genuine dispatch participant before Super can update caches.
     // Weak validity after the synchronous call never invents a lifetime lease.
-    const bool Blocking=CurrentHit.bBlockingHit;
-    const TWeakObjectPtr<USolidSubBody> Peer=Cast<USolidSubBody>(CurrentHit.Component.Get());
+    const bool Blocking=CurrentHitStorage().bBlockingHit;
+    const TWeakObjectPtr<USolidSubBody> Peer=Cast<USolidSubBody>(CurrentHitStorage().Component.Get());
     Super::ResolveCurrentHitPrv(Delta,SimTime); // unchanged native solver, once
     if(Blocking&&Peer.IsValid())
     {

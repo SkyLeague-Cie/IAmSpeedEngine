@@ -50,16 +50,16 @@ public:
         using B=Speed::FEpisodeStateBytesForTesting;
         B::Add(Out,ParentComponent);
         const FTransform RelativePose=GetRelativeTransform();B::Add(Out,RelativePose);
-        B::Add(Out,Kinematics);
+        B::Add(Out,KinematicsStorage());
         B::Add(Out,SubBodyType);
         B::Add(Out,CollisionChannel);
         for(int32 Channel=0;Channel<int32(ECC_MAX);++Channel)B::Add(Out,ResponseParams.CollisionResponse.GetResponse(ECollisionChannel(Channel)));
-        B::Add(Out,FutureHit);
-        B::Add(Out,CurrentHit);
-        B::Add(Out,GroundHit);
-        B::Add(Out,BoxHit);
-        B::Add(Out,SphereHit);
-        B::Add(Out,WheelHit);
+        B::Add(Out,FutureHitStorage());
+        B::Add(Out,CurrentHitStorage());
+        B::Add(Out,GroundHitStorage());
+        B::Add(Out,BoxHitStorage());
+        B::Add(Out,SphereHitStorage());
+        B::Add(Out,WheelHitStorage());
         B::Array(Out,AlwaysIgnoredComponents);
         B::Array(Out,IgnoredComponents);
         B::Array(Out,IgnoredSubBodyTypes);
@@ -115,8 +115,8 @@ public:
 
     // --- Set/Get kinematics ---
 	virtual void UpdateKinematicsFromOwner(const SKinematic& ParentKinematic);
-    void SetKinematicState(const Speed::FKinematicState& State) { Kinematics = State; }
-    const Speed::FKinematicState& GetKinematicState() const { return Kinematics; }
+    void SetKinematicState(const Speed::FKinematicState& State) { KinematicsStorage() = State; }
+    const Speed::FKinematicState& GetKinematicState() const { return KinematicsStorage(); }
 
     // --- Sweep for remaining delta time; return true if a hit occurred ---
     virtual bool SweepTOI(const float& RemainingDelta, float& OutTOI);
@@ -132,17 +132,17 @@ public:
     virtual void ResolveCurrentHit(const float& delta, const float& SimTime);
 
     // --- Returns true if a valid hit exists ---
-    bool HasHit() const { return CurrentHit.bBlockingHit; }
-    bool WillHit() const { return FutureHit.bBlockingHit; }
-    float GetFutureTOI() const { return FutureHit.TOI; }
+    bool HasHit() const { return CurrentHitStorage().bBlockingHit; }
+    bool WillHit() const { return FutureHitStorage().bBlockingHit; }
+    float GetFutureTOI() const { return FutureHitStorage().TOI; }
 
-	void SetHit(const SHitResult& Hit) { CurrentHit = Hit; }
-    const SHitResult& GetHit() const { return CurrentHit; }
-	const SHitResult& GetFutureHit() const { return FutureHit; }
-	void SetFutureHit(const SHitResult& Hit) { FutureHit = Hit; }
+	void SetHit(const SHitResult& Hit) { CurrentHitStorage() = Hit; }
+    const SHitResult& GetHit() const { return CurrentHitStorage(); }
+	const SHitResult& GetFutureHit() const { return FutureHitStorage(); }
+	void SetFutureHit(const SHitResult& Hit) { FutureHitStorage() = Hit; }
 
 	ESubBodyType GetSubBodyType() const { return SubBodyType; }
-    FVector GetCenterOfMassWS() const { return Kinematics.Location; }
+    FVector GetCenterOfMassWS() const { return KinematicsStorage().Location; }
 
 	ISpeedComponent* GetParentComponent() const { return ParentComponent; }
 
@@ -170,6 +170,23 @@ protected:
 	ISpeedComponent* ParentComponent;
 
     // Kinematic state at start of frame or during substep
+    // Lifetime-invariant subtypes can route these value blocks to an owner.
+    // Default adapters retain exactly their legacy fields. No restore or
+    // geometry/configuration/lifetime completeness is granted by these hooks.
+    virtual Speed::FKinematicState& KinematicsStorage() {return Kinematics;}
+    virtual Speed::FKinematicState const& KinematicsStorage() const {return Kinematics;}
+    virtual SHitResult& FutureHitStorage() {return FutureHit;}
+    virtual SHitResult const& FutureHitStorage() const {return FutureHit;}
+    virtual SHitResult& CurrentHitStorage() {return CurrentHit;}
+    virtual SHitResult const& CurrentHitStorage() const {return CurrentHit;}
+    virtual SHitResult& GroundHitStorage() {return GroundHit;}
+    virtual SHitResult const& GroundHitStorage() const {return GroundHit;}
+    virtual SHitResult& BoxHitStorage() {return BoxHit;}
+    virtual SHitResult const& BoxHitStorage() const {return BoxHit;}
+    virtual SHitResult& SphereHitStorage() {return SphereHit;}
+    virtual SHitResult const& SphereHitStorage() const {return SphereHit;}
+    virtual SHitResult& WheelHitStorage() {return WheelHit;}
+    virtual SHitResult const& WheelHitStorage() const {return WheelHit;}
     Speed::FKinematicState Kinematics;
 
 	ESubBodyType SubBodyType = ESubBodyType::Unknown;

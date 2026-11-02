@@ -97,10 +97,10 @@ void USphereSubBody::Initialize(ISpeedComponent* InParentComponent)
 void USphereSubBody::ResetForFrame(const float& Delta)
 {
     Super::ResetForFrame(Delta);
-    GroundHit = SHitResult();
-    BoxHit = SHitResult();
-    SphereHit = SHitResult();
-	WheelHit = SHitResult();
+    GroundHitStorage() = SHitResult();
+    BoxHitStorage() = SHitResult();
+    SphereHitStorage() = SHitResult();
+	WheelHitStorage() = SHitResult();
 }
 
 bool USphereSubBody::IsSphereBoxProjectionEnabled()
@@ -129,11 +129,11 @@ void USphereSubBody::AcceptHit()
     // Ignoring that whole component after the first hit lets a sphere enter a
     // second face (notably in gutters) during the remaining part of the frame.
     // Static separation below makes the same face safe to query again.
-    if (CurrentHit.Component.IsValid() &&
-        CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic &&
+    if (CurrentHitStorage().Component.IsValid() &&
+        CurrentHitStorage().Component->GetCollisionObjectType() == ECC_WorldStatic &&
 		IsWorldStaticProjectionEnabled())
     {
-        IgnoredComponents.Remove(CurrentHit.Component.Get());
+        IgnoredComponents.Remove(CurrentHitStorage().Component.Get());
     }
 }
 
@@ -152,7 +152,7 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
     float TOI_Box = RemainingDelta;
     float TOI_Sphere = RemainingDelta;
 	float TOI_Wheel = RemainingDelta;
-    FutureHit = SHitResult();
+    FutureHitStorage() = SHitResult();
 
     SHitResult GroundHitresult;
 	SHitResult BoxHitresult;
@@ -184,29 +184,29 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
     if (bHitGround && TOI_ground < OutTOI)
     {
         OutTOI = TOI_ground;
-		GroundHit = GroundHitresult;
-        FutureHit = GroundHit;
+		GroundHitStorage() = GroundHitresult;
+        FutureHitStorage() = GroundHitStorage();
     }
 
     if (bHitBox && TOI_Box < OutTOI)
     {
         OutTOI = TOI_Box;
-		BoxHit = BoxHitresult;
-        FutureHit = BoxHit;
+		BoxHitStorage() = BoxHitresult;
+        FutureHitStorage() = BoxHitStorage();
     }
 
     if (bHitSphere && TOI_Sphere < OutTOI)
     {
         OutTOI = TOI_Sphere;
-		SphereHit = SphereHitresult;
-        FutureHit = SphereHit;
+		SphereHitStorage() = SphereHitresult;
+        FutureHitStorage() = SphereHitStorage();
     }
 
     if (bHitWheel && TOI_Wheel < OutTOI)
     {
 		OutTOI = TOI_Wheel;
-        WheelHit = WheelHitresult;
-        FutureHit = WheelHit;
+        WheelHitStorage() = WheelHitresult;
+        FutureHitStorage() = WheelHitStorage();
 	}
 
     return true;
@@ -224,21 +224,21 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
         return;
     }
 
-    if (CurrentHit.SurfaceId != 0 && CurrentHit.bSurfaceNormalMayVary &&
-        !CurrentHit.bStartPenetrating)
+    if (CurrentHitStorage().SurfaceId != 0 && CurrentHitStorage().bSurfaceNormalMayVary &&
+        !CurrentHitStorage().bStartPenetrating)
     {
         RegisterContactAsConstraint(
             IAmSpeedSphereStaticResponsePoint(GetKinematicState().Location,
-                GetRadius(), CurrentHit),
-            CurrentHit.ImpactNormal, CurrentHit.Component.Get(), nullptr,
-            CurrentHit.PenetrationDepth, CurrentHit.TOI, false);
+                GetRadius(), CurrentHitStorage()),
+            CurrentHitStorage().ImpactNormal, CurrentHitStorage().Component.Get(), nullptr,
+            CurrentHitStorage().PenetrationDepth, CurrentHitStorage().TOI, false);
     }
     else
     {
         RegisterCurrentHitAsConstraint();
     }
 
-    UPrimitiveComponent* OtherComponent = CurrentHit.Component.Get();
+    UPrimitiveComponent* OtherComponent = CurrentHitStorage().Component.Get();
     USSubBody* OtherSubBody = Cast<USSubBody>(OtherComponent);
 	UBoxSubBody* Box = Cast<UBoxSubBody>(OtherSubBody);
 	USphereSubBody* Sphere = Cast<USphereSubBody>(OtherSubBody);
@@ -255,7 +255,7 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
     // SurfaceId is the engine-independent static-provider identity, so it must
     // enter the same sphere/static restitution and support response as an
     // Unreal WorldStatic component.
-    else if (CurrentHit.SurfaceId != 0 ||
+    else if (CurrentHitStorage().SurfaceId != 0 ||
         (OtherComponent && OtherComponent->GetCollisionObjectType() == ECC_WorldStatic))
     {
         ResolveHitVsGround(delta, SimTime);
@@ -264,9 +264,9 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
 
 void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime)
 {
-    const FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
+    const FVector N = CurrentHitStorage().ImpactNormal.GetSafeNormal();
     const FVector P = IAmSpeedSphereStaticResponsePoint(
-        GetKinematicState().Location, GetRadius(), CurrentHit);
+        GetKinematicState().Location, GetRadius(), CurrentHitStorage());
 
     // Velocity at contact point
     const FVector Vp = ParentComponent->GetPhysVelocityAtPoint(P);
@@ -354,7 +354,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
     BoxKSAtTOI.AngularAcceleration = BBox.AngAccel;
 
     // Sphere state at TOI (already integrated)
-    const SKinematic& SphereKS = Kinematics;
+    const SKinematic& SphereKS = KinematicsStorage();
     FFakePhysicsImpactContext FakePhysicsContext;
     FakePhysicsContext.SelfParentKinematics = ParentComponent->GetKinematicState();
     if (const ISpeedComponent* BoxParent = OtherBox.GetParentComponent())
@@ -406,8 +406,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         }
     }*/
 
-    const FVector BoxLocalContactNormal = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactNormal.GetSafeNormal());
-    const FVector BoxLocalContactPoint = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHit.ImpactPoint - BoxKSAtTOI.Location);
+    const FVector BoxLocalContactNormal = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHitStorage().ImpactNormal.GetSafeNormal());
+    const FVector BoxLocalContactPoint = BoxKSAtTOI.Rotation.UnrotateVector(CurrentHitStorage().ImpactPoint - BoxKSAtTOI.Location);
     const float MixedRestitution = ResolveSphereBoxRestitution(
         *this,
         OtherBox,
@@ -415,12 +415,12 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
     const float MixedFriction = ResolveSphereBoxFriction(*this, OtherBox,
         MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
 	const FVector PreSpherePointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
-		SphereKS, CurrentHit.ImpactPoint);
+		SphereKS, CurrentHitStorage().ImpactPoint);
 	const FVector PreBoxPointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
-		BoxKSAtTOI, CurrentHit.ImpactPoint);
+		BoxKSAtTOI, CurrentHitStorage().ImpactPoint);
 	const float PreRelativeNormalSpeed = FMath::Abs(FVector::DotProduct(
 		PreSpherePointVelocity - PreBoxPointVelocity,
-		CurrentHit.ImpactNormal.GetSafeNormal()));
+		CurrentHitStorage().ImpactNormal.GetSafeNormal()));
 
 	// Compute collision impulse at TOI
     const bool bUsePostNormalFriction =
@@ -433,8 +433,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         : BoxKSAtTOI;
     FVector ImpThis, ImpOther;
     bool ok = Speed::SImpulseSolver::ComputeCollisionImpulse(
-        CurrentHit.ImpactPoint,
-        CurrentHit.ImpactNormal,   // Other -> Sphere
+        CurrentHitStorage().ImpactPoint,
+        CurrentHitStorage().ImpactNormal,   // Other -> Sphere
 
         ImpulseSphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
         ImpulseBoxKS, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
@@ -456,9 +456,9 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 #if !UE_BUILD_SHIPPING
         if (IAmSpeedSphereBoxImpulseDebugEnabled())
         {
-            const FVector N = CurrentHit.ImpactNormal.GetSafeNormal();
-            const FVector SphereVp = IAmSpeedSphereVelocityAtPointFromKS(SphereKS, CurrentHit.ImpactPoint);
-            const FVector BoxVp = IAmSpeedSphereVelocityAtPointFromKS(BoxKSAtTOI, CurrentHit.ImpactPoint);
+            const FVector N = CurrentHitStorage().ImpactNormal.GetSafeNormal();
+            const FVector SphereVp = IAmSpeedSphereVelocityAtPointFromKS(SphereKS, CurrentHitStorage().ImpactPoint);
+            const FVector BoxVp = IAmSpeedSphereVelocityAtPointFromKS(BoxKSAtTOI, CurrentHitStorage().ImpactPoint);
             const FVector RelVp = SphereVp - BoxVp;
             const float RelNormalSpeed = FVector::DotProduct(RelVp, N);
             const FVector LocalNormal = BoxLocalContactNormal;
@@ -473,10 +473,10 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
                 ParentComponent ? ParentComponent->NumFrame() : -1,
                 delta,
                 SimTime,
-                CurrentHit.TOI,
+                CurrentHitStorage().TOI,
                 GetOwner() ? *GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
                 OtherBox.GetOwner() ? *OtherBox.GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
-                *CurrentHit.ImpactPoint.ToString(),
+                *CurrentHitStorage().ImpactPoint.ToString(),
                 *BoxLocalContactPoint.ToString(),
                 *N.ToString(),
                 *LocalNormal.ToString(),
@@ -522,12 +522,12 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         // Apply impulses
 		ApplySphereBoxImpulse(
 			ImpThis,
-			CurrentHit.ImpactPoint,
-			CurrentHit.ImpactNormal,
+			CurrentHitStorage().ImpactPoint,
+			CurrentHitStorage().ImpactNormal,
 			PreRelativeNormalSpeed,
 			SphereKS,
 			BoxKSAtTOI);
-		OtherBox.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
+		OtherBox.ApplyImpulse(ImpOther, CurrentHitStorage().ImpactPoint);
 
 #if !UE_BUILD_SHIPPING
         if (IAmSpeedSphereBoxImpulseDebugEnabled())
@@ -544,7 +544,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
                 ParentComponent ? ParentComponent->NumFrame() : -1,
                 GetOwner() ? *GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
                 OtherBox.GetOwner() ? *OtherBox.GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
-                *CurrentHit.ImpactPoint.ToString(),
+                *CurrentHitStorage().ImpactPoint.ToString(),
                 *SphereCOMVPost.ToString(),
                 *SphereWPost.ToString(),
                 *BoxCOMVPost.ToString(),
@@ -563,11 +563,11 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         {
 			// UpdateKinematicsFromOwner(frame); // update kinematics to current frame before applying fake physics
 			// OtherBox.UpdateKinematicsFromOwner(frame);
-            ApplyFakePhysicsOn(OtherBox, CurrentHit, delta, &FakePhysicsContext);
+            ApplyFakePhysicsOn(OtherBox, CurrentHitStorage(), delta, &FakePhysicsContext);
         }
         if (OtherBox.IsFakePhysicsEnabled())
         {
-			SHitResult InvertedHit = CurrentHit;
+			SHitResult InvertedHit = CurrentHitStorage();
 			InvertedHit.ImpactNormal *= -1.f; // invert normal for correct fake physics application on the box
 			// UpdateKinematicsFromOwner(frame); // update kinematics to current frame before applying fake physics
 			// OtherBox.UpdateKinematicsFromOwner(frame);
@@ -583,7 +583,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 	ProjectOutOfBox(OtherBox);
 	if (ShouldMaintainSphereBoxContact(
 		PreRelativeNormalSpeed,
-		CurrentHit.ImpactNormal,
+		CurrentHitStorage().ImpactNormal,
 		FakePhysicsContext.SelfParentKinematics,
 		FakePhysicsContext.OtherParentKinematics))
 	{
@@ -592,7 +592,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 			if (USpeedWorldSubsystem* SpeedWorld = World->GetSubsystem<USpeedWorldSubsystem>())
 			{
 				SpeedWorld->RegisterDynamicContactPair(
-					*this, OtherBox, CurrentHit.ImpactPoint, CurrentHit.ImpactNormal,
+					*this, OtherBox, CurrentHitStorage().ImpactPoint, CurrentHitStorage().ImpactNormal,
 					PreRelativeNormalSpeed);
 			}
 		}
@@ -601,10 +601,10 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 
 void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta, const float& SimTime)
 {
-    const float TOI = CurrentHit.TOI;
+    const float TOI = CurrentHitStorage().TOI;
 
     // --- Sphere kinematics at TOI (already advanced) ---
-    const SKinematic& ThisKS = Kinematics;
+    const SKinematic& ThisKS = KinematicsStorage();
 
     // --- Sphere kinematics at TOI ---
     SSphere OSSphere = OtherSphere.MakeSphere();
@@ -671,8 +671,8 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
 
 	// --- Compute impulse ---
     const bool bOk = Speed::SImpulseSolver::ComputeCollisionImpulse(
-        CurrentHit.ImpactPoint,
-        CurrentHit.ImpactNormal, // Other -> This
+        CurrentHitStorage().ImpactPoint,
+        CurrentHitStorage().ImpactNormal, // Other -> This
 
         ThisKS, GetMass(), ComputeWorldInvInertiaTensor(),
         OtherKS, OtherSphere.GetMass(), OtherSphere.ComputeWorldInvInertiaTensor(),
@@ -686,7 +686,7 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
     if (IsMainSubBody())
     {
         // Small position correction
-        FVector correctPos = CurrentHit.ImpactPoint + CurrentHit.ImpactNormal * GetRadius();
+        FVector correctPos = CurrentHitStorage().ImpactPoint + CurrentHitStorage().ImpactNormal * GetRadius();
         ParentComponent->SetPhysLocation(correctPos);
     }
 
@@ -703,15 +703,15 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
         *ImpThis.ToString(), TimePassed);*/
 
         // --- Apply impulse on Sphere only ---
-    ApplyImpulse(ImpThis, CurrentHit.ImpactPoint);
-	OtherSphere.ApplyImpulse(ImpOther, CurrentHit.ImpactPoint);
+    ApplyImpulse(ImpThis, CurrentHitStorage().ImpactPoint);
+	OtherSphere.ApplyImpulse(ImpOther, CurrentHitStorage().ImpactPoint);
 
 	// apply fake physics
     if (IsFakePhysicsEnabled())
     {
 		// UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics with latest position/velocity from physics (important for correct fake physics application)
 		// OtherSphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        ApplyFakePhysicsOn(OtherSphere, CurrentHit, delta);
+        ApplyFakePhysicsOn(OtherSphere, CurrentHitStorage(), delta);
     }
     if (OtherSphere.IsFakePhysicsEnabled())
     {
@@ -723,7 +723,7 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
 
 void USphereSubBody::HandleMicroOscillation()
 {
-    if (!ParentComponent || !IsMainSubBody() || !CurrentHit.Component.IsValid())
+    if (!ParentComponent || !IsMainSubBody() || !CurrentHitStorage().Component.IsValid())
     {
         return;
     }
@@ -733,8 +733,8 @@ void USphereSubBody::HandleMicroOscillation()
     }*/
 
     FVector vel = ParentComponent->GetPhysCOMVelocity();
-    float vN = FVector::DotProduct(vel, CurrentHit.ImpactNormal);
-    FVector VelN = vN * CurrentHit.ImpactNormal;
+    float vN = FVector::DotProduct(vel, CurrentHitStorage().ImpactNormal);
+    FVector VelN = vN * CurrentHitStorage().ImpactNormal;
     if (vel.Size() < 0.01f)
     {
         ParentComponent->AddPhysVelocity(-vel);
@@ -749,10 +749,10 @@ void USphereSubBody::HandleMicroOscillation()
     // TOI. Rebuilding it from ImpactPoint is not equivalent on complex
     // collision meshes and can move the sphere back inside the surface.
     const bool bWorldStaticHit =
-        CurrentHit.Component->GetCollisionObjectType() == ECC_WorldStatic;
+        CurrentHitStorage().Component->GetCollisionObjectType() == ECC_WorldStatic;
     const FVector correctPos = bWorldStaticHit
-        ? CurrentHit.Location
-        : CurrentHit.ImpactPoint + CurrentHit.ImpactNormal * GetRadius();
+        ? CurrentHitStorage().Location
+        : CurrentHitStorage().ImpactPoint + CurrentHitStorage().ImpactNormal * GetRadius();
     ParentComponent->SetPhysLocation(correctPos);
     if (bWorldStaticHit)
     {
@@ -805,7 +805,7 @@ bool USphereSubBody::ProjectOutOfBox(UBoxSubBody& OtherBox)
         : (SphereCenter - ClosestPoint).GetSafeNormal();
     if (ProjectionNormal.IsNearlyZero())
     {
-        ProjectionNormal = CurrentHit.ImpactNormal.GetSafeNormal();
+        ProjectionNormal = CurrentHitStorage().ImpactNormal.GetSafeNormal();
     }
     if (ProjectionNormal.IsNearlyZero())
     {
@@ -1056,7 +1056,7 @@ FCollisionShape USphereSubBody::GetCollisionShape(float Inflation) const
 
 SSphere USphereSubBody::MakeSphere() const
 {
-    const SKinematic& KS = Kinematics;
+    const SKinematic& KS = KinematicsStorage();
     SSphere SphereShape(
         KS.Location,
         GetRadiusWithMargin(),

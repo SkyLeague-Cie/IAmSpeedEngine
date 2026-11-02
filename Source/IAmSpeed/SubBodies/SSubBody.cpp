@@ -73,8 +73,8 @@ void USSubBody::Initialize(ISpeedComponent* InParentComponent)
 
 void USSubBody::ResetForFrame(const float& Delta)
 {
-    FutureHit = SHitResult();
-    CurrentHit = SHitResult();
+    FutureHitStorage() = SHitResult();
+    CurrentHitStorage() = SHitResult();
     ResetIgnoredComponents();
 }
 
@@ -155,34 +155,34 @@ void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
  // Preserve this exact native cache access even when completed base arithmetic
  // can be reused. Failed value/FP validation leaves the original path intact.
  if(Speed::FrameParallel::TryConsumeJoinedActorBase1430(*this,ParentKinematic,
-     RelativeLocationVar,RelativeRotationVar,Kinematics))return;
+     RelativeLocationVar,RelativeRotationVar,KinematicsStorage()))return;
 	const FVector WorldOffset = ParentKinematic.Rotation.RotateVector(RelativeLocationVar);
-	Kinematics.Location = ParentKinematic.Location + WorldOffset;
-	Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);
-	Kinematics.Acceleration = ParentKinematic.Acceleration +
+	KinematicsStorage().Location = ParentKinematic.Location + WorldOffset;
+	KinematicsStorage().Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);
+	KinematicsStorage().Acceleration = ParentKinematic.Acceleration +
         FVector::CrossProduct(ParentKinematic.AngularAcceleration, WorldOffset) +
         FVector::CrossProduct(ParentKinematic.AngularVelocity, FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset));
-    Kinematics.Rotation = ParentKinematic.Rotation * RelativeRotationVar;
-	Kinematics.AngularVelocity = ParentKinematic.AngularVelocity;
-	Kinematics.AngularAcceleration = ParentKinematic.AngularAcceleration;
+    KinematicsStorage().Rotation = ParentKinematic.Rotation * RelativeRotationVar;
+	KinematicsStorage().AngularVelocity = ParentKinematic.AngularVelocity;
+	KinematicsStorage().AngularAcceleration = ParentKinematic.AngularAcceleration;
 }
 
 bool USSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {
     OutTOI = RemainingDelta;
-    FutureHit = SHitResult();
+    FutureHitStorage() = SHitResult();
 
-    const FVector Start = Kinematics.Location;
+    const FVector Start = KinematicsStorage().Location;
     const FVector End =
         Start +
-        Kinematics.Velocity * RemainingDelta +
-        0.5f * Kinematics.Acceleration * RemainingDelta * RemainingDelta;
+        KinematicsStorage().Velocity * RemainingDelta +
+        0.5f * KinematicsStorage().Acceleration * RemainingDelta * RemainingDelta;
 
-    if (!InternalSweep(Start, End, FutureHit, RemainingDelta))
+    if (!InternalSweep(Start, End, FutureHitStorage(), RemainingDelta))
         return false;
 
     // Convert normalized Hit.Time (0..1) to true TOI (seconds)
-    OutTOI = FutureHit.TOI;
+    OutTOI = FutureHitStorage().TOI;
     OutTOI = FMath::Clamp(OutTOI, 0.f, RemainingDelta);
 
     return true;
@@ -192,17 +192,17 @@ void USSubBody::AdvanceToTOI(const float& t)
 {
     // Integrate Kinematics to time t
     if (t > 0.f)
-        Kinematics = Kinematics.Integrate(t);
+        KinematicsStorage() = KinematicsStorage().Integrate(t);
 }
 
 void USSubBody::AcceptHit()
 {
-    CurrentHit = FutureHit;
-    FutureHit = SHitResult();
+    CurrentHitStorage() = FutureHitStorage();
+    FutureHitStorage() = SHitResult();
 
-    if (CurrentHit.SubBody.IsValid())
+    if (CurrentHitStorage().SubBody.IsValid())
     {
-        USSubBody* OtherSubBody = CurrentHit.SubBody.Get();
+        USSubBody* OtherSubBody = CurrentHitStorage().SubBody.Get();
         IgnoredComponents.AddUnique(OtherSubBody);
 
         // Do NOT blindly accept OtherSubBody->FutureHit.
@@ -227,9 +227,9 @@ void USSubBody::AcceptHit()
             }
         }
     }
-    else if (CurrentHit.Component.IsValid())
+    else if (CurrentHitStorage().Component.IsValid())
     {
-        IgnoredComponents.AddUnique(CurrentHit.Component.Get());
+        IgnoredComponents.AddUnique(CurrentHitStorage().Component.Get());
     }
 }
 
@@ -240,7 +240,7 @@ bool USSubBody::ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) co
 
 void USSubBody::ResolveCurrentHit(const float& delta, const float& SimTime)
 {
-    if (CurrentHit.bBlockingHit)
+    if (CurrentHitStorage().bBlockingHit)
         ResolveCurrentHitPrv(delta, SimTime);
 }
 
@@ -255,7 +255,7 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
 	const bool bUsedAnalyticAuthority =
 		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), Hit, bHit,
 		&AnalyticHit);
 	if (!bUsedAnalyticAuthority)
@@ -263,12 +263,12 @@ bool USSubBody::InternalSweep(const FVector& Start, const FVector& End, SHitResu
 		const FCollisionQueryParams Params = BuildTraceParams();
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(Hit, Start, End,
-			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			KinematicsStorage().Rotation, GetCollisionChannel(), GetCollisionShape(),
 			Params, GetResponseParams());
 	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::SubBodySweep,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, Hit);
 
 	OutHit = SHitResult();

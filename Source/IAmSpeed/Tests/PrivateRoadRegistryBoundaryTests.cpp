@@ -30,6 +30,10 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
     int32 Calls=0;
     const SKinematic* RetainedView=nullptr;
     double WrittenX=0;
+    const Speed::FKinematicState* RetainedBodyView=nullptr;
+    const SHitResult* RetainedBodyHit=nullptr;
+    double WrittenBodyX=0;
+
     bool CanBeUsedOnAnyThread() const override {return true;}
     bool CanBeUsedOnMultipleThreads() const override {return true;}
     void Serialize(const TCHAR* Text,ELogVerbosity::Type,const FName&) override
@@ -43,6 +47,18 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
         SKinematic Intrusion=*RetainedView;Intrusion.Location.X+=864200;WrittenX=Intrusion.Location.X;
         Component->SetKinematicState(Intrusion);
         Component->SetPhysCOMVelocity(FVector(1000000,2000000,3000000));
+        if(auto* Body=Component->GetHitboxSubBodyForConfiguration())
+        {
+            RetainedBodyView=&Body->GetKinematicState();
+            auto BodyIntrusion=*RetainedBodyView;BodyIntrusion.Location.X+=555555;WrittenBodyX=BodyIntrusion.Location.X;
+            Body->SetKinematicState(BodyIntrusion);
+            RetainedBodyHit=&Body->GetHit();
+            // Deliberately invalid FACADE hit. Never count this as a native
+            // physical contact or feed it into checkpoint/reference coverage.
+            auto HitIntrusion=*RetainedBodyHit;HitIntrusion.TOI=0.875f;HitIntrusion.bBlockingHit=true;
+            Body->SetHit(HitIntrusion);
+        }
+
     }
 };
 struct FForbiddenPrivatePhaseObserver final : ISpeedPhysicsPhaseObserver
@@ -216,6 +232,11 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     if(!TestTrue(TEXT("declared native cache/wheel subset also exact after the real callback attack"),
         P::ComparePrivateRoadPartialValues(Actual->Actors[0],Reference->Actors[0])==P::EPrivateRoadPartialComparison::Equal))return false;
     TestEqual(TEXT("reference borrowed inside actual callback aliases facade only"),LogAttack.RetainedView->Location.X,LogAttack.WrittenX);
+    if(!TestTrue(TEXT("real callback retained actual public body value/hit references"),LogAttack.RetainedBodyView&&LogAttack.RetainedBodyHit))return false;
+    TestEqual(TEXT("callback body pose facade remains the written value"),LogAttack.RetainedBodyView->Location.X,LogAttack.WrittenBodyX);
+    TestEqual(TEXT("callback facade hit did not become a native contact"),LogAttack.RetainedBodyHit->TOI,0.875f);
+    TestTrue(TEXT("actual native hitbox center exact versus unattacked control"),Actual->Actors[0].NativeHitboxCenter==Reference->Actors[0].NativeHitboxCenter);
+
     TestEqual(TEXT("previous facade view observes only the callback facade write"),RetainedFacadeView.Location.X,LogAttack.WrittenX);
     Next.Frame=2;Next.Sequence=3;Next.Input.SourceSequence=3;
     if(History.Confirm(5,Next).Status!=EResult::Accepted)return false;
@@ -228,10 +249,14 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     const auto LaterDifference=P::MeasurePrivateRoadKinematics(LaterBody->COMState,LaterControl->COMState);
     if(!TestTrue(TEXT("next real physical frame remains exact with callback view retained"),LaterDifference.Valid&&!LaterDifference.Different))return false;
     TestEqual(TEXT("retained callback view still never aliases native advance"),LogAttack.RetainedView->Location.X,LogAttack.WrittenX);
+    TestEqual(TEXT("body view retained across next physical frame remains facade only"),LogAttack.RetainedBodyView->Location.X,LogAttack.WrittenBodyX);
+    TestEqual(TEXT("native ResetForFrame never resets the old facade hit reference"),LogAttack.RetainedBodyHit->TOI,0.875f);
+    TestTrue(TEXT("next native hitbox center exact versus untouched control"),Later->Actors[0].NativeHitboxCenter==LaterRef->Actors[0].NativeHitboxCenter);
+
     DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
 
     TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
-    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 complete_lease=0 localized=0"));
+    AddInfo(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=2 actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 complete_lease=0 localized=0"));
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
     AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));

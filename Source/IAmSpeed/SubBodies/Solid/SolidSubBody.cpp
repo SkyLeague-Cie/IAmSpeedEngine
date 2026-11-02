@@ -82,18 +82,18 @@ void USolidSubBody::SetSphereBoxRestitutionOverride(float InRestitution)
 
 void USolidSubBody::RegisterCurrentHitAsConstraint()
 {
-    if (!CurrentHit.bBlockingHit || !CurrentHit.Component.IsValid())
+    if (!CurrentHitStorage().bBlockingHit || !CurrentHitStorage().Component.IsValid())
     {
         return;
     }
 
     RegisterContactAsConstraint(
-        CurrentHit.ImpactPoint,
-        CurrentHit.ImpactNormal,
-        CurrentHit.Component.Get(),
-        Cast<USolidSubBody>(CurrentHit.SubBody.Get()),
-        CurrentHit.PenetrationDepth,
-        CurrentHit.TOI,
+        CurrentHitStorage().ImpactPoint,
+        CurrentHitStorage().ImpactNormal,
+        CurrentHitStorage().Component.Get(),
+        Cast<USolidSubBody>(CurrentHitStorage().SubBody.Get()),
+        CurrentHitStorage().PenetrationDepth,
+        CurrentHitStorage().TOI,
         false
     );
 }

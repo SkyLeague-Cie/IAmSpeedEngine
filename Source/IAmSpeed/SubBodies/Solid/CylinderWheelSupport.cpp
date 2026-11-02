@@ -33,7 +33,7 @@ bool CylinderSuspensionHit(USSubBody& Wheel,TConstArrayView<TWeakObjectPtr<UCyli
 }
 bool USWheelSubBody::TryGetPrescribedSupportVelocity(const FVector& Point,FVector& Velocity) const
 {
-    const auto* Other=Cast<USolidSubBody>(CurrentHit.SubBody.Get());
+    const auto* Other=Cast<USolidSubBody>(CurrentHitStorage().SubBody.Get());
     if(!Other||!Other->GetParentComponent()||!Other->GetParentComponent()->IsPrescribedMotion())return false;
     Velocity=Other->GetVelocityAtPoint(Point);return true;
 }

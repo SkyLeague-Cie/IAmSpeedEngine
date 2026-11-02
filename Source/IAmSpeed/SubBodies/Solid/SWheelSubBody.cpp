@@ -333,7 +333,7 @@ void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
 void USWheelSubBody::ResetForFrame(const float& Delta)
 {
     // CurrentHit = SHitResult(); // do not reset current hit, because netcode needs it to know if wheel is transitionning on wall/ground
-    FutureHit = SHitResult();
+    FutureHitStorage() = SHitResult();
     ResetIgnoredComponents();
     bWasOnGroundPrevFrame = IsOnGround();
     bCountedGroundFrame = false;
@@ -345,10 +345,10 @@ void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic
 
     const FVector SuspensionOffset = ParentKinematic.Rotation.RotateVector(
         SpringDisplacement() * FVector::UpVector);
-    Kinematics.Location += SuspensionOffset;
-    Kinematics.Velocity = ParentKinematic.Velocity + FVector::CrossProduct(
+    KinematicsStorage().Location += SuspensionOffset;
+    KinematicsStorage().Velocity = ParentKinematic.Velocity + FVector::CrossProduct(
         ParentKinematic.AngularVelocity,
-        Kinematics.Location - ParentKinematic.Location);
+        KinematicsStorage().Location - ParentKinematic.Location);
 }
 
 SSphere USWheelSubBody::MakeSphere() const
@@ -376,11 +376,11 @@ void USWheelSubBody::AcceptHit()
     // Do nothing; we keep CurrentHit as is (suspension handles it)
     // CurrentHit = FutureHit;
     // Ignore this component for the rest of the frame
-    if (CurrentHit.Component.IsValid())
-        IgnoredComponents.AddUnique(CurrentHit.Component.Get());
-    else if (FutureHit.Component.IsValid())
+    if (CurrentHitStorage().Component.IsValid())
+        IgnoredComponents.AddUnique(CurrentHitStorage().Component.Get());
+    else if (FutureHitStorage().Component.IsValid())
         // for safety, ignore FutureHit component too
-        IgnoredComponents.AddUnique(FutureHit.Component.Get());
+        IgnoredComponents.AddUnique(FutureHitStorage().Component.Get());
 }
 
 SKinematic USWheelSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) const
@@ -420,19 +420,19 @@ bool USWheelSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 
 void USWheelSubBody::SweepSuspension(const float& delta)
 {
-    bool bHitSphere = SweepSuspensionOnSpheres(CurrentHit, delta);
+    bool bHitSphere = SweepSuspensionOnSpheres(CurrentHitStorage(), delta);
     if (bHitSphere)
     {
         return;
     }
-    bool bHitBox = SweepSuspensionOnBoxes(CurrentHit, delta);
+    bool bHitBox = SweepSuspensionOnBoxes(CurrentHitStorage(), delta);
     if (bHitBox)
     {
         return;
     }
 
-    if(SweepSuspensionOnCylinders(CurrentHit,delta))return;
-    bool bHitGround = SweepSuspensionOnGround(CurrentHit, delta);
+    if(SweepSuspensionOnCylinders(CurrentHitStorage(),delta))return;
+    bool bHitGround = SweepSuspensionOnGround(CurrentHitStorage(), delta);
     if (!bHitGround)
     {
         SetOnGround(false);
@@ -470,7 +470,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 	const bool bUsedAnalyticAuthority =
 		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
 		&AnalyticHit);
 	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
@@ -483,7 +483,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 			PreviousHit.SourceId != 0)
 		{
 			Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
-				World, Start, End, Kinematics.Rotation, GetCollisionShape(),
+				World, Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 				static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
 				UnrealHit, bHit, &AnalyticHit, PreviousHit.SourceId, 0, 0,
 				PreviousNormal, 0.9f, true);
@@ -493,13 +493,13 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 	{
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(UnrealHit, Start, End,
-			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			KinematicsStorage().Rotation, GetCollisionChannel(), GetCollisionShape(),
 			Params, GetResponseParams());
 	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::WheelEstablishedSupportProbe,
 		Start, End,
-		Kinematics.Rotation, GetCollisionShape(),
+		KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
 	{
@@ -539,7 +539,7 @@ bool USWheelSubBody::TryCaptureGroundQuery1075(
     FMemory::Memcpy(&Out.Consumer.DeltaBits, &Delta, sizeof(Delta));
     Out.MaximumSearchTime=1.0;
     Out.Query=Speed::Analytic::FStaticWorldQueryAudit::MakeStrictSingleQuery1075(
-        Start, End, Kinematics.Rotation, GetCollisionShape(),
+        Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
         static_cast<uint8>(GetCollisionChannel()), GetResponseParams());
     return true;
 }
@@ -572,7 +572,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 	const bool bUsedAnalyticAuthority =
 		Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
 		World,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), UnrealHit, bHit,
 		&AnalyticHit);
 	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
@@ -585,7 +585,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 			PreviousHit.SourceId != 0)
 		{
 			Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthoritySingle(
-				World, Start, End, Kinematics.Rotation, GetCollisionShape(),
+				World, Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 				static_cast<uint8>(GetCollisionChannel()), GetResponseParams(),
 				UnrealHit, bHit, &AnalyticHit, PreviousHit.SourceId, 0, 0,
 				PreviousNormal, 0.9f, true);
@@ -595,12 +595,12 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 	{
 		Speed::Analytic::FStaticWorldQueryAudit::RecordLegacySweep();
 		bHit = World->SweepSingleByChannel(UnrealHit, Start, End,
-			Kinematics.Rotation, GetCollisionChannel(), GetCollisionShape(),
+			KinematicsStorage().Rotation, GetCollisionChannel(), GetCollisionShape(),
 			Params, GetResponseParams());
 	}
 	Speed::Analytic::FStaticWorldQueryAudit::RecordSingle(
 		Speed::Analytic::EStaticQuerySite::WheelSuspensionProbe,
-		Start, End, Kinematics.Rotation, GetCollisionShape(),
+		Start, End, KinematicsStorage().Rotation, GetCollisionShape(),
 		static_cast<uint8>(GetCollisionChannel()), GetResponseParams(), bHit, UnrealHit);
 	if (!bHit)
     {
@@ -643,7 +643,7 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     FVector End = FVector::ZeroVector;
     GetSuspensionSweepSegment(delta, Start, End);
     float NewSpringDisplacement = PredictNextDisplacement(delta); // if wheel will be in air next frame
-    SHitResult OldCurrentHit = CurrentHit;
+    SHitResult OldCurrentHit = CurrentHitStorage();
     // auto Sphere = SSphere(WorldPos(), Radius(), FVector::ZeroVector, FVector::ZeroVector);
     // Sphere.DrawDebug(GetWorld());
 
@@ -874,7 +874,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         FVector SuspensionAnchorWorldPos = ChassisTM.TransformPosition(GetLocalOffset() +
             PSuspension->Setup().MaxLength * FVector::UpVector);
         const FVector SuspensionAxis = Up; // Car Up Vector
-        const float ProjectedCompression = FVector::DotProduct(SuspensionAnchorWorldPos - CurrentHit.Location, SuspensionAxis);
+        const float ProjectedCompression = FVector::DotProduct(SuspensionAnchorWorldPos - CurrentHitStorage().Location, SuspensionAxis);
 
         // update suspension state
         const float LastDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
@@ -886,10 +886,10 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         bCrossedIntoCompressionThisFrame = LastDisplacement < 0.0f &&
             CurrentDisplacement >= 0.0f;
         FSuspensionForceDebugData ForceDebugData;
-		FVector RelativePointVelocity=ParentComponent->GetPhysVelocityAtPoint(CurrentHit.ImpactPoint);
+		FVector RelativePointVelocity=ParentComponent->GetPhysVelocityAtPoint(CurrentHitStorage().ImpactPoint);
         FVector SurfaceVelocity;
-        if(TryGetPrescribedSupportVelocity(CurrentHit.ImpactPoint,SurfaceVelocity))RelativePointVelocity-=SurfaceVelocity;
-        const float ProjectedVelocity = RelativePointVelocity.Dot(CurrentHit.ImpactNormal);
+        if(TryGetPrescribedSupportVelocity(CurrentHitStorage().ImpactPoint,SurfaceVelocity))RelativePointVelocity-=SurfaceVelocity;
+        const float ProjectedVelocity = RelativePointVelocity.Dot(CurrentHitStorage().ImpactNormal);
         SuspensionForce = ComputeQuantizedSuspensionForce(*PSuspension, LastDisplacement,
             CurrentDisplacement, ProjectedVelocity, ClampsSuspensionForceToPositive(),
             bUseIncreasingDisplacementAsCompression,
@@ -908,7 +908,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 		}
         PSuspension->SetLastDisplacement(CurrentDisplacement);
 
-		const float Dot = FVector::DotProduct(CurrentHit.ImpactNormal, FVector::UpVector);
+		const float Dot = FVector::DotProduct(CurrentHitStorage().ImpactNormal, FVector::UpVector);
 		// Keep full support through both gutters. Only fade at the final ceiling
 		// approach so gravity can release the car without letting the chassis
 		// bottom out throughout the upper transition.
@@ -940,7 +940,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
             CVarSkyLeagueSuspensionMaxAttractiveForceMinNormalZ.GetValueOnAnyThread(),
             -1.0f, 1.0f);
         const bool bCappedAttractionSupport = FVector::DotProduct(
-            CurrentHit.ImpactNormal.GetSafeNormal(), FVector::UpVector)
+            CurrentHitStorage().ImpactNormal.GetSafeNormal(), FVector::UpVector)
             >= MaxAttractionMinNormalZ;
         const float MinSuspensionForce = bClampPositive
             ? 0.0f
@@ -951,8 +951,8 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
             SuspensionForce, MinSuspensionForce, SuspensionMaxValue);
 		// Special Actor case: if we do not hit the ground but an other actor, we keep suspension force only for positive values
         // to avoid wheel to stick to it too much and create unrealistic behavior.
-        if (CurrentHit.Component.IsValid() &&
-            CurrentHit.Component->Mobility !=
+        if (CurrentHitStorage().Component.IsValid() &&
+            CurrentHitStorage().Component->Mobility !=
             EComponentMobility::Static)
         {
             SuspensionForce = FMath::Max(0.0f, SuspensionForce);
@@ -968,8 +968,8 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
                 Idx(),
                 delta,
                 SuspensionDelta,
-                CurrentHit.TOI,
-                CurrentHit.PenetrationDepth,
+                CurrentHitStorage().TOI,
+                CurrentHitStorage().PenetrationDepth,
                 LastDisplacement,
                 CurrentDisplacement,
                 ForceDebugData.ForceLastDisplacement,
@@ -989,8 +989,8 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
                 SuspensionScale,
                 SuspensionForce,
                 ParentVelocity.Z,
-                *CurrentHit.ImpactNormal.ToString(),
-                *CurrentHit.Location.ToString());
+                *CurrentHitStorage().ImpactNormal.ToString(),
+                *CurrentHitStorage().Location.ToString());
         }
 #endif
     }
@@ -1022,8 +1022,8 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
                 *WorldPos().ToString(),
                 *ParentUp.ToString(),
                 *ParentVelocity.ToString(),
-                *CurrentHit.ImpactNormal.ToString(),
-                *CurrentHit.Location.ToString());
+                *CurrentHitStorage().ImpactNormal.ToString(),
+                *CurrentHitStorage().Location.ToString());
         }
 #endif
     }
@@ -1082,7 +1082,7 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
 {
     if (WheelComponent)
     {
-        const FVector ContactNormal = CurrentHit.ImpactNormal.GetSafeNormal();
+        const FVector ContactNormal = CurrentHitStorage().ImpactNormal.GetSafeNormal();
         const float ContactGroundDot = FVector::DotProduct(ContactNormal, FVector::UpVector);
         const float CarUpGroundDot = FVector::DotProduct(WheelComponent->GetPhysUpVector().GetSafeNormal(), FVector::UpVector);
         FVector VelAtPoint = WheelComponent->GetPhysVelocityAtPoint(WorldPoint);
@@ -1134,12 +1134,12 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
         //    Idx(), WheelComponent->NumFrame());
         WheelComponent->RegisterWheelGroundContact({
             this,
-            CurrentHit.Component,
-            CurrentHit.ImpactPoint,
-            CurrentHit.FaceIndex,
-			CurrentHit.SourceId,
-			CurrentHit.SurfaceId,
-			CurrentHit.FeatureId,
+            CurrentHitStorage().Component,
+            CurrentHitStorage().ImpactPoint,
+            CurrentHitStorage().FaceIndex,
+			CurrentHitStorage().SourceId,
+			CurrentHitStorage().SurfaceId,
+			CurrentHitStorage().FeatureId,
             ContactPoint,
             N,
             r,
@@ -1318,7 +1318,7 @@ float USWheelSubBody::ContactSpringDisplacement() const
         return SpringDisplacement();
     }
 
-    return ContactSpringDisplacement(CurrentHit);
+    return ContactSpringDisplacement(CurrentHitStorage());
 }
 
 float USWheelSubBody::ContactSpringDisplacement(const SHitResult& ContactHit) const
@@ -1497,7 +1497,7 @@ FVector USWheelSubBody::GetSuspensionForceApplicationPoint() const
 	case 3:
 		return WorldPos() - SpringDisplacement() * ParentComponent->GetPhysUpVector();
 	default:
-		return CurrentHit.ImpactPoint;
+		return CurrentHitStorage().ImpactPoint;
 	}
 }
 
@@ -1506,7 +1506,7 @@ FVector USWheelSubBody::GetContactImpulseApplicationPoint() const
 	switch (ContactImpulseApplicationMode)
 	{
 	case 1:
-		return CurrentHit.ImpactPoint;
+		return CurrentHitStorage().ImpactPoint;
 	case 3:
 		return WorldPos() - SpringDisplacement() * ParentComponent->GetPhysUpVector();
 	default:
@@ -1564,15 +1564,15 @@ bool USWheelSubBody::IsOnGround() const
 
 bool USWheelSubBody::IsOnStaticObject() const
 {
-    const UPrimitiveComponent* Support = CurrentHit.Component.Get();
-    return IsOnGround() && CurrentHit.bHit && IsValid(Support)
+    const UPrimitiveComponent* Support = CurrentHitStorage().Component.Get();
+    return IsOnGround() && CurrentHitStorage().bHit && IsValid(Support)
         && Support->GetMobility() == EComponentMobility::Static;
 }
 
 bool USWheelSubBody::IsOnDynamicObject() const
 {
-    const UPrimitiveComponent* Support = CurrentHit.Component.Get();
-    return IsOnGround() && CurrentHit.bHit && IsValid(Support)
+    const UPrimitiveComponent* Support = CurrentHitStorage().Component.Get();
+    return IsOnGround() && CurrentHitStorage().bHit && IsValid(Support)
         && Support->GetMobility() == EComponentMobility::Movable;
 }
 
@@ -1582,12 +1582,12 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
 
     if (!bWasOnGround && on_ground)
     {
-        const float NormalSpeed = FVector::DotProduct(ParentComponent->GetPhysVelocityAtPoint(WorldPos()), CurrentHit.ImpactNormal);
+        const float NormalSpeed = FVector::DotProduct(ParentComponent->GetPhysVelocityAtPoint(WorldPos()), CurrentHitStorage().ImpactNormal);
 
         // Real impact
         if (NormalSpeed < -5.0f) // cm/s, to tune
         {
-			ParentComponent->RcvImpactOnSubBody(*this, CurrentHit.ImpactPoint);
+			ParentComponent->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
         }
     }
 
@@ -1599,7 +1599,7 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
             ConsecutiveGroundFrames = FMath::Min<uint8>(ConsecutiveGroundFrames + 1, 31);
             bCountedGroundFrame = true;
         }
-        ApplyImpulse(FVector::UpVector, CurrentHit.ImpactPoint);
+        ApplyImpulse(FVector::UpVector, CurrentHitStorage().ImpactPoint);
     }
     else
     {
@@ -1677,7 +1677,7 @@ FVector USWheelSubBody::GetHitContactNormal() const
 {
     if (IsOnGround())
     {
-        return CurrentHit.ImpactNormal;
+        return CurrentHitStorage().ImpactNormal;
     }
     else
     {
@@ -1689,7 +1689,7 @@ FVector USWheelSubBody::GetHitContactPoint() const
 {
     if (IsOnGround())
     {
-        return CurrentHit.ImpactPoint;
+        return CurrentHitStorage().ImpactPoint;
     }
 
     return WorldPos();
@@ -1697,7 +1697,7 @@ FVector USWheelSubBody::GetHitContactPoint() const
 
 void USWheelSubBody::SetHitContactNormal(const FVector& ImpactNormal)
 {
-    CurrentHit.ImpactNormal = ImpactNormal;
+    CurrentHitStorage().ImpactNormal = ImpactNormal;
 }
 
 const SWheelRenderData& USWheelSubBody::GetRenderData() const

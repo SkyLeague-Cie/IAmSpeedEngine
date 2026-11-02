@@ -65,11 +65,11 @@ void UCylinderSubBody::AcceptHit()
 {
     // The cylinder owns its new pair CCD. Do not suppress a genuine later
     // reacquisition after another impact in the same canonical frame.
-    CurrentHit=FutureHit;
+    CurrentHitStorage()=FutureHitStorage();
 }
 bool UCylinderSubBody::SweepTOI(const float& Remaining,float& OutTOI)
 {
-    FutureHit={};OutTOI=Remaining;if(!ParentComponent||Remaining<=0.f)return false;
+    FutureHitStorage()={};OutTOI=Remaining;if(!ParentComponent||Remaining<=0.f)return false;
     const auto C=Geometry();const double R=FMath::Sqrt(C.Radius*C.Radius+C.HalfHeight*C.HalfHeight);
     const FCylinderRigidTrajectory CT(*this,Remaining,R);
     auto Visit=[&](USolidSubBody* Other)
@@ -93,17 +93,17 @@ bool UCylinderSubBody::SweepTOI(const float& Remaining,float& OutTOI)
         if(H.Result==Speed::Geometry::ECylinderSweepResult::Miss)return;
         if(H.Result!=Speed::Geometry::ECylinderSweepResult::Hit)throw std::runtime_error("Cylinder trajectory unresolved; collision miss refused");
         const float T=float(H.Time*Remaining);if(T>=OutTOI)return;
-        OutTOI=T;FutureHit=SHitResult(true,(H.Contact.CylinderPoint+H.Contact.ShapePoint)*.5,-H.Contact.Normal,T,Other);FutureHit.SubBody=Other;
-        FutureHit.ContactPointThis=H.Contact.CylinderPoint;FutureHit.ContactPointOther=H.Contact.ShapePoint;FutureHit.GeometricErrorBoundCm=float(2.e-4+CT.Error+OT.Error);
-        FutureHit.bStartPenetrating=H.Time==0.&&H.Contact.UpperSeparation<0.;FutureHit.PenetrationDepth=float(FMath::Max(0.,-H.Contact.LowerSeparation));FutureHit.bSurfaceNormalMayVary=true;FutureHit.FrameTag=ParentComponent->NumFrame();
+        OutTOI=T;FutureHitStorage()=SHitResult(true,(H.Contact.CylinderPoint+H.Contact.ShapePoint)*.5,-H.Contact.Normal,T,Other);FutureHitStorage().SubBody=Other;
+        FutureHitStorage().ContactPointThis=H.Contact.CylinderPoint;FutureHitStorage().ContactPointOther=H.Contact.ShapePoint;FutureHitStorage().GeometricErrorBoundCm=float(2.e-4+CT.Error+OT.Error);
+        FutureHitStorage().bStartPenetrating=H.Time==0.&&H.Contact.UpperSeparation<0.;FutureHitStorage().PenetrationDepth=float(FMath::Max(0.,-H.Contact.LowerSeparation));FutureHitStorage().bSurfaceNormalMayVary=true;FutureHitStorage().FrameTag=ParentComponent->NumFrame();
     };
     for(const auto& P:ExternalBoxSubBodies)Visit(P.Get());
     for(const auto& P:ExternalSphereSubBodies)Visit(P.Get());
     for(const auto& P:ExternalWheelSubBodies)Visit(P.Get());
-    return FutureHit.bBlockingHit;
+    return FutureHitStorage().bBlockingHit;
 }
 void UCylinderSubBody::ResolveCurrentHitPrv(const float&,const float&)
 {
-    auto* Other=Cast<USolidSubBody>(CurrentHit.SubBody.Get());
-    if(!Other||!USolidSubBody::ResolvePrescribedContact(*this,*Other,CurrentHit,CurrentHit.PenetrationDepth))throw std::runtime_error("Cylinder pair lost its admitted prescribed response");
+    auto* Other=Cast<USolidSubBody>(CurrentHitStorage().SubBody.Get());
+    if(!Other||!USolidSubBody::ResolvePrescribedContact(*this,*Other,CurrentHitStorage(),CurrentHitStorage().PenetrationDepth))throw std::runtime_error("Cylinder pair lost its admitted prescribed response");
 }
