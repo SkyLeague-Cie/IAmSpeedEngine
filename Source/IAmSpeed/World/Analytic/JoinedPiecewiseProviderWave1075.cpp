@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "JoinedPiecewiseProviderWave1075.h"
 #include "IAmSpeed/World/Collision/StaticQueryBatch.h"
 #include "IAmSpeed/World/Simulation/FrameParallelExecutor.h"
@@ -69,7 +70,7 @@ FPiecewiseProviderWaveStats1075 SnapshotPiecewiseProviderWaveStats1075()
 void LogPiecewiseProviderWaveStats1075(const TCHAR* Context)
 {
     const auto S=SnapshotPiecewiseProviderWaveStats1075();
-    UE_LOG(LogTemp,Display,TEXT("[IAmSpeedPiecewiseProviderWave1075] Context=%s Attempts=%llu Waves=%llu TimedAttempts=%llu TimingSkippedAttempts=%llu Candidates=%llu Eligible=%llu Skipped=%llu Computed=%llu Reused=%llu Recomputed=%llu Wasted=%llu RejectBound=%llu RejectQuery=%llu RejectContext=%llu RejectNumeric=%llu LogicalMax=%d NativeMax=%d UsefulLaneMax=%d UsefulNativeMax=%d PreparationCycles=%llu AdmissionCycles=%llu CallerCycles=%llu JoinWaitCycles=%llu KernelCycles=%llu MaxLaneKernelCycles=%llu ValidationCycles=%llu SecondsPerCycle=%.17g FallbackSerial=%llu FallbackFew=%llu FallbackNested=%llu FallbackDiagnostics=%llu FallbackCapacity=%llu FallbackBound=%llu FallbackNumeric=%llu FallbackExecutor=%llu Scope=WholeProvidersConsumptionOriginalOrder NestedTimingsNotAdditive=1 Clock=ElapsedFPlatformTimeCycles64"),
+    SPEED_NATIVE_LOG(LogTemp,Display,TEXT("[IAmSpeedPiecewiseProviderWave1075] Context=%s Attempts=%llu Waves=%llu TimedAttempts=%llu TimingSkippedAttempts=%llu Candidates=%llu Eligible=%llu Skipped=%llu Computed=%llu Reused=%llu Recomputed=%llu Wasted=%llu RejectBound=%llu RejectQuery=%llu RejectContext=%llu RejectNumeric=%llu LogicalMax=%d NativeMax=%d UsefulLaneMax=%d UsefulNativeMax=%d PreparationCycles=%llu AdmissionCycles=%llu CallerCycles=%llu JoinWaitCycles=%llu KernelCycles=%llu MaxLaneKernelCycles=%llu ValidationCycles=%llu SecondsPerCycle=%.17g FallbackSerial=%llu FallbackFew=%llu FallbackNested=%llu FallbackDiagnostics=%llu FallbackCapacity=%llu FallbackBound=%llu FallbackNumeric=%llu FallbackExecutor=%llu Scope=WholeProvidersConsumptionOriginalOrder NestedTimingsNotAdditive=1 Clock=ElapsedFPlatformTimeCycles64"),
         Context?Context:TEXT(""),S.Attempts,S.Waves,S.TimedAttempts,S.TimingSkippedAttempts,S.Candidates,S.Eligible,S.Skipped,S.Computed,S.Reused,S.Recomputed,S.Wasted,
         S.RejectBound,S.RejectQuery,S.RejectContext,S.RejectNumeric,S.LogicalMax,S.NativeMax,S.UsefulLaneMax,S.UsefulNativeMax,
         S.PreparationCycles,S.AdmissionCycles,S.CallerCycles,S.JoinWaitCycles,S.KernelCycles,S.MaxLaneKernelCycles,S.ValidationCycles,FPlatformTime::GetSecondsPerCycle64(),

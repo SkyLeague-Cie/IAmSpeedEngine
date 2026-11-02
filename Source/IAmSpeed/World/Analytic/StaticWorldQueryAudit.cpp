@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "StaticWorldQueryAudit.h"
 #include "Engine/World.h"
 #include "JoinedAnalyticQueryPrefetch1075.h"
@@ -335,7 +336,7 @@ namespace
 						(Patch.BlockingChannels & (1ull << Query.TraceChannel)) != 0 &&
 						Patch.ObjectType < 64 &&
 						(Query.BlockingObjectTypes & (1ull << Patch.ObjectType)) != 0;
-				UE_LOG(LogTemp, Display,
+				SPEED_NATIVE_LOG(LogTemp, Display,
 					TEXT("[AnalyticResidualCandidate] Frame=%llu Surface=%016llX Primitive=%016llX Group=%016llX BoundsMin=%s BoundsMax=%s Cells=%d ObjectType=%u BlockingChannels=%016llX QueryTraceChannel=%u QueryBlockingObjectTypes=%016llX QueryEnabled=%d Authority=%d CanBlock=%d"),
 					GStaticWorldAuditFrame.Frame, Patch.SurfaceId, Patch.PrimitiveId,
 					Patch.CanonicalGroupId, *FVector(Patch.Bounds.Min).ToString(),
@@ -347,7 +348,7 @@ namespace
 		}
 
 		++GStaticWorldAuditFrame.ResidualSelectionDetailCount;
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[AnalyticResidualSelection] Frame=%llu Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX ResidualTime=%.17g ResidualPoint=%s ResidualNormal=%s ResidualSource=%016llX ResidualSurface=%016llX ResidualFeature=%016llX ResidualPrimitive=%016llX PolishedHit=%d PolishedTime=%.17g PolishedPoint=%s PolishedNormal=%s PolishedSource=%016llX PolishedSurface=%016llX PolishedFeature=%016llX PolishedPrimitive=%016llX NormalRayHit=%d NormalRayTime=%.17g NormalRayPoint=%s NormalRayNormal=%s NormalRaySource=%016llX NormalRaySurface=%016llX NormalRayFeature=%016llX NormalRayPrimitive=%016llX"),
 			GStaticWorldAuditFrame.Frame, static_cast<uint8>(Query.Shape),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
@@ -415,7 +416,7 @@ namespace
 			GStaticWorldAuditFrame.StrictFirstMissQuery = Query;
 			return;
 		}
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[AnalyticStrictQuery] Frame=%llu Attempt=%u TorusTrajectory=%d Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX Hit=%d StartPenetrating=%d PenetrationDepth=%.17g ErrorCm=%.17g Time=%.17g Point=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
 			GStaticWorldAuditFrame.Frame, AuthorityAttempt, Query.bExcludeTori ? 1 : 0, static_cast<uint8>(Query.Shape),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
@@ -434,7 +435,7 @@ namespace
 			FWorldHit ResidualHit;
 			if (bOverlapQuery) StaticWorld.TryFindDeepestOverlap(ResidualQuery, ResidualHit);
 			else ResidualHit = StaticWorld.SweepSingle(ResidualQuery);
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticStrictResidual] Frame=%llu Attempt=%u Hit=%d StartPenetrating=%d PenetrationDepth=%.17g Time=%.17g Point=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
 				GStaticWorldAuditFrame.Frame, AuthorityAttempt, ResidualHit.bHit ? 1 : 0,
 				ResidualHit.bStartPenetrating ? 1 : 0,
@@ -456,12 +457,12 @@ namespace
 			return;
 		}
 		GStaticWorldAuditFrame.bFirstDivergenceReported = true;
-		UE_LOG(LogTemp, Warning,
+		SPEED_NATIVE_LOG(LogTemp, Warning,
 			TEXT("[AnalyticShadowFirstDivergence] Frame=%llu Query=%u Site=%s Field=%s"),
 			GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site), Field);
 		const UPrimitiveComponent* LegacyComponent = Legacy.Component.Get();
 		const AActor* LegacyOwner = LegacyComponent ? LegacyComponent->GetOwner() : nullptr;
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[AnalyticShadowFirstDivergenceDetail] Frame=%llu Query=%u Site=%s Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g TraceChannel=%u ObjectTypes=%016llX BlockingObjectTypes=%016llX LegacyHit=%d LegacyTime=%.9g LegacyLocation=%s LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g LegacyOwner=%s LegacyComponent=%s LegacyFace=%d AnalyticHit=%d AnalyticTime=%.17g AnalyticLocation=%s AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSource=%016llX AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX"),
 			GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site), static_cast<uint8>(Query.Shape),
 			*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
@@ -492,7 +493,7 @@ namespace
 		if (GStaticWorldAuditFrame.bFirstHitDivergenceReported) return;
 		GStaticWorldAuditFrame.bFirstHitDivergenceReported = true;
 		const UPrimitiveComponent* LegacyComponent = Legacy.Component.Get();
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[AnalyticShadowFirstHitDivergence] Frame=%llu Query=%u Site=%s Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g LegacyComponent=%s LegacyFace=%d AnalyticHit=%d AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSource=%016llX AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX"),
 			GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site),
 			static_cast<uint8>(Query.Shape), *FVector(Query.Start).ToString(),
@@ -718,7 +719,7 @@ namespace
 			CVarCompactShadowEnabled.GetValueOnAnyThread() != 0 &&
 			Query.Shape == EQueryShape::Box)
 		{
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticCompactShadowBoxQuery] Frame=%llu Query=%u Site=%s Start=%s End=%s Rotation=%s HalfExtent=%s LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g AnalyticHit=%d AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
 				GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site),
 				*FVector(Query.Start).ToString(), *FVector(Query.End).ToString(),
@@ -741,7 +742,7 @@ namespace
 			CVarCompactShadowEnabled.GetValueOnAnyThread() != 0 &&
 			AnalyticHit.bHit && AnalyticHit.PrimitiveId != 0)
 		{
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticCompactShadowHit] Frame=%llu Query=%u Site=%s Shape=%u LegacyHit=%d LegacyTime=%.9g LegacyPoint=%s LegacyNormal=%s LegacyStartPenetrating=%d LegacyPenetrationDepth=%.9g AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
 				GStaticWorldAuditFrame.Frame, QueryOrdinal, SiteName(Site),
 				static_cast<uint8>(Query.Shape), bHit ? 1 : 0,
@@ -1136,7 +1137,7 @@ bool FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 		{
 			// A failed operation is not a clear pose, and strict physics must
 			// never fall through to an unsafe worker-thread Unreal scene query.
-			UE_LOG(LogTemp, Fatal, TEXT("Strict overlap requires a stationary sphere or box query."));
+			SPEED_NATIVE_LOG(LogTemp, Fatal, TEXT("Strict overlap requires a stationary sphere or box query."));
 			return false;
 		}
 		LogStrictQueryDetail(Query, Analytic, GStaticWorldAuditFrame.AuthorityAttemptCount,
@@ -1207,7 +1208,7 @@ void FStaticWorldQueryAudit::EndFrame()
 	}
 	if (IsEnabled())
 	{
-		UE_LOG(LogTemp, Display,
+		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[StaticWorldQueryFrame] Frame=%llu Queries=%u LegacySweeps=%u AuthorityAttempts=%u AuthorityCovered=%u AuthorityFallback=%u StrictMissingWorld=%u Backend=%u LegacyHash=%016llX ShadowHash=%016llX Shadow=%d MeshShadow=%d Matches=%u Mismatches=%u Fields=%u/%u/%u/%u/%u/%u/%u/%u/%u"),
 			GStaticWorldAuditFrame.Frame, GStaticWorldAuditFrame.QueryCount, GStaticWorldAuditFrame.LegacySweepCount,
 			GStaticWorldAuditFrame.AuthorityAttemptCount,
@@ -1246,7 +1247,7 @@ void FStaticWorldQueryAudit::EndFrame()
 			GStaticWorldAuditFrame.StrictMissCount != GStaticWorldAuditFrame.PreviousStrictMissCount;
 		if (bProviderSetChanged || bMissCountChanged)
 		{
-			UE_LOG(LogTemp, Display,
+			SPEED_NATIVE_LOG(LogTemp, Display,
 				TEXT("[AnalyticStrictQueryFrame] Frame=%llu Attempts=%u Hits=%u Misses=%u ProviderCount=%d ProviderHash=%016llX Providers=%s ProviderChanged=%d MissCountChanged=%d"),
 				GStaticWorldAuditFrame.Frame, GStaticWorldAuditFrame.AuthorityAttemptCount, GStaticWorldAuditFrame.StrictHitCount,
 				GStaticWorldAuditFrame.StrictMissCount, GStaticWorldAuditFrame.StrictProviderIds.Num(), ProviderHash,
@@ -1256,7 +1257,7 @@ void FStaticWorldQueryAudit::EndFrame()
 				GStaticWorldAuditFrame.bStrictFirstMissCaptured)
 			{
 				const FWorldQuery& Query = GStaticWorldAuditFrame.StrictFirstMissQuery;
-				UE_LOG(LogTemp, Display,
+				SPEED_NATIVE_LOG(LogTemp, Display,
 					TEXT("[AnalyticStrictMiss] Frame=%llu Attempt=%u Shape=%u Start=%s End=%s Rotation=%s HalfExtent=%s Radius=%.17g RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX"),
 					GStaticWorldAuditFrame.Frame, GStaticWorldAuditFrame.StrictFirstMissAuthorityAttempt,
 					static_cast<uint8>(Query.Shape),
@@ -1399,7 +1400,7 @@ void FStaticWorldQueryAudit::RecordEstablishedContactQuery(
 	const int32 Last = CVarStrictQueryDetailFrameEnd.GetValueOnAnyThread();
 	if ((First >= 0 && GStaticWorldAuditFrame.Frame < static_cast<uint64>(First)) ||
 		(Last >= 0 && GStaticWorldAuditFrame.Frame > static_cast<uint64>(Last))) return;
-	UE_LOG(LogTemp, Display,
+	SPEED_NATIVE_LOG(LogTemp, Display,
 		TEXT("[AnalyticEstablishedContact] Frame=%llu Iteration=%u Validation=%d Start=%s Rotation=%s HalfExtent=%s RequiredSource=%016llX RequiredSurface=%016llX RequiredGroup=%016llX ReferenceNormal=%s MinNormalDot=%.17g Hit=%d StartPenetrating=%d Depth=%.17g Point=%s QueryPoint=%s Normal=%s Source=%016llX Surface=%016llX Feature=%016llX Primitive=%016llX CanonicalGroup=%016llX"),
 		GStaticWorldAuditFrame.Frame, Iteration, bValidation ? 1 : 0,
 		*FVector(Query.Start).ToString(), *FQuat(Query.Rotation).ToString(),

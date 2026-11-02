@@ -8,7 +8,8 @@ namespace Speed::Driving
  * SI-ish accelerations are cm/s^2; the existing angular drag law uses 1/s.
  * These are a sports-road starting point, not a measured vehicle homologation.
  */
-inline void ApplyStockRoadCar(USpeedWheeledComponent& M)
+template<class TMovementValues>
+inline void ApplyStockRoadCar(TMovementValues& M)
 {
     M.MaxThrottleSpeed=8000;M.PhysMaxSpeed=8000;
     M.ThrottleAccel=750;M.BrakeAccel=1100;

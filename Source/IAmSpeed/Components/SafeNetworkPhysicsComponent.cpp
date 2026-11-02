@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "SafeNetworkPhysicsComponent.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 
@@ -37,7 +38,7 @@ void USafeNetworkPhysicsComponent::LogBypass(const TCHAR* Stage) const
 	const FString WorldName = World ? World->GetName() : TEXT("<null>");
 	const FString OwnerName = GetOwner() ? GetOwner()->GetName() : TEXT("<null>");
 
-	UE_LOG(
+	SPEED_NATIVE_LOG(
 		SafeNetworkPhysicsLog,
 		Warning,
 		TEXT("[SafeNetworkPhysicsComponent] Bypassing %s on %s (Owner=%s, World=%s, IsTemplate=%d)"),
@@ -55,7 +56,7 @@ void USafeNetworkPhysicsComponent::LogLifecycle(const TCHAR* Stage) const
 	const FString OwnerName = GetOwner() ? GetOwner()->GetName() : TEXT("<null>");
 
 #if !(UE_BUILD_SHIPPING)
-	UE_LOG(
+	SPEED_NATIVE_LOG(
 		SafeNetworkPhysicsLog,
 		VeryVerbose,
 		TEXT("[SafeNetworkPhysicsComponent] %s on %s (Owner=%s, World=%s, IsRegistered=%d)"),
@@ -84,7 +85,7 @@ void USafeNetworkPhysicsComponent::PrepareAsyncShutdown(const TCHAR* Stage)
 			AsyncInput->bCompareInputToTriggerRewind = false;
 			AsyncInput->bUnregisterDataHistoryFromRewindData = true;
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(
+			SPEED_NATIVE_LOG(
 				SafeNetworkPhysicsLog,
 				VeryVerbose,
 				TEXT("[SafeNetworkPhysicsComponent] Prepared async shutdown during %s on %s"),
@@ -161,7 +162,7 @@ bool USafeNetworkPhysicsComponent::CallRemoteFunction(UFunction* Function, void*
         {
             ++PrivateRPCTraceLines;
             ++ProcessTraceLines;
-            UE_LOG(SafeNetworkPhysicsLog, Display,
+            SPEED_NATIVE_LOG(SafeNetworkPhysicsLog, Display,
                 TEXT("[BumpPrivateActualRPCEnvelope] stage=before_Super_CallRemoteFunction seq=%u component=%s outer_class=%s actor=%s world=%s parameter_matched=%d owner_matched=%d history_present=%d history_count=%d has_data=%d earliest_frame=%d latest_frame=%d delta_issue=%d scope=ACTUAL_REFLECTED_PROXY_ONLY_NOT_SERIALIZED_PACKET_OR_DELIVERY"),
                 PrivateRPCTraceCallSerial, *GetPathName(), *GetPathNameSafe(GetOuter() ? GetOuter()->GetClass() : nullptr),
                 *GetPathNameSafe(GetOwner()), *GetPathNameSafe(GetWorld()), int32(Seen.bParameterMatched), int32(Seen.bOwnerMatched),

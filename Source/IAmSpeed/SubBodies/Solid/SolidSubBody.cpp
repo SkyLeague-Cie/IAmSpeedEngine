@@ -69,9 +69,9 @@ void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
 
 void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint)
 {
-	if (ParentComponent)
+	if (ParentComponentBodyDomainStorage())
 	{
-		ParentComponent->ApplyImpulse(LinearImpulse, WorldPoint, this);
+		ParentComponentBodyDomainStorage()->ApplyImpulse(LinearImpulse, WorldPoint, this);
 	}
 }
 
@@ -107,7 +107,7 @@ void USolidSubBody::RegisterContactAsConstraint(
     float TOI,
     bool bPersistent)
 {
-    if (!ParentComponent || !OtherComponent)
+    if (!ParentComponentBodyDomainStorage() || !OtherComponent)
     {
         return;
     }
@@ -118,7 +118,7 @@ void USolidSubBody::RegisterContactAsConstraint(
     }
 
     const bool bStaticConstraint = OtherComponent->GetCollisionObjectType() == ECC_WorldStatic;
-    const bool bDynamicSolidConstraint = OtherSubBody && OtherSubBody->ParentComponent;
+    const bool bDynamicSolidConstraint = OtherSubBody && OtherSubBody->ParentComponentBodyDomainStorage();
     if (!bStaticConstraint && !bDynamicSolidConstraint)
     {
         return;
@@ -129,7 +129,7 @@ void USolidSubBody::RegisterContactAsConstraint(
     const bool bRegisterOtherConstraint =
         bDynamicSolidConstraint &&
         OtherSubBody->bEnableConstraintOnSubBodyHitSolidStorage() &&
-        OtherSubBody->ParentComponent != ParentComponent;
+        OtherSubBody->ParentComponentBodyDomainStorage() != ParentComponentBodyDomainStorage();
     if (!bRegisterThisConstraint && !bRegisterOtherConstraint)
     {
         return;
@@ -153,7 +153,7 @@ void USolidSubBody::RegisterContactAsConstraint(
 
     if (bRegisterThisConstraint)
     {
-        ParentComponent->RegisterPhysicalConstraint(Constraint);
+        ParentComponentBodyDomainStorage()->RegisterPhysicalConstraint(Constraint);
     }
 
     if (bRegisterOtherConstraint)
@@ -167,7 +167,7 @@ void USolidSubBody::RegisterContactAsConstraint(
         OtherConstraint.TOI = TOI;
         OtherConstraint.PairKey = USSubBody::MakePairKey(OtherSubBody, this);
         OtherConstraint.bPersistent = false;
-        OtherSubBody->ParentComponent->RegisterPhysicalConstraint(OtherConstraint);
+        OtherSubBody->ParentComponentBodyDomainStorage()->RegisterPhysicalConstraint(OtherConstraint);
 
         /*
         UE_LOG(LogTemp, Log,
@@ -191,7 +191,7 @@ void USolidSubBody::RegisterContactManifoldAsConstraints(
     bool bPersistent,
     int32 MaxContacts)
 {
-    if (!ParentComponent || !OtherComponent || ContactPointsWS.Num() == 0)
+    if (!ParentComponentBodyDomainStorage() || !OtherComponent || ContactPointsWS.Num() == 0)
     {
         return;
     }
@@ -314,9 +314,9 @@ float USolidSubBody::ResolveSphereBoxRestitution(const USolidSubBody& Sphere, co
 
 FVector USolidSubBody::GetVelocityAtPoint(const FVector& Point) const
 {
-    if (ParentComponent)
+    if (ParentComponentBodyDomainStorage())
     {
-        return ParentComponent->GetPhysVelocityAtPoint(Point);
+        return ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(Point);
     }
     return FVector::ZeroVector;
 }
@@ -398,9 +398,9 @@ void USolidSubBody::SolveOverlap(
 
 FMatrix USolidSubBody::ComputeWorldInvInertiaTensor() const
 {
-    if (ParentComponent)
+    if (ParentComponentBodyDomainStorage())
     {
-        return ParentComponent->ComputeWorldInvInertiaTensorOfSubBody(*this);
+        return ParentComponentBodyDomainStorage()->ComputeWorldInvInertiaTensorOfSubBody(*this);
     }
     return FMatrix::Identity;
 }

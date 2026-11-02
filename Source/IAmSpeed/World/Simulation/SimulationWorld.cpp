@@ -169,7 +169,7 @@ namespace Speed
 		Adapters.Add(&Adapter);
 		StableIds.Add(&Adapter, StableId);
 		AdaptersByStableId.Add(StableId, &Adapter);
-		Adapter.PublishedSimulationStableId.Store(StableId);
+		Adapter.PublishedSimulationStableIdStorage().Store(StableId);
 		bOrderDirty = true;
 		return true;
 	}
@@ -181,7 +181,7 @@ namespace Speed
 		const int32 Removed = Adapters.Remove(&Adapter);
 		StableIds.Remove(&Adapter);
 		AdaptersByStableId.Remove(StableId);
-		Adapter.PublishedSimulationStableId.Store(0);
+		Adapter.PublishedSimulationStableIdStorage().Store(0);
 		bOrderDirty |= Removed > 0;
 		return Removed > 0;
 	}

@@ -14,6 +14,9 @@
 #include "Misc/OutputDevice.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "HAL/IConsoleManager.h"
+#include "UObject/GarbageCollection.h"
+#include "IAmSpeed/World/Simulation/CanonicalFrameContext.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/IAmSpeed.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPartialStateComparison.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
@@ -28,6 +31,8 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
     USpeedBranchWheeledComponent* Component=nullptr;
     bool WithinOriginalStepCall=false;
     int32 Calls=0;
+    int32 ActualCollectionsReturned=0;
+    bool CollectionWasOutsidePhysicalLogQueue=false;
     const SKinematic* RetainedView=nullptr;
     double WrittenX=0;
     const Speed::FKinematicState* RetainedBodyView=nullptr;
@@ -58,7 +63,18 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
                 EscapedWheel->SetRollAngle(57);WrittenWheelRoll=RetainedWheelRender->RollRotation;
             }
         }
-        ++Calls;RetainedView=&Component->GetKinematicState();
+        ++Calls;
+        CollectionWasOutsidePhysicalLogQueue=!Speed::NativeEpoch::HasOriginalDiagnosticOutbox();
+        // A genuine Engine GC invoked from the real output-device callback
+        // must RETURN. A bool/token cannot substitute for this observation.
+        CollectGarbage(RF_NoFlags);++ActualCollectionsReturned;
+        // Real public configuration/registry/driver operations affect only
+        // their separately retained facade data, never the original epoch.
+        Component->PhysMass=999999;Component->GravityZ=-123456;
+        Component->DriveSpeedAccelScaleCurve.Empty();Component->SteerAngleFromSpeedCurve.Empty();
+        if(auto* Bridge=Component->GetWorld()->GetSubsystem<USpeedWorldSubsystem>())
+        {Bridge->UnregisterSpeedComponent(Component);Bridge->ApplyPendingOps();}
+        RetainedView=&Component->GetKinematicState();
         SKinematic Intrusion=*RetainedView;Intrusion.Location.X+=864200;WrittenX=Intrusion.Location.X;
         Component->SetKinematicState(Intrusion);
         Component->SetPhysCOMVelocity(FVector(1000000,2000000,3000000));
@@ -172,17 +188,25 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     if(!TestTrue(TEXT("actual frozen native publication0 completed"),Owner->Step(First,false,Why)))return false;
     const auto Baseline=Owner->ReadLatest();if(!Baseline)return false;
     TestEqual(TEXT("refused observer was never invoked by the real native step"),ForbiddenObserver.Calls,0);
-    Bridge->UnregisterSpeedComponent(Component); // real pending mutation
-    TestFalse(TEXT("pending native unregister blocks initial CanMove release"),Owner->ReleaseInitialPublication(Baseline,Why));
-    TestTrue(TEXT("pending mutation explicitly identified"),Why.Contains(TEXT("pending mutation")));
-    TestFalse(TEXT("pending unregister refused before duplicate physical step/input preparation"),Owner->Step(First,false,Why));
-    TestTrue(TEXT("read-only refusal preserves exact original immutable publication"),Owner->ReadLatest()==Baseline&&!Baseline->Actors[0].CanMove&&Baseline->Frame==0);
-    Bridge->ApplyPendingOps(); // actual original registry removal, no fake flag
-    TestFalse(TEXT("materialized native unregister also blocks release"),Owner->ReleaseInitialPublication(Baseline,Why));
-    TestTrue(TEXT("actual changed registry diagnosed"),Why.Contains(TEXT("registered roster changed")));
-    TestFalse(TEXT("materialized roster drift refused before native advance"),Owner->Step(First,false,Why));
-    TestTrue(TEXT("original frozen publication retained after both actual failures"),Owner->ReadLatest()==Baseline&&!Baseline->Actors[0].CanMove);
-    TestTrue(TEXT("actual owning graph retires on original GT"),Owner->Close());
+    Bridge->UnregisterSpeedComponent(Component); // actual legacy queue mutation
+    TestTrue(TEXT("facade pending unregister cannot remove the original physical registry"),Owner->ReleaseInitialPublication(Baseline,Why));
+    TestTrue(TEXT("common activation does not rewrite the immutable original baseline"),Owner->ReadLatest()==Baseline&&!Baseline->Actors[0].CanMove&&Baseline->Frame==0);
+    Bridge->ApplyPendingOps(); // materialize only the distinct legacy registry
+    const std::vector<P::FPrivateRoadRequest> OriginalNext{{101,3,History.Predict(1)}};
+    TestTrue(*FString::Printf(TEXT("actual original graph advances after real facade registry removal: %s"),*Why),Owner->Step(OriginalNext,false,Why));
+    const auto OriginalOne=Owner->ReadLatest();
+    TestTrue(TEXT("actual registered original participant remains present and synchronized"),OriginalOne&&OriginalOne->Frame==1&&OriginalOne->Actors.size()==1&&OriginalOne->Actors[0].CanMove&&!OriginalOne->Actors[0].Frozen);
+    ASpeedBranchSimulation* EscapedDriver=nullptr;
+    for(TActorIterator<ASpeedBranchSimulation> It(EscapedWorld);It;++It)EscapedDriver=*It;
+    TestTrue(TEXT("real global enumeration retains the original driver facade"),EscapedDriver!=nullptr);
+    if(EscapedDriver)
+    {
+        FSimulationSnapshot FacadeSnapshot;
+        TestFalse(TEXT("legacy driver snapshot cannot expose the original physical publication"),EscapedDriver->ReadLatestSimulationSnapshot(FacadeSnapshot));
+        TestFalse(TEXT("direct native driver step requires the actual original owner context"),EscapedDriver->StepCanonicalFrame(FCanonicalFrameContext(2)));
+    }
+    TestTrue(TEXT("refused direct driver operation preserves the exact original immutable publication"),Owner->ReadLatest()==OriginalOne);
+    TestTrue(TEXT("actual original owner closes on GT"),Owner->Close());
     TestTrue(TEXT("original owner retirement actually invoked retained global world callback"),ActualCleanupCallbacks>0);
     TestTrue(TEXT("actual original native wheel storage stays readable through the synchronous cleanup callback"),ActualCleanupBoundWheels==4);
     for(const auto& Weak:OriginalWheelObjects)if(const auto* Wheel=Weak.Get())
@@ -238,7 +262,9 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     AddInfo(FString::Printf(TEXT("[IASActualPhysicalLogContext] frame=%llu actualCanMove=%d debugCVar=%d categoryVerbosity=%d synchronousCalls=%d"),
         ActualLogCut?ActualLogCut->Frame:MAX_uint64,ActualLogCut&&!ActualLogCut->Actors.empty()?int(ActualLogCut->Actors[0].CanMove):-1,
         DebugKinematics->GetInt(),int(SpeedPhysicsLog.GetVerbosity()),LogAttack.Calls));
-    TestEqual(TEXT("actual synchronous output callback reached inside original physical Step"),LogAttack.Calls,1);
+    TestEqual(TEXT("actual output callback reached before original Step returns"),LogAttack.Calls,1);
+    TestTrue(TEXT("actual output callback runs outside original physical diagnostic collection"),LogAttack.CollectionWasOutsidePhysicalLogQueue);
+    TestEqual(TEXT("genuine GC returned from actual callback after native physical stack ended"),LogAttack.ActualCollectionsReturned,1);
     if(!LogAttack.RetainedView)return false;
 
     const auto Actual=Isolated->ReadLatest(),Reference=Control->ReadLatest();
@@ -330,10 +356,10 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
 
     TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
-    AddInfo(FString::Printf(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=%llu initial_controlled_forward_steps=2 render_motion_observation_frame=%llu actual_output_device_callback=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 wheel_runtime_value_blocks=15 solid_value_blocks=21 complete_lease=0 localized=0"),MotionFrame,MotionFrame));
+    AddInfo(FString::Printf(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=%llu initial_controlled_forward_steps=2 render_motion_observation_frame=%llu actual_output_device_callback=1 actual_gc_returned_after_math=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 wheel_runtime_value_blocks=15 solid_value_blocks=21 complete_lease=0 localized=0"),MotionFrame,MotionFrame));
     // Never dereference OriginalWheelPointers after Close: storage has retired.
     // The unknown future borrowers remain unclosed; complete_lease stays0.
-    AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_pending_unregister_refused=1 actual_registered_drift_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));
+    AddInfo(FString::Printf(TEXT("[IASPrivateRegistryBoundary] actual_direct_legacy_restore_refused=1 actual_external_phase_observer_refused=1 actual_facade_pending_unregister_isolated=1 actual_facade_registry_removal_isolated=1 actual_direct_driver_step_refused=1 unchanged_publication=1 actual_global_birth_callback=1 actual_cleanup_callbacks=%d actual_cleanup_native_read=%d actual_cleanup_original_wheels=%d global_engine_enumeration_still_open=1 complete_lease=0"),ActualCleanupCallbacks,int(ActualCleanupRead),ActualCleanupBoundWheels));
     return !HasAnyErrors();
 }
 #endif

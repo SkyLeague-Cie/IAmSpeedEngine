@@ -48,25 +48,25 @@ public:
     virtual void AppendEpisodeStateForTesting(TArray<uint8>& Out) const
     {
         using B=Speed::FEpisodeStateBytesForTesting;
-        B::Add(Out,ParentComponent);
-        const FTransform RelativePose=GetRelativeTransform();B::Add(Out,RelativePose);
+        B::Add(Out,ParentComponentBodyDomainStorage());
+        const FTransform RelativePose=PhysicalLocalPose();B::Add(Out,RelativePose);
         B::Add(Out,KinematicsStorage());
-        B::Add(Out,SubBodyType);
-        B::Add(Out,CollisionChannel);
-        for(int32 Channel=0;Channel<int32(ECC_MAX);++Channel)B::Add(Out,ResponseParams.CollisionResponse.GetResponse(ECollisionChannel(Channel)));
+        B::Add(Out,SubBodyTypeBodyDomainStorage());
+        B::Add(Out,CollisionChannelBodyDomainStorage());
+        for(int32 Channel=0;Channel<int32(ECC_MAX);++Channel)B::Add(Out,ResponseParamsBodyDomainStorage().CollisionResponse.GetResponse(ECollisionChannel(Channel)));
         B::Add(Out,FutureHitStorage());
         B::Add(Out,CurrentHitStorage());
         B::Add(Out,GroundHitStorage());
         B::Add(Out,BoxHitStorage());
         B::Add(Out,SphereHitStorage());
         B::Add(Out,WheelHitStorage());
-        B::Array(Out,AlwaysIgnoredComponents);
-        B::Array(Out,IgnoredComponents);
-        B::Array(Out,IgnoredSubBodyTypes);
-        B::Array(Out,ExternalBoxSubBodies);
-        B::Array(Out,ExternalSphereSubBodies);
-        B::Array(Out,ExternalWheelSubBodies);
-        B::Array(Out,ExternalCylinderSubBodies);
+        B::Array(Out,AlwaysIgnoredComponentsBodyDomainStorage());
+        B::Array(Out,IgnoredComponentsBodyDomainStorage());
+        B::Array(Out,IgnoredSubBodyTypesBodyDomainStorage());
+        B::Array(Out,ExternalBoxSubBodiesBodyDomainStorage());
+        B::Array(Out,ExternalSphereSubBodiesBodyDomainStorage());
+        B::Array(Out,ExternalWheelSubBodiesBodyDomainStorage());
+        B::Array(Out,ExternalCylinderSubBodiesBodyDomainStorage());
     }
 #endif
 
@@ -141,18 +141,18 @@ public:
 	const SHitResult& GetFutureHit() const { return FutureHitStorage(); }
 	void SetFutureHit(const SHitResult& Hit) { FutureHitStorage() = Hit; }
 
-	ESubBodyType GetSubBodyType() const { return SubBodyType; }
+	ESubBodyType GetSubBodyType() const { return SubBodyTypeBodyDomainStorage(); }
     FVector GetCenterOfMassWS() const { return KinematicsStorage().Location; }
 
-	ISpeedComponent* GetParentComponent() const { return ParentComponent; }
+	ISpeedComponent* GetParentComponent() const { return ParentComponentBodyDomainStorage(); }
 
     // ====== REQUIRED PHYSICS SHAPE AND COLLISION PARAMS ======
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const { return FCollisionShape::MakeSphere(10.f); }
-    ECollisionChannel GetCollisionChannel() const { return CollisionChannel; }
-    const FCollisionResponseParams& GetResponseParams() const { return ResponseParams; }
+    ECollisionChannel GetCollisionChannel() const { return CollisionChannelBodyDomainStorage(); }
+    const FCollisionResponseParams& GetResponseParams() const { return ResponseParamsBodyDomainStorage(); }
 
-	FVector GetLocalOffset() const { return GetRelativeLocation(); }
-	FQuat GetLocalRotation() const { return GetRelativeRotation().Quaternion(); }
+	FVector GetLocalOffset() const { return PhysicalLocalPose().GetLocation(); }
+	FQuat GetLocalRotation() const { return PhysicalLocalPose().GetRotation(); }
     static uint64 MakePairKey(const USSubBody* A, const UPrimitiveComponent* OtherComp);
     static int32 SubBodyPriority(USSubBody::ESubBodyType T);
     static USSubBody* PickResolver(USSubBody* A, USSubBody* B);
@@ -164,9 +164,34 @@ protected:
     const TArray<TWeakObjectPtr<UBoxSubBody>>& GetExternalBoxSubBodies() const;
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const;
     const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const;
-    const TArray<TWeakObjectPtr<UCylinderSubBody>>& GetExternalCylinderSubBodies() const {return ExternalCylinderSubBodies;}
+    const TArray<TWeakObjectPtr<UCylinderSubBody>>& GetExternalCylinderSubBodies() const {return ExternalCylinderSubBodiesBodyDomainStorage();}
 protected:
 
+protected:
+    virtual FTransform PhysicalLocalPose() const {return GetRelativeTransform();}
+    virtual void SetPhysicalLocalOffset(const FVector& V) {SetRelativeLocation(V);}
+    virtual ISpeedComponent*& ParentComponentBodyDomainStorage() {return ParentComponent;}
+    virtual ISpeedComponent* const& ParentComponentBodyDomainStorage() const {return ParentComponent;}
+    virtual ESubBodyType& SubBodyTypeBodyDomainStorage() {return SubBodyType;}
+    virtual ESubBodyType const& SubBodyTypeBodyDomainStorage() const {return SubBodyType;}
+    virtual ECollisionChannel& CollisionChannelBodyDomainStorage() {return CollisionChannel;}
+    virtual ECollisionChannel const& CollisionChannelBodyDomainStorage() const {return CollisionChannel;}
+    virtual FCollisionResponseParams& ResponseParamsBodyDomainStorage() {return ResponseParams;}
+    virtual FCollisionResponseParams const& ResponseParamsBodyDomainStorage() const {return ResponseParams;}
+    virtual TArray<UPrimitiveComponent*>& AlwaysIgnoredComponentsBodyDomainStorage() {return AlwaysIgnoredComponents;}
+    virtual TArray<UPrimitiveComponent*> const& AlwaysIgnoredComponentsBodyDomainStorage() const {return AlwaysIgnoredComponents;}
+    virtual TArray<UPrimitiveComponent*>& IgnoredComponentsBodyDomainStorage() {return IgnoredComponents;}
+    virtual TArray<UPrimitiveComponent*> const& IgnoredComponentsBodyDomainStorage() const {return IgnoredComponents;}
+    virtual TArray<ESubBodyType>& IgnoredSubBodyTypesBodyDomainStorage() {return IgnoredSubBodyTypes;}
+    virtual TArray<ESubBodyType> const& IgnoredSubBodyTypesBodyDomainStorage() const {return IgnoredSubBodyTypes;}
+    virtual TArray<TWeakObjectPtr<UBoxSubBody>>& ExternalBoxSubBodiesBodyDomainStorage() {return ExternalBoxSubBodies;}
+    virtual TArray<TWeakObjectPtr<UBoxSubBody>> const& ExternalBoxSubBodiesBodyDomainStorage() const {return ExternalBoxSubBodies;}
+    virtual TArray<TWeakObjectPtr<USphereSubBody>>& ExternalSphereSubBodiesBodyDomainStorage() {return ExternalSphereSubBodies;}
+    virtual TArray<TWeakObjectPtr<USphereSubBody>> const& ExternalSphereSubBodiesBodyDomainStorage() const {return ExternalSphereSubBodies;}
+    virtual TArray<TWeakObjectPtr<USWheelSubBody>>& ExternalWheelSubBodiesBodyDomainStorage() {return ExternalWheelSubBodies;}
+    virtual TArray<TWeakObjectPtr<USWheelSubBody>> const& ExternalWheelSubBodiesBodyDomainStorage() const {return ExternalWheelSubBodies;}
+    virtual TArray<TWeakObjectPtr<UCylinderSubBody>>& ExternalCylinderSubBodiesBodyDomainStorage() {return ExternalCylinderSubBodies;}
+    virtual TArray<TWeakObjectPtr<UCylinderSubBody>> const& ExternalCylinderSubBodiesBodyDomainStorage() const {return ExternalCylinderSubBodies;}
 	ISpeedComponent* ParentComponent;
 
     // Kinematic state at start of frame or during substep

@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "ISpeedWheeledComponent.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
@@ -45,7 +46,7 @@ static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, cons
 	const Speed::Analytic::FAnalyticWorldData* Data = Subsystem ? Subsystem->GetAnalyticWorldData() : nullptr;
 	if (!Data || PrimitiveId == 0)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Unknown"), Frame, Wheel, Role, PrimitiveId);
+		SPEED_NATIVE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Unknown"), Frame, Wheel, Role, PrimitiveId);
 		return;
 	}
 	int32 Examined = 0;
@@ -61,7 +62,7 @@ static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, cons
 			bMatched = true;
 			const FVector3d A = Patch.SectionPolyline[Segment];
 			const FVector3d B = Patch.SectionPolyline[Segment + 1];
-			UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Mapped Provider=Extruded Parent=%016llx Group=%016llx Authority=%d C2=%d Segment=%d MinExtrusion=%.17g MaxExtrusion=%.17g Axis=%s A=%s B=%s ErrorCm=%.17g"),
+			SPEED_NATIVE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Mapped Provider=Extruded Parent=%016llx Group=%016llx Authority=%d C2=%d Segment=%d MinExtrusion=%.17g MaxExtrusion=%.17g Axis=%s A=%s B=%s ErrorCm=%.17g"),
 				Frame, Wheel, Role, PrimitiveId, Patch.PrimitiveId, Patch.CanonicalGroupId,
 				Patch.bAuthorityEligible ? 1 : 0, Patch.bCanonicalC2ByConstruction ? 1 : 0,
 				Segment, Patch.MinimumExtrusionCoordinate, Patch.MaximumExtrusionCoordinate,
@@ -79,7 +80,7 @@ static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, cons
 			if (Speed::Analytic::CombineStableIds(Parent, uint64(2 * CellIndex + Triangle + 1)) != PrimitiveId) continue;
 			bMatched = true;
 			const auto& Cell = Cells[CellIndex];
-			UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Mapped Provider=%s Parent=%016llx Group=%016llx Authority=%d ApproxCell=%d Triangle=%d U0=%.17g U1=%.17g V0=%.17g V1=%.17g A=%s B=%s C=%s ErrorCm=%.17g"),
+			SPEED_NATIVE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomain] Frame=%d Wheel=%d Role=%s Primitive=%016llx Status=Mapped Provider=%s Parent=%016llx Group=%016llx Authority=%d ApproxCell=%d Triangle=%d U0=%.17g U1=%.17g V0=%.17g V1=%.17g A=%s B=%s C=%s ErrorCm=%.17g"),
 				Frame, Wheel, Role, PrimitiveId, Provider, Parent, Group, Authority ? 1 : 0, CellIndex, Triangle,
 				Cell.MinimumU, Cell.MaximumU, Cell.MinimumV, Cell.MaximumV,
 				*CoupledPoseDiagnosticVector(Cell.Corners[Indices[Triangle][0]]),
@@ -101,7 +102,7 @@ static void LogCoupledPosePrimitiveDomain(UWorld* World, const int32 Frame, cons
 				LogTensor(TEXT("PiecewiseTensor"), Cell.PrimitiveId, Patch.CanonicalGroupId, Patch.bAuthorityEligible, Cell.ApproximationCells);
 		}
 	}
-	UE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomainSummary] Frame=%d Wheel=%d Role=%s Primitive=%016llx Matched=%d Complete=%d Examined=%d WorldHash=%016llx"), Frame, Wheel, Role, PrimitiveId, bMatched ? 1 : 0, Examined <= MaximumCandidates ? 1 : 0, Examined, Data->SourceHash);
+	SPEED_NATIVE_LOG(LogTemp, Log, TEXT("[CoupledPosePrimitiveDomainSummary] Frame=%d Wheel=%d Role=%s Primitive=%016llx Matched=%d Complete=%d Examined=%d WorldHash=%016llx"), Frame, Wheel, Role, PrimitiveId, bMatched ? 1 : 0, Examined <= MaximumCandidates ? 1 : 0, Examined, Data->SourceHash);
 }
 #endif
 
@@ -546,7 +547,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
 			{
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[WheelContactSolver] Mode=FinalSupportRejected Frame=%d Wheel=%d SpringDisp=%.3f SurfaceSource=%llu Surface=%llu Feature=%llu Pos=%s Normal=%s"),
 					NumFrame(),
 					Contact.Wheel ? Contact.Wheel->Idx() : INDEX_NONE,
@@ -860,7 +861,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 #if !(UE_BUILD_SHIPPING)
 		if (!bMovingIntoSurface && vN < -VNDeadzone && CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
 		{
-			UE_LOG(LogTemp, Log,
+			SPEED_NATIVE_LOG(LogTemp, Log,
 				TEXT("[WheelContactSolver] Mode=PersistentSupportSkipped dt=%.5f vN=%.3f SpringDisp=%.3f Locked=%d Pos=%s Normal=%s"),
 				dt,
 				vN,
@@ -922,7 +923,7 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 #if !(UE_BUILD_SHIPPING)
 		if (CVarIAmSpeedWheelContactDebug.GetValueOnAnyThread() != 0)
 		{
-			UE_LOG(LogTemp, Log,
+			SPEED_NATIVE_LOG(LogTemp, Log,
 				TEXT("[WheelContactSolver] Mode=%s Coupling=%d dt=%.5f Tau=%.5f Gamma=%.4f vN=%.3f SolvedVN=%.3f SpringDisp=%.3f Locked=%d InvMassEff=%.6f Softness=%.6f Impulse=%s Pos=%s Normal=%s"),
 				bMovingIntoSurface ? TEXT("Inward") : TEXT("Separating"),
 				SolverMode,
@@ -1347,7 +1348,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0 &&
 				Probe.bWasGrounded && !Probe.bHasProbeHit)
 			{
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[WheelSupportProjectionCandidate] Frame=%d Wheel=%d Surface=%d Static=%d NormalZ=%.3f Locked=%d Jump=%d Unilateral=%d"),
 					NumFrame(), Index, PreviousSurface ? 1 : 0,
 					PreviousSurface && PreviousSurface->Mobility == EComponentMobility::Static ? 1 : 0,
@@ -1356,7 +1357,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					Wheel->HasJumpUnilateralSupport() ? 1 : 0);
 				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 2)
 				{
-					UE_LOG(LogTemp, Log,
+					SPEED_NATIVE_LOG(LogTemp, Log,
 						TEXT("[WheelSupportProjectionIdentity] Frame=%d Wheel=%d Source=%016llx Surface=%016llx Feature=%016llx Primitive=%016llx Group=%016llx Component=%s Hit=%d HitFrame=%u Point=(%.17g,%.17g,%.17g) Normal=(%.17g,%.17g,%.17g)"),
 						NumFrame(), Index,
 						static_cast<unsigned long long>(Probe.PreviousHit.SourceId),
@@ -1407,7 +1408,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() >= 2 &&
 					CVarIAmSpeedCertifiedExtrudedProjection.GetValueOnAnyThread() != 0)
 				{
-					UE_LOG(LogTemp, Log,
+					SPEED_NATIVE_LOG(LogTemp, Log,
 						TEXT("[WheelSupportCertifiedProjectionRejected] Frame=%d Wheel=%d LocalHit=%d PreviousSource=%016llx LocalSource=%016llx PreviousSurface=%016llx LocalSurface=%016llx PreviousFeature=%016llx LocalFeature=%016llx PreviousPrimitive=%016llx LocalPrimitive=%016llx PreviousGroup=%016llx LocalGroup=%016llx PreviousPoint=%s LocalPoint=%s"),
 						NumFrame(), Index, bHasLocalPatch ? 1 : 0,
 						Probe.PreviousHit.SourceId, LocalPatchHit.SourceId,
@@ -1448,7 +1449,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 #if !(UE_BUILD_SHIPPING)
 				if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
 				{
-					UE_LOG(LogTemp, Log,
+					SPEED_NATIVE_LOG(LogTemp, Log,
 						TEXT("[WheelSupportPatchRejected] Frame=%d Wheel=%d LocalHit=%d SameComponent=%d NormalDot=%.5f TangentialTravel=%.3f MaxTravel=%.3f PreviousFace=%d LocalFace=%d PreviousPoint=%s LocalPoint=%s"),
 						NumFrame(), Index, bHasLocalPatch ? 1 : 0,
 						bHasLocalPatch && LocalPatchHit.Component.Get() == PreviousSurface ? 1 : 0,
@@ -1471,7 +1472,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
 			{
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[WheelSupportProjectionCandidateResult] Frame=%d Wheel=%d LocalPatch=1 Gap=%.4f PreviousFace=%d LocalFace=%d NormalDot=%.5f TangentialTravel=%.3f MaxTravel=%.3f"),
 					NumFrame(), Index, ReachGap, Probe.PreviousHit.FaceIndex,
 					LocalPatchHit.FaceIndex, FVector::DotProduct(LocalNormal, PreviousNormal),
@@ -1691,7 +1692,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 							const FVector InitialNormal = Probe.ProbeHit.ImpactNormal.GetSafeNormal();
 							const double Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
 							const double ProposedGap = FVector::DotProduct(ProposedEnd - Probe.ProbeHit.ImpactPoint, InitialNormal) - Radius;
-							UE_LOG(LogTemp, Log,
+							SPEED_NATIVE_LOG(LogTemp, Log,
 								TEXT("[WheelSupportProjectionRejectedProbe] ComponentFrame=%u Wheel=%d InitialHit=1 ProposedActualHit=0 InitialSource=%016llx ProposedGapCm=%.17g RadiusCm=%.17g ProposedStart=%s ProposedEnd=%s InitialPlanePoint=%s InitialPlaneNormal=%s OriginalCOM=%s ProposedCOM=%s ProposedRotationDeg=%.17g"),
 								NumFrame(), Probe.Wheel->Idx(), static_cast<unsigned long long>(Probe.ProbeHit.SourceId),
 								ProposedGap, Radius, *CoupledPoseDiagnosticVector(ProposedStart), *CoupledPoseDiagnosticVector(ProposedEnd),
@@ -1705,7 +1706,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 						{
 							for (const FProjectionPassResidual& Row : DiagnosticResiduals)
 							{
-								UE_LOG(LogTemp, Log,
+								SPEED_NATIVE_LOG(LogTemp, Log,
 									TEXT("[WheelSupportProjectionPassResidual] ComponentFrame=%u RejectedWheel=%d Pass=%d Wheel=%d InitialHit=%d ReachGapCm=%.17g ClearanceCm=%.17g ReachViolationCm=%.17g Truncated=%d"),
 									NumFrame(), Probe.Wheel->Idx(), Row.Pass, Row.Wheel, Row.bInitialHit ? 1 : 0,
 									Row.ReachGap, Row.Clearance, Row.ReachViolation, bDiagnosticResidualsTruncated ? 1 : 0);
@@ -1775,7 +1776,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread() != 0)
 			{
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f CoherentSpring=%d CoherentStateValid=%d"),
 					NumFrame(), EstablishedMisses.Num(), bAcceptProjectedPose ? 1 : 0,
 					(GetPhysCOM() - OriginalCOM).Size(),
@@ -1795,7 +1796,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 						const double Radius = Probe.Wheel->GetCollisionShape().GetSphereRadius();
 						const double BeforeGap = FVector::DotProduct(Probe.DiagnosticInitialEnd - Plane.ImpactPoint, N) - Radius;
 						const double AfterGap = FVector::DotProduct(AfterEnd - Plane.ImpactPoint, N) - Radius;
-						UE_LOG(LogTemp, Log,
+						SPEED_NATIVE_LOG(LogTemp, Log,
 							TEXT("[WheelSupportProjectionTransaction] ComponentFrame=%u Wheel=%d WasGrounded=%d BeforeHit=%d AfterHit=%d WithinBounds=%d MissConstraints=%d BeforeSource=%016llx AfterSource=%016llx BeforeGapCm=%.17g AfterGapCm=%.17g RadiusCm=%.17g BeforeEnd=%s AfterEnd=%s PlanePoint=%s PlaneNormal=%s BeforeCOM=%s AfterCOM=%s RotationDeg=%.17g AcceptedPose=%d ProposedRotationDeg=%.17g"),
 							NumFrame(), Probe.Wheel->Idx(), Probe.bWasGrounded ? 1 : 0, Probe.bHasProbeHit ? 1 : 0,
 							bActualAfterHit ? 1 : 0, bWithinBounds ? 1 : 0, EstablishedMisses.Num(),
@@ -1821,7 +1822,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 					SHitResult VerificationHit;
 					const bool bVerificationHit =
 						Probe.Wheel->ProbeSuspensionOnGround(VerificationHit, delta);
-					UE_LOG(LogTemp, Log,
+					SPEED_NATIVE_LOG(LogTemp, Log,
 						TEXT("[WheelSupportProjectionWheel] Frame=%d Wheel=%d Gap=%.4f Resweep=%d"),
 						NumFrame(), Index, Gap, bVerificationHit ? 1 : 0);
 				}
@@ -2321,7 +2322,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0 &&
 			InitialMaximumDepth > Slop)
 		{
-			UE_LOG(LogTemp, Warning,
+			SPEED_NATIVE_LOG(LogTemp, Warning,
 				TEXT("[CoupledPose][HitboxRejected] Frame=%d InitialDepth=%.3f InitialHits=%d Constraints=%d Translation=%.3f RotationDeg=%.3f Strict=%d CertifiedAge=%d CertifiedSweep=%.6f"),
 				NumFrame(), InitialMaximumDepth, InitialPenetrationHits.Num(),
 				HitboxConstraints.Num(), (GetPhysCOM() - TransactionCOM).Size(),
@@ -2495,7 +2496,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
 			{
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=LocalPatch HasPatch=%d SameComponent=%d NormalDot=%.6f AnalyticIdentity=%d SameAnalytic=%d SameFace=%d ExpectedSource=%016llx ExpectedSurface=%016llx ExpectedFeature=%016llx ActualSource=%016llx ActualSurface=%016llx ActualFeature=%016llx ExpectedFace=%d ActualFace=%d ExpectedPrimitive=%016llx ActualPrimitive=%016llx ExpectedPoint=%s ActualPoint=%s ExpectedNormal=%s ActualNormal=%s"),
 					NumFrame(), Wheel->Idx(), bHasLocalPatch ? 1 : 0,
 					LocalPatchHit.Component == Contact.SurfaceComponent ? 1 : 0,
@@ -2600,7 +2601,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
 			{
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseWallTangent] Frame=%d Wheel=%d Applied=%d GapCm=%.6f HitboxConstraints=%d Locked=%d Jump=%d Unilateral=%d"),
 					NumFrame(), Wheel->Idx(), bAppliedWallTangentProjection ? 1 : 0,
 					Gap, HitboxConstraints.Num(), Wheel->IsContactVelocityLocked() ? 1 : 0,
@@ -2619,7 +2620,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
 			{
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=HitboxFeasibility GapCm=%.6f RadiusCm=%.6f"),
 					NumFrame(), Wheel->Idx(), Gap, SweepRadius);
 			}
@@ -2638,7 +2639,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
 			{
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseWheelRetention] Frame=%d Wheel=%d Reason=FinalGap GapCm=%.6f FinalGapCm=%.6f MaxGapCm=%.6f RadiusCm=%.6f"),
 					NumFrame(), Wheel->Idx(), Gap, FinalGap, MaxWheelGap, SweepRadius);
 			}
@@ -2729,7 +2730,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 #if !(UE_BUILD_SHIPPING)
 			if (CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread() != 0)
 			{
-				UE_LOG(LogTemp, Log, TEXT("[CoupledPoseSharedWallPlane] Frame=%u Wheels=%d GapCm=%.9g TranslationCm=%.9g ActualAllSupport=%d"),
+				SPEED_NATIVE_LOG(LogTemp, Log, TEXT("[CoupledPoseSharedWallPlane] Frame=%u Wheels=%d GapCm=%.9g TranslationCm=%.9g ActualAllSupport=%d"),
 					NumFrame(), WheelConstraints.Num(), MaximumGap, Translation, bAllRealSupport ? 1 : 0);
 			}
 #endif
@@ -2742,7 +2743,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		(!GetPhysCOM().Equals(TransactionCOM, 0.001f) ||
 			GetPhysRotation().AngularDistance(TransactionRotation) > 1.0e-5f))
 	{
-		UE_LOG(LogTemp, Log,
+		SPEED_NATIVE_LOG(LogTemp, Log,
 			TEXT("[CoupledPose] Frame=%d HitboxTranslation=%.3f TotalTranslation=%.3f RotationDeg=%.3f HitboxConstraints=%d WheelConstraints=%d RetainedWheels=%d"),
 			NumFrame(), (HitboxFeasibleCOM - TransactionCOM).Size(),
 			(GetPhysCOM() - TransactionCOM).Size(),
@@ -2775,7 +2776,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 				Wheel->GetSuspensionSweepSegment(Delta, QueryStart, QueryEnd);
 				const FVector PreviousQueryNormal = PreviousQueryHit.ImpactNormal.GetSafeNormal();
 				const float PreviousPlaneGap = FVector::DotProduct(QueryEnd - PreviousQueryHit.ImpactPoint, PreviousQueryNormal) - Wheel->GetCollisionShape().GetSphereRadius();
-				UE_LOG(LogTemp, Log,
+				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[CoupledPoseFinalQuery] ComponentFrame=%u Wheel=%d BeforeGround=%d ActualHit=%d StrictHitbox=%d RetainedConstraints=%d PreviousSource=%016llx FinalSource=%016llx PreviousGapCm=%.9g InwardSpeed=%.9g Start=(%.17g,%.17g,%.17g) End=(%.17g,%.17g,%.17g) PreviousNormal=(%.17g,%.17g,%.17g)"),
 					NumFrame(), Wheel->Idx(), bPreviousGround ? 1 : 0, bOnGround ? 1 : 0,
 					bStrictHitboxGate ? 1 : 0, RetainedWheels,

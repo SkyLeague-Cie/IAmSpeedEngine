@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "ISolidSweeper.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -55,7 +56,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 			const bool bChaosShadowHit = World->SweepSingleByChannel(
 				ChaosShadowHit, Start, End, KS.Rotation, GetCollisionChannel(),
 				GetCollisionShape(), Params, GetResponseParams());
-			UE_LOG(SpeedPhysicsLog, Display,
+			SPEED_NATIVE_LOG(SpeedPhysicsLog, Display,
 				TEXT("[AnalyticAuthorityChaosBoxShadow] Start=%s End=%s Rotation=%s HalfExtent=%s AnalyticTime=%.17g AnalyticPoint=%s AnalyticNormal=%s AnalyticStartPenetrating=%d AnalyticPenetrationDepth=%.17g AnalyticSurface=%016llX AnalyticFeature=%016llX AnalyticPrimitive=%016llX ChaosHit=%d ChaosTime=%.9g ChaosPoint=%s ChaosNormal=%s ChaosStartPenetrating=%d ChaosPenetrationDepth=%.9g"),
 				*Start.ToString(), *End.ToString(), *KS.Rotation.ToString(),
 				*GetCollisionShape().GetBox().ToString(),

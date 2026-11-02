@@ -18,8 +18,8 @@ USSubBody::USSubBody(const FObjectInitializer& ObjectInitializer):
 	Super(ObjectInitializer)
 {
     PrimaryComponentTick.bCanEverTick = false;
-    ResponseParams.CollisionResponse.SetAllChannels(ECollisionResponse::ECR_Ignore);
-    ResponseParams.CollisionResponse.SetResponse(ECollisionChannel::ECC_WorldStatic, ECollisionResponse::ECR_Block);
+    ResponseParamsBodyDomainStorage().CollisionResponse.SetAllChannels(ECollisionResponse::ECR_Ignore);
+    ResponseParamsBodyDomainStorage().CollisionResponse.SetResponse(ECollisionChannel::ECC_WorldStatic, ECollisionResponse::ECR_Block);
 	SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore); // For UE
 	SetCollisionObjectType(ECollisionChannel::ECC_WorldDynamic); // For UE
     SetSimulatePhysics(false); // For UE
@@ -50,22 +50,22 @@ void USSubBody::OnRegister()
 
 void USSubBody::Initialize(ISpeedComponent* InParentComponent)
 {
-	ParentComponent = InParentComponent;
-    if (ParentComponent)
+	ParentComponentBodyDomainStorage() = InParentComponent;
+    if (ParentComponentBodyDomainStorage())
     {
-		SubBodyConfig Config = ParentComponent->GetSubBodyConfig(*this);
+		SubBodyConfig Config = ParentComponentBodyDomainStorage()->GetSubBodyConfig(*this);
         if (Config.bValid)
         {
             SetRelativeLocation(Config.LocalOffset);
             SetRelativeRotation(Config.LocalRotation);
-            CollisionChannel = Config.CollisionChannel;
+            CollisionChannelBodyDomainStorage() = Config.CollisionChannel;
         }
         
-        for (USSubBody* SubBody: ParentComponent->GetSubBodies())
+        for (USSubBody* SubBody: ParentComponentBodyDomainStorage()->GetSubBodies())
         {
             if (SubBody)
             {
-                AlwaysIgnoredComponents.AddUnique(SubBody);
+                AlwaysIgnoredComponentsBodyDomainStorage().AddUnique(SubBody);
             }
 		}
     }
@@ -83,38 +83,38 @@ void USSubBody::ResetIgnoredComponents()
     // Reuse the ordinary frame's buffer instead of freeing/reallocating it at
     // 300 Hz. An exceptional contact burst must not retain unbounded slack:
     // keep at most 1 KiB or the permanent registry's existing allocation.
-    const SIZE_T RetainedBytes = FMath::Max<SIZE_T>(1024, AlwaysIgnoredComponents.GetAllocatedSize());
-    if (IgnoredComponents.GetAllocatedSize() > RetainedBytes)
-        IgnoredComponents.Empty(AlwaysIgnoredComponents.Num());
+    const SIZE_T RetainedBytes = FMath::Max<SIZE_T>(1024, AlwaysIgnoredComponentsBodyDomainStorage().GetAllocatedSize());
+    if (IgnoredComponentsBodyDomainStorage().GetAllocatedSize() > RetainedBytes)
+        IgnoredComponentsBodyDomainStorage().Empty(AlwaysIgnoredComponentsBodyDomainStorage().Num());
     else
-        IgnoredComponents.Reset(AlwaysIgnoredComponents.Num());
-    IgnoredComponents.Append(AlwaysIgnoredComponents);
+        IgnoredComponentsBodyDomainStorage().Reset(AlwaysIgnoredComponentsBodyDomainStorage().Num());
+    IgnoredComponentsBodyDomainStorage().Append(AlwaysIgnoredComponentsBodyDomainStorage());
 }
 
 void USSubBody::AddExternalSubBodies(const TArray<USSubBody*>& SubBodies)
 {
     for (USSubBody* SubBody : SubBodies)
     {
-        if (SubBody && SubBody->GetParentComponent() != ParentComponent &&
-            !AlwaysIgnoredComponents.Contains(SubBody) && !SubBody->IsSensor() &&
-            !(ParentComponent && ParentComponent->IsPrescribedMotion() && SubBody->GetParentComponent() && SubBody->GetParentComponent()->IsPrescribedMotion()))
+        if (SubBody && SubBody->GetParentComponent() != ParentComponentBodyDomainStorage() &&
+            !AlwaysIgnoredComponentsBodyDomainStorage().Contains(SubBody) && !SubBody->IsSensor() &&
+            !(ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->IsPrescribedMotion() && SubBody->GetParentComponent() && SubBody->GetParentComponent()->IsPrescribedMotion()))
         {
             switch (SubBody->GetSubBodyType())
             {
             case ESubBodyType::Cylinder:
-                if(!IgnoredSubBodyTypes.Contains(ESubBodyType::Cylinder))ExternalCylinderSubBodies.AddUnique(Cast<UCylinderSubBody>(SubBody));
+                if(!IgnoredSubBodyTypesBodyDomainStorage().Contains(ESubBodyType::Cylinder))ExternalCylinderSubBodiesBodyDomainStorage().AddUnique(Cast<UCylinderSubBody>(SubBody));
                 break;
 			case ESubBodyType::Hitbox:
-				if (!IgnoredSubBodyTypes.Contains(ESubBodyType::Hitbox))
-				    ExternalBoxSubBodies.AddUnique(Cast<UBoxSubBody>(SubBody));
+				if (!IgnoredSubBodyTypesBodyDomainStorage().Contains(ESubBodyType::Hitbox))
+				    ExternalBoxSubBodiesBodyDomainStorage().AddUnique(Cast<UBoxSubBody>(SubBody));
 				break;
 			case ESubBodyType::Sphere:
-				if (!IgnoredSubBodyTypes.Contains(ESubBodyType::Sphere))
-				    ExternalSphereSubBodies.AddUnique(Cast<USphereSubBody>(SubBody));
+				if (!IgnoredSubBodyTypesBodyDomainStorage().Contains(ESubBodyType::Sphere))
+				    ExternalSphereSubBodiesBodyDomainStorage().AddUnique(Cast<USphereSubBody>(SubBody));
 				break;
 			case ESubBodyType::Wheel:
-				if (!IgnoredSubBodyTypes.Contains(ESubBodyType::Wheel))
-				    ExternalWheelSubBodies.AddUnique(Cast<USWheelSubBody>(SubBody));
+				if (!IgnoredSubBodyTypesBodyDomainStorage().Contains(ESubBodyType::Wheel))
+				    ExternalWheelSubBodiesBodyDomainStorage().AddUnique(Cast<USWheelSubBody>(SubBody));
 				break;
             }
         }
@@ -130,15 +130,15 @@ void USSubBody::RemoveExternalSubBodies(const TArray<USSubBody*>& SubBodies)
             switch (SubBody->GetSubBodyType())
             {
             case ESubBodyType::Cylinder:
-                ExternalCylinderSubBodies.Remove(Cast<UCylinderSubBody>(SubBody));break;
+                ExternalCylinderSubBodiesBodyDomainStorage().Remove(Cast<UCylinderSubBody>(SubBody));break;
             case ESubBodyType::Hitbox:
-                ExternalBoxSubBodies.Remove(Cast<UBoxSubBody>(SubBody));
+                ExternalBoxSubBodiesBodyDomainStorage().Remove(Cast<UBoxSubBody>(SubBody));
                 break;
             case ESubBodyType::Sphere:
-                ExternalSphereSubBodies.Remove(Cast<USphereSubBody>(SubBody));
+                ExternalSphereSubBodiesBodyDomainStorage().Remove(Cast<USphereSubBody>(SubBody));
                 break;
             case ESubBodyType::Wheel:
-                ExternalWheelSubBodies.Remove(Cast<USWheelSubBody>(SubBody));
+                ExternalWheelSubBodiesBodyDomainStorage().Remove(Cast<USWheelSubBody>(SubBody));
                 break;
             }
         }
@@ -203,7 +203,7 @@ void USSubBody::AcceptHit()
     if (CurrentHitStorage().SubBody.IsValid())
     {
         USSubBody* OtherSubBody = CurrentHitStorage().SubBody.Get();
-        IgnoredComponents.AddUnique(OtherSubBody);
+        IgnoredComponentsBodyDomainStorage().AddUnique(OtherSubBody);
 
         // Do NOT blindly accept OtherSubBody->FutureHit.
         // It may be an unrelated hit, e.g. Hitbox vs Stadium while Sensor vs Hitbox is being resolved.
@@ -229,13 +229,13 @@ void USSubBody::AcceptHit()
     }
     else if (CurrentHitStorage().Component.IsValid())
     {
-        IgnoredComponents.AddUnique(CurrentHitStorage().Component.Get());
+        IgnoredComponentsBodyDomainStorage().AddUnique(CurrentHitStorage().Component.Get());
     }
 }
 
 bool USSubBody::ComponentHasBeenIgnored(const UPrimitiveComponent& OtherComp) const
 {
-	return IgnoredComponents.Contains(&OtherComp);
+	return IgnoredComponentsBodyDomainStorage().Contains(&OtherComp);
 }
 
 void USSubBody::ResolveCurrentHit(const float& delta, const float& SimTime)
@@ -288,7 +288,7 @@ FCollisionQueryParams USSubBody::BuildTraceParams() const
     FCollisionQueryParams Params(NAME_None, false);
     Params.bReturnFaceIndex = true;
     Params.bReturnPhysicalMaterial = true;
-	Params.AddIgnoredComponents(IgnoredComponents);
+	Params.AddIgnoredComponents(IgnoredComponentsBodyDomainStorage());
     return Params;
 }
 
@@ -333,17 +333,17 @@ USSubBody* USSubBody::PickResolver(USSubBody* A, USSubBody* B)
 
 const TArray<TWeakObjectPtr<UBoxSubBody>>& USSubBody::GetExternalBoxSubBodies() const
 {
-    return ExternalBoxSubBodies;
+    return ExternalBoxSubBodiesBodyDomainStorage();
 }
 
 const TArray<TWeakObjectPtr<USphereSubBody>>& USSubBody::GetExternalSphereSubBodies() const
 {
-    return ExternalSphereSubBodies;
+    return ExternalSphereSubBodiesBodyDomainStorage();
 }
 
 const TArray<TWeakObjectPtr<USWheelSubBody>>& USSubBody::GetExternalWheelSubBodies() const
 {
-    return ExternalWheelSubBodies;
+    return ExternalWheelSubBodiesBodyDomainStorage();
 }
 
 

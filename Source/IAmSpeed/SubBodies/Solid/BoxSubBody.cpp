@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
@@ -207,14 +208,14 @@ namespace
     }
 
     void IAmSpeedApplyGutterSlideDamping(
-        ISpeedComponent* ParentComponent,
+        ISpeedComponent* ParentComponentBodyDomainStorage(),
         const bool MainSubBodyForDamping,
         const FVector& SupportNormal,
         const float Dt,
         const bool bEnableDamping,
         const TCHAR* Source)
     {
-        if (!ParentComponent || !MainSubBodyForDamping || !bEnableDamping || Dt <= 0.f)
+        if (!ParentComponentBodyDomainStorage() || !MainSubBodyForDamping || !bEnableDamping || Dt <= 0.f)
         {
             return;
         }
@@ -226,7 +227,7 @@ namespace
             return;
         }
 
-        const FVector V = ParentComponent->GetPhysCOMVelocity();
+        const FVector V = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
         const FVector VT = V - FVector::DotProduct(V, N) * N;
         const float TangentSpeed = VT.Size();
         const float MinSpeed = FMath::Max(0.f, CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread());
@@ -281,16 +282,16 @@ namespace
             return;
         }
 
-        ParentComponent->AddPhysVelocity(DeltaV);
+        ParentComponentBodyDomainStorage()->AddPhysVelocity(DeltaV);
 
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Warning,
                 TEXT("[CCDBoxGutterSlideDamping] Frame=%d Source=%s N=%s TangentSpeed=%.2f ClimbSpeed=%.2f DeltaV=%s ClimbDeltaV=%s Damping=%.2f MaxDelta=%.2f MaxClimb=%.2f Velocity=%s"),
-                ParentComponent->NumFrame(),
+                ParentComponentBodyDomainStorage()->NumFrame(),
                 Source,
                 *N.ToString(),
                 TangentSpeed,
@@ -469,20 +470,20 @@ UBoxSubBody::UBoxSubBody(const FObjectInitializer& ObjectInitializer):
     , ShowFlags(ESFIM_All0)
 #endif // WITH_EDITOR
 {
-	SubBodyType = ESubBodyType::Hitbox;
+	SubBodyTypeBodyDomainStorage() = ESubBodyType::Hitbox;
     bUseEditorCompositing = true;
-    BoxExtent = FVector(32.f, 32.f, 32.f);
+    BoxExtentBoxDomainStorage() = FVector(32.f, 32.f, 32.f);
 }
 
 void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
 {
 	Super::Initialize(InParentComponent);
-	if (ParentComponent)
+	if (ParentComponentBodyDomainStorage())
 	{
-		SubBodyConfig Config = ParentComponent->GetSubBodyConfig(*this);
+		SubBodyConfig Config = ParentComponentBodyDomainStorage()->GetSubBodyConfig(*this);
         if (Config.bValid)
         {
-            BoxExtent = Config.BoxExtent;
+            BoxExtentBoxDomainStorage() = Config.BoxExtent;
 			InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
         }
         else
@@ -494,18 +495,18 @@ void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
 
 FVector UBoxSubBody::GetStaticRestingReaction(const Speed::IStaticCollisionWorld& World, double* StopAfterSeconds) const
 {
-    if (!ParentComponent || !HasToApplyRestForce()) return FVector::ZeroVector;
+    if (!ParentComponentBodyDomainStorage() || !HasToApplyRestForce()) return FVector::ZeroVector;
     Speed::FBoxRestingSupport Support;
-    if (!EvaluateStaticBoxSupport(World, ParentComponent->GetPhysAcceleration(), Support, true,
-        ParentComponent->GetStaticSupportFrameHorizon())) return FVector::ZeroVector;
+    if (!EvaluateStaticBoxSupport(World, ParentComponentBodyDomainStorage()->GetPhysAcceleration(), Support, true,
+        ParentComponentBodyDomainStorage()->GetStaticSupportFrameHorizon())) return FVector::ZeroVector;
     if (StopAfterSeconds) *StopAfterSeconds = Support.StopAfterSeconds;
     return Support.ResultantAcceleration;
 }
 
 double UBoxSubBody::GetStaticSupportStopTimeCandidate() const
 {
-    if (!ParentComponent || !HasToApplyRestForce() || GetDynamicFriction() <= 0) return TNumericLimits<double>::Max();
-    const SKinematic& State = ParentComponent->GetKinematicState();
+    if (!ParentComponentBodyDomainStorage() || !HasToApplyRestForce() || GetDynamicFriction() <= 0) return TNumericLimits<double>::Max();
+    const SKinematic& State = ParentComponentBodyDomainStorage()->GetKinematicState();
     const double Load = State.Acceleration.Size(), Speed = State.Velocity.Size();
     if (Load == 0 || Speed == 0 || !State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero() ||
         FVector::DotProduct(State.Velocity, State.Acceleration) != 0) return TNumericLimits<double>::Max();
@@ -514,7 +515,7 @@ double UBoxSubBody::GetStaticSupportStopTimeCandidate() const
 
 bool UBoxSubBody::HasExactStaticRestingSupport(const Speed::IStaticCollisionWorld& World, const FVector& Load) const
 {
-    if (!ParentComponent) return false;
+    if (!ParentComponentBodyDomainStorage()) return false;
     Speed::FBoxRestingSupport Support;
     return HasToApplyRestForce() && EvaluateStaticBoxSupport(World, Load, Support, true);
 }
@@ -526,8 +527,8 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
-            UE_LOG(BoxSubBodyLog, Display, TEXT("[CurrentHullContactDecision] frame=%u resolved=%d admitted=%d reason=%s source=%016llX surface=%016llX varying=%d error=%.17g feature=%d component=%d componentType=%d normalNorm=%.17g gapComputed=%d gap=%.17g roundoff=%.17g"),
-                ParentComponent ? ParentComponent->NumFrame() : 0u, LastResolvedGroundHitFrame, Accepted ? 1 : 0, Reason,
+            SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[CurrentHullContactDecision] frame=%u resolved=%d admitted=%d reason=%s source=%016llX surface=%016llX varying=%d error=%.17g feature=%d component=%d componentType=%d normalNorm=%.17g gapComputed=%d gap=%.17g roundoff=%.17g"),
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : 0u, LastResolvedGroundHitFrameBoxDomainStorage(), Accepted ? 1 : 0, Reason,
                 static_cast<unsigned long long>(GroundHitStorage().SourceId), static_cast<unsigned long long>(GroundHitStorage().SurfaceId),
                 GroundHitStorage().bSurfaceNormalMayVary ? 1 : 0, double(GroundHitStorage().GeometricErrorBoundCm),
                 static_cast<int32>(GroundHitStorage().ContactFeatureOther), GroundHitStorage().Component.IsValid() ? 1 : 0,
@@ -536,30 +537,30 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
 #endif
         return Accepted;
     };
-    if (!ParentComponent || LastResolvedGroundHitFrame < 0) return Decision(false, TEXT("no_owner_or_resolved_frame"));
-    const int32 Frame = static_cast<int32>(ParentComponent->NumFrame());
-    if (LastResolvedGroundHitFrame > Frame ||
+    if (!ParentComponentBodyDomainStorage() || LastResolvedGroundHitFrameBoxDomainStorage() < 0) return Decision(false, TEXT("no_owner_or_resolved_frame"));
+    const int32 Frame = static_cast<int32>(ParentComponentBodyDomainStorage()->NumFrame());
+    if (LastResolvedGroundHitFrameBoxDomainStorage() > Frame ||
         GroundHitStorage().SourceId == 0 || GroundHitStorage().SurfaceId == 0 ||
         GroundHitStorage().bSurfaceNormalMayVary || GroundHitStorage().GeometricErrorBoundCm != 0 ||
         GroundHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face ||
         !GroundHitStorage().Component.IsValid() || GroundHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic)
         return Decision(false, TEXT("frame_or_provider_metadata"));
-    const auto* World = ParentComponent->GetStaticCollisionWorldForFrame();
+    const auto* World = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame();
     if (!World) return Decision(false, TEXT("no_static_world"));
-    const auto Query = MakeSupportBoxQuery(ParentComponent->GetKinematicState());
+    const auto Query = MakeSupportBoxQuery(ParentComponentBodyDomainStorage()->GetKinematicState());
     const FVector N = GroundHitStorage().ImpactNormal;
     if (N.ContainsNaN() || GroundHitStorage().ImpactPoint.ContainsNaN() ||
         !FMath::IsNearlyEqual(N.SizeSquared(), 1.0, 32 * DBL_EPSILON)) return Decision(false, TEXT("nonfinite_or_nonunit_plane"));
-    const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + BoxExtent.GetMax());
+    const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
     const double Roundoff = 64.0 * DBL_EPSILON * Scale;
     FVector Vertices[8];
     double Gaps[8], MinimumGap = DBL_MAX;
     for (int32 Corner = 0; Corner < 8; ++Corner)
     {
         Vertices[Corner] = Query.Start + Query.Rotation.RotateVector(FVector(
-            (Corner & 1) ? BoxExtent.X : -BoxExtent.X,
-            (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y,
-            (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z));
+            (Corner & 1) ? BoxExtentBoxDomainStorage().X : -BoxExtentBoxDomainStorage().X,
+            (Corner & 2) ? BoxExtentBoxDomainStorage().Y : -BoxExtentBoxDomainStorage().Y,
+            (Corner & 4) ? BoxExtentBoxDomainStorage().Z : -BoxExtentBoxDomainStorage().Z));
         Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - GroundHitStorage().ImpactPoint, N);
         if (!FMath::IsFinite(Gaps[Corner])) return Decision(false, TEXT("nonfinite_corner_gap"));
         MinimumGap = FMath::Min(MinimumGap, Gaps[Corner]);
@@ -595,13 +596,13 @@ Speed::Analytic::FWorldQuery UBoxSubBody::MakeSupportBoxQuery(const SKinematic& 
 {
     // Read current COM state, not a recorded frame or a previous contact pose.
     SKinematic Origin = State;
-    Origin.Location = State.Location - State.Rotation.RotateVector(ParentComponent->GetPhysCenterOfMassLocal());
+    Origin.Location = State.Location - State.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal());
     const SKinematic Box = GetKinematicsFromOwnerKS(Origin);
     Speed::Analytic::FWorldQuery Query;
     Query.Shape = Speed::Analytic::EQueryShape::Box;
     Query.Start = Query.End = Box.Location;
     Query.Rotation = Box.Rotation;
-    Query.HalfExtent = BoxExtent;
+    Query.HalfExtent = BoxExtentBoxDomainStorage();
     Query.TraceChannel = static_cast<uint8>(GetCollisionChannel());
     Query.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
     Query.bApplyCollisionFilter = true;
@@ -658,7 +659,7 @@ FVector FindBoxPlanarRoundoffCorrection(const Speed::IStaticCollisionWorld& Worl
 
 bool UBoxSubBody::CanApplyQuantizedPose(const Speed::IStaticCollisionWorld& World, const SKinematic& OwnerPose) const
 {
-    if (!ParentComponent) return true;
+    if (!ParentComponentBodyDomainStorage()) return true;
     auto Query = MakeSupportBoxQuery(OwnerPose);
     // Pose feasibility has the same static-object scope as penetration
     // projection, not CCD's two-sided trace response filter. A query-enabled
@@ -672,12 +673,12 @@ bool UBoxSubBody::CanApplyQuantizedPose(const Speed::IStaticCollisionWorld& Worl
     static const auto* Detail = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail"));
     static const auto* First = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail.FrameStart"));
     static const auto* Last = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("p.IAmSpeed.AnalyticWorld.StrictQueryDetail.FrameEnd"));
-    const int64 Frame = ParentComponent->NumFrame();
+    const int64 Frame = ParentComponentBodyDomainStorage()->NumFrame();
     if (Detail && First && Last && Detail->GetValueOnAnyThread() >= 2 &&
         (First->GetValueOnAnyThread() < 0 || Frame >= First->GetValueOnAnyThread()) &&
         (Last->GetValueOnAnyThread() < 0 || Frame <= Last->GetValueOnAnyThread()))
     {
-        UE_LOG(LogTemp, Display, TEXT("[BoxPoseQuantization] Frame=%lld Start=(%.17g,%.17g,%.17g) Rotation=(%.17g,%.17g,%.17g,%.17g) HalfExtent=(%.17g,%.17g,%.17g) Domain=%.17g Hit=%d Depth=%.17g Primitive=%016llX"),
+        SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[BoxPoseQuantization] Frame=%lld Start=(%.17g,%.17g,%.17g) Rotation=(%.17g,%.17g,%.17g,%.17g) HalfExtent=(%.17g,%.17g,%.17g) Domain=%.17g Hit=%d Depth=%.17g Primitive=%016llX"),
             Frame, Query.Start.X, Query.Start.Y, Query.Start.Z,
             Query.Rotation.X, Query.Rotation.Y, Query.Rotation.Z, Query.Rotation.W,
             Query.HalfExtent.X, Query.HalfExtent.Y, Query.HalfExtent.Z, Query.DomainTolerance,
@@ -694,8 +695,8 @@ bool UBoxSubBody::EvaluateStaticBoxSupport(const Speed::IStaticCollisionWorld& W
     bool bIncludeMotion, double HorizonSeconds) const
 {
     OutSupport = {};
-    if (!ParentComponent) return false;
-    const SKinematic& State = ParentComponent->GetKinematicState();
+    if (!ParentComponentBodyDomainStorage()) return false;
+    const SKinematic& State = ParentComponentBodyDomainStorage()->GetKinematicState();
     const auto Query = MakeSupportBoxQuery(State);
     return !bIncludeMotion || State.Velocity.IsZero()
         ? Speed::TryBuildBoxRestingSupport(World, Query, State.Location, ExternalAcceleration, OutSupport)
@@ -711,10 +712,10 @@ void UBoxSubBody::PostPhysicsUpdate()
 
 bool UBoxSubBody::PublishExactStaticSupport()
 {
-    const Speed::IStaticCollisionWorld* World = ParentComponent ? ParentComponent->GetStaticCollisionWorldForFrame() : nullptr;
-    if (!World || !HasToApplyRestForce() || ParentComponent->IsFrozen()) return false;
-    const SKinematic& State = ParentComponent->GetKinematicState();
-    const FVector Load = ParentComponent->GetNominalGravityAcceleration();
+    const Speed::IStaticCollisionWorld* World = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() : nullptr;
+    if (!World || !HasToApplyRestForce() || ParentComponentBodyDomainStorage()->IsFrozen()) return false;
+    const SKinematic& State = ParentComponentBodyDomainStorage()->GetKinematicState();
+    const FVector Load = ParentComponentBodyDomainStorage()->GetNominalGravityAcceleration();
     if (Load.IsZero() || !State.AngularVelocity.IsZero() || FVector::DotProduct(State.Velocity, Load) != 0) return false;
     Speed::FBoxRestingSupport Support;
     if (!EvaluateStaticBoxSupport(*World, Load, Support, true)) return false;
@@ -725,15 +726,15 @@ bool UBoxSubBody::PublishExactStaticSupport()
     // A stationary query can correctly report no sweep impact at an exterior
     // representable pose. The four finite support witnesses still establish
     // a passive contact. Publish that fact without an impulse or gameplay hit.
-    GroundHitStorage() = SHitResult::FromAnalyticHit(Support.ProviderWitness, 0, Source.Get(), ParentComponent->NumFrame());
+    GroundHitStorage() = SHitResult::FromAnalyticHit(Support.ProviderWitness, 0, Source.Get(), ParentComponentBodyDomainStorage()->NumFrame());
     GroundHitStorage().ContactFeatureThis = Speed::EContactFeatureKind::Face;
-    GroundPlaneN = Support.Normal;
-    GroundPlanePointWS = Support.Points[0];
-    GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, GroundPlaneN);
-    GroundComp = Source;
-    bGroundPlaneValid = bHasGroundContact = true;
-    CurrentGroundContactsWS.Reset(4);
-    for (const FVector& P : Support.Points) CurrentGroundContactsWS.Add(P);
+    GroundPlaneNBoxDomainStorage() = Support.Normal;
+    GroundPlanePointWSBoxDomainStorage() = Support.Points[0];
+    GroundPlaneDBoxDomainStorage() = FVector::DotProduct(GroundPlanePointWSBoxDomainStorage(), GroundPlaneNBoxDomainStorage());
+    GroundCompBoxDomainStorage() = Source;
+    bGroundPlaneValidBoxDomainStorage() = bHasGroundContactBoxDomainStorage() = true;
+    CurrentGroundContactsWSBoxDomainStorage().Reset(4);
+    for (const FVector& P : Support.Points) CurrentGroundContactsWSBoxDomainStorage().Add(P);
     return true;
 }
 
@@ -747,8 +748,8 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
     const bool bContinueRoofTraversalSupport =
         bVariableNormalSupportReady &&
         HasRoofSurfaceTraversalSupport() &&
-        bGroundPlaneValid &&
-        GroundComp.IsValid();
+        bGroundPlaneValidBoxDomainStorage() &&
+        GroundCompBoxDomainStorage().IsValid();
 	const bool bNativeAnalyticEstablishedContact =
 		bContinueRoofTraversalSupport &&
 		UsesNativeAnalyticEstablishedContact();
@@ -771,49 +772,49 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
     if (bContinueRoofTraversalSupport && GroundHitStorage().SourceId != 0 &&
         GroundHitStorage().SurfaceId != 0)
     {
-        EstablishedSupportSourceId = GroundHitStorage().SourceId;
-        EstablishedSupportSurfaceId = GroundHitStorage().SurfaceId;
+        EstablishedSupportSourceIdBoxDomainStorage() = GroundHitStorage().SourceId;
+        EstablishedSupportSurfaceIdBoxDomainStorage() = GroundHitStorage().SurfaceId;
     }
 
-    PreviousFrameGroundContactsWS.Reset();
-    if (bHasGroundContact && CurrentGroundContactsWS.Num() > 0)
+    PreviousFrameGroundContactsWSBoxDomainStorage().Reset();
+    if (bHasGroundContactBoxDomainStorage() && CurrentGroundContactsWSBoxDomainStorage().Num() > 0)
     {
-        PreviousFrameGroundContactsWS = CurrentGroundContactsWS;
+        PreviousFrameGroundContactsWSBoxDomainStorage() = CurrentGroundContactsWSBoxDomainStorage();
     }
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
-        (bHasGroundContact ||
-            CurrentGroundContactsWS.Num() > 0 ||
-            PreviousFrameGroundContactsWS.Num() > 0 ||
-            PrevGroundContactsLS.Num() > 0 ||
-            bEdgeSupportLatched))
+        (bHasGroundContactBoxDomainStorage() ||
+            CurrentGroundContactsWSBoxDomainStorage().Num() > 0 ||
+            PreviousFrameGroundContactsWSBoxDomainStorage().Num() > 0 ||
+            PrevGroundContactsLSBoxDomainStorage().Num() > 0 ||
+            bEdgeSupportLatchedBoxDomainStorage()))
     {
-        UE_LOG(
+        SPEED_NATIVE_LOG(
             BoxSubBodyLog,
             Log,
             TEXT("[ARContact.Reset] Frame=%d HasCurrent=%d Current=%d CachedPrev=%d PrevLS=%d Latched=%d LatchedLS=%d PlaneValid=%d GroundComp=%s"),
-            ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
-            bHasGroundContact ? 1 : 0,
-            CurrentGroundContactsWS.Num(),
-            PreviousFrameGroundContactsWS.Num(),
-            PrevGroundContactsLS.Num(),
-            bEdgeSupportLatched ? 1 : 0,
-            LatchedEdgeContactsLS.Num(),
-            bGroundPlaneValid ? 1 : 0,
-            GroundComp.IsValid() ? *GroundComp->GetName() : TEXT("None"));
+            ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
+            bHasGroundContactBoxDomainStorage() ? 1 : 0,
+            CurrentGroundContactsWSBoxDomainStorage().Num(),
+            PreviousFrameGroundContactsWSBoxDomainStorage().Num(),
+            PrevGroundContactsLSBoxDomainStorage().Num(),
+            bEdgeSupportLatchedBoxDomainStorage() ? 1 : 0,
+            LatchedEdgeContactsLSBoxDomainStorage().Num(),
+            bGroundPlaneValidBoxDomainStorage() ? 1 : 0,
+            GroundCompBoxDomainStorage().IsValid() ? *GroundCompBoxDomainStorage()->GetName() : TEXT("None"));
     }
 #endif
 
-    HitCountThisFrame.Empty();
-    CurrentGroundContactsWS.Reset();
-    CurrentGroundNormalsWS.Reset();
+    HitCountThisFrameBoxDomainStorage().Empty();
+    CurrentGroundContactsWSBoxDomainStorage().Reset();
+    CurrentGroundNormalsWSBoxDomainStorage().Reset();
 
-    bGroundHitFromSweep = false;
-    bHasGroundContact =
+    bGroundHitFromSweepBoxDomainStorage() = false;
+    bHasGroundContactBoxDomainStorage() =
         bContinueRoofTraversalSupport &&
-        bGroundPlaneValid;
-    bFreshEdgeRecoverCandidate = false;
+        bGroundPlaneValidBoxDomainStorage();
+    bFreshEdgeRecoverCandidateBoxDomainStorage() = false;
 }
 
 bool UBoxSubBody::UsesNativeAnalyticEstablishedContact() const
@@ -826,11 +827,11 @@ bool UBoxSubBody::UsesNativeAnalyticEstablishedContact() const
 
 bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
 {
-    if (!ParentComponent ||
+    if (!ParentComponentBodyDomainStorage() ||
         !GroundHitStorage().bSurfaceNormalMayVary ||
         GroundHitStorage().SourceId == 0 || GroundHitStorage().SurfaceId == 0 ||
         GroundHitStorage().CanonicalGroupId == 0 ||
-        !GroundComp.IsValid())
+        !GroundCompBoxDomainStorage().IsValid())
     {
         return false;
     }
@@ -841,17 +842,17 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
         return false;
     }
 
-    const FVector PreviousNormal = GroundPlaneN.GetSafeNormal();
+    const FVector PreviousNormal = GroundPlaneNBoxDomainStorage().GetSafeNormal();
     if (PreviousNormal.IsNearlyZero())
     {
         return false;
     }
 
-    const SKinematic State = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    const SKinematic State = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
     const FVector Start = State.Location;
     constexpr float InitialOverlapShellCm = 0.05f;
     const float StepSeconds = FMath::Max(0.f, Delta);
-    const float BoxVertexRadiusCm = BoxExtent.Size();
+    const float BoxVertexRadiusCm = BoxExtentBoxDomainStorage().Size();
     const float LinearTravelBoundCm =
         (State.Velocity.Size() +
             0.5f * State.Acceleration.Size() * StepSeconds) * StepSeconds;
@@ -899,7 +900,7 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
     }
 
     SHitResult RefreshedHit =
-        SHitResult::FromAnalyticHit(AnalyticHit, Delta, GroundComp.Get());
+        SHitResult::FromAnalyticHit(AnalyticHit, Delta, GroundCompBoxDomainStorage().Get());
     // This is already an admitted analytic witness. Keep its point, normal,
     // time and error bound together, just as for the initial CCD contact.
     // Absolute-coordinate rounding would move a translated support surface.
@@ -909,10 +910,10 @@ bool UBoxSubBody::RefreshVariableNormalGroundSupport(const float Delta)
     }
 
     GroundHitStorage() = RefreshedHit;
-    GroundPlaneN = RefreshedHit.ImpactNormal;
-    GroundPlanePointWS = RefreshedHit.ImpactPoint;
-    GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, GroundPlaneN);
-    bGroundPlaneValid = true;
+    GroundPlaneNBoxDomainStorage() = RefreshedHit.ImpactNormal;
+    GroundPlanePointWSBoxDomainStorage() = RefreshedHit.ImpactPoint;
+    GroundPlaneDBoxDomainStorage() = FVector::DotProduct(GroundPlanePointWSBoxDomainStorage(), GroundPlaneNBoxDomainStorage());
+    bGroundPlaneValidBoxDomainStorage() = true;
     return true;
 }
 
@@ -923,19 +924,19 @@ bool UBoxSubBody::ProjectEstablishedStaticContact(const float& Delta)
 
 bool UBoxSubBody::RequiresUnquantizedContactPose() const
 {
-    return ParentComponent && ParentComponent->GetStaticCollisionWorldForFrame() &&
-        LastResolvedGroundHitFrame == static_cast<int32>(ParentComponent->NumFrame()) &&
-        GroundComp.IsValid() && GroundHitStorage().SourceId != 0 &&
+    return ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() &&
+        LastResolvedGroundHitFrameBoxDomainStorage() == static_cast<int32>(ParentComponentBodyDomainStorage()->NumFrame()) &&
+        GroundCompBoxDomainStorage().IsValid() && GroundHitStorage().SourceId != 0 &&
         !GroundHitStorage().bSurfaceNormalMayVary && GroundHitStorage().GeometricErrorBoundCm == 0 &&
         GroundHitStorage().ContactFeatureOther == Speed::EContactFeatureKind::Face;
 }
 
 bool UBoxSubBody::RequiresEstablishedStaticContactTransport() const
 {
-	const bool bHasEstablishedAnalyticContact = ParentComponent && bHasGroundContact &&
+	const bool bHasEstablishedAnalyticContact = ParentComponentBodyDomainStorage() && bHasGroundContactBoxDomainStorage() &&
 		GroundHitStorage().bSurfaceNormalMayVary && GroundHitStorage().SourceId != 0 &&
 		GroundHitStorage().SurfaceId != 0 && GroundHitStorage().CanonicalGroupId != 0 &&
-		GroundComp.IsValid() &&
+		GroundCompBoxDomainStorage().IsValid() &&
 		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend();
 	if (!bHasEstablishedAnalyticContact)
 	{
@@ -943,13 +944,13 @@ bool UBoxSubBody::RequiresEstablishedStaticContactTransport() const
 	}
 
 	return CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread() == 0 ||
-		!ParentComponent->HasCompatibleEstablishedStaticSupport(GroundHitStorage());
+		!ParentComponentBodyDomainStorage()->HasCompatibleEstablishedStaticSupport(GroundHitStorage());
 }
 
 bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     const float& Delta, const bool bProjectVelocity)
 {
-    if (!ParentComponent || Delta < 0.0f ||
+    if (!ParentComponentBodyDomainStorage() || Delta < 0.0f ||
         !Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend())
     {
         return false;
@@ -958,8 +959,8 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     // Translating the whole rigid body to satisfy the box alone can lift an
     // established wheel pivot. Let the coupled pose transaction satisfy both
     // manifolds; declining only the impulse after this translation is too late.
-    const bool bExactPlanarEnabled = ParentComponent->GetStaticCollisionWorldForFrame() != nullptr &&
-        !ParentComponent->HasActivePhysicalConstraintsOtherThan(this);
+    const bool bExactPlanarEnabled = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() != nullptr &&
+        !ParentComponentBodyDomainStorage()->HasActivePhysicalConstraintsOtherThan(this);
     const auto IsUsableSeed = [bExactPlanarEnabled](const SHitResult& Hit)
     {
         return Hit.SourceId != 0 && Hit.SurfaceId != 0 &&
@@ -967,7 +968,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
                 (bExactPlanarEnabled && !Hit.bSurfaceNormalMayVary && Hit.GeometricErrorBoundCm == 0 &&
                     Hit.ContactFeatureOther == Speed::EContactFeatureKind::Face));
     };
-    const bool bHasPersistentSeed = bHasGroundContact && IsUsableSeed(GroundHitStorage()) && GroundComp.IsValid();
+    const bool bHasPersistentSeed = bHasGroundContactBoxDomainStorage() && IsUsableSeed(GroundHitStorage()) && GroundCompBoxDomainStorage().IsValid();
     const bool bHasTransientSeed = !bHasPersistentSeed &&
         CurrentHitStorage().bHit && IsUsableSeed(CurrentHitStorage()) && CurrentHitStorage().Component.IsValid() &&
         CurrentHitStorage().Component->GetMobility() == EComponentMobility::Static;
@@ -977,14 +978,14 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         {
             // A valid face may be passive (no impact seed). Never raise it as
             // tangential travel changes the world-coordinate roundoff scale.
-            if (ParentComponent->HasExactStaticFaceSupport()) return false;
+            if (ParentComponentBodyDomainStorage()->HasExactStaticFaceSupport()) return false;
             const FVector Correction = FindBoxPlanarRoundoffCorrection(
-                *ParentComponent->GetStaticCollisionWorldForFrame(), MakeSupportBoxQuery(ParentComponent->GetKinematicState()),
-                !ParentComponent->GetPhysCOMVelocity().IsZero() || !ParentComponent->GetPhysAngularVelocity().IsZero());
+                *ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame(), MakeSupportBoxQuery(ParentComponentBodyDomainStorage()->GetKinematicState()),
+                !ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().IsZero() || !ParentComponentBodyDomainStorage()->GetPhysAngularVelocity().IsZero());
             if (!Correction.IsZero())
             {
-                ParentComponent->SetPhysCOMLocation(ParentComponent->GetPhysCOMLocation() + Correction);
-                ParentComponent->UpdateSubBodiesKinematics();
+                ParentComponentBodyDomainStorage()->SetPhysCOMLocation(ParentComponentBodyDomainStorage()->GetPhysCOMLocation() + Correction);
+                ParentComponentBodyDomainStorage()->UpdateSubBodiesKinematics();
                 return true;
             }
         }
@@ -1011,7 +1012,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     Query.Start = FVector3d(PredictedState.Location);
     Query.End = Query.Start;
     Query.Rotation = FQuat4d(PredictedState.Rotation);
-    Query.HalfExtent = FVector3d(BoxExtent);
+    Query.HalfExtent = FVector3d(BoxExtentBoxDomainStorage());
     Query.TraceChannel = static_cast<uint8>(GetCollisionChannel());
     Query.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
 
@@ -1025,7 +1026,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     if (bExactPlanarSeed) Query.DomainTolerance = 0;
 	Query.ReferenceNormal = FVector3d(
         bHasPersistentSeed
-            ? GroundPlaneN.GetSafeNormal()
+            ? GroundPlaneNBoxDomainStorage().GetSafeNormal()
             : ProjectionSeed.ImpactNormal.GetSafeNormal());
 	Query.MinimumReferenceNormalDot = 0.9;
 
@@ -1046,13 +1047,13 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         for (int32 I = 0; I < 8; ++I)
         {
             const FVector P = Query.Start + Query.Rotation.RotateVector(FVector(
-                (I & 1) ? BoxExtent.X : -BoxExtent.X, (I & 2) ? BoxExtent.Y : -BoxExtent.Y,
-                (I & 4) ? BoxExtent.Z : -BoxExtent.Z));
+                (I & 1) ? BoxExtentBoxDomainStorage().X : -BoxExtentBoxDomainStorage().X, (I & 2) ? BoxExtentBoxDomainStorage().Y : -BoxExtentBoxDomainStorage().Y,
+                (I & 4) ? BoxExtentBoxDomainStorage().Z : -BoxExtentBoxDomainStorage().Z));
             const double D = FVector::DotProduct(P - ProjectionSeed.ImpactPoint, N);
             if (D < Gap) { Gap = D; Lowest = P; }
         }
-        const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + BoxExtent.GetMax());
-        const bool bRotating = !ParentComponent->GetPhysAngularVelocity().IsZero();
+        const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
+        const bool bRotating = !ParentComponentBodyDomainStorage()->GetPhysAngularVelocity().IsZero();
         // Different inlined scalar/SIMD corner evaluations may fuse different
         // operations. Reserve exterior roundoff while transporting rotation;
         // never move a certified stationary face merely to add this reserve.
@@ -1082,8 +1083,8 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         if (bExactPlanarSeed && PublishExactStaticSupport()) return false;
         if (bHasPersistentSeed)
         {
-            bHasGroundContact = false;
-            bGroundPlaneValid = false;
+            bHasGroundContactBoxDomainStorage() = false;
+            bGroundPlaneValidBoxDomainStorage() = false;
         }
         return false;
     }
@@ -1092,19 +1093,19 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     if (bExactPlanarSeed && !Correction.IsZero())
     {
         const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + Query.HalfExtent.GetMax());
-        const double RoundingFactor = ParentComponent->GetPhysAngularVelocity().IsZero() ? 2.0 : 16.0;
+        const double RoundingFactor = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity().IsZero() ? 2.0 : 16.0;
         Correction += FVector(Projection.Hit.Normal) * (RoundingFactor * DBL_EPSILON * Scale);
     }
     const bool bHasCorrection = bExactPlanarSeed ? !Correction.IsZero() : !Correction.IsNearlyZero();
     if (bHasCorrection)
     {
-        ParentComponent->SetPhysCOMLocation(
-            ParentComponent->GetPhysCOM() + Correction);
+        ParentComponentBodyDomainStorage()->SetPhysCOMLocation(
+            ParentComponentBodyDomainStorage()->GetPhysCOM() + Correction);
     }
 
     if (bExactPlanarSeed)
     {
-        ParentComponent->UpdateSubBodiesKinematics();
+        ParentComponentBodyDomainStorage()->UpdateSubBodiesKinematics();
         // Position feasibility is separate from the event impulse. Re-solve
         // normal velocities after constrained transport, without replaying a
         // gameplay impact notification or inventing a new preferred face.
@@ -1134,14 +1135,14 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
                 GetVelocityAtPoint(ContactPoint), Normal);
             if (!Normal.IsNearlyZero() && NormalSpeed < 0.0f)
             {
-                ParentComponent->AddPhysVelocity(-NormalSpeed * Normal);
+                ParentComponentBodyDomainStorage()->AddPhysVelocity(-NormalSpeed * Normal);
             }
         }
         return !Correction.IsNearlyZero();
     }
 
     SHitResult ProjectedHit = SHitResult::FromAnalyticHit(
-        Projection.Hit, Delta, GroundComp.Get());
+        Projection.Hit, Delta, GroundCompBoxDomainStorage().Get());
     // Preserve the projected analytic witness as a coherent geometric tuple.
     // A world-coordinate grid moves its support point relative to the body.
     ProjectedHit.PenetrationDepth =
@@ -1152,12 +1153,12 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         return !Correction.IsNearlyZero();
     }
 
-	const FVector PreviousNormal = GroundPlaneN.GetSafeNormal();
+	const FVector PreviousNormal = GroundPlaneNBoxDomainStorage().GetSafeNormal();
     GroundHitStorage() = ProjectedHit;
-    GroundPlaneN = Normal;
-    GroundPlanePointWS = ProjectedHit.ImpactPoint;
-    GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, GroundPlaneN);
-    bGroundPlaneValid = true;
+    GroundPlaneNBoxDomainStorage() = Normal;
+    GroundPlanePointWSBoxDomainStorage() = ProjectedHit.ImpactPoint;
+    GroundPlaneDBoxDomainStorage() = FVector::DotProduct(GroundPlanePointWSBoxDomainStorage(), GroundPlaneNBoxDomainStorage());
+    bGroundPlaneValidBoxDomainStorage() = true;
 
     // Enforce non-closing velocity at the native analytical witness. For a
 	// varying established surface, transport linear velocity between successive
@@ -1172,25 +1173,25 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         Projection.ResidualPenetrationDepth <= ResidualToleranceCm &&
         NormalSpeed > ReleaseNormalSpeedCmS)
     {
-        bHasGroundContact = false;
-        bGroundPlaneValid = false;
+        bHasGroundContactBoxDomainStorage() = false;
+        bGroundPlaneValidBoxDomainStorage() = false;
         return false;
     }
     bool bVelocityProjected = false;
     const bool bDeferVelocityTransportToSubordinateSupport =
 		CVarIAmSpeedBoxDeferSupportedTransitionVelocityTransport.GetValueOnAnyThread() != 0 &&
-		ParentComponent->HasCompatibleEstablishedStaticSupport(ProjectedHit);
+		ParentComponentBodyDomainStorage()->HasCompatibleEstablishedStaticSupport(ProjectedHit);
     if (bProjectVelocity && NormalSpeed < 0.0f &&
 		!bDeferVelocityTransportToSubordinateSupport)
     {
 		const FVector RotationalPointVelocity =
 			GetVelocityAtPoint(ContactPoint) -
-			ParentComponent->GetPhysCOMVelocity();
+			ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
 		const FVector TransportedLinearVelocity =
 			Speed::TransportEstablishedContactVelocity(
-				ParentComponent->GetPhysCOMVelocity(),
+				ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(),
 				RotationalPointVelocity, PreviousNormal, Normal);
-		ParentComponent->SetPhysCOMVelocity(TransportedLinearVelocity);
+		ParentComponentBodyDomainStorage()->SetPhysCOMVelocity(TransportedLinearVelocity);
 		bVelocityProjected = true;
     }
 
@@ -1208,27 +1209,27 @@ void UBoxSubBody::AcceptHit()
     if (Cast<USphereSubBody>(CurrentHitStorage().SubBody.Get()))
     {
         SphereHitStorage() = CurrentHitStorage();
-        LastResolvedSphereHit = CurrentHitStorage();
-        LastResolvedSphereHitFrame = ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE;
+        LastResolvedSphereHitBoxDomainStorage() = CurrentHitStorage();
+        LastResolvedSphereHitFrameBoxDomainStorage() = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE;
     }
 
     UPrimitiveComponent* Comp = CurrentHitStorage().Component.Get();
     if (CurrentHitStorage().Component.IsValid() && CurrentHitStorage().Component->GetMobility() == EComponentMobility::Static)
     {
-        uint32& Count = HitCountThisFrame.FindOrAdd(Comp);
+        uint32& Count = HitCountThisFrameBoxDomainStorage().FindOrAdd(Comp);
         Count++;
 
         // Exact vertex identities already use the World per-pair resolution budget.
         // Keep counting every hit; all other contacts retain the component cap.
-        if (Count >= MaxHitsPerComponentPerFrame &&
+        if (Count >= MaxHitsPerComponentPerFrameBoxDomainStorage() &&
             !(CanInitializeRepeatedContact(CurrentHitStorage()) || CanResolveRepeatedContact(CurrentHitStorage())))
         {
-            IgnoredComponents.AddUnique(Comp);
+            IgnoredComponentsBodyDomainStorage().AddUnique(Comp);
         }
     }
     else
     {
-        IgnoredComponents.AddUnique(Comp);
+        IgnoredComponentsBodyDomainStorage().AddUnique(Comp);
     }
 
     if (CurrentHitStorage().SubBody.IsValid())
@@ -1302,18 +1303,18 @@ bool UBoxSubBody::GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const
 // =====================================================
 bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const SHitResult& SweepSphereHit, SHitResult& OutHit, float& OutTOI) const
 {
-    if (!ParentComponent || !LastResolvedSphereHit.bBlockingHit || !LastResolvedSphereHit.SubBody.IsValid())
+    if (!ParentComponentBodyDomainStorage() || !LastResolvedSphereHitBoxDomainStorage().bBlockingHit || !LastResolvedSphereHitBoxDomainStorage().SubBody.IsValid())
     {
         return false;
     }
 
-    const int32 CurrentFrame = ParentComponent->NumFrame();
-    if (LastResolvedSphereHitFrame == INDEX_NONE || CurrentFrame - LastResolvedSphereHitFrame != 1)
+    const int32 CurrentFrame = ParentComponentBodyDomainStorage()->NumFrame();
+    if (LastResolvedSphereHitFrameBoxDomainStorage() == INDEX_NONE || CurrentFrame - LastResolvedSphereHitFrameBoxDomainStorage() != 1)
     {
         return false;
     }
 
-    USphereSubBody* OtherSphere = Cast<USphereSubBody>(LastResolvedSphereHit.SubBody.Get());
+    USphereSubBody* OtherSphere = Cast<USphereSubBody>(LastResolvedSphereHitBoxDomainStorage().SubBody.Get());
     if (!OtherSphere || ComponentHasBeenIgnored(*OtherSphere))
     {
         return false;
@@ -1349,7 +1350,7 @@ bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const
     FVector N = (ContactPoint - OtherSphereShape.Center).GetSafeNormal();
     if (N.IsNearlyZero())
     {
-        N = LastResolvedSphereHit.ImpactNormal.GetSafeNormal();
+        N = LastResolvedSphereHitBoxDomainStorage().ImpactNormal.GetSafeNormal();
     }
     if (N.IsNearlyZero())
     {
@@ -1395,7 +1396,7 @@ bool UBoxSubBody::TryBuildPersistentSphereContact(bool bHasSweepSphereHit, const
 
 bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {
-    if (!ParentComponent)
+    if (!ParentComponentBodyDomainStorage())
     {
         return false;
     }
@@ -1411,7 +1412,7 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
     SHitResult BoxHitresult;
     SHitResult SphereHitresult;
 	SHitResult WheelHitresult;
-    bool bHitGround = !ParentComponent->IsPrescribedMotion() && SweepVsGround(GetWorld(), GroundHitresult, RemainingDelta, TOI_ground);
+    bool bHitGround = !ParentComponentBodyDomainStorage()->IsPrescribedMotion() && SweepVsGround(GetWorld(), GroundHitresult, RemainingDelta, TOI_ground);
     bool bHitBox = SweepVsBoxes(GetWorld(), BoxHitresult, RemainingDelta, TOI_Box);
     bool bHitSphere = SweepVsSpheres(GetWorld(), SphereHitresult, RemainingDelta, TOI_Sphere);
     bool bHitWheel = SweepVsWheels(GetWorld(), WheelHitresult, RemainingDelta, TOI_Wheel);
@@ -1439,7 +1440,7 @@ bool UBoxSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
             // DO NOT recreate contact if separating
             if (vN <= 0.f)
             {
-                if (!IgnoredComponents.Contains(OldGroundHit.Component))
+                if (!IgnoredComponentsBodyDomainStorage().Contains(OldGroundHit.Component))
                 {
                     OutTOI = 0.0f;
                     FutureHitStorage() = OldGroundHit; // reuse current ground hit
@@ -1503,7 +1504,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
         0.5f * KinematicsStorage().Acceleration * Delta * Delta;
 
     SHitResult Hit;
-    bGroundHitFromSweep = false;
+    bGroundHitFromSweepBoxDomainStorage() = false;
     // SSBox CarBox(Kinematics.Location, BoxExtent, Kinematics.Rotation, Kinematics.Velocity, Kinematics.Acceleration, Kinematics.AngularVelocity, Kinematics.AngularAcceleration);
     // CarBox.DrawDebug(GetWorld());
     bool bFoundGroundHit = InternalSweep(World, Start, End, Hit, Delta);
@@ -1511,34 +1512,34 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
     {
         // An established plane still matters when the translational query
         // misses: rotation can bring a different vertex into contact.
-        if (ParentComponent->GetStaticCollisionWorldForFrame() && CurrentHitStorage().bBlockingHit &&
+        if (ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() && CurrentHitStorage().bBlockingHit &&
             !CurrentHitStorage().bSurfaceNormalMayVary && CurrentHitStorage().SourceId != 0 &&
-            LastResolvedGroundHitFrame == static_cast<int32>(ParentComponent->NumFrame()))
+            LastResolvedGroundHitFrameBoxDomainStorage() == static_cast<int32>(ParentComponentBodyDomainStorage()->NumFrame()))
         { Hit = CurrentHitStorage(); bFoundGroundHit = true; }
     }
 
     auto AddGroundNormal = [&](const FVector& Nnew)
         {
             const FVector nn = Nnew.GetSafeNormal();
-            for (const FVector& Nprev : CurrentGroundNormalsWS)
+            for (const FVector& Nprev : CurrentGroundNormalsWSBoxDomainStorage())
             {
                 if (FVector::DotProduct(nn, Nprev) > 0.995f) // ~5°
                     return; // already have essentially same normal
             }
-            CurrentGroundNormalsWS.Add(nn);
+            CurrentGroundNormalsWSBoxDomainStorage().Add(nn);
         };
 
 
     // A straight query returns a fraction of displacement, not of accelerated
     // time. Refine exact planar translation against the actual integrator and
     // keep the representable time on the non-penetrating side of the event.
-    bool bExactPlanarContact = bFoundGroundHit && ParentComponent &&
-        ParentComponent->GetStaticCollisionWorldForFrame() &&
+    bool bExactPlanarContact = bFoundGroundHit && ParentComponentBodyDomainStorage() &&
+        ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() &&
         !Hit.bSurfaceNormalMayVary && Hit.GeometricErrorBoundCm == 0 &&
         Hit.ContactFeatureOther == Speed::EContactFeatureKind::Face;
     if (bExactPlanarContact && !RefineExactPlanarTOI(Hit, Delta)) bFoundGroundHit = false;
-    const Speed::IStaticCollisionWorld* StaticWorld = ParentComponent->GetStaticCollisionWorldForFrame();
-    const SKinematic& OwnerState = ParentComponent->GetKinematicState();
+    const Speed::IStaticCollisionWorld* StaticWorld = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame();
+    const SKinematic& OwnerState = ParentComponentBodyDomainStorage()->GetKinematicState();
     if (StaticWorld && (!OwnerState.AngularVelocity.IsZero() || !OwnerState.AngularAcceleration.IsZero()))
     {
         // A fixed-orientation box sweep cannot discover rotation-only first
@@ -1548,7 +1549,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
         Broad.Shape = Speed::Analytic::EQueryShape::Sphere;
         Broad.Start = OwnerState.Location;
         Broad.End = OwnerState.Integrate(Delta).Location;
-        Broad.Radius = BoxExtent.Size() + (GetLocalOffset() - ParentComponent->GetPhysCenterOfMassLocal()).Size() +
+        Broad.Radius = BoxExtentBoxDomainStorage().Size() + (GetLocalOffset() - ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal()).Size() +
             OwnerState.Acceleration.Size() * (0.125 * double(Delta) * Delta);
         Broad.bApplyCollisionFilter = true; Broad.bAuthorityOnly = true; Broad.bIncludeCompactPatches = true;
         Broad.TraceChannel = static_cast<uint8>(GetCollisionChannel());
@@ -1586,7 +1587,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
         // centimetres far from the origin. Curved providers need the same
         // preservation as exact planes; no query tolerance is changed here.
         OutTOI = OutHit.TOI;
-        bGroundHitFromSweep = true;
+        bGroundHitFromSweepBoxDomainStorage() = true;
         AddGroundNormal(OutHit.ImpactNormal);
         return true;
     }
@@ -1595,7 +1596,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
 	OutTOI = OutHit.TOI;
     OutHit.ImpactPoint = Speed::QuantizeVectorCm(Hit.ImpactPoint, 0.1f); // 1 mm
     OutHit.PenetrationDepth = Speed::QuantizeScalar(Hit.PenetrationDepth, 0.01f);
-    bGroundHitFromSweep = true;
+    bGroundHitFromSweepBoxDomainStorage() = true;
     AddGroundNormal(OutHit.ImpactNormal);
     return true;
 }
@@ -1621,7 +1622,7 @@ bool UBoxSubBody::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& D
 
 void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 {
-    if (!CurrentHitStorage().bBlockingHit || !ParentComponent)
+    if (!CurrentHitStorage().bBlockingHit || !ParentComponentBodyDomainStorage())
         return;
 
     if(auto* Other=Cast<USolidSubBody>(CurrentHitStorage().SubBody.Get()))
@@ -1657,17 +1658,17 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 // ============================================================================
 void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 {
-    if (!ParentComponent) return;
+    if (!ParentComponentBodyDomainStorage()) return;
 
-    const int32 CurrentFrame = ParentComponent->NumFrame();
-    LastResolvedGroundHitFrame = CurrentFrame;
+    const int32 CurrentFrame = ParentComponentBodyDomainStorage()->NumFrame();
+    LastResolvedGroundHitFrameBoxDomainStorage() = CurrentFrame;
 
-    CompositeGroundNormal = BuildCompositeGroundNormal();
+    CompositeGroundNormalBoxDomainStorage() = BuildCompositeGroundNormal();
 
     const FVector RawN = CurrentHitStorage().ImpactNormal.GetSafeNormal();
     const float RawUpDot = FVector::DotProduct(RawN, FVector::UpVector);
-    const FVector VelBeforeResolve = ParentComponent->GetPhysCOMVelocity();
-    const FVector AngBeforeResolve = ParentComponent->GetPhysAngularVelocity();
+    const FVector VelBeforeResolve = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+    const FVector AngBeforeResolve = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity();
 
     SHitResult EffectiveHit = CurrentHitStorage();
     FVector EffectiveN = RawN;
@@ -1697,16 +1698,16 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
     const bool bSameRoofSurfaceComponent =
         EffectiveHit.Component.IsValid() &&
-        GroundComp.IsValid() &&
-        EffectiveHit.Component.Get() == GroundComp.Get();
+        GroundCompBoxDomainStorage().IsValid() &&
+        EffectiveHit.Component.Get() == GroundCompBoxDomainStorage().Get();
     if (bRoofSurfaceTraversalActive &&
         bSameRoofSurfaceComponent &&
         (EffectiveUpDot < 0.f ||
-            FVector::DotProduct(EffectiveN, GroundPlaneN.GetSafeNormal()) < 0.8f) &&
-        bGroundPlaneValid &&
-        GroundPlaneN.Z > 0.f)
+            FVector::DotProduct(EffectiveN, GroundPlaneNBoxDomainStorage().GetSafeNormal()) < 0.8f) &&
+        bGroundPlaneValidBoxDomainStorage() &&
+        GroundPlaneNBoxDomainStorage().Z > 0.f)
     {
-        EffectiveN = GroundPlaneN.GetSafeNormal();
+        EffectiveN = GroundPlaneNBoxDomainStorage().GetSafeNormal();
         EffectiveHit.ImpactNormal = EffectiveN;
         EffectiveUpDot = FVector::DotProduct(EffectiveN, FVector::UpVector);
     }
@@ -1723,9 +1724,9 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         EffectiveUpDot >= CandidateSupportUpDot ||
         bUpsideDownRoofSlideCandidate;
     const bool bHasLatchedEdgeSupport =
-        bEdgeSupportLatched &&
-        LatchedEdgeContactsLS.Num() == 2;
-    const bool bHasPreviousEdgeSupport = PrevGroundContactsLS.Num() == 2;
+        bEdgeSupportLatchedBoxDomainStorage() &&
+        LatchedEdgeContactsLSBoxDomainStorage().Num() == 2;
+    const bool bHasPreviousEdgeSupport = PrevGroundContactsLSBoxDomainStorage().Num() == 2;
 
     bool bIsSupportingContact = false;
     int32 PreviewSupportContacts = 0;
@@ -1737,7 +1738,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
             EffectiveN,
             KinematicsStorage().Location,
             KinematicsStorage().Rotation,
-            BoxExtent,
+            BoxExtentBoxDomainStorage(),
             PreviewPts,
             0.5f
         );
@@ -1765,14 +1766,14 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
             PreviewSupportContacts > 0 ||
             bHasLatchedEdgeSupport ||
             bHasPreviousEdgeSupport ||
-            bGroundPlaneValid ||
-            bEdgeSupportLatched))
+            bGroundPlaneValidBoxDomainStorage() ||
+            bEdgeSupportLatchedBoxDomainStorage()))
     {
-        UE_LOG(
+        SPEED_NATIVE_LOG(
             BoxSubBodyLog,
             Log,
             TEXT("[ARContact.ResolveGround] Frame=%d RawUpDot=%.3f EffUpDot=%.3f Promoted=%d RoofSlide=%d Candidate=%d Supporting=%d Preview=%d vN=%.2f Sweep=%d Current=%d PrevLS=%d Latched=%d LatchedLS=%d PlaneValid=%d N=%s HitP=%s"),
-            ParentComponent->NumFrame(),
+            ParentComponentBodyDomainStorage()->NumFrame(),
             RawUpDot,
             EffectiveUpDot,
             bPromotedWallToSupport ? 1 : 0,
@@ -1781,12 +1782,12 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
             bIsSupportingContact ? 1 : 0,
             PreviewSupportContacts,
             vN_atImpact,
-            bGroundHitFromSweep ? 1 : 0,
-            CurrentGroundContactsWS.Num(),
-            PrevGroundContactsLS.Num(),
-            bEdgeSupportLatched ? 1 : 0,
-            LatchedEdgeContactsLS.Num(),
-            bGroundPlaneValid ? 1 : 0,
+            bGroundHitFromSweepBoxDomainStorage() ? 1 : 0,
+            CurrentGroundContactsWSBoxDomainStorage().Num(),
+            PrevGroundContactsLSBoxDomainStorage().Num(),
+            bEdgeSupportLatchedBoxDomainStorage() ? 1 : 0,
+            LatchedEdgeContactsLSBoxDomainStorage().Num(),
+            bGroundPlaneValidBoxDomainStorage() ? 1 : 0,
             *EffectiveN.ToString(),
             *EffectiveHit.ImpactPoint.ToString());
     }
@@ -1858,9 +1859,9 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         bSameRoofSurfaceComponent &&
         EffectiveHit.bSurfaceNormalMayVary &&
         EffectiveHit.SourceId != 0 && EffectiveHit.SurfaceId != 0 &&
-        EffectiveHit.SourceId == EstablishedSupportSourceId &&
-        EffectiveHit.SurfaceId == EstablishedSupportSurfaceId &&
-        FVector::DotProduct(EffectiveN, GroundPlaneN.GetSafeNormal()) > 0.0f;
+        EffectiveHit.SourceId == EstablishedSupportSourceIdBoxDomainStorage() &&
+        EffectiveHit.SurfaceId == EstablishedSupportSurfaceIdBoxDomainStorage() &&
+        FVector::DotProduct(EffectiveN, GroundPlaneNBoxDomainStorage().GetSafeNormal()) > 0.0f;
     if (bAnalyticSemanticSurfaceContinuation)
     {
         // A smooth provider transition on one semantic surface is a
@@ -1870,25 +1871,25 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         // substep is instead handled by the native established-contact
         // projection in IntegrateKinematics.
         GroundHitStorage() = EffectiveHit;
-        GroundPlaneN = EffectiveN;
-        GroundPlanePointWS = EffectiveHit.ImpactPoint;
-        GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, GroundPlaneN);
-        GroundComp = EffectiveHit.Component;
-        bGroundPlaneValid = true;
-        bHasGroundContact = true;
-        CurrentGroundContactsWS = PreviewPts;
+        GroundPlaneNBoxDomainStorage() = EffectiveN;
+        GroundPlanePointWSBoxDomainStorage() = EffectiveHit.ImpactPoint;
+        GroundPlaneDBoxDomainStorage() = FVector::DotProduct(GroundPlanePointWSBoxDomainStorage(), GroundPlaneNBoxDomainStorage());
+        GroundCompBoxDomainStorage() = EffectiveHit.Component;
+        bGroundPlaneValidBoxDomainStorage() = true;
+        bHasGroundContactBoxDomainStorage() = true;
+        CurrentGroundContactsWSBoxDomainStorage() = PreviewPts;
         // Do not move the body from inside the impact callback. The remaining
         // CCD interval must first advance on the continued semantic surface;
         // established-contact projection owns subsequent substeps, and the
         // canonical frame-boundary pass handles a contact acquired at the last
         // TOI before observers can sample it.
-        bRoofSurfaceTraversalLatched = true;
-        LastRoofSurfaceContactFrame = CurrentFrame;
-        RoofSurfaceComp = EffectiveHit.Component;
+        bRoofSurfaceTraversalLatchedBoxDomainStorage() = true;
+        LastRoofSurfaceContactFrameBoxDomainStorage() = CurrentFrame;
+        RoofSurfaceCompBoxDomainStorage() = EffectiveHit.Component;
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[AnalyticContactContinuation] Frame=%d Source=%016llX Surface=%016llX Group=%016llX N=%s Velocity=%s"),
@@ -1897,7 +1898,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
                 EffectiveHit.SurfaceId,
                 EffectiveHit.CanonicalGroupId,
                 *EffectiveN.ToString(),
-                *ParentComponent->GetPhysCOMVelocity().ToString());
+                *ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().ToString());
         }
 #endif
         return;
@@ -1907,15 +1908,15 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     {
         if (bRoofSurfaceTraversalActive)
         {
-            const float SeparationSpeed = FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), EffectiveN);
+            const float SeparationSpeed = FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), EffectiveN);
             if (SeparationSpeed > RoofTraversalTargetNormalSpeed)
             {
-                ParentComponent->AddPhysVelocity(
+                ParentComponentBodyDomainStorage()->AddPhysVelocity(
                     (RoofTraversalTargetNormalSpeed - SeparationSpeed) * EffectiveN);
             }
         }
         IAmSpeedApplyGutterSlideDamping(
-            ParentComponent,
+            ParentComponentBodyDomainStorage(),
             IsMainSubBody(),
             EffectiveN,
             Dt,
@@ -1924,7 +1925,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
         UpdatePersistentGroundContact(Dt);
 
-        if (HasPersistentGroundContact() && bIsSupportingContact && !bGroundHitFromSweep)
+        if (HasPersistentGroundContact() && bIsSupportingContact && !bGroundHitFromSweepBoxDomainStorage())
         {
             ApplyPersistentSupportConstraint(Dt);
         }
@@ -1939,10 +1940,10 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         if (bRoofSurfaceTraversalActive)
         {
             const float SeparationSpeed =
-                FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), EffectiveN);
+                FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), EffectiveN);
             if (SeparationSpeed > RoofTraversalTargetNormalSpeed)
             {
-                ParentComponent->AddPhysVelocity(
+                ParentComponentBodyDomainStorage()->AddPhysVelocity(
                     (RoofTraversalTargetNormalSpeed - SeparationSpeed) * EffectiveN);
             }
         }
@@ -1951,11 +1952,11 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     {
         ResolveWallOrGutter(Dt, EffectiveHit);
 
-        const bool bHasFacePersistentSupport = PrevGroundContactsLS.Num() >= 3;
+        const bool bHasFacePersistentSupport = PrevGroundContactsLSBoxDomainStorage().Num() >= 3;
         const bool bSteepWallOrGutterHit = EffectiveUpDot < 0.5f;
         const bool bPersistentPlaneDisagreesWithHit =
-            bGroundPlaneValid &&
-            FVector::DotProduct(GroundPlaneN.GetSafeNormal(), EffectiveN) < 0.5f;
+            bGroundPlaneValidBoxDomainStorage() &&
+            FVector::DotProduct(GroundPlaneNBoxDomainStorage().GetSafeNormal(), EffectiveN) < 0.5f;
         const bool bUprightHitbox =
             FVector::DotProduct(HitboxUpVector, FVector::UpVector) > 0.2f;
 
@@ -1967,26 +1968,26 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 #if !UE_BUILD_SHIPPING
             if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
             {
-                UE_LOG(
+                SPEED_NATIVE_LOG(
                     BoxSubBodyLog,
                     Log,
                     TEXT("[ARContact.PersistentInvalidate] Frame=%d Reason=UprightSteepWallVsFace PrevLS=%d HitUpDot=%.3f PlaneN=%s HitN=%s"),
-                    ParentComponent->NumFrame(),
-                    PrevGroundContactsLS.Num(),
+                    ParentComponentBodyDomainStorage()->NumFrame(),
+                    PrevGroundContactsLSBoxDomainStorage().Num(),
                     EffectiveUpDot,
-                    *GroundPlaneN.ToString(),
+                    *GroundPlaneNBoxDomainStorage().ToString(),
                     *EffectiveN.ToString());
             }
 #endif
 
-            bHasGroundContact = false;
-            bGroundPlaneValid = false;
-            bGroundContactStable = false;
-            StableTime = 0.f;
-            CurrentGroundContactsWS.Reset();
-            PrevGroundContactsLS.Reset();
-            LatchedEdgeContactsLS.Reset();
-            bEdgeSupportLatched = false;
+            bHasGroundContactBoxDomainStorage() = false;
+            bGroundPlaneValidBoxDomainStorage() = false;
+            bGroundContactStableBoxDomainStorage() = false;
+            StableTimeBoxDomainStorage() = 0.f;
+            CurrentGroundContactsWSBoxDomainStorage().Reset();
+            PrevGroundContactsLSBoxDomainStorage().Reset();
+            LatchedEdgeContactsLSBoxDomainStorage().Reset();
+            bEdgeSupportLatchedBoxDomainStorage() = false;
         }
     }
 
@@ -1997,8 +1998,8 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         ApplyPersistentSupportConstraint(Dt);
     }
 
-    PrevContactNormal = EffectiveN;
-    bHadContactPrevFrame = true;
+    PrevContactNormalBoxDomainStorage() = EffectiveN;
+    bHadContactPrevFrameBoxDomainStorage() = true;
 
 	// Debug log at end of hit resolution
     /*const FVector vImpactEnd = GetVelocityAtPoint(EffectiveHit.ImpactPoint);
@@ -2039,7 +2040,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     const SKinematic& SphereKS0 =
         Sphere.GetKinematicState();
     FFakePhysicsImpactContext FakePhysicsContext;
-    FakePhysicsContext.SelfParentKinematics = ParentComponent->GetKinematicState();
+    FakePhysicsContext.SelfParentKinematics = ParentComponentBodyDomainStorage()->GetKinematicState();
     if (const ISpeedComponent* SphereParent = Sphere.GetParentComponent())
     {
         FakePhysicsContext.OtherParentKinematics = SphereParent->GetKinematicState();
@@ -2047,7 +2048,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     // const SKinematic SphereKSAtTOI = SphereKS0.Integrate(TimePassed);
 
     // Current frame
-    const unsigned frame = ParentComponent->NumFrame();
+    const unsigned frame = ParentComponentBodyDomainStorage()->NumFrame();
 
     // -------- Overlap branch (Box - Sphere) --------
     /*
@@ -2143,11 +2144,11 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         const FVector BoxRight = BoxKS.Rotation.GetRightVector();
         const FVector BoxUp = BoxKS.Rotation.GetUpVector();
 
-        UE_LOG(
+        SPEED_NATIVE_LOG(
             BoxSubBodyLog,
             Warning,
             TEXT("[SphereBoxImpulse][BoxResolve] Frame=%d Delta=%.6f TOI=%.6f Box=%s Sphere=%s Point=%s LocalPoint=%s Normal(SphereToBox)=%s LocalNormal=%s Restitution=%.3f Friction=%.3f Threshold=%.3f RelN(BoxMinusSphere)=%.3f RelVp=%s BoxImpulse=%s SphereImpulse=%s BoxLoc=%s BoxRot=%s BoxForward=%s BoxRight=%s BoxUp=%s BoxV=%s BoxW=%s SphereLoc=%s SphereV=%s SphereW=%s BoxVp=%s SphereVp=%s BoxMass=%.3f SphereMass=%.3f"),
-            ParentComponent ? ParentComponent->NumFrame() : -1,
+            ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : -1,
             delta,
             CurrentHitStorage().TOI,
             GetOwner() ? *GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
@@ -2192,8 +2193,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 
 #if !UE_BUILD_SHIPPING
     const ISpeedComponent* SphereParentForDebug = Sphere.GetParentComponent();
-    const FVector BoxCOMVPre = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
-    const FVector BoxWPre = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
+    const FVector BoxCOMVPre = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
+    const FVector BoxWPre = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() : FVector::ZeroVector;
     const FVector SphereCOMVPre = SphereParentForDebug ? SphereParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
     const FVector SphereWPre = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
 #endif
@@ -2210,16 +2211,16 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread() != 0)
     {
-        const FVector BoxCOMVPost = ParentComponent ? ParentComponent->GetPhysCOMVelocity() : FVector::ZeroVector;
-        const FVector BoxWPost = ParentComponent ? ParentComponent->GetPhysAngularVelocity() : FVector::ZeroVector;
+        const FVector BoxCOMVPost = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
+        const FVector BoxWPost = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() : FVector::ZeroVector;
         const FVector SphereCOMVPost = SphereParentForDebug ? SphereParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
         const FVector SphereWPost = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
 
-        UE_LOG(
+        SPEED_NATIVE_LOG(
             BoxSubBodyLog,
             Warning,
             TEXT("[SphereBoxImpulse][BoxResolvePost] Frame=%d Box=%s Sphere=%s Point=%s BoxCOMVPost=%s BoxWPost=%s SphereCOMVPost=%s SphereWPost=%s DeltaBoxCOMV=%s DeltaBoxW=%s DeltaSphereCOMV=%s DeltaSphereW=%s BoxImpulse=%s SphereImpulse=%s"),
-            ParentComponent ? ParentComponent->NumFrame() : -1,
+            ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : -1,
             GetOwner() ? *GetOwner()->GetName() : TEXT("<NoBoxOwner>"),
             Sphere.GetOwner() ? *Sphere.GetOwner()->GetName() : TEXT("<NoSphereOwner>"),
             *CurrentHitStorage().ImpactPoint.ToString(),
@@ -2273,7 +2274,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 	}
 
     // --- Gameplay hooks ---
-    ParentComponent->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
+    ParentComponentBodyDomainStorage()->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
 }
 
 void UBoxSubBody::ResolveHitVsBox(
@@ -2292,8 +2293,8 @@ void UBoxSubBody::ResolveHitVsBox(
     // Snapshot both chassis before rigid/overlap impulses and either fake
     // callback. Role exchange must not sample a state modified by callback1.
     FFakePhysicsImpactContext FakePhysicsContext;
-    FakePhysicsContext.SelfParentKinematics = ParentComponent
-        ? ParentComponent->GetKinematicState() : KA;
+    FakePhysicsContext.SelfParentKinematics = ParentComponentBodyDomainStorage()
+        ? ParentComponentBodyDomainStorage()->GetKinematicState() : KA;
     FakePhysicsContext.OtherParentKinematics = OtherBox.GetParentComponent()
         ? OtherBox.GetParentComponent()->GetKinematicState() : KB;
     const FFakePhysicsImpactContext InverseContext = FakePhysicsContext.Inverted();
@@ -2307,10 +2308,10 @@ void UBoxSubBody::ResolveHitVsBox(
     {
         ISpeedComponent* OtherParent=OtherBox.GetParentComponent();
         if (!UsesNonclosingBoxBumpResponse() || !OtherBox.UsesNonclosingBoxBumpResponse() ||
-            !ParentComponent || !OtherParent) return;
+            !ParentComponentBodyDomainStorage() || !OtherParent) return;
         FVector CorrectA, CorrectB;
         if (Speed::SImpulseSolver::ComputeCollisionImpulse(P,N,
-            ParentComponent->GetKinematicState(),GetMass(),ComputeWorldInvInertiaTensor(),
+            ParentComponentBodyDomainStorage()->GetKinematicState(),GetMass(),ComputeWorldInvInertiaTensor(),
             OtherParent->GetKinematicState(),OtherBox.GetMass(),OtherBox.ComputeWorldInvInertiaTensor(),
             0.f,0.f,CorrectA,CorrectB,0.f))
         {
@@ -2326,11 +2327,11 @@ void UBoxSubBody::ResolveHitVsBox(
         SSBox B = OtherBox.MakeBox();
         const float pen = SSBox::EstimateOBBOverlapAlongNormal(A, B, N);
         const bool bCarPair=UsesNonclosingBoxBumpResponse() && OtherBox.UsesNonclosingBoxBumpResponse();
-        const float Slop=bCarPair?0.f:MinSlopCm;
+        const float Slop=bCarPair?0.f:MinSlopCmBoxDomainStorage();
         if (pen > Slop)
         {
             ISpeedComponent* OtherComp = OtherBox.GetParentComponent();
-            SolveOverlap(*ParentComponent, GetMass(), ComputeWorldInvInertiaTensor(), KA,
+            SolveOverlap(*ParentComponentBodyDomainStorage(), GetMass(), ComputeWorldInvInertiaTensor(), KA,
                 OtherComp, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(), KB,
                 P, N, pen, Slop, bCarPair?1.f:0.8f, bCarPair?0.f:GetImpactThreshold());
             if (IsFakePhysicsEnabled())
@@ -2395,9 +2396,9 @@ void UBoxSubBody::ResolveHitVsBox(
 // ============================================================================
 void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 {
-    if (!ParentComponent) return;
+    if (!ParentComponentBodyDomainStorage()) return;
 
-    const bool bAnalyticWitness = ParentComponent->GetStaticCollisionWorldForFrame() &&
+    const bool bAnalyticWitness = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() &&
         Hit.SourceId != 0 && Hit.SurfaceId != 0;
     // The sweep already supplies the admitted analytic witness. Quantizing it
     // again here changes the impulse lever arm after a common translation,
@@ -2441,16 +2442,16 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     int32 PreviewSupportContacts = 0;
     const float UpDot = FVector::DotProduct(N, FVector::UpVector);
-    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const int32 CurrentFrame = ParentComponentBodyDomainStorage()->NumFrame();
     const int32 FramesSinceLastWallContact =
-        LastWallOrGutterFrame == INDEX_NONE
+        LastWallOrGutterFrameBoxDomainStorage() == INDEX_NONE
         ? INDEX_NONE
-        : CurrentFrame - LastWallOrGutterFrame;
+        : CurrentFrame - LastWallOrGutterFrameBoxDomainStorage();
     const bool bContinuesVerticalWallManifold =
         FramesSinceLastWallContact >= 0 &&
         FramesSinceLastWallContact <= 1 &&
-        FMath::Abs(LastWallOrGutterUpDot) < 0.10f &&
-        FVector::DotProduct(LastWallOrGutterN, N) >= 0.98f;
+        FMath::Abs(LastWallOrGutterUpDotBoxDomainStorage()) < 0.10f &&
+        FVector::DotProduct(LastWallOrGutterNBoxDomainStorage(), N) >= 0.98f;
     if (UpDot >= 0.85f)
     {
         TArray<FVector> PreviewPts;
@@ -2458,7 +2459,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             N,
             KinematicsStorage().Location,
             KinematicsStorage().Rotation,
-            BoxExtent,
+            BoxExtentBoxDomainStorage(),
             PreviewPts,
             0.5f
         );
@@ -2466,8 +2467,8 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     }
 
     const bool bHasValidSupportPlane =
-        bGroundPlaneValid &&
-        FVector::DotProduct(GroundPlaneN.GetSafeNormal(), FVector::UpVector) >= 0.85f;
+        bGroundPlaneValidBoxDomainStorage() &&
+        FVector::DotProduct(GroundPlaneNBoxDomainStorage().GetSafeNormal(), FVector::UpVector) >= 0.85f;
 
     const bool bIsGutterLikeWall =
         UpDot >= 0.10f && UpDot < 0.85f;
@@ -2484,7 +2485,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     const bool bIsLowSlopeGutterImpact =
         UpDot >= 0.0f &&
         UpDot < 0.10f &&
-        bGroundHitFromSweep &&
+        bGroundHitFromSweepBoxDomainStorage() &&
         FMath::Abs(vN) > 300.f;
 
     const bool bIsNearGutterVerticalWall =
@@ -2503,7 +2504,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     const bool bSupportedStaticTransition =
         CVarIAmSpeedBoxSupportedTransitionResponse.GetValueOnAnyThread() != 0 &&
-        ParentComponent->HasCompatibleEstablishedStaticSupport(Hit);
+        ParentComponentBodyDomainStorage()->HasCompatibleEstablishedStaticSupport(Hit);
 
     const bool bSoftWall =
         bIsNearHorizontalEdge ||
@@ -2525,18 +2526,18 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         (!Hit.bStartPenetrating || bContinuesVerticalWallManifold);
     const bool bUseSoftWallResponse = bSoftWall && !bHardVerticalWallImpact;
 
-    LastWallOrGutterFrame = CurrentFrame;
-    LastWallOrGutterN = N;
-    LastWallOrGutterUpDot = UpDot;
+    LastWallOrGutterFrameBoxDomainStorage() = CurrentFrame;
+    LastWallOrGutterNBoxDomainStorage() = N;
+    LastWallOrGutterUpDotBoxDomainStorage() = UpDot;
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
     {
-        UE_LOG(
+        SPEED_NATIVE_LOG(
             BoxSubBodyLog,
             Log,
             TEXT("[CCDBox] ResolveWallOrGutter for frame = %d ImpactPoint = %s, ImpactNormal = %s, Box Kinematic = (%s)"),
-            ParentComponent->NumFrame(),
+            ParentComponentBodyDomainStorage()->NumFrame(),
             *P.ToString(),
             *N.ToString(),
             *KinematicsStorage().ToString());
@@ -2635,14 +2636,14 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     ApplyImpulse(J, SolveP);
 
     const bool bApplyWallGutterSlideDamping =
-        ParentComponent->IsUpsideDown() &&
+        ParentComponentBodyDomainStorage()->IsUpsideDown() &&
         (bIsGutterLikeWall ||
             bIsInclinedWall ||
             bIsLowSlopePenetratingWall ||
             bIsLowSlopeGutterImpact ||
             bIsNearGutterVerticalWall);
     IAmSpeedApplyGutterSlideDamping(
-        ParentComponent,
+        ParentComponentBodyDomainStorage(),
         IsMainSubBody(),
         N,
         Dt,
@@ -2653,9 +2654,9 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
         (FMath::Abs(vN) > 5.f || Hit.bStartPenetrating))
     {
-        UE_LOG(BoxSubBodyLog, Warning,
+        SPEED_NATIVE_LOG(BoxSubBodyLog, Warning,
             TEXT("[CCDBoxWallSolve] Frame=%d vN=%.2f N=%s P=%s J=%s jn=%.4f jnMax=%.4f SoftWall=%d SoftMassScale=%.2f PreviewContacts=%d denomN=%.6f TOI=%.6f Pen=%d Depth=%.3f Kinematic=%s"),
-            ParentComponent->NumFrame(),
+            ParentComponentBodyDomainStorage()->NumFrame(),
             vN,
             *N.ToString(),
             *P.ToString(),
@@ -2687,7 +2688,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         const bool bStalledUnsupportedShallowContact =
             Hit.PenetrationDepth <= Slop &&
             !HasPersistentGroundContact() &&
-            ParentComponent->GetPhysCOMVelocity().SizeSquared() <= FMath::Square(5.f) &&
+            ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().SizeSquared() <= FMath::Square(5.f) &&
             vN >= -VN_EPS;
         const float pushOut = bStalledUnsupportedShallowContact
             ? Hit.PenetrationDepth + 0.1f
@@ -2696,11 +2697,11 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         {
             const float PositionScale =
                 bStalledUnsupportedShallowContact ? 1.f : BetaPos;
-            ParentComponent->SetPhysLocation(
-                ParentComponent->GetPhysLocation() + DepenDir * (PositionScale * pushOut));
+            ParentComponentBodyDomainStorage()->SetPhysLocation(
+                ParentComponentBodyDomainStorage()->GetPhysLocation() + DepenDir * (PositionScale * pushOut));
 
             // Kill inward velocity along depen dir
-            const FVector V = ParentComponent->GetPhysCOMVelocity();
+            const FVector V = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
             if (vIn < 0.f && !bHardVerticalWallImpact)
             {
@@ -2744,15 +2745,15 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
                     DepenVelocityDelta *= FMath::Clamp(DepenScale, 0.f, 1.f);
                 }
 
-                ParentComponent->AddPhysVelocity(DepenVelocityDelta);
+                ParentComponentBodyDomainStorage()->AddPhysVelocity(DepenVelocityDelta);
 
 #if !UE_BUILD_SHIPPING
                 if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
                     (FMath::Abs(vIn) > 50.f || DepenScale < 0.999f))
                 {
-                    UE_LOG(BoxSubBodyLog, Warning,
+                    SPEED_NATIVE_LOG(BoxSubBodyLog, Warning,
                         TEXT("[CCDBoxWallDepenVelocity] Frame=%d vIn=%.2f DepenDir=%s DeltaV=%s Scale=%.3f SoftWall=%d GutterLike=%d UpDot=%.3f Depth=%.3f Kinematic=%s"),
-                        ParentComponent->NumFrame(),
+                        ParentComponentBodyDomainStorage()->NumFrame(),
                         vIn,
                         *DepenDir.ToString(),
                         *DepenVelocityDelta.ToString(),
@@ -2778,7 +2779,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 // ============================================================================
 void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& Hit)
 {
-    if (!ParentComponent) return;
+    if (!ParentComponentBodyDomainStorage()) return;
 
     const FVector Nraw = Hit.ImpactNormal.GetSafeNormal();
     const FVector N = Nraw; // Keep raw; if you want composite, do it in persistence step
@@ -2794,11 +2795,11 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
     const FVector CenterWS = KinematicsStorage().Location;
     const FQuat BoxRotWS = KinematicsStorage().Rotation;
-    const FVector Ext = BoxExtent;
+    const FVector Ext = BoxExtentBoxDomainStorage();
     const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, BoxRotWS);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
-    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const int32 CurrentFrame = ParentComponentBodyDomainStorage()->NumFrame();
     const bool bRoofFacingSurface =
         FVector::DotProduct(BoxRotWS.GetUpVector(), N) < -0.45f;
     const bool bRoofFaceNearlyAligned =
@@ -2807,29 +2808,29 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     // A face that replaces a supporting edge on the same plane is a
     // continuation of that ground contact, not a new bouncing impact.
     const bool bContinuingEdgeSupport =
-        bGroundPlaneValid &&
-        FVector::DotProduct(GroundPlaneN.GetSafeNormal(), N) >= 0.95f &&
-        (PrevGroundContactsLS.Num() == 2 ||
-            (bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2));
+        bGroundPlaneValidBoxDomainStorage() &&
+        FVector::DotProduct(GroundPlaneNBoxDomainStorage().GetSafeNormal(), N) >= 0.95f &&
+        (PrevGroundContactsLSBoxDomainStorage().Num() == 2 ||
+            (bEdgeSupportLatchedBoxDomainStorage() && LatchedEdgeContactsLSBoxDomainStorage().Num() == 2));
 
-    if (bNearlyFaceAligned && bEdgeSupportLatched)
+    if (bNearlyFaceAligned && bEdgeSupportLatchedBoxDomainStorage())
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[ARContact.EdgeLatchRelease] Frame=%d Source=ResolveDirect FaceDot=%.5f PrevLS=%d LatchedLS=%d"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
                 FaceAlignmentAbs,
-                PrevGroundContactsLS.Num(),
-                LatchedEdgeContactsLS.Num());
+                PrevGroundContactsLSBoxDomainStorage().Num(),
+                LatchedEdgeContactsLSBoxDomainStorage().Num());
         }
 #endif
-        bEdgeSupportLatched = false;
-        LatchedEdgeContactsLS.Reset();
-        PrevGroundContactsLS.Reset();
+        bEdgeSupportLatchedBoxDomainStorage() = false;
+        LatchedEdgeContactsLSBoxDomainStorage().Reset();
+        PrevGroundContactsLSBoxDomainStorage().Reset();
     }
 
     TArray<FVector> ContactPtsWS;
@@ -2860,15 +2861,15 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         // PERSISTENT EDGE OVERRIDE
         // ------------------------------------------------------------
     const bool bUseLatchedEdge =
-        bEdgeSupportLatched &&
-        LatchedEdgeContactsLS.Num() == 2;
+        bEdgeSupportLatchedBoxDomainStorage() &&
+        LatchedEdgeContactsLSBoxDomainStorage().Num() == 2;
 
     if (bUseLatchedEdge && ContactPtsWS.Num() == 1)
     {
-        const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
+        const SKinematic K = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
 
-        const FVector A = K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLS[0]);
-        const FVector B = K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLS[1]);
+        const FVector A = K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLSBoxDomainStorage()[0]);
+        const FVector B = K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLSBoxDomainStorage()[1]);
 
         ContactPtsWS.Reset();
         ContactPtsWS.Add(A);
@@ -2877,8 +2878,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         // IMPORTANT : renew latch so grace window doesn't expire
         if (vN_atImpact < -5.f)
         {
-            bEdgeSupportLatched = true;
-            EdgeSupportLatchFrame = ParentComponent->NumFrame();
+            bEdgeSupportLatchedBoxDomainStorage() = true;
+            EdgeSupportLatchFrameBoxDomainStorage() = ParentComponentBodyDomainStorage()->NumFrame();
         }
 
 #if !UE_BUILD_SHIPPING
@@ -2892,27 +2893,27 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         !bNearlyFaceAligned &&
         !bRoofSurfaceTraversalActive &&
         !bUseLatchedEdge &&
-        !(bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2) &&
-        PrevGroundContactsLS.Num() != 2;
+        !(bEdgeSupportLatchedBoxDomainStorage() && LatchedEdgeContactsLSBoxDomainStorage().Num() == 2) &&
+        PrevGroundContactsLSBoxDomainStorage().Num() != 2;
 
     if (bFreshTwoPointEdgeSupport)
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Warning,
                 TEXT("[ARContact.FreshEdge] Frame=%d Contacts=%d UpDot=%.3f UseLatched=%d PrevLS=%d Latched=%d LatchedLS=%d Sweep=%d PlaneValidBefore=%d N=%s HitP=%s TOI=%.6f"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
                 ContactPtsWS.Num(),
                 UpDot,
                 bUseLatchedEdge ? 1 : 0,
-                PrevGroundContactsLS.Num(),
-                bEdgeSupportLatched ? 1 : 0,
-                LatchedEdgeContactsLS.Num(),
-                bGroundHitFromSweep ? 1 : 0,
-                bGroundPlaneValid ? 1 : 0,
+                PrevGroundContactsLSBoxDomainStorage().Num(),
+                bEdgeSupportLatchedBoxDomainStorage() ? 1 : 0,
+                LatchedEdgeContactsLSBoxDomainStorage().Num(),
+                bGroundHitFromSweepBoxDomainStorage() ? 1 : 0,
+                bGroundPlaneValidBoxDomainStorage() ? 1 : 0,
                 *N.ToString(),
                 *ImpactP.ToString(),
                 Hit.TOI);
@@ -2922,17 +2923,17 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         // Do not solve a fresh edge as a stable support, otherwise the box can
         // balance on an edge. Keep the contact manifold/plane though: car-level
         // auto-recover needs those two points to bias the hitbox toward a face.
-        CurrentGroundContactsWS = ContactPtsWS;
-        bFreshEdgeRecoverCandidate = true;
+        CurrentGroundContactsWSBoxDomainStorage() = ContactPtsWS;
+        bFreshEdgeRecoverCandidateBoxDomainStorage() = true;
 
-        if (bGroundHitFromSweep)
+        if (bGroundHitFromSweepBoxDomainStorage())
         {
-            bGroundPlaneValid = true;
-            GroundPlaneN = N;
-            GroundPlanePointWS = Hit.ImpactPoint;
-            GroundPlaneD = FVector::DotProduct(ImpactP, N);
-            GroundComp = Hit.Component;
-            ParentComponent->RcvImpactOnSubBody(*this, ImpactP);
+            bGroundPlaneValidBoxDomainStorage() = true;
+            GroundPlaneNBoxDomainStorage() = N;
+            GroundPlanePointWSBoxDomainStorage() = Hit.ImpactPoint;
+            GroundPlaneDBoxDomainStorage() = FVector::DotProduct(ImpactP, N);
+            GroundCompBoxDomainStorage() = Hit.Component;
+            ParentComponentBodyDomainStorage()->RcvImpactOnSubBody(*this, ImpactP);
         }
 
         /*UE_LOG(BoxSubBodyLog, Warning,
@@ -2963,7 +2964,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     if (ContactPtsWS.Num() < 2 && UpDot < 0.97f && !bUpsideDownRoofSlideSupport)
     {
-        CurrentGroundContactsWS.Reset();
+        CurrentGroundContactsWSBoxDomainStorage().Reset();
 
         /*UE_LOG(BoxSubBodyLog, Warning,
             TEXT("[CCDBoxSupportReject] Frame=%d Reason=InclinedSinglePoint UpDot=%.4f Contacts=%d UseLatched=%d -> Wall/Gutter N=%s HitP=%s TOI=%.6f"),
@@ -2980,18 +2981,18 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     }
 
     const bool bHasCompatiblePersistentPlane =
-        bGroundPlaneValid &&
-        FVector::DotProduct(GroundPlaneN.GetSafeNormal(), N) >= 0.95f;
+        bGroundPlaneValidBoxDomainStorage() &&
+        FVector::DotProduct(GroundPlaneNBoxDomainStorage().GetSafeNormal(), N) >= 0.95f;
     const bool bFreshSweepSupport =
-        bGroundHitFromSweep &&
+        bGroundHitFromSweepBoxDomainStorage() &&
         !bHasCompatiblePersistentPlane &&
         !bUseLatchedEdge &&
         !bUpsideDownRoofSlideSupport &&
-        !bHasGroundContact &&
-        PrevGroundContactsLS.Num() == 0 &&
-        !(bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2);
+        !bHasGroundContactBoxDomainStorage() &&
+        PrevGroundContactsLSBoxDomainStorage().Num() == 0 &&
+        !(bEdgeSupportLatchedBoxDomainStorage() && LatchedEdgeContactsLSBoxDomainStorage().Num() == 2);
 
-    CurrentGroundContactsWS = ContactPtsWS;
+    CurrentGroundContactsWSBoxDomainStorage() = ContactPtsWS;
 
     const bool bStableRoofFaceSupport =
         IsMainSubBody() && bRoofFaceNearlyAligned &&
@@ -3002,11 +3003,11 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         UpDot < 0.97f &&
         ContactPtsWS.Num() >= 2;
     const FVector TangentialVelocity =
-        ParentComponent->GetPhysCOMVelocity() -
-        FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N) * N;
+        ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() -
+        FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N) * N;
     constexpr float MinTraversalLatchSpeedCmS = 1000.f;
     const bool bCanStartRoofTraversal =
-        !ParentComponent->IsInAutoRecover() &&
+        !ParentComponentBodyDomainStorage()->IsInAutoRecover() &&
         TangentialVelocity.Size() >= MinTraversalLatchSpeedCmS &&
         (bStableRoofFaceSupport ||
             bUpsideDownRoofSlideSupport ||
@@ -3014,13 +3015,13 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     if ((bCanStartRoofTraversal || bRoofSurfaceTraversalActive) &&
         Hit.Component.IsValid())
     {
-        bRoofSurfaceTraversalLatched = true;
-        LastRoofSurfaceContactFrame = CurrentFrame;
-        RoofSurfaceComp = Hit.Component;
+        bRoofSurfaceTraversalLatchedBoxDomainStorage() = true;
+        LastRoofSurfaceContactFrameBoxDomainStorage() = CurrentFrame;
+        RoofSurfaceCompBoxDomainStorage() = Hit.Component;
     }
 
     IAmSpeedApplyGutterSlideDamping(
-        ParentComponent,
+        ParentComponentBodyDomainStorage(),
         IsMainSubBody(),
         N,
         Dt,
@@ -3045,40 +3046,40 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 // #endif
 
     // if we end up with 2 points, renew too (even without override)
-    if (!bNearlyFaceAligned && CurrentGroundContactsWS.Num() == 2 && bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2)
+    if (!bNearlyFaceAligned && CurrentGroundContactsWSBoxDomainStorage().Num() == 2 && bEdgeSupportLatchedBoxDomainStorage() && LatchedEdgeContactsLSBoxDomainStorage().Num() == 2)
     {
-        EdgeSupportLatchFrame = ParentComponent->NumFrame();
+        EdgeSupportLatchFrameBoxDomainStorage() = ParentComponentBodyDomainStorage()->NumFrame();
     }
 
 
     // Store plane for persistence (only if the hit came from sweep and is “support-like”).
-    if (bGroundHitFromSweep)
+    if (bGroundHitFromSweepBoxDomainStorage())
     {
-        bGroundPlaneValid = true;
-        GroundPlaneN = N;
-        GroundPlanePointWS = Hit.ImpactPoint;
-        GroundPlaneD = FVector::DotProduct(ImpactP, N);
-        GroundComp = Hit.Component;
-		ParentComponent->RcvImpactOnSubBody(*this, ImpactP);
+        bGroundPlaneValidBoxDomainStorage() = true;
+        GroundPlaneNBoxDomainStorage() = N;
+        GroundPlanePointWSBoxDomainStorage() = Hit.ImpactPoint;
+        GroundPlaneDBoxDomainStorage() = FVector::DotProduct(ImpactP, N);
+        GroundCompBoxDomainStorage() = Hit.Component;
+		ParentComponentBodyDomainStorage()->RcvImpactOnSubBody(*this, ImpactP);
     }
 
     // If concave, do not persist (your existing rule).
     if (IsConcaveGroundContact())
     {
-        bGroundPlaneValid = false;
-        bHasGroundContact = false;
-        CurrentGroundContactsWS.Reset();
+        bGroundPlaneValidBoxDomainStorage() = false;
+        bHasGroundContactBoxDomainStorage() = false;
+        CurrentGroundContactsWSBoxDomainStorage().Reset();
     }
 
     // Sequential impulse (warm-started)
-    const int32 NumC = CurrentGroundContactsWS.Num();
+    const int32 NumC = CurrentGroundContactsWSBoxDomainStorage().Num();
     if (NumC <= 0) return;
 
 	// Register constraints for this manifold
     if (CurrentHitStorage().Component.IsValid())
     {
         RegisterContactManifoldAsConstraints(
-            CurrentGroundContactsWS,
+            CurrentGroundContactsWSBoxDomainStorage(),
             N,
             CurrentHitStorage().Component.Get(),
             CurrentHitStorage().PenetrationDepth,
@@ -3088,38 +3089,38 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         );
     }
 
-    if (PrevLambdaN.Num() != NumC)
-        PrevLambdaN.Reset();
+    if (PrevLambdaNBoxDomainStorage().Num() != NumC)
+        PrevLambdaNBoxDomainStorage().Reset();
 
     const int32 Iter = FMath::Clamp(NumC * 2, 6, 12);
     const bool bRecentlyHadWallOrGutter =
-        LastWallOrGutterFrame != INDEX_NONE &&
-        CurrentFrame - LastWallOrGutterFrame <= 8;
-    if (FreshSupportClampUntilFrame != INDEX_NONE && CurrentFrame > FreshSupportClampUntilFrame)
+        LastWallOrGutterFrameBoxDomainStorage() != INDEX_NONE &&
+        CurrentFrame - LastWallOrGutterFrameBoxDomainStorage() <= 8;
+    if (FreshSupportClampUntilFrameBoxDomainStorage() != INDEX_NONE && CurrentFrame > FreshSupportClampUntilFrameBoxDomainStorage())
     {
-        FreshSupportClampUntilFrame = INDEX_NONE;
-        FreshSupportClampComp.Reset();
-        FreshSupportClampN = FVector::UpVector;
+        FreshSupportClampUntilFrameBoxDomainStorage() = INDEX_NONE;
+        FreshSupportClampCompBoxDomainStorage().Reset();
+        FreshSupportClampNBoxDomainStorage() = FVector::UpVector;
     }
 
     const bool bSameFreshClampComponent =
         Hit.Component.IsValid() &&
-        FreshSupportClampComp.IsValid() &&
-        Hit.Component.Get() == FreshSupportClampComp.Get();
+        FreshSupportClampCompBoxDomainStorage().IsValid() &&
+        Hit.Component.Get() == FreshSupportClampCompBoxDomainStorage().Get();
     const bool bFreshClampNormalCompatible =
-        FVector::DotProduct(N, FreshSupportClampN) >= 0.98f;
+        FVector::DotProduct(N, FreshSupportClampNBoxDomainStorage()) >= 0.98f;
 
     bool bInFreshSupportClampWindow =
-        FreshSupportClampUntilFrame != INDEX_NONE &&
-        CurrentFrame <= FreshSupportClampUntilFrame &&
+        FreshSupportClampUntilFrameBoxDomainStorage() != INDEX_NONE &&
+        CurrentFrame <= FreshSupportClampUntilFrameBoxDomainStorage() &&
         bSameFreshClampComponent &&
         bFreshClampNormalCompatible;
 
     if (bFreshSweepSupport && NumC >= 3 && Hit.Component.IsValid())
     {
-        FreshSupportClampUntilFrame = CurrentFrame + 4;
-        FreshSupportClampN = N;
-        FreshSupportClampComp = Hit.Component;
+        FreshSupportClampUntilFrameBoxDomainStorage() = CurrentFrame + 4;
+        FreshSupportClampNBoxDomainStorage() = N;
+        FreshSupportClampCompBoxDomainStorage() = Hit.Component;
         bInFreshSupportClampWindow = true;
     }
 
@@ -3127,7 +3128,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     if ((bFreshSweepSupport || bInFreshSupportClampWindow) && NumC >= 3)
     {
         const float MaxFreshSupportDeltaVCmS = bRecentlyHadWallOrGutter ? 10.f : 25.f;
-        const float VnCom = FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N);
+        const float VnCom = FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N);
         RemainingFreshSupportImpulse =
             GetMass() * FMath::Min(FMath::Max(-VnCom, 0.f), MaxFreshSupportDeltaVCmS);
 
@@ -3148,11 +3149,11 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     TArray<float> LambdaN;
     LambdaN.SetNum(NumC);
     for (int32 i = 0; i < NumC; ++i)
-        LambdaN[i] = (i < PrevLambdaN.Num()) ? PrevLambdaN[i] : 0.f;
+        LambdaN[i] = (i < PrevLambdaNBoxDomainStorage().Num()) ? PrevLambdaNBoxDomainStorage()[i] : 0.f;
 
     const float InvMass = 1.f / GetMass();
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
-    const FVector COMVelocityBeforeSolve = ParentComponent->GetPhysCOMVelocity();
+    const FVector COMVelocityBeforeSolve = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
     FVector TotalNormalImpulse = FVector::ZeroVector;
     FVector TotalTangentialImpulse = FVector::ZeroVector;
     // (BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d CurrentGroundContactsWS.Num = %d, ImpactNormal = %s, Kinematic = %s"),
@@ -3165,12 +3166,12 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         if (NumC == 2)
         {
             SolveEdgeSupportConstraint(
-                N, CurrentGroundContactsWS, Dt, /*bDoFriction=*/false, /*Mu=*/0.f, bRoofSurfaceTraversalActive);
+                N, CurrentGroundContactsWSBoxDomainStorage(), Dt, /*bDoFriction=*/false, /*Mu=*/0.f, bRoofSurfaceTraversalActive);
             break;
         }
         for (int32 i = 0; i < NumC; ++i)
         {
-            const FVector& P = CurrentGroundContactsWS[i];
+            const FVector& P = CurrentGroundContactsWSBoxDomainStorage()[i];
             const FVector Vp = GetVelocityAtPoint(P);
             const float vN = FVector::DotProduct(Vp, N);
             if (vN >= 0.f)
@@ -3187,11 +3188,11 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             float Rest = 0.f;
             const bool bImpact = (vN < -GetImpactThreshold());
 
-            const float cosAngle = bHadContactPrevFrame ? FVector::DotProduct(N, PrevContactNormal) : 0.f;
+            const float cosAngle = bHadContactPrevFrameBoxDomainStorage() ? FVector::DotProduct(N, PrevContactNormalBoxDomainStorage()) : 0.f;
             const bool bNewContact =
                 !bContinuingEdgeSupport &&
-                !bHadGroundContactPrevFrame &&
-                bGroundHitFromSweep;
+                !bHadGroundContactPrevFrameBoxDomainStorage() &&
+                bGroundHitFromSweepBoxDomainStorage();
             const bool bSharpImpact = (bNewContact && bImpact && cosAngle > 0.95f);
 
             if (bSharpImpact)
@@ -3259,8 +3260,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 const FVector SinglePoint[1] = { P };
                 const auto Coupled = Speed::SolvePlanarCoulombImpulse(
                     MakeArrayView(SinglePoint, 1), N, COM,
-                    ParentComponent->GetPhysCOMVelocity(),
-                    ParentComponent->GetPhysAngularVelocity(),
+                    ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(),
+                    ParentComponentBodyDomainStorage()->GetPhysAngularVelocity(),
                     double(InvMass), InvI, double(Rest), double(mu));
                 if (Coupled.bSolved)
                 {
@@ -3281,19 +3282,19 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 // Preserve every collision query and all manifold points. This
                 // narrow path only handles fresh constraints of this same box
                 // and plane; mixed/persistent constraints keep the existing solve.
-                const auto& OriginalConstraints = ParentComponent->GetPhysicalConstraints();
+                const auto& OriginalConstraints = ParentComponentBodyDomainStorage()->GetPhysicalConstraints();
                 const int32 OriginalCount = OriginalConstraints.Num();
                 // RegisterPhysicalConstraint stores GetSafeNormal(N). Compare
                 // the exact registered representation, with no new tolerance.
                 const FVector RegisteredGroundNormal = N.GetSafeNormal();
-                const double ParentMass = ParentComponent->GetPhysMass();
+                const double ParentMass = ParentComponentBodyDomainStorage()->GetPhysMass();
                 const FVector ExpectedDV = ParentMass > 0 ? J / ParentMass : FVector::ZeroVector;
                 const FVector ExpectedDW = InvI.TransformVector(FVector::CrossProduct(P - COM, J));
-                const FVector ExpectedV = ParentComponent->GetPhysCOMVelocity() + ExpectedDV;
-                const FVector ExpectedW = ParentComponent->GetPhysAngularVelocity() + ExpectedDW;
+                const FVector ExpectedV = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() + ExpectedDV;
+                const FVector ExpectedW = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() + ExpectedDW;
                 bool bCertifiedScope = ParentMass > 0 && ParentMass == double(GetMass()) &&
-                    ExpectedV.SizeSquared() <= FMath::Square(double(ParentComponent->GetPhysMaxSpeed())) &&
-                    ExpectedW.SizeSquared() <= FMath::Square(double(ParentComponent->GetPhysMaxAngularSpeed())) &&
+                    ExpectedV.SizeSquared() <= FMath::Square(double(ParentComponentBodyDomainStorage()->GetPhysMaxSpeed())) &&
+                    ExpectedW.SizeSquared() <= FMath::Square(double(ParentComponentBodyDomainStorage()->GetPhysMaxAngularSpeed())) &&
                     FVector::DotProduct(ExpectedDV, N) >= 0;
                 int32 Retired = 0;
                 TArray<FPhysicalContactConstraint> Retained;
@@ -3310,7 +3311,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                     const FVector ConstraintN = Constraint.Normal.GetSafeNormal();
                     const FVector Arm = Constraint.ContactPoint - COM;
                     const double BeforeNormalSpeed = FVector::DotProduct(
-                        ParentComponent->GetPhysVelocityAtPoint(Constraint.ContactPoint), ConstraintN);
+                        ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(Constraint.ContactPoint), ConstraintN);
                     // Match the existing owner's float delta predicate exactly.
                     const float DeltaNormalSpeed = FVector::DotProduct(
                         ExpectedDV + FVector::CrossProduct(ExpectedDW, Arm), ConstraintN);
@@ -3330,9 +3331,9 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 }
                 if (bCertifiedScope && Retired > 0)
                 {
-                    ParentComponent->ClearPhysicalConstraints();
+                    ParentComponentBodyDomainStorage()->ClearPhysicalConstraints();
                     for (const auto& Constraint : Retained)
-                        ParentComponent->RegisterPhysicalConstraint(Constraint);
+                        ParentComponentBodyDomainStorage()->RegisterPhysicalConstraint(Constraint);
                 }
             }
 
@@ -3372,12 +3373,12 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedBoxGroundSupportDebug.GetValueOnAnyThread() != 0)
     {
-        const FVector COMVelocityAfterSolve = ParentComponent->GetPhysCOMVelocity();
-        UE_LOG(
+        const FVector COMVelocityAfterSolve = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+        SPEED_NATIVE_LOG(
             BoxSubBodyLog,
             Log,
             TEXT("[BoxGroundSupport] Frame=%d Contacts=%d Iter=%d Mu=%.3f Fresh=%d ContinuingEdge=%d COMVBefore=%s COMVAfter=%s DeltaCOMV=%s NormalImpulse=%s TangentialImpulse=%s"),
-            ParentComponent->NumFrame(),
+            ParentComponentBodyDomainStorage()->NumFrame(),
             NumC,
             Iter,
             GetDynamicFriction(),
@@ -3391,7 +3392,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     }
 #endif
 
-    PrevLambdaN = LambdaN;
+    PrevLambdaNBoxDomainStorage() = LambdaN;
 
     // Positional correction (Baumgarte / split impulse style)
     if (Hit.bStartPenetrating && Hit.PenetrationDepth > 0.f)
@@ -3403,18 +3404,18 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         const float pushOut = FMath::Max(Hit.PenetrationDepth - Slop, 0.f);
         if (pushOut > 0.f)
         {
-            ParentComponent->SetPhysLocation(ParentComponent->GetPhysLocation() + DepenDir * (BetaPos * pushOut));
+            ParentComponentBodyDomainStorage()->SetPhysLocation(ParentComponentBodyDomainStorage()->GetPhysLocation() + DepenDir * (BetaPos * pushOut));
 
-            const FVector V = ParentComponent->GetPhysCOMVelocity();
+            const FVector V = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
             if (vIn < 0.f)
-                ParentComponent->AddPhysVelocity(-vIn * DepenDir);
+                ParentComponentBodyDomainStorage()->AddPhysVelocity(-vIn * DepenDir);
         }
     }
 
     // Track previous contact normal
-    PrevContactNormal = N;
-    bHadContactPrevFrame = true;
+    PrevContactNormalBoxDomainStorage() = N;
+    bHadContactPrevFrameBoxDomainStorage() = true;
 }
 
 // ============================================================================
@@ -3427,10 +3428,10 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 // ============================================================================
 void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
 {
-    if (!ParentComponent) return;
+    if (!ParentComponentBodyDomainStorage()) return;
 
 	// if hitbox is in auto-recover and has 2 ground contacts, skip persistence to avoid fighting with edge recovery logic
-    if (ParentComponent->IsInAutoRecover() &&
+    if (ParentComponentBodyDomainStorage()->IsInAutoRecover() &&
         GetGroundContacts().Num() == 2)
     {
         return;
@@ -3446,7 +3447,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     // IMPORTANT: keep the persistent support constrained to the stored ground plane.
     // Mixing in a wall normal here can create a fake support plane in floor/wall corners
     // and pull the hitbox into the ground.
-    const FVector N = GroundPlaneN.GetSafeNormal();
+    const FVector N = GroundPlaneNBoxDomainStorage().GetSafeNormal();
     const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
 
     // If the plane became non-support (e.g. got overwritten), bail.
@@ -3459,40 +3460,40 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
 
     // Rebuild manifold from current pose *against the ground plane normal*.
     // This is key: it keeps 2+ points, so you don't pivot on the gutter edge.
-    const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    const SKinematic K = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
     TArray<FVector> SupportPts;
     const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
 
-    if (bNearlyFaceAligned && bEdgeSupportLatched)
+    if (bNearlyFaceAligned && bEdgeSupportLatchedBoxDomainStorage())
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[ARContact.EdgeLatchRelease] Frame=%d Source=PersistentConstraint FaceDot=%.5f PrevLS=%d LatchedLS=%d"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
                 FaceAlignmentAbs,
-                PrevGroundContactsLS.Num(),
-                LatchedEdgeContactsLS.Num());
+                PrevGroundContactsLSBoxDomainStorage().Num(),
+                LatchedEdgeContactsLSBoxDomainStorage().Num());
         }
 #endif
-        bEdgeSupportLatched = false;
-        LatchedEdgeContactsLS.Reset();
-        PrevGroundContactsLS.Reset();
+        bEdgeSupportLatchedBoxDomainStorage() = false;
+        LatchedEdgeContactsLSBoxDomainStorage().Reset();
+        PrevGroundContactsLSBoxDomainStorage().Reset();
     }
 
-    if (!bNearlyFaceAligned && bEdgeSupportLatched && LatchedEdgeContactsLS.Num() == 2)
+    if (!bNearlyFaceAligned && bEdgeSupportLatchedBoxDomainStorage() && LatchedEdgeContactsLSBoxDomainStorage().Num() == 2)
     {
         // Force edge support from latched memory
         SupportPts.Add(
-            K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLS[0])
+            K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLSBoxDomainStorage()[0])
         );
         SupportPts.Add(
-            K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLS[1])
+            K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLSBoxDomainStorage()[1])
         );
     }
     else
@@ -3501,11 +3502,11 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
             ? FMath::Max(0.75f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
             : 0.75f;
         BuildSupportManifoldFromNormal(
-            N, K.Location, K.Rotation, BoxExtent, SupportPts, SupportContactEps
+            N, K.Location, K.Rotation, BoxExtentBoxDomainStorage(), SupportPts, SupportContactEps
         );
         if (bNearlyFaceAligned)
         {
-            IAmSpeedBuildSupportFaceManifoldFromNormal(N, K.Location, K.Rotation, BoxExtent, SupportPts, FaceReleaseDot);
+            IAmSpeedBuildSupportFaceManifoldFromNormal(N, K.Location, K.Rotation, BoxExtentBoxDomainStorage(), SupportPts, FaceReleaseDot);
         }
     }
 
@@ -3526,17 +3527,17 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     constexpr float VN_EPS = 0.0f; // cm/s (allow tiny bias)
     if (worstInto > VN_EPS)
     {
-        bHadGroundContactPrevFrame = true;
-        PrevGroundNormal = N;
+        bHadGroundContactPrevFrameBoxDomainStorage() = true;
+        PrevGroundNormalBoxDomainStorage() = N;
         return;
     }
 	// Register constraints for this manifold
-    if (GroundComp.IsValid())
+    if (GroundCompBoxDomainStorage().IsValid())
     {
         RegisterContactManifoldAsConstraints(
             SupportPts,
             N,
-            GroundComp.Get(),
+            GroundCompBoxDomainStorage().Get(),
             0.f,
             0.f,
             true,
@@ -3550,7 +3551,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
 
     // Debug
-    KinematicsStorage() = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    KinematicsStorage() = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
     // UE_LOG(BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d, ImpactNormal = %s, Kinematic = %s"),
     //     ParentComponent->NumFrame(), *N.ToString(), *Kinematics.ToString());
 
@@ -3590,13 +3591,13 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     // Positional drift correction toward plane (soft).
     // Keep within a small band so you don't accumulate penetration over many frames.
     TArray<FVector, TInlineAllocator<8>> Verts;
-    BuildBoxVerticesWithAllocator(K.Location, K.Rotation, BoxExtent, Verts);
+    BuildBoxVerticesWithAllocator(K.Location, K.Rotation, BoxExtentBoxDomainStorage(), Verts);
 
     float minDist = FLT_MAX;
-    const FVector PlaneN = GroundPlaneN.GetSafeNormal();
+    const FVector PlaneN = GroundPlaneNBoxDomainStorage().GetSafeNormal();
     for (const FVector& V : Verts)
     {
-        const float dist = PlaneSignedDist(V, PlaneN, GroundPlanePointWS);
+        const float dist = PlaneSignedDist(V, PlaneN, GroundPlanePointWSBoxDomainStorage());
         minDist = FMath::Min(minDist, dist);
     }
 
@@ -3608,51 +3609,51 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     if (minDist < -PenTol)
     {
         const float pushOut = (-PenTol - minDist);
-        ParentComponent->SetPhysLocation(ParentComponent->GetPhysLocation() + N * (BetaPos * pushOut));
+        ParentComponentBodyDomainStorage()->SetPhysLocation(ParentComponentBodyDomainStorage()->GetPhysLocation() + N * (BetaPos * pushOut));
 
         // Kill inward normal component at COM
-        const FVector Vcm = ParentComponent->GetPhysCOMVelocity();
+        const FVector Vcm = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
         const float vIn = FVector::DotProduct(Vcm, N);
         if (vIn < 0.f)
-            ParentComponent->AddPhysVelocity(-vIn * N);
+            ParentComponentBodyDomainStorage()->AddPhysVelocity(-vIn * N);
     }
     else if (minDist > ContactTol)
     {
         constexpr float MaxRoofTraversalDrift = 25.f;
         if (bRoofSurfaceTraversalActive && minDist <= MaxRoofTraversalDrift)
         {
-            ParentComponent->SetPhysLocation(
-                ParentComponent->GetPhysLocation() - N * (minDist - ContactTol));
+            ParentComponentBodyDomainStorage()->SetPhysLocation(
+                ParentComponentBodyDomainStorage()->GetPhysLocation() - N * (minDist - ContactTol));
 
-            const FVector Vcm = ParentComponent->GetPhysCOMVelocity();
+            const FVector Vcm = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
             const float vOut = FVector::DotProduct(Vcm, N);
             if (vOut > 0.f)
             {
-                ParentComponent->AddPhysVelocity(-vOut * N);
+                ParentComponentBodyDomainStorage()->AddPhysVelocity(-vOut * N);
             }
         }
         else
         {
             // If we’re clearly leaving the plane, stop persisting.
             // (Otherwise you “float” and keep canceling gravity.)
-            bGroundPlaneValid = false;
-            bHasGroundContact = false;
+            bGroundPlaneValidBoxDomainStorage() = false;
+            bHasGroundContactBoxDomainStorage() = false;
         }
     }
 
     // Hard release conditions for latched edge
-    if (bEdgeSupportLatched)
+    if (bEdgeSupportLatchedBoxDomainStorage())
     {
         const float upDot = FVector::DotProduct(N, FVector::UpVector);
         if (upDot < 0.5f || minDist > 2.0f)
         {
-            bEdgeSupportLatched = false;
-            LatchedEdgeContactsLS.Reset();
+            bEdgeSupportLatchedBoxDomainStorage() = false;
+            LatchedEdgeContactsLSBoxDomainStorage().Reset();
         }
     }
 
-    bHadGroundContactPrevFrame = true;
-    PrevGroundNormal = N;
+    bHadGroundContactPrevFrameBoxDomainStorage() = true;
+    PrevGroundNormalBoxDomainStorage() = N;
 }
 
 void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDirectSupportSolved)
@@ -3669,48 +3670,48 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         Hit.CanonicalGroupId = SupportSourceHit.CanonicalGroupId;
         Hit.MaterialId = SupportSourceHit.MaterialId;
     };
-    bHasGroundContact = false;
-	const bool bEdgeRecoverActive = ParentComponent->IsInAutoRecover();
+    bHasGroundContactBoxDomainStorage() = false;
+	const bool bEdgeRecoverActive = ParentComponentBodyDomainStorage()->IsInAutoRecover();
 
-    if (!bGroundPlaneValid || !GroundComp.IsValid())
+    if (!bGroundPlaneValidBoxDomainStorage() || !GroundCompBoxDomainStorage().IsValid())
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
-            (CurrentGroundContactsWS.Num() > 0 || PrevGroundContactsLS.Num() > 0 || bFreshEdgeRecoverCandidate))
+            (CurrentGroundContactsWSBoxDomainStorage().Num() > 0 || PrevGroundContactsLSBoxDomainStorage().Num() > 0 || bFreshEdgeRecoverCandidateBoxDomainStorage()))
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[ARContact.PersistentReject] Frame=%d Reason=NoPlane PlaneValid=%d GroundComp=%s Current=%d PrevLS=%d FreshEdge=%d"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
-                bGroundPlaneValid ? 1 : 0,
-                GroundComp.IsValid() ? *GroundComp->GetName() : TEXT("None"),
-                CurrentGroundContactsWS.Num(),
-                PrevGroundContactsLS.Num(),
-                bFreshEdgeRecoverCandidate ? 1 : 0);
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
+                bGroundPlaneValidBoxDomainStorage() ? 1 : 0,
+                GroundCompBoxDomainStorage().IsValid() ? *GroundCompBoxDomainStorage()->GetName() : TEXT("None"),
+                CurrentGroundContactsWSBoxDomainStorage().Num(),
+                PrevGroundContactsLSBoxDomainStorage().Num(),
+                bFreshEdgeRecoverCandidateBoxDomainStorage() ? 1 : 0);
         }
 #endif
         return;
     }
 
-    const float GroundPlaneUpDot = FVector::DotProduct(GroundPlaneN, FVector::UpVector);
-    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const float GroundPlaneUpDot = FVector::DotProduct(GroundPlaneNBoxDomainStorage(), FVector::UpVector);
+    const int32 CurrentFrame = ParentComponentBodyDomainStorage()->NumFrame();
     const bool bRoofSurfaceTraversalActive = HasRoofSurfaceTraversalSupport();
     if (GroundPlaneUpDot < 0.5f && !bRoofSurfaceTraversalActive)
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[ARContact.PersistentReject] Frame=%d Reason=LowUpDot UpDot=%.3f Current=%d PrevLS=%d FreshEdge=%d N=%s"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
                 GroundPlaneUpDot,
-                CurrentGroundContactsWS.Num(),
-                PrevGroundContactsLS.Num(),
-                bFreshEdgeRecoverCandidate ? 1 : 0,
-                *GroundPlaneN.ToString());
+                CurrentGroundContactsWSBoxDomainStorage().Num(),
+                PrevGroundContactsLSBoxDomainStorage().Num(),
+                bFreshEdgeRecoverCandidateBoxDomainStorage() ? 1 : 0,
+                *GroundPlaneNBoxDomainStorage().ToString());
         }
 #endif
         return;
@@ -3721,61 +3722,61 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[ARContact.PersistentReject] Frame=%d Reason=Concave Current=%d Normals=%d PrevLS=%d FreshEdge=%d"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
-                CurrentGroundContactsWS.Num(),
-                CurrentGroundNormalsWS.Num(),
-                PrevGroundContactsLS.Num(),
-                bFreshEdgeRecoverCandidate ? 1 : 0);
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
+                CurrentGroundContactsWSBoxDomainStorage().Num(),
+                CurrentGroundNormalsWSBoxDomainStorage().Num(),
+                PrevGroundContactsLSBoxDomainStorage().Num(),
+                bFreshEdgeRecoverCandidateBoxDomainStorage() ? 1 : 0);
         }
 #endif
-        bGroundPlaneValid = false;
-        bHasGroundContact = false;
-        bGroundContactStable = false;
-        StableTime = 0.f;
-        CurrentGroundContactsWS.Reset();
-        PrevGroundContactsLS.Reset();
+        bGroundPlaneValidBoxDomainStorage() = false;
+        bHasGroundContactBoxDomainStorage() = false;
+        bGroundContactStableBoxDomainStorage() = false;
+        StableTimeBoxDomainStorage() = 0.f;
+        CurrentGroundContactsWSBoxDomainStorage().Reset();
+        PrevGroundContactsLSBoxDomainStorage().Reset();
         return;
     }
 
-    const FVector N = GroundPlaneN.GetSafeNormal();
-    const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    const FVector N = GroundPlaneNBoxDomainStorage().GetSafeNormal();
+    const SKinematic K = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
     const float FaceReleaseDot = FMath::Clamp(CVarIAmSpeedEdgeLatchFaceReleaseDot.GetValueOnAnyThread(), 0.0f, 1.0f);
     const float FaceAlignmentAbs = IAmSpeedFindBestSupportFaceAlignment(N, K.Rotation);
     const bool bNearlyFaceAligned = FaceAlignmentAbs >= FaceReleaseDot;
     const bool bEdgeRecoverCandidate =
         !bNearlyFaceAligned &&
-        (PrevGroundContactsLS.Num() == 2 || bEdgeSupportLatched || bFreshEdgeRecoverCandidate);
+        (PrevGroundContactsLSBoxDomainStorage().Num() == 2 || bEdgeSupportLatchedBoxDomainStorage() || bFreshEdgeRecoverCandidateBoxDomainStorage());
     const bool bVertexRecoverCandidate =
-        CurrentGroundContactsWS.Num() == 1 &&
-        PrevGroundContactsLS.Num() <= 1 &&
+        CurrentGroundContactsWSBoxDomainStorage().Num() == 1 &&
+        PrevGroundContactsLSBoxDomainStorage().Num() <= 1 &&
         FaceAlignmentAbs < FaceReleaseDot;
 
-    if (bNearlyFaceAligned && bEdgeSupportLatched)
+    if (bNearlyFaceAligned && bEdgeSupportLatchedBoxDomainStorage())
     {
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[ARContact.EdgeLatchRelease] Frame=%d Source=PersistentUpdate FaceDot=%.5f PrevLS=%d LatchedLS=%d"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
                 FaceAlignmentAbs,
-                PrevGroundContactsLS.Num(),
-                LatchedEdgeContactsLS.Num());
+                PrevGroundContactsLSBoxDomainStorage().Num(),
+                LatchedEdgeContactsLSBoxDomainStorage().Num());
         }
 #endif
-        bEdgeSupportLatched = false;
-        LatchedEdgeContactsLS.Reset();
-        PrevGroundContactsLS.Reset();
+        bEdgeSupportLatchedBoxDomainStorage() = false;
+        LatchedEdgeContactsLSBoxDomainStorage().Reset();
+        PrevGroundContactsLSBoxDomainStorage().Reset();
     }
 
     TArray<FVector, TInlineAllocator<8>> Verts;
-    BuildBoxVerticesWithAllocator(K.Location, K.Rotation, BoxExtent, Verts);
+    BuildBoxVerticesWithAllocator(K.Location, K.Rotation, BoxExtentBoxDomainStorage(), Verts);
 
     // ------------------------------------------------------------
     // Compute min distance to plane
@@ -3783,12 +3784,12 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     float minDist = FLT_MAX;
     for (const FVector& V : Verts)
     {
-        const float dist = PlaneSignedDist(V, GroundPlaneN, GroundPlanePointWS);
+        const float dist = PlaneSignedDist(V, GroundPlaneNBoxDomainStorage(), GroundPlanePointWSBoxDomainStorage());
         minDist = FMath::Min(minDist, dist);
     }
 
     float worstVN = 0.f;
-    for (const FVector& P : CurrentGroundContactsWS)
+    for (const FVector& P : CurrentGroundContactsWSBoxDomainStorage())
     {
         const float vnP = FVector::DotProduct(GetVelocityAtPoint(P), N);
         worstVN = FMath::Max(worstVN, vnP);
@@ -3831,8 +3832,8 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         minDist <= MaxRoofTraversalDrift)
     {
         constexpr float TargetRoofTraversalDistance = 0.5f;
-        ParentComponent->SetPhysLocation(
-            ParentComponent->GetPhysLocation() -
+        ParentComponentBodyDomainStorage()->SetPhysLocation(
+            ParentComponentBodyDomainStorage()->GetPhysLocation() -
             N * (minDist - TargetRoofTraversalDistance));
         minDist = TargetRoofTraversalDistance;
     }
@@ -3841,8 +3842,8 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         minDist >= -MaxRoofTraversalDrift)
     {
         constexpr float TargetRoofTraversalPenetration = -0.5f;
-        ParentComponent->SetPhysLocation(
-            ParentComponent->GetPhysLocation() +
+        ParentComponentBodyDomainStorage()->SetPhysLocation(
+            ParentComponentBodyDomainStorage()->GetPhysLocation() +
             N * (TargetRoofTraversalPenetration - minDist));
         minDist = TargetRoofTraversalPenetration;
     }
@@ -3855,7 +3856,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         (minDist >= -PenTolReject);
 
     const float MeasuredSupportSeparatingSpeed = bRoofSurfaceTraversalActive
-        ? FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N)
+        ? FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N)
         : worstVN;
     const float SupportSeparatingSpeed =
         bRoofSurfaceTraversalActive && bDirectSupportSolved
@@ -3866,16 +3867,16 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
-        (CurrentGroundContactsWS.Num() > 0 || PrevGroundContactsLS.Num() > 0 || bFreshEdgeRecoverCandidate))
+        (CurrentGroundContactsWSBoxDomainStorage().Num() > 0 || PrevGroundContactsLSBoxDomainStorage().Num() > 0 || bFreshEdgeRecoverCandidateBoxDomainStorage()))
     {
-        UE_LOG(
+        SPEED_NATIVE_LOG(
             BoxSubBodyLog,
             Log,
             TEXT("[ARContact.PersistentCheck] Frame=%d Current=%d PrevLS=%d FreshEdge=%d EdgeRecoverActive=%d VertexCandidate=%d RoofTraversal=%d FaceDot=%.5f minDist=%.3f ContactTol=%.3f PenTol=%.3f worstVN=%.2f SupportSep=%.2f SepVelTol=%.2f WithinBand=%d StableMotion=%d NotExploding=%d PlaneN=%s"),
-            ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
-            CurrentGroundContactsWS.Num(),
-            PrevGroundContactsLS.Num(),
-            bFreshEdgeRecoverCandidate ? 1 : 0,
+            ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
+            CurrentGroundContactsWSBoxDomainStorage().Num(),
+            PrevGroundContactsLSBoxDomainStorage().Num(),
+            bFreshEdgeRecoverCandidateBoxDomainStorage() ? 1 : 0,
             bEdgeRecoverActive ? 1 : 0,
             bVertexRecoverCandidate ? 1 : 0,
             bRoofSurfaceTraversalActive ? 1 : 0,
@@ -3889,46 +3890,46 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
             bWithinSupportBand ? 1 : 0,
             bStableNormalMotion ? 1 : 0,
             bNotExploding ? 1 : 0,
-            *GroundPlaneN.ToString());
+            *GroundPlaneNBoxDomainStorage().ToString());
     }
 #endif
 
-    if (!bNearlyFaceAligned && bFreshEdgeRecoverCandidate && CurrentGroundContactsWS.Num() == 2)
+    if (!bNearlyFaceAligned && bFreshEdgeRecoverCandidateBoxDomainStorage() && CurrentGroundContactsWSBoxDomainStorage().Num() == 2)
     {
-        const FVector& P0 = CurrentGroundContactsWS[0];
-        const FVector& P1 = CurrentGroundContactsWS[1];
+        const FVector& P0 = CurrentGroundContactsWSBoxDomainStorage()[0];
+        const FVector& P1 = CurrentGroundContactsWSBoxDomainStorage()[1];
         if ((P1 - P0).SizeSquared() > FMath::Square(1.0f))
         {
 #if !UE_BUILD_SHIPPING
             if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
             {
-                UE_LOG(
+                SPEED_NATIVE_LOG(
                     BoxSubBodyLog,
                     Log,
                     TEXT("[ARContact.PersistentFreshEdgeAccepted] Frame=%d P0=%s P1=%s PlaneN=%s GroundComp=%s"),
-                    ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                    ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
                     *P0.ToString(),
                     *P1.ToString(),
-                    *GroundPlaneN.ToString(),
-                    GroundComp.IsValid() ? *GroundComp->GetName() : TEXT("None"));
+                    *GroundPlaneNBoxDomainStorage().ToString(),
+                    GroundCompBoxDomainStorage().IsValid() ? *GroundCompBoxDomainStorage()->GetName() : TEXT("None"));
             }
 #endif
-            bHasGroundContact = true;
-            bEdgeSupportLatched = true;
-            EdgeSupportLatchFrame = ParentComponent->NumFrame();
+            bHasGroundContactBoxDomainStorage() = true;
+            bEdgeSupportLatchedBoxDomainStorage() = true;
+            EdgeSupportLatchFrameBoxDomainStorage() = ParentComponentBodyDomainStorage()->NumFrame();
 
-            LatchedEdgeContactsLS.Reset(2);
-            LatchedEdgeContactsLS.Add(K.Rotation.UnrotateVector(P0 - K.Location));
-            LatchedEdgeContactsLS.Add(K.Rotation.UnrotateVector(P1 - K.Location));
+            LatchedEdgeContactsLSBoxDomainStorage().Reset(2);
+            LatchedEdgeContactsLSBoxDomainStorage().Add(K.Rotation.UnrotateVector(P0 - K.Location));
+            LatchedEdgeContactsLSBoxDomainStorage().Add(K.Rotation.UnrotateVector(P1 - K.Location));
 
-            PrevGroundContactsLS.Reset(2);
-            PrevGroundContactsLS.Add(LatchedEdgeContactsLS[0]);
-            PrevGroundContactsLS.Add(LatchedEdgeContactsLS[1]);
+            PrevGroundContactsLSBoxDomainStorage().Reset(2);
+            PrevGroundContactsLSBoxDomainStorage().Add(LatchedEdgeContactsLSBoxDomainStorage()[0]);
+            PrevGroundContactsLSBoxDomainStorage().Add(LatchedEdgeContactsLSBoxDomainStorage()[1]);
 
             GroundHitStorage() = SHitResult();
             GroundHitStorage().bBlockingHit = true;
-            GroundHitStorage().Component = GroundComp;
-            GroundHitStorage().ImpactNormal = GroundPlaneN;
+            GroundHitStorage().Component = GroundCompBoxDomainStorage();
+            GroundHitStorage().ImpactNormal = GroundPlaneNBoxDomainStorage();
             GroundHitStorage().TOI = 0.f;
             GroundHitStorage().ImpactPoint = 0.5f * (P0 + P1);
             PreserveSupportProvider(GroundHitStorage());
@@ -3941,14 +3942,14 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[ARContact.PersistentReject] Frame=%d Reason=BandOrMotion Current=%d PrevLS=%d FreshEdge=%d VertexCandidate=%d minDist=%.3f ContactTol=%.3f PenTol=%.3f worstVN=%.2f SepVelTol=%.2f WithinBand=%d StableMotion=%d NotExploding=%d"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
-                CurrentGroundContactsWS.Num(),
-                PrevGroundContactsLS.Num(),
-                bFreshEdgeRecoverCandidate ? 1 : 0,
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
+                CurrentGroundContactsWSBoxDomainStorage().Num(),
+                PrevGroundContactsLSBoxDomainStorage().Num(),
+                bFreshEdgeRecoverCandidateBoxDomainStorage() ? 1 : 0,
                 bVertexRecoverCandidate ? 1 : 0,
                 minDist,
                 ActiveContactTol,
@@ -3971,19 +3972,19 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         const float CarUpToPlaneDot =
             FVector::DotProduct(K.Rotation.GetUpVector(), N);
         if (bNearlyFaceAligned &&
-            CurrentGroundContactsWS.Num() >= 3 &&
+            CurrentGroundContactsWSBoxDomainStorage().Num() >= 3 &&
             PlaneUpDot >= 0.95f &&
             CarUpToPlaneDot >= 0.9f)
         {
-            bHasGroundContact = false;
-            bGroundPlaneValid = false;
-            bGroundContactStable = false;
-            StableTime = 0.f;
-            CurrentGroundContactsWS.Reset();
+            bHasGroundContactBoxDomainStorage() = false;
+            bGroundPlaneValidBoxDomainStorage() = false;
+            bGroundContactStableBoxDomainStorage() = false;
+            StableTimeBoxDomainStorage() = 0.f;
+            CurrentGroundContactsWSBoxDomainStorage().Reset();
         }
-        bEdgeSupportLatched = false;
-        LatchedEdgeContactsLS.Reset();
-        PrevGroundContactsLS.Reset();
+        bEdgeSupportLatchedBoxDomainStorage() = false;
+        LatchedEdgeContactsLSBoxDomainStorage().Reset();
+        PrevGroundContactsLSBoxDomainStorage().Reset();
         return;
     }
     // If clearly separating, drop persistence. Near a face support we keep a
@@ -4002,52 +4003,52 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(
+            SPEED_NATIVE_LOG(
                 BoxSubBodyLog,
                 Log,
                 TEXT("[ARContact.PersistentReject] Frame=%d Reason=Separating worstVN=%.2f ReleaseSpeed=%.2f VertexCandidate=%d FaceDot=%.5f Current=%d PrevLS=%d"),
-                ParentComponent ? ParentComponent->NumFrame() : INDEX_NONE,
+                ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
                 worstVN,
                 SeparatingReleaseSpeed,
                 bVertexRecoverCandidate ? 1 : 0,
                 FaceAlignmentAbs,
-                CurrentGroundContactsWS.Num(),
-                PrevGroundContactsLS.Num());
+                CurrentGroundContactsWSBoxDomainStorage().Num(),
+                PrevGroundContactsLSBoxDomainStorage().Num());
         }
 #endif
-        bHasGroundContact = false;
-        bGroundPlaneValid = false;
-        bEdgeSupportLatched = false;
-        CurrentGroundContactsWS.Reset();
-        LatchedEdgeContactsLS.Reset();
-        PrevGroundContactsLS.Reset();
+        bHasGroundContactBoxDomainStorage() = false;
+        bGroundPlaneValidBoxDomainStorage() = false;
+        bEdgeSupportLatchedBoxDomainStorage() = false;
+        CurrentGroundContactsWSBoxDomainStorage().Reset();
+        LatchedEdgeContactsLSBoxDomainStorage().Reset();
+        PrevGroundContactsLSBoxDomainStorage().Reset();
         return;
     }
 
     // ------------------------------------------------------------
     // Rebuild support manifold from vertices
     // ------------------------------------------------------------
-    bHasGroundContact = true;
+    bHasGroundContactBoxDomainStorage() = true;
 
     if (bRoofSurfaceTraversalActive)
     {
-        LastRoofSurfaceContactFrame = CurrentFrame;
+        LastRoofSurfaceContactFrameBoxDomainStorage() = CurrentFrame;
     }
 
-    CurrentGroundContactsWS.Reset();
+    CurrentGroundContactsWSBoxDomainStorage().Reset();
     const float ContactEps = bNearlyFaceAligned || bRoofSurfaceTraversalActive
         ? FMath::Max(0.5f, CVarIAmSpeedFaceSupportContactEpsilonCm.GetValueOnAnyThread())
         : 0.5f;
 
     for (const FVector& V : Verts)
     {
-        const float dist = PlaneSignedDist(V, GroundPlaneN, GroundPlanePointWS);
+        const float dist = PlaneSignedDist(V, GroundPlaneNBoxDomainStorage(), GroundPlanePointWSBoxDomainStorage());
         if (dist <= minDist + ContactEps)
-            CurrentGroundContactsWS.Add(V);
+            CurrentGroundContactsWSBoxDomainStorage().Add(V);
     }
     if (bRoofSurfaceTraversalActive && !bNearlyFaceAligned)
     {
-        IAmSpeedBuildRoofTransitionEdge(N, K.Location, K.Rotation, BoxExtent, CurrentGroundContactsWS);
+        IAmSpeedBuildRoofTransitionEdge(N, K.Location, K.Rotation, BoxExtentBoxDomainStorage(), CurrentGroundContactsWSBoxDomainStorage());
     }
     if (bNearlyFaceAligned)
     {
@@ -4055,21 +4056,21 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
             N,
             K.Location,
             K.Rotation,
-            BoxExtent,
-            CurrentGroundContactsWS,
+            BoxExtentBoxDomainStorage(),
+            CurrentGroundContactsWSBoxDomainStorage(),
             FaceReleaseDot);
     }
 
     // ------------------------------------------------------------
     // EDGE PERSISTENCE HYSTERESIS (local-space robust)
     // ------------------------------------------------------------
-    if (!bNearlyFaceAligned && !bEdgeRecoverActive && PrevGroundContactsLS.Num() == 2 && CurrentGroundContactsWS.Num() == 1)
+    if (!bNearlyFaceAligned && !bEdgeRecoverActive && PrevGroundContactsLSBoxDomainStorage().Num() == 2 && CurrentGroundContactsWSBoxDomainStorage().Num() == 1)
     {
-        const FVector& P = CurrentGroundContactsWS[0];
+        const FVector& P = CurrentGroundContactsWSBoxDomainStorage()[0];
 
         // Rebuild previous edge in CURRENT pose using LOCAL stored endpoints
-        const FVector A = K.Location + K.Rotation.RotateVector(PrevGroundContactsLS[0]);
-        const FVector B = K.Location + K.Rotation.RotateVector(PrevGroundContactsLS[1]);
+        const FVector A = K.Location + K.Rotation.RotateVector(PrevGroundContactsLSBoxDomainStorage()[0]);
+        const FVector B = K.Location + K.Rotation.RotateVector(PrevGroundContactsLSBoxDomainStorage()[1]);
 
         const FVector Edge = (B - A);
         const float EdgeLen2 = Edge.SizeSquared();
@@ -4090,7 +4091,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
             if (FVector::DistSquared(P, Pproj) <= tol2)
             {
-                CurrentGroundContactsWS.Add(Pproj);
+                CurrentGroundContactsWSBoxDomainStorage().Add(Pproj);
 
 #if !UE_BUILD_SHIPPING
                 /*UE_LOG(BoxSubBodyLog, Log,
@@ -4111,10 +4112,10 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     }
 
     // Latch edge contacts if we have exactly 2 contacts this frame
-    if (!bNearlyFaceAligned && !bEdgeRecoverActive && CurrentGroundContactsWS.Num() == 2)
+    if (!bNearlyFaceAligned && !bEdgeRecoverActive && CurrentGroundContactsWSBoxDomainStorage().Num() == 2)
     {
-        const FVector& P0 = CurrentGroundContactsWS[0];
-        const FVector& P1 = CurrentGroundContactsWS[1];
+        const FVector& P0 = CurrentGroundContactsWSBoxDomainStorage()[0];
+        const FVector& P1 = CurrentGroundContactsWSBoxDomainStorage()[1];
 
         const float EdgeLenWS = (P1 - P0).Size();
 
@@ -4122,16 +4123,16 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
         if (EdgeLenWS > MinLatchEdgeLen)
         {
-            LatchedEdgeContactsLS.Reset(2);
-            LatchedEdgeContactsLS.Add(
+            LatchedEdgeContactsLSBoxDomainStorage().Reset(2);
+            LatchedEdgeContactsLSBoxDomainStorage().Add(
                 K.Rotation.UnrotateVector(P0 - K.Location)
             );
-            LatchedEdgeContactsLS.Add(
+            LatchedEdgeContactsLSBoxDomainStorage().Add(
                 K.Rotation.UnrotateVector(P1 - K.Location)
             );
 
-            bEdgeSupportLatched = true;
-            EdgeSupportLatchFrame = ParentComponent->NumFrame();
+            bEdgeSupportLatchedBoxDomainStorage() = true;
+            EdgeSupportLatchFrameBoxDomainStorage() = ParentComponentBodyDomainStorage()->NumFrame();
         }
 #if !UE_BUILD_SHIPPING
         else
@@ -4149,18 +4150,18 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     // ------------------------------------------------------------
     // Store previous manifold for next frame
     // ------------------------------------------------------------
-    PrevGroundContactsLS.Reset();
-    PrevGroundContactsLS.Reserve(CurrentGroundContactsWS.Num());
+    PrevGroundContactsLSBoxDomainStorage().Reset();
+    PrevGroundContactsLSBoxDomainStorage().Reserve(CurrentGroundContactsWSBoxDomainStorage().Num());
 
-    for (const FVector& Pw : CurrentGroundContactsWS)
+    for (const FVector& Pw : CurrentGroundContactsWSBoxDomainStorage())
     {
         // local around COM frame: (Pw - K.Location) in hitbox local
-        PrevGroundContactsLS.Add(K.Rotation.UnrotateVector(Pw - K.Location));
+        PrevGroundContactsLSBoxDomainStorage().Add(K.Rotation.UnrotateVector(Pw - K.Location));
     }
-    if (!bNearlyFaceAligned && PrevGroundContactsLS.Num() == 2)
+    if (!bNearlyFaceAligned && PrevGroundContactsLSBoxDomainStorage().Num() == 2)
     {
-        bEdgeSupportLatched = true;
-        EdgeSupportLatchFrame = ParentComponent->NumFrame();
+        bEdgeSupportLatchedBoxDomainStorage() = true;
+        EdgeSupportLatchFrameBoxDomainStorage() = ParentComponentBodyDomainStorage()->NumFrame();
     }
 
     // ------------------------------------------------------------
@@ -4168,17 +4169,17 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     // ------------------------------------------------------------
     const FVector& Location = K.Location;
     const FVector Pbox =
-        CurrentGroundContactsWS.Num() ?
-        CurrentGroundContactsWS[0] :
+        CurrentGroundContactsWSBoxDomainStorage().Num() ?
+        CurrentGroundContactsWSBoxDomainStorage()[0] :
         Location;
 
-    const float dist = PlaneSignedDist(Pbox, GroundPlaneN, GroundPlanePointWS);
-    const FVector Pplane = Pbox - dist * GroundPlaneN;
+    const float dist = PlaneSignedDist(Pbox, GroundPlaneNBoxDomainStorage(), GroundPlanePointWSBoxDomainStorage());
+    const FVector Pplane = Pbox - dist * GroundPlaneNBoxDomainStorage();
 
     GroundHitStorage() = SHitResult();
     GroundHitStorage().bBlockingHit = true;
-    GroundHitStorage().Component = GroundComp;
-    GroundHitStorage().ImpactNormal = GroundPlaneN;
+    GroundHitStorage().Component = GroundCompBoxDomainStorage();
+    GroundHitStorage().ImpactNormal = GroundPlaneNBoxDomainStorage();
     GroundHitStorage().TOI = 0.f;
     // GroundHit.Location = K.Location;
     GroundHitStorage().ImpactPoint = Pplane;
@@ -4187,14 +4188,14 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
 bool UBoxSubBody::CanResolveRepeatedContact(const SHitResult& Hit) const
 {
-    return ParentComponent && ParentComponent->GetStaticCollisionWorldForFrame() &&
+    return ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() &&
         Speed::Collision::IsEligibleExactStaticRepeatHit(Hit) && Hit.Component.IsValid() &&
         Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
 }
 
 bool UBoxSubBody::CanInitializeRepeatedContact(const SHitResult& Hit) const
 {
-    return ParentComponent && ParentComponent->GetStaticCollisionWorldForFrame() &&
+    return ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() &&
         Speed::Collision::IsEligibleExactStaticInitialHit(Hit) && Hit.Component.IsValid() &&
         Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
 }
@@ -4202,18 +4203,18 @@ bool UBoxSubBody::CanInitializeRepeatedContact(const SHitResult& Hit) const
 bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const
 {
     Linear = Angular = FVector::ZeroVector;
-    if (ParentComponent && ParentComponent->HasActivePhysicalConstraintsOtherThan(this)) return false;
-    const Speed::IStaticCollisionWorld* World = ParentComponent ? ParentComponent->GetStaticCollisionWorldForFrame() : nullptr;
+    if (ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->HasActivePhysicalConstraintsOtherThan(this)) return false;
+    const Speed::IStaticCollisionWorld* World = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() : nullptr;
     if (!World || !HasToApplyRestForce() || !CurrentHitStorage().bBlockingHit ||
         CurrentHitStorage().SourceId == 0 || CurrentHitStorage().bSurfaceNormalMayVary || CurrentHitStorage().GeometricErrorBoundCm != 0 ||
         CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face || !CurrentHitStorage().Component.IsValid() ||
         CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic) return false;
-    const SKinematic& State = ParentComponent->GetKinematicState();
+    const SKinematic& State = ParentComponentBodyDomainStorage()->GetKinematicState();
     const FVector N = CurrentHitStorage().ImpactNormal;
-    const FVector Center = State.Location + State.Rotation.RotateVector(GetLocalOffset() - ParentComponent->GetPhysCenterOfMassLocal());
+    const FVector Center = State.Location + State.Rotation.RotateVector(GetLocalOffset() - ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal());
     const FQuat Q = State.Rotation * GetLocalRotation();
-    const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0, Center.GetAbsMax() + BoxExtent.GetMax());
-    const double SpeedRoundoff = 4096 * DBL_EPSILON * FMath::Max(1.0, State.Velocity.Size() + State.AngularVelocity.Size() * BoxExtent.Size());
+    const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0, Center.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
+    const double SpeedRoundoff = 4096 * DBL_EPSILON * FMath::Max(1.0, State.Velocity.Size() + State.AngularVelocity.Size() * BoxExtentBoxDomainStorage().Size());
     FVector Points[4];
     double Centripetal[4];
     int32 Count = 0;
@@ -4228,8 +4229,8 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
     Probe.DomainTolerance = 0; Probe.InitialOverlapTolerance = 0;
     for (int32 I = 0; I < 8; ++I)
     {
-        const FVector P = Center + Q.RotateVector(FVector((I & 1) ? BoxExtent.X : -BoxExtent.X,
-            (I & 2) ? BoxExtent.Y : -BoxExtent.Y, (I & 4) ? BoxExtent.Z : -BoxExtent.Z));
+        const FVector P = Center + Q.RotateVector(FVector((I & 1) ? BoxExtentBoxDomainStorage().X : -BoxExtentBoxDomainStorage().X,
+            (I & 2) ? BoxExtentBoxDomainStorage().Y : -BoxExtentBoxDomainStorage().Y, (I & 4) ? BoxExtentBoxDomainStorage().Z : -BoxExtentBoxDomainStorage().Z));
         const double Gap = FVector::DotProduct(P - CurrentHitStorage().ImpactPoint, N);
         if (Gap < -Roundoff) return false;
         if (Gap > Roundoff) continue;
@@ -4253,7 +4254,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         Points[Count] = P;
         Centripetal[Count++] = FVector::DotProduct(PointCentripetal, N);
     }
-    if (Count == 0 || ParentComponent->GetPhysMass() <= 0) return false;
+    if (Count == 0 || ParentComponentBodyDomainStorage()->GetPhysMass() <= 0) return false;
     const FMatrix InvI = RotateLocalInverseInertia(Q);
     if (Count == 4)
     {
@@ -4261,8 +4262,8 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         // its continuous reaction rather than recreating impacts each frame.
         const auto Response = Speed::SolvePlanarSlidingReaction(MakeArrayView(Points, Count), N,
             State.Location, State.Velocity, State.AngularVelocity, State.Acceleration,
-            State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI,
-            GetDynamicFriction(), ParentComponent->GetStaticSupportFrameHorizon());
+            State.AngularAcceleration, 1.0 / ParentComponentBodyDomainStorage()->GetPhysMass(), InvI,
+            GetDynamicFriction(), ParentComponentBodyDomainStorage()->GetStaticSupportFrameHorizon());
         if (!Response.bSolved) return false;
         Linear = Response.DeltaVelocity; Angular = Response.DeltaAngularVelocity;
         return true;
@@ -4275,8 +4276,8 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
     {
         const auto Sliding = Speed::SolvePlanarSlidingReaction(MakeArrayView(Points, Count), N,
             State.Location, State.Velocity, State.AngularVelocity, State.Acceleration,
-            State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI,
-            GetDynamicFriction(), ParentComponent->GetStaticSupportFrameHorizon());
+            State.AngularAcceleration, 1.0 / ParentComponentBodyDomainStorage()->GetPhysMass(), InvI,
+            GetDynamicFriction(), ParentComponentBodyDomainStorage()->GetStaticSupportFrameHorizon());
         if (Sliding.bSolved)
         {
             Linear = Sliding.DeltaVelocity; Angular = Sliding.DeltaAngularVelocity;
@@ -4293,9 +4294,9 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
     const auto Response = bSticking && Count <= 2
         ? Speed::SolvePlanarCoulombImpulse(MakeArrayView(Points, Count), N, State.Location,
             State.Acceleration + CommonCentripetal, State.AngularAcceleration,
-            1.0 / ParentComponent->GetPhysMass(), InvI, 0, GetDynamicFriction())
+            1.0 / ParentComponentBodyDomainStorage()->GetPhysMass(), InvI, 0, GetDynamicFriction())
         : Speed::SolvePlanarNormalImpulse(MakeArrayView(Points, Count), N, State.Location,
-            State.Acceleration, State.AngularAcceleration, 1.0 / ParentComponent->GetPhysMass(), InvI, 0,
+            State.Acceleration, State.AngularAcceleration, 1.0 / ParentComponentBodyDomainStorage()->GetPhysMass(), InvI, 0,
             MakeArrayView(Centripetal, Count));
     if (!Response.bSolved) return false;
     Linear = Response.DeltaVelocity;
@@ -4305,9 +4306,9 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
 
 bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
 {
-    const SKinematic Initial = ParentComponent->GetKinematicState();
+    const SKinematic Initial = ParentComponentBodyDomainStorage()->GetKinematicState();
     const FVector N = Hit.ImpactNormal;
-    const FVector LocalCOM = ParentComponent->GetPhysCenterOfMassLocal();
+    const FVector LocalCOM = ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal();
     const FVector LocalCenter = GetLocalOffset();
     const FQuat LocalQ = GetLocalRotation();
     const auto PoseAt = [&](float Time)
@@ -4321,9 +4322,9 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
     FVector Corners[8];
     double InitialGaps[8], InitialNormalSpeeds[8], MinimumInitial = DBL_MAX;
     const SKinematic StartPose = PoseAt(0);
-    const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0, StartPose.Location.GetAbsMax() + BoxExtent.GetMax());
+    const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0, StartPose.Location.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
     const double SpeedRoundoff = 4096 * DBL_EPSILON * FMath::Max(1.0,
-        Initial.Velocity.Size() + Initial.AngularVelocity.Size() * BoxExtent.Size());
+        Initial.Velocity.Size() + Initial.AngularVelocity.Size() * BoxExtentBoxDomainStorage().Size());
     uint8 EstablishedMask = 0;
     // Adjacent/overlapping providers may represent the same supporting plane.
     // Primitive identity is not a new physical impact: a duplicate time-zero
@@ -4331,15 +4332,15 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
     // by the world and hide that real collision. Only identify exact coplanar
     // geometry here; each arriving corner still needs its finite-domain ray.
     const bool bEstablished = CurrentHitStorage().bBlockingHit &&
-        LastResolvedGroundHitFrame == static_cast<int32>(ParentComponent->NumFrame()) &&
+        LastResolvedGroundHitFrameBoxDomainStorage() == static_cast<int32>(ParentComponentBodyDomainStorage()->NumFrame()) &&
         CurrentHitStorage().SourceId != 0 && !CurrentHitStorage().bSurfaceNormalMayVary && CurrentHitStorage().GeometricErrorBoundCm == 0 &&
         CurrentHitStorage().ContactFeatureOther == Speed::EContactFeatureKind::Face &&
         CurrentHitStorage().ImpactNormal.Equals(N, 32 * DBL_EPSILON) &&
         FMath::Abs(FVector::DotProduct(CurrentHitStorage().ImpactPoint - Hit.ImpactPoint, N)) <= Roundoff;
     for (int32 I = 0; I < 8; ++I)
     {
-        Corners[I] = FVector((I & 1) ? BoxExtent.X : -BoxExtent.X,
-            (I & 2) ? BoxExtent.Y : -BoxExtent.Y, (I & 4) ? BoxExtent.Z : -BoxExtent.Z);
+        Corners[I] = FVector((I & 1) ? BoxExtentBoxDomainStorage().X : -BoxExtentBoxDomainStorage().X,
+            (I & 2) ? BoxExtentBoxDomainStorage().Y : -BoxExtentBoxDomainStorage().Y, (I & 4) ? BoxExtentBoxDomainStorage().Z : -BoxExtentBoxDomainStorage().Z);
         const FVector Vertex = StartPose.Location + StartPose.Rotation.RotateVector(Corners[I]);
         InitialGaps[I] = FVector::DotProduct(Vertex - Hit.ImpactPoint, N);
         InitialNormalSpeeds[I] = FVector::DotProduct(Initial.Velocity +
@@ -4393,9 +4394,9 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
     }
  #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0 &&
-        ParentComponent->NumFrame() >= 129 && ParentComponent->NumFrame() <= 132)
-        UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarArrival] frame=%u dt=%.17g established=%d mask=%u corner=%d time=%.17g source=%llu primitive=%llu current_primitive=%llu plane_z=%.17g q=%s a=%s alpha=%s gaps=(%.17g,%.17g,%.17g,%.17g;%.17g,%.17g,%.17g,%.17g)"),
-            ParentComponent->NumFrame(), double(Delta), bEstablished ? 1 : 0, EstablishedMask, FirstCorner, double(FirstTime),
+        ParentComponentBodyDomainStorage()->NumFrame() >= 129 && ParentComponentBodyDomainStorage()->NumFrame() <= 132)
+        SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarArrival] frame=%u dt=%.17g established=%d mask=%u corner=%d time=%.17g source=%llu primitive=%llu current_primitive=%llu plane_z=%.17g q=%s a=%s alpha=%s gaps=(%.17g,%.17g,%.17g,%.17g;%.17g,%.17g,%.17g,%.17g)"),
+            ParentComponentBodyDomainStorage()->NumFrame(), double(Delta), bEstablished ? 1 : 0, EstablishedMask, FirstCorner, double(FirstTime),
             Hit.SourceId, Hit.PrimitiveId, CurrentHitStorage().PrimitiveId, double(Hit.ImpactPoint.Z), *Initial.Rotation.ToString(),
             *Initial.Acceleration.ToString(), *Initial.AngularAcceleration.ToString(),
             InitialGaps[4], InitialGaps[5], InitialGaps[6], InitialGaps[7],
@@ -4414,7 +4415,7 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
     Probe.TraceChannel = static_cast<uint8>(GetCollisionChannel());
     Probe.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
     Probe.DomainTolerance = 0; Probe.InitialOverlapTolerance = 0;
-    const auto Witness = ParentComponent->GetStaticCollisionWorldForFrame()->SweepSingle(Probe);
+    const auto Witness = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame()->SweepSingle(Probe);
     if (!Witness.bHit || Witness.bStartPenetrating || Witness.bSurfaceNormalMayVary ||
         Witness.SurfaceFeatureKind != Speed::EContactFeatureKind::Face || Witness.GeometricErrorBoundCm != 0 ||
         !Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return false;
@@ -4442,9 +4443,9 @@ void UBoxSubBody::ProjectPlanarEventRoundoff(SKinematic& State, const SHitResult
     // normal-axis spin also transports the pose through earlier float-time
     // segments: its accumulated roundoff is not bounded by the last tiny TOI.
     const double SpinTransportRoundoff = 4.0 * FLT_EPSILON *
-        ParentComponent->GetStaticSupportFrameHorizon() * FMath::Abs(FVector::DotProduct(State.AngularVelocity, N));
+        ParentComponentBodyDomainStorage()->GetStaticSupportFrameHorizon() * FMath::Abs(FVector::DotProduct(State.AngularVelocity, N));
     const double AngularRoundoff = 4.0 * FLT_EPSILON * Hit.TOI *
-        (ParentComponent->GetPhysMaxAngularSpeed() + State.AngularAcceleration.Size() * Hit.TOI) +
+        (ParentComponentBodyDomainStorage()->GetPhysMaxAngularSpeed() + State.AngularAcceleration.Size() * Hit.TOI) +
         SpinTransportRoundoff + 64 * DBL_EPSILON;
     FVector From = FVector::ZeroVector, To = FVector::ZeroVector;
     // A face event has priority over its constituent edges. Cross-product
@@ -4469,18 +4470,18 @@ void UBoxSubBody::ProjectPlanarEventRoundoff(SKinematic& State, const SHitResult
     const FQuat Correction(Cross.X, Cross.Y, Cross.Z, 1 + FVector::DotProduct(From, To));
     SKinematic Candidate = State;
     Candidate.Rotation = (Correction.GetNormalized() * State.Rotation).GetNormalized();
-    const FVector Center = Candidate.Location - Candidate.Rotation.RotateVector(ParentComponent->GetPhysCenterOfMassLocal()) +
+    const FVector Center = Candidate.Location - Candidate.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal()) +
         Candidate.Rotation.RotateVector(GetLocalOffset());
     const FQuat CandidateQ = Candidate.Rotation * GetLocalRotation();
     double Gap = DBL_MAX;
     for (int32 I = 0; I < 8; ++I)
     {
-        const FVector P((I & 1) ? BoxExtent.X : -BoxExtent.X,
-            (I & 2) ? BoxExtent.Y : -BoxExtent.Y, (I & 4) ? BoxExtent.Z : -BoxExtent.Z);
+        const FVector P((I & 1) ? BoxExtentBoxDomainStorage().X : -BoxExtentBoxDomainStorage().X,
+            (I & 2) ? BoxExtentBoxDomainStorage().Y : -BoxExtentBoxDomainStorage().Y, (I & 4) ? BoxExtentBoxDomainStorage().Z : -BoxExtentBoxDomainStorage().Z);
         Gap = FMath::Min(Gap, FVector::DotProduct(Center + CandidateQ.RotateVector(P) - Hit.ImpactPoint, N));
     }
-    const double Scale = FMath::Max(1.0, Center.GetAbsMax() + BoxExtent.GetMax());
-    const double PositionRoundoff = AngularRoundoff * BoxExtent.Size() +
+    const double Scale = FMath::Max(1.0, Center.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
+    const double PositionRoundoff = AngularRoundoff * BoxExtentBoxDomainStorage().Size() +
         4.0 * FLT_EPSILON * Hit.TOI * State.Velocity.Size() + 128 * DBL_EPSILON * Scale;
     if (FMath::Abs(Gap) > PositionRoundoff) return;
     Candidate.Location += (-Gap + 2.0 * DBL_EPSILON * Scale) * N;
@@ -4492,27 +4493,27 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
     // This kernel uses free-body inverse inertia. Existing constraints from
     // other sub-bodies belong to the coupled response, not a later correction
     // applied after committing an incompatible independent box impulse.
-    if (ParentComponent->HasActivePhysicalConstraintsOtherThan(this)) return false;
-    const Speed::IStaticCollisionWorld* World = ParentComponent->GetStaticCollisionWorldForFrame();
+    if (ParentComponentBodyDomainStorage()->HasActivePhysicalConstraintsOtherThan(this)) return false;
+    const Speed::IStaticCollisionWorld* World = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame();
     if (!World || !HasToApplyRestForce() || CurrentHitStorage().SourceId == 0 ||
         CurrentHitStorage().bSurfaceNormalMayVary || CurrentHitStorage().GeometricErrorBoundCm != 0 ||
         CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face ||
         !CurrentHitStorage().Component.IsValid() || CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic)
         return false;
-    SKinematic State = ParentComponent->GetKinematicState();
+    SKinematic State = ParentComponentBodyDomainStorage()->GetKinematicState();
     if (bNotifyImpact) ProjectPlanarEventRoundoff(State, CurrentHitStorage());
-    const FVector BoxCenter = State.Location - State.Rotation.RotateVector(ParentComponent->GetPhysCenterOfMassLocal()) +
+    const FVector BoxCenter = State.Location - State.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal()) +
         State.Rotation.RotateVector(GetLocalOffset());
     const FQuat BoxQ = State.Rotation * GetLocalRotation();
     const FVector N = CurrentHitStorage().ImpactNormal;
-    const double Scale = FMath::Max(1.0, BoxCenter.GetAbsMax() + BoxExtent.GetMax());
+    const double Scale = FMath::Max(1.0, BoxCenter.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
     const double Roundoff = 64.0 * DBL_EPSILON * Scale;
     FVector Vertices[8];
     double Gaps[8], MinimumGap = DBL_MAX;
     for (int32 Corner = 0; Corner < 8; ++Corner)
     {
-        const FVector P((Corner & 1) ? BoxExtent.X : -BoxExtent.X,
-            (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y, (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z);
+        const FVector P((Corner & 1) ? BoxExtentBoxDomainStorage().X : -BoxExtentBoxDomainStorage().X,
+            (Corner & 2) ? BoxExtentBoxDomainStorage().Y : -BoxExtentBoxDomainStorage().Y, (Corner & 4) ? BoxExtentBoxDomainStorage().Z : -BoxExtentBoxDomainStorage().Z);
         Vertices[Corner] = BoxCenter + BoxQ.RotateVector(P);
         Gaps[Corner] = FVector::DotProduct(Vertices[Corner] - CurrentHitStorage().ImpactPoint, N);
         MinimumGap = FMath::Min(MinimumGap, Gaps[Corner]);
@@ -4543,8 +4544,8 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
             !Witness.Normal.Equals(N, 32 * DBL_EPSILON)) return false;
         Points[Count++] = Witness.Point;
     }
-    if (Count == 0 || ParentComponent->GetPhysMass() <= 0) return false;
-    const double InvMass = 1.0 / ParentComponent->GetPhysMass();
+    if (Count == 0 || ParentComponentBodyDomainStorage()->GetPhysMass() <= 0) return false;
+    const double InvMass = 1.0 / ParentComponentBodyDomainStorage()->GetPhysMass();
     const FMatrix InvI = RotateLocalInverseInertia(BoxQ);
     const double Closing = FVector::DotProduct(State.Velocity + FVector::CrossProduct(State.AngularVelocity, Points[0] - State.Location), N);
     // Restitution belongs to an actual CCD impact, never a post-transport
@@ -4554,8 +4555,8 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         State.Location, State.Velocity, State.AngularVelocity, InvMass, InvI, ImpactRestitution, GetDynamicFriction());
 #if !UE_BUILD_SHIPPING
     if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
-        UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarAcquisition] frame=%u impact=%d solved=%d count=%d gap=%.17g pose=%s q=%s v=%s w=%s a=%s alpha=%s dv=%s dw=%s toi=%.17g speed=%.17g spin=%.17g next_spin=%.17g"),
-            ParentComponent->NumFrame(), bNotifyImpact ? 1 : 0, Response.bSolved ? 1 : 0, Count, MinimumGap,
+        SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarAcquisition] frame=%u impact=%d solved=%d count=%d gap=%.17g pose=%s q=%s v=%s w=%s a=%s alpha=%s dv=%s dw=%s toi=%.17g speed=%.17g spin=%.17g next_spin=%.17g"),
+            ParentComponentBodyDomainStorage()->NumFrame(), bNotifyImpact ? 1 : 0, Response.bSolved ? 1 : 0, Count, MinimumGap,
             *State.Location.ToString(), *State.Rotation.ToString(), *State.Velocity.ToString(), *State.AngularVelocity.ToString(),
             *State.Acceleration.ToString(), *State.AngularAcceleration.ToString(),
             *Response.DeltaVelocity.ToString(), *Response.DeltaAngularVelocity.ToString(), double(CurrentHitStorage().TOI),
@@ -4567,21 +4568,21 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
 #if !UE_BUILD_SHIPPING
         if (CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread() != 0)
         {
-            UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolveRejected] frame=%u count=%d iterations=%u v=%s w=%s n=(%.17g,%.17g,%.17g) q=%s"),
-                ParentComponent->NumFrame(), Count, Response.IterationCount, *State.Velocity.ToString(), *State.AngularVelocity.ToString(),
+            SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolveRejected] frame=%u count=%d iterations=%u v=%s w=%s n=(%.17g,%.17g,%.17g) q=%s"),
+                ParentComponentBodyDomainStorage()->NumFrame(), Count, Response.IterationCount, *State.Velocity.ToString(), *State.AngularVelocity.ToString(),
                 double(N.X), double(N.Y), double(N.Z), *State.Rotation.ToString());
-            UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolveInput] com=(%.17g,%.17g,%.17g) v=(%.17g,%.17g,%.17g) w=(%.17g,%.17g,%.17g) invmass=%.17g mu=%.17g restitution=%.17g invI=(%.17g,%.17g,%.17g;%.17g,%.17g,%.17g;%.17g,%.17g,%.17g)"),
+            SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolveInput] com=(%.17g,%.17g,%.17g) v=(%.17g,%.17g,%.17g) w=(%.17g,%.17g,%.17g) invmass=%.17g mu=%.17g restitution=%.17g invI=(%.17g,%.17g,%.17g;%.17g,%.17g,%.17g;%.17g,%.17g,%.17g)"),
                 State.Location.X, State.Location.Y, State.Location.Z, State.Velocity.X, State.Velocity.Y, State.Velocity.Z,
                 State.AngularVelocity.X, State.AngularVelocity.Y, State.AngularVelocity.Z, InvMass, double(GetDynamicFriction()), ImpactRestitution,
                 InvI.M[0][0], InvI.M[0][1], InvI.M[0][2], InvI.M[1][0], InvI.M[1][1], InvI.M[1][2], InvI.M[2][0], InvI.M[2][1], InvI.M[2][2]);
             for (int32 I = 0; I < Count; ++I)
-                UE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolvePoint] index=%d p=(%.17g,%.17g,%.17g)"), I, Points[I].X, Points[I].Y, Points[I].Z);
+                SPEED_NATIVE_LOG(BoxSubBodyLog, Display, TEXT("[ExactPlanarSolvePoint] index=%d p=(%.17g,%.17g,%.17g)"), I, Points[I].X, Points[I].Y, Points[I].Z);
         }
 #endif
         return false;
     }
     const double VelocityRoundoff = 4096 * DBL_EPSILON * FMath::Max(1.0,
-        State.Velocity.Size() + State.AngularVelocity.Size() * BoxExtent.Size());
+        State.Velocity.Size() + State.AngularVelocity.Size() * BoxExtentBoxDomainStorage().Size());
     // Only an actual solved four-point impact can close micro-rocking. Never
     // capture from an old contact during ordinary support projection. The
     // certificate uses incoming energy and fresh geometry, not a cached face.
@@ -4619,51 +4620,51 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         State.Velocity = FVector::ZeroVector;
         State.AngularVelocity = FVector::ZeroVector;
     }
-    ParentComponent->SetPhysCOMLocation(State.Location);
-    ParentComponent->SetPhysRotationPreserveCOM(State.Rotation);
-    ParentComponent->SetPhysCOMVelocity(State.Velocity);
-    ParentComponent->SetPhysAngularVelocity(State.AngularVelocity);
-    ParentComponent->UpdateSubBodiesKinematics();
+    ParentComponentBodyDomainStorage()->SetPhysCOMLocation(State.Location);
+    ParentComponentBodyDomainStorage()->SetPhysRotationPreserveCOM(State.Rotation);
+    ParentComponentBodyDomainStorage()->SetPhysCOMVelocity(State.Velocity);
+    ParentComponentBodyDomainStorage()->SetPhysAngularVelocity(State.AngularVelocity);
+    ParentComponentBodyDomainStorage()->UpdateSubBodiesKinematics();
     GroundHitStorage() = CurrentHitStorage();
-    GroundPlaneN = N;
-    GroundPlanePointWS = Points[0];
-    GroundPlaneD = FVector::DotProduct(Points[0], N);
-    GroundComp = CurrentHitStorage().Component;
-    bGroundPlaneValid = true;
-    bHasGroundContact = true;
-    CurrentGroundContactsWS.Reset(Count);
-    for (int32 I = 0; I < Count; ++I) CurrentGroundContactsWS.Add(Points[I]);
-    LastResolvedGroundHitFrame = ParentComponent->NumFrame();
-    if (bNotifyImpact) ParentComponent->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
+    GroundPlaneNBoxDomainStorage() = N;
+    GroundPlanePointWSBoxDomainStorage() = Points[0];
+    GroundPlaneDBoxDomainStorage() = FVector::DotProduct(Points[0], N);
+    GroundCompBoxDomainStorage() = CurrentHitStorage().Component;
+    bGroundPlaneValidBoxDomainStorage() = true;
+    bHasGroundContactBoxDomainStorage() = true;
+    CurrentGroundContactsWSBoxDomainStorage().Reset(Count);
+    for (int32 I = 0; I < Count; ++I) CurrentGroundContactsWSBoxDomainStorage().Add(Points[I]);
+    LastResolvedGroundHitFrameBoxDomainStorage() = ParentComponentBodyDomainStorage()->NumFrame();
+    if (bNotifyImpact) ParentComponentBodyDomainStorage()->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
     return true;
 }
 
 bool UBoxSubBody::TryResolveExactFaceImpact()
 {
-    if (ParentComponent->HasActivePhysicalConstraintsOtherThan(this)) return false;
-    const Speed::IStaticCollisionWorld* World = ParentComponent->GetStaticCollisionWorldForFrame();
+    if (ParentComponentBodyDomainStorage()->HasActivePhysicalConstraintsOtherThan(this)) return false;
+    const Speed::IStaticCollisionWorld* World = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame();
     if (!World || !HasToApplyRestForce() || CurrentHitStorage().SourceId == 0 ||
         CurrentHitStorage().bSurfaceNormalMayVary || CurrentHitStorage().GeometricErrorBoundCm != 0 ||
         CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face ||
         !CurrentHitStorage().Component.IsValid() || CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic)
         return false;
-    const SKinematic State = ParentComponent->GetKinematicState();
+    const SKinematic State = ParentComponentBodyDomainStorage()->GetKinematicState();
     const FVector N = CurrentHitStorage().ImpactNormal;
     const double VN = FVector::DotProduct(State.Velocity, N);
     if (VN >= 0 || !State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero() ||
         !(State.Velocity - VN * N).IsZero()) return false;
 
     SKinematic Origin = State;
-    Origin.Location -= State.Rotation.RotateVector(ParentComponent->GetPhysCenterOfMassLocal());
+    Origin.Location -= State.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal());
     const SKinematic Box = GetKinematicsFromOwnerKS(Origin);
     double Gap = DBL_MAX;
     for (int32 Corner = 0; Corner < 8; ++Corner)
     {
-        const FVector P((Corner & 1) ? BoxExtent.X : -BoxExtent.X,
-            (Corner & 2) ? BoxExtent.Y : -BoxExtent.Y, (Corner & 4) ? BoxExtent.Z : -BoxExtent.Z);
+        const FVector P((Corner & 1) ? BoxExtentBoxDomainStorage().X : -BoxExtentBoxDomainStorage().X,
+            (Corner & 2) ? BoxExtentBoxDomainStorage().Y : -BoxExtentBoxDomainStorage().Y, (Corner & 4) ? BoxExtentBoxDomainStorage().Z : -BoxExtentBoxDomainStorage().Z);
         Gap = FMath::Min(Gap, FVector::DotProduct(Box.Location + Box.Rotation.RotateVector(P) - CurrentHitStorage().ImpactPoint, N));
     }
-    const double Scale = FMath::Max(1.0, Box.Location.GetAbsMax() + BoxExtent.GetMax());
+    const double Scale = FMath::Max(1.0, Box.Location.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
     const double EventRoundoff = 4.0 * FLT_EPSILON * FMath::Abs(CurrentHitStorage().TOI * VN) + 64.0 * DBL_EPSILON * Scale;
     // This is only the residual of representing the CCD event time as float,
     // not a contact skin or a general-purpose depenetration/acquisition band.
@@ -4676,7 +4677,7 @@ bool UBoxSubBody::TryResolveExactFaceImpact()
     const FVector EventCorrection = (-Gap + 2.0 * DBL_EPSILON * Scale) * N;
     Query.Start = Query.End = Box.Location + EventCorrection;
     Query.Rotation = Box.Rotation;
-    Query.HalfExtent = BoxExtent;
+    Query.HalfExtent = BoxExtentBoxDomainStorage();
     Query.TraceChannel = static_cast<uint8>(GetCollisionChannel());
     Query.BlockingObjectTypes = Speed::GetBlockingResponseMask(GetResponseParams().CollisionResponse);
     Query.bApplyCollisionFilter = true;
@@ -4695,22 +4696,22 @@ bool UBoxSubBody::TryResolveExactFaceImpact()
     if (!bCertified) return false;
 
     const double ImpactRestitution = -VN > GetImpactThreshold() ? GetRestitution() : 0.0;
-    ParentComponent->SetPhysCOMLocation(COM);
+    ParentComponentBodyDomainStorage()->SetPhysCOMLocation(COM);
     // The certified positive load fractions place the pressure resultant at
     // the COM projection. Its normal impulse has exactly zero net torque.
-    ParentComponent->SetPhysCOMVelocity(State.Velocity - (1.0 + ImpactRestitution) * VN * N);
-    ParentComponent->UpdateSubBodiesKinematics();
-    GroundPlaneN = N;
-    GroundPlanePointWS = Support.Points[0];
-    GroundPlaneD = FVector::DotProduct(GroundPlanePointWS, N);
-    GroundComp = CurrentHitStorage().Component;
+    ParentComponentBodyDomainStorage()->SetPhysCOMVelocity(State.Velocity - (1.0 + ImpactRestitution) * VN * N);
+    ParentComponentBodyDomainStorage()->UpdateSubBodiesKinematics();
+    GroundPlaneNBoxDomainStorage() = N;
+    GroundPlanePointWSBoxDomainStorage() = Support.Points[0];
+    GroundPlaneDBoxDomainStorage() = FVector::DotProduct(GroundPlanePointWSBoxDomainStorage(), N);
+    GroundCompBoxDomainStorage() = CurrentHitStorage().Component;
     GroundHitStorage() = CurrentHitStorage();
-    bGroundPlaneValid = true;
-    bHasGroundContact = true;
-    CurrentGroundContactsWS.Reset(4);
-    for (const FVector& P : Support.Points) CurrentGroundContactsWS.Add(P);
-    LastResolvedGroundHitFrame = ParentComponent->NumFrame();
-    ParentComponent->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
+    bGroundPlaneValidBoxDomainStorage() = true;
+    bHasGroundContactBoxDomainStorage() = true;
+    CurrentGroundContactsWSBoxDomainStorage().Reset(4);
+    for (const FVector& P : Support.Points) CurrentGroundContactsWSBoxDomainStorage().Add(P);
+    LastResolvedGroundHitFrameBoxDomainStorage() = ParentComponentBodyDomainStorage()->NumFrame();
+    ParentComponentBodyDomainStorage()->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
     return true;
 }
 
@@ -4720,9 +4721,9 @@ bool UBoxSubBody::TryResolveExactFaceImpact()
 
 SKinematic UBoxSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) const
 {
-    if (!ParentComponent)
+    if (!ParentComponentBodyDomainStorage())
         return SKinematic();
-    return GetKinematicsFromOwnerKS(ParentComponent->GetOriginKinematicStateForFrame(NumFrame));
+    return GetKinematicsFromOwnerKS(ParentComponentBodyDomainStorage()->GetOriginKinematicStateForFrame(NumFrame));
 }
 SKinematic UBoxSubBody::GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const
 {
@@ -4733,7 +4734,7 @@ SKinematic UBoxSubBody::GetKinematicsFromOwnerKS(const SKinematic& CarKinematicS
     auto HitboxWolrdCenter = CarKinematicState.Location + HitboxWorldLocation;
 
     FQuat HitboxRelativeQuat(GetLocalRotation());
-    FVector HitboxExtent = BoxExtent;
+    FVector HitboxExtent = BoxExtentBoxDomainStorage();
     FQuat HitboxRot(CarRot * HitboxRelativeQuat);
 
     auto CarVelocity = CarKinematicState.Velocity;
@@ -4760,14 +4761,14 @@ SSBox UBoxSubBody::MakeBox() const
     const auto& CrtKinematics = KinematicsStorage();
     SSBox BoxShape(
         CrtKinematics.Location,
-        BoxExtent,
+        BoxExtentBoxDomainStorage(),
         CrtKinematics.Rotation,
         CrtKinematics.Velocity,
         CrtKinematics.Acceleration,
         CrtKinematics.AngularVelocity,
         CrtKinematics.AngularAcceleration
     );
-    BoxShape.bProductionNonpenetratingSphereContacts = bProductionNonpenetratingSphereContacts;
+    BoxShape.bProductionNonpenetratingSphereContactsBoxDomainStorage() = bProductionNonpenetratingSphereContactsBoxDomainStorage();
     return BoxShape;
 }
 
@@ -4776,14 +4777,14 @@ SSBox UBoxSubBody::MakeBoxFromKS(const SKinematic& BoxKinematicState) const
     auto CrtKinematics = GetKinematicsFromOwnerKS(BoxKinematicState);
     SSBox BoxShape(
         CrtKinematics.Location,
-        BoxExtent,
+        BoxExtentBoxDomainStorage(),
         CrtKinematics.Rotation,
         CrtKinematics.Velocity,
         CrtKinematics.Acceleration,
         CrtKinematics.AngularVelocity,
         CrtKinematics.AngularAcceleration
     );
-    BoxShape.bProductionNonpenetratingSphereContacts = bProductionNonpenetratingSphereContacts;
+    BoxShape.bProductionNonpenetratingSphereContactsBoxDomainStorage() = bProductionNonpenetratingSphereContactsBoxDomainStorage();
     return BoxShape;
 }
 
@@ -4807,25 +4808,25 @@ FVector UBoxSubBody::ComputeBoxSupportPointWS(const FVector& Center, const FQuat
 
 const TArray<FVector>& UBoxSubBody::GetGroundContacts() const
 {
-    return CurrentGroundContactsWS;
+    return CurrentGroundContactsWSBoxDomainStorage();
 }
 
 const TArray<FVector>& UBoxSubBody::GetPhysicsTickGroundContacts() const
 {
-    return CurrentGroundContactsWS.Num() > 0 ? CurrentGroundContactsWS : PreviousFrameGroundContactsWS;
+    return CurrentGroundContactsWSBoxDomainStorage().Num() > 0 ? CurrentGroundContactsWSBoxDomainStorage() : PreviousFrameGroundContactsWSBoxDomainStorage();
 }
 
 bool UBoxSubBody::IsConcaveGroundContact() const
 {
-    if (CurrentGroundNormalsWS.Num() >= 2)
+    if (CurrentGroundNormalsWSBoxDomainStorage().Num() >= 2)
     {
-        for (int i = 0; i < CurrentGroundNormalsWS.Num(); ++i)
+        for (int i = 0; i < CurrentGroundNormalsWSBoxDomainStorage().Num(); ++i)
         {
-            for (int j = i + 1; j < CurrentGroundNormalsWS.Num(); ++j)
+            for (int j = i + 1; j < CurrentGroundNormalsWSBoxDomainStorage().Num(); ++j)
             {
                 if (FVector::DotProduct(
-                    CurrentGroundNormalsWS[i],
-                    CurrentGroundNormalsWS[j]) < 0.95f)
+                    CurrentGroundNormalsWSBoxDomainStorage()[i],
+                    CurrentGroundNormalsWSBoxDomainStorage()[j]) < 0.95f)
                 {
                     return true;
                 }
@@ -4837,23 +4838,23 @@ bool UBoxSubBody::IsConcaveGroundContact() const
 
 FVector UBoxSubBody::GetGroundPlaneNormal() const
 {
-    return GroundPlaneN;
+    return GroundPlaneNBoxDomainStorage();
 }
 
 float UBoxSubBody::GetGroundPlaneD() const
 {
-    return GroundPlaneD;
+    return GroundPlaneDBoxDomainStorage();
 }
 
 bool UBoxSubBody::GetLatchedEdgeWS(FVector& OutA, FVector& OutB) const
 {
-    if (!bEdgeSupportLatched || LatchedEdgeContactsLS.Num() != 2)
+    if (!bEdgeSupportLatchedBoxDomainStorage() || LatchedEdgeContactsLSBoxDomainStorage().Num() != 2)
         return false;
 
-    const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    const SKinematic K = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
 
-    OutA = K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLS[0]);
-    OutB = K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLS[1]);
+    OutA = K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLSBoxDomainStorage()[0]);
+    OutB = K.Location + K.Rotation.RotateVector(LatchedEdgeContactsLSBoxDomainStorage()[1]);
     return true;
 }
 
@@ -4863,7 +4864,7 @@ bool UBoxSubBody::IsPointSupportedByPersistentContact(const FVector& P, float Ma
         return false;
 
     // Distance to ground plane
-    const float dist = PlaneSignedDist(P, GroundPlaneN, GroundPlanePointWS);
+    const float dist = PlaneSignedDist(P, GroundPlaneNBoxDomainStorage(), GroundPlanePointWSBoxDomainStorage());
 
     // If point is above plane -> still supported
     if (dist > Margin)
@@ -4874,32 +4875,32 @@ bool UBoxSubBody::IsPointSupportedByPersistentContact(const FVector& P, float Ma
 
 bool UBoxSubBody::HasPersistentGroundContact() const
 {
-    return bHasGroundContact;
+    return bHasGroundContactBoxDomainStorage();
 }
 
 bool UBoxSubBody::HasPhysicsTickGroundContact() const
 {
-    return bHasGroundContact || PreviousFrameGroundContactsWS.Num() > 0;
+    return bHasGroundContactBoxDomainStorage() || PreviousFrameGroundContactsWSBoxDomainStorage().Num() > 0;
 }
 
 bool UBoxSubBody::HasRoofSurfaceTraversalSupport() const
 {
-    if (!ParentComponent ||
+    if (!ParentComponentBodyDomainStorage() ||
         !IsMainSubBody() ||
-        !bRoofSurfaceTraversalLatched ||
-        LastRoofSurfaceContactFrame == INDEX_NONE ||
-        !RoofSurfaceComp.IsValid())
+        !bRoofSurfaceTraversalLatchedBoxDomainStorage() ||
+        LastRoofSurfaceContactFrameBoxDomainStorage() == INDEX_NONE ||
+        !RoofSurfaceCompBoxDomainStorage().IsValid())
     {
         return false;
     }
 
-    const FVector N = GroundPlaneN.GetSafeNormal();
+    const FVector N = GroundPlaneNBoxDomainStorage().GetSafeNormal();
     if (N.IsNearlyZero())
     {
         return false;
     }
 
-    const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    const SKinematic K = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
     if (FVector::DotProduct(K.Rotation.GetUpVector(), N) > -0.25f)
     {
         return false;
@@ -4913,21 +4914,21 @@ bool UBoxSubBody::HasRoofSurfaceTraversalSupport() const
         return false;
     }
 
-    const int32 CurrentFrame = int32(ParentComponent->NumFrame());
-    if (CurrentFrame >= LastRoofSurfaceContactFrame &&
-        CurrentFrame - LastRoofSurfaceContactFrame <= RoofSurfaceTraversalGraceFrames)
+    const int32 CurrentFrame = int32(ParentComponentBodyDomainStorage()->NumFrame());
+    if (CurrentFrame >= LastRoofSurfaceContactFrameBoxDomainStorage() &&
+        CurrentFrame - LastRoofSurfaceContactFrameBoxDomainStorage() <= RoofSurfaceTraversalGraceFrames)
     {
         return true;
     }
 
     TArray<FVector> Verts;
-    GetBoxVertices(K.Location, K.Rotation, BoxExtent, Verts);
+    GetBoxVertices(K.Location, K.Rotation, BoxExtentBoxDomainStorage(), Verts);
 
     float MinDistance = FLT_MAX;
     FVector NearestPoint = K.Location;
     for (const FVector& Vertex : Verts)
     {
-        const float Distance = PlaneSignedDist(Vertex, N, GroundPlanePointWS);
+        const float Distance = PlaneSignedDist(Vertex, N, GroundPlanePointWSBoxDomainStorage());
         if (Distance < MinDistance)
         {
             MinDistance = Distance;
@@ -4946,7 +4947,7 @@ bool UBoxSubBody::HasRoofSurfaceTraversalSupport() const
 
 bool UBoxSubBody::HasPersistentEdgeSupport() const
 {
-    return bHasGroundContact && PrevGroundContactsLS.Num() == 2;
+    return bHasGroundContactBoxDomainStorage() && PrevGroundContactsLSBoxDomainStorage().Num() == 2;
 }
 
 
@@ -4958,7 +4959,7 @@ bool UBoxSubBody::IsInEdgeBalance() const
     const FVector GroundN = GetGroundPlaneNormal().GetSafeNormal();
 
     // Normal of the hitbox face most aligned with ground normal
-    const FQuat Q = GetKinematicsFromOwner(ParentComponent->NumFrame()).Rotation;
+    const FQuat Q = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame()).Rotation;
 
     float bestDot = -1.f;
     int bestFace = -1;
@@ -4982,7 +4983,7 @@ bool UBoxSubBody::IsInEdgeBalance() const
 int UBoxSubBody::GetBestSupportingFace() const
 {
     const FVector GroundN = GetGroundPlaneNormal().GetSafeNormal();
-    const FQuat Q = GetKinematicsFromOwner(ParentComponent->NumFrame()).Rotation;
+    const FQuat Q = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame()).Rotation;
 
     float bestDot = -FLT_MAX;
     int bestFace = -1;
@@ -5005,8 +5006,8 @@ int UBoxSubBody::GetLowestFaceIndex() const
     const FVector GroundN = GetGroundPlaneNormal().GetSafeNormal();
     const float GroundD = GetGroundPlaneD();
 
-    const FQuat Q = GetKinematicsFromOwner(ParentComponent->NumFrame()).Rotation;
-    const FVector C = GetKinematicsFromOwner(ParentComponent->NumFrame()).Location;
+    const FQuat Q = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame()).Rotation;
+    const FVector C = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame()).Location;
 
     float bestMinDist = FLT_MAX;
     int bestFace = -1;
@@ -5044,15 +5045,15 @@ FVector UBoxSubBody::GetFaceNormalWS(const int& FaceIndex, const FQuat& HitboxRo
 TArray<FVector> UBoxSubBody::GetFaceVerticesWS(const int& FaceIndex) const
 {
     TArray<FVector> OutVertsWS;
-    if (!ParentComponent)
+    if (!ParentComponentBodyDomainStorage())
         return OutVertsWS;
 
-    const SKinematic K = GetKinematicsFromOwner(ParentComponent->NumFrame());
+    const SKinematic K = GetKinematicsFromOwner(ParentComponentBodyDomainStorage()->NumFrame());
     const FVector CenterWS = K.Location;
     const FQuat Q = K.Rotation;
 
     FVector Vlocal[4];
-    FaceLocalVertices(FaceIndex, BoxExtent, Vlocal);
+    FaceLocalVertices(FaceIndex, BoxExtentBoxDomainStorage(), Vlocal);
 
     OutVertsWS.Reserve(4);
     for (int i = 0; i < 4; ++i)
@@ -5098,12 +5099,12 @@ void UBoxSubBody::ApplyImpulse(
     const FVector& LinearImpulse,
     const FVector& WorldPoint)
 {
-    ParentComponent->ApplyImpulse(LinearImpulse, WorldPoint, this);
+    ParentComponentBodyDomainStorage()->ApplyImpulse(LinearImpulse, WorldPoint, this);
 }
 
 FVector UBoxSubBody::GetCOM() const
 {
-    if (!ParentComponent)
+    if (!ParentComponentBodyDomainStorage())
     {
         return FVector::ZeroVector;
     }
@@ -5111,12 +5112,12 @@ FVector UBoxSubBody::GetCOM() const
     // Using the box's local offset here was only valid while the COM happened
     // to coincide with the component origin; it produces incorrect lever arms
     // as soon as a vehicle defines an offset CenterOfMass.
-    return ParentComponent->GetPhysCOM();
+    return ParentComponentBodyDomainStorage()->GetPhysCOM();
 }
 
 FVector UBoxSubBody::GetBoxExtent() const
 {
-	return BoxExtent;
+	return BoxExtentBoxDomainStorage();
 }
 
 float UBoxSubBody::GetSphereSeparation(
@@ -5127,17 +5128,17 @@ float UBoxSubBody::GetSphereSeparation(
 		BoxShape.Rot,
 		BoxShape.AbsoluteCenter(),
 		SphereCenter,
-		SphereRadius, nullptr, bProductionNonpenetratingSphereContacts);
+		SphereRadius, nullptr, bProductionNonpenetratingSphereContactsBoxDomainStorage());
 }
 
 void UBoxSubBody::SetBoxExtent(const FVector& InBoxExtent)
 {
-	BoxExtent = InBoxExtent.ComponentMax(FVector::ZeroVector);
+	BoxExtentBoxDomainStorage() = InBoxExtent.ComponentMax(FVector::ZeroVector);
 }
 
 FCollisionShape UBoxSubBody::GetCollisionShape(float Inflation) const
 {
-    return FCollisionShape::MakeBox(BoxExtent + FVector(Inflation));
+    return FCollisionShape::MakeBox(BoxExtentBoxDomainStorage() + FVector(Inflation));
 }
 
 void UBoxSubBody::BuildContactPoints(const FVector& Nworld, const FVector& CenterWS, const FQuat& BoxRotWS, const FVector& Ext,
@@ -5209,19 +5210,19 @@ void UBoxSubBody::BuildContactPoints(const FVector& Nworld, const FVector& Cente
 
 FVector UBoxSubBody::BuildCompositeGroundNormal() const
 {
-    if (CurrentGroundNormalsWS.Num() == 0)
+    if (CurrentGroundNormalsWSBoxDomainStorage().Num() == 0)
         return FVector::UpVector;
 
     FVector Nsum = FVector::ZeroVector;
 
-    for (const FVector& N : CurrentGroundNormalsWS)
+    for (const FVector& N : CurrentGroundNormalsWSBoxDomainStorage())
     {
         Nsum += N;
     }
 
     if (!Nsum.Normalize())
     {
-        return CurrentGroundNormalsWS[0];
+        return CurrentGroundNormalsWSBoxDomainStorage()[0];
     }
 
     return Nsum;
@@ -5229,17 +5230,17 @@ FVector UBoxSubBody::BuildCompositeGroundNormal() const
 
 bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVector& HitN, float HitUpDot, float Dt, SHitResult& OutSupportHit) const
 {
-    if (!ParentComponent)
+    if (!ParentComponentBodyDomainStorage())
     {
         return false;
     }
 
     constexpr int32 WallToSupportPromotionCooldownFrames = 8;
-    const int32 CurrentFrame = ParentComponent->NumFrame();
+    const int32 CurrentFrame = ParentComponentBodyDomainStorage()->NumFrame();
     const int32 FramesSinceWallOrGutter =
-        LastWallOrGutterFrame == INDEX_NONE
+        LastWallOrGutterFrameBoxDomainStorage() == INDEX_NONE
         ? INDEX_NONE
-        : CurrentFrame - LastWallOrGutterFrame;
+        : CurrentFrame - LastWallOrGutterFrameBoxDomainStorage();
 
     if (FramesSinceWallOrGutter != INDEX_NONE &&
         FramesSinceWallOrGutter >= 0 &&
@@ -5278,12 +5279,12 @@ bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVe
         return false;
     }
 
-    if (!bGroundPlaneValid || !GroundComp.IsValid())
+    if (!bGroundPlaneValidBoxDomainStorage() || !GroundCompBoxDomainStorage().IsValid())
     {
         return false;
     }
 
-    const FVector PlaneN = GroundPlaneN.GetSafeNormal();
+    const FVector PlaneN = GroundPlaneNBoxDomainStorage().GetSafeNormal();
     const float PlaneUpDot = FVector::DotProduct(PlaneN, FVector::UpVector);
 
     if (PlaneUpDot < 0.97f)
@@ -5292,19 +5293,19 @@ bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVe
     }
 
     // Avoid promoting a hit against a component other than the remembered ground/stadium.
-    if (Hit.Component.IsValid() && GroundComp.IsValid() && Hit.Component.Get() != GroundComp.Get())
+    if (Hit.Component.IsValid() && GroundCompBoxDomainStorage().IsValid() && Hit.Component.Get() != GroundCompBoxDomainStorage().Get())
     {
         return false;
     }
 
-    const FVector Vcm = ParentComponent->GetPhysCOMVelocity();
+    const FVector Vcm = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
     const float Vz = Vcm.Z;
 
     // Velocity normal to the support plane.
     const FVector Pbox = ComputeBoxSupportPointWS(
         KinematicsStorage().Location,
         KinematicsStorage().Rotation,
-        BoxExtent,
+        BoxExtentBoxDomainStorage(),
         PlaneN
     );
 
@@ -5316,7 +5317,7 @@ bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVe
         return false;
     }
 
-    const float DistToPlane = PlaneSignedDist(Pbox, PlaneN, GroundPlanePointWS);
+    const float DistToPlane = PlaneSignedDist(Pbox, PlaneN, GroundPlanePointWSBoxDomainStorage());
 
     // Large band intentionally: the hitbox center/point can be high in the gutters.
     // To tune with your logs. I would start wide, then narrow it.
@@ -5349,7 +5350,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     const float Mu /*= 0.0f*/,
     const bool bAllowTraversalTorque /*= false*/)
 {
-    if (!ParentComponent)
+    if (!ParentComponentBodyDomainStorage())
         return false;
 
     if (SupportPts.Num() != 2)
@@ -5380,15 +5381,15 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     if (FMath::Abs(FVector::DotProduct(EdgeDir, N)) > 0.95f)
         return false;
 
-    const FVector COM = ParentComponent->GetPhysCOM();
-    const FVector COMVelocity = ParentComponent->GetPhysCOMVelocity();
+    const FVector COM = ParentComponentBodyDomainStorage()->GetPhysCOM();
+    const FVector COMVelocity = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
     const float vN_com = FVector::DotProduct(COMVelocity, N);
-    const bool bIsInAutoRecover = ParentComponent->IsInAutoRecover();
+    const bool bIsInAutoRecover = ParentComponentBodyDomainStorage()->IsInAutoRecover();
 
     if (!bAllowTraversalTorque)
     {
         // Normal edge support must remain close to its original plane.
-        const float distCOM = PlaneSignedDist(COM, N, GroundPlanePointWS);
+        const float distCOM = PlaneSignedDist(COM, N, GroundPlanePointWSBoxDomainStorage());
         constexpr float MaxSupportDist = 1.0f; // cm
         if (distCOM > MaxSupportDist)
         {
@@ -5442,7 +5443,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
         else
         {
             // Apply impulse at COM to avoid torque which could cancel auto-recover
-            ParentComponent->AddPhysVelocity(-vN * N);
+            ParentComponentBodyDomainStorage()->AddPhysVelocity(-vN * N);
 #if !UE_BUILD_SHIPPING
             // UE_LOG(BoxSubBodyLog, Log, TEXT("[EdgeSupport] Linear support @COM vN=%.3f"), vN);
 #endif
@@ -5451,10 +5452,10 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     {
         const float MaxSeparationSpeed =
             FMath::Max(0.f, CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread());
-        const float SeparationSpeed = FVector::DotProduct(ParentComponent->GetPhysCOMVelocity(), N);
+        const float SeparationSpeed = FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N);
         if (SeparationSpeed > MaxSeparationSpeed)
         {
-            ParentComponent->AddPhysVelocity((MaxSeparationSpeed - SeparationSpeed) * N);
+            ParentComponentBodyDomainStorage()->AddPhysVelocity((MaxSeparationSpeed - SeparationSpeed) * N);
         }
     }
     }
@@ -5467,7 +5468,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
         vN < SupportVNThreshold &&
         (bAllowTraversalTorque || FVector::DotProduct(N, FVector::UpVector) > 0.7f);
 
-    if (ParentComponent->IsSubBodyInAutoRecoverMode())
+    if (ParentComponentBodyDomainStorage()->IsSubBodyInAutoRecoverMode())
     {
         // Do NOT project angular velocity
         return false; // skip edge support
@@ -5481,13 +5482,13 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     {
         if (!bIsInAutoRecover && IsMainSubBody())
         {
-            const FVector Omega = ParentComponent->GetPhysAngularVelocity();
+            const FVector Omega = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity();
             const float wEdge = FVector::DotProduct(Omega, EdgeDir);
 
             // Project angular velocity onto edge axis
             const FVector OmegaProjected = wEdge * EdgeDir;
 
-            ParentComponent->AddPhysAngularVelocity(OmegaProjected - Omega);
+            ParentComponentBodyDomainStorage()->AddPhysAngularVelocity(OmegaProjected - Omega);
 
 #if !UE_BUILD_SHIPPING
             /*UE_LOG(
@@ -5503,7 +5504,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
         {
             // Mode auto-recover :
             // enable rotation only on Fall axis
-            const FVector Omega = ParentComponent->GetPhysAngularVelocity();
+            const FVector Omega = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity();
 
             const FVector FallAxis =
                 FVector::CrossProduct(EdgeDir, N).GetSafeNormal();
@@ -5512,7 +5513,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
             const float wFall = FVector::DotProduct(Omega, FallAxis);
 
             // Conserver edge + fall, only suppress normal component
-            ParentComponent->SetPhysAngularVelocity(
+            ParentComponentBodyDomainStorage()->SetPhysAngularVelocity(
                 wEdge * EdgeDir +
                 wFall * FallAxis
             );
@@ -5524,8 +5525,8 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
 
 FMatrix UBoxSubBody::InitInvInertiaTensor() const
 {
-    if(ParentComponent && ParentComponent->IsPrescribedMotion())return FMatrix(ForceInitToZero);
-    if (!ParentComponent)
+    if(ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->IsPrescribedMotion())return FMatrix(ForceInitToZero);
+    if (!ParentComponentBodyDomainStorage())
     {
         return FMatrix::Identity;
     }
@@ -5533,8 +5534,8 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
     FQuat HitboxRelRot = GetLocalRotation();
 
     // 1. Compute the box-center-to-COM offset in hitbox local space.
-    const FVector COMLocal = ParentComponent->GetPhysRotation().UnrotateVector(
-        ParentComponent->GetPhysCOM() - ParentComponent->GetPhysLocation()
+    const FVector COMLocal = ParentComponentBodyDomainStorage()->GetPhysRotation().UnrotateVector(
+        ParentComponentBodyDomainStorage()->GetPhysCOM() - ParentComponentBodyDomainStorage()->GetPhysLocation()
     );
     const FVector d_localChassis = HitboxRelLoc - COMLocal;
     FVector d_in_box = HitboxRelRot.UnrotateVector(d_localChassis);
@@ -5542,7 +5543,7 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
 	// 2. Compute inverse inertia tensor at COM, expressed in box local frame
     const float InertiaScale = FMath::Max(UE_KINDA_SMALL_NUMBER, CVarIAmSpeedBoxInertiaScale.GetValueOnAnyThread());
     const FVector Idiag =
-        SSBox::ComputeInertiaTensor(BoxExtent, GetMass(), InertiaScale);
+        SSBox::ComputeInertiaTensor(BoxExtentBoxDomainStorage(), GetMass(), InertiaScale);
 
     const FMatrix I_atCOM =
         SSBox::ConvertBoxInertiaToCOM(Idiag, d_in_box, GetMass());
@@ -5552,9 +5553,9 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
 
 FMatrix UBoxSubBody::ComputeWorldInvInertiaTensor() const
 {
-    if (!ParentComponent)
+    if (!ParentComponentBodyDomainStorage())
         return FMatrix::Identity;
-    const FQuat ChassisQ = ParentComponent->GetPhysRotation();
+    const FQuat ChassisQ = ParentComponentBodyDomainStorage()->GetPhysRotation();
     const FQuat HitboxRelQ = GetLocalRotation();
 
     // Hitbox local -> world
@@ -5601,7 +5602,7 @@ FPrimitiveSceneProxy* UBoxSubBody::CreateSceneProxy()
         FBoxSceneProxy(const UBoxSubBody* InComponent)
             : FPrimitiveSceneProxy(InComponent)
             , bDrawOnlyIfSelected(InComponent->bDrawOnlyIfSelected)
-            , BoxExtents(InComponent->BoxExtent)
+            , BoxExtents(InComponent->BoxExtentBoxDomainStorage())
             , BoxColor(InComponent->ShapeColor)
             , LineThickness(InComponent->LineThickness)
         {
@@ -5709,11 +5710,11 @@ FPrimitiveSceneProxy* UBoxSubBody::CreateSceneProxy()
 
 FBoxSphereBounds UBoxSubBody::CalcBounds(const FTransform& LocalToWorld) const
 {
-    return FBoxSphereBounds(FBox(-BoxExtent, BoxExtent)).TransformBy(LocalToWorld);
+    return FBoxSphereBounds(FBox(-BoxExtentBoxDomainStorage(), BoxExtentBoxDomainStorage())).TransformBy(LocalToWorld);
 }
 
 template <EShapeBodySetupHelper UpdateBodySetupAction, typename BodySetupType>
-bool InvalidateOrUpdateBoxBodySetup(BodySetupType& ShapeBodySetup, bool bUseArchetypeBodySetup, FVector BoxExtent)
+bool InvalidateOrUpdateBoxBodySetup(BodySetupType& ShapeBodySetup, bool bUseArchetypeBodySetup, FVector LocalBoxExtent)
 {
     check((bUseArchetypeBodySetup && UpdateBodySetupAction == EShapeBodySetupHelper::InvalidateSharingIfStale) || (!bUseArchetypeBodySetup && UpdateBodySetupAction == EShapeBodySetupHelper::UpdateBodySetup));
     check(ShapeBodySetup->AggGeom.BoxElems.Num() == 1);
@@ -5721,24 +5722,24 @@ bool InvalidateOrUpdateBoxBodySetup(BodySetupType& ShapeBodySetup, bool bUseArch
 
     // @todo do we allow this now?
     // check for malformed values
-    if (BoxExtent.X < UE_KINDA_SMALL_NUMBER)
+    if (LocalBoxExtent.X < UE_KINDA_SMALL_NUMBER)
     {
-        BoxExtent.X = 1.0f;
+        LocalBoxExtent.X = 1.0f;
     }
 
-    if (BoxExtent.Y < UE_KINDA_SMALL_NUMBER)
+    if (LocalBoxExtent.Y < UE_KINDA_SMALL_NUMBER)
     {
-        BoxExtent.Y = 1.0f;
+        LocalBoxExtent.Y = 1.0f;
     }
 
-    if (BoxExtent.Z < UE_KINDA_SMALL_NUMBER)
+    if (LocalBoxExtent.Z < UE_KINDA_SMALL_NUMBER)
     {
-        BoxExtent.Z = 1.0f;
+        LocalBoxExtent.Z = 1.0f;
     }
 
-    float XExtent = BoxExtent.X * 2.f;
-    float YExtent = BoxExtent.Y * 2.f;
-    float ZExtent = BoxExtent.Z * 2.f;
+    float XExtent = LocalBoxExtent.X * 2.f;
+    float YExtent = LocalBoxExtent.Y * 2.f;
+    float ZExtent = LocalBoxExtent.Z * 2.f;
 
     if (UpdateBodySetupAction == EShapeBodySetupHelper::UpdateBodySetup)
     {
@@ -5761,13 +5762,13 @@ void UBoxSubBody::UpdateBodySetup()
 {
     if (PrepareSharedBodySetup<UBoxSubBody>())
     {
-        bUseArchetypeBodySetup = InvalidateOrUpdateBoxBodySetup<EShapeBodySetupHelper::InvalidateSharingIfStale>(ShapeBodySetup, bUseArchetypeBodySetup, BoxExtent);
+        bUseArchetypeBodySetup = InvalidateOrUpdateBoxBodySetup<EShapeBodySetupHelper::InvalidateSharingIfStale>(ShapeBodySetup, bUseArchetypeBodySetup, BoxExtentBoxDomainStorage());
     }
 
     CreateShapeBodySetupIfNeeded<FKBoxElem>();
 
     if (!bUseArchetypeBodySetup)
     {
-        InvalidateOrUpdateBoxBodySetup<EShapeBodySetupHelper::UpdateBodySetup>(ShapeBodySetup, bUseArchetypeBodySetup, BoxExtent);
+        InvalidateOrUpdateBoxBodySetup<EShapeBodySetupHelper::UpdateBodySetup>(ShapeBodySetup, bUseArchetypeBodySetup, BoxExtentBoxDomainStorage());
     }
 }

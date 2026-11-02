@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "AnalyticCausalStats1075.h"
 #include "HAL/IConsoleManager.h"
 #include <atomic>
@@ -108,7 +109,7 @@ void LogAnalyticCausalStats1075(const TCHAR* Context)
     for (int32 Kind = 0; Kind < AnalyticCausalKindCount1075; ++Kind)
     {
         const auto& T = S.Kinds[Kind];
-        UE_LOG(LogTemp, Display, TEXT("[IAmSpeedAnalyticCausal1075] Context=%s Kind=%d Enabled=%d Limit=%d Seen=%llu Sampled=%llu Skipped=%llu Failed=%llu Items=%llu Elapsed=%llu Prepare=%llu NumericSum=%llu NumericLaneMaxSum=%llu Fold=%llu Admission=%llu Caller=%llu JoinWait=%llu CallbackSum=%llu Pool=%llu NestedExecutorFallback=%llu QueueFallback=%llu SerialPolicy=%llu TooFew=%llu Diagnostics=%llu NestedPolicy=%llu Capacity=%llu NumericUnavailable=%llu SecondsPerCycle=%.17g Unit=PlatformElapsedCycles Overlap=1"),
+        SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[IAmSpeedAnalyticCausal1075] Context=%s Kind=%d Enabled=%d Limit=%d Seen=%llu Sampled=%llu Skipped=%llu Failed=%llu Items=%llu Elapsed=%llu Prepare=%llu NumericSum=%llu NumericLaneMaxSum=%llu Fold=%llu Admission=%llu Caller=%llu JoinWait=%llu CallbackSum=%llu Pool=%llu NestedExecutorFallback=%llu QueueFallback=%llu SerialPolicy=%llu TooFew=%llu Diagnostics=%llu NestedPolicy=%llu Capacity=%llu NumericUnavailable=%llu SecondsPerCycle=%.17g Unit=PlatformElapsedCycles Overlap=1"),
             Context ? Context : TEXT(""), Kind, S.bEnabled ? 1 : 0, S.SampleLimitPerKind,
             T.Seen, T.Sampled, T.Skipped, T.FailedSamples, T.Items, T.ElapsedCycles,
             T.PreparationCycles, T.NumericCycles, T.MaximumLaneNumericCycles, T.FoldCycles,
@@ -125,7 +126,7 @@ void LogAnalyticCausalStats1075(const TCHAR* Context)
         // overlap; child kinds and parallel lanes must never be summed as CPU.
         for (int32 Bucket1185 = 0; Bucket1185 < 14; ++Bucket1185)
         {
-            UE_LOG(LogTemp, Display, TEXT("[IAmSpeedAnalyticCausalBuckets1185] Context=%s Kind=%d Bucket=%d Count=%llu Items=%llu Elapsed=%llu NumericSum=%llu MaximumElapsed=%llu Seen=%llu Sampled=%llu Skipped=%llu Failed=%llu Limit=%d CoverageComplete=%d SecondsPerCycle=%.17g Scope=SampledInclusiveScopesByVisitedItems Unit=PlatformElapsedCycles NumericAndKindsNotAdditive=1"),
+            SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[IAmSpeedAnalyticCausalBuckets1185] Context=%s Kind=%d Bucket=%d Count=%llu Items=%llu Elapsed=%llu NumericSum=%llu MaximumElapsed=%llu Seen=%llu Sampled=%llu Skipped=%llu Failed=%llu Limit=%d CoverageComplete=%d SecondsPerCycle=%.17g Scope=SampledInclusiveScopesByVisitedItems Unit=PlatformElapsedCycles NumericAndKindsNotAdditive=1"),
                 Context ? Context : TEXT(""), Kind, Bucket1185,
                 T.ItemCountBuckets[Bucket1185], T.ItemBucketItems1185[Bucket1185], T.ItemBucketElapsedCycles1185[Bucket1185],
                 T.ItemBucketNumericCycles1185[Bucket1185], T.ItemBucketMaximumElapsedCycles1185[Bucket1185],

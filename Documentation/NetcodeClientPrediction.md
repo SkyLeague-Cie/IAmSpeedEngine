@@ -493,3 +493,30 @@ Reported forward-step counts are actual, not fixed assertions. This observation
 deadline never opens CanMove: its original synchronization activation remains
 frame1 and is checked throughout. No physics law, startup warmup, restore gate
 or numerical comparison tolerance changes. Earlier failures remain preserved.
+
+
+Source52 prepares the original road epoch boundary as one development hunk.
+The native bridge registry/world and driver controls/journals/publication tail
+have fresh private storage. Component configuration/history/input controls and
+body geometry/reference lists, box contact caches, wheel configuration and
+vehicle simulation bindings join that storage. The actual physical and legacy
+reference vehicle/config instances are independent; Engine AccessSetup must
+never mutate a config shared with the original graph. The unchanged stock
+profile program initializes fresh values without importing a mutable facade.
+
+During Step, diagnostic values are queued; actual output-device callbacks run
+after the native math stack, original storage route and real FGCScopeGuard
+have ended. Publication follows those callbacks and real lifetime rechecks.
+The strict test invokes actual CollectGarbage from that real callback and
+requires it to return. Legacy registry mutations are now tested as mutations
+of distinct facade storage, while direct original driver execution refuses
+without its actual owner context. Earlier registry-refusal and native failure
+artifacts retain their original results and are not reclassified.
+
+This development hunk is NOT yet native-qualified. It does not provide a
+complete state serializer, authoritative restore at K, source/lifecycle lease,
+localized replay, Device integration or human local-feel acceptance. Legacy
+CVar reads still require the explicit authoritative immutable epoch recipe;
+a GT capture does not prove equal worker values or exclude foreign writers.
+Complete restore guards and ProtectsEscapedMutableViews remain CLOSED. Even
+successful compilation or partial native equality must not admit restoration.

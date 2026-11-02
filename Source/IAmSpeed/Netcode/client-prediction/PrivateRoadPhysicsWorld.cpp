@@ -12,6 +12,7 @@
 #include "Physics/NetworkPhysicsComponent.h"
 #include "Chaos/Framework/PhysicsSolverBase.h"
 #include "ChaosVehicleWheel.h"
+#include "PhysicsEngine/PhysicsSettings.h"
 #include "SimpleVehicle.h"
 #include "SuspensionSystem.h"
 #include "WheelSystem.h"
@@ -19,6 +20,8 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "Misc/ScopeExit.h"
+#include "UObject/GarbageCollection.h"
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include <algorithm>
 #include <mutex>
 
@@ -27,8 +30,10 @@ namespace Speed::Netcode::Prediction
 // No public handle exposes this staging area. It exists only during one GT
 // call and cannot be used to install a Device producer, authority receipt or
 // legacy snapshot. Native lifetime/restore certification remains separate.
-struct FPrivateRoadAccess
+struct FPrivateRoadAccess : Speed::NativeEpoch::IOriginalStorageRoute
 {
+    bool Retired=false;
+    bool SelectsOriginalStorage() const noexcept override;
     struct FSlot {std::shared_ptr<const FBranchProcessedInput> Input;bool Consumed=false;U64 Actor=0,Incarnation=0;};
     UWorld* World=nullptr;
     bool Active=false,RequiresInitialPublication=true,InitialPublicationReleased=false;
@@ -93,6 +98,13 @@ bool NoNetworkOwner(UWorld* World)
 {return World&&!World->Scene&&!World->GetPhysicsScene()&&!World->bShouldSimulatePhysics
     &&!World->GetNetDriver()&&NativeNetworkComponentCount(World)==0;}
 }
+bool FPrivateRoadAccess::SelectsOriginalStorage() const noexcept
+{
+    // Foreign threads return BEFORE reading GT-only epoch fields. The weak
+    // route binding also prevents raw-address reuse after actual retirement.
+    if(OriginalComponentStorageOwner!=this||!IsInGameThread())return false;
+    return !Retired;
+}
 struct FPrivateRoadPhysicsWorld::FImpl
 {
     struct FCar
@@ -100,6 +112,8 @@ struct FPrivateRoadPhysicsWorld::FImpl
         FPrivateRoadCarSeed Seed;
         Chaos::FSimpleWheelConfig WheelConfig;
         Chaos::FSimpleSuspensionConfig SuspensionConfig;
+        Chaos::FSimpleWheelConfig ReferenceWheelConfig;
+        Chaos::FSimpleSuspensionConfig ReferenceSuspensionConfig;
         ASpeedBranchCar* Actor=nullptr;
         USpeedBranchWheeledComponent* Component=nullptr;
         U64 StableId=0;
@@ -112,6 +126,7 @@ struct FPrivateRoadPhysicsWorld::FImpl
     ASpeedBranchSimulation* Driver=nullptr;
     std::vector<std::unique_ptr<FCar>> Cars;
     std::shared_ptr<FPrivateRoadAccess> Access=std::make_shared<FPrivateRoadAccess>();
+    std::unique_ptr<Speed::NativeEpoch::FDiagnosticOutbox> Diagnostics;
     mutable std::mutex Gate;
     std::atomic<std::shared_ptr<const FPrivateRoadPublication>> Published;
     U64 Lifetime=0,VehicleContactFrameCount=0;
@@ -149,6 +164,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     {Refuse(Why,TEXT("mixed startup policy or countdown substituted for initial publication"));return {};}
     auto Owner=std::unique_ptr<FPrivateRoadPhysicsWorld>(new FPrivateRoadPhysicsWorld);
     auto& I=*Owner->Impl;
+    I.Diagnostics.reset(new Speed::NativeEpoch::FDiagnosticOutbox);
     I.Access->RequiresInitialPublication=StartPolicy==EPrivateRoadStartPolicy::AwaitInitialPublication;
     U64 Last=0;
     for(auto& Seed:Seeds)
@@ -176,6 +192,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     I.Access->World=I.World.Get();I.Bridge=I.World->GetSubsystem<USpeedWorldSubsystem>();
     if(!I.Bridge){Refuse(Why,TEXT("private native bridge missing"));return {};}
     I.Pin(I.Bridge);
+    I.Bridge->BindOriginalEpochStorage(I.Access);
     auto Data=MakeShared<Speed::Analytic::FAnalyticWorldData>();
     auto& P=Data->Planes.AddDefaulted_GetRef();P.SourceId=1;P.SurfaceId=2;P.FeatureId=3;P.PrimitiveId=4;
     P.ObjectType=uint32(ECC_WorldStatic);P.BlockingChannels=MAX_uint64;
@@ -189,13 +206,36 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     auto* Floor=NewObject<UBoxComponent>(FloorActor);FloorActor->AddInstanceComponent(Floor);
     Floor->SetMobility(EComponentMobility::Static);Floor->SetCollisionObjectType(ECC_WorldStatic);
     Floor->SetCollisionResponseToAllChannels(ECR_Block);I.PinTree(FloorActor);
-    I.Bridge->AnalyticSourceComponents.Add(1,Floor);I.Bridge->AnalyticWorldData=Data;
-    I.Bridge->SimulationWorld.SetStaticCollisionWorld(MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*Data));
+    {
+        FOriginalComponentStorageScope OriginalWorldAdmission(*I.Access);
+        I.Bridge->AnalyticSourceComponentsEpochStorage().Add(1,Floor);
+        I.Bridge->AnalyticWorldDataEpochStorage()=Data;
+        I.Bridge->SimulationWorldEpochStorage().SetStaticCollisionWorld(MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*Data));
+    }
     I.Driver=I.World->SpawnActor<ASpeedBranchSimulation>();
     if(!I.Driver||ASpeedPhysicsSimulation::GetEngineFPS()!=300)
     {Refuse(Why,TEXT("private driver missing or canonical physical rate differs"));return {};}
-    I.Driver->Access=I.Access;I.Driver->bPublishPresentation=true;I.Driver->bPublishCompletedWorldInput=false;
+    I.Driver->Access=I.Access;if(!I.Driver->BindOriginalDriverStorage(I.Access)){Refuse(Why,TEXT("original native driver birth storage refused"));return {};}
+    {FOriginalComponentStorageScope OriginalDriver(*I.Access);
+        I.Driver->bPublishPresentationDriverStorage()=true;I.Driver->bPublishCompletedWorldInputDriverStorage()=false;}
     I.PinTree(I.Driver);
+    const auto BuildOriginalVehicle=[&](USpeedBranchWheeledComponent& C,Chaos::FSimpleWheelConfig& WheelConfig,Chaos::FSimpleSuspensionConfig& SuspensionConfig)
+    {
+        auto Vehicle=MakeUnique<Chaos::FSimpleWheeledVehicle>();
+        for(int32 W=0;W<4;++W)
+        {
+            auto& Wheel=Vehicle->Wheels.Emplace_GetRef(&WheelConfig);
+            Wheel.MaxOmega=10000;Wheel.AppliedLinearDriveForce=0;Wheel.AppliedLinearBrakeForce=0;
+            Wheel.LongitudinalAdhesiveLimit=0;Wheel.LateralAdhesiveLimit=0;Wheel.SideSlipModifier=WheelConfig.SideSlipModifier;
+            Vehicle->Suspension.Emplace_GetRef(&SuspensionConfig).SetLocalRestingPosition(FVector(W<2?70:-70,W%2?45:-45,-15));
+            auto* HostWheel=NewObject<UChaosVehicleWheel>(&C);HostWheel->WheelRadius=30;
+            HostWheel->SuspensionMaxRaise=10;HostWheel->SuspensionMaxDrop=25;C.WheelsWheeledDomainStorage().Add(HostWheel);
+        }
+        C.VehicleSimulationPTWheeledDomainStorage()=MakeUnique<USpeedSimulation>();
+        C.SkySimulationWheeledDomainStorage()=static_cast<USpeedSimulation*>(C.VehicleSimulationPTWheeledDomainStorage().Get());
+        C.SkySimulationWheeledDomainStorage()->Init(Vehicle);
+        C.BindWheelSimulationPointers();
+    };
     for(auto& Node:I.Cars)
     {
         auto& N=*Node;N.Actor=I.World->SpawnActor<ASpeedBranchCar>();
@@ -203,7 +243,10 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         auto* C=N.Component;
         if(!C||C->GetClass()!=USpeedBranchWheeledComponent::StaticClass()||!C->HasIsolatedNativeConstruction())
         {Refuse(Why,TEXT("private native component subtype missing"));return {};}
-        C->Access=I.Access;C->SetOwner(N.Actor);C->SetAsyncPhysicsTickEnabled(false);
+        C->Access=I.Access;
+        if(!C->BindOriginalWheeledDomain(I.Access)){Refuse(Why,TEXT("original native component domain birth refused"));return {};}
+        C->SetOwner(N.Actor);C->SetAsyncPhysicsTickEnabled(false);
+        // SetOwner's normal legacy registration remains a facade operation.
         for(auto* Body:C->GetSubBodies())
         {
             if(auto* Box=Cast<USpeedBranchBoxSubBody>(Body))Box->StorageAccess=I.Access;
@@ -212,27 +255,18 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         }
         if(!C->GetHitboxSubBodyForConfiguration()||C->GetHitboxSubBodyForConfiguration()->GetClass()!=USpeedBranchBoxSubBody::StaticClass())
         {Refuse(Why,TEXT("private native contact dispatch subtype missing"));return {};}
+        N.ReferenceSuspensionConfig.SetSuspensionMaxRaise(10);N.ReferenceSuspensionConfig.SetSuspensionMaxDrop(25);
+        N.ReferenceSuspensionConfig.SpringRate=5000;N.ReferenceSuspensionConfig.RestingForce=250000;
+        N.ReferenceSuspensionConfig.CompressionDamping=1000;N.ReferenceSuspensionConfig.ReboundDamping=1000;
         N.SuspensionConfig.SetSuspensionMaxRaise(10);N.SuspensionConfig.SetSuspensionMaxDrop(25);
         N.SuspensionConfig.SpringRate=5000;N.SuspensionConfig.RestingForce=250000;
         N.SuspensionConfig.CompressionDamping=1000;N.SuspensionConfig.ReboundDamping=1000;
-        auto Vehicle=MakeUnique<Chaos::FSimpleWheeledVehicle>();
-        for(int32 W=0;W<4;++W)
-        {
-            auto& Wheel=Vehicle->Wheels.Emplace_GetRef(&N.WheelConfig);
-            Wheel.MaxOmega=10000;Wheel.AppliedLinearDriveForce=0;Wheel.AppliedLinearBrakeForce=0;
-            Wheel.LongitudinalAdhesiveLimit=0;Wheel.LateralAdhesiveLimit=0;Wheel.SideSlipModifier=N.WheelConfig.SideSlipModifier;
-            Vehicle->Suspension.Emplace_GetRef(&N.SuspensionConfig).SetLocalRestingPosition(FVector(W<2?70:-70,W%2?45:-45,-15));
-            auto* HostWheel=NewObject<UChaosVehicleWheel>(C);HostWheel->WheelRadius=30;
-            HostWheel->SuspensionMaxRaise=10;HostWheel->SuspensionMaxDrop=25;C->Wheels.Add(HostWheel);
-        }
-        C->VehicleSimulationPT=MakeUnique<USpeedSimulation>();
-        C->SkySimulation=static_cast<USpeedSimulation*>(C->VehicleSimulationPT.Get());C->SkySimulation->Init(Vehicle);
-        C->BindWheelSimulationPointers();
+        BuildOriginalVehicle(*C,N.ReferenceWheelConfig,N.ReferenceSuspensionConfig);
         if(C->GetWheelSubBodies().Num()!=4){Refuse(Why,TEXT("private native wheel topology differs"));return {};}
         for(int32 W=0;W<4;++W)
         {C->GetWheelSubBodies()[W]->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));C->GetWheelSubBodies()[W]->SetRadiusForConfiguration(30);}
         if(!C->ValidateSimulationBindings(Why))return {};
-        if(C->ThrottleAccel!=750||C->BrakeAccel!=1100||C->PhysDamping!=0||C->AirForwardThrottle!=0||C->AirBackwardThrottle!=0)
+        if(C->ThrottleAccelWheeledDomainStorage()!=750||C->BrakeAccelWheeledDomainStorage()!=1100||C->PhysDampingWheeledDomainStorage()!=0||C->AirForwardThrottleWheeledDomainStorage()!=0||C->AirBackwardThrottleWheeledDomainStorage()!=0)
         {Refuse(Why,TEXT("stock native driving profile differs"));return {};}
         C->EstablishOriginalComponentStorage();
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
@@ -249,6 +283,36 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         }
 #endif
         FOriginalComponentStorageScope OriginalStorage(*I.Access);
+        // The actual private domain is initialized through native operations
+        // from its explicit constructor/profile program. No facade values,
+        // container headers, vehicle state or mutable config views are copied.
+        C->InitChaosVehicle();
+        Speed::Driving::ApplyStockRoadCar(*C->OriginalWheeledDomain);
+        C->GravityZWheeledDomainStorage()=GetDefault<UPhysicsSettings>()->DefaultGravityZ;
+        C->SetEngineFPS(300);
+        TArray<USSubBody*> OriginalTopology;
+        auto* OriginalBox=Cast<USpeedBranchBoxSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::HitboxName));
+        if(!OriginalBox||OriginalBox->GetClass()!=USpeedBranchBoxSubBody::StaticClass())return {};
+        OriginalTopology.Add(OriginalBox);
+        for(int32 W=0;W<4;++W)
+        {
+            auto* Body=Cast<USpeedBranchWheelSubBody>(C->GetDefaultSubobjectByName(USpeedWheeledComponent::WheelNames[W]));
+            if(!Body||Body->GetClass()!=USpeedBranchWheelSubBody::StaticClass()||Body->GetOwner()!=N.Actor)return {};
+            OriginalTopology.Add(Body);
+        }
+        C->SetSubBodies(OriginalTopology);C->SetOwner(N.Actor);
+        BuildOriginalVehicle(*C,N.WheelConfig,N.SuspensionConfig);
+        for(int32 W=0;W<4;++W)
+        {
+            auto* Body=C->GetWheelSubBodies()[W].Get();
+            Body->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));
+            Body->SetRadiusForConfiguration(30);
+            // Same original authored host travel, stored as original native
+            // config instead of rereading the mutable UChaosWheel facade.
+            Body->ConfigureSuspensionTravel(10,25);
+        }
+        if(!C->ValidateSimulationBindings(Why))return {};
+
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         const auto CaptureOutsideSolidValues=[&](TArray<uint8>& Bytes)
         {
@@ -307,10 +371,10 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         {
             C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove=N.Seed.CountdownFrames;
             C->WheeledPhysicsStateStorage().bStartCountdown=N.Seed.CountdownFrames>0;
-            C->SinceCanMoveFrame=N.Seed.CountdownFrames?INDEX_NONE:0;
+            C->SinceCanMoveFrameWheeledDomainStorage()=N.Seed.CountdownFrames?INDEX_NONE:0;
             if(N.Seed.CountdownFrames)C->FreezeMovement();else C->UnFreezeMovement();
         }
-        C->bPublishWheelPresentation=true;I.PinTree(N.Actor);I.PinTree(C);
+        C->bPublishWheelPresentationWheeledDomainStorage()=true;I.PinTree(N.Actor);I.PinTree(C);
     }
     FOriginalComponentStorageScope OriginalInitialization(*I.Access);
     I.Bridge->ApplyPendingOps();
@@ -334,14 +398,14 @@ bool FPrivateRoadPhysicsWorld::HasExactRegisteredRoster(FString& Why) const
     // Inspect the actual pending queue under its original lock. This check
     // detects queued/committed topology drift BEFORE private input preparation
     // or physics. It is not a lease excluding later/global native mutations.
-    FScopeLock PendingLock(&I.Bridge->PendingCS);
-    if(I.Bridge->bCanonicalFrameActive||!I.Bridge->PendingOps.IsEmpty())
+    FScopeLock PendingLock(&I.Bridge->PendingCSEpochStorage());
+    if(I.Bridge->bCanonicalFrameActiveEpochStorage()||!I.Bridge->PendingOpsEpochStorage().IsEmpty())
         return Refuse(Why,TEXT("private native registry has an active frame or pending mutation"));
-    const auto& Actual=I.Bridge->SimulationWorld.GetAdapters();
+    const auto& Actual=I.Bridge->SimulationWorldEpochStorage().GetAdapters();
     if(Actual.Num()!=int32(I.Cars.size()))return Refuse(Why,TEXT("private native registered roster changed"));
     for(const auto& N:I.Cars)
         if(!N->StableId||!Actual.Contains(N->Component)
-            ||I.Bridge->SimulationWorld.FindAdapterByStableId(N->StableId)!=N->Component
+            ||I.Bridge->SimulationWorldEpochStorage().FindAdapterByStableId(N->StableId)!=N->Component
             ||N->Component->GetPublishedSimulationStableId()!=N->StableId)
             return Refuse(Why,TEXT("private native registered identity changed"));
     return true;
@@ -360,8 +424,14 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             ||N->Actor->GetVehicleMovement()!=N->Component||N->Component->GetClass()!=USpeedBranchWheeledComponent::StaticClass())
             return Refuse(Why,TEXT("private native actor/component lifetime changed"));
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("private native graph object invalidated"));
-    if(!HasExactRegisteredRoster(Why))return false;
+    if(!I.Diagnostics||!I.Diagnostics->Begin())return Refuse(Why,TEXT("native diagnostic owner unavailable"));
+    std::shared_ptr<const FPrivateRoadPublication> Completed;
+    bool DiagnosticActive=true;ON_SCOPE_EXIT{if(DiagnosticActive)I.Diagnostics->End();};
+    bool Advanced=false;try {Advanced=[&]() -> bool
+    {
+    FGCScopeGuard NativeGCExclusion;
     FOriginalComponentStorageScope OriginalStorage(*I.Access);
+    if(!HasExactRegisteredRoster(Why))return false;
     const U64 Frame=I.Driver->NextPrivate();
     if(Frame&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
         return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
@@ -476,9 +546,26 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         if(Frame==0&&(A.CanMove||!A.Frozen||A.CountdownFrames!=1))return Fail(TEXT("initial publication moved before synchronization"));
         if(Frame>0&&(!A.CanMove||A.Frozen||A.CountdownFrames))return Fail(TEXT("common startup activation not applied"));
     }
-    I.Published.store(std::move(Out));return true;
+    Completed=std::move(Out);return true;
     }
     catch(...) {return Fail(TEXT("private native branch retired after step/publication exception"));}
+    }();} catch(...) {Why=TEXT("original native preparation exception");}
+    // Original physical stack, routing and GC exclusion have ended.
+    I.Diagnostics->End();DiagnosticActive=false;
+    bool DiagnosticsComplete=false;
+    try {DiagnosticsComplete=I.Diagnostics->Flush();}
+    catch(...) {Why=TEXT("original native diagnostic callback exception");}
+    const auto Terminal=[&](const TCHAR* Message)
+    {I.Failed=true;I.Published.store({});Completed.reset();if(Why.IsEmpty())Why=Message;return false;};
+    if(!Advanced||!DiagnosticsComplete||!Completed)return Terminal(TEXT("native stage or diagnostic boundary refused"));
+    // No UObject dereference occurs until real strong/weak lifetime validity is
+    // rechecked after arbitrary genuine output-device callbacks have returned.
+    for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Terminal(TEXT("native lifetime invalidated by external diagnostic callback"));
+    if(!I.World.IsValid()||I.World->bIsTearingDown||!IsValid(I.Driver)||I.Driver->IsActorBeingDestroyed())
+        return Terminal(TEXT("native world/driver retired by external diagnostic callback"));
+    for(const auto& N:I.Cars)if(!IsValid(N->Actor)||!IsValid(N->Component)||N->Actor->IsActorBeingDestroyed())
+        return Terminal(TEXT("native participant retired by external diagnostic callback"));
+    I.Published.store(std::move(Completed));return true;
 }
 std::shared_ptr<const FPrivateRoadPublication> FPrivateRoadPhysicsWorld::ReadLatest() const noexcept {return Impl->Published.load();}
 bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why)
@@ -489,10 +576,11 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
         ||I.Access->InitialPublicationReleased||!Baseline||Baseline!=I.Published.load()
         ||!Baseline->AwaitingInitialPublication||Baseline->Frame!=0||Baseline->LocalKernelLifetime!=I.Lifetime
         ||!I.World.IsValid()||I.World->bIsTearingDown||!I.Driver||!IsValid(I.Driver)
-        ||I.Driver->NextPrivate()!=1||Baseline->Actors.size()!=I.Cars.size())return Refuse(Why,TEXT("startup original baseline/boundary unavailable"));
+        ||Baseline->Actors.size()!=I.Cars.size())return Refuse(Why,TEXT("startup original baseline/boundary unavailable"));
+    FOriginalComponentStorageScope OriginalStorage(*I.Access);
+    if(I.Driver->NextPrivate()!=1)return Refuse(Why,TEXT("original startup physical counter changed"));
     if(!HasExactRegisteredRoster(Why))return false;
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("startup native graph invalidated"));
-    FOriginalComponentStorageScope OriginalStorage(*I.Access);
     for(const auto& N:I.Cars)
     {
         const auto* C=N->Component;
@@ -507,8 +595,8 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
     for(const auto& N:I.Cars)
     {
         auto* C=N->Component;C->WheeledPhysicsStateStorage().nbFramesbeforeCanMove=0;C->WheeledPhysicsStateStorage().bStartCountdown=false;
-        C->SinceCanMoveFrame=C->NumFrame()+1;C->bSimTimelineWasCanMove=true;
-        C->bSimTimelineHasGroundState=true;C->bSimTimelineWasGrounded=C->IsOnTheGround();
+        C->SinceCanMoveFrameWheeledDomainStorage()=C->NumFrame()+1;C->bSimTimelineWasCanMoveWheeledDomainStorage()=true;
+        C->bSimTimelineHasGroundStateWheeledDomainStorage()=true;C->bSimTimelineWasGroundedWheeledDomainStorage()=C->IsOnTheGround();
         C->ResetWheelTransientStateForCurrentPose(false);C->UnFreezeMovement();
     }
     I.Access->InitialPublicationReleased=true;return true;
@@ -520,9 +608,11 @@ bool FPrivateRoadPhysicsWorld::Close()
     if(I.Closed)return true;I.Closed=true;I.Published.store({});I.Access->Slots.Empty();I.Access->World=nullptr;
     if(I.Bridge)
     {
+        FOriginalComponentStorageScope OriginalRetirement(*I.Access);
         for(const auto& N:I.Cars)if(N->Component)I.Bridge->UnregisterSpeedComponent(N->Component);
         I.Bridge->ApplyPendingOps();
     }
+    I.Access->Retired=true; // actual native registry retired, before callbacks
     for(const auto& N:I.Cars)if(auto* C=N->Component)C->Access.reset();
     if(I.Driver)I.Driver->Access.reset();
     // The actual synchronous WorldCleanup/PostWorldCleanup callbacks can still
@@ -531,15 +621,26 @@ bool FPrivateRoadPhysicsWorld::Close()
     // This is not exclusion of future escaped views or a complete lease.
     if(I.World.IsValid())I.World->DestroyWorld(false);
     for(const auto& N:I.Cars)if(auto* C=N->Component)
-    {C->ClearWheelSimulationPointers();C->SkySimulation=nullptr;C->VehicleSimulationPT.Reset();}
+    {
+        C->ClearWheelSimulationPointers();
+        if(C->OriginalWheeledDomain)
+        {
+            for(const auto& E:C->OriginalWheeledDomain->WheelSubBodies)
+                if(auto* B=Cast<USpeedBranchWheelSubBody>(E.Get()))
+                {B->OwnedWheelDomain->PWheel=nullptr;B->OwnedWheelDomain->PSuspension=nullptr;B->OwnedWheelDomain->ChaosWheel=nullptr;}
+            C->OriginalWheeledDomain->SkySimulation=nullptr;C->OriginalWheeledDomain->VehicleSimulationPT.Reset();
+        }
+        C->SkySimulationWheeledDomainStorage()=nullptr;C->VehicleSimulationPTWheeledDomainStorage().Reset();
+    }
     I.Pins.Empty();I.World.Reset();I.Cars.clear();I.Bridge=nullptr;I.Driver=nullptr;return true;
 }
 }
 
 USpeedBranchBoxSubBody::USpeedBranchBoxSubBody(const FObjectInitializer& Initializer)
-    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()){}
+    :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),OwnedBoxDomain(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadBoxDomain>()){OwnedBodyValues->SubBodyType=ESubBodyType::Hitbox;}
 bool USpeedBranchBoxSubBody::UsesOriginalBodyStorage() const
 {
+    if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
     const auto A=StorageAccess.lock();
     return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
 }
@@ -601,8 +702,10 @@ SHitResult const& USpeedBranchBoxSubBody::WheelHitStorage() const
 }
 USpeedBranchWheelSubBody::USpeedBranchWheelSubBody(const FObjectInitializer& Initializer)
     :Super(Initializer),OwnedBodyValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>()),OwnedSolidValues(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSolidValues>()),OwnedWheelRuntime(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelRuntimeValues>()){OwnedSolidValues->bApplyRestForce=false;OwnedSolidValues->Mass=USWheelSubBody::DefaultWheelMass;}
-bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
+bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const,OwnedWheelDomain(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadWheelDomain>()),OwnedSphereDomain(std::make_unique<Speed::Netcode::Prediction::FPrivateRoadSphereDomain>())
 {
+    OwnedBodyValues->SubBodyType=ESubBodyType::Wheel;OwnedBodyValues->IgnoredSubBodyTypes.AddUnique(ESubBodyType::Wheel);
+    if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
     const auto A=StorageAccess.lock();
     return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
 }
@@ -1172,6 +1275,14 @@ Speed::Netcode::Prediction::FPrivateRoadSolidValues USpeedBranchWheelSubBody::Re
     return V; // diagnostic copy only, never physical initialization
 }
 #endif
+TAtomic<uint64>& USpeedBranchWheeledComponent::PublishedSimulationStableIdStorage()
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->PublishedStableId:ISpeedComponent::PublishedSimulationStableIdStorage();
+}
+TAtomic<uint64> const& USpeedBranchWheeledComponent::PublishedSimulationStableIdStorage() const
+{
+    return UsesOriginalComponentStorage()?OwnedComponentValues->PublishedStableId:ISpeedComponent::PublishedSimulationStableIdStorage();
+}
 USpeedBranchWheeledComponent::USpeedBranchWheeledComponent(const FObjectInitializer& Initializer)
     :Super(Initializer.SetDefaultSubobjectClass<USpeedBranchBoxSubBody>(HitboxName).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[0]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[1]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[2]).SetDefaultSubobjectClass<USpeedBranchWheelSubBody>(WheelNames[3]),ESpeedWheeledNetworkConstruction::IAmSpeedOnly)
 {
@@ -1198,8 +1309,8 @@ bool USpeedBranchWheeledComponent::HasIsolatedNativeConstruction() const
     // Check actual stored pointers as well as the world's object census: an
     // inherited CDO reference is not an absent native network participant.
     return NetworkConstruction==ESpeedWheeledNetworkConstruction::IAmSpeedOnly
-        &&!NetworkPhysicsComponent&&!SNetworkPhysicsComponent&&!WheeledNetworkPhysicsComponent
-        &&!SNetworkSettings&&!NetDataAsset&&!AHUD::OnShowDebugInfo.IsBoundToObject(this)
+        &&!NetworkPhysicsComponent&&!SNetworkPhysicsComponentWheeledDomainStorage()&&!WheeledNetworkPhysicsComponentWheeledDomainStorage()
+        &&!SNetworkSettingsWheeledDomainStorage()&&!NetDataAssetWheeledDomainStorage()&&!AHUD::OnShowDebugInfo.IsBoundToObject(this)
 #if !UE_BUILD_SHIPPING
         &&!ISpeedComponent::IsPhysicsPhaseObservationEnabled() // actual base stored observer, no masked count
 #endif
@@ -1219,6 +1330,7 @@ bool USpeedBranchWheeledComponent::CopyActualCacheDiagnosticValues(
 #endif
 bool USpeedBranchWheeledComponent::UsesOriginalComponentStorage() const
 {
+    if(!IsInGameThread()||!Speed::Netcode::Prediction::OriginalComponentStorageOwner)return false;
     const auto A=Access.lock();
     return OwnedComponentValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
 }
@@ -1331,19 +1443,19 @@ bool USpeedBranchWheeledComponent::IsInitialSynchronizationComplete() const
 }
 void USpeedBranchWheeledComponent::UpdateInputs()
 {
-    const auto A=Access.lock();bInputFrameRejectedV2=true;
+    const auto A=Access.lock();bInputFrameRejectedV2WheeledDomainStorage()=true;
     const auto* Slot=A?A->Slots.Find(this):nullptr;
     if(!IsInGameThread()||!A||!A->Active||A->World!=GetWorld()||!Slot||!Slot->Input
         ||Slot->Input->Frame!=A->Frame||uint64(NumFrame())!=A->Frame+1
-        ||FrameInputStream||FrameInputStreamV2||CanonicalInputSnapshot||InputReservationV2||ReservedInputFrameV2
+        ||FrameInputStreamWheeledDomainStorage()||FrameInputStreamV2WheeledDomainStorage()||CanonicalInputSnapshotWheeledDomainStorage()||InputReservationV2WheeledDomainStorage()||ReservedInputFrameV2WheeledDomainStorage()
         ||HasProducedInputAuthority()||HasLegacyRemoteInputAuthority())return;
     const auto& Applied=Slot->Input->Applied;
-    bProducedInputFrameOwned=true; // actual frame ownership, no Device authority.
+    bProducedInputFrameOwnedWheeledDomainStorage()=true; // actual frame ownership, no Device authority.
     WheeledPhysicalInputStorage().Throttle=uint8(Applied[0]);WheeledPhysicalInputStorage().Brake=uint8(Applied[1]);WheeledPhysicalInputStorage().Steer=int8(Applied[2]);
     WheeledPhysicalInputStorage().bCanMove=CanMove();
     WheeledPhysicalInputStorage().Camera={};WheeledPhysicalInputStorage().Camera.Flags=1;
     WheeledPhysicalInputStorage().Camera.Yaw=int8(Applied[5]);WheeledPhysicalInputStorage().Camera.Pitch=int8(Applied[6]);
-    SyncWheeledPhysicalInputToState();bInputFrameRejectedV2=false;
+    SyncWheeledPhysicalInputToState();bInputFrameRejectedV2WheeledDomainStorage()=false;
 }
 void USpeedBranchBoxSubBody::ResolveCurrentHitPrv(const float& Delta,const float& SimTime)
 {
@@ -1396,13 +1508,13 @@ bool USpeedBranchWheeledComponent::ValidateCanonicalFrameCommit(uint64 Frame) co
 {
     const auto A=Access.lock();const auto* Slot=A?A->Slots.Find(this):nullptr;
     return IsInGameThread()&&A&&A->Active&&A->World==GetWorld()&&A->Frame==Frame&&Slot&&Slot->Input
-        &&!Slot->Consumed&&!bInputFrameRejectedV2&&PreparedCanonicalInputFrame.IsSet()&&PreparedCanonicalInputFrame.GetValue()==Frame;
+        &&!Slot->Consumed&&!bInputFrameRejectedV2WheeledDomainStorage()&&PreparedCanonicalInputFrameWheeledDomainStorage().IsSet()&&PreparedCanonicalInputFrameWheeledDomainStorage().GetValue()==Frame;
 }
 bool USpeedBranchWheeledComponent::CommitCanonicalFrame(uint64 Frame) noexcept
 {
     if(!ValidateCanonicalFrameCommit(Frame))return false;Access.lock()->Slots.FindChecked(this).Consumed=true;return true;
 }
-void USpeedBranchWheeledComponent::AbortCanonicalFrame(uint64,ECanonicalFrameAbortReason) noexcept {bInputFrameRejectedV2=true;}
+void USpeedBranchWheeledComponent::AbortCanonicalFrame(uint64,ECanonicalFrameAbortReason) noexcept {bInputFrameRejectedV2WheeledDomainStorage()=true;}
 ASpeedBranchCar::ASpeedBranchCar(const FObjectInitializer& Initializer)
     :Super(Initializer.SetDefaultSubobjectClass<USpeedBranchWheeledComponent>(VehicleMovementComponentName))
 {PrimaryActorTick.bCanEverTick=false;PrimaryActorTick.bStartWithTickEnabled=false;SetReplicates(false);}
@@ -1413,14 +1525,761 @@ void ASpeedBranchSimulation::BeginPlay() {AActor::BeginPlay();}
 bool ASpeedBranchSimulation::InitializePrivate(USpeedWorldSubsystem& Bridge)
 {
     if(!IsInGameThread()||!Access.lock()||GetEngineFPS()!=300)return false;
-    SpeedWorldSubsystem=&Bridge;if(!EnsureSimulationWorldReady())return false;
-    SealSimulationInputs();InitializeCanonicalFrame(0);return CanonicalNumFrame==0;
+    SpeedWorldSubsystemDriverStorage()=&Bridge;if(!EnsureSimulationWorldReady())return false;
+    SealSimulationInputs();InitializeCanonicalFrame(0);return CanonicalNumFrameDriverStorage()==0;
 }
 bool ASpeedBranchSimulation::AdvancePrivate(bool Resimulation)
 {
     const auto A=Access.lock();
-    if(!IsInGameThread()||!A||!A->Active||A->Frame!=CanonicalNumFrame||A->World!=GetWorld())return false;
-    FCanonicalFrameContext Context(CanonicalNumFrame);Context.Purpose=Resimulation?ECanonicalFramePurpose::Resimulation:ECanonicalFramePurpose::Forward;
+    if(!IsInGameThread()||!A||!A->Active||A->Frame!=CanonicalNumFrameDriverStorage()||A->World!=GetWorld())return false;
+    FCanonicalFrameContext Context(CanonicalNumFrameDriverStorage());Context.Purpose=Resimulation?ECanonicalFramePurpose::Resimulation:ECanonicalFramePurpose::Forward;
     if(!StepCanonicalFrame(Context))return false;
-    ++CanonicalNumFrame;return true; // same success-only counter as RunCanonicalFrames.
+    ++CanonicalNumFrameDriverStorage();return true; // same success-only counter as RunCanonicalFrames.
+}
+
+// All domains below are part of the pending vertical epoch hunk, not a lease.
+ISpeedComponent*& USpeedBranchBoxSubBody::ParentComponentBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ParentComponent:USSubBody::ParentComponentBodyDomainStorage();
+}
+ISpeedComponent* const& USpeedBranchBoxSubBody::ParentComponentBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ParentComponent:USSubBody::ParentComponentBodyDomainStorage();
+}
+USSubBody::ESubBodyType& USpeedBranchBoxSubBody::SubBodyTypeBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SubBodyType:USSubBody::SubBodyTypeBodyDomainStorage();
+}
+USSubBody::ESubBodyType const& USpeedBranchBoxSubBody::SubBodyTypeBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SubBodyType:USSubBody::SubBodyTypeBodyDomainStorage();
+}
+ECollisionChannel& USpeedBranchBoxSubBody::CollisionChannelBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CollisionChannel:USSubBody::CollisionChannelBodyDomainStorage();
+}
+ECollisionChannel const& USpeedBranchBoxSubBody::CollisionChannelBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CollisionChannel:USSubBody::CollisionChannelBodyDomainStorage();
+}
+FCollisionResponseParams& USpeedBranchBoxSubBody::ResponseParamsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ResponseParams:USSubBody::ResponseParamsBodyDomainStorage();
+}
+FCollisionResponseParams const& USpeedBranchBoxSubBody::ResponseParamsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ResponseParams:USSubBody::ResponseParamsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*>& USpeedBranchBoxSubBody::AlwaysIgnoredComponentsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->AlwaysIgnoredComponents:USSubBody::AlwaysIgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*> const& USpeedBranchBoxSubBody::AlwaysIgnoredComponentsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->AlwaysIgnoredComponents:USSubBody::AlwaysIgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*>& USpeedBranchBoxSubBody::IgnoredComponentsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredComponents:USSubBody::IgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*> const& USpeedBranchBoxSubBody::IgnoredComponentsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredComponents:USSubBody::IgnoredComponentsBodyDomainStorage();
+}
+TArray<USSubBody::ESubBodyType>& USpeedBranchBoxSubBody::IgnoredSubBodyTypesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredSubBodyTypes:USSubBody::IgnoredSubBodyTypesBodyDomainStorage();
+}
+TArray<USSubBody::ESubBodyType> const& USpeedBranchBoxSubBody::IgnoredSubBodyTypesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredSubBodyTypes:USSubBody::IgnoredSubBodyTypesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UBoxSubBody>>& USpeedBranchBoxSubBody::ExternalBoxSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalBoxSubBodies:USSubBody::ExternalBoxSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UBoxSubBody>> const& USpeedBranchBoxSubBody::ExternalBoxSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalBoxSubBodies:USSubBody::ExternalBoxSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USphereSubBody>>& USpeedBranchBoxSubBody::ExternalSphereSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalSphereSubBodies:USSubBody::ExternalSphereSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USphereSubBody>> const& USpeedBranchBoxSubBody::ExternalSphereSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalSphereSubBodies:USSubBody::ExternalSphereSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USWheelSubBody>>& USpeedBranchBoxSubBody::ExternalWheelSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalWheelSubBodies:USSubBody::ExternalWheelSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USWheelSubBody>> const& USpeedBranchBoxSubBody::ExternalWheelSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalWheelSubBodies:USSubBody::ExternalWheelSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UCylinderSubBody>>& USpeedBranchBoxSubBody::ExternalCylinderSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalCylinderSubBodies:USSubBody::ExternalCylinderSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UCylinderSubBody>> const& USpeedBranchBoxSubBody::ExternalCylinderSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalCylinderSubBodies:USSubBody::ExternalCylinderSubBodiesBodyDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::BoxExtentBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->BoxExtent:UBoxSubBody::BoxExtentBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::BoxExtentBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->BoxExtent:UBoxSubBody::BoxExtentBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bProductionNonpenetratingSphereContactsBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bProductionNonpenetratingSphereContacts:UBoxSubBody::bProductionNonpenetratingSphereContactsBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bProductionNonpenetratingSphereContactsBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bProductionNonpenetratingSphereContacts:UBoxSubBody::bProductionNonpenetratingSphereContactsBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::CurrentGroundContactsWSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CurrentGroundContactsWS:UBoxSubBody::CurrentGroundContactsWSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::CurrentGroundContactsWSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CurrentGroundContactsWS:UBoxSubBody::CurrentGroundContactsWSBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::PreviousFrameGroundContactsWSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PreviousFrameGroundContactsWS:UBoxSubBody::PreviousFrameGroundContactsWSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::PreviousFrameGroundContactsWSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PreviousFrameGroundContactsWS:UBoxSubBody::PreviousFrameGroundContactsWSBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::CurrentGroundNormalsWSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CurrentGroundNormalsWS:UBoxSubBody::CurrentGroundNormalsWSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::CurrentGroundNormalsWSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CurrentGroundNormalsWS:UBoxSubBody::CurrentGroundNormalsWSBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::PrevGroundContactsLSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevGroundContactsLS:UBoxSubBody::PrevGroundContactsLSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::PrevGroundContactsLSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevGroundContactsLS:UBoxSubBody::PrevGroundContactsLSBoxDomainStorage();
+}
+TArray<FVector>& USpeedBranchBoxSubBody::LatchedEdgeContactsLSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LatchedEdgeContactsLS:UBoxSubBody::LatchedEdgeContactsLSBoxDomainStorage();
+}
+TArray<FVector> const& USpeedBranchBoxSubBody::LatchedEdgeContactsLSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LatchedEdgeContactsLS:UBoxSubBody::LatchedEdgeContactsLSBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bEdgeSupportLatchedBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bEdgeSupportLatched:UBoxSubBody::bEdgeSupportLatchedBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bEdgeSupportLatchedBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bEdgeSupportLatched:UBoxSubBody::bEdgeSupportLatchedBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::EdgeSupportLatchFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EdgeSupportLatchFrame:UBoxSubBody::EdgeSupportLatchFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::EdgeSupportLatchFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EdgeSupportLatchFrame:UBoxSubBody::EdgeSupportLatchFrameBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bRoofSurfaceTraversalLatchedBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bRoofSurfaceTraversalLatched:UBoxSubBody::bRoofSurfaceTraversalLatchedBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bRoofSurfaceTraversalLatchedBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bRoofSurfaceTraversalLatched:UBoxSubBody::bRoofSurfaceTraversalLatchedBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::LastRoofSurfaceContactFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastRoofSurfaceContactFrame:UBoxSubBody::LastRoofSurfaceContactFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::LastRoofSurfaceContactFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastRoofSurfaceContactFrame:UBoxSubBody::LastRoofSurfaceContactFrameBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent>& USpeedBranchBoxSubBody::RoofSurfaceCompBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->RoofSurfaceComp:UBoxSubBody::RoofSurfaceCompBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent> const& USpeedBranchBoxSubBody::RoofSurfaceCompBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->RoofSurfaceComp:UBoxSubBody::RoofSurfaceCompBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::CompositeGroundNormalBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CompositeGroundNormal:UBoxSubBody::CompositeGroundNormalBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::CompositeGroundNormalBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->CompositeGroundNormal:UBoxSubBody::CompositeGroundNormalBoxDomainStorage();
+}
+TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32>& USpeedBranchBoxSubBody::HitCountThisFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->HitCountThisFrame:UBoxSubBody::HitCountThisFrameBoxDomainStorage();
+}
+TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> const& USpeedBranchBoxSubBody::HitCountThisFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->HitCountThisFrame:UBoxSubBody::HitCountThisFrameBoxDomainStorage();
+}
+uint32& USpeedBranchBoxSubBody::MaxHitsPerComponentPerFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->MaxHitsPerComponentPerFrame:UBoxSubBody::MaxHitsPerComponentPerFrameBoxDomainStorage();
+}
+uint32 const& USpeedBranchBoxSubBody::MaxHitsPerComponentPerFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->MaxHitsPerComponentPerFrame:UBoxSubBody::MaxHitsPerComponentPerFrameBoxDomainStorage();
+}
+TArray<float>& USpeedBranchBoxSubBody::PrevLambdaNBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevLambdaN:UBoxSubBody::PrevLambdaNBoxDomainStorage();
+}
+TArray<float> const& USpeedBranchBoxSubBody::PrevLambdaNBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevLambdaN:UBoxSubBody::PrevLambdaNBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bGroundContactStableBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundContactStable:UBoxSubBody::bGroundContactStableBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bGroundContactStableBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundContactStable:UBoxSubBody::bGroundContactStableBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::LastResolvedGroundHitFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedGroundHitFrame:UBoxSubBody::LastResolvedGroundHitFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::LastResolvedGroundHitFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedGroundHitFrame:UBoxSubBody::LastResolvedGroundHitFrameBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bHasGroundContactBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHasGroundContact:UBoxSubBody::bHasGroundContactBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bHasGroundContactBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHasGroundContact:UBoxSubBody::bHasGroundContactBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bFreshEdgeRecoverCandidateBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bFreshEdgeRecoverCandidate:UBoxSubBody::bFreshEdgeRecoverCandidateBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bFreshEdgeRecoverCandidateBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bFreshEdgeRecoverCandidate:UBoxSubBody::bFreshEdgeRecoverCandidateBoxDomainStorage();
+}
+float& USpeedBranchBoxSubBody::StableTimeBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->StableTime:UBoxSubBody::StableTimeBoxDomainStorage();
+}
+float const& USpeedBranchBoxSubBody::StableTimeBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->StableTime:UBoxSubBody::StableTimeBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bGroundHitFromSweepBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundHitFromSweep:UBoxSubBody::bGroundHitFromSweepBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bGroundHitFromSweepBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundHitFromSweep:UBoxSubBody::bGroundHitFromSweepBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bGroundPlaneValidBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundPlaneValid:UBoxSubBody::bGroundPlaneValidBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bGroundPlaneValidBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bGroundPlaneValid:UBoxSubBody::bGroundPlaneValidBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::GroundPlanePointWSBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlanePointWS:UBoxSubBody::GroundPlanePointWSBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::GroundPlanePointWSBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlanePointWS:UBoxSubBody::GroundPlanePointWSBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::GroundPlaneNBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlaneN:UBoxSubBody::GroundPlaneNBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::GroundPlaneNBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlaneN:UBoxSubBody::GroundPlaneNBoxDomainStorage();
+}
+float& USpeedBranchBoxSubBody::GroundPlaneDBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlaneD:UBoxSubBody::GroundPlaneDBoxDomainStorage();
+}
+float const& USpeedBranchBoxSubBody::GroundPlaneDBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundPlaneD:UBoxSubBody::GroundPlaneDBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent>& USpeedBranchBoxSubBody::GroundCompBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundComp:UBoxSubBody::GroundCompBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent> const& USpeedBranchBoxSubBody::GroundCompBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->GroundComp:UBoxSubBody::GroundCompBoxDomainStorage();
+}
+uint64& USpeedBranchBoxSubBody::EstablishedSupportSourceIdBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EstablishedSupportSourceId:UBoxSubBody::EstablishedSupportSourceIdBoxDomainStorage();
+}
+uint64 const& USpeedBranchBoxSubBody::EstablishedSupportSourceIdBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EstablishedSupportSourceId:UBoxSubBody::EstablishedSupportSourceIdBoxDomainStorage();
+}
+uint64& USpeedBranchBoxSubBody::EstablishedSupportSurfaceIdBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EstablishedSupportSurfaceId:UBoxSubBody::EstablishedSupportSurfaceIdBoxDomainStorage();
+}
+uint64 const& USpeedBranchBoxSubBody::EstablishedSupportSurfaceIdBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->EstablishedSupportSurfaceId:UBoxSubBody::EstablishedSupportSurfaceIdBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::FreshSupportClampUntilFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampUntilFrame:UBoxSubBody::FreshSupportClampUntilFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::FreshSupportClampUntilFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampUntilFrame:UBoxSubBody::FreshSupportClampUntilFrameBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::FreshSupportClampNBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampN:UBoxSubBody::FreshSupportClampNBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::FreshSupportClampNBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampN:UBoxSubBody::FreshSupportClampNBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent>& USpeedBranchBoxSubBody::FreshSupportClampCompBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampComp:UBoxSubBody::FreshSupportClampCompBoxDomainStorage();
+}
+TWeakObjectPtr<UPrimitiveComponent> const& USpeedBranchBoxSubBody::FreshSupportClampCompBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->FreshSupportClampComp:UBoxSubBody::FreshSupportClampCompBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::PrevGroundNormalBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevGroundNormal:UBoxSubBody::PrevGroundNormalBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::PrevGroundNormalBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevGroundNormal:UBoxSubBody::PrevGroundNormalBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bHadGroundContactPrevFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHadGroundContactPrevFrame:UBoxSubBody::bHadGroundContactPrevFrameBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bHadGroundContactPrevFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHadGroundContactPrevFrame:UBoxSubBody::bHadGroundContactPrevFrameBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::PrevContactNormalBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevContactNormal:UBoxSubBody::PrevContactNormalBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::PrevContactNormalBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->PrevContactNormal:UBoxSubBody::PrevContactNormalBoxDomainStorage();
+}
+bool& USpeedBranchBoxSubBody::bHadContactPrevFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHadContactPrevFrame:UBoxSubBody::bHadContactPrevFrameBoxDomainStorage();
+}
+bool const& USpeedBranchBoxSubBody::bHadContactPrevFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->bHadContactPrevFrame:UBoxSubBody::bHadContactPrevFrameBoxDomainStorage();
+}
+float& USpeedBranchBoxSubBody::MinSlopCmBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->MinSlopCm:UBoxSubBody::MinSlopCmBoxDomainStorage();
+}
+float const& USpeedBranchBoxSubBody::MinSlopCmBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->MinSlopCm:UBoxSubBody::MinSlopCmBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::LastWallOrGutterFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterFrame:UBoxSubBody::LastWallOrGutterFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::LastWallOrGutterFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterFrame:UBoxSubBody::LastWallOrGutterFrameBoxDomainStorage();
+}
+FVector& USpeedBranchBoxSubBody::LastWallOrGutterNBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterN:UBoxSubBody::LastWallOrGutterNBoxDomainStorage();
+}
+FVector const& USpeedBranchBoxSubBody::LastWallOrGutterNBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterN:UBoxSubBody::LastWallOrGutterNBoxDomainStorage();
+}
+float& USpeedBranchBoxSubBody::LastWallOrGutterUpDotBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterUpDot:UBoxSubBody::LastWallOrGutterUpDotBoxDomainStorage();
+}
+float const& USpeedBranchBoxSubBody::LastWallOrGutterUpDotBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastWallOrGutterUpDot:UBoxSubBody::LastWallOrGutterUpDotBoxDomainStorage();
+}
+SHitResult& USpeedBranchBoxSubBody::LastResolvedSphereHitBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedSphereHit:UBoxSubBody::LastResolvedSphereHitBoxDomainStorage();
+}
+SHitResult const& USpeedBranchBoxSubBody::LastResolvedSphereHitBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedSphereHit:UBoxSubBody::LastResolvedSphereHitBoxDomainStorage();
+}
+int32& USpeedBranchBoxSubBody::LastResolvedSphereHitFrameBoxDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedSphereHitFrame:UBoxSubBody::LastResolvedSphereHitFrameBoxDomainStorage();
+}
+int32 const& USpeedBranchBoxSubBody::LastResolvedSphereHitFrameBoxDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBoxDomain->LastResolvedSphereHitFrame:UBoxSubBody::LastResolvedSphereHitFrameBoxDomainStorage();
+}
+FTransform USpeedBranchBoxSubBody::PhysicalLocalPose() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose:USSubBody::PhysicalLocalPose();}
+void USpeedBranchBoxSubBody::SetPhysicalLocalOffset(const FVector& V) {if(UsesOriginalBodyStorage())OwnedBodyValues->LocalPose.SetLocation(V);else USSubBody::SetPhysicalLocalOffset(V);}
+ISpeedComponent*& USpeedBranchWheelSubBody::ParentComponentBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ParentComponent:USSubBody::ParentComponentBodyDomainStorage();
+}
+ISpeedComponent* const& USpeedBranchWheelSubBody::ParentComponentBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ParentComponent:USSubBody::ParentComponentBodyDomainStorage();
+}
+USSubBody::ESubBodyType& USpeedBranchWheelSubBody::SubBodyTypeBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SubBodyType:USSubBody::SubBodyTypeBodyDomainStorage();
+}
+USSubBody::ESubBodyType const& USpeedBranchWheelSubBody::SubBodyTypeBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->SubBodyType:USSubBody::SubBodyTypeBodyDomainStorage();
+}
+ECollisionChannel& USpeedBranchWheelSubBody::CollisionChannelBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CollisionChannel:USSubBody::CollisionChannelBodyDomainStorage();
+}
+ECollisionChannel const& USpeedBranchWheelSubBody::CollisionChannelBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->CollisionChannel:USSubBody::CollisionChannelBodyDomainStorage();
+}
+FCollisionResponseParams& USpeedBranchWheelSubBody::ResponseParamsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ResponseParams:USSubBody::ResponseParamsBodyDomainStorage();
+}
+FCollisionResponseParams const& USpeedBranchWheelSubBody::ResponseParamsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ResponseParams:USSubBody::ResponseParamsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*>& USpeedBranchWheelSubBody::AlwaysIgnoredComponentsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->AlwaysIgnoredComponents:USSubBody::AlwaysIgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*> const& USpeedBranchWheelSubBody::AlwaysIgnoredComponentsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->AlwaysIgnoredComponents:USSubBody::AlwaysIgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*>& USpeedBranchWheelSubBody::IgnoredComponentsBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredComponents:USSubBody::IgnoredComponentsBodyDomainStorage();
+}
+TArray<UPrimitiveComponent*> const& USpeedBranchWheelSubBody::IgnoredComponentsBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredComponents:USSubBody::IgnoredComponentsBodyDomainStorage();
+}
+TArray<USSubBody::ESubBodyType>& USpeedBranchWheelSubBody::IgnoredSubBodyTypesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredSubBodyTypes:USSubBody::IgnoredSubBodyTypesBodyDomainStorage();
+}
+TArray<USSubBody::ESubBodyType> const& USpeedBranchWheelSubBody::IgnoredSubBodyTypesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->IgnoredSubBodyTypes:USSubBody::IgnoredSubBodyTypesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UBoxSubBody>>& USpeedBranchWheelSubBody::ExternalBoxSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalBoxSubBodies:USSubBody::ExternalBoxSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UBoxSubBody>> const& USpeedBranchWheelSubBody::ExternalBoxSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalBoxSubBodies:USSubBody::ExternalBoxSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USphereSubBody>>& USpeedBranchWheelSubBody::ExternalSphereSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalSphereSubBodies:USSubBody::ExternalSphereSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USphereSubBody>> const& USpeedBranchWheelSubBody::ExternalSphereSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalSphereSubBodies:USSubBody::ExternalSphereSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USWheelSubBody>>& USpeedBranchWheelSubBody::ExternalWheelSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalWheelSubBodies:USSubBody::ExternalWheelSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<USWheelSubBody>> const& USpeedBranchWheelSubBody::ExternalWheelSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalWheelSubBodies:USSubBody::ExternalWheelSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UCylinderSubBody>>& USpeedBranchWheelSubBody::ExternalCylinderSubBodiesBodyDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalCylinderSubBodies:USSubBody::ExternalCylinderSubBodiesBodyDomainStorage();
+}
+TArray<TWeakObjectPtr<UCylinderSubBody>> const& USpeedBranchWheelSubBody::ExternalCylinderSubBodiesBodyDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedBodyValues->ExternalCylinderSubBodies:USSubBody::ExternalCylinderSubBodiesBodyDomainStorage();
+}
+ISpeedWheeledComponent*& USpeedBranchWheelSubBody::WheelComponentWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->WheelComponent:USWheelSubBody::WheelComponentWheelDomainStorage();
+}
+ISpeedWheeledComponent* const& USpeedBranchWheelSubBody::WheelComponentWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->WheelComponent:USWheelSubBody::WheelComponentWheelDomainStorage();
+}
+UChaosVehicleWheel*& USpeedBranchWheelSubBody::ChaosWheelWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ChaosWheel:USWheelSubBody::ChaosWheelWheelDomainStorage();
+}
+UChaosVehicleWheel* const& USpeedBranchWheelSubBody::ChaosWheelWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ChaosWheel:USWheelSubBody::ChaosWheelWheelDomainStorage();
+}
+Chaos::FSimpleWheelSim*& USpeedBranchWheelSubBody::PWheelWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->PWheel:USWheelSubBody::PWheelWheelDomainStorage();
+}
+Chaos::FSimpleWheelSim* const& USpeedBranchWheelSubBody::PWheelWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->PWheel:USWheelSubBody::PWheelWheelDomainStorage();
+}
+Chaos::FSimpleSuspensionSim*& USpeedBranchWheelSubBody::PSuspensionWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->PSuspension:USWheelSubBody::PSuspensionWheelDomainStorage();
+}
+Chaos::FSimpleSuspensionSim* const& USpeedBranchWheelSubBody::PSuspensionWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->PSuspension:USWheelSubBody::PSuspensionWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::WheelMassWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->WheelMass:USWheelSubBody::WheelMassWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::WheelMassWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->WheelMass:USWheelSubBody::WheelMassWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionSpringRateWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionSpringRate:USWheelSubBody::SuspensionSpringRateWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionSpringRateWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionSpringRate:USWheelSubBody::SuspensionSpringRateWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionDampingCompressionRatioWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionDampingCompressionRatio:USWheelSubBody::SuspensionDampingCompressionRatioWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionDampingCompressionRatioWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionDampingCompressionRatio:USWheelSubBody::SuspensionDampingCompressionRatioWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionDampingReboundRatioWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionDampingReboundRatio:USWheelSubBody::SuspensionDampingReboundRatioWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionDampingReboundRatioWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionDampingReboundRatio:USWheelSubBody::SuspensionDampingReboundRatioWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseSuspensionForceModelOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseSuspensionForceModelOverride:USWheelSubBody::bUseSuspensionForceModelOverrideWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseSuspensionForceModelOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseSuspensionForceModelOverride:USWheelSubBody::bUseSuspensionForceModelOverrideWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bClampSuspensionForceToPositiveWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampSuspensionForceToPositive:USWheelSubBody::bClampSuspensionForceToPositiveWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bClampSuspensionForceToPositiveWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampSuspensionForceToPositive:USWheelSubBody::bClampSuspensionForceToPositiveWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bClampPositiveUntilFirstCompressionWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampPositiveUntilFirstCompression:USWheelSubBody::bClampPositiveUntilFirstCompressionWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bClampPositiveUntilFirstCompressionWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampPositiveUntilFirstCompression:USWheelSubBody::bClampPositiveUntilFirstCompressionWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseEffectiveSuspensionSweepRadiusWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseEffectiveSuspensionSweepRadius:USWheelSubBody::bUseEffectiveSuspensionSweepRadiusWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseEffectiveSuspensionSweepRadiusWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseEffectiveSuspensionSweepRadius:USWheelSubBody::bUseEffectiveSuspensionSweepRadiusWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseIncreasingDisplacementAsCompressionWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseIncreasingDisplacementAsCompression:USWheelSubBody::bUseIncreasingDisplacementAsCompressionWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseIncreasingDisplacementAsCompressionWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseIncreasingDisplacementAsCompression:USWheelSubBody::bUseIncreasingDisplacementAsCompressionWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bUseCompressionCrossingContactImpulseWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseCompressionCrossingContactImpulse:USWheelSubBody::bUseCompressionCrossingContactImpulseWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bUseCompressionCrossingContactImpulseWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bUseCompressionCrossingContactImpulse:USWheelSubBody::bUseCompressionCrossingContactImpulseWheelDomainStorage();
+}
+uint8& USpeedBranchWheelSubBody::GroundForceApplicationModeWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->GroundForceApplicationMode:USWheelSubBody::GroundForceApplicationModeWheelDomainStorage();
+}
+uint8 const& USpeedBranchWheelSubBody::GroundForceApplicationModeWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->GroundForceApplicationMode:USWheelSubBody::GroundForceApplicationModeWheelDomainStorage();
+}
+uint8& USpeedBranchWheelSubBody::ContactImpulseApplicationModeWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ContactImpulseApplicationMode:USWheelSubBody::ContactImpulseApplicationModeWheelDomainStorage();
+}
+uint8 const& USpeedBranchWheelSubBody::ContactImpulseApplicationModeWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ContactImpulseApplicationMode:USWheelSubBody::ContactImpulseApplicationModeWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionStiffnessForceScaleWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionStiffnessForceScale:USWheelSubBody::SuspensionStiffnessForceScaleWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionStiffnessForceScaleWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionStiffnessForceScale:USWheelSubBody::SuspensionStiffnessForceScaleWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionStiffnessReferenceDisplacementWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionStiffnessReferenceDisplacement:USWheelSubBody::SuspensionStiffnessReferenceDisplacementWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionStiffnessReferenceDisplacementWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionStiffnessReferenceDisplacement:USWheelSubBody::SuspensionStiffnessReferenceDisplacementWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionPreRestCompressionDampingScaleWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionPreRestCompressionDampingScale:USWheelSubBody::SuspensionPreRestCompressionDampingScaleWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionPreRestCompressionDampingScaleWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionPreRestCompressionDampingScale:USWheelSubBody::SuspensionPreRestCompressionDampingScaleWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bClampNegativeSuspensionDisplacementWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampNegativeSuspensionDisplacement:USWheelSubBody::bClampNegativeSuspensionDisplacementWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bClampNegativeSuspensionDisplacementWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bClampNegativeSuspensionDisplacement:USWheelSubBody::bClampNegativeSuspensionDisplacementWheelDomainStorage();
+}
+bool& USpeedBranchWheelSubBody::bDisableSuspensionBumpStopForceWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bDisableSuspensionBumpStopForce:USWheelSubBody::bDisableSuspensionBumpStopForceWheelDomainStorage();
+}
+bool const& USpeedBranchWheelSubBody::bDisableSuspensionBumpStopForceWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->bDisableSuspensionBumpStopForce:USWheelSubBody::bDisableSuspensionBumpStopForceWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionSpringRateCmOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionSpringRateCmOverride:USWheelSubBody::SuspensionSpringRateCmOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionSpringRateCmOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionSpringRateCmOverride:USWheelSubBody::SuspensionSpringRateCmOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionCompressionDampingOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionCompressionDampingOverride:USWheelSubBody::SuspensionCompressionDampingOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionCompressionDampingOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionCompressionDampingOverride:USWheelSubBody::SuspensionCompressionDampingOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionReboundDampingOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionReboundDampingOverride:USWheelSubBody::SuspensionReboundDampingOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionReboundDampingOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionReboundDampingOverride:USWheelSubBody::SuspensionReboundDampingOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxRaiseOverride:USWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxRaiseOverride:USWheelSubBody::SuspensionMaxRaiseOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxDropOverride:USWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxDropOverride:USWheelSubBody::SuspensionMaxDropOverrideWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::ConfiguredStaticSpringCompressionWheelDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ConfiguredStaticSpringCompression:USWheelSubBody::ConfiguredStaticSpringCompressionWheelDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::ConfiguredStaticSpringCompressionWheelDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->ConfiguredStaticSpringCompression:USWheelSubBody::ConfiguredStaticSpringCompressionWheelDomainStorage();
+}
+float& USpeedBranchWheelSubBody::RadiusSphereDomainStorage()
+{
+    return UsesOriginalBodyStorage()?OwnedSphereDomain->Radius:USphereSubBody::RadiusSphereDomainStorage();
+}
+float const& USpeedBranchWheelSubBody::RadiusSphereDomainStorage() const
+{
+    return UsesOriginalBodyStorage()?OwnedSphereDomain->Radius:USphereSubBody::RadiusSphereDomainStorage();
+}
+FTransform USpeedBranchWheelSubBody::PhysicalLocalPose() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose:USSubBody::PhysicalLocalPose();}
+void USpeedBranchWheelSubBody::SetPhysicalLocalOffset(const FVector& V) {if(UsesOriginalBodyStorage())OwnedBodyValues->LocalPose.SetLocation(V);else USSubBody::SetPhysicalLocalOffset(V);}
+
+float USpeedBranchWheelSubBody::PhysicalSuspensionRestLength() const
+{
+    return UsesOriginalBodyStorage()?OwnedWheelDomain->SuspensionMaxRaiseOverride:USWheelSubBody::PhysicalSuspensionRestLength();
 }

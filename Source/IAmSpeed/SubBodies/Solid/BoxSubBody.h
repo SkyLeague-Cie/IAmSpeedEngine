@@ -34,51 +34,51 @@ public:
     {
         USolidSubBody::AppendEpisodeStateForTesting(Out);
         using B=Speed::FEpisodeStateBytesForTesting;
-        B::Add(Out,bProductionNonpenetratingSphereContacts);
-        B::Add(Out,BoxExtent);
-        B::Add(Out,bEdgeSupportLatched);
-        B::Add(Out,EdgeSupportLatchFrame);
-        B::Add(Out,bRoofSurfaceTraversalLatched);
-        B::Add(Out,LastRoofSurfaceContactFrame);
-        B::Add(Out,RoofSurfaceComp);
-        B::Add(Out,CompositeGroundNormal);
-        B::Add(Out,MaxHitsPerComponentPerFrame);
-        B::Add(Out,bGroundContactStable);
-        B::Add(Out,LastResolvedGroundHitFrame);
-        B::Add(Out,bHasGroundContact);
-        B::Add(Out,bFreshEdgeRecoverCandidate);
-        B::Add(Out,StableTime);
-        B::Add(Out,bGroundHitFromSweep);
-        B::Add(Out,bGroundPlaneValid);
-        B::Add(Out,GroundPlanePointWS);
-        B::Add(Out,GroundPlaneN);
-        B::Add(Out,GroundPlaneD);
-        B::Add(Out,GroundComp);
-        B::Add(Out,EstablishedSupportSourceId);
-        B::Add(Out,EstablishedSupportSurfaceId);
-        B::Add(Out,FreshSupportClampUntilFrame);
-        B::Add(Out,FreshSupportClampN);
-        B::Add(Out,FreshSupportClampComp);
-        B::Add(Out,PrevGroundNormal);
-        B::Add(Out,bHadGroundContactPrevFrame);
-        B::Add(Out,PrevContactNormal);
-        B::Add(Out,bHadContactPrevFrame);
-        B::Add(Out,MinSlopCm);
-        B::Add(Out,LastWallOrGutterFrame);
-        B::Add(Out,LastWallOrGutterN);
-        B::Add(Out,LastWallOrGutterUpDot);
-        B::Add(Out,LastResolvedSphereHit);
-        B::Add(Out,LastResolvedSphereHitFrame);
-        B::Array(Out,CurrentGroundContactsWS);
-        B::Array(Out,PreviousFrameGroundContactsWS);
-        B::Array(Out,CurrentGroundNormalsWS);
-        B::Array(Out,PrevGroundContactsLS);
-        B::Array(Out,LatchedEdgeContactsLS);
-        B::Array(Out,PrevLambdaN);
-        B::Add(Out,HitCountThisFrame.Num());
-        TArray<TWeakObjectPtr<UPrimitiveComponent>> Keys;HitCountThisFrame.GenerateKeyArray(Keys);
+        B::Add(Out,bProductionNonpenetratingSphereContactsBoxDomainStorage());
+        B::Add(Out,BoxExtentBoxDomainStorage());
+        B::Add(Out,bEdgeSupportLatchedBoxDomainStorage());
+        B::Add(Out,EdgeSupportLatchFrameBoxDomainStorage());
+        B::Add(Out,bRoofSurfaceTraversalLatchedBoxDomainStorage());
+        B::Add(Out,LastRoofSurfaceContactFrameBoxDomainStorage());
+        B::Add(Out,RoofSurfaceCompBoxDomainStorage());
+        B::Add(Out,CompositeGroundNormalBoxDomainStorage());
+        B::Add(Out,MaxHitsPerComponentPerFrameBoxDomainStorage());
+        B::Add(Out,bGroundContactStableBoxDomainStorage());
+        B::Add(Out,LastResolvedGroundHitFrameBoxDomainStorage());
+        B::Add(Out,bHasGroundContactBoxDomainStorage());
+        B::Add(Out,bFreshEdgeRecoverCandidateBoxDomainStorage());
+        B::Add(Out,StableTimeBoxDomainStorage());
+        B::Add(Out,bGroundHitFromSweepBoxDomainStorage());
+        B::Add(Out,bGroundPlaneValidBoxDomainStorage());
+        B::Add(Out,GroundPlanePointWSBoxDomainStorage());
+        B::Add(Out,GroundPlaneNBoxDomainStorage());
+        B::Add(Out,GroundPlaneDBoxDomainStorage());
+        B::Add(Out,GroundCompBoxDomainStorage());
+        B::Add(Out,EstablishedSupportSourceIdBoxDomainStorage());
+        B::Add(Out,EstablishedSupportSurfaceIdBoxDomainStorage());
+        B::Add(Out,FreshSupportClampUntilFrameBoxDomainStorage());
+        B::Add(Out,FreshSupportClampNBoxDomainStorage());
+        B::Add(Out,FreshSupportClampCompBoxDomainStorage());
+        B::Add(Out,PrevGroundNormalBoxDomainStorage());
+        B::Add(Out,bHadGroundContactPrevFrameBoxDomainStorage());
+        B::Add(Out,PrevContactNormalBoxDomainStorage());
+        B::Add(Out,bHadContactPrevFrameBoxDomainStorage());
+        B::Add(Out,MinSlopCmBoxDomainStorage());
+        B::Add(Out,LastWallOrGutterFrameBoxDomainStorage());
+        B::Add(Out,LastWallOrGutterNBoxDomainStorage());
+        B::Add(Out,LastWallOrGutterUpDotBoxDomainStorage());
+        B::Add(Out,LastResolvedSphereHitBoxDomainStorage());
+        B::Add(Out,LastResolvedSphereHitFrameBoxDomainStorage());
+        B::Array(Out,CurrentGroundContactsWSBoxDomainStorage());
+        B::Array(Out,PreviousFrameGroundContactsWSBoxDomainStorage());
+        B::Array(Out,CurrentGroundNormalsWSBoxDomainStorage());
+        B::Array(Out,PrevGroundContactsLSBoxDomainStorage());
+        B::Array(Out,LatchedEdgeContactsLSBoxDomainStorage());
+        B::Array(Out,PrevLambdaNBoxDomainStorage());
+        B::Add(Out,HitCountThisFrameBoxDomainStorage().Num());
+        TArray<TWeakObjectPtr<UPrimitiveComponent>> Keys;HitCountThisFrameBoxDomainStorage().GenerateKeyArray(Keys);
         Keys.Sort([](const auto& A,const auto& Other){return reinterpret_cast<UPTRINT>(A.GetEvenIfUnreachable())<reinterpret_cast<UPTRINT>(Other.GetEvenIfUnreachable());});
-        for(const auto& Key:Keys){B::Add(Out,Key);B::Add(Out,HitCountThisFrame.FindChecked(Key));}
+        for(const auto& Key:Keys){B::Add(Out,Key);B::Add(Out,HitCountThisFrameBoxDomainStorage().FindChecked(Key));}
     }
 #endif
     virtual void Initialize(ISpeedComponent* InParentComponent) override;
@@ -91,8 +91,8 @@ public:
     SKinematic GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const;
     SSBox MakeBox() const;
     // Construction-time physical policy; not driven by a test ID or diagnostic.
-    void SetProductionNonpenetratingSphereContacts(bool bEnabled) { bProductionNonpenetratingSphereContacts = bEnabled; }
-    bool UsesProductionNonpenetratingSphereContacts() const { return bProductionNonpenetratingSphereContacts; }
+    void SetProductionNonpenetratingSphereContacts(bool bEnabled) { bProductionNonpenetratingSphereContactsBoxDomainStorage() = bEnabled; }
+    bool UsesProductionNonpenetratingSphereContacts() const { return bProductionNonpenetratingSphereContactsBoxDomainStorage(); }
 
     SSBox MakeBoxFromKS(const SKinematic& CarKinematicState) const;
     void ResetForFrame(const float& Delta) override;
@@ -118,7 +118,7 @@ public:
     static FVector ComputeBoxSupportPointWS(const FVector& Center, const FQuat& Rot, const FVector& Ext, const FVector& N);
     const TArray<FVector>& GetGroundContacts() const;
     const TArray<FVector>& GetPhysicsTickGroundContacts() const;
-    int32 GetLastResolvedGroundHitFrame() const { return LastResolvedGroundHitFrame; }
+    int32 GetLastResolvedGroundHitFrame() const { return LastResolvedGroundHitFrameBoxDomainStorage(); }
     /** Rechecks a resolved exact planar provider at the current pose, without publishing contact. */
     bool HasCurrentExactPlanarContact() const;
     bool IsConcaveGroundContact() const;
@@ -152,6 +152,91 @@ public:
     FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
     void UpdateBodySetup();
 protected:
+protected:
+    virtual FVector& BoxExtentBoxDomainStorage() {return BoxExtent;}
+    virtual FVector const& BoxExtentBoxDomainStorage() const {return BoxExtent;}
+    virtual bool& bProductionNonpenetratingSphereContactsBoxDomainStorage() {return bProductionNonpenetratingSphereContacts;}
+    virtual bool const& bProductionNonpenetratingSphereContactsBoxDomainStorage() const {return bProductionNonpenetratingSphereContacts;}
+    virtual TArray<FVector>& CurrentGroundContactsWSBoxDomainStorage() {return CurrentGroundContactsWS;}
+    virtual TArray<FVector> const& CurrentGroundContactsWSBoxDomainStorage() const {return CurrentGroundContactsWS;}
+    virtual TArray<FVector>& PreviousFrameGroundContactsWSBoxDomainStorage() {return PreviousFrameGroundContactsWS;}
+    virtual TArray<FVector> const& PreviousFrameGroundContactsWSBoxDomainStorage() const {return PreviousFrameGroundContactsWS;}
+    virtual TArray<FVector>& CurrentGroundNormalsWSBoxDomainStorage() {return CurrentGroundNormalsWS;}
+    virtual TArray<FVector> const& CurrentGroundNormalsWSBoxDomainStorage() const {return CurrentGroundNormalsWS;}
+    virtual TArray<FVector>& PrevGroundContactsLSBoxDomainStorage() {return PrevGroundContactsLS;}
+    virtual TArray<FVector> const& PrevGroundContactsLSBoxDomainStorage() const {return PrevGroundContactsLS;}
+    virtual TArray<FVector>& LatchedEdgeContactsLSBoxDomainStorage() {return LatchedEdgeContactsLS;}
+    virtual TArray<FVector> const& LatchedEdgeContactsLSBoxDomainStorage() const {return LatchedEdgeContactsLS;}
+    virtual bool& bEdgeSupportLatchedBoxDomainStorage() {return bEdgeSupportLatched;}
+    virtual bool const& bEdgeSupportLatchedBoxDomainStorage() const {return bEdgeSupportLatched;}
+    virtual int32& EdgeSupportLatchFrameBoxDomainStorage() {return EdgeSupportLatchFrame;}
+    virtual int32 const& EdgeSupportLatchFrameBoxDomainStorage() const {return EdgeSupportLatchFrame;}
+    virtual bool& bRoofSurfaceTraversalLatchedBoxDomainStorage() {return bRoofSurfaceTraversalLatched;}
+    virtual bool const& bRoofSurfaceTraversalLatchedBoxDomainStorage() const {return bRoofSurfaceTraversalLatched;}
+    virtual int32& LastRoofSurfaceContactFrameBoxDomainStorage() {return LastRoofSurfaceContactFrame;}
+    virtual int32 const& LastRoofSurfaceContactFrameBoxDomainStorage() const {return LastRoofSurfaceContactFrame;}
+    virtual TWeakObjectPtr<UPrimitiveComponent>& RoofSurfaceCompBoxDomainStorage() {return RoofSurfaceComp;}
+    virtual TWeakObjectPtr<UPrimitiveComponent> const& RoofSurfaceCompBoxDomainStorage() const {return RoofSurfaceComp;}
+    virtual FVector& CompositeGroundNormalBoxDomainStorage() {return CompositeGroundNormal;}
+    virtual FVector const& CompositeGroundNormalBoxDomainStorage() const {return CompositeGroundNormal;}
+    virtual TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32>& HitCountThisFrameBoxDomainStorage() {return HitCountThisFrame;}
+    virtual TMap<TWeakObjectPtr<UPrimitiveComponent>, uint32> const& HitCountThisFrameBoxDomainStorage() const {return HitCountThisFrame;}
+    virtual uint32& MaxHitsPerComponentPerFrameBoxDomainStorage() {return MaxHitsPerComponentPerFrame;}
+    virtual uint32 const& MaxHitsPerComponentPerFrameBoxDomainStorage() const {return MaxHitsPerComponentPerFrame;}
+    virtual TArray<float>& PrevLambdaNBoxDomainStorage() {return PrevLambdaN;}
+    virtual TArray<float> const& PrevLambdaNBoxDomainStorage() const {return PrevLambdaN;}
+    virtual bool& bGroundContactStableBoxDomainStorage() {return bGroundContactStable;}
+    virtual bool const& bGroundContactStableBoxDomainStorage() const {return bGroundContactStable;}
+    virtual int32& LastResolvedGroundHitFrameBoxDomainStorage() {return LastResolvedGroundHitFrame;}
+    virtual int32 const& LastResolvedGroundHitFrameBoxDomainStorage() const {return LastResolvedGroundHitFrame;}
+    virtual bool& bHasGroundContactBoxDomainStorage() {return bHasGroundContact;}
+    virtual bool const& bHasGroundContactBoxDomainStorage() const {return bHasGroundContact;}
+    virtual bool& bFreshEdgeRecoverCandidateBoxDomainStorage() {return bFreshEdgeRecoverCandidate;}
+    virtual bool const& bFreshEdgeRecoverCandidateBoxDomainStorage() const {return bFreshEdgeRecoverCandidate;}
+    virtual float& StableTimeBoxDomainStorage() {return StableTime;}
+    virtual float const& StableTimeBoxDomainStorage() const {return StableTime;}
+    virtual bool& bGroundHitFromSweepBoxDomainStorage() {return bGroundHitFromSweep;}
+    virtual bool const& bGroundHitFromSweepBoxDomainStorage() const {return bGroundHitFromSweep;}
+    virtual bool& bGroundPlaneValidBoxDomainStorage() {return bGroundPlaneValid;}
+    virtual bool const& bGroundPlaneValidBoxDomainStorage() const {return bGroundPlaneValid;}
+    virtual FVector& GroundPlanePointWSBoxDomainStorage() {return GroundPlanePointWS;}
+    virtual FVector const& GroundPlanePointWSBoxDomainStorage() const {return GroundPlanePointWS;}
+    virtual FVector& GroundPlaneNBoxDomainStorage() {return GroundPlaneN;}
+    virtual FVector const& GroundPlaneNBoxDomainStorage() const {return GroundPlaneN;}
+    virtual float& GroundPlaneDBoxDomainStorage() {return GroundPlaneD;}
+    virtual float const& GroundPlaneDBoxDomainStorage() const {return GroundPlaneD;}
+    virtual TWeakObjectPtr<UPrimitiveComponent>& GroundCompBoxDomainStorage() {return GroundComp;}
+    virtual TWeakObjectPtr<UPrimitiveComponent> const& GroundCompBoxDomainStorage() const {return GroundComp;}
+    virtual uint64& EstablishedSupportSourceIdBoxDomainStorage() {return EstablishedSupportSourceId;}
+    virtual uint64 const& EstablishedSupportSourceIdBoxDomainStorage() const {return EstablishedSupportSourceId;}
+    virtual uint64& EstablishedSupportSurfaceIdBoxDomainStorage() {return EstablishedSupportSurfaceId;}
+    virtual uint64 const& EstablishedSupportSurfaceIdBoxDomainStorage() const {return EstablishedSupportSurfaceId;}
+    virtual int32& FreshSupportClampUntilFrameBoxDomainStorage() {return FreshSupportClampUntilFrame;}
+    virtual int32 const& FreshSupportClampUntilFrameBoxDomainStorage() const {return FreshSupportClampUntilFrame;}
+    virtual FVector& FreshSupportClampNBoxDomainStorage() {return FreshSupportClampN;}
+    virtual FVector const& FreshSupportClampNBoxDomainStorage() const {return FreshSupportClampN;}
+    virtual TWeakObjectPtr<UPrimitiveComponent>& FreshSupportClampCompBoxDomainStorage() {return FreshSupportClampComp;}
+    virtual TWeakObjectPtr<UPrimitiveComponent> const& FreshSupportClampCompBoxDomainStorage() const {return FreshSupportClampComp;}
+    virtual FVector& PrevGroundNormalBoxDomainStorage() {return PrevGroundNormal;}
+    virtual FVector const& PrevGroundNormalBoxDomainStorage() const {return PrevGroundNormal;}
+    virtual bool& bHadGroundContactPrevFrameBoxDomainStorage() {return bHadGroundContactPrevFrame;}
+    virtual bool const& bHadGroundContactPrevFrameBoxDomainStorage() const {return bHadGroundContactPrevFrame;}
+    virtual FVector& PrevContactNormalBoxDomainStorage() {return PrevContactNormal;}
+    virtual FVector const& PrevContactNormalBoxDomainStorage() const {return PrevContactNormal;}
+    virtual bool& bHadContactPrevFrameBoxDomainStorage() {return bHadContactPrevFrame;}
+    virtual bool const& bHadContactPrevFrameBoxDomainStorage() const {return bHadContactPrevFrame;}
+    virtual float& MinSlopCmBoxDomainStorage() {return MinSlopCm;}
+    virtual float const& MinSlopCmBoxDomainStorage() const {return MinSlopCm;}
+    virtual int32& LastWallOrGutterFrameBoxDomainStorage() {return LastWallOrGutterFrame;}
+    virtual int32 const& LastWallOrGutterFrameBoxDomainStorage() const {return LastWallOrGutterFrame;}
+    virtual FVector& LastWallOrGutterNBoxDomainStorage() {return LastWallOrGutterN;}
+    virtual FVector const& LastWallOrGutterNBoxDomainStorage() const {return LastWallOrGutterN;}
+    virtual float& LastWallOrGutterUpDotBoxDomainStorage() {return LastWallOrGutterUpDot;}
+    virtual float const& LastWallOrGutterUpDotBoxDomainStorage() const {return LastWallOrGutterUpDot;}
+    virtual SHitResult& LastResolvedSphereHitBoxDomainStorage() {return LastResolvedSphereHit;}
+    virtual SHitResult const& LastResolvedSphereHitBoxDomainStorage() const {return LastResolvedSphereHit;}
+    virtual int32& LastResolvedSphereHitFrameBoxDomainStorage() {return LastResolvedSphereHitFrame;}
+    virtual int32 const& LastResolvedSphereHitFrameBoxDomainStorage() const {return LastResolvedSphereHitFrame;}
     bool bProductionNonpenetratingSphereContacts = false;
     virtual FCollisionShape GetCollisionShape(float Inflation = 0.0f) const override;
     FMatrix InitInvInertiaTensor() const override;

@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/World/Simulation/FrameParallelSettings.h"
 
 #include "HAL/IConsoleManager.h"
@@ -62,7 +63,7 @@ const Speed::FFrameParallelRuntimeTopology& HostTopology()
         // Function-local static initialization is thread safe and executes once
         // per module/process lifetime. These are observed runtime fields, not
         // CPU-OS guesses for the Unreal worker pool or enclosing Job hierarchy.
-        UE_LOG(LogTemp, Display, TEXT("[FrameParallelTopologyV1] PhysicalCores=%d LogicalCores=%d AvailableLogicalCores=%d AvailableTaskWorkers=%d ReservedPhysicalCores=%d MaxLanes=%d EffectiveCpuRate10000=%d EffectiveCpuRateKnown=%d SingleProcessorGroupKnown=%d ProcessorGroup=%u AffinityMask=%016llX ProcessInJobKnown=%d ProcessInJob=%d QuotaObservation=%u ImmediateJobControlFlags=%08x ImmediateJobRate10000=%u LastQueryError=%u TaskGraphWorkers=%d PrivateFrameWorkers=%d WorkerBackend=%d PrivateSelected=%d ExecutorReady=%d WorkerCapacityScope=SelectedIAmSpeedBackend ConfigScope=FirstSettingsCapture TopologyScope=ProcessFirstCapture"),
+        SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[FrameParallelTopologyV1] PhysicalCores=%d LogicalCores=%d AvailableLogicalCores=%d AvailableTaskWorkers=%d ReservedPhysicalCores=%d MaxLanes=%d EffectiveCpuRate10000=%d EffectiveCpuRateKnown=%d SingleProcessorGroupKnown=%d ProcessorGroup=%u AffinityMask=%016llX ProcessInJobKnown=%d ProcessInJob=%d QuotaObservation=%u ImmediateJobControlFlags=%08x ImmediateJobRate10000=%u LastQueryError=%u TaskGraphWorkers=%d PrivateFrameWorkers=%d WorkerBackend=%d PrivateSelected=%d ExecutorReady=%d WorkerCapacityScope=SelectedIAmSpeedBackend ConfigScope=FirstSettingsCapture TopologyScope=ProcessFirstCapture"),
             Captured.Limits.PhysicalCores, Captured.Limits.LogicalCores,
             Captured.Limits.AvailableLogicalCores, Captured.Limits.AvailableTaskWorkers,
             FirstReservedCores, FirstMaxLanes, Captured.Limits.EffectiveCpuRate10000,

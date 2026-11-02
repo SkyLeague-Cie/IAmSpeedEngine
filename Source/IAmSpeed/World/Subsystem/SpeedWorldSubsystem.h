@@ -8,6 +8,7 @@
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "IAmSpeed/World/Collision/StaticCollisionWorld.h"
 #include "IAmSpeed/World/Simulation/SimulationWorld.h"
+#include "IAmSpeed/World/Simulation/NativeEpochStorageRoute.h"
 #include "SpeedWorldSubsystem.generated.h"
 
 namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;}
@@ -130,7 +131,7 @@ public:
 	bool ValidateSimulationBindings(FString& OutReason);
 	/** Keeps the admitted registry fixed until the canonical frame has ended. */
 	bool BeginCanonicalFrame(FString& OutReason);
-	void EndCanonicalFrame() { bCanonicalFrameActive = false; }
+	void EndCanonicalFrame() { bCanonicalFrameActiveEpochStorage() = false; }
 	ECanonicalRunControlState GetCanonicalRunControlState();
 #if !UE_BUILD_SHIPPING
     /** Owner-only observer over the already admitted registry. No pending-op
@@ -139,15 +140,15 @@ public:
 #endif
 	const Speed::Analytic::FAnalyticWorldData* GetAnalyticWorldData() const
 	{
-		return AnalyticWorldData.Get();
+		return AnalyticWorldDataEpochStorage().Get();
 	}
 	const Speed::IStaticCollisionWorld* GetStaticCollisionWorld() const
 	{
-		return SimulationWorld.GetStaticCollisionWorld();
+		return SimulationWorldEpochStorage().GetStaticCollisionWorld();
 	}
 	const FSpeedStepDiagnostics& GetLastStepDiagnostics() const
 	{
-		return LastStepDiagnostics;
+		return LastStepDiagnosticsEpochStorage();
 	}
 	FSimulationSnapshot CaptureSimulationSnapshot(uint64 NumFrame, uint64 InputJournalHash, bool bIncludePresentation = false);
 	bool CaptureReplayStateFields(TArray<FSimulationReplayStateRecord>& Out, uint64& UnsupportedStableId) const;
@@ -162,7 +163,7 @@ public:
 	uint64 GetSimulationStableId(const ISpeedComponent& Component);
     ISpeedComponent* FindSimulationAdapter(uint64 StableId) const
     {
-        return SimulationWorld.FindAdapterByStableId(StableId);
+        return SimulationWorldEpochStorage().FindAdapterByStableId(StableId);
     }
 	/** Applies the sealed input commands for a frame before component preparation. */
 	bool ApplySimulationInputs(uint64 NumFrame, const Speed::SimulationBoundary::FInputJournal& Journal);
@@ -170,6 +171,67 @@ public:
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
+    // Whole private bridge storage is one fresh allocation. Original legacy
+    // members below stay ordinary fields, including old caller views. Native
+    // operations select the private epoch block internally; no facade import.
+    struct FEpochBridgeStorage
+    {
+#if !UE_BUILD_SHIPPING
+        uint64 TestingPreparingFrame=MAX_uint64;
+#endif
+        bool bCanonicalFrameActive=false;
+        Speed::FSimulationWorld SimulationWorld;
+        uint64 StepSerial=0;
+        FSpeedStepDiagnostics LastStepDiagnostics;
+        mutable bool bLoggedRollingOwnershipState=false;
+        bool bLoggedRollingSolveState=false;
+        TSharedPtr<const Speed::Analytic::FAnalyticWorldData> AnalyticWorldData;
+        TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>> AnalyticSourceComponents;
+        uint8 AnalyticWorldBuildAttempt=0;
+        FCriticalSection PendingCS;
+        TArray<FPendingOp> PendingOps;
+    };
+    std::unique_ptr<FEpochBridgeStorage> OriginalEpochBridgeStorage;
+    std::weak_ptr<const Speed::NativeEpoch::IOriginalStorageRoute> OriginalEpochRoute;
+    bool UsesOriginalEpochStorage() const
+    {
+        if(!IsInGameThread())return false;
+        const auto Owner=OriginalEpochRoute.lock();
+        return OriginalEpochBridgeStorage&&Owner&&Owner->SelectsOriginalStorage();
+    }
+    void BindOriginalEpochStorage(const std::shared_ptr<const Speed::NativeEpoch::IOriginalStorageRoute>& Owner)
+    {
+        check(Owner&&!OriginalEpochBridgeStorage&&OriginalEpochRoute.expired());
+        OriginalEpochBridgeStorage=std::make_unique<FEpochBridgeStorage>();
+        OriginalEpochRoute=Owner; // never copy any legacy/facade state
+    }
+#if !UE_BUILD_SHIPPING
+    uint64& TestingPreparingFrameEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->TestingPreparingFrame:TestingPreparingFrame;}
+    uint64 const& TestingPreparingFrameEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->TestingPreparingFrame:TestingPreparingFrame;}
+#endif
+    bool& bCanonicalFrameActiveEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->bCanonicalFrameActive:bCanonicalFrameActive;}
+    bool const& bCanonicalFrameActiveEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->bCanonicalFrameActive:bCanonicalFrameActive;}
+    Speed::FSimulationWorld& SimulationWorldEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->SimulationWorld:SimulationWorld;}
+    Speed::FSimulationWorld const& SimulationWorldEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->SimulationWorld:SimulationWorld;}
+    uint64& StepSerialEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->StepSerial:StepSerial;}
+    uint64 const& StepSerialEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->StepSerial:StepSerial;}
+    FSpeedStepDiagnostics& LastStepDiagnosticsEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->LastStepDiagnostics:LastStepDiagnostics;}
+    FSpeedStepDiagnostics const& LastStepDiagnosticsEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->LastStepDiagnostics:LastStepDiagnostics;}
+    bool& bLoggedRollingOwnershipStateEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->bLoggedRollingOwnershipState:bLoggedRollingOwnershipState;}
+    bool& bLoggedRollingOwnershipStateEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->bLoggedRollingOwnershipState:bLoggedRollingOwnershipState;}
+    bool& bLoggedRollingSolveStateEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->bLoggedRollingSolveState:bLoggedRollingSolveState;}
+    bool const& bLoggedRollingSolveStateEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->bLoggedRollingSolveState:bLoggedRollingSolveState;}
+    TSharedPtr<const Speed::Analytic::FAnalyticWorldData>& AnalyticWorldDataEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->AnalyticWorldData:AnalyticWorldData;}
+    TSharedPtr<const Speed::Analytic::FAnalyticWorldData> const& AnalyticWorldDataEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->AnalyticWorldData:AnalyticWorldData;}
+    TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>>& AnalyticSourceComponentsEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->AnalyticSourceComponents:AnalyticSourceComponents;}
+    TMap<uint64, TWeakObjectPtr<UPrimitiveComponent>> const& AnalyticSourceComponentsEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->AnalyticSourceComponents:AnalyticSourceComponents;}
+    uint8& AnalyticWorldBuildAttemptEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->AnalyticWorldBuildAttempt:AnalyticWorldBuildAttempt;}
+    uint8 const& AnalyticWorldBuildAttemptEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->AnalyticWorldBuildAttempt:AnalyticWorldBuildAttempt;}
+    FCriticalSection& PendingCSEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->PendingCS:PendingCS;}
+    FCriticalSection const& PendingCSEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->PendingCS:PendingCS;}
+    TArray<FPendingOp>& PendingOpsEpochStorage() {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->PendingOps:PendingOps;}
+    TArray<FPendingOp> const& PendingOpsEpochStorage() const {return UsesOriginalEpochStorage()?OriginalEpochBridgeStorage->PendingOps:PendingOps;}
+
 #if !UE_BUILD_SHIPPING
     uint64 TestingPreparingFrame=MAX_uint64;
 #endif

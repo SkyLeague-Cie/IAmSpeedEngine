@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
@@ -90,7 +91,7 @@ void FNetworkWheeledSpeedState::ApplyData(UActorComponent* NetworkComponent) con
 	{
 		if (!Mover->AllowsExternalNetworkStateRestore()) return;
 #if !(UE_BUILD_SHIPPING)
-		UE_LOG(WheelNetcodeLog, Warning, TEXT("[WheeledSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
+		SPEED_NATIVE_LOG(WheelNetcodeLog, Warning, TEXT("[WheeledSpeed] ApplyData (RESIMULATION?) Triggered for frame = %d"), Mover->NumFrame());
 #endif
 		Mover->WheeledPhysicsState = WheeledState;
 		if (SourceFramesSinceCanMove != INDEX_NONE)
@@ -154,7 +155,7 @@ void TracePrivateBumpWire(FArchive& Ar, UPackageMap* Map, UActorComponent* Owner
     // No archive byte, physical state or package-map assignment is authored.
     if(!IsInGameThread())
     {
-        UE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=unsupported-serialization-lane"));
+        SPEED_NATIVE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=unsupported-serialization-lane"));
         return;
     }
     auto* ClientMap=Cast<UPackageMapClient>(Map);
@@ -170,7 +171,7 @@ void TracePrivateBumpWire(FArchive& Ar, UPackageMap* Map, UActorComponent* Owner
     if(Rows>=32768 || (Frames && !LastPositive.Contains(TraceKey) && LastPositiveByDirection[0].Num()+LastPositiveByDirection[1].Num()>=16))
     {
         static bool bLimitReported=false;
-        if(!bLimitReported) UE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=diagnostic-budget-exceeded"));
+        if(!bLimitReported) SPEED_NATIVE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=diagnostic-budget-exceeded"));
         bLimitReported=true;
         return;
     }
@@ -180,7 +181,7 @@ void TracePrivateBumpWire(FArchive& Ar, UPackageMap* Map, UActorComponent* Owner
     if(Movers.Num()!=1 || Movers[0]!=Owner)
     {
         static bool bAmbiguousReported=false;
-        if(!bAmbiguousReported) UE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=ambiguous-owner-component count=%d"),Movers.Num());
+        if(!bAmbiguousReported) SPEED_NATIVE_LOG(WheelNetcodeLog,Error,TEXT("[BumpWire] status=ambiguous-owner-component count=%d"),Movers.Num());
         bAmbiguousReported=true;
         return;
     }
@@ -188,7 +189,7 @@ void TracePrivateBumpWire(FArchive& Ar, UPackageMap* Map, UActorComponent* Owner
     const auto* VictimMover=Cast<USpeedWheeledComponent>(Victim);
     const AActor* VictimActor=VictimMover?VictimMover->GetOwner():nullptr;
     const uint64 VictimActorGuid=ClientMap && VictimActor ? ClientMap->GetNetGUIDFromObject(VictimActor).ObjectId : 0;
-    UE_LOG(WheelNetcodeLog,Display,
+    SPEED_NATIVE_LOG(WheelNetcodeLog,Display,
         TEXT("[BumpWire] direction=%s source_frame=%d owner_actor_guid=%llu owner_components=1 owner_component_guid=%llu victim_component_guid=%llu victim_actor_guid=%llu remaining=%u mapped=%d archive_success=%d"),
         Ar.IsSaving()?TEXT("save"):TEXT("load"),SourceFrame,static_cast<unsigned long long>(OwnerGuid),static_cast<unsigned long long>(OwnerComponentGuid),
         static_cast<unsigned long long>(VictimGuid),static_cast<unsigned long long>(VictimActorGuid),
@@ -350,7 +351,7 @@ void FNetworkWheeledSpeedInputState::ApplyData(UActorComponent* NetworkComponent
 		const int32 Activation = ResolveActivationFrame(Mover->GetPublishedInputTimelineOrigin(), false);
 		const auto Result = Mover->SubmitLegacyWheeledInput(ClientFrame, Activation, WheeledInput);
 		if (Result != Speed::Input::ELegacyRemoteAdmission::Accepted)
-			UE_LOG(SpeedInputLog, Verbose, TEXT("[LegacyRemotePreSlew] wheel packet rejected status=%u source=%u activation=%d"), uint32(Result), ClientFrame, Activation);
+			SPEED_NATIVE_LOG(SpeedInputLog, Verbose, TEXT("[LegacyRemotePreSlew] wheel packet rejected status=%u source=%u activation=%d"), uint32(Result), ClientFrame, Activation);
 	}
 }
 
@@ -446,7 +447,7 @@ bool FNetworkWheeledSpeedInputState::CompareData(const FNetworkPhysicsData& Pred
 		&& IS.Steer == IC.Steer;
 	if (!bAnalogOk)
 	{
-		UE_LOG(WheelNetcodeLog, Warning,
+		SPEED_NATIVE_LOG(WheelNetcodeLog, Warning,
 			TEXT("[NET][INPUT MISMATCH] Frame=%u ClientFrame=%u Autonomous=%d ")
 			TEXT("C(Throttle=%u Brake=%u Steer=%d) ")
 			TEXT("S(Throttle=%u Brake=%u Steer=%d)"),

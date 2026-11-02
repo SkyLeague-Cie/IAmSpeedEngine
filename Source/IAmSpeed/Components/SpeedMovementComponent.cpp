@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
@@ -472,7 +473,7 @@ void USpeedMovementComponent::HandleCountdownTimer()
 		SinceCanMoveFrame = NumFrame();
 		UnFreezeMovement();
 // #if !(UE_BUILD_SHIPPING)
-		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
 // #endif
 	}
@@ -739,7 +740,7 @@ void USpeedMovementComponent::StartConfrontationLocal(const float& TimeSec)
 		SinceCanMoveFrame = NumFrame();
 		UnFreezeMovement();
 // #if !(UE_BUILD_SHIPPING)
-		UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][CAN MOVE] At Frame = %d, Kinematics: %s"),
 			*GetOwner()->GetName(), *GetRole(), NumFrame(), *BasePhysicsState.Kinematic.ToString());
 // #endif
 	}
@@ -878,7 +879,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 	// check coutdown mismatch
 	if (bNewTarget && (Target.BaseState.bStartCountdown != PastPredictedState.bStartCountdown))
 	{
-		UE_LOG(SpeedNetcodeLog, Verbose, TEXT("[%s(%s)][COUNTDOWN MISMATCH] Countdown mismatch: Target=%d, PastPred=%d, NbFramesBeforeCanMove=%d, NumPredictedFrames=%d"), *GetOwner()->GetName(), *GetRole(),
+		SPEED_NATIVE_LOG(SpeedNetcodeLog, Verbose, TEXT("[%s(%s)][COUNTDOWN MISMATCH] Countdown mismatch: Target=%d, PastPred=%d, NbFramesBeforeCanMove=%d, NumPredictedFrames=%d"), *GetOwner()->GetName(), *GetRole(),
 			Target.BaseState.bStartCountdown, PastPredictedState.bStartCountdown, BasePhysicsState.nbFramesbeforeCanMove, NumPredictedFrames);
 		BasePhysicsState.bStartCountdown = Target.BaseState.bStartCountdown;
 	}
@@ -899,15 +900,15 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			BasePhysicsState.bStartCountdown = false;
 			UnFreezeMovement();
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
-			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
+			SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"), *GetOwner()->GetName(), *GetRole(), Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
+			SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][LATE CAN MOVE] At CurrentFrame = %d, NumFrame = %d, Kinematics: %s"),
 				*GetOwner()->GetName(), *GetRole(), CurrentFrame, NumFrame(), *BasePhysicsState.Kinematic.ToString());
 #endif
 		}
 		else
 		{
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(SpeedNetcodeLog, Verbose, TEXT("[%s(%s)][CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"),
+			SPEED_NATIVE_LOG(SpeedNetcodeLog, Verbose, TEXT("[%s(%s)][CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d"),
 				*GetOwner()->GetName(), *GetRole(), Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove);
 #endif
 			const bool bStartupCountdownCatchup =
@@ -944,7 +945,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			SinceCanMoveFrame = INDEX_NONE;
 			FreezeMovement();
 #if !(UE_BUILD_SHIPPING)
-			UE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"), *GetOwner()->GetName(), *GetRole(),
+			SPEED_NATIVE_LOG(SpeedNetcodeLog, Warning, TEXT("[%s(%s)][EARLY CAN MOVE MISMATCH] nbFramesbeforeCanMove mismatch: Target=%d, PastPred=%d, Corrected=%d"), *GetOwner()->GetName(), *GetRole(),
 				Target.BaseState.nbFramesbeforeCanMove, PastPredictedState.nbFramesbeforeCanMove, BasePhysicsState.nbFramesbeforeCanMove);
 #endif
 		}
@@ -1003,7 +1004,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
-				UE_LOG(SpeedNetcodeLog, Log,
+				SPEED_NATIVE_LOG(SpeedNetcodeLog, Log,
 					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d LinVelDiff0=%.2f Corr=%.2f TargetVelNow=%fcm/s"),
 					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrV0.Size(), CorrV.Size(), GetPhysCOMVelocity().Size());
 #endif
@@ -1016,7 +1017,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
-				UE_LOG(SpeedNetcodeLog, Log,
+				SPEED_NATIVE_LOG(SpeedNetcodeLog, Log,
 					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d PosDiff0=%.2fcm Corr=%.2fcm TargetPosNow=%s"),
 					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrX0.Size(), AppliedCorrX.Size(), *GetPhysLocation().ToString());
 #endif
@@ -1029,7 +1030,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			if (bNewTarget)
 			{
 #if !(UE_BUILD_SHIPPING)
-				UE_LOG(SpeedNetcodeLog, Log,
+				SPEED_NATIVE_LOG(SpeedNetcodeLog, Log,
 					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d AngVelDiff0=%.4f Corr=%.4f TargetAngVelNow=%.4frad/s"),
 					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrW0.Size(), CorrW.Size(), GetPhysAngularVelocity().Size());
 #endif
@@ -1043,7 +1044,7 @@ void USpeedMovementComponent::ApplyNetworkCorrection(const float& DeltaSeconds)
 			{
 #if !(UE_BUILD_SHIPPING)
 				const float AppliedCorrDeg = FMath::RadiansToDegrees(AppliedCorrQuat.GetAngle());
-				UE_LOG(SpeedNetcodeLog, Log,
+				SPEED_NATIVE_LOG(SpeedNetcodeLog, Log,
 					TEXT("[%s(%s)][CORR] ServerFrame=%d LocalFrame=%d NumFrame=%d NumPredictedFrames=%d RotDiff0=%.2fdeg Corr=%.2fdeg"),
 					*GetOwner()->GetName(), *GetRole(), Target.ServerFrame, LocalFrame, NumFrame(), NumPredictedFrames, ErrEuler0.Size(), AppliedCorrDeg);
 #endif

@@ -185,7 +185,7 @@ public:
 	/** Terminal cancellation before global publication; must not throw or allocate. */
 	virtual void AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept {}
 	/** Read-only identity publication; querying this never mutates the world registry. */
-	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableId.Load(); }
+	uint64 GetPublishedSimulationStableId() const { return PublishedSimulationStableIdStorage().Load(); }
     /** Complete prepared restore is opt-in. Legacy payload validation does not
      * qualify mechanical/gameplay/caches/lifecycle state for this transaction. */
     virtual std::unique_ptr<Speed::IPreparedSimulationComponentRestore>
@@ -418,6 +418,8 @@ protected:
 		check(Payload.IsEmpty());
 	}
 
+    virtual TAtomic<uint64>& PublishedSimulationStableIdStorage() {return PublishedSimulationStableId;}
+    virtual TAtomic<uint64> const& PublishedSimulationStableIdStorage() const {return PublishedSimulationStableId;}
     // Legacy fields remain unchanged. Private owners can separate the common
     // value blocks from facade calls; this grants no restore or borrow lease.
     virtual TArray<FPhysicalContactConstraint>& PhysicalConstraintsStorage() {return PhysicalConstraints;}

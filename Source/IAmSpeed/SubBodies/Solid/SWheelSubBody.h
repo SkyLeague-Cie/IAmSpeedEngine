@@ -49,33 +49,33 @@ public:
     {
         USphereSubBody::AppendEpisodeStateForTesting(Out);
         using B=Speed::FEpisodeStateBytesForTesting;
-        B::Add(Out,WheelComponent);
-        B::Add(Out,ChaosWheel);
-        B::Add(Out,PWheel);
-        B::Add(Out,PSuspension);
-        B::Add(Out,WheelMass);
-        B::Add(Out,SuspensionSpringRate);
-        B::Add(Out,SuspensionDampingCompressionRatio);
-        B::Add(Out,SuspensionDampingReboundRatio);
-        B::Add(Out,bUseSuspensionForceModelOverride);
-        B::Add(Out,bClampSuspensionForceToPositive);
-        B::Add(Out,bClampPositiveUntilFirstCompression);
-        B::Add(Out,bUseEffectiveSuspensionSweepRadius);
-        B::Add(Out,bUseIncreasingDisplacementAsCompression);
-        B::Add(Out,bUseCompressionCrossingContactImpulse);
-        B::Add(Out,GroundForceApplicationMode);
-        B::Add(Out,ContactImpulseApplicationMode);
-        B::Add(Out,SuspensionStiffnessForceScale);
-        B::Add(Out,SuspensionStiffnessReferenceDisplacement);
-        B::Add(Out,SuspensionPreRestCompressionDampingScale);
-        B::Add(Out,bClampNegativeSuspensionDisplacement);
-        B::Add(Out,bDisableSuspensionBumpStopForce);
-        B::Add(Out,SuspensionSpringRateCmOverride);
-        B::Add(Out,SuspensionCompressionDampingOverride);
-        B::Add(Out,SuspensionReboundDampingOverride);
-        B::Add(Out,SuspensionMaxRaiseOverride);
-        B::Add(Out,SuspensionMaxDropOverride);
-        B::Add(Out,ConfiguredStaticSpringCompression);
+        B::Add(Out,WheelComponentWheelDomainStorage());
+        B::Add(Out,ChaosWheelWheelDomainStorage());
+        B::Add(Out,PWheelWheelDomainStorage());
+        B::Add(Out,PSuspensionWheelDomainStorage());
+        B::Add(Out,WheelMassWheelDomainStorage());
+        B::Add(Out,SuspensionSpringRateWheelDomainStorage());
+        B::Add(Out,SuspensionDampingCompressionRatioWheelDomainStorage());
+        B::Add(Out,SuspensionDampingReboundRatioWheelDomainStorage());
+        B::Add(Out,bUseSuspensionForceModelOverrideWheelDomainStorage());
+        B::Add(Out,bClampSuspensionForceToPositiveWheelDomainStorage());
+        B::Add(Out,bClampPositiveUntilFirstCompressionWheelDomainStorage());
+        B::Add(Out,bUseEffectiveSuspensionSweepRadiusWheelDomainStorage());
+        B::Add(Out,bUseIncreasingDisplacementAsCompressionWheelDomainStorage());
+        B::Add(Out,bUseCompressionCrossingContactImpulseWheelDomainStorage());
+        B::Add(Out,GroundForceApplicationModeWheelDomainStorage());
+        B::Add(Out,ContactImpulseApplicationModeWheelDomainStorage());
+        B::Add(Out,SuspensionStiffnessForceScaleWheelDomainStorage());
+        B::Add(Out,SuspensionStiffnessReferenceDisplacementWheelDomainStorage());
+        B::Add(Out,SuspensionPreRestCompressionDampingScaleWheelDomainStorage());
+        B::Add(Out,bClampNegativeSuspensionDisplacementWheelDomainStorage());
+        B::Add(Out,bDisableSuspensionBumpStopForceWheelDomainStorage());
+        B::Add(Out,SuspensionSpringRateCmOverrideWheelDomainStorage());
+        B::Add(Out,SuspensionCompressionDampingOverrideWheelDomainStorage());
+        B::Add(Out,SuspensionReboundDampingOverrideWheelDomainStorage());
+        B::Add(Out,SuspensionMaxRaiseOverrideWheelDomainStorage());
+        B::Add(Out,SuspensionMaxDropOverrideWheelDomainStorage());
+        B::Add(Out,ConfiguredStaticSpringCompressionWheelDomainStorage());
         B::Add(Out,SuspensionForceRuntimeStorage());
         B::Add(Out,bIsJumpingRuntimeStorage());
         B::Add(Out,bJumpUnilateralSupportRuntimeStorage());
@@ -150,7 +150,7 @@ public:
     FVector GetSuspensionDirectionWS() const;
     float Radius() const;
     float ChaosEffectiveRadius() const;
-    const UChaosVehicleWheel* GetChaosWheelConfiguration() const { return ChaosWheel; }
+    const UChaosVehicleWheel* GetChaosWheelConfiguration() const { return ChaosWheelWheelDomainStorage(); }
     float AngularVelocity() const;
     void SetAngularVelocity(const float& InOmega);
     float SpringDisplacement() const; // current spring displacement (positive when compressed)
@@ -207,9 +207,9 @@ public:
 	void SetChaosWheel(UChaosVehicleWheel* InChaosWheel);
 	void SetWheelSim(Chaos::FSimpleWheelSim* InPWheel);
 	void SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension);
-	bool HasSuspensionSim() const { return PSuspension != nullptr; }
-	const Chaos::FSimpleWheelSim* GetWheelSim() const { return PWheel; }
-	const Chaos::FSimpleSuspensionSim* GetSuspensionSim() const { return PSuspension; }
+	bool HasSuspensionSim() const { return PSuspensionWheelDomainStorage() != nullptr; }
+	const Chaos::FSimpleWheelSim* GetWheelSim() const { return PWheelWheelDomainStorage(); }
+	const Chaos::FSimpleSuspensionSim* GetSuspensionSim() const { return PSuspensionWheelDomainStorage(); }
 	void SetLocalOffset(const FVector& InLocalOffset);
 
     void HandleTimers();
@@ -226,6 +226,64 @@ protected:
     void ResetContactVelocityLock();
 
 protected:
+protected:
+    virtual ISpeedWheeledComponent*& WheelComponentWheelDomainStorage() {return WheelComponent;}
+    virtual ISpeedWheeledComponent* const& WheelComponentWheelDomainStorage() const {return WheelComponent;}
+    virtual UChaosVehicleWheel*& ChaosWheelWheelDomainStorage() {return ChaosWheel;}
+    virtual UChaosVehicleWheel* const& ChaosWheelWheelDomainStorage() const {return ChaosWheel;}
+    virtual Chaos::FSimpleWheelSim*& PWheelWheelDomainStorage() {return PWheel;}
+    virtual Chaos::FSimpleWheelSim* const& PWheelWheelDomainStorage() const {return PWheel;}
+    virtual Chaos::FSimpleSuspensionSim*& PSuspensionWheelDomainStorage() {return PSuspension;}
+    virtual Chaos::FSimpleSuspensionSim* const& PSuspensionWheelDomainStorage() const {return PSuspension;}
+    virtual float& WheelMassWheelDomainStorage() {return WheelMass;}
+    virtual float const& WheelMassWheelDomainStorage() const {return WheelMass;}
+    virtual float& SuspensionSpringRateWheelDomainStorage() {return SuspensionSpringRate;}
+    virtual float const& SuspensionSpringRateWheelDomainStorage() const {return SuspensionSpringRate;}
+    virtual float& SuspensionDampingCompressionRatioWheelDomainStorage() {return SuspensionDampingCompressionRatio;}
+    virtual float const& SuspensionDampingCompressionRatioWheelDomainStorage() const {return SuspensionDampingCompressionRatio;}
+    virtual float& SuspensionDampingReboundRatioWheelDomainStorage() {return SuspensionDampingReboundRatio;}
+    virtual float const& SuspensionDampingReboundRatioWheelDomainStorage() const {return SuspensionDampingReboundRatio;}
+    virtual bool& bUseSuspensionForceModelOverrideWheelDomainStorage() {return bUseSuspensionForceModelOverride;}
+    virtual bool const& bUseSuspensionForceModelOverrideWheelDomainStorage() const {return bUseSuspensionForceModelOverride;}
+    virtual bool& bClampSuspensionForceToPositiveWheelDomainStorage() {return bClampSuspensionForceToPositive;}
+    virtual bool const& bClampSuspensionForceToPositiveWheelDomainStorage() const {return bClampSuspensionForceToPositive;}
+    virtual bool& bClampPositiveUntilFirstCompressionWheelDomainStorage() {return bClampPositiveUntilFirstCompression;}
+    virtual bool const& bClampPositiveUntilFirstCompressionWheelDomainStorage() const {return bClampPositiveUntilFirstCompression;}
+    virtual bool& bUseEffectiveSuspensionSweepRadiusWheelDomainStorage() {return bUseEffectiveSuspensionSweepRadius;}
+    virtual bool const& bUseEffectiveSuspensionSweepRadiusWheelDomainStorage() const {return bUseEffectiveSuspensionSweepRadius;}
+    virtual bool& bUseIncreasingDisplacementAsCompressionWheelDomainStorage() {return bUseIncreasingDisplacementAsCompression;}
+    virtual bool const& bUseIncreasingDisplacementAsCompressionWheelDomainStorage() const {return bUseIncreasingDisplacementAsCompression;}
+    virtual bool& bUseCompressionCrossingContactImpulseWheelDomainStorage() {return bUseCompressionCrossingContactImpulse;}
+    virtual bool const& bUseCompressionCrossingContactImpulseWheelDomainStorage() const {return bUseCompressionCrossingContactImpulse;}
+    virtual uint8& GroundForceApplicationModeWheelDomainStorage() {return GroundForceApplicationMode;}
+    virtual uint8 const& GroundForceApplicationModeWheelDomainStorage() const {return GroundForceApplicationMode;}
+    virtual uint8& ContactImpulseApplicationModeWheelDomainStorage() {return ContactImpulseApplicationMode;}
+    virtual uint8 const& ContactImpulseApplicationModeWheelDomainStorage() const {return ContactImpulseApplicationMode;}
+    virtual float& SuspensionStiffnessForceScaleWheelDomainStorage() {return SuspensionStiffnessForceScale;}
+    virtual float const& SuspensionStiffnessForceScaleWheelDomainStorage() const {return SuspensionStiffnessForceScale;}
+    virtual float& SuspensionStiffnessReferenceDisplacementWheelDomainStorage() {return SuspensionStiffnessReferenceDisplacement;}
+    virtual float const& SuspensionStiffnessReferenceDisplacementWheelDomainStorage() const {return SuspensionStiffnessReferenceDisplacement;}
+    virtual float& SuspensionPreRestCompressionDampingScaleWheelDomainStorage() {return SuspensionPreRestCompressionDampingScale;}
+    virtual float const& SuspensionPreRestCompressionDampingScaleWheelDomainStorage() const {return SuspensionPreRestCompressionDampingScale;}
+    virtual bool& bClampNegativeSuspensionDisplacementWheelDomainStorage() {return bClampNegativeSuspensionDisplacement;}
+    virtual bool const& bClampNegativeSuspensionDisplacementWheelDomainStorage() const {return bClampNegativeSuspensionDisplacement;}
+    virtual bool& bDisableSuspensionBumpStopForceWheelDomainStorage() {return bDisableSuspensionBumpStopForce;}
+    virtual bool const& bDisableSuspensionBumpStopForceWheelDomainStorage() const {return bDisableSuspensionBumpStopForce;}
+    virtual float& SuspensionSpringRateCmOverrideWheelDomainStorage() {return SuspensionSpringRateCmOverride;}
+    virtual float const& SuspensionSpringRateCmOverrideWheelDomainStorage() const {return SuspensionSpringRateCmOverride;}
+    virtual float& SuspensionCompressionDampingOverrideWheelDomainStorage() {return SuspensionCompressionDampingOverride;}
+    virtual float const& SuspensionCompressionDampingOverrideWheelDomainStorage() const {return SuspensionCompressionDampingOverride;}
+    virtual float& SuspensionReboundDampingOverrideWheelDomainStorage() {return SuspensionReboundDampingOverride;}
+    virtual float const& SuspensionReboundDampingOverrideWheelDomainStorage() const {return SuspensionReboundDampingOverride;}
+    virtual float& SuspensionMaxRaiseOverrideWheelDomainStorage() {return SuspensionMaxRaiseOverride;}
+    virtual float const& SuspensionMaxRaiseOverrideWheelDomainStorage() const {return SuspensionMaxRaiseOverride;}
+    virtual float& SuspensionMaxDropOverrideWheelDomainStorage() {return SuspensionMaxDropOverride;}
+    virtual float const& SuspensionMaxDropOverrideWheelDomainStorage() const {return SuspensionMaxDropOverride;}
+    virtual float& ConfiguredStaticSpringCompressionWheelDomainStorage() {return ConfiguredStaticSpringCompression;}
+    virtual float const& ConfiguredStaticSpringCompressionWheelDomainStorage() const {return ConfiguredStaticSpringCompression;}
+    // Ordinary callers preserve the exact existing live host configuration.
+    // An original epoch can consume its explicit immutable authored value.
+    virtual float PhysicalSuspensionRestLength() const;
     ISpeedWheeledComponent* WheelComponent = nullptr;
 
     // --- Wheel configuration ---

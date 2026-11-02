@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "SpeedPhysicsSimulation.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "ReplayPhysicalFrameScope.h"
@@ -236,6 +237,17 @@ static void ObserveCanonicalCameraSample(uint64 Frame) noexcept
 }
 }
 #endif
+bool ASpeedPhysicsSimulation::BindOriginalDriverStorage(const std::shared_ptr<const Speed::NativeEpoch::IOriginalStorageRoute>& Route)
+{
+    if(!IsInGameThread()||!Route||OriginalDriverStorage||!OriginalDriverRoute.expired()||GetEngineFPS()!=300)return false;
+    auto Native=std::make_unique<FOriginalDriverStorage>();
+    Native->RealDeltaTime=1.0f/static_cast<float>(GetEngineFPS());
+    Native->InputWorkerGeneration=NextInputWorkerGeneration.fetch_add(1);
+    if(!Native->InputWorkerGeneration||Native->InputWorkerGeneration==MAX_uint64)return false;
+    Native->InputSessionCommands=std::make_shared<Speed::Input::V2::FInputSessionCommands>();
+    OriginalDriverStorage=std::move(Native);OriginalDriverRoute=Route;return true;
+}
+
 ASpeedPhysicsSimulation::ASpeedPhysicsSimulation()
 {
     bReplicates = true;
@@ -248,10 +260,10 @@ ASpeedPhysicsSimulation::ASpeedPhysicsSimulation()
 	PrimaryActorTick.bTickEvenWhenPaused = true;
 	PrimaryActorTick.TickGroup = TG_PrePhysics;
 	EngineFPS = Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize);
-	RealDeltaTime = 1.0f / static_cast<float>(EngineFPS);
-	InputWorkerGeneration = NextInputWorkerGeneration.fetch_add(1);
-	check(InputWorkerGeneration && InputWorkerGeneration != MAX_uint64);
-	InputSessionCommands = std::make_shared<Speed::Input::V2::FInputSessionCommands>();
+	RealDeltaTimeDriverStorage() = 1.0f / static_cast<float>(EngineFPS);
+	InputWorkerGenerationDriverStorage() = NextInputWorkerGeneration.fetch_add(1);
+	check(InputWorkerGenerationDriverStorage() && InputWorkerGenerationDriverStorage() != MAX_uint64);
+	InputSessionCommandsDriverStorage() = std::make_shared<Speed::Input::V2::FInputSessionCommands>();
 }
 
 void ASpeedPhysicsSimulation::BeginPlay()
@@ -259,43 +271,43 @@ void ASpeedPhysicsSimulation::BeginPlay()
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) { AActor::BeginPlay(); return; }
 	Super::BeginPlay();
 	// Fixed before the worker starts; diagnostics never change the canonical payload.
-	bPublishPresentation = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
-	bPublishCompletedWorldInput = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishCompletedWorldInput"));
+	bPublishPresentationDriverStorage() = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishPresentation"));
+	bPublishCompletedWorldInputDriverStorage() = FParse::Param(FCommandLine::Get(), TEXT("SpeedPublishCompletedWorldInput"));
 	RefreshExecutionMode();
 }
 
 bool ASpeedPhysicsSimulation::ReadPresentationPose(const uint64 StableId, FSimulationPoseConsumption& Out)
 {
 	check(IsInGameThread());
-	if (!bPublishPresentation) { Out = FSimulationPoseConsumption(); return false; }
-	return PresentationLatch.ReadBody(GFrameCounter, SnapshotBuffer, StableId, Out);
+	if (!bPublishPresentationDriverStorage()) { Out = FSimulationPoseConsumption(); return false; }
+	return PresentationLatchDriverStorage().ReadBody(GFrameCounter, SnapshotBufferDriverStorage(), StableId, Out);
 }
 
 bool ASpeedPhysicsSimulation::ReadCanonicalCameraSample(const uint64 NumFrame,
 	FCameraCanonicalSample& Out) const
 {
 	check(IsInGameThread());
-	return CameraSampleBuffer.ReadFrame(NumFrame, Out);
+	return CameraSampleBufferDriverStorage().ReadFrame(NumFrame, Out);
 }
 
 bool ASpeedPhysicsSimulation::ReadPresentationOutput(const uint64 StableId, const uint32 Channel,
 	FSimulationPresentationOutput& Out)
 {
 	check(IsInGameThread());
-	if (!bPublishPresentation) { Out = FSimulationPresentationOutput(); return false; }
-	return PresentationLatch.ReadOutput(GFrameCounter, SnapshotBuffer, StableId, Channel, Out);
+	if (!bPublishPresentationDriverStorage()) { Out = FSimulationPresentationOutput(); return false; }
+	return PresentationLatchDriverStorage().ReadOutput(GFrameCounter, SnapshotBufferDriverStorage(), StableId, Channel, Out);
 }
 
 bool ASpeedPhysicsSimulation::RegisterPresentationProducer(
 	TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe> Producer)
 {
 	check(IsInGameThread());
-	FScopeLock Lock(&PresentationProducerMutex);
-	if (bPresentationBindingClosed || !Producer->OwnerStableId() || !Producer->Channel() || PresentationProducers.Num() >= 64 ||
+	FScopeLock Lock(&PresentationProducerMutexDriverStorage());
+	if (bPresentationBindingClosedDriverStorage() || !Producer->OwnerStableId() || !Producer->Channel() || PresentationProducersDriverStorage().Num() >= 64 ||
 		(Producer->IsCameraPresentation() && !AllowsCameraPresentation())) return false;
-	for (const auto& Existing : PresentationProducers)
+	for (const auto& Existing : PresentationProducersDriverStorage())
 		if (Existing->OwnerStableId() == Producer->OwnerStableId() && Existing->Channel() == Producer->Channel()) return false;
-	PresentationProducers.Add(Producer);
+	PresentationProducersDriverStorage().Add(Producer);
 	return true;
 }
 
@@ -303,8 +315,8 @@ void ASpeedPhysicsSimulation::UnregisterPresentationProducer(
 	const TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>& Producer)
 {
 	check(IsInGameThread());
-	FScopeLock Lock(&PresentationProducerMutex);
-	PresentationProducers.Remove(Producer);
+	FScopeLock Lock(&PresentationProducerMutexDriverStorage());
+	PresentationProducersDriverStorage().Remove(Producer);
 }
 
 bool ASpeedPhysicsSimulation::UnbindPresentationAtFrameBoundary(
@@ -318,15 +330,15 @@ bool ASpeedPhysicsSimulation::UnbindPresentationAtFrameBoundary(
 	const ESimulationQuiescence Boundary = bOwnedLane ? TrySuspendOwnedBoundaryService() : TryPauseOwnedSimulation();
 	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PresentationUnbindingPauseUnacknowledged] Removal rejected; simulation remains pause-requested."));
+		SPEED_NATIVE_LOG(LogTemp, Warning, TEXT("[PresentationUnbindingPauseUnacknowledged] Removal rejected; simulation remains pause-requested."));
 		return false;
 	}
 	const bool bSuspensionLease = bOwnedLane && Boundary == ESimulationQuiescence::BoundaryAcknowledged;
 	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused) ResumeOwnedSimulation(); };
-	FScopeLock Lock(&PresentationProducerMutex);
-	const int32 Index = PresentationProducers.IndexOfByKey(Producer);
+	FScopeLock Lock(&PresentationProducerMutexDriverStorage());
+	const int32 Index = PresentationProducersDriverStorage().IndexOfByKey(Producer);
 	ReleaseAtBoundary();
-	if (Index != INDEX_NONE) PresentationProducers.RemoveAt(Index);
+	if (Index != INDEX_NONE) PresentationProducersDriverStorage().RemoveAt(Index);
 	return true;
 }
 
@@ -354,29 +366,29 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedPhysicsSi
         if(FParse::Param(FCommandLine::Get(),TEXT("ReplayDeliveryProbe")))
         {
             const FString File=FPaths::ProjectSavedDir()/TEXT("ReplayBoundaryDiagnostics.txt");
-            const FString Row=FString::Printf(TEXT("Refuse line=%d closed=%d mode=%d terminal=%d subsystem=%d collision=%d startup=%d worker=%d paused=%d frame=%llu boundary=%d owner=%llu target=%llu\n"),Line,bPresentationBindingClosed?1:0,(int32)GetActiveExecutionMode(),bOwnedWorkerTerminal.Load()?1:0,SpeedWorldSubsystem?1:0,(SpeedWorldSubsystem&&SpeedWorldSubsystem->GetStaticCollisionWorld())?1:0,HasReplayStartupHoldOnGameThread(this)?1:0,SimulationWorker?1:0,IsOwnedSimulationPaused()?1:0,(unsigned long long)CanonicalNumFrame,ProbeBoundary,(unsigned long long)ProbeOwner,(unsigned long long)ProbeTarget);
+            const FString Row=FString::Printf(TEXT("Refuse line=%d closed=%d mode=%d terminal=%d subsystem=%d collision=%d startup=%d worker=%d paused=%d frame=%llu boundary=%d owner=%llu target=%llu\n"),Line,bPresentationBindingClosedDriverStorage()?1:0,(int32)GetActiveExecutionMode(),bOwnedWorkerTerminalDriverStorage().Load()?1:0,SpeedWorldSubsystemDriverStorage()?1:0,(SpeedWorldSubsystemDriverStorage()&&SpeedWorldSubsystemDriverStorage()->GetStaticCollisionWorld())?1:0,HasReplayStartupHoldOnGameThread(this)?1:0,SimulationWorkerDriverStorage()?1:0,IsOwnedSimulationPaused()?1:0,(unsigned long long)CanonicalNumFrameDriverStorage(),ProbeBoundary,(unsigned long long)ProbeOwner,(unsigned long long)ProbeTarget);
             if(IFileManager::Get().FileSize(*File)<65536)FFileHelper::SaveStringToFile(Row,*File,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,&IFileManager::Get(),FILEWRITE_Append);
         }
         return nullptr;
     };
-	if (bPresentationBindingClosed || GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback ||
-		bOwnedWorkerTerminal.Load() || !EnsureSimulationWorldReady()) return Refuse(__LINE__);
+	if (bPresentationBindingClosedDriverStorage() || GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback ||
+		bOwnedWorkerTerminalDriverStorage().Load() || !EnsureSimulationWorldReady()) return Refuse(__LINE__);
 	const bool bWasPaused = IsOwnedSimulationPaused();
 	const bool bOwnedLane = GetActiveExecutionMode() == ESimulationExecutionMode::IAmSpeedThread;
 	const ESimulationQuiescence Boundary = bOwnedLane ? TrySuspendOwnedBoundaryService() : TryPauseOwnedSimulation();
     ProbeBoundary=(int32)Boundary;
 	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PresentationBindingPauseUnacknowledged] Registration rejected; simulation remains pause-requested."));
+		SPEED_NATIVE_LOG(LogTemp, Warning, TEXT("[PresentationBindingPauseUnacknowledged] Registration rejected; simulation remains pause-requested."));
 		return Refuse(__LINE__);
 	}
 	const bool bSuspensionLease = bOwnedLane && Boundary == ESimulationQuiescence::BoundaryAcknowledged;
 	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused) ResumeOwnedSimulation(); };
 	InitializeCanonicalFrame(0);
 	FSimulationPresentationBinding Binding;
-	Binding.OwnerStableId = SpeedWorldSubsystem->GetSimulationStableId(OwnerComponent);
-	Binding.TargetStableId = TargetComponent ? SpeedWorldSubsystem->GetSimulationStableId(*TargetComponent) : 0;
-	Binding.FirstFrame = CanonicalNumFrame;
+	Binding.OwnerStableId = SpeedWorldSubsystemDriverStorage()->GetSimulationStableId(OwnerComponent);
+	Binding.TargetStableId = TargetComponent ? SpeedWorldSubsystemDriverStorage()->GetSimulationStableId(*TargetComponent) : 0;
+	Binding.FirstFrame = CanonicalNumFrameDriverStorage();
     ProbeOwner=Binding.OwnerStableId;ProbeTarget=Binding.TargetStableId;
 	if (!Binding.OwnerStableId || (TargetComponent && !Binding.TargetStableId) || Binding.OwnerStableId == Binding.TargetStableId)
 		return Refuse(__LINE__);
@@ -387,19 +399,19 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedPhysicsSi
 	if (AdapterCommit && !AdapterCommit->Prepare(Producer)) return Refuse(__LINE__);
 	if (Previous)
 	{
-		FScopeLock Lock(&PresentationProducerMutex);
-		const int32 Index = PresentationProducers.IndexOfByKey(Previous.ToSharedRef());
+		FScopeLock Lock(&PresentationProducerMutexDriverStorage());
+		const int32 Index = PresentationProducersDriverStorage().IndexOfByKey(Previous.ToSharedRef());
 		if (Index == INDEX_NONE || Previous->OwnerStableId() != Producer->OwnerStableId() ||
 			Previous->Channel() != Producer->Channel()) return Refuse(__LINE__);
 		// The acknowledged boundary makes replacement atomic with respect to Produce.
-		PresentationProducers[Index] = Producer.ToSharedRef();
+		PresentationProducersDriverStorage()[Index] = Producer.ToSharedRef();
 	}
 	else if (!RegisterPresentationProducer(Producer.ToSharedRef())) return Refuse(__LINE__);
 	// Successful binding opts into its body/output sidecars. The owned worker
 	// is pause-acknowledged above and resumes only after this boundary returns.
 	// Failed factories/registration must leave publication policy unchanged.
 	if (AdapterCommit) AdapterCommit->Finalize(Producer);
-	bPublishPresentation = true;
+	bPublishPresentationDriverStorage() = true;
 	return Producer;
 }
 
@@ -407,14 +419,14 @@ bool ASpeedPhysicsSimulation::ReadCanonicalCameraSamples(const uint64 FirstFrame
 	const uint64 LastFrame, TArray<FCameraCanonicalSample>& Out) const
 {
 	check(IsInGameThread());
-	return CameraSampleBuffer.ReadRange(FirstFrame, LastFrame, Out);
+	return CameraSampleBufferDriverStorage().ReadRange(FirstFrame, LastFrame, Out);
 }
 
 uint64 ASpeedPhysicsSimulation::TryAcquireReplayStartupHoldBeforeBeginPlay()
 {
     check(IsInGameThread());
-    if(!::IsValid(this)||IsTemplate()||HasActorBegunPlay()||SimulationWorker||CanonicalNumFrame!=0||
-        bOwnedWorkerTerminal.Load()||bInputOwnerRetired.Load()||!Speed::CanonicalFrameDriver::IsEnabled()||
+    if(!::IsValid(this)||IsTemplate()||HasActorBegunPlay()||SimulationWorkerDriverStorage()||CanonicalNumFrameDriverStorage()!=0||
+        bOwnedWorkerTerminalDriverStorage().Load()||bInputOwnerRetiredDriverStorage().Load()||!Speed::CanonicalFrameDriver::IsEnabled()||
         Speed::CanonicalFrameDriver::GetExecutionMode()!=ESimulationExecutionMode::IAmSpeedThread)return 0;
     for(auto It=ReplayStartupHolds.CreateIterator();It;++It)if(!It.Key().IsValid())It.RemoveCurrent();
     const auto Key=ReplayStartupKeyFor(this);
@@ -436,17 +448,17 @@ bool ASpeedPhysicsSimulation::IsReplayStartupHeld(uint64 Token)const
 void ASpeedPhysicsSimulation::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     if(!ReplayStartupHolds.IsEmpty())ReplayStartupHolds.Remove(ReplayStartupKeyFor(this));
-	bPresentationBindingClosed = true;
+	bPresentationBindingClosedDriverStorage() = true;
 #if WITH_DEV_AUTOMATION_TESTS
 	Speed::OwnedFrameAudit::TryExportForHostOnGameThread(this);
 #endif
 	StopOwnedWorker();
     Speed::ReplayLifecycle::RetireHost(*this);
 	{
-		FScopeLock Lock(&PresentationProducerMutex);
-		PresentationProducers.Reset();
+		FScopeLock Lock(&PresentationProducerMutexDriverStorage());
+		PresentationProducersDriverStorage().Reset();
 	}
-	if (GetActiveExecutionMode() != ESimulationExecutionMode::UnrealAsyncCallback) PresentationRetiredAfterJoin->Store(true);
+	if (GetActiveExecutionMode() != ESimulationExecutionMode::UnrealAsyncCallback) PresentationRetiredAfterJoinDriverStorage()->Store(true);
 	bAsyncPhysicsTickEnabled = false;
 	Super::EndPlay(EndPlayReason);
 }
@@ -459,12 +471,12 @@ void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
 #endif
 	RefreshExecutionMode();
     if(HasReplayStartupHoldOnGameThread(this))return;
-	if (HostTransitionDelayTicks > 0)
+	if (HostTransitionDelayTicksDriverStorage() > 0)
 	{
-		--HostTransitionDelayTicks;
+		--HostTransitionDelayTicksDriverStorage();
 		return;
 	}
-	const bool bExecutionPaused = bOwnedSimulationPaused.Load() ||
+	const bool bExecutionPaused = bOwnedSimulationPausedDriverStorage().Load() ||
 		Speed::CanonicalFrameDriver::IsOwnedThreadPaused();
 
 	switch (GetActiveExecutionMode())
@@ -473,14 +485,14 @@ void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
 		return;
 	case ESimulationExecutionMode::GameThread:
 	{
-		if (bExecutionPaused || bOwnedWorkerTerminal.Load())
+		if (bExecutionPaused || bOwnedWorkerTerminalDriverStorage().Load())
 		{
 			return;
 		}
-		GameThreadAccumulatorSeconds += FMath::Max(0.0f, DeltaSeconds);
+		GameThreadAccumulatorSecondsDriverStorage() += FMath::Max(0.0f, DeltaSeconds);
 		const double FrameIntervalSeconds =
 			static_cast<double>(FCanonicalFrameContext::CanonicalPhysicalDeltaTime);
-		while (GameThreadAccumulatorSeconds + UE_DOUBLE_SMALL_NUMBER >= FrameIntervalSeconds)
+		while (GameThreadAccumulatorSecondsDriverStorage() + UE_DOUBLE_SMALL_NUMBER >= FrameIntervalSeconds)
 		{
 			const ESimulationWorkerResult Result = DriveSimulation(
 				FCanonicalFrameContext::CanonicalPhysicalDeltaTime,
@@ -490,20 +502,20 @@ void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
 			{
 				if (Result == ESimulationWorkerResult::Failed)
 				{
-					PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-					bOwnedWorkerTerminal.Store(true);
-					bOwnedSimulationPaused.Store(true);
+					PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+					bOwnedWorkerTerminalDriverStorage().Store(true);
+					bOwnedSimulationPausedDriverStorage().Store(true);
 				}
-				GameThreadAccumulatorSeconds = 0.0;
+				GameThreadAccumulatorSecondsDriverStorage() = 0.0;
 				return;
 			}
-			GameThreadAccumulatorSeconds -= FrameIntervalSeconds;
+			GameThreadAccumulatorSecondsDriverStorage() -= FrameIntervalSeconds;
 			if (Result == ESimulationWorkerResult::Idle)
 			{
 				// Readiness delay is wall-clock time, not simulation time. Keep at
 				// most one frame of debt and retry on the next game-thread tick.
-				GameThreadAccumulatorSeconds = FMath::Min(
-					GameThreadAccumulatorSeconds, FrameIntervalSeconds);
+				GameThreadAccumulatorSecondsDriverStorage() = FMath::Min(
+					GameThreadAccumulatorSecondsDriverStorage(), FrameIntervalSeconds);
 				return;
 			}
 		}
@@ -511,15 +523,15 @@ void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
 	}
 	case ESimulationExecutionMode::IAmSpeedThread:
 		StartOwnedWorkerIfReady();
-		if (SimulationWorker)
+		if (SimulationWorkerDriverStorage())
 		{
-			if (bExecutionPaused && !SimulationWorker->IsPaused())
+			if (bExecutionPaused && !SimulationWorkerDriverStorage()->IsPaused())
 			{
-				SimulationWorker->Pause();
+				SimulationWorkerDriverStorage()->Pause();
 			}
-			else if (!bExecutionPaused && SimulationWorker->IsPaused())
+			else if (!bExecutionPaused && SimulationWorkerDriverStorage()->IsPaused())
 			{
-				SimulationWorker->Resume();
+				SimulationWorkerDriverStorage()->Resume();
 			}
 		}
 		return;
@@ -535,7 +547,7 @@ void ASpeedPhysicsSimulation::RefreshExecutionMode()
 		Speed::CanonicalFrameDriver::IsEnabled()
 		? Speed::CanonicalFrameDriver::GetExecutionMode()
 		: ESimulationExecutionMode::UnrealAsyncCallback;
-	if (!bExecutionModeInitialized || DesiredMode != GetActiveExecutionMode())
+	if (!bExecutionModeInitializedDriverStorage() || DesiredMode != GetActiveExecutionMode())
 	{
 		TransitionExecutionMode(DesiredMode);
 	}
@@ -544,7 +556,7 @@ void ASpeedPhysicsSimulation::RefreshExecutionMode()
 void ASpeedPhysicsSimulation::TransitionExecutionMode(
 	const ESimulationExecutionMode NewMode)
 {
-	if (bInputOwnerRetired.Load()) return;
+	if (bInputOwnerRetiredDriverStorage().Load()) return;
     // A manual unsupported mode change invalidates startup admission; the
     // recording owner must refuse rather than override the requested mode.
     if(NewMode!=ESimulationExecutionMode::IAmSpeedThread&&!ReplayStartupHolds.IsEmpty())ReplayStartupHolds.Remove(ReplayStartupKeyFor(this));
@@ -552,11 +564,11 @@ void ASpeedPhysicsSimulation::TransitionExecutionMode(
     Speed::ReplayLifecycle::RetireHost(*this);
 	bAsyncPhysicsTickEnabled = false;
 	ResetCanonicalFrame();
-	GameThreadAccumulatorSeconds = 0.0;
-	bOwnedWorkerTerminal.Store(false);
-	ActiveExecutionModeValue.Store(static_cast<uint8>(NewMode));
-	bExecutionModeInitialized = true;
-	HostTransitionDelayTicks = NewMode == ESimulationExecutionMode::UnrealAsyncCallback ? 0 : 1;
+	GameThreadAccumulatorSecondsDriverStorage() = 0.0;
+	bOwnedWorkerTerminalDriverStorage().Store(false);
+	ActiveExecutionModeValueDriverStorage().Store(static_cast<uint8>(NewMode));
+	bExecutionModeInitializedDriverStorage() = true;
+	HostTransitionDelayTicksDriverStorage() = NewMode == ESimulationExecutionMode::UnrealAsyncCallback ? 0 : 1;
 	if (NewMode == ESimulationExecutionMode::UnrealAsyncCallback)
 	{
 		bAsyncPhysicsTickEnabled = true;
@@ -567,7 +579,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 {
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
     if(HasReplayStartupHoldOnGameThread(this))return;
-	if (SimulationWorker || bOwnedWorkerTerminal.Load() ||
+	if (SimulationWorkerDriverStorage() || bOwnedWorkerTerminalDriverStorage().Load() ||
 		!EnsureSimulationWorldReady())
 	{
 		return;
@@ -581,7 +593,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 		IsA<ARealTimeSimulation>() && CVarSimulationPerformanceAudit.GetValueOnGameThread() != 0,
 		FCommandLine::Get());
 #endif
-	SimulationWorker = MakeUnique<FSimulationWorker>(
+	SimulationWorkerDriverStorage() = MakeUnique<FSimulationWorker>(
 		[this
 #if WITH_DEV_AUTOMATION_TESTS
 		, OwnedAudit
@@ -601,7 +613,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
             }
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
-			Speed::OwnedFrameAudit::BeginWork(OwnedAudit, CanonicalNumFrame);
+			Speed::OwnedFrameAudit::BeginWork(OwnedAudit, CanonicalNumFrameDriverStorage());
 #endif
 			const ESimulationWorkerResult Result = DriveOwnedWorkerPulse(
 				FCanonicalFrameContext::CanonicalPhysicalDeltaTime,
@@ -612,8 +624,8 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 			if (Result == ESimulationWorkerResult::Complete ||
 				Result == ESimulationWorkerResult::Failed)
 			{
-				PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-				bOwnedWorkerTerminal.Store(true);
+				PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+				bOwnedWorkerTerminalDriverStorage().Store(true);
 			}
 			return Result;
 		},
@@ -640,7 +652,7 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 #if WITH_DEV_AUTOMATION_TESTS
 			if (OwnedAudit) Speed::OwnedFrameAudit::OwnerBoundary(OwnedAudit,
 				CVarSimulationPerformanceAudit.GetValueOnAnyThread() != 0);
-			Speed::OwnedFrameAudit::BeginService(OwnedAudit, bPauseRequested, CanonicalNumFrame);
+			Speed::OwnedFrameAudit::BeginService(OwnedAudit, bPauseRequested, CanonicalNumFrameDriverStorage());
 #endif
 			const auto Result = ServiceInputSessionBoundary(bPauseRequested);
 #if WITH_DEV_AUTOMATION_TESTS
@@ -665,87 +677,87 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 #endif
 			CloseInputSessionsOnWorker();
 		});
-	if (!SimulationWorker->Start(bOwnedSimulationPaused.Load() || Speed::CanonicalFrameDriver::IsOwnedThreadPaused()))
+	if (!SimulationWorkerDriverStorage()->Start(bOwnedSimulationPausedDriverStorage().Load() || Speed::CanonicalFrameDriver::IsOwnedThreadPaused()))
 	{
-		SimulationWorker.Reset();
-		PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-		bOwnedWorkerTerminal.Store(true);
-		UE_LOG(LogTemp, Error, TEXT("[SimulationWorkerStartFailed]"));
+		SimulationWorkerDriverStorage().Reset();
+		PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+		bOwnedWorkerTerminalDriverStorage().Store(true);
+		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[SimulationWorkerStartFailed]"));
 	}
 }
 
 void ASpeedPhysicsSimulation::StopOwnedWorker()
 {
-	if (SimulationWorker)
+	if (SimulationWorkerDriverStorage())
 	{
-		SimulationWorker->StopAndJoin();
-		SimulationWorker.Reset();
+		SimulationWorkerDriverStorage()->StopAndJoin();
+		SimulationWorkerDriverStorage().Reset();
 	}
 	// After join, no in-flight frame can republish an endpoint.
-	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+	PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
 }
 
 bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
 {
 	check(IsInGameThread());
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
-		|| bCanonicalPublicationTerminal.Load()) return false;
+		|| bCanonicalPublicationTerminalDriverStorage().Load()) return false;
 	const auto Boundary = TryPauseOwnedSimulation();
 	if (Boundary != ESimulationQuiescence::BoundaryAcknowledged
 		&& Boundary != ESimulationQuiescence::AlreadyStopped) return false;
 	StopOwnedWorker(); // CloseInputSessionsOnWorker retires producers on their lane.
-	FScopeLock Lock(&InputSessionAdmissionMutex);
-	if (InputSessionRegistry
-		|| (bInputSessionAdmissionRequested.Load() && !bInputOwnersClosedOnWorker.Load())
-		|| !PendingInputJournals.empty() || !PendingInputObservations.empty()
-		|| !InputObservations.empty() || bCanonicalPublicationTerminal.Load()) return false;
+	FScopeLock Lock(&InputSessionAdmissionMutexDriverStorage());
+	if (InputSessionRegistryDriverStorage()
+		|| (bInputSessionAdmissionRequestedDriverStorage().Load() && !bInputOwnersClosedOnWorkerDriverStorage().Load())
+		|| !PendingInputJournalsDriverStorage().empty() || !PendingInputObservationsDriverStorage().empty()
+		|| !InputObservationsDriverStorage().empty() || bCanonicalPublicationTerminalDriverStorage().Load()) return false;
 	try
 	{
 		auto NextCommands = std::make_shared<Speed::Input::V2::FInputSessionCommands>();
 		const auto Generation = NextInputWorkerGeneration.fetch_add(1);
 		if (!Generation || Generation == MAX_uint64) return false;
-		InputSessionCommands = std::move(NextCommands);
-		InputWorkerGeneration = Generation; NextInputCommandId = 1;
+		InputSessionCommandsDriverStorage() = std::move(NextCommands);
+		InputWorkerGenerationDriverStorage() = Generation; NextInputCommandIdDriverStorage() = 1;
 	}
 	catch (...) { return false; }
-	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-	PublishedInputRegistry.store(std::shared_ptr<const Speed::Input::V2::FInputRegistryView>{}, std::memory_order_seq_cst);
-	PublishedInputFrame.store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
-	bInputSessionAdmissionRequested.Store(false); bInputOwnersClosedOnWorker.Store(false);
-	bInputNeutralizedDuringPause = false; NeutralizedInputRegistryVersion = MAX_uint64;
-	bInputOwnerRetired.Store(false); bOwnedWorkerTerminal.Store(false);
-	CanonicalReadyDelayPulsesObserved = 0;
+	PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+	PublishedInputRegistryDriverStorage().store(std::shared_ptr<const Speed::Input::V2::FInputRegistryView>{}, std::memory_order_seq_cst);
+	PublishedInputFrameDriverStorage().store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
+	bInputSessionAdmissionRequestedDriverStorage().Store(false); bInputOwnersClosedOnWorkerDriverStorage().Store(false);
+	bInputNeutralizedDuringPauseDriverStorage() = false; NeutralizedInputRegistryVersionDriverStorage() = MAX_uint64;
+	bInputOwnerRetiredDriverStorage().Store(false); bOwnedWorkerTerminalDriverStorage().Store(false);
+	CanonicalReadyDelayPulsesObservedDriverStorage() = 0;
 	return true; // Remains paused until the new scenario is sealed.
 }
 
 void ASpeedPhysicsSimulation::RestartControlledRun()
 {
 	check(IsInGameThread());
-	if (bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()
-		|| bCanonicalPublicationTerminal.Load() || !IsOwnedSimulationPaused())
+	if (bInputOwnerRetiredDriverStorage().Load() || bOwnedWorkerTerminalDriverStorage().Load()
+		|| bCanonicalPublicationTerminalDriverStorage().Load() || !IsOwnedSimulationPaused())
 	{
-		UE_LOG(LogTemp, Error, TEXT("[ControlledRunNotPrepared] Prepare the new generation before admitting scenario inputs."));
+		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[ControlledRunNotPrepared] Prepare the new generation before admitting scenario inputs."));
 		return;
 	}
 	// Never join here: replacement descriptors already belong to this generation.
-	CanonicalReadyDelayPulsesObserved = 0;
+	CanonicalReadyDelayPulsesObservedDriverStorage() = 0;
 	ResumeOwnedSimulation();
 }
 
 ESimulationQuiescence ASpeedPhysicsSimulation::TryPauseOwnedSimulation(const uint32 TimeoutMilliseconds)
 {
 	check(IsInGameThread());
-	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-	bOwnedSimulationPaused.Store(true);
-	if (!SimulationWorker && HasActorBegunPlay()
+	PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+	bOwnedSimulationPausedDriverStorage().Store(true);
+	if (!SimulationWorkerDriverStorage() && HasActorBegunPlay()
 		&& GetActiveExecutionMode() == ESimulationExecutionMode::UnrealAsyncCallback)
 		return ESimulationQuiescence::Failed; // No owned boundary for legacy async callbacks.
-	if (!SimulationWorker || !SimulationWorker->IsRunning())
+	if (!SimulationWorkerDriverStorage() || !SimulationWorkerDriverStorage()->IsRunning())
 	{
 		OnOwnedSimulationPaused();
 		return ESimulationQuiescence::AlreadyStopped;
 	}
-	if (!SimulationWorker->TryPause(TimeoutMilliseconds)) return ESimulationQuiescence::TimedOut;
+	if (!SimulationWorkerDriverStorage()->TryPause(TimeoutMilliseconds)) return ESimulationQuiescence::TimedOut;
 	OnOwnedSimulationPaused();
 	return ESimulationQuiescence::BoundaryAcknowledged;
 }
@@ -753,50 +765,50 @@ ESimulationQuiescence ASpeedPhysicsSimulation::TryPauseOwnedSimulation(const uin
 ESimulationQuiescence ASpeedPhysicsSimulation::TrySuspendOwnedBoundaryService(const uint32 TimeoutMilliseconds)
 {
 	check(IsInGameThread());
-	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+	PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread)
 		return ESimulationQuiescence::Failed;
-	if (OwnedBoundarySuspendDepth)
+	if (OwnedBoundarySuspendDepthDriverStorage())
 	{
 		// Joining while a recreation lease is held supersedes the parked
 		// boundary. The GT may finish teardown after the worker is gone; the
 		// outstanding lease still has to be released exactly once.
-		if (!SimulationWorker || !SimulationWorker->IsRunning())
+		if (!SimulationWorkerDriverStorage() || !SimulationWorkerDriverStorage()->IsRunning())
 			return ESimulationQuiescence::AlreadyStopped;
-		if (!SimulationWorker->IsBoundaryServiceSuspended())
+		if (!SimulationWorkerDriverStorage()->IsBoundaryServiceSuspended())
 			return ESimulationQuiescence::Failed;
-		++OwnedBoundarySuspendDepth;
+		++OwnedBoundarySuspendDepthDriverStorage();
 		return ESimulationQuiescence::BoundaryAcknowledged;
 	}
-	if (!SimulationWorker || !SimulationWorker->IsRunning())
+	if (!SimulationWorkerDriverStorage() || !SimulationWorkerDriverStorage()->IsRunning())
 		return ESimulationQuiescence::AlreadyStopped;
-	bOwnedSimulationPaused.Store(true);
-	if (!SimulationWorker->TrySuspendBoundaryService(TimeoutMilliseconds))
+	bOwnedSimulationPausedDriverStorage().Store(true);
+	if (!SimulationWorkerDriverStorage()->TrySuspendBoundaryService(TimeoutMilliseconds))
 		return ESimulationQuiescence::TimedOut;
-	OwnedBoundarySuspendDepth = 1;
+	OwnedBoundarySuspendDepthDriverStorage() = 1;
 	return ESimulationQuiescence::BoundaryAcknowledged;
 }
 
 void ASpeedPhysicsSimulation::ResumeOwnedBoundaryService()
 {
 	check(IsInGameThread());
-	if (!OwnedBoundarySuspendDepth) return;
-	if (--OwnedBoundarySuspendDepth == 0 && SimulationWorker)
-		SimulationWorker->ResumeBoundaryService();
+	if (!OwnedBoundarySuspendDepthDriverStorage()) return;
+	if (--OwnedBoundarySuspendDepthDriverStorage() == 0 && SimulationWorkerDriverStorage())
+		SimulationWorkerDriverStorage()->ResumeBoundaryService();
 }
 
 bool ASpeedPhysicsSimulation::IsOwnedBoundaryServiceSuspended() const
 {
-	return OwnedBoundarySuspendDepth && SimulationWorker && SimulationWorker->IsBoundaryServiceSuspended();
+	return OwnedBoundarySuspendDepthDriverStorage() && SimulationWorkerDriverStorage() && SimulationWorkerDriverStorage()->IsBoundaryServiceSuspended();
 }
 
 void ASpeedPhysicsSimulation::PauseOwnedSimulation()
 {
-	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-	bOwnedSimulationPaused.Store(true);
-	if (SimulationWorker)
+	PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+	bOwnedSimulationPausedDriverStorage().Store(true);
+	if (SimulationWorkerDriverStorage())
 	{
-		SimulationWorker->Pause();
+		SimulationWorkerDriverStorage()->Pause();
 	}
 	OnOwnedSimulationPaused();
 }
@@ -805,20 +817,20 @@ bool ASpeedPhysicsSimulation::ReadInputFirstFrameAtPausedBoundary(uint64& OutFra
 {
 	check(IsInGameThread());
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread
-		|| bInputOwnerRetired.Load() || !bOwnedSimulationPaused.Load() || bCanonicalPublicationTerminal.Load()
-		|| (SimulationWorker && SimulationWorker->IsRunning() && !SimulationWorker->IsPaused()))
+		|| bInputOwnerRetiredDriverStorage().Load() || !bOwnedSimulationPausedDriverStorage().Load() || bCanonicalPublicationTerminalDriverStorage().Load()
+		|| (SimulationWorkerDriverStorage() && SimulationWorkerDriverStorage()->IsRunning() && !SimulationWorkerDriverStorage()->IsPaused()))
 	{
 		// Current atomic observations after the existing rejection, not a new ACK/readiness predicate.
 		RecordPrivateInputFailure(TEXT("SpeedPhysicsSimulation.ReadFirstFramePausedBoundaryRejected"), FString::Printf(
 			TEXT("mode=%u retired=%d paused=%d publication_terminal=%d worker_present=%d worker_running=%d worker_paused=%d worker_terminal=%d driver_uid=%u generation=%llu"),
-			uint32(GetActiveExecutionMode()), int32(bInputOwnerRetired.Load()), int32(bOwnedSimulationPaused.Load()),
-			int32(bCanonicalPublicationTerminal.Load()), int32(bool(SimulationWorker)),
-			SimulationWorker ? int32(SimulationWorker->IsRunning()) : -1,
-			SimulationWorker ? int32(SimulationWorker->IsPaused()) : -1,
-			int32(bOwnedWorkerTerminal.Load()), GetUniqueID(), GetInputWorkerGeneration()));
+			uint32(GetActiveExecutionMode()), int32(bInputOwnerRetiredDriverStorage().Load()), int32(bOwnedSimulationPausedDriverStorage().Load()),
+			int32(bCanonicalPublicationTerminalDriverStorage().Load()), int32(bool(SimulationWorkerDriverStorage())),
+			SimulationWorkerDriverStorage() ? int32(SimulationWorkerDriverStorage()->IsRunning()) : -1,
+			SimulationWorkerDriverStorage() ? int32(SimulationWorkerDriverStorage()->IsPaused()) : -1,
+			int32(bOwnedWorkerTerminalDriverStorage().Load()), GetUniqueID(), GetInputWorkerGeneration()));
 		return false;
 	}
-	InitializeCanonicalFrame(0.0f); OutFrame = CanonicalNumFrame; return true;
+	InitializeCanonicalFrame(0.0f); OutFrame = CanonicalNumFrameDriverStorage(); return true;
 }
 
 bool ASpeedPhysicsSimulation::JoinOwnedSimulationForInputTeardown()
@@ -826,22 +838,22 @@ bool ASpeedPhysicsSimulation::JoinOwnedSimulationForInputTeardown()
 	check(IsInGameThread());
 	// An async callback (or absent driver) cannot grant an owned-thread fence.
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread) return false;
-	bInputOwnerRetired.Store(true);
-	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-	bOwnedSimulationPaused.Store(true); bOwnedWorkerTerminal.Store(true);
+	bInputOwnerRetiredDriverStorage().Store(true);
+	PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+	bOwnedSimulationPausedDriverStorage().Store(true); bOwnedWorkerTerminalDriverStorage().Store(true);
 	StopOwnedWorker();
-	if (SimulationWorker) return false;
-	if (!bInputOwnersClosedOnWorker.Load())
+	if (SimulationWorkerDriverStorage()) return false;
+	if (!bInputOwnersClosedOnWorkerDriverStorage().Load())
 	{
-		FScopeLock Lock(&InputSessionAdmissionMutex);
+		FScopeLock Lock(&InputSessionAdmissionMutexDriverStorage());
 		// No published registry plus no surviving worker-owned registry means
 		// only inert, unserviced descriptors may remain. Do not manufacture a
 		// worker-owner retirement receipt for a registry that actually ran.
-		if (InputSessionRegistry || ReadInputRegistryView() || !InputObservations.empty()
-			|| !InputSessionCommands->CancelUnprocessedAfterJoin()) return false;
-		for (const auto& Observation : PendingInputObservations) Observation.second->Deactivate();
-		PendingInputObservations.clear(); PendingInputJournals.clear();
-		bInputOwnersClosedOnWorker.Store(true); // Joined proof: zero owners were constructed.
+		if (InputSessionRegistryDriverStorage() || ReadInputRegistryView() || !InputObservationsDriverStorage().empty()
+			|| !InputSessionCommandsDriverStorage()->CancelUnprocessedAfterJoin()) return false;
+		for (const auto& Observation : PendingInputObservationsDriverStorage()) Observation.second->Deactivate();
+		PendingInputObservationsDriverStorage().clear(); PendingInputJournalsDriverStorage().clear();
+		bInputOwnersClosedOnWorkerDriverStorage().Store(true); // Joined proof: zero owners were constructed.
 	}
 	return true;
 }
@@ -851,7 +863,7 @@ void ASpeedPhysicsSimulation::ResumeOwnedSimulation()
     // Native input/gameplay callers are GT owners. Refuse a foreign-thread
     // resume before consulting GT lifecycle ownership or changing pause state.
     if(!IsInGameThread())return;
-	if (bInputOwnerRetired.Load()) return;
+	if (bInputOwnerRetiredDriverStorage().Load()) return;
     // A resumed device does not prove the other owners (bots included) have
     // acknowledged Resume. Keep servicing boundaries, but do not step a
     // partially paused registry: PrepareFrame correctly rejects that state.
@@ -865,20 +877,20 @@ void ASpeedPhysicsSimulation::ResumeOwnedSimulation()
 
 	// A timed-out structural request remains fail-closed until a later caller
 	// claims its ACK or joins the worker. Do not publish a false resumed state.
-	if (SimulationWorker && SimulationWorker->IsBoundaryServiceSuspendRequested()) return;
+	if (SimulationWorkerDriverStorage() && SimulationWorkerDriverStorage()->IsBoundaryServiceSuspendRequested()) return;
     if (Speed::ReplayLifecycle::DeferResume(this)) return;
-	bOwnedSimulationPaused.Store(false);
+	bOwnedSimulationPausedDriverStorage().Store(false);
 	OnOwnedSimulationResumed();
-	if (SimulationWorker &&
+	if (SimulationWorkerDriverStorage() &&
 		!Speed::CanonicalFrameDriver::IsOwnedThreadPaused())
 	{
-		SimulationWorker->Resume();
+		SimulationWorkerDriverStorage()->Resume();
 	}
 }
 
 ESimulationExecutionMode ASpeedPhysicsSimulation::GetActiveExecutionMode() const
 {
-	return static_cast<ESimulationExecutionMode>(ActiveExecutionModeValue.Load());
+	return static_cast<ESimulationExecutionMode>(ActiveExecutionModeValueDriverStorage().Load());
 }
 
 bool ASpeedPhysicsSimulation::IsOwnedWorkerExecutionMode() const
@@ -888,18 +900,18 @@ bool ASpeedPhysicsSimulation::IsOwnedWorkerExecutionMode() const
 
 float ASpeedPhysicsSimulation::GetCanonicalPulseSimTime() const
 {
-	return static_cast<float>(CanonicalNumFrame) *
+	return static_cast<float>(CanonicalNumFrameDriverStorage()) *
 		FCanonicalFrameContext::CanonicalPhysicalDeltaTime;
 }
 
 void ASpeedPhysicsSimulation::UpdateNumFrame(const float& SimTime)
 {
-	_NumFrame = Speed::SimUtils::ComputeNumFrameFromSimTime(EngineFPS, SimTime);
+	_NumFrameDriverStorage() = Speed::SimUtils::ComputeNumFrameFromSimTime(EngineFPS, SimTime);
 }
 
 unsigned int ASpeedPhysicsSimulation::NumFrame() const
 {
-    return _NumFrame;
+    return _NumFrameDriverStorage();
 }
 
 USpeedWorldSubsystem* ASpeedPhysicsSimulation::GetSpeedWorldSubsystem(UWorld* World)
@@ -915,7 +927,7 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 	{
 		return;
 	}
-	if (bOwnedSimulationPaused.Load() ||
+	if (bOwnedSimulationPausedDriverStorage().Load() ||
 		Speed::CanonicalFrameDriver::IsOwnedThreadPaused())
 	{
 		return;
@@ -923,17 +935,17 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_IAmSpeed_AsyncPhysicsTickActor);
 	TRACE_CPUPROFILER_EVENT_SCOPE(IAmSpeed_AsyncPhysicsTickActor);
 	const double CallbackStartSeconds = FPlatformTime::Seconds();
-	const uint64 StepSerialAtEntry = SpeedWorldSubsystem
-		? SpeedWorldSubsystem->GetLastStepDiagnostics().Serial : 0;
+	const uint64 StepSerialAtEntry = SpeedWorldSubsystemDriverStorage()
+		? SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics().Serial : 0;
 	ON_SCOPE_EXIT
 	{
-		if (!SpeedWorldSubsystem || !ShouldMeasureCallback())
+		if (!SpeedWorldSubsystemDriverStorage() || !ShouldMeasureCallback())
 		{
 			return;
 		}
 
 		const FSpeedStepDiagnostics& Diagnostics =
-			SpeedWorldSubsystem->GetLastStepDiagnostics();
+			SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics();
 		if (Diagnostics.Serial == StepSerialAtEntry)
 		{
 			return;
@@ -950,8 +962,8 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 			CVarSimulationPerformanceAudit.GetValueOnAnyThread() != 0;
 		const bool bReportSlow = bSlow &&
 			CVarSimulationSlowFrameWarnings.GetValueOnAnyThread() != 0 &&
-			(SlowFrameReportCount == 0 ||
-				Diagnostics.Frame >= LastSlowFrameReport + 300u);
+			(SlowFrameReportCountDriverStorage() == 0 ||
+				Diagnostics.Frame >= LastSlowFrameReportDriverStorage() + 300u);
 		if (!bDetailed && !bReportSlow)
 		{
 			return;
@@ -959,8 +971,8 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 
 		if (bReportSlow)
 		{
-			++SlowFrameReportCount;
-			LastSlowFrameReport = Diagnostics.Frame;
+			++SlowFrameReportCountDriverStorage();
+			LastSlowFrameReportDriverStorage() = Diagnostics.Frame;
 		}
 		const FString Message = FString::Printf(
 			TEXT("[SpeedPhysicalFrame] Frame=%u CallbackMs=%.6f BudgetMs=%.6f StepMs=%.6f ResetMs=%.6f SweepMs=%.6f StaticAuthorityMs=%.6f StaticAuthorityMaxMs=%.6f IntegrateMs=%.6f ResolveMs=%.6f ProjectionMs=%.6f PostMs=%.6f Iterations=%d MaxIterations=%d ComponentSweeps=%d StaticQueries=%u LegacySweeps=%u AuthorityAttempts=%u ResolvedEvents=%d IterationLimit=%d Slow=%d"),
@@ -978,11 +990,11 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 			Diagnostics.bIterationLimitReached ? 1 : 0, bSlow ? 1 : 0);
 		if (bSlow)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("%s"), *Message);
+			SPEED_NATIVE_LOG(LogTemp, Warning, TEXT("%s"), *Message);
 		}
 		else
 		{
-			UE_LOG(LogTemp, Display, TEXT("%s"), *Message);
+			SPEED_NATIVE_LOG(LogTemp, Display, TEXT("%s"), *Message);
 		}
 	};
 
@@ -992,35 +1004,35 @@ void ASpeedPhysicsSimulation::AsyncPhysicsTickActor(float Dt, float SimTime)
 bool ASpeedPhysicsSimulation::EnsureSimulationWorldReady()
 {
 	if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return false;
-	if (!SpeedWorldSubsystem)
+	if (!SpeedWorldSubsystemDriverStorage())
 	{
-		SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());
+		SpeedWorldSubsystemDriverStorage() = GetSpeedWorldSubsystem(GetWorld());
 	}
-	if (!SpeedWorldSubsystem) return false;
+	if (!SpeedWorldSubsystemDriverStorage()) return false;
 	if (Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend() &&
-		!SpeedWorldSubsystem->GetStaticCollisionWorld())
+		!SpeedWorldSubsystemDriverStorage()->GetStaticCollisionWorld())
 	{
-		if (!bStaticCollisionReadinessErrorReported)
+		if (!bStaticCollisionReadinessErrorReportedDriverStorage())
 		{
-			bStaticCollisionReadinessErrorReported = true;
-			UE_LOG(LogTemp, Error,
+			bStaticCollisionReadinessErrorReportedDriverStorage() = true;
+			SPEED_NATIVE_LOG(LogTemp, Error,
 				TEXT("[StaticCollisionAuthorityNotReady] Canonical simulation is waiting for a valid analytical static collision world."));
 		}
 		return false;
 	}
-	bStaticCollisionReadinessErrorReported = false;
+	bStaticCollisionReadinessErrorReportedDriverStorage() = false;
 	return true;
 }
 
 ESimulationWorkerResult ASpeedPhysicsSimulation::CheckCanonicalRunReadiness()
 {
 	const ECanonicalRunControlState RunState =
-		SpeedWorldSubsystem->GetCanonicalRunControlState();
+		SpeedWorldSubsystemDriverStorage()->GetCanonicalRunControlState();
 	if (RunState == ECanonicalRunControlState::WaitingForScenario ||
 		(RunState == ECanonicalRunControlState::Uncontrolled &&
 			RequiresCanonicalRunController()))
 	{
-		CanonicalReadyDelayPulsesObserved = 0;
+		CanonicalReadyDelayPulsesObservedDriverStorage() = 0;
 		return ESimulationWorkerResult::Idle;
 	}
 	if (RunState == ECanonicalRunControlState::Complete)
@@ -1028,10 +1040,10 @@ ESimulationWorkerResult ASpeedPhysicsSimulation::CheckCanonicalRunReadiness()
 		return ESimulationWorkerResult::Complete;
 	}
 	if (RunState == ECanonicalRunControlState::Ready &&
-		CanonicalReadyDelayPulsesObserved <
+		CanonicalReadyDelayPulsesObservedDriverStorage() <
 			Speed::CanonicalFrameDriver::GetFastReadyDelayCallbacks())
 	{
-		++CanonicalReadyDelayPulsesObserved;
+		++CanonicalReadyDelayPulsesObservedDriverStorage();
 		return ESimulationWorkerResult::Idle;
 	}
 	return ESimulationWorkerResult::Advanced;
@@ -1039,16 +1051,16 @@ ESimulationWorkerResult ASpeedPhysicsSimulation::CheckCanonicalRunReadiness()
 
 void ASpeedPhysicsSimulation::InitializeCanonicalFrame(const float SimTime)
 {
-	if (bCanonicalFrameInitialized) return;
+	if (bCanonicalFrameInitializedDriverStorage()) return;
 	UpdateNumFrame(SimTime);
-	CanonicalNumFrame = NumFrame() > 0 ? uint64(NumFrame() - 1u) : 0u;
-	bCanonicalFrameInitialized = true;
+	CanonicalNumFrameDriverStorage() = NumFrame() > 0 ? uint64(NumFrame() - 1u) : 0u;
+	bCanonicalFrameInitializedDriverStorage() = true;
 }
 
 void ASpeedPhysicsSimulation::ResetCanonicalFrame()
 {
-	bCanonicalFrameInitialized = false;
-	CanonicalReadyDelayPulsesObserved = 0;
+	bCanonicalFrameInitializedDriverStorage() = false;
+	CanonicalReadyDelayPulsesObservedDriverStorage() = 0;
 }
 
 #if !UE_BUILD_SHIPPING
@@ -1079,22 +1091,22 @@ bool ASpeedPhysicsSimulation::ConfigureCaseSatDiagnosticsAfterJoin(
 {
     using namespace Speed::Analytic::CaseSatDiagnostics;
     // No new pause/join or physical rejection: observe the fence already required by SLTest.
-    if (!IsInGameThread() || SimulationWorker || !IsOwnedWorkerExecutionMode() ||
-        !bInputOwnerRetired.Load() || !bInputOwnersClosedOnWorker.Load() || CaseSatDiagnosticEpoch==MAX_uint64)
+    if (!IsInGameThread() || SimulationWorkerDriverStorage() || !IsOwnedWorkerExecutionMode() ||
+        !bInputOwnerRetiredDriverStorage().Load() || !bInputOwnersClosedOnWorkerDriverStorage().Load() || CaseSatDiagnosticEpochDriverStorage()==MAX_uint64)
     {
         // Never mutate identity potentially being read by an active owner, even
         // if the live cvar changed to0. This rejected diagnostic call is inert.
         try
         {
-            if (IsEnabled()) UE_LOG(LogTemp, Warning, TEXT("[CaseSatUnavailable] Case=%d Reason=NoJoinedOwnedLane DiagnosticOnly=1"),NativeCaseId);
+            if (IsEnabled()) SPEED_NATIVE_LOG(LogTemp, Warning, TEXT("[CaseSatUnavailable] Case=%d Reason=NoJoinedOwnedLane DiagnosticOnly=1"),NativeCaseId);
         }
         catch (...) { /* Diagnostics cannot interrupt ResetActors or mutate a live identity. */ }
         return false;
     }
-    ParallelFrameTiming.ConfigureAfterJoin(uint64(reinterpret_cast<UPTRINT>(this)),
+    ParallelFrameTimingDriverStorage().ConfigureAfterJoin(uint64(reinterpret_cast<UPTRINT>(this)),
         NativeCaseId, BatchIndex, WorldGeneration);
     // Existing joined-owner fence above, outside the canonical frame body.
-    if(!ParallelFrameTiming.IsActive() && ObserveJoinedAnalytic1075())
+    if(!ParallelFrameTimingDriverStorage().IsActive() && ObserveJoinedAnalytic1075())
     {
         Speed::Analytic::ResetAnalyticCausalStats1075();
         Speed::Analytic::ResetPiecewiseProviderWaveStats1075();
@@ -1103,61 +1115,61 @@ bool ASpeedPhysicsSimulation::ConfigureCaseSatDiagnosticsAfterJoin(
     }
     // The already-joined owned lane is the authority. This case identity is
     // independent of CaseSat diagnostics, so real parallel kernels stay on.
-    NativeWitnessCase=Speed::FNativeFrameWitnessCaseIdentity{};
+    NativeWitnessCaseDriverStorage()=Speed::FNativeFrameWitnessCaseIdentity{};
     FString WitnessUUID;
-    if(NativeWitnessEpoch!=MAX_uint64 && NativeCaseId>=0 &&
+    if(NativeWitnessEpochDriverStorage()!=MAX_uint64 && NativeCaseId>=0 &&
        FParse::Value(FCommandLine::Get(),TEXT("SLFrameWitnessRunUUID="),WitnessUUID) &&
        !WitnessUUID.IsEmpty() && WitnessUUID.Len()<=64)
     {
-        NativeWitnessCase.RunUUID=MoveTemp(WitnessUUID);
-        NativeWitnessCase.DriverKey=uint64(reinterpret_cast<UPTRINT>(this));
-        NativeWitnessCase.Epoch=++NativeWitnessEpoch;NativeWitnessCase.WorldGeneration=WorldGeneration;
-        NativeWitnessCase.NativeCaseId=NativeCaseId;NativeWitnessCase.BatchIndex=BatchIndex;
-        NativeWitnessCase.bConfigured=true;
+        NativeWitnessCaseDriverStorage().RunUUID=MoveTemp(WitnessUUID);
+        NativeWitnessCaseDriverStorage().DriverKey=uint64(reinterpret_cast<UPTRINT>(this));
+        NativeWitnessCaseDriverStorage().Epoch=++NativeWitnessEpochDriverStorage();NativeWitnessCaseDriverStorage().WorldGeneration=WorldGeneration;
+        NativeWitnessCaseDriverStorage().NativeCaseId=NativeCaseId;NativeWitnessCaseDriverStorage().BatchIndex=BatchIndex;
+        NativeWitnessCaseDriverStorage().bConfigured=true;
     }
     // Read the already-established joined owner fence, after mode initialization.
     // V2 is per-case and must match the real CaseBegin identity; it is not a
     // replacement for consumed input or callback/source closure.
-    if(ParallelFrameTiming.IsActive() || NativeWitnessCase.bConfigured)
-        UE_LOG(LogTemp,Display,TEXT("[IAmSpeedOwnedCasePolicyV2] Driver=%llu Case=%d Batch=%d WorldGeneration=%llu ExecutionHost=%u OwnedInputFence=1 Scope=ExistingJoinedOwnerFence"),
+    if(ParallelFrameTimingDriverStorage().IsActive() || NativeWitnessCaseDriverStorage().bConfigured)
+        SPEED_NATIVE_LOG(LogTemp,Display,TEXT("[IAmSpeedOwnedCasePolicyV2] Driver=%llu Case=%d Batch=%d WorldGeneration=%llu ExecutionHost=%u OwnedInputFence=1 Scope=ExistingJoinedOwnerFence"),
             uint64(reinterpret_cast<UPTRINT>(this)),NativeCaseId,BatchIndex,WorldGeneration,uint32(GetActiveExecutionMode()));
-    if (!IsEnabled()) { CaseSatDiagnosticIdentity=FCaseIdentity{}; return true; }
+    if (!IsEnabled()) { CaseSatDiagnosticIdentityDriverStorage()=FCaseIdentity{}; return true; }
     try
     {
-        return BuildCaseIdentity(CaseSatDiagnosticIdentity,
-            uint64(reinterpret_cast<UPTRINT>(this)),++CaseSatDiagnosticEpoch,
+        return BuildCaseIdentity(CaseSatDiagnosticIdentityDriverStorage(),
+            uint64(reinterpret_cast<UPTRINT>(this)),++CaseSatDiagnosticEpochDriverStorage(),
             NativeCaseId,BatchIndex,WorldGeneration);
     }
-    catch (...) { CaseSatDiagnosticIdentity=FCaseIdentity{}; return false; }
+    catch (...) { CaseSatDiagnosticIdentityDriverStorage()=FCaseIdentity{}; return false; }
 }
 #endif
 
 #if !UE_BUILD_SHIPPING
 void ASpeedPhysicsSimulation::BeginIndependentRealTimeCoverage696() noexcept
 {
-    ParallelFrameTiming.BeginDriver(false, CanonicalNumFrame, IsOwnedWorkerExecutionMode());
-    IndependentFastCoverage276.BeginRealTime(CaseSatDiagnosticIdentity,CanonicalNumFrame,
-        PerformanceFrameCount,IsOwnedWorkerExecutionMode());
+    ParallelFrameTimingDriverStorage().BeginDriver(false, CanonicalNumFrameDriverStorage(), IsOwnedWorkerExecutionMode());
+    IndependentFastCoverage276DriverStorage().BeginRealTime(CaseSatDiagnosticIdentityDriverStorage(),CanonicalNumFrameDriverStorage(),
+        PerformanceFrameCountDriverStorage(),IsOwnedWorkerExecutionMode());
 }
 void ASpeedPhysicsSimulation::EndIndependentRealTimeCoverage696(bool bCompleted, const TCHAR* Reason) noexcept
 {
-    ParallelFrameTiming.Close(bCompleted, Reason);
-    if(ParallelFrameTiming.ClaimJoinedCaseLog())
-        LogJoinedAnalytic1075(ParallelFrameTiming.JoinedCaseContextForLogging());
-    IndependentFastCoverage276.EndRealTime(CanonicalNumFrame,PerformanceFrameCount,bCompleted,Reason);
+    ParallelFrameTimingDriverStorage().Close(bCompleted, Reason);
+    if(ParallelFrameTimingDriverStorage().ClaimJoinedCaseLog())
+        LogJoinedAnalytic1075(ParallelFrameTimingDriverStorage().JoinedCaseContextForLogging());
+    IndependentFastCoverage276DriverStorage().EndRealTime(CanonicalNumFrameDriverStorage(),PerformanceFrameCountDriverStorage(),bCompleted,Reason);
 }
 void ASpeedPhysicsSimulation::BeginIndependentFastCoverage276() noexcept
 {
-    ParallelFrameTiming.BeginDriver(true, CanonicalNumFrame, IsOwnedWorkerExecutionMode());
-    IndependentFastCoverage276.BeginFast(CaseSatDiagnosticIdentity,CanonicalNumFrame,
-        PerformanceFrameCount,IsOwnedWorkerExecutionMode());
+    ParallelFrameTimingDriverStorage().BeginDriver(true, CanonicalNumFrameDriverStorage(), IsOwnedWorkerExecutionMode());
+    IndependentFastCoverage276DriverStorage().BeginFast(CaseSatDiagnosticIdentityDriverStorage(),CanonicalNumFrameDriverStorage(),
+        PerformanceFrameCountDriverStorage(),IsOwnedWorkerExecutionMode());
 }
 void ASpeedPhysicsSimulation::EndIndependentFastCoverage276(bool bCompleted, const TCHAR* Reason) noexcept
 {
-    ParallelFrameTiming.Close(bCompleted, Reason);
-    if(ParallelFrameTiming.ClaimJoinedCaseLog())
-        LogJoinedAnalytic1075(ParallelFrameTiming.JoinedCaseContextForLogging());
-    IndependentFastCoverage276.EndFast(CanonicalNumFrame,PerformanceFrameCount,bCompleted,Reason);
+    ParallelFrameTimingDriverStorage().Close(bCompleted, Reason);
+    if(ParallelFrameTimingDriverStorage().ClaimJoinedCaseLog())
+        LogJoinedAnalytic1075(ParallelFrameTimingDriverStorage().JoinedCaseContextForLogging());
+    IndependentFastCoverage276DriverStorage().EndFast(CanonicalNumFrameDriverStorage(),PerformanceFrameCountDriverStorage(),bCompleted,Reason);
 }
 #endif
 
@@ -1165,11 +1177,11 @@ FCanonicalFrameContext ASpeedPhysicsSimulation::MakeCanonicalFrameContext(const 
 {
     FCanonicalFrameContext Context(Frame);
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
-    if (CollisionMatrixTestHz != 0)
+    if (CollisionMatrixTestHzDriverStorage() != 0)
     {
-        check(Frame >= CollisionMatrixTestFirstFrame);
-        Context.PhysicalDeltaTime = 1.0f / float(CollisionMatrixTestHz);
-        Context.SimTime = float(Frame - CollisionMatrixTestFirstFrame) * Context.PhysicalDeltaTime;
+        check(Frame >= CollisionMatrixTestFirstFrameDriverStorage());
+        Context.PhysicalDeltaTime = 1.0f / float(CollisionMatrixTestHzDriverStorage());
+        Context.SimTime = float(Frame - CollisionMatrixTestFirstFrameDriverStorage()) * Context.PhysicalDeltaTime;
     }
 #endif
     return Context;
@@ -1178,7 +1190,7 @@ FCanonicalFrameContext ASpeedPhysicsSimulation::MakeCanonicalFrameContext(const 
 bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 {
 #if !UE_BUILD_SHIPPING
-    Speed::Diagnostics::CaseCoverage276::FScopedPreloop CallerPreloop276(IndependentFastCoverage276);
+    Speed::Diagnostics::CaseCoverage276::FScopedPreloop CallerPreloop276(IndependentFastCoverage276DriverStorage());
 #endif
 	if (!ProcessPendingRollbackRequest())
 	{
@@ -1193,14 +1205,14 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 	for (uint32 FrameIndex = 0; FrameIndex < FrameCount; ++FrameIndex)
 	{
 #if !UE_BUILD_SHIPPING
-        Speed::Diagnostics::CaseCoverage276::FScopedForward CallerForward276(IndependentFastCoverage276,CanonicalNumFrame);
-        Speed::Analytic::CaseSatDiagnostics::FScopedFrame DiagnosticFrame(CaseSatDiagnosticIdentity,CanonicalNumFrame);
+        Speed::Diagnostics::CaseCoverage276::FScopedForward CallerForward276(IndependentFastCoverage276DriverStorage(),CanonicalNumFrameDriverStorage());
+        Speed::Analytic::CaseSatDiagnostics::FScopedFrame DiagnosticFrame(CaseSatDiagnosticIdentityDriverStorage(),CanonicalNumFrameDriverStorage());
 #endif
 		const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
 #if WITH_DEV_AUTOMATION_TESTS
-		const auto OwnedStep = Speed::OwnedFrameAudit::BeginStep(CanonicalNumFrame, false);
+		const auto OwnedStep = Speed::OwnedFrameAudit::BeginStep(CanonicalNumFrameDriverStorage(), false);
 #endif
-		const bool StepSucceeded = StepCanonicalFrame(MakeCanonicalFrameContext(CanonicalNumFrame));
+		const bool StepSucceeded = StepCanonicalFrame(MakeCanonicalFrameContext(CanonicalNumFrameDriverStorage()));
 #if WITH_DEV_AUTOMATION_TESTS
 		Speed::OwnedFrameAudit::EndStep(OwnedStep, true, StepSucceeded);
 #endif
@@ -1218,24 +1230,24 @@ bool ASpeedPhysicsSimulation::RunCanonicalFrames(const uint32 FrameCount)
 #endif
 		RecordStepPerformance(
 			(FPlatformTime::Seconds() - PhysicalFrameStartSeconds) * 1000.0);
-		++CanonicalNumFrame;
+		++CanonicalNumFrameDriverStorage();
 	}
 	return true;
 }
 
 void ASpeedPhysicsSimulation::Simulate(const float& DeltaTime, const float& SimTime)
 {
-    if (!SpeedWorldSubsystem)
+    if (!SpeedWorldSubsystemDriverStorage())
     {
-		SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());
-		if (!SpeedWorldSubsystem)
+		SpeedWorldSubsystemDriverStorage() = GetSpeedWorldSubsystem(GetWorld());
+		if (!SpeedWorldSubsystemDriverStorage())
 		{
 			return;
 		}
 	}
 
 	const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
-	SpeedWorldSubsystem->Step(DeltaTime, SimTime, NumFrame());
+	SpeedWorldSubsystemDriverStorage()->Step(DeltaTime, SimTime, NumFrame());
 	RecordStepPerformance(
 		(FPlatformTime::Seconds() - PhysicalFrameStartSeconds) * 1000.0);
 }
@@ -1243,40 +1255,40 @@ void ASpeedPhysicsSimulation::Simulate(const float& DeltaTime, const float& SimT
 bool ASpeedPhysicsSimulation::QueueSimulationInput(const uint64 ActivationFrame,
 	const uint64 TargetStableId, const TConstArrayView<uint8> Payload)
 {
-	return InputJournal.Append(ActivationFrame, TargetStableId, Payload);
+	return InputJournalDriverStorage().Append(ActivationFrame, TargetStableId, Payload);
 }
 
 void ASpeedPhysicsSimulation::SealSimulationInputs()
 {
-	InputJournal.Seal();
+	InputJournalDriverStorage().Seal();
 }
 
 void ASpeedPhysicsSimulation::RecordStepPerformance(
 	const double PhysicalFrameMilliseconds)
 {
-	if (!SpeedWorldSubsystem)
+	if (!SpeedWorldSubsystemDriverStorage())
 	{
 		return;
 	}
 	const FSpeedStepDiagnostics& Diagnostics =
-		SpeedWorldSubsystem->GetLastStepDiagnostics();
-	if (Diagnostics.Serial == 0 || Diagnostics.Serial == LastRecordedStepSerial)
+		SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics();
+	if (Diagnostics.Serial == 0 || Diagnostics.Serial == LastRecordedStepSerialDriverStorage())
 	{
 		return;
 	}
-	LastRecordedStepSerial = Diagnostics.Serial;
-	LastPhysicalFrameMilliseconds = PhysicalFrameMilliseconds;
-	++PerformanceFrameCount;
-	PerformanceTotalStepMilliseconds += PhysicalFrameMilliseconds;
-	PerformanceMaximumStepMilliseconds = FMath::Max(
-		PerformanceMaximumStepMilliseconds, PhysicalFrameMilliseconds);
+	LastRecordedStepSerialDriverStorage() = Diagnostics.Serial;
+	LastPhysicalFrameMillisecondsDriverStorage() = PhysicalFrameMilliseconds;
+	++PerformanceFrameCountDriverStorage();
+	PerformanceTotalStepMillisecondsDriverStorage() += PhysicalFrameMilliseconds;
+	PerformanceMaximumStepMillisecondsDriverStorage() = FMath::Max(
+		PerformanceMaximumStepMillisecondsDriverStorage(), PhysicalFrameMilliseconds);
 	const double WarningThresholdMilliseconds =
 		Diagnostics.PhysicalDeltaTimeMilliseconds * FMath::Max(
 			0.0, static_cast<double>(
 				CVarSimulationWarningFrameFraction.GetValueOnAnyThread()));
-	PerformanceWarningFrameCount +=
+	PerformanceWarningFrameCountDriverStorage() +=
 		PhysicalFrameMilliseconds > WarningThresholdMilliseconds ? 1u : 0u;
-	PerformanceIterationLimitCount +=
+	PerformanceIterationLimitCountDriverStorage() +=
 		Diagnostics.bIterationLimitReached ? 1u : 0u;
 }
 
@@ -1287,6 +1299,8 @@ float ASpeedPhysicsSimulation::GetWarningFrameFraction() const
 
 bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
 {
+    if(!AllowsNativeDriverExecution())return false;
+
     // Failure can occur before MarkTerminal exists (world lookup/admission).
     // Keep the previous completed pair during work, but retire current access
     // on every unsuccessful exit. Retained immutable historical reads survive.
@@ -1294,19 +1308,19 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     ON_SCOPE_EXIT
     {
         if (!bCompletedPublicationFrameSucceeded)
-            PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+            PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
     };
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::OwnedFrameAudit::FCanonicalPhaseScope OwnedPhases(Context.NumFrame);
 #endif
 #if !UE_BUILD_SHIPPING
-    Speed::ParallelTiming::FFrameScope ParallelTimingScope(ParallelFrameTiming, Context.NumFrame, Context.PhysicalDeltaTime);
+    Speed::ParallelTiming::FFrameScope ParallelTimingScope(ParallelFrameTimingDriverStorage(), Context.NumFrame, Context.PhysicalDeltaTime);
 #endif
-	if (bCanonicalPublicationTerminal.Load()) return false;
-	if (!SpeedWorldSubsystem)
+	if (bCanonicalPublicationTerminalDriverStorage().Load()) return false;
+	if (!SpeedWorldSubsystemDriverStorage())
 	{
-		SpeedWorldSubsystem = GetSpeedWorldSubsystem(GetWorld());
-		if (!SpeedWorldSubsystem)
+		SpeedWorldSubsystemDriverStorage() = GetSpeedWorldSubsystem(GetWorld());
+		if (!SpeedWorldSubsystemDriverStorage())
 		{
 			return false;
 		}
@@ -1314,18 +1328,18 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 
 	FString BindingFailure;
 	bool bAdmitted = false;
-	try { bAdmitted = SpeedWorldSubsystem->BeginCanonicalFrame(BindingFailure); }
+	try { bAdmitted = SpeedWorldSubsystemDriverStorage()->BeginCanonicalFrame(BindingFailure); }
 	catch (...)
 	{
-		bCanonicalPublicationTerminal.Store(true);
-		PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-		bOwnedWorkerTerminal.Store(true);
-		UE_LOG(LogTemp, Error, TEXT("[CanonicalAdmissionExceptionTerminal] Frame=%llu"), Context.NumFrame);
+		bCanonicalPublicationTerminalDriverStorage().Store(true);
+		PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+		bOwnedWorkerTerminalDriverStorage().Store(true);
+		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalAdmissionExceptionTerminal] Frame=%llu"), Context.NumFrame);
 		return false; // BeginCanonicalFrame sets its active flag only after validation returns.
 	}
 	if (!bAdmitted)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[SimulationBindingRejected] frame=%llu %s"),
+		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[SimulationBindingRejected] frame=%llu %s"),
 			Context.NumFrame, *BindingFailure);
 		// Both drivers convert a rejected frame to Failed; the owned worker
 		// exits at this boundary without advancing time or publishing a pose.
@@ -1341,9 +1355,9 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     // Default timing mode 0 pays none
     // of this observer's per-frame settings/counter work.
     Speed::ParallelTiming::FFrameWorkEvidence ParallelWork;
-    const auto* ParallelTimingWorld = ParallelFrameTiming.IsActive()
-        ? SpeedWorldSubsystem->GetStaticCollisionWorld() : nullptr;
-    if (ParallelFrameTiming.IsActive())
+    const auto* ParallelTimingWorld = ParallelFrameTimingDriverStorage().IsActive()
+        ? SpeedWorldSubsystemDriverStorage()->GetStaticCollisionWorld() : nullptr;
+    if (ParallelFrameTimingDriverStorage().IsActive())
     {
         const auto Settings = Speed::CaptureFrameParallelSettings();
         ParallelWork.Requested = Settings.RequestedLanes;
@@ -1362,15 +1376,15 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	ON_SCOPE_EXIT
 	{
 		if (bAuditStarted) Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
-		SpeedWorldSubsystem->EndCanonicalFrame();
+		SpeedWorldSubsystemDriverStorage()->EndCanonicalFrame();
 	};
 	const auto MarkTerminal = [this]()
 	{
-		PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
-		if (InputSessionRegistry) InputSessionRegistry->AbortFrame();
-		PublishedInputFrame.store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
-		bCanonicalPublicationTerminal.Store(true);
-		bOwnedWorkerTerminal.Store(true);
+		PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+		if (InputSessionRegistryDriverStorage()) InputSessionRegistryDriverStorage()->AbortFrame();
+		PublishedInputFrameDriverStorage().store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
+		bCanonicalPublicationTerminalDriverStorage().Store(true);
+		bOwnedWorkerTerminalDriverStorage().Store(true);
 	};
 
 #if !UE_BUILD_SHIPPING
@@ -1380,7 +1394,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	try
 	{
 		IAMSPEED_FRAME_SCOPE(Initialize);
-		const auto InputView = InputSessionRegistry ? InputSessionRegistry->ReadRegistry() : nullptr;
+		const auto InputView = InputSessionRegistryDriverStorage() ? InputSessionRegistryDriverStorage()->ReadRegistry() : nullptr;
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Registry);
 #endif
@@ -1388,16 +1402,16 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		if (bHasInputSessions)
 		{
 			ExceptionStage = TEXT("ScenarioInputs");
-			if (!SpeedWorldSubsystem->StageCanonicalScenarioInputs(Context, *InputSessionRegistry))
+			if (!SpeedWorldSubsystemDriverStorage()->StageCanonicalScenarioInputs(Context, *InputSessionRegistryDriverStorage()))
 				throw std::runtime_error("canonical scenario authoring rejected");
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::ScenarioInputs);
 #endif
 			ExceptionStage = TEXT("InputPrepareFrame");
-			if (!InputSessionRegistry->PrepareFrame(Context.NumFrame))
+			if (!InputSessionRegistryDriverStorage()->PrepareFrame(Context.NumFrame))
 			{
-				const auto Failure = InputSessionRegistry->ReadLastFrameFailure();
-                UE_LOG(LogTemp, Error, TEXT("[CanonicalInputPollRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
+				const auto Failure = InputSessionRegistryDriverStorage()->ReadLastFrameFailure();
+                SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalInputPollRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
                     Context.NumFrame, unsigned(Failure.Reason), Failure.Session, Failure.Epoch,
                     unsigned(Failure.OwnerPresent), unsigned(Failure.OwnerStatusPresent),
                     unsigned(Failure.OwnerStatus), unsigned(Failure.OwnerPhase), unsigned(Failure.PollFailure),
@@ -1408,10 +1422,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputPrepare);
 #endif
 			ExceptionStage = TEXT("InputInstallAll");
-			if (!InputSessionRegistry->InstallAll())
+			if (!InputSessionRegistryDriverStorage()->InstallAll())
 			{
-				const auto Failure = InputSessionRegistry->ReadLastFrameFailure();
-                UE_LOG(LogTemp, Error, TEXT("[CanonicalInputInstallRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
+				const auto Failure = InputSessionRegistryDriverStorage()->ReadLastFrameFailure();
+                SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalInputInstallRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
                     Context.NumFrame, unsigned(Failure.Reason), Failure.Session, Failure.Epoch,
                     unsigned(Failure.OwnerPresent), unsigned(Failure.OwnerStatusPresent),
                     unsigned(Failure.OwnerStatus), unsigned(Failure.OwnerPhase), unsigned(Failure.PollFailure),
@@ -1422,65 +1436,65 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputInstall);
 #endif
 			ExceptionStage = TEXT("InputSnapshotInstall");
-			const auto Installed = InputSessionRegistry->ReadInstalled();
-			if (!Installed || !SpeedWorldSubsystem->InstallCanonicalInputs(*Installed) || !InputSessionRegistry->BeginAll())
+			const auto Installed = InputSessionRegistryDriverStorage()->ReadInstalled();
+			if (!Installed || !SpeedWorldSubsystemDriverStorage()->InstallCanonicalInputs(*Installed) || !InputSessionRegistryDriverStorage()->BeginAll())
 				throw std::runtime_error("canonical input installation rejected");
 		}
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputSnapshot);
 #endif
 #if !UE_BUILD_SHIPPING
-        const auto WitnessInstalled=bHasInputSessions && InputSessionRegistry?InputSessionRegistry->ReadInstalled():nullptr;
+        const auto WitnessInstalled=bHasInputSessions && InputSessionRegistryDriverStorage()?InputSessionRegistryDriverStorage()->ReadInstalled():nullptr;
         TUniquePtr<Speed::FFrameAppliedCommandWitnessScope> AppliedCommandWitness;
         TUniquePtr<Speed::FNativeFrameWitnessRecorder> FrameWitness;
         try { FrameWitness=Speed::FNativeFrameWitnessRecorder::Begin(
-            Context.NumFrame,Context.PhysicalDeltaTime,WitnessInstalled.get(),*SpeedWorldSubsystem,NativeWitnessCase,!bHasInputSessions); }
-        catch(...) { UE_LOG(LogTemp,Error,TEXT("[FrameWitnessBeginUnknown] Frame=%llu"),Context.NumFrame); }
+            Context.NumFrame,Context.PhysicalDeltaTime,WitnessInstalled.get(),*SpeedWorldSubsystemDriverStorage(),NativeWitnessCaseDriverStorage(),!bHasInputSessions); }
+        catch(...) { SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[FrameWitnessBeginUnknown] Frame=%llu"),Context.NumFrame); }
         if(FrameWitness)try { AppliedCommandWitness=MakeUnique<Speed::FFrameAppliedCommandWitnessScope>(
-            Context.NumFrame,InputJournal.GetCommandsForFrame(Context.NumFrame).Num());
-            SpeedWorldSubsystem->DeclareExpectedFrameAnalogWitnessForTesting(); }
-        catch(...) { UE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandBeginUnknown] Frame=%llu"),Context.NumFrame); }
+            Context.NumFrame,InputJournalDriverStorage().GetCommandsForFrame(Context.NumFrame).Num());
+            SpeedWorldSubsystemDriverStorage()->DeclareExpectedFrameAnalogWitnessForTesting(); }
+        catch(...) { SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandBeginUnknown] Frame=%llu"),Context.NumFrame); }
 #endif
 		ExceptionStage = TEXT("StaticWorldAudit");
 		Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
-			Context.NumFrame, SpeedWorldSubsystem->GetAnalyticWorldData(),
-			SpeedWorldSubsystem);
+			Context.NumFrame, SpeedWorldSubsystemDriverStorage()->GetAnalyticWorldData(),
+			SpeedWorldSubsystemDriverStorage());
 		bAuditStarted = true;
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::StaticAudit);
 #endif
 		ExceptionStage = TEXT("SimulationInputJournal");
-		if (InputJournal.IsSealed() &&
-			!SpeedWorldSubsystem->ApplySimulationInputs(Context.NumFrame, InputJournal))
+		if (InputJournalDriverStorage().IsSealed() &&
+			!SpeedWorldSubsystemDriverStorage()->ApplySimulationInputs(Context.NumFrame, InputJournalDriverStorage()))
 		{
-			if (!bInputConsumptionErrorReported)
+			if (!bInputConsumptionErrorReportedDriverStorage())
 			{
-				bInputConsumptionErrorReported = true;
-				UE_LOG(LogTemp, Error,
+				bInputConsumptionErrorReportedDriverStorage() = true;
+				SPEED_NATIVE_LOG(LogTemp, Error,
 					TEXT("[SimulationInputRejected] Frame=%llu JournalHash=%016llX"),
-					Context.NumFrame, InputJournal.StableHash());
+					Context.NumFrame, InputJournalDriverStorage().StableHash());
 			}
-			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 			bOutcomeHandled = true;
 			MarkTerminal();
 			return false;
 		}
 #if WITH_DEV_AUTOMATION_TESTS
-    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputJournal);
+    OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputJournalDriverStorage());
 #endif
 		ExceptionStage = TEXT("CanonicalInputPrepare");
-		if (!SpeedWorldSubsystem->PrepareCanonicalInputs(Context))
+		if (!SpeedWorldSubsystemDriverStorage()->PrepareCanonicalInputs(Context))
 		{
-			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 			bOutcomeHandled = true;
 			MarkTerminal();
-			UE_LOG(LogTemp, Error, TEXT("[CanonicalInputPreparationRejected] Frame=%llu"), Context.NumFrame);
+			SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalInputPreparationRejected] Frame=%llu"), Context.NumFrame);
 			return false;
 		}
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CanonicalInputs);
 #endif
-		bInputConsumptionErrorReported = false;
+		bInputConsumptionErrorReportedDriverStorage() = false;
 
 #if !UE_BUILD_SHIPPING
         ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Prepare);
@@ -1490,10 +1504,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #if !UE_BUILD_SHIPPING
         {
             Speed::FCanonicalEpisodeTestingScope PrepareOwnerScope(Context);
-            SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+            SpeedWorldSubsystemDriverStorage()->PrepareCanonicalFrame(Context);
         }
 #else
-        SpeedWorldSubsystem->PrepareCanonicalFrame(Context);
+        SpeedWorldSubsystemDriverStorage()->PrepareCanonicalFrame(Context);
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldPrepare);
@@ -1506,16 +1520,16 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		ExceptionStage = TEXT("WorldStep");
 #if WITH_DEV_AUTOMATION_TESTS
     const uint64 OwnedDiagnosticSerialBefore = OwnedPhases.CapturesPhysicalDetail()
-        ? SpeedWorldSubsystem->GetLastStepDiagnostics().Serial : 0;
+        ? SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics().Serial : 0;
 #endif
-		SpeedWorldSubsystem->Step(
+		SpeedWorldSubsystemDriverStorage()->Step(
 			Context.PhysicalDeltaTime,
 			Context.SimTime,
 			static_cast<unsigned int>(Context.NumFrame));
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldStep);
     if (OwnedPhases.CapturesPhysicalDetail())
-        OwnedPhases.CopyPhysicalDetail(SpeedWorldSubsystem->GetLastStepDiagnostics(), OwnedDiagnosticSerialBefore);
+        OwnedPhases.CopyPhysicalDetail(SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics(), OwnedDiagnosticSerialBefore);
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -1523,8 +1537,8 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
 		IAMSPEED_FRAME_PHASE(Snapshot);
 		ExceptionStage = TEXT("SnapshotCapture");
-		FSimulationSnapshot Snapshot = SpeedWorldSubsystem->CaptureSimulationSnapshot(
-			Context.NumFrame, InputJournal.StableHash(), bPublishPresentation);
+		FSimulationSnapshot Snapshot = SpeedWorldSubsystemDriverStorage()->CaptureSimulationSnapshot(
+			Context.NumFrame, InputJournalDriverStorage().StableHash(), bPublishPresentationDriverStorage());
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Snapshot);
 #endif
@@ -1535,8 +1549,8 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		ExceptionStage = TEXT("PresentationProducerList");
 		TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
 		{
-			FScopeLock Lock(&PresentationProducerMutex);
-			Producers = PresentationProducers;
+			FScopeLock Lock(&PresentationProducerMutexDriverStorage());
+			Producers = PresentationProducersDriverStorage();
 		}
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::ProducerList);
@@ -1549,7 +1563,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         TOptional<Speed::OwnedFrameAudit::FCameraScope> OwnedCamera;
         const bool bInputComplete = Speed::FrameParallel::ProduceFramePresentationWithOwnerValidationAndObservation(
             Snapshot, Producers, ParallelPresentationSettings.bParallelCamera ? ParallelPresentationSettings.LaneLimit : 1,
-            bHasInputSessions, [&] { return !bHasInputSessions || InputSessionRegistry->ValidateComplete(); },
+            bHasInputSessions, [&] { return !bHasInputSessions || InputSessionRegistryDriverStorage()->ValidateComplete(); },
             [&](const ISimulationPresentationProducer& Producer)
             {
                 Speed::Testing::ObservePresentationDispatch(&Producer, Snapshot.NumFrame);
@@ -1564,7 +1578,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #else
         const bool bInputComplete = Speed::FrameParallel::ProduceFramePresentationWithOwnerValidation(
             Snapshot, Producers, ParallelPresentationSettings.bParallelCamera ? ParallelPresentationSettings.LaneLimit : 1,
-            bHasInputSessions, [&] { return !bHasInputSessions || InputSessionRegistry->ValidateComplete(); });
+            bHasInputSessions, [&] { return !bHasInputSessions || InputSessionRegistryDriverStorage()->ValidateComplete(); });
 #endif
 		ExceptionStage = TEXT("InputValidateComplete");
 		if (!bInputComplete)
@@ -1579,10 +1593,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         // Reserve/copy all common-view storage before either irreversible commit.
         // The captured registry/Installed endpoint belongs to THIS canonical frame.
         std::shared_ptr<Speed::FCompletedSimulationPublication> CompletedDraft;
-        if (bPublishCompletedWorldInput)
+        if (bPublishCompletedWorldInputDriverStorage())
         {
             ExceptionStage = TEXT("CompletedWorldInputPrepare");
-            const auto Installed = bHasInputSessions ? InputSessionRegistry->ReadInstalled() : nullptr;
+            const auto Installed = bHasInputSessions ? InputSessionRegistryDriverStorage()->ReadInstalled() : nullptr;
             // ReadRegistry() produces an observation copy. Bind the common view to
             // the exact registry retained by PrepareFrame, never a later sample.
             const auto CapturedRegistry = Installed ? Installed->Registry : InputView;
@@ -1594,25 +1608,25 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         {
             if (!CompletedDraft) return true;
             if (!CompletedDraft->MatchesCompleted(Completed)
-                || !CompletedDraft->BindPublicationSerial(SnapshotBuffer.PublishedSerial())) return false;
+                || !CompletedDraft->BindPublicationSerial(SnapshotBufferDriverStorage().PublishedSerial())) return false;
             // No allocation, callbacks or separate endpoint loads in this store.
             // Moving consumes the only mutable alias; readers retain one object.
             std::shared_ptr<const Speed::FCompletedSimulationPublication> Sealed = std::move(CompletedDraft);
-            PublishedCompletedWorldInput.store(std::move(Sealed), std::memory_order_seq_cst);
+            PublishedCompletedWorldInputDriverStorage().store(std::move(Sealed), std::memory_order_seq_cst);
             return true;
         };
 		IAMSPEED_FRAME_PHASE(Publish);
 		ExceptionStage = TEXT("CanonicalPublish");
-		const ECanonicalPublicationResult Publication = SpeedWorldSubsystem->PublishCanonicalFrame(Context.NumFrame, [&]()
+		const ECanonicalPublicationResult Publication = SpeedWorldSubsystemDriverStorage()->PublishCanonicalFrame(Context.NumFrame, [&]()
 		{
 			// One simulation owner. Avoid serial wrap before touching the inactive slot.
-			if (SnapshotBuffer.PublishedSerial() == MAX_uint64) return false;
+			if (SnapshotBufferDriverStorage().PublishedSerial() == MAX_uint64) return false;
 #if !UE_BUILD_SHIPPING
             // Replay publications do not represent paced real-time starts.
-            return Context.IsResimulation() ? SnapshotBuffer.Publish(Snapshot) :
-                SnapshotBuffer.PublishWithCadenceTiming(Snapshot, GetCanonicalPublicationTiming(Context));
+            return Context.IsResimulation() ? SnapshotBufferDriverStorage().Publish(Snapshot) :
+                SnapshotBufferDriverStorage().PublishWithCadenceTiming(Snapshot, GetCanonicalPublicationTiming(Context));
 #else
-            return SnapshotBuffer.Publish(Snapshot);
+            return SnapshotBufferDriverStorage().Publish(Snapshot);
 #endif
 		});
 #if WITH_DEV_AUTOMATION_TESTS
@@ -1623,7 +1637,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		if (Publication != ECanonicalPublicationResult::Completed)
 		{
 			MarkTerminal();
-			UE_LOG(LogTemp, Error, TEXT("[CanonicalPublicationTerminal] Frame=%llu Result=%u GlobalPublished=%d"),
+			SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalPublicationTerminal] Frame=%llu Result=%u GlobalPublished=%d"),
 				Context.NumFrame, static_cast<uint32>(Publication), bGlobalPublished ? 1 : 0);
 			return false;
 		}
@@ -1634,26 +1648,26 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		if (bHasInputSessions)
 		{
 			ExceptionStage = TEXT("InputComplete");
-			if (!InputSessionRegistry->CompleteAll())
+			if (!InputSessionRegistryDriverStorage()->CompleteAll())
 			{
 				MarkTerminal();
 				return false;
 			}
-			const auto Completed = InputSessionRegistry->ReadLatest();
+			const auto Completed = InputSessionRegistryDriverStorage()->ReadLatest();
             // A failed/mismatched completion never produces a common publication.
             if (!Completed || Completed->Frame != Context.NumFrame || !PublishCompletedWorldInput(Completed))
             {
                 MarkTerminal();
                 return false;
             }
-			PublishedInputFrame.store(Completed, std::memory_order_seq_cst);
+			PublishedInputFrameDriverStorage().store(Completed, std::memory_order_seq_cst);
 			for (const auto& Input : Completed->Inputs)
 			{
-				const auto Observation = InputObservations.find(Input.Session);
-				if (Observation != InputObservations.end())
+				const auto Observation = InputObservationsDriverStorage().find(Input.Session);
+				if (Observation != InputObservationsDriverStorage().end())
 				{
 					try { if (!Observation->second->Publish(Input.Snapshot)) Observation->second->Deactivate(); }
-					catch (...) { UE_LOG(LogTemp, Error, TEXT("[InputObservationPublicationFailed] Frame=%llu"), Context.NumFrame); }
+					catch (...) { SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[InputObservationPublicationFailed] Frame=%llu"), Context.NumFrame); }
 				}
 			}
 		}
@@ -1667,7 +1681,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
 		// V2 authoritative commit is finished before any optional presentation work.
 		ExceptionStage = TEXT("PostCommitNotify");
-		SpeedWorldSubsystem->NotifyCanonicalFramePublished(Context.NumFrame);
+		SpeedWorldSubsystemDriverStorage()->NotifyCanonicalFramePublished(Context.NumFrame);
 		// Optional replay observes only the successful full commit. Failure retires
 		// recording, never the live physics step or its canonical hash.
 		ServiceReplayCapture(Snapshot);
@@ -1685,10 +1699,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         if (bHasCanonicalCameraSample)
 		{
 			CameraSample.NumFrame = Snapshot.NumFrame;
-			CameraSample.PublicationSerial = SnapshotBuffer.PublishedSerial();
+			CameraSample.PublicationSerial = SnapshotBufferDriverStorage().PublishedSerial();
 			CameraSample.StateHash = Snapshot.StateHash;
 			CameraSample.InputJournalHash = Snapshot.InputJournalHash;
-			CameraSampleBuffer.Publish(CameraSample);
+			CameraSampleBufferDriverStorage().Publish(CameraSample);
 		}
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CameraSample);
@@ -1719,12 +1733,12 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
                 WitnessBytes::Add(WitnessCamera,CameraSample.Rotation.X);WitnessBytes::Add(WitnessCamera,CameraSample.Rotation.Y);WitnessBytes::Add(WitnessCamera,CameraSample.Rotation.Z);WitnessBytes::Add(WitnessCamera,CameraSample.Rotation.W);
             }
             if(AppliedCommandWitness && !AppliedCommandWitness->SaveCommittedFrame())
-                UE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandSaveUnknown] Frame=%llu"),Context.NumFrame);
-            const auto WitnessCompleted=bHasInputSessions && InputSessionRegistry?InputSessionRegistry->ReadLatest():nullptr;
+                SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandSaveUnknown] Frame=%llu"),Context.NumFrame);
+            const auto WitnessCompleted=bHasInputSessions && InputSessionRegistryDriverStorage()?InputSessionRegistryDriverStorage()->ReadLatest():nullptr;
             FrameWitness->Finish(WitnessCompleted.get(),Snapshot.Payload,
-                SpeedWorldSubsystem->GetLastStepDiagnostics().ResolvedEventCount,WitnessCamera,true,!bHasInputSessions);
+                SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics().ResolvedEventCount,WitnessCamera,true,!bHasInputSessions);
         }
-        catch(...) { UE_LOG(LogTemp,Error,TEXT("[FrameWitnessFinishUnknown] Frame=%llu"),Context.NumFrame); }
+        catch(...) { SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[FrameWitnessFinishUnknown] Frame=%llu"),Context.NumFrame); }
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -1732,7 +1746,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
 		IAMSPEED_FRAME_PHASE(Journal);
 		ExceptionStage = TEXT("FrameHash");
-		FrameHashes.Append(Context.NumFrame, Snapshot.StateHash);
+		FrameHashesDriverStorage().Append(Context.NumFrame, Snapshot.StateHash);
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::FrameHash);
 #endif
@@ -1788,18 +1802,18 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	catch (const std::exception& Exception)
 	{
 		if (!bGlobalPublished && !bOutcomeHandled)
-			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 		MarkTerminal();
-		UE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d Stage=%s Type=std Message=%s"),
+		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d Stage=%s Type=std Message=%s"),
 			Context.NumFrame, bGlobalPublished ? 1 : 0, ExceptionStage, UTF8_TO_TCHAR(Exception.what()));
 		return false; // No exception escapes into the UE worker/callback boundary.
 	}
 	catch (...)
 	{
 		if (!bGlobalPublished && !bOutcomeHandled)
-			SpeedWorldSubsystem->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 		MarkTerminal();
-		UE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d Stage=%s Type=unknown"),
+		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d Stage=%s Type=unknown"),
 			Context.NumFrame, bGlobalPublished ? 1 : 0, ExceptionStage);
 		return false; // No exception escapes into the UE worker/callback boundary.
 	}
@@ -1810,8 +1824,8 @@ bool ASpeedPhysicsSimulation::RequestRollbackAndResimulation(
 	const uint64 TargetFrameInclusive)
 {
     if (!AllowsLegacySnapshotRollback()) return false;
-	if (!Speed::CanonicalFrameDriver::IsEnabled() || !InputJournal.IsSealed() ||
-		Snapshot.InputJournalHash != InputJournal.StableHash() ||
+	if (!Speed::CanonicalFrameDriver::IsEnabled() || !InputJournalDriverStorage().IsSealed() ||
+		Snapshot.InputJournalHash != InputJournalDriverStorage().StableHash() ||
 		Snapshot.NumFrame > TargetFrameInclusive ||
 		TargetFrameInclusive >= TNumericLimits<unsigned int>::Max())
 	{
@@ -1821,12 +1835,12 @@ bool ASpeedPhysicsSimulation::RequestRollbackAndResimulation(
 	// before queuing instead of rewinding physics underneath live owners.
 	const auto InputView = ReadInputRegistryView();
 	if (InputView && !InputView->Bindings.empty()) return false;
-	FScopeLock Lock(&RollbackRequestMutex);
-	if (PendingRollbackRequest.IsSet())
+	FScopeLock Lock(&RollbackRequestMutexDriverStorage());
+	if (PendingRollbackRequestDriverStorage().IsSet())
 	{
 		return false;
 	}
-	PendingRollbackRequest.Emplace(FPendingRollbackRequest{
+	PendingRollbackRequestDriverStorage().Emplace(FPendingRollbackRequest{
 		Snapshot, TargetFrameInclusive });
 	return true;
 }
@@ -1835,28 +1849,28 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 {
 	TOptional<FPendingRollbackRequest> Request;
 	{
-		FScopeLock Lock(&RollbackRequestMutex);
-		if (!PendingRollbackRequest.IsSet())
+		FScopeLock Lock(&RollbackRequestMutexDriverStorage());
+		if (!PendingRollbackRequestDriverStorage().IsSet())
 		{
 			return true;
 		}
 #if !UE_BUILD_SHIPPING
-        IndependentFastCoverage276.RollbackDequeued();
+        IndependentFastCoverage276DriverStorage().RollbackDequeued();
 #endif
-		Request = MoveTemp(PendingRollbackRequest);
-		PendingRollbackRequest.Reset();
+		Request = MoveTemp(PendingRollbackRequestDriverStorage());
+		PendingRollbackRequestDriverStorage().Reset();
 	}
 
 	// Legacy restore is not a completed world/input transaction. Invalidate the
 	// optional common view before any restore mutation; retained reads are historical.
-	PublishedCompletedWorldInput.store({}, std::memory_order_seq_cst);
+	PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
 	// Recheck on the worker: an input binding may have arrived since admission.
 	const auto InputView = ReadInputRegistryView();
 	if (InputView && !InputView->Bindings.empty()) return false;
 	TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> RestoreProducers;
 	{
-		FScopeLock Lock(&PresentationProducerMutex);
-		RestoreProducers = PresentationProducers;
+		FScopeLock Lock(&PresentationProducerMutexDriverStorage());
+		RestoreProducers = PresentationProducersDriverStorage();
 	}
 	TArray<FSimulationPresentationOutput> RestoreOutputs;
 	if (Request->Snapshot.PresentationOutputs.Num() != RestoreProducers.Num()) return false;
@@ -1871,11 +1885,11 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 			!Producer->CanRestore(*Output, Request->TargetFrameInclusive)) return false;
 		RestoreOutputs.Add(*Output);
 	}
-	if (!SpeedWorldSubsystem ||
-		!SpeedWorldSubsystem->RestoreSimulationSnapshot(
-			Request->Snapshot, InputJournal.StableHash()))
+	if (!SpeedWorldSubsystemDriverStorage() ||
+		!SpeedWorldSubsystemDriverStorage()->RestoreSimulationSnapshot(
+			Request->Snapshot, InputJournalDriverStorage().StableHash()))
 	{
-		UE_LOG(LogTemp, Error,
+		SPEED_NATIVE_LOG(LogTemp, Error,
 			TEXT("[SimulationSnapshotRestoreRejected] Frame=%llu TargetFrame=%llu"),
 			Request->Snapshot.NumFrame, Request->TargetFrameInclusive);
 		return false;
@@ -1888,25 +1902,25 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 		RestoreProducers[Index]->RestoreValidated(RestoreOutputs[Index], Request->TargetFrameInclusive, Restored);
 		Request->Snapshot.PresentationOutputs.Add(MoveTemp(Restored));
 	}
-	FrameHashes.RemoveFrom(Request->Snapshot.NumFrame);
-	if (!FrameHashes.Append(
+	FrameHashesDriverStorage().RemoveFrom(Request->Snapshot.NumFrame);
+	if (!FrameHashesDriverStorage().Append(
 			Request->Snapshot.NumFrame, Request->Snapshot.StateHash) ||
-		!SnapshotBuffer.Publish(Request->Snapshot))
+		!SnapshotBufferDriverStorage().Publish(Request->Snapshot))
 	{
-		UE_LOG(LogTemp, Error,
+		SPEED_NATIVE_LOG(LogTemp, Error,
 			TEXT("[SimulationSnapshotRepublishFailed] Frame=%llu"),
 			Request->Snapshot.NumFrame);
 		return false;
 	}
 
-	CanonicalNumFrame = Request->Snapshot.NumFrame + 1u;
-	_NumFrame = static_cast<unsigned int>(CanonicalNumFrame);
+	CanonicalNumFrameDriverStorage() = Request->Snapshot.NumFrame + 1u;
+	_NumFrameDriverStorage() = static_cast<unsigned int>(CanonicalNumFrameDriverStorage());
 	const uint64 ReplayFrameCount =
 		Request->TargetFrameInclusive - Request->Snapshot.NumFrame;
 	for (uint64 ReplayIndex = 0; ReplayIndex < ReplayFrameCount; ++ReplayIndex)
 	{
 		const double PhysicalFrameStartSeconds = FPlatformTime::Seconds();
-        FCanonicalFrameContext ReplayContext(CanonicalNumFrame);
+        FCanonicalFrameContext ReplayContext(CanonicalNumFrameDriverStorage());
         ReplayContext.Purpose=ECanonicalFramePurpose::Resimulation;
 #if WITH_DEV_AUTOMATION_TESTS
         const auto OwnedReplayStep = Speed::OwnedFrameAudit::BeginStep(ReplayContext.NumFrame, true);
@@ -1917,15 +1931,15 @@ bool ASpeedPhysicsSimulation::ProcessPendingRollbackRequest()
 #endif
         if (!ReplayStepSucceeded)
 		{
-			UE_LOG(LogTemp, Error,
+			SPEED_NATIVE_LOG(LogTemp, Error,
 				TEXT("[SimulationResimulationFailed] Frame=%llu TargetFrame=%llu"),
-				CanonicalNumFrame, Request->TargetFrameInclusive);
+				CanonicalNumFrameDriverStorage(), Request->TargetFrameInclusive);
 			return false;
 		}
 		RecordStepPerformance(
 			(FPlatformTime::Seconds() - PhysicalFrameStartSeconds) * 1000.0);
-		++CanonicalNumFrame;
-		_NumFrame = static_cast<unsigned int>(CanonicalNumFrame);
+		++CanonicalNumFrameDriverStorage();
+		_NumFrameDriverStorage() = static_cast<unsigned int>(CanonicalNumFrameDriverStorage());
 	}
 	OnCanonicalTimelineRestored();
 	return true;
@@ -1936,9 +1950,9 @@ void ASpeedPhysicsSimulation::SetReplaySink(TSharedPtr<ISimulationReplaySink, ES
 {
     check(IsInGameThread());
     {
-        FScopeLock Lock(&ReplaySinkMutex);
-        Swap(ReplaySink,Sink);
-        bReplayCaptureRequested.Store(ReplaySink.IsValid());
+        FScopeLock Lock(&ReplaySinkMutexDriverStorage());
+        Swap(ReplaySinkDriverStorage(),Sink);
+        bReplayCaptureRequestedDriverStorage().Store(ReplaySinkDriverStorage().IsValid());
     }
     // Any old sink is released outside the publication lock, after in-flight refs.
 }
@@ -1948,30 +1962,30 @@ bool ASpeedPhysicsSimulation::TryReplaceReplaySink(const ISimulationReplaySink* 
 {
     check(IsInGameThread());
     {
-        FScopeLock Lock(&ReplaySinkMutex);
-        if(ReplaySink.Get()!=Expected)return false;
-        Swap(ReplaySink,Replacement);
-        bReplayCaptureRequested.Store(ReplaySink.IsValid());
+        FScopeLock Lock(&ReplaySinkMutexDriverStorage());
+        if(ReplaySinkDriverStorage().Get()!=Expected)return false;
+        Swap(ReplaySinkDriverStorage(),Replacement);
+        bReplayCaptureRequestedDriverStorage().Store(ReplaySinkDriverStorage().IsValid());
     }
     return true; // Replacement retains the old sink until after lock release.
 }
 
 void ASpeedPhysicsSimulation::ServiceReplayCapture(const FSimulationSnapshot& Snapshot) noexcept
 {
-    if (!bReplayCaptureRequested.Load()) return;
+    if (!bReplayCaptureRequestedDriverStorage().Load()) return;
     TSharedPtr<ISimulationReplaySink, ESPMode::ThreadSafe> Sink;
     {
-        FScopeLock Lock(&ReplaySinkMutex); Sink=ReplaySink;
+        FScopeLock Lock(&ReplaySinkMutexDriverStorage()); Sink=ReplaySinkDriverStorage();
     }
     if (!Sink.IsValid() || !Sink->IsCapturing()) return;
     uint64 UnsupportedStableId=0;
     try
     {
         FSimulationReplayFrame Frame;
-        if (SpeedWorldSubsystem->CaptureReplayStateFields(Frame.Records,UnsupportedStableId))
+        if (SpeedWorldSubsystemDriverStorage()->CaptureReplayStateFields(Frame.Records,UnsupportedStableId))
         {
             Frame.Snapshot=Snapshot;
-            Frame.Snapshot.PublicationSerial=SnapshotBuffer.PublishedSerial();
+            Frame.Snapshot.PublicationSerial=SnapshotBufferDriverStorage().PublishedSerial();
             Sink->Consume(MoveTemp(Frame));
             return;
         }
@@ -1979,8 +1993,8 @@ void ASpeedPhysicsSimulation::ServiceReplayCapture(const FSimulationSnapshot& Sn
     catch (...) { /* Allocation/schema failure affects recording only. */ }
     Sink->Failed(Snapshot.NumFrame,UnsupportedStableId);
     {
-        FScopeLock Lock(&ReplaySinkMutex);
+        FScopeLock Lock(&ReplaySinkMutexDriverStorage());
         // Do not disable a newer GT registration while retiring this generation.
-        if (ReplaySink==Sink) {ReplaySink.Reset();bReplayCaptureRequested.Store(false);}
+        if (ReplaySinkDriverStorage()==Sink) {ReplaySinkDriverStorage().Reset();bReplayCaptureRequestedDriverStorage().Store(false);}
     }
 }

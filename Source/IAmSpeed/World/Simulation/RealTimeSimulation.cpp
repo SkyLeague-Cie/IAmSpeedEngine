@@ -1,3 +1,4 @@
+#include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "RealTimeSimulation.h"
 
 #include "CanonicalFrameDriver.h"
@@ -214,7 +215,7 @@ ESimulationWorkerResult ARealTimeSimulation::DriveOwnedWorkerPulse(
             Outcome.HasPreviousStart = Sample.bHasPreviousStart;
             Outcome.RecoveryLimited = Sample.bRecoveryLimited;
             if (!SnapshotBuffer.CompleteCadenceTiming(CanonicalNumFrame - 1u, FrameStartSeconds, Outcome))
-                UE_LOG(SpeedPhysicsLog, Error, TEXT("[RealTimePublicationCadenceIncomplete] Frame=%llu"), CanonicalNumFrame - 1u);
+                SPEED_NATIVE_LOG(SpeedPhysicsLog, Error, TEXT("[RealTimePublicationCadenceIncomplete] Frame=%llu"), CanonicalNumFrame - 1u);
         }
 #else
 		FramePacer.BeginFrame(
@@ -266,7 +267,7 @@ void ARealTimeSimulation::AuditPhysicalFrameStart(
 		NowSeconds - LastPhysicalFastWarningSeconds >= CooldownSeconds)
 	{
 		LastPhysicalFastWarningSeconds = NowSeconds;
-		UE_LOG(SpeedPhysicsLog, Warning,
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
 			TEXT("[RealTimeSimulationCadence] Physics Thread is too fast: Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f BaseStartIntervalMs=%.6f PhaseErrorMs=%.6f RecoveryDebtMs=%.6f"),
 			CanonicalNumFrame, Sample.IntervalSeconds * 1000.0,
 			ExpectedSeconds * 1000.0, static_cast<double>(RealDeltaTime) * 1000.0,
@@ -278,7 +279,7 @@ void ARealTimeSimulation::AuditPhysicalFrameStart(
 		NowSeconds - LastPhysicalSlowWarningSeconds >= CooldownSeconds)
 	{
 		LastPhysicalSlowWarningSeconds = NowSeconds;
-		UE_LOG(SpeedPhysicsLog, Warning,
+		SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
 			TEXT("[RealTimeSimulationCadence] Physics Thread is too slow: Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f BaseStartIntervalMs=%.6f PhaseErrorMs=%.6f RecoveryDebtMs=%.6f"),
 			CanonicalNumFrame, Sample.IntervalSeconds * 1000.0,
 			ExpectedSeconds * 1000.0, static_cast<double>(RealDeltaTime) * 1000.0,
@@ -318,7 +319,7 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
     // A missing receipt/clock/history is a diagnostic failure, never a green gap.
     if (!Result.HistoryComplete || Result.FrameAccountingMismatch)
     {
-        UE_LOG(SpeedPhysicsLog, Error,
+        SPEED_NATIVE_LOG(SpeedPhysicsLog, Error,
             TEXT("[RealTimePresentationCadence] Incomplete publication observation: Observer=%s HistoryComplete=%u FrameAccountingMismatch=%u Frame=%llu Serial=%llu"),
             *Observer.GetName(), uint32(Result.HistoryComplete), uint32(Result.FrameAccountingMismatch),
             uint64(Result.Latest.Frame), uint64(Result.Latest.Serial));
@@ -335,7 +336,7 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
     if (Result.EarlyStart && NowSeconds - LastPresentationFastWarningSeconds >= CooldownSeconds)
     {
         LastPresentationFastWarningSeconds = NowSeconds;
-        UE_LOG(SpeedPhysicsLog, Warning,
+        SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
             TEXT("[RealTimePresentationCadence] Physics Thread is too fast: Observer=%s Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f Publications=%llu ObservationIntervalMs=%.6f"),
             *Observer.GetName(), uint64(Early.Frame), Early.Start.ActualIntervalSeconds * 1000.0,
             Early.Start.TargetIntervalSeconds * 1000.0, uint64(Result.Publications),
@@ -344,7 +345,7 @@ void ARealTimeSimulation::AuditPresentationFrameCadence(
     if (Result.LateStart && NowSeconds - LastPresentationSlowWarningSeconds >= CooldownSeconds)
     {
         LastPresentationSlowWarningSeconds = NowSeconds;
-        UE_LOG(SpeedPhysicsLog, Warning,
+        SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
             TEXT("[RealTimePresentationCadence] Physics Thread is too slow: Observer=%s Frame=%llu ActualStartIntervalMs=%.6f TargetStartIntervalMs=%.6f Publications=%llu ObservationIntervalMs=%.6f"),
             *Observer.GetName(), uint64(Late.Frame), Late.Start.ActualIntervalSeconds * 1000.0,
             Late.Start.TargetIntervalSeconds * 1000.0, uint64(Result.Publications),
