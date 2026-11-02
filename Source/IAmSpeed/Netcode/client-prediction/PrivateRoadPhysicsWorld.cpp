@@ -509,7 +509,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     I.OriginalFloorActorWeak=FloorActor;I.OriginalFloorWeak=Floor;I.Access->OriginalFloorBirth=I.OriginalFloorWeak;
     {
         FOriginalComponentStorageScope OriginalWorldAdmission(*I.Access);
-        I.Bridge->AnalyticSourceComponentsEpochStorage().Add(1,Floor);
+        I.Bridge->AnalyticSourceComponentsEpochStorage().Add(1,I.OriginalFloorWeak); // genuine existing birth weak, no raw reconstruction
         I.Bridge->AnalyticWorldDataEpochStorage()=Data;
         auto OriginalCollision=MakeUnique<Speed::FAnalyticStaticCollisionWorld>(*Data);
         I.Access->OriginalQueryIdentity=OriginalCollision->GetImmutableQueryIdentity1075();
@@ -614,15 +614,32 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         const bool BirthConfigured=[&]() -> bool
         {
         try {
-        FGCScopeGuard BirthMathOnly;
-        Speed::RoadSettings::FOriginalRoadSettingsScope SettingsBirthMath(I.DeclaredSettings);
+        // Ordinary reference/facade lifecycle is callback-capable. No GC,
+        // original recipe or original storage scope is held here. The same
+        // owned diagnostic outbox remains active until after native birth.
         C->SetOwner(N.Actor);
-        // SetOwner's normal legacy registration remains a facade operation.
-        for(auto* Body:C->GetSubBodies())
+        if(!I.AcquiredGraphStillLive())return false;
+        const TArray<USSubBody*> FacadeTopology=C->GetSubBodies(); // owned identity list, never a physical-state import
+        const auto FacadeTopologyStillMatches=[&]() -> bool
+        {
+            if(!I.AcquiredGraphStillLive()||FacadeTopology.Num()!=5||N.OriginalWheelBodyBirth.Num()!=4)return false;
+            const auto& Current=C->SubBodiesWheeledDomainStorage();
+            const auto& Wheels=C->WheelSubBodiesWheeledDomainStorage();
+            if(Current.Num()!=5||Wheels.Num()!=4
+                ||FacadeTopology[0]!=N.OriginalHitboxBirth.Get()||Current[0]!=FacadeTopology[0]
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(C->HitboxSubBodyWheeledDomainStorage(),N.OriginalHitboxBirth))return false;
+            for(int32 Index=0;Index<4;++Index)
+                if(FacadeTopology[Index+1]!=N.OriginalWheelBodyBirth[Index].Get()||Current[Index+1]!=FacadeTopology[Index+1]
+                    ||!Speed::NativeObjectRead::MatchesOriginalBirth(Wheels[Index],N.OriginalWheelBodyBirth[Index]))return false;
+            return true;
+        };
+        if(!FacadeTopologyStillMatches())return false;
+        for(auto* Body:FacadeTopology)
         {
             if(auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
             {
                 Box->StorageAccess=I.Access;I.OriginalBoxesWeak.Add(Box);
+                if(!FacadeTopologyStillMatches()||!Box->OwnedBodyValues||!Box->OwnedSolidValues||!Box->OwnedBoxDomain)return false;
                 N.NativeBoxRoot=std::make_shared<FImpl::FCar::FBoxRoot>(N.NativeVehicleRoot,std::move(Box->OwnedBodyValues),std::move(Box->OwnedSolidValues),std::move(Box->OwnedBoxDomain));
                 Box->OwnedBodyValues=RetirementDraft::AliasBodyPart<0>(N.NativeBoxRoot);
                 Box->OwnedSolidValues=RetirementDraft::AliasBodyPart<1>(N.NativeBoxRoot);
@@ -632,6 +649,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
             else if(auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
             {
                 Wheel->StorageAccess=I.Access;I.OriginalWheelsWeak.Add(Wheel);
+                if(!FacadeTopologyStillMatches()||!Wheel->OwnedBodyValues||!Wheel->OwnedSolidValues||!Wheel->OwnedWheelRuntime||!Wheel->OwnedWheelDomain||!Wheel->OwnedSphereDomain)return false;
                 auto Root=std::make_shared<FImpl::FCar::FWheelRoot>(N.NativeVehicleRoot,std::move(Wheel->OwnedBodyValues),std::move(Wheel->OwnedSolidValues),std::move(Wheel->OwnedWheelRuntime),std::move(Wheel->OwnedWheelDomain),std::move(Wheel->OwnedSphereDomain));
                 Wheel->OwnedBodyValues=RetirementDraft::AliasBodyPart<0>(Root);
                 Wheel->OwnedSolidValues=RetirementDraft::AliasBodyPart<1>(Root);
@@ -642,7 +660,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
             }
             else {Refuse(Why,TEXT("private subbody storage subtype missing"));return {};}
         }
-        if(!C->GetHitboxSubBodyForConfiguration()||C->GetHitboxSubBodyForConfiguration()->GetClass()!=USpeedBranchBoxSubBody::StaticClass())
+        auto* const FacadeHitbox=C->GetHitboxSubBodyForConfiguration();
+        if(!FacadeTopologyStillMatches()||!FacadeHitbox||FacadeHitbox!=N.OriginalHitboxBirth.Get()
+            ||FacadeHitbox->GetClass()!=USpeedBranchBoxSubBody::StaticClass())
         {Refuse(Why,TEXT("private native contact dispatch subtype missing"));return {};}
         N.ReferenceConfiguration->Suspension.SetSuspensionMaxRaise(10);N.ReferenceConfiguration->Suspension.SetSuspensionMaxDrop(25);
         N.ReferenceConfiguration->Suspension.SpringRate=5000;N.ReferenceConfiguration->Suspension.RestingForce=250000;
@@ -651,10 +671,16 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         N.NativeConfiguration->Suspension.SpringRate=5000;N.NativeConfiguration->Suspension.RestingForce=250000;
         N.NativeConfiguration->Suspension.CompressionDamping=1000;N.NativeConfiguration->Suspension.ReboundDamping=1000;
         BuildOriginalVehicle(*C,N.ReferenceConfiguration,ReferenceWheels);
-        if(C->ReadWheelSubBodiesForPhysics().Num()!=4){Refuse(Why,TEXT("private native wheel topology differs"));return {};}
+        if(!FacadeTopologyStillMatches()){Refuse(Why,TEXT("private facade wheel topology changed"));return false;}
         for(int32 W=0;W<4;++W)
-        {C->ReadWheelSubBodiesForPhysics()[W]->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));C->ReadWheelSubBodiesForPhysics()[W]->SetRadiusForConfiguration(30);}
-        if(!C->ValidateSimulationBindings(Why))return {};
+        {
+            auto* const Wheel=N.OriginalWheelBodyBirth[W].Get();if(!Wheel)return false;
+            Wheel->SetLocalOffset(FVector(W<2?70:-70,W%2?45:-45,-15));
+            if(!FacadeTopologyStillMatches())return false;
+            Wheel->SetRadiusForConfiguration(30);
+            if(!FacadeTopologyStillMatches())return false;
+        }
+        if(!C->ValidateSimulationBindings(Why)||!FacadeTopologyStillMatches())return false;
         if(C->ThrottleAccelWheeledDomainStorage()!=750||C->BrakeAccelWheeledDomainStorage()!=1100||C->PhysDampingWheeledDomainStorage()!=0||C->AirForwardThrottleWheeledDomainStorage()!=0||C->AirBackwardThrottleWheeledDomainStorage()!=0)
         {Refuse(Why,TEXT("stock native driving profile differs"));return {};}
         C->EstablishOriginalComponentStorage();
@@ -663,7 +689,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         // Witness only: actual legacy values from the original setup. These
         // are NEVER imported into physical storage or a restore certificate.
         TArray<uint8> OriginalSolidRecipe;
-        for(auto* Body:C->GetSubBodies())
+        for(auto* Body:FacadeTopology)
         {
             if(const auto* Box=Cast<USpeedBranchBoxSubBody>(Body))
             {if(!PartialObservation::AppendSolidValues(OriginalSolidRecipe,Box->ReadLegacySolidDiagnosticValues()))return {};}
@@ -672,6 +698,10 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
             else return {};
         }
 #endif
+        if(!FacadeTopologyStillMatches())return false;
+        FGCScopeGuard BirthMathOnly;
+        if(!I.AcquiredGraphStillLive())return false; // actual original readback after the last callback
+        Speed::RoadSettings::FOriginalRoadSettingsScope SettingsBirthMath(I.DeclaredSettings);
         FOriginalComponentStorageScope OriginalStorage(*I.Access);
         // The actual private domain is initialized through native operations
         // from its explicit constructor/profile program. No facade values,

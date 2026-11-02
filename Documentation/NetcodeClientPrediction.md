@@ -1210,3 +1210,44 @@ A separate reviewed78 adaptation must bind the genuine new source, original
 closure, metadata and upstream hashes. No runtime factory prefix, complete
 callback/service lifetime, authoritativeK restore or localized rollback is
 claimed from this compile fix. All incomplete restoration guards remain closed.
+
+
+Source82/native78 completed56 native tests0errors/warnings, Pending1,
+three commandlets, two simultaneous actual Game clients plus dedicated and
+expected cancellation. Original79488 closed0 with all real original children,
+managedJob0 twice and empty final source/protected/Engine audits.35 oscillations
+cover21455frames, all six measured kinematic differences0 after synchronization.
+The widened primary recipe-or-original-route census measured178birth objects,
+41nulls and1deliberate control, noStep reads. Route-only subset was1floor weak
+assignment.91actualprefixes capture220events with0capturefailure/overflow/reentry;
+151events have24PC-capped suffixes. Retirement, negativebirth, nonGT and ordinary
+facade outside both contexts remain unobserved, not a wholefactory/lifetime proof.
+
+The actual bounded readonly78 helper completed synchronously with exit0,
+genuineJob0 twice and six reserved tool/review/manifest plus eleven upstream
+file hashes stable.2121PC records,1994 candidates and9modules were retained;
+127unresolved PC records and all capped suffixes remain UNKNOWN. Current
+module/PDB mapping after capture does not certify source or loader incarnation.
+These candidates plus exact code inspection identify reference/facade owner,
+wheel setup, scene offset and weak-root operations inside the original recipe.
+
+Source83 is a local experimental partition, submitted to Netcode SL for exact
+source review. It keeps the diagnostic outbox active but moves the reference/
+facade setup before the GC, original recipe and original storage scopes.
+It uses an owned topology IDENTITY list, checked against real prior hitbox/
+wheel birth weak references and actual field NoResolve readback after callbacks
+and before native entry, and refuses missing native backing. Callbackful setup
+no longer retains borrowed facade container iterators in this owner loop.
+Native physical values are still constructed from defaults and the same
+explicit declared native program, never imported from facade state. The actual
+legacy solid recipe remains comparison evidence only; a mismatch refuses.
+The initial floor map copies its genuine existing floor weak identity.
+
+This does NOT complete factory callback closure: the second native SetOwner,
+gravity CDO, late PinTree and driver/network admission remain known open
+domains. Their guards and retention points remain unchanged. No zero-count
+or historical177comparison is assumed after changing scope. Fresh native79,
+GC/negativebirth/isolation controls and exact review are still required. Full
+causal restoration, real service/module/deleter participation and localized
+rollback remain guarded and unfinished; current replay is GLOBAL_FROM_BIRTH.
+All earlier FAIL73/75/77 and UNKNOWN remain preserved.
