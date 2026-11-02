@@ -570,3 +570,14 @@ physical radius in its own scope. Native53's three actual C2039/C2065 errors,
 original exit6/338.922s and natural Job0 twice with zero source/protected/Engine
 audit drift remain failures. No runtime ran and no native law, value, guard,
 complete restoration capability or localized replay claim changes here.
+
+
+Source59 initializes the fresh original recorded-history arrays with the SAME
+constructor policy as the legacy native domain: native capacity and INDEX_NONE
+frame markers, default native state values. A shared typed helper executes that
+policy in both births. It does not import facade history, record synthetic
+frames, add warmup or replace missing history with a success value. Native54
+compiled/loaded/query0, then genuinely crashed3 in the first oscillating case:
+SetOwner hitbox inertia queried frame0 against an empty original history array.
+All raw diagnostics/drains/audits and the incomplete suite remain FAIL; subsequent
+network/Game stages did not run. No restore/localized capability is admitted.

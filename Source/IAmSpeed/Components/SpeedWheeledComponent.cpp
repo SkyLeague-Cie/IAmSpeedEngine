@@ -424,6 +424,20 @@ float GetSmishTurnTargetSpeed(
 }
 }
 
+namespace
+{
+// Same original constructor policy for both fresh native domains. INDEX_NONE
+// means no historical frame exists; no fake state or frame is recorded here.
+template<class TFrames,class TBase,class TWheeled>
+void InitializeRecordedSlotsAtNativeBirth(TFrames& Frames,TBase& Base,TWheeled& Wheeled)
+{
+    Frames.Init(INDEX_NONE,SpeedConstants::RecordedHistorySize);
+    Frames.SetNum(SpeedConstants::RecordedHistorySize);
+    Base.SetNum(SpeedConstants::RecordedHistorySize);
+    Wheeled.SetNum(SpeedConstants::RecordedHistorySize);
+}
+}
+
 USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectInitializer)
     :USpeedWheeledComponent(ObjectInitializer,ESpeedWheeledNetworkConstruction::Legacy) {}
 
@@ -442,10 +456,7 @@ USpeedWheeledComponent::USpeedWheeledComponent(const FObjectInitializer& ObjectI
 	InitNetwork();
 
     // Physical recorded slots are independent of any UE network component.
-    RecordedBaseFramesWheeledDomainStorage().Init(INDEX_NONE, SpeedConstants::RecordedHistorySize);
-    RecordedBaseFramesWheeledDomainStorage().SetNum(SpeedConstants::RecordedHistorySize);
-    RecordedBaseStatesWheeledDomainStorage().SetNum(SpeedConstants::RecordedHistorySize);
-    RecordedWheeledStatesWheeledDomainStorage().SetNum(SpeedConstants::RecordedHistorySize);
+    InitializeRecordedSlotsAtNativeBirth(RecordedBaseFramesWheeledDomainStorage(),RecordedBaseStatesWheeledDomainStorage(),RecordedWheeledStatesWheeledDomainStorage());
 
 	SetEngineFPS(Speed::SimUtils::ComputePhysicsFPS(UPhysicsSettings::Get()->AsyncFixedTimeStepSize));
 	GravityZWheeledDomainStorage() = GetDefault<UPhysicsSettings>()->DefaultGravityZ;
@@ -5330,6 +5341,7 @@ bool USpeedWheeledComponent::BindOriginalWheeledDomain(const std::shared_ptr<con
 {
     if(!IsInGameThread()||!Route||OriginalWheeledDomain||!OriginalWheeledRoute.expired()||NetworkConstruction!=ESpeedWheeledNetworkConstruction::IAmSpeedOnly)return false;
     OriginalWheeledDomain=std::make_unique<FOriginalWheeledDomain>();OriginalWheeledRoute=Route;
+    InitializeRecordedSlotsAtNativeBirth(OriginalWheeledDomain->RecordedBaseFrames,OriginalWheeledDomain->RecordedBaseStates,OriginalWheeledDomain->RecordedWheeledStates);
     // Full native ctor/configuration/geometry setup is performed by the owner
     // before registration. This allocation alone is not a boundary lease.
     return true;
