@@ -62,8 +62,8 @@ bool PadControl(const FKey& Key, FRawControl& Out)
 }
 }
 
-bool ImportInputMappings(const UInputMappingContext* Context, const TMap<const UInputAction*, FActionId>& Actions,
-	FInputActionContractDescription& Description, FString& Error)
+static bool ImportInputMappingValues(const UInputMappingContext* Context, const TMap<const UInputAction*, FActionId>& Actions,
+	FInputActionContractDescription& Description, FString& Error, bool PresentationOnly)
 {
 	check(IsInGameThread());
 	auto Reject = [&](const TCHAR* Reason) { Error = Reason; return false; };
@@ -145,7 +145,14 @@ bool ImportInputMappings(const UInputMappingContext* Context, const TMap<const U
 	for (const auto& Definition : Result.Actions)
 		if (Definition.Wiring == EActionWiring::Wired && !Seen.Contains(Definition.Id))
 			return Reject(TEXT("A required game action has no binding"));
-	if (!FInputActionContract::Create(Result)) return Reject(TEXT("Imported mapping exceeds supported response or capacity"));
+    if (PresentationOnly ? !FInputActionContract::ValidatePresentationDescription(Result) : !FInputActionContract::Create(Result))
+        return Reject(TEXT("Imported mapping exceeds supported response or capacity"));
 	Description = std::move(Result); Error.Reset(); return true;
 }
+bool ImportInputMappings(const UInputMappingContext* Context,const TMap<const UInputAction*,FActionId>& Actions,
+    FInputActionContractDescription& Description,FString& Error)
+{ return ImportInputMappingValues(Context,Actions,Description,Error,false); }
+bool ImportPresentationInputMappings(const UInputMappingContext* Context,const TMap<const UInputAction*,FActionId>& Actions,
+    FInputActionContractDescription& Description,FString& Error)
+{ return ImportInputMappingValues(Context,Actions,Description,Error,true); }
 }

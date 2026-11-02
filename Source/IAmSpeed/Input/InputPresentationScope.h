@@ -1,4 +1,7 @@
 #pragma once
+#if defined(IAMSPEED_API)
+#include "CoreTypes.h"
+#endif
 
 // One exported TLS definition is needed across Unreal module/DLL boundaries.
 #ifndef IAMSPEED_API

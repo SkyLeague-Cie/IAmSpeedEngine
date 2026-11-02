@@ -102,6 +102,36 @@ public:
 		}
 		return Result;
 	}
+    // Values-only UI mappings have no physical destinations. This separate
+    // validator never admits them to a driving mapper or weakens Create().
+    static bool ValidatePresentationDescription(const FInputActionContractDescription& D)
+    {
+        if (!D.Revision.Value || D.Actions.empty() || D.Actions.size()>ActionCount
+            || D.Mapping.size()>256 || !D.Physical.empty()) return false;
+        std::vector<std::string> Names;
+        for (std::size_t I=0;I<D.Actions.size();++I)
+        {
+            const auto& A=D.Actions[I];
+            if (A.Id>=ActionCount || (I&&A.Id<=D.Actions[I-1].Id) || !Token(A.Owner)
+                || !Token(A.Name) || !A.Version || !A.Aliases.empty() || A.Type!=EActionType::Axis1D
+                || A.Wiring>EActionWiring::Wired || A.Quantization<=0
+                || A.Accumulation>EActionAccumulation::HighestAbsolute || !ValidModifiers(A.Modifiers)
+                || !std::isfinite(A.Deadzone) || A.Deadzone<0 || A.Deadzone>1
+                || !std::isfinite(A.Exponent) || A.Exponent<=0
+                || !std::isfinite(A.Sensitivity) || A.Sensitivity<=0) return false;
+            const auto Name=A.Owner+":"+A.Name;
+            if (std::find(Names.begin(),Names.end(),Name)!=Names.end()) return false;
+            Names.push_back(Name);
+        }
+        for (const auto& B:D.Mapping)
+        {
+            const FActionDefinition* A=nullptr;
+            for (const auto& Candidate:D.Actions) if(Candidate.Id==B.Action){A=&Candidate;break;}
+            if (!A || A->Wiring!=EActionWiring::Wired || !B.Control.IsValid()
+                || !std::isfinite(B.Scale) || B.Scale==0 || !ValidModifiers(B.Modifiers)) return false;
+        }
+        return true;
+    }
 private:
 	static bool ValidModifiers(const std::vector<FScalarModifier>& Modifiers)
 	{
