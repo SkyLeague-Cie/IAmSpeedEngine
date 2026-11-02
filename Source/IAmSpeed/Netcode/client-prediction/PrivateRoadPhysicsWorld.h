@@ -12,6 +12,10 @@
 
 namespace Speed::Netcode::Prediction
 {
+// Observes this GT's actual original storage-routing pointer only. This is
+// diagnostic context, NOT factory completion, permission, exclusion or a lease.
+// Foreign callbacks can still run inside a route; they remain observable work.
+IAMSPEED_API bool IsPrivateRoadOriginalStorageRouteForDiagnostics() noexcept;
 enum class EPrivateRoadStartPolicy : uint8 { AwaitInitialPublication, ExplicitUnitRecipe };
 struct FPrivateRoadCarSeed
 {

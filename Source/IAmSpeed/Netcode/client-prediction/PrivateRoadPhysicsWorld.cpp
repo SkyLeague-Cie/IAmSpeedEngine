@@ -129,6 +129,10 @@ bool NoNetworkOwner(UWorld* World)
 {return World&&!World->Scene&&!World->GetPhysicsScene()&&!World->bShouldSimulatePhysics
     &&Speed::NativeObjectRead::IsResolvedNull(World->NetDriver)&&NativeNetworkComponentCount(World)==0;}
 }
+bool IsPrivateRoadOriginalStorageRouteForDiagnostics() noexcept
+{
+    return IsInGameThread()&&OriginalComponentStorageOwner!=nullptr;
+}
 bool FPrivateRoadAccess::OriginalActorWorldStillMatches(const AActor* Actor) const
 {
     const auto* W=OriginalWorldBirth.Get();const auto* L=OriginalLevelBirth.Get();

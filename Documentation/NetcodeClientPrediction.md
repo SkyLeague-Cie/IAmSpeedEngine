@@ -1139,3 +1139,55 @@ No source78/native74 PASS is transferred to80. Full causal state, authoritativeK
 restore, callback/service/module/deleter lifetime admission and localized rollback
 remain open and guarded. Current reconciliation remains GLOBAL_FROM_BIRTH.
 All earlier FAIL/UNKNOWN including73 and75 remain preserved.
+
+
+Source80/native76 completed build0,56 native tests0errors/warnings, Pending1,
+three commandlets, two simultaneous actual Game client hosts plus a dedicated
+process and expected cancellation. Original9813 and coordinators closed0,
+real Job0 twice and final source/protected/Engine audits empty.35 oscillations
+cover21455frames with all six measured COM differences zero after synchronization.
+Default startup gate refused512 attempts until real publication/activation1.
+The interacting recipe-GT scoped read census is now0 object/null events with
+tracking enabled and64 genuine positive controls,375 contact-event frames.
+This is the measured recipe scope, NOT a whole callback/factory/lifetime proof.
+One-car recipe-only birth177/null41 remain. All FAIL73/75 and UNKNOWN preserved.
+
+The actual finite Game run now retains240/240 paired authority/first-forward
+frames for each client, no missing observations. First-forward position maxima
+over those frames are431.5385455139685cm localA,411.53127184241754cm remoteB
+onA,255.21254257253062cm remoteA and274.6549326156487cm localB onB.
+Actual requested input mismatches are0 for owners,122 remoteB frames and121
+remoteA frames, in the deliberate withholding/contact fixture. Final compared
+kinematics at239 are exact after3/4GLOBAL_FROM_BIRTH corrections. These are
+programmed inputs, not playable device/local-feel acceptance. Input-value
+association is not isolated causal attribution; first forward may inherit prior
+pulse corrections, and added instrumentation affects scheduling.
+
+Source81 widens the actual primary read census to the UNION of selected recipe
+and original native storage routing context. A read-only GT boolean observes
+the genuine translation-unit routing pointer; it exposes no owner/view/scope
+installer and grants no permission, lifetime or exclusion. Route-only birth,
+step, control and null counts are reported separately. The historical
+ActualRecipeObjectReadCensus marker now denotes the wider UNION, so its new
+totals are not directly comparable with177recipe-only. Facade operations outside
+both contexts and all non-GT reads remain unobserved by this census.
+
+Before observer registration the actual ntdll stack-capture function is resolved
+and PINned. Every primary union-scope object/null event gets a bounded address
+sample, keyed by phase/route-only/null,24PC/512prefixes. Capture failure,
+overflow and reentrant sample skips remain explicit and reconcile with all
+actual census events. Identity accounting still uses the actual object array
+and serial readback, not manufactured weak generations. The hook is actually
+removed before reporting names/modules and before retirement/negative-birth
+fixtures; positive controls precede removal. Retirement and subsequent invalid
+birth are explicitly NOT observed by these primary counters. Current module
+lookups after capture are conditional and do not certify loader incarnation or
+source attribution; capped suffixes remain UNKNOWN. No symbol lookup, log,
+object name or heap allocation is called by the address sampler. Instrumentation
+adds work and does not certify unchanged performance or complete callbacks.
+
+Fresh native77 is required. No76 success transfers to this source. This change
+does not alter physical math, startup/retirement routing, provider guards or
+restoration admission. Actual factory callback partition, real service/module/
+deleter participation, full typed causal state, authoritativeK restoration and
+localized contact-island replay remain required. Reconciliation remains GLOBAL.

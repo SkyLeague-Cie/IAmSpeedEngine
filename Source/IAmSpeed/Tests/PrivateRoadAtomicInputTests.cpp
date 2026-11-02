@@ -24,6 +24,9 @@
 #include "UObject/ObjectHandleTracking.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include <atomic>
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#endif
 #include "Components/BoxComponent.h"
 #include "UObject/StrongObjectPtr.h"
 #include "IAmSpeed/World/Simulation/WeakContactReference.h"
@@ -148,8 +151,9 @@ struct FActualHandleReadWitness
         }
     }
 };
-// Actual Engine read census of ALL objects, including factory and the native
-// step/capture. This is diagnostic evidence, never callback exclusion authority.
+// Actual Engine read census when the selected recipe OR original storage route
+// is active. Facade operations outside both scopes remain NOT observed here.
+// This is diagnostic evidence, never callback exclusion authority.
 // Do not resolve/dereference class/name/physical views inside the callback.
 struct FActualRecipeObjectReadCensus
 {
@@ -162,14 +166,67 @@ struct FActualRecipeObjectReadCensus
     std::array<FEntry,256> Entries{};
     uint32 Used=0,ObserverDepth=0,MaxObserverDepth=0;bool DuringBirth=true,DuringControl=false,Overflow=false;
     uint64 BirthObjects=0,StepObjects=0,ControlObjects=0,NullObjects=0,NativeSerialAllocationCalls=0,UnknownIdentities=0;
+    uint64 RouteOnlyBirthObjects=0,RouteOnlyStepObjects=0,RouteOnlyControlObjects=0,RouteOnlyNullObjects=0;
+#if UE_WITH_OBJECT_HANDLE_TRACKING && PLATFORM_WINDOWS
+    using FRawStackCapture=uint16 (WINAPI*)(uint32,uint32,void**,uint32*);
+    FRawStackCapture RawCapture=nullptr;
+    struct FPrefix
+    {
+        uint8 Phase=0;bool RouteOnly=false,Null=false;uint16 Depth=0;uint64 Events=0;
+        std::array<uint64,24> PCs{};
+    };
+    std::array<FPrefix,512> Prefixes{};
+    uint32 UsedPrefixes=0;
+    uint64 CaptureFailures=0,PrefixOverflowEvents=0,ReentrantSamplesSkipped=0;
+    void Capture(bool RouteOnly,bool Null)
+    {
+        // Counters/actual identity census still observe reentrant events. Only
+        // this address sampler refuses recursion; skipped samples are explicit.
+        if(ObserverDepth>1){++ReentrantSamplesSkipped;return;}
+        if(!RawCapture){++CaptureFailures;return;}
+        std::array<void*,24> PCs{};
+        const uint16 Depth=RawCapture(0,uint32(PCs.size()),PCs.data(),nullptr);
+        if(!Depth){++CaptureFailures;return;}
+        const uint8 Phase=DuringBirth?0:DuringControl?2:1;
+        uint32 Index=0;
+        for(;Index<UsedPrefixes;++Index)
+        {
+            const auto& P=Prefixes[Index];
+            if(P.Phase!=Phase||P.RouteOnly!=RouteOnly||P.Null!=Null||P.Depth!=Depth)continue;
+            bool Same=true;
+            for(uint16 F=0;F<Depth;++F)if(P.PCs[F]!=reinterpret_cast<uint64>(PCs[F])){Same=false;break;}
+            if(Same)break;
+        }
+        if(Index==UsedPrefixes)
+        {
+            if(UsedPrefixes==Prefixes.size()){++PrefixOverflowEvents;return;}
+            auto& P=Prefixes[UsedPrefixes++];P.Phase=Phase;P.RouteOnly=RouteOnly;P.Null=Null;P.Depth=Depth;
+            for(uint16 F=0;F<Depth;++F)P.PCs[F]=reinterpret_cast<uint64>(PCs[F]);
+        }
+        ++Prefixes[Index].Events;
+    }
+#endif
     void Observe(TArrayView<const UObject* const> Objects)
     {
-        if(!IsInGameThread()||!Speed::RoadSettings::SelectedOriginalRoadSettings())return;
+        if(!IsInGameThread())return;
+        const bool Recipe=Speed::RoadSettings::SelectedOriginalRoadSettings()!=nullptr;
+        const bool OriginalRoute=P::IsPrivateRoadOriginalStorageRouteForDiagnostics();
+        if(!Recipe&&!OriginalRoute)return;
+        const bool RouteOnly=OriginalRoute&&!Recipe;
         ++ObserverDepth;if(ObserverDepth>MaxObserverDepth)MaxObserverDepth=ObserverDepth;
         ON_SCOPE_EXIT{--ObserverDepth;}; // observe depth; never skip a callback
         for(const auto* Object:Objects)
         {
-            if(!Object){++NullObjects;continue;}
+#if UE_WITH_OBJECT_HANDLE_TRACKING && PLATFORM_WINDOWS
+            Capture(RouteOnly,Object==nullptr); // every actual event, including null
+#endif
+            if(!Object){++NullObjects;if(RouteOnly)++RouteOnlyNullObjects;continue;}
+            if(RouteOnly)
+            {
+                if(DuringBirth)++RouteOnlyBirthObjects;
+                else if(DuringControl)++RouteOnlyControlObjects;
+                else ++RouteOnlyStepObjects;
+            }
             if(DuringBirth)++BirthObjects;else if(DuringControl)++ControlObjects;else ++StepObjects;
             // Weak assignment itself calls FObjectPtr.Get in this exact Engine,
             // recursively entering the real read callback. Use the actual object
@@ -530,10 +587,23 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
     BirthLiveStiffness->Set(ForeignLive,ECVF_SetByCode);
     if(BirthLiveStiffness->GetFloat()!=ForeignLive)return false;
     FActualRecipeObjectReadCensus AllRecipeReads;
+#if UE_WITH_OBJECT_HANDLE_TRACKING && PLATFORM_WINDOWS
+    // Resolve the actual capture function and PIN its system module before
+    // registering the observer. No stack walker/symbols/name/heap in sampler.
+    const auto CaptureLibrary=::GetModuleHandleW(L"ntdll.dll");
+    AllRecipeReads.RawCapture=CaptureLibrary?reinterpret_cast<FActualRecipeObjectReadCensus::FRawStackCapture>(
+        ::GetProcAddress(CaptureLibrary,"RtlCaptureStackBackTrace")):nullptr;
+    HMODULE PinnedFactoryCaptureModule=nullptr;
+    const bool FactoryCapturePinned=AllRecipeReads.RawCapture&&::GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<const wchar_t*>(AllRecipeReads.RawCapture),&PinnedFactoryCaptureModule);
+    if(!TestTrue(TEXT("actual factory capture system function pinned before observer"),FactoryCapturePinned))return false;
+#endif
 #if UE_WITH_OBJECT_HANDLE_TRACKING
     const auto AllRecipeReadHandle=UE::CoreUObject::AddObjectHandleReadCallback(
         [&](TArrayView<const UObject* const> Objects){AllRecipeReads.Observe(Objects);});
-    ON_SCOPE_EXIT{UE::CoreUObject::RemoveObjectHandleReadCallback(AllRecipeReadHandle);};
+    bool AllRecipeReadRegistered=true;
+    ON_SCOPE_EXIT{if(AllRecipeReadRegistered)UE::CoreUObject::RemoveObjectHandleReadCallback(AllRecipeReadHandle);};
 #endif
     FActualBirthReadScopeObserver BirthObserver;
     if(!GLog)return false;
@@ -666,8 +736,18 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
 #endif
         }
     }
+#if UE_WITH_OBJECT_HANDLE_TRACKING
+    // Freeze this primary birth/step/control census before reporting values.
+    // Retirement and the following invalid-birth fixture are NOT observed.
+    if(!TestFalse(TEXT("freeze census outside recipe and original storage route"),
+        Speed::RoadSettings::SelectedOriginalRoadSettings()!=nullptr||P::IsPrivateRoadOriginalStorageRouteForDiagnostics()))return false;
+    UE::CoreUObject::RemoveObjectHandleReadCallback(AllRecipeReadHandle);
+    AllRecipeReadRegistered=false;
+#endif
     AddInfo(FString::Printf(TEXT("[ActualRecipeObjectReadCensus] trackingCompiled=%d birthObjectReads=%llu stepObjectReads=%llu controlObjectReads=%llu nullReads=%llu uniqueObjects=%u overflow=%d unknownIdentities=%llu nativeSerialAllocationCalls=%llu maxObserverDepth=%u completeCallbackClosure=0 completeRestoreLease=0"),
         int(UE_WITH_OBJECT_HANDLE_TRACKING),AllRecipeReads.BirthObjects,AllRecipeReads.StepObjects,AllRecipeReads.ControlObjects,AllRecipeReads.NullObjects,AllRecipeReads.Used,int(AllRecipeReads.Overflow),AllRecipeReads.UnknownIdentities,AllRecipeReads.NativeSerialAllocationCalls,AllRecipeReads.MaxObserverDepth));
+    AddInfo(FString::Printf(TEXT("[ActualOriginalRouteOnlyReadCensus] birthObjectReads=%llu stepObjectReads=%llu controlObjectReads=%llu nullReads=%llu totalScopeRecipeOrOriginalRoute=1 factoryFacadeOutsideBothNotObserved=1 completeCallbackClosure=0 completeRestoreLease=0"),
+        AllRecipeReads.RouteOnlyBirthObjects,AllRecipeReads.RouteOnlyStepObjects,AllRecipeReads.RouteOnlyControlObjects,AllRecipeReads.RouteOnlyNullObjects));
     for(uint32 Index=0;Index<AllRecipeReads.Used;++Index)
     {
         const auto& Entry=AllRecipeReads.Entries[Index];bool OriginalLive=false;
@@ -688,6 +768,37 @@ bool FIASNativeInitialPublicationGate::RunTest(const FString&)
         AddInfo(FString::Printf(TEXT("[ActualRecipeObjectReadTarget] ordinal=%u birthReads=%llu stepReads=%llu controlReads=%llu originalLive=%d class=%s path=%s"),
             Index,Entry.BirthReads,Entry.StepReads,Entry.ControlReads,int(OriginalLive),*Type,*Name));
     }
+#if UE_WITH_OBJECT_HANDLE_TRACKING && PLATFORM_WINDOWS
+    uint64 CapturedFactoryEvents=0,DepthCappedFactoryEvents=0;
+    for(uint32 I=0;I<AllRecipeReads.UsedPrefixes;++I)
+    {
+        const auto& P=AllRecipeReads.Prefixes[I];CapturedFactoryEvents+=P.Events;
+        if(P.Depth==24)DepthCappedFactoryEvents+=P.Events;
+    }
+    const uint64 ActualFactoryEvents=AllRecipeReads.BirthObjects+AllRecipeReads.StepObjects+AllRecipeReads.ControlObjects+AllRecipeReads.NullObjects;
+    AddInfo(FString::Printf(TEXT("[ActualFactoryReadPrefixes] unique=%u actualEvents=%llu recordedEvents=%llu captureFailures=%llu overflowEvents=%llu reentrantSamplesSkipped=%llu depthCappedEvents=%llu frameCap=24 prefixCap=512 scopeRecipeOrOriginalRoute=1 primaryBirthStepAndWorldControlOnly=1 retirementAndNegativeBirthNotObserved=1 capturedPrefixOnly=1 loaderIncarnationAtCaptureCertified=0 completeCallbackClosure=0"),
+        AllRecipeReads.UsedPrefixes,ActualFactoryEvents,CapturedFactoryEvents,AllRecipeReads.CaptureFailures,AllRecipeReads.PrefixOverflowEvents,AllRecipeReads.ReentrantSamplesSkipped,DepthCappedFactoryEvents));
+    if(!TestEqual(TEXT("all actual primary factory/step/control object and null events accounted or explicitly incomplete"),
+        CapturedFactoryEvents+AllRecipeReads.CaptureFailures+AllRecipeReads.PrefixOverflowEvents+AllRecipeReads.ReentrantSamplesSkipped,ActualFactoryEvents))return false;
+    for(uint32 I=0;I<AllRecipeReads.UsedPrefixes;++I)
+    {
+        const auto& P=AllRecipeReads.Prefixes[I];
+        AddInfo(FString::Printf(TEXT("[ActualFactoryReadPrefix] ordinal=%u phase=%u routeOnly=%d null=%d events=%llu depth=%u suffixUnknown=%d"),
+            I,uint32(P.Phase),int(P.RouteOnly),int(P.Null),P.Events,uint32(P.Depth),int(P.Depth==24)));
+        for(uint16 F=0;F<P.Depth;++F)
+        {
+            const uint64 PC=P.PCs[F];HMODULE Module=nullptr;wchar_t Path[4096]{};uint32 Length=0;uint64 Base=0;
+            // Ordinary conditional module lookup AFTER observer removal and
+            // math. This does not prove the module incarnation at capture.
+            const bool Mapped=::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                reinterpret_cast<const wchar_t*>(PC),&Module)!=0;
+            if(Mapped){Base=reinterpret_cast<uint64>(Module);Length=::GetModuleFileNameW(Module,Path,uint32(UE_ARRAY_COUNT(Path)));::FreeLibrary(Module);}
+            const bool CompletePath=Length>0&&Length<UE_ARRAY_COUNT(Path);
+            AddInfo(FString::Printf(TEXT("[ActualFactoryReadPrefixFrame] prefix=%u frame=%u pc=%016llX moduleBase=%016llX rva=%016llX mapped=%d pathComplete=%d module=%s"),
+                I,uint32(F),PC,Base,Mapped?PC-Base:0,int(Mapped),int(CompletePath),CompletePath?Path:TEXT("<unknown>")));
+        }
+    }
+#endif
     const bool Closed=World->Close();
     FActualNativeBoundaryLogProbe InvalidBirth;InvalidBirth.Case=FActualNativeBoundaryLogProbe::ECase::DestroyBirthDriver;
     const auto InvalidBirthHandle=FWorldDelegates::OnPostWorldCreation.AddLambda([&](UWorld* Created){if(IsInGameThread())InvalidBirth.World=Created;});
