@@ -63,9 +63,18 @@ public:
 };
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
 	"IAmSpeed.Simulation.ControllerInputLifecycle",
 	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+
+// Preserve the existing test name and expose the device lifecycle branch to
+// ordinary Automation RunTests. A simple test never supplies its parameter.
+void FIAmSpeedControllerInputLifecycleTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+    Names.Add(TEXT("IAmSpeed.Simulation.ControllerInputLifecycle")); Commands.Add(FString());
+    Names.Add(TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"));
+    Commands.Add(TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"));
+}
 
 bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
