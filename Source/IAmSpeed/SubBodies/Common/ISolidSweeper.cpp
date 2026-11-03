@@ -1,4 +1,5 @@
 #include "ISolidSweeper.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
@@ -11,7 +12,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
 {
     if (!World) return false;
 
-    const Speed::FKinematicState& KS = GetKinematicState();
+    const Speed::FKinematicState& KS = Speed::NativeKinematics::FBodyRead::Sweeper(*this);
     const USolidSubBody* Solid=GetSolidSweepBody();
     const ISpeedComponent* Owner=Solid ? Solid->GetParentComponent() : nullptr;
     Speed::Analytic::FTorusSweepTrajectory Trajectory;

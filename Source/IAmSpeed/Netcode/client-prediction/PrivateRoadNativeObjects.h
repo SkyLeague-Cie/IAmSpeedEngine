@@ -168,6 +168,9 @@ UCLASS(NotBlueprintable,Transient)
 class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
 {
     GENERATED_BODY()
+private:
+    const Speed::FKinematicState& PublicKinematicView() const override { return Kinematics; }
+    const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
     std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;
@@ -360,6 +363,9 @@ UCLASS(NotBlueprintable,Transient)
 class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
 {
     GENERATED_BODY()
+private:
+    const Speed::FKinematicState& PublicKinematicView() const override { return Kinematics; }
+    const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
     std::shared_ptr<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues> OwnedBodyValues;

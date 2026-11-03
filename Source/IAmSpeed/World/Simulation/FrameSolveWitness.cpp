@@ -1,4 +1,5 @@
 #include "FrameSolveWitness.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #if !UE_BUILD_SHIPPING
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
@@ -165,7 +166,7 @@ struct FDynamicBodyWitness
 {
  using W=FEpisodeStateBytesForTesting;
  W::Add(B,Body);W::Add(B,Body!=nullptr);if(!Body)return;
- W::Add(B,Body->GetKinematicState());
+ W::Add(B,Speed::NativeKinematics::FBodyRead::Body(*Body));
  const ISpeedComponent* Parent=Body->GetParentComponent();
  W::Add(B,Parent!=nullptr);if(!Parent)return;
  W::Add(B,Parent->GetPublishedSimulationStableId());W::Add(B,Speed::NativeKinematics::FComponentRead::Current(*Parent));

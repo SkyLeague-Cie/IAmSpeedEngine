@@ -1,4 +1,5 @@
 #include "CylinderSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "CylinderSweep.h"
 #include "BoxSubBody.h"
@@ -18,7 +19,7 @@ struct FCylinderRigidTrajectory
     FCylinderRigidTrajectory(const USolidSubBody& Body,double Dt,double ShapeRadius)
     {
         const auto& Parent=*Body.GetParentComponent();Owner=Speed::NativeKinematics::FComponentRead::Current(Parent);Delta=Dt;
-        const auto& K=Body.GetKinematicState();Offset=Owner.Rotation.UnrotateVector(K.Location-Owner.Location);LocalRotation=Owner.Rotation.Inverse()*K.Rotation;
+        const auto& K=Speed::NativeKinematics::FBodyRead::Body(Body);Offset=Owner.Rotation.UnrotateVector(K.Location-Owner.Location);LocalRotation=Owner.Rotation.Inverse()*K.Rotation;
         Span=Offset.Size()+ShapeRadius;const double W=Owner.AngularVelocity.Size()+Owner.AngularAcceleration.Size()*Dt;
         Motion=Dt*(Owner.Velocity.Size()+Owner.Acceleration.Size()*Dt+W*Span);
         Acceleration=Dt*Dt*(Owner.Acceleration.Size()+(Owner.AngularAcceleration.Size()+W*W)*Span);
@@ -55,7 +56,7 @@ FMatrix UCylinderSubBody::InitInvInertiaTensor() const
 FMatrix UCylinderSubBody::ComputeWorldInvInertiaTensor() const
 {
     if(ParentComponent&&ParentComponent->IsPrescribedMotion())return FMatrix(ForceInitToZero);
-    const FMatrix R=FQuatRotationMatrix(GetKinematicState().Rotation);return R.GetTransposed()*InvInertiaLocalSolidStorage()*R;
+    const FMatrix R=FQuatRotationMatrix(Speed::NativeKinematics::FBodyRead::Body(*this).Rotation);return R.GetTransposed()*InvInertiaLocalSolidStorage()*R;
 }
 FBoxSphereBounds UCylinderSubBody::CalcBounds(const FTransform& Pose) const
 {
@@ -82,7 +83,7 @@ bool UCylinderSubBody::SweepTOI(const float& Remaining,float& OutTOI)
         if(!Sphere&&!Shape.IsBox())throw std::runtime_error("Unsupported cylinder contact shape");
         const double Radius=Sphere?Shape.GetSphereRadius():0.;const FVector3d Extent=Sphere?FVector3d::ZeroVector:FVector3d(Shape.GetBox());
         const double BoundRadius=Sphere?Radius:Extent.Size();const FCylinderRigidTrajectory OT(*Other,Remaining,BoundRadius);
-        if(FVector::Distance(GetKinematicState().Location,Other->GetKinematicState().Location)>R+BoundRadius+CT.Motion+OT.Motion+CT.Error+OT.Error)return;
+        if(FVector::Distance(Speed::NativeKinematics::FBodyRead::Body(*this).Location,Speed::NativeKinematics::FBodyRead::Body(*Other).Location)>R+BoundRadius+CT.Motion+OT.Motion+CT.Error+OT.Error)return;
         Speed::Geometry::FCylinderProjectedMotionBounds Projected;
         const double Dt=Remaining;
         Projected.TranslationVelocity=(OT.Owner.Velocity-CT.Owner.Velocity)*Dt;

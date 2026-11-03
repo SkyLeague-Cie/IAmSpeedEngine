@@ -1,4 +1,5 @@
 #include "ISpeedWheeledComponent.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/SubBodies/Solid/BoxSubBody.h"
@@ -2271,7 +2272,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			{
 				continue;
 			}
-			const Speed::FKinematicState& State = PrincipalHitbox->GetKinematicState();
+			const Speed::FKinematicState& State = Speed::NativeKinematics::FBodyRead::Body(*PrincipalHitbox);
 			const FVector ContactPoint = UBoxSubBody::ComputeBoxSupportPointWS(
 				State.Location, State.Rotation, PrincipalHitbox->GetBoxExtent(), -N);
 			const FVector R = ContactPoint - GetPhysCOM();
@@ -2553,7 +2554,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 				if (HitboxContact.Component == Contact.SurfaceComponent &&
 					FVector::DotProduct(HitboxNormal, N) >= 0.995f)
 				{
-					const Speed::FKinematicState& HitboxState = PrincipalHitbox->GetKinematicState();
+					const Speed::FKinematicState& HitboxState = Speed::NativeKinematics::FBodyRead::Body(*PrincipalHitbox);
 					const FVector HitboxPoint = UBoxSubBody::ComputeBoxSupportPointWS(
 						HitboxState.Location, HitboxState.Rotation,
 						PrincipalHitbox->GetBoxExtent(), HitboxNormal);

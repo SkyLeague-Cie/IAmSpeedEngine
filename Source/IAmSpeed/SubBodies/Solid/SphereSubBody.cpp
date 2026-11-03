@@ -1,4 +1,5 @@
 #include "SphereSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
@@ -231,7 +232,7 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
         !CurrentHitStorage().bStartPenetrating)
     {
         RegisterContactAsConstraint(
-            IAmSpeedSphereStaticResponsePoint(GetKinematicState().Location,
+            IAmSpeedSphereStaticResponsePoint(Speed::NativeKinematics::FBodyRead::Body(*this).Location,
                 GetRadius(), CurrentHitStorage()),
             CurrentHitStorage().ImpactNormal, CurrentHitStorage().Component.Get(), nullptr,
             CurrentHitStorage().PenetrationDepth, CurrentHitStorage().TOI, false);
@@ -269,7 +270,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 {
     const FVector N = CurrentHitStorage().ImpactNormal.GetSafeNormal();
     const FVector P = IAmSpeedSphereStaticResponsePoint(
-        GetKinematicState().Location, GetRadius(), CurrentHitStorage());
+        Speed::NativeKinematics::FBodyRead::Body(*this).Location, GetRadius(), CurrentHitStorage());
 
     // Velocity at contact point
     const FVector Vp = ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(P);

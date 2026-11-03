@@ -1,4 +1,5 @@
 #include "JoinedActorKinematics1213.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "JoinedActorBaseWitness1534.h"
 #include "FrameParallelExecutor.h"
@@ -308,7 +309,7 @@ bool FJoinedActorKinematics1213::TryInstall(ISpeedComponent& Actor,TFunctionRef<
  {
   ++GActorShadow1213.ComparableEntries;
   const auto& Bodies=Actor.GetSubBodies();
-  for(int32 I=0;I<Bodies.Num();++I)if(!JoinedOrigin1213(Outputs[Found->First+I],Bodies[I]->GetKinematicState()))++GActorShadow1213.StateDifferences;
+  for(int32 I=0;I<Bodies.Num();++I)if(!JoinedOrigin1213(Outputs[Found->First+I],Speed::NativeKinematics::FBodyRead::Body(*Bodies[I])))++GActorShadow1213.StateDifferences;
   if(!SameJoinedActorNumericContext1213(AfterItem[Found->First+Found->Count-1],ActualExit))++GActorShadow1213.ExitDifferences;
  }
  return true; // Original computation already ran, including on a stale shadow.

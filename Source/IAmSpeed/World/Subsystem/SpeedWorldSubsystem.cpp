@@ -1,4 +1,5 @@
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include <stdexcept>
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
@@ -1630,7 +1631,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				ContactPoint,
 				BoxToSphereNormal,
 				0.0f);
-			RollingHit.Location = Sphere->GetKinematicState().Location;
+			RollingHit.Location = Speed::NativeKinematics::FBodyRead::Body(*Sphere).Location;
 			RollingHit.PenetrationDepth = PenetrationDepth;
 			RollingHit.ContactPointThis = Sphere == BodyA ? AnchorA : AnchorB;
 			RollingHit.ContactPointOther = Sphere == BodyA ? AnchorB : AnchorA;

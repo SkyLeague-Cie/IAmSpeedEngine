@@ -1,20 +1,23 @@
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "RayWheelSubBody.h"
 #include "CylinderSubBody.h"
 #include "CylinderSweep.h"
 #include "IAmSpeed/Components/ISpeedWheeledComponent.h"
 #include <stdexcept>
 #include <limits>
-namespace
+namespace Speed::NativeKinematics
 {
-bool CylinderSuspensionHit(USSubBody& Wheel,TConstArrayView<TWeakObjectPtr<UCylinderSubBody>> Cylinders,
+struct FCylinderSuspensionQuery
+{
+static bool Hit(USSubBody& Wheel,TConstArrayView<TWeakObjectPtr<UCylinderSubBody>> Cylinders,
     const FVector& Start,const FVector& End,double Radius,const float Delta,SHitResult& Out)
 {
     bool Found=false;double Best=1.;const double Length=(End-Start).Size();
     for(const auto& Reference:Cylinders)
     {
         auto* C=Reference.Get();if(!C||C->GetOwner()==Wheel.GetOwner()||Wheel.ComponentHasBeenIgnored(*C))continue;
-        const auto Geometry=C->Geometry();const auto K=C->GetKinematicState();
+        const auto Geometry=C->Geometry();const auto K=Speed::NativeKinematics::FBodyRead::Body(*C);
         const double Bound=FMath::Sqrt(Geometry.Radius*Geometry.Radius+Geometry.HalfHeight*Geometry.HalfHeight)+Radius+Length;
         const double Roundoff=64.*std::numeric_limits<double>::epsilon()*(1.+Start.Size()+K.Location.Size()+Bound);
         if(FVector::Distance(Start,K.Location)>Bound+Roundoff)continue;
@@ -30,6 +33,7 @@ bool CylinderSuspensionHit(USSubBody& Wheel,TConstArrayView<TWeakObjectPtr<UCyli
     }
     return Found;
 }
+};
 }
 bool USWheelSubBody::TryGetPrescribedSupportVelocity(const FVector& Point,FVector& Velocity) const
 {
@@ -43,13 +47,13 @@ bool USWheelSubBody::SweepSuspensionOnCylinders(SHitResult& Out,const float& Del
     const FTransform Chassis(ParentComponent->GetPhysRotation(),ParentComponent->GetPhysLocation());
     const FVector Up=Chassis.GetUnitAxis(EAxis::Z),Start=Chassis.TransformPosition(GetLocalOffset())+SuspensionMaxRaise()*Up;
     const FVector End=WorldPos()+(PredictNextDisplacement(Delta)-SpringDisplacement()-CollisionMargin())*Up;
-    if(!CylinderSuspensionHit(*this,ExternalCylinderSubBodies,Start,End,Radius(),Delta,Out))return false;
+    if(!Speed::NativeKinematics::FCylinderSuspensionQuery::Hit(*this,ExternalCylinderSubBodies,Start,End,Radius(),Delta,Out))return false;
     Out.ImpactNormal=Speed::QuantizeUnitNormal(Out.ImpactNormal);Out.Location=Out.ImpactPoint+Radius()*Out.ImpactNormal;
     SetOnGround(true);if(WheelComponent)WheelComponent->NotifyWheelOnGroundStateChanged();return true;
 }
 bool URayWheelSubBody::SweepSuspensionOnCylinders(SHitResult& Out,const float& Delta)
 {
     FVector Start,End,Up;if(ExternalCylinderSubBodies.IsEmpty()||!BuildSuspensionRay(Delta,Start,End,Up))return false;
-    if(!CylinderSuspensionHit(*this,ExternalCylinderSubBodies,Start,End,0.,Delta,Out))return false;
+    if(!Speed::NativeKinematics::FCylinderSuspensionQuery::Hit(*this,ExternalCylinderSubBodies,Start,End,0.,Delta,Out))return false;
     AcceptSuspensionRayHit(Out,Up);SetOnGround(true);if(WheelComponent)WheelComponent->UpdateWheelOnGroundStates();return true;
 }

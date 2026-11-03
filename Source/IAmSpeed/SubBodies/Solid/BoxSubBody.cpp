@@ -1,4 +1,5 @@
 #include "BoxSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/WeakContactReference.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
@@ -1009,7 +1010,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
         return false;
     }
 
-    const Speed::FKinematicState PredictedState = GetKinematicState();
+    const Speed::FKinematicState PredictedState = Speed::NativeKinematics::FBodyRead::Body(*this);
     Speed::Analytic::FWorldQuery Query;
     Query.Shape = Speed::Analytic::EQueryShape::Box;
     Query.Start = FVector3d(PredictedState.Location);
@@ -1263,7 +1264,7 @@ bool UBoxSubBody::GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const
     }
     FCollisionObjectQueryParams ObjectQuery;
     ObjectQuery.AddObjectTypesToQuery(ECC_WorldStatic);
-    const Speed::FKinematicState& State = GetKinematicState();
+    const Speed::FKinematicState& State = Speed::NativeKinematics::FBodyRead::Body(*this);
 	if (!Speed::Analytic::FStaticWorldQueryAudit::TryCompactAuthorityMulti(
 		World,
 		State.Location, State.Location, State.Rotation, GetCollisionShape(),
@@ -2047,7 +2048,7 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 
     // --- Sphere kinematics at TOI ---
     const SKinematic& SphereKS0 =
-        Sphere.GetKinematicState();
+        Speed::NativeKinematics::FBodyRead::Body(Sphere);
     FFakePhysicsImpactContext FakePhysicsContext;
     FakePhysicsContext.SelfParentKinematics = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     if (const ISpeedComponent* SphereParent = Sphere.GetParentComponent())

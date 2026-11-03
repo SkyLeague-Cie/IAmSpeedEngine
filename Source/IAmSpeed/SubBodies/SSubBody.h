@@ -18,6 +18,7 @@ class USphereSubBody;
 class USWheelSubBody;
 class UCylinderSubBody;
 namespace Speed { class IStaticCollisionWorld; }
+namespace Speed::NativeKinematics { class FBodyRead; }
 
 /**
  * USubBody : Base class for any physics sub-body (wheel, hitbox, sphere) and detection SubBodies
@@ -36,6 +37,11 @@ UCLASS()
 class IAMSPEED_API USSubBody : public UShapeComponent
 {
     GENERATED_UCLASS_BODY()
+private:
+    friend class Speed::NativeKinematics::FBodyRead;
+    // Custom storage adapters retain the old getter dispatch. Only the private
+    // final road bodies override this public-view selector with legacy backing.
+    virtual const Speed::FKinematicState& PublicKinematicView() const { return KinematicsStorage(); }
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
@@ -116,7 +122,7 @@ public:
     // --- Set/Get kinematics ---
 	virtual void UpdateKinematicsFromOwner(const SKinematic& ParentKinematic);
     void SetKinematicState(const Speed::FKinematicState& State) { KinematicsStorage() = State; }
-    const Speed::FKinematicState& GetKinematicState() const { return KinematicsStorage(); }
+    const Speed::FKinematicState& GetKinematicState() const { return PublicKinematicView(); }
 
     // --- Sweep for remaining delta time; return true if a hit occurred ---
     virtual bool SweepTOI(const float& RemainingDelta, float& OutTOI);

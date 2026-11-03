@@ -1,4 +1,5 @@
 #include "PrivateRoadPhysicsWorld.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "PrivateRoadNativeObjects.h"
 #include "PrivateRoadPartialStateObservation.h"
@@ -1132,8 +1133,42 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         }
         const auto* Hitbox=N->Component->GetHitboxSubBodyForConfiguration();
         if(!Hitbox)return Fail(TEXT("native hitbox diagnostics missing"));
+        {
+            // Actual public reference identities of the original box and four
+            // wheel objects under the real owner scope; no lease is inferred.
+            auto ObserveBodyViews=[&](const auto* OriginalBody,const ISweeper& ShapeView)
+            {
+                if(!OriginalBody)return false;
+                const SKinematic* Legacy=&OriginalBody->Kinematics;
+                const SKinematic* Original=&Speed::NativeKinematics::FBodyRead::Body(*OriginalBody);
+                // Box/sphere and solid sweepers have distinct ISweeper bases.
+                // Observe each real subobject through its unambiguous base.
+                const ISolidSweeper& SolidView=*OriginalBody;
+                const SKinematic* Views[]={&OriginalBody->GetKinematicState(),
+                    &OriginalBody->USSubBody::GetKinematicState(),
+                    &OriginalBody->USolidSubBody::GetKinematicState(),
+                    &SolidView.GetKinematicState(),&ShapeView.GetKinematicState()};
+                auto& Observation=Out->Actors.back();
+                for(const auto* View:Views)
+                {
+                    ++Observation.PublicBodyKinematicViews;
+                    if(View==Legacy&&View!=Original)++Observation.PublicBodyKinematicFacadeViews;
+                    if(View==Original)++Observation.PublicBodyKinematicOriginalViews;
+                }
+                return true;
+            };
+            const auto* OriginalBox=Cast<USpeedBranchBoxSubBody>(Hitbox);
+            if(!OriginalBox||!ObserveBodyViews(OriginalBox,static_cast<const IBoxSweeper&>(*OriginalBox)))
+                return Fail(TEXT("original box public-view diagnostics missing"));
+            for(const auto& Entry:N->Component->ReadWheelSubBodiesForPhysics())
+            {
+                const auto* OriginalWheel=Cast<USpeedBranchWheelSubBody>(Entry.Get());
+                if(!OriginalWheel||!ObserveBodyViews(OriginalWheel,static_cast<const ISphereSweeper&>(*OriginalWheel)))
+                    return Fail(TEXT("original wheel public-view diagnostics missing"));
+            }
+        }
         Out->Actors.back().NativeHitboxHalfExtent=Hitbox->GetBoxExtent();
-        Out->Actors.back().NativeHitboxCenter=Hitbox->GetKinematicState().Location;
+        Out->Actors.back().NativeHitboxCenter=Speed::NativeKinematics::FBodyRead::Body(*Hitbox).Location;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         // This is a read-only declared-subset observation, not a complete-state
         // capture through the guarded restore provider. Unknown remains false.
@@ -1463,6 +1498,11 @@ bool USpeedBranchBoxSubBody::UsesOriginalBodyStorage() const
     const auto A=StorageAccess.lock();
     return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
 }
+const Speed::FKinematicState& USpeedBranchBoxSubBody::ReadPhysicsSweeperKinematics() const
+{
+    return Speed::NativeKinematics::FBodyRead::Body(*this);
+}
+
 Speed::FKinematicState& USpeedBranchBoxSubBody::KinematicsStorage()
 {
     return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();
@@ -1544,6 +1584,11 @@ bool USpeedBranchWheelSubBody::UsesOriginalBodyStorage() const
     const auto A=StorageAccess.lock();
     return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
 }
+const Speed::FKinematicState& USpeedBranchWheelSubBody::ReadPhysicsSweeperKinematics() const
+{
+    return Speed::NativeKinematics::FBodyRead::Body(*this);
+}
+
 Speed::FKinematicState& USpeedBranchWheelSubBody::KinematicsStorage()
 {
     return UsesOriginalBodyStorage()?OwnedBodyValues->Kinematics:USSubBody::KinematicsStorage();

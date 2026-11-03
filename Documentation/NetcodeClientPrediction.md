@@ -1558,3 +1558,19 @@ Native compiler exit6, outer wrapper1, natural Job drain and zero source/Engine
 audit drift are preserved. QA and runtime96 were not run. Source104 adds that
 existing declaration header explicitly; it does not hard-code a history size,
 change a reader body or relax any restoration guard. A fresh tuple is required.
+
+### Subbody and sweeper kinematic reference separation (source105 draft)
+
+The final private box/wheel types select legacy backing for public body getters,
+including qualified base and sweeper-interface calls under original routing.
+Default custom body-storage and sweeper getter dispatch is preserved. Native
+call sites retain the old live storage reads using private, non-exported reader
+entries; two final private types specialize the internal sweeper reader.
+
+The actual owner records five public paths on each original box/four wheel
+objects, checking twenty-five addresses against real facade and native backing. The
+registry boundary scenario checks those values while retaining native control
+comparisons after real facade mutations. This draft is not applied or tested.
+GetPhys submember references, existing protected hooks, mutable operations and
+other aliases, complete state/source/lifetime and authoritative-K/localized
+restoration remain unqualified; all restoration guards remain closed.

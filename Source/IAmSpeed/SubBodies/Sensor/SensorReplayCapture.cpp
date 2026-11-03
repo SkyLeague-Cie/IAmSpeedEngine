@@ -1,4 +1,5 @@
 #include "SensorSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "BoxSensor.h"
 #include "SphereSensor.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -19,7 +20,7 @@ bool USensorSubBody::CaptureReplaySensorState(Speed::Replay::FSensorReplayState&
     {S.Shape=1;const auto D=Box->GetBoxExtent();S.Dimensions={D.X,D.Y,D.Z};}
     else if(const auto* Sphere=Cast<USphereSensor>(this)){S.Shape=2;S.Dimensions={Sphere->GetRadius(),0,0};}
     else return false;
-    const auto& K=GetKinematicState();S.Kinematic={K.Location.X,K.Location.Y,K.Location.Z,K.Velocity.X,K.Velocity.Y,K.Velocity.Z,
+    const auto& K=Speed::NativeKinematics::FBodyRead::Body(*this);S.Kinematic={K.Location.X,K.Location.Y,K.Location.Z,K.Velocity.X,K.Velocity.Y,K.Velocity.Z,
         K.Acceleration.X,K.Acceleration.Y,K.Acceleration.Z,K.Rotation.X,K.Rotation.Y,K.Rotation.Z,K.Rotation.W,
         K.AngularVelocity.X,K.AngularVelocity.Y,K.AngularVelocity.Z,K.AngularAcceleration.X,K.AngularAcceleration.Y,K.AngularAcceleration.Z};
     const auto T=GetRelativeTransform();const auto P=T.GetLocation(),Scale=T.GetScale3D();const auto Q=T.GetRotation();

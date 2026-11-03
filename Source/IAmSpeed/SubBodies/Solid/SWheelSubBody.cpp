@@ -1,4 +1,5 @@
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
@@ -356,7 +357,7 @@ void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic
 
 SSphere USWheelSubBody::MakeSphere() const
 {
-    const SKinematic& KS = GetKinematicState();
+    const SKinematic& KS = Speed::NativeKinematics::FBodyRead::Body(*this);
     return SSphere(
         KS.Location,
         Radius() + CollisionMargin(),

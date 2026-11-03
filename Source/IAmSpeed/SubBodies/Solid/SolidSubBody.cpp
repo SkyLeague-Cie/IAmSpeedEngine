@@ -2,6 +2,7 @@
 
 
 #include "SolidSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
@@ -232,7 +233,7 @@ void USolidSubBody::RegisterManifoldWithReference(
 
     // Cas rare : trop de points. On garde des points répartis autour du COM,
     // ce qui donne de meilleurs bras de levier pour la projection angulaire.
-    const FVector COM = GetKinematicState().Location                     ;
+    const FVector COM = Speed::NativeKinematics::FBodyRead::Body(*this).Location                     ;
 
     TArray<FVector> Sorted = ContactPointsWS;
     Sorted.Sort([&COM](const FVector& A, const FVector& B)
