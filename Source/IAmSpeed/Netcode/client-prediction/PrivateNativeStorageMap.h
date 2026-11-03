@@ -116,6 +116,11 @@ class FPrivateNativeStorageAccess final
     friend class Speed::NativeKinematics::FComponentRead;friend class Speed::NativeKinematics::FComponentWrite;
     friend class Speed::NativeKinematics::FWheelBindingAccess;friend class Speed::NativeKinematics::FSolidMassAccess;
     friend class Speed::NativeKinematics::FSolidPropertiesAccess;
+    static void RequireBirth(const FPrivateNativeOperation& Operation)
+    {
+        if(Operation.Kind!=FPrivateNativeOperation::EKind::Birth
+            ||!Operation.HasExactRootAndGate(Operation.Identity))throw FPrivateNativeStorageUnavailable{};
+    }
     static void RequireStep(const FPrivateNativeOperation& Operation)
     {
         if(Operation.Kind!=FPrivateNativeOperation::EKind::Step

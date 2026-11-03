@@ -1759,3 +1759,38 @@ values are cleaned up before canonical
 advancement and compared with an independent graph. This is not acquired source
 coverage, full-state restoration or a new lifetime/exclusion certificate. These
 controls still require compilation and actual native execution on the new tuple.
+
+### Private birth initialization and concrete shape inertia
+
+The next boundary carries the actual factory Birth operation through Base,
+Solid, Box, Sphere and Wheel initialization and the concrete Box/Sphere initial
+inverse-inertia dispatch. Seven original bodies are shared with legacy policies.
+Box still performs its post-Solid configuration query and second inverse call,
+including its invalid-config branch. Sphere also performs two inverse calls;
+Wheel performs the third when its wheel configuration is valid. Legacy custom
+configuration and inverse virtuals remain in their original order.
+
+Private native body/parent and shape bindings are validated before dispatch.
+The sealed native stock parent's exact declared default-invalid configurations
+are returned only after those bindings are available; missing bindings refuse.
+These values are not substitutes for unknown configuration. The key-free scalar
+PrescribedMotion virtual and remaining source/lifetime boundaries stay open.
+
+Prepared controls use genuine UCLASS fixtures for five valid/invalid legacy
+configuration cases and record actual configuration/inverse order and the
+extent/radius/mass visible at each call. Separate controls run inside the real
+Birth operation, reject foreign body/parent/inverse subjects and a Step-only
+route, and verify that the real Step rejects Birth-only initialization before
+writing. A forced failure after one actual initializer on the already allocated
+first-car graph returns through the existing factory/operation/owner unwind.
+Only existing independent native/configuration counters are retained for the
+post-return destruction observations. This does not cover early allocation or
+constructor failures. No birth-table flag or restoration guard is changed.
+
+This source requires fresh compilation and execution. These controls, typed
+backing and limited initialization witnesses establish no complete causal state,
+source/lifetime exclusion or restoration lease. Other mass/member-pointer,
+response/sweep, constructor/binding, retirement and escaped-view paths remain
+open. Full effective-state CanMove synchronization, authoritative-K localized
+resimulation and two rendered playable clients with a dedicated server remain
+unfinished. Earlier native results cannot qualify these new bytes.

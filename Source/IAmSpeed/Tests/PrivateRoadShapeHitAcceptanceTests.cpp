@@ -39,6 +39,7 @@ bool FIASPrivateRoadShapeHitAcceptance::RunTest(const FString&)
     if(!TestTrue(*FString::Printf(TEXT("controls inside real Step, followed by canonical advance: %s"),*Why),
         Own->StepWithHitAcceptanceProbeForDiagnostics(Requests,false,*Foreign,Probe,Why)))return false;
     TestTrue(TEXT("actual Step operation, not a minted diagnostic permission"),Probe.ActualStepOperation);
+    TestTrue(TEXT("Birth-only initialization refuses actual Step before write"),Probe.BirthInitializationRefusedDuringStep);
     TestEqual(TEXT("eight shape-specific cases"),Probe.Cases.size(),size_t(8));
     TestEqual(TEXT("eight actual legacy dispatches"),Probe.LegacyCalls,uint32(8));
     TestEqual(TEXT("eight actual private native dispatches"),Probe.NativeCalls,uint32(8));

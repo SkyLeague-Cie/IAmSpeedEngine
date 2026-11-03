@@ -7,17 +7,20 @@ namespace Speed::FrameParallel {class FJoinedActorKinematics1213;}
 
 // Module-internal live reads. No exported entry point or public issuer.
 // This access control is NOT an ownership, lifetime or restoration lease.
+struct SubBodyConfig;struct WheelSubBodyConfig;
 class ISpeedComponent;
 class ISpeedWheeledComponent;
 class URayWheelSubBody;
 class ISolidSweeper;
 class USpeedWheeledComponent;
 class USolidSubBody;
+class USSubBody;
 class UBoxSubBody;
 class USphereSubBody;
 class USWheelSubBody;
 class USpeedWorldSubsystem;
 class USpeedBranchBoxSubBody;
+class USpeedBranchWheelSubBody;
 namespace Speed { struct FKinematicState; class FSimulationWorld; class IStaticCollisionWorld; }
 namespace Speed::Netcode::Prediction { class FPrivateRoadPhysicsWorld; class FPrivateNativeOperation; }
 
@@ -26,6 +29,7 @@ namespace Speed::NativeKinematics
 struct FCylinderRigidTrajectory;
 struct FDynamicBodyWitness;
 struct FGutterSlideDamping;
+class FBodyWrite;
 class FComponentRead final
 {
     friend class ::ISpeedComponent;
@@ -34,8 +38,11 @@ class FComponentRead final
     friend class ::ISolidSweeper;
     friend class ::USpeedWheeledComponent;
     friend class ::USolidSubBody;
+    friend class ::USSubBody;
     friend class ::UBoxSubBody;
     friend class ::USpeedBranchBoxSubBody;
+    friend class ::USpeedBranchWheelSubBody;
+    friend class FBodyWrite;
     friend class ::USphereSubBody;
     friend class ::USWheelSubBody;
     friend class ::USpeedWorldSubsystem;
@@ -45,6 +52,9 @@ class FComponentRead final
     friend struct FCylinderRigidTrajectory;
     friend struct FDynamicBodyWitness;
     friend struct FGutterSlideDamping;
+    static SubBodyConfig BirthSubBodyConfiguration(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component,const USSubBody& Body);
+    static WheelSubBodyConfig BirthWheelConfiguration(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedWheeledComponent& Component,const USWheelSubBody& Body);
+    static bool PrescribedMotion(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static bool Frozen(const ISpeedComponent& Component);
     static bool Frozen(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static float MaxSpeed(const ISpeedComponent& Component);

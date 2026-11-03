@@ -36,6 +36,15 @@ UCLASS(ClassGroup = "Collision", editinlinenew, hidecategories = (Object, LOD, L
 class IAMSPEED_API USphereSubBody : public USolidSubBody, public ISphereSweeper, public ISolidSweeper
 {
     GENERATED_UCLASS_BODY()
+private:
+    friend class USWheelSubBody;friend class USpeedBranchWheelSubBody;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    class FLegacyInitialInertiaAccess;class FNativeInitialInertiaAccess;
+    template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
+    template<class TAccess> FMatrix InitialInverseTensorBody(TAccess& Storage) const;
+    void InitializeNativeSphere(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    FMatrix InitialNativeInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+
 	
 public:
     const USolidSubBody* GetSolidSweepBody() const override { return this; }

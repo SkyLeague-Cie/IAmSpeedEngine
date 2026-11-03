@@ -398,23 +398,59 @@ UBoxSubBody::UBoxSubBody(const FObjectInitializer& ObjectInitializer):
     BoxExtentBoxDomainStorage() = FVector(32.f, 32.f, 32.f);
 }
 
-void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
+class UBoxSubBody::FLegacyBirthInitializeAccess final
 {
-	Super::Initialize(InParentComponent);
-	if (ParentComponentBodyDomainStorage())
+    UBoxSubBody& Owner;
+public:
+    explicit FLegacyBirthInitializeAccess(UBoxSubBody& Value):Owner(Value){}
+    void Base(ISpeedComponent* Parent) const {Owner.USolidSubBody::Initialize(Parent);}
+    decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
+    SubBodyConfig Configuration() const {return Owner.ParentComponentBodyDomainStorage()->GetSubBodyConfig(Owner);}
+    decltype(auto) Extent() const {return Owner.BoxExtentBoxDomainStorage();}
+    decltype(auto) InverseLocal() const {return Owner.InvInertiaLocalSolidStorage();}
+    FMatrix InitialInverse() const {return Owner.InitInvInertiaTensor();}
+};
+class UBoxSubBody::FNativeBirthInitializeAccess final
+{
+    UBoxSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Body() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner);}
+public:
+    FNativeBirthInitializeAccess(UBoxSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {
+        using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Op);
+        (void)Body();(void)FPrivateNativeStorageAccess::Part<FPrivateRoadSolidValues>(Op,&Owner);
+        (void)FPrivateNativeStorageAccess::Part<FPrivateRoadBoxDomain>(Op,&Owner);
+    }
+    void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeSolid(Op,Parent);}
+    decltype(auto) Parent() const {return (Body().ParentComponent);}
+    SubBodyConfig Configuration() const {return Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*Body().ParentComponent,Owner);}
+    decltype(auto) Extent() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadBoxDomain>(Op,&Owner).BoxExtent);}
+    decltype(auto) InverseLocal() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,&Owner).InvInertiaLocal);}
+    FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
+};
+template<class TAccess>
+void UBoxSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
+{
+	Storage.Base(InParentComponent);
+	if (Storage.Parent())
 	{
-		SubBodyConfig Config = ParentComponentBodyDomainStorage()->GetSubBodyConfig(*this);
+		SubBodyConfig Config = Storage.Configuration();
         if (Config.bValid)
         {
-            BoxExtentBoxDomainStorage() = Config.BoxExtent;
-			InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
+            Storage.Extent() = Config.BoxExtent;
+			Storage.InverseLocal() = Storage.InitialInverse();
         }
         else
         {
-            InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
+            Storage.InverseLocal() = Storage.InitialInverse();
         }
 	}
 }
+void UBoxSubBody::Initialize(ISpeedComponent* InParentComponent)
+{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+void UBoxSubBody::InitializeNativeBox(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+
 
 FVector UBoxSubBody::GetStaticRestingReaction(const Speed::IStaticCollisionWorld& World, double* StopAfterSeconds) const
 {
@@ -5531,19 +5567,58 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     return true;
 }
 
-FMatrix UBoxSubBody::InitInvInertiaTensor() const
+class UBoxSubBody::FLegacyInitialInertiaAccess final
 {
-    if(ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->IsPrescribedMotion())return FMatrix(ForceInitToZero);
-    if (!ParentComponentBodyDomainStorage())
+    const UBoxSubBody& Owner;
+public:
+    explicit FLegacyInitialInertiaAccess(const UBoxSubBody& Value):Owner(Value){}
+    auto Parent() const {return Owner.ParentComponentBodyDomainStorage();}
+    bool Prescribed() const {return Parent()->IsPrescribedMotion();}
+    FVector LocalOffset() const {return Owner.GetLocalOffset();}
+    FQuat LocalRotation() const {return Owner.GetLocalRotation();}
+    decltype(auto) Rotation() const {return Speed::NativeKinematics::FComponentRead::Of(*Parent()).Rotation();}
+    decltype(auto) COM() const {return Speed::NativeKinematics::FComponentRead::Of(*Parent()).COM();}
+    FVector Location() const {return Speed::NativeKinematics::FComponentRead::Of(*Parent()).Location();}
+    decltype(auto) Extent() const {return Owner.BoxExtentBoxDomainStorage();}
+    float Mass() const {return Speed::NativeKinematics::FSolidMassAccess::Read(Owner);}
+};
+class UBoxSubBody::FNativeInitialInertiaAccess final
+{
+    const UBoxSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner);}
+public:
+    FNativeInitialInertiaAccess(const UBoxSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {
+        using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Op);
+        (void)Values();(void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Op,&Owner);
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Op,&Owner);
+        if(auto* ParentValue=Values().ParentComponent)Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Op,ParentValue);
+    }
+    auto Parent() const {return Values().ParentComponent;}
+    bool Prescribed() const {return Speed::NativeKinematics::FComponentRead::PrescribedMotion(Op,*Parent());}
+    FVector LocalOffset() const {return Values().LocalPose.GetLocation();}
+    FQuat LocalRotation() const {return Values().LocalPose.GetRotation();}
+    decltype(auto) Rotation() const {return Speed::NativeKinematics::FComponentRead::Rotation(Op,*Parent());}
+    decltype(auto) COM() const {return Speed::NativeKinematics::FComponentRead::COM(Op,*Parent());}
+    FVector Location() const {return Speed::NativeKinematics::FComponentRead::Location(Op,*Parent());}
+    decltype(auto) Extent() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadBoxDomain>(Op,&Owner).BoxExtent);}
+    float Mass() const {return Speed::NativeKinematics::FSolidMassAccess::Read(Op,Owner);}
+};
+
+template<class TAccess>
+FMatrix UBoxSubBody::InitialInverseTensorBody(TAccess& Storage) const
+{
+    if(Storage.Parent() && Storage.Prescribed())return FMatrix(ForceInitToZero);
+    if (!Storage.Parent())
     {
         return FMatrix::Identity;
     }
-    FVector HitboxRelLoc = GetLocalOffset(); // cm
-    FQuat HitboxRelRot = GetLocalRotation();
+    FVector HitboxRelLoc = Storage.LocalOffset(); // cm
+    FQuat HitboxRelRot = Storage.LocalRotation();
 
     // 1. Compute the box-center-to-COM offset in hitbox local space.
-    const FVector COMLocal = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation().UnrotateVector(
-        Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM() - Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location()
+    const FVector COMLocal = Storage.Rotation().UnrotateVector(
+        Storage.COM() - Storage.Location()
     );
     const FVector d_localChassis = HitboxRelLoc - COMLocal;
     FVector d_in_box = HitboxRelRot.UnrotateVector(d_localChassis);
@@ -5551,13 +5626,19 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
 	// 2. Compute inverse inertia tensor at COM, expressed in box local frame
     const float InertiaScale = FMath::Max(UE_KINDA_SMALL_NUMBER, Speed::RoadSettings::ReadOriginalOrLegacy<4>([](){ return CVarIAmSpeedBoxInertiaScale.GetValueOnAnyThread(); }));
     const FVector Idiag =
-        SSBox::ComputeInertiaTensor(BoxExtentBoxDomainStorage(), Speed::NativeKinematics::FSolidMassAccess::Read(*this), InertiaScale);
+        SSBox::ComputeInertiaTensor(Storage.Extent(), Storage.Mass(), InertiaScale);
 
     const FMatrix I_atCOM =
-        SSBox::ConvertBoxInertiaToCOM(Idiag, d_in_box, Speed::NativeKinematics::FSolidMassAccess::Read(*this));
+        SSBox::ConvertBoxInertiaToCOM(Idiag, d_in_box, Storage.Mass());
 
     return I_atCOM.InverseFast();
 }
+
+FMatrix UBoxSubBody::InitInvInertiaTensor() const
+{FLegacyInitialInertiaAccess Storage(*this);return InitialInverseTensorBody(Storage);}
+FMatrix UBoxSubBody::InitialNativeInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{FNativeInitialInertiaAccess Storage(*this,Operation);return InitialInverseTensorBody(Storage);}
+
 
 FMatrix UBoxSubBody::ComputeWorldInvInertiaTensor() const
 {

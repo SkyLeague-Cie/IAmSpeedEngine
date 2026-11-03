@@ -22,6 +22,7 @@ class FBodyWrite final
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     static void FakePhysics(USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext);
     static void FakePhysics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext);
+    static void Initialize(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,ISpeedComponent* Parent);
     static void AcceptHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body);
     static void UpdateFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const SKinematic& ParentKinematic);
     static void Impulse(USolidSubBody& Body,const FVector& Impulse,const FVector& Point);

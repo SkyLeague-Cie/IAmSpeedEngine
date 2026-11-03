@@ -400,6 +400,8 @@ protected:
     void ResolveCurrentHitPrv(const float&,const float&) override;
 
 private:
+    void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;
+    FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
     void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) override;
     void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic) override;
     void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) override;
@@ -654,6 +656,8 @@ public:
     explicit USpeedBranchWheelSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
 
 private:
+    void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;
+    FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
     void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) override;
     void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic) override;
     void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) override;

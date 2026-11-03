@@ -1,4 +1,6 @@
 #include "SphereSubBody.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
@@ -82,23 +84,57 @@ USphereSubBody::USphereSubBody(const FObjectInitializer& ObjectInitializer):
     bUseEditorCompositing = true;
 }
 
-void USphereSubBody::Initialize(ISpeedComponent* InParentComponent)
+class USphereSubBody::FLegacyBirthInitializeAccess final
 {
-	Super::Initialize(InParentComponent);
-    if (ParentComponentBodyDomainStorage())
+    USphereSubBody& Owner;
+public:
+    explicit FLegacyBirthInitializeAccess(USphereSubBody& Value):Owner(Value){}
+    void Base(ISpeedComponent* Parent) const {Owner.USolidSubBody::Initialize(Parent);}
+    decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
+    SubBodyConfig Configuration() const {return Owner.ParentComponentBodyDomainStorage()->GetSubBodyConfig(Owner);}
+    void Radius(float Value) const {Owner.SetRadius(Value);}
+    decltype(auto) InverseLocal() const {return Owner.InvInertiaLocalSolidStorage();}
+    FMatrix InitialInverse() const {return Owner.InitInvInertiaTensor();}
+};
+class USphereSubBody::FNativeBirthInitializeAccess final
+{
+    USphereSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Body() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner);}
+public:
+    FNativeBirthInitializeAccess(USphereSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Body();}
+    void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeSolid(Op,Parent);}
+    decltype(auto) Parent() const {return (Body().ParentComponent);}
+    SubBodyConfig Configuration() const {return Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*Body().ParentComponent,Owner);}
+    void Radius(float Value) const {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSphereDomain>(Op,&Owner).Radius=Value;}
+    decltype(auto) InverseLocal() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,&Owner).InvInertiaLocal);}
+    FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
+};
+
+template<class TAccess>
+void USphereSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
+{
+	Storage.Base(InParentComponent);
+    if (Storage.Parent())
     {
-        SubBodyConfig Config = ParentComponentBodyDomainStorage()->GetSubBodyConfig(*this);
+        SubBodyConfig Config = Storage.Configuration();
         if (Config.bValid)
         {
-            SetRadius(FMath::Max(Config.Radius, KINDA_SMALL_NUMBER));
-            InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
+            Storage.Radius(FMath::Max(Config.Radius, KINDA_SMALL_NUMBER));
+            Storage.InverseLocal() = Storage.InitialInverse();
         }
         else
         {
-            InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
+            Storage.InverseLocal() = Storage.InitialInverse();
         }
 	}
 }
+
+void USphereSubBody::Initialize(ISpeedComponent* InParentComponent)
+{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+void USphereSubBody::InitializeNativeSphere(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+
 
 void USphereSubBody::ResetForFrame(const float& Delta)
 {
@@ -1204,10 +1240,33 @@ bool USphereSubBody::ShouldSkipBoxSweep(const UBoxSubBody& Box) const
 		SpeedWorld->IsDynamicContactPairOwnedByRollingManifold(*this, Box);
 }
 
-FMatrix USphereSubBody::InitInvInertiaTensor() const
+class USphereSubBody::FLegacyInitialInertiaAccess final
+{
+    const USphereSubBody& Owner;
+public:
+    explicit FLegacyInitialInertiaAccess(const USphereSubBody& Value):Owner(Value){}
+    float Mass() const {return Speed::NativeKinematics::FSolidMassAccess::Read(Owner);}
+    float Radius() const {return Owner.GetRadius();}
+};
+class USphereSubBody::FNativeInitialInertiaAccess final
+{
+    const USphereSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+public:
+    FNativeInitialInertiaAccess(const USphereSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {
+        using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Op);
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Op,&Owner);
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Op,&Owner);
+    }
+    float Mass() const {return Speed::NativeKinematics::FSolidMassAccess::Read(Op,Owner);}
+    float Radius() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadSphereDomain>(Op,&Owner).Radius;}
+};
+
+template<class TAccess>
+FMatrix USphereSubBody::InitialInverseTensorBody(TAccess& Storage) const
 {
     // Inertia tensor for solid sphere: I = 2/5 m r^2
-    const float I = (2.f / 5.f) * Speed::NativeKinematics::FSolidMassAccess::Read(*this) * GetRadius() * GetRadius();
+    const float I = (2.f / 5.f) * Storage.Mass() * Storage.Radius() * Storage.Radius();
     const float InvI = I > KINDA_SMALL_NUMBER ? 1.f / I : 0.f;
     return FMatrix(
         FPlane(InvI, 0.f, 0.f, 0.f),
@@ -1216,6 +1275,12 @@ FMatrix USphereSubBody::InitInvInertiaTensor() const
         FPlane(0.f, 0.f, 0.f, 1.f)
 	);
 }
+
+FMatrix USphereSubBody::InitInvInertiaTensor() const
+{FLegacyInitialInertiaAccess Storage(*this);return InitialInverseTensorBody(Storage);}
+FMatrix USphereSubBody::InitialNativeInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{FNativeInitialInertiaAccess Storage(*this,Operation);return InitialInverseTensorBody(Storage);}
+
 
 FMatrix USphereSubBody::ComputeWorldInvInertiaTensor() const
 {

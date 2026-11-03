@@ -1,4 +1,6 @@
 #include "ComponentKinematicRead.h"
+#include "IAmSpeed/SubBodies/Configs/WheelSubBodyConfig.h"
+#include "IAmSpeed/SubBodies/Configs/SubBodyConfig.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -7,6 +9,32 @@
 
 namespace Speed::NativeKinematics
 {
+SubBodyConfig FComponentRead::BirthSubBodyConfiguration(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component,const USSubBody& Body)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component);
+    (void)FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,&Component);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,&Body);
+    // Exact declared value of the sealed original parent GetSubBodyConfig.
+    // A missing binding refused above; this is not a zero-state substitute.
+    return SubBodyConfig{};
+}
+WheelSubBodyConfig FComponentRead::BirthWheelConfiguration(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedWheeledComponent& Component,const USWheelSubBody& Body)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,static_cast<const ISpeedComponent*>(&Component));
+    (void)FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,static_cast<const ISpeedComponent*>(&Component));
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,&Body);
+    // Exact inherited stock GetWheelSubBodyConfig result, not guessed coverage.
+    return WheelSubBodyConfig{};
+}
+bool FComponentRead::PrescribedMotion(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    ValidateCurrentAndSubBodies(Operation,&Component);
+    return Component.IsPrescribedMotion(); // original key-free scalar virtual, no Op passed
+}
 const TArray<FPhysicalContactConstraint>& FComponentRead::Constraints(const ISpeedComponent& Component)
 {
     return Component.PhysicalConstraintsStorage();

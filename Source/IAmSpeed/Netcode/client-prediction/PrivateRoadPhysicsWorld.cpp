@@ -433,6 +433,13 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
 // the actual FImpl/root/config control blocks for their complete native call.
 // It grants NO restoration, mutable-view, source or lifecycle exclusion lease.
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+struct FPrivateRoadPhysicsWorld::FBirthInitializationDiagnosticContext final
+{
+    std::shared_ptr<FImpl> ForeignRoot;
+    EPrivateRoadBirthProbeMode Mode;
+    FPrivateRoadBirthInitializationProbe& Result;
+    bool GuardProbeReturned=false; // actual diagnostic call return, never permission
+};
 struct FPrivateRoadPhysicsWorld::FHitAcceptanceDiagnosticContext final
 {
     std::shared_ptr<FImpl> ForeignRoot;
@@ -491,6 +498,14 @@ FPrivateRoadPhysicsWorld::~FPrivateRoadPhysicsWorld()
     if(!Retired)std::terminate(); // no silent release or retry after interruption
 }
 std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why)
+{
+    return CreateCore(std::move(Seeds),Why);
+}
+std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    ,FBirthInitializationDiagnosticContext* BirthContext
+#endif
+    )
 {
     Why.Empty();
     if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive()
@@ -905,7 +920,35 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         TArray<uint8> BeforeOther,AfterOther,ActualSolidRecipe;
         if(!CaptureOutsideSolidValues(BeforeOther))return {};
 #endif
-        for(auto* Body:C->GetSubBodies())Body->Initialize(C);
+        for(auto* Body:Speed::NativeKinematics::FComponentRead::SubBodies(Operation,*C))
+        {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            if(BirthContext&&!BirthContext->GuardProbeReturned)
+            {
+                if(!ProbeBirthInitializationGuards(I,Operation,*BirthContext,Body,C))
+                    return Refuse(Why,TEXT("actual birth initialization guards refused"));
+                BirthContext->GuardProbeReturned=true;
+            }
+#endif
+            Speed::NativeKinematics::FBodyWrite::Initialize(Operation,Body,C);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+            if(BirthContext)
+            {
+                ++BirthContext->Result.InitializersReturned; // only after actual return
+                if(BirthContext->Mode==EPrivateRoadBirthProbeMode::FailAfterFirstInitializer
+                    &&BirthContext->Result.InitializersReturned==1)
+                {
+                    // Fully allocated/bound first car, one of its five repeated
+                    // initializers returned. This does not cover early allocation
+                    // failures. Retain COUNTERS only before genuine owner unwind.
+                    for(const auto& Trace:I.NativeConfigurationLifetime)
+                        BirthContext->Result.LifetimeObservers.push_back(Trace);
+                    BirthContext->Result.FaultAfterFirstInitializerReached=true;
+                    return Refuse(Why,TEXT("explicit late birth diagnostic abort after first initializer"));
+                }
+            }
+#endif
+        }
         for(int32 W=0;W<C->ReadWheelSubBodiesForPhysics().Num();++W)Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Operation,*C->ReadWheelSubBodiesForPhysics()[W],W);
         // Real validation AFTER every new initializer, under the same scope.
         if(!C->ValidateSimulationBindings(Why))return {};
@@ -980,6 +1023,68 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     if(!I.NativeStorage->CloseBirthRegistration(Operation))return {};
     return Owner;
 }
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool FPrivateRoadPhysicsWorld::ProbeBirthInitializationGuards(FImpl& I,const FPrivateNativeOperation& Operation,
+    FBirthInitializationDiagnosticContext& Context,USSubBody* Body,ISpeedComponent* Parent)
+{
+    FPrivateNativeStorageAccess::RequireBirth(Operation);
+    if(!I.AcquiredGraphStillLive())return false;
+    auto& Out=Context.Result;const auto& Foreign=*Context.ForeignRoot;
+    if(!IsInGameThread()||Foreign.Closed||Foreign.Failed||Foreign.RetirementRequested.load()
+        ||Foreign.NativeOperationIdentity->ActiveGTActualOperation||!Foreign.AcquiredGraphStillLive()
+        ||Foreign.OriginalBoxesWeak.IsEmpty()||Foreign.Cars.empty())return false;
+    auto* ForeignBox=Foreign.OriginalBoxesWeak[0].Get();auto* ForeignParent=Foreign.Cars[0]->Component;
+    if(!ForeignBox||!ForeignParent)return false;
+    auto& Values=FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,Body);
+    const auto SavedCurrent=Values.CurrentHit,SavedFuture=Values.FutureHit;
+    ON_SCOPE_EXIT{Values.CurrentHit=SavedCurrent;Values.FutureHit=SavedFuture;};
+    // Named cache sentinels make an accidentally accepted Step-only hit route
+    // observable. This is fixture cleanup, not full-state restoration.
+    Values.CurrentHit.FrameTag=17;Values.FutureHit.FrameTag=29;Values.FutureHit.bBlockingHit=true;
+    const auto Capture=[&](){TArray<uint8> Bytes;Body->AppendEpisodeStateForTesting(Bytes);return Bytes;};
+    Out.OwnBodyUnchangedAfterRefusals=true;
+    for(int32 Case=0;Case<4;++Case)
+    {
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==0)Speed::NativeKinematics::FBodyWrite::Initialize(Operation,ForeignBox,Parent);
+            if(Case==1)Speed::NativeKinematics::FBodyWrite::Initialize(Operation,Body,ForeignParent);
+            if(Case==2)(void)Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Operation,ForeignBox);
+            if(Case==3)Speed::NativeKinematics::FBodyWrite::AcceptHit(Operation,Body);
+        }
+        catch(const FPrivateNativeStorageUnavailable&){Refused=true;}
+        Out.OwnBodyUnchangedAfterRefusals=Out.OwnBodyUnchangedAfterRefusals&&Before==Capture();
+        if(Case==0)Out.ForeignBodyRefused=Refused;
+        if(Case==1)Out.ForeignParentRefused=Refused;
+        if(Case==2)Out.ForeignInverseRefused=Refused;
+        if(Case==3)Out.StepHitRefusedInBirth=Refused;
+    }
+    Out.ActualBirthOperation=true;
+    return Out.ForeignBodyRefused&&Out.ForeignParentRefused&&Out.ForeignInverseRefused
+        &&Out.StepHitRefusedInBirth&&Out.OwnBodyUnchangedAfterRefusals;
+}
+std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
+    std::vector<FPrivateRoadCarSeed> Seeds,FPrivateRoadPhysicsWorld& Foreign,EPrivateRoadBirthProbeMode Mode,
+    FPrivateRoadBirthInitializationProbe& Result,FString& Why)
+{
+    Result={};Why.Empty();
+    if(!IsInGameThread()||OriginalComponentStorageOwner||Speed::Input::FPresentationInputScope::IsActive()
+        ||(Mode!=EPrivateRoadBirthProbeMode::Observe&&Mode!=EPrivateRoadBirthProbeMode::FailAfterFirstInitializer))
+    {Refuse(Why,TEXT("native birth diagnostic requires a valid GT test mode"));return {};}
+    FRetainedNativeCall ForeignCall(Foreign.Impl);
+    if(!ForeignCall.Root||ForeignCall.Root->Closed||ForeignCall.Root->Failed
+        ||ForeignCall.Root->RetirementRequested.load()||ForeignCall.Root->NativeOperationIdentity->ActiveGTActualOperation)
+    {Refuse(Why,TEXT("foreign native birth fixture unavailable"));return {};}
+    // Actual retained foreign root only. No foreign mutex or operation is
+    // acquired across callback-capable creation, GC, logging or owner unwind.
+    FBirthInitializationDiagnosticContext Context{ForeignCall.Root,Mode,Result};
+    auto Owner=CreateCore(std::move(Seeds),Why,&Context);
+    Result.CreateReturnedNull=!Owner; // actual return, never a guessed drain
+    return Owner;
+}
+#endif
+
 bool FPrivateRoadPhysicsWorld::HasExactRegisteredRosterRetained(const std::shared_ptr<FImpl>& Root,const FPrivateNativeOperation& Operation,FString& Why)
 {
     const auto& I=*Root;
@@ -1544,9 +1649,16 @@ bool FPrivateRoadPhysicsWorld::ProbeHitAcceptanceRetained(FImpl& I,const FPrivat
             &&HitEqual(ForeignBeforeFuture,ForeignBox->OwnedBodyValues->FutureHit)
             &&ForeignBeforeIgnored==ForeignBox->OwnedBodyValues->IgnoredComponents;
     }
+    Reset();
+    auto* ActualBirthParent=SavedBoxBody.ParentComponent;
+    BV.ParentComponent=nullptr; // makes a wrongly entered initializer observable
+    const auto BeforeBirthAttempt=Capture();bool BirthRefused=false;
+    try{Speed::NativeKinematics::FBodyWrite::Initialize(Operation,Box,ActualBirthParent);}
+    catch(const FPrivateNativeStorageUnavailable&){BirthRefused=true;}
+    Result.BirthInitializationRefusedDuringStep=BirthRefused&&BeforeBirthAttempt==Capture();
     Result.ActualStepOperation=true;
     return Result.Cases.size()==8&&Result.LegacyCalls==8&&Result.NativeCalls==8
-        &&Result.BaseBehaviorDistinguished&&Result.Refusals==3&&Result.AllRefusalsBeforeWrite
+        &&Result.BirthInitializationRefusedDuringStep&&Result.BaseBehaviorDistinguished&&Result.Refusals==3&&Result.AllRefusalsBeforeWrite
         &&std::all_of(Result.Cases.begin(),Result.Cases.end(),[](const auto& X){return X.LegacyExpected&&X.NativeExpected&&X.LegacyNativeEqual;});
 }
 bool FPrivateRoadPhysicsWorld::StepWithHitAcceptanceProbeForDiagnostics(const std::vector<FPrivateRoadRequest>& Requests,
@@ -1913,6 +2025,43 @@ void USpeedBranchWheelSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Pr
     // This sealed native subtype inherits the original empty base operation.
     // Do not dispatch the extensible public callback or fabricate an impulse.
     (void)Hit;(void)DeltaTime;(void)ImpactContext;
+}
+
+void USpeedBranchBoxSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{
+    using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,Parent);
+    InitializeNativeBox(Operation,Parent);
+}
+FMatrix USpeedBranchBoxSubBody::ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    return InitialNativeInverseTensor(Operation);
+}
+void USpeedBranchWheelSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{
+    using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,Parent);
+    InitializeNativeWheel(Operation,Parent);
+}
+FMatrix USpeedBranchWheelSubBody::ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    return InitialNativeInverseTensor(Operation);
 }
 
 void USpeedBranchBoxSubBody::AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)

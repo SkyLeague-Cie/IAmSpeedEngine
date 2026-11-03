@@ -310,32 +310,80 @@ USWheelSubBody::USWheelSubBody(const FObjectInitializer& ObjectInitializer):
     Speed::NativeKinematics::FSolidMassAccess::Write(*this,WheelMassWheelDomainStorage());
 }
 
-void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
+class USWheelSubBody::FLegacyBirthInitializeAccess final
 {
-	Super::Initialize(InParentComponent);
+    USWheelSubBody& Owner;
+public:
+    explicit FLegacyBirthInitializeAccess(USWheelSubBody& Value):Owner(Value){}
+    void Base(ISpeedComponent* Parent) const {Owner.USphereSubBody::Initialize(Parent);}
+    decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
+    WheelSubBodyConfig Configuration() const {return Owner.WheelComponentWheelDomainStorage()->GetWheelSubBodyConfig(Owner);}
+    void Index(int Value) const {Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Owner,Value);}
+    void Radius(float Value) const {Owner.SetRadius(Value);}
+    void Mass(float Value) const {Speed::NativeKinematics::FSolidMassAccess::Write(Owner,Value);}
+    decltype(auto) InverseLocal() const {return Owner.InvInertiaLocalSolidStorage();}
+    FMatrix InitialInverse() const {return Owner.InitInvInertiaTensor();}
+    decltype(auto) WheelComponent() const {return Owner.WheelComponentWheelDomainStorage();}
+    decltype(auto) ChaosWheel() const {return Owner.ChaosWheelWheelDomainStorage();}
+    decltype(auto) Wheel() const {return Owner.PWheelWheelDomainStorage();}
+    decltype(auto) Suspension() const {return Owner.PSuspensionWheelDomainStorage();}
+    decltype(auto) WheelMass() const {return Owner.WheelMassWheelDomainStorage();}
+};
+class USWheelSubBody::FNativeBirthInitializeAccess final
+{
+    USWheelSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadWheelDomain>(Op,&Owner);}
+public:
+    FNativeBirthInitializeAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
+    void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeSphere(Op,Parent);}
+    decltype(auto) Parent() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner).ParentComponent);}
+    WheelSubBodyConfig Configuration() const {return Speed::NativeKinematics::FComponentRead::BirthWheelConfiguration(Op,*Values().WheelComponent,Owner);}
+    void Index(int Value) const {Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Op,Owner,Value);}
+    void Radius(float Value) const {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSphereDomain>(Op,&Owner).Radius=Value;}
+    void Mass(float Value) const {Speed::NativeKinematics::FSolidMassAccess::Write(Op,Owner,Value);}
+    decltype(auto) InverseLocal() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,&Owner).InvInertiaLocal);}
+    FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
+    decltype(auto) WheelComponent() const {return (Values().WheelComponent);}
+    decltype(auto) ChaosWheel() const {return (Values().ChaosWheel);}
+    decltype(auto) Wheel() const {return (Values().PWheel);}
+    decltype(auto) Suspension() const {return (Values().PSuspension);}
+    decltype(auto) WheelMass() const {return (Values().WheelMass);}
+};
+
+template<class TAccess>
+void USWheelSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
+{
+	Storage.Base(InParentComponent);
 	if (InParentComponent)
 	{
-		ParentComponentBodyDomainStorage() = InParentComponent;
-		WheelComponentWheelDomainStorage() = static_cast<ISpeedWheeledComponent*>(InParentComponent);
+		Storage.Parent() = InParentComponent;
+		Storage.WheelComponent() = static_cast<ISpeedWheeledComponent*>(InParentComponent);
 
-		if (WheelComponentWheelDomainStorage())
+		if (Storage.WheelComponent())
 		{
-			WheelSubBodyConfig Config = WheelComponentWheelDomainStorage()->GetWheelSubBodyConfig(*this);
+			WheelSubBodyConfig Config = Storage.Configuration();
             if (Config.bValid)
             {
-                Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(*this,Config.WheelIndex);
-                ChaosWheelWheelDomainStorage() = Config.ChaosWheel;
-                PWheelWheelDomainStorage() = Config.PWheel;
-                PSuspensionWheelDomainStorage() = Config.PSuspension;
+                Storage.Index(Config.WheelIndex);
+                Storage.ChaosWheel() = Config.ChaosWheel;
+                Storage.Wheel() = Config.PWheel;
+                Storage.Suspension() = Config.PSuspension;
                 // keep consistency with radius and mass
-                SetRadius(PWheelWheelDomainStorage()->GetEffectiveRadius());
-                PWheelWheelDomainStorage()->SetMassPerWheel(WheelMassWheelDomainStorage());
-                Speed::NativeKinematics::FSolidMassAccess::Write(*this,WheelMassWheelDomainStorage());
-                InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
+                Storage.Radius(Storage.Wheel()->GetEffectiveRadius());
+                Storage.Wheel()->SetMassPerWheel(Storage.WheelMass());
+                Storage.Mass(Storage.WheelMass());
+                Storage.InverseLocal() = Storage.InitialInverse();
             }
 		}
 	}
 }
+
+void USWheelSubBody::Initialize(ISpeedComponent* InParentComponent)
+{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+void USWheelSubBody::InitializeNativeWheel(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+
 
 
 void USWheelSubBody::ResetForFrame(const float& Delta)

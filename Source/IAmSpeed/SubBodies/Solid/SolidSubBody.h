@@ -400,6 +400,11 @@ private:
     virtual void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext);
     // Separate explicit native dispatch. Old public/protected virtual APIs stay
     // legacy; no public context or routing scope can issue this Operation.
+    friend class USphereSubBody;friend class UBoxSubBody;friend class USpeedBranchBoxSubBody;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
+    void InitializeNativeSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    virtual FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
     virtual FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
 
 };

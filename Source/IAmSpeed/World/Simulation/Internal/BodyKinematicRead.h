@@ -32,6 +32,7 @@ class FBodyRead final
     friend class Speed::FrameParallel::FJoinedActorKinematics1213;
     friend struct FCylinderRigidTrajectory; friend struct FCylinderSuspensionQuery;
     friend struct FDynamicBodyWitness;
+    static FMatrix InitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USolidSubBody* Body);
     static FMatrix WorldInvInertia(const USolidSubBody& Body);
     static FMatrix WorldInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USolidSubBody& Body);
     static FMatrix WorldInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USolidSubBody* Body);

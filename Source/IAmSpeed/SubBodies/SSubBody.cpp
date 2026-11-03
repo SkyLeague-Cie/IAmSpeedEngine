@@ -2,6 +2,7 @@
 
 
 #include "SSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
@@ -56,28 +57,66 @@ void USSubBody::OnRegister()
     Super::OnRegister();
 }
 
-void USSubBody::Initialize(ISpeedComponent* InParentComponent)
+class USSubBody::FLegacyBirthInitializeAccess final
 {
-	ParentComponentBodyDomainStorage() = InParentComponent;
-    if (ParentComponentBodyDomainStorage())
+    USSubBody& Owner;
+public:
+    explicit FLegacyBirthInitializeAccess(USSubBody& Value):Owner(Value){}
+    decltype(auto) Parent() const {return Owner.ParentComponentBodyDomainStorage();}
+    SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Parent->GetSubBodyConfig(Owner);}
+    void LocalOffset(const FVector& Value) const {Owner.SetPhysicalLocalOffset(Value);}
+    void LocalRotation(const FQuat& Value) const {Owner.SetPhysicalLocalRotation(Value);}
+    decltype(auto) CollisionChannel() const {return Owner.CollisionChannelBodyDomainStorage();}
+    decltype(auto) SubBodies() const {return Owner.ParentComponentBodyDomainStorage()->GetSubBodies();}
+    decltype(auto) AlwaysIgnored() const {return Owner.AlwaysIgnoredComponentsBodyDomainStorage();}
+};
+class USSubBody::FNativeBirthInitializeAccess final
+{
+    USSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner);}
+public:
+    FNativeBirthInitializeAccess(USSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
+    decltype(auto) Parent() const {return (Values().ParentComponent);}
+    SubBodyConfig Configuration(ISpeedComponent* ParentValue) const {return Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*ParentValue,Owner);}
+    void LocalOffset(const FVector& Value) const {Values().LocalPose.SetLocation(Value);}
+    void LocalRotation(const FQuat& Value) const {Values().LocalEulerRotation=Value.Rotator();Values().LocalPose.SetRotation(Value);}
+    decltype(auto) CollisionChannel() const {return (Values().CollisionChannel);}
+    decltype(auto) SubBodies() const {return Speed::NativeKinematics::FComponentRead::SubBodies(Op,*Values().ParentComponent);}
+    decltype(auto) AlwaysIgnored() const {return (Values().AlwaysIgnoredComponents);}
+};
+
+template<class TAccess>
+void USSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
+{
+	Storage.Parent() = InParentComponent;
+    if (Storage.Parent())
     {
-		SubBodyConfig Config = ParentComponentBodyDomainStorage()->GetSubBodyConfig(*this);
+		SubBodyConfig Config = Storage.Configuration(Storage.Parent());
         if (Config.bValid)
         {
-            SetPhysicalLocalOffset(Config.LocalOffset);
-            SetPhysicalLocalRotation(Config.LocalRotation);
-            CollisionChannelBodyDomainStorage() = Config.CollisionChannel;
+            Storage.LocalOffset(Config.LocalOffset);
+            Storage.LocalRotation(Config.LocalRotation);
+            Storage.CollisionChannel() = Config.CollisionChannel;
         }
         
-        for (USSubBody* SubBody: ParentComponentBodyDomainStorage()->GetSubBodies())
+        for (USSubBody* SubBody: Storage.SubBodies())
         {
             if (SubBody)
             {
-                AlwaysIgnoredComponentsBodyDomainStorage().AddUnique(SubBody);
+                Storage.AlwaysIgnored().AddUnique(SubBody);
             }
 		}
     }
 }
+
+void USSubBody::Initialize(ISpeedComponent* InParentComponent)
+{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+void USSubBody::InitializeNativeBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+void USSubBody::InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{(void)Operation;(void)Parent;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+
 
 void USSubBody::ResetForFrame(const float& Delta)
 {

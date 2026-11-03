@@ -388,6 +388,9 @@ protected:
 private:
     friend class USpeedBranchWheelSubBody;
     class FLegacyWheelUpdateAccess;class FNativeWheelUpdateAccess;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
+    void InitializeNativeWheel(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
     class FLegacyWheelHitAccess;class FNativeWheelHitAccess;
     template<class TAccess> void AcceptWheelHitBody(TAccess& Storage);
     void AcceptNativeWheelHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);

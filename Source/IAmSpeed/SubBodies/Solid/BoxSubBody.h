@@ -267,6 +267,12 @@ protected:
 private:
     friend class USpeedBranchBoxSubBody;
     class FLegacyBoxHitAccess;class FNativeBoxHitAccess;class FLegacyRepeatedContactAccess;
+    class FLegacyInitialInertiaAccess;class FNativeInitialInertiaAccess;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
+    void InitializeNativeBox(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    template<class TAccess> FMatrix InitialInverseTensorBody(TAccess& Storage) const;
+    FMatrix InitialNativeInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
     template<class TAccess> void AcceptBoxHitBody(TAccess& Storage);
     template<class TAccess> bool CanInitializeRepeatedContactBody(TAccess& Storage,const SHitResult& Hit) const;
     template<class TAccess> bool CanResolveRepeatedContactBody(TAccess& Storage,const SHitResult& Hit) const;

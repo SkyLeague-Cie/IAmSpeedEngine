@@ -2,6 +2,7 @@
 
 
 #include "SolidSubBody.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
@@ -48,27 +49,75 @@ float Speed::NativeKinematics::FSolidRestitutionPolicy::Resolve(
         return FMath::Clamp(FallbackRestitution, 0.f, 1.f);
     }
 
-void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
+class USolidSubBody::FLegacyBirthInitializeAccess final
 {
-	Super::Initialize(InParentComponent);
+    USolidSubBody& Owner;
+public:
+    explicit FLegacyBirthInitializeAccess(USolidSubBody& Value):Owner(Value){}
+    void Base(ISpeedComponent* Parent) const {Owner.USSubBody::Initialize(Parent);}
+    SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Parent->GetSubBodyConfig(Owner);}
+    FMatrix InitialInverse() const {return Owner.InitInvInertiaTensor();}
+    decltype(auto) Mass() const {return Owner.MassSolidStorage();}
+    decltype(auto) Restitution() const {return Owner.RestitutionSolidStorage();}
+    decltype(auto) StaticFriction() const {return Owner.StaticFrictionSolidStorage();}
+    decltype(auto) DynamicFriction() const {return Owner.DynamicFrictionSolidStorage();}
+    decltype(auto) ImpactThreshold() const {return Owner.ImpactThresholdSolidStorage();}
+    decltype(auto) IsMain() const {return Owner.bIsMainSubBodySolidStorage();}
+    decltype(auto) EnableFake() const {return Owner.EnableFakePhysicsSolidStorage();}
+    decltype(auto) HitDamping() const {return Owner.HitDampingSolidStorage();}
+    decltype(auto) InverseLocal() const {return Owner.InvInertiaLocalSolidStorage();}
+};
+class USolidSubBody::FNativeBirthInitializeAccess final
+{
+    USolidSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,&Owner);}
+public:
+    FNativeBirthInitializeAccess(USolidSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Op);(void)Values();}
+    void Base(ISpeedComponent* Parent) const {Owner.InitializeNativeBase(Op,Parent);}
+    SubBodyConfig Configuration(ISpeedComponent* Parent) const {return Speed::NativeKinematics::FComponentRead::BirthSubBodyConfiguration(Op,*Parent,Owner);}
+    FMatrix InitialInverse() const {return Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Op,&Owner);}
+    decltype(auto) Mass() const {return (Values().Mass);}
+    decltype(auto) Restitution() const {return (Values().Restitution);}
+    decltype(auto) StaticFriction() const {return (Values().StaticFriction);}
+    decltype(auto) DynamicFriction() const {return (Values().DynamicFriction);}
+    decltype(auto) ImpactThreshold() const {return (Values().ImpactThreshold);}
+    decltype(auto) IsMain() const {return (Values().bIsMainSubBody);}
+    decltype(auto) EnableFake() const {return (Values().EnableFakePhysics);}
+    decltype(auto) HitDamping() const {return (Values().HitDamping);}
+    decltype(auto) InverseLocal() const {return (Values().InvInertiaLocal);}
+};
+
+template<class TAccess>
+void USolidSubBody::InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent)
+{
+	Storage.Base(InParentComponent);
 
 	if (InParentComponent)
 	{
-		SubBodyConfig Config = InParentComponent->GetSubBodyConfig(*this);
+		SubBodyConfig Config = Storage.Configuration(InParentComponent);
         if (Config.bValid)
         {
-            MassSolidStorage() = Config.Mass;
-            RestitutionSolidStorage() = Config.Restitution;
-            StaticFrictionSolidStorage() = Config.StaticFriction;
-            DynamicFrictionSolidStorage() = Config.DynamicFriction;
-            ImpactThresholdSolidStorage() = Config.ImpactThreshold;
-            bIsMainSubBodySolidStorage() = Config.bIsMainSubBody;
-            EnableFakePhysicsSolidStorage() = Config.bEnableFakePhysics;
-            HitDampingSolidStorage() = FMath::Clamp(Config.HitDamping, 0.f, 1.f);
+            Storage.Mass() = Config.Mass;
+            Storage.Restitution() = Config.Restitution;
+            Storage.StaticFriction() = Config.StaticFriction;
+            Storage.DynamicFriction() = Config.DynamicFriction;
+            Storage.ImpactThreshold() = Config.ImpactThreshold;
+            Storage.IsMain() = Config.bIsMainSubBody;
+            Storage.EnableFake() = Config.bEnableFakePhysics;
+            Storage.HitDamping() = FMath::Clamp(Config.HitDamping, 0.f, 1.f);
         }
-		InvInertiaLocalSolidStorage() = InitInvInertiaTensor();
+		Storage.InverseLocal() = Storage.InitialInverse();
 	}
 }
+
+void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
+{FLegacyBirthInitializeAccess Storage(*this);InitializeBirthBody(Storage,InParentComponent);}
+void USolidSubBody::InitializeNativeSolid(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent)
+{FNativeBirthInitializeAccess Storage(*this,Operation);InitializeBirthBody(Storage,Parent);}
+FMatrix USolidSubBody::ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{(void)Operation;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+
 
 void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& WorldPoint)
 {

@@ -10,6 +10,7 @@
 #include <variant>
 #include "IAmSpeed/World/Simulation/RoadSettings/DeclaredRoadSettingsRecipe.h"
 
+class USSubBody;class ISpeedComponent;
 namespace Speed::Netcode::Prediction
 {
 class FPrivateNativeOperation;
@@ -108,6 +109,17 @@ struct FPrivateRoadPublication
     std::vector<FPrivateRoadActorFrame> Actors;
 };
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitializer };
+struct FPrivateRoadBirthInitializationProbe
+{
+    uint32 InitializersReturned=0;
+    bool ActualBirthOperation=false,ForeignBodyRefused=false,ForeignParentRefused=false,ForeignInverseRefused=false;
+    bool StepHitRefusedInBirth=false,OwnBodyUnchangedAfterRefusals=false;
+    bool FaultAfterFirstInitializerReached=false,CreateReturnedNull=false;
+    // Only existing independent actual constructor/destructor counters escape.
+    // No own graph, simulation, configuration, UObject or native view retained.
+    std::vector<std::shared_ptr<const FNativeConfigurationLifetimeTrace>> LifetimeObservers;
+};
 struct FPrivateRoadHitAcceptanceCase
 {
     FString Name;bool LegacyExpected=false,NativeExpected=false,LegacyNativeEqual=false;
@@ -117,6 +129,7 @@ struct FPrivateRoadHitAcceptanceProbe
     std::vector<FPrivateRoadHitAcceptanceCase> Cases;
     uint32 LegacyCalls=0,NativeCalls=0,Refusals=0;
     bool BaseBehaviorDistinguished=false,AllRefusalsBeforeWrite=false,ActualStepOperation=false;
+    bool BirthInitializationRefusedDuringStep=false;
 };
 #endif
 // Experimental finite native flat-road kernel. Creates actual, private native
@@ -145,6 +158,16 @@ class IAMSPEED_API FPrivateRoadPhysicsWorld final
     static bool ReleaseInitialPublicationRetained(const std::shared_ptr<FImpl>& Root,const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why);
     static std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeRetained(const std::shared_ptr<FImpl>& Root);
     static bool CloseRetained(const std::shared_ptr<FImpl>& Root);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    struct FBirthInitializationDiagnosticContext;
+    static bool ProbeBirthInitializationGuards(FImpl& I,const FPrivateNativeOperation& Operation,
+        FBirthInitializationDiagnosticContext& Context,USSubBody* Body,ISpeedComponent* Parent);
+#endif
+    static std::unique_ptr<FPrivateRoadPhysicsWorld> CreateCore(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        ,FBirthInitializationDiagnosticContext* BirthContext=nullptr
+#endif
+        );
     FPrivateRoadPhysicsWorld();
 
 public:
@@ -162,6 +185,11 @@ public:
     std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeForDiagnostics() const;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     struct FOriginalWorldReadProbe {bool Admitted=false,SameOriginal=false;};
+    // Fixed test-only observations/fault injection in the same real factory.
+    // A failure mode can only abort; it never grants an operation or lease.
+    static std::unique_ptr<FPrivateRoadPhysicsWorld> CreateWithBirthInitializationProbeForDiagnostics(
+        std::vector<FPrivateRoadCarSeed> Seeds,FPrivateRoadPhysicsWorld& Foreign,EPrivateRoadBirthProbeMode Mode,
+        FPrivateRoadBirthInitializationProbe& Result,FString& Why);
     // Fixed native cache fixtures inside a real advancing Step. Only copied
     // results escape; the caller cannot supply a native pointer or callback.
     bool StepWithHitAcceptanceProbeForDiagnostics(const std::vector<FPrivateRoadRequest>& Requests,

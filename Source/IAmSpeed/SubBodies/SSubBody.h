@@ -45,6 +45,11 @@ private:
     friend class USWheelSubBody;
     friend class USpeedBranchBoxSubBody;
     class FLegacyBodyUpdateAccess;class FNativeBodyUpdateAccess;
+    friend class USolidSubBody;
+    class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
+    template<class TAccess> void InitializeBirthBody(TAccess& Storage,ISpeedComponent* InParentComponent);
+    void InitializeNativeBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
+    virtual void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
     virtual void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
     template<class TAccess> void UpdateKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic);
     void UpdateNativeBaseKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);

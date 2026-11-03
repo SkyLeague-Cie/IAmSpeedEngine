@@ -1,4 +1,5 @@
 #include "BodyContactWrite.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "ComponentContactWrite.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
@@ -46,6 +47,15 @@ void FBodyWrite::FakePhysics(const Speed::Netcode::Prediction::FPrivateNativeOpe
     (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,Other);
     (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,Other);
     Body->ApplyNativeFakePhysicsOn(Operation,*Other,Hit,DeltaTime,ImpactContext);
+}
+
+void FBodyWrite::Initialize(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,ISpeedComponent* Parent)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,Body);
+    FComponentRead::ValidateCurrentAndSubBodies(Operation,Parent);
+    Body->InitializeNative(Operation,Parent);
 }
 
 void FBodyWrite::AcceptHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body)
