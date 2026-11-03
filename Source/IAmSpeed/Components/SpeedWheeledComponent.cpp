@@ -998,10 +998,10 @@ bool USpeedWheeledComponent::ProbeNativeWheelBindingStepRefusalForDiagnostics(
     if(!D.SkySimulation||D.SkySimulation->PVehicle.Get()!=OriginalAllocation||OriginalAllocation->Wheels.Num()!=4)return false;
     auto* First=BodyBirths[0].Get();auto* Configuration=ConfigurationBirths[0].Get();
     auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,First);
-    const int32 Index=Solid.idx;const float Mass=Solid.Mass,NativeMass=OriginalAllocation->Wheels[0].MassPerWheel;
+    const int32 Index=Solid.idx;const float SavedSolidMass=Solid.Mass,NativeMass=OriginalAllocation->Wheels[0].MassPerWheel;
     const float Raise=Configuration->SuspensionMaxRaise,Drop=Configuration->SuspensionMaxDrop;
     ON_SCOPE_EXIT{
-        Solid.idx=Index;Solid.Mass=Mass;OriginalAllocation->Wheels[0].MassPerWheel=NativeMass;
+        Solid.idx=Index;Solid.Mass=SavedSolidMass;OriginalAllocation->Wheels[0].MassPerWheel=NativeMass;
         Configuration->SuspensionMaxRaise=Raise;Configuration->SuspensionMaxDrop=Drop;
     };
     // Named temporary fixture sentinels make accidental entry writes visible.
