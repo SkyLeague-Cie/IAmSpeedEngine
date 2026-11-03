@@ -1,4 +1,5 @@
 #include "NativePredictionProcessProbe.h"
+#include "NativeLocalIngressProbeControls.h"
 #include "RedundantDatagram.h"
 #include "OriginalRetryOrder.h"
 #include "ObservationRetention.h"
@@ -306,6 +307,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
     auto Launcher=O.Launcher;Launcher.ControlledLossEvery=O.ControlledDatagramDropEvery;
     Launcher.ControlledLossKinds=Launcher.ControlledLossEvery?14:0; // kinds2/3/4 ONLY
     auto Channel=FNativeLocalSession::Open(Launcher);if(!Channel)co_return Fail(__LINE__);
+    FOriginalIngressProbeControls OriginalIngress;if(!OriginalIngress.Acquire(*Channel))co_return Fail(__LINE__);
     const auto Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(90);
     const auto Send=[&](U64 Peer,std::uint8_t Kind,const std::vector<std::uint8_t>& Bytes)
     {
@@ -349,7 +351,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
             Phase=TEXT("server-receive");TraceNext=Next;
             for(unsigned Work=0;Work<512;++Work)
             {
-                FLocalSessionMessage M;const auto Status=Channel->Receive(M);TraceTransport=int(Status);if(Status==ELocalSession::WouldBlock)break;
+                FLocalSessionMessage M;const auto Status=OriginalIngress.Receive(M);TraceTransport=int(Status);if(Status==ELocalSession::WouldBlock)break;
                 if(Status==ELocalSession::PeerUnavailable||Status==ELocalSession::Pending||Status==ELocalSession::Duplicate||Status==ELocalSession::Stale||Status==ELocalSession::UnknownPeer)continue;
                 if(Status!=ELocalSession::Ready|| (M.Peer!=PeerA&&M.Peer!=PeerB))co_return Fail(__LINE__);
                 const unsigned A=M.Peer==PeerA?0:1;
@@ -472,7 +474,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
                     bool Released=false,ValidRelease=false;
                     {std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
                     if(Release>>Session>>Epoch){Released=true;ValidRelease=Session==O.Launcher.Session&&Epoch==O.Launcher.Epoch;}}
-                    if(Released){Channel->Close();co_return ValidRelease;}
+                    if(Released){co_return ValidRelease&&OriginalIngress.CloseAndRecord(Channel,O);}
                     if(!Channel->OriginalPeersAlive())co_return false;
                     co_await std::suspend_always{};
                 }
@@ -506,14 +508,14 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
             if(Release>>Session>>Epoch)
             {
                 if(Session!=O.Launcher.Session||Epoch!=O.Launcher.Epoch||!Client->Close())co_return Fail(__LINE__);
-                Channel->Close();co_return true;
+                co_return OriginalIngress.CloseAndRecord(Channel,O);
             }
         }
         Phase=TEXT("client-receive");TraceNext=Next;
         if(!Send(Server,Hello,{1}))co_return Fail(__LINE__);
         for(unsigned Work=0;Work<512;++Work)
         {
-            FLocalSessionMessage M;const auto Status=Channel->Receive(M);TraceTransport=int(Status);if(Status==ELocalSession::WouldBlock)break;
+            FLocalSessionMessage M;const auto Status=OriginalIngress.Receive(M);TraceTransport=int(Status);if(Status==ELocalSession::WouldBlock)break;
             if(Status==ELocalSession::PeerUnavailable||Status==ELocalSession::Pending||Status==ELocalSession::Duplicate||Status==ELocalSession::Stale||Status==ELocalSession::UnknownPeer)continue;
             if(Status!=ELocalSession::Ready||M.Peer!=Server)co_return Fail(__LINE__);
             if(M.Kind==RetentionAck||M.Kind==AuthorityInput)
@@ -656,7 +658,7 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
             std::ifstream Release(O.ReleasePath);U64 Session=0,Epoch=0;
             if(Release>>Session>>Epoch)
             {
-                if(Session!=O.Launcher.Session||Epoch!=O.Launcher.Epoch||!Client->Close())co_return Fail(__LINE__);Channel->Close();co_return true;
+                if(Session!=O.Launcher.Session||Epoch!=O.Launcher.Epoch||!Client->Close())co_return Fail(__LINE__);co_return OriginalIngress.CloseAndRecord(Channel,O);
             }
         }
         co_await std::suspend_always{};

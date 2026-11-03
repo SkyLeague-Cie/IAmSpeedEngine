@@ -42,12 +42,12 @@ struct FNativeLocalSession::FImpl
     std::mutex Gate;const std::thread::id Owner=std::this_thread::get_id();
     FLocalSessionConfig Config;FNativeDatagramSocket Socket;
     std::unique_ptr<FNativeLocalPeerPin> Self;std::vector<LocalSessionDetail::FPeer> Peers;
-    std::uint64_t Next=1;bool Closed=false;FLocalSessionEgressCounters Egress;
+    std::uint64_t Next=1;bool Closed=false,IngressAcquired=false,LegacyReceiveClaimed=false;FLocalSessionEgressCounters Egress;
     bool Alive() const
     {if(Closed||!Self||!Self->OriginalProcessAlive())return false;for(const auto& P:Peers)if(!P.Pin->OriginalProcessAlive())return false;return true;}
     void Retire() noexcept {Socket.Close();Closed=true;}
 };
-FNativeLocalSession::FNativeLocalSession():Impl(std::make_unique<FImpl>()){}
+FNativeLocalSession::FNativeLocalSession():Impl(std::make_shared<FImpl>()){}
 FNativeLocalSession::~FNativeLocalSession(){Close();}
 std::unique_ptr<FNativeLocalSession> FNativeLocalSession::Open(const FLocalSessionConfig& C)
 {
@@ -103,9 +103,17 @@ ELocalSession FNativeLocalSession::Send(std::uint64_t Peer,std::uint8_t Kind,con
 }
 ELocalSession FNativeLocalSession::Receive(FLocalSessionMessage& Message)
 {
-    using namespace LocalSessionDetail;auto& I=*Impl;Message={};
+    auto Original=Impl;auto& I=*Original;Message={};
     if(std::this_thread::get_id()!=I.Owner)return ELocalSession::WrongOwner;
     std::lock_guard Lock(I.Gate);if(I.Closed)return ELocalSession::Closed;
+    if(I.IngressAcquired)return ELocalSession::ConsumerClaimed;
+    I.LegacyReceiveClaimed=true; // no late handover to another receive facade
+    return ReceiveOriginal(I,Message);
+}
+ELocalSession FNativeLocalSession::ReceiveOriginal(FImpl& I,FLocalSessionMessage& Message)
+{
+    using namespace LocalSessionDetail;
+    if(I.Closed)return ELocalSession::Closed;
     if(!I.Alive()){I.Retire();return ELocalSession::PeerDead;}
     FNativeEndpoint Source;std::vector<std::uint8_t> Bytes;const auto Status=I.Socket.Receive(Source,Bytes);
     if(Status==ENativeDatagram::WouldBlock)return ELocalSession::WouldBlock;
@@ -160,4 +168,34 @@ bool FNativeLocalSession::OriginalPeersAlive() const
 FNativeEndpoint FNativeLocalSession::LocalEndpoint() const
 {std::lock_guard Lock(Impl->Gate);return Impl->Socket.LocalEndpoint();}
 void FNativeLocalSession::Close() noexcept {std::lock_guard Lock(Impl->Gate);Impl->Retire();}
+
+std::unique_ptr<FNativeLocalIngress> FNativeLocalSession::AcquireIngress(ELocalSession& Status)
+{
+    auto Original=Impl;auto& I=*Original;
+    if(std::this_thread::get_id()!=I.Owner){Status=ELocalSession::WrongOwner;return {};}
+    std::lock_guard Lock(I.Gate);
+    if(I.Closed){Status=ELocalSession::Closed;return {};}
+    if(!I.Alive()){I.Retire();Status=ELocalSession::PeerDead;return {};}
+    if(I.IngressAcquired||I.LegacyReceiveClaimed){Status=ELocalSession::ConsumerClaimed;return {};}
+    auto Export=std::unique_ptr<FNativeLocalIngress>(new FNativeLocalIngress(Original));
+    I.IngressAcquired=true;Status=ELocalSession::Ready;return Export;
+}
+FNativeLocalIngress::~FNativeLocalIngress()=default;
+FNativeLocalReceivedMessage::~FNativeLocalReceivedMessage()=default;
+ELocalSession FNativeLocalIngress::Receive(std::shared_ptr<const FNativeLocalReceivedMessage>& Message)
+{
+    Message.reset();auto RetainedOriginal=Original;auto& I=*RetainedOriginal;
+    if(std::this_thread::get_id()!=I.Owner)return ELocalSession::WrongOwner;
+    // Allocate before consuming a real datagram. The mutable candidate is
+    // private, and only an original Ready result can publish it as const.
+    auto Candidate=std::shared_ptr<FNativeLocalReceivedMessage>(new FNativeLocalReceivedMessage(RetainedOriginal));
+    std::lock_guard Lock(I.Gate);
+    const auto Status=FNativeLocalSession::ReceiveOriginal(I,Candidate->Original);
+    if(Status==ELocalSession::Ready)Message=std::move(Candidate);
+    return Status;
+}
+void FNativeLocalIngress::Close() noexcept
+{
+    auto RetainedOriginal=Original;std::lock_guard Lock(RetainedOriginal->Gate);RetainedOriginal->Retire();
+}
 }

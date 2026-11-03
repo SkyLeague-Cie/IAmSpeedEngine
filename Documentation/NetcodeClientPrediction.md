@@ -1386,3 +1386,54 @@ Full authoritativeK capture/restore, real opaque ingress/service/module/lifetime
 participation and conservative localized resimulation remain closed/unqualified.
 Source87's periodic-loss/aggregate-kind/pre-release/single-fixture limitations,
 all historical FAIL/UNKNOWN and the unfinished playable-device goal persist.
+
+
+## Proposed source89: opaque original same-host ingress (native NOT_RUN)
+
+The real FNativeLocalSession alone can export one FNativeLocalIngress. The
+export retains that original FImpl, socket and original process pins. Its
+constructor is private; no numeric peer/session/CRC can fabricate it. The
+claim is irreversible: double acquisition and facade Receive refuse after it,
+even when an export is destroyed. A new socket/session cannot be rebound.
+
+Receive runs on the original owner thread. Only actual transport Ready can
+return an immutable FNativeLocalReceivedMessage containing original bytes;
+other outcomes clear output. The receipt retains the original source storage
+but is data only after closure. No SL callback or UObject is invoked under Gate.
+
+Close is idempotent and may run on another thread. Gate linearizes it against
+actual Receive: an operation completing under Gate before Close may return
+Ready, while every Receive acquiring Gate after Close returns Closed. Close
+waits for that critical section, not arbitrary post-unlock return stacks.
+Each operation holds the original shared FImpl through its own return path.
+Destroying the facade closes the shared original and surviving exports cannot
+resurrect it. Module retention through all operations/export/receipt destructors
+remains the host's explicit obligation; this code does not manufacture a loader,
+service/global lifetime lease, remote-host authentication, game source admission,
+complete causal physical state, authoritative-K restore or localized rollback.
+
+This source is a proposed tranche only. Actual exclusive-consumer, wrong-lane,
+distinct real sessions/peers, close/receive ordering and surviving-export controls
+must be executed in genuine native processes before qualification. Existing
+source88/native86/Game86 receipts do not transfer to it.
+
+Self-review89r02: the first legacy facade Receive also irreversibly claims that
+receive mode; later opaque acquisition refuses. No silent handover from an
+already consumed legacy stream. Wrong-owner calls never claim either mode.
+
+
+Source89r03 integrates the proposed ingress into both genuine process-probe
+receive loops. Each actual opened channel must acquire one opaque consumer;
+wrong-owner acquisition, second consumer and facade receive are refused before
+its normal network run. On original successful shutdown it checks wrong-owner
+Receive with an actual retained receipt prefilled, output clearing, original
+assigned-peer provenance, surviving original bytes and repeated Closed results.
+Clients destroy the still-bound facade without a prior explicit Close; the
+server coordinates a real closer thread against owner Receive then checks closed
+acquisition. Sidecars record actual original PID/peer/sequence/Ready count and
+per-role outcomes. No particular race order/overlap or missing legacy-first
+control is claimed. These controls are NOT_RUN until fresh compiled processes.
+The original owner thread and called facade/export objects must stay alive
+through every call/return; shared FImpl does not legalize concurrent destruction
+of the same C++ object or prevent std::thread::id reuse after the original thread
+exits. Host module lifetime remains required through all object destructors.
