@@ -3,6 +3,7 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Controllers/SpeedController.h"
 #include "IAmSpeed/Input/DeviceInputSession.h"
+#include "IAmSpeed/Driving/DrivingInput.h"
 #include "IAmSpeed/World/Simulation/RealTimeSimulation.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -64,24 +65,28 @@ public:
 }
 
 IMPLEMENT_COMPLEX_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
-	"IAmSpeed.Simulation.ControllerInputLifecycle",
+	"IAmSpeed.Simulation",
 	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 
-// Preserve the existing test name and expose the device lifecycle branch to
-// ordinary Automation RunTests. A simple test never supplies its parameter.
+// Complex tests append each suffix to their pretty prefix. Give both cases a
+// nonempty command so the legacy case is an independently runnable leaf too.
 void FIAmSpeedControllerInputLifecycleTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
-    Names.Add(TEXT("IAmSpeed.Simulation.ControllerInputLifecycle")); Commands.Add(FString());
-    Names.Add(TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"));
-    Commands.Add(TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"));
+    Names.Add(TEXT("ControllerInputLifecycle")); Commands.Add(TEXT("Legacy"));
+    Names.Add(TEXT("DeviceV2Lifecycle2443")); Commands.Add(TEXT("DeviceV2Lifecycle2443"));
 }
 
 bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	using namespace Speed::Input;
-	if (Parameters == TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"))
+	if (Parameters == TEXT("DeviceV2Lifecycle2443") || Parameters == TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"))
 	{
 #include "ControllerDeviceV2Lifecycle2443.inl"
+	}
+	if (!Parameters.IsEmpty() && Parameters != TEXT("Legacy"))
+	{
+		AddError(FString::Printf(TEXT("Unknown controller lifecycle case: %s"), *Parameters));
+		return false;
 	}
 	if (!TestTrue(TEXT("controller fixture on game thread"), IsInGameThread())) return false;
 	auto Unadapted = std::make_shared<FUnadaptedLifecycleProbe>();

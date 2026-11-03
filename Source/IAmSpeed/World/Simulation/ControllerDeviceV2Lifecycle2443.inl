@@ -50,6 +50,16 @@ if (!TestTrue(TEXT("V2 real mechanics admitted"),Component->ValidateSimulationBi
 Driver->TransitionExecutionMode(ESimulationExecutionMode::IAmSpeedThread);
 Driver->InitializeCanonicalFrame(0);
 
+// ASpeedCar installs the stock road profile, including canonical camera slots
+// 5/6. Exercise that profile with its complete production contract rather than
+// a throttle-only contract which the real input application correctly refuses.
+Speed::Driving::FBindings Bindings;
+Bindings.Keyboard[static_cast<size_t>(Speed::Driving::ECommand::Throttle)].Control={ERawControlKind::KeyboardUsage,4};
+const auto Contract=Speed::Driving::MakeContract(Bindings);
+if (!TestTrue(TEXT("V2 stock road contract admitted"),bool(Contract))
+    ||!TestEqual(TEXT("V2 stock movement retains canonical yaw input"),Component->CanonicalCameraYawAction,int32(Speed::Driving::CameraYaw))
+    ||!TestEqual(TEXT("V2 stock movement retains canonical pitch input"),Component->CanonicalCameraPitchAction,int32(Speed::Driving::CameraPitch))) return false;
+
 std::atomic<uint32> Steps{0},Budget{0},BoundaryCalls{0},PhysicalThread{0};
 std::atomic<bool> Failed{false}; std::atomic<uint64> Watch{0};
 std::mutex ReceiptsGate; std::vector<FBoundaryReceipt> Receipts;
@@ -129,12 +139,9 @@ for (uint32 Failure=0;Failure<3;++Failure)
 {
     const bool BadGeneration=Failure==0, Unavailable=Failure==2;
     const uint64 Epoch = 2442997+Failure;
-    FInputActionContractDescription Description; Description.Revision={1}; Description.Actions=FInputActionContract::BaseActions();
-    Description.Physical={{0,EPhysicalDestination::Throttle},{1,EPhysicalDestination::Brake},{2,EPhysicalDestination::Steering}};
-    Description.Mapping={{{ERawControlKind::KeyboardUsage,4},Throttle,1}};
     FSessionDescriptor Binding; Binding.Id=2443; Binding.Controller=2443; Binding.Epoch=Epoch;
     Binding.Producer=Epoch; Binding.Journal=Epoch; Binding.Kind=EProducerContract::Device;
-    Binding.First=Steps.load(); Binding.Contract=FInputActionContract::Create(Description);
+    Binding.First=Steps.load(); Binding.Contract=Contract;
     auto Session=FInputHostSession::CreateDescriptor(Binding);
     if (!TestTrue(TEXT("startup timeout real descriptor"),bool(Session))) return false;
     Session->Journal=std::make_shared<FRawAcquisitionJournal>(Epoch,Binding.First);
@@ -191,12 +198,9 @@ for (uint32 Failure=0;Failure<3;++Failure)
 for (uint32 Replacement=0;Replacement<2;++Replacement)
 {
     const uint64 Epoch=2443001+Replacement;
-    FInputActionContractDescription Description; Description.Revision={1}; Description.Actions=FInputActionContract::BaseActions();
-    Description.Physical={{0,EPhysicalDestination::Throttle},{1,EPhysicalDestination::Brake},{2,EPhysicalDestination::Steering}};
-    Description.Mapping={{{ERawControlKind::KeyboardUsage,4},Throttle,1}};
     FSessionDescriptor Binding; Binding.Id=2443; Binding.Controller=2443; Binding.Epoch=Epoch;
     Binding.Producer=24430+Replacement; Binding.Journal=24440+Replacement; Binding.Kind=EProducerContract::Device;
-    Binding.First=Steps.load(); Binding.Contract=FInputActionContract::Create(Description);
+    Binding.First=Steps.load(); Binding.Contract=Contract;
     auto Session=FInputHostSession::CreateDescriptor(Binding);
     if (!TestTrue(TEXT("V2 real descriptor session"),bool(Session))) return false;
     Session->Journal=std::make_shared<FRawAcquisitionJournal>(Epoch,Binding.First);
