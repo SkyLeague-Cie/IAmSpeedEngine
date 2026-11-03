@@ -1,4 +1,6 @@
 #include "JoinedActorKinematics1213.h"
+#include "Internal/ComponentKinematicRead.h"
+#include "Internal/ComponentContactWrite.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "JoinedActorBaseWitness1534.h"
@@ -257,7 +259,43 @@ bool FJoinedActorKinematics1213::TryInstall(ISpeedComponent& Actor)
 {
  return TryInstall(Actor,[&Actor](){Actor.UpdateSubBodiesKinematics();});
 }
-bool FJoinedActorKinematics1213::TryInstall(ISpeedComponent& Actor,TFunctionRef<void()> OriginalOwnerOperation)
+class FJoinedActorKinematics1213::FLegacyJoinedRead final
+{
+    friend class FJoinedActorKinematics1213;ISpeedComponent& Owner;
+    explicit FLegacyJoinedRead(ISpeedComponent& Value):Owner(Value){}
+    FLegacyJoinedRead(const FLegacyJoinedRead&)=delete;
+    FLegacyJoinedRead& operator=(const FLegacyJoinedRead&)=delete;
+    FLegacyJoinedRead(FLegacyJoinedRead&&)=delete;
+    FLegacyJoinedRead& operator=(FLegacyJoinedRead&&)=delete;
+public:
+    bool SupportsCapture() const {return Owner.SupportsJoinedActorKinematicCapture1213();}
+    SKinematic Origin() const {return Owner.GetOriginKinematicState();}
+    const TArray<USSubBody*>& SubBodies() const {return Owner.GetSubBodies();}
+    const SKinematic& Body(const USSubBody& Value) const {return Speed::NativeKinematics::FBodyRead::Body(Value);}
+};
+class FJoinedActorKinematics1213::FNativeJoinedRead final
+{
+    friend class FJoinedActorKinematics1213;ISpeedComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    explicit FNativeJoinedRead(ISpeedComponent& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation){Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,&Owner);}
+    FNativeJoinedRead(const FNativeJoinedRead&)=delete;
+    FNativeJoinedRead& operator=(const FNativeJoinedRead&)=delete;
+    FNativeJoinedRead(FNativeJoinedRead&&)=delete;
+    FNativeJoinedRead& operator=(FNativeJoinedRead&&)=delete;
+public:
+    bool SupportsCapture() const
+    {
+        Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,&Owner);
+        const bool Supported=Owner.SupportsJoinedActorKinematicCapture1213();
+        Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,&Owner);
+        return Supported;
+    }
+    SKinematic Origin() const {return Speed::NativeKinematics::FComponentRead::Origin(Operation,Owner);}
+    const TArray<USSubBody*>& SubBodies() const {return Speed::NativeKinematics::FComponentRead::SubBodies(Operation,Owner);}
+    const SKinematic& Body(const USSubBody& Value) const {return Speed::NativeKinematics::FBodyRead::Body(Operation,Value);}
+};
+template<class TAccess,class TOriginalOperation>
+bool FJoinedActorKinematics1213::TryInstallBody(TAccess& Storage,ISpeedComponent& Actor,TOriginalOperation&& OriginalOwnerOperation)
 {
  FActor* Found=nullptr;for(auto& R:Records)if(R.Actor==&Actor){Found=&R;break;}
  if(!Found||Found->bConsumed)return false;Found->bConsumed=true;
@@ -274,8 +312,8 @@ bool FJoinedActorKinematics1213::TryInstall(ISpeedComponent& Actor,TFunctionRef<
   else
   try
   {
-  InputsMatch=Actor.SupportsJoinedActorKinematicCapture1213()&&JoinedOrigin1213(Found->Origin,Actor.GetOriginKinematicState());
-  const auto& Bodies=Actor.GetSubBodies();InputsMatch&=Bodies.Num()==Found->Count;
+  InputsMatch=Storage.SupportsCapture()&&JoinedOrigin1213(Found->Origin,Storage.Origin());
+  const auto& Bodies=Storage.SubBodies();InputsMatch&=Bodies.Num()==Found->Count;
   if(InputsMatch)for(int32 I=0;I<Bodies.Num();++I)
   {
    FSubBodyKinematicInput Current;
@@ -308,10 +346,28 @@ bool FJoinedActorKinematics1213::TryInstall(ISpeedComponent& Actor,TFunctionRef<
  else
  {
   ++GActorShadow1213.ComparableEntries;
-  const auto& Bodies=Actor.GetSubBodies();
-  for(int32 I=0;I<Bodies.Num();++I)if(!JoinedOrigin1213(Outputs[Found->First+I],Speed::NativeKinematics::FBodyRead::Body(*Bodies[I])))++GActorShadow1213.StateDifferences;
+  const auto& Bodies=Storage.SubBodies();
+  for(int32 I=0;I<Bodies.Num();++I)if(!JoinedOrigin1213(Outputs[Found->First+I],Storage.Body(*Bodies[I])))++GActorShadow1213.StateDifferences;
   if(!SameJoinedActorNumericContext1213(AfterItem[Found->First+Found->Count-1],ActualExit))++GActorShadow1213.ExitDifferences;
  }
  return true; // Original computation already ran, including on a stale shadow.
 }
+bool FJoinedActorKinematics1213::TryInstall(ISpeedComponent& Actor,TFunctionRef<void()> OriginalOwnerOperation)
+{
+    FLegacyJoinedRead Storage(Actor);
+    return TryInstallBody(Storage,Actor,OriginalOwnerOperation);
+}
+void FJoinedActorKinematics1213::InstallOrUpdateNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent& Actor,int32 LaneLimit,int32 MinPrepareItems)
+{
+    FNativeJoinedRead Storage(Actor,Operation); // raw preflight BEFORE callback/helper
+    // This fixed callback is constructed and consumed ONLY by the PRIVATE
+    // template above. It never enters the public TFunctionRef overload.
+    const auto OriginalOwnerOperation=[&Actor,&Operation,LaneLimit,MinPrepareItems]()
+    {
+        if(!TryUpdateSubBodyKinematicsInParallel(Actor,LaneLimit,MinPrepareItems))
+            Speed::NativeKinematics::FComponentWrite::UpdateSubBodies(Operation,&Actor);
+    };
+    if(!TryInstallBody(Storage,Actor,OriginalOwnerOperation))OriginalOwnerOperation();
+}
+
 }

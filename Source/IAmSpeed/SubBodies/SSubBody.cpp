@@ -2,6 +2,8 @@
 
 
 #include "SSubBody.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "Solid/CylinderSubBody.h"
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
@@ -151,27 +153,82 @@ void USSubBody::RemoveExternalSubBodies(const TArray<USSubBody*>& SubBodies)
     }
 }
 
-void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
+namespace
+{
+Speed::FExactRotatorQuaternionCache& SubBodyLocalRotationCache()
+{
+    static thread_local Speed::FExactRotatorQuaternionCache Cache;
+    return Cache;
+}
+}
+
+class USSubBody::FLegacyBodyUpdateAccess final
+{
+    friend class USSubBody;USSubBody& Owner;
+    explicit FLegacyBodyUpdateAccess(USSubBody& Value):Owner(Value){}
+    FLegacyBodyUpdateAccess(const FLegacyBodyUpdateAccess&)=delete;
+    FLegacyBodyUpdateAccess& operator=(const FLegacyBodyUpdateAccess&)=delete;
+    FLegacyBodyUpdateAccess(FLegacyBodyUpdateAccess&&)=delete;
+    FLegacyBodyUpdateAccess& operator=(FLegacyBodyUpdateAccess&&)=delete;
+public:
+    FVector LocalOffset() const {return Owner.PhysicalLocalOffset();}
+    FRotator LocalEuler() const {return Owner.PhysicalLocalEulerRotation();}
+    SKinematic& Body() const {return Owner.KinematicsStorage();}
+};
+class USSubBody::FNativeBodyUpdateAccess final
+{
+    friend class USSubBody;USSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    explicit FNativeBodyUpdateAccess(USSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation){(void)Actual();}
+    FNativeBodyUpdateAccess(const FNativeBodyUpdateAccess&)=delete;
+    FNativeBodyUpdateAccess& operator=(const FNativeBodyUpdateAccess&)=delete;
+    FNativeBodyUpdateAccess(FNativeBodyUpdateAccess&&)=delete;
+    FNativeBodyUpdateAccess& operator=(FNativeBodyUpdateAccess&&)=delete;
+    Speed::Netcode::Prediction::FPrivateRoadSubBodyValues& Actual() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Owner);}
+public:
+    FVector LocalOffset() const {return Actual().LocalPose.GetLocation();}
+    FRotator LocalEuler() const {return Actual().LocalEulerRotation;}
+    SKinematic& Body() const {return Actual().Kinematics;}
+};
+template<class TAccess>
+void USSubBody::UpdateKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic)
 {
 	// Reuse only pure local Euler conversion, independently on each calling lane.
 	// Do not share USceneComponent's mutable rotation cache with the game thread.
-	static thread_local Speed::FExactRotatorQuaternionCache LocalRotationCache;
-	auto RelativeLocationVar = PhysicalLocalOffset();
-	auto RelativeRotationVar = LocalRotationCache.Get(PhysicalLocalEulerRotation());
+	auto& LocalRotationCache = SubBodyLocalRotationCache();
+	auto RelativeLocationVar = Storage.LocalOffset();
+	auto RelativeRotationVar = LocalRotationCache.Get(Storage.LocalEuler());
  // Preserve this exact native cache access even when completed base arithmetic
  // can be reused. Failed value/FP validation leaves the original path intact.
  if(Speed::FrameParallel::TryConsumeJoinedActorBase1430(*this,ParentKinematic,
-     RelativeLocationVar,RelativeRotationVar,KinematicsStorage()))return;
+     RelativeLocationVar,RelativeRotationVar,Storage.Body()))return;
 	const FVector WorldOffset = ParentKinematic.Rotation.RotateVector(RelativeLocationVar);
-	KinematicsStorage().Location = ParentKinematic.Location + WorldOffset;
-	KinematicsStorage().Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);
-	KinematicsStorage().Acceleration = ParentKinematic.Acceleration +
+	Storage.Body().Location = ParentKinematic.Location + WorldOffset;
+	Storage.Body().Velocity = ParentKinematic.Velocity + FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset);
+	Storage.Body().Acceleration = ParentKinematic.Acceleration +
         FVector::CrossProduct(ParentKinematic.AngularAcceleration, WorldOffset) +
         FVector::CrossProduct(ParentKinematic.AngularVelocity, FVector::CrossProduct(ParentKinematic.AngularVelocity, WorldOffset));
-    KinematicsStorage().Rotation = ParentKinematic.Rotation * RelativeRotationVar;
-	KinematicsStorage().AngularVelocity = ParentKinematic.AngularVelocity;
-	KinematicsStorage().AngularAcceleration = ParentKinematic.AngularAcceleration;
+    Storage.Body().Rotation = ParentKinematic.Rotation * RelativeRotationVar;
+	Storage.Body().AngularVelocity = ParentKinematic.AngularVelocity;
+	Storage.Body().AngularAcceleration = ParentKinematic.AngularAcceleration;
 }
+
+void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
+{
+    FLegacyBodyUpdateAccess Storage(*this);
+    UpdateKinematicsFromOwnerBody(Storage,ParentKinematic);
+}
+void USSubBody::UpdateNativeBaseKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    FNativeBodyUpdateAccess Storage(*this,Operation);
+    UpdateKinematicsFromOwnerBody(Storage,ParentKinematic);
+}
+void USSubBody::UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    (void)Operation;(void)ParentKinematic;
+    throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
+
 
 bool USSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 {

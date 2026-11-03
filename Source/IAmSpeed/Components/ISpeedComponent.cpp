@@ -1,4 +1,5 @@
 #include "ISpeedComponent.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
@@ -367,15 +368,52 @@ bool ISpeedComponent::ProjectEstablishedStaticContacts(const float& Delta)
 	return bProjected;
 }
 
-void ISpeedComponent::UpdateSubBodiesKinematics()
+class ISpeedComponent::FLegacyChildrenUpdateAccess final
+{
+    friend class ISpeedComponent;ISpeedComponent& Owner;
+    explicit FLegacyChildrenUpdateAccess(ISpeedComponent& Value):Owner(Value){}
+    FLegacyChildrenUpdateAccess(const FLegacyChildrenUpdateAccess&)=delete;
+    FLegacyChildrenUpdateAccess& operator=(const FLegacyChildrenUpdateAccess&)=delete;
+    FLegacyChildrenUpdateAccess(FLegacyChildrenUpdateAccess&&)=delete;
+    FLegacyChildrenUpdateAccess& operator=(FLegacyChildrenUpdateAccess&&)=delete;
+public:
+    SKinematic Origin() const {return Speed::NativeKinematics::FComponentRead::Origin(Owner);}
+    const TArray<USSubBody*>& SubBodies() const {return Speed::NativeKinematics::FComponentRead::SubBodies(Owner);}
+    void Update(USSubBody* Body,const SKinematic& Parent) const {Body->UpdateKinematicsFromOwner(Parent);}
+};
+class ISpeedComponent::FNativeChildrenUpdateAccess final
+{
+    friend class ISpeedComponent;ISpeedComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    explicit FNativeChildrenUpdateAccess(ISpeedComponent& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation){(void)Speed::NativeKinematics::FComponentRead::Current(Operation,Owner);(void)SubBodies();}
+    FNativeChildrenUpdateAccess(const FNativeChildrenUpdateAccess&)=delete;
+    FNativeChildrenUpdateAccess& operator=(const FNativeChildrenUpdateAccess&)=delete;
+    FNativeChildrenUpdateAccess(FNativeChildrenUpdateAccess&&)=delete;
+    FNativeChildrenUpdateAccess& operator=(FNativeChildrenUpdateAccess&&)=delete;
+public:
+    SKinematic Origin() const {return Speed::NativeKinematics::FComponentRead::Origin(Operation,Owner);}
+    const TArray<USSubBody*>& SubBodies() const {return Speed::NativeKinematics::FComponentRead::SubBodies(Operation,Owner);}
+    void Update(USSubBody* Body,const SKinematic& Parent) const {Speed::NativeKinematics::FBodyWrite::UpdateFromOwner(Operation,Body,Parent);}
+};
+template<class TAccess>
+void ISpeedComponent::UpdateSubBodiesKinematicsBody(TAccess& Storage)
 {
     // Every child observes the same parent state; derive origin from COM once.
-    const SKinematic OriginState = Speed::NativeKinematics::FComponentRead::Of(*this).Origin();
-    for (USSubBody* SubBody : GetSubBodies())
+    const SKinematic OriginState = Storage.Origin();
+    for (USSubBody* SubBody : Storage.SubBodies())
     {
-        SubBody->UpdateKinematicsFromOwner(OriginState);
+        Storage.Update(SubBody,OriginState);
     }
 }
+void ISpeedComponent::UpdateSubBodiesKinematics()
+{
+    FLegacyChildrenUpdateAccess Storage(*this);UpdateSubBodiesKinematicsBody(Storage);
+}
+void ISpeedComponent::UpdateSubBodiesKinematicsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    FNativeChildrenUpdateAccess Storage(*this,Operation);UpdateSubBodiesKinematicsBody(Storage);
+}
+
 
 SKinematic ISpeedComponent::GetOriginKinematicState() const
 {

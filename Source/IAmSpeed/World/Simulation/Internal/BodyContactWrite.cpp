@@ -48,4 +48,10 @@ void FBodyWrite::FakePhysics(const Speed::Netcode::Prediction::FPrivateNativeOpe
     Body->ApplyNativeFakePhysicsOn(Operation,*Other,Hit,DeltaTime,ImpactContext);
 }
 
+void FBodyWrite::UpdateFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const SKinematic& ParentKinematic)
+{
+    (void)Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,Body);
+    Body->UpdateNativeKinematicsFromOwner(Operation,ParentKinematic);
+}
+
 }

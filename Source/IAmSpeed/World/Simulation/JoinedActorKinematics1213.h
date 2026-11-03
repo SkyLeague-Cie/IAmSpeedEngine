@@ -2,7 +2,8 @@
 #include "CoreMinimal.h"
 #include "SubBodyKinematicsTasks.h"
 #include "FrameFloatingPointContext.h"
-class ISpeedComponent;class USSubBody;
+class ISpeedComponent;class USSubBody;class USpeedWorldSubsystem;
+namespace Speed::Netcode::Prediction {class FPrivateNativeOperation;}
 namespace Speed::FrameParallel
 {
 struct FJoinedActorKinematicShadowTotals1213
@@ -41,6 +42,10 @@ public:
  int32 LogicalLanes() const{return Lanes;}
  int32 NativeParticipants() const{return Participants;}
 private:
+ friend class ::USpeedWorldSubsystem;
+ class FLegacyJoinedRead;class FNativeJoinedRead;
+ template<class TAccess,class TOriginalOperation> bool TryInstallBody(TAccess& Storage,ISpeedComponent& Actor,TOriginalOperation&& OriginalOwnerOperation);
+ void InstallOrUpdateNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent& Actor,int32 LaneLimit,int32 MinPrepareItems);
  friend bool TryConsumeJoinedActorBase1430(const USSubBody&,const SKinematic&,const FVector&,const FQuat&,SKinematic&);
  struct FItem{SKinematic Origin;FSubBodyKinematicInput Local;};
  struct FActor

@@ -1697,3 +1697,33 @@ activation agreement, authoritative-frame restoration and localized resimulation
 remain required. The prepared-restore guard stays closed. No historical native
 test, programmed NullRHI run or observable-subset equality qualifies this tuple
 as two playable clients with working localized rollback.
+
+### Private sequential sub-body update and joined callback boundary
+
+The next native tranche routes the sequential component-to-sub-body update
+through the actual private operation. The real ordered sub-body list, origin,
+six kinematic writes and wheel update after its inherited sphere operation use
+the original shared numerical bodies. Authored local pose/Euler values, one
+shared per-thread rotator cache and suspension reads retain their original
+order. Typed raw storage validation precedes private dispatch.
+
+Native joined installation constructs its fixed operation-bearing callback
+inside a private entry and consumes it only in a private template in the same
+translation unit. The public legacy TFunctionRef overload receives no native
+operation. The existing joined consume helper retains its synchronous six
+writes; this does not admit a callback or borrowed output to escape.
+
+The concrete validation target is the real private road Step reaching these
+new native update entries, followed by fresh same-frame input/body/component
+comparisons and normal/exception last-wrapper retirement on the new tuple.
+Passing pre-tranche tests does not qualify changed code. Source routing plus
+state parity does not invent a measured branch counter or prove every optional
+parallel/joined branch was taken.
+
+SupportsCapture, shadow/CaptureAndCompute and parallel paths, further numeric
+phases, initialization, snapshot/participant callbacks and partial-birth Close
+still need source/lifetime/escaped-borrow review. Protected member-pointer and
+mutable-view channels remain open wherever their actual callees are unmigrated.
+Complete causal state, an effective full-state CanMove barrier, authoritative-K
+restore and localized replay with two rendered playable clients plus a dedicated
+server remain unqualified. The prepared-restore guard remains closed.

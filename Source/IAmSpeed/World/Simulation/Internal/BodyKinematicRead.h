@@ -1,4 +1,6 @@
 #pragma once
+namespace Speed::FrameParallel {class FJoinedActorKinematics1213;}
+
 // Module-internal live references. Private call sites only; not a restore lease.
 #include "IAmSpeed/Base/SHitResult.h"
 class ISpeedComponent; class USpeedMovementComponent; class USpeedWheeledComponent;
@@ -26,6 +28,7 @@ class FBodyRead final
     friend class ::USpeedBranchBoxSubBody; friend class ::USpeedBranchWheelSubBody;
     friend class Speed::FrameParallel::FJoinedActorKinematics1213;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    friend class Speed::FrameParallel::FJoinedActorKinematics1213;
     friend struct FCylinderRigidTrajectory; friend struct FCylinderSuspensionQuery;
     friend struct FDynamicBodyWitness;
     static FMatrix WorldInvInertia(const USolidSubBody& Body);

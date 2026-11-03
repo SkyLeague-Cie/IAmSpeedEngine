@@ -1,4 +1,6 @@
 #include "SWheelSubBody.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
@@ -345,17 +347,58 @@ void USWheelSubBody::ResetForFrame(const float& Delta)
     bCountedGroundFrameRuntimeStorage() = false;
 }
 
-void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
+class USWheelSubBody::FLegacyWheelUpdateAccess final
 {
-    Super::UpdateKinematicsFromOwner(ParentKinematic);
+    friend class USWheelSubBody;USWheelSubBody& Owner;
+    explicit FLegacyWheelUpdateAccess(USWheelSubBody& Value):Owner(Value){}
+    FLegacyWheelUpdateAccess(const FLegacyWheelUpdateAccess&)=delete;
+    FLegacyWheelUpdateAccess& operator=(const FLegacyWheelUpdateAccess&)=delete;
+    FLegacyWheelUpdateAccess(FLegacyWheelUpdateAccess&&)=delete;
+    FLegacyWheelUpdateAccess& operator=(FLegacyWheelUpdateAccess&&)=delete;
+public:
+    void Base(const SKinematic& Parent) const {Owner.USphereSubBody::UpdateKinematicsFromOwner(Parent);}
+    float SpringDisplacement() const {return Owner.SpringDisplacement();}
+    SKinematic& Body() const {return Owner.KinematicsStorage();}
+};
+class USWheelSubBody::FNativeWheelUpdateAccess final
+{
+    friend class USWheelSubBody;USWheelSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    explicit FNativeWheelUpdateAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation){(void)Body();(void)Suspension();}
+    FNativeWheelUpdateAccess(const FNativeWheelUpdateAccess&)=delete;
+    FNativeWheelUpdateAccess& operator=(const FNativeWheelUpdateAccess&)=delete;
+    FNativeWheelUpdateAccess(FNativeWheelUpdateAccess&&)=delete;
+    FNativeWheelUpdateAccess& operator=(FNativeWheelUpdateAccess&&)=delete;
+    Chaos::FSimpleSuspensionSim* Suspension() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadWheelDomain>(Operation,&Owner).PSuspension;}
+public:
+    void Base(const SKinematic& Parent) const {Owner.UpdateNativeBaseKinematicsFromOwner(Operation,Parent);}
+    float SpringDisplacement() const {return Suspension()?Suspension()->GetLastDisplacement():0.0f;}
+    SKinematic& Body() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Owner).Kinematics;}
+};
+template<class TAccess>
+void USWheelSubBody::UpdateWheelKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic)
+{
+    Storage.Base(ParentKinematic);
 
     const FVector SuspensionOffset = ParentKinematic.Rotation.RotateVector(
-        SpringDisplacement() * FVector::UpVector);
-    KinematicsStorage().Location += SuspensionOffset;
-    KinematicsStorage().Velocity = ParentKinematic.Velocity + FVector::CrossProduct(
+        Storage.SpringDisplacement() * FVector::UpVector);
+    Storage.Body().Location += SuspensionOffset;
+    Storage.Body().Velocity = ParentKinematic.Velocity + FVector::CrossProduct(
         ParentKinematic.AngularVelocity,
-        KinematicsStorage().Location - ParentKinematic.Location);
+        Storage.Body().Location - ParentKinematic.Location);
 }
+
+void USWheelSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
+{
+    FLegacyWheelUpdateAccess Storage(*this);
+    UpdateWheelKinematicsFromOwnerBody(Storage,ParentKinematic);
+}
+void USWheelSubBody::UpdateNativeWheelKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    FNativeWheelUpdateAccess Storage(*this,Operation);
+    UpdateWheelKinematicsFromOwnerBody(Storage,ParentKinematic);
+}
+
 
 SSphere USWheelSubBody::MakeSphere() const
 {

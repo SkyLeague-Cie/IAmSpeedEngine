@@ -1,4 +1,6 @@
 #pragma once
+namespace Speed::FrameParallel {class FJoinedActorKinematics1213;}
+
 #include "CoreMinimal.h"
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/Kinematic.h"
@@ -39,6 +41,7 @@ class FComponentRead final
     friend class ::USpeedWorldSubsystem;
     friend class Speed::FSimulationWorld;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    friend class Speed::FrameParallel::FJoinedActorKinematics1213;
     friend struct FCylinderRigidTrajectory;
     friend struct FDynamicBodyWitness;
     friend struct FGutterSlideDamping;
@@ -90,6 +93,9 @@ class FComponentRead final
     static Speed::FKinematicState Origin(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static Speed::FKinematicState OriginForFrame(const ISpeedComponent& Component, const unsigned int& NumFrameToRead);
     static Speed::FKinematicState OriginForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const unsigned int& NumFrameToRead);
+    static void ValidateCurrentAndSubBodies(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent* Component);
+    static const TArray<USSubBody*>& SubBodies(const ISpeedComponent& Component);
+    static const TArray<USSubBody*>& SubBodies(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const Speed::FKinematicState& Current(const ISpeedComponent& Component);
     static const Speed::FKinematicState& Current(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const Speed::FKinematicState& ForFrame(const ISpeedComponent& Component, const unsigned int& Frame);

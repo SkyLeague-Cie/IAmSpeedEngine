@@ -385,4 +385,10 @@ protected:
     FVector UpAxis = FVector::UpVector;
 
     SWheelRenderData RenderData;
+private:
+    friend class USpeedBranchWheelSubBody;
+    class FLegacyWheelUpdateAccess;class FNativeWheelUpdateAccess;
+    template<class TAccess> void UpdateWheelKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic);
+    void UpdateNativeWheelKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);
+
 };

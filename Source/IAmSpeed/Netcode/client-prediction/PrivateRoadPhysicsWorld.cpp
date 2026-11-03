@@ -1758,6 +1758,24 @@ void USpeedBranchWheelSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Pr
     (void)Hit;(void)DeltaTime;(void)ImpactContext;
 }
 
+void USpeedBranchBoxSubBody::UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    UpdateNativeBaseKinematicsFromOwner(Operation,ParentKinematic);
+}
+void USpeedBranchWheelSubBody::UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    UpdateNativeWheelKinematicsFromOwner(Operation,ParentKinematic);
+}
+
 FMatrix USpeedBranchBoxSubBody::ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
 {
     using namespace Speed::Netcode::Prediction;

@@ -474,6 +474,9 @@ private:
     void AddPhysForceAtPointNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& Force,const FVector& WorldPoint,const USolidSubBody* SubBody);
     template<class TAccess> void AddPhysForceBatchAtPointsBody(TAccess& Storage,const TArray<FVector>& Forces,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
     void AddPhysForceBatchAtPointsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const TArray<FVector>& Forces,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
+    class FLegacyChildrenUpdateAccess;class FNativeChildrenUpdateAccess;
+    template<class TAccess> void UpdateSubBodiesKinematicsBody(TAccess& Storage);
+    void UpdateSubBodiesKinematicsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
     class FLegacyImpulseAccess;class FNativeImpulseAccess;
     template<class TAccess> void AddPhysImpulseAtPointBody(TAccess& Storage,const FVector& Impulse,const FVector& Point,const USolidSubBody* SubBody);
     void AddPhysImpulseAtPointNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FVector& Impulse,const FVector& Point,const USolidSubBody* SubBody);

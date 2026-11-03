@@ -11,6 +11,17 @@ const TArray<FPhysicalContactConstraint>& FComponentRead::Constraints(const ISpe
 {
     return Component.PhysicalConstraintsStorage();
 }
+void FComponentRead::ValidateCurrentAndSubBodies(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent* Component)
+{
+    // Both true raw adjusted subjects before any UObject dereference.
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,Component);
+    (void)FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,Component);
+}
+const TArray<USSubBody*>& FComponentRead::SubBodies(const ISpeedComponent& Component)
+{return Component.GetSubBodies();}
+const TArray<USSubBody*>& FComponentRead::SubBodies(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,&Component).SubBodies;}
 const Speed::FKinematicState& FComponentRead::Current(const ISpeedComponent& Component)
 {
     return Component.ReadPhysicsKinematicState();

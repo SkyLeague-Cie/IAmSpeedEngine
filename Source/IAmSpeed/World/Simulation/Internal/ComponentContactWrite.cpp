@@ -55,4 +55,10 @@ void FComponentWrite::FrameStaticWorld(const Speed::Netcode::Prediction::FPrivat
     Values.StaticSupportFrameHorizon = World ? FrameHorizon : 0;
 }
 
+void FComponentWrite::UpdateSubBodies(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component)
+{
+    (void)Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,Component);
+    Component->UpdateSubBodiesKinematicsNative(Operation);
+}
+
 }

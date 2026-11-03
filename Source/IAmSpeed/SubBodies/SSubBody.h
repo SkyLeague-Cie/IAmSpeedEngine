@@ -19,6 +19,8 @@ class USWheelSubBody;
 class UCylinderSubBody;
 namespace Speed { class IStaticCollisionWorld; }
 namespace Speed::NativeKinematics { class FBodyRead; class FBodyWrite; }
+namespace Speed::Netcode::Prediction {class FPrivateNativeOperation;}
+class USpeedBranchBoxSubBody;
 
 /**
  * USubBody : Base class for any physics sub-body (wheel, hitbox, sphere) and detection SubBodies
@@ -40,6 +42,12 @@ class IAMSPEED_API USSubBody : public UShapeComponent
 private:
     friend class Speed::NativeKinematics::FBodyRead;
     friend class Speed::NativeKinematics::FBodyWrite;
+    friend class USWheelSubBody;
+    friend class USpeedBranchBoxSubBody;
+    class FLegacyBodyUpdateAccess;class FNativeBodyUpdateAccess;
+    template<class TAccess> void UpdateKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic);
+    void UpdateNativeBaseKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);
+    virtual void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);
     // Custom storage adapters retain the old getter dispatch. Only the private
     // final road bodies override this public-view selector with legacy backing.
     virtual const Speed::FKinematicState& PublicKinematicView() const { return KinematicsStorage(); }

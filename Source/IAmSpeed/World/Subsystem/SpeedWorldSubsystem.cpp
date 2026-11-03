@@ -1063,6 +1063,16 @@ public:
     float ReadComponentMass(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Mass(Component);}
     FMatrix ReadWorldInvInertia(const USolidSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::WorldInvInertia(Body);}
     void ApplyBodyImpulse(USolidSubBody& Body,const FVector& Impulse,const FVector& Point) const {Speed::NativeKinematics::FBodyWrite::Impulse(Body,Impulse,Point);}
+    void UpdateComponentChildrenWithJoined(Speed::FrameParallel::FJoinedActorKinematics1213& Wave,ISpeedComponent& Actor,int32 LaneLimit,int32 MinPrepareItems) const
+    {
+        // Legacy public callback carries only the actor and immutable numbers.
+        const auto OriginalOwnerOperation=[&Actor,LaneLimit,MinPrepareItems]()
+        {
+            if(!Speed::FrameParallel::TryUpdateSubBodyKinematicsInParallel(Actor,LaneLimit,MinPrepareItems))
+                Actor.UpdateSubBodiesKinematics();
+        };
+        if(!Wave.TryInstall(Actor,OriginalOwnerOperation))OriginalOwnerOperation();
+    }
     void SetFrameStaticWorld(ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon) const {Component->SetStaticCollisionWorldForFrame(World,FrameHorizon);}
     void ApplyBodyFakePhysics(USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) const {Speed::NativeKinematics::FBodyWrite::FakePhysics(Body,Other,Hit,DeltaTime,ImpactContext);}
     void ApplyPendingOps() const {Owner.ApplyPendingOps();}
@@ -1122,6 +1132,7 @@ public:
     float ReadComponentMass(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Mass(Operation,Component);}
     FMatrix ReadWorldInvInertia(const USolidSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::WorldInvInertia(Operation,Body);}
     void ApplyBodyImpulse(USolidSubBody& Body,const FVector& Impulse,const FVector& Point) const {Speed::NativeKinematics::FBodyWrite::Impulse(Operation,Body,Impulse,Point);}
+    void UpdateComponentChildrenWithJoined(Speed::FrameParallel::FJoinedActorKinematics1213& Wave,ISpeedComponent& Actor,int32 LaneLimit,int32 MinPrepareItems) const {Wave.InstallOrUpdateNative(Operation,Actor,LaneLimit,MinPrepareItems);}
     void SetFrameStaticWorld(ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon) const {Speed::NativeKinematics::FComponentWrite::FrameStaticWorld(Operation,Component,World,FrameHorizon);}
     void ApplyBodyFakePhysics(USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) const {Speed::NativeKinematics::FBodyWrite::FakePhysics(Operation,Body,Other,Hit,DeltaTime,ImpactContext);}
     void ApplyPendingOps() const
@@ -2442,14 +2453,8 @@ void USpeedWorldSubsystem::StepBody(TAccess& Storage,const float& Dt,const float
 		IAMSPEED_ACTOR_SCOPE(Storage.SimulationWorld(), *Comp, Reset);
         // Preserve the exact pre-existing native child-batch admission and
         // fallback choice. Shadow only observes around this original block.
-        const auto OriginalOwnerOperation1213=[&]()
-        {
-            if(!Speed::FrameParallel::TryUpdateSubBodyKinematicsInParallel(*Comp,
-                ParallelPreparationSettings.LaneLimit,ParallelPreparationSettings.MinPrepareItems))
-                Comp->UpdateSubBodiesKinematics();
-        };
-        if(!JoinedActors1213.TryInstall(*Comp,OriginalOwnerOperation1213))
-            OriginalOwnerOperation1213();
+        Storage.UpdateComponentChildrenWithJoined(JoinedActors1213,*Comp,
+            ParallelPreparationSettings.LaneLimit,ParallelPreparationSettings.MinPrepareItems);
         Comp->ResetForFrame(Dt);
 		Storage.SetFrameStaticWorld(Comp,RestingWorld, Dt);
     }
