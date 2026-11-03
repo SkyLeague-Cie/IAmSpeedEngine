@@ -43,7 +43,7 @@ std::shared_ptr<const FNativeProcessCodePins> FNativeProcessCodePins::PinObserve
         HMODULE Pinned=nullptr;
         const BOOL Result=::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
             reinterpret_cast<LPCWSTR>(Modules[I]),&Pinned);
-        Record.PinReturned=Result!=FALSE;Record.ReturnedBase=reinterpret_cast<std::uintptr_t>(Pinned);
+        Record.PinReturned=Result!=0;Record.ReturnedBase=reinterpret_cast<std::uintptr_t>(Pinned);
         if(!Result)Record.Error=::GetLastError();
         if(!Result||Pinned!=Modules[I])
         {Report->Outcome=EProcessCodePinStatus::PinFailed;Report->FailureError=Record.Error;return Report;}
