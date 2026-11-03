@@ -59,6 +59,15 @@ const auto Contract=Speed::Driving::MakeContract(Bindings);
 if (!TestTrue(TEXT("V2 stock road contract admitted"),bool(Contract))
     ||!TestEqual(TEXT("V2 stock movement retains canonical yaw input"),Component->CanonicalCameraYawAction,int32(Speed::Driving::CameraYaw))
     ||!TestEqual(TEXT("V2 stock movement retains canonical pitch input"),Component->CanonicalCameraPitchAction,int32(Speed::Driving::CameraPitch))) return false;
+const auto KeyboardCapabilities=FControllerRawAcquisition2443::KeyboardState(false);
+if (!TestTrue(TEXT("V2 authored keyboard snapshot is complete, ordered and unique"),KeyboardCapabilities.IsValid(ERawDeviceKind::Keyboard))) return false;
+for (const auto& Mapping:Contract->GetDescription().Mapping)
+{
+    if (Mapping.Control.Kind!=ERawControlKind::KeyboardUsage) continue;
+    const bool Present=std::any_of(KeyboardCapabilities.Values.begin(),KeyboardCapabilities.Values.begin()+KeyboardCapabilities.Count,
+        [&](const auto& Value){return Value.Control==Mapping.Control && Value.Value==0;});
+    if (!TestTrue(TEXT("V2 authored keyboard supplies every mapped neutral control"),Present)) return false;
+}
 
 std::atomic<uint32> Steps{0},Budget{0},BoundaryCalls{0},PhysicalThread{0};
 std::atomic<bool> Failed{false}; std::atomic<uint64> Watch{0};
