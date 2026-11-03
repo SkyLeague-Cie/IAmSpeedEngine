@@ -61,8 +61,8 @@ void USSubBody::Initialize(ISpeedComponent* InParentComponent)
 		SubBodyConfig Config = ParentComponentBodyDomainStorage()->GetSubBodyConfig(*this);
         if (Config.bValid)
         {
-            SetRelativeLocation(Config.LocalOffset);
-            SetRelativeRotation(Config.LocalRotation);
+            SetPhysicalLocalOffset(Config.LocalOffset);
+            SetPhysicalLocalRotation(Config.LocalRotation);
             CollisionChannelBodyDomainStorage() = Config.CollisionChannel;
         }
         
@@ -155,8 +155,8 @@ void USSubBody::UpdateKinematicsFromOwner(const SKinematic& ParentKinematic)
 	// Reuse only pure local Euler conversion, independently on each calling lane.
 	// Do not share USceneComponent's mutable rotation cache with the game thread.
 	static thread_local Speed::FExactRotatorQuaternionCache LocalRotationCache;
-	auto RelativeLocationVar = GetRelativeLocation();
-	auto RelativeRotationVar = LocalRotationCache.Get(GetRelativeRotation());
+	auto RelativeLocationVar = PhysicalLocalOffset();
+	auto RelativeRotationVar = LocalRotationCache.Get(PhysicalLocalEulerRotation());
  // Preserve this exact native cache access even when completed base arithmetic
  // can be reused. Failed value/FP validation leaves the original path intact.
  if(Speed::FrameParallel::TryConsumeJoinedActorBase1430(*this,ParentKinematic,

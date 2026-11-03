@@ -173,8 +173,12 @@ protected:
 protected:
     virtual FVector PhysicalLocalOffset() const {return GetRelativeLocation();}
     virtual FQuat PhysicalLocalRotation() const {return GetRelativeRotation().Quaternion();}
+    // Keep the original Euler input to the exact native rotation cache. An
+    // isolated owner must not reread a mutable USceneComponent transform.
+    virtual FRotator PhysicalLocalEulerRotation() const {return GetRelativeRotation();}
     virtual FTransform PhysicalLocalPose() const {return GetRelativeTransform();}
     virtual void SetPhysicalLocalOffset(const FVector& V) {SetRelativeLocation(V);}
+    virtual void SetPhysicalLocalRotation(const FQuat& V) {SetRelativeRotation(V);}
     virtual ISpeedComponent*& ParentComponentBodyDomainStorage() {return ParentComponent;}
     virtual ISpeedComponent* const& ParentComponentBodyDomainStorage() const {return ParentComponent;}
     virtual ESubBodyType& SubBodyTypeBodyDomainStorage() {return SubBodyType;}

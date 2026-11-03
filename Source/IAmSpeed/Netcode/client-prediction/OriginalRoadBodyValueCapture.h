@@ -135,6 +135,7 @@ inline void AppendPlane(FWriter& A,const Speed::Analytic::FBoundedPlane& V)
 inline void Append(FWriter& A,const FPrivateRoadSubBodyValues& V)
 {
     A.Value(V.LocalPose);
+    A.Value(V.LocalEulerRotation.Pitch);A.Value(V.LocalEulerRotation.Yaw);A.Value(V.LocalEulerRotation.Roll);
     A.Value(V.ParentComponent);
     A.Value(V.SubBodyType);
     A.Value(V.CollisionChannel);

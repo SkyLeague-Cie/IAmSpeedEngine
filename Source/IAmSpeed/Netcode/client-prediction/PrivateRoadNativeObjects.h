@@ -16,6 +16,9 @@ namespace Speed::Netcode::Prediction
 struct FPrivateRoadSubBodyValues
 {
     FTransform LocalPose=FTransform::Identity;
+    // Authored original local Euler value, not imported from a facade. Retain
+    // it separately: a quaternion round trip can change the native bits.
+    FRotator LocalEulerRotation=FRotator::ZeroRotator;
     ISpeedComponent* ParentComponent=nullptr;
     USSubBody::ESubBodyType SubBodyType=USSubBody::ESubBodyType::Unknown;
     ECollisionChannel CollisionChannel=ECC_WorldDynamic;
@@ -233,6 +236,8 @@ class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
     SHitResult& WheelHitStorage() override;
     SHitResult const& WheelHitStorage() const override;    FVector PhysicalLocalOffset() const override;
     FQuat PhysicalLocalRotation() const override;
+    FRotator PhysicalLocalEulerRotation() const override;
+    void SetPhysicalLocalRotation(const FQuat&) override;
     FTransform PhysicalLocalPose() const override;
     void SetPhysicalLocalOffset(const FVector&) override;
     ISpeedComponent*& ParentComponentBodyDomainStorage() override;
@@ -456,6 +461,8 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     SHitResult const& WheelHitStorage() const override;    float PhysicalSuspensionRestLength() const override;
     FVector PhysicalLocalOffset() const override;
     FQuat PhysicalLocalRotation() const override;
+    FRotator PhysicalLocalEulerRotation() const override;
+    void SetPhysicalLocalRotation(const FQuat&) override;
     FTransform PhysicalLocalPose() const override;
     void SetPhysicalLocalOffset(const FVector&) override;
     ISpeedComponent*& ParentComponentBodyDomainStorage() override;

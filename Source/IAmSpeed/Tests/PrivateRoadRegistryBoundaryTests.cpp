@@ -38,6 +38,24 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
     const Speed::FKinematicState* RetainedBodyView=nullptr;
     const SHitResult* RetainedBodyHit=nullptr;
     double WrittenBodyX=0;
+    int32 ActualScenePoseWrites=0,ActualFacadeKinematicResponses=0;
+    const FVector WrittenSceneOffset=FVector(321,-654,987);
+    const FRotator WrittenSceneRotation=FRotator(11,23,37);
+    void AttackActualScenePose(USSubBody& Body)
+    {
+        // Real supported USceneComponent operations on the escaped facade.
+        // They execute in the actual output callback, outside physical math.
+        const SKinematic Parent=Component->GetKinematicState();
+        Body.USSubBody::UpdateKinematicsFromOwner(Parent);
+        const auto Before=Body.GetKinematicState();
+        Body.SetRelativeLocation(WrittenSceneOffset);
+        Body.SetRelativeRotation(WrittenSceneRotation);
+        if(Body.GetRelativeLocation()==WrittenSceneOffset
+            &&Body.GetRelativeRotation().Equals(WrittenSceneRotation,1.e-6))++ActualScenePoseWrites;
+        Body.USSubBody::UpdateKinematicsFromOwner(Parent);
+        const auto After=Body.GetKinematicState();
+        if(Before.Location!=After.Location&&Before.Rotation!=After.Rotation)++ActualFacadeKinematicResponses;
+    }
     USolidSubBody* EscapedSolid=nullptr;
     USWheelSubBody* EscapedWheel=nullptr;
     const SWheelRenderData* RetainedWheelRender=nullptr;
@@ -57,6 +75,7 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
             EscapedWheel=Component->GetWheelSubBodies()[0];
             if(EscapedWheel)
             {
+                AttackActualScenePose(*EscapedWheel);
                 RetainedWheelRender=&EscapedWheel->GetRenderData();BeforeWheelRoll=RetainedWheelRender->RollRotation;
                 EscapedWheel->SetIsJumping(255);EscapedWheel->SetConsecutiveGroundFrames(31);
                 EscapedWheel->SetJumpUnilateralSupport(true);EscapedWheel->SetAngularVelocity(12345);
@@ -80,6 +99,7 @@ struct FActualPhysicalLogFacadeAttack final : FOutputDevice
         Component->SetPhysCOMVelocity(FVector(1000000,2000000,3000000));
         if(auto* Body=Component->GetHitboxSubBodyForConfiguration())
         {
+            AttackActualScenePose(*Body);
             EscapedSolid=Body;Body->SetMass(987654);Body->SetIdx(555);
             Body->SetSphereBoxRestitutionOverride(1);Body->SetUseCoupledContactImpulse(true);
             Body->SetSphereBoxFrictionOverride(0.125f);Body->SetUsePersistentBilateralContact(true);
@@ -287,6 +307,8 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestTrue(TEXT("actual output callback runs outside original physical diagnostic collection"),LogAttack.CollectionWasOutsidePhysicalLogQueue);
     TestEqual(TEXT("genuine GC returned from actual callback after native physical stack ended"),LogAttack.ActualCollectionsReturned,1);
     if(!LogAttack.RetainedView)return false;
+    if(!TestEqual(TEXT("actual callback changed both escaped scene offsets and rotations"),LogAttack.ActualScenePoseWrites,2))return false;
+    if(!TestEqual(TEXT("ordinary facade base-kinematics responds to both real scene changes"),LogAttack.ActualFacadeKinematicResponses,2))return false;
 
     const auto Actual=Isolated->ReadLatest(),Reference=Control->ReadLatest();
     if(!Actual||!Reference||Actual->Frame!=1||Reference->Frame!=1)return false;
@@ -318,6 +340,10 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestEqual(TEXT("body view retained across next physical frame remains facade only"),LogAttack.RetainedBodyView->Location.X,LogAttack.WrittenBodyX);
     TestEqual(TEXT("native ResetForFrame never resets the old facade hit reference"),LogAttack.RetainedBodyHit->TOI,0.875f);
     TestTrue(TEXT("next native hitbox center exact versus untouched control"),Later->Actors[0].NativeHitboxCenter==LaterRef->Actors[0].NativeHitboxCenter);
+    TestTrue(TEXT("next native step keeps owned local Euler/pose and body values exact despite real scene writes"),
+        Later->Actors[0].OriginalBodyDomainAvailable&&LaterRef->Actors[0].OriginalBodyDomainAvailable
+        &&!Later->Actors[0].OriginalBodyDomainValues.empty()
+        &&Later->Actors[0].OriginalBodyDomainValues==LaterRef->Actors[0].OriginalBodyDomainValues);
     if(!TestTrue(TEXT("real callback retained public wheel render reference"),LogAttack.EscapedWheel&&LogAttack.RetainedWheelRender))return false;
     TestEqual(TEXT("old wheel jump timer remains facade value across native steps"),LogAttack.EscapedWheel->IsJumping(),uint8(255));
     TestEqual(TEXT("old wheel ground count remains facade value"),LogAttack.EscapedWheel->GetConsecutiveGroundFrames(),uint8(31));
@@ -359,7 +385,10 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
         if(!M||!R)return false;
         const auto Difference=P::MeasurePrivateRoadKinematics(M->COMState,R->COMState);
         if(!TestTrue(TEXT("every actual motion followup keeps native COM and declared state exact to independent control"),
-            Difference.Valid&&!Difference.Different&&P::ComparePrivateRoadPartialValues(MotionCut->Actors[0],MotionReference->Actors[0])==P::EPrivateRoadPartialComparison::Equal))return false;
+            Difference.Valid&&!Difference.Different&&P::ComparePrivateRoadPartialValues(MotionCut->Actors[0],MotionReference->Actors[0])==P::EPrivateRoadPartialComparison::Equal
+            &&MotionCut->Actors[0].OriginalBodyDomainAvailable&&MotionReference->Actors[0].OriginalBodyDomainAvailable
+            &&!MotionCut->Actors[0].OriginalBodyDomainValues.empty()
+            &&MotionCut->Actors[0].OriginalBodyDomainValues==MotionReference->Actors[0].OriginalBodyDomainValues))return false;
     }
     TestTrue(TEXT("actual native render field really advances under original throttle within finite observation"),
         OriginalZero->Actors[0].NativeWheelRenderRotations[0]!=MotionCut->Actors[0].NativeWheelRenderRotations[0]);
@@ -376,6 +405,9 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
 
     DebugKinematics->Set(OriginalDebug,ECVF_SetByCode);
 
+    TestEqual(TEXT("retained hitbox scene offset remains the actual public write"),LogAttack.EscapedSolid->GetRelativeLocation(),LogAttack.WrittenSceneOffset);
+    TestTrue(TEXT("retained wheel scene rotation remains the actual public write"),LogAttack.EscapedWheel->GetRelativeRotation().Equals(LogAttack.WrittenSceneRotation,1.e-6));
+    AddInfo(FString::Printf(TEXT("[IASActualScenePoseIsolation] actual_callback_scene_pose_writes=%d actual_facade_kinematic_responses=%d last_compared_frame=%llu native_com_and_body_values_equal=1 full_source_exclusion=0 complete_lease=0 restoreK=0 localized=0"),LogAttack.ActualScenePoseWrites,LogAttack.ActualFacadeKinematicResponses,MotionFrame));
     TestTrue(TEXT("both actual original graphs retire on their owning GT"),Isolated->Close()&&Control->Close());
     AddInfo(FString::Printf(TEXT("[IASPrivateComponentStorageIsolation] actual_native_forward_steps=%llu initial_controlled_forward_steps=2 render_motion_observation_frame=%llu actual_output_device_callback=1 actual_gc_returned_after_math=1 retained_callback_view=1 facade_pose_and_velocity_attack=1 exact_six_com=1 component_value_blocks=5 common_value_blocks=5 subbody_core_value_blocks=7 wheel_runtime_value_blocks=15 solid_value_blocks=21 complete_lease=0 localized=0"),MotionFrame,MotionFrame));
     // Never dereference OriginalWheelPointers after Close: storage has retired.

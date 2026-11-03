@@ -3130,6 +3130,28 @@ float USpeedBranchWheelSubBody::PhysicalSuspensionRestLength() const
 
 FVector USpeedBranchBoxSubBody::PhysicalLocalOffset() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetLocation():USSubBody::PhysicalLocalOffset();}
 FQuat USpeedBranchBoxSubBody::PhysicalLocalRotation() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetRotation():USSubBody::PhysicalLocalRotation();}
+FRotator USpeedBranchBoxSubBody::PhysicalLocalEulerRotation() const
+{return UsesOriginalBodyStorage()?OwnedBodyValues->LocalEulerRotation:USSubBody::PhysicalLocalEulerRotation();}
+void USpeedBranchBoxSubBody::SetPhysicalLocalRotation(const FQuat& V)
+{
+    if(UsesOriginalBodyStorage())
+    {
+        OwnedBodyValues->LocalEulerRotation=V.Rotator();
+        OwnedBodyValues->LocalPose.SetRotation(V);
+    }
+    else USSubBody::SetPhysicalLocalRotation(V);
+}
 
 FVector USpeedBranchWheelSubBody::PhysicalLocalOffset() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetLocation():USSubBody::PhysicalLocalOffset();}
 FQuat USpeedBranchWheelSubBody::PhysicalLocalRotation() const {return UsesOriginalBodyStorage()?OwnedBodyValues->LocalPose.GetRotation():USSubBody::PhysicalLocalRotation();}
+FRotator USpeedBranchWheelSubBody::PhysicalLocalEulerRotation() const
+{return UsesOriginalBodyStorage()?OwnedBodyValues->LocalEulerRotation:USSubBody::PhysicalLocalEulerRotation();}
+void USpeedBranchWheelSubBody::SetPhysicalLocalRotation(const FQuat& V)
+{
+    if(UsesOriginalBodyStorage())
+    {
+        OwnedBodyValues->LocalEulerRotation=V.Rotator();
+        OwnedBodyValues->LocalPose.SetRotation(V);
+    }
+    else USSubBody::SetPhysicalLocalRotation(V);
+}

@@ -1482,3 +1482,29 @@ private birth. Subbody initialization, other getters, allocator/reentrant paths,
 source/configuration lifetime and every actual escaping view remain to audit and
 protect. No complete restore lease, complete hidden state, authoritative-K restore
 or localized rollback is supplied. Native results on source96 do not transfer.
+
+
+## Proposed source100 local subbody pose boundary (native NOT_RUN)
+
+The native base subbody initializer and owner-kinematics update use explicit
+physical local pose operations. Their default implementations perform the same
+scene-component calls as before. Private box/wheel branches use their owned
+local offset and original Euler value. The native exact Euler-to-quaternion
+cache still receives Euler values; no quaternion-to-Euler round trip is added.
+The owned Euler coordinates are included in declared body-value encoding with
+finite checks. This extends the declared six-struct member count to126; it is
+not a claim of complete causal state.
+
+The native registry boundary test extends its actual GLog callback attack with
+supported scene offset/rotation writes on the escaped hitbox and wheel. It must
+observe both writes and compare subsequent actual COM and encoded body values
+against an independent untouched physical graph through the final motion frame.
+The facade base-kinematics must respond to the same scene writes as a positive
+control. Existing callback, GC return,
+retained-reference and native motion checks remain required. A separate typed
+codec control proves Euler-coordinate sensitivity and nonfinite refusal; that
+control does not measure scene isolation. These changes do not close every
+borrow, configuration/source/lifetime path or authorize restoration. This
+fixed stock private profile authors identity local rotations; changed valid
+subbody configurations and Engine rotation-cache history are not qualified. Native
+results from source99 or earlier never transfer to this proposed source.

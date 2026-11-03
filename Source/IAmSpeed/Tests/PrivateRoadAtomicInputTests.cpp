@@ -322,6 +322,28 @@ bool TestResponseChannelCapture(FAutomationTestBase& Test)
         if(Z.Bytes()!=X.Bytes())++Changed;
     }
     OK=Test.TestEqual(TEXT("EVERY actual collision response channel including63 changes the encoding"),Changed,uint32(C::StoredResponseChannels))&&OK;
+    TStrongObjectPtr<UBoxComponent> EulerReferenceRoot(NewObject<UBoxComponent>(GetTransientPackage()));
+    C::FReferences PoseReferences;
+    if(!EulerReferenceRoot.IsValid()||!PoseReferences.Add(EulerReferenceRoot.Get(),{0,0,uint16(C::EReferenceRole::StaticSource),0,1})||!PoseReferences.Seal())return false;
+    Speed::Netcode::Prediction::FPrivateRoadSubBodyValues BasePose;
+    C::FWriter PoseBase(PoseReferences);C::Append(PoseBase,BasePose);
+    uint32 EulerChanges=0;
+    for(int32 Axis=0;Axis<3;++Axis)
+    {
+        auto ChangedPose=BasePose;
+        if(Axis==0)ChangedPose.LocalEulerRotation.Pitch=11;
+        if(Axis==1)ChangedPose.LocalEulerRotation.Yaw=23;
+        if(Axis==2)ChangedPose.LocalEulerRotation.Roll=37;
+        C::FWriter Encoded(PoseReferences);C::Append(Encoded,ChangedPose);
+        if(Encoded.Bytes()!=PoseBase.Bytes())++EulerChanges;
+    }
+    OK=Test.TestEqual(TEXT("all three owned Euler coordinates affect the typed body encoding"),EulerChanges,uint32(3))&&OK;
+    auto InvalidPose=BasePose;InvalidPose.LocalEulerRotation.Yaw=std::numeric_limits<double>::quiet_NaN();
+    bool NonfiniteEulerRefused=false;
+    try{C::FWriter Encoded(PoseReferences);C::Append(Encoded,InvalidPose);}
+    catch(const Speed::Replay::FFieldError&){NonfiniteEulerRefused=true;}
+    OK=Test.TestTrue(TEXT("nonfinite owned Euler coordinate refuses encoding"),NonfiniteEulerRefused)&&OK;
+    Test.AddInfo(FString::Printf(TEXT("[OwnedEulerCodecControl] typed_scalar_changes=%u nonfinite_refused=%d native_pose_isolation=NOT_MEASURED_BY_THIS_CONTROL"),EulerChanges,int(NonfiniteEulerRefused)));
     Test.AddInfo(FString::Printf(TEXT("[ActualResponseChannelCodec] nativeStoredChannels=%llu independentlyChanged=%u adjacentSentinelsExcluded=%d deprecatedMarkerSerialized=0 completeEpoch=0"),
         uint64(C::StoredResponseChannels),Changed,int(X.Bytes()==Y.Bytes())));
     return OK;
@@ -506,7 +528,7 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
         Difference.FirstDifferent,Difference.DifferentFrames,FilterDifferences,StartupDifferences,Difference.Position,Difference.Velocity,Difference.Acceleration,
         Difference.Rotation,Difference.AngularVelocity,Difference.AngularAcceleration,Response.Position,Response.Velocity,Response.Rotation));
     Test.AddInfo(FString::Printf(TEXT("[NativePartialStateMeasure] case=%s action=%u frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u complete_causal_state=0 sockets=0 hardware=0"),Case.Name,Case.Action,uint32(Case.FrameCount),PartialMissing,PartialDifferent,PartialResponse));
-    Test.AddInfo(FString::Printf(TEXT("[OriginalBodyDomainMeasure] case=%s fieldsPerStructSet=125 frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u completeEpoch=0 restore=0"),
+    Test.AddInfo(FString::Printf(TEXT("[OriginalBodyDomainMeasure] case=%s fieldsPerStructSet=126 frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u completeEpoch=0 restore=0"),
         Case.Name,uint32(Case.FrameCount),BodyMissing,BodyDifferent,BodyNeutralResponse));
     Test.AddInfo(FString::Printf(TEXT("[OriginalComponentDomainMeasure] case=%s topMembers=11 frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u completeEpoch=0 restore=0"),
         Case.Name,uint32(Case.FrameCount),ComponentMissing,ComponentDifferent,ComponentNeutralResponse));
