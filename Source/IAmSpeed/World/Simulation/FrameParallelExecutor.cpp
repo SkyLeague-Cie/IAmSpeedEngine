@@ -167,6 +167,7 @@ struct FExecutorState
     std::condition_variable Idle;
     std::shared_ptr<FPrivateFramePool> Pool;
     int32 ActiveDispatches = 0;
+    int32 ActualServiceRetentions = 0;
     bool bStopping = false;
 };
 FExecutorState& State()
@@ -199,6 +200,46 @@ struct FDispatchLease
         if (--S.ActiveDispatches == 0) S.Idle.notify_all();
     }
 };
+}
+
+struct FFrameExecutorServiceRetention::FImpl
+{
+    FExecutorState* Original=nullptr;
+    std::shared_ptr<FPrivateFramePool> OriginalPool;
+    ~FImpl()
+    {
+        if(!Original)return;
+        // The actual State still owns this SAME pool while its retention count
+        // is nonzero. Drop our shared root before publishing consumer release.
+        // No Pool destructor or foreign finalizer runs under the State mutex.
+        OriginalPool.reset();
+        std::lock_guard<std::mutex> Lock(Original->Mutex);
+        if(Original->ActualServiceRetentions<=0)std::terminate();
+        --Original->ActualServiceRetentions;
+        Original->Idle.notify_all();
+    }
+};
+FFrameExecutorServiceRetention::FFrameExecutorServiceRetention()=default;
+FFrameExecutorServiceRetention::~FFrameExecutorServiceRetention()=default;
+std::unique_ptr<FFrameExecutorServiceRetention> RetainConfiguredFrameExecutorService()
+{
+    // Allocate before taking the service mutex. Failure cannot leave a count
+    // without a real owner, and constructors invoke no pool/worker creation.
+    auto Result=std::unique_ptr<FFrameExecutorServiceRetention>(new FFrameExecutorServiceRetention);
+    auto Actual=std::make_unique<FFrameExecutorServiceRetention::FImpl>();
+    auto& S=State();
+    {
+        std::lock_guard<std::mutex> Lock(S.Mutex);
+        if(S.bStopping||!S.Pool||S.ActualServiceRetentions==MAX_int32)return {};
+        Actual->OriginalPool=S.Pool;Actual->Original=&S;
+        ++S.ActualServiceRetentions;Result->Impl=std::move(Actual);
+    }
+    return Result;
+}
+FFrameExecutorServiceObservation ObserveFrameExecutorServiceForDiagnostics()
+{
+    auto& S=State();std::lock_guard<std::mutex> Lock(S.Mutex);
+    return {bool(S.Pool),S.bStopping,S.ActualServiceRetentions,S.ActiveDispatches,S.Pool?S.Pool->NumWorkers():0};
 }
 
 int32 RequestedFrameExecutorBackend()
@@ -314,7 +355,7 @@ void ShutdownFrameParallelExecutor()
     auto& S = State(); std::shared_ptr<FPrivateFramePool> Pool;
     {
         std::unique_lock<std::mutex> Lock(S.Mutex); S.bStopping = true;
-        S.Idle.wait(Lock, [&] { return S.ActiveDispatches == 0; });
+        S.Idle.wait(Lock, [&] { return S.ActiveDispatches == 0 && S.ActualServiceRetentions == 0; });
         Pool = std::move(S.Pool);
     }
     if (Pool) Pool->StopAndJoin();

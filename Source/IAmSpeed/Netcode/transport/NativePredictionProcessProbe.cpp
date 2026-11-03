@@ -1,4 +1,7 @@
 #include "NativePredictionProcessProbe.h"
+#include "NativeFiniteProcessRetention.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "NativeLocalIngressProbeControls.h"
 #include "RedundantDatagram.h"
 #include "OriginalRetryOrder.h"
@@ -668,6 +671,8 @@ FNativeProbeTask MakeNativePredictionProbeTask(FNativePredictionProbeOptions O,s
 
 struct FNativePredictionProbePump::FImpl
 {
+    // Actual code/service participant outlives EVERY dependent field below.
+    std::unique_ptr<FNativeFiniteProcessRetention> Retention;
     const std::thread::id Owner=std::this_thread::get_id();
     std::atomic<std::shared_ptr<const Prediction::FPrivateRoadPublication>> Published;
     ENativeProbePumpStep State=ENativeProbePumpStep::Running;
@@ -677,9 +682,10 @@ struct FNativePredictionProbePump::FImpl
     // Destroy the coroutine and its real native graph FIRST. World cleanup
     // callbacks may query the still-live pump value publication during unwind.
     FNativeProbeTask Task;
-    explicit FImpl(FNativePredictionProbeOptions O):Task(MakeNativePredictionProbeTask(std::move(O),Diagnostics)){}
+    FImpl(FNativePredictionProbeOptions O,std::unique_ptr<FNativeFiniteProcessRetention> R)
+        :Retention(std::move(R)),Task(MakeNativePredictionProbeTask(std::move(O),Diagnostics)){}
 };
-FNativePredictionProbePump::FNativePredictionProbePump(FNativePredictionProbeOptions O):Impl(std::make_unique<FImpl>(std::move(O))){}
+FNativePredictionProbePump::FNativePredictionProbePump(std::unique_ptr<FImpl> I):Impl(std::move(I)){}
 FNativePredictionProbePump::~FNativePredictionProbePump()
 {
     if(!IsInGameThread()||std::this_thread::get_id()!=Impl->Owner||Impl->Active)std::terminate();
@@ -691,7 +697,14 @@ FNativePredictionProbePump::~FNativePredictionProbePump()
 std::unique_ptr<FNativePredictionProbePump> FNativePredictionProbePump::Create(FNativePredictionProbeOptions O,std::string& Why)
 {
     Why.clear();if(!IsInGameThread()){Why="native probe pump requires the original game thread";return {};}
-    return std::unique_ptr<FNativePredictionProbePump>(new FNativePredictionProbePump(std::move(O)));
+    std::unique_ptr<FNativeFiniteProcessRetention> Retention;
+    if(FParse::Param(FCommandLine::Get(),TEXT("IASFiniteProcessCodePins")))
+    {
+        Retention=FNativeFiniteProcessRetention::Create(O.ReportPath,O.Launcher.OriginalSelf.Pid,Why);
+        if(!Retention)return {};
+    }
+    auto Original=std::make_unique<FImpl>(std::move(O),std::move(Retention));
+    return std::unique_ptr<FNativePredictionProbePump>(new FNativePredictionProbePump(std::move(Original)));
 }
 ENativeProbePumpStep FNativePredictionProbePump::Tick()
 {

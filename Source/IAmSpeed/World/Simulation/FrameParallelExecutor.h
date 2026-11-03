@@ -1,5 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
+#include <memory>
 #include "FrameDispatchObservation1075.h"
 
 namespace Speed
@@ -40,7 +41,34 @@ IAMSPEED_API bool TryDispatchPrivateFrameParallelLanes1075(
 IAMSPEED_API EFrameExecutorBackend DispatchPrivateFramePair(
     TFunctionRef<void()> ProducerWork, TFunctionRef<void()> OwnerWork);
 IAMSPEED_API int32 EnsurePrivateFrameWorkers(int32 RequestedWorkers);
+// Opaque retention of the ACTUAL already-configured service root. Acquisition
+// refuses after shutdown admission closes and never creates/resizes a pool.
+// The native owner releases it only after all dependent returns/finalizers.
+// Host module retention through every call and this destructor is still required.
+// This does not protect physical views, sources, configurations or a world.
+class FFrameExecutorServiceRetention;
+IAMSPEED_API std::unique_ptr<FFrameExecutorServiceRetention> RetainConfiguredFrameExecutorService();
+class IAMSPEED_API FFrameExecutorServiceRetention final
+{
+    struct FImpl;
+    std::unique_ptr<FImpl> Impl;
+    FFrameExecutorServiceRetention();
+    friend std::unique_ptr<FFrameExecutorServiceRetention> RetainConfiguredFrameExecutorService();
+public:
+    ~FFrameExecutorServiceRetention();
+    FFrameExecutorServiceRetention(const FFrameExecutorServiceRetention&)=delete;
+    FFrameExecutorServiceRetention& operator=(const FFrameExecutorServiceRetention&)=delete;
+};
+// Data-only observation for native lifecycle controls, never a capability.
+struct FFrameExecutorServiceObservation
+{
+    bool Configured=false,Stopping=false;
+    int32 ActualRetentions=0,ActiveDispatches=0,Workers=0;
+};
+IAMSPEED_API FFrameExecutorServiceObservation ObserveFrameExecutorServiceForDiagnostics();
 // Module shutdown, after simulation owners have drained. Stops admission,
-// joins every accepted work group, then joins all owned threads; no thread kill.
+// waits for all actual retained consumers and dispatches, then joins all owned
+// threads; no thread kill. Never call on a worker or while retaining the same
+// service on the calling stack: the original owner must release first.
 IAMSPEED_API void ShutdownFrameParallelExecutor();
 }

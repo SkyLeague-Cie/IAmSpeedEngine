@@ -36,11 +36,13 @@ struct FNativeProbePumpDiagnostics
 class IAMSPEED_API FNativePredictionProbePump final
 {
     struct FImpl;std::unique_ptr<FImpl> Impl;
-    explicit FNativePredictionProbePump(FNativePredictionProbeOptions);
+    explicit FNativePredictionProbePump(std::unique_ptr<FImpl>);
 public:
     ~FNativePredictionProbePump();
     FNativePredictionProbePump(const FNativePredictionProbePump&)=delete;
     FNativePredictionProbePump& operator=(const FNativePredictionProbePump&)=delete;
+    // Explicit -IASFiniteProcessCodePins retains actual PIN-time modules and the
+    // configured service before coroutine birth in finite private processes only.
     static std::unique_ptr<FNativePredictionProbePump> Create(FNativePredictionProbeOptions,std::string& Why);
     ENativeProbePumpStep Tick(); // original GT only; one bounded protocol pulse
     // Synchronously unwind the genuinely suspended native owners on their GT.

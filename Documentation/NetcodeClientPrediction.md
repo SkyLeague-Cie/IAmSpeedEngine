@@ -1459,3 +1459,8 @@ driver/native-vehicle/world/configuration closure, a restore boundary lease,
 full-state synchronization, authoritative-K restore or localized rollback.
 Existing restoration guards are unchanged. Fresh native results are required;
 source89/native87 results do not transfer. Native90 is NOT_RUN at preparation.
+
+
+## Source93 finite native code and service retention
+
+The explicitly selected `-IASFiniteProcessCodePins` profile in a finite private commandlet or non-Editor Game pins the actual modules returned by Windows at each PIN call and retains the actual configured executor before the original probe coroutine is born. The roots outlive the coroutine, publications and pump field finalizers. Acquired/released sidecars contain actual PID/module bases and service observations. Initial roster incarnations, pre-existing callback provenance and future module loads are not covered. The profile is refused in a shared Editor. This does not open restoration guards or qualify complete initial state, authoritative-K restore or localized rollback. A separate fresh-process control exercises irreversible executor shutdown; it is never a registered Automation test. New native compile and process controls remain NOT_RUN at preparation; Windows91r07 is not Unreal qualification.

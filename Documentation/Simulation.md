@@ -162,3 +162,8 @@ End-to-end netcode is currently not operational in the 0.4 development line.
 Restoration is targeted for 0.5. Existing input, snapshot, checkpoint and replay
 seams are groundwork; they do not establish complete multiplayer prediction,
 reconciliation or network rollback acceptance.
+
+
+## Source93 finite native code and service retention
+
+The executor can now return an opaque retention of its actual configured pool. Acquisition never creates or resizes a pool and refuses after shutdown closes admission. Shutdown waits for real retained consumers and dispatches before moving and joining that pool. A caller must release its retention before calling shutdown and retain the module through actual calls and destructors. This participant is not a physical-world/source/config/view lease; concurrent shutdown return ordering remains unqualified.
