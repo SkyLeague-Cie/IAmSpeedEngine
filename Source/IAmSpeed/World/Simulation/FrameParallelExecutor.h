@@ -53,7 +53,7 @@ class IAMSPEED_API FFrameExecutorServiceRetention final
     struct FImpl;
     std::unique_ptr<FImpl> Impl;
     FFrameExecutorServiceRetention();
-    friend std::unique_ptr<FFrameExecutorServiceRetention> RetainConfiguredFrameExecutorService();
+    friend IAMSPEED_API std::unique_ptr<FFrameExecutorServiceRetention> RetainConfiguredFrameExecutorService();
 public:
     ~FFrameExecutorServiceRetention();
     FFrameExecutorServiceRetention(const FFrameExecutorServiceRetention&)=delete;
