@@ -341,7 +341,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     TestEqual(TEXT("native ResetForFrame never resets the old facade hit reference"),LogAttack.RetainedBodyHit->TOI,0.875f);
     TestTrue(TEXT("next native hitbox center exact versus untouched control"),Later->Actors[0].NativeHitboxCenter==LaterRef->Actors[0].NativeHitboxCenter);
     TestTrue(TEXT("next native step keeps owned local Euler/pose and body values exact despite real scene writes"),
-        Later->Actors[0].OriginalBodyDomainAvailable&&LaterRef->Actors[0].OriginalBodyDomainAvailable
+        Later->Actors[0].OriginalBodyDomainsAvailable&&LaterRef->Actors[0].OriginalBodyDomainsAvailable
         &&!Later->Actors[0].OriginalBodyDomainValues.empty()
         &&Later->Actors[0].OriginalBodyDomainValues==LaterRef->Actors[0].OriginalBodyDomainValues);
     if(!TestTrue(TEXT("real callback retained public wheel render reference"),LogAttack.EscapedWheel&&LogAttack.RetainedWheelRender))return false;
@@ -386,7 +386,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
         const auto Difference=P::MeasurePrivateRoadKinematics(M->COMState,R->COMState);
         if(!TestTrue(TEXT("every actual motion followup keeps native COM and declared state exact to independent control"),
             Difference.Valid&&!Difference.Different&&P::ComparePrivateRoadPartialValues(MotionCut->Actors[0],MotionReference->Actors[0])==P::EPrivateRoadPartialComparison::Equal
-            &&MotionCut->Actors[0].OriginalBodyDomainAvailable&&MotionReference->Actors[0].OriginalBodyDomainAvailable
+            &&MotionCut->Actors[0].OriginalBodyDomainsAvailable&&MotionReference->Actors[0].OriginalBodyDomainsAvailable
             &&!MotionCut->Actors[0].OriginalBodyDomainValues.empty()
             &&MotionCut->Actors[0].OriginalBodyDomainValues==MotionReference->Actors[0].OriginalBodyDomainValues))return false;
     }

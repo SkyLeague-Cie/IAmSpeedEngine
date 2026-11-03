@@ -52,7 +52,7 @@ struct FPrivateRoadActorFrame
     CommonState::FQuantizationValues NativeQuantization;
     std::vector<uint8> NativeWheelSuspensionValues; // normalized config references
     std::vector<FQuat> NativeWheelRenderRotations; // actual per-wheel diagnostic copies
-    // Exact six original body structs (125 fields plus nested hit/render values).
+    // Exact six original body structs (126 declared members plus nested hit/render values).
     // Component, driver, native vehicle, source and lifetime domains are NOT covered.
     bool OriginalBodyDomainsAvailable=false;
     std::vector<uint8> OriginalBodyDomainValues;
