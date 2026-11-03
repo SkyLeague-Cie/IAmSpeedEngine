@@ -116,6 +116,18 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	Driver->SpeedWorldSubsystem = Bridge;
 	GameMode->SpeedSimActor = Driver;
 
+	// A possession can see the GameMode's driver before its BeginPlay initializes
+	// owned execution. The base factory would reject if this gate called it.
+	Controller->SpeedCar = Car;
+	Controller->bInputSessionRequiredV2 = true;
+	Controller->bInputSessionPendingV2 = true;
+	TestFalse(TEXT("pre-BeginPlay driver defers the input factory"), Controller->RefreshInputSessionV2());
+	TestTrue(TEXT("unready driver preserves pending neutral admission without fault"),
+		Controller->bInputSessionPendingV2 && !Controller->bInputLifecycleFault && !Controller->InputSessionV2);
+	Controller->SpeedCar = nullptr;
+	Controller->bInputSessionRequiredV2 = false;
+	Controller->bInputSessionPendingV2 = false;
+
 	// A real immutable empty collision world isolates frame ordering from contacts.
 	// The normal core step still runs; no fake physical consumer or query backend.
 	auto Data = MakeShared<Speed::Analytic::FAnalyticWorldData>();

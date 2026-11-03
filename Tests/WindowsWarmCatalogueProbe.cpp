@@ -35,7 +35,12 @@ int main()
     const auto Second = MakeDevice(2);
     Api->Initial = {{Pad, 1, true}};
     std::shared_ptr<FGameInputWarmCatalogue> Warm = FGameInputWarmCatalogue::Create(Api.Get());
-    Check(bool(Warm) && Api->AllKinds, "one blocking OS enumeration");
+    Check(bool(Warm) && Api->LastEnumeration == GameInputAsyncEnumeration
+        && (Api->LastRegisteredKinds & GameInputKindKeyboard)
+        && (Api->LastRegisteredKinds & GameInputKindGamepad)
+        && (Api->LastRegisteredKinds & GameInputKindMouse)
+        && (Api->LastRegisteredKinds & GameInputKindRawDeviceReport),
+        "warm catalogue requests the existing nonblocking all-kinds enumeration");
 
     const std::array<bool, ActionCount> Digital{};
     auto First = FGameInputDiscovery::Create(Warm, 101, Digital);
@@ -273,6 +278,55 @@ int main()
         Check(Context.Close() && Context.Close() && ContextApi->UnregisterCalls == 2,
             "persistent owner retries once and closes after all sessions join");
         Check(!Context.GetOrCreate(ContextApi.Get()), "closed context cannot resurrect callback");
+    }
+
+    {
+        ComPtr<DiscoveryApi> FailedApi; FailedApi.Attach(new DiscoveryApi);
+        const auto PadBeforeFailure=MakeDevice(41);
+        FailedApi->Initial={{PadBeforeFailure,100,true}};
+        FGameInputWarmContext Context;
+        auto Failed=Context.GetOrCreate(FailedApi.Get());
+        Check(bool(Failed), "recoverable context creates its first catalogue");
+        Check(Context.RetireFailedCatalogue() && Context.GetOrCreate(nullptr)==Failed,
+            "healthy catalogue and callbacks are retained");
+        auto View=FGameInputDiscovery::Create(Failed,501,Digital);
+        Check(bool(View), "recovery has an actual subscribed source");
+        FailedApi->FireDevice(PadBeforeFailure.Get(),100,false);
+        Check(FAILED(Failed->GetError()), "inconsistent OS callback preserves raw failure");
+        Check(!Context.RetireFailedCatalogue(), "failed catalogue cannot retire a live source");
+        Check(View->Shutdown(), "old source detaches before catalogue recovery");View.reset();
+        FailedApi->FailUnregister=true;
+        Check(!Context.RetireFailedCatalogue() && Context.GetOrCreate(nullptr)==Failed,
+            "failed callback teardown keeps ownership for another safe attempt");
+        FailedApi->FailUnregister=false;
+        Check(Context.RetireFailedCatalogue() && !Context.GetOrCreate(nullptr),
+            "failed catalogue retires only after successful callback drain");
+        ComPtr<DiscoveryApi> FreshApi;FreshApi.Attach(new DiscoveryApi);
+        FreshApi->Initial={{MakeDevice(42),200,true}};
+        auto Fresh=Context.GetOrCreate(FreshApi.Get());
+        Check(Fresh && Fresh!=Failed && SUCCEEDED(Fresh->GetError()),
+            "next session obtains a new healthy catalogue instead of a sticky failure");
+        auto FreshView=FGameInputDiscovery::Create(Fresh,502,Digital);
+        Check(FreshView && FreshView->Snapshot().size()==1 && FreshView->Snapshot()[0].Id==Key(42),
+            "new source sees the current physical device after backend recovery");
+        Check(FreshView->Shutdown(), "fresh view detaches");FreshView.reset();
+        Check(Context.Close(), "recovered context closes all callbacks");
+    }
+
+    {
+        ComPtr<DiscoveryApi> LateApi;LateApi.Attach(new DiscoveryApi);
+        FGameInputWarmContext LateContext;
+        auto Empty=LateContext.GetOrCreate(LateApi.Get());
+        Check(Empty && LateApi->LastEnumeration==GameInputAsyncEnumeration,
+            "empty catalogue starts without waiting for a controller");
+        auto Waiting=FGameInputDiscovery::Create(Empty,601,Digital);
+        Check(Waiting && Waiting->Snapshot().empty(), "no device is fabricated before hotplug");
+        auto LatePad=MakeDevice(43);LateApi->FireDevice(LatePad.Get(),300,true);
+        const auto Found=Waiting->Snapshot();
+        Check(Found.size()==1 && Found[0].Id==Key(43) && Found[0].Connected,
+            "existing callback discovers a controller arriving after empty startup");
+        Check(Waiting->Shutdown(), "late-device view detaches");Waiting.reset();
+        Check(LateContext.Close(), "late-device catalogue drains safely");
     }
 
     std::cout << "PASS WindowsWarmCatalogueProbe checks=" << Checks << '\n';

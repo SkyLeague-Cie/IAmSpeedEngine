@@ -270,17 +270,65 @@ int main()
 		}
 		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Waiting,
 			"host can service an unpublished acquisition without blocking");
+		Check(!Worker.IsStartupTimedOut(std::chrono::seconds(2)) && !Worker.IsStartupTimedOut(std::chrono::milliseconds(0)),
+			"waiting attempt and invalid timeout do not authorize recovery");
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		Check(Worker.StartupState(std::chrono::milliseconds(1)) == EAcquisitionStartup::Failed,
 			"unpublished acquisition fails after configured deadline");
+		Check(Worker.IsStartupTimedOut(std::chrono::milliseconds(1)),
+			"expired live attempt is distinguished from a source failure");
 		{ std::lock_guard<std::mutex> Lock(Source->Mutex); Source->Release = true; Source->Changed.notify_all(); }
 		Check(Worker.WaitForFirstPublication(std::chrono::seconds(2)), "deferred acquisition eventually publishes");
 		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Ready,
 			"fresh publication resumes within deadline");
 		Check(Worker.StartupState(std::chrono::milliseconds(1)) == EAcquisitionStartup::Failed,
 			"late publication cannot retroactively satisfy an expired deadline");
+		Check(Worker.IsStartupTimedOut(std::chrono::milliseconds(1)) && !Worker.IsStartupTimedOut(std::chrono::seconds(2)),
+			"late real baseline still belongs to the expired attempt only");
 		Check(Worker.Stop() && Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Failed,
 			"closed acquisition cannot resume gameplay");
+		Check(!Worker.IsStartupTimedOut(std::chrono::milliseconds(1)),
+			"closed acquisition never authorizes timeout recovery");
+	}
+	{
+		struct FUnavailableSource final : IInputAcquisition
+		{
+			explicit FUnavailableSource(EAcquisitionPumpResult InResult, bool InStartReady = false)
+				: Outcome(InResult), StartReady(InStartReady) {}
+			EAcquisitionPumpResult Pump() override
+			{ const auto Call = ++Calls; return StartReady && Call == 1 ? EAcquisitionPumpResult::Installed : Outcome; }
+			bool Close() override { Closed = true; return true; }
+			EAcquisitionPumpResult Outcome; bool StartReady = false;
+			std::atomic<unsigned> Calls{0}; std::atomic<bool> Closed{false};
+		};
+		for (auto Outcome : {EAcquisitionPumpResult::RetryableUnavailable, EAcquisitionPumpResult::Rejected})
+		{
+			auto Source = std::make_shared<FUnavailableSource>(Outcome); FInputAcquisitionWorker Worker(Source);
+			Check(Worker.Start(std::chrono::microseconds(1000)), "backend outcome owner starts");
+			Check(!Worker.WaitForFirstPublication(std::chrono::seconds(2)), "backend failure does not satisfy startup");
+			Check(Outcome == EAcquisitionPumpResult::RetryableUnavailable
+				? !Worker.HasFinished() && !Source->Closed : Worker.HasFinished() && Source->Closed,
+				"unavailable source remains owned until host Stop; rejected source terminates");
+			Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Failed
+				&& !Worker.IsStartupTimedOut(std::chrono::milliseconds(1)), "backend failure remains distinct from timeout");
+			Check(Worker.IsRetryableUnavailable() == (Outcome == EAcquisitionPumpResult::RetryableUnavailable),
+				"only explicit backend unavailability authorizes host recovery");
+			Check(Source->Calls == 1, "unavailable source is not polled again by the old worker");
+			Check(Worker.Stop() && Worker.HasFinished() && Source->Closed && !Worker.IsRetryableUnavailable(),
+				"host Stop joins and closes the unavailable acquisition before replacement");
+		}
+		auto Source = std::make_shared<FUnavailableSource>(EAcquisitionPumpResult::RetryableUnavailable, true);
+		FInputAcquisitionWorker Worker(Source);
+		Check(Worker.Start(std::chrono::microseconds(1000)), "previously ready backend owner starts");
+		const auto Deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (!Worker.IsRetryableUnavailable() && std::chrono::steady_clock::now() < Deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		Check(Worker.IsRetryableUnavailable() && Source->Calls == 2 && !Source->Closed,
+			"backend stops polling after a previously successful publication");
+		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Failed
+			&& !Worker.WaitForFirstPublication(std::chrono::milliseconds(0)),
+			"explicit unavailability overrides a previously ready startup gate");
+		Check(Worker.Stop() && Source->Closed, "previously ready unavailable owner closes on host Stop");
 	}
 	{
 		struct FBlockingSource final : IInputAcquisition
@@ -340,6 +388,8 @@ int main()
 			"held value cannot survive terminal acquisition failure");
 		Check(Worker.StartupState(std::chrono::seconds(2)) == EAcquisitionStartup::Failed,
 			"terminated worker cannot satisfy a previously successful startup");
+		Check(!Worker.IsStartupTimedOut(std::chrono::milliseconds(1)),
+			"source rejection cannot be retried as an expired startup attempt");
 		Check(Worker.Stop(), "failed owner teardown joined");
 	}
 	{

@@ -126,6 +126,11 @@ public:
 		{ Failed = true; return std::nullopt; }
 		std::optional<FDeviceId> Winner;
 		bool StartupChoice = false;
+		bool PrioritizeReadablePad = false;
+		if (Config.GamepadPriority)
+			for (const auto& Item : Trackers)
+				if (Item.second.Kind == EDeviceKind::Gamepad && Item.second.HasBaseline)
+				{ PrioritizeReadablePad = true; break; }
 		if (!Paused)
 		{
 			if (Locked) { if (Trackers.count(*Locked)) Winner = Locked; }
@@ -137,19 +142,23 @@ public:
 				for (const auto& Item : Trackers)
 				{
 					const auto Stamp = Item.second.Pending;
-					if (!Stamp) continue;
+					// Keyboard activity cannot hide a real pad claim while the
+					// product's preferred kind has a readable current baseline.
+					if (!Stamp || (PrioritizeReadablePad && Item.second.Kind != EDeviceKind::Gamepad)) continue;
 					if (!Best || *Stamp > *Best || (*Stamp == *Best
 						&& (!Winner || (Remembered && Item.first == *Remembered))))
 					{ Best = Stamp; Winner = Item.first; }
 				}
 				if (Winner && Remembered && *Winner != *Remembered && Trackers.count(*Remembered)
-					&& LastSwitch && Frame - *LastSwitch < Config.MinimumResidenceFrames) Winner = Remembered;
+					&& LastSwitch && Frame - *LastSwitch < Config.MinimumResidenceFrames
+					&& (!Config.GamepadPriority || Trackers.at(*Remembered).HasClaimedOwnership)) Winner = Remembered;
 				// A startup fallback is readable, but has not earned ownership through activity.
 				// Let the first real pad command replace it before suppressing mirrored pads.
 				if (Winner && Remembered && *Winner != *Remembered && LastClaimTimestamp && Config.RetainSameKindOwner)
 				{
 					const auto Owner = Trackers.find(*Remembered);
 					if (Owner != Trackers.end() && Owner->second.HasBaseline
+						&& (!Config.GamepadPriority || Owner->second.HasClaimedOwnership)
 						&& Owner->second.Kind == EDeviceKind::Gamepad
 						&& Owner->second.Kind == Trackers.at(*Winner).Kind) Winner = Remembered;
 				}
@@ -170,8 +179,9 @@ public:
 		}
         if (!Paused && !Locked && Config.GamepadPriority)
         {
-            // Keep an available pad stable. After removal choose another readable
-            // pad, then a readable keyboard; never retain a vanished owner ID.
+            // Preserve the pad selected by real activity. A readable startup or
+            // removal fallback stays provisional until it earns its own claim.
+            // After removal choose another readable pad, then a keyboard.
             const auto Pick=[&](EDeviceKind Kind)->std::optional<FDeviceId>
             {
                 if (Remembered)
@@ -181,10 +191,15 @@ public:
                     if (I.second.Kind==Kind && I.second.HasBaseline) return I.first;
                 return {};
             };
-            Winner=Pick(EDeviceKind::Gamepad);
+            if (!Winner || Trackers.at(*Winner).Kind!=EDeviceKind::Gamepad
+                || !Trackers.at(*Winner).HasBaseline) Winner=Pick(EDeviceKind::Gamepad);
             if (!Winner) Winner=Pick(EDeviceKind::Keyboard);
         }
-		if (Winner && !StartupChoice && (!Remembered || *Winner != *Remembered)) LastSwitch = Frame;
+		if (Winner && Trackers.at(*Winner).Pending
+			&& (!LastClaimTimestamp || *Trackers.at(*Winner).Pending >= *LastClaimTimestamp))
+			Trackers.at(*Winner).HasClaimedOwnership = true;
+		if (Winner && !StartupChoice && (!Remembered || *Winner != *Remembered)
+			&& (!Config.GamepadPriority || Trackers.at(*Winner).HasClaimedOwnership)) LastSwitch = Frame;
 		if (Winner && Trackers.at(*Winner).Pending
 			&& (!LastClaimTimestamp || *Trackers.at(*Winner).Pending > *LastClaimTimestamp)) LastClaimTimestamp = Trackers.at(*Winner).Pending;
 		if (Winner) Remembered = Winner;
@@ -204,6 +219,9 @@ private:
 		std::array<FAnalog, 4> Analog{};
 		std::optional<std::uint64_t> Timestamp, Pending;
 		bool HasBaseline = false;
+		// A selected real command in this lifecycle revision. Pause/rearm keeps
+		// the claim; Sync starts a new tracker when the revision changes.
+		bool HasClaimedOwnership = false;
 	};
 	const FActivityConfig Config;
 	std::map<FDeviceId, FTracker> Trackers;

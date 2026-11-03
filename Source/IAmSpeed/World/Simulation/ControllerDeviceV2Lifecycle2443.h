@@ -23,6 +23,10 @@ public:
         return Changed.wait_for(Lock,std::chrono::seconds(2),[&]{return Closed || Completed>=Id;})
             && !Closed && Completed==Id && Accepted;
     }
+    void RequestUnavailable()
+    {
+        std::lock_guard<std::mutex> Lock(Gate); Unavailable=true;
+    }
     Speed::Input::V2::EAcquisitionPumpResult Pump() override
     {
         using namespace Speed::Input::V2;
@@ -31,6 +35,7 @@ public:
         {
             std::lock_guard<std::mutex> Lock(Gate);
             if (Closed) return EAcquisitionPumpResult::Closed;
+            if (Unavailable) return EAcquisitionPumpResult::RetryableUnavailable;
             if (!Pending) return EAcquisitionPumpResult::NoChange;
             Request=*Pending; Pending.reset();
         }
@@ -61,6 +66,6 @@ private:
     mutable std::mutex Gate; std::condition_variable Changed;
     std::optional<FRequest> Pending;
     uint64 Requested=0,Completed=0,Sequence=0,Publications=0;
-    bool Accepted=false,Closed=false;
+    bool Accepted=false,Closed=false,Unavailable=false;
 };
 }

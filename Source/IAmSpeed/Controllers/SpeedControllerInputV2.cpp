@@ -1,6 +1,9 @@
 #include "SpeedController.h"
 #include "IAmSpeed/Controllers/PrivateInputFailureFile.h"
 #include "IAmSpeed/Actors/SpeedCar.h"
+#include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
+#include "HAL/PlatformTime.h"
 #include "IAmSpeed/World/Simulation/SpeedPhysicsSimulation.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "IAmSpeed/Input/ControlBatchPolicy.h"
@@ -108,9 +111,12 @@ bool ASpeedController::RefreshInputSessionV2()
 	check(IsInGameThread());
 	if (!bInputSessionRequiredV2 || !IsValid(SpeedCar) || InputSessionV2 || bInputLifecycleFault
 		|| Speed::Input::FPresentationInputScope::IsActive()) return false;
+	if (FPlatformTime::Seconds() < NextInputSessionRetryTimeV2) return false;
 	ASpeedGameMode* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASpeedGameMode>() : nullptr;
 	ASpeedPhysicsSimulation* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
-	if (!Driver) return false; // GameMode may spawn its owned driver after possession.
+	// Possession may precede driver BeginPlay and its owned execution mode.
+	// No acquisition is constructed until the simulation can admit its actor.
+	if (!Driver || !Driver->HasActorBegunPlay()) return false;
 	const auto Boundary = Driver->TryPauseOwnedSimulation();
 	uint64 FirstFrame = 0;
 	if ((Boundary != ESimulationQuiescence::BoundaryAcknowledged && Boundary != ESimulationQuiescence::AlreadyStopped)
@@ -124,6 +130,9 @@ bool ASpeedController::RefreshInputSessionV2()
 			Driver->GetInputWorkerGeneration()));
 		MarkInputLifecycleFault(TEXT("SpeedControllerInputV2.cpp:117")); return false;
 	}
+	auto* Component = Cast<USpeedWheeledComponent>(SpeedCar->GetVehicleMovement());
+	auto* World = GetWorld() ? GetWorld()->GetSubsystem<USpeedWorldSubsystem>() : nullptr;
+	if (!Component || !World || !World->GetSimulationStableId(*Component)) return false;
 	auto Session = CreateInputSessionV2(FirstFrame);
 	if (Session && Session->Descriptor)
 	{
@@ -132,7 +141,7 @@ bool ASpeedController::RefreshInputSessionV2()
 		InputSessionV2 = std::move(Session); LastInputSessionV2 = InputSessionV2->Session;
 		if (!ObservePrivateInputAdmission(BindInputPresentationV2(), TEXT("Presentation.Bind")) || !ObservePrivateInputAdmission(InputSessionV2->Activate(), TEXT("Session.Activate")) || !ObservePrivateInputAdmission(BeginRegistryInputSession(), TEXT("Registry.Begin")))
 		{ MarkInputLifecycleFault(TEXT("SpeedControllerInputV2.cpp:125")); ReleaseInputSessionV2(); return false; }
-		bInputSessionPendingV2 = false;
+		bInputSessionPendingV2 = false; NextInputSessionRetryTimeV2 = 0.;
 		return true;
 	}
 	if (!Session || !Session->Stream || !Session->Presentation || Session->Closed
@@ -207,6 +216,36 @@ bool ASpeedController::ServiceInputSessionV2()
 	{
 		UE_LOG(LogTemp, Error, TEXT("Independent input acquisition failed or timed out; session %llu remains neutral"),
 			Session->Session);
+		const bool TimedOut = Session->Acquisition->IsStartupTimedOut(Session->AcquisitionStartupTimeout);
+		const bool Unavailable = Session->Acquisition->IsRetryableUnavailable();
+		RecordPrivateInputFailure(TEXT("SpeedController.AcquisitionStartupFailed"), FString::Printf(
+			TEXT("session=%llu timeout_ms=%lld retryable_timeout=%d retryable_unavailable=%d"), Session->Session,
+			static_cast<long long>(Session->AcquisitionStartupTimeout.count()), int32(TimedOut), int32(Unavailable)));
+		if ((TimedOut || Unavailable) && !bInputLifecycleFault && bInputSessionRequiredV2 && IsValid(SpeedCar)
+			&& Session->Descriptor && Session->Descriptor->Kind == Speed::Input::V2::EProducerContract::Device)
+		{
+			const auto* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ASpeedGameMode>() : nullptr;
+			auto* Driver = Mode ? Mode->GetSpeedSimulation() : nullptr;
+			// Backend availability never authorizes repairing a different or retired worker.
+			if (Driver && Session->WorkerGeneration == Driver->GetInputWorkerGeneration())
+			{
+				uint64 FirstFrame = 0;
+				if (ReleaseInputSessionV2() && !bInputLifecycleFault
+					&& Session->Acquisition->LastResult() != Speed::Input::V2::EAcquisitionPumpResult::Rejected
+					&& Session->Acquisition->LastResult() != Speed::Input::V2::EAcquisitionPumpResult::Closed
+					&& Driver->ReadInputFirstFrameAtPausedBoundary(FirstFrame))
+				{
+					// Release consumed the real Detach receipt, closed the journal and
+					// joined acquisition. The next factory allocates an entirely new epoch.
+					bInputSessionPendingV2 = true;
+					NextInputSessionRetryTimeV2 = FPlatformTime::Seconds() + .25;
+					UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStartupRetry] retired_session=%llu cooldown_ms=250 unavailable=%d"), Session->Session, int32(Unavailable));
+					return false;
+				}
+			}
+			MarkInputLifecycleFault(TEXT("InputAcquisition.RetryableRetirementRejected"));
+			return false;
+		}
 		MarkInputLifecycleFault(TEXT("SpeedControllerInputV2.cpp:201"));
 		ReleaseInputSessionV2();
 		return false;
