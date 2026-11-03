@@ -3,6 +3,7 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Controllers/SpeedController.h"
 #include "IAmSpeed/Input/DeviceInputSession.h"
+#include "IAmSpeed/Driving/DrivingInput.h"
 #include "IAmSpeed/World/Simulation/RealTimeSimulation.h"
 #include "IAmSpeed/World/Simulation/SpeedGameMode.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -63,16 +64,29 @@ public:
 };
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
-	"IAmSpeed.Simulation.ControllerInputLifecycle",
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FIAmSpeedControllerInputLifecycleTest,
+	"IAmSpeed.Simulation",
 	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+
+// Complex tests append each suffix to their pretty prefix. Give both cases a
+// nonempty command so the legacy case is an independently runnable leaf too.
+void FIAmSpeedControllerInputLifecycleTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
+{
+    Names.Add(TEXT("ControllerInputLifecycle")); Commands.Add(TEXT("Legacy"));
+    Names.Add(TEXT("DeviceV2Lifecycle2443")); Commands.Add(TEXT("DeviceV2Lifecycle2443"));
+}
 
 bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 {
 	using namespace Speed::Input;
-	if (Parameters == TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"))
+	if (Parameters == TEXT("DeviceV2Lifecycle2443") || Parameters == TEXT("IAmSpeed.Simulation.DeviceV2Lifecycle2443"))
 	{
 #include "ControllerDeviceV2Lifecycle2443.inl"
+	}
+	if (!Parameters.IsEmpty() && Parameters != TEXT("Legacy"))
+	{
+		AddError(FString::Printf(TEXT("Unknown controller lifecycle case: %s"), *Parameters));
+		return false;
 	}
 	if (!TestTrue(TEXT("controller fixture on game thread"), IsInGameThread())) return false;
 	auto Unadapted = std::make_shared<FUnadaptedLifecycleProbe>();
@@ -115,6 +129,18 @@ bool FIAmSpeedControllerInputLifecycleTest::RunTest(const FString& Parameters)
 	if (!TestNotNull(TEXT("production wheeled component"), Component)) return false;
 	Driver->SpeedWorldSubsystem = Bridge;
 	GameMode->SpeedSimActor = Driver;
+
+	// A possession can see the GameMode's driver before its BeginPlay initializes
+	// owned execution. The base factory would reject if this gate called it.
+	Controller->SpeedCar = Car;
+	Controller->bInputSessionRequiredV2 = true;
+	Controller->bInputSessionPendingV2 = true;
+	TestFalse(TEXT("pre-BeginPlay driver defers the input factory"), Controller->RefreshInputSessionV2());
+	TestTrue(TEXT("unready driver preserves pending neutral admission without fault"),
+		Controller->bInputSessionPendingV2 && !Controller->bInputLifecycleFault && !Controller->InputSessionV2);
+	Controller->SpeedCar = nullptr;
+	Controller->bInputSessionRequiredV2 = false;
+	Controller->bInputSessionPendingV2 = false;
 
 	// A real immutable empty collision world isolates frame ordering from contacts.
 	// The normal core step still runs; no fake physical consumer or query backend.

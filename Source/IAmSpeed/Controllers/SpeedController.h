@@ -218,6 +218,8 @@ private:
 	bool bScenarioOwnsInputAuthority = false;
 	bool bInputSessionRequiredV2 = false;
 	bool bInputSessionPendingV2 = false;
+	// Monotonic cooldown after a fully drained acquisition startup timeout.
+	double NextInputSessionRetryTimeV2 = 0.;
 	bool bInputLifecycleFault = false;
 	void MarkInputLifecycleFault(const TCHAR* Site, const Speed::Input::V2::FBoundaryReceipt* Receipt = nullptr);
 	bool ObservePrivateInputAdmission(bool Result, const TCHAR* Site);

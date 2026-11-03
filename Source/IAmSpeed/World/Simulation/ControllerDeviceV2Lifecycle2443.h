@@ -23,6 +23,24 @@ public:
         return Changed.wait_for(Lock,std::chrono::seconds(2),[&]{return Closed || Completed>=Id;})
             && !Closed && Completed==Id && Accepted;
     }
+    // This fake keyboard supports the complete portable HID usage catalogue.
+    // Neutral values are part of the capability snapshot, including bindings
+    // other than the throttle authored by Submit; they may never be omitted.
+    static Speed::Input::V2::FCanonicalRawState KeyboardState(bool Held)
+    {
+        using namespace Speed::Input::V2;
+        FCanonicalRawState State;
+        for (uint16 Usage=0;Usage<256;++Usage)
+        {
+            const FRawControl Control{ERawControlKind::KeyboardUsage,Usage};
+            if (Control.IsValid()) State.Values[State.Count++]={Control,Usage==4 && Held?1.0f:0.0f};
+        }
+        return State;
+    }
+    void RequestUnavailable()
+    {
+        std::lock_guard<std::mutex> Lock(Gate); Unavailable=true;
+    }
     Speed::Input::V2::EAcquisitionPumpResult Pump() override
     {
         using namespace Speed::Input::V2;
@@ -31,6 +49,7 @@ public:
         {
             std::lock_guard<std::mutex> Lock(Gate);
             if (Closed) return EAcquisitionPumpResult::Closed;
+            if (Unavailable) return EAcquisitionPumpResult::RetryableUnavailable;
             if (!Pending) return EAcquisitionPumpResult::NoChange;
             Request=*Pending; Pending.reset();
         }
@@ -39,7 +58,7 @@ public:
         FRawAcquisitionBatch Batch; Batch.Count=1; auto& R=Batch.Readings[0];
         R.DeviceId=7; R.Sequence=++Sequence; R.TimestampMicroseconds=Sequence;
         R.Generation={1}; R.Kind=ERawDeviceKind::Keyboard; R.FreshBaseline=Request.Baseline;
-        R.State.Count=1; R.State.Values[0]={{ERawControlKind::KeyboardUsage,4},Request.Held?1.0f:0.0f};
+        R.State=KeyboardState(Request.Held);
         const bool Good=Journal->Publish(Ticket,Batch);
         {
             std::lock_guard<std::mutex> Lock(Gate); Accepted=Good; Completed=Request.Id;
@@ -61,6 +80,6 @@ private:
     mutable std::mutex Gate; std::condition_variable Changed;
     std::optional<FRequest> Pending;
     uint64 Requested=0,Completed=0,Sequence=0,Publications=0;
-    bool Accepted=false,Closed=false;
+    bool Accepted=false,Closed=false,Unavailable=false;
 };
 }

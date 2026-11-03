@@ -50,6 +50,25 @@ if (!TestTrue(TEXT("V2 real mechanics admitted"),Component->ValidateSimulationBi
 Driver->TransitionExecutionMode(ESimulationExecutionMode::IAmSpeedThread);
 Driver->InitializeCanonicalFrame(0);
 
+// ASpeedCar installs the stock road profile, including canonical camera slots
+// 5/6. Exercise that profile with its complete production contract rather than
+// a throttle-only contract which the real input application correctly refuses.
+Speed::Driving::FBindings Bindings;
+Bindings.Keyboard[static_cast<size_t>(Speed::Driving::ECommand::Throttle)].Control={ERawControlKind::KeyboardUsage,4};
+const auto Contract=Speed::Driving::MakeContract(Bindings);
+if (!TestTrue(TEXT("V2 stock road contract admitted"),bool(Contract))
+    ||!TestEqual(TEXT("V2 stock movement retains canonical yaw input"),Component->CanonicalCameraYawAction,int32(Speed::Driving::CameraYaw))
+    ||!TestEqual(TEXT("V2 stock movement retains canonical pitch input"),Component->CanonicalCameraPitchAction,int32(Speed::Driving::CameraPitch))) return false;
+const auto KeyboardCapabilities=FControllerRawAcquisition2443::KeyboardState(false);
+if (!TestTrue(TEXT("V2 authored keyboard snapshot is complete, ordered and unique"),KeyboardCapabilities.IsValid(ERawDeviceKind::Keyboard))) return false;
+for (const auto& Mapping:Contract->GetDescription().Mapping)
+{
+    if (Mapping.Control.Kind!=ERawControlKind::KeyboardUsage) continue;
+    const bool Present=std::any_of(KeyboardCapabilities.Values.begin(),KeyboardCapabilities.Values.begin()+KeyboardCapabilities.Count,
+        [&](const auto& Value){return Value.Control==Mapping.Control && Value.Value==0;});
+    if (!TestTrue(TEXT("V2 authored keyboard supplies every mapped neutral control"),Present)) return false;
+}
+
 std::atomic<uint32> Steps{0},Budget{0},BoundaryCalls{0},PhysicalThread{0};
 std::atomic<bool> Failed{false}; std::atomic<uint64> Watch{0};
 std::mutex ReceiptsGate; std::vector<FBoundaryReceipt> Receipts;
@@ -122,15 +141,75 @@ auto RunOne=[&](uint64 Epoch,int32 Expected,bool Reset)
     return R.N==Before && R.ComponentNext==Before+1 && R.Epoch==Epoch && R.Applied==Expected
         && R.Requested==Expected && R.Physical==Expected && R.Reset==Reset;
 };
+// Exercise a real missing first publication through the controller, real Bind
+// and Detach receipts. A short explicit fixture deadline keeps this test bounded;
+// the product policy remains 2000ms and its strict deadline probe is unchanged.
+for (uint32 Failure=0;Failure<3;++Failure)
+{
+    const bool BadGeneration=Failure==0, Unavailable=Failure==2;
+    const uint64 Epoch = 2442997+Failure;
+    FSessionDescriptor Binding; Binding.Id=2443; Binding.Controller=2443; Binding.Epoch=Epoch;
+    Binding.Producer=Epoch; Binding.Journal=Epoch; Binding.Kind=EProducerContract::Device;
+    Binding.First=Steps.load(); Binding.Contract=Contract;
+    auto Session=FInputHostSession::CreateDescriptor(Binding);
+    if (!TestTrue(TEXT("startup timeout real descriptor"),bool(Session))) return false;
+    Session->Journal=std::make_shared<FRawAcquisitionJournal>(Epoch,Binding.First);
+    auto Source=std::make_shared<FControllerRawAcquisition2443>(Session->Journal);
+    Session->Acquisition=std::make_unique<FInputAcquisitionWorker>(Source);
+    Session->AcquisitionStartupTimeout=std::chrono::milliseconds(Unavailable?2000:20);
+    Sessions.Add(Session); Sources.Add(Source);
+    if (!TestTrue(TEXT("startup timeout independent acquisition starts"),Session->Acquisition->Start(std::chrono::microseconds(1000)))
+        ||!TestTrue(TEXT("startup timeout session configured"),Controller->ConfigureInputSessionV2(Session))) return false;
+    const auto BindId=Driver->NextInputCommandId; Watch.store(BindId); Controller->Possess(Car);
+    if (!TestTrue(TEXT("retryable acquisition real Bind applied"),Await([&]{return Captured(BindId,EBoundaryStatus::Applied);}))) return false;
+    if (Unavailable)
+    {
+        if (!TestTrue(TEXT("backend was genuinely ready before becoming unavailable"),Source->Submit(false,true)
+            && Session->Acquisition->WaitForFirstPublication(std::chrono::milliseconds(1000))
+            && Session->Acquisition->StartupState(Session->AcquisitionStartupTimeout)==EAcquisitionStartup::Ready)) return false;
+        Source->RequestUnavailable();
+    }
+    if (!TestTrue(TEXT("acquisition attempt reaches its explicit failure"),Await([&]{return Unavailable
+            ? Session->Acquisition->IsRetryableUnavailable()
+            : Session->Acquisition->IsStartupTimedOut(Session->AcquisitionStartupTimeout);}))
+        ||!TestTrue(TEXT("original acquisition failure remains visible"),Session->Acquisition->StartupState(Session->AcquisitionStartupTimeout)==EAcquisitionStartup::Failed)) return false;
+    if (Unavailable && !TestTrue(TEXT("unavailable source remains alive before real Detach"),
+        !Session->Acquisition->HasFinished() && !Source->IsClosed()
+        && Session->Journal->ReadControlsSince({Epoch,0}).Status!=EAcquisitionRead::Closed)) return false;
+    const auto Generation=Session->WorkerGeneration;
+    if (BadGeneration) ++Session->WorkerGeneration; // Negative witness: never repair a foreign worker.
+    AddExpectedMessagePlain(TEXT("Independent input acquisition failed or timed out"),ELogVerbosity::Error,EAutomationExpectedMessageFlags::Contains,1);
+    TestFalse(TEXT("expired attempt does not dispatch gameplay"),Controller->ServiceInputSessionV2());
+    if (BadGeneration)
+    {
+        if (!TestTrue(TEXT("malformed worker generation remains terminal and retained"),Controller->bInputLifecycleFault
+            && Controller->InputSessionV2==Session && !Controller->bInputSessionPendingV2)) return false;
+        Session->WorkerGeneration=Generation; // Restore only for mandatory fixture teardown.
+        if (!TestTrue(TEXT("negative witness drains through actual owner"),Controller->ReleaseInputSessionV2())) return false;
+        Controller->bInputLifecycleFault=false; // Isolate the next independent positive witness.
+    }
+    else
+    {
+        if (!TestTrue(TEXT("startup timeout queues a new attempt without a lifecycle fault"),Controller->bInputSessionPendingV2
+            && !Controller->bInputLifecycleFault && !Controller->InputSessionV2)
+            ||!TestTrue(TEXT("timeout fully closes acquisition before another owner"),Session->Closed && Source->IsClosed() && Session->Acquisition->HasFinished())
+            ||!TestTrue(TEXT("timeout preserves worker generation and neutral physical state"),Driver->GetInputWorkerGeneration()==Generation
+                && Driver->IsOwnedSimulationPaused() && Steps.load()==0 && Driver->ReadInputRegistryView()->Bindings.empty())
+            ||!TestFalse(TEXT("startup retry cooldown does not create another host"),Controller->RefreshInputSessionV2())
+            ||!TestFalse(TEXT("retry cooldown cannot turn a base-factory rejection into a fault"),Controller->bInputLifecycleFault)) return false;
+    }
+    Controller->UnPossess();
+    if (!TestTrue(TEXT("expired acquisition is closed before fresh epoch possession"),Session->Closed && Source->IsClosed()
+        && !Controller->InputSessionV2 && !Controller->GetPawn())) return false;
+}
+// The same controller now accepts fresh epochs and reaches real canonical
+// throttle frames below; neither timed-out journal is ever reused.
 for (uint32 Replacement=0;Replacement<2;++Replacement)
 {
     const uint64 Epoch=2443001+Replacement;
-    FInputActionContractDescription Description; Description.Revision={1}; Description.Actions=FInputActionContract::BaseActions();
-    Description.Physical={{0,EPhysicalDestination::Throttle},{1,EPhysicalDestination::Brake},{2,EPhysicalDestination::Steering}};
-    Description.Mapping={{{ERawControlKind::KeyboardUsage,4},Throttle,1}};
     FSessionDescriptor Binding; Binding.Id=2443; Binding.Controller=2443; Binding.Epoch=Epoch;
     Binding.Producer=24430+Replacement; Binding.Journal=24440+Replacement; Binding.Kind=EProducerContract::Device;
-    Binding.First=Steps.load(); Binding.Contract=FInputActionContract::Create(Description);
+    Binding.First=Steps.load(); Binding.Contract=Contract;
     auto Session=FInputHostSession::CreateDescriptor(Binding);
     if (!TestTrue(TEXT("V2 real descriptor session"),bool(Session))) return false;
     Session->Journal=std::make_shared<FRawAcquisitionJournal>(Epoch,Binding.First);
@@ -215,5 +294,5 @@ if (!TestTrue(TEXT("V2 actual teardown joins owner"),Driver->JoinOwnedSimulation
     ||!TestTrue(TEXT("V2 physical owner distinct from GT"),PhysicalThread.load()!=0 && PhysicalThread.load()!=GGameThreadId)) return false;
 for (const auto& Receipt:Receipts)
     UE_LOG(LogTemp,Display,TEXT("[DeviceV2Lifecycle2443Receipt] Id=%llu WorkerGeneration=%llu RegistryVersion=%llu ResumeGeneration=%llu Status=%u Outcomes=%llu"),uint64(Receipt.Id),uint64(Receipt.WorkerGeneration),uint64(Receipt.RegistryVersion),uint64(Receipt.ResumeGeneration),unsigned(Receipt.Status),uint64(Receipt.Sessions.size()));
-UE_LOG(LogTemp,Display,TEXT("[DeviceV2Lifecycle2443] Sessions=2 PauseResumeCycles=6 CanonicalFrames=16 Hardware=NONE Focus=NOT_RUN WorldReset=NOT_RUN SkyLeagueGame=NOT_RUN"));
+UE_LOG(LogTemp,Display,TEXT("[DeviceV2Lifecycle2443] Sessions=5 StartupTimeoutRecovery=1 UnavailableRecovery=1 BadGenerationTerminal=1 PauseResumeCycles=6 CanonicalFrames=16 Hardware=NONE Focus=NOT_RUN WorldReset=NOT_RUN SkyLeagueGame=NOT_RUN"));
 return true;

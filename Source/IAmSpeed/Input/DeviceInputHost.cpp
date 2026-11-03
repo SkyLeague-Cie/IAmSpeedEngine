@@ -59,7 +59,7 @@ public:
                 const HRESULT Created = GameInput::v3::GameInputCreate(Api.GetAddressOf());
                 UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=create_exit hresult=0x%08X"), Producer, uint32(Created));
                 if (FAILED(Created))
-                { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::Rejected; }
+                { UE_LOG(LogTemp, Error, TEXT("Independent input GameInputCreate failed: 0x%08X"), uint32(Created)); return EAcquisitionPumpResult::RetryableUnavailable; }
             }
 #if !UE_BUILD_SHIPPING
             const double CreatedAt = FPlatformTime::Seconds();
@@ -85,7 +85,7 @@ public:
                 : Windows::FGameInputSelectedSource::CreateRaw(Api.Get(), Producer, Activity, true);
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_exit source=%d"), Producer, int32(bool(Raw)));
             if (!Raw)
-            { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::Rejected; }
+            { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::RetryableUnavailable; }
             Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
 #if !UE_BUILD_SHIPPING
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStartup] game_input_create_ms=%.3f discovery_ms=%.3f catalogue_reused=%d"),
@@ -114,6 +114,12 @@ public:
             Report(TEXT("discovery"), Fatal.Discovery);
             Report(TEXT("warm"), Fatal.Warm);
 		}
+        // Poll/neutralization has already fenced cached raw values. A failed
+        // backend cannot recover merely by polling its latched failure again.
+        // Hand retirement to the host: it quiesces/detaches before this owner's
+        // Close runs, then retries a fresh session and a fresh catalogue.
+        if (const auto Fatal = Source->ReadFailureDiagnostics(); Fatal.Discovery || Fatal.Warm)
+            return EAcquisitionPumpResult::RetryableUnavailable;
 #if !UE_BUILD_SHIPPING
         // Observe the installed source only on selection changes. Never poll,
         // select, alter focus or inject a value for this diagnostic.
@@ -136,7 +142,9 @@ public:
     {
         Journal->Close();
         if (Source && !Source->Close()) return false;
-        Source.reset(); Closed=true; return true;
+        Source.reset();
+        if (Warm && !Warm->RetireFailedCatalogue()) return false;
+        Closed=true; return true;
     }
 private:
     uint64_t Producer;
@@ -287,3 +295,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 #endif
 }
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+#include "DeviceInputHostRecoveryTests.inl"
+#endif
