@@ -1,4 +1,5 @@
 #include "NativeFiniteProcessRetention.h"
+#include "IAmSpeed/Netcode/client-prediction/ProcessCodePinJson.h"
 #include "Misc/CoreMisc.h"
 #include <filesystem>
 #include <fstream>
@@ -7,6 +8,22 @@
 
 namespace Speed::Netcode
 {
+namespace
+{
+bool WriteCodeRefusal(const std::string& Base,const Prediction::FNativeProcessCodePins& Code) noexcept try
+{
+    std::ofstream Out(std::filesystem::path(Base+".process-code-refusal.json"),std::ios::out|std::ios::trunc);
+    if(!Out)return false;
+    Out<<R"({"scope":"actual_refused_process_pin_observations_only","admitted":false,"original_pid":)"<<Code.OriginalProcess()
+        <<R"(,"pin_status":)"<<int(Code.Status())<<R"(,"pin_error":)"<<Code.OriginalError()<<R"(,"self_module":)"<<Code.ActualSelfModule();
+    Prediction::AppendProcessCodePinRecords(Out,Code);
+    Prediction::AppendProcessCodePinPasses(Out,Code);
+    Out<<R"(,"initial_roster_incarnations":"UNKNOWN","preexisting_callback_provenance":"UNKNOWN","future_modules":"NOT_COVERED","full_world_lease":false,"restoreK":false,"localized":false})"<<'\n';
+    Out.close();return bool(Out);
+}
+catch(...){return false;}
+}
+
 FNativeFiniteProcessRetention::FNativeFiniteProcessRetention(std::string Path,
     std::shared_ptr<const Prediction::FNativeProcessCodePins> Pins):ReportBase(std::move(Path)),Code(std::move(Pins)){}
 bool FNativeFiniteProcessRetention::Write(const char* Phase,const FFrameExecutorServiceObservation& Actual) const
@@ -21,14 +38,9 @@ bool FNativeFiniteProcessRetention::Write(const char* Phase,const FFrameExecutor
         <<"\",\"original_pid\":"<<Code->OriginalProcess()<<",\"pin_status\":"<<int(Code->Status())
         <<",\"self_module\":"<<Code->ActualSelfModule()<<",\"pin_error\":"<<Code->OriginalError()
         <<",\"before\":";State(Before);Out<<",\"held\":";State(Held);Out<<",\"actual\":";State(Actual);
-    Out<<",\"modules\":[";
-    bool First=true;for(const auto& R:Code->Records())
-    {
-        if(!First)Out<<',';First=false;
-        Out<<"{\"enumerated_base\":"<<R.EnumeratedBase<<",\"returned_base\":"<<R.ReturnedBase
-            <<",\"attempted\":"<<int(R.Attempted)<<",\"pin_returned\":"<<int(R.PinReturned)<<",\"error\":"<<R.Error<<'}';
-    }
-    Out<<"],\"initial_roster_incarnations\":\"UNKNOWN\",\"preexisting_callback_provenance\":\"UNKNOWN\",\"future_modules\":\"NOT_COVERED\",\"full_world_lease\":false,\"restoreK\":false,\"localized\":false}\n";
+    Prediction::AppendProcessCodePinRecords(Out,*Code);
+    Prediction::AppendProcessCodePinPasses(Out,*Code);
+    Out<<",\"initial_roster_incarnations\":\"UNKNOWN\",\"preexisting_callback_provenance\":\"UNKNOWN\",\"future_modules\":\"NOT_COVERED\",\"full_world_lease\":false,\"restoreK\":false,\"localized\":false}\n";
     Out.close();return bool(Out);
 }
 std::unique_ptr<FNativeFiniteProcessRetention> FNativeFiniteProcessRetention::Create(
@@ -51,6 +63,7 @@ std::unique_ptr<FNativeFiniteProcessRetention> FNativeFiniteProcessRetention::Cr
             +" actual_pid="+std::to_string(Code->OriginalProcess())
             +" expected_pid="+std::to_string(OriginalPid)
             +" observed_modules="+std::to_string(Code->Records().size());
+        if(!WriteCodeRefusal(Path,*Code))Why+=" refusal_report_write_failed=1";
         return {};
     }
     auto Root=std::unique_ptr<FNativeFiniteProcessRetention>(new FNativeFiniteProcessRetention(Path,std::move(Code)));

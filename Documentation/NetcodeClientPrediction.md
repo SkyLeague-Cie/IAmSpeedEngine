@@ -1574,3 +1574,41 @@ comparisons after real facade mutations. This draft is not applied or tested.
 GetPhys submember references, existing protected hooks, mutable operations and
 other aliases, complete state/source/lifetime and authoritative-K/localized
 restoration remain unqualified; all restoration guards remain closed.
+
+### Bounded actual process PIN acquisition (source106 draft, NOT applied/native)
+
+Native97 cancellation refused at code admission with actual status RosterChanged,
+error0, equal actual/expected PIDs and423 original observed records. The report
+does not identify whether the later count or same-count bases changed. Native94
+fine cause remains UNKNOWN; neither failure is erased by a future success.
+
+This draft preallocates1024 module records and four raw pass observations before
+the first PIN. It records each real initial/After enumeration, byte count,
+errors and transition. Later inputs are explicitly the preceding actual After
+observation. Only a strict superset of already successful matched PIN bases may
+be expanded; only new bases are PINned. Failed PINs, removals/substitutions,
+invalid sets, capacity and pass-budget exhaustion refuse. Success requires exact
+equality of the final currently observed numeric base set and actual PIN set.
+No Engine callback, C++ allocation or physics operation occurs in the PIN loop.
+
+This is still only retention at the actual PIN calls. Initial incarnations,
+preexisting callback provenance, future modules and full source/lifetime/restore
+permission remain UNKNOWN/unadmitted. Real finite Windows stable/growth/refused
+PIN/budget controls and the fresh native tuple are NOT yet implemented or run.
+Pure set tests would qualify only set predicates, never a Windows loader lease.
+
+The source106 experiment also retains raw pass observations in successful
+finite-process reports and a separate refusal report before any service/world
+admission. Development-only, thread-local kernel event controls let a finite
+Windows fixture load/unload a real private DLL after actual input enumeration
+and before PIN. No enumeration/PIN result is supplied by that control. A failed
+event/finite wait returns a distinct refusal, never PinFailed or success. These
+are Windows loader controls only and do not qualify Unreal/world restoration.
+The actual harness and new native executions remain pending.
+
+The raw pass/record JSON fragments are shared engine-independent inline code so
+the finite Windows fixture can compile and parse the exact same renderer. A
+prior unexecuted draft had malformed C++ quote escaping; it is preserved as a
+preparation finding, not a native failure. Actual new compilation is required.
+
+The unexecuted r04 draft used the SDK FALSE macro in a new BOOL comparison; Unreal hides that macro. The next draft uses !=0, preserving the actual BOOL result without depending on the standalone SDK wrapper. No r04 native failure or success is inferred.
