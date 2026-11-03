@@ -2,6 +2,7 @@
 
 
 #include "SSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "Solid/CylinderSubBody.h"
 #include "IAmSpeed/World/Simulation/JoinedActorKinematics1213.h"
 #include "IAmSpeed/Base/ExactRotatorQuaternionCache.h"
@@ -213,9 +214,9 @@ void USSubBody::AcceptHit()
         // Do NOT blindly accept OtherSubBody->FutureHit.
         // It may be an unrelated hit, e.g. Hitbox vs Stadium while Sensor vs Hitbox is being resolved.
 
-        if (OtherSubBody->WillHit())
+        if (Speed::NativeKinematics::FBodyRead::WillHit(*OtherSubBody))
         {
-            const SHitResult& OtherFutureHit = OtherSubBody->GetFutureHit();
+            const SHitResult& OtherFutureHit = Speed::NativeKinematics::FBodyRead::FutureHit(*OtherSubBody);
 
             const bool bIsReciprocal =
                 OtherFutureHit.SubBody.Get() == this ||

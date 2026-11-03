@@ -170,6 +170,8 @@ class IAMSPEED_API USpeedBranchBoxSubBody final : public UBoxSubBody
     GENERATED_BODY()
 private:
     const Speed::FKinematicState& PublicKinematicView() const override { return Kinematics; }
+    const SHitResult& PublicCurrentHitView() const override { return CurrentHit; }
+    const SHitResult& PublicFutureHitView() const override { return FutureHit; }
     const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
@@ -365,6 +367,8 @@ class IAMSPEED_API USpeedBranchWheelSubBody final : public USWheelSubBody
     GENERATED_BODY()
 private:
     const Speed::FKinematicState& PublicKinematicView() const override { return Kinematics; }
+    const SHitResult& PublicCurrentHitView() const override { return CurrentHit; }
+    const SHitResult& PublicFutureHitView() const override { return FutureHit; }
     const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
@@ -568,6 +572,7 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     const FVector& ReadPhysicsCenterOfMassLocal() const override;
     const FVector& PublicPhysCOMView() const override { return BasePhysicsState.Kinematic.Location; }
     const FVector& PublicPhysLocalCOMView() const override { return CenterOfMass; }
+    const TArray<FPhysicalContactConstraint>& PublicPhysicalConstraintsView() const override { return PhysicalConstraints; }
     const SKinematic& ReadPhysicsKinematicStateForFrame(const unsigned int& Frame) const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;

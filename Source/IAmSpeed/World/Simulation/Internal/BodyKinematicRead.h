@@ -1,5 +1,7 @@
 #pragma once
 // Module-internal live references. Private call sites only; not a restore lease.
+#include "IAmSpeed/Base/SHitResult.h"
+class ISpeedComponent; class USpeedMovementComponent; class USpeedWheeledComponent;
 class USSubBody; class ISweeper; class ISolidSweeper; class ISensorSweeper;
 class IBoxSweeper; class ISphereSweeper; class ISpeedWheeledComponent;
 class UBoxSubBody; class USphereSubBody; class USolidSubBody; class USWheelSubBody;
@@ -14,6 +16,8 @@ struct FCylinderRigidTrajectory; struct FCylinderSuspensionQuery; struct FDynami
 class FBodyRead final
 {
     friend class ::ISolidSweeper; friend class ::ISensorSweeper;
+    friend class ::USSubBody; friend class ::ISpeedComponent;
+    friend class ::USpeedMovementComponent; friend class ::USpeedWheeledComponent;
     friend class ::IBoxSweeper; friend class ::ISphereSweeper;
     friend class ::ISpeedWheeledComponent; friend class ::UBoxSubBody;
     friend class ::USphereSubBody; friend class ::USolidSubBody;
@@ -26,5 +30,10 @@ class FBodyRead final
     friend struct FDynamicBodyWitness;
     static const Speed::FKinematicState& Body(const USSubBody& Body);
     static const Speed::FKinematicState& Sweeper(const ISweeper& Sweeper);
+    static const SHitResult& CurrentHit(const USSubBody& Body);
+    static const SHitResult& FutureHit(const USSubBody& Body);
+    static bool HasHit(const USSubBody& Body);
+    static bool WillHit(const USSubBody& Body);
+    static float FutureTOI(const USSubBody& Body);
 };
 }

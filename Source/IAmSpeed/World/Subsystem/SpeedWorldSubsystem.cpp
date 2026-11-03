@@ -2402,7 +2402,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			Resolver->AcceptHit();
 			bool bIgnored = false;
 			if (UPrimitiveComponent* HitComponent =
-				Resolver->GetHit().Component.Get())
+				Speed::NativeKinematics::FBodyRead::CurrentHit(*Resolver).Component.Get())
 			{
 				if (Resolver->ComponentHasBeenIgnored(*HitComponent))
 				{
@@ -2412,7 +2412,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 			}
 			USolidSubBody* RollingBodyA = Cast<USolidSubBody>(Resolver);
 			USolidSubBody* RollingBodyB =
-				Cast<USolidSubBody>(Resolver->GetHit().SubBody.Get());
+				Cast<USolidSubBody>(Speed::NativeKinematics::FBodyRead::CurrentHit(*Resolver).SubBody.Get());
 
 			const double ResolveStartSeconds = FPlatformTime::Seconds();
 #if WITH_DEV_AUTOMATION_TESTS

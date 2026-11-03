@@ -42,6 +42,8 @@ private:
     // Custom storage adapters retain the old getter dispatch. Only the private
     // final road bodies override this public-view selector with legacy backing.
     virtual const Speed::FKinematicState& PublicKinematicView() const { return KinematicsStorage(); }
+    virtual const SHitResult& PublicCurrentHitView() const { return CurrentHitStorage(); }
+    virtual const SHitResult& PublicFutureHitView() const { return FutureHitStorage(); }
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
@@ -138,13 +140,13 @@ public:
     virtual void ResolveCurrentHit(const float& delta, const float& SimTime);
 
     // --- Returns true if a valid hit exists ---
-    bool HasHit() const { return CurrentHitStorage().bBlockingHit; }
-    bool WillHit() const { return FutureHitStorage().bBlockingHit; }
-    float GetFutureTOI() const { return FutureHitStorage().TOI; }
+    bool HasHit() const { return PublicCurrentHitView().bBlockingHit; }
+    bool WillHit() const { return PublicFutureHitView().bBlockingHit; }
+    float GetFutureTOI() const { return PublicFutureHitView().TOI; }
 
 	void SetHit(const SHitResult& Hit) { CurrentHitStorage() = Hit; }
-    const SHitResult& GetHit() const { return CurrentHitStorage(); }
-	const SHitResult& GetFutureHit() const { return FutureHitStorage(); }
+    const SHitResult& GetHit() const { return PublicCurrentHitView(); }
+	const SHitResult& GetFutureHit() const { return PublicFutureHitView(); }
 	void SetFutureHit(const SHitResult& Hit) { FutureHitStorage() = Hit; }
 
 	ESubBodyType GetSubBodyType() const { return SubBodyTypeBodyDomainStorage(); }

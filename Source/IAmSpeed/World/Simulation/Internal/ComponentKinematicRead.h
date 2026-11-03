@@ -1,5 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
+#include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/Kinematic.h"
 
 // Module-internal live reads. No exported entry point or public issuer.
@@ -15,6 +16,7 @@ class USphereSubBody;
 class USWheelSubBody;
 class USpeedWorldSubsystem;
 namespace Speed { struct FKinematicState; class FSimulationWorld; }
+namespace Speed::Netcode::Prediction { class FPrivateRoadPhysicsWorld; }
 
 namespace Speed::NativeKinematics
 {
@@ -34,9 +36,11 @@ class FComponentRead final
     friend class ::USWheelSubBody;
     friend class ::USpeedWorldSubsystem;
     friend class Speed::FSimulationWorld;
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     friend struct FCylinderRigidTrajectory;
     friend struct FDynamicBodyWitness;
     friend struct FGutterSlideDamping;
+    static const TArray<FPhysicalContactConstraint>& Constraints(const ISpeedComponent& Component);
     static const FQuat& Rotation(const ISpeedComponent& Component);
     static const FVector& COMVelocity(const ISpeedComponent& Component);
     static const FVector& AngularVelocity(const ISpeedComponent& Component);

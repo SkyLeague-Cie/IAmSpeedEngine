@@ -2,6 +2,7 @@
 
 
 #include "SensorSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "Engine/OverlapResult.h"
 
 USensorSubBody::USensorSubBody(const FObjectInitializer& ObjectInitializer) :
@@ -40,7 +41,7 @@ void USensorSubBody::ResolveCurrentHit(const float& Delta, const float& SimTime)
 
 void USensorSubBody::ResolveCurrentHitPrv(const float& Delta, const float& SimTime)
 {
-    UPrimitiveComponent* Other = GetHit().Component.Get();
+    UPrimitiveComponent* Other = Speed::NativeKinematics::FBodyRead::CurrentHit(*this).Component.Get();
     if (!Other) return;
 
     // Mark touched this frame

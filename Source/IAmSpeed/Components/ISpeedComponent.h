@@ -99,6 +99,7 @@ class IAMSPEED_API ISpeedComponent
     { return GetKinematicStateForFrame(Frame); }
     virtual const FVector& ReadPhysicsCOM() const { return GetPhysCOM(); }
     virtual const FVector& ReadPhysicsCenterOfMassLocal() const { return GetPhysCenterOfMassLocal(); }
+    virtual const TArray<FPhysicalContactConstraint>& PublicPhysicalConstraintsView() const { return PhysicalConstraintsStorage(); }
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
@@ -385,7 +386,7 @@ public:
 
 	void RegisterPhysicalConstraint(const FPhysicalContactConstraint& Constraint);
 	void ClearPhysicalConstraints();
-	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PhysicalConstraintsStorage(); }
+	const TArray<FPhysicalContactConstraint>& GetPhysicalConstraints() const { return PublicPhysicalConstraintsView(); }
 	/** True when another sub-body supplies a live constraint: an isolated
 	 * rigid-body contact response must then defer to the coupled solver. */
 	virtual bool HasActivePhysicalConstraintsOtherThan(const USSubBody* Source) const;

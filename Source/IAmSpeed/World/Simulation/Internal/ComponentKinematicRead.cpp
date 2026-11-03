@@ -4,6 +4,10 @@
 
 namespace Speed::NativeKinematics
 {
+const TArray<FPhysicalContactConstraint>& FComponentRead::Constraints(const ISpeedComponent& Component)
+{
+    return Component.PhysicalConstraintsStorage();
+}
 const Speed::FKinematicState& FComponentRead::Current(const ISpeedComponent& Component)
 {
     return Component.ReadPhysicsKinematicState();

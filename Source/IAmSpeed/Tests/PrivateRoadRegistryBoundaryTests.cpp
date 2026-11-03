@@ -269,6 +269,9 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
                 &&Actor.PublicComponentKinematicOriginalViews==0
                 &&Actor.PublicBodyKinematicViews==25&&Actor.PublicBodyKinematicFacadeViews==25
                 &&Actor.PublicBodyKinematicOriginalViews==0
+                &&Actor.PublicContactReferenceViews==32&&Actor.PublicContactReferenceFacadeViews==32
+                &&Actor.PublicContactReferenceOriginalViews==0
+                &&Actor.PublicContactPredicateChecks==15&&Actor.PublicContactPredicateMatches==15
                 &&Actor.PublicPhysReferenceViews==24&&Actor.PublicPhysReferenceFacadeViews==24
                 &&Actor.PublicPhysReferenceOriginalViews==0))return false;
         return !Publication.Actors.empty();

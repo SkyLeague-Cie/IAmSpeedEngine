@@ -1237,7 +1237,7 @@ bool ISpeedWheeledComponent::HasCompatibleEstablishedStaticSupport(
 		{
 			continue;
 		}
-		const SHitResult& WheelHit = Wheel->GetHit();
+		const SHitResult& WheelHit = Speed::NativeKinematics::FBodyRead::CurrentHit(*Wheel);
 		if (WheelHit.Component.Get() != SurfaceComponent ||
 			WheelHit.ImpactNormal.IsNearlyZero())
 		{
@@ -1302,7 +1302,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			FGroundProbe& Probe = Probes.AddDefaulted_GetRef();
 			Probe.Wheel = Wheel;
 			Probe.bWasGrounded = Wheel->IsOnGround();
-			Probe.PreviousHit = Wheel->GetHit();
+			Probe.PreviousHit = Speed::NativeKinematics::FBodyRead::CurrentHit(*Wheel);
 			Probe.OriginalDisplacement = Wheel->GetLastDisplacement();
 			Probe.bHasProbeHit = Wheel->ProbeSuspensionOnGround(Probe.ProbeHit, delta);
 #if !(UE_BUILD_SHIPPING)
@@ -1958,7 +1958,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		if (Wheel && Wheel->IsOnGround())
 		{
 			WheelPatchCandidates.AddUnique(Wheel);
-			const FVector PatchNormal = Wheel->GetHit().ImpactNormal.GetSafeNormal();
+			const FVector PatchNormal = Speed::NativeKinematics::FBodyRead::CurrentHit(*Wheel).ImpactNormal.GetSafeNormal();
 			bWheelPatchesOnGravityAlignedSurface =
 				bWheelPatchesOnGravityAlignedSurface
 				&& !PatchNormal.IsNearlyZero()
@@ -1993,7 +1993,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	{
 		if (Wheel)
 		{
-			WheelManifoldNormal += Wheel->GetHit().ImpactNormal.GetSafeNormal();
+			WheelManifoldNormal += Speed::NativeKinematics::FBodyRead::CurrentHit(*Wheel).ImpactNormal.GetSafeNormal();
 		}
 	}
 	WheelManifoldNormal.Normalize();
@@ -2393,7 +2393,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		{
 			continue;
 		}
-		const SHitResult& Hit = Wheel->GetHit();
+		const SHitResult& Hit = Speed::NativeKinematics::FBodyRead::CurrentHit(*Wheel);
 		if (!Hit.Component.IsValid() ||
 			Hit.Component->GetMobility() != EComponentMobility::Static ||
 			Hit.ImpactNormal.IsNearlyZero())
@@ -2438,7 +2438,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			Constraint.SurfaceId = Contact.SurfaceId;
 			Constraint.SurfaceFeatureId = Contact.SurfaceFeatureId;
 			// Only report the cached primitive if it identifies this pending contact.
-			const SHitResult& CachedHit = Contact.Wheel->GetHit();
+			const SHitResult& CachedHit = Speed::NativeKinematics::FBodyRead::CurrentHit(*Contact.Wheel);
 			if (CachedHit.Component == Contact.SurfaceComponent &&
 				CachedHit.FaceIndex == Contact.SurfaceFaceIndex &&
 				CachedHit.SourceId == Contact.SurfaceSourceId &&
@@ -2768,7 +2768,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 #if !(UE_BUILD_SHIPPING)
 			const bool bTraceFinalQuery = Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) >= 2;
 			const bool bPreviousGround = Wheel->IsOnGround();
-			const SHitResult PreviousQueryHit = Wheel->GetHit();
+			const SHitResult PreviousQueryHit = Speed::NativeKinematics::FBodyRead::CurrentHit(*Wheel);
 #endif
 			SHitResult FinalHit;
 			const bool bOnGround = Wheel->ProbeSuspensionOnGround(FinalHit, Delta);

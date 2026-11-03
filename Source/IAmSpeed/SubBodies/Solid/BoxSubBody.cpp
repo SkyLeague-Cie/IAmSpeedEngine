@@ -1153,7 +1153,7 @@ void UBoxSubBody::AcceptHit()
     {
         // if Other sub-body will hit, accept the hit for it too to ensure both sides are in sync and won't try to resolve the same hit again
         auto OtherSubBody = CurrentHitStorage().SubBody.Get();
-        if (OtherSubBody->WillHit())
+        if (Speed::NativeKinematics::FBodyRead::WillHit(*OtherSubBody))
         {
             OtherSubBody->AcceptHit();
         }
@@ -3205,7 +3205,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 // Preserve every collision query and all manifold points. This
                 // narrow path only handles fresh constraints of this same box
                 // and plane; mixed/persistent constraints keep the existing solve.
-                const auto& OriginalConstraints = ParentComponentBodyDomainStorage()->GetPhysicalConstraints();
+                const auto& OriginalConstraints = Speed::NativeKinematics::FComponentRead::Constraints(*ParentComponentBodyDomainStorage());
                 const int32 OriginalCount = OriginalConstraints.Num();
                 // RegisterPhysicalConstraint stores GetSafeNormal(N). Compare
                 // the exact registered representation, with no new tolerance.

@@ -57,6 +57,11 @@ struct FPrivateRoadActorFrame
     uint8 PublicBodyKinematicViews=0;
     uint8 PublicBodyKinematicFacadeViews=0;
     uint8 PublicBodyKinematicOriginalViews=0;
+    uint8 PublicContactReferenceViews=0;
+    uint8 PublicContactReferenceFacadeViews=0;
+    uint8 PublicContactReferenceOriginalViews=0;
+    uint8 PublicContactPredicateChecks=0;
+    uint8 PublicContactPredicateMatches=0;
     // Declared PARTIAL observation only. Missing is UNKNOWN, never zero/full.
     bool NativePartialValuesAvailable=false;
     CommonState::FSleepValues NativeSleep;

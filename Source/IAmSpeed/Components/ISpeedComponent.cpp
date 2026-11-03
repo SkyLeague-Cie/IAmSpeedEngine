@@ -1,4 +1,5 @@
 #include "ISpeedComponent.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/OriginKinematicView.h"
 using Speed::NativeKinematics::FOriginKinematicView;
@@ -489,7 +490,7 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 #if !UE_BUILD_SHIPPING
 		if (bCaptureDiagnostics)
 		{
-			const SHitResult& DiagnosticHit = Sweeper->GetFutureHit();
+			const SHitResult& DiagnosticHit = Speed::NativeKinematics::FBodyRead::FutureHit(*Sweeper);
 			USSubBody* DiagnosticResolver = USSubBody::PickResolver(
 				Sweeper, DiagnosticHit.SubBody.Get());
 			SSubBodyTOIDiagnostic& Diagnostic = Best.DiagnosticCandidates.AddDefaulted_GetRef();
@@ -505,7 +506,7 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
         if (TOI >= Best.TOI)
             continue;
 
-        const SHitResult& H = Sweeper->GetFutureHit();
+        const SHitResult& H = Speed::NativeKinematics::FBodyRead::FutureHit(*Sweeper);
         USSubBody* OtherSB = H.SubBody.Get();
         USSubBody* Resolver = USSubBody::PickResolver(Sweeper, OtherSB);
 

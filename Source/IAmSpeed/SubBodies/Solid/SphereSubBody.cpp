@@ -223,7 +223,7 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 
 void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 {
-    if (!HasHit() || !ParentComponentBodyDomainStorage())
+    if (!Speed::NativeKinematics::FBodyRead::HasHit(*this) || !ParentComponentBodyDomainStorage())
     {
         return;
     }
@@ -721,7 +721,7 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
     {
 		// UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics with latest position/velocity from physics (important for correct fake physics application)
 		// OtherSphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
-        OtherSphere.ApplyFakePhysicsOn(*this, OtherSphere.GetHit(), delta);
+        OtherSphere.ApplyFakePhysicsOn(*this, Speed::NativeKinematics::FBodyRead::CurrentHit(OtherSphere), delta);
 	}
 }
 

@@ -479,7 +479,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 		&AnalyticHit);
 	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
 	{
-		const SHitResult& PreviousHit = GetHit();
+		const SHitResult& PreviousHit = Speed::NativeKinematics::FBodyRead::CurrentHit(*this);
 		const FVector PreviousNormal = PreviousHit.ImpactNormal.GetSafeNormal();
 		const float InwardSpeed = FVector::DotProduct(
 			Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), PreviousNormal);
@@ -581,7 +581,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 		&AnalyticHit);
 	if (bUsedAnalyticAuthority && !bHit && IsOnGround())
 	{
-		const SHitResult& PreviousHit = GetHit();
+		const SHitResult& PreviousHit = Speed::NativeKinematics::FBodyRead::CurrentHit(*this);
 		const FVector PreviousNormal = PreviousHit.ImpactNormal.GetSafeNormal();
 		const float InwardSpeed = FVector::DotProduct(
 			Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), PreviousNormal);

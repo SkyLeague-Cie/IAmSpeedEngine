@@ -1637,3 +1637,25 @@ implementation friend, changes only its three call designators, and keeps all
 parameters, settings, vector operations and logging. The reader stays private.
 This is a compilation repair, not an authoritative-K, localized, causal-state
 or source/lifetime qualification. A new frozen tuple must compile and run.
+
+### Contact reference separation (source109 draft, NOT applied/native)
+
+Public current/future hit references, their HasHit/WillHit/TOI predicates and
+the physical-constraint array reference select facade storage only on the final
+private road types. Ordinary/custom storage adapter dispatch is preserved.
+Internal native readers retain exact live backing at the named physical calls;
+no setter, hit acceptance, solver order, coefficient or equation is changed.
+
+Actual-owner diagnostics check thirty body hit-reference paths and two component
+constraint-reference paths against real facade/native addresses, plus fifteen
+derived predicate checks. The existing real output-device facade mutations and
+independent native-control comparison remain. An empty contact/constraint or
+pointer-identity match never certifies actual contact or complete causal state.
+Public mutable operations, wheel/config/source aliases and lifetime exclusion
+remain open. No complete CanMove synchronization, authoritative-K/localized
+restore or rendered/device client qualification follows; all guards stay closed.
+HasActivePhysicalConstraintsOtherThan and its pose-dependent relevancy predicate
+remain explicitly outside this getter-reference tranche. They keep their exact
+existing storage/pose dispatch; no facade-array/native-pose hybrid is introduced.
+New compilation and native tests are required. Source108/build100 is a distinct
+frozen tuple; no historical result transfers to this draft.

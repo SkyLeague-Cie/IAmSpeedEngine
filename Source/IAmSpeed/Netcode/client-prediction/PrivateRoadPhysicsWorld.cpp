@@ -1185,6 +1185,49 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
                     return Fail(TEXT("original wheel public-view diagnostics missing"));
             }
         }
+        {
+            // Real reference identities, even during original routing. Empty
+            // hit/constraint values do not certify real contact presence.
+            auto& Observation=Out->Actors.back();
+            auto ObserveHits=[&](const auto* Body)
+            {
+                if(!Body)return false;
+                const SHitResult* Legacy[]={&Body->CurrentHit,&Body->FutureHit};
+                const SHitResult* Native[]={&Speed::NativeKinematics::FBodyRead::CurrentHit(*Body),
+                    &Speed::NativeKinematics::FBodyRead::FutureHit(*Body)};
+                const SHitResult* Views[]={&Body->GetHit(),&Body->GetFutureHit(),
+                    &Body->USSubBody::GetHit(),&Body->USSubBody::GetFutureHit(),
+                    &Body->USolidSubBody::GetHit(),&Body->USolidSubBody::GetFutureHit()};
+                for(int32 I=0;I<6;++I)
+                {
+                    ++Observation.PublicContactReferenceViews;
+                    if(Views[I]==Legacy[I%2]&&Views[I]!=Native[I%2])++Observation.PublicContactReferenceFacadeViews;
+                    if(Views[I]==Native[I%2])++Observation.PublicContactReferenceOriginalViews;
+                }
+                Observation.PublicContactPredicateChecks+=3;
+                if(Body->HasHit()==Legacy[0]->bBlockingHit)++Observation.PublicContactPredicateMatches;
+                if(Body->WillHit()==Legacy[1]->bBlockingHit)++Observation.PublicContactPredicateMatches;
+                if(Body->GetFutureTOI()==Legacy[1]->TOI)++Observation.PublicContactPredicateMatches;
+                return true;
+            };
+            const auto* Box=Cast<USpeedBranchBoxSubBody>(Hitbox);
+            if(!Box||!ObserveHits(Box))return Fail(TEXT("original box contact-view diagnostics missing"));
+            for(const auto& Entry:N->Component->ReadWheelSubBodiesForPhysics())
+            {
+                const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Entry.Get());
+                if(!Wheel||!ObserveHits(Wheel))return Fail(TEXT("original wheel contact-view diagnostics missing"));
+            }
+            const auto* Legacy=&N->Component->PhysicalConstraints;
+            const auto* Native=&Speed::NativeKinematics::FComponentRead::Constraints(*N->Component);
+            const TArray<FPhysicalContactConstraint>* Views[]={&N->Component->GetPhysicalConstraints(),
+                &N->Component->ISpeedComponent::GetPhysicalConstraints()};
+            for(const auto* View:Views)
+            {
+                ++Observation.PublicContactReferenceViews;
+                if(View==Legacy&&View!=Native)++Observation.PublicContactReferenceFacadeViews;
+                if(View==Native)++Observation.PublicContactReferenceOriginalViews;
+            }
+        }
         Out->Actors.back().NativeHitboxHalfExtent=Hitbox->GetBoxExtent();
         Out->Actors.back().NativeHitboxCenter=Speed::NativeKinematics::FBodyRead::Body(*Hitbox).Location;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
