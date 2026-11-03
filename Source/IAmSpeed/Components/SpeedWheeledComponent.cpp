@@ -1,5 +1,8 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/NativeRetirementStorage.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "Misc/ScopeExit.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/WheelBindingAccess.h"
@@ -651,58 +654,378 @@ void USpeedWheeledComponent::BindWheelSimulationPointers()
 			: nullptr);
 }
 
-void USpeedWheeledComponent::BindWheelSimulationPointers(
-	Chaos::FSimpleWheeledVehicle* PVehicle)
+class USpeedWheeledComponent::FLegacyWheelBindingAccess final
+{
+    USpeedWheeledComponent& Owner;
+public:
+    explicit FLegacyWheelBindingAccess(USpeedWheeledComponent& Value):Owner(Value) {}
+    auto Bodies() const {return Owner.ReadWheelSubBodiesForPhysics();}
+    auto Configuration(int32 Index) const {return Owner.ReadWheelConfigurationForPhysics(Index);}
+    decltype(auto) Configurations() const {return (Owner.WheelsWheeledDomainStorage());}
+    void Clear() const {Owner.ClearWheelSimulationPointers();}
+    void SetIndex(USWheelSubBody& Body,int32 Index) const {Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Body,Index);}
+    void BindConfiguration(USWheelSubBody& Body,UChaosVehicleWheel* Value) const {Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(Body,Value);}
+    void BindWheel(USWheelSubBody& Body,Chaos::FSimpleWheelSim* Value) const {Speed::NativeKinematics::FWheelBindingAccess::BindWheel(Body,Value);}
+    void BindSuspension(USWheelSubBody& Body,Chaos::FSimpleSuspensionSim* Value) const {Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(Body,Value);}
+};
+// Unapplied candidate. Complete factory wiring and real controls before review/application.
+// These borrowed views are supplied only by the actual factory's existing birth
+// weak identities, under its genuine retained operation. No permission boolean,
+// synthetic root or source/lifetime/complete-state claim is supplied.
+class USpeedWheeledComponent::FNativeWheelBindingAccess final
+{
+    USpeedWheeledComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    Chaos::FSimpleWheeledVehicle* const OriginalAllocation;
+    const TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths;
+    const TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths;
+    FOriginalWheeledDomain& Actual() const
+    {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,&Owner);}
+    void CheckRoster() const
+    {
+        const auto& D=Actual();
+        if(!D.SkySimulation||!D.VehicleSimulationPT
+            ||D.VehicleSimulationPT.Get()!=D.SkySimulation
+            ||!OriginalAllocation||D.SkySimulation->PVehicle.Get()!=OriginalAllocation)
+            throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        // Compare the incoming vehicle with the actual owner's unique allocation
+        // BEFORE dereferencing it. The private factory authors a complete roster;
+        // legacy partial/null/tail behavior stays in the unchanged shared body.
+        if(BodyBirths.Num()<=0||D.WheelSubBodies.Num()!=BodyBirths.Num()
+            ||D.Wheels.Num()!=ConfigurationBirths.Num()||ConfigurationBirths.Num()!=BodyBirths.Num()
+            ||OriginalAllocation->Wheels.Num()!=BodyBirths.Num()
+            ||OriginalAllocation->Suspension.Num()!=BodyBirths.Num())
+            throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        const auto& Configuration=Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<
+            Speed::Netcode::Prediction::RetirementDraft::FVehicleConfiguration>(Operation,&Owner);
+        for(int32 Index=0;Index<BodyBirths.Num();++Index)
+        {
+            if(!BodyBirths[Index].IsValid()||!ConfigurationBirths[Index].IsValid()
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.WheelSubBodies[Index],BodyBirths[Index])
+                ||!Speed::NativeObjectRead::MatchesOriginalBirth(D.Wheels[Index],ConfigurationBirths[Index])
+                ||OriginalAllocation->Wheels[Index].SetupPtr!=&Configuration.Wheel
+                ||OriginalAllocation->Suspension[Index].SetupPtr!=&Configuration.Suspension)
+                throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+            const auto& Body=*BodyBirths[Index].Get();
+            if(Speed::NativeKinematics::FBodyRead::Parent(Operation,Body)!=static_cast<ISpeedComponent*>(&Owner))
+                throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+            // Acquire/check every actual backing part for every wheel before the
+            // first index, pointed configuration, simulator or pointer write.
+            (void)Speed::NativeKinematics::FSolidPropertiesAccess::Idx(Operation,Body);
+            (void)Speed::NativeKinematics::FSolidMassAccess::Read(Operation,Body);
+            (void)Speed::NativeKinematics::FWheelBindingAccess::Configuration(Operation,Body);
+            (void)Speed::NativeKinematics::FWheelBindingAccess::Wheel(Operation,Body);
+            (void)Speed::NativeKinematics::FWheelBindingAccess::Suspension(Operation,Body);
+        }
+    }
+    int32 OwnIndex(const USWheelSubBody& Body) const
+    {
+        CheckRoster();
+        for(int32 Index=0;Index<BodyBirths.Num();++Index)
+            if(BodyBirths[Index].Get()==&Body)return Index;
+        throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+    }
+public:
+    FNativeWheelBindingAccess(USpeedWheeledComponent& Value,
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& ActualOperation,
+        Chaos::FSimpleWheeledVehicle* ActualAllocation,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths)
+      :Owner(Value),Operation(ActualOperation),OriginalAllocation(ActualAllocation),
+       BodyBirths(ActualBodyBirths),ConfigurationBirths(ActualConfigurationBirths)
+    {
+        Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireBirth(Operation);
+        CheckRoster(); // ALL subjects before shared body's first log or write
+    }
+    FNativeWheelBindingAccess(const FNativeWheelBindingAccess&)=delete;
+    FNativeWheelBindingAccess& operator=(const FNativeWheelBindingAccess&)=delete;
+    FNativeWheelBindingAccess(FNativeWheelBindingAccess&&)=delete;
+    FNativeWheelBindingAccess& operator=(FNativeWheelBindingAccess&&)=delete;
+    auto Bodies() const
+    {return Speed::NativeObjectRead::TView<USWheelSubBody>{Actual().WheelSubBodies,true};}
+    auto Configuration(int32 Index) const
+    {return Speed::NativeObjectRead::TRead<UChaosVehicleWheel>{Actual().Wheels[Index],true};}
+    decltype(auto) Configurations() const {return (Actual().Wheels);}
+    void Clear() const
+    {
+        // The specific private Birth entry accepts its non-null actual owned
+        // allocation only. It cannot select shared body's null-vehicle route.
+        // Ordinary Clear and real Retirement unbinding stay unchanged.
+        throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+    }
+    void SetIndex(USWheelSubBody& Body,int32 Index) const
+    {
+        if(OwnIndex(Body)!=Index)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Operation,Body,Index);
+    }
+    void BindConfiguration(USWheelSubBody& Body,UChaosVehicleWheel* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(ConfigurationBirths[Index].Get()!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(Operation,Body,Value);
+    }
+    void BindWheel(USWheelSubBody& Body,Chaos::FSimpleWheelSim* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(&OriginalAllocation->Wheels[Index]!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FWheelBindingAccess::BindWheel(Operation,Body,Value);
+    }
+    void BindSuspension(USWheelSubBody& Body,Chaos::FSimpleSuspensionSim* Value) const
+    {
+        const auto Index=OwnIndex(Body);
+        if(&OriginalAllocation->Suspension[Index]!=Value)throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(Operation,Body,Value);
+    }
+};
+
+template<class TAccess>
+void USpeedWheeledComponent::BindWheelSimulationPointersBody(TAccess& Storage,Chaos::FSimpleWheeledVehicle* PVehicle)
 {
 	if (!PVehicle)
 	{
-		ClearWheelSimulationPointers();
+		Storage.Clear();
 		return;
 	}
 
 	const int32 NumBindings = FMath::Min3(
-		ReadWheelSubBodiesForPhysics().Num(),
+		Storage.Bodies().Num(),
 		PVehicle->Wheels.Num(),
 		PVehicle->Suspension.Num());
 	SPEED_NATIVE_LOG(LogTemp, Display, TEXT("[WheelSuspensionBinding] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d bindings=%d component_wheels=%d"),
-		ReadWheelSubBodiesForPhysics().Num(), PVehicle->Wheels.Num(),
-		PVehicle->Suspension.Num(), NumBindings, WheelsWheeledDomainStorage().Num());
+		Storage.Bodies().Num(), PVehicle->Wheels.Num(),
+		PVehicle->Suspension.Num(), NumBindings, Storage.Configurations().Num());
 	// This message describes ordinary setup, including the earlier stage where
 	// Chaos storage exists before component wheel configurations. Only an actual
 	// storage-count mismatch is a warning; canonical admission still validates
 	// every final index/pointer/configuration without relaxation.
-	if (ReadWheelSubBodiesForPhysics().Num() <= 0 || PVehicle->Wheels.Num() != ReadWheelSubBodiesForPhysics().Num()
-		|| PVehicle->Suspension.Num() != ReadWheelSubBodiesForPhysics().Num())
+	if (Storage.Bodies().Num() <= 0 || PVehicle->Wheels.Num() != Storage.Bodies().Num()
+		|| PVehicle->Suspension.Num() != Storage.Bodies().Num())
 	{
 		SPEED_NATIVE_LOG(LogTemp, Warning, TEXT("[WheelSuspensionBindingIncomplete] subbodies=%d vehicle_wheels=%d vehicle_suspensions=%d"),
-			ReadWheelSubBodiesForPhysics().Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
+			Storage.Bodies().Num(), PVehicle->Wheels.Num(), PVehicle->Suspension.Num());
 	}
-	for (int32 WheelIdx = 0; WheelIdx < ReadWheelSubBodiesForPhysics().Num(); ++WheelIdx)
+	for (int32 WheelIdx = 0; WheelIdx < Storage.Bodies().Num(); ++WheelIdx)
 	{
-		USWheelSubBody* WheelSubBody = ReadWheelSubBodiesForPhysics()[WheelIdx].Get();
+		USWheelSubBody* WheelSubBody = Storage.Bodies()[WheelIdx].Get();
 		if (!WheelSubBody)
 		{
 			continue;
 		}
 
-		Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(*WheelSubBody,WheelIdx);
+		Storage.SetIndex(*WheelSubBody,WheelIdx);
 		if (WheelIdx < NumBindings)
 		{
-			if (WheelsWheeledDomainStorage().IsValidIndex(WheelIdx))
+			if (Storage.Configurations().IsValidIndex(WheelIdx))
 			{
-				Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(*WheelSubBody,ReadWheelConfigurationForPhysics(WheelIdx).Get());
+				Storage.BindConfiguration(*WheelSubBody,Storage.Configuration(WheelIdx).Get());
 			}
-			Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*WheelSubBody,&PVehicle->Wheels[WheelIdx]);
-			Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*WheelSubBody,&PVehicle->Suspension[WheelIdx]);
+			Storage.BindWheel(*WheelSubBody,&PVehicle->Wheels[WheelIdx]);
+			Storage.BindSuspension(*WheelSubBody,&PVehicle->Suspension[WheelIdx]);
 		}
 		else
 		{
-			Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(*WheelSubBody,nullptr);
-			Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*WheelSubBody,nullptr);
-			Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*WheelSubBody,nullptr);
+			Storage.BindConfiguration(*WheelSubBody,nullptr);
+			Storage.BindWheel(*WheelSubBody,nullptr);
+			Storage.BindSuspension(*WheelSubBody,nullptr);
 		}
 	}
 }
+void USpeedWheeledComponent::BindWheelSimulationPointers(
+	Chaos::FSimpleWheeledVehicle* PVehicle)
+{
+    FLegacyWheelBindingAccess Storage(*this);
+    BindWheelSimulationPointersBody(Storage,PVehicle);
+}
+
+void USpeedWheeledComponent::BindNativeWheelSimulationPointersBirth(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+ TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+ TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths)
+{
+    FNativeWheelBindingAccess Storage(*this,Operation,OriginalAllocation,
+        ActualBodyBirths,ActualConfigurationBirths);
+    BindWheelSimulationPointersBody(Storage,OriginalAllocation);
+}
+
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedWheeledComponent::ProbeNativeWheelBindingsBirthForDiagnostics(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+ TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+ TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+ USWheelSubBody* ForeignBody,ISpeedComponent* ForeignParent,
+ Chaos::FSimpleWheeledVehicle* ForeignVehicle,Chaos::FSimpleWheelSim* ForeignWheel,
+ Chaos::FSimpleSuspensionSim* ForeignSuspension,UChaosVehicleWheel* ForeignConfiguration,
+ FNativeWheelBindingDiagnostics& Out)
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireBirth(Operation);
+    Out={};
+    if(!ForeignBody||!ForeignParent||!ForeignVehicle||!ForeignWheel||!ForeignSuspension
+        ||!ForeignConfiguration||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4)return false;
+    FNativeWheelBindingAccess Initial(*this,Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);
+    auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    struct FCell
+    {
+        USWheelSubBody* Body;UChaosVehicleWheel* Configuration;
+        int32 Index;float Mass,AuthoredMass,Raise,Drop,NativeMass,ConfigurationRaise,ConfigurationDrop;
+        UChaosVehicleWheel* BindingConfiguration;Chaos::FSimpleWheelSim* Wheel;Chaos::FSimpleSuspensionSim* Suspension;
+        ISpeedComponent* Parent;
+    };
+    TArray<FCell,TInlineAllocator<4>> Saved;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        auto* Body=BodyBirths[Index].Get();auto* Configuration=ConfigurationBirths[Index].Get();
+        auto& V=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,Body);
+        auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,Body);
+        auto& Base=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Body));
+        Saved.Add({Body,Configuration,Solid.idx,Solid.Mass,V.WheelMass,V.SuspensionMaxRaiseOverride,V.SuspensionMaxDropOverride,
+            OriginalAllocation->Wheels[Index].MassPerWheel,Configuration->SuspensionMaxRaise,Configuration->SuspensionMaxDrop,
+            V.ChaosWheel,V.PWheel,V.PSuspension,Base.ParentComponent});
+    }
+    const auto SavedRoster=D.WheelSubBodies;const auto SavedConfigurations=D.Wheels;
+    const float ForeignMass=ForeignWheel->MassPerWheel;
+    const float ForeignRaise=ForeignConfiguration->SuspensionMaxRaise,ForeignDrop=ForeignConfiguration->SuspensionMaxDrop;
+    const auto CleanupFixture=[&]()
+    {
+        D.WheelSubBodies=SavedRoster;D.Wheels=SavedConfigurations;
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& S=Saved[Index];
+            auto& V=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,S.Body);
+            auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,S.Body);
+            auto& Base=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(S.Body));
+            Solid.idx=S.Index;Solid.Mass=S.Mass;V.WheelMass=S.AuthoredMass;
+            V.SuspensionMaxRaiseOverride=S.Raise;V.SuspensionMaxDropOverride=S.Drop;
+            V.ChaosWheel=S.BindingConfiguration;V.PWheel=S.Wheel;V.PSuspension=S.Suspension;Base.ParentComponent=S.Parent;
+            OriginalAllocation->Wheels[Index].MassPerWheel=S.NativeMass;
+            S.Configuration->SuspensionMaxRaise=S.ConfigurationRaise;S.Configuration->SuspensionMaxDrop=S.ConfigurationDrop;
+        }
+        ForeignWheel->MassPerWheel=ForeignMass;
+        ForeignConfiguration->SuspensionMaxRaise=ForeignRaise;ForeignConfiguration->SuspensionMaxDrop=ForeignDrop;
+    };
+    // Explicit named fixture cleanup only. It is neither a physical restore
+    // provider nor a state/source/lifetime exclusion certificate.
+    ON_SCOPE_EXIT{CleanupFixture();};
+    const float Masses[]={27.f,31.f,39.f,43.f};
+    const float Raises[]={7.f,-1.f,13.f,-1.f},Drops[]={11.f,19.f,-1.f,-1.f};
+    const auto Prime=[&]()
+    {
+        CleanupFixture();
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& S=Saved[Index];
+            auto& V=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,S.Body);
+            auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,S.Body);
+            V.WheelMass=Masses[Index];V.SuspensionMaxRaiseOverride=Raises[Index];V.SuspensionMaxDropOverride=Drops[Index];
+            Solid.idx=50+Index;Solid.Mass=90.f+Index;OriginalAllocation->Wheels[Index].MassPerWheel=1000.f+Index;
+            S.Configuration->SuspensionMaxRaise=101.f+Index;S.Configuration->SuspensionMaxDrop=201.f+Index;
+        }
+    };
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& S=Saved[Index];S.Body->AppendEpisodeStateForTesting(Bytes);
+            B::Add(Bytes,D.WheelSubBodies[Index].Get());B::Add(Bytes,D.Wheels[Index].Get());
+            B::Add(Bytes,OriginalAllocation->Wheels[Index].MassPerWheel);
+            B::Add(Bytes,S.Configuration->SuspensionMaxRaise);B::Add(Bytes,S.Configuration->SuspensionMaxDrop);
+        }
+        B::Add(Bytes,ForeignWheel->MassPerWheel);B::Add(Bytes,ForeignConfiguration->SuspensionMaxRaise);B::Add(Bytes,ForeignConfiguration->SuspensionMaxDrop);
+        return Bytes;
+    };
+    Out.AllRefusalsBeforeWrite=true;
+    for(int32 Case=0;Case<8;++Case)
+    {
+        Prime();
+        if(Case==2)P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Saved[0].Body)).ParentComponent=ForeignParent;
+        if(Case==6)D.Wheels[3]=ForeignConfiguration;
+        if(Case==7)D.WheelSubBodies[3]=ForeignBody;
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==0)BindNativeWheelSimulationPointersBirth(Operation,ForeignVehicle,BodyBirths,ConfigurationBirths);
+            else if(Case==2||Case>=6)BindNativeWheelSimulationPointersBirth(Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);
+            else
+            {
+                FNativeWheelBindingAccess Access(*this,Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);
+                if(Case==1)Access.SetIndex(*ForeignBody,0);
+                if(Case==3)Access.BindWheel(*Saved[0].Body,ForeignWheel);
+                if(Case==4)Access.BindSuspension(*Saved[0].Body,ForeignSuspension);
+                if(Case==5)Access.BindConfiguration(*Saved[0].Body,ForeignConfiguration);
+            }
+        }
+        catch(const P::FPrivateNativeStorageUnavailable&){Refused=true;}
+        if(Refused)++Out.Refusals;
+        Out.AllRefusalsBeforeWrite=Out.AllRefusalsBeforeWrite&&Before==Capture();
+        if(!Refused||!Out.AllRefusalsBeforeWrite)return false;
+    }
+    Prime();
+    BindNativeWheelSimulationPointersBirth(Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);
+    ++Out.PositiveEntryReturns;
+    Out.PositiveValuesMatch=true;Out.OverridePredicatesMatch=true;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        const auto& S=Saved[Index];const auto& V=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,S.Body);
+        const auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,S.Body);
+        Out.PositiveValuesMatch=Out.PositiveValuesMatch&&Solid.idx==Index&&Solid.Mass==Masses[Index]
+            &&OriginalAllocation->Wheels[Index].MassPerWheel==Masses[Index]&&V.PWheel==&OriginalAllocation->Wheels[Index]
+            &&V.PSuspension==&OriginalAllocation->Suspension[Index]&&V.ChaosWheel==S.Configuration;
+        const bool Override=Raises[Index]>=0.f&&Drops[Index]>=0.f;
+        Out.OverridePredicatesMatch=Out.OverridePredicatesMatch
+            &&S.Configuration->SuspensionMaxRaise==(Override?Raises[Index]:101.f+Index)
+            &&S.Configuration->SuspensionMaxDrop==(Override?Drops[Index]:201.f+Index);
+    }
+    return Out.Refusals==8&&Out.AllRefusalsBeforeWrite&&Out.PositiveEntryReturns==1&&Out.PositiveValuesMatch&&Out.OverridePredicatesMatch;
+}
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedWheeledComponent::ProbeNativeWheelBindingStepRefusalForDiagnostics(
+ const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+ Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+ TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+ TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths)
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireStep(Operation);
+    if(!OriginalAllocation||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4
+        ||!BodyBirths[0].IsValid()||!ConfigurationBirths[0].IsValid())return false;
+    auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    if(!D.SkySimulation||D.SkySimulation->PVehicle.Get()!=OriginalAllocation||OriginalAllocation->Wheels.Num()!=4)return false;
+    auto* First=BodyBirths[0].Get();auto* Configuration=ConfigurationBirths[0].Get();
+    auto& Solid=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,First);
+    const int32 Index=Solid.idx;const float Mass=Solid.Mass,NativeMass=OriginalAllocation->Wheels[0].MassPerWheel;
+    const float Raise=Configuration->SuspensionMaxRaise,Drop=Configuration->SuspensionMaxDrop;
+    ON_SCOPE_EXIT{
+        Solid.idx=Index;Solid.Mass=Mass;OriginalAllocation->Wheels[0].MassPerWheel=NativeMass;
+        Configuration->SuspensionMaxRaise=Raise;Configuration->SuspensionMaxDrop=Drop;
+    };
+    // Named temporary fixture sentinels make accidental entry writes visible.
+    // Cleanup before the real Step continues is not authoritative restoration.
+    Solid.idx=91;Solid.Mass=73.f;OriginalAllocation->Wheels[0].MassPerWheel=77.f;
+    Configuration->SuspensionMaxRaise=37.f;Configuration->SuspensionMaxDrop=38.f;
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;using B=Speed::FEpisodeStateBytesForTesting;
+        for(int32 I=0;I<4;++I)
+        {
+            if(!BodyBirths[I].IsValid()||!ConfigurationBirths[I].IsValid())throw P::FPrivateNativeStorageUnavailable{};
+            BodyBirths[I].Get()->AppendEpisodeStateForTesting(Bytes);
+            B::Add(Bytes,OriginalAllocation->Wheels[I].MassPerWheel);
+            B::Add(Bytes,ConfigurationBirths[I].Get()->SuspensionMaxRaise);B::Add(Bytes,ConfigurationBirths[I].Get()->SuspensionMaxDrop);
+        }
+        return Bytes;
+    };
+    const auto Before=Capture();bool Refused=false;
+    try{BindNativeWheelSimulationPointersBirth(Operation,OriginalAllocation,BodyBirths,ConfigurationBirths);}
+    catch(const P::FPrivateNativeStorageUnavailable&){Refused=true;}
+    return Refused&&Before==Capture();
+}
+#endif
 
 void USpeedWheeledComponent::ClearWheelSimulationPointers()
 {

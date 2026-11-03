@@ -865,6 +865,33 @@ private:
 	// across physics-state teardown/recreation.
 	void BindWheelSimulationPointers();
 	void BindWheelSimulationPointers(Chaos::FSimpleWheeledVehicle* PVehicle);
+    class FLegacyWheelBindingAccess;class FNativeWheelBindingAccess;
+    template<class TAccess> void BindWheelSimulationPointersBody(TAccess& Storage,Chaos::FSimpleWheeledVehicle* PVehicle);
+    void BindNativeWheelSimulationPointersBirth(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths);
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    friend class FIASLegacyWheelSimulationBindings;
+    struct FNativeWheelBindingDiagnostics
+    {
+        uint32 Refusals=0,PositiveEntryReturns=0;
+        bool AllRefusalsBeforeWrite=false,PositiveValuesMatch=false,OverridePredicatesMatch=false;
+    };
+    bool ProbeNativeWheelBindingsBirthForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+        USWheelSubBody* ForeignBody,ISpeedComponent* ForeignParent,
+        Chaos::FSimpleWheeledVehicle* ForeignVehicle,Chaos::FSimpleWheelSim* ForeignWheel,
+        Chaos::FSimpleSuspensionSim* ForeignSuspension,UChaosVehicleWheel* ForeignConfiguration,
+        FNativeWheelBindingDiagnostics& Out);
+    bool ProbeNativeWheelBindingStepRefusalForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        Chaos::FSimpleWheeledVehicle* OriginalAllocation,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths);
+#endif
 	void ClearWheelSimulationPointers();
 	/** Latches game-thread driving inputs exactly once at a physics-frame boundary. */
 	bool ConsumeProducedWheeledInputs(uint64 CanonicalFrame);

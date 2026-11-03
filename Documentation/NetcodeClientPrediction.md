@@ -1794,3 +1794,28 @@ response/sweep, constructor/binding, retirement and escaped-view paths remain
 open. Full effective-state CanMove synchronization, authoritative-K localized
 resimulation and two rendered playable clients with a dedicated server remain
 unfinished. Earlier native results cannot qualify these new bytes.
+
+
+The next private Birth binding route preflights the real currently owned vehicle,
+the original captured wheel/configuration birth identities and all typed backing
+parts before the shared binding body's first log/write. The factory records its
+actual new allocation before Init transfers ownership. Legacy null/partial/full,
+configuration-index/tail and Clear semantics remain in the same shared body;
+actual Retirement helpers are unchanged. Native pointer inputs and real body
+parents are checked against those current owned originals before writes.
+
+Prepared controls exercise real legacy UCLASS objects, meaningful masses and
+both Raise/Drop predicates; genuine factory Birth and Step operations; foreign
+body/parent/vehicle/wheel/suspension/configuration subjects and an invalid fourth
+roster/configuration before earlier writes. Named temporary fixture cleanup and
+an independent COM comparison do not supply authoritative restoration. These
+source controls are not executed at preparation. Existing keyed helper paths,
+other numerical/birth/retirement accesses, complete causal state/source/lifetime
+exclusion, full effective-state CanMove synchronization, authoritative-K local
+resimulation and the final two rendered playable clients remain unfinished.
+
+The private factory shares only the unchanged vehicle constructor program.
+Its reference/facade caller explicitly retains ordinary wheel binding with the
+reference configuration. Only the later original storage caller selects the
+actual Birth binding route and its original captured identities. No permission
+boolean or reference-to-native fallback selects those routes.

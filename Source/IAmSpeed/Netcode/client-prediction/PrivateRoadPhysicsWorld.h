@@ -113,6 +113,10 @@ enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitialize
 struct FPrivateRoadBirthInitializationProbe
 {
     uint32 InitializersReturned=0;
+    uint32 WheelBindingFactoryReturns=0,WheelBindingGuardRefusals=0,WheelBindingPositiveEntryReturns=0;
+    bool WheelBindingProbeReturned=false,WheelBindingAllRefusalsBeforeWrite=false;
+    bool WheelBindingPositiveValuesMatch=false,WheelBindingOverridePredicatesMatch=false;
+
     bool ActualBirthOperation=false,ForeignBodyRefused=false,ForeignParentRefused=false,ForeignInverseRefused=false;
     bool StepHitRefusedInBirth=false,OwnBodyUnchangedAfterRefusals=false;
     bool FaultAfterFirstInitializerReached=false,CreateReturnedNull=false;
@@ -130,6 +134,7 @@ struct FPrivateRoadHitAcceptanceProbe
     uint32 LegacyCalls=0,NativeCalls=0,Refusals=0;
     bool BaseBehaviorDistinguished=false,AllRefusalsBeforeWrite=false,ActualStepOperation=false;
     bool BirthInitializationRefusedDuringStep=false;
+    bool BirthWheelBindingRefusedDuringStep=false;
 };
 #endif
 // Experimental finite native flat-road kernel. Creates actual, private native

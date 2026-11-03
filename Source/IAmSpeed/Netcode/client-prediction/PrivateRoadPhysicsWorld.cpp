@@ -635,7 +635,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
     {FOriginalComponentStorageScope OriginalDriver(*I.Access);
         I.Driver->bPublishPresentationDriverStorage()=true;I.Driver->bPublishCompletedWorldInputDriverStorage()=false;}
     I.PinTree(I.Driver);
-    const auto BuildOriginalVehicle=[&](USpeedBranchWheeledComponent& C,std::shared_ptr<RetirementDraft::FVehicleConfiguration> Configuration,const TArray<UChaosVehicleWheel*>& PreparedWheels)
+    // Shared constructor program. The existing reference and original storage
+    // scopes still choose their actual owned backend at their separate callers.
+    const auto BuildVehicleStorage=[&](USpeedBranchWheeledComponent& C,std::shared_ptr<RetirementDraft::FVehicleConfiguration> Configuration,const TArray<UChaosVehicleWheel*>& PreparedWheels)
     {
         auto& WheelConfig=Configuration->Wheel;auto& SuspensionConfig=Configuration->Suspension;
         auto Vehicle=MakeUnique<Chaos::FSimpleWheeledVehicle>();
@@ -649,8 +651,54 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         }
         C.VehicleSimulationPTWheeledDomainStorage()=MakeUnique<RetirementDraft::TSimulationWithConfiguration<USpeedSimulation,RetirementDraft::FVehicleConfiguration>>(Configuration);
         C.SkySimulationWheeledDomainStorage()=static_cast<USpeedSimulation*>(C.VehicleSimulationPTWheeledDomainStorage().Get());
+        // Capture the actual new allocation before ownership transfer. This is
+        // an allocation identity, not a caller-granted permission or lease.
+        auto* const OriginalAllocationBeforeInit=Vehicle.Get();
         C.SkySimulationWheeledDomainStorage()->Init(Vehicle);
-        C.BindWheelSimulationPointers();
+        return OriginalAllocationBeforeInit; // actual pre-transfer allocation identity only
+    };
+    const auto BuildReferenceVehicle=[&](USpeedBranchWheeledComponent& C,std::shared_ptr<RetirementDraft::FVehicleConfiguration> Configuration,const TArray<UChaosVehicleWheel*>& PreparedWheels)
+    {
+        (void)BuildVehicleStorage(C,std::move(Configuration),PreparedWheels);
+        C.BindWheelSimulationPointers(); // genuine ordinary/reference path, unchanged
+    };
+    const auto BuildOriginalVehicle=[&](USpeedBranchWheeledComponent& C,std::shared_ptr<RetirementDraft::FVehicleConfiguration> Configuration,const TArray<UChaosVehicleWheel*>& PreparedWheels,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths) -> bool
+    {
+        auto* const OriginalAllocationBeforeInit=BuildVehicleStorage(C,std::move(Configuration),PreparedWheels);
+        C.BindNativeWheelSimulationPointersBirth(Operation,OriginalAllocationBeforeInit,
+            ActualBodyBirths,ActualConfigurationBirths);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext)
+        {
+            ++BirthContext->Result.WheelBindingFactoryReturns; // after actual factory entry returned
+            if(!BirthContext->Result.WheelBindingProbeReturned)
+            {
+                auto& Foreign=*BirthContext->ForeignRoot;
+                if(Foreign.Closed||Foreign.Failed||Foreign.RetirementRequested.load()
+                    ||Foreign.NativeOperationIdentity->ActiveGTActualOperation||!Foreign.AcquiredGraphStillLive()
+                    ||Foreign.Cars.empty())return false;
+                const auto& FN=*Foreign.Cars.front();
+                if(!FN.Component||FN.OriginalWheelBodyBirth.Num()!=4||FN.OriginalWheelObjects.Num()!=4
+                    ||!FN.OriginalWheelBodyBirth[0].IsValid()||!FN.OriginalWheelObjects[0].IsValid()
+                    ||!FN.OriginalNativeVehicle||!FN.OriginalNativeWheelAllocation||!FN.OriginalNativeSuspensionAllocation)return false;
+                // Actual retained foreign birth identities only; no foreign gate
+                // held across this callback-capable own Birth or owner unwind.
+                USpeedWheeledComponent::FNativeWheelBindingDiagnostics Probe;
+                if(!C.ProbeNativeWheelBindingsBirthForDiagnostics(Operation,OriginalAllocationBeforeInit,
+                    ActualBodyBirths,ActualConfigurationBirths,FN.OriginalWheelBodyBirth[0].Get(),
+                    static_cast<ISpeedComponent*>(FN.Component),FN.OriginalNativeVehicle,FN.OriginalNativeWheelAllocation,
+                    FN.OriginalNativeSuspensionAllocation,FN.OriginalWheelObjects[0].Get(),Probe))return false;
+                auto& Result=BirthContext->Result;
+                Result.WheelBindingGuardRefusals=Probe.Refusals;Result.WheelBindingPositiveEntryReturns=Probe.PositiveEntryReturns;
+                Result.WheelBindingAllRefusalsBeforeWrite=Probe.AllRefusalsBeforeWrite;
+                Result.WheelBindingPositiveValuesMatch=Probe.PositiveValuesMatch;Result.WheelBindingOverridePredicatesMatch=Probe.OverridePredicatesMatch;
+                Result.WheelBindingProbeReturned=true; // observed diagnostic return only, never a permission
+            }
+        }
+#endif
+        return true;
     };
     for(auto& Node:I.Cars)
     {
@@ -809,7 +857,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         N.NativeConfiguration->Suspension.SetSuspensionMaxRaise(10);N.NativeConfiguration->Suspension.SetSuspensionMaxDrop(25);
         N.NativeConfiguration->Suspension.SpringRate=5000;N.NativeConfiguration->Suspension.RestingForce=250000;
         N.NativeConfiguration->Suspension.CompressionDamping=1000;N.NativeConfiguration->Suspension.ReboundDamping=1000;
-        BuildOriginalVehicle(*C,N.ReferenceConfiguration,ReferenceWheels);
+        BuildReferenceVehicle(*C,N.ReferenceConfiguration,ReferenceWheels);
         if(!FacadeTopologyStillMatches()){Refuse(Why,TEXT("private facade wheel topology changed"));return false;}
         for(int32 W=0;W<4;++W)
         {
@@ -875,7 +923,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         C->SetSubBodies(OriginalTopology);
         C->InitializeOriginalOwnerFromCapturedPose(N.Actor,OriginalOwnerRotation,OriginalOwnerLocation);
         I.Bridge->RegisterOriginalComponentForPrivateOwner(C);
-        BuildOriginalVehicle(*C,N.NativeConfiguration,OriginalWheels);
+        if(!BuildOriginalVehicle(*C,N.NativeConfiguration,OriginalWheels,N.OriginalWheelBodyBirth,N.OriginalWheelObjects))return {};
         N.OriginalNativeSimulation=C->SkySimulationWheeledDomainStorage();
         N.OriginalNativeVehicle=N.OriginalNativeSimulation?N.OriginalNativeSimulation->PVehicle.Get():nullptr;
         if(!N.OriginalNativeVehicle||N.OriginalNativeVehicle->Wheels.Num()!=4||N.OriginalNativeVehicle->Suspension.Num()!=4)return {};
@@ -1551,6 +1599,11 @@ bool FPrivateRoadPhysicsWorld::ProbeHitAcceptanceRetained(FImpl& I,const FPrivat
     auto& BD=FPrivateNativeStorageAccess::Part<FPrivateRoadBoxDomain>(Operation,Box);
     if(!BV.ParentComponent)return false;
     auto& CV=FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,BV.ParentComponent);
+    if(I.Cars.empty())return false;
+    const auto& BindingNode=*I.Cars.front();
+    if(!BindingNode.Component||!BindingNode.Component->ProbeNativeWheelBindingStepRefusalForDiagnostics(
+        Operation,BindingNode.OriginalNativeVehicle,BindingNode.OriginalWheelBodyBirth,BindingNode.OriginalWheelObjects))return false;
+    Result.BirthWheelBindingRefusedDuringStep=true; // only after real Step guard test returned true
     const auto SavedBoxBody=BV;const auto SavedWheelBody=WV;const auto SavedBoxDomain=BD;
     const auto* SavedStaticWorld=CV.StaticRestingWorld;
     // These are exact C++ value fixtures for named contact caches only. This

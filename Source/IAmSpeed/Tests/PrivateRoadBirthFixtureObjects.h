@@ -79,5 +79,8 @@ public:
     std::shared_ptr<FIASBirthFixtureTrace> Trace;
     FMatrix ReadInverseForFixture() const {return InvInertiaLocalSolidStorage();}
     float ReadMassForFixture() const {return MassSolidStorage();}
+    void AuthorWheelBindingFixture(float Mass,float Raise,float Drop)
+    {WheelMassWheelDomainStorage()=Mass;SuspensionMaxRaiseOverrideWheelDomainStorage()=Raise;SuspensionMaxDropOverrideWheelDomainStorage()=Drop;}
+
     int32 ReadIgnoredCountForFixture() const {return AlwaysIgnoredComponentsBodyDomainStorage().Num();}
 };
