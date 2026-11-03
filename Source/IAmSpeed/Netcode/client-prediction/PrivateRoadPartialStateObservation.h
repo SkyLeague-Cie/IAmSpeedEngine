@@ -1,5 +1,6 @@
 #pragma once
 #include "PrivateRoadPhysicsWorld.h"
+#include "IAmSpeed/World/Simulation/Internal/WheelBindingAccess.h"
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
 #include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
 #include "IAmSpeed/Netcode/Common/NativeCommonCacheAccess.h"
@@ -164,7 +165,10 @@ template<class Solid>bool AppendSolidValues(TArray<uint8>& Out,const Solid& V)
     FCheckedWriter::Add(Out,V.idx);
     return Finite;
 }
-template<class Component>bool Capture(Component& C,uint64 Actor,uint64 Incarnation,
+class FNativeWheelCapture final
+{
+    friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    template<class Component>static bool Capture(Component& C,uint64 Actor,uint64 Incarnation,
     const Chaos::FSimpleWheelConfig& WheelConfig,const Chaos::FSimpleSuspensionConfig& SuspensionConfig,
     FPrivateRoadActorFrame& Out)
 {
@@ -186,14 +190,15 @@ template<class Component>bool Capture(Component& C,uint64 Actor,uint64 Incarnati
     for(const auto& Entry:C.ReadWheelSubBodiesForPhysics())
     {
         const auto* Body=Entry.Get();
-        if(!Body||!Body->GetWheelSim()||!Body->GetSuspensionSim())return false;
-        AppendCheckedWheel(Raw,*Body->GetWheelSim());
-        const FCheckedSuspensionCopy Copy(*Body->GetSuspensionSim());Copy.Append(Raw);
+        if(!Body||!Speed::NativeKinematics::FWheelBindingAccess::Wheel(*Body)||!Speed::NativeKinematics::FWheelBindingAccess::Suspension(*Body))return false;
+        AppendCheckedWheel(Raw,*Speed::NativeKinematics::FWheelBindingAccess::Wheel(*Body));
+        const FCheckedSuspensionCopy Copy(*Speed::NativeKinematics::FWheelBindingAccess::Suspension(*Body));Copy.Append(Raw);
     }
     if(!Finite||!Pointers.MakeCanonical(Canonical)||Canonical.IsEmpty())return false;
     Out.NativeSleep=Sleep;Out.NativeQuantization=Quantization;
     Out.NativeWheelSuspensionValues.assign(Canonical.GetData(),Canonical.GetData()+Canonical.Num());
     Out.NativePartialValuesAvailable=true;return true;
 }
+};
 }
 #endif

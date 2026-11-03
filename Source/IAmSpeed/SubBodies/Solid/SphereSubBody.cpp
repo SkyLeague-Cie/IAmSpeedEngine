@@ -1,4 +1,6 @@
 #include "SphereSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
@@ -281,15 +283,15 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
     // ------------------------------------------------------------------
 
     // if it is a real impact
-    if (vN < - GetImpactThreshold())
+    if (vN < - Speed::NativeKinematics::FSolidPropertiesAccess::GetImpactThreshold(*this))
     {
         // ------------------------------------------------------------------
         // 1) NORMAL IMPULSE (bounce)
         // ------------------------------------------------------------------
-		const float Rest = GetRestitution();
+		const float Rest = Speed::NativeKinematics::FSolidPropertiesAccess::GetRestitution(*this);
 
         // For a sphere vs plane: no angular coupling on normal
-        const float jn = -(1.f + Rest) * vN * GetMass();
+        const float jn = -(1.f + Rest) * vN * Speed::NativeKinematics::FSolidMassAccess::Read(*this);
         ApplyImpulse(jn * N, P);
         // ParentComponent->NotifyLocalImpulseEvent();
 
@@ -307,12 +309,12 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 
             // Effective mass for solid sphere rolling friction impulse
             // m_eff = 2m / 7
-            const float mEff = (2.f / 7.f) * GetMass();
+            const float mEff = (2.f / 7.f) * Speed::NativeKinematics::FSolidMassAccess::Read(*this);
 
             float jt = -vTmag * mEff;
 
             // Coulomb clamp
-            const float mu = GetStaticFriction();
+            const float mu = Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(*this);
             const float jtMax = mu * jn;
             jt = FMath::Clamp(jt, -jtMax, jtMax);
 
@@ -336,7 +338,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 		Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(P), N);
 	const float NormalAcceleration = FVector::DotProduct(
 		Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Acceleration(), N);
-	if (PostNormalSpeed <= GetImpactThreshold() && NormalAcceleration < 0.0f)
+	if (PostNormalSpeed <= Speed::NativeKinematics::FSolidPropertiesAccess::GetImpactThreshold(*this) && NormalAcceleration < 0.0f)
 	{
 		ParentComponentBodyDomainStorage()->AddPhysAcceleration(-NormalAcceleration * N);
 	}
@@ -415,9 +417,9 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
     const float MixedRestitution = ResolveSphereBoxRestitution(
         *this,
         OtherBox,
-        MixRestitution(GetRestitution(), OtherBox.GetRestitution(), EMixMode::E_Max));
+        MixRestitution(Speed::NativeKinematics::FSolidPropertiesAccess::GetRestitution(*this), Speed::NativeKinematics::FSolidPropertiesAccess::GetRestitution(OtherBox), EMixMode::E_Max));
     const float MixedFriction = ResolveSphereBoxFriction(*this, OtherBox,
-        MixFriction(GetStaticFriction(), OtherBox.GetStaticFriction(), EMixMode::E_Max));
+        MixFriction(Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(*this), Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(OtherBox), EMixMode::E_Max));
 	const FVector PreSpherePointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
 		SphereKS, CurrentHitStorage().ImpactPoint);
 	const FVector PreBoxPointVelocity = IAmSpeedSphereVelocityAtPointFromKS(
@@ -428,7 +430,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 
 	// Compute collision impulse at TOI
     const bool bUsePostNormalFriction =
-        UsesPostNormalFrictionImpulse() || OtherBox.UsesPostNormalFrictionImpulse();
+        Speed::NativeKinematics::FSolidPropertiesAccess::UsesPostNormalFrictionImpulse(*this) || Speed::NativeKinematics::FSolidPropertiesAccess::UsesPostNormalFrictionImpulse(OtherBox);
     const SKinematic& ImpulseSphereKS = bUsePostNormalFriction
         ? FakePhysicsContext.SelfParentKinematics
         : SphereKS;
@@ -440,18 +442,18 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         CurrentHitStorage().ImpactPoint,
         CurrentHitStorage().ImpactNormal,   // Other -> Sphere
 
-        ImpulseSphereKS, GetMass(), ComputeWorldInvInertiaTensor(),
-        ImpulseBoxKS, OtherBox.GetMass(), OtherBox.ComputeWorldInvInertiaTensor(),
+        ImpulseSphereKS, Speed::NativeKinematics::FSolidMassAccess::Read(*this), ComputeWorldInvInertiaTensor(),
+        ImpulseBoxKS, Speed::NativeKinematics::FSolidMassAccess::Read(OtherBox), OtherBox.ComputeWorldInvInertiaTensor(),
 
 		MixedRestitution,
         MixedFriction,
 
         ImpThis,
         ImpOther,
-        GetImpactThreshold(),
-        (UsesCoupledContactImpulse() || OtherBox.UsesCoupledContactImpulse()) &&
-        AllowsCoupledContactImpulseFor(SphereKS) &&
-        OtherBox.AllowsCoupledContactNormal(BoxLocalContactNormal),
+        Speed::NativeKinematics::FSolidPropertiesAccess::GetImpactThreshold(*this),
+        (Speed::NativeKinematics::FSolidPropertiesAccess::UsesCoupledContactImpulse(*this) || Speed::NativeKinematics::FSolidPropertiesAccess::UsesCoupledContactImpulse(OtherBox)) &&
+        Speed::NativeKinematics::FSolidPropertiesAccess::AllowsCoupledContactImpulseFor(*this,SphereKS) &&
+        Speed::NativeKinematics::FSolidPropertiesAccess::AllowsCoupledContactNormal(OtherBox,BoxLocalContactNormal),
         bUsePostNormalFriction
     );
 
@@ -486,7 +488,7 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
                 *LocalNormal.ToString(),
 				MixedRestitution,
                 MixedFriction,
-                GetImpactThreshold(),
+                Speed::NativeKinematics::FSolidPropertiesAccess::GetImpactThreshold(*this),
                 RelNormalSpeed,
                 *RelVp.ToString(),
                 *ImpThis.ToString(),
@@ -503,8 +505,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
                 *BoxKSAtTOI.AngularVelocity.ToString(),
                 *SphereVp.ToString(),
                 *BoxVp.ToString(),
-                GetMass(),
-                OtherBox.GetMass());
+                Speed::NativeKinematics::FSolidMassAccess::Read(*this),
+                Speed::NativeKinematics::FSolidMassAccess::Read(OtherBox));
         }
 #endif
 
@@ -563,13 +565,13 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 #endif
 
         // apply fake physics
-        if (IsFakePhysicsEnabled())
+        if (Speed::NativeKinematics::FSolidPropertiesAccess::IsFakePhysicsEnabled(*this))
         {
 			// UpdateKinematicsFromOwner(frame); // update kinematics to current frame before applying fake physics
 			// OtherBox.UpdateKinematicsFromOwner(frame);
             ApplyFakePhysicsOn(OtherBox, CurrentHitStorage(), delta, &FakePhysicsContext);
         }
-        if (OtherBox.IsFakePhysicsEnabled())
+        if (Speed::NativeKinematics::FSolidPropertiesAccess::IsFakePhysicsEnabled(OtherBox))
         {
 			SHitResult InvertedHit = CurrentHitStorage();
 			InvertedHit.ImpactNormal *= -1.f; // invert normal for correct fake physics application on the box
@@ -678,16 +680,16 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
         CurrentHitStorage().ImpactPoint,
         CurrentHitStorage().ImpactNormal, // Other -> This
 
-        ThisKS, GetMass(), ComputeWorldInvInertiaTensor(),
-        OtherKS, OtherSphere.GetMass(), OtherSphere.ComputeWorldInvInertiaTensor(),
+        ThisKS, Speed::NativeKinematics::FSolidMassAccess::Read(*this), ComputeWorldInvInertiaTensor(),
+        OtherKS, Speed::NativeKinematics::FSolidMassAccess::Read(OtherSphere), OtherSphere.ComputeWorldInvInertiaTensor(),
 
-        MixRestitution(GetRestitution(), OtherSphere.GetRestitution(), EMixMode::E_Min),
-        MixFriction(GetStaticFriction(), OtherSphere.GetStaticFriction(), EMixMode::E_Min),
+        MixRestitution(Speed::NativeKinematics::FSolidPropertiesAccess::GetRestitution(*this), Speed::NativeKinematics::FSolidPropertiesAccess::GetRestitution(OtherSphere), EMixMode::E_Min),
+        MixFriction(Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(*this), Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(OtherSphere), EMixMode::E_Min),
         ImpThis, ImpOther,
-        GetImpactThreshold()
+        Speed::NativeKinematics::FSolidPropertiesAccess::GetImpactThreshold(*this)
     );
 
-    if (IsMainSubBody())
+    if (Speed::NativeKinematics::FSolidPropertiesAccess::IsMainSubBody(*this))
     {
         // Small position correction
         FVector correctPos = CurrentHitStorage().ImpactPoint + CurrentHitStorage().ImpactNormal * GetRadius();
@@ -711,13 +713,13 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
 	OtherSphere.ApplyImpulse(ImpOther, CurrentHitStorage().ImpactPoint);
 
 	// apply fake physics
-    if (IsFakePhysicsEnabled())
+    if (Speed::NativeKinematics::FSolidPropertiesAccess::IsFakePhysicsEnabled(*this))
     {
 		// UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics with latest position/velocity from physics (important for correct fake physics application)
 		// OtherSphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
         ApplyFakePhysicsOn(OtherSphere, CurrentHitStorage(), delta);
     }
-    if (OtherSphere.IsFakePhysicsEnabled())
+    if (Speed::NativeKinematics::FSolidPropertiesAccess::IsFakePhysicsEnabled(OtherSphere))
     {
 		// UpdateKinematicsFromOwner(ParentComponent->NumFrame()); // update kinematics with latest position/velocity from physics (important for correct fake physics application)
 		// OtherSphere.UpdateKinematicsFromOwner(ParentComponent->NumFrame());
@@ -727,7 +729,7 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
 
 void USphereSubBody::HandleMicroOscillation()
 {
-    if (!ParentComponentBodyDomainStorage() || !IsMainSubBody() || !CurrentHitStorage().Component.IsValid())
+    if (!ParentComponentBodyDomainStorage() || !Speed::NativeKinematics::FSolidPropertiesAccess::IsMainSubBody(*this) || !CurrentHitStorage().Component.IsValid())
     {
         return;
     }
@@ -743,7 +745,7 @@ void USphereSubBody::HandleMicroOscillation()
     {
         ParentComponentBodyDomainStorage()->AddPhysVelocity(-vel);
     }
-    else if (FMath::Abs(vN) <= GetImpactThreshold())
+    else if (FMath::Abs(vN) <= Speed::NativeKinematics::FSolidPropertiesAccess::GetImpactThreshold(*this))
     {
         // Remove tiny separating normal velocity
         ParentComponentBodyDomainStorage()->AddPhysVelocity(-VelN);
@@ -766,7 +768,7 @@ void USphereSubBody::HandleMicroOscillation()
 
 bool USphereSubBody::ProjectOutOfBox(UBoxSubBody& OtherBox)
 {
-    if (!IsSphereBoxProjectionEnabled() || !ParentComponentBodyDomainStorage() || !IsMainSubBody())
+    if (!IsSphereBoxProjectionEnabled() || !ParentComponentBodyDomainStorage() || !Speed::NativeKinematics::FSolidPropertiesAccess::IsMainSubBody(*this))
     {
         return false;
     }
@@ -826,7 +828,7 @@ bool USphereSubBody::ProjectOutOfBox(UBoxSubBody& OtherBox)
 bool USphereSubBody::ProjectOutOfWorldStatic()
 {
     if (!IsWorldStaticProjectionEnabled() || !ParentComponentBodyDomainStorage() ||
-		!IsMainSubBody() || !GetWorld())
+		!Speed::NativeKinematics::FSolidPropertiesAccess::IsMainSubBody(*this) || !GetWorld())
     {
         return false;
     }
@@ -1205,7 +1207,7 @@ bool USphereSubBody::ShouldSkipBoxSweep(const UBoxSubBody& Box) const
 FMatrix USphereSubBody::InitInvInertiaTensor() const
 {
     // Inertia tensor for solid sphere: I = 2/5 m r^2
-    const float I = (2.f / 5.f) * GetMass() * GetRadius() * GetRadius();
+    const float I = (2.f / 5.f) * Speed::NativeKinematics::FSolidMassAccess::Read(*this) * GetRadius() * GetRadius();
     const float InvI = I > KINDA_SMALL_NUMBER ? 1.f / I : 0.f;
     return FMatrix(
         FPlane(InvI, 0.f, 0.f, 0.f),

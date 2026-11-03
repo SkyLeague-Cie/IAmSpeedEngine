@@ -12,6 +12,7 @@
 
 namespace Speed::Netcode::Prediction
 {
+class FPrivateNativeOperation;
 // Observes this GT's actual original storage-routing pointer only. This is
 // diagnostic context, NOT factory completion, permission, exclusion or a lease.
 // Foreign callbacks can still run inside a route; they remain observable work.
@@ -116,9 +117,16 @@ struct FPrivateRoadPublication
 class IAMSPEED_API FPrivateRoadPhysicsWorld final
 {
     struct FImpl;
-    std::unique_ptr<FImpl> Impl;
+    struct FRetainedNativeCall;
+    std::shared_ptr<FImpl> Impl;
+    // Private operation-memory retention only. No source/restore lease follows.
+    static bool HasExactRegisteredRosterRetained(const std::shared_ptr<FImpl>& Root,const FPrivateNativeOperation& Operation,FString& Why);
+    static bool StepRetained(const std::shared_ptr<FImpl>& Root,const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why);
+    static bool ReleaseInitialPublicationRetained(const std::shared_ptr<FImpl>& Root,const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why);
+    static std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeRetained(const std::shared_ptr<FImpl>& Root);
+    static bool CloseRetained(const std::shared_ptr<FImpl>& Root);
     FPrivateRoadPhysicsWorld();
-    bool HasExactRegisteredRoster(FString& Why) const;
+
 public:
     ~FPrivateRoadPhysicsWorld();
     FPrivateRoadPhysicsWorld(const FPrivateRoadPhysicsWorld&)=delete;
@@ -137,6 +145,12 @@ public:
     // Read-only diagnostic executed by the actual owner. No caller recipe,
     // pointer, callback, native view, physical route or restore authority.
     FOriginalWorldReadProbe ObserveOriginalWorldReadForDiagnostics();
+    // Actual independent counter objects; retaining them does not retain any
+    // native simulation/configuration or provide source/lifetime authority.
+    std::vector<std::shared_ptr<const FNativeConfigurationLifetimeTrace>> CaptureNativeConfigurationLifetimeObserversForDiagnostics();
+private:
+    static FOriginalWorldReadProbe ObserveOriginalWorldReadRetained(const std::shared_ptr<FImpl>& Root);
+public:
 #endif
     bool Close(); // GT only; never destroys native storage in a physical/publication tail
 };

@@ -11,7 +11,8 @@
 #include "IAmSpeed/World/Simulation/NativeEpochStorageRoute.h"
 #include "SpeedWorldSubsystem.generated.h"
 
-namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;}
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation;}
+class ASpeedPhysicsSimulation;
 class ISpeedComponent;
 #if !UE_BUILD_SHIPPING
 namespace Speed { class FFramePointerRegistry; }
@@ -171,6 +172,38 @@ public:
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
+    friend class ASpeedPhysicsSimulation;
+    class FLegacyEpochAccess;class FNativeEpochAccess;
+    template<class TAccess> void ActivatePendingRollingContactPairAtTOIBody(TAccess& Storage,const USolidSubBody& BodyA,const USolidSubBody& BodyB,const float RemainingDt);
+    void ActivatePendingRollingContactPairAtTOINative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USolidSubBody& BodyA,const USolidSubBody& BodyB,const float RemainingDt);
+    template<class TAccess> void SolveDynamicContactPairsBody(TAccess& Storage,const float Dt,const uint64 PairKeyFilter,const bool bFilterByPairKey,const bool bSolveFirstSeenFrame);
+    void SolveDynamicContactPairsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float Dt,const uint64 PairKeyFilter=0,const bool bFilterByPairKey=false,const bool bSolveFirstSeenFrame=false);
+    template<class TAccess> void ProjectDynamicContactPairsBody(TAccess& Storage);
+    void ProjectDynamicContactPairsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
+
+    template<class TAccess> bool BeginCanonicalFrameBody(TAccess& Storage,FString& OutReason);
+    bool BeginNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,FString& OutReason);
+    template<class TAccess> bool ValidateSimulationBindingsBody(TAccess& Storage,FString& OutReason);
+    bool ValidateNativeSimulationBindings(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,FString& OutReason);
+    template<class TAccess> bool PrepareCanonicalInputsBody(TAccess& Storage,const FCanonicalFrameContext& Context);
+    bool PrepareNativeCanonicalInputs(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FCanonicalFrameContext& Context);
+    template<class TAccess> void PrepareCanonicalFrameBody(TAccess& Storage,const FCanonicalFrameContext& Context);
+    void PrepareNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FCanonicalFrameContext& Context);
+    template<class TAccess> void StepBody(TAccess& Storage,const float& Dt,const float& SimTime,const unsigned int& Frame);
+    void StepNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Dt,const float& SimTime,const unsigned int& Frame);
+    template<class TAccess> FSimulationSnapshot CaptureSimulationSnapshotBody(TAccess& Storage,const uint64 NumFrame,const uint64 InputJournalHash,const bool bIncludePresentation);
+    FSimulationSnapshot CaptureNativeSimulationSnapshot(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const uint64 NumFrame,const uint64 InputJournalHash,const bool bIncludePresentation);
+    template<class TAccess> void NotifyCanonicalFramePublishedBody(TAccess& Storage,uint64 NumFrame);
+    void NotifyNativeCanonicalFramePublished(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,uint64 NumFrame);
+    template<class TAccess> void AbortCanonicalFrameBody(TAccess& Storage,uint64 Frame,ECanonicalFrameAbortReason Reason);
+    void AbortNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,uint64 Frame,ECanonicalFrameAbortReason Reason);
+    void EndNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
+    static void ValidateNativeSubject(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USpeedWorldSubsystem* Subject);
+    const Speed::IStaticCollisionWorld* GetNativeStaticCollisionWorld(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    const Speed::Analytic::FAnalyticWorldData* GetNativeAnalyticWorldData(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    const FSpeedStepDiagnostics& GetNativeLastStepDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    ECanonicalPublicationResult PublishNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ASpeedPhysicsSimulation& Driver,
+        const FCanonicalFrameContext& Context,const FSimulationSnapshot& Snapshot);
     // Called only by the actual private factory, after its ordinary-world
     // admission. Does not query UWorld or manufacture source/lifetime authority.
     void RegisterOriginalComponentForPrivateOwner(ISpeedComponent* Component);

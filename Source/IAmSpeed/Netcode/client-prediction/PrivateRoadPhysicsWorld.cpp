@@ -1,4 +1,8 @@
 #include "PrivateRoadPhysicsWorld.h"
+#include "Math/QuatRotationTranslationMatrix.h"
+#include "PrivateNativeOperation.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/WheelBindingAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
@@ -213,6 +217,7 @@ using FBoxRoot=RetirementDraft::TBodyRoot<FVehicleRoot,
 std::shared_ptr<FVehicleRoot> NativeVehicleRoot;
 std::vector<std::shared_ptr<FWheelRoot>> NativeWheelRoots;
 std::shared_ptr<FBoxRoot> NativeBoxRoot;
+std::shared_ptr<USpeedBranchWheeledComponent::FOwnedComponentValues> NativeCommonValues;
 using FReferenceSimulation=std::remove_reference_t<decltype(
     std::declval<USpeedBranchWheeledComponent&>().VehicleSimulationPTWheeledDomainStorage())>;
 FReferenceSimulation RetiringReferenceSimulation;
@@ -256,6 +261,14 @@ FReferenceSimulation RetiringReferenceSimulation;
     std::shared_ptr<FPrivateRoadAccess> Access=std::make_shared<FPrivateRoadAccess>();
     std::unique_ptr<Speed::NativeEpoch::FDiagnosticOutbox> Diagnostics;
     mutable std::mutex Gate;
+    std::shared_ptr<const FPrivateNativeGraphIdentity> NativeOperationIdentity;
+    std::shared_ptr<FPrivateNativeStorageMap> NativeStorage;
+    std::shared_ptr<ASpeedPhysicsSimulation::FOriginalDriverStorage> NativeDriverStorage;
+    std::shared_ptr<USpeedWorldSubsystem::FEpochBridgeStorage> NativeBridgeStorage;
+    // Count of actually retained private stack call objects, not permission,
+    // a lifecycle/source exclusion proof, or a fabricated reader census.
+    std::atomic<uint64> RetainedNativeCalls{0};
+    std::atomic<bool> RetirementRequested{false};
     std::atomic<std::shared_ptr<const FPrivateRoadPublication>> Published;
     std::shared_ptr<const Speed::RoadSettings::FDeclaredRecipe> DeclaredSettings;
     U64 Lifetime=0,VehicleContactFrameCount=0;
@@ -415,15 +428,59 @@ std::vector<std::shared_ptr<void>> NativeCppKeepAlive;
         Pin(Object);ForEachObjectWithOuter(Object,[this](UObject* Child){Pin(Child);},EGetObjectsFlags::IncludeNestedObjects);
     }
 };
-FPrivateRoadPhysicsWorld::FPrivateRoadPhysicsWorld():Impl(std::make_unique<FImpl>()){}
+// This object is private to the wrapper entry implementations. It retains
+// the actual FImpl/root/config control blocks for their complete native call.
+// It grants NO restoration, mutable-view, source or lifecycle exclusion lease.
+struct FPrivateRoadPhysicsWorld::FRetainedNativeCall final
+{
+    const std::shared_ptr<FImpl> Root;
+    explicit FRetainedNativeCall(std::shared_ptr<FImpl> Value):Root(std::move(Value))
+    {
+        if(!Root||!IsInGameThread())std::terminate();
+        Root->RetainedNativeCalls.fetch_add(1);
+    }
+    FRetainedNativeCall(const FRetainedNativeCall&)=delete;
+    FRetainedNativeCall& operator=(const FRetainedNativeCall&)=delete;
+    ~FRetainedNativeCall()
+    {
+        const auto Before=Root->RetainedNativeCalls.fetch_sub(1);
+        if(!Before)std::terminate();
+        if(Before==1&&Root->RetirementRequested.load())
+        {
+            // The retained static native operation has really returned or
+            // unwound. Its gate/outbox/GC/storage scopes are no longer active.
+            // Preserve Close's phase protocol, and NEVER replay Interrupted.
+            const bool Retired=FPrivateRoadPhysicsWorld::CloseRetained(Root);
+            checkf(Retired,TEXT("Deferred private road retirement must actually complete"));
+            if(!Retired)std::terminate();
+        }
+    }
+};
+FPrivateRoadPhysicsWorld::FPrivateRoadPhysicsWorld():Impl(std::make_shared<FImpl>())
+{
+    // Actual single root allocation and its actual mutex, before native birth.
+    // Identity keeps only a weak root; no new cycle or public issuer is created.
+    Impl->NativeOperationIdentity=std::shared_ptr<const FPrivateNativeGraphIdentity>(
+        new FPrivateNativeGraphIdentity(Impl,Impl->Gate));
+    Impl->NativeStorage=std::shared_ptr<FPrivateNativeStorageMap>(new FPrivateNativeStorageMap(Impl->NativeOperationIdentity));
+}
 FPrivateRoadPhysicsWorld::~FPrivateRoadPhysicsWorld()
 {
-    // This finite prototype has no worker. Its UObject graph is constructed
-    // and destroyed on the GT; a later async owner needs its own real join.
     checkf(IsInGameThread(),TEXT("Private road world must retire on the game thread"));
-    const bool Retired=Close();
-    checkf(Retired,TEXT("Private road world cannot retire during an active step"));
-    if(!Retired)std::terminate(); // retirement must execute in Shipping too
+    if(!IsInGameThread())std::terminate(); // preserve the real Shipping fail-safe before deferral
+    auto Root=std::move(Impl);
+    if(!Root)std::terminate();
+    if(Root->RetainedNativeCalls.load()!=0)
+    {
+        // A real private call object owns this exact control block. Its last
+        // destructor runs only after the retained native call has returned or
+        // unwound; no wrapper/member is reused after a callback can delete it.
+        Root->RetirementRequested.store(true);
+        return;
+    }
+    const bool Retired=CloseRetained(Root);
+    checkf(Retired,TEXT("Private road world retirement must actually complete"));
+    if(!Retired)std::terminate(); // no silent release or retry after interruption
 }
 std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::vector<FPrivateRoadCarSeed> Seeds,FString& Why)
 {
@@ -453,6 +510,14 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     {Refuse(Why,TEXT("mixed startup policy or countdown substituted for initial publication"));return {};}
     auto Owner=std::unique_ptr<FPrivateRoadPhysicsWorld>(new FPrivateRoadPhysicsWorld);
     auto& I=*Owner->Impl;
+    const auto Root=Owner->Impl;
+    std::unique_lock BirthLock(I.Gate,std::try_to_lock);
+    if(!BirthLock.owns_lock()){Refuse(Why,TEXT("native birth owner gate unavailable"));return {};}
+    FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Birth,std::move(BirthLock));
+    // Each real backing allocation is registered immediately after its actual
+    // root/alias wiring, BEFORE its first operation-bearing native consumer.
+    const auto Bind=[&]<class T>(const void* Subject,const std::shared_ptr<T>& Part)
+    {return I.NativeStorage->BindAtBirth(Operation,Subject,Part);};
     I.DeclaredSettings=SuppliedSettings;
     I.Diagnostics.reset(new Speed::NativeEpoch::FDiagnosticOutbox);
     I.Access->RequiresInitialPublication=StartPolicy==EPrivateRoadStartPolicy::AwaitInitialPublication;
@@ -492,7 +557,11 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     if(!I.Bridge){Refuse(Why,TEXT("private native bridge missing"));return {};}
     I.OriginalBridgeWeak=I.Bridge;I.Pin(I.Bridge);I.Access->OriginalBridgeBirth=I.OriginalBridgeWeak;
     I.Bridge->BindOriginalEpochStorage(I.Access);
-    I.NativeCppKeepAlive.push_back(I.Bridge->OriginalEpochBridgeStorage);
+    I.NativeBridgeStorage=I.Bridge->OriginalEpochBridgeStorage;
+    I.NativeCppKeepAlive.push_back(I.NativeBridgeStorage);
+    if(!Bind(I.Bridge,I.NativeBridgeStorage)
+        ||!Bind(&I.NativeBridgeStorage->SimulationWorld,
+            std::shared_ptr<Speed::FSimulationWorld>(I.NativeBridgeStorage,&I.NativeBridgeStorage->SimulationWorld)))return {};
     auto Data=MakeShared<Speed::Analytic::FAnalyticWorldData>();
     auto& P=Data->Planes.AddDefaulted_GetRef();P.SourceId=1;P.SurfaceId=2;P.FeatureId=3;P.PrimitiveId=4;
     I.Access->OriginalStaticSourceId=P.SourceId;
@@ -536,7 +605,10 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     {Refuse(Why,TEXT("private driver missing or canonical physical rate differs"));return {};}
     I.OriginalDriverWeak=I.Driver;I.Access->OriginalDriverBirth=I.OriginalDriverWeak;
     I.Driver->Access=I.Access;if(!I.Driver->BindOriginalDriverStorage(I.Access)){Refuse(Why,TEXT("original native driver birth storage refused"));return {};}
-    I.NativeCppKeepAlive.push_back(I.Driver->OriginalDriverStorage);
+    I.NativeDriverStorage=I.Driver->OriginalDriverStorage;
+    I.NativeCppKeepAlive.push_back(I.NativeDriverStorage);
+    if(!Bind(static_cast<ASpeedPhysicsSimulation*>(I.Driver),I.NativeDriverStorage)
+        ||!Bind(I.Driver,I.NativeDriverStorage))return {};
     {FOriginalComponentStorageScope OriginalDriver(*I.Access);
         I.Driver->bPublishPresentationDriverStorage()=true;I.Driver->bPublishCompletedWorldInputDriverStorage()=false;}
     I.PinTree(I.Driver);
@@ -599,6 +671,12 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         N.NativeVehicleRoot=std::make_shared<FImpl::FCar::FVehicleRoot>(N.NativeConfiguration,C->OriginalWheeledDomain);
         C->OriginalWheeledDomain=RetirementDraft::AliasExistingPart(N.NativeVehicleRoot,N.NativeVehicleRoot->Domain);
         I.NativeCppKeepAlive.push_back(N.NativeVehicleRoot);
+        const auto BindComponentPart=[&]<class T>(const std::shared_ptr<T>& Part)
+        {
+            return Bind(C,Part)&&Bind(static_cast<USpeedWheeledComponent*>(C),Part)
+                &&Bind(static_cast<ISpeedWheeledComponent*>(C),Part)&&Bind(static_cast<ISpeedComponent*>(C),Part);
+        };
+        if(!BindComponentPart(N.NativeVehicleRoot->Domain)||!BindComponentPart(N.NativeConfiguration))return {};
         C->SetAsyncPhysicsTickEnabled(false);
         // Retain the actual base-wheel class before any prepared-wheel birth
         // callback. The original profile authors exactly this class; changed,
@@ -660,6 +738,16 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
                 Box->OwnedSolidValues=RetirementDraft::AliasBodyPart<1>(N.NativeBoxRoot);
                 Box->OwnedBoxDomain=RetirementDraft::AliasBodyPart<2>(N.NativeBoxRoot);
                 I.NativeCppKeepAlive.push_back(N.NativeBoxRoot);
+                const auto BindBox=[&](const void* Subject)
+                {
+                    return Bind(Subject,RetirementDraft::AliasBodyPart<0>(N.NativeBoxRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<1>(N.NativeBoxRoot))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<2>(N.NativeBoxRoot));
+                };
+                if(!BindBox(Box)||!BindBox(static_cast<UBoxSubBody*>(Box))
+                    ||!BindBox(static_cast<USolidSubBody*>(Box))||!BindBox(static_cast<USSubBody*>(Box))
+                    ||!BindBox(static_cast<ISweeper*>(static_cast<IBoxSweeper*>(Box)))
+                    ||!BindBox(static_cast<ISweeper*>(static_cast<ISolidSweeper*>(Box))))return false;
             }
             else if(auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
             {
@@ -672,6 +760,19 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
                 Wheel->OwnedWheelDomain=RetirementDraft::AliasBodyPart<3>(Root);
                 Wheel->OwnedSphereDomain=RetirementDraft::AliasBodyPart<4>(Root);
                 N.NativeWheelRoots.push_back(Root);I.NativeCppKeepAlive.push_back(Root);
+                const auto BindWheel=[&](const void* Subject)
+                {
+                    return Bind(Subject,RetirementDraft::AliasBodyPart<0>(Root))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<1>(Root))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<2>(Root))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<3>(Root))
+                        &&Bind(Subject,RetirementDraft::AliasBodyPart<4>(Root));
+                };
+                if(!BindWheel(Wheel)||!BindWheel(static_cast<USWheelSubBody*>(Wheel))
+                    ||!BindWheel(static_cast<USphereSubBody*>(Wheel))
+                    ||!BindWheel(static_cast<USolidSubBody*>(Wheel))||!BindWheel(static_cast<USSubBody*>(Wheel))
+                    ||!BindWheel(static_cast<ISweeper*>(static_cast<ISphereSweeper*>(Wheel)))
+                    ||!BindWheel(static_cast<ISweeper*>(static_cast<ISolidSweeper*>(Wheel))))return false;
             }
             else {Refuse(Why,TEXT("private subbody storage subtype missing"));return {};}
         }
@@ -699,7 +800,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(C->ThrottleAccelWheeledDomainStorage()!=750||C->BrakeAccelWheeledDomainStorage()!=1100||C->PhysDampingWheeledDomainStorage()!=0||C->AirForwardThrottleWheeledDomainStorage()!=0||C->AirBackwardThrottleWheeledDomainStorage()!=0)
         {Refuse(Why,TEXT("stock native driving profile differs"));return {};}
         C->EstablishOriginalComponentStorage();
-        I.NativeCppKeepAlive.push_back(C->OwnedComponentValues);
+        N.NativeCommonValues=C->OwnedComponentValues;
+        I.NativeCppKeepAlive.push_back(N.NativeCommonValues);
+        if(!BindComponentPart(N.NativeCommonValues))return false;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         // Witness only: actual legacy values from the original setup. These
         // are NEVER imported into physical storage or a restore certificate.
@@ -780,12 +883,12 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
                 else if(const auto* Wheel=Cast<USpeedBranchWheelSubBody>(Body))
                 {
                     Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetRadiusWithMargin());
-                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetChaosWheelConfiguration());
-                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetWheelSim());
-                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Wheel->GetSuspensionSim());
-                    if(!Wheel->GetWheelSim()||!Wheel->GetSuspensionSim())return false;
-                    PartialObservation::AppendCheckedWheel(Bytes,*Wheel->GetWheelSim());
-                    const PartialObservation::FCheckedSuspensionCopy Suspension(*Wheel->GetSuspensionSim());Suspension.Append(Bytes);
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Speed::NativeKinematics::FWheelBindingAccess::Configuration(Operation,*Wheel));
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Speed::NativeKinematics::FWheelBindingAccess::Wheel(Operation,*Wheel));
+                    Speed::FEpisodeStateBytesForTesting::Add(Bytes,Speed::NativeKinematics::FWheelBindingAccess::Suspension(Operation,*Wheel));
+                    if(!Speed::NativeKinematics::FWheelBindingAccess::Wheel(Operation,*Wheel)||!Speed::NativeKinematics::FWheelBindingAccess::Suspension(Operation,*Wheel))return false;
+                    PartialObservation::AppendCheckedWheel(Bytes,*Speed::NativeKinematics::FWheelBindingAccess::Wheel(Operation,*Wheel));
+                    const PartialObservation::FCheckedSuspensionCopy Suspension(*Speed::NativeKinematics::FWheelBindingAccess::Suspension(Operation,*Wheel));Suspension.Append(Bytes);
                 }
                 else return false;
             }
@@ -795,7 +898,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         if(!CaptureOutsideSolidValues(BeforeOther))return {};
 #endif
         for(auto* Body:C->GetSubBodies())Body->Initialize(C);
-        for(int32 W=0;W<C->ReadWheelSubBodiesForPhysics().Num();++W)C->ReadWheelSubBodiesForPhysics()[W]->SetIdx(W);
+        for(int32 W=0;W<C->ReadWheelSubBodiesForPhysics().Num();++W)Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(Operation,*C->ReadWheelSubBodiesForPhysics()[W],W);
         // Real validation AFTER every new initializer, under the same scope.
         if(!C->ValidateSimulationBindings(Why))return {};
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
@@ -851,11 +954,11 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         N->StableId=I.Bridge->GetSimulationStableId(*N->Component);
         if(!N->StableId){Refuse(Why,TEXT("private native registration identity missing"));return {};}
     }
-    if(!NoNetworkOwner(I.World.Get())||!I.Driver->InitializePrivate(*I.Bridge))
+    if(!NoNetworkOwner(I.World.Get())||!I.Driver->InitializePrivate(Operation,*I.Bridge))
     {Refuse(Why,TEXT("private native lifecycle/driver admission failed"));return {};}
     static U64 NextLifetime=1; // GT-only mint at actual successful birth.
     if(NextLifetime==MAX_uint64){Refuse(Why,TEXT("private native lifetime exhausted"));return {};}
-    if(!Owner->HasExactRegisteredRoster(Why))return {};
+    if(!HasExactRegisteredRosterRetained(Root,Operation,Why))return {};
     I.Lifetime=NextLifetime++;
     return true;
     }();
@@ -864,13 +967,16 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
     {
         FGCScopeGuard FinalBirthReadOnly;
         FOriginalComponentStorageScope OriginalFinalBirth(*I.Access);
-        if(!Owner->HasExactRegisteredRoster(Why)||I.Driver->NextPrivate()!=0)return {};
+        if(!HasExactRegisteredRosterRetained(Root,Operation,Why)||I.Driver->NextPrivate(Operation)!=0)return {};
     }
+    if(!I.NativeStorage->CloseBirthRegistration(Operation))return {};
     return Owner;
 }
-bool FPrivateRoadPhysicsWorld::HasExactRegisteredRoster(FString& Why) const
+bool FPrivateRoadPhysicsWorld::HasExactRegisteredRosterRetained(const std::shared_ptr<FImpl>& Root,const FPrivateNativeOperation& Operation,FString& Why)
 {
-    const auto& I=*Impl;
+    const auto& I=*Root;
+    if(!Operation.HasExactRootAndGate(I.NativeOperationIdentity))
+        return Refuse(Why,TEXT("original roster read requires its actual retained root and owned mutex"));
     if(!I.Bridge)return Refuse(Why,TEXT("private native registry bridge missing"));
     if(!I.OriginalObjectHandlesStillMatch())
         return Refuse(Why,TEXT("original wheel/hitbox handle unresolved, stale or different from actual birth role"));
@@ -889,11 +995,15 @@ bool FPrivateRoadPhysicsWorld::HasExactRegisteredRoster(FString& Why) const
             return Refuse(Why,TEXT("private native registered identity changed"));
     return true;
 }
-bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why)
+bool FPrivateRoadPhysicsWorld::StepRetained(const std::shared_ptr<FImpl>& Root,const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why)
 {
     Why.Empty();if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("private step requires GT physical caller"));
-    auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
+    auto& I=*Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)
+        return Refuse(Why,TEXT("same graph native operation already active; Step refused before mutex"));
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
     if(!Lock.owns_lock()||I.Closed||I.Failed||Requests.size()!=I.Cars.size())return Refuse(Why,TEXT("private step owner/roster unavailable"));
+    FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Step,std::move(Lock));
     if(!I.AcquiredGraphStillLive())return Refuse(Why,TEXT("original acquired graph unavailable before Step"));
     if(!IsValid(I.Driver)||!I.OriginalActorWorldStillMatches(I.Driver,I.World.Get())||I.Driver->HasActorBegunPlay()
         ||I.Driver->IsActorBeingDestroyed())return Refuse(Why,TEXT("private driver lifecycle changed"));
@@ -908,7 +1018,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     // repeated caller attempts cannot retire or erase the original baseline.
     {
         FOriginalComponentStorageScope OriginalStartupRead(*I.Access);
-        if(I.Driver->NextPrivate()&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
+        if(I.Driver->NextPrivate(Operation)&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
             return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
     }
     if(!I.Diagnostics||!I.Diagnostics->Begin())return Refuse(Why,TEXT("native diagnostic owner unavailable"));
@@ -919,8 +1029,8 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     Speed::RoadSettings::FOriginalRoadSettingsScope SettingsStep(I.DeclaredSettings);
     FGCScopeGuard NativeGCExclusion;
     FOriginalComponentStorageScope OriginalStorage(*I.Access);
-    if(!HasExactRegisteredRoster(Why))return false;
-    const U64 Frame=I.Driver->NextPrivate();
+    if(!HasExactRegisteredRosterRetained(Root,Operation,Why))return false;
+    const U64 Frame=I.Driver->NextPrivate(Operation);
     if(Frame&&I.Access->RequiresInitialPublication&&!I.Access->InitialPublicationReleased)
         return Refuse(Why,TEXT("awaiting actual initial publication and common activation; no timer release"));
     if(Frame>=uint64(MAX_int32-1)||Chaos::FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled()||!NoNetworkOwner(I.World.Get()))return Refuse(Why,TEXT("private step native domain changed"));
@@ -956,7 +1066,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
     const auto Fail=[&](const TCHAR* Reason){I.Failed=true;I.Published.store({});return Refuse(Why,Reason);};
     try
     {
-    if(!I.Driver->AdvancePrivate(Resimulation))return Fail(TEXT("private canonical native step failed"));
+    if(!I.Driver->AdvancePrivate(Operation,Resimulation))return Fail(TEXT("private canonical native step failed"));
     for(size_t N=0;N<I.Cars.size();++N)
     {
         const auto* Slot=I.Access->Slots.Find(I.Cars[N]->Component);
@@ -1159,7 +1269,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             {
                 if(!OriginalBody)return false;
                 const SKinematic* Legacy=&OriginalBody->Kinematics;
-                const SKinematic* Original=&Speed::NativeKinematics::FBodyRead::Body(*OriginalBody);
+                const SKinematic* Original=&Speed::NativeKinematics::FBodyRead::Body(Operation,*OriginalBody);
                 // Box/sphere and solid sweepers have distinct ISweeper bases.
                 // Observe each real subobject through its unambiguous base.
                 const ISolidSweeper& SolidView=*OriginalBody;
@@ -1194,8 +1304,8 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             {
                 if(!Body)return false;
                 const SHitResult* Legacy[]={&Body->CurrentHit,&Body->FutureHit};
-                const SHitResult* Native[]={&Speed::NativeKinematics::FBodyRead::CurrentHit(*Body),
-                    &Speed::NativeKinematics::FBodyRead::FutureHit(*Body)};
+                const SHitResult* Native[]={&Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*Body),
+                    &Speed::NativeKinematics::FBodyRead::FutureHit(Operation,*Body)};
                 const SHitResult* Views[]={&Body->GetHit(),&Body->GetFutureHit(),
                     &Body->USSubBody::GetHit(),&Body->USSubBody::GetFutureHit(),
                     &Body->USolidSubBody::GetHit(),&Body->USolidSubBody::GetFutureHit()};
@@ -1219,7 +1329,7 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
                 if(!Wheel||!ObserveHits(Wheel))return Fail(TEXT("original wheel contact-view diagnostics missing"));
             }
             const auto* Legacy=&N->Component->PhysicalConstraints;
-            const auto* Native=&Speed::NativeKinematics::FComponentRead::Constraints(*N->Component);
+            const auto* Native=&Speed::NativeKinematics::FComponentRead::Constraints(Operation,*N->Component);
             const TArray<FPhysicalContactConstraint>* Views[]={&N->Component->GetPhysicalConstraints(),
                 &N->Component->ISpeedComponent::GetPhysicalConstraints()};
             for(const auto* View:Views)
@@ -1230,14 +1340,14 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
             }
         }
         Out->Actors.back().NativeHitboxHalfExtent=Hitbox->GetBoxExtent();
-        Out->Actors.back().NativeHitboxCenter=Speed::NativeKinematics::FBodyRead::Body(*Hitbox).Location;
+        Out->Actors.back().NativeHitboxCenter=Speed::NativeKinematics::FBodyRead::Body(Operation,*Hitbox).Location;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
         // This is a read-only declared-subset observation, not a complete-state
         // capture through the guarded restore provider. Unknown remains false.
         auto& Observation=Out->Actors.back();
         Observation.NativeSolidInitializationWitness=N->SolidInitializationWitness;
         if(N->Component->CopyActualCacheDiagnosticValues(Observation.NativeSleep,Observation.NativeQuantization))
-            PartialObservation::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
+            PartialObservation::FNativeWheelCapture::Capture(*N->Component,N->Seed.Actor,N->Seed.Incarnation,
                 N->NativeConfiguration->Wheel,N->NativeConfiguration->Suspension,Observation);
         if(Observation.NativePartialValuesAvailable)
         {
@@ -1298,14 +1408,28 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         return Terminal(TEXT("native participant retired by external diagnostic callback"));
     I.Published.store(std::move(Completed));return true;
 }
-std::shared_ptr<const FPrivateRoadPublication> FPrivateRoadPhysicsWorld::ReadLatest() const noexcept {return Impl->Published.load();}
-bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why)
+bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why)
+{
+    if(!IsInGameThread()){Why.Empty();return Refuse(Why,TEXT("private step requires GT physical caller"));}
+    FRetainedNativeCall Call(Impl);
+    return StepRetained(Call.Root,Requests,Resimulation,Why);
+}
+std::shared_ptr<const FPrivateRoadPublication> FPrivateRoadPhysicsWorld::ReadLatest() const noexcept
+{
+    const auto Root=Impl;
+    return Root->Published.load(); // immutable value acquisition, no native object read
+}
+bool FPrivateRoadPhysicsWorld::ReleaseInitialPublicationRetained(const std::shared_ptr<FImpl>& Root,const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why)
 {
     Why.Empty();if(OriginalComponentStorageOwner||!IsInGameThread()||Speed::Input::FPresentationInputScope::IsActive())return Refuse(Why,TEXT("startup release requires original GT owner"));
-    auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
+    auto& I=*Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)
+        return Refuse(Why,TEXT("same graph native operation already active; activation refused before mutex"));
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
     if(!Lock.owns_lock()||I.Closed||I.Failed||I.Access->Active)return Refuse(Why,TEXT("startup original owner unavailable"));
+    FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Activation,std::move(Lock));
     if(!I.AcquiredGraphStillLive())return Refuse(Why,TEXT("startup original acquired graph unavailable"));
-    if(!Lock.owns_lock()||I.Closed||I.Failed||I.Access->Active||!I.Access->RequiresInitialPublication
+    if(!Operation.HasExactRootAndGate(I.NativeOperationIdentity)||I.Closed||I.Failed||I.Access->Active||!I.Access->RequiresInitialPublication
         ||I.Access->InitialPublicationReleased||!Baseline||Baseline!=I.Published.load()
         ||!Baseline->AwaitingInitialPublication||Baseline->Frame!=0||Baseline->LocalKernelLifetime!=I.Lifetime
         ||!I.World.IsValid()||I.World->bIsTearingDown||!I.Driver||!IsValid(I.Driver)
@@ -1319,8 +1443,8 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
     Speed::RoadSettings::FOriginalRoadSettingsScope SettingsActivation(I.DeclaredSettings);
     if(I.DeclaredSettings&&Baseline->DeclaredSettingsIdentity!=I.DeclaredSettings->CanonicalIdentity())
         return Refuse(Why,TEXT("startup declared settings recipe changed"));
-    if(I.Driver->NextPrivate()!=1)return Refuse(Why,TEXT("original startup physical counter changed"));
-    if(!HasExactRegisteredRoster(Why))return false;
+    if(I.Driver->NextPrivate(Operation)!=1)return Refuse(Why,TEXT("original startup physical counter changed"));
+    if(!HasExactRegisteredRosterRetained(Root,Operation,Why))return false;
     for(const auto& Pin:I.Pins)if(!IsValid(Pin.Get()))return Refuse(Why,TEXT("startup native graph invalidated"));
     for(const auto& N:I.Cars)
     {
@@ -1342,7 +1466,7 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
     }
     // Real optional diagnostic edge after physical activation, dispatched by
     // the original outbox outside math/GC/routing and before commit read-back.
-    SPEED_NATIVE_LOG(LogTemp,Verbose,TEXT("[IASOriginalActivationCompleted] frame=%llu actors=%u"),I.Driver->NextPrivate(),uint32(I.Cars.size()));
+    SPEED_NATIVE_LOG(LogTemp,Verbose,TEXT("[IASOriginalActivationCompleted] frame=%llu actors=%u"),I.Driver->NextPrivate(Operation),uint32(I.Cars.size()));
     return true;
     }();
     I.Diagnostics->End();ActivationOutboxActive=false;
@@ -1353,7 +1477,7 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
     {
         FGCScopeGuard ActivationReadBackOnly;
         FOriginalComponentStorageScope OriginalActivationReadBack(*I.Access);
-        if(!HasExactRegisteredRoster(Why)||I.Driver->NextPrivate()!=1||I.Published.load()!=Baseline)
+        if(!HasExactRegisteredRosterRetained(Root,Operation,Why)||I.Driver->NextPrivate(Operation)!=1||I.Published.load()!=Baseline)
             return StartupFailed(TEXT("startup original registry/counter/publication changed during callback"));
         for(const auto& N:I.Cars)
         {
@@ -1373,24 +1497,52 @@ bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<c
     }
     return true;
 }
-std::vector<FNativeConfigurationLifetimeValues> FPrivateRoadPhysicsWorld::ReadNativeConfigurationLifetimeForDiagnostics() const
+bool FPrivateRoadPhysicsWorld::ReleaseInitialPublication(const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why)
+{
+    if(!IsInGameThread()){Why.Empty();return Refuse(Why,TEXT("startup release requires original GT owner"));}
+    FRetainedNativeCall Call(Impl);
+    return ReleaseInitialPublicationRetained(Call.Root,Baseline,Why);
+}
+std::vector<FNativeConfigurationLifetimeValues> FPrivateRoadPhysicsWorld::ReadNativeConfigurationLifetimeRetained(const std::shared_ptr<FImpl>& Root)
 {
     if(!IsInGameThread())return {};
-    auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);if(!Lock.owns_lock())return {};
+    auto& I=*Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)return {};
+    std::unique_lock Lock(I.Gate,std::try_to_lock);if(!Lock.owns_lock())return {};
     std::vector<FNativeConfigurationLifetimeValues> Values;
     for(const auto& Trace:I.NativeConfigurationLifetime)Values.push_back(Trace->Read());
     return Values;
 }
+std::vector<FNativeConfigurationLifetimeValues> FPrivateRoadPhysicsWorld::ReadNativeConfigurationLifetimeForDiagnostics() const
+{
+    if(!IsInGameThread())return {};
+    FRetainedNativeCall Call(Impl);
+    return ReadNativeConfigurationLifetimeRetained(Call.Root);
+}
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
-FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe FPrivateRoadPhysicsWorld::ObserveOriginalWorldReadForDiagnostics()
+std::vector<std::shared_ptr<const FNativeConfigurationLifetimeTrace>> FPrivateRoadPhysicsWorld::CaptureNativeConfigurationLifetimeObserversForDiagnostics()
+{
+    if(!IsInGameThread())return {};
+    FRetainedNativeCall Call(Impl);
+    const auto& I=*Call.Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)return {};
+    std::unique_lock Lock(I.Gate,std::try_to_lock);
+    if(!Lock.owns_lock())return {};
+    std::vector<std::shared_ptr<const FNativeConfigurationLifetimeTrace>> Values;
+    for(const auto& Trace:I.NativeConfigurationLifetime)Values.push_back(Trace);
+    return Values; // counter allocations only; no simulation/config reference escapes
+}
+FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe FPrivateRoadPhysicsWorld::ObserveOriginalWorldReadRetained(const std::shared_ptr<FImpl>& Root)
 {
     FOriginalWorldReadProbe Result;
     try
     {
-        if(!Impl||OriginalComponentStorageOwner||!IsInGameThread()
+        if(!Root||OriginalComponentStorageOwner||!IsInGameThread()
             ||Speed::RoadSettings::SelectedOriginalRoadSettings()
             ||Speed::Input::FPresentationInputScope::IsActive())return Result;
-        auto& I=*Impl;std::unique_lock Lock(I.Gate,std::try_to_lock);
+        auto& I=*Root;
+        if(I.NativeOperationIdentity->ActiveGTActualOperation)return Result;
+        std::unique_lock Lock(I.Gate,std::try_to_lock);
         if(!Lock.owns_lock()||I.Closed||I.Failed||!I.Access||I.Access->Active
             ||!I.DeclaredSettings||!I.AcquiredGraphStillLive())return Result;
         auto* Expected=I.OriginalWorldWeak.Get();
@@ -1412,19 +1564,27 @@ FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe FPrivateRoadPhysicsWorld::Obse
     }
     catch(...){return FOriginalWorldReadProbe{};}
 }
+FPrivateRoadPhysicsWorld::FOriginalWorldReadProbe FPrivateRoadPhysicsWorld::ObserveOriginalWorldReadForDiagnostics()
+{
+    if(!IsInGameThread())return {};
+    FRetainedNativeCall Call(Impl);
+    return ObserveOriginalWorldReadRetained(Call.Root);
+}
 #endif
 
-bool FPrivateRoadPhysicsWorld::Close()
+bool FPrivateRoadPhysicsWorld::CloseRetained(const std::shared_ptr<FImpl>& Root)
 {
     using RetirementDraft::EPhase;
     if(!IsInGameThread()||OriginalComponentStorageOwner)return false;
-    auto& I=*Impl;
+    auto& I=*Root;
+    if(I.NativeOperationIdentity->ActiveGTActualOperation)return false;
     std::unique_lock Lock(I.Gate,std::try_to_lock);
     // This b22 profile has SYNCHRONOUS GT Step, no private worker. This is only
     // exclusion of its real current Step, NOT source/capture/async owner join.
     if(!Lock.owns_lock()||I.Access->Active)return false;
     if(I.RetirementPhase==EPhase::Retired)return true;
     if(I.RetirementPhase!=EPhase::Open)return false; // interrupted is never retired
+    FPrivateNativeOperation Operation(Root,I.NativeOperationIdentity,I.NativeStorage,FPrivateNativeOperation::EKind::Retirement,std::move(Lock));
     I.RetirementPhase=EPhase::AdmissionClosed;
     I.Failed=true; // existing Step and ReleaseInitialPublication now refuse
     I.Published.store({});
@@ -1483,7 +1643,7 @@ bool FPrivateRoadPhysicsWorld::Close()
                 W->StorageAccess.reset();
                 // These null paths in b22 are assignments/short-circuit only;
                 // re-review if their implementations change.
-                W->SetWheelSim(nullptr);W->SetSuspensionSim(nullptr);W->SetChaosWheel(nullptr);
+                Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*W,nullptr);Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*W,nullptr);Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(*W,nullptr);
                 W->OwnedBodyValues.reset();W->OwnedSolidValues.reset();
                 W->OwnedWheelRuntime.reset();W->OwnedWheelDomain.reset();W->OwnedSphereDomain.reset();
             }
@@ -1535,14 +1695,26 @@ bool FPrivateRoadPhysicsWorld::Close()
             if(N->NativeVehicleRoot&&!RetirementDraft::ReleaseNativeVehicle(*N->NativeVehicleRoot))return Interrupt();
             N->RetiringReferenceSimulation.Reset(); // no GC exclusion over native dtor
         }
+        // Release table aliases only after real native simulation destructors
+        // and callback phases returned. Existing original roots still retain
+        // all actual cpp backends through this point, including refusal.
+        if(!I.NativeStorage->ReleaseAtRetirement(Operation))return Interrupt();
+        I.NativeDriverStorage.reset();I.NativeBridgeStorage.reset();
         I.Pins.Empty();I.World.Reset();
         I.Bridge=nullptr;I.Driver=nullptr;I.Cars.clear();
         I.NativeCppKeepAlive.clear(); // actual last-owner native destructors
         I.RetirementPhase=EPhase::NativeReferencesReleased;
         I.Closed=true; // only AFTER real return, detachment, native release
         I.RetirementPhase=EPhase::Retired;
+        I.NativeOperationIdentity->Retired.store(true); // only after actual full phased Close returned its native releases
         return true; // finite synchronous profile only, NOT full native/source lease
     } catch(...) {return Interrupt();}
+}
+bool FPrivateRoadPhysicsWorld::Close()
+{
+    if(!IsInGameThread())return false;
+    FRetainedNativeCall Call(Impl);
+    return CloseRetained(Call.Root);
 }
 }
 
@@ -1560,6 +1732,57 @@ bool USpeedBranchBoxSubBody::UsesOriginalBodyStorage() const
     const auto A=StorageAccess.lock();
     return OwnedBodyValues&&A&&Speed::Netcode::Prediction::OriginalComponentStorageOwner==A.get();
 }
+void USpeedBranchBoxSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,&OtherSubBody);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,&OtherSubBody);
+    // This sealed native subtype inherits the original empty base operation.
+    // Do not dispatch the extensible public callback or fabricate an impulse.
+    (void)Hit;(void)DeltaTime;(void)ImpactContext;
+}
+void USpeedBranchWheelSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext)
+{
+    using namespace Speed::Netcode::Prediction;
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,&OtherSubBody);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,&OtherSubBody);
+    // This sealed native subtype inherits the original empty base operation.
+    // Do not dispatch the extensible public callback or fabricate an impulse.
+    (void)Hit;(void)DeltaTime;(void)ImpactContext;
+}
+
+FMatrix USpeedBranchBoxSubBody::ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using namespace Speed::Netcode::Prediction;
+    const auto& Body=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    const auto& Solid=FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,this);
+    if(!Body.ParentComponent)return FMatrix::Identity; // real original null-parent branch
+    const FQuat ChassisQ=Speed::NativeKinematics::FComponentRead::Rotation(Operation,*Body.ParentComponent);
+    const FQuat HitboxRelQ=Body.LocalPose.GetRotation();
+    const FQuat Qworld=ChassisQ*HitboxRelQ;
+    const FMatrix R=FQuatRotationMatrix(Qworld);
+    return R.GetTransposed()*Solid.InvInertiaLocal*R;
+}
+FMatrix USpeedBranchWheelSubBody::ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using namespace Speed::Netcode::Prediction;
+    // Actual final wheel inherits the sphere tensor rule: no parent-dependent
+    // rotation or fabricated fallback is inserted.
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Operation,this);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Operation,this);
+    const auto& Solid=FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,this);
+    return Solid.InvInertiaLocal;
+}
+
 const Speed::FKinematicState& USpeedBranchBoxSubBody::ReadPhysicsSweeperKinematics() const
 {
     return Speed::NativeKinematics::FBodyRead::Body(*this);
@@ -2526,19 +2749,22 @@ UWorld* ASpeedBranchSimulation::ResolveOriginalPhysicalWorld() const
         return A->OriginalDriverBirth.Get()==this&&A->OriginalActorWorldStillMatches(this)?A->World:nullptr;
     return AActor::GetWorld(); // real ordinary Engine facade outside the private route
 }
-bool ASpeedBranchSimulation::InitializePrivate(USpeedWorldSubsystem& Bridge)
+bool ASpeedBranchSimulation::InitializePrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USpeedWorldSubsystem& Bridge)
 {
+    (void)ReadNativeCanonicalFrame(Operation); // genuine native backing before owner reads
     if(!IsInGameThread()||!Access.lock()||GetEngineFPS()!=300)return false;
     SpeedWorldSubsystemDriverStorage()=&Bridge;if(!EnsureSimulationWorldReady())return false;
-    SealSimulationInputs();InitializeCanonicalFrame(0);return CanonicalNumFrameDriverStorage()==0;
+    SealSimulationInputs();InitializeCanonicalFrame(0);return ReadNativeCanonicalFrame(Operation)==0;
 }
-bool ASpeedBranchSimulation::AdvancePrivate(bool Resimulation)
+bool ASpeedBranchSimulation::AdvancePrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,bool Resimulation)
 {
+    const auto Frame=ReadNativeCanonicalFrame(Operation);
     const auto A=Access.lock();
-    if(!IsInGameThread()||!A||!A->Active||A->Frame!=CanonicalNumFrameDriverStorage()||A->World!=ResolveOriginalPhysicalWorld())return false;
-    FCanonicalFrameContext Context(CanonicalNumFrameDriverStorage());Context.Purpose=Resimulation?ECanonicalFramePurpose::Resimulation:ECanonicalFramePurpose::Forward;
-    if(!StepCanonicalFrame(Context))return false;
-    ++CanonicalNumFrameDriverStorage();return true; // same success-only counter as RunCanonicalFrames.
+    if(!IsInGameThread()||!A||!A->Active||A->Frame!=Frame||A->World!=ResolveOriginalPhysicalWorld())return false;
+    FCanonicalFrameContext Context(Frame);Context.Purpose=Resimulation?ECanonicalFramePurpose::Resimulation:ECanonicalFramePurpose::Forward;
+    if(!StepNativeCanonicalFrame(Operation,Context))return false;
+    // Same success-only counter as RunCanonicalFrames, in actual retained state.
+    IncrementNativeCanonicalFrame(Operation);return true;
 }
 
 // All domains below are part of the pending vertical epoch hunk, not a lease.
@@ -3314,4 +3540,27 @@ void USpeedBranchWheelSubBody::SetPhysicalLocalRotation(const FQuat& V)
         OwnedBodyValues->LocalPose.SetRotation(V);
     }
     else USSubBody::SetPhysicalLocalRotation(V);
+}
+
+// Explicit public facade binding effects. Native physical methods use the
+// separately private unchanged binding operations above, never these entries.
+void USpeedBranchWheelSubBody::ApplyPublicChaosWheel(UChaosVehicleWheel* Value)
+{
+    ChaosWheel=Value;
+    if(ChaosWheel&&SuspensionMaxRaiseOverride>=0.0f&&SuspensionMaxDropOverride>=0.0f)
+    {
+        ChaosWheel->SuspensionMaxRaise=SuspensionMaxRaiseOverride;
+        ChaosWheel->SuspensionMaxDrop=SuspensionMaxDropOverride;
+    }
+}
+void USpeedBranchWheelSubBody::ApplyPublicWheelSim(Chaos::FSimpleWheelSim* Value)
+{
+    PWheel=Value;
+    if(!PWheel)return;
+    PWheel->SetMassPerWheel(WheelMass);
+    Mass=WheelMass; // actual public facade solid backing, never native Storage
+}
+void USpeedBranchWheelSubBody::ApplyPublicSuspensionSim(Chaos::FSimpleSuspensionSim* Value)
+{
+    PSuspension=Value;
 }

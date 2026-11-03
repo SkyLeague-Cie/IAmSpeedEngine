@@ -24,7 +24,9 @@
 #include "SpeedSimulation.h"
 #include "NativeEpochStorageRoute.h"
 #include "SpeedPhysicsSimulation.generated.h"
-namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;}
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation;}
+namespace Speed {class FSimulationWorld;}
+class ASpeedBranchSimulation;
 
 class USpeedWorldSubsystem;
 struct FCanonicalFrameContext;
@@ -274,6 +276,16 @@ protected:
 	void RecordStepPerformance(double PhysicalFrameMilliseconds);
 	float GetWarningFrameFraction() const;
 private:
+    friend class Speed::FSimulationWorld;
+    friend class ASpeedBranchSimulation;
+    class FLegacyCanonicalAccess;
+    class FNativeCanonicalAccess;
+    template<class TAccess> bool StepCanonicalFrameBody(const FCanonicalFrameContext& Context,TAccess& Storage);
+    bool StepNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FCanonicalFrameContext& Context);
+    uint64 ReadNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    void IncrementNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
+    void ValidateNativePublicationOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    bool PublishNativeSnapshot(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FCanonicalFrameContext& Context,const FSimulationSnapshot& Snapshot);
     // A fresh original driver owns its controls, journals, registries, frame
     // counters and publication tail together. Escaped legacy references keep
     // addressing the original legacy fields below, never this allocation.

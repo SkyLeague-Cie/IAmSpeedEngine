@@ -15,8 +15,9 @@ class UBoxSubBody;
 class USphereSubBody;
 class USWheelSubBody;
 class USpeedWorldSubsystem;
+class USpeedBranchBoxSubBody;
 namespace Speed { struct FKinematicState; class FSimulationWorld; }
-namespace Speed::Netcode::Prediction { class FPrivateRoadPhysicsWorld; }
+namespace Speed::Netcode::Prediction { class FPrivateRoadPhysicsWorld; class FPrivateNativeOperation; }
 
 namespace Speed::NativeKinematics
 {
@@ -32,6 +33,7 @@ class FComponentRead final
     friend class ::USpeedWheeledComponent;
     friend class ::USolidSubBody;
     friend class ::UBoxSubBody;
+    friend class ::USpeedBranchBoxSubBody;
     friend class ::USphereSubBody;
     friend class ::USWheelSubBody;
     friend class ::USpeedWorldSubsystem;
@@ -40,27 +42,59 @@ class FComponentRead final
     friend struct FCylinderRigidTrajectory;
     friend struct FDynamicBodyWitness;
     friend struct FGutterSlideDamping;
+    static bool Frozen(const ISpeedComponent& Component);
+    static bool Frozen(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
+    static float MaxSpeed(const ISpeedComponent& Component);
+    static float MaxSpeed(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
+    static float MaxAngularSpeed(const ISpeedComponent& Component);
+    static float MaxAngularSpeed(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
+    static FMatrix WorldInvInertia(const ISpeedComponent& Component);
+    static FMatrix WorldInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
+    static float Mass(const ISpeedComponent& Component);
+    static float Mass(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const TArray<FPhysicalContactConstraint>& Constraints(const ISpeedComponent& Component);
+    static const TArray<FPhysicalContactConstraint>& Constraints(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const FQuat& Rotation(const ISpeedComponent& Component);
+    static const FQuat& Rotation(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const FVector& COMVelocity(const ISpeedComponent& Component);
+    static const FVector& COMVelocity(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const FVector& AngularVelocity(const ISpeedComponent& Component);
+    static const FVector& AngularVelocity(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const FVector& Acceleration(const ISpeedComponent& Component);
+    static const FVector& Acceleration(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const FVector& AngularAcceleration(const ISpeedComponent& Component);
+    static const FVector& AngularAcceleration(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const FVector& COM(const ISpeedComponent& Component);
+    static const FVector& COM(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const FVector& LocalCOM(const ISpeedComponent& Component);
+    static const FVector& LocalCOM(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static FVector Location(const ISpeedComponent& Component);
+    static FVector Location(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static FVector Velocity(const ISpeedComponent& Component);
+    static FVector Velocity(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static FVector VelocityAtPoint(const ISpeedComponent& Component, const FVector& Point);
+    static FVector VelocityAtPoint(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const FVector& Point);
     static FVector AccelerationAtPoint(const ISpeedComponent& Component, const FVector& Point);
+    static FVector AccelerationAtPoint(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const FVector& Point);
     static FVector Forward(const ISpeedComponent& Component);
+    static FVector Forward(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static FVector Right(const ISpeedComponent& Component);
+    static FVector Right(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static FVector Up(const ISpeedComponent& Component);
+    static FVector Up(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static float ForwardSpeed(const ISpeedComponent& Component);
+    static float ForwardSpeed(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static bool GoingForward(const ISpeedComponent& Component);
+    static bool GoingForward(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static Speed::FKinematicState Origin(const ISpeedComponent& Component);
+    static Speed::FKinematicState Origin(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static Speed::FKinematicState OriginForFrame(const ISpeedComponent& Component, const unsigned int& NumFrameToRead);
+    static Speed::FKinematicState OriginForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const unsigned int& NumFrameToRead);
     static const Speed::FKinematicState& Current(const ISpeedComponent& Component);
+    static const Speed::FKinematicState& Current(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const Speed::FKinematicState& ForFrame(const ISpeedComponent& Component, const unsigned int& Frame);
+    static const Speed::FKinematicState& ForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const unsigned int& Frame);
+    static unsigned int NativeFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     class FView final
     {
         const ISpeedComponent& Component;

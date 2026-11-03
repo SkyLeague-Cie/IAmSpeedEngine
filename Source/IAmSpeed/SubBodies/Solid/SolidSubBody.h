@@ -6,6 +6,8 @@
 #include "IAmSpeed/SubBodies/SSubBody.h"
 #include "IAmSpeed/Base/EpisodeStateBytesForTesting.h"
 #include "SolidSubBody.generated.h"
+namespace Speed::Netcode::Prediction {class FPrivateNativeOperation;}
+namespace Speed::NativeKinematics {class FBodyRead;class FBodyWrite;}
 
 UENUM()
 enum class EMixMode : uint8
@@ -59,10 +61,53 @@ struct FFakePhysicsImpactContext
  *  - Fake physics impulses
  *  - Collision properties (restitution, friction, impact threshold)
  */
+namespace Speed::NativeKinematics { class FSolidMassAccess; class FSolidPropertiesAccess; }
 UCLASS()
 class IAMSPEED_API USolidSubBody : public USSubBody
 {
 	GENERATED_BODY()
+private:
+    friend class Speed::NativeKinematics::FSolidMassAccess;
+    friend class Speed::NativeKinematics::FSolidPropertiesAccess;
+    virtual const int& PublicSolid_idxStorage() const { return idxSolidStorage(); }
+    virtual int& PublicSolid_idxStorage() { return idxSolidStorage(); }
+    virtual const bool& PublicSolid_bIsMainSubBodyStorage() const { return bIsMainSubBodySolidStorage(); }
+    virtual bool& PublicSolid_bIsMainSubBodyStorage() { return bIsMainSubBodySolidStorage(); }
+    virtual const bool& PublicSolid_bApplyRestForceStorage() const { return bApplyRestForceSolidStorage(); }
+    virtual bool& PublicSolid_bApplyRestForceStorage() { return bApplyRestForceSolidStorage(); }
+    virtual const bool& PublicSolid_EnableFakePhysicsStorage() const { return EnableFakePhysicsSolidStorage(); }
+    virtual bool& PublicSolid_EnableFakePhysicsStorage() { return EnableFakePhysicsSolidStorage(); }
+    virtual const float& PublicSolid_RestitutionStorage() const { return RestitutionSolidStorage(); }
+    virtual float& PublicSolid_RestitutionStorage() { return RestitutionSolidStorage(); }
+    virtual const float& PublicSolid_SphereBoxRestitutionOverrideStorage() const { return SphereBoxRestitutionOverrideSolidStorage(); }
+    virtual float& PublicSolid_SphereBoxRestitutionOverrideStorage() { return SphereBoxRestitutionOverrideSolidStorage(); }
+    virtual const float& PublicSolid_SphereBoxFrictionOverrideStorage() const { return SphereBoxFrictionOverrideSolidStorage(); }
+    virtual float& PublicSolid_SphereBoxFrictionOverrideStorage() { return SphereBoxFrictionOverrideSolidStorage(); }
+    virtual const float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() const { return SphereBoxManifoldFrictionOverrideSolidStorage(); }
+    virtual float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() { return SphereBoxManifoldFrictionOverrideSolidStorage(); }
+    virtual const bool& PublicSolid_bUseCoupledContactImpulseStorage() const { return bUseCoupledContactImpulseSolidStorage(); }
+    virtual bool& PublicSolid_bUseCoupledContactImpulseStorage() { return bUseCoupledContactImpulseSolidStorage(); }
+    virtual const bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() const { return bUsePostNormalFrictionImpulseSolidStorage(); }
+    virtual bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() { return bUsePostNormalFrictionImpulseSolidStorage(); }
+    virtual const bool& PublicSolid_bUsePersistentBilateralContactStorage() const { return bUsePersistentBilateralContactSolidStorage(); }
+    virtual bool& PublicSolid_bUsePersistentBilateralContactStorage() { return bUsePersistentBilateralContactSolidStorage(); }
+    virtual const float& PublicSolid_CoupledContactMaxLinearSpeedStorage() const { return CoupledContactMaxLinearSpeedSolidStorage(); }
+    virtual float& PublicSolid_CoupledContactMaxLinearSpeedStorage() { return CoupledContactMaxLinearSpeedSolidStorage(); }
+    virtual const float& PublicSolid_CoupledContactMaxAngularSpeedStorage() const { return CoupledContactMaxAngularSpeedSolidStorage(); }
+    virtual float& PublicSolid_CoupledContactMaxAngularSpeedStorage() { return CoupledContactMaxAngularSpeedSolidStorage(); }
+    virtual const float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() const { return CoupledContactMaxAbsLocalNormalYSolidStorage(); }
+    virtual float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() { return CoupledContactMaxAbsLocalNormalYSolidStorage(); }
+    virtual const float& PublicSolid_StaticFrictionStorage() const { return StaticFrictionSolidStorage(); }
+    virtual float& PublicSolid_StaticFrictionStorage() { return StaticFrictionSolidStorage(); }
+    virtual const float& PublicSolid_DynamicFrictionStorage() const { return DynamicFrictionSolidStorage(); }
+    virtual float& PublicSolid_DynamicFrictionStorage() { return DynamicFrictionSolidStorage(); }
+    virtual const float& PublicSolid_ImpactThresholdStorage() const { return ImpactThresholdSolidStorage(); }
+    virtual float& PublicSolid_ImpactThresholdStorage() { return ImpactThresholdSolidStorage(); }
+    virtual const float& PublicSolid_HitDampingStorage() const { return HitDampingSolidStorage(); }
+    virtual float& PublicSolid_HitDampingStorage() { return HitDampingSolidStorage(); }
+
+    virtual const float& PublicMassView() const { return MassSolidStorage(); }
+    virtual float& PublicMassMutableView() { return MassSolidStorage(); }
 	
 public:
 #if !UE_BUILD_SHIPPING
@@ -98,68 +143,68 @@ public:
 
 	/** New mechanical obstacle path only; false preserves ordinary response. */
 	static bool ResolvePrescribedContact(USolidSubBody& A,USolidSubBody& B,const SHitResult& Hit,double Penetration);
-	float GetMass() const { return MassSolidStorage(); }
-	void SetMass(float InMass) { MassSolidStorage() = InMass; }
+	float GetMass() const { return PublicMassView(); }
+	void SetMass(float InMass) { PublicMassMutableView() = InMass; }
 	virtual FMatrix ComputeWorldInvInertiaTensor() const;
-	int Idx() const { return idxSolidStorage(); }
-	void SetIdx(int InIdx) { idxSolidStorage() = InIdx; }
-	bool IsMainSubBody() const { return bIsMainSubBodySolidStorage(); }
-	bool IsFakePhysicsEnabled() const { return EnableFakePhysicsSolidStorage(); }
-	float GetRestitution() const { return RestitutionSolidStorage(); }
-	float GetSphereBoxRestitutionOverride() const { return SphereBoxRestitutionOverrideSolidStorage(); }
-	float GetSphereBoxFrictionOverride() const { return SphereBoxFrictionOverrideSolidStorage(); }
-	float GetSphereBoxManifoldFrictionOverride() const { return SphereBoxManifoldFrictionOverrideSolidStorage(); }
-	bool UsesCoupledContactImpulse() const { return bUseCoupledContactImpulseSolidStorage(); }
-	bool UsesPostNormalFrictionImpulse() const { return bUsePostNormalFrictionImpulseSolidStorage(); }
-	bool UsesPersistentBilateralContact() const { return bUsePersistentBilateralContactSolidStorage(); }
+	int Idx() const { return PublicSolid_idxStorage(); }
+	void SetIdx(int InIdx) { PublicSolid_idxStorage() = InIdx; }
+	bool IsMainSubBody() const { return PublicSolid_bIsMainSubBodyStorage(); }
+	bool IsFakePhysicsEnabled() const { return PublicSolid_EnableFakePhysicsStorage(); }
+	float GetRestitution() const { return PublicSolid_RestitutionStorage(); }
+	float GetSphereBoxRestitutionOverride() const { return PublicSolid_SphereBoxRestitutionOverrideStorage(); }
+	float GetSphereBoxFrictionOverride() const { return PublicSolid_SphereBoxFrictionOverrideStorage(); }
+	float GetSphereBoxManifoldFrictionOverride() const { return PublicSolid_SphereBoxManifoldFrictionOverrideStorage(); }
+	bool UsesCoupledContactImpulse() const { return PublicSolid_bUseCoupledContactImpulseStorage(); }
+	bool UsesPostNormalFrictionImpulse() const { return PublicSolid_bUsePostNormalFrictionImpulseStorage(); }
+	bool UsesPersistentBilateralContact() const { return PublicSolid_bUsePersistentBilateralContactStorage(); }
 	bool AllowsCoupledContactImpulseFor(const SKinematic& State) const
 	{
-		return (CoupledContactMaxLinearSpeedSolidStorage() < 0.0f ||
-			State.Velocity.Size() <= CoupledContactMaxLinearSpeedSolidStorage()) &&
-			(CoupledContactMaxAngularSpeedSolidStorage() < 0.0f ||
-			State.AngularVelocity.Size() <= CoupledContactMaxAngularSpeedSolidStorage());
+		return (PublicSolid_CoupledContactMaxLinearSpeedStorage() < 0.0f ||
+			State.Velocity.Size() <= PublicSolid_CoupledContactMaxLinearSpeedStorage()) &&
+			(PublicSolid_CoupledContactMaxAngularSpeedStorage() < 0.0f ||
+			State.AngularVelocity.Size() <= PublicSolid_CoupledContactMaxAngularSpeedStorage());
 	}
 	bool AllowsCoupledContactNormal(const FVector& LocalNormal) const
 	{
-		return CoupledContactMaxAbsLocalNormalYSolidStorage() < 0.0f ||
-			FMath::Abs(LocalNormal.Y) <= CoupledContactMaxAbsLocalNormalYSolidStorage();
+		return PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() < 0.0f ||
+			FMath::Abs(LocalNormal.Y) <= PublicSolid_CoupledContactMaxAbsLocalNormalYStorage();
 	}
-	float GetStaticFriction() const { return StaticFrictionSolidStorage(); }
-	float GetDynamicFriction() const { return DynamicFrictionSolidStorage(); }
-	float GetImpactThreshold() const { return ImpactThresholdSolidStorage(); }
-	float GetHitDamping() const { return HitDampingSolidStorage(); }
+	float GetStaticFriction() const { return PublicSolid_StaticFrictionStorage(); }
+	float GetDynamicFriction() const { return PublicSolid_DynamicFrictionStorage(); }
+	float GetImpactThreshold() const { return PublicSolid_ImpactThresholdStorage(); }
+	float GetHitDamping() const { return PublicSolid_HitDampingStorage(); }
 	UFUNCTION(BlueprintCallable, Category = "Physics")
 	void SetSphereBoxRestitutionOverride(float InRestitution);
 	void SetSphereBoxFrictionOverride(float InFriction)
 	{
-		SphereBoxFrictionOverrideSolidStorage() = InFriction < 0.0f ? -1.0f : InFriction;
+		PublicSolid_SphereBoxFrictionOverrideStorage() = InFriction < 0.0f ? -1.0f : InFriction;
 	}
 	void SetSphereBoxManifoldFrictionOverride(float InFriction)
 	{
-		SphereBoxManifoldFrictionOverrideSolidStorage() = InFriction < 0.0f ? -1.0f : InFriction;
+		PublicSolid_SphereBoxManifoldFrictionOverrideStorage() = InFriction < 0.0f ? -1.0f : InFriction;
 	}
 	void SetUseCoupledContactImpulse(bool bInEnabled)
 	{
-		bUseCoupledContactImpulseSolidStorage() = bInEnabled;
+		PublicSolid_bUseCoupledContactImpulseStorage() = bInEnabled;
 	}
 	void SetUsePostNormalFrictionImpulse(bool bInEnabled)
 	{
-		bUsePostNormalFrictionImpulseSolidStorage() = bInEnabled;
+		PublicSolid_bUsePostNormalFrictionImpulseStorage() = bInEnabled;
 	}
 	void SetUsePersistentBilateralContact(bool bInEnabled)
 	{
-		bUsePersistentBilateralContactSolidStorage() = bInEnabled;
+		PublicSolid_bUsePersistentBilateralContactStorage() = bInEnabled;
 	}
 	void SetCoupledContactKinematicLimits(
 		float MaxLinearSpeed,
 		float MaxAngularSpeed)
 	{
-		CoupledContactMaxLinearSpeedSolidStorage() = MaxLinearSpeed;
-		CoupledContactMaxAngularSpeedSolidStorage() = MaxAngularSpeed;
+		PublicSolid_CoupledContactMaxLinearSpeedStorage() = MaxLinearSpeed;
+		PublicSolid_CoupledContactMaxAngularSpeedStorage() = MaxAngularSpeed;
 	}
 	void SetCoupledContactMaxAbsLocalNormalY(float MaxAbsLocalNormalY)
 	{
-		CoupledContactMaxAbsLocalNormalYSolidStorage() = MaxAbsLocalNormalY;
+		PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() = MaxAbsLocalNormalY;
 	}
 
 	// Override this function to apply custom impulses on the subbody itself when a hit is resolved.
@@ -191,7 +236,7 @@ public:
 		float Percent = 0.8f,
 		float KillVelThreshold = 5.f // cm/s (or ImpactThreshold)
 	);
-	bool HasToApplyRestForce() const { return bApplyRestForceSolidStorage(); }
+	bool HasToApplyRestForce() const { return PublicSolid_bApplyRestForceStorage(); }
 
 protected:
 	virtual FMatrix InitInvInertiaTensor() const { return FMatrix::Identity; }
@@ -348,4 +393,13 @@ protected:
 
 	// Index of the subbody (for logs)
 	int idx = -1;
+
+private:
+    friend class Speed::NativeKinematics::FBodyRead;
+    friend class Speed::NativeKinematics::FBodyWrite;
+    virtual void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext);
+    // Separate explicit native dispatch. Old public/protected virtual APIs stay
+    // legacy; no public context or routing scope can issue this Operation.
+    virtual FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+
 };

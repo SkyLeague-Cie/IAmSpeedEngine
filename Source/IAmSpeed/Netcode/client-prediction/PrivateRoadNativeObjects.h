@@ -7,7 +7,7 @@
 #include "IAmSpeed/SubBodies/Solid/SWheelSubBody.h"
 #include <memory>
 #include "PrivateRoadNativeObjects.generated.h"
-namespace Speed::Netcode::Prediction { struct FPrivateRoadAccess;class FPrivateRoadPhysicsWorld; }
+namespace Speed::Netcode::Prediction { struct FPrivateRoadAccess;class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation; }
 namespace Speed::CommonState {struct FSleepValues;struct FQuantizationValues;}
 namespace Speed::Netcode::Prediction
 {
@@ -172,6 +172,46 @@ private:
     const Speed::FKinematicState& PublicKinematicView() const override { return Kinematics; }
     const SHitResult& PublicCurrentHitView() const override { return CurrentHit; }
     const SHitResult& PublicFutureHitView() const override { return FutureHit; }
+    SHitResult& PublicCurrentHitMutableView() override { return CurrentHit; }
+    SHitResult& PublicFutureHitMutableView() override { return FutureHit; }
+    const float& PublicMassView() const override { return Mass; }
+    float& PublicMassMutableView() override { return Mass; }
+    const int& PublicSolid_idxStorage() const override { return idx; }
+    int& PublicSolid_idxStorage() override { return idx; }
+    const bool& PublicSolid_bIsMainSubBodyStorage() const override { return bIsMainSubBody; }
+    bool& PublicSolid_bIsMainSubBodyStorage() override { return bIsMainSubBody; }
+    const bool& PublicSolid_bApplyRestForceStorage() const override { return bApplyRestForce; }
+    bool& PublicSolid_bApplyRestForceStorage() override { return bApplyRestForce; }
+    const bool& PublicSolid_EnableFakePhysicsStorage() const override { return EnableFakePhysics; }
+    bool& PublicSolid_EnableFakePhysicsStorage() override { return EnableFakePhysics; }
+    const float& PublicSolid_RestitutionStorage() const override { return Restitution; }
+    float& PublicSolid_RestitutionStorage() override { return Restitution; }
+    const float& PublicSolid_SphereBoxRestitutionOverrideStorage() const override { return SphereBoxRestitutionOverride; }
+    float& PublicSolid_SphereBoxRestitutionOverrideStorage() override { return SphereBoxRestitutionOverride; }
+    const float& PublicSolid_SphereBoxFrictionOverrideStorage() const override { return SphereBoxFrictionOverride; }
+    float& PublicSolid_SphereBoxFrictionOverrideStorage() override { return SphereBoxFrictionOverride; }
+    const float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() const override { return SphereBoxManifoldFrictionOverride; }
+    float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() override { return SphereBoxManifoldFrictionOverride; }
+    const bool& PublicSolid_bUseCoupledContactImpulseStorage() const override { return bUseCoupledContactImpulse; }
+    bool& PublicSolid_bUseCoupledContactImpulseStorage() override { return bUseCoupledContactImpulse; }
+    const bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() const override { return bUsePostNormalFrictionImpulse; }
+    bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() override { return bUsePostNormalFrictionImpulse; }
+    const bool& PublicSolid_bUsePersistentBilateralContactStorage() const override { return bUsePersistentBilateralContact; }
+    bool& PublicSolid_bUsePersistentBilateralContactStorage() override { return bUsePersistentBilateralContact; }
+    const float& PublicSolid_CoupledContactMaxLinearSpeedStorage() const override { return CoupledContactMaxLinearSpeed; }
+    float& PublicSolid_CoupledContactMaxLinearSpeedStorage() override { return CoupledContactMaxLinearSpeed; }
+    const float& PublicSolid_CoupledContactMaxAngularSpeedStorage() const override { return CoupledContactMaxAngularSpeed; }
+    float& PublicSolid_CoupledContactMaxAngularSpeedStorage() override { return CoupledContactMaxAngularSpeed; }
+    const float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() const override { return CoupledContactMaxAbsLocalNormalY; }
+    float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() override { return CoupledContactMaxAbsLocalNormalY; }
+    const float& PublicSolid_StaticFrictionStorage() const override { return StaticFriction; }
+    float& PublicSolid_StaticFrictionStorage() override { return StaticFriction; }
+    const float& PublicSolid_DynamicFrictionStorage() const override { return DynamicFriction; }
+    float& PublicSolid_DynamicFrictionStorage() override { return DynamicFriction; }
+    const float& PublicSolid_ImpactThresholdStorage() const override { return ImpactThreshold; }
+    float& PublicSolid_ImpactThresholdStorage() override { return ImpactThreshold; }
+    const float& PublicSolid_HitDampingStorage() const override { return HitDamping; }
+    float& PublicSolid_HitDampingStorage() override { return HitDamping; }
     const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
@@ -358,6 +398,11 @@ public:
 protected:
     const USpeedWorldSubsystem* ResolveEpochBridgeForSweep(UWorld*,const Speed::IStaticCollisionWorld*) const override;
     void ResolveCurrentHitPrv(const float&,const float&) override;
+
+private:
+    void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) override;
+    FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+
 };
 // Same inherited wheel physics; only the declared core value storage routes.
 // Exact-class parallel query admission remains closed until separately checked.
@@ -369,6 +414,53 @@ private:
     const Speed::FKinematicState& PublicKinematicView() const override { return Kinematics; }
     const SHitResult& PublicCurrentHitView() const override { return CurrentHit; }
     const SHitResult& PublicFutureHitView() const override { return FutureHit; }
+    SHitResult& PublicCurrentHitMutableView() override { return CurrentHit; }
+    SHitResult& PublicFutureHitMutableView() override { return FutureHit; }
+    const float& PublicMassView() const override { return Mass; }
+    float& PublicMassMutableView() override { return Mass; }
+    const int& PublicSolid_idxStorage() const override { return idx; }
+    int& PublicSolid_idxStorage() override { return idx; }
+    const bool& PublicSolid_bIsMainSubBodyStorage() const override { return bIsMainSubBody; }
+    bool& PublicSolid_bIsMainSubBodyStorage() override { return bIsMainSubBody; }
+    const bool& PublicSolid_bApplyRestForceStorage() const override { return bApplyRestForce; }
+    bool& PublicSolid_bApplyRestForceStorage() override { return bApplyRestForce; }
+    const bool& PublicSolid_EnableFakePhysicsStorage() const override { return EnableFakePhysics; }
+    bool& PublicSolid_EnableFakePhysicsStorage() override { return EnableFakePhysics; }
+    const float& PublicSolid_RestitutionStorage() const override { return Restitution; }
+    float& PublicSolid_RestitutionStorage() override { return Restitution; }
+    const float& PublicSolid_SphereBoxRestitutionOverrideStorage() const override { return SphereBoxRestitutionOverride; }
+    float& PublicSolid_SphereBoxRestitutionOverrideStorage() override { return SphereBoxRestitutionOverride; }
+    const float& PublicSolid_SphereBoxFrictionOverrideStorage() const override { return SphereBoxFrictionOverride; }
+    float& PublicSolid_SphereBoxFrictionOverrideStorage() override { return SphereBoxFrictionOverride; }
+    const float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() const override { return SphereBoxManifoldFrictionOverride; }
+    float& PublicSolid_SphereBoxManifoldFrictionOverrideStorage() override { return SphereBoxManifoldFrictionOverride; }
+    const bool& PublicSolid_bUseCoupledContactImpulseStorage() const override { return bUseCoupledContactImpulse; }
+    bool& PublicSolid_bUseCoupledContactImpulseStorage() override { return bUseCoupledContactImpulse; }
+    const bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() const override { return bUsePostNormalFrictionImpulse; }
+    bool& PublicSolid_bUsePostNormalFrictionImpulseStorage() override { return bUsePostNormalFrictionImpulse; }
+    const bool& PublicSolid_bUsePersistentBilateralContactStorage() const override { return bUsePersistentBilateralContact; }
+    bool& PublicSolid_bUsePersistentBilateralContactStorage() override { return bUsePersistentBilateralContact; }
+    const float& PublicSolid_CoupledContactMaxLinearSpeedStorage() const override { return CoupledContactMaxLinearSpeed; }
+    float& PublicSolid_CoupledContactMaxLinearSpeedStorage() override { return CoupledContactMaxLinearSpeed; }
+    const float& PublicSolid_CoupledContactMaxAngularSpeedStorage() const override { return CoupledContactMaxAngularSpeed; }
+    float& PublicSolid_CoupledContactMaxAngularSpeedStorage() override { return CoupledContactMaxAngularSpeed; }
+    const float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() const override { return CoupledContactMaxAbsLocalNormalY; }
+    float& PublicSolid_CoupledContactMaxAbsLocalNormalYStorage() override { return CoupledContactMaxAbsLocalNormalY; }
+    const float& PublicSolid_StaticFrictionStorage() const override { return StaticFriction; }
+    float& PublicSolid_StaticFrictionStorage() override { return StaticFriction; }
+    const float& PublicSolid_DynamicFrictionStorage() const override { return DynamicFriction; }
+    float& PublicSolid_DynamicFrictionStorage() override { return DynamicFriction; }
+    const float& PublicSolid_ImpactThresholdStorage() const override { return ImpactThreshold; }
+    float& PublicSolid_ImpactThresholdStorage() override { return ImpactThreshold; }
+    const float& PublicSolid_HitDampingStorage() const override { return HitDamping; }
+    float& PublicSolid_HitDampingStorage() override { return HitDamping; }
+    void ApplyPublicChaosWheel(UChaosVehicleWheel* Value) override;
+    void ApplyPublicWheelSim(Chaos::FSimpleWheelSim* Value) override;
+    void ApplyPublicSuspensionSim(Chaos::FSimpleSuspensionSim* Value) override;
+    const UChaosVehicleWheel* PublicChaosWheelView() const override { return ChaosWheel; }
+    const Chaos::FSimpleWheelSim* PublicWheelSimView() const override { return PWheel; }
+    const Chaos::FSimpleSuspensionSim* PublicSuspensionSimView() const override { return PSuspension; }
+
     const Speed::FKinematicState& ReadPhysicsSweeperKinematics() const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> StorageAccess;
@@ -558,6 +650,11 @@ private:
 
 public:
     explicit USpeedBranchWheelSubBody(const FObjectInitializer& Initializer=FObjectInitializer::Get());
+
+private:
+    void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) override;
+    FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+
 };
 // A real subtype whose lifecycle never creates a Chaos/network physics owner.
 // Its manually owned wheel/suspension storage belongs to the private factory.
@@ -573,8 +670,11 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     const FVector& PublicPhysCOMView() const override { return BasePhysicsState.Kinematic.Location; }
     const FVector& PublicPhysLocalCOMView() const override { return CenterOfMass; }
     const TArray<FPhysicalContactConstraint>& PublicPhysicalConstraintsView() const override { return PhysicalConstraints; }
+    TArray<FPhysicalContactConstraint>& PublicPhysicalConstraintsMutableView() override { return PhysicalConstraints; }
     const SKinematic& ReadPhysicsKinematicStateForFrame(const unsigned int& Frame) const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    friend class Speed::NativeKinematics::FComponentRead;
+    friend class Speed::NativeKinematics::FComponentWrite;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
     bool HasIsolatedNativeConstruction() const;
     bool ReadOriginalLegacyGameModePresence() const override;
@@ -671,9 +771,9 @@ class IAMSPEED_API ASpeedBranchSimulation final : public ASpeedPhysicsSimulation
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
     UWorld* ResolveOriginalPhysicalWorld() const;
-    bool InitializePrivate(USpeedWorldSubsystem& Bridge);
-    bool AdvancePrivate(bool Resimulation);
-    uint64 NextPrivate() const {return CanonicalNumFrameDriverStorage();}
+    bool InitializePrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USpeedWorldSubsystem& Bridge);
+    bool AdvancePrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,bool Resimulation);
+    uint64 NextPrivate(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const {return ReadNativeCanonicalFrame(Operation);}
     ESimulationWorkerResult DriveSimulation(float,float) override {return ESimulationWorkerResult::Failed;}
     void WaitBetweenFrames(FSimulationWorkerWaitContext&) override {}
     bool AllowsLegacySnapshotRollback() const override {return false;}

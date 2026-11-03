@@ -2,6 +2,9 @@
 
 
 #include "SolidSubBody.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
@@ -25,20 +28,18 @@ static TAutoConsoleVariable<float> CVarIAmSpeedSphereBoxManifoldFrictionOverride
     -1.0f,
     TEXT("Forces friction only for persistent sphere/box manifolds when >= 0. Negative values use subbody manifold overrides or ordinary sphere/box friction."));
 
-namespace
-{
-    float ResolveSphereBoxGlobalRestitution(
+float Speed::NativeKinematics::FSolidRestitutionPolicy::Resolve(
         const USolidSubBody& Sphere,
         const USolidSubBody& Box,
         const float FallbackRestitution)
     {
-        const float SphereOverride = Sphere.GetSphereBoxRestitutionOverride();
+        const float SphereOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxRestitutionOverride(Sphere);
         if (SphereOverride >= 0.f)
         {
             return FMath::Clamp(SphereOverride, 0.f, 1.f);
         }
 
-        const float BoxOverride = Box.GetSphereBoxRestitutionOverride();
+        const float BoxOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxRestitutionOverride(Box);
         if (BoxOverride >= 0.f)
         {
             return FMath::Clamp(BoxOverride, 0.f, 1.f);
@@ -46,7 +47,6 @@ namespace
 
         return FMath::Clamp(FallbackRestitution, 0.f, 1.f);
     }
-}
 
 void USolidSubBody::Initialize(ISpeedComponent* InParentComponent)
 {
@@ -80,7 +80,7 @@ void USolidSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& Wo
 
 void USolidSubBody::SetSphereBoxRestitutionOverride(float InRestitution)
 {
-    SphereBoxRestitutionOverrideSolidStorage() = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
+    PublicSolid_SphereBoxRestitutionOverrideStorage() = InRestitution < 0.f ? -1.f : FMath::Clamp(InRestitution, 0.f, 1.f);
 }
 
 void USolidSubBody::RegisterCurrentHitAsConstraint()
@@ -165,7 +165,7 @@ void USolidSubBody::RegisterContactWithReference(
 
     if (bRegisterThisConstraint)
     {
-        ParentComponentBodyDomainStorage()->RegisterPhysicalConstraint(Constraint);
+        Speed::NativeKinematics::FComponentWrite::RegisterConstraint(*ParentComponentBodyDomainStorage(),Constraint);
     }
 
     if (bRegisterOtherConstraint)
@@ -179,7 +179,7 @@ void USolidSubBody::RegisterContactWithReference(
         OtherConstraint.TOI = TOI;
         OtherConstraint.PairKey = USSubBody::MakePairKey(OtherSubBody, this);
         OtherConstraint.bPersistent = false;
-        OtherSubBody->ParentComponentBodyDomainStorage()->RegisterPhysicalConstraint(OtherConstraint);
+        Speed::NativeKinematics::FComponentWrite::RegisterConstraint(*OtherSubBody->ParentComponentBodyDomainStorage(),OtherConstraint);
 
         /*
         UE_LOG(LogTemp, Log,
@@ -291,8 +291,8 @@ float USolidSubBody::ResolveSphereBoxFriction(
     {
         return ForcedOverride;
     }
-    const float SphereOverride = Sphere.GetSphereBoxFrictionOverride();
-    const float BoxOverride = Box.GetSphereBoxFrictionOverride();
+    const float SphereOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxFrictionOverride(Sphere);
+    const float BoxOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxFrictionOverride(Box);
     if (SphereOverride >= 0.0f || BoxOverride >= 0.0f)
     {
         return FMath::Max(SphereOverride, BoxOverride);
@@ -312,8 +312,8 @@ float USolidSubBody::ResolveSphereBoxManifoldFriction(
         return ForcedOverride;
     }
 
-    const float SphereOverride = Sphere.GetSphereBoxManifoldFrictionOverride();
-    const float BoxOverride = Box.GetSphereBoxManifoldFrictionOverride();
+    const float SphereOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxManifoldFrictionOverride(Sphere);
+    const float BoxOverride = Speed::NativeKinematics::FSolidPropertiesAccess::GetSphereBoxManifoldFrictionOverride(Box);
     if (SphereOverride >= 0.0f || BoxOverride >= 0.0f)
     {
         return FMath::Max(SphereOverride, BoxOverride);
@@ -329,7 +329,7 @@ float USolidSubBody::ResolveSphereBoxRestitution(const USolidSubBody& Sphere, co
         return FMath::Clamp(ForcedOverride, 0.f, 1.f);
     }
 
-    return ResolveSphereBoxGlobalRestitution(Sphere, Box, FallbackRestitution);
+    return Speed::NativeKinematics::FSolidRestitutionPolicy::Resolve(Sphere, Box, FallbackRestitution);
 }
 
 FVector USolidSubBody::GetVelocityAtPoint(const FVector& Point) const
@@ -414,6 +414,21 @@ void USolidSubBody::SolveOverlap(
             if (OtherComp) OtherComp->ApplyImpulse(-J, P);
         }
     }
+}
+
+void USolidSubBody::ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext)
+{
+    (void)Operation;(void)OtherSubBody;(void)Hit;(void)DeltaTime;(void)ImpactContext;
+    // No public virtual fallback on an unsupported native subtype.
+    throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
+
+FMatrix USolidSubBody::ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    (void)Operation;
+    // Unsupported native subtype refuses BEFORE old Storage, virtual public
+    // getters or any native state mutation. Missing is never a zero matrix.
+    throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
 }
 
 FMatrix USolidSubBody::ComputeWorldInvInertiaTensor() const

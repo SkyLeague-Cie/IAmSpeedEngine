@@ -1,4 +1,5 @@
 #include "SpeedMovementComponent.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
@@ -517,7 +518,7 @@ void USpeedMovementComponent::HandleRestForce()
 	{
 		if (!SubBody)
 			continue;
-		if (!SubBody->HasToApplyRestForce() || !Speed::NativeKinematics::FBodyRead::HasHit(*SubBody))
+		if (!Speed::NativeKinematics::FSolidPropertiesAccess::HasToApplyRestForce(*SubBody) || !Speed::NativeKinematics::FBodyRead::HasHit(*SubBody))
 			continue;
 		FVector N = Speed::NativeKinematics::FBodyRead::CurrentHit(*SubBody).ImpactNormal; // surface normal
 		FVector accel = GetPhysAcceleration();

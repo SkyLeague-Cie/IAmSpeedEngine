@@ -18,7 +18,8 @@ namespace Speed::Replay { class FFieldWriter; }
 
 #include "IAmSpeed/World/Simulation/NativeEpochStorageRoute.h"
 #include "SpeedWheeledComponent.generated.h"
-namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;}
+namespace Speed::Netcode::Prediction {class FPrivateRoadPhysicsWorld;class FPrivateNativeOperation;}
+namespace Speed::NativeKinematics {class FComponentRead;}
 class USpeedBranchWheeledComponent;
 
 // Explicit construction policy; never inferred from role, time or a packet.
@@ -62,6 +63,7 @@ class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementC
     virtual const FVector& PublicPhysLocalCOMView() const { return CenterOfMassWheeledDomainStorage(); }
     friend class USpeedBranchWheeledComponent;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
+    friend class Speed::NativeKinematics::FComponentRead;
 #if WITH_DEV_AUTOMATION_TESTS
 	friend struct FLocalNormalCameraFixtureAccess;
 #endif
@@ -878,6 +880,9 @@ private:
 		FSpeedCarCameraPhysicalInput Input;
 	};	using FLegacyWheeledIngress = Speed::Input::TLegacyRemotePreSlewIngress<FWheeledInputState>;
 	using FLegacyWheeledOwner = Speed::Input::TLegacyRemotePreSlewOwner<FWheeledInputState>;
+    class FLegacyInertiaAccess;class FNativeInertiaAccess;
+    template<class TAccess> static FMatrix ComputeWorldInvInertiaBody(TAccess& Storage);
+    static FMatrix ComputeNativeComponentInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     struct FOriginalWheeledDomain
     {
         bool bPublishWheelPresentation= false;

@@ -18,7 +18,7 @@ class USphereSubBody;
 class USWheelSubBody;
 class UCylinderSubBody;
 namespace Speed { class IStaticCollisionWorld; }
-namespace Speed::NativeKinematics { class FBodyRead; }
+namespace Speed::NativeKinematics { class FBodyRead; class FBodyWrite; }
 
 /**
  * USubBody : Base class for any physics sub-body (wheel, hitbox, sphere) and detection SubBodies
@@ -39,11 +39,16 @@ class IAMSPEED_API USSubBody : public UShapeComponent
     GENERATED_UCLASS_BODY()
 private:
     friend class Speed::NativeKinematics::FBodyRead;
+    friend class Speed::NativeKinematics::FBodyWrite;
     // Custom storage adapters retain the old getter dispatch. Only the private
     // final road bodies override this public-view selector with legacy backing.
     virtual const Speed::FKinematicState& PublicKinematicView() const { return KinematicsStorage(); }
     virtual const SHitResult& PublicCurrentHitView() const { return CurrentHitStorage(); }
     virtual const SHitResult& PublicFutureHitView() const { return FutureHitStorage(); }
+    // Default/custom storage adapters retain their previous virtual backing.
+    // The final private bodies bind public writes to their actual facade.
+    virtual SHitResult& PublicCurrentHitMutableView() { return CurrentHitStorage(); }
+    virtual SHitResult& PublicFutureHitMutableView() { return FutureHitStorage(); }
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
@@ -144,10 +149,10 @@ public:
     bool WillHit() const { return PublicFutureHitView().bBlockingHit; }
     float GetFutureTOI() const { return PublicFutureHitView().TOI; }
 
-	void SetHit(const SHitResult& Hit) { CurrentHitStorage() = Hit; }
+	void SetHit(const SHitResult& Hit) { PublicCurrentHitMutableView() = Hit; }
     const SHitResult& GetHit() const { return PublicCurrentHitView(); }
 	const SHitResult& GetFutureHit() const { return PublicFutureHitView(); }
-	void SetFutureHit(const SHitResult& Hit) { FutureHitStorage() = Hit; }
+	void SetFutureHit(const SHitResult& Hit) { PublicFutureHitMutableView() = Hit; }
 
 	ESubBodyType GetSubBodyType() const { return SubBodyTypeBodyDomainStorage(); }
     FVector GetCenterOfMassWS() const { return KinematicsStorage().Location; }

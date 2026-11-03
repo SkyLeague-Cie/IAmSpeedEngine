@@ -1,4 +1,7 @@
 #include "ComponentKinematicRead.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
+#include "IAmSpeed/Base/SpeedConstant.h"
 #include "OriginKinematicView.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 
@@ -91,4 +94,139 @@ Speed::FKinematicState FComponentRead::OriginForFrame(const ISpeedComponent& Com
 	OriginState.Acceleration = Origin.Acceleration();
 	return OriginState;
 }
+
+// Explicit native reads require the genuine owner operation. The legacy
+// FView above remains unchanged; no new Operation-holding proxy is returned.
+unsigned int FComponentRead::NativeFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component).BaseGameState.NumFrame;
+}
+const TArray<FPhysicalContactConstraint>& FComponentRead::Constraints(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component).PhysicalConstraints;
+}
+const Speed::FKinematicState& FComponentRead::Current(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component).BasePhysicsState.Kinematic;
+}
+const Speed::FKinematicState& FComponentRead::ForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const unsigned int& Frame)
+{
+    const auto& Domain=Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,&Component);
+    // Unknown/malformed native history refuses; never fabricate a zero state
+    // or treat a missing record as measured equality.
+    if(Domain.RecordedBaseFrames.Num()!=SpeedConstants::RecordedHistorySize
+        ||Domain.RecordedBaseStates.Num()!=SpeedConstants::RecordedHistorySize)
+        throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+    const int32 Idx=Frame%SpeedConstants::RecordedHistorySize;
+    if(Domain.RecordedBaseFrames[Idx]==Frame)return Domain.RecordedBaseStates[Idx].Kinematic;
+    return FComponentRead::Current(Operation,Component);
+}
+const FQuat& FComponentRead::Rotation(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return FComponentRead::Current(Operation,Component).Rotation;
+}
+const FVector& FComponentRead::COMVelocity(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+	return FComponentRead::Current(Operation,Component).Velocity;
+}
+const FVector& FComponentRead::AngularVelocity(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+	return FComponentRead::Current(Operation,Component).AngularVelocity;
+}
+const FVector& FComponentRead::Acceleration(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return FComponentRead::Current(Operation,Component).Acceleration;
+}
+const FVector& FComponentRead::AngularAcceleration(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+	return FComponentRead::Current(Operation,Component).AngularAcceleration;
+}
+const FVector& FComponentRead::COM(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return FComponentRead::Current(Operation,Component).Location;
+}
+const FVector& FComponentRead::LocalCOM(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,&Component).CenterOfMass;
+}
+FVector FComponentRead::Location(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+	// Keep the historical-frame selection used by the complete origin getter.
+	const SKinematic& COMState = FComponentRead::ForFrame(Operation,Component,FComponentRead::NativeFrame(Operation,Component));
+	return FOriginKinematicView(COMState, FComponentRead::LocalCOM(Operation,Component)).Location();
+}
+FVector FComponentRead::Velocity(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+	const SKinematic& COMState = FComponentRead::ForFrame(Operation,Component,FComponentRead::NativeFrame(Operation,Component));
+	return FOriginKinematicView(COMState, FComponentRead::LocalCOM(Operation,Component)).Velocity();
+}
+FVector FComponentRead::VelocityAtPoint(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const FVector& Point)
+{
+    // v + w x r
+    const FVector R = Point - FComponentRead::COM(Operation,Component);
+    return FComponentRead::COMVelocity(Operation,Component) + FVector::CrossProduct(FComponentRead::AngularVelocity(Operation,Component), R);
+}
+FVector FComponentRead::AccelerationAtPoint(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const FVector& Point)
+{
+    // a + alpha x r + w x (w x r)
+    const FVector R = Point - FComponentRead::COM(Operation,Component);
+    return FComponentRead::Acceleration(Operation,Component) + FVector::CrossProduct(FComponentRead::AngularAcceleration(Operation,Component), R) + FVector::CrossProduct(FComponentRead::AngularVelocity(Operation,Component), FVector::CrossProduct(FComponentRead::AngularVelocity(Operation,Component), R));
+}
+FVector FComponentRead::Forward(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{ return FComponentRead::Rotation(Operation,Component).GetForwardVector(); }
+FVector FComponentRead::Right(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{ return FComponentRead::Rotation(Operation,Component).GetRightVector(); }
+FVector FComponentRead::Up(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{ return FComponentRead::Rotation(Operation,Component).GetUpVector(); }
+float FComponentRead::ForwardSpeed(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{ return FVector::DotProduct(FComponentRead::COMVelocity(Operation,Component), FComponentRead::Forward(Operation,Component)); }
+bool FComponentRead::GoingForward(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{ return FComponentRead::ForwardSpeed(Operation,Component) > 0; }
+Speed::FKinematicState FComponentRead::Origin(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+	return FComponentRead::OriginForFrame(Operation,Component, FComponentRead::NativeFrame(Operation,Component));
+}
+Speed::FKinematicState FComponentRead::OriginForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const unsigned int& NumFrameToRead)
+{
+	const SKinematic& COMState = FComponentRead::ForFrame(Operation,Component,NumFrameToRead);
+	SKinematic OriginState = COMState;
+	const FOriginKinematicView Origin(COMState, FComponentRead::LocalCOM(Operation,Component));
+	OriginState.Location = Origin.Location();
+	OriginState.Velocity = Origin.Velocity();
+	OriginState.Acceleration = Origin.Acceleration();
+	return OriginState;
+}
+
+float FComponentRead::Mass(const ISpeedComponent& Component)
+{return Component.GetPhysMass();}
+float FComponentRead::Mass(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,&Component).PhysMass;
+}
+
+bool FComponentRead::Frozen(const ISpeedComponent& Component)
+{return Component.IsFrozen();}
+bool FComponentRead::Frozen(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component).BasePhysicsState.bIsFrozen;
+}
+float FComponentRead::MaxSpeed(const ISpeedComponent& Component)
+{return Component.GetPhysMaxSpeed();}
+float FComponentRead::MaxSpeed(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,&Component).PhysMaxSpeed;
+}
+float FComponentRead::MaxAngularSpeed(const ISpeedComponent& Component)
+{return Component.GetPhysMaxAngularSpeed();}
+float FComponentRead::MaxAngularSpeed(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,&Component).PhysMaxAngularSpeed;
+}
+
+
+FMatrix FComponentRead::WorldInvInertia(const ISpeedComponent& Component)
+{return Component.ComputeWorldInvInertiaTensor();}
+FMatrix FComponentRead::WorldInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{return USpeedWheeledComponent::ComputeNativeComponentInvInertia(Operation,Component);}
+
 }

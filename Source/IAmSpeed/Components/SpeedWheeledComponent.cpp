@@ -1,4 +1,8 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/WheelBindingAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include <stdexcept>
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
@@ -608,20 +612,20 @@ bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) cons
 		const auto* ExpectedWheel = &Vehicle->Wheels[Ordinal];
 		const auto* ExpectedSuspension = &Vehicle->Suspension[Ordinal];
 		const UChaosVehicleWheel* ExpectedConfiguration = ReadWheelConfigurationForPhysics(Ordinal).Get();
-		if (!Wheel || Wheel->Idx() != Ordinal || Wheel->GetParentComponent() != this
+		if (!Wheel || Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel) != Ordinal || Wheel->GetParentComponent() != this
 			|| !ExpectedConfiguration || !(UsesOriginalWheeledDomain()
                 ? Speed::NativeObjectRead::ResolvedOriginalClass(WheelSetupsWheeledDomainStorage()[Ordinal].WheelClass)==UChaosVehicleWheel::StaticClass()
                 : bool(WheelSetupsWheeledDomainStorage()[Ordinal].WheelClass))
-			|| Wheel->GetChaosWheelConfiguration() != ExpectedConfiguration
-			|| Wheel->GetWheelSim() != ExpectedWheel || Wheel->GetSuspensionSim() != ExpectedSuspension)
+			|| Speed::NativeKinematics::FWheelBindingAccess::Configuration(*Wheel) != ExpectedConfiguration
+			|| Speed::NativeKinematics::FWheelBindingAccess::Wheel(*Wheel) != ExpectedWheel || Speed::NativeKinematics::FWheelBindingAccess::Suspension(*Wheel) != ExpectedSuspension)
 		{
 			OutReason = FString::Printf(
 				TEXT("component=%s ordinal=%d idx=%d body=%p parent=%p expected_parent=%p wheel=%p expected_wheel=%p suspension=%p expected_suspension=%p configuration=%p expected_configuration=%p"),
-				*GetPathName(), Ordinal, Wheel ? Wheel->Idx() : INDEX_NONE, Wheel,
+				*GetPathName(), Ordinal, Wheel ? Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel) : INDEX_NONE, Wheel,
 				Wheel ? Wheel->GetParentComponent() : nullptr, static_cast<const ISpeedComponent*>(this),
-				Wheel ? Wheel->GetWheelSim() : nullptr, ExpectedWheel,
-				Wheel ? Wheel->GetSuspensionSim() : nullptr, ExpectedSuspension,
-				Wheel ? Wheel->GetChaosWheelConfiguration() : nullptr, ExpectedConfiguration);
+				Wheel ? Speed::NativeKinematics::FWheelBindingAccess::Wheel(*Wheel) : nullptr, ExpectedWheel,
+				Wheel ? Speed::NativeKinematics::FWheelBindingAccess::Suspension(*Wheel) : nullptr, ExpectedSuspension,
+				Wheel ? Speed::NativeKinematics::FWheelBindingAccess::Configuration(*Wheel) : nullptr, ExpectedConfiguration);
 			return false;
 		}
 	}
@@ -681,21 +685,21 @@ void USpeedWheeledComponent::BindWheelSimulationPointers(
 			continue;
 		}
 
-		WheelSubBody->SetIdx(WheelIdx);
+		Speed::NativeKinematics::FSolidPropertiesAccess::SetIdx(*WheelSubBody,WheelIdx);
 		if (WheelIdx < NumBindings)
 		{
 			if (WheelsWheeledDomainStorage().IsValidIndex(WheelIdx))
 			{
-				WheelSubBody->SetChaosWheel(ReadWheelConfigurationForPhysics(WheelIdx).Get());
+				Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(*WheelSubBody,ReadWheelConfigurationForPhysics(WheelIdx).Get());
 			}
-			WheelSubBody->SetWheelSim(&PVehicle->Wheels[WheelIdx]);
-			WheelSubBody->SetSuspensionSim(&PVehicle->Suspension[WheelIdx]);
+			Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*WheelSubBody,&PVehicle->Wheels[WheelIdx]);
+			Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*WheelSubBody,&PVehicle->Suspension[WheelIdx]);
 		}
 		else
 		{
-			WheelSubBody->SetChaosWheel(nullptr);
-			WheelSubBody->SetWheelSim(nullptr);
-			WheelSubBody->SetSuspensionSim(nullptr);
+			Speed::NativeKinematics::FWheelBindingAccess::BindChaosWheel(*WheelSubBody,nullptr);
+			Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*WheelSubBody,nullptr);
+			Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*WheelSubBody,nullptr);
 		}
 	}
 }
@@ -708,8 +712,8 @@ void USpeedWheeledComponent::ClearWheelSimulationPointers()
 		{
 			continue;
 		}
-		WheelSubBody->SetWheelSim(nullptr);
-		WheelSubBody->SetSuspensionSim(nullptr);
+		Speed::NativeKinematics::FWheelBindingAccess::BindWheel(*WheelSubBody,nullptr);
+		Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(*WheelSubBody,nullptr);
 	}
 }
 
@@ -864,7 +868,7 @@ void USpeedWheeledComponent::SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheel
 
 		if (PVehicle->Wheels.IsValidIndex(WheelIdx))
 		{
-			PVehicle->Wheels[WheelIdx].SetMassPerWheel(WheelSubBody->GetMass());
+			PVehicle->Wheels[WheelIdx].SetMassPerWheel(Speed::NativeKinematics::FSolidMassAccess::Read(*WheelSubBody));
 		}
 
 #if !(UE_BUILD_SHIPPING)
@@ -1243,7 +1247,39 @@ SKinematic USpeedWheeledComponent::GetKinematicsOfSubBody(const USSubBody& SubBo
 {
 	return Speed::NativeKinematics::FComponentRead::Of(*this).OriginForFrame(LocalFrame);
 }
-FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
+class USpeedWheeledComponent::FLegacyInertiaAccess final
+{
+    friend class USpeedWheeledComponent;
+    const USpeedWheeledComponent& Owner;
+    explicit FLegacyInertiaAccess(const USpeedWheeledComponent& Value):Owner(Value){}
+    FLegacyInertiaAccess(const FLegacyInertiaAccess&)=delete;
+    FLegacyInertiaAccess& operator=(const FLegacyInertiaAccess&)=delete;
+    FLegacyInertiaAccess(FLegacyInertiaAccess&&)=delete;
+    FLegacyInertiaAccess& operator=(FLegacyInertiaAccess&&)=delete;
+public:
+    const FQuat& Rotation() const {return Speed::NativeKinematics::FComponentRead::Rotation(Owner);}
+    const FMatrix& LocalInv() const {return Owner.CarLocalInvIWheeledDomainStorage();}
+};
+class USpeedWheeledComponent::FNativeInertiaAccess final
+{
+    friend class USpeedWheeledComponent;
+    const ISpeedComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    explicit FNativeInertiaAccess(const ISpeedComponent& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation)
+    {
+        (void)Speed::NativeKinematics::FComponentRead::Current(Operation,Owner);
+        (void)Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FOriginalWheeledDomain>(Operation,&Owner);
+    }
+    FNativeInertiaAccess(const FNativeInertiaAccess&)=delete;
+    FNativeInertiaAccess& operator=(const FNativeInertiaAccess&)=delete;
+    FNativeInertiaAccess(FNativeInertiaAccess&&)=delete;
+    FNativeInertiaAccess& operator=(FNativeInertiaAccess&&)=delete;
+public:
+    const FQuat& Rotation() const {return Speed::NativeKinematics::FComponentRead::Rotation(Operation,Owner);}
+    const FMatrix& LocalInv() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FOriginalWheeledDomain>(Operation,&Owner).CarLocalInvI;}
+};
+template<class TAccess>
+FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaBody(TAccess& Storage)
 {
 	// The covariant correction is not yet qualified against the host's existing
 	// steering/contact contracts. Preserve the published response by default.
@@ -1253,13 +1289,24 @@ FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
 		// TransformVector uses row vectors: unrotate the world torque, apply the
 		// chassis tensor, then rotate back. Match the box accessor without Euler
 		// pole loss; wheel impulses must not depend on the vehicle's world heading.
-		const FMatrix ChassisToWorld = FQuatRotationMatrix(Speed::NativeKinematics::FComponentRead::Of(*this).Rotation());
-		return ChassisToWorld.GetTransposed() * CarLocalInvIWheeledDomainStorage() * ChassisToWorld;
+		const FMatrix ChassisToWorld = FQuatRotationMatrix(Storage.Rotation());
+		return ChassisToWorld.GetTransposed() * Storage.LocalInv() * ChassisToWorld;
 	}
 #endif
-	const FMatrix ChassisToWorld = FRotationMatrix::Make(Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().Rotator());
-	return ChassisToWorld * CarLocalInvIWheeledDomainStorage() * ChassisToWorld.GetTransposed();
+	const FMatrix ChassisToWorld = FRotationMatrix::Make(Storage.Rotation().Rotator());
+	return ChassisToWorld * Storage.LocalInv() * ChassisToWorld.GetTransposed();
 }
+FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
+{
+    FLegacyInertiaAccess Storage(*this);
+    return ComputeWorldInvInertiaBody(Storage);
+}
+FMatrix USpeedWheeledComponent::ComputeNativeComponentInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    FNativeInertiaAccess Storage(Component,Operation);
+    return ComputeWorldInvInertiaBody(Storage);
+}
+
 
 FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensorOfSubBody(const USSubBody& SubBody) const
 {
@@ -1697,10 +1744,10 @@ void USpeedWheeledComponent::UpdateFrameState()
 		uint32 WheelMask = 0;
 		for (const auto Wheel : ReadWheelSubBodiesForPhysics())
 		{
-			if (Wheel && Wheel->IsOnGround() && Wheel->Idx() >= 0
-				&& Wheel->Idx() < 32)
+			if (Wheel && Wheel->IsOnGround() && Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel) >= 0
+				&& Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel) < 32)
 			{
-				WheelMask |= 1u << Wheel->Idx();
+				WheelMask |= 1u << Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel);
 			}
 		}
 		const FVector AngularVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
@@ -2189,7 +2236,7 @@ void USpeedWheeledComponent::AppendWheelPresentationSnapshot(TArray<FSimulationW
         if(!Wheel) {Out.Reset();return;}
         const auto& R=Wheel->GetRenderData();
         FSimulationWheelVisual& V=Out.AddDefaulted_GetRef();
-        V.Ordinal=uint32(Wheel->Idx());V.SuspensionOffset=Wheel->SpringDisplacement();
+        V.Ordinal=uint32(Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*Wheel));V.SuspensionOffset=Wheel->SpringDisplacement();
         V.SteeringRotation=R.SteerRotation;V.RollingRotation=R.RollRotation;
         V.bGrounded=Wheel->IsOnGround();
         V.bLandedThisFrame=V.bGrounded && !Wheel->WasOnGroundPreviousFrame();
@@ -3178,7 +3225,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 				{
 					SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 						TEXT("[Suspension] Frame=%d Wheel=%d Load=%.2f Dot=%.3f Scale=%.3f NormalBlend=%.2f InvDotBlend=%.2f Force=%s Point=%s"),
-						NumFrame(), W.Idx(), Load, Dot, Scale, NormalBlend, InvDotBlend, *Force.ToString(), *ApplicationPoint.ToString());
+						NumFrame(), Speed::NativeKinematics::FSolidPropertiesAccess::Idx(W), Load, Dot, Scale, NormalBlend, InvDotBlend, *Force.ToString(), *ApplicationPoint.ToString());
 				}
 #endif
 			};
@@ -3451,8 +3498,8 @@ void USpeedWheeledComponent::UpdateWheelVisuals()
 
 		FRotator steerRot(R.SteerRotation);
 		FRotator rollRot(R.RollRotation);
-		PVehicleOutput->Wheels[W->Idx()].SteeringAngle = steerRot.Yaw;
-		PVehicleOutput->Wheels[W->Idx()].AngularPosition = W->GetRollAngle();
+		PVehicleOutput->Wheels[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)].SteeringAngle = steerRot.Yaw;
+		PVehicleOutput->Wheels[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)].AngularPosition = W->GetRollAngle();
 	}
 }
 
@@ -3460,16 +3507,16 @@ void USpeedWheeledComponent::RecoverWheelState()
 {
 	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
-		if (!W->HasSuspensionSim())
+		if (!Speed::NativeKinematics::FWheelBindingAccess::HasSuspension(*W))
 		{
-			SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[WheelSuspensionBinding] missing suspension sim for wheel %d during RecoverWheelState"), W->Idx());
+			SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[WheelSuspensionBinding] missing suspension sim for wheel %d during RecoverWheelState"), Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W));
 			continue;
 		}
 		// float rollAngle = WheeledPhysicsStateStorage().WheelsAngularPosition[W->Idx()];
 		// W->SetRollAngle(rollAngle);
 		// float omega = WheeledPhysicsStateStorage().WheelsOmega[W->Idx()];
 		// W->SetAngularVelocity(omega);
-		float lastDisplacement = WheeledPhysicsStateStorage().SuspensionLastDisplacement[W->Idx()];
+		float lastDisplacement = WheeledPhysicsStateStorage().SuspensionLastDisplacement[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)];
 		W->SetLastDisplacement(lastDisplacement);
 	}
 }
@@ -3478,7 +3525,7 @@ void USpeedWheeledComponent::RegisterWheelState()
 {
 	for (auto W : ReadWheelSubBodiesForPhysics())
 	{
-		WheeledPhysicsStateStorage().SuspensionLastDisplacement[W->Idx()] = W->GetLastDisplacement();
+		WheeledPhysicsStateStorage().SuspensionLastDisplacement[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)] = W->GetLastDisplacement();
 	}
 }
 
@@ -3501,7 +3548,7 @@ void USpeedWheeledComponent::ResetWheelTransientStateForCurrentPose(
 			: W->SpringDisplacement();
 		W->SetLastDisplacement(CurrentDisplacement);
 		W->SetAngularVelocity(0.0f);
-		WheeledPhysicsStateStorage().SuspensionLastDisplacement[W->Idx()] = CurrentDisplacement;
+		WheeledPhysicsStateStorage().SuspensionLastDisplacement[Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W)] = CurrentDisplacement;
 	}
 }
 
@@ -5126,7 +5173,7 @@ void USpeedWheeledComponent::QuantizePhysicalState()
 	// round trip on last suspension length to avoid precision drift on client and server
 	for (const auto W : ReadWheelSubBodiesForPhysics())
 	{
-		const int32 WheelIdx = W->Idx();
+		const int32 WheelIdx = Speed::NativeKinematics::FSolidPropertiesAccess::Idx(*W);
 		const float QuantizedDisplacement = WheeledPhysicsStateStorage().DequantizeLastSuspensionDisplacement(WheeledPhysicsStateStorage().QuantizeLastSuspensionDisplacement(WheelIdx));
 		WheeledPhysicsStateStorage().SuspensionLastDisplacement[WheelIdx] = QuantizedDisplacement;
 		W->SetLastDisplacement(QuantizedDisplacement);

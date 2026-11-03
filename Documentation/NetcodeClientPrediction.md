@@ -1668,3 +1668,32 @@ were not run. Source110 adds the defining ComponentKinematicRead.h directly
 after the translation unit's own header. It changes no method, friend, equation,
 contact order, predicate or restoration guard. A new frozen tuple must compile
 and run; no source108/native100 result transfers to these changed sources.
+
+### Explicit native operation and storage boundaries
+
+The private road owner has a separate, non-exported operation object. It is
+constructed only from the actual retained graph and its transferred owner lock;
+a public frame context, thread-local routing flag or caller-supplied type id
+cannot issue it. Typed storage bindings retain the real allocation's control
+block and validate the actual adjusted subject, graph and operation before use.
+This establishes a private C++ memory/access boundary, not a complete source,
+UObject, module, worker, escaped-borrow or restoration lease.
+
+The driver, bridge and pair solver propagate this operation through their
+private publication and physical read/write paths. Legacy and custom adapters
+retain their existing public/protected virtual behavior. Shared numerical
+bodies preserve the original formulas, branch order, clamping and transaction
+order. Frame-scoped collision-world pointers remain borrowed references.
+
+This migration is incomplete: numerical component/sub-body/sweeper phases,
+snapshot/participant callbacks, initialization and partial-birth retirement
+still contain legacy paths. In particular, a protected Storage member pointer
+can still reach original storage on unmigrated paths. Do not treat the private
+operation, strong ownership, negative public-access controls or any successful
+compile as closure of that channel or admission for restoration.
+
+Complete causal-state/source/lifetime coverage, effective initial sync and
+activation agreement, authoritative-frame restoration and localized resimulation
+remain required. The prepared-restore guard stays closed. No historical native
+test, programmed NullRHI run or observable-subset equality qualifies this tuple
+as two playable clients with working localized rollback.

@@ -9,6 +9,7 @@
 
 namespace Speed::Analytic { struct FAnalyticPrefetchQuery1075; }
 class ISpeedWheeledComponent;
+namespace Speed::NativeKinematics { class FWheelBindingAccess; }
 class UChaosVehicleWheel;
 namespace Chaos
 {
@@ -36,6 +37,18 @@ UCLASS()
 class IAMSPEED_API USWheelSubBody : public USphereSubBody
 {
     GENERATED_UCLASS_BODY()
+private:
+    friend class Speed::NativeKinematics::FWheelBindingAccess;
+    void SetChaosWheelForPhysics(UChaosVehicleWheel* InChaosWheel);
+    void SetWheelSimForPhysics(Chaos::FSimpleWheelSim* InPWheel);
+    void SetSuspensionSimForPhysics(Chaos::FSimpleSuspensionSim* InPSuspension);
+    virtual void ApplyPublicChaosWheel(UChaosVehicleWheel* Value) { SetChaosWheelForPhysics(Value); }
+    virtual void ApplyPublicWheelSim(Chaos::FSimpleWheelSim* Value) { SetWheelSimForPhysics(Value); }
+    virtual void ApplyPublicSuspensionSim(Chaos::FSimpleSuspensionSim* Value) { SetSuspensionSimForPhysics(Value); }
+    virtual const UChaosVehicleWheel* PublicChaosWheelView() const { return ChaosWheelWheelDomainStorage(); }
+    virtual const Chaos::FSimpleWheelSim* PublicWheelSimView() const { return PWheelWheelDomainStorage(); }
+    virtual const Chaos::FSimpleSuspensionSim* PublicSuspensionSimView() const { return PSuspensionWheelDomainStorage(); }
+
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     friend class FSLBallEpisodeAdmissionOwnerTest; // sole native fixture mutates omitted-field categories
 #endif
@@ -150,7 +163,7 @@ public:
     FVector GetSuspensionDirectionWS() const;
     float Radius() const;
     float ChaosEffectiveRadius() const;
-    const UChaosVehicleWheel* GetChaosWheelConfiguration() const { return ChaosWheelWheelDomainStorage(); }
+    const UChaosVehicleWheel* GetChaosWheelConfiguration() const { return PublicChaosWheelView(); }
     float AngularVelocity() const;
     void SetAngularVelocity(const float& InOmega);
     float SpringDisplacement() const; // current spring displacement (positive when compressed)
@@ -207,9 +220,9 @@ public:
 	void SetChaosWheel(UChaosVehicleWheel* InChaosWheel);
 	void SetWheelSim(Chaos::FSimpleWheelSim* InPWheel);
 	void SetSuspensionSim(Chaos::FSimpleSuspensionSim* InPSuspension);
-	bool HasSuspensionSim() const { return PSuspensionWheelDomainStorage() != nullptr; }
-	const Chaos::FSimpleWheelSim* GetWheelSim() const { return PWheelWheelDomainStorage(); }
-	const Chaos::FSimpleSuspensionSim* GetSuspensionSim() const { return PSuspensionWheelDomainStorage(); }
+	bool HasSuspensionSim() const { return PublicSuspensionSimView() != nullptr; }
+	const Chaos::FSimpleWheelSim* GetWheelSim() const { return PublicWheelSimView(); }
+	const Chaos::FSimpleSuspensionSim* GetSuspensionSim() const { return PublicSuspensionSimView(); }
 	void SetLocalOffset(const FVector& InLocalOffset);
 
     void HandleTimers();

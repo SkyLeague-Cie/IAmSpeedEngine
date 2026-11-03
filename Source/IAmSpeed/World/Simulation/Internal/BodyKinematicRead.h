@@ -9,7 +9,7 @@ class UCylinderSubBody; class USensorSubBody; class USpeedWorldSubsystem;
 class USpeedBranchBoxSubBody; class USpeedBranchWheelSubBody;
 namespace Speed { struct FKinematicState; }
 namespace Speed::FrameParallel { class FJoinedActorKinematics1213; }
-namespace Speed::Netcode::Prediction { class FPrivateRoadPhysicsWorld; }
+namespace Speed::Netcode::Prediction { class FPrivateRoadPhysicsWorld; class FPrivateNativeOperation; }
 namespace Speed::NativeKinematics
 {
 struct FCylinderRigidTrajectory; struct FCylinderSuspensionQuery; struct FDynamicBodyWitness;
@@ -28,12 +28,24 @@ class FBodyRead final
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     friend struct FCylinderRigidTrajectory; friend struct FCylinderSuspensionQuery;
     friend struct FDynamicBodyWitness;
+    static FMatrix WorldInvInertia(const USolidSubBody& Body);
+    static FMatrix WorldInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USolidSubBody& Body);
+    static FMatrix WorldInvInertia(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USolidSubBody* Body);
+    static ISpeedComponent* Parent(const USSubBody& Body);
+    static ISpeedComponent* Parent(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
     static const Speed::FKinematicState& Body(const USSubBody& Body);
+    static const Speed::FKinematicState& Body(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
     static const Speed::FKinematicState& Sweeper(const ISweeper& Sweeper);
+    static const Speed::FKinematicState& Sweeper(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISweeper& Sweeper);
     static const SHitResult& CurrentHit(const USSubBody& Body);
+    static const SHitResult& CurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
     static const SHitResult& FutureHit(const USSubBody& Body);
+    static const SHitResult& FutureHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
     static bool HasHit(const USSubBody& Body);
+    static bool HasHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
     static bool WillHit(const USSubBody& Body);
+    static bool WillHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
     static float FutureTOI(const USSubBody& Body);
+    static float FutureTOI(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
 };
 }

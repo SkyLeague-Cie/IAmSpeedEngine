@@ -1,4 +1,10 @@
 #include "SpeedWorldSubsystem.h"
+#include <utility>
+#include <stdexcept>
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include <stdexcept>
@@ -941,8 +947,8 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	ISpeedComponent* CompA = BodyA.GetParentComponent();
 	ISpeedComponent* CompB = BodyB.GetParentComponent();
 	if (!CompA || !CompB || CompA == CompB ||
-		!BodyA.UsesPersistentBilateralContact() ||
-		!BodyB.UsesPersistentBilateralContact())
+		!Speed::NativeKinematics::FSolidPropertiesAccess::UsesPersistentBilateralContact(BodyA) ||
+		!Speed::NativeKinematics::FSolidPropertiesAccess::UsesPersistentBilateralContact(BodyB))
 	{
 		return;
 	}
@@ -987,12 +993,10 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	}
 }
 
-void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOI(
-	const USolidSubBody& BodyA,
-	const USolidSubBody& BodyB,
-	const float RemainingDt)
+template<class TAccess>
+void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOIBody(TAccess& Storage,const USolidSubBody& BodyA,const USolidSubBody& BodyB,const float RemainingDt)
 {
-	if (!AreUnilateralRollingPairsEnabled())
+	if (!Storage.AreUnilateralRollingPairsEnabled())
 	{
 		return;
 	}
@@ -1002,16 +1006,153 @@ void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOI(
 	const uint32 Lo = FMath::Min(IdA, IdB);
 	const uint32 Hi = FMath::Max(IdA, IdB);
 	const uint64 PairKey = (static_cast<uint64>(Lo) << 32) | Hi;
-	if (!SimulationWorldEpochStorage().ActivatePendingRollingContactPair(PairKey))
+	if (!Storage.SimulationWorld().ActivatePendingRollingContactPair(PairKey))
 	{
 		return;
 	}
 
 	if (RemainingDt > KINDA_SMALL_NUMBER)
 	{
-		SolveDynamicContactPairs(RemainingDt, PairKey, true, true);
+		Storage.SolveDynamicContactPairs(RemainingDt, PairKey, true, true);
 	}
 }
+
+class USpeedWorldSubsystem::FLegacyEpochAccess final
+{
+    friend class USpeedWorldSubsystem;
+    USpeedWorldSubsystem& Owner;
+    explicit FLegacyEpochAccess(USpeedWorldSubsystem& Value):Owner(Value){}
+    FLegacyEpochAccess(const FLegacyEpochAccess&)=delete;
+    FLegacyEpochAccess& operator=(const FLegacyEpochAccess&)=delete;
+    FLegacyEpochAccess(FLegacyEpochAccess&&)=delete;
+    FLegacyEpochAccess& operator=(FLegacyEpochAccess&&)=delete;
+public:
+    decltype(auto) LastStepDiagnostics() const {return Owner.LastStepDiagnosticsEpochStorage();}
+    decltype(auto) SimulationWorld() const {return Owner.SimulationWorldEpochStorage();}
+    decltype(auto) StepSerial() const {return Owner.StepSerialEpochStorage();}
+#if !UE_BUILD_SHIPPING
+    decltype(auto) TestingPreparingFrame() const {return Owner.TestingPreparingFrameEpochStorage();}
+#endif
+    decltype(auto) bCanonicalFrameActive() const {return Owner.bCanonicalFrameActiveEpochStorage();}
+    template<class... TArgs> decltype(auto) ActivatePendingRollingContactPairAtTOI(TArgs&&... Args) const {return Owner.ActivatePendingRollingContactPairAtTOI(std::forward<TArgs>(Args)...);}
+    decltype(auto) bLoggedRollingSolveState() const {return Owner.bLoggedRollingSolveStateEpochStorage();}
+    template<class... TArgs> decltype(auto) AreUnilateralRollingPairsEnabled(TArgs&&... Args) const {return Owner.AreUnilateralRollingPairsEnabled(std::forward<TArgs>(Args)...);}
+    const TArray<FPhysicalContactConstraint>& ReadComponentConstraints(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Constraints(Component);}
+    const Speed::FKinematicState& ReadComponentCurrent(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Current(Component);}
+    const Speed::FKinematicState& ReadComponentForFrame(const ISpeedComponent& Component, const unsigned int& Frame) const {return Speed::NativeKinematics::FComponentRead::ForFrame(Component,Frame);}
+    const FQuat& ReadComponentRotation(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Rotation(Component);}
+    const FVector& ReadComponentCOMVelocity(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::COMVelocity(Component);}
+    const FVector& ReadComponentAngularVelocity(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::AngularVelocity(Component);}
+    const FVector& ReadComponentAcceleration(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Acceleration(Component);}
+    const FVector& ReadComponentAngularAcceleration(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::AngularAcceleration(Component);}
+    const FVector& ReadComponentCOM(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::COM(Component);}
+    const FVector& ReadComponentLocalCOM(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::LocalCOM(Component);}
+    FVector ReadComponentLocation(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Location(Component);}
+    FVector ReadComponentVelocity(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Velocity(Component);}
+    FVector ReadComponentVelocityAtPoint(const ISpeedComponent& Component, const FVector& Point) const {return Speed::NativeKinematics::FComponentRead::VelocityAtPoint(Component,Point);}
+    FVector ReadComponentAccelerationAtPoint(const ISpeedComponent& Component, const FVector& Point) const {return Speed::NativeKinematics::FComponentRead::AccelerationAtPoint(Component,Point);}
+    FVector ReadComponentForward(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Forward(Component);}
+    FVector ReadComponentRight(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Right(Component);}
+    FVector ReadComponentUp(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Up(Component);}
+    float ReadComponentForwardSpeed(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::ForwardSpeed(Component);}
+    bool ReadComponentGoingForward(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::GoingForward(Component);}
+    Speed::FKinematicState ReadComponentOrigin(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Origin(Component);}
+    Speed::FKinematicState ReadComponentOriginForFrame(const ISpeedComponent& Component, const unsigned int& NumFrameToRead) const {return Speed::NativeKinematics::FComponentRead::OriginForFrame(Component,NumFrameToRead);}
+    const Speed::FKinematicState& ReadBodyBody(const USSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::Body(Body);}
+    ISpeedComponent* ReadBodyParent(const USSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::Parent(Body);}
+    float ReadComponentMass(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Mass(Component);}
+    FMatrix ReadWorldInvInertia(const USolidSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::WorldInvInertia(Body);}
+    void ApplyBodyImpulse(USolidSubBody& Body,const FVector& Impulse,const FVector& Point) const {Speed::NativeKinematics::FBodyWrite::Impulse(Body,Impulse,Point);}
+    void SetFrameStaticWorld(ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon) const {Component->SetStaticCollisionWorldForFrame(World,FrameHorizon);}
+    void ApplyBodyFakePhysics(USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) const {Speed::NativeKinematics::FBodyWrite::FakePhysics(Body,Other,Hit,DeltaTime,ImpactContext);}
+    void ApplyPendingOps() const {Owner.ApplyPendingOps();}
+    template<class... TArgs> decltype(auto) ProjectDynamicContactPairs(TArgs&&... Args) const {return Owner.ProjectDynamicContactPairs(std::forward<TArgs>(Args)...);}
+    void RebuildSortedIfNeeded() const {Owner.RebuildSortedIfNeeded();}
+    template<class... TArgs> decltype(auto) SolveDynamicContactPairs(TArgs&&... Args) const {return Owner.SolveDynamicContactPairs(std::forward<TArgs>(Args)...);}
+    bool ValidateSimulationBindings(FString& Why) const {return Owner.ValidateSimulationBindings(Why);}
+};
+
+class USpeedWorldSubsystem::FNativeEpochAccess final
+{
+    friend class USpeedWorldSubsystem;
+    USpeedWorldSubsystem& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    FEpochBridgeStorage& Actual() const
+    {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<FEpochBridgeStorage>(Operation,&Owner);}
+    explicit FNativeEpochAccess(USpeedWorldSubsystem& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Operation(Operation)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireStep(Operation);(void)Actual();}
+    FNativeEpochAccess(const FNativeEpochAccess&)=delete;
+    FNativeEpochAccess& operator=(const FNativeEpochAccess&)=delete;
+    FNativeEpochAccess(FNativeEpochAccess&&)=delete;
+    FNativeEpochAccess& operator=(FNativeEpochAccess&&)=delete;
+public:
+    decltype(auto) LastStepDiagnostics() const {return (Actual().LastStepDiagnostics);}
+    decltype(auto) SimulationWorld() const {return (Actual().SimulationWorld);}
+    decltype(auto) StepSerial() const {return (Actual().StepSerial);}
+#if !UE_BUILD_SHIPPING
+    decltype(auto) TestingPreparingFrame() const {return (Actual().TestingPreparingFrame);}
+#endif
+    decltype(auto) bCanonicalFrameActive() const {return (Actual().bCanonicalFrameActive);}
+    template<class... TArgs> decltype(auto) ActivatePendingRollingContactPairAtTOI(TArgs&&... Args) const {return Owner.ActivatePendingRollingContactPairAtTOINative(Operation,std::forward<TArgs>(Args)...);}
+    decltype(auto) bLoggedRollingSolveState() const {return (Actual().bLoggedRollingSolveState);}
+    template<class... TArgs> decltype(auto) AreUnilateralRollingPairsEnabled(TArgs&&... Args) const {return Owner.AreUnilateralRollingPairsEnabled(std::forward<TArgs>(Args)...);}
+    const TArray<FPhysicalContactConstraint>& ReadComponentConstraints(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Constraints(Operation,Component);}
+    const Speed::FKinematicState& ReadComponentCurrent(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Current(Operation,Component);}
+    const Speed::FKinematicState& ReadComponentForFrame(const ISpeedComponent& Component, const unsigned int& Frame) const {return Speed::NativeKinematics::FComponentRead::ForFrame(Operation,Component,Frame);}
+    const FQuat& ReadComponentRotation(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Rotation(Operation,Component);}
+    const FVector& ReadComponentCOMVelocity(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::COMVelocity(Operation,Component);}
+    const FVector& ReadComponentAngularVelocity(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::AngularVelocity(Operation,Component);}
+    const FVector& ReadComponentAcceleration(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Acceleration(Operation,Component);}
+    const FVector& ReadComponentAngularAcceleration(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::AngularAcceleration(Operation,Component);}
+    const FVector& ReadComponentCOM(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::COM(Operation,Component);}
+    const FVector& ReadComponentLocalCOM(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::LocalCOM(Operation,Component);}
+    FVector ReadComponentLocation(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Location(Operation,Component);}
+    FVector ReadComponentVelocity(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Velocity(Operation,Component);}
+    FVector ReadComponentVelocityAtPoint(const ISpeedComponent& Component, const FVector& Point) const {return Speed::NativeKinematics::FComponentRead::VelocityAtPoint(Operation,Component,Point);}
+    FVector ReadComponentAccelerationAtPoint(const ISpeedComponent& Component, const FVector& Point) const {return Speed::NativeKinematics::FComponentRead::AccelerationAtPoint(Operation,Component,Point);}
+    FVector ReadComponentForward(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Forward(Operation,Component);}
+    FVector ReadComponentRight(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Right(Operation,Component);}
+    FVector ReadComponentUp(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Up(Operation,Component);}
+    float ReadComponentForwardSpeed(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::ForwardSpeed(Operation,Component);}
+    bool ReadComponentGoingForward(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::GoingForward(Operation,Component);}
+    Speed::FKinematicState ReadComponentOrigin(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Origin(Operation,Component);}
+    Speed::FKinematicState ReadComponentOriginForFrame(const ISpeedComponent& Component, const unsigned int& NumFrameToRead) const {return Speed::NativeKinematics::FComponentRead::OriginForFrame(Operation,Component,NumFrameToRead);}
+    const Speed::FKinematicState& ReadBodyBody(const USSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::Body(Operation,Body);}
+    ISpeedComponent* ReadBodyParent(const USSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::Parent(Operation,Body);}
+    float ReadComponentMass(const ISpeedComponent& Component) const {return Speed::NativeKinematics::FComponentRead::Mass(Operation,Component);}
+    FMatrix ReadWorldInvInertia(const USolidSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::WorldInvInertia(Operation,Body);}
+    void ApplyBodyImpulse(USolidSubBody& Body,const FVector& Impulse,const FVector& Point) const {Speed::NativeKinematics::FBodyWrite::Impulse(Operation,Body,Impulse,Point);}
+    void SetFrameStaticWorld(ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon) const {Speed::NativeKinematics::FComponentWrite::FrameStaticWorld(Operation,Component,World,FrameHorizon);}
+    void ApplyBodyFakePhysics(USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) const {Speed::NativeKinematics::FBodyWrite::FakePhysics(Operation,Body,Other,Hit,DeltaTime,ImpactContext);}
+    void ApplyPendingOps() const
+    {
+        auto& Values=Actual();
+        FScopeLock PendingLock(&Values.PendingCS);
+        // Actual fixed-roster native Step never admits new registry operations.
+        // Missing/changed pending state refuses; no queue is cleared or consumed.
+        if(!Values.PendingOps.IsEmpty())throw std::runtime_error("private native roster changed before phase boundary");
+    }
+    template<class... TArgs> decltype(auto) ProjectDynamicContactPairs(TArgs&&... Args) const {return Owner.ProjectDynamicContactPairsNative(Operation,std::forward<TArgs>(Args)...);}
+    void RebuildSortedIfNeeded() const {Actual().SimulationWorld.RebuildOrderedAdapters();}
+    template<class... TArgs> decltype(auto) SolveDynamicContactPairs(TArgs&&... Args) const {return Owner.SolveDynamicContactPairsNative(Operation,std::forward<TArgs>(Args)...);}
+    bool ValidateSimulationBindings(FString& Why) const {return Owner.ValidateNativeSimulationBindings(Operation,Why);}
+};
+
+void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOI(
+	const USolidSubBody& BodyA,
+	const USolidSubBody& BodyB,
+	const float RemainingDt)
+{
+    FLegacyEpochAccess Storage(*this);
+    ActivatePendingRollingContactPairAtTOIBody(Storage,BodyA,BodyB,RemainingDt);
+}
+
+void USpeedWorldSubsystem::ActivatePendingRollingContactPairAtTOINative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USolidSubBody& BodyA,const USolidSubBody& BodyB,const float RemainingDt)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    ActivatePendingRollingContactPairAtTOIBody(Storage,BodyA,BodyB,RemainingDt);
+}
+
 
 bool USpeedWorldSubsystem::IsDynamicContactPairOwnedByRollingManifold(
 	const USolidSubBody& BodyA,
@@ -1079,14 +1220,11 @@ ERollingManifoldContactState USpeedWorldSubsystem::GetRollingManifoldContactStat
 	return Result;
 }
 
-void USpeedWorldSubsystem::SolveDynamicContactPairs(
-	const float Dt,
-	const uint64 PairKeyFilter,
-	const bool bFilterByPairKey,
-	const bool bSolveFirstSeenFrame)
+template<class TAccess>
+void USpeedWorldSubsystem::SolveDynamicContactPairsBody(TAccess& Storage,const float Dt,const uint64 PairKeyFilter,const bool bFilterByPairKey,const bool bSolveFirstSeenFrame)
 {
-	auto& DynamicContactPairs = SimulationWorldEpochStorage().GetDynamicContactPairs();
-	unsigned int& CurrentStepFrame = SimulationWorldEpochStorage().GetCurrentStepFrame();
+	auto& DynamicContactPairs = Storage.SimulationWorld().GetDynamicContactPairs();
+	unsigned int& CurrentStepFrame = Storage.SimulationWorld().GetCurrentStepFrame();
 	constexpr unsigned int MaxUnseenFrames = 2;
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
 
@@ -1096,7 +1234,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  const uint64 ContactWitnessPass=CW::IsActive()?CW::BeginDynamicPass(CurrentStepFrame,
   Speed::EFrameDynamicContactPass::Persistent,Dt,PairKeyFilter,bFilterByPairKey,
   bSolveFirstSeenFrame,DynamicContactPairs.Num(),
-  bFilterByPairKey?SimulationWorldEpochStorage().FindDynamicContactPair(PairKeyFilter):nullptr):0;
+  bFilterByPairKey?Storage.SimulationWorld().FindDynamicContactPair(PairKeyFilter):nullptr):0;
  ON_SCOPE_EXIT {if(ContactWitnessPass)CW::EndDynamicPass(ContactWitnessPass,DynamicContactPairs.Num());};
 #endif // IAmSpeed contact witness1075 END
 
@@ -1144,7 +1282,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 	int32 LastPairIndex = 0;
 	if (bFilterByPairKey)
 	{
-		FirstPairIndex = SimulationWorldEpochStorage().FindDynamicContactPairIndex(PairKeyFilter);
+		FirstPairIndex = Storage.SimulationWorld().FindDynamicContactPairIndex(PairKeyFilter);
 		if (FirstPairIndex == INDEX_NONE)
 		{
 			return;
@@ -1165,7 +1303,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  ON_SCOPE_EXIT
  {
   if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::PairEnd,Index,
-   WitnessPairKey,SimulationWorldEpochStorage().FindDynamicContactPair(WitnessPairKey),
+   WitnessPairKey,Storage.SimulationWorld().FindDynamicContactPair(WitnessPairKey),
    WitnessBodyA.Get(),WitnessBodyB.Get(),WitnessOutcome,bWitnessRolling);
  };
 #endif // IAmSpeed contact witness1075 END
@@ -1182,8 +1320,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		Pair.bActiveContactLastSolve = false;
 		USolidSubBody* BodyA = Pair.BodyA.Get();
 		USolidSubBody* BodyB = Pair.BodyB.Get();
-		ISpeedComponent* CompA = BodyA ? BodyA->GetParentComponent() : nullptr;
-		ISpeedComponent* CompB = BodyB ? BodyB->GetParentComponent() : nullptr;
+		ISpeedComponent* CompA = BodyA ? Storage.ReadBodyParent(*BodyA) : nullptr;
+		ISpeedComponent* CompB = BodyB ? Storage.ReadBodyParent(*BodyB) : nullptr;
 		if (!BodyA || !BodyB || !CompA || !CompB)
 		{
 			LogRollingRelease(Pair, TEXT("InvalidBody"));
@@ -1191,7 +1329,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  WitnessOutcome=CO::InvalidBody;
 #endif // IAmSpeed contact witness1075 END
 
-			SimulationWorldEpochStorage().RemoveDynamicContactPairAtSwap(Index);
+			Storage.SimulationWorld().RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 
@@ -1203,15 +1341,15 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			Box = Cast<UBoxSubBody>(BodyA);
 		}
 		const bool bUseRollingManifold =
-			AreUnilateralRollingPairsEnabled() &&
+			Storage.AreUnilateralRollingPairsEnabled() &&
 			Sphere != nullptr && Box != nullptr;
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
  bWitnessRolling=bUseRollingManifold;
 #endif // IAmSpeed contact witness1075 END
 
-		if (bUseRollingManifold && !bLoggedRollingSolveStateEpochStorage())
+		if (bUseRollingManifold && !Storage.bLoggedRollingSolveState())
 		{
-			bLoggedRollingSolveStateEpochStorage() = true;
+			Storage.bLoggedRollingSolveState() = true;
 			SPEED_NATIVE_LOG(LogTemp, Warning,
 				TEXT("[PersistentPair][RollingSolveState] Frame=%u FirstSeen=%u LastSeen=%u PairCount=%d A=%s B=%s"),
 				CurrentStepFrame, Pair.FirstSeenFrame, Pair.LastSeenFrame,
@@ -1224,7 +1362,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  WitnessOutcome=CO::Unseen;
 #endif // IAmSpeed contact witness1075 END
 
-			SimulationWorldEpochStorage().RemoveDynamicContactPairAtSwap(Index);
+			Storage.SimulationWorld().RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 
@@ -1243,7 +1381,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  WitnessOutcome=CO::FrameRewind;
 #endif // IAmSpeed contact witness1075 END
 
-			SimulationWorldEpochStorage().RemoveDynamicContactPairAtSwap(Index);
+			Storage.SimulationWorld().RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 
@@ -1261,10 +1399,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		}
 		Pair.LastSolvedFrame = CurrentStepFrame;
 
-		const FVector CurrentCOMA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COM();
-		const FVector CurrentCOMB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COM();
-		const float MaxExpectedMoveA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COMVelocity().Size() * Dt * 2.0f + 10.0f;
-		const float MaxExpectedMoveB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COMVelocity().Size() * Dt * 2.0f + 10.0f;
+		const FVector CurrentCOMA = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentCOM(ComponentReaderReceiver111); }());
+		const FVector CurrentCOMB = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentCOM(ComponentReaderReceiver111); }());
+		const float MaxExpectedMoveA = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentCOMVelocity(ComponentReaderReceiver111); }()).Size() * Dt * 2.0f + 10.0f;
+		const float MaxExpectedMoveB = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentCOMVelocity(ComponentReaderReceiver111); }()).Size() * Dt * 2.0f + 10.0f;
 		if (FVector::DistSquared(CurrentCOMA, Pair.LastCOMA) > FMath::Square(MaxExpectedMoveA) ||
 			FVector::DistSquared(CurrentCOMB, Pair.LastCOMB) > FMath::Square(MaxExpectedMoveB))
 		{
@@ -1273,17 +1411,17 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  WitnessOutcome=CO::DiscontinuousMotion;
 #endif // IAmSpeed contact witness1075 END
 
-			SimulationWorldEpochStorage().RemoveDynamicContactPairAtSwap(Index);
+			Storage.SimulationWorld().RemoveDynamicContactPairAtSwap(Index);
 			continue;
 		}
 		Pair.LastCOMA = CurrentCOMA;
 		Pair.LastCOMB = CurrentCOMB;
 
-		const FQuat RotA = Speed::NativeKinematics::FComponentRead::Of(*CompA).Rotation();
-		const FQuat RotB = Speed::NativeKinematics::FComponentRead::Of(*CompB).Rotation();
+		const FQuat RotA = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentRotation(ComponentReaderReceiver111); }());
+		const FQuat RotB = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentRotation(ComponentReaderReceiver111); }());
 		FVector N = RotB.RotateVector(Pair.LocalNormalB).GetSafeNormal();
-		FVector AnchorA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COM() + RotA.RotateVector(Pair.LocalAnchorA);
-		FVector AnchorB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COM() + RotB.RotateVector(Pair.LocalAnchorB);
+		FVector AnchorA = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentCOM(ComponentReaderReceiver111); }()) + RotA.RotateVector(Pair.LocalAnchorA);
+		FVector AnchorB = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentCOM(ComponentReaderReceiver111); }()) + RotB.RotateVector(Pair.LocalAnchorB);
 		float ShapeSeparation = FVector::DotProduct(AnchorA - AnchorB, N);
 		if (Sphere && Box)
 		{
@@ -1317,7 +1455,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  WitnessOutcome=CO::RejectedGeometry;
 #endif // IAmSpeed contact witness1075 END
 
-				SimulationWorldEpochStorage().RemoveDynamicContactPairAtSwap(Index);
+				Storage.SimulationWorld().RemoveDynamicContactPairAtSwap(Index);
 				continue;
 			}
 
@@ -1340,8 +1478,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 					AnchorB = SphereContactPoint;
 				}
 
-				Pair.LocalAnchorA = RotA.UnrotateVector(AnchorA - Speed::NativeKinematics::FComponentRead::Of(*CompA).COM());
-				Pair.LocalAnchorB = RotB.UnrotateVector(AnchorB - Speed::NativeKinematics::FComponentRead::Of(*CompB).COM());
+				Pair.LocalAnchorA = RotA.UnrotateVector(AnchorA - ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentCOM(ComponentReaderReceiver111); }()));
+				Pair.LocalAnchorB = RotB.UnrotateVector(AnchorB - ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentCOM(ComponentReaderReceiver111); }()));
 				Pair.LocalNormalB = RotB.UnrotateVector(N);
 				Pair.LastSeenFrame = CurrentStepFrame;
 				if (FVector::DotProduct(PreviousNormal, N) < 0.995f)
@@ -1368,12 +1506,12 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		}
 		Pair.bRollingManifoldReady = bUseRollingManifold;
 
-		const FVector OffsetA = AnchorA - Speed::NativeKinematics::FComponentRead::Of(*CompA).COM();
-		const FVector OffsetB = AnchorB - Speed::NativeKinematics::FComponentRead::Of(*CompB).COM();
-		const FVector VelocityA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COMVelocity() +
-			FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*CompA).AngularVelocity(), OffsetA);
-		const FVector VelocityB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COMVelocity() +
-			FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*CompB).AngularVelocity(), OffsetB);
+		const FVector OffsetA = AnchorA - ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentCOM(ComponentReaderReceiver111); }());
+		const FVector OffsetB = AnchorB - ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentCOM(ComponentReaderReceiver111); }());
+		const FVector VelocityA = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentCOMVelocity(ComponentReaderReceiver111); }()) +
+			FVector::CrossProduct(([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentAngularVelocity(ComponentReaderReceiver111); }()), OffsetA);
+		const FVector VelocityB = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentCOMVelocity(ComponentReaderReceiver111); }()) +
+			FVector::CrossProduct(([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentAngularVelocity(ComponentReaderReceiver111); }()), OffsetB);
 		const float Separation = bUseRollingManifold
 			? ShapeSeparation
 			: FVector::DotProduct(AnchorA - AnchorB, N);
@@ -1386,8 +1524,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		}
 		const float PredictedRelativeNormalVelocity = RelativeNormalVelocity +
 			Dt * FVector::DotProduct(
-				Speed::NativeKinematics::FComponentRead::Of(*CompA).AccelerationAtPoint(AnchorA) -
-				Speed::NativeKinematics::FComponentRead::Of(*CompB).AccelerationAtPoint(AnchorB), N);
+				([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentAccelerationAtPoint(ComponentReaderReceiver111,AnchorA); }()) -
+				([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentAccelerationAtPoint(ComponentReaderReceiver111,AnchorB); }()), N);
 		const float PenetrationSlop = FMath::Max(
 			0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<18>([](){ return CVarIAmSpeedRollingPenetrationSlop.GetValueOnAnyThread(); }));
 		if (bUseRollingManifold && Separation >= -PenetrationSlop &&
@@ -1397,7 +1535,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			LogRollingRelease(
 				Pair, TEXT("SeparatingVelocity"), Separation,
 				PredictedRelativeNormalVelocity);
-			SimulationWorldEpochStorage().RemoveDynamicContactPairAtSwap(Index);
+			Storage.SimulationWorld().RemoveDynamicContactPairAtSwap(Index);
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
  WitnessOutcome=CO::SeparatingVelocity;
 #endif // IAmSpeed contact witness1075 END
@@ -1440,13 +1578,13 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<15>([](){ return CVarIAmSpeedRollingBaumgarte.GetValueOnAnyThread(); })) *
 					(PenetrationDepth - PenetrationSlop) / Dt)
 			: 0.0f;
-		const float InvMassA = 1.0f / FMath::Max(CompA->GetPhysMass(), 1.0f);
-		const float InvMassB = 1.0f / FMath::Max(CompB->GetPhysMass(), 1.0f);
+		const float InvMassA = 1.0f / FMath::Max(Storage.ReadComponentMass(*CompA), 1.0f);
+		const float InvMassB = 1.0f / FMath::Max(Storage.ReadComponentMass(*CompB), 1.0f);
 		const FVector AngularA = FVector::CrossProduct(
-			BodyA->ComputeWorldInvInertiaTensor().TransformVector(
+			Storage.ReadWorldInvInertia(*BodyA).TransformVector(
 				FVector::CrossProduct(OffsetA, N)), OffsetA);
 		const FVector AngularB = FVector::CrossProduct(
-			BodyB->ComputeWorldInvInertiaTensor().TransformVector(
+			Storage.ReadWorldInvInertia(*BodyB).TransformVector(
 				FVector::CrossProduct(OffsetB, N)), OffsetB);
 		const float Denominator = InvMassA + InvMassB +
 			FVector::DotProduct(N, AngularA + AngularB);
@@ -1508,11 +1646,11 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		if (bUseRollingManifold)
 		{
 			RollingFakePhysicsContext.SelfParentKinematics = Sphere == BodyA
-				? Speed::NativeKinematics::FComponentRead::Current(*CompA)
-				: Speed::NativeKinematics::FComponentRead::Current(*CompB);
+				? Storage.ReadComponentCurrent(*CompA)
+				: Storage.ReadComponentCurrent(*CompB);
 			RollingFakePhysicsContext.OtherParentKinematics = Sphere == BodyA
-				? Speed::NativeKinematics::FComponentRead::Current(*CompB)
-				: Speed::NativeKinematics::FComponentRead::Current(*CompA);
+				? Storage.ReadComponentCurrent(*CompB)
+				: Storage.ReadComponentCurrent(*CompA);
 			RollingFakePhysicsContext.FakeImpulseScale = FMath::Max(
 				0.0f,
 				Speed::RoadSettings::ReadOriginalOrLegacy<21>([](){ return CVarIAmSpeedRollingTangentialFakePhysicsScale.GetValueOnAnyThread(); }));
@@ -1537,7 +1675,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalBeforeA,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
 #endif // IAmSpeed contact witness1075 END
-			BodyA->ApplyImpulse(Impulse, ContactPoint);
+			Storage.ApplyBodyImpulse(*BodyA,Impulse, ContactPoint);
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalAfterA,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
@@ -1548,7 +1686,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalBeforeB,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
 #endif // IAmSpeed contact witness1075 END
-			BodyB->ApplyImpulse(-Impulse, ContactPoint);
+			Storage.ApplyBodyImpulse(*BodyB,-Impulse, ContactPoint);
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::NormalAfterB,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation);
@@ -1558,8 +1696,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 
 		if (bUseRollingManifold && NormalImpulseMagnitude > KINDA_SMALL_NUMBER)
 		{
-			const FVector PostVelocityA = Speed::NativeKinematics::FComponentRead::Of(*CompA).VelocityAtPoint(AnchorA);
-			const FVector PostVelocityB = Speed::NativeKinematics::FComponentRead::Of(*CompB).VelocityAtPoint(AnchorB);
+			const FVector PostVelocityA = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompA; return Storage.ReadComponentVelocityAtPoint(ComponentReaderReceiver111,AnchorA); }());
+			const FVector PostVelocityB = ([&]() -> decltype(auto) { const auto& ComponentReaderReceiver111=*CompB; return Storage.ReadComponentVelocityAtPoint(ComponentReaderReceiver111,AnchorB); }());
 			const FVector RelativeVelocity = PostVelocityA - PostVelocityB;
 			const FVector TangentialVelocity = RelativeVelocity -
 				FVector::DotProduct(RelativeVelocity, N) * N;
@@ -1568,10 +1706,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 			{
 				const FVector Tangent = TangentialVelocity / TangentialSpeed;
 				const FVector TangentialAngularA = FVector::CrossProduct(
-					BodyA->ComputeWorldInvInertiaTensor().TransformVector(
+					Storage.ReadWorldInvInertia(*BodyA).TransformVector(
 						FVector::CrossProduct(OffsetA, Tangent)), OffsetA);
 				const FVector TangentialAngularB = FVector::CrossProduct(
-					BodyB->ComputeWorldInvInertiaTensor().TransformVector(
+					Storage.ReadWorldInvInertia(*BodyB).TransformVector(
 						FVector::CrossProduct(OffsetB, Tangent)), OffsetB);
 				const float TangentialDenominator = InvMassA + InvMassB +
 					FVector::DotProduct(Tangent, TangentialAngularA + TangentialAngularB);
@@ -1582,7 +1720,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 						*Sphere,
 						*Box,
 						USolidSubBody::MixFriction(
-							Sphere->GetStaticFriction(), Box->GetStaticFriction(), EMixMode::E_Max));
+							Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(*Sphere), Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(*Box), EMixMode::E_Max));
 					const float MaxFrictionImpulse =
 						NormalImpulseMagnitude * FMath::Max(0.0f, ManifoldFriction);
 					const float TangentialImpulseMagnitude = FMath::Min(
@@ -1598,7 +1736,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialBeforeA,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
 #endif // IAmSpeed contact witness1075 END
-					BodyA->ApplyImpulse(TangentialImpulse, ContactPoint);
+					Storage.ApplyBodyImpulse(*BodyA,TangentialImpulse, ContactPoint);
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialAfterA,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
@@ -1609,7 +1747,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialBeforeB,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
 #endif // IAmSpeed contact witness1075 END
-					BodyB->ApplyImpulse(-TangentialImpulse, ContactPoint);
+					Storage.ApplyBodyImpulse(*BodyB,-TangentialImpulse, ContactPoint);
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::TangentialAfterB,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,TangentialImpulse,ContactPoint,TangentialImpulseMagnitude,TangentialDenominator);
@@ -1631,7 +1769,7 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 				ContactPoint,
 				BoxToSphereNormal,
 				0.0f);
-			RollingHit.Location = Speed::NativeKinematics::FBodyRead::Body(*Sphere).Location;
+			RollingHit.Location = Storage.ReadBodyBody(*Sphere).Location;
 			RollingHit.PenetrationDepth = PenetrationDepth;
 			RollingHit.ContactPointThis = Sphere == BodyA ? AnchorA : AnchorB;
 			RollingHit.ContactPointOther = Sphere == BodyA ? AnchorB : AnchorA;
@@ -1641,8 +1779,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::FakePhysicsBefore,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation,&RollingHit,&RollingFakePhysicsContext);
 #endif // IAmSpeed contact witness1075 END
-			Sphere->ApplyFakePhysicsOn(
-				*Box, RollingHit, Dt, &RollingFakePhysicsContext);
+			Storage.ApplyBodyFakePhysics(
+				Sphere, Box, RollingHit, Dt, &RollingFakePhysicsContext);
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::FakePhysicsAfter,Index,
   Pair.PairKey,&Pair,BodyA,BodyB,CO::Completed,bUseRollingManifold,Impulse,ContactPoint,NormalImpulseMagnitude,Separation,&RollingHit,&RollingFakePhysicsContext);
@@ -1652,16 +1790,34 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 	}
 }
 
-void USpeedWorldSubsystem::ProjectDynamicContactPairs()
+void USpeedWorldSubsystem::SolveDynamicContactPairs(
+	const float Dt,
+	const uint64 PairKeyFilter,
+	const bool bFilterByPairKey,
+	const bool bSolveFirstSeenFrame)
 {
-	auto& DynamicContactPairs = SimulationWorldEpochStorage().GetDynamicContactPairs();
-	auto& PendingRollingContactPairs = SimulationWorldEpochStorage().GetPendingRollingContactPairs();
+    FLegacyEpochAccess Storage(*this);
+    SolveDynamicContactPairsBody(Storage,Dt,PairKeyFilter,bFilterByPairKey,bSolveFirstSeenFrame);
+}
+
+void USpeedWorldSubsystem::SolveDynamicContactPairsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float Dt,const uint64 PairKeyFilter,const bool bFilterByPairKey,const bool bSolveFirstSeenFrame)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    SolveDynamicContactPairsBody(Storage,Dt,PairKeyFilter,bFilterByPairKey,bSolveFirstSeenFrame);
+}
+
+
+template<class TAccess>
+void USpeedWorldSubsystem::ProjectDynamicContactPairsBody(TAccess& Storage)
+{
+	auto& DynamicContactPairs = Storage.SimulationWorld().GetDynamicContactPairs();
+	auto& PendingRollingContactPairs = Storage.SimulationWorld().GetPendingRollingContactPairs();
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
 
  using CW=Speed::FFrameSolveWitnessScope;
  using CE=Speed::EFrameDynamicContactEvent;
  using CO=Speed::EFrameDynamicContactOutcome;
- const uint64 ContactWitnessPass=CW::IsActive()?CW::BeginDynamicPass(SimulationWorldEpochStorage().GetCurrentStepFrame(),
+ const uint64 ContactWitnessPass=CW::IsActive()?CW::BeginDynamicPass(Storage.SimulationWorld().GetCurrentStepFrame(),
   Speed::EFrameDynamicContactPass::Projection,0.0f,0,false,false,DynamicContactPairs.Num()):0;
  ON_SCOPE_EXIT {if(ContactWitnessPass)CW::EndDynamicPass(ContactWitnessPass,DynamicContactPairs.Num());};
 #endif // IAmSpeed contact witness1075 END
@@ -1759,14 +1915,14 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 
  int32 WitnessFreshProjectionIndex=0;
  if(ContactWitnessPass)CW::RecordDynamicEvent(ContactWitnessPass,CE::ProjectFreshBegin,
-  SimulationWorldEpochStorage().GetProjectionSpheres().Num(),0,nullptr,nullptr,nullptr);
+  Storage.SimulationWorld().GetProjectionSpheres().Num(),0,nullptr,nullptr,nullptr);
 #endif // IAmSpeed contact witness1075 END
-	for (USphereSubBody* Sphere : SimulationWorldEpochStorage().GetProjectionSpheres())
+	for (USphereSubBody* Sphere : Storage.SimulationWorld().GetProjectionSpheres())
 	{
-		for (UBoxSubBody* Box : SimulationWorldEpochStorage().GetProjectionBoxes())
+		for (UBoxSubBody* Box : Storage.SimulationWorld().GetProjectionBoxes())
 		{
 			if (Sphere && Box &&
-				Sphere->GetParentComponent() != Box->GetParentComponent())
+				Storage.ReadBodyParent(*Sphere) != Storage.ReadBodyParent(*Box))
 			{
 #if !UE_BUILD_SHIPPING // IAmSpeed contact witness1075 BEGIN
 
@@ -1791,28 +1947,72 @@ void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 
 }
 
-bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
+void USpeedWorldSubsystem::ProjectDynamicContactPairs()
 {
-	if (bCanonicalFrameActiveEpochStorage())
+    FLegacyEpochAccess Storage(*this);
+    ProjectDynamicContactPairsBody(Storage);
+}
+
+void USpeedWorldSubsystem::ProjectDynamicContactPairsNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    ProjectDynamicContactPairsBody(Storage);
+}
+
+
+
+
+
+template<class TAccess>
+bool USpeedWorldSubsystem::BeginCanonicalFrameBody(TAccess& Storage,FString& OutReason)
+{
+	if (Storage.bCanonicalFrameActive())
 	{
 		OutReason = TEXT("canonical frame already active");
 		return false;
 	}
-	if (!ValidateSimulationBindings(OutReason)) return false;
-	bCanonicalFrameActiveEpochStorage() = true;
+	if (!Storage.ValidateSimulationBindings(OutReason)) return false;
+	Storage.bCanonicalFrameActive() = true;
 	return true;
 }
 
-bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
+bool USpeedWorldSubsystem::BeginCanonicalFrame(FString& OutReason)
 {
-	ApplyPendingOps();
-	RebuildSortedIfNeeded();
-	for (const ISpeedComponent* Component : SimulationWorldEpochStorage().GetOrderedAdapters())
+    FLegacyEpochAccess Storage(*this);
+    return BeginCanonicalFrameBody(Storage,OutReason);
+}
+
+bool USpeedWorldSubsystem::BeginNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,FString& OutReason)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    return BeginCanonicalFrameBody(Storage,OutReason);
+}
+
+
+template<class TAccess>
+bool USpeedWorldSubsystem::ValidateSimulationBindingsBody(TAccess& Storage,FString& OutReason)
+{
+	Storage.ApplyPendingOps();
+	Storage.RebuildSortedIfNeeded();
+	for (const ISpeedComponent* Component : Storage.SimulationWorld().GetOrderedAdapters())
 	{
 		if (Component && !Component->ValidateSimulationBindings(OutReason)) return false;
 	}
 	return true;
 }
+
+bool USpeedWorldSubsystem::ValidateSimulationBindings(FString& OutReason)
+{
+    FLegacyEpochAccess Storage(*this);
+    return ValidateSimulationBindingsBody(Storage,OutReason);
+}
+
+bool USpeedWorldSubsystem::ValidateNativeSimulationBindings(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,FString& OutReason)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    return ValidateSimulationBindingsBody(Storage,OutReason);
+}
+
 
 bool USpeedWorldSubsystem::ServiceInputRetirementsAtBoundary()
 {
@@ -1875,13 +2075,27 @@ bool USpeedWorldSubsystem::StageCanonicalScenarioInputs(const FCanonicalFrameCon
 	return true;
 }
 
-bool USpeedWorldSubsystem::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
+template<class TAccess>
+bool USpeedWorldSubsystem::PrepareCanonicalInputsBody(TAccess& Storage,const FCanonicalFrameContext& Context)
 {
 	// BeginCanonicalFrame has already frozen/validated the active adapter view.
-	for (ISpeedComponent* Component : SimulationWorldEpochStorage().GetOrderedAdapters())
+	for (ISpeedComponent* Component : Storage.SimulationWorld().GetOrderedAdapters())
 		if (Component && !Component->PrepareCanonicalInputs(Context)) return false;
 	return true;
 }
+
+bool USpeedWorldSubsystem::PrepareCanonicalInputs(const FCanonicalFrameContext& Context)
+{
+    FLegacyEpochAccess Storage(*this);
+    return PrepareCanonicalInputsBody(Storage,Context);
+}
+
+bool USpeedWorldSubsystem::PrepareNativeCanonicalInputs(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FCanonicalFrameContext& Context)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    return PrepareCanonicalInputsBody(Storage,Context);
+}
+
 
 #if !UE_BUILD_SHIPPING
 bool USpeedWorldSubsystem::InspectBodyContactPairsForTesting(
@@ -1896,31 +2110,45 @@ bool USpeedWorldSubsystem::InspectBodyContactPairsForTesting(
 }
 #endif
 
-void USpeedWorldSubsystem::PrepareCanonicalFrame(
-	const FCanonicalFrameContext& Context)
+template<class TAccess>
+void USpeedWorldSubsystem::PrepareCanonicalFrameBody(TAccess& Storage,const FCanonicalFrameContext& Context)
 {
 #if !UE_BUILD_SHIPPING
-    const uint64 PreviousTestingFrame=TestingPreparingFrameEpochStorage();
-    TestingPreparingFrameEpochStorage()=Context.NumFrame;
-    ON_SCOPE_EXIT{TestingPreparingFrameEpochStorage()=PreviousTestingFrame;};
+    const uint64 PreviousTestingFrame=Storage.TestingPreparingFrame();
+    Storage.TestingPreparingFrame()=Context.NumFrame;
+    ON_SCOPE_EXIT{Storage.TestingPreparingFrame()=PreviousTestingFrame;};
 #endif
-	ApplyPendingOps();
-	RebuildSortedIfNeeded();
+	Storage.ApplyPendingOps();
+	Storage.RebuildSortedIfNeeded();
 
 	for (bool bPrescribed : {true, false})
-	for (ISpeedComponent* Component : SimulationWorldEpochStorage().GetOrderedAdapters())
+	for (ISpeedComponent* Component : Storage.SimulationWorld().GetOrderedAdapters())
 	{
 		if (Component && Component->IsPrescribedMotion()==bPrescribed)
 		{
-			IAMSPEED_ACTOR_SCOPE(SimulationWorldEpochStorage(), *Component, Prepare);
-			Component->SetStaticCollisionWorldForFrame(
+			IAMSPEED_ACTOR_SCOPE(Storage.SimulationWorld(), *Component, Prepare);
+			Storage.SetFrameStaticWorld(Component,
 				Speed::RoadSettings::ReadOriginalOrLegacy<12>([](){ return CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread(); }) != 0 &&
 				Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
-					? SimulationWorldEpochStorage().GetStaticCollisionWorld() : nullptr, Context.PhysicalDeltaTime);
+					? Storage.SimulationWorld().GetStaticCollisionWorld() : nullptr, Context.PhysicalDeltaTime);
 			Component->PrepareCanonicalFrame(Context);
 		}
 	}
 }
+
+void USpeedWorldSubsystem::PrepareCanonicalFrame(
+	const FCanonicalFrameContext& Context)
+{
+    FLegacyEpochAccess Storage(*this);
+    PrepareCanonicalFrameBody(Storage,Context);
+}
+
+void USpeedWorldSubsystem::PrepareNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FCanonicalFrameContext& Context)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    PrepareCanonicalFrameBody(Storage,Context);
+}
+
 
 ECanonicalRunControlState USpeedWorldSubsystem::GetCanonicalRunControlState()
 {
@@ -1987,9 +2215,57 @@ ECanonicalRunControlState USpeedWorldSubsystem::InspectAdmittedCanonicalRunContr
 }
 #endif
 
+template<class TAccess>
+void USpeedWorldSubsystem::NotifyCanonicalFramePublishedBody(TAccess& Storage,uint64 NumFrame)
+{
+	Storage.SimulationWorld().NotifyCanonicalFramePublished(NumFrame);
+}
+
 void USpeedWorldSubsystem::NotifyCanonicalFramePublished(uint64 NumFrame)
 {
-	SimulationWorldEpochStorage().NotifyCanonicalFramePublished(NumFrame);
+    FLegacyEpochAccess Storage(*this);
+    NotifyCanonicalFramePublishedBody(Storage,NumFrame);
+}
+
+void USpeedWorldSubsystem::NotifyNativeCanonicalFramePublished(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,uint64 NumFrame)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    NotifyCanonicalFramePublishedBody(Storage,NumFrame);
+}
+
+
+
+void USpeedWorldSubsystem::ValidateNativeSubject(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USpeedWorldSubsystem* Subject)
+{
+    // Static lookup before invoking a method on a possibly changed bridge
+    // pointer. This checks actual graph/type/address, not UObject lifetime.
+    Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireStep(Operation);
+    (void)Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FEpochBridgeStorage>(Operation,Subject);
+}
+void USpeedWorldSubsystem::EndNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<FEpochBridgeStorage>(Operation,this).bCanonicalFrameActive=false;
+}
+const Speed::IStaticCollisionWorld* USpeedWorldSubsystem::GetNativeStaticCollisionWorld(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FEpochBridgeStorage>(Operation,this).SimulationWorld.GetStaticCollisionWorld();
+}
+const Speed::Analytic::FAnalyticWorldData* USpeedWorldSubsystem::GetNativeAnalyticWorldData(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FEpochBridgeStorage>(Operation,this).AnalyticWorldData.Get();
+}
+const FSpeedStepDiagnostics& USpeedWorldSubsystem::GetNativeLastStepDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FEpochBridgeStorage>(Operation,this).LastStepDiagnostics;
+}
+
+ECanonicalPublicationResult USpeedWorldSubsystem::PublishNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    ASpeedPhysicsSimulation& Driver,const FCanonicalFrameContext& Context,const FSimulationSnapshot& Snapshot)
+{
+    using Speed::Netcode::Prediction::FPrivateNativeStorageAccess;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    auto& Actual=FPrivateNativeStorageAccess::Part<FEpochBridgeStorage>(Operation,this);
+    return Actual.SimulationWorld.PublishNativeCanonicalFrame(Operation,Driver,Context,Snapshot);
 }
 
 ECanonicalPublicationResult USpeedWorldSubsystem::PublishCanonicalFrame(uint64 Frame, TFunctionRef<bool()> Publish)
@@ -1997,17 +2273,45 @@ ECanonicalPublicationResult USpeedWorldSubsystem::PublishCanonicalFrame(uint64 F
 	return SimulationWorldEpochStorage().PublishCanonicalFrame(Frame, Publish);
 }
 
+template<class TAccess>
+void USpeedWorldSubsystem::AbortCanonicalFrameBody(TAccess& Storage,uint64 Frame,ECanonicalFrameAbortReason Reason)
+{
+	Storage.SimulationWorld().AbortCanonicalFrame(Frame, Reason);
+}
+
 void USpeedWorldSubsystem::AbortCanonicalFrame(uint64 Frame, ECanonicalFrameAbortReason Reason) noexcept
 {
-	SimulationWorldEpochStorage().AbortCanonicalFrame(Frame, Reason);
+    FLegacyEpochAccess Storage(*this);
+    AbortCanonicalFrameBody(Storage,Frame,Reason);
+}
+
+void USpeedWorldSubsystem::AbortNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,uint64 Frame,ECanonicalFrameAbortReason Reason)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    AbortCanonicalFrameBody(Storage,Frame,Reason);
+}
+
+
+template<class TAccess>
+FSimulationSnapshot USpeedWorldSubsystem::CaptureSimulationSnapshotBody(TAccess& Storage,const uint64 NumFrame,const uint64 InputJournalHash,const bool bIncludePresentation)
+{
+	Storage.RebuildSortedIfNeeded();
+	return Storage.SimulationWorld().CaptureSnapshot(NumFrame, InputJournalHash, bIncludePresentation);
 }
 
 FSimulationSnapshot USpeedWorldSubsystem::CaptureSimulationSnapshot(
 	const uint64 NumFrame, const uint64 InputJournalHash, const bool bIncludePresentation)
 {
-	RebuildSortedIfNeeded();
-	return SimulationWorldEpochStorage().CaptureSnapshot(NumFrame, InputJournalHash, bIncludePresentation);
+    FLegacyEpochAccess Storage(*this);
+    return CaptureSimulationSnapshotBody(Storage,NumFrame,InputJournalHash,bIncludePresentation);
 }
+
+FSimulationSnapshot USpeedWorldSubsystem::CaptureNativeSimulationSnapshot(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const uint64 NumFrame,const uint64 InputJournalHash,const bool bIncludePresentation)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    return CaptureSimulationSnapshotBody(Storage,NumFrame,InputJournalHash,bIncludePresentation);
+}
+
 
 bool USpeedWorldSubsystem::RestoreSimulationSnapshot(
 	const FSimulationSnapshot& Snapshot,
@@ -2056,21 +2360,22 @@ static void ObserveCcdPose(const USpeedWorldSubsystem* World, uint32 Frame, ECcd
 }
 #endif
 
-void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
+template<class TAccess>
+void USpeedWorldSubsystem::StepBody(TAccess& Storage,const float& Dt,const float& SimTime,const unsigned int& Frame)
 {
 #if !UE_BUILD_SHIPPING
     Speed::Analytic::CaseSatDiagnostics::FScopedCpuPhase400 Phase400(
         Speed::Analytic::CaseSatDiagnostics::ECpuPhase400::SubsystemStep);
 #endif
-	unsigned int& CurrentStepFrame = SimulationWorldEpochStorage().GetCurrentStepFrame();
+	unsigned int& CurrentStepFrame = Storage.SimulationWorld().GetCurrentStepFrame();
 	const double StepStartSeconds = FPlatformTime::Seconds();
-	LastStepDiagnosticsEpochStorage() = FSpeedStepDiagnostics();
-	LastStepDiagnosticsEpochStorage().Serial = ++StepSerialEpochStorage();
-	LastStepDiagnosticsEpochStorage().Frame = Frame;
-	LastStepDiagnosticsEpochStorage().PhysicalDeltaTimeMilliseconds =
+	Storage.LastStepDiagnostics() = FSpeedStepDiagnostics();
+	Storage.LastStepDiagnostics().Serial = ++Storage.StepSerial();
+	Storage.LastStepDiagnostics().Frame = Frame;
+	Storage.LastStepDiagnostics().PhysicalDeltaTimeMilliseconds =
 		static_cast<double>(Dt) * 1000.0;
 	constexpr int32 MaxIter = 24;
-	LastStepDiagnosticsEpochStorage().MaximumIterationCount = MaxIter;
+	Storage.LastStepDiagnostics().MaximumIterationCount = MaxIter;
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::FrameBegin,0.f,0.f);
 #endif
@@ -2084,8 +2389,8 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		const int32 GenerationAfter)
 	{
 		if (!bCaptureSolverEventTrace) return;
-		ISpeedComponent* Parent = Resolver ? Resolver->GetParentComponent() : nullptr;
-		const uint64 ComponentStableId = Parent ? SimulationWorldEpochStorage().FindStableId(*Parent) : 0;
+		ISpeedComponent* Parent = Resolver ? Storage.ReadBodyParent(*Resolver) : nullptr;
+		const uint64 ComponentStableId = Parent ? Storage.SimulationWorld().FindStableId(*Parent) : 0;
 		const int32 SubBodyIndex = Parent ? Parent->GetSubBodies().IndexOfByKey(Resolver) : INDEX_NONE;
 		SPEED_NATIVE_LOG(LogTemp, Display,
 			TEXT("[SpeedSolverEventV2] Frame=%u Iter=%d Stage=%s Disposition=%s Order=%d ComponentStableId=%llu ResolverClass=%s SubBodyIndex=%d PairKey=%llu SourceId=%llu SurfaceId=%llu FeatureId=%llu PrimitiveId=%llu ThisFeature=%d ThisIndex=%d OtherFeature=%d OtherIndex=%d HitTOI=%.9g GenerationBefore=%d GenerationAfter=%d"),
@@ -2105,12 +2410,12 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	};
 #endif
 	CurrentStepFrame = Frame;
-    ApplyPendingOps();
-    RebuildSortedIfNeeded();
+    Storage.ApplyPendingOps();
+    Storage.RebuildSortedIfNeeded();
 
-    if (Dt <= 0.f || SimulationWorldEpochStorage().GetOrderedAdapters().Num() == 0)
+    if (Dt <= 0.f || Storage.SimulationWorld().GetOrderedAdapters().Num() == 0)
 	{
-		LastStepDiagnosticsEpochStorage().TotalMilliseconds =
+		Storage.LastStepDiagnostics().TotalMilliseconds =
 			(FPlatformTime::Seconds() - StepStartSeconds) * 1000.0;
         return;
 	}
@@ -2124,17 +2429,17 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	const Speed::IStaticCollisionWorld* RestingWorld =
 		Speed::RoadSettings::ReadOriginalOrLegacy<12>([](){ return CVarIAmSpeedExactBoxRestingSupport.GetValueOnAnyThread(); }) != 0 &&
 		Speed::Analytic::FStaticWorldQueryAudit::IsSurfaceAnalyticBackend()
-			? SimulationWorldEpochStorage().GetStaticCollisionWorld() : nullptr;
+			? Storage.SimulationWorld().GetStaticCollisionWorld() : nullptr;
 	const Speed::FFrameParallelSettings ParallelPreparationSettings = Speed::CaptureFrameParallelSettings();
     Speed::FrameParallel::FJoinedActorKinematics1213 JoinedActors1213;
     if(Speed::FrameParallel::IsJoinedActorKinematicWaveEnabled1213())
-        JoinedActors1213.CaptureAndCompute(SimulationWorldEpochStorage().GetOrderedAdapters(),
+        JoinedActors1213.CaptureAndCompute(Storage.SimulationWorld().GetOrderedAdapters(),
             ParallelPreparationSettings.LaneLimit,ParallelPreparationSettings.MinPrepareItems);
-	for (ISpeedComponent* Comp : SimulationWorldEpochStorage().GetOrderedAdapters())
+	for (ISpeedComponent* Comp : Storage.SimulationWorld().GetOrderedAdapters())
     {
         if (!Comp) continue;
 
-		IAMSPEED_ACTOR_SCOPE(SimulationWorldEpochStorage(), *Comp, Reset);
+		IAMSPEED_ACTOR_SCOPE(Storage.SimulationWorld(), *Comp, Reset);
         // Preserve the exact pre-existing native child-batch admission and
         // fallback choice. Shadow only observes around this original block.
         const auto OriginalOwnerOperation1213=[&]()
@@ -2146,10 +2451,10 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
         if(!JoinedActors1213.TryInstall(*Comp,OriginalOwnerOperation1213))
             OriginalOwnerOperation1213();
         Comp->ResetForFrame(Dt);
-		Comp->SetStaticCollisionWorldForFrame(RestingWorld, Dt);
+		Storage.SetFrameStaticWorld(Comp,RestingWorld, Dt);
     }
 
-	LastStepDiagnosticsEpochStorage().ResetMilliseconds =
+	Storage.LastStepDiagnostics().ResetMilliseconds =
 		(FPlatformTime::Seconds() - ResetStartSeconds) * 1000.0;
 
     // Anti double-resolve (pair) on the frame
@@ -2162,15 +2467,15 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	{
 		LastSubDelta = SubDelta;
 		const double IntegrateStartSeconds = FPlatformTime::Seconds();
-		for (ISpeedComponent* Comp : SimulationWorldEpochStorage().GetOrderedAdapters())
+		for (ISpeedComponent* Comp : Storage.SimulationWorld().GetOrderedAdapters())
 		{
 			if (Comp)
 			{
-				IAMSPEED_ACTOR_SCOPE(SimulationWorldEpochStorage(), *Comp, Integrate);
+				IAMSPEED_ACTOR_SCOPE(Storage.SimulationWorld(), *Comp, Integrate);
 				Comp->IntegrateKinematics(SubDelta);
 			}
 		}
-		LastStepDiagnosticsEpochStorage().IntegrateMilliseconds +=
+		Storage.LastStepDiagnostics().IntegrateMilliseconds +=
 			(FPlatformTime::Seconds() - IntegrateStartSeconds) * 1000.0;
 		TimePassed += SubDelta;
 #if WITH_DEV_AUTOMATION_TESTS
@@ -2190,15 +2495,15 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		}
 		if (Iter >= MaxIter)
 		{
-			LastStepDiagnosticsEpochStorage().bIterationLimitReached = true;
+			Storage.LastStepDiagnostics().bIterationLimitReached = true;
 			IntegrateAll(Remaining);
 			break;
 		}
 		++Iter;
-		LastStepDiagnosticsEpochStorage().IterationCount = Iter;
+		Storage.LastStepDiagnostics().IterationCount = Iter;
 		// A material stop is a real temporal boundary just like a TOI. Never
 		// sweep a trajectory that decelerates past zero and reverses its slip.
-		for (const ISpeedComponent* Comp : SimulationWorldEpochStorage().GetOrderedAdapters())
+		for (const ISpeedComponent* Comp : Storage.SimulationWorld().GetOrderedAdapters())
 			if (Comp) Remaining = FMath::Min(Remaining, Comp->GetMaximumCanonicalSupportInterval(Remaining));
 
         // ------------------------------------------------------------
@@ -2211,14 +2516,14 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 		float EarliestTOI = Remaining;
 
         const double SweepStartSeconds = FPlatformTime::Seconds();
-        for (ISpeedComponent* Comp : SimulationWorldEpochStorage().GetOrderedAdapters())
+        for (ISpeedComponent* Comp : Storage.SimulationWorld().GetOrderedAdapters())
         {
             if (!Comp) continue;
-			++LastStepDiagnosticsEpochStorage().ComponentSweepCount;
+			++Storage.LastStepDiagnostics().ComponentSweepCount;
 
             SComponentTOI Ctoi;
             {
-                IAMSPEED_ACTOR_SCOPE(SimulationWorldEpochStorage(), *Comp, Sweep);
+                IAMSPEED_ACTOR_SCOPE(Storage.SimulationWorld(), *Comp, Sweep);
                 Ctoi = Comp->SweepTOISubBodies(Remaining, LastSubDelta
 #if !UE_BUILD_SHIPPING
 					, bCaptureSolverEventTrace
@@ -2307,7 +2612,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 				Earliest.TOI = T;
             }
         }
-		LastStepDiagnosticsEpochStorage().SweepMilliseconds +=
+		Storage.LastStepDiagnostics().SweepMilliseconds +=
 			(FPlatformTime::Seconds() - SweepStartSeconds) * 1000.0;
 #if !UE_BUILD_SHIPPING
 		if (bCaptureSolverEventTrace)
@@ -2398,7 +2703,7 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 #if !UE_BUILD_SHIPPING
             const int32 GenerationBefore = ResolvedPairs.GetGeneration(Hit.PairKey);
 #endif
-			Resolver->SetFutureHit(Hit.Hit);
+			Speed::NativeKinematics::FBodyWrite::FutureHit(*Resolver,Hit.Hit);
 			Resolver->AcceptHit();
 			bool bIgnored = false;
 			if (UPrimitiveComponent* HitComponent =
@@ -2431,9 +2736,9 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterResolve,TimePassed,SubDelta);
 #endif
 
-			LastStepDiagnosticsEpochStorage().ResolveMilliseconds +=
+			Storage.LastStepDiagnostics().ResolveMilliseconds +=
 				(FPlatformTime::Seconds() - ResolveStartSeconds) * 1000.0;
-			++LastStepDiagnosticsEpochStorage().ResolvedEventCount;
+			++Storage.LastStepDiagnostics().ResolvedEventCount;
             // A resolved exact time-zero vertex is an initial event, not a
             // repeat. Seed its identity only now, so a later positive return
             // can use an actual-time progress certificate; the legacy generation
@@ -2458,16 +2763,16 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 				GenerationBefore, GenerationAfter);
             if (Speed::FFrameSolveWitnessScope::IsActive())
             {
-                ISpeedComponent* WitnessParent=Resolver?Resolver->GetParentComponent():nullptr;
+                ISpeedComponent* WitnessParent=Resolver?Storage.ReadBodyParent(*Resolver):nullptr;
                 Speed::FFrameSolveWitnessScope::Record(Frame,Iter,HitIndex,
-                    WitnessParent?SimulationWorldEpochStorage().FindStableId(*WitnessParent):0,
+                    WitnessParent?Storage.SimulationWorld().FindStableId(*WitnessParent):0,
                     WitnessParent?WitnessParent->GetSubBodies().IndexOfByKey(Resolver):INDEX_NONE,
                     Hit.PairKey,Hit.Hit,bIgnored,GenerationBefore,GenerationAfter,Resolver,RestingWorld!=nullptr);
             }
 #endif
 			if (RollingBodyA && RollingBodyB)
 			{
-				ActivatePendingRollingContactPairAtTOI(
+				Storage.ActivatePendingRollingContactPairAtTOI(
 					*RollingBodyA, *RollingBodyB, Dt - TimePassed);
 			}
 		}
@@ -2487,72 +2792,85 @@ void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const uns
 	// an infeasible analytical pose. Moving the body here also avoids changing
 	// the within-frame CCD trajectory from inside an impact callback.
 	const double ProjectionStartSeconds = FPlatformTime::Seconds();
-	for (ISpeedComponent* Comp : SimulationWorldEpochStorage().GetOrderedAdapters())
+	for (ISpeedComponent* Comp : Storage.SimulationWorld().GetOrderedAdapters())
 	{
 		if (Comp)
 		{
-			IAMSPEED_ACTOR_SCOPE(SimulationWorldEpochStorage(), *Comp, Projection);
+			IAMSPEED_ACTOR_SCOPE(Storage.SimulationWorld(), *Comp, Projection);
 			Comp->ProjectEstablishedStaticContacts(Dt);
 		}
 	}
 
     // Make persistent finite-mass contacts geometrically feasible before any
     // PostPhysics observer samples them.
-	ProjectDynamicContactPairs();
+	Storage.ProjectDynamicContactPairs();
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterProjection,TimePassed,0.f);
 #endif
-	LastStepDiagnosticsEpochStorage().ProjectionMilliseconds =
+	Storage.LastStepDiagnostics().ProjectionMilliseconds =
 		(FPlatformTime::Seconds() - ProjectionStartSeconds) * 1000.0;
 
     // ------------------------------------------------------------
     // 5) Final post update
     // ------------------------------------------------------------
 	const double PostStartSeconds = FPlatformTime::Seconds();
-    for (ISpeedComponent* Comp : SimulationWorldEpochStorage().GetOrderedAdapters())
+    for (ISpeedComponent* Comp : Storage.SimulationWorld().GetOrderedAdapters())
     {
         if (!Comp) continue;
-		IAMSPEED_ACTOR_SCOPE(SimulationWorldEpochStorage(), *Comp, Post);
+		IAMSPEED_ACTOR_SCOPE(Storage.SimulationWorld(), *Comp, Post);
 		Comp->PostPhysicsUpdate(Dt);
 	}
 
-	if (!SimulationWorldEpochStorage().GetPendingRollingContactPairs().IsEmpty())
+	if (!Storage.SimulationWorld().GetPendingRollingContactPairs().IsEmpty())
 	{
-		SimulationWorldEpochStorage().MergePendingRollingContactPairs();
+		Storage.SimulationWorld().MergePendingRollingContactPairs();
 	}
 
-	SolveDynamicContactPairs(Dt);
-	ProjectDynamicContactPairs();
+	Storage.SolveDynamicContactPairs(Dt);
+	Storage.ProjectDynamicContactPairs();
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::Testing::ObserveCcdPose(this,Frame,Speed::Testing::ECcdPoseAuditStage::AfterPost,TimePassed,0.f);
 #endif
-	LastStepDiagnosticsEpochStorage().PostMilliseconds =
+	Storage.LastStepDiagnostics().PostMilliseconds =
 		(FPlatformTime::Seconds() - PostStartSeconds) * 1000.0;
-	LastStepDiagnosticsEpochStorage().TotalMilliseconds =
+	Storage.LastStepDiagnostics().TotalMilliseconds =
 		(FPlatformTime::Seconds() - StepStartSeconds) * 1000.0;
 	const Speed::Analytic::FStaticWorldQueryCounters QueryCounters =
 		Speed::Analytic::FStaticWorldQueryAudit::GetCurrentFrameCounters();
-	LastStepDiagnosticsEpochStorage().StaticQueryCount = QueryCounters.QueryCount;
-	LastStepDiagnosticsEpochStorage().LegacySweepCount = QueryCounters.LegacySweepCount;
-	LastStepDiagnosticsEpochStorage().AuthorityAttemptCount = QueryCounters.AuthorityAttemptCount;
-	LastStepDiagnosticsEpochStorage().StaticAuthorityMilliseconds =
+	Storage.LastStepDiagnostics().StaticQueryCount = QueryCounters.QueryCount;
+	Storage.LastStepDiagnostics().LegacySweepCount = QueryCounters.LegacySweepCount;
+	Storage.LastStepDiagnostics().AuthorityAttemptCount = QueryCounters.AuthorityAttemptCount;
+	Storage.LastStepDiagnostics().StaticAuthorityMilliseconds =
 		QueryCounters.AuthorityMilliseconds;
-	LastStepDiagnosticsEpochStorage().MaximumStaticAuthorityMilliseconds =
+	Storage.LastStepDiagnostics().MaximumStaticAuthorityMilliseconds =
 		QueryCounters.MaximumAuthorityMilliseconds;
 
-	if (LastStepDiagnosticsEpochStorage().bIterationLimitReached)
+	if (Storage.LastStepDiagnostics().bIterationLimitReached)
 	{
 		SPEED_NATIVE_LOG(LogTemp, Error,
 			TEXT("[SpeedSolverIterationLimit] Frame=%u Iterations=%d MaxIterations=%d ComponentSweeps=%d StaticQueries=%u AuthorityAttempts=%u ResolvedEvents=%d TimePassed=%.9g Dt=%.9g StepMs=%.6f"),
-			Frame, LastStepDiagnosticsEpochStorage().IterationCount,
-			LastStepDiagnosticsEpochStorage().MaximumIterationCount,
-			LastStepDiagnosticsEpochStorage().ComponentSweepCount,
-			LastStepDiagnosticsEpochStorage().StaticQueryCount,
-			LastStepDiagnosticsEpochStorage().AuthorityAttemptCount,
-			LastStepDiagnosticsEpochStorage().ResolvedEventCount,
-			TimePassed, Dt, LastStepDiagnosticsEpochStorage().TotalMilliseconds);
+			Frame, Storage.LastStepDiagnostics().IterationCount,
+			Storage.LastStepDiagnostics().MaximumIterationCount,
+			Storage.LastStepDiagnostics().ComponentSweepCount,
+			Storage.LastStepDiagnostics().StaticQueryCount,
+			Storage.LastStepDiagnostics().AuthorityAttemptCount,
+			Storage.LastStepDiagnostics().ResolvedEventCount,
+			TimePassed, Dt, Storage.LastStepDiagnostics().TotalMilliseconds);
 	}
 }
+
+void USpeedWorldSubsystem::Step(const float& Dt, const float& SimTime, const unsigned int& Frame)
+{
+    FLegacyEpochAccess Storage(*this);
+    StepBody(Storage,Dt,SimTime,Frame);
+}
+
+void USpeedWorldSubsystem::StepNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Dt,const float& SimTime,const unsigned int& Frame)
+{
+    FNativeEpochAccess Storage(*this,Operation);
+    StepBody(Storage,Dt,SimTime,Frame);
+}
+
 
 #if !UE_BUILD_SHIPPING
 void USpeedWorldSubsystem::DeclareExpectedFrameAnalogWitnessForTesting() const

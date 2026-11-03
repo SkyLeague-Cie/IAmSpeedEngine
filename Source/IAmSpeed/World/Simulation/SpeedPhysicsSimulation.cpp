@@ -1,4 +1,5 @@
 #include "SpeedPhysicsSimulation.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
@@ -1298,7 +1299,198 @@ float ASpeedPhysicsSimulation::GetWarningFrameFraction() const
 	return Speed::RoadSettings::ReadOriginalOrLegacy<91>([](){ return CVarSimulationWarningFrameFraction.GetValueOnAnyThread(); });
 }
 
-bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
+bool ASpeedPhysicsSimulation::PublishNativeSnapshot(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+    const FCanonicalFrameContext& Context,const FSimulationSnapshot& Snapshot)
+{
+    using Speed::Netcode::Prediction::FPrivateNativeStorageAccess;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    ValidateNativePublicationOwner(Operation); // after participant Validate, before global store
+    auto& Actual=FPrivateNativeStorageAccess::Part<FOriginalDriverStorage>(Operation,this);
+    if(Snapshot.NumFrame!=Context.NumFrame||Actual.SnapshotBuffer.PublishedSerial()==MAX_uint64)return false;
+#if !UE_BUILD_SHIPPING
+    // As in the original canonical publisher, replay has no paced cadence.
+    if(Context.IsResimulation())return Actual.SnapshotBuffer.Publish(Snapshot);
+    const auto Timing=GetCanonicalPublicationTiming(Context); // timing values only, no key/route argument
+    // Revalidate the real operation after the actual virtual timing return.
+    // This is NOT a source/participant/UObject lifecycle lease.
+    ValidateNativePublicationOwner(Operation); // actual profile recheck after virtual timing return
+    auto& AfterTiming=FPrivateNativeStorageAccess::Part<FOriginalDriverStorage>(Operation,this);
+    return AfterTiming.SnapshotBuffer.PublishWithCadenceTiming(Snapshot,Timing);
+#else
+    return Actual.SnapshotBuffer.Publish(Snapshot);
+#endif
+}
+
+class ASpeedPhysicsSimulation::FLegacyCanonicalAccess final
+{
+    friend class ASpeedPhysicsSimulation;
+    ASpeedPhysicsSimulation& Owner;
+    explicit FLegacyCanonicalAccess(ASpeedPhysicsSimulation& Value):Owner(Value){}
+    FLegacyCanonicalAccess(const FLegacyCanonicalAccess&)=delete;
+    FLegacyCanonicalAccess& operator=(const FLegacyCanonicalAccess&)=delete;
+    FLegacyCanonicalAccess(FLegacyCanonicalAccess&&)=delete;
+    FLegacyCanonicalAccess& operator=(FLegacyCanonicalAccess&&)=delete;
+public:
+    decltype(auto) CameraSampleBuffer() const {return Owner.CameraSampleBufferDriverStorage();}
+    decltype(auto) FrameHashes() const {return Owner.FrameHashesDriverStorage();}
+    decltype(auto) InputJournal() const {return Owner.InputJournalDriverStorage();}
+    decltype(auto) InputObservations() const {return Owner.InputObservationsDriverStorage();}
+    decltype(auto) InputSessionRegistry() const {return Owner.InputSessionRegistryDriverStorage();}
+#if !UE_BUILD_SHIPPING
+    decltype(auto) NativeWitnessCase() const {return Owner.NativeWitnessCaseDriverStorage();}
+#endif
+#if !UE_BUILD_SHIPPING
+    decltype(auto) ParallelFrameTiming() const {return Owner.ParallelFrameTimingDriverStorage();}
+#endif
+    decltype(auto) PresentationProducerMutex() const {return Owner.PresentationProducerMutexDriverStorage();}
+    decltype(auto) PresentationProducers() const {return Owner.PresentationProducersDriverStorage();}
+    decltype(auto) PublishedCompletedWorldInput() const {return Owner.PublishedCompletedWorldInputDriverStorage();}
+    decltype(auto) PublishedInputFrame() const {return Owner.PublishedInputFrameDriverStorage();}
+    decltype(auto) SnapshotBuffer() const {return Owner.SnapshotBufferDriverStorage();}
+    decltype(auto) SpeedWorldSubsystem() const {return Owner.SpeedWorldSubsystemDriverStorage();}
+    decltype(auto) bCanonicalPublicationTerminal() const {return Owner.bCanonicalPublicationTerminalDriverStorage();}
+    decltype(auto) bInputConsumptionErrorReported() const {return Owner.bInputConsumptionErrorReportedDriverStorage();}
+    decltype(auto) bOwnedWorkerTerminal() const {return Owner.bOwnedWorkerTerminalDriverStorage();}
+    decltype(auto) bPublishCompletedWorldInput() const {return Owner.bPublishCompletedWorldInputDriverStorage();}
+    decltype(auto) bPublishPresentation() const {return Owner.bPublishPresentationDriverStorage();}
+    auto MakeInputValidation(bool HasSessions) const
+    {
+        // Legacy callback retains only its original facade/driver receiver.
+        return [Driver=&Owner,HasSessions]()
+        {return !HasSessions||Driver->InputSessionRegistryDriverStorage()->ValidateComplete();};
+    }
+    ECanonicalPublicationResult PublishFrame(const FCanonicalFrameContext& Context,const FSimulationSnapshot& Snapshot) const
+    {
+        // Public legacy protocol retains its original callback and exact store.
+        return Owner.SpeedWorldSubsystemDriverStorage()->PublishCanonicalFrame(Context.NumFrame,
+            [Driver=&Owner,&Context,&Snapshot]()
+            {
+                if(Driver->SnapshotBufferDriverStorage().PublishedSerial()==MAX_uint64)return false;
+#if !UE_BUILD_SHIPPING
+                return Context.IsResimulation()?Driver->SnapshotBufferDriverStorage().Publish(Snapshot):
+                    Driver->SnapshotBufferDriverStorage().PublishWithCadenceTiming(Snapshot,Driver->GetCanonicalPublicationTiming(Context));
+#else
+                return Driver->SnapshotBufferDriverStorage().Publish(Snapshot);
+#endif
+            });
+    }
+    bool BeginCanonicalFrame(FString& OutReason) const {return Owner.SpeedWorldSubsystemDriverStorage()->BeginCanonicalFrame(OutReason);}
+    bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context) const {return Owner.SpeedWorldSubsystemDriverStorage()->PrepareCanonicalInputs(Context);}
+    void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) const {Owner.SpeedWorldSubsystemDriverStorage()->PrepareCanonicalFrame(Context);}
+    void Step(const float& Dt,const float& SimTime,const unsigned int& Frame) const {Owner.SpeedWorldSubsystemDriverStorage()->Step(Dt,SimTime,Frame);}
+    FSimulationSnapshot CaptureSimulationSnapshot(const uint64 NumFrame,const uint64 InputJournalHash,const bool bIncludePresentation) const {return Owner.SpeedWorldSubsystemDriverStorage()->CaptureSimulationSnapshot(NumFrame,InputJournalHash,bIncludePresentation);}
+    void NotifyCanonicalFramePublished(uint64 NumFrame) const {Owner.SpeedWorldSubsystemDriverStorage()->NotifyCanonicalFramePublished(NumFrame);}
+    void AbortCanonicalFrame(uint64 Frame,ECanonicalFrameAbortReason Reason) const {Owner.SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Frame,Reason);}
+    void EndCanonicalFrame() const {Owner.SpeedWorldSubsystemDriverStorage()->EndCanonicalFrame();}
+    const Speed::IStaticCollisionWorld* GetStaticCollisionWorld() const {return Owner.SpeedWorldSubsystemDriverStorage()->GetStaticCollisionWorld();}
+    const Speed::Analytic::FAnalyticWorldData* GetAnalyticWorldData() const {return Owner.SpeedWorldSubsystemDriverStorage()->GetAnalyticWorldData();}
+    const FSpeedStepDiagnostics& GetLastStepDiagnostics() const {return Owner.SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics();}
+    void ValidateInputDispatch(bool) const {}
+    void ValidateProducerDispatch(const TArray<TSharedRef<ISimulationPresentationProducer,ESPMode::ThreadSafe>>&) const {}
+    void ValidateCompletedPublication() const {}
+    void ServiceReplay(const FSimulationSnapshot& Snapshot) const {Owner.ServiceReplayCapture(Snapshot);}
+};
+
+class ASpeedPhysicsSimulation::FNativeCanonicalAccess final
+{
+    friend class ASpeedPhysicsSimulation;
+    ASpeedPhysicsSimulation& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    FOriginalDriverStorage& Actual() const
+    {
+        return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<FOriginalDriverStorage>(Operation,&Owner);
+    }
+    USpeedWorldSubsystem& NativeBridge() const
+    {
+        auto* Bridge=Actual().SpeedWorldSubsystem;
+        USpeedWorldSubsystem::ValidateNativeSubject(Operation,Bridge); // before dereference
+        return *Bridge;
+    }
+    explicit FNativeCanonicalAccess(ASpeedPhysicsSimulation& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+        :Owner(Value),Operation(Operation)
+    {
+        using Speed::Netcode::Prediction::FPrivateNativeStorageAccess;
+        FPrivateNativeStorageAccess::RequireStep(Operation);
+        auto& Values=Actual(); // real root/gate/storage checked before any state read
+        // The existing private road kernel uses owner-filtered direct inputs
+        // and values-only facade rendering. Reject unsupported native producer/
+        // registry/replay profiles explicitly; no key-bearing validator escapes
+        // to the public presentation scheduler. This is not restore admission.
+        const auto Registry=Values.InputSessionRegistry?Values.InputSessionRegistry->ReadRegistry():nullptr;
+        if((Registry&&!Registry->Bindings.empty())||!Values.PresentationProducers.IsEmpty()
+            ||Values.bPublishCompletedWorldInput||Values.bReplayCaptureRequested.Load())
+            throw std::runtime_error("private native canonical profile has public input/presentation/replay participants");
+    }
+    FNativeCanonicalAccess(const FNativeCanonicalAccess&)=delete;
+    FNativeCanonicalAccess& operator=(const FNativeCanonicalAccess&)=delete;
+    FNativeCanonicalAccess(FNativeCanonicalAccess&&)=delete;
+    FNativeCanonicalAccess& operator=(FNativeCanonicalAccess&&)=delete;
+public:
+    decltype(auto) CameraSampleBuffer() const {return (Actual().CameraSampleBuffer);}
+    decltype(auto) FrameHashes() const {return (Actual().FrameHashes);}
+    decltype(auto) InputJournal() const {return (Actual().InputJournal);}
+    decltype(auto) InputObservations() const {return (Actual().InputObservations);}
+    decltype(auto) InputSessionRegistry() const {return (Actual().InputSessionRegistry);}
+#if !UE_BUILD_SHIPPING
+    decltype(auto) NativeWitnessCase() const {return (Actual().NativeWitnessCase);}
+#endif
+#if !UE_BUILD_SHIPPING
+    decltype(auto) ParallelFrameTiming() const {return (Actual().ParallelFrameTiming);}
+#endif
+    decltype(auto) PresentationProducerMutex() const {return (Actual().PresentationProducerMutex);}
+    decltype(auto) PresentationProducers() const {return (Actual().PresentationProducers);}
+    decltype(auto) PublishedCompletedWorldInput() const {return (Actual().PublishedCompletedWorldInput);}
+    decltype(auto) PublishedInputFrame() const {return (Actual().PublishedInputFrame);}
+    decltype(auto) SnapshotBuffer() const {return (Actual().SnapshotBuffer);}
+    decltype(auto) SpeedWorldSubsystem() const {return (Actual().SpeedWorldSubsystem);}
+    decltype(auto) bCanonicalPublicationTerminal() const {return (Actual().bCanonicalPublicationTerminal);}
+    decltype(auto) bInputConsumptionErrorReported() const {return (Actual().bInputConsumptionErrorReported);}
+    decltype(auto) bOwnedWorkerTerminal() const {return (Actual().bOwnedWorkerTerminal);}
+    decltype(auto) bPublishCompletedWorldInput() const {return (Actual().bPublishCompletedWorldInput);}
+    decltype(auto) bPublishPresentation() const {return (Actual().bPublishPresentation);}
+    auto MakeInputValidation(bool HasSessions) const
+    {
+        if(HasSessions)throw std::runtime_error("private native input-session profile changed");
+        return [](){return true;}; // exact no-session validation, captures NOTHING
+    }
+    ECanonicalPublicationResult PublishFrame(const FCanonicalFrameContext& Context,const FSimulationSnapshot& Snapshot) const
+    {
+        auto& Values=Actual();
+        if(!Values.SpeedWorldSubsystem)throw std::runtime_error("private native bridge unavailable at publication");
+        return NativeBridge().PublishNativeCanonicalFrame(Operation,Owner,Context,Snapshot);
+    }
+    bool BeginCanonicalFrame(FString& OutReason) const {return NativeBridge().BeginNativeCanonicalFrame(Operation,OutReason);}
+    bool PrepareCanonicalInputs(const FCanonicalFrameContext& Context) const {return NativeBridge().PrepareNativeCanonicalInputs(Operation,Context);}
+    void PrepareCanonicalFrame(const FCanonicalFrameContext& Context) const {NativeBridge().PrepareNativeCanonicalFrame(Operation,Context);}
+    void Step(const float& Dt,const float& SimTime,const unsigned int& Frame) const {NativeBridge().StepNative(Operation,Dt,SimTime,Frame);}
+    FSimulationSnapshot CaptureSimulationSnapshot(const uint64 NumFrame,const uint64 InputJournalHash,const bool bIncludePresentation) const {return NativeBridge().CaptureNativeSimulationSnapshot(Operation,NumFrame,InputJournalHash,bIncludePresentation);}
+    void NotifyCanonicalFramePublished(uint64 NumFrame) const {NativeBridge().NotifyNativeCanonicalFramePublished(Operation,NumFrame);}
+    void AbortCanonicalFrame(uint64 Frame,ECanonicalFrameAbortReason Reason) const {NativeBridge().AbortNativeCanonicalFrame(Operation,Frame,Reason);}
+    void EndCanonicalFrame() const {NativeBridge().EndNativeCanonicalFrame(Operation);}
+    const Speed::IStaticCollisionWorld* GetStaticCollisionWorld() const {return NativeBridge().GetNativeStaticCollisionWorld(Operation);}
+    const Speed::Analytic::FAnalyticWorldData* GetAnalyticWorldData() const {return NativeBridge().GetNativeAnalyticWorldData(Operation);}
+    const FSpeedStepDiagnostics& GetLastStepDiagnostics() const {return NativeBridge().GetNativeLastStepDiagnostics(Operation);}
+    void ValidateInputDispatch(bool HasSessions) const
+    {
+        if(HasSessions)throw std::runtime_error("private native sessions changed before input dispatch");
+        Owner.ValidateNativePublicationOwner(Operation);
+    }
+    void ValidateProducerDispatch(const TArray<TSharedRef<ISimulationPresentationProducer,ESPMode::ThreadSafe>>& Producers) const
+    {
+        if(!Producers.IsEmpty())throw std::runtime_error("private native producers changed before dispatch");
+        Owner.ValidateNativePublicationOwner(Operation);
+    }
+    void ValidateCompletedPublication() const {Owner.ValidateNativePublicationOwner(Operation);}
+    void ServiceReplay(const FSimulationSnapshot&) const
+    {
+        // Native replay sinks are not part of this original road profile.
+        // An attempt remains refused; it is never routed to facade storage.
+        if(Actual().bReplayCaptureRequested.Load())throw std::runtime_error("private native replay profile changed");
+    }
+};
+
+template<class TAccess>
+bool ASpeedPhysicsSimulation::StepCanonicalFrameBody(const FCanonicalFrameContext& Context,TAccess& Storage)
 {
     if(!AllowsNativeDriverExecution())return false;
 
@@ -1309,19 +1501,19 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     ON_SCOPE_EXIT
     {
         if (!bCompletedPublicationFrameSucceeded)
-            PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
+            Storage.PublishedCompletedWorldInput().store({}, std::memory_order_seq_cst);
     };
 #if WITH_DEV_AUTOMATION_TESTS
     Speed::OwnedFrameAudit::FCanonicalPhaseScope OwnedPhases(Context.NumFrame);
 #endif
 #if !UE_BUILD_SHIPPING
-    Speed::ParallelTiming::FFrameScope ParallelTimingScope(ParallelFrameTimingDriverStorage(), Context.NumFrame, Context.PhysicalDeltaTime);
+    Speed::ParallelTiming::FFrameScope ParallelTimingScope(Storage.ParallelFrameTiming(), Context.NumFrame, Context.PhysicalDeltaTime);
 #endif
-	if (bCanonicalPublicationTerminalDriverStorage().Load()) return false;
-	if (!SpeedWorldSubsystemDriverStorage())
+	if (Storage.bCanonicalPublicationTerminal().Load()) return false;
+	if (!Storage.SpeedWorldSubsystem())
 	{
-		SpeedWorldSubsystemDriverStorage() = GetSpeedWorldSubsystem(GetWorld());
-		if (!SpeedWorldSubsystemDriverStorage())
+		Storage.SpeedWorldSubsystem() = GetSpeedWorldSubsystem(GetWorld());
+		if (!Storage.SpeedWorldSubsystem())
 		{
 			return false;
 		}
@@ -1329,12 +1521,12 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 
 	FString BindingFailure;
 	bool bAdmitted = false;
-	try { bAdmitted = SpeedWorldSubsystemDriverStorage()->BeginCanonicalFrame(BindingFailure); }
+	try { bAdmitted = Storage.BeginCanonicalFrame(BindingFailure); }
 	catch (...)
 	{
-		bCanonicalPublicationTerminalDriverStorage().Store(true);
-		PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
-		bOwnedWorkerTerminalDriverStorage().Store(true);
+		Storage.bCanonicalPublicationTerminal().Store(true);
+		Storage.PublishedCompletedWorldInput().store({}, std::memory_order_seq_cst);
+		Storage.bOwnedWorkerTerminal().Store(true);
 		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalAdmissionExceptionTerminal] Frame=%llu"), Context.NumFrame);
 		return false; // BeginCanonicalFrame sets its active flag only after validation returns.
 	}
@@ -1356,9 +1548,9 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     // Default timing mode 0 pays none
     // of this observer's per-frame settings/counter work.
     Speed::ParallelTiming::FFrameWorkEvidence ParallelWork;
-    const auto* ParallelTimingWorld = ParallelFrameTimingDriverStorage().IsActive()
-        ? SpeedWorldSubsystemDriverStorage()->GetStaticCollisionWorld() : nullptr;
-    if (ParallelFrameTimingDriverStorage().IsActive())
+    const auto* ParallelTimingWorld = Storage.ParallelFrameTiming().IsActive()
+        ? Storage.GetStaticCollisionWorld() : nullptr;
+    if (Storage.ParallelFrameTiming().IsActive())
     {
         const auto Settings = Speed::CaptureFrameParallelSettings();
         ParallelWork.Requested = Settings.RequestedLanes;
@@ -1377,15 +1569,15 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	ON_SCOPE_EXIT
 	{
 		if (bAuditStarted) Speed::Analytic::FStaticWorldQueryAudit::EndFrame();
-		SpeedWorldSubsystemDriverStorage()->EndCanonicalFrame();
+		Storage.EndCanonicalFrame();
 	};
-	const auto MarkTerminal = [this]()
+	const auto MarkTerminal = [&Storage]()
 	{
-		PublishedCompletedWorldInputDriverStorage().store({}, std::memory_order_seq_cst);
-		if (InputSessionRegistryDriverStorage()) InputSessionRegistryDriverStorage()->AbortFrame();
-		PublishedInputFrameDriverStorage().store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
-		bCanonicalPublicationTerminalDriverStorage().Store(true);
-		bOwnedWorkerTerminalDriverStorage().Store(true);
+		Storage.PublishedCompletedWorldInput().store({}, std::memory_order_seq_cst);
+		if (Storage.InputSessionRegistry()) Storage.InputSessionRegistry()->AbortFrame();
+		Storage.PublishedInputFrame().store(std::shared_ptr<const Speed::Input::V2::FRegistryFrame>{}, std::memory_order_seq_cst);
+		Storage.bCanonicalPublicationTerminal().Store(true);
+		Storage.bOwnedWorkerTerminal().Store(true);
 	};
 
 #if !UE_BUILD_SHIPPING
@@ -1395,23 +1587,24 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	try
 	{
 		IAMSPEED_FRAME_SCOPE(Initialize);
-		const auto InputView = InputSessionRegistryDriverStorage() ? InputSessionRegistryDriverStorage()->ReadRegistry() : nullptr;
+		const auto InputView = Storage.InputSessionRegistry() ? Storage.InputSessionRegistry()->ReadRegistry() : nullptr;
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Registry);
 #endif
 		const bool bHasInputSessions = InputView && !InputView->Bindings.empty();
+        Storage.ValidateInputDispatch(bHasInputSessions); // before scenario/install/poll callbacks
 		if (bHasInputSessions)
 		{
 			ExceptionStage = TEXT("ScenarioInputs");
-			if (!SpeedWorldSubsystemDriverStorage()->StageCanonicalScenarioInputs(Context, *InputSessionRegistryDriverStorage()))
+			if (!Storage.SpeedWorldSubsystem()->StageCanonicalScenarioInputs(Context, *Storage.InputSessionRegistry()))
 				throw std::runtime_error("canonical scenario authoring rejected");
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::ScenarioInputs);
 #endif
 			ExceptionStage = TEXT("InputPrepareFrame");
-			if (!InputSessionRegistryDriverStorage()->PrepareFrame(Context.NumFrame))
+			if (!Storage.InputSessionRegistry()->PrepareFrame(Context.NumFrame))
 			{
-				const auto Failure = InputSessionRegistryDriverStorage()->ReadLastFrameFailure();
+				const auto Failure = Storage.InputSessionRegistry()->ReadLastFrameFailure();
                 SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalInputPollRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
                     Context.NumFrame, unsigned(Failure.Reason), Failure.Session, Failure.Epoch,
                     unsigned(Failure.OwnerPresent), unsigned(Failure.OwnerStatusPresent),
@@ -1423,9 +1616,9 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputPrepare);
 #endif
 			ExceptionStage = TEXT("InputInstallAll");
-			if (!InputSessionRegistryDriverStorage()->InstallAll())
+			if (!Storage.InputSessionRegistry()->InstallAll())
 			{
-				const auto Failure = InputSessionRegistryDriverStorage()->ReadLastFrameFailure();
+				const auto Failure = Storage.InputSessionRegistry()->ReadLastFrameFailure();
                 SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalInputInstallRejected] Frame=%llu Reason=%u Session=%llu Epoch=%llu OwnerPresent=%u OwnerStatusPresent=%u OwnerStatus=%u OwnerPhase=%u PollFailure=%u PollSerial=%llu RegistryVersion=%llu"),
                     Context.NumFrame, unsigned(Failure.Reason), Failure.Session, Failure.Epoch,
                     unsigned(Failure.OwnerPresent), unsigned(Failure.OwnerStatusPresent),
@@ -1437,45 +1630,45 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputInstall);
 #endif
 			ExceptionStage = TEXT("InputSnapshotInstall");
-			const auto Installed = InputSessionRegistryDriverStorage()->ReadInstalled();
-			if (!Installed || !SpeedWorldSubsystemDriverStorage()->InstallCanonicalInputs(*Installed) || !InputSessionRegistryDriverStorage()->BeginAll())
+			const auto Installed = Storage.InputSessionRegistry()->ReadInstalled();
+			if (!Installed || !Storage.SpeedWorldSubsystem()->InstallCanonicalInputs(*Installed) || !Storage.InputSessionRegistry()->BeginAll())
 				throw std::runtime_error("canonical input installation rejected");
 		}
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputSnapshot);
 #endif
 #if !UE_BUILD_SHIPPING
-        const auto WitnessInstalled=bHasInputSessions && InputSessionRegistryDriverStorage()?InputSessionRegistryDriverStorage()->ReadInstalled():nullptr;
+        const auto WitnessInstalled=bHasInputSessions && Storage.InputSessionRegistry()?Storage.InputSessionRegistry()->ReadInstalled():nullptr;
         TUniquePtr<Speed::FFrameAppliedCommandWitnessScope> AppliedCommandWitness;
         TUniquePtr<Speed::FNativeFrameWitnessRecorder> FrameWitness;
         try { FrameWitness=Speed::FNativeFrameWitnessRecorder::Begin(
-            Context.NumFrame,Context.PhysicalDeltaTime,WitnessInstalled.get(),*SpeedWorldSubsystemDriverStorage(),NativeWitnessCaseDriverStorage(),!bHasInputSessions); }
+            Context.NumFrame,Context.PhysicalDeltaTime,WitnessInstalled.get(),*Storage.SpeedWorldSubsystem(),Storage.NativeWitnessCase(),!bHasInputSessions); }
         catch(...) { SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[FrameWitnessBeginUnknown] Frame=%llu"),Context.NumFrame); }
         if(FrameWitness)try { AppliedCommandWitness=MakeUnique<Speed::FFrameAppliedCommandWitnessScope>(
-            Context.NumFrame,InputJournalDriverStorage().GetCommandsForFrame(Context.NumFrame).Num());
-            SpeedWorldSubsystemDriverStorage()->DeclareExpectedFrameAnalogWitnessForTesting(); }
+            Context.NumFrame,Storage.InputJournal().GetCommandsForFrame(Context.NumFrame).Num());
+            Storage.SpeedWorldSubsystem()->DeclareExpectedFrameAnalogWitnessForTesting(); }
         catch(...) { SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandBeginUnknown] Frame=%llu"),Context.NumFrame); }
 #endif
 		ExceptionStage = TEXT("StaticWorldAudit");
 		Speed::Analytic::FStaticWorldQueryAudit::BeginFrame(
-			Context.NumFrame, SpeedWorldSubsystemDriverStorage()->GetAnalyticWorldData(),
-			SpeedWorldSubsystemDriverStorage());
+			Context.NumFrame, Storage.GetAnalyticWorldData(),
+			Storage.SpeedWorldSubsystem());
 		bAuditStarted = true;
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::StaticAudit);
 #endif
 		ExceptionStage = TEXT("SimulationInputJournal");
-		if (InputJournalDriverStorage().IsSealed() &&
-			!SpeedWorldSubsystemDriverStorage()->ApplySimulationInputs(Context.NumFrame, InputJournalDriverStorage()))
+		if (Storage.InputJournal().IsSealed() &&
+			!Storage.SpeedWorldSubsystem()->ApplySimulationInputs(Context.NumFrame, Storage.InputJournal()))
 		{
-			if (!bInputConsumptionErrorReportedDriverStorage())
+			if (!Storage.bInputConsumptionErrorReported())
 			{
-				bInputConsumptionErrorReportedDriverStorage() = true;
+				Storage.bInputConsumptionErrorReported() = true;
 				SPEED_NATIVE_LOG(LogTemp, Error,
 					TEXT("[SimulationInputRejected] Frame=%llu JournalHash=%016llX"),
-					Context.NumFrame, InputJournalDriverStorage().StableHash());
+					Context.NumFrame, Storage.InputJournal().StableHash());
 			}
-			SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			Storage.AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 			bOutcomeHandled = true;
 			MarkTerminal();
 			return false;
@@ -1484,9 +1677,9 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::InputJournal);
 #endif
 		ExceptionStage = TEXT("CanonicalInputPrepare");
-		if (!SpeedWorldSubsystemDriverStorage()->PrepareCanonicalInputs(Context))
+		if (!Storage.PrepareCanonicalInputs(Context))
 		{
-			SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			Storage.AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 			bOutcomeHandled = true;
 			MarkTerminal();
 			SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalInputPreparationRejected] Frame=%llu"), Context.NumFrame);
@@ -1495,7 +1688,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CanonicalInputs);
 #endif
-		bInputConsumptionErrorReportedDriverStorage() = false;
+		Storage.bInputConsumptionErrorReported() = false;
 
 #if !UE_BUILD_SHIPPING
         ParallelTimingScope.NextPhase(Speed::ParallelTiming::EFrameCostPhase::Prepare);
@@ -1505,10 +1698,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #if !UE_BUILD_SHIPPING
         {
             Speed::FCanonicalEpisodeTestingScope PrepareOwnerScope(Context);
-            SpeedWorldSubsystemDriverStorage()->PrepareCanonicalFrame(Context);
+            Storage.PrepareCanonicalFrame(Context);
         }
 #else
-        SpeedWorldSubsystemDriverStorage()->PrepareCanonicalFrame(Context);
+        Storage.PrepareCanonicalFrame(Context);
 #endif
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldPrepare);
@@ -1521,16 +1714,16 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		ExceptionStage = TEXT("WorldStep");
 #if WITH_DEV_AUTOMATION_TESTS
     const uint64 OwnedDiagnosticSerialBefore = OwnedPhases.CapturesPhysicalDetail()
-        ? SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics().Serial : 0;
+        ? Storage.GetLastStepDiagnostics().Serial : 0;
 #endif
-		SpeedWorldSubsystemDriverStorage()->Step(
+		Storage.Step(
 			Context.PhysicalDeltaTime,
 			Context.SimTime,
 			static_cast<unsigned int>(Context.NumFrame));
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::WorldStep);
     if (OwnedPhases.CapturesPhysicalDetail())
-        OwnedPhases.CopyPhysicalDetail(SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics(), OwnedDiagnosticSerialBefore);
+        OwnedPhases.CopyPhysicalDetail(Storage.GetLastStepDiagnostics(), OwnedDiagnosticSerialBefore);
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -1538,8 +1731,8 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
 		IAMSPEED_FRAME_PHASE(Snapshot);
 		ExceptionStage = TEXT("SnapshotCapture");
-		FSimulationSnapshot Snapshot = SpeedWorldSubsystemDriverStorage()->CaptureSimulationSnapshot(
-			Context.NumFrame, InputJournalDriverStorage().StableHash(), bPublishPresentationDriverStorage());
+		FSimulationSnapshot Snapshot = Storage.CaptureSimulationSnapshot(
+			Context.NumFrame, Storage.InputJournal().StableHash(), Storage.bPublishPresentation());
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Snapshot);
 #endif
@@ -1550,21 +1743,22 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		ExceptionStage = TEXT("PresentationProducerList");
 		TArray<TSharedRef<ISimulationPresentationProducer, ESPMode::ThreadSafe>> Producers;
 		{
-			FScopeLock Lock(&PresentationProducerMutexDriverStorage());
-			Producers = PresentationProducersDriverStorage();
+			FScopeLock Lock(&Storage.PresentationProducerMutex());
+			Producers = Storage.PresentationProducers();
 		}
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::ProducerList);
 #endif
 		const Speed::FFrameParallelSettings ParallelPresentationSettings = Speed::CaptureFrameParallelSettings();
 		ExceptionStage = TEXT("PresentationProduce");
+        Storage.ValidateProducerDispatch(Producers); // before any producer method/scheduler callback
         Producers.RemoveAll([this](const auto& Producer)
         { return Producer->IsCameraPresentation() && !AllowsCameraPresentation(); });
 #if WITH_DEV_AUTOMATION_TESTS
         TOptional<Speed::OwnedFrameAudit::FCameraScope> OwnedCamera;
         const bool bInputComplete = Speed::FrameParallel::ProduceFramePresentationWithOwnerValidationAndObservation(
             Snapshot, Producers, ParallelPresentationSettings.bParallelCamera ? ParallelPresentationSettings.LaneLimit : 1,
-            bHasInputSessions, [&] { return !bHasInputSessions || InputSessionRegistryDriverStorage()->ValidateComplete(); },
+            bHasInputSessions, Storage.MakeInputValidation(bHasInputSessions),
             [&](const ISimulationPresentationProducer& Producer)
             {
                 Speed::Testing::ObservePresentationDispatch(&Producer, Snapshot.NumFrame);
@@ -1579,7 +1773,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #else
         const bool bInputComplete = Speed::FrameParallel::ProduceFramePresentationWithOwnerValidation(
             Snapshot, Producers, ParallelPresentationSettings.bParallelCamera ? ParallelPresentationSettings.LaneLimit : 1,
-            bHasInputSessions, [&] { return !bHasInputSessions || InputSessionRegistryDriverStorage()->ValidateComplete(); });
+            bHasInputSessions, Storage.MakeInputValidation(bHasInputSessions));
 #endif
 		ExceptionStage = TEXT("InputValidateComplete");
 		if (!bInputComplete)
@@ -1594,10 +1788,11 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         // Reserve/copy all common-view storage before either irreversible commit.
         // The captured registry/Installed endpoint belongs to THIS canonical frame.
         std::shared_ptr<Speed::FCompletedSimulationPublication> CompletedDraft;
-        if (bPublishCompletedWorldInputDriverStorage())
+        Storage.ValidateCompletedPublication(); // initial profile check was not an immutability lease
+        if (Storage.bPublishCompletedWorldInput())
         {
             ExceptionStage = TEXT("CompletedWorldInputPrepare");
-            const auto Installed = bHasInputSessions ? InputSessionRegistryDriverStorage()->ReadInstalled() : nullptr;
+            const auto Installed = bHasInputSessions ? Storage.InputSessionRegistry()->ReadInstalled() : nullptr;
             // ReadRegistry() produces an observation copy. Bind the common view to
             // the exact registry retained by PrepareFrame, never a later sample.
             const auto CapturedRegistry = Installed ? Installed->Registry : InputView;
@@ -1605,31 +1800,20 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
                 throw std::runtime_error("completed world/input preparation rejected");
             CompletedDraft.reset(new Speed::FCompletedSimulationPublication(Snapshot, CapturedRegistry, Installed));
         }
-        const auto PublishCompletedWorldInput = [&](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)
+        const auto PublishCompletedWorldInput = [&CompletedDraft,&Storage](const std::shared_ptr<const Speed::Input::V2::FRegistryFrame>& Completed)
         {
             if (!CompletedDraft) return true;
             if (!CompletedDraft->MatchesCompleted(Completed)
-                || !CompletedDraft->BindPublicationSerial(SnapshotBufferDriverStorage().PublishedSerial())) return false;
+                || !CompletedDraft->BindPublicationSerial(Storage.SnapshotBuffer().PublishedSerial())) return false;
             // No allocation, callbacks or separate endpoint loads in this store.
             // Moving consumes the only mutable alias; readers retain one object.
             std::shared_ptr<const Speed::FCompletedSimulationPublication> Sealed = std::move(CompletedDraft);
-            PublishedCompletedWorldInputDriverStorage().store(std::move(Sealed), std::memory_order_seq_cst);
+            Storage.PublishedCompletedWorldInput().store(std::move(Sealed), std::memory_order_seq_cst);
             return true;
         };
 		IAMSPEED_FRAME_PHASE(Publish);
 		ExceptionStage = TEXT("CanonicalPublish");
-		const ECanonicalPublicationResult Publication = SpeedWorldSubsystemDriverStorage()->PublishCanonicalFrame(Context.NumFrame, [&]()
-		{
-			// One simulation owner. Avoid serial wrap before touching the inactive slot.
-			if (SnapshotBufferDriverStorage().PublishedSerial() == MAX_uint64) return false;
-#if !UE_BUILD_SHIPPING
-            // Replay publications do not represent paced real-time starts.
-            return Context.IsResimulation() ? SnapshotBufferDriverStorage().Publish(Snapshot) :
-                SnapshotBufferDriverStorage().PublishWithCadenceTiming(Snapshot, GetCanonicalPublicationTiming(Context));
-#else
-            return SnapshotBufferDriverStorage().Publish(Snapshot);
-#endif
-		});
+		const ECanonicalPublicationResult Publication = Storage.PublishFrame(Context,Snapshot);
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::Publication);
 #endif
@@ -1649,23 +1833,23 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 		if (bHasInputSessions)
 		{
 			ExceptionStage = TEXT("InputComplete");
-			if (!InputSessionRegistryDriverStorage()->CompleteAll())
+			if (!Storage.InputSessionRegistry()->CompleteAll())
 			{
 				MarkTerminal();
 				return false;
 			}
-			const auto Completed = InputSessionRegistryDriverStorage()->ReadLatest();
+			const auto Completed = Storage.InputSessionRegistry()->ReadLatest();
             // A failed/mismatched completion never produces a common publication.
             if (!Completed || Completed->Frame != Context.NumFrame || !PublishCompletedWorldInput(Completed))
             {
                 MarkTerminal();
                 return false;
             }
-			PublishedInputFrameDriverStorage().store(Completed, std::memory_order_seq_cst);
+			Storage.PublishedInputFrame().store(Completed, std::memory_order_seq_cst);
 			for (const auto& Input : Completed->Inputs)
 			{
-				const auto Observation = InputObservationsDriverStorage().find(Input.Session);
-				if (Observation != InputObservationsDriverStorage().end())
+				const auto Observation = Storage.InputObservations().find(Input.Session);
+				if (Observation != Storage.InputObservations().end())
 				{
 					try { if (!Observation->second->Publish(Input.Snapshot)) Observation->second->Deactivate(); }
 					catch (...) { SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[InputObservationPublicationFailed] Frame=%llu"), Context.NumFrame); }
@@ -1682,10 +1866,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
 		// V2 authoritative commit is finished before any optional presentation work.
 		ExceptionStage = TEXT("PostCommitNotify");
-		SpeedWorldSubsystemDriverStorage()->NotifyCanonicalFramePublished(Context.NumFrame);
+		Storage.NotifyCanonicalFramePublished(Context.NumFrame);
 		// Optional replay observes only the successful full commit. Failure retires
 		// recording, never the live physics step or its canonical hash.
-		ServiceReplayCapture(Snapshot);
+		Storage.ServiceReplay(Snapshot);
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::PostCommit);
 #endif
@@ -1700,10 +1884,10 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
         if (bHasCanonicalCameraSample)
 		{
 			CameraSample.NumFrame = Snapshot.NumFrame;
-			CameraSample.PublicationSerial = SnapshotBufferDriverStorage().PublishedSerial();
+			CameraSample.PublicationSerial = Storage.SnapshotBuffer().PublishedSerial();
 			CameraSample.StateHash = Snapshot.StateHash;
 			CameraSample.InputJournalHash = Snapshot.InputJournalHash;
-			CameraSampleBufferDriverStorage().Publish(CameraSample);
+			Storage.CameraSampleBuffer().Publish(CameraSample);
 		}
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::CameraSample);
@@ -1735,9 +1919,9 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
             }
             if(AppliedCommandWitness && !AppliedCommandWitness->SaveCommittedFrame())
                 SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[FrameAppliedCommandSaveUnknown] Frame=%llu"),Context.NumFrame);
-            const auto WitnessCompleted=bHasInputSessions && InputSessionRegistryDriverStorage()?InputSessionRegistryDriverStorage()->ReadLatest():nullptr;
+            const auto WitnessCompleted=bHasInputSessions && Storage.InputSessionRegistry()?Storage.InputSessionRegistry()->ReadLatest():nullptr;
             FrameWitness->Finish(WitnessCompleted.get(),Snapshot.Payload,
-                SpeedWorldSubsystemDriverStorage()->GetLastStepDiagnostics().ResolvedEventCount,WitnessCamera,true,!bHasInputSessions);
+                Storage.GetLastStepDiagnostics().ResolvedEventCount,WitnessCamera,true,!bHasInputSessions);
         }
         catch(...) { SPEED_NATIVE_LOG(LogTemp,Error,TEXT("[FrameWitnessFinishUnknown] Frame=%llu"),Context.NumFrame); }
 #endif
@@ -1747,7 +1931,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 #endif
 		IAMSPEED_FRAME_PHASE(Journal);
 		ExceptionStage = TEXT("FrameHash");
-		FrameHashesDriverStorage().Append(Context.NumFrame, Snapshot.StateHash);
+		Storage.FrameHashes().Append(Context.NumFrame, Snapshot.StateHash);
 #if WITH_DEV_AUTOMATION_TESTS
     OwnedPhases.Mark(Speed::OwnedFrameAudit::ECanonicalEdge::FrameHash);
 #endif
@@ -1803,7 +1987,7 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	catch (const std::exception& Exception)
 	{
 		if (!bGlobalPublished && !bOutcomeHandled)
-			SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			Storage.AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 		MarkTerminal();
 		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d Stage=%s Type=std Message=%s"),
 			Context.NumFrame, bGlobalPublished ? 1 : 0, ExceptionStage, UTF8_TO_TCHAR(Exception.what()));
@@ -1812,13 +1996,44 @@ bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& C
 	catch (...)
 	{
 		if (!bGlobalPublished && !bOutcomeHandled)
-			SpeedWorldSubsystemDriverStorage()->AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
+			Storage.AbortCanonicalFrame(Context.NumFrame, ECanonicalFrameAbortReason::PreparationFailed);
 		MarkTerminal();
 		SPEED_NATIVE_LOG(LogTemp, Error, TEXT("[CanonicalFrameExceptionTerminal] Frame=%llu GlobalPublished=%d Stage=%s Type=unknown"),
 			Context.NumFrame, bGlobalPublished ? 1 : 0, ExceptionStage);
 		return false; // No exception escapes into the UE worker/callback boundary.
 	}
 }
+
+bool ASpeedPhysicsSimulation::StepCanonicalFrame(const FCanonicalFrameContext& Context)
+{
+    FLegacyCanonicalAccess Storage(*this);
+    return StepCanonicalFrameBody(Context,Storage);
+}
+bool ASpeedPhysicsSimulation::StepNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const FCanonicalFrameContext& Context)
+{
+    FNativeCanonicalAccess Storage(*this,Operation);
+    return StepCanonicalFrameBody(Context,Storage);
+}
+uint64 ASpeedPhysicsSimulation::ReadNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const FOriginalDriverStorage>(Operation,this).CanonicalNumFrame;
+}
+void ASpeedPhysicsSimulation::IncrementNativeCanonicalFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    auto& Actual=Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<FOriginalDriverStorage>(Operation,this);
+    ++Actual.CanonicalNumFrame;
+}
+void ASpeedPhysicsSimulation::ValidateNativePublicationOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    using Speed::Netcode::Prediction::FPrivateNativeStorageAccess;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    const auto& Values=FPrivateNativeStorageAccess::Part<const FOriginalDriverStorage>(Operation,this);
+    const auto Registry=Values.InputSessionRegistry?Values.InputSessionRegistry->ReadRegistry():nullptr;
+    if((Registry&&!Registry->Bindings.empty())||!Values.PresentationProducers.IsEmpty()
+        ||Values.bPublishCompletedWorldInput||Values.bReplayCaptureRequested.Load())
+        throw std::runtime_error("private native canonical participants changed at dispatch/publication boundary");
+}
+
 
 bool ASpeedPhysicsSimulation::RequestRollbackAndResimulation(
 	const FSimulationSnapshot& Snapshot,
