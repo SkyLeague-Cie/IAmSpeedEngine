@@ -171,6 +171,10 @@ public:
 		uint64 SourceId) const;
     void Step(const float& Dt, const float& SimTime, const unsigned int& Frame);
 private:
+    // Called only by the actual private factory, after its ordinary-world
+    // admission. Does not query UWorld or manufacture source/lifetime authority.
+    void RegisterOriginalComponentForPrivateOwner(ISpeedComponent* Component);
+    void EnqueueSpeedComponentRegistration(ISpeedComponent* Component);
     // Whole private bridge storage is one fresh allocation. Original legacy
     // members below stay ordinary fields, including old caller views. Native
     // operations select the private epoch block internally; no facade import.

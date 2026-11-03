@@ -1,4 +1,5 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include <stdexcept>
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/World/Simulation/ResolvedNativeObjectRead.h"
@@ -524,6 +525,23 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 	ResolveFixedCenterOfMassFromConfiguration();
 	SetPhysRotation(NewOwner->GetActorRotation().Quaternion());
 	SetPhysLocation(NewOwner->GetActorLocation());	// init sub-bodies
+	InitializeBoundSubBodiesForPhysicalOwner();
+
+	// start physics thread
+	SetAsyncPhysicsTickEnabled(true);
+	// Register in SpeedWorldSubsystem
+	if (UWorld* World = GetWorld())
+	{
+		if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
+		{
+			SpeedWorldSubsystem->RegisterSpeedComponent(this);
+		}
+	}
+}
+
+
+void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwner()
+{
 	if (SubBodiesWheeledDomainStorage().Num() > 0)
 	{
 		HitboxSubBodyWheeledDomainStorage() = Cast<UBoxSubBody>(SubBodiesWheeledDomainStorage()[0]);
@@ -552,16 +570,20 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 
 	UpdateSubBodiesKinematics();
 
-	// start physics thread
-	SetAsyncPhysicsTickEnabled(true);
-	// Register in SpeedWorldSubsystem
-	if (UWorld* World = GetWorld())
-	{
-		if (USpeedWorldSubsystem* SpeedWorldSubsystem = World->GetSubsystem<USpeedWorldSubsystem>())
-		{
-			SpeedWorldSubsystem->RegisterSpeedComponent(this);
-		}
-	}
+}
+
+void USpeedWheeledComponent::InitializeOriginalOwnerFromCapturedPose(AActor* OriginalOwner,
+    const FQuat& OriginalRotation,const FVector& OriginalLocation)
+{
+    // Actual private route selection is required. This check is NOT a
+    // lifetime/view exclusion lease or admission to restore any state.
+    if(!UsesOriginalWheeledDomain()||!OriginalOwner)
+        throw std::logic_error("original owner initialization outside its actual route");
+    SpeedCarOwnerWheeledDomainStorage()=Cast<ASpeedCar>(OriginalOwner);
+    ResolveFixedCenterOfMassFromConfiguration();
+    SetPhysRotation(OriginalRotation);
+    SetPhysLocation(OriginalLocation);
+    InitializeBoundSubBodiesForPhysicalOwner();
 }
 
 bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) const

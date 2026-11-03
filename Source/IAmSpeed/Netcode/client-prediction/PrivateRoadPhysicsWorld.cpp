@@ -711,6 +711,17 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
         }
 #endif
         if(!FacadeTopologyStillMatches())return false;
+        // Real actor-facing queries and tick lifecycle stay outside the
+        // original physical storage route. These are actual native actor
+        // values, not a caller pose, copied facade physical state or permission.
+        if(Speed::Netcode::PresentationClient::SuppressesLocalPhysics(C->GetWorld()))
+            return Refuse(Why,TEXT("private owner facade admission changed"));
+        const FQuat OriginalOwnerRotation=N.Actor->GetActorRotation().Quaternion();
+        const FVector OriginalOwnerLocation=N.Actor->GetActorLocation();
+        C->SetAsyncPhysicsTickEnabled(false);
+        if(!FacadeTopologyStillMatches()||OriginalOwnerRotation.ContainsNaN()
+            ||!OriginalOwnerRotation.IsNormalized()||OriginalOwnerLocation.ContainsNaN())
+            return Refuse(Why,TEXT("original private actor pose/binding unavailable"));
         FGCScopeGuard BirthMathOnly;
         if(!I.AcquiredGraphStillLive())return false; // actual original readback after the last callback
         Speed::RoadSettings::FOriginalRoadSettingsScope SettingsBirthMath(I.DeclaredSettings);
@@ -732,7 +743,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::Create(std::
             if(!Body||Body->GetClass()!=USpeedBranchWheelSubBody::StaticClass()||Body->GetOwner()!=N.Actor)return {};
             OriginalTopology.Add(Body);
         }
-        C->SetSubBodies(OriginalTopology);C->SetOwner(N.Actor);
+        C->SetSubBodies(OriginalTopology);
+        C->InitializeOriginalOwnerFromCapturedPose(N.Actor,OriginalOwnerRotation,OriginalOwnerLocation);
+        I.Bridge->RegisterOriginalComponentForPrivateOwner(C);
         BuildOriginalVehicle(*C,N.NativeConfiguration,OriginalWheels);
         N.OriginalNativeSimulation=C->SkySimulationWheeledDomainStorage();
         N.OriginalNativeVehicle=N.OriginalNativeSimulation?N.OriginalNativeSimulation->PVehicle.Get():nullptr;

@@ -847,6 +847,13 @@ private:
 
 	// Shared fixed-COM authoring rule for initial setup and BeginPlay.
 	void ResolveFixedCenterOfMassFromConfiguration();
+    // Shared value/body operation only. The public facade retains its original
+    // Engine tick/registration path; the private factory supplies real captured
+    // actor pose and explicitly registers its original bridge separately.
+    void InitializeBoundSubBodiesForPhysicalOwner();
+    void InitializeOriginalOwnerFromCapturedPose(AActor* OriginalOwner,
+        const FQuat& OriginalRotation,const FVector& OriginalLocation);
+
 
 	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);
 	// Rebind wheel sub-bodies whenever Chaos recreates the vehicle. The

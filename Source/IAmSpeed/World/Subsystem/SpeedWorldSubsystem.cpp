@@ -1,4 +1,5 @@
 #include "SpeedWorldSubsystem.h"
+#include <stdexcept>
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
@@ -814,6 +815,16 @@ void USpeedWorldSubsystem::RegisterSpeedComponent(ISpeedComponent* Comp)
 {
     if (Speed::Netcode::PresentationClient::SuppressesLocalPhysics(GetWorld())) return;
     if (!Comp) return;
+    EnqueueSpeedComponentRegistration(Comp);
+}
+void USpeedWorldSubsystem::RegisterOriginalComponentForPrivateOwner(ISpeedComponent* Comp)
+{
+    if(!UsesOriginalEpochStorage()||!Comp)
+        throw std::logic_error("original private registration outside its actual route");
+    EnqueueSpeedComponentRegistration(Comp);
+}
+void USpeedWorldSubsystem::EnqueueSpeedComponentRegistration(ISpeedComponent* Comp)
+{
     FScopeLock Lock(&PendingCSEpochStorage());
     PendingOpsEpochStorage().Add({ true, Comp });
 }
