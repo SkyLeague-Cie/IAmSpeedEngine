@@ -32,6 +32,17 @@
 #include "Math/QuatRotationTranslationMatrix.h"
 
 DEFINE_LOG_CATEGORY(BoxSubBodyLog);
+namespace Speed::NativeKinematics
+{
+// Translation-unit implementation only; no exported getter or issuer.
+struct FGutterSlideDamping final
+{
+    static void Apply(ISpeedComponent* GutterParentComponent,
+        const bool MainSubBodyForDamping,const FVector& SupportNormal,
+        const float Dt,const bool bEnableDamping,const TCHAR* Source);
+};
+}
+
 namespace
 {
 template<class AllocatorType>
@@ -211,104 +222,6 @@ namespace
         return KS.Velocity + FVector::CrossProduct(KS.AngularVelocity, Point - KS.Location);
     }
 
-    void IAmSpeedApplyGutterSlideDamping(
-        ISpeedComponent* GutterParentComponent,
-        const bool MainSubBodyForDamping,
-        const FVector& SupportNormal,
-        const float Dt,
-        const bool bEnableDamping,
-        const TCHAR* Source)
-    {
-        if (!GutterParentComponent || !MainSubBodyForDamping || !bEnableDamping || Dt <= 0.f)
-        {
-            return;
-        }
-
-        const float Damping = Speed::RoadSettings::ReadOriginalOrLegacy<61>([](){ return CVarIAmSpeedGutterSlideDamping.GetValueOnAnyThread(); });
-        const FVector N = SupportNormal.GetSafeNormal();
-        if (N.IsNearlyZero())
-        {
-            return;
-        }
-
-        const FVector V = Speed::NativeKinematics::FComponentRead::Of(*GutterParentComponent).COMVelocity();
-        const FVector VT = V - FVector::DotProduct(V, N) * N;
-        const float TangentSpeed = VT.Size();
-        const float MinSpeed = FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<65>([](){ return CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread(); }));
-        FVector DeltaV = FVector::ZeroVector;
-
-        if (Damping > 0.f && TangentSpeed > MinSpeed)
-        {
-            const float Alpha = FMath::Clamp(1.f - FMath::Exp(-Damping * Dt), 0.f, 1.f);
-            DeltaV = -Alpha * VT;
-
-            const float MaxDelta = Speed::RoadSettings::ReadOriginalOrLegacy<64>([](){ return CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(); });
-            if (MaxDelta > 0.f)
-            {
-                DeltaV = DeltaV.GetClampedToMaxSize(MaxDelta);
-            }
-        }
-
-        FVector ClimbDeltaV = FVector::ZeroVector;
-        const float MaxClimbSpeed = Speed::RoadSettings::ReadOriginalOrLegacy<63>([](){ return CVarIAmSpeedGutterSlideMaxClimbSpeedCmS.GetValueOnAnyThread(); });
-        const float MaxClimbBrakeDelta =
-            FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<62>([](){ return CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS.GetValueOnAnyThread(); }));
-        const bool bGutterSlope = N.Z > 0.20f && N.Z < 0.98f;
-        float ClimbSpeed = 0.f;
-        if (MaxClimbSpeed > 0.f && MaxClimbBrakeDelta > 0.f && bGutterSlope)
-        {
-            const FVector Uphill = (FVector::UpVector - FVector::DotProduct(FVector::UpVector, N) * N).GetSafeNormal();
-            if (!Uphill.IsNearlyZero())
-            {
-                ClimbSpeed = FVector::DotProduct(V, Uphill);
-                if (ClimbSpeed > MaxClimbSpeed)
-                {
-                    const float BrakeDelta = FMath::Min(ClimbSpeed - MaxClimbSpeed, MaxClimbBrakeDelta);
-                    ClimbDeltaV = -BrakeDelta * Uphill;
-                    DeltaV += ClimbDeltaV;
-                }
-
-                const FVector CrossGutter = FVector::CrossProduct(N, Uphill).GetSafeNormal();
-                const float CrossDamping =
-                    FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<60>([](){ return CVarIAmSpeedGutterSlideCrossDamping.GetValueOnAnyThread(); }));
-                if (!CrossGutter.IsNearlyZero() && CrossDamping > 0.f)
-                {
-                    const float CrossSpeed = FVector::DotProduct(V, CrossGutter);
-                    const float CrossAlpha =
-                        FMath::Clamp(1.f - FMath::Exp(-CrossDamping * Dt), 0.f, 1.f);
-                    DeltaV -= CrossAlpha * CrossSpeed * CrossGutter;
-                }
-            }
-        }
-
-        if (DeltaV.IsNearlyZero())
-        {
-            return;
-        }
-
-        GutterParentComponent->AddPhysVelocity(DeltaV);
-
-#if !UE_BUILD_SHIPPING
-        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
-        {
-            SPEED_NATIVE_LOG(
-                BoxSubBodyLog,
-                Warning,
-                TEXT("[CCDBoxGutterSlideDamping] Frame=%d Source=%s N=%s TangentSpeed=%.2f ClimbSpeed=%.2f DeltaV=%s ClimbDeltaV=%s Damping=%.2f MaxDelta=%.2f MaxClimb=%.2f Velocity=%s"),
-                GutterParentComponent->NumFrame(),
-                Source,
-                *N.ToString(),
-                TangentSpeed,
-                ClimbSpeed,
-                *DeltaV.ToString(),
-                *ClimbDeltaV.ToString(),
-                Damping,
-                Speed::RoadSettings::ReadOriginalOrLegacy<64>([](){ return CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(); }),
-                MaxClimbSpeed,
-                *V.ToString());
-        }
-#endif
-    }
 
     FVector IAmSpeedFaceLocalNormal(int32 FaceIndex)
     {
@@ -1925,7 +1838,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
                     (RoofTraversalTargetNormalSpeed - SeparationSpeed) * EffectiveN);
             }
         }
-        IAmSpeedApplyGutterSlideDamping(
+        Speed::NativeKinematics::FGutterSlideDamping::Apply(
             ParentComponentBodyDomainStorage(),
             IsMainSubBody(),
             EffectiveN,
@@ -2652,7 +2565,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             bIsLowSlopePenetratingWall ||
             bIsLowSlopeGutterImpact ||
             bIsNearGutterVerticalWall);
-    IAmSpeedApplyGutterSlideDamping(
+    Speed::NativeKinematics::FGutterSlideDamping::Apply(
         ParentComponentBodyDomainStorage(),
         IsMainSubBody(),
         N,
@@ -3030,7 +2943,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         RoofSurfaceCompBoxDomainStorage() = Hit.Component;
     }
 
-    IAmSpeedApplyGutterSlideDamping(
+    Speed::NativeKinematics::FGutterSlideDamping::Apply(
         ParentComponentBodyDomainStorage(),
         IsMainSubBody(),
         N,
@@ -5780,5 +5693,107 @@ void UBoxSubBody::UpdateBodySetup()
     if (!bUseArchetypeBodySetup)
     {
         InvalidateOrUpdateBoxBodySetup<EShapeBodySetupHelper::UpdateBodySetup>(ShapeBodySetup, bUseArchetypeBodySetup, BoxExtentBoxDomainStorage());
+    }
+}
+
+namespace Speed::NativeKinematics
+{
+void FGutterSlideDamping::Apply(
+        ISpeedComponent* GutterParentComponent,
+        const bool MainSubBodyForDamping,
+        const FVector& SupportNormal,
+        const float Dt,
+        const bool bEnableDamping,
+        const TCHAR* Source)
+    {
+        if (!GutterParentComponent || !MainSubBodyForDamping || !bEnableDamping || Dt <= 0.f)
+        {
+            return;
+        }
+
+        const float Damping = Speed::RoadSettings::ReadOriginalOrLegacy<61>([](){ return CVarIAmSpeedGutterSlideDamping.GetValueOnAnyThread(); });
+        const FVector N = SupportNormal.GetSafeNormal();
+        if (N.IsNearlyZero())
+        {
+            return;
+        }
+
+        const FVector V = Speed::NativeKinematics::FComponentRead::Of(*GutterParentComponent).COMVelocity();
+        const FVector VT = V - FVector::DotProduct(V, N) * N;
+        const float TangentSpeed = VT.Size();
+        const float MinSpeed = FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<65>([](){ return CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread(); }));
+        FVector DeltaV = FVector::ZeroVector;
+
+        if (Damping > 0.f && TangentSpeed > MinSpeed)
+        {
+            const float Alpha = FMath::Clamp(1.f - FMath::Exp(-Damping * Dt), 0.f, 1.f);
+            DeltaV = -Alpha * VT;
+
+            const float MaxDelta = Speed::RoadSettings::ReadOriginalOrLegacy<64>([](){ return CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(); });
+            if (MaxDelta > 0.f)
+            {
+                DeltaV = DeltaV.GetClampedToMaxSize(MaxDelta);
+            }
+        }
+
+        FVector ClimbDeltaV = FVector::ZeroVector;
+        const float MaxClimbSpeed = Speed::RoadSettings::ReadOriginalOrLegacy<63>([](){ return CVarIAmSpeedGutterSlideMaxClimbSpeedCmS.GetValueOnAnyThread(); });
+        const float MaxClimbBrakeDelta =
+            FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<62>([](){ return CVarIAmSpeedGutterSlideMaxClimbBrakeDeltaCmS.GetValueOnAnyThread(); }));
+        const bool bGutterSlope = N.Z > 0.20f && N.Z < 0.98f;
+        float ClimbSpeed = 0.f;
+        if (MaxClimbSpeed > 0.f && MaxClimbBrakeDelta > 0.f && bGutterSlope)
+        {
+            const FVector Uphill = (FVector::UpVector - FVector::DotProduct(FVector::UpVector, N) * N).GetSafeNormal();
+            if (!Uphill.IsNearlyZero())
+            {
+                ClimbSpeed = FVector::DotProduct(V, Uphill);
+                if (ClimbSpeed > MaxClimbSpeed)
+                {
+                    const float BrakeDelta = FMath::Min(ClimbSpeed - MaxClimbSpeed, MaxClimbBrakeDelta);
+                    ClimbDeltaV = -BrakeDelta * Uphill;
+                    DeltaV += ClimbDeltaV;
+                }
+
+                const FVector CrossGutter = FVector::CrossProduct(N, Uphill).GetSafeNormal();
+                const float CrossDamping =
+                    FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<60>([](){ return CVarIAmSpeedGutterSlideCrossDamping.GetValueOnAnyThread(); }));
+                if (!CrossGutter.IsNearlyZero() && CrossDamping > 0.f)
+                {
+                    const float CrossSpeed = FVector::DotProduct(V, CrossGutter);
+                    const float CrossAlpha =
+                        FMath::Clamp(1.f - FMath::Exp(-CrossDamping * Dt), 0.f, 1.f);
+                    DeltaV -= CrossAlpha * CrossSpeed * CrossGutter;
+                }
+            }
+        }
+
+        if (DeltaV.IsNearlyZero())
+        {
+            return;
+        }
+
+        GutterParentComponent->AddPhysVelocity(DeltaV);
+
+#if !UE_BUILD_SHIPPING
+        if (Speed::RoadSettings::ReadOriginalOrLegacy<1>([](){ return CVarIAmSpeedAutoRecoverContactDebug.GetValueOnAnyThread(); }) != 0)
+        {
+            SPEED_NATIVE_LOG(
+                BoxSubBodyLog,
+                Warning,
+                TEXT("[CCDBoxGutterSlideDamping] Frame=%d Source=%s N=%s TangentSpeed=%.2f ClimbSpeed=%.2f DeltaV=%s ClimbDeltaV=%s Damping=%.2f MaxDelta=%.2f MaxClimb=%.2f Velocity=%s"),
+                GutterParentComponent->NumFrame(),
+                Source,
+                *N.ToString(),
+                TangentSpeed,
+                ClimbSpeed,
+                *DeltaV.ToString(),
+                *ClimbDeltaV.ToString(),
+                Damping,
+                Speed::RoadSettings::ReadOriginalOrLegacy<64>([](){ return CVarIAmSpeedGutterSlideMaxDeltaCmS.GetValueOnAnyThread(); }),
+                MaxClimbSpeed,
+                *V.ToString());
+        }
+#endif
     }
 }

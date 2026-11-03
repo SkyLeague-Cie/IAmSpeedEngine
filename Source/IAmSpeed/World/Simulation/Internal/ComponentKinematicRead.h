@@ -20,6 +20,7 @@ namespace Speed::NativeKinematics
 {
 struct FCylinderRigidTrajectory;
 struct FDynamicBodyWitness;
+struct FGutterSlideDamping;
 class FComponentRead final
 {
     friend class ::ISpeedComponent;
@@ -35,6 +36,7 @@ class FComponentRead final
     friend class Speed::FSimulationWorld;
     friend struct FCylinderRigidTrajectory;
     friend struct FDynamicBodyWitness;
+    friend struct FGutterSlideDamping;
     static const FQuat& Rotation(const ISpeedComponent& Component);
     static const FVector& COMVelocity(const ISpeedComponent& Component);
     static const FVector& AngularVelocity(const ISpeedComponent& Component);

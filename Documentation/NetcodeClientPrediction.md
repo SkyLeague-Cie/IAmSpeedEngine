@@ -1628,3 +1628,12 @@ This draft is uncompiled and unexecuted; no source/borrow/lifetime, hidden-state
 authoritative-K or localized-restoration coverage follows. All guards stay closed.
 
 The unexecuted r04 draft missed the physical GetPhysCOMLocation alias inside a planar roundoff correction. The native read now uses the same private COM reference, before adding the unchanged Correction and calling the original setter. Three real alias paths are included in the24 diagnostics. Other exact-class-gated joined/shadow kinematic paths remain outside this private-native migration scope; no exhaustive alias or restore lease follows.
+
+Source107/native99 failed compilation at the private reader used by the unnamed
+gutter damping helper. Native exit6, root1, natural drain, two Job0 observations
+and zero input/protected/unexpected-output drift remain recorded; QA/runtime99
+did not run. Source108 moves that exact helper body into a non-exported named
+implementation friend, changes only its three call designators, and keeps all
+parameters, settings, vector operations and logging. The reader stays private.
+This is a compilation repair, not an authoritative-K, localized, causal-state
+or source/lifetime qualification. A new frozen tuple must compile and run.
