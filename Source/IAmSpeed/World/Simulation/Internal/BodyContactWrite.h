@@ -3,6 +3,7 @@
 #include "IAmSpeed/Base/SHitResult.h"
 #include "IAmSpeed/Base/Kinematic.h"
 class USSubBody;
+class UBoxSubBody;
 class ISpeedWheeledComponent;
 class ISpeedComponent;
 class USolidSubBody;
@@ -13,6 +14,7 @@ namespace Speed::NativeKinematics
 {
 class FBodyWrite final
 {
+    friend class ::UBoxSubBody;
     friend class ::ISpeedWheeledComponent;
     friend class ::ISpeedComponent;
     friend class ::USolidSubBody;
@@ -20,6 +22,7 @@ class FBodyWrite final
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     static void FakePhysics(USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext);
     static void FakePhysics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext);
+    static void AcceptHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body);
     static void UpdateFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const SKinematic& ParentKinematic);
     static void Impulse(USolidSubBody& Body,const FVector& Impulse,const FVector& Point);
     static void Impulse(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& Body,const FVector& Impulse,const FVector& Point);

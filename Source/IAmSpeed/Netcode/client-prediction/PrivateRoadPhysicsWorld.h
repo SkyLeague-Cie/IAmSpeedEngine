@@ -107,6 +107,18 @@ struct FPrivateRoadPublication
     FSimulationSnapshot Physics;
     std::vector<FPrivateRoadActorFrame> Actors;
 };
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+struct FPrivateRoadHitAcceptanceCase
+{
+    FString Name;bool LegacyExpected=false,NativeExpected=false,LegacyNativeEqual=false;
+};
+struct FPrivateRoadHitAcceptanceProbe
+{
+    std::vector<FPrivateRoadHitAcceptanceCase> Cases;
+    uint32 LegacyCalls=0,NativeCalls=0,Refusals=0;
+    bool BaseBehaviorDistinguished=false,AllRefusalsBeforeWrite=false,ActualStepOperation=false;
+};
+#endif
 // Experimental finite native flat-road kernel. Creates actual, private native
 // cars and runs the unchanged canonical IAmSpeed solver at300Hz on the GT.
 // This public API returns immutable VALUES. Engine/global enumeration and
@@ -121,7 +133,15 @@ class IAMSPEED_API FPrivateRoadPhysicsWorld final
     std::shared_ptr<FImpl> Impl;
     // Private operation-memory retention only. No source/restore lease follows.
     static bool HasExactRegisteredRosterRetained(const std::shared_ptr<FImpl>& Root,const FPrivateNativeOperation& Operation,FString& Why);
-    static bool StepRetained(const std::shared_ptr<FImpl>& Root,const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    struct FHitAcceptanceDiagnosticContext;
+    static bool ProbeHitAcceptanceRetained(FImpl& I,const FPrivateNativeOperation& Operation,FHitAcceptanceDiagnosticContext& Context);
+#endif
+    static bool StepRetained(const std::shared_ptr<FImpl>& Root,const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        ,FHitAcceptanceDiagnosticContext* HitContext=nullptr
+#endif
+        );
     static bool ReleaseInitialPublicationRetained(const std::shared_ptr<FImpl>& Root,const std::shared_ptr<const FPrivateRoadPublication>& Baseline,FString& Why);
     static std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeRetained(const std::shared_ptr<FImpl>& Root);
     static bool CloseRetained(const std::shared_ptr<FImpl>& Root);
@@ -142,6 +162,10 @@ public:
     std::vector<FNativeConfigurationLifetimeValues> ReadNativeConfigurationLifetimeForDiagnostics() const;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     struct FOriginalWorldReadProbe {bool Admitted=false,SameOriginal=false;};
+    // Fixed native cache fixtures inside a real advancing Step. Only copied
+    // results escape; the caller cannot supply a native pointer or callback.
+    bool StepWithHitAcceptanceProbeForDiagnostics(const std::vector<FPrivateRoadRequest>& Requests,
+        bool Resimulation,FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadHitAcceptanceProbe& Result,FString& Why);
     // Read-only diagnostic executed by the actual owner. No caller recipe,
     // pointer, callback, native view, physical route or restore authority.
     FOriginalWorldReadProbe ObserveOriginalWorldReadForDiagnostics();

@@ -265,6 +265,12 @@ protected:
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
     const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 private:
+    friend class USpeedBranchBoxSubBody;
+    class FLegacyBoxHitAccess;class FNativeBoxHitAccess;class FLegacyRepeatedContactAccess;
+    template<class TAccess> void AcceptBoxHitBody(TAccess& Storage);
+    template<class TAccess> bool CanInitializeRepeatedContactBody(TAccess& Storage,const SHitResult& Hit) const;
+    template<class TAccess> bool CanResolveRepeatedContactBody(TAccess& Storage,const SHitResult& Hit) const;
+    void AcceptNativeBoxHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FIAmSpeedCurvedPersistentSupportTest;
 #endif

@@ -388,6 +388,9 @@ protected:
 private:
     friend class USpeedBranchWheelSubBody;
     class FLegacyWheelUpdateAccess;class FNativeWheelUpdateAccess;
+    class FLegacyWheelHitAccess;class FNativeWheelHitAccess;
+    template<class TAccess> void AcceptWheelHitBody(TAccess& Storage);
+    void AcceptNativeWheelHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
     template<class TAccess> void UpdateWheelKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic);
     void UpdateNativeWheelKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);
 

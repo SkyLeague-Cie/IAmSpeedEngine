@@ -3,6 +3,9 @@
 #include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/WeakContactReference.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
@@ -1118,49 +1121,132 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     return !Correction.IsNearlyZero() || bVelocityProjected;
 }
 
-void UBoxSubBody::AcceptHit()
+class UBoxSubBody::FLegacyRepeatedContactAccess final
 {
-    CurrentHitStorage() = FutureHitStorage();
-    FutureHitStorage() = SHitResult();
+    const UBoxSubBody& Owner;
+public:
+    explicit FLegacyRepeatedContactAccess(const UBoxSubBody& Value):Owner(Value){}
+    bool HasParent() const {return Owner.ParentComponentBodyDomainStorage()!=nullptr;}
+    const Speed::IStaticCollisionWorld* StaticWorld() const {return Owner.ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame();}
+};
+template<class TAccess>
+bool UBoxSubBody::CanResolveRepeatedContactBody(TAccess& Storage,const SHitResult& Hit) const
+{
+    return Storage.HasParent() && Storage.StaticWorld() &&
+        Speed::Collision::IsEligibleExactStaticRepeatHit(Hit) && Hit.Component.IsValid() &&
+        Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
+}
 
-    if (!CurrentHitStorage().Component.IsValid())
+template<class TAccess>
+bool UBoxSubBody::CanInitializeRepeatedContactBody(TAccess& Storage,const SHitResult& Hit) const
+{
+    return Storage.HasParent() && Storage.StaticWorld() &&
+        Speed::Collision::IsEligibleExactStaticInitialHit(Hit) && Hit.Component.IsValid() &&
+        Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
+}
+
+class UBoxSubBody::FLegacyBoxHitAccess final
+{
+    UBoxSubBody& Owner;
+public:
+    explicit FLegacyBoxHitAccess(UBoxSubBody& Value):Owner(Value){}
+    decltype(auto) CurrentHit() const {return Owner.CurrentHitStorage();}
+    decltype(auto) FutureHit() const {return Owner.FutureHitStorage();}
+    decltype(auto) SphereHit() const {return Owner.SphereHitStorage();}
+    decltype(auto) LastResolvedSphereHit() const {return Owner.LastResolvedSphereHitBoxDomainStorage();}
+    decltype(auto) LastResolvedSphereHitFrame() const {return Owner.LastResolvedSphereHitFrameBoxDomainStorage();}
+    decltype(auto) HitCountThisFrame() const {return Owner.HitCountThisFrameBoxDomainStorage();}
+    decltype(auto) MaxHitsPerComponentPerFrame() const {return Owner.MaxHitsPerComponentPerFrameBoxDomainStorage();}
+    decltype(auto) IgnoredComponents() const {return Owner.IgnoredComponentsBodyDomainStorage();}
+    auto ParentFrame() const {return Owner.ParentComponentBodyDomainStorage()?Owner.ParentComponentBodyDomainStorage()->NumFrame():INDEX_NONE;}
+    bool CanInitializeRepeatedContact(const SHitResult& Hit) const {return Owner.CanInitializeRepeatedContact(Hit);}
+    bool CanResolveRepeatedContact(const SHitResult& Hit) const {return Owner.CanResolveRepeatedContact(Hit);}
+    bool OtherWillHit(const USSubBody& Other) const {return Speed::NativeKinematics::FBodyRead::WillHit(Other);}
+    void AcceptOther(USSubBody& Other) const {Other.AcceptHit();}
+};
+class UBoxSubBody::FNativeBoxHitAccess final
+{
+    UBoxSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Owner);}
+    decltype(auto) Box() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadBoxDomain>(Operation,&Owner);}
+public:
+    FNativeBoxHitAccess(UBoxSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op):Owner(Value),Operation(Op)
+    {
+        Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireStep(Operation);
+        (void)Values();(void)Box();
+        if(auto* Parent=Values().ParentComponent)
+            Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,Parent);
+    }
+    decltype(auto) CurrentHit() const {return (Values().CurrentHit);}
+    decltype(auto) FutureHit() const {return (Values().FutureHit);}
+    decltype(auto) SphereHit() const {return (Values().SphereHit);}
+    decltype(auto) LastResolvedSphereHit() const {return (Box().LastResolvedSphereHit);}
+    decltype(auto) LastResolvedSphereHitFrame() const {return (Box().LastResolvedSphereHitFrame);}
+    decltype(auto) HitCountThisFrame() const {return (Box().HitCountThisFrame);}
+    decltype(auto) MaxHitsPerComponentPerFrame() const {return (Box().MaxHitsPerComponentPerFrame);}
+    decltype(auto) IgnoredComponents() const {return (Values().IgnoredComponents);}
+    bool HasParent() const {return Values().ParentComponent!=nullptr;}
+    const Speed::IStaticCollisionWorld* StaticWorld() const {return Speed::NativeKinematics::FComponentRead::StaticWorld(Operation,*Values().ParentComponent);}
+    auto ParentFrame() const {return HasParent()?Speed::NativeKinematics::FComponentRead::NativeFrame(Operation,*Values().ParentComponent):INDEX_NONE;}
+    bool CanInitializeRepeatedContact(const SHitResult& Hit) {return Owner.CanInitializeRepeatedContactBody(*this,Hit);}
+    bool CanResolveRepeatedContact(const SHitResult& Hit) {return Owner.CanResolveRepeatedContactBody(*this,Hit);}
+    bool OtherWillHit(const USSubBody& Other) const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Other).FutureHit.bBlockingHit;}
+    void AcceptOther(USSubBody& Other) const {Speed::NativeKinematics::FBodyWrite::AcceptHit(Operation,&Other);}
+};
+template<class TAccess>
+void UBoxSubBody::AcceptBoxHitBody(TAccess& Storage)
+{
+    Storage.CurrentHit() = Storage.FutureHit();
+    Storage.FutureHit() = SHitResult();
+
+    if (!Storage.CurrentHit().Component.IsValid())
         return;
 
-    if (Cast<USphereSubBody>(CurrentHitStorage().SubBody.Get()))
+    if (Cast<USphereSubBody>(Storage.CurrentHit().SubBody.Get()))
     {
-        SphereHitStorage() = CurrentHitStorage();
-        LastResolvedSphereHitBoxDomainStorage() = CurrentHitStorage();
-        LastResolvedSphereHitFrameBoxDomainStorage() = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE;
+        Storage.SphereHit() = Storage.CurrentHit();
+        Storage.LastResolvedSphereHit() = Storage.CurrentHit();
+        Storage.LastResolvedSphereHitFrame() = Storage.ParentFrame();
     }
 
-    UPrimitiveComponent* Comp = CurrentHitStorage().Component.Get();
-    if (CurrentHitStorage().Component.IsValid() && CurrentHitStorage().Component->GetMobility() == EComponentMobility::Static)
+    UPrimitiveComponent* Comp = Storage.CurrentHit().Component.Get();
+    if (Storage.CurrentHit().Component.IsValid() && Storage.CurrentHit().Component->GetMobility() == EComponentMobility::Static)
     {
-        uint32& Count = HitCountThisFrameBoxDomainStorage().FindOrAdd(CurrentHitStorage().Component);
+        uint32& Count = Storage.HitCountThisFrame().FindOrAdd(Storage.CurrentHit().Component);
         Count++;
 
         // Exact vertex identities already use the World per-pair resolution budget.
         // Keep counting every hit; all other contacts retain the component cap.
-        if (Count >= MaxHitsPerComponentPerFrameBoxDomainStorage() &&
-            !(CanInitializeRepeatedContact(CurrentHitStorage()) || CanResolveRepeatedContact(CurrentHitStorage())))
+        if (Count >= Storage.MaxHitsPerComponentPerFrame() &&
+            !(Storage.CanInitializeRepeatedContact(Storage.CurrentHit()) || Storage.CanResolveRepeatedContact(Storage.CurrentHit())))
         {
-            IgnoredComponentsBodyDomainStorage().AddUnique(Comp);
+            Storage.IgnoredComponents().AddUnique(Comp);
         }
     }
     else
     {
-        IgnoredComponentsBodyDomainStorage().AddUnique(Comp);
+        Storage.IgnoredComponents().AddUnique(Comp);
     }
 
-    if (CurrentHitStorage().SubBody.IsValid())
+    if (Storage.CurrentHit().SubBody.IsValid())
     {
         // if Other sub-body will hit, accept the hit for it too to ensure both sides are in sync and won't try to resolve the same hit again
-        auto OtherSubBody = CurrentHitStorage().SubBody.Get();
-        if (Speed::NativeKinematics::FBodyRead::WillHit(*OtherSubBody))
+        auto OtherSubBody = Storage.CurrentHit().SubBody.Get();
+        if (Storage.OtherWillHit(*OtherSubBody))
         {
-            OtherSubBody->AcceptHit();
+            Storage.AcceptOther(*OtherSubBody);
         }
     }
+}
+
+void UBoxSubBody::AcceptHit()
+{
+    FLegacyBoxHitAccess Storage(*this);AcceptBoxHitBody(Storage);
+}
+void UBoxSubBody::AcceptNativeBoxHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    FNativeBoxHitAccess Storage(*this,Operation);AcceptBoxHitBody(Storage);
 }
 
 bool UBoxSubBody::GatherStaticPenetrationHits(TArray<FHitResult>& OutHits) const
@@ -4114,16 +4200,12 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
 
 bool UBoxSubBody::CanResolveRepeatedContact(const SHitResult& Hit) const
 {
-    return ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() &&
-        Speed::Collision::IsEligibleExactStaticRepeatHit(Hit) && Hit.Component.IsValid() &&
-        Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
+    FLegacyRepeatedContactAccess Storage(*this);return CanResolveRepeatedContactBody(Storage,Hit);
 }
 
 bool UBoxSubBody::CanInitializeRepeatedContact(const SHitResult& Hit) const
 {
-    return ParentComponentBodyDomainStorage() && ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() &&
-        Speed::Collision::IsEligibleExactStaticInitialHit(Hit) && Hit.Component.IsValid() &&
-        Hit.Component->GetCollisionObjectType() == ECC_WorldStatic;
+    FLegacyRepeatedContactAccess Storage(*this);return CanInitializeRepeatedContactBody(Storage,Hit);
 }
 
 bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angular) const

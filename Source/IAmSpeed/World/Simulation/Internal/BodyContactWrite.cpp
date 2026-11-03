@@ -48,6 +48,18 @@ void FBodyWrite::FakePhysics(const Speed::Netcode::Prediction::FPrivateNativeOpe
     Body->ApplyNativeFakePhysicsOn(Operation,*Other,Hit,DeltaTime,ImpactContext);
 }
 
+void FBodyWrite::AcceptHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    const auto& Values=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,Body);
+    // Both genuine raw subjects before any private virtual dispatch or write.
+    // Missing peer backing refuses; never substitute a fabricated empty hit.
+    if(auto* Other=Values.FutureHit.SubBody.Get())
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,Other);
+    Body->AcceptNativeHit(Operation);
+}
+
 void FBodyWrite::UpdateFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const SKinematic& ParentKinematic)
 {
     (void)Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,Body);

@@ -1727,3 +1727,35 @@ mutable-view channels remain open wherever their actual callees are unmigrated.
 Complete causal state, an effective full-state CanMove barrier, authoritative-K
 restore and localized replay with two rendered playable clients plus a dedicated
 server remain unqualified. The prepared-restore guard remains closed.
+
+### Private shape-specific resolved-hit acceptance
+
+The operation-bearing Step hit-acceptance route preserves the actual distinct
+box and wheel virtual implementations. Box copy/reset, early return, sphere
+cache and frame, per-component static budget, repeated-contact predicates and
+peer acceptance share their original bodies with legacy policies. Wheel keeps
+both hits and only ignores the current component or its future fallback. The
+base public implementation remains unchanged; unsupported native types refuse.
+The actual owner/peer backing and box parent backing are checked before that
+private entry's first write. No operation-bearing public callback is created.
+
+This remains a limited cache-routing boundary. Component mobility/type reads,
+weak object resolution and source/lifetime coverage require further work;
+typed backing and borrowed static-world identity do not provide that coverage.
+Shape response/sweep/birth, protected mass/member-pointer channels and other
+mutable views remain open. The restore guard stays closed. No historical
+native result qualifies new bytes. Complete initial state synchronization,
+authoritative-K localized replay and two rendered playable clients plus a
+dedicated server remain unfinished.
+
+The test-only controls execute eight authored cache fixtures through both actual
+legacy and private native dispatches inside a real advancing Step operation.
+They distinguish box sphere-cache/frame, static cap and repeated-contact cases,
+wheel hit preservation/current-before-future fallback, and the unchanged base
+behavior. A second actual graph supplies foreign body/peer/parent refusals;
+only copied results escape. No foreign mutex is held across the real own Step;
+the foreign owner is retained solely for genuine negative subjects. Named fixture
+values are cleaned up before canonical
+advancement and compared with an independent graph. This is not acquired source
+coverage, full-state restoration or a new lifetime/exclusion certificate. These
+controls still require compilation and actual native execution on the new tuple.

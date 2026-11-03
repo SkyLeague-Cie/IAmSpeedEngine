@@ -7,6 +7,11 @@ namespace Speed::NativeKinematics
 {
 const SHitResult& FBodyRead::CurrentHit(const USSubBody& Body) { return Body.CurrentHitStorage(); }
 const SHitResult& FBodyRead::FutureHit(const USSubBody& Body) { return Body.FutureHitStorage(); }
+bool FBodyRead::ComponentIgnored(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body,const UPrimitiveComponent* Other)
+{
+    const auto& Values=Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Body);
+    return Values.IgnoredComponents.Contains(Other); // identity comparison only, no peer dereference
+}
 bool FBodyRead::HasHit(const USSubBody& Body) { return Body.CurrentHitStorage().bBlockingHit; }
 bool FBodyRead::WillHit(const USSubBody& Body) { return Body.FutureHitStorage().bBlockingHit; }
 float FBodyRead::FutureTOI(const USSubBody& Body) { return Body.FutureHitStorage().TOI; }

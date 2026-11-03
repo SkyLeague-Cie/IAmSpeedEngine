@@ -18,7 +18,7 @@ class USphereSubBody;
 class USWheelSubBody;
 class USpeedWorldSubsystem;
 class USpeedBranchBoxSubBody;
-namespace Speed { struct FKinematicState; class FSimulationWorld; }
+namespace Speed { struct FKinematicState; class FSimulationWorld; class IStaticCollisionWorld; }
 namespace Speed::Netcode::Prediction { class FPrivateRoadPhysicsWorld; class FPrivateNativeOperation; }
 
 namespace Speed::NativeKinematics
@@ -100,6 +100,7 @@ class FComponentRead final
     static const Speed::FKinematicState& Current(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static const Speed::FKinematicState& ForFrame(const ISpeedComponent& Component, const unsigned int& Frame);
     static const Speed::FKinematicState& ForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component, const unsigned int& Frame);
+    static const Speed::IStaticCollisionWorld* StaticWorld(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     static unsigned int NativeFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component);
     class FView final
     {

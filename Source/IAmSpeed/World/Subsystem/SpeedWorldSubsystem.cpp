@@ -1073,6 +1073,10 @@ public:
         };
         if(!Wave.TryInstall(Actor,OriginalOwnerOperation))OriginalOwnerOperation();
     }
+    void WriteBodyFutureHit(USSubBody& Body,const SHitResult& Hit) const {Speed::NativeKinematics::FBodyWrite::FutureHit(Body,Hit);}
+    void AcceptBodyHit(USSubBody& Body) const {Body.AcceptHit();}
+    const SHitResult& ReadBodyCurrentHit(const USSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::CurrentHit(Body);}
+    bool BodyIgnoresComponent(const USSubBody& Body,const UPrimitiveComponent& Other) const {return Body.ComponentHasBeenIgnored(Other);}
     void SetFrameStaticWorld(ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon) const {Component->SetStaticCollisionWorldForFrame(World,FrameHorizon);}
     void ApplyBodyFakePhysics(USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) const {Speed::NativeKinematics::FBodyWrite::FakePhysics(Body,Other,Hit,DeltaTime,ImpactContext);}
     void ApplyPendingOps() const {Owner.ApplyPendingOps();}
@@ -1133,6 +1137,10 @@ public:
     FMatrix ReadWorldInvInertia(const USolidSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::WorldInvInertia(Operation,Body);}
     void ApplyBodyImpulse(USolidSubBody& Body,const FVector& Impulse,const FVector& Point) const {Speed::NativeKinematics::FBodyWrite::Impulse(Operation,Body,Impulse,Point);}
     void UpdateComponentChildrenWithJoined(Speed::FrameParallel::FJoinedActorKinematics1213& Wave,ISpeedComponent& Actor,int32 LaneLimit,int32 MinPrepareItems) const {Wave.InstallOrUpdateNative(Operation,Actor,LaneLimit,MinPrepareItems);}
+    void WriteBodyFutureHit(USSubBody& Body,const SHitResult& Hit) const {Speed::NativeKinematics::FBodyWrite::FutureHit(Operation,Body,Hit);}
+    void AcceptBodyHit(USSubBody& Body) const {Speed::NativeKinematics::FBodyWrite::AcceptHit(Operation,&Body);}
+    const SHitResult& ReadBodyCurrentHit(const USSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,Body);}
+    bool BodyIgnoresComponent(const USSubBody& Body,const UPrimitiveComponent& Other) const {return Speed::NativeKinematics::FBodyRead::ComponentIgnored(Operation,Body,&Other);}
     void SetFrameStaticWorld(ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon) const {Speed::NativeKinematics::FComponentWrite::FrameStaticWorld(Operation,Component,World,FrameHorizon);}
     void ApplyBodyFakePhysics(USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) const {Speed::NativeKinematics::FBodyWrite::FakePhysics(Operation,Body,Other,Hit,DeltaTime,ImpactContext);}
     void ApplyPendingOps() const
@@ -2708,13 +2716,13 @@ void USpeedWorldSubsystem::StepBody(TAccess& Storage,const float& Dt,const float
 #if !UE_BUILD_SHIPPING
             const int32 GenerationBefore = ResolvedPairs.GetGeneration(Hit.PairKey);
 #endif
-			Speed::NativeKinematics::FBodyWrite::FutureHit(*Resolver,Hit.Hit);
-			Resolver->AcceptHit();
+			Storage.WriteBodyFutureHit(*Resolver,Hit.Hit);
+			Storage.AcceptBodyHit(*Resolver);
 			bool bIgnored = false;
 			if (UPrimitiveComponent* HitComponent =
-				Speed::NativeKinematics::FBodyRead::CurrentHit(*Resolver).Component.Get())
+				Storage.ReadBodyCurrentHit(*Resolver).Component.Get())
 			{
-				if (Resolver->ComponentHasBeenIgnored(*HitComponent))
+				if (Storage.BodyIgnoresComponent(*Resolver,*HitComponent))
 				{
 					bIgnored = true;
 					ResolvedPairs.Add(Hit.PairKey);
@@ -2722,7 +2730,7 @@ void USpeedWorldSubsystem::StepBody(TAccess& Storage,const float& Dt,const float
 			}
 			USolidSubBody* RollingBodyA = Cast<USolidSubBody>(Resolver);
 			USolidSubBody* RollingBodyB =
-				Cast<USolidSubBody>(Speed::NativeKinematics::FBodyRead::CurrentHit(*Resolver).SubBody.Get());
+				Cast<USolidSubBody>(Storage.ReadBodyCurrentHit(*Resolver).SubBody.Get());
 
 			const double ResolveStartSeconds = FPlatformTime::Seconds();
 #if WITH_DEV_AUTOMATION_TESTS

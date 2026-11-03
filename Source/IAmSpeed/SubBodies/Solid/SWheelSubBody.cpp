@@ -420,16 +420,47 @@ FCollisionShape USWheelSubBody::GetCollisionShape(const float Inflation) const
         FMath::Max(KINDA_SMALL_NUMBER, Radius() + CollisionMargin() + Inflation));
 }
 
-void USWheelSubBody::AcceptHit()
+class USWheelSubBody::FLegacyWheelHitAccess final
+{
+    USWheelSubBody& Owner;
+public:
+    explicit FLegacyWheelHitAccess(USWheelSubBody& Value):Owner(Value){}
+    decltype(auto) CurrentHit() const {return Owner.CurrentHitStorage();}
+    decltype(auto) FutureHit() const {return Owner.FutureHitStorage();}
+    decltype(auto) IgnoredComponents() const {return Owner.IgnoredComponentsBodyDomainStorage();}
+};
+class USWheelSubBody::FNativeWheelHitAccess final
+{
+    USWheelSubBody& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    decltype(auto) Values() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Owner);}
+public:
+    FNativeWheelHitAccess(USWheelSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op):Owner(Value),Operation(Op)
+    {Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireStep(Operation);(void)Values();}
+    decltype(auto) CurrentHit() const {return (Values().CurrentHit);}
+    decltype(auto) FutureHit() const {return (Values().FutureHit);}
+    decltype(auto) IgnoredComponents() const {return (Values().IgnoredComponents);}
+};
+template<class TAccess>
+void USWheelSubBody::AcceptWheelHitBody(TAccess& Storage)
 {
     // Do nothing; we keep CurrentHit as is (suspension handles it)
     // CurrentHit = FutureHit;
     // Ignore this component for the rest of the frame
-    if (CurrentHitStorage().Component.IsValid())
-        IgnoredComponentsBodyDomainStorage().AddUnique(CurrentHitStorage().Component.Get());
-    else if (FutureHitStorage().Component.IsValid())
+    if (Storage.CurrentHit().Component.IsValid())
+        Storage.IgnoredComponents().AddUnique(Storage.CurrentHit().Component.Get());
+    else if (Storage.FutureHit().Component.IsValid())
         // for safety, ignore FutureHit component too
-        IgnoredComponentsBodyDomainStorage().AddUnique(FutureHitStorage().Component.Get());
+        Storage.IgnoredComponents().AddUnique(Storage.FutureHit().Component.Get());
+}
+
+void USWheelSubBody::AcceptHit()
+{
+    FLegacyWheelHitAccess Storage(*this);AcceptWheelHitBody(Storage);
+}
+void USWheelSubBody::AcceptNativeWheelHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    FNativeWheelHitAccess Storage(*this,Operation);AcceptWheelHitBody(Storage);
 }
 
 SKinematic USWheelSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) const

@@ -108,6 +108,10 @@ Speed::FKinematicState FComponentRead::OriginForFrame(const ISpeedComponent& Com
 
 // Explicit native reads require the genuine owner operation. The legacy
 // FView above remains unchanged; no new Operation-holding proxy is returned.
+const Speed::IStaticCollisionWorld* FComponentRead::StaticWorld(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
+{
+    return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component).StaticRestingWorld;
+}
 unsigned int FComponentRead::NativeFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent& Component)
 {
     return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component).BaseGameState.NumFrame;

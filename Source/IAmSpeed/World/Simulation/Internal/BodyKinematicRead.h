@@ -3,6 +3,7 @@ namespace Speed::FrameParallel {class FJoinedActorKinematics1213;}
 
 // Module-internal live references. Private call sites only; not a restore lease.
 #include "IAmSpeed/Base/SHitResult.h"
+class UPrimitiveComponent;
 class ISpeedComponent; class USpeedMovementComponent; class USpeedWheeledComponent;
 class USSubBody; class ISweeper; class ISolidSweeper; class ISensorSweeper;
 class IBoxSweeper; class ISphereSweeper; class ISpeedWheeledComponent;
@@ -48,6 +49,7 @@ class FBodyRead final
     static bool HasHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
     static bool WillHit(const USSubBody& Body);
     static bool WillHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
+    static bool ComponentIgnored(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body,const UPrimitiveComponent* Other);
     static float FutureTOI(const USSubBody& Body);
     static float FutureTOI(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody& Body);
 };

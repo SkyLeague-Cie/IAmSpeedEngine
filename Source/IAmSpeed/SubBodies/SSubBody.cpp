@@ -258,6 +258,10 @@ void USSubBody::AdvanceToTOI(const float& t)
         KinematicsStorage() = KinematicsStorage().Integrate(t);
 }
 
+void USSubBody::AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation)
+{
+    (void)Operation;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};
+}
 void USSubBody::AcceptHit()
 {
     CurrentHitStorage() = FutureHitStorage();
