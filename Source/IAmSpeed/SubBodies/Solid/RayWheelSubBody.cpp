@@ -1,4 +1,5 @@
 #include "RayWheelSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Analytic/StaticWorldQueryAudit.h"
 
 #include "IAmSpeed/Base/SUtils.h"
@@ -21,7 +22,7 @@ bool URayWheelSubBody::BuildSuspensionRay(const float Delta,
 	}
 
 	const FTransform ChassisTransform(
-		ParentComponent->GetPhysRotation(), ParentComponent->GetPhysLocation());
+		Speed::NativeKinematics::FComponentRead::Of(*ParentComponent).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponent).Location());
 	OutSuspensionUp = ChassisTransform.GetUnitAxis(EAxis::Z);
 	const FVector WorldRest = ChassisTransform.TransformPosition(GetLocalOffset());
 	OutStart = WorldRest + MaxLength() * OutSuspensionUp;

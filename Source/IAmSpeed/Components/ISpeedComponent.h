@@ -97,6 +97,8 @@ class IAMSPEED_API ISpeedComponent
     virtual const SKinematic& ReadPhysicsKinematicState() const { return GetKinematicState(); }
     virtual const SKinematic& ReadPhysicsKinematicStateForFrame(const unsigned int& Frame) const
     { return GetKinematicStateForFrame(Frame); }
+    virtual const FVector& ReadPhysicsCOM() const { return GetPhysCOM(); }
+    virtual const FVector& ReadPhysicsCenterOfMassLocal() const { return GetPhysCenterOfMassLocal(); }
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif

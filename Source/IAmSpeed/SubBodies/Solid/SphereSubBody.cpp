@@ -273,7 +273,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
         Speed::NativeKinematics::FBodyRead::Body(*this).Location, GetRadius(), CurrentHitStorage());
 
     // Velocity at contact point
-    const FVector Vp = ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(P);
+    const FVector Vp = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(P);
     const float vN = FVector::DotProduct(Vp, N);
 
     // ------------------------------------------------------------------
@@ -296,7 +296,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
         // ------------------------------------------------------------------
         // 2) TANGENTIAL IMPULSE (impact friction -> spin transfer)
         // ------------------------------------------------------------------
-        const FVector VpPostN = ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(P);
+        const FVector VpPostN = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(P);
         const float vNpost = FVector::DotProduct(VpPostN, N);
         const FVector vT = VpPostN - vNpost * N;
         const float vTmag = vT.Size();
@@ -333,9 +333,9 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 	// constrained normal acceleration when the resolved contact is not a
 	// separating bounce; tangential acceleration and genuine rebounds remain.
 	const float PostNormalSpeed = FVector::DotProduct(
-		ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(P), N);
+		Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(P), N);
 	const float NormalAcceleration = FVector::DotProduct(
-		ParentComponentBodyDomainStorage()->GetPhysAcceleration(), N);
+		Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Acceleration(), N);
 	if (PostNormalSpeed <= GetImpactThreshold() && NormalAcceleration < 0.0f)
 	{
 		ParentComponentBodyDomainStorage()->AddPhysAcceleration(-NormalAcceleration * N);
@@ -518,10 +518,10 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 
 #if !UE_BUILD_SHIPPING
         const ISpeedComponent* BoxParentForDebug = OtherBox.GetParentComponent();
-        const FVector SphereCOMVPre = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
-        const FVector SphereWPre = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() : FVector::ZeroVector;
-        const FVector BoxCOMVPre = BoxParentForDebug ? BoxParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
-        const FVector BoxWPre = BoxParentForDebug ? BoxParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
+        const FVector SphereCOMVPre = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() : FVector::ZeroVector;
+        const FVector SphereWPre = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity() : FVector::ZeroVector;
+        const FVector BoxCOMVPre = BoxParentForDebug ? Speed::NativeKinematics::FComponentRead::Of(*BoxParentForDebug).COMVelocity() : FVector::ZeroVector;
+        const FVector BoxWPre = BoxParentForDebug ? Speed::NativeKinematics::FComponentRead::Of(*BoxParentForDebug).AngularVelocity() : FVector::ZeroVector;
 #endif
         // Apply impulses
 		ApplySphereBoxImpulse(
@@ -536,10 +536,10 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 #if !UE_BUILD_SHIPPING
         if (IAmSpeedSphereBoxImpulseDebugEnabled())
         {
-            const FVector SphereCOMVPost = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
-            const FVector SphereWPost = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() : FVector::ZeroVector;
-            const FVector BoxCOMVPost = BoxParentForDebug ? BoxParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
-            const FVector BoxWPost = BoxParentForDebug ? BoxParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
+            const FVector SphereCOMVPost = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() : FVector::ZeroVector;
+            const FVector SphereWPost = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity() : FVector::ZeroVector;
+            const FVector BoxCOMVPost = BoxParentForDebug ? Speed::NativeKinematics::FComponentRead::Of(*BoxParentForDebug).COMVelocity() : FVector::ZeroVector;
+            const FVector BoxWPost = BoxParentForDebug ? Speed::NativeKinematics::FComponentRead::Of(*BoxParentForDebug).AngularVelocity() : FVector::ZeroVector;
 
             SPEED_NATIVE_LOG(
                 SphereSubBodyLog,
@@ -736,7 +736,7 @@ void USphereSubBody::HandleMicroOscillation()
         return;
     }*/
 
-    FVector vel = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+    FVector vel = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
     float vN = FVector::DotProduct(vel, CurrentHitStorage().ImpactNormal);
     FVector VelN = vN * CurrentHitStorage().ImpactNormal;
     if (vel.Size() < 0.01f)
@@ -779,7 +779,7 @@ bool USphereSubBody::ProjectOutOfBox(UBoxSubBody& OtherBox)
         BoxParent->UpdateSubBodiesKinematics();
     }
     const Speed::SBox BoxShape = OtherBox.MakeBox();
-    const FVector SphereCenter = ParentComponentBodyDomainStorage()->GetPhysLocation();
+    const FVector SphereCenter = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location();
     FVector ClosestPoint = FVector::ZeroVector;
     const float Separation = BoxShape.SphereOBBSeparation(
         BoxShape.Rot,
@@ -842,8 +842,8 @@ bool USphereSubBody::ProjectOutOfWorldStatic()
     constexpr float PublishedPoseQuantizationClearanceCm = 0.015f;
     const FCollisionShape ProjectionShape = FCollisionShape::MakeSphere(
         GetRadius() + PublishedPoseQuantizationClearanceCm);
-    FVector Center = ParentComponentBodyDomainStorage()->GetPhysLocation();
-    FVector CorrectedVelocity = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+    FVector Center = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location();
+    FVector CorrectedVelocity = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
     bool bMoved = false;
 
     FCollisionQueryParams QueryParams(
@@ -1137,11 +1137,11 @@ void USphereSubBody::ApplySphereBoxImpulse(
 		return;
 	}
 
-	const FVector Lever = WorldPoint - ParentComponentBodyDomainStorage()->GetPhysCOM();
+	const FVector Lever = WorldPoint - Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM();
 	const FVector TangentialDeltaW = ComputeWorldInvInertiaTensor().TransformVector(
 		FVector::CrossProduct(Lever, TangentialImpulse));
 	ParentComponentBodyDomainStorage()->SetPhysAngularVelocity(
-		ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() +
+		Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity() +
 		(EffectiveScale - 1.0f) * TangentialDeltaW);
 }
 

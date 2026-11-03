@@ -51,6 +51,9 @@ struct FPrivateRoadActorFrame
     uint8 PublicComponentKinematicViews=0;
     uint8 PublicComponentKinematicFacadeViews=0;
     uint8 PublicComponentKinematicOriginalViews=0;
+    uint8 PublicPhysReferenceViews=0;
+    uint8 PublicPhysReferenceFacadeViews=0;
+    uint8 PublicPhysReferenceOriginalViews=0;
     uint8 PublicBodyKinematicViews=0;
     uint8 PublicBodyKinematicFacadeViews=0;
     uint8 PublicBodyKinematicOriginalViews=0;

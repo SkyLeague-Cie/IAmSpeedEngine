@@ -339,7 +339,7 @@ namespace Speed
 				FSimulationPresentationBody& Pose = Snapshot.PresentationBodies.AddDefaulted_GetRef();
 				Pose.StableId = Body.StableId;
 				Pose.COMState = State;
-				Pose.CenterOfMassLocal = Body.Adapter->GetPhysCenterOfMassLocal();
+				Pose.CenterOfMassLocal = Speed::NativeKinematics::FComponentRead::Of(*Body.Adapter).LocalCOM();
 				Body.Adapter->AppendPresentationSnapshot(Pose.Extension);
                 Body.Adapter->AppendWheelPresentationSnapshot(Pose.WheelVisuals);
                 if(Pose.WheelVisuals.Num())Pose.WheelVisualsVersion=1;

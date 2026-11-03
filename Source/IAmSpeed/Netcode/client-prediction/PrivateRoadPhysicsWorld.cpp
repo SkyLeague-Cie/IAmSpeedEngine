@@ -1078,6 +1078,24 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
                 &C->USpeedWheeledComponent::GetKinematicState(),&C->GetKinematicStateForFrame(LocalFrame),
                 &Interface.GetKinematicStateForFrame(LocalFrame),&C->USpeedWheeledComponent::GetKinematicStateForFrame(LocalFrame)};
             auto& Observation=Out->Actors.back();
+            const void* PhysViews[8][3]={
+                {&C->GetPhysRotation(),&Interface.GetPhysRotation(),&C->ISpeedComponent::GetPhysRotation()},
+                {&C->GetPhysCOMVelocity(),&Interface.GetPhysCOMVelocity(),&C->ISpeedComponent::GetPhysCOMVelocity()},
+                {&C->GetPhysAngularVelocity(),&Interface.GetPhysAngularVelocity(),&C->ISpeedComponent::GetPhysAngularVelocity()},
+                {&C->GetPhysAcceleration(),&Interface.GetPhysAcceleration(),&C->ISpeedComponent::GetPhysAcceleration()},
+                {&C->GetPhysAngularAcceleration(),&Interface.GetPhysAngularAcceleration(),&C->ISpeedComponent::GetPhysAngularAcceleration()},
+                {&C->GetPhysCOM(),&Interface.GetPhysCOM(),&C->USpeedWheeledComponent::GetPhysCOM()},
+                {&C->GetPhysCenterOfMassLocal(),&Interface.GetPhysCenterOfMassLocal(),&C->USpeedWheeledComponent::GetPhysCenterOfMassLocal()},
+                {&C->GetPhysCOMLocation(),&Interface.GetPhysCOMLocation(),&C->ISpeedComponent::GetPhysCOMLocation()},
+            };
+            const void* LegacyPhys[]={&FacadeCurrent->Rotation,static_cast<const FVector*>(&FacadeCurrent->Velocity),static_cast<const FVector*>(&FacadeCurrent->AngularVelocity),static_cast<const FVector*>(&FacadeCurrent->Acceleration),static_cast<const FVector*>(&FacadeCurrent->AngularAcceleration),static_cast<const FVector*>(&FacadeCurrent->Location),&C->CenterOfMass,static_cast<const FVector*>(&FacadeCurrent->Location)};
+            const void* OriginalPhys[]={&OriginalCurrent->Rotation,static_cast<const FVector*>(&OriginalCurrent->Velocity),static_cast<const FVector*>(&OriginalCurrent->AngularVelocity),static_cast<const FVector*>(&OriginalCurrent->Acceleration),static_cast<const FVector*>(&OriginalCurrent->AngularAcceleration),static_cast<const FVector*>(&OriginalCurrent->Location),&C->CenterOfMassWheeledDomainStorage(),static_cast<const FVector*>(&OriginalCurrent->Location)};
+            for(int32 Member=0;Member<8;++Member)for(const void* View:PhysViews[Member])
+            {
+                ++Observation.PublicPhysReferenceViews;
+                if(View==LegacyPhys[Member]&&View!=OriginalPhys[Member])++Observation.PublicPhysReferenceFacadeViews;
+                if(View==OriginalPhys[Member])++Observation.PublicPhysReferenceOriginalViews;
+            }
             for(int32 Index=0;Index<6;++Index)
             {
                 const SKinematic* ExpectedFacade=Index<3?FacadeCurrent:FacadeFrame;
@@ -2264,6 +2282,14 @@ SBaseGameState& USpeedBranchWheeledComponent::BaseGameStateStorage()
 const SBaseGameState& USpeedBranchWheeledComponent::BaseGameStateStorage() const
 {
     return UsesOriginalComponentStorage()?OwnedComponentValues->BaseGameState:USpeedWheeledComponent::BaseGameStateStorage();
+}
+const FVector& USpeedBranchWheeledComponent::ReadPhysicsCOM() const
+{
+    return BasePhysicsStateStorage().Kinematic.Location;
+}
+const FVector& USpeedBranchWheeledComponent::ReadPhysicsCenterOfMassLocal() const
+{
+    return CenterOfMassWheeledDomainStorage();
 }
 const SKinematic& USpeedBranchWheeledComponent::ReadPhysicsKinematicState() const
 {

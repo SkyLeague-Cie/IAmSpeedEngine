@@ -1,4 +1,5 @@
 #include "ISpeedWheeledComponent.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
@@ -502,8 +503,8 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 	// Legacy solves every wheel from the same snapshot. The diagnostic coupled
 	// modes update the virtual rigid state after each impulse so later contacts
 	// observe the response already supplied by earlier contacts.
-	const FVector V0 = GetPhysCOMVelocity();
-	const FVector W0 = GetPhysAngularVelocity();
+	const FVector V0 = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
+	const FVector W0 = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
 	FVector CurrentV = V0;
 	FVector CurrentW = W0;
 	const int32 SolverMode = FMath::Clamp(
@@ -912,8 +913,8 @@ void ISpeedWheeledComponent::ResolveGroupedWheelGroundContacts(const float& delt
 
 		if (SolverMode != 0)
 		{
-			CurrentV = GetPhysCOMVelocity();
-			CurrentW = GetPhysAngularVelocity();
+			CurrentV = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
+			CurrentW = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
 		}
 // BEGIN_WHEEL_MANIFOLD1368
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
@@ -1037,13 +1038,13 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 		}
 	}
 
-	const float NormalSpeed = FVector::DotProduct(GetPhysCOMVelocity(), PlaneNormal);
-	const FVector TangentialAngularVelocity = GetPhysAngularVelocity()
-		- FVector::DotProduct(GetPhysAngularVelocity(), PlaneNormal) * PlaneNormal;
+	const float NormalSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), PlaneNormal);
+	const FVector TangentialAngularVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity()
+		- FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), PlaneNormal) * PlaneNormal;
 	const bool bPreserveNormalRotation = CanPreserveCanonicalSupportNormalRotation();
 	const float SupportAngularSpeed = bPreserveNormalRotation
 		? TangentialAngularVelocity.Size()
-		: GetPhysAngularVelocity().Size();
+		: Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity().Size();
 	if (FMath::Abs(NormalSpeed) > FMath::Max(0.0f,
 		Speed::RoadSettings::ReadOriginalOrLegacy<99>([](){ return CVarIAmSpeedCanonicalWheelSupportMaxNormalSpeed.GetValueOnAnyThread(); })) ||
 		SupportAngularSpeed > FMath::Max(0.0f,
@@ -1052,10 +1053,10 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 		return false;
 	}
 
-	FVector Forward = FVector::VectorPlaneProject(GetPhysForwardVector(), PlaneNormal).GetSafeNormal();
+	FVector Forward = FVector::VectorPlaneProject(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), PlaneNormal).GetSafeNormal();
 	if (Forward.IsNearlyZero())
 	{
-		Forward = FVector::VectorPlaneProject(GetPhysRightVector(), PlaneNormal).GetSafeNormal();
+		Forward = FVector::VectorPlaneProject(Speed::NativeKinematics::FComponentRead::Of(*this).Right(), PlaneNormal).GetSafeNormal();
 	}
 	if (Forward.IsNearlyZero())
 	{
@@ -1138,10 +1139,10 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 	double TargetOriginNormal = 0.0;
 	for (const double Value : BaseOffsets) TargetOriginNormal += Value;
 	TargetOriginNormal /= BaseOffsets.Num();
-	const FVector CurrentOrigin = GetPhysLocation();
+	const FVector CurrentOrigin = Speed::NativeKinematics::FComponentRead::Of(*this).Location();
 	const FVector TargetOrigin = CurrentOrigin +
 		(static_cast<float>(TargetOriginNormal) - FVector::DotProduct(CurrentOrigin, PlaneNormal)) * PlaneNormal;
-	const float PoseAngleError = TargetRotation.AngularDistance(GetPhysRotation());
+	const float PoseAngleError = TargetRotation.AngularDistance(Speed::NativeKinematics::FComponentRead::Of(*this).Rotation());
 	const float PoseNormalError = FMath::Abs(FVector::DotProduct(TargetOrigin - CurrentOrigin, PlaneNormal));
 	if (PoseAngleError > FMath::DegreesToRadians(2.0f) || PoseNormalError > 2.0f)
 	{
@@ -1150,12 +1151,12 @@ bool ISpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 
 	SetPhysRotation(TargetRotation);
 	SetPhysLocation(TargetOrigin);
-	SetPhysCOMVelocity(GetPhysCOMVelocity() - NormalSpeed * PlaneNormal);
+	SetPhysCOMVelocity(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity() - NormalSpeed * PlaneNormal);
 	// The canonical support pose owns only pitch/roll. Preserve rotation around
 	// the support normal so throttle steering and powerslide can still build the
 	// intended yaw response without changing ride height or chassis attitude.
 	SetPhysAngularVelocity(bPreserveNormalRotation
-		? FVector::DotProduct(GetPhysAngularVelocity(), PlaneNormal) * PlaneNormal
+		? FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), PlaneNormal) * PlaneNormal
 		: FVector::ZeroVector);
 	for (const auto WheelPtr : Wheels)
 	{
@@ -1435,7 +1436,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const float TangentialPatchTravel = FVector::VectorPlaneProject(
 				PatchTravel, PreviousNormal).Size();
 			const float PredictedPatchTravel =
-				GetPhysVelocityAtPoint(Probe.PreviousHit.ImpactPoint).Size() * delta;
+				Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(Probe.PreviousHit.ImpactPoint).Size() * delta;
 			const float MaxPatchTravel = PredictedPatchTravel + PatchTravelSlack;
 			const bool bSameWallIdentity = !bNativeStaticWallSupport ||
 				(LocalPatchHit.SourceId == Probe.PreviousHit.SourceId &&
@@ -1494,8 +1495,8 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 
 		if (EstablishedMisses.Num() > 0)
 		{
-			const FVector OriginalCOM = GetPhysCOM();
-			const FQuat OriginalRotation = GetPhysRotation();
+			const FVector OriginalCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
+			const FQuat OriginalRotation = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation();
 			const float RotationLength = FMath::Max(1.0f,
 				Speed::RoadSettings::ReadOriginalOrLegacy<147>([](){ return CVarIAmSpeedWheelSupportProjectionRotationLength.GetValueOnAnyThread(); }));
 			const float RotationLengthSquared = RotationLength * RotationLength;
@@ -1556,18 +1557,18 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				}
 				const FVector N = Direction.GetSafeNormal();
 				const FVector AngularJacobian = FVector::CrossProduct(
-					WorldPoint - GetPhysCOM(), N);
+					WorldPoint - Speed::NativeKinematics::FComponentRead::Of(*this).COM(), N);
 				const float Denominator = 1.0f
 					+ AngularJacobian.SizeSquared() / RotationLengthSquared;
 				const float Lambda = Violation / FMath::Max(Denominator, 1.0f);
-				SetPhysCOMLocation(GetPhysCOM() + Lambda * N);
+				SetPhysCOMLocation(Speed::NativeKinematics::FComponentRead::Of(*this).COM() + Lambda * N);
 				const FVector DeltaAngular =
 					(Lambda / RotationLengthSquared) * AngularJacobian;
 				const float DeltaAngle = DeltaAngular.Size();
 				if (DeltaAngle > SMALL_NUMBER)
 				{
 					const FQuat WorldDelta(DeltaAngular / DeltaAngle, DeltaAngle);
-					SetPhysRotation((WorldDelta * GetPhysRotation()).GetNormalized());
+					SetPhysRotation((WorldDelta * Speed::NativeKinematics::FComponentRead::Of(*this).Rotation()).GetNormalized());
 				}
 				UpdateSubBodiesKinematics();
 			};
@@ -1657,7 +1658,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			}
 
 			FQuat RelativeRotation = (OriginalRotation.Inverse()
-				* GetPhysRotation()).GetNormalized();
+				* Speed::NativeKinematics::FComponentRead::Of(*this).Rotation()).GetNormalized();
 			float RotationAngle = 0.0f;
 			FVector RotationAxis = FVector::ZeroVector;
 			RelativeRotation.ToAxisAndAngle(RotationAxis, RotationAngle);
@@ -1665,7 +1666,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 			const float MaxRotationRadians = FMath::DegreesToRadians(FMath::Max(0.0f,
 				Speed::RoadSettings::ReadOriginalOrLegacy<140>([](){ return CVarIAmSpeedWheelSupportProjectionMaxRotationDegrees.GetValueOnAnyThread(); })));
 			const bool bWithinBounds =
-				(GetPhysCOM() - OriginalCOM).Size() <= MaxGap &&
+				(Speed::NativeKinematics::FComponentRead::Of(*this).COM() - OriginalCOM).Size() <= MaxGap &&
 				RotationAngle <= MaxRotationRadians;
 			bool bPreservedProbeHits = true;
 			if (bPreserveProbeHits && bWithinBounds)
@@ -1699,7 +1700,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 								NumFrame(), Probe.Wheel->Idx(), static_cast<unsigned long long>(Probe.ProbeHit.SourceId),
 								ProposedGap, Radius, *CoupledPoseDiagnosticVector(ProposedStart), *CoupledPoseDiagnosticVector(ProposedEnd),
 								*CoupledPoseDiagnosticVector(Probe.ProbeHit.ImpactPoint), *CoupledPoseDiagnosticVector(InitialNormal),
-								*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()),
+								*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(Speed::NativeKinematics::FComponentRead::Of(*this).COM()),
 								static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
 						}
 #endif
@@ -1781,7 +1782,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 				SPEED_NATIVE_LOG(LogTemp, Log,
 					TEXT("[WheelSupportProjection] Frame=%d Retained=%d Applied=%d Translation=%.3f RotationDeg=%.3f CoherentSpring=%d CoherentStateValid=%d"),
 					NumFrame(), EstablishedMisses.Num(), bAcceptProjectedPose ? 1 : 0,
-					(GetPhysCOM() - OriginalCOM).Size(),
+					(Speed::NativeKinematics::FComponentRead::Of(*this).COM() - OriginalCOM).Size(),
 					FMath::RadiansToDegrees(RotationAngle), bCoherentSpringState ? 1 : 0, bCoherentStateValid ? 1 : 0);
 				if (Speed::RoadSettings::ReadOriginalOrLegacy<138>([](){ return CVarIAmSpeedWheelSupportProjectionDebug.GetValueOnAnyThread(); }) >= 3)
 				{
@@ -1806,7 +1807,7 @@ void ISpeedWheeledComponent::PostIntegrateKinematics(const float& delta)
 							static_cast<unsigned long long>(bActualAfterHit ? AfterHit.SourceId : 0), BeforeGap, AfterGap, Radius,
 							*CoupledPoseDiagnosticVector(Probe.DiagnosticInitialEnd), *CoupledPoseDiagnosticVector(AfterEnd),
 							*CoupledPoseDiagnosticVector(Plane.ImpactPoint), *CoupledPoseDiagnosticVector(N),
-							*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(GetPhysCOM()),
+							*CoupledPoseDiagnosticVector(OriginalCOM), *CoupledPoseDiagnosticVector(Speed::NativeKinematics::FComponentRead::Of(*this).COM()),
 							static_cast<double>(bAcceptProjectedPose ? FMath::RadiansToDegrees(RotationAngle) : 0.0f),
 							bAcceptProjectedPose ? 1 : 0, static_cast<double>(FMath::RadiansToDegrees(RotationAngle)));
 					}
@@ -1938,8 +1939,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		return false;
 	}
 
-	const FVector TransactionCOM = GetPhysCOM();
-	const FQuat TransactionRotation = GetPhysRotation();
+	const FVector TransactionCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
+	const FQuat TransactionRotation = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation();
 	const float ConfiguredSlop = FMath::Max(0.0f,
 		Speed::RoadSettings::ReadOriginalOrLegacy<35>([](){ return CVarIAmSpeedCoupledPoseHitboxSlopCm.GetValueOnAnyThread(); }));
 	const float Slop =
@@ -1951,7 +1952,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	TArray<USWheelSubBody*, TInlineAllocator<4>> WheelPatchCandidates;
 	bool bWheelPatchesOnGravityAlignedSurface = true;
 	bool bWheelPatchesFaceChassisSupportSide = true;
-	const FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
+	const FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 	for (USWheelSubBody* Wheel : ReadWheelSubBodiesForPhysics())
 	{
 		if (Wheel && Wheel->IsOnGround())
@@ -1997,7 +1998,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 	}
 	WheelManifoldNormal.Normalize();
 	const FVector LocalAngularVelocity =
-		GetPhysRotation().UnrotateVector(GetPhysAngularVelocity());
+		Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().UnrotateVector(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity());
 	const bool bPitchDominatedFreeHitboxContact = !bHasWheelPatchCandidate
 		&& FMath::Abs(LocalAngularVelocity.Y) > FMath::Abs(LocalAngularVelocity.X);
 	bool bWheelPatchesFormLateralAxle = false;
@@ -2009,7 +2010,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		FVector SweepEndB = FVector::ZeroVector;
 		WheelPatchCandidates[0]->GetSuspensionSweepSegment(Delta, SweepStartA, SweepEndA);
 		WheelPatchCandidates[1]->GetSuspensionSweepSegment(Delta, SweepStartB, SweepEndB);
-		const FVector LocalPatchSpan = GetPhysRotation().UnrotateVector(
+		const FVector LocalPatchSpan = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().UnrotateVector(
 			SweepStartB - SweepStartA);
 		bWheelPatchesFormLateralAxle =
 			FMath::Abs(LocalPatchSpan.Y) > FMath::Abs(LocalPatchSpan.X);
@@ -2078,8 +2079,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			UpdateSubBodiesKinematics();
 			return false;
 		}
-		LastCertifiedCoupledPoseCOM = GetPhysCOM();
-		LastCertifiedCoupledPoseRotation = GetPhysRotation();
+		LastCertifiedCoupledPoseCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
+		LastCertifiedCoupledPoseRotation = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation();
 		LastCertifiedCoupledPoseFrame = static_cast<int32>(NumFrame());
 
 		BeginDeferredWheelGroundStateUpdate();
@@ -2134,19 +2135,19 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		{
 			return;
 		}
-		const FVector AngularJacobian = FVector::CrossProduct(WorldPoint - GetPhysCOM(), N);
+		const FVector AngularJacobian = FVector::CrossProduct(WorldPoint - Speed::NativeKinematics::FComponentRead::Of(*this).COM(), N);
 		const float RotationLengthSquared = RotationLength * RotationLength;
 		const FVector AngularMobility = AngularJacobian / RotationLengthSquared;
 		const float Denominator = 1.0f
 			+ FVector::DotProduct(AngularJacobian, AngularMobility);
 		const float Lambda = Violation / FMath::Max(Denominator, 1.0f);
-		SetPhysCOMLocation(GetPhysCOM() + Lambda * N);
+		SetPhysCOMLocation(Speed::NativeKinematics::FComponentRead::Of(*this).COM() + Lambda * N);
 		const FVector DeltaAngular = Lambda * AngularMobility;
 		const float DeltaAngle = DeltaAngular.Size();
 		if (DeltaAngle > SMALL_NUMBER)
 		{
 			const FQuat WorldDelta(DeltaAngular / DeltaAngle, DeltaAngle);
-			SetPhysRotation((WorldDelta * GetPhysRotation()).GetNormalized());
+			SetPhysRotation((WorldDelta * Speed::NativeKinematics::FComponentRead::Of(*this).Rotation()).GetNormalized());
 		}
 		UpdateSubBodiesKinematics();
 	};
@@ -2238,7 +2239,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 						? WheelConstraintRotationLength : DefaultRotationLength);
 				ApplyConstraint(Constraint.Normal,
 					bUseSupportedFloorContactPoint || bUseFreeFloorContactPoint
-						? Constraint.Point : GetPhysCOM(),
+						? Constraint.Point : Speed::NativeKinematics::FComponentRead::Of(*this).COM(),
 					Constraint.ObservedDepth - ProjectionTargetSlop +
 						(bStrictHitboxGate ? 0.01f : 0.0f),
 					HitboxRotationLength);
@@ -2275,9 +2276,9 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			const Speed::FKinematicState& State = Speed::NativeKinematics::FBodyRead::Body(*PrincipalHitbox);
 			const FVector ContactPoint = UBoxSubBody::ComputeBoxSupportPointWS(
 				State.Location, State.Rotation, PrincipalHitbox->GetBoxExtent(), -N);
-			const FVector R = ContactPoint - GetPhysCOM();
+			const FVector R = ContactPoint - Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 			const float InwardSpeed = FVector::DotProduct(
-				GetPhysVelocityAtPoint(ContactPoint), N);
+				Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(ContactPoint), N);
 			if (InwardSpeed >= -0.001f)
 			{
 				continue;
@@ -2327,8 +2328,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 			SPEED_NATIVE_LOG(LogTemp, Warning,
 				TEXT("[CoupledPose][HitboxRejected] Frame=%d InitialDepth=%.3f InitialHits=%d Constraints=%d Translation=%.3f RotationDeg=%.3f Strict=%d CertifiedAge=%d CertifiedSweep=%.6f"),
 				NumFrame(), InitialMaximumDepth, InitialPenetrationHits.Num(),
-				HitboxConstraints.Num(), (GetPhysCOM() - TransactionCOM).Size(),
-				FMath::RadiansToDegrees(GetPhysRotation().AngularDistance(TransactionRotation)),
+				HitboxConstraints.Num(), (Speed::NativeKinematics::FComponentRead::Of(*this).COM() - TransactionCOM).Size(),
+				FMath::RadiansToDegrees(Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().AngularDistance(TransactionRotation)),
 				bStrictHitboxGate ? 1 : 0,
 				static_cast<int32>(NumFrame()) - LastCertifiedCoupledPoseFrame, CertifiedPoseSweepCm);
 		}
@@ -2345,8 +2346,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		// let wheel retention reject and roll back an already-feasible OBB pose;
 		// wheel support is solved in the preceding post-physics phases and will
 		// be reprobed after this bounded positional correction.
-		const bool bPoseChanged = !GetPhysCOM().Equals(TransactionCOM, 0.001f) ||
-			GetPhysRotation().AngularDistance(TransactionRotation) > 1.0e-5f;
+		const bool bPoseChanged = !Speed::NativeKinematics::FComponentRead::Of(*this).COM().Equals(TransactionCOM, 0.001f) ||
+			Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().AngularDistance(TransactionRotation) > 1.0e-5f;
 		if (bPoseChanged)
 		{
 			BeginDeferredWheelGroundStateUpdate();
@@ -2369,8 +2370,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		return bPoseChanged;
 	}
 
-	const FVector HitboxFeasibleCOM = GetPhysCOM();
-	const FQuat HitboxFeasibleRotation = GetPhysRotation();
+	const FVector HitboxFeasibleCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
+	const FQuat HitboxFeasibleRotation = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation();
 	const float MaxWheelGap = FMath::Max(0.0f,
 		Speed::RoadSettings::ReadOriginalOrLegacy<41>([](){ return CVarIAmSpeedCoupledPoseWheelGapCm.GetValueOnAnyThread(); }));
 	struct FWheelPatchConstraint
@@ -2462,8 +2463,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		{
 			continue;
 		}
-		const FVector BeforeWheelCOM = GetPhysCOM();
-		const FQuat BeforeWheelRotation = GetPhysRotation();
+		const FVector BeforeWheelCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
+		const FQuat BeforeWheelRotation = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation();
 		const FVector N = Contact.Normal.GetSafeNormal();
 		SHitResult LocalPatchHit;
 		const bool bHasLocalPatch = Wheel->SweepSuspensionAlongNormal(
@@ -2560,9 +2561,9 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 						PrincipalHitbox->GetBoxExtent(), HitboxNormal);
 					const FVector WheelDirection = -N;
 					const FVector WheelAngular = FVector::CrossProduct(
-						SweepEnd - GetPhysCOM(), WheelDirection);
+						SweepEnd - Speed::NativeKinematics::FComponentRead::Of(*this).COM(), WheelDirection);
 					const FVector HitboxAngular = FVector::CrossProduct(
-						HitboxPoint - GetPhysCOM(), HitboxNormal);
+						HitboxPoint - Speed::NativeKinematics::FComponentRead::Of(*this).COM(), HitboxNormal);
 					const float RotationLengthSquared =
 						WheelConstraintRotationLength * WheelConstraintRotationLength;
 					const float HitboxMobility = 1.0f +
@@ -2588,11 +2589,11 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 						if (!Translation.ContainsNaN() && !DeltaAngular.ContainsNaN() &&
 							Translation.Size() <= MaxTranslation && DeltaAngle <= MaxRotation)
 						{
-							SetPhysCOMLocation(GetPhysCOM() + Translation);
+							SetPhysCOMLocation(Speed::NativeKinematics::FComponentRead::Of(*this).COM() + Translation);
 							if (DeltaAngle > SMALL_NUMBER)
 							{
 								const FQuat WorldDelta(DeltaAngular / DeltaAngle, DeltaAngle);
-								SetPhysRotation((WorldDelta * GetPhysRotation()).GetNormalized());
+								SetPhysRotation((WorldDelta * Speed::NativeKinematics::FComponentRead::Of(*this).Rotation()).GetNormalized());
 							}
 							UpdateSubBodiesKinematics();
 							bAppliedWallTangentProjection = true;
@@ -2706,8 +2707,8 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 		if (bSharedPlane && MaximumGap > 0.0f &&
 			Translation <= FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<139>([](){ return CVarIAmSpeedWheelSupportProjectionMaxGap.GetValueOnAnyThread(); })))
 		{
-			const FVector BeforeSharedCOM = GetPhysCOM();
-			const FQuat BeforeSharedRotation = GetPhysRotation();
+			const FVector BeforeSharedCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
+			const FQuat BeforeSharedRotation = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation();
 			SetPhysCOMLocation(BeforeSharedCOM - SharedNormal * Translation);
 			UpdateSubBodiesKinematics();
 			bool bAllRealSupport = SolveHitboxFeasibility(MaxPasses);
@@ -2742,19 +2743,19 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 
 #if !(UE_BUILD_SHIPPING)
 	if (Speed::RoadSettings::ReadOriginalOrLegacy<32>([](){ return CVarIAmSpeedCoupledPoseDebug.GetValueOnAnyThread(); }) != 0 &&
-		(!GetPhysCOM().Equals(TransactionCOM, 0.001f) ||
-			GetPhysRotation().AngularDistance(TransactionRotation) > 1.0e-5f))
+		(!Speed::NativeKinematics::FComponentRead::Of(*this).COM().Equals(TransactionCOM, 0.001f) ||
+			Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().AngularDistance(TransactionRotation) > 1.0e-5f))
 	{
 		SPEED_NATIVE_LOG(LogTemp, Log,
 			TEXT("[CoupledPose] Frame=%d HitboxTranslation=%.3f TotalTranslation=%.3f RotationDeg=%.3f HitboxConstraints=%d WheelConstraints=%d RetainedWheels=%d"),
 			NumFrame(), (HitboxFeasibleCOM - TransactionCOM).Size(),
-			(GetPhysCOM() - TransactionCOM).Size(),
-			FMath::RadiansToDegrees(GetPhysRotation().AngularDistance(TransactionRotation)),
+			(Speed::NativeKinematics::FComponentRead::Of(*this).COM() - TransactionCOM).Size(),
+			FMath::RadiansToDegrees(Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().AngularDistance(TransactionRotation)),
 			HitboxConstraints.Num(), WheelConstraints.Num(), RetainedWheels);
 	}
 #endif
-	const bool bPoseChanged = !GetPhysCOM().Equals(TransactionCOM, 0.001f) ||
-		GetPhysRotation().AngularDistance(TransactionRotation) > 1.0e-5f;
+	const bool bPoseChanged = !Speed::NativeKinematics::FComponentRead::Of(*this).COM().Equals(TransactionCOM, 0.001f) ||
+		Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().AngularDistance(TransactionRotation) > 1.0e-5f;
 	if (bPoseChanged)
 	{
 		BeginDeferredWheelGroundStateUpdate();
@@ -2784,7 +2785,7 @@ bool ISpeedWheeledComponent::ProjectCoupledSubBodyPose(
 					bStrictHitboxGate ? 1 : 0, RetainedWheels,
 					static_cast<unsigned long long>(PreviousQueryHit.SourceId),
 					static_cast<unsigned long long>(bOnGround ? FinalHit.SourceId : 0),
-					PreviousPlaneGap, FVector::DotProduct(GetPhysCOMVelocity(), PreviousQueryNormal),
+					PreviousPlaneGap, FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), PreviousQueryNormal),
 					QueryStart.X, QueryStart.Y, QueryStart.Z, QueryEnd.X, QueryEnd.Y, QueryEnd.Z,
 					PreviousQueryNormal.X, PreviousQueryNormal.Y, PreviousQueryNormal.Z);
 			}

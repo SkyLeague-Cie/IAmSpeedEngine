@@ -564,6 +564,10 @@ class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComp
     // Only this final private subtype bypasses public facade kinematics.
     // Ordinary/custom wheeled adapters retain public virtual dispatch.
     const SKinematic& ReadPhysicsKinematicState() const override;
+    const FVector& ReadPhysicsCOM() const override;
+    const FVector& ReadPhysicsCenterOfMassLocal() const override;
+    const FVector& PublicPhysCOMView() const override { return BasePhysicsState.Kinematic.Location; }
+    const FVector& PublicPhysLocalCOMView() const override { return CenterOfMass; }
     const SKinematic& ReadPhysicsKinematicStateForFrame(const unsigned int& Frame) const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;

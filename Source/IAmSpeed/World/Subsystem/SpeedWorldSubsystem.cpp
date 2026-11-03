@@ -972,11 +972,11 @@ void USpeedWorldSubsystem::RegisterDynamicContactPair(
 	}
 
 	Pair->LastSeenFrame = CurrentStepFrame;
-	Pair->LastCOMA = CompA->GetPhysCOM();
-	Pair->LastCOMB = CompB->GetPhysCOM();
-	Pair->LocalAnchorA = CompA->GetPhysRotation().UnrotateVector(ContactPoint - CompA->GetPhysCOM());
-	Pair->LocalAnchorB = CompB->GetPhysRotation().UnrotateVector(ContactPoint - CompB->GetPhysCOM());
-	Pair->LocalNormalB = CompB->GetPhysRotation().UnrotateVector(NormalBToA.GetSafeNormal());
+	Pair->LastCOMA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COM();
+	Pair->LastCOMB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COM();
+	Pair->LocalAnchorA = Speed::NativeKinematics::FComponentRead::Of(*CompA).Rotation().UnrotateVector(ContactPoint - Speed::NativeKinematics::FComponentRead::Of(*CompA).COM());
+	Pair->LocalAnchorB = Speed::NativeKinematics::FComponentRead::Of(*CompB).Rotation().UnrotateVector(ContactPoint - Speed::NativeKinematics::FComponentRead::Of(*CompB).COM());
+	Pair->LocalNormalB = Speed::NativeKinematics::FComponentRead::Of(*CompB).Rotation().UnrotateVector(NormalBToA.GetSafeNormal());
 	if (Speed::RoadSettings::ReadOriginalOrLegacy<10>([](){ return CVarIAmSpeedDebugPersistentDynamicPairs.GetValueOnAnyThread(); }) != 0)
 	{
 		SPEED_NATIVE_LOG(LogTemp, Warning,
@@ -1261,10 +1261,10 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		}
 		Pair.LastSolvedFrame = CurrentStepFrame;
 
-		const FVector CurrentCOMA = CompA->GetPhysCOM();
-		const FVector CurrentCOMB = CompB->GetPhysCOM();
-		const float MaxExpectedMoveA = CompA->GetPhysCOMVelocity().Size() * Dt * 2.0f + 10.0f;
-		const float MaxExpectedMoveB = CompB->GetPhysCOMVelocity().Size() * Dt * 2.0f + 10.0f;
+		const FVector CurrentCOMA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COM();
+		const FVector CurrentCOMB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COM();
+		const float MaxExpectedMoveA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COMVelocity().Size() * Dt * 2.0f + 10.0f;
+		const float MaxExpectedMoveB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COMVelocity().Size() * Dt * 2.0f + 10.0f;
 		if (FVector::DistSquared(CurrentCOMA, Pair.LastCOMA) > FMath::Square(MaxExpectedMoveA) ||
 			FVector::DistSquared(CurrentCOMB, Pair.LastCOMB) > FMath::Square(MaxExpectedMoveB))
 		{
@@ -1279,11 +1279,11 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		Pair.LastCOMA = CurrentCOMA;
 		Pair.LastCOMB = CurrentCOMB;
 
-		const FQuat RotA = CompA->GetPhysRotation();
-		const FQuat RotB = CompB->GetPhysRotation();
+		const FQuat RotA = Speed::NativeKinematics::FComponentRead::Of(*CompA).Rotation();
+		const FQuat RotB = Speed::NativeKinematics::FComponentRead::Of(*CompB).Rotation();
 		FVector N = RotB.RotateVector(Pair.LocalNormalB).GetSafeNormal();
-		FVector AnchorA = CompA->GetPhysCOM() + RotA.RotateVector(Pair.LocalAnchorA);
-		FVector AnchorB = CompB->GetPhysCOM() + RotB.RotateVector(Pair.LocalAnchorB);
+		FVector AnchorA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COM() + RotA.RotateVector(Pair.LocalAnchorA);
+		FVector AnchorB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COM() + RotB.RotateVector(Pair.LocalAnchorB);
 		float ShapeSeparation = FVector::DotProduct(AnchorA - AnchorB, N);
 		if (Sphere && Box)
 		{
@@ -1340,8 +1340,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 					AnchorB = SphereContactPoint;
 				}
 
-				Pair.LocalAnchorA = RotA.UnrotateVector(AnchorA - CompA->GetPhysCOM());
-				Pair.LocalAnchorB = RotB.UnrotateVector(AnchorB - CompB->GetPhysCOM());
+				Pair.LocalAnchorA = RotA.UnrotateVector(AnchorA - Speed::NativeKinematics::FComponentRead::Of(*CompA).COM());
+				Pair.LocalAnchorB = RotB.UnrotateVector(AnchorB - Speed::NativeKinematics::FComponentRead::Of(*CompB).COM());
 				Pair.LocalNormalB = RotB.UnrotateVector(N);
 				Pair.LastSeenFrame = CurrentStepFrame;
 				if (FVector::DotProduct(PreviousNormal, N) < 0.995f)
@@ -1368,12 +1368,12 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		}
 		Pair.bRollingManifoldReady = bUseRollingManifold;
 
-		const FVector OffsetA = AnchorA - CompA->GetPhysCOM();
-		const FVector OffsetB = AnchorB - CompB->GetPhysCOM();
-		const FVector VelocityA = CompA->GetPhysCOMVelocity() +
-			FVector::CrossProduct(CompA->GetPhysAngularVelocity(), OffsetA);
-		const FVector VelocityB = CompB->GetPhysCOMVelocity() +
-			FVector::CrossProduct(CompB->GetPhysAngularVelocity(), OffsetB);
+		const FVector OffsetA = AnchorA - Speed::NativeKinematics::FComponentRead::Of(*CompA).COM();
+		const FVector OffsetB = AnchorB - Speed::NativeKinematics::FComponentRead::Of(*CompB).COM();
+		const FVector VelocityA = Speed::NativeKinematics::FComponentRead::Of(*CompA).COMVelocity() +
+			FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*CompA).AngularVelocity(), OffsetA);
+		const FVector VelocityB = Speed::NativeKinematics::FComponentRead::Of(*CompB).COMVelocity() +
+			FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*CompB).AngularVelocity(), OffsetB);
 		const float Separation = bUseRollingManifold
 			? ShapeSeparation
 			: FVector::DotProduct(AnchorA - AnchorB, N);
@@ -1386,8 +1386,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		}
 		const float PredictedRelativeNormalVelocity = RelativeNormalVelocity +
 			Dt * FVector::DotProduct(
-				CompA->GetPhysAccelerationAtPoint(AnchorA) -
-				CompB->GetPhysAccelerationAtPoint(AnchorB), N);
+				Speed::NativeKinematics::FComponentRead::Of(*CompA).AccelerationAtPoint(AnchorA) -
+				Speed::NativeKinematics::FComponentRead::Of(*CompB).AccelerationAtPoint(AnchorB), N);
 		const float PenetrationSlop = FMath::Max(
 			0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<18>([](){ return CVarIAmSpeedRollingPenetrationSlop.GetValueOnAnyThread(); }));
 		if (bUseRollingManifold && Separation >= -PenetrationSlop &&
@@ -1558,8 +1558,8 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 
 		if (bUseRollingManifold && NormalImpulseMagnitude > KINDA_SMALL_NUMBER)
 		{
-			const FVector PostVelocityA = CompA->GetPhysVelocityAtPoint(AnchorA);
-			const FVector PostVelocityB = CompB->GetPhysVelocityAtPoint(AnchorB);
+			const FVector PostVelocityA = Speed::NativeKinematics::FComponentRead::Of(*CompA).VelocityAtPoint(AnchorA);
+			const FVector PostVelocityB = Speed::NativeKinematics::FComponentRead::Of(*CompB).VelocityAtPoint(AnchorB);
 			const FVector RelativeVelocity = PostVelocityA - PostVelocityB;
 			const FVector TangentialVelocity = RelativeVelocity -
 				FVector::DotProduct(RelativeVelocity, N) * N;

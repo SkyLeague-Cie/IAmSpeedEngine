@@ -2,6 +2,7 @@
 
 
 #include "SolidSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -335,7 +336,7 @@ FVector USolidSubBody::GetVelocityAtPoint(const FVector& Point) const
 {
     if (ParentComponentBodyDomainStorage())
     {
-        return ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(Point);
+        return Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(Point);
     }
     return FVector::ZeroVector;
 }
@@ -368,9 +369,9 @@ void USolidSubBody::SolveOverlap(
         const float wA = InvMassA / InvMassSum;
         const float wB = InvMassB / InvMassSum;
 
-        ThisComp.SetPhysLocation(ThisComp.GetPhysLocation() + corr * wA);
+        ThisComp.SetPhysLocation(Speed::NativeKinematics::FComponentRead::Of(ThisComp).Location() + corr * wA);
         if (OtherComp)
-            OtherComp->SetPhysLocation(OtherComp->GetPhysLocation() - corr * wB);
+            OtherComp->SetPhysLocation(Speed::NativeKinematics::FComponentRead::Of(*OtherComp).Location() - corr * wB);
     }
 
     // -------------------------

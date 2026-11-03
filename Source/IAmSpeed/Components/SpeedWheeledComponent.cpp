@@ -1211,12 +1211,12 @@ float USpeedWheeledComponent::GetPhysMass() const
 
 const FVector& USpeedWheeledComponent::GetPhysCOM() const
 {
-	return BasePhysicsStateStorage().Kinematic.Location;
+	return PublicPhysCOMView();
 }
 
 const FVector& USpeedWheeledComponent::GetPhysCenterOfMassLocal() const
 {
-	return CenterOfMassWheeledDomainStorage();
+	return PublicPhysLocalCOMView();
 }
 const TArray<USSubBody*>& USpeedWheeledComponent::GetSubBodies() const
 {
@@ -1241,7 +1241,7 @@ WheelSubBodyConfig USpeedWheeledComponent::GetWheelSubBodyConfig(const USWheelSu
 
 SKinematic USpeedWheeledComponent::GetKinematicsOfSubBody(const USSubBody& SubBody, const unsigned int& LocalFrame) const
 {
-	return GetOriginKinematicStateForFrame(LocalFrame);
+	return Speed::NativeKinematics::FComponentRead::Of(*this).OriginForFrame(LocalFrame);
 }
 FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
 {
@@ -1253,11 +1253,11 @@ FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensor() const
 		// TransformVector uses row vectors: unrotate the world torque, apply the
 		// chassis tensor, then rotate back. Match the box accessor without Euler
 		// pole loss; wheel impulses must not depend on the vehicle's world heading.
-		const FMatrix ChassisToWorld = FQuatRotationMatrix(GetPhysRotation());
+		const FMatrix ChassisToWorld = FQuatRotationMatrix(Speed::NativeKinematics::FComponentRead::Of(*this).Rotation());
 		return ChassisToWorld.GetTransposed() * CarLocalInvIWheeledDomainStorage() * ChassisToWorld;
 	}
 #endif
-	const FMatrix ChassisToWorld = FRotationMatrix::Make(GetPhysRotation().Rotator());
+	const FMatrix ChassisToWorld = FRotationMatrix::Make(Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().Rotator());
 	return ChassisToWorld * CarLocalInvIWheeledDomainStorage() * ChassisToWorld.GetTransposed();
 }
 
@@ -1667,8 +1667,8 @@ void USpeedWheeledComponent::UpdateFrameState()
 		// Only an already stationary support is a startup point-fix candidate.
 		// Callers opt in only when they authored an exact support pose. Full speed
 		// checks still reject stale requests applied to a moving body.
-		if (GetPhysCOMVelocity().Size() <= 0.01f
-			&& GetPhysAngularVelocity().Size() <= 0.01f)
+		if (Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().Size() <= 0.01f
+			&& Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity().Size() <= 0.01f)
 		{
 			// RecoverWheelState runs after the countdown transition. Initialize the
 			// support and its transient length here, after recovery but before gravity
@@ -1691,9 +1691,9 @@ void USpeedWheeledComponent::UpdateFrameState()
 	}
 	if (CanMove() && Speed::RoadSettings::ReadOriginalOrLegacy<43>([](){ return CVarIAmSpeedDebugKinematics.GetValueOnAnyThread(); }) != 0 && NumFrame() % 1 == 0)
 	{
-		const FVector Forward = GetPhysForwardVector();
-		const FVector Right = GetPhysRightVector();
-		const FVector Up = GetPhysUpVector();
+		const FVector Forward = Speed::NativeKinematics::FComponentRead::Of(*this).Forward();
+		const FVector Right = Speed::NativeKinematics::FComponentRead::Of(*this).Right();
+		const FVector Up = Speed::NativeKinematics::FComponentRead::Of(*this).Up();
 		uint32 WheelMask = 0;
 		for (const auto Wheel : ReadWheelSubBodiesForPhysics())
 		{
@@ -1703,7 +1703,7 @@ void USpeedWheeledComponent::UpdateFrameState()
 				WheelMask |= 1u << Wheel->Idx();
 			}
 		}
-		const FVector AngularVelocity = GetPhysAngularVelocity();
+		const FVector AngularVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
 		const FVector LocalAngularVelocity(
 			FVector::DotProduct(AngularVelocity, Forward),
 			FVector::DotProduct(AngularVelocity, Right),
@@ -1715,12 +1715,12 @@ void USpeedWheeledComponent::UpdateFrameState()
 			NbFramesSinceCanMove(),
 			NumWheelsOnGround(),
 			WheelMask,
-			*GetPhysCOM().ToString(),
-			*GetPhysCOMVelocity().ToString(),
-			*GetPhysAccelerationAtPoint(GetPhysCOM()).ToString(),
+			*Speed::NativeKinematics::FComponentRead::Of(*this).COM().ToString(),
+			*Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().ToString(),
+			*Speed::NativeKinematics::FComponentRead::Of(*this).AccelerationAtPoint(Speed::NativeKinematics::FComponentRead::Of(*this).COM()).ToString(),
 			*AngularVelocity.ToString(),
 			*LocalAngularVelocity.ToString(),
-			*GetPhysAngularAcceleration().ToString(),
+			*Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration().ToString(),
 			*Forward.ToString(),
 			*Right.ToString(),
 			*Up.ToString());
@@ -2328,7 +2328,7 @@ void USpeedWheeledComponent::HandleDamping(const float& delta)
 		return;
 	}
 
-	const FVector COMVelocity = GetPhysCOMVelocity();
+	const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 	FVector NewCOMVelocity = (1 - PhysDampingWheeledDomainStorage()) * COMVelocity;
 	const float Speed = COMVelocity.Size();
 	if (Speed <= 1.0f)
@@ -2356,10 +2356,10 @@ void USpeedWheeledComponent::HandleRestForce()
 	const FVector N = ReadHitboxForPhysics()->GetGroundPlaneNormal().GetSafeNormal();
 
 	// Total acceleration (world-space)
-	const FVector Accel = GetPhysAcceleration();
+	const FVector Accel = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
 
 	// --- HARD STOP: never apply rest force if we are separating from the plane ---
-	const FVector Vcm = GetPhysCOMVelocity();
+	const FVector Vcm = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 	const float vN = FVector::DotProduct(Vcm, N);
 
 	// If separating or stationary relative to plane, DO NOT apply rest force
@@ -2409,7 +2409,7 @@ void USpeedWheeledComponent::HandleRestForce()
 			LockAxisWorld))
 		{
 			// remove forbidden component in WORLD space directly
-			const float a = FVector::DotProduct(GetPhysAngularAcceleration(), LockAxisWorld);
+			const float a = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration(), LockAxisWorld);
 			constexpr float A_EPS = 0.02f;
 			if (FMath::Abs(a) > A_EPS)
 			{
@@ -2441,13 +2441,13 @@ FVector USpeedWheeledComponent::GetWheelFrictionApplicationPoint(
 	const FVector& ContactPoint,
 	const FVector& SurfaceNormal) const
 {
-	FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
+	FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 	if (ChassisUp.IsNearlyZero())
 	{
 		ChassisUp = SurfaceNormal;
 	}
 
-	const FVector PhysCOM = GetPhysCOM();
+	const FVector PhysCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 	const FVector ContactArm = ContactPoint - PhysCOM;
 	return PhysCOM + ContactArm - FVector::DotProduct(ContactArm, ChassisUp) * ChassisUp;
 }
@@ -2464,19 +2464,19 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 	if (GetLocalSideFriction() <= KINDA_SMALL_NUMBER)
 		return;
 
-	const float ForwardSpeed = GetPhysForwardSpeed();
+	const float ForwardSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed();
 	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
 	const float SteeringRearReverseScaleOverride = Speed::RoadSettings::ReadOriginalOrLegacy<127>([](){ return CVarIAmSpeedWheelFrameSteeringRearLateralFrictionReverseScale.GetValueOnAnyThread(); });
 	const bool bUseSteeringRearReverseScale = ForwardSpeed < -KINDA_SMALL_NUMBER && SteeringRearReverseScaleOverride >= 0.0f;
 	float DebugNormalRearAppliedScale = 1.0f;
 
-	const float PlanarGroundSpeed = GetPhysCOMVelocity().Size2D();
+	const float PlanarGroundSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().Size2D();
 	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
 	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
 	float Wheelbase = 0.0f;
 	{
 		const FVector SurfaceNormal = GetNormalFromWheels().GetSafeNormal();
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		if (ForwardDir.Normalize())
 		{
 			float MinForwardOffset = BIG_NUMBER;
@@ -2486,7 +2486,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				if (!Wheel)
 					continue;
 
-				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysCOM(), ForwardDir);
+				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - Speed::NativeKinematics::FComponentRead::Of(*this).COM(), ForwardDir);
 				MinForwardOffset = FMath::Min(MinForwardOffset, ForwardOffset);
 				MaxForwardOffset = FMath::Max(MaxForwardOffset, ForwardOffset);
 			}
@@ -2546,7 +2546,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 		const float FrictionStateScale = bIsAccelerating ? 1.0f :
 			FMath::Max(0.0f, EvaluateLinearFloatCurve(NonAcceleratingFrictionScaleCurveWheeledDomainStorage(), SurfaceNormal.Z, 1.0f));
 
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		if (!ForwardDir.Normalize())
 			continue;
 
@@ -2563,22 +2563,22 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 
 		// RocketSim evaluates its tire friction curve from the projected hard point,
 		// then resolves the bilateral lateral impulse at the actual wheel contact.
-		FVector HardPointVelocity = GetPhysVelocityAtPoint(HardPoint);
+		FVector HardPointVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(HardPoint);
         FVector PrescribedSurfaceVelocity;
         if(Wheel->TryGetPrescribedSupportVelocity(HardPoint,PrescribedSurfaceVelocity))HardPointVelocity-=PrescribedSurfaceVelocity;
 		const float CurveLateralSpeed = FVector::DotProduct(HardPointVelocity, LateralDir);
 		const float CurveLongitudinalSpeed = FVector::DotProduct(HardPointVelocity, LongitudinalDir);
 		const float AbsCurveLateralSpeed = FMath::Abs(CurveLateralSpeed);
 		const float AbsLongitudinalSpeed = FMath::Abs(CurveLongitudinalSpeed);
-		FVector ContactVelocity = GetPhysVelocityAtPoint(ContactPoint);
+		FVector ContactVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(ContactPoint);
         if(Wheel->TryGetPrescribedSupportVelocity(ContactPoint,PrescribedSurfaceVelocity))ContactVelocity-=PrescribedSurfaceVelocity;
 		const float LateralSpeed = FVector::DotProduct(ContactVelocity, LateralDir);
-		FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
+		FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 		if (ChassisUp.IsNearlyZero())
 		{
 			ChassisUp = SurfaceNormal;
 		}
-		const FVector PhysCOM = GetPhysCOM();
+		const FVector PhysCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 		const FVector ContactArm = ContactPoint - PhysCOM;
 		const FVector ProjectedContactArm = ContactArm - FVector::DotProduct(ContactArm, ChassisUp) * ChassisUp;
 		const FVector ForceApplicationPoint = GetWheelFrictionApplicationPoint(*Wheel, ContactPoint, SurfaceNormal);
@@ -2842,7 +2842,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 					FrictionCurveInput, FrictionScale, CombinedFrictionScale, ForwardLossCurveScale, ForwardLossSlipScale, SteeringForwardLossSpeedScale, UnclampedAccelToApply, AccelToApply,
 					ForceForward, ForceRight, WheelYawTorque);
 			}
-			const FVector AccelBefore = GetPhysAcceleration();
+			const FVector AccelBefore = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
 			AddPhysForceAtPoint(Force, ForceApplicationPoint);
 			if (bDebugWheelFriction)
 			{
@@ -2851,7 +2851,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 				DebugLatAccelSum += AccelToApply;
 				DebugScrubAccelSum += ScrubAccel;
 				DebugTotalForce += Force;
-				DebugAppliedAccel += GetPhysAcceleration() - AccelBefore;
+				DebugAppliedAccel += Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() - AccelBefore;
 				DebugApplicationPointSum += ForceApplicationPoint;
 				++DebugApplicationPointCount;
 
@@ -2879,11 +2879,11 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 	{
 		const FVector SurfaceNormal = GetNormalFromWheels().GetSafeNormal();
 		FVector SurfaceRight = FVector::CrossProduct(
-			SurfaceNormal, GetPhysForwardVector()).GetSafeNormal();
+			SurfaceNormal, Speed::NativeKinematics::FComponentRead::Of(*this).Forward()).GetSafeNormal();
 		if (!SurfaceNormal.IsNearlyZero() && !SurfaceRight.IsNearlyZero())
 		{
 			const float SideSpeed = FVector::DotProduct(
-				GetPhysCOMVelocity(), SurfaceRight);
+				Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), SurfaceRight);
 			const float FullSlipOverride =
 				Speed::RoadSettings::ReadOriginalOrLegacy<130>([](){ return CVarIAmSpeedWheelFrameUnsteeredAligningYawFullSlipSpeed.GetValueOnAnyThread(); });
 			const float FullSlipSpeed = FMath::Max(1.0f, FullSlipOverride >= 0.0f
@@ -2904,7 +2904,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float TimeConstant = FMath::Max(delta, TimeConstantOverride >= 0.0f
 				? TimeConstantOverride : WheelFrameUnsteeredAligningYawTimeConstantWheeledDomainStorage());
 			const float CurrentYawRate = FVector::DotProduct(
-				GetPhysAngularVelocity(), SurfaceNormal);
+				Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), SurfaceNormal);
 			// Default mode scales the whole correction by slip authority.
 			// The diagnostic candidate preserves residual damping while the
 			// target remains slip-scaled; full authority agrees in both modes.
@@ -2932,31 +2932,31 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			LastTurnSummaryFrameWheeledDomainStorage() = INDEX_NONE;
 		}
 		const FVector UpVector = GetNormalFromWheels();
-		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
+		const float YawRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), UpVector);
 		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedAngularVelocity, UpVector);
 		const float Radius = FMath::Abs(YawRate) > KINDA_SMALL_NUMBER ? AbsForwardSpeed / FMath::Abs(YawRate) : 0.0f;
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), UpVector) * UpVector;
 		ForwardDir.Normalize();
 		const FVector RightDir = FVector::CrossProduct(UpVector, ForwardDir).GetSafeNormal();
 		const float ForwardAccel = FVector::DotProduct(DebugTotalForce, ForwardDir) / Mass;
 		const float SideAccel = FVector::DotProduct(DebugTotalForce, RightDir) / Mass;
 		const float AppliedForwardAccel = FVector::DotProduct(DebugAppliedAccel, ForwardDir);
 		const float AppliedSideAccel = FVector::DotProduct(DebugAppliedAccel, RightDir);
-		const float SideSpeed = FVector::DotProduct(GetPhysCOMVelocity(), RightDir);
+		const float SideSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), RightDir);
 		const FVector DebugAverageApplicationPoint = DebugApplicationPointCount > 0 ? DebugApplicationPointSum / static_cast<float>(DebugApplicationPointCount) : FVector::ZeroVector;
-		const FVector COMVelocity = GetPhysCOMVelocity();
+		const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 		const float GroundSpeed = (COMVelocity - FVector::DotProduct(COMVelocity, UpVector) * UpVector).Size();
 		const float DebugAvgFrontAbsLatSpeed = DebugFrontWheelCount > 0 ? DebugFrontAbsLatSpeedSum / DebugFrontWheelCount : 0.0f;
 		const float DebugAvgRearAbsLatSpeed = DebugRearWheelCount > 0 ? DebugRearAbsLatSpeedSum / DebugRearWheelCount : 0.0f;
-		const float BasisForwardRate = FVector::DotProduct(GetPhysCOMVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
-		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
+		const float BasisForwardRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), ForwardDir));
+		const float TotalForwardRateNow = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration(), ForwardDir) + BasisForwardRate;
 		const float TurnTime = (NumFrame() - TurnStartFrameWheeledDomainStorage()) / 300.f;
-		const float SmishTargetSpeed = GetSmishTurnTargetSpeed(TurnTime, GetPhysForwardSpeed());
+		const float SmishTargetSpeed = GetSmishTurnTargetSpeed(TurnTime, Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed());
 		const uint32 SummaryIntervalFrames = static_cast<uint32>(FMath::Max(1, Speed::RoadSettings::ReadOriginalOrLegacy<129>([](){ return CVarIAmSpeedWheelFrameTurnSummaryIntervalFrames.GetValueOnAnyThread(); })));
 		if (TurnStartFrameWheeledDomainStorage() != INDEX_NONE && (LastTurnSummaryFrameWheeledDomainStorage() == INDEX_NONE || NumFrame() - LastTurnSummaryFrameWheeledDomainStorage() >= SummaryIntervalFrames))
 		{
 			LastTurnSummaryFrameWheeledDomainStorage() = NumFrame();
-			const float SpeedError = GetPhysForwardSpeed() - SmishTargetSpeed;
+			const float SpeedError = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed() - SmishTargetSpeed;
 			const float RadiusRatio = TargetRadius > KINDA_SMALL_NUMBER ? Radius / TargetRadius : 0.0f;
 			const float SlipAngleDeg = FMath::RadiansToDegrees(FMath::Atan2(SideSpeed, ForwardSpeed));
 			const float DebugAverageFrictionInput = DebugFrictionInputSum / DebugGroundedWheels;
@@ -2964,7 +2964,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			const float DebugSteeringForwardLossSpeedScale = HandbrakeFrictionValue > KINDA_SMALL_NUMBER ? 1.0f : FMath::Max(0.0f, EvaluateLinearFloatCurve(SteeringForwardLossSpeedScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f));
 			SPEED_NATIVE_LOG(SpeedPhysicsLog, Warning,
 				TEXT("[%s(%s)][WheelTurnSummary] Frame=%d TurnTime=%.3f Speed=%.1f SmishTargetSpeed=%.1f SpeedError=%.1f Radius=%.1f TargetRadius=%.1f RadiusRatio=%.3f YawRate=%.3f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f WheelFrame=%d LegacySteering=%d AllowedYaw=%.3f SideSpeed=%.1f SlipAngleDeg=%.2fdeg ForwardLossCurveScale=%.3f ForwardLossSlipScale=%.3f SteeringForwardLossSpeedScale=%.3f ForwardLossMultiplier=%.3f EffectiveForwardLossScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrictionForwardAccel=%.1f FrictionSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f"),
-				*GetOwner()->GetName(), *GetRole(), NumFrame(), TurnTime, GetPhysForwardSpeed(), SmishTargetSpeed, SpeedError, Radius, TargetRadius, RadiusRatio,
+				*GetOwner()->GetName(), *GetRole(), NumFrame(), TurnTime, Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed(), SmishTargetSpeed, SpeedError, Radius, TargetRadius, RadiusRatio,
 				YawRate, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, bUseWheelFrameLateralFrictionWheeledDomainStorage() ? 1 : 0, bUseLegacySteeringVelocityStateWheeledDomainStorage() ? 1 : 0, AllowedYawRate, SideSpeed, SlipAngleDeg, FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f)), DebugForwardLossSlipScale, DebugSteeringForwardLossSpeedScale, FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); }) >= 0.0f ? Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); }) : WheelFrameLateralForwardLossScaleWheeledDomainStorage()), FMath::Max(0.0f, EvaluateLinearFloatCurve(LateralForwardLossScaleCurveWheeledDomainStorage(), AbsForwardSpeed, 1.0f)) * DebugForwardLossSlipScale * DebugSteeringForwardLossSpeedScale * FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); }) >= 0.0f ? Speed::RoadSettings::ReadOriginalOrLegacy<122>([](){ return CVarIAmSpeedWheelFrameLateralForwardLossScale.GetValueOnAnyThread(); }) : WheelFrameLateralForwardLossScaleWheeledDomainStorage()), DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels,
 				ForwardAccel, SideAccel, BasisForwardRate, TotalForwardRateNow);
 		}
@@ -2973,7 +2973,7 @@ void USpeedWheeledComponent::ApplyWheelFrameLateralFriction(const float& delta)
 			SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][WheelFrameFriction] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f MaxAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgFrictionScale=%.3f AvgLatAccel=%.1f AvgScrubAccel=%.1f FrontAbsLat=%.1f RearAbsLat=%.1f FrontYawTorque=%.1f RearYawTorque=%.1f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f"
 				"BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s AvgApplicationPoint=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f TurnTime=%.3f SmishTargetSpeed=%.1f SignedForwardSpeed=%.6f NormalRearScale=%.6f NormalRearReverseActive=%d"),
-			*GetOwner()->GetName(), *GetRole(), NumFrame(), GetPhysForwardSpeed(), GroundSpeed, SideSpeed, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugGroundedWheels,
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed(), GroundSpeed, SideSpeed, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugGroundedWheels,
 			DebugAbsLatSpeedSum / DebugGroundedWheels, DebugMaxAbsLatSpeed, DebugAbsLongSpeedSum / DebugGroundedWheels,
 			DebugFrictionInputSum / DebugGroundedWheels, DebugFrictionScaleSum / DebugGroundedWheels, DebugLatAccelSum / DebugGroundedWheels, DebugScrubAccelSum / DebugGroundedWheels, DebugAvgFrontAbsLatSpeed, DebugAvgRearAbsLatSpeed, DebugFrontYawTorque, DebugRearYawTorque,
 			ForwardAccel, SideAccel, AppliedForwardAccel, AppliedSideAccel, BasisForwardRate, TotalForwardRateNow, *DebugTotalForce.ToString(), *DebugAverageApplicationPoint.ToString(), DebugYawTorque, YawRate, Radius, TurnTime, SmishTargetSpeed, ForwardSpeed, DebugNormalRearAppliedScale, bUseSteeringRearReverseScale ? 1 : 0);
@@ -2989,17 +2989,17 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 	}
 
 	FVector UpVector = GetNormalFromWheels(); // surface normal
-	const FVector COMVelocity = GetPhysCOMVelocity();
+	const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 	FVector GroundVelocity = COMVelocity - (COMVelocity.Dot(UpVector)) * UpVector;
 	float GroundSpeed = GroundVelocity.Size();
 
 	// compute right vector
-	FVector PhysRightVector = GetPhysRightVector();
+	FVector PhysRightVector = Speed::NativeKinematics::FComponentRead::Of(*this).Right();
 	FVector RightVector = PhysRightVector - (PhysRightVector.Dot(UpVector)) * UpVector;
 	RightVector.Normalize();
 
 	// compute forward vector
-	FVector PhysForwardVector = GetPhysForwardVector();
+	FVector PhysForwardVector = Speed::NativeKinematics::FComponentRead::Of(*this).Forward();
 	FVector ForwardVector = PhysForwardVector - (PhysForwardVector.Dot(UpVector)) * UpVector;
 	ForwardVector.Normalize();
 
@@ -3134,7 +3134,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 					return;
 
                 if (TryApplyWheelSuspensionForce(W, W.GetSuspensionForce())) return;
-				const FVector SuspensionDir = GetPhysUpVector().GetSafeNormal();
+				const FVector SuspensionDir = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 				const FVector ContactNormal = W.GetHitContactNormal().GetSafeNormal();
 				const float Load = W.GetSuspensionForce();
 				const float Dot = FVector::DotProduct(SuspensionDir, ContactNormal);
@@ -3191,7 +3191,7 @@ void USpeedWheeledComponent::HandleSuspension(const float& delta)
 
 void USpeedWheeledComponent::HandleAngularDamping(const float& delta)
 {
-	const auto AngularVelocityToDampen = GetPhysAngularVelocity() - WheeledPhysicsStateStorage().AllowedAngularVelocity;
+	const auto AngularVelocityToDampen = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity() - WheeledPhysicsStateStorage().AllowedAngularVelocity;
 	if (!OneWheelOnGround())
 	{
 		DampenAirAngularVelocity(AngularVelocityToDampen, delta);
@@ -3236,9 +3236,9 @@ void USpeedWheeledComponent::DampenAngularVelocity(const float& DampingFactor, c
 void USpeedWheeledComponent::DampenAirAngularVelocity(const FVector& VelocityToDampen, const float& delta)
 {
 	// get axes
-	const FVector RollAxis = GetPhysForwardVector();
-	const FVector PitchAxis = GetPhysRightVector();
-	const FVector YawAxis = GetPhysUpVector();
+	const FVector RollAxis = Speed::NativeKinematics::FComponentRead::Of(*this).Forward();
+	const FVector PitchAxis = Speed::NativeKinematics::FComponentRead::Of(*this).Right();
+	const FVector YawAxis = Speed::NativeKinematics::FComponentRead::Of(*this).Up();
 	const float RollVelocity = FVector::DotProduct(VelocityToDampen, RollAxis);
 	const float PitchVelocity = FVector::DotProduct(VelocityToDampen, PitchAxis);
 	const float YawVelocity = FVector::DotProduct(VelocityToDampen, YawAxis);
@@ -3330,16 +3330,16 @@ void USpeedWheeledComponent::ApplyAccelKinematicsConstraint(const float& delta)
 void USpeedWheeledComponent::applyAccelerationConstraint(const float& delta)
 {
 	if (IsSpeedLimitPreservedByExactSupport(delta)) return;
-	const FVector COMVelocity = GetPhysCOMVelocity();
-	const FVector NewCOMVelocity = SSBox::AdvanceVelocity(COMVelocity, GetPhysAcceleration(), delta);
+	const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
+	const FVector NewCOMVelocity = SSBox::AdvanceVelocity(COMVelocity, Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration(), delta);
 	const FVector ClampedCOMVelocity = NewCOMVelocity.GetClampedToMaxSize(GetPhysMaxSpeed());
 	const FVector ActualAcceleration = (ClampedCOMVelocity - COMVelocity) / delta;
 	SetPhysAcceleration(ActualAcceleration);
 }
 void USpeedWheeledComponent::applyAngularAccelerationConstraint(const float& delta)
 {
-	const FVector AngularAccel = GetPhysAngularAcceleration();
-	const FVector AngularVelocity = GetPhysAngularVelocity();
+	const FVector AngularAccel = Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration();
+	const FVector AngularVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
 	FVector NewAngularVelocity = SSBox::AdvanceAngularVelocity(AngularVelocity, AngularAccel, delta);
 	NewAngularVelocity = NewAngularVelocity.GetClampedToMaxSize(GetPhysMaxAngularSpeed());
 	const FVector ActualAngularAccel = (NewAngularVelocity - AngularVelocity) / delta;
@@ -3840,7 +3840,7 @@ bool USpeedWheeledComponent::IsHandbrakingForWheelFriction() const
 
 bool USpeedWheeledComponent::IsHandbrakingForwardForWheelFriction() const
 {
-	return GetPhysForwardSpeed() >= 0.0f;
+	return Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed() >= 0.0f;
 }
 
 void USpeedWheeledComponent::UpdateWheelFrameHandbrakeValue(const float& Delta)
@@ -3898,7 +3898,7 @@ float USpeedWheeledComponent::ComputeWheelFrameSteerAngle(const float& AbsForwar
 		if (Speed::RoadSettings::ReadOriginalOrLegacy<117>([](){ return CVarIAmSpeedWheelFrameHandbrakeFullInputCOMSpeedModel.GetValueOnAnyThread(); }) == 1
 			&& FMath::Abs(Input) > 0.75f)
 		{
-			const float PlanarCOMSpeed = GetPhysCOMVelocity().Size2D();
+			const float PlanarCOMSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().Size2D();
 			const float AbsRawFraction = FMath::Abs(RawFraction);
 			const float AnchorFraction = 0.75f * SteeringInputCalibrationScale(0.75f);
 			const float FullRawFraction = SteeringInputCalibrationScale(1.0f);
@@ -3992,7 +3992,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 	if (!bUseWheelFrameLateralFrictionWheeledDomainStorage() || GroundedWheelCount == 0)
 	{
 		auto GroundNormal = GetNormalFromWheels();
-		auto AccelVector = GetPhysForwardVector() - GetPhysForwardVector().Dot(GroundNormal) * GroundNormal;
+		auto AccelVector = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - Speed::NativeKinematics::FComponentRead::Of(*this).Forward().Dot(GroundNormal) * GroundNormal;
 		if (AccelVector.Normalize())
 		{
 			AddPhysAcceleration(AccelVector * Accel);
@@ -4000,15 +4000,15 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		return;
 	}
 
-	const float ForwardSpeed = GetPhysForwardSpeed();
+	const float ForwardSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed();
 	const float AbsForwardSpeed = FMath::Abs(ForwardSpeed);
-	const float PlanarGroundSpeed = GetPhysCOMVelocity().Size2D();
+	const float PlanarGroundSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity().Size2D();
 	const float AbsSteeringInput = FMath::Abs(FMath::Clamp(GetPhysSteeringInput(), -1.0f, 1.0f));
 	const float TargetRadius = ComputeSteeringRadius(ForwardSpeed, AbsSteeringInput);
 	float Wheelbase = 0.0f;
 	{
 		const FVector SurfaceNormal = GetNormalFromWheels().GetSafeNormal();
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		if (ForwardDir.Normalize())
 		{
 			float MinForwardOffset = BIG_NUMBER;
@@ -4018,7 +4018,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 				if (!Wheel)
 					continue;
 
-				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - GetPhysCOM(), ForwardDir);
+				const float ForwardOffset = FVector::DotProduct(Wheel->SteeringPos() - Speed::NativeKinematics::FComponentRead::Of(*this).COM(), ForwardDir);
 				MinForwardOffset = FMath::Min(MinForwardOffset, ForwardOffset);
 				MaxForwardOffset = FMath::Max(MaxForwardOffset, ForwardOffset);
 			}
@@ -4061,7 +4061,7 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		const float FrictionStateScale = bIsAccelerating ? 1.0f :
 			FMath::Max(0.0f, EvaluateLinearFloatCurve(NonAcceleratingFrictionScaleCurveWheeledDomainStorage(), SurfaceNormal.Z, 1.0f));
 
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		if (!ForwardDir.Normalize())
 			continue;
 
@@ -4075,19 +4075,19 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 		const FVector LongitudinalDir = FVector::CrossProduct(LateralDir, SurfaceNormal).GetSafeNormal();
 		const FVector ContactPoint = Wheel->GetHitContactPoint();
 		const FVector HardPoint = Wheel->SteeringPos();
-		FVector WheelVelocity = GetPhysVelocityAtPoint(HardPoint);
+		FVector WheelVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(HardPoint);
         FVector PrescribedSurfaceVelocity;
         if(Wheel->TryGetPrescribedSupportVelocity(HardPoint,PrescribedSurfaceVelocity))WheelVelocity-=PrescribedSurfaceVelocity;
 		const float LateralSpeed = FVector::DotProduct(WheelVelocity, LateralDir);
 		const float LongitudinalSpeed = FVector::DotProduct(WheelVelocity, LongitudinalDir);
 		const float AbsLateralSpeed = FMath::Abs(LateralSpeed);
 		const float AbsLongitudinalSpeed = FMath::Abs(LongitudinalSpeed);
-		FVector ChassisUp = GetPhysUpVector().GetSafeNormal();
+		FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*this).Up().GetSafeNormal();
 		if (ChassisUp.IsNearlyZero())
 		{
 			ChassisUp = SurfaceNormal;
 		}
-		const FVector PhysCOM = GetPhysCOM();
+		const FVector PhysCOM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 		const FVector ContactArm = ContactPoint - PhysCOM;
 		const FVector ProjectedContactArm = ContactArm - FVector::DotProduct(ContactArm, ChassisUp) * ChassisUp;
 		const FVector ForceApplicationPoint = GetWheelFrictionApplicationPoint(*Wheel, ContactPoint, SurfaceNormal);
@@ -4110,14 +4110,14 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 			LongitudinalFrictionScale *= FMath::Lerp(1.0f, HandbrakeFactor, HandbrakeFrictionValue);
 		}
 		const FVector Force = LongitudinalDir * AccelPerWheel * LongitudinalFrictionScale * FrictionStateScale * Mass;
-		const FVector AccelBefore = GetPhysAcceleration();
+		const FVector AccelBefore = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
 		AddPhysForceAtPoint(Force, ForceApplicationPoint);
 		if (bDebugWheelFriction)
 		{
 			DebugDriveFrictionInputSum += FrictionCurveInput;
 			DebugDriveLongitudinalScaleSum += LongitudinalFrictionScale * FrictionStateScale;
 			DebugDriveTotalForce += Force;
-			DebugDriveAppliedAccel += GetPhysAcceleration() - AccelBefore;
+			DebugDriveAppliedAccel += Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() - AccelBefore;
 			DebugDriveYawTorque += FVector::DotProduct(FVector::CrossProduct(ProjectedContactArm, Force), SurfaceNormal);
 		}
 	}
@@ -4126,24 +4126,24 @@ void USpeedWheeledComponent::ApplyDriveAcceleration(float Accel)
 	if (bDebugWheelFriction && DebugDriveWheelCount > 0 && NumFrame() % DebugIntervalFrames == 0)
 	{
 		const FVector UpVector = GetNormalFromWheels();
-		const float YawRate = FVector::DotProduct(GetPhysAngularVelocity(), UpVector);
+		const float YawRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), UpVector);
 		const float AllowedYawRate = FVector::DotProduct(WheeledPhysicsStateStorage().AllowedAngularVelocity, UpVector);
 		const float Radius = FMath::Abs(YawRate) > KINDA_SMALL_NUMBER ? AbsForwardSpeed / FMath::Abs(YawRate) : 0.0f;
-		FVector ForwardDir = GetPhysForwardVector() - FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+		FVector ForwardDir = Speed::NativeKinematics::FComponentRead::Of(*this).Forward() - FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), UpVector) * UpVector;
 		ForwardDir.Normalize();
 		const FVector RightDir = FVector::CrossProduct(UpVector, ForwardDir).GetSafeNormal();
 		const float ForwardAccel = FVector::DotProduct(DebugDriveTotalForce, ForwardDir) / Mass;
 		const float SideAccel = FVector::DotProduct(DebugDriveTotalForce, RightDir) / Mass;
 		const float AppliedForwardAccel = FVector::DotProduct(DebugDriveAppliedAccel, ForwardDir);
 		const float AppliedSideAccel = FVector::DotProduct(DebugDriveAppliedAccel, RightDir);
-		const float SideSpeed = FVector::DotProduct(GetPhysCOMVelocity(), RightDir);
-		const FVector COMVelocity = GetPhysCOMVelocity();
+		const float SideSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), RightDir);
+		const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity();
 		const float GroundSpeed = (COMVelocity - FVector::DotProduct(COMVelocity, UpVector) * UpVector).Size();
-		const float BasisForwardRate = FVector::DotProduct(GetPhysCOMVelocity(), FVector::CrossProduct(GetPhysAngularVelocity(), ForwardDir));
-		const float TotalForwardRateNow = FVector::DotProduct(GetPhysAcceleration(), ForwardDir) + BasisForwardRate;
+		const float BasisForwardRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity(), FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), ForwardDir));
+		const float TotalForwardRateNow = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration(), ForwardDir) + BasisForwardRate;
 		SPEED_NATIVE_LOG(SpeedPhysicsLog, Log,
 			TEXT("[%s(%s)][WheelDriveForce] Frame=%d Speed=%.1f GroundSpeed=%.1f SideSpeed=%.1f Accel=%.1f AccelPerWheel=%.1f Steering=%.2f SteerAngle=%.4f Handbrake=%.3f RearRelease=%.3f TargetRadius=%.1f Wheelbase=%.1f Grounded=%d AvgAbsLat=%.2f AvgAbsLong=%.2f AvgFrictionInput=%.3f AvgLongitudinalScale=%.3f ForwardAccel=%.1f SideAccel=%.1f AppliedForwardAccel=%.1f AppliedSideAccel=%.1f BasisForwardRate=%.1f TotalForwardRateNow=%.1f TotalForce=%s YawTorque=%.1f YawRate=%.3f Radius=%.1f"),
-			*GetOwner()->GetName(), *GetRole(), NumFrame(), GetPhysForwardSpeed(), GroundSpeed, SideSpeed, Accel, AccelPerWheel, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugDriveWheelCount,
+			*GetOwner()->GetName(), *GetRole(), NumFrame(), Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed(), GroundSpeed, SideSpeed, Accel, AccelPerWheel, GetPhysSteeringInput(), SteerAngle, HandbrakeFrictionValue, DebugSteeringRearReleaseScale, TargetRadius, Wheelbase, DebugDriveWheelCount,
 			DebugDriveAbsLatSpeedSum / DebugDriveWheelCount, DebugDriveAbsLongSpeedSum / DebugDriveWheelCount,
 			DebugDriveFrictionInputSum / DebugDriveWheelCount, DebugDriveLongitudinalScaleSum / DebugDriveWheelCount,
 			ForwardAccel, SideAccel, AppliedForwardAccel, AppliedSideAccel, BasisForwardRate, TotalForwardRateNow, *DebugDriveTotalForce.ToString(), DebugDriveYawTorque, YawRate, Radius);
@@ -4176,7 +4176,7 @@ float USpeedWheeledComponent::ComputeAccelFromSignedThrottle(float SignedThrottl
 	const uint8 nbWheelsOnGround = NumWheelsOnGround();
 	const float groundRatio = static_cast<float>(nbWheelsOnGround) / 4.0f;
 	const float airRatio = 1.0f - groundRatio;
-	const float forwardSpeed = GetPhysForwardSpeed();
+	const float forwardSpeed = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed();
 	const float absForwardSpeed = FMath::Abs(forwardSpeed);
 	const float absThrottle = FMath::Abs(SignedThrottle);
 
@@ -4278,7 +4278,7 @@ void USpeedWheeledComponent::HandleWheelTimers()
 void USpeedWheeledComponent::HandleSteering(const float& delta)
 {
 	const float steeringInput = GetPhysSteeringInput(); // [-1,1]
-	const float forwardVelocity = GetPhysForwardSpeed();
+	const float forwardVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed();
 
 	// Wheel-frame friction owns steering in the RocketSim-like model. Do not let the legacy velocity controller inject a second yaw response.
 	if (bUseWheelFrameLateralFrictionWheeledDomainStorage() && !bUseLegacySteeringVelocityStateWheeledDomainStorage())
@@ -4323,8 +4323,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	// Build ground tangent basis (fallback)
 	// -------------------------------------
-	FVector FwdGround = GetPhysForwardVector()
-		- FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+	FVector FwdGround = Speed::NativeKinematics::FComponentRead::Of(*this).Forward()
+		- FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), UpVector) * UpVector;
 	FwdGround.Normalize();
 
 	FVector RightGround = FVector::CrossProduct(UpVector, FwdGround);
@@ -4371,8 +4371,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	// Save current accelerations
 	// -------------------------------------
-	FVector oldAccel = GetPhysAcceleration();
-	FVector oldAngAccel = GetPhysAngularAcceleration();
+	FVector oldAccel = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
+	FVector oldAngAccel = Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration();
 
 	// -------------------------------------
 	// Wheel-by-wheel steering force
@@ -4389,8 +4389,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 
 		// Compute forward projected onto the surface plane (required for walls)
 		FVector ForwardProjected =
-			GetPhysForwardVector() -
-			FVector::DotProduct(GetPhysForwardVector(), SurfaceNormal) * SurfaceNormal;
+			Speed::NativeKinematics::FComponentRead::Of(*this).Forward() -
+			FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), SurfaceNormal) * SurfaceNormal;
 		ForwardProjected.Normalize();
 
 		// True lateral axis tangent to the surface (ground or wall)
@@ -4443,8 +4443,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 #if !(UE_BUILD_SHIPPING)
 		if (Speed::RoadSettings::ReadOriginalOrLegacy<44>([](){ return CVarIAmSpeedDebugSteering.GetValueOnAnyThread(); }) != 0)
 		{
-			FVector up = GetPhysUpVector();
-			float yawRate = FVector::DotProduct(GetPhysAngularVelocity(), up);
+			FVector up = Speed::NativeKinematics::FComponentRead::Of(*this).Up();
+			float yawRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), up);
 			if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
 			{
 				float radius = speed / FMath::Abs(yawRate);
@@ -4460,7 +4460,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// -------------------------------------
 	// Update AllowedSideVelocity / Angular
 	// -------------------------------------
-	FVector newAccel = GetPhysAcceleration();
+	FVector newAccel = Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration();
 	FVector deltaAccel = newAccel - oldAccel;
 	WheeledPhysicsStateStorage().AllowedSideVelocity += deltaAccel * delta * steerGain;
 
@@ -4476,8 +4476,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 	// On walls, rebuild a correct tangent axis
 	if (incline > 0.05f)
 	{
-		FVector FwdProj = GetPhysForwardVector()
-			- FVector::DotProduct(GetPhysForwardVector(), UpVector) * UpVector;
+		FVector FwdProj = Speed::NativeKinematics::FComponentRead::Of(*this).Forward()
+			- FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).Forward(), UpVector) * UpVector;
 		FwdProj.Normalize();
 		RightSurface = FVector::CrossProduct(UpVector, FwdProj).GetSafeNormal();
 	}
@@ -4501,7 +4501,7 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 
 	// Override yaw angular velocity along Up
 	{
-		FVector currentAngVel = GetPhysAngularVelocity();
+		FVector currentAngVel = Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity();
 		FVector correctedAngVel = WheeledPhysicsStateStorage().AllowedAngularVelocity - FVector::DotProduct(currentAngVel, UpVector) * UpVector;
 		const float YawCorrectionTimeConstant = GetSteeringYawCorrectionTimeConstant();
 		if (YawCorrectionTimeConstant > KINDA_SMALL_NUMBER)
@@ -4517,8 +4517,8 @@ void USpeedWheeledComponent::HandleSteering(const float& delta)
 #if !(UE_BUILD_SHIPPING)
 	if (Speed::RoadSettings::ReadOriginalOrLegacy<44>([](){ return CVarIAmSpeedDebugSteering.GetValueOnAnyThread(); }) != 0)
 	{
-		FVector up = GetPhysUpVector();
-		float yawRate = FVector::DotProduct(GetPhysAngularVelocity(), up); // rad/s
+		FVector up = Speed::NativeKinematics::FComponentRead::Of(*this).Up();
+		float yawRate = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), up); // rad/s
 		if (FMath::Abs(yawRate) > KINDA_SMALL_NUMBER)
 		{
 			float radius = speed / FMath::Abs(yawRate);
@@ -4549,13 +4549,13 @@ float USpeedWheeledComponent::GetWheelContactNormalVelocityTimeConstant() const
 bool USpeedWheeledComponent::NoSteeringAllowed() const
 {
 	const float MinForwardSpeed = FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<149>([](){ return CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread(); }));
-	return FMath::Abs(GetPhysForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
+	return FMath::Abs(Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
 }
 
 bool USpeedWheeledComponent::MustReduceAllowedVelocityForSteering() const
 {
 	const float MinForwardSpeed = FMath::Max(0.0f, Speed::RoadSettings::ReadOriginalOrLegacy<149>([](){ return CVarSkyLeagueSteeringMinForwardSpeed.GetValueOnAnyThread(); }));
-	return FMath::Abs(GetPhysForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
+	return FMath::Abs(Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed()) < MinForwardSpeed || FMath::IsNearlyZero(GetPhysSteeringInput());
 }
 
 float USpeedWheeledComponent::GetSteeringYawCorrectionTimeConstant() const
@@ -5339,7 +5339,7 @@ bool USpeedWheeledComponent::TryProjectCanonicalWheelSupportPose()
 		&& !CanPreserveCanonicalSupportNormalRotation())
 	{
 		const FVector SupportNormal = GetNormalFromWheels().GetSafeNormal();
-		const double NormalSpin = FVector::DotProduct(GetPhysAngularVelocity(), SupportNormal);
+		const double NormalSpin = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), SupportNormal);
 		if (!SupportNormal.IsNearlyZero() && NormalSpin != 0.0)
 		{
 			// The support point-fix must not repeatedly erase the small yaw that
@@ -5363,7 +5363,7 @@ float USpeedWheeledComponent::ComputeFullHandbrakeGroundEngineAccel() const
 	// The caller admits only four grounded wheels and raw retained-throttle HB.
 	// Keep the accepted virtual ComputeAccel paths byte-for-byte unchanged.
 	if (NumWheelsOnGround() != 4 || !UsesRetainedHandbrakeDriveModel()) return 0.0f;
-	const float AbsSpeed = FMath::Abs(GetPhysForwardSpeed());
+	const float AbsSpeed = FMath::Abs(Speed::NativeKinematics::FComponentRead::Of(*this).ForwardSpeed());
 	const float DriveScale = EvaluateLinearFloatCurve(DriveSpeedAccelScaleCurveWheeledDomainStorage(),
 		AbsSpeed, FMath::Clamp(1.0f - AbsSpeed / FMath::Max(MaxThrottleSpeedWheeledDomainStorage(), 1.0f), 0.0f, 1.0f));
 	return ThrottleAccelWheeledDomainStorage() * DriveScale;

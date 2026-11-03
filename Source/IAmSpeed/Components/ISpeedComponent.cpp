@@ -1,4 +1,7 @@
 #include "ISpeedComponent.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/OriginKinematicView.h"
+using Speed::NativeKinematics::FOriginKinematicView;
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/World/Analytic/AnalyticWorldData.h"
 #include "Misc/ScopeExit.h"
@@ -15,20 +18,7 @@ namespace
 
 	// A call-local view shares the origin formulas without reconstructing fields
 	// that a single-field getter will discard. No state is cached across calls.
-	struct FOriginKinematicView
-	{
-		const SKinematic& COM;
-		const FVector OriginToCOM;
-		FOriginKinematicView(const SKinematic& State, const FVector& LocalCOM)
-			: COM(State), OriginToCOM(State.Rotation.RotateVector(LocalCOM)) {}
-		FVector Location() const { return COM.Location - OriginToCOM; }
-		FVector Velocity() const { return COM.Velocity - FVector::CrossProduct(COM.AngularVelocity, OriginToCOM); }
-		FVector Acceleration() const
-		{
-			return COM.Acceleration - FVector::CrossProduct(COM.AngularAcceleration, OriginToCOM)
-				- FVector::CrossProduct(COM.AngularVelocity, FVector::CrossProduct(COM.AngularVelocity, OriginToCOM));
-		}
-	};
+
 }
 
 void ISpeedComponent::RestoreSimulationSnapshot(
@@ -269,14 +259,14 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 	FVector RestingReaction = GetStaticRestingReaction(&StopAfterSeconds);
 	FVector AngularReaction = FVector::ZeroVector;
 	if (RestingReaction.IsZero()) GetStaticContactAcceleration(RestingReaction, AngularReaction);
-	if (!RestingReaction.IsZero()) SetPhysAcceleration(GetPhysAcceleration() + RestingReaction);
-	if (!AngularReaction.IsZero()) SetPhysAngularAcceleration(GetPhysAngularAcceleration() + AngularReaction);
+	if (!RestingReaction.IsZero()) SetPhysAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() + RestingReaction);
+	if (!AngularReaction.IsZero()) SetPhysAngularAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration() + AngularReaction);
 	ON_SCOPE_EXIT
 	{
 		if (!RestingReaction.IsZero() || !AngularReaction.IsZero())
 		{
-			SetPhysAcceleration(GetPhysAcceleration() - RestingReaction);
-			SetPhysAngularAcceleration(GetPhysAngularAcceleration() - AngularReaction);
+			SetPhysAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() - RestingReaction);
+			SetPhysAngularAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration() - AngularReaction);
 			UpdateSubBodiesKinematics();
 		}
 	};
@@ -344,8 +334,8 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 		IntegrateKinematicsPrv(TransportDelta);
 
 		// Enforce limits directly on the canonical COM state.
-		SetPhysCOMVelocity(GetPhysCOMVelocity());
-		SetPhysAngularVelocity(GetPhysAngularVelocity());
+		SetPhysCOMVelocity(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity());
+		SetPhysAngularVelocity(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity());
 
 		UpdateSubBodiesKinematics();
 		ProjectEstablishedStaticContacts(TransportDelta);
@@ -377,7 +367,7 @@ bool ISpeedComponent::ProjectEstablishedStaticContacts(const float& Delta)
 void ISpeedComponent::UpdateSubBodiesKinematics()
 {
     // Every child observes the same parent state; derive origin from COM once.
-    const SKinematic OriginState = GetOriginKinematicState();
+    const SKinematic OriginState = Speed::NativeKinematics::FComponentRead::Of(*this).Origin();
     for (USSubBody* SubBody : GetSubBodies())
     {
         SubBody->UpdateKinematicsFromOwner(OriginState);
@@ -391,7 +381,7 @@ SKinematic ISpeedComponent::GetOriginKinematicState() const
 
 SKinematic ISpeedComponent::GetOriginKinematicStateForFrame(const unsigned int& NumFrameToRead) const
 {
-	const SKinematic& COMState = ReadPhysicsKinematicStateForFrame(NumFrameToRead);
+	const SKinematic& COMState = GetKinematicStateForFrame(NumFrameToRead);
 	SKinematic OriginState = COMState;
 	const FOriginKinematicView Origin(COMState, GetPhysCenterOfMassLocal());
 	OriginState.Location = Origin.Location();
@@ -440,16 +430,16 @@ SComponentTOI ISpeedComponent::SweepTOISubBodies(
 	if (RestingReaction.IsZero()) GetStaticContactAcceleration(RestingReaction, AngularReaction);
 	if (!RestingReaction.IsZero() || !AngularReaction.IsZero())
 	{
-		SetPhysAcceleration(GetPhysAcceleration() + RestingReaction);
-		SetPhysAngularAcceleration(GetPhysAngularAcceleration() + AngularReaction);
+		SetPhysAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() + RestingReaction);
+		SetPhysAngularAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration() + AngularReaction);
 		UpdateSubBodiesKinematics();
 	}
 	ON_SCOPE_EXIT
 	{
 		if (!RestingReaction.IsZero() || !AngularReaction.IsZero())
 		{
-			SetPhysAcceleration(GetPhysAcceleration() - RestingReaction);
-			SetPhysAngularAcceleration(GetPhysAngularAcceleration() - AngularReaction);
+			SetPhysAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() - RestingReaction);
+			SetPhysAngularAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration() - AngularReaction);
 			UpdateSubBodiesKinematics();
 		}
 	};
@@ -606,7 +596,7 @@ void ISpeedComponent::PostPhysicsUpdate(const float& delta)
 FVector ISpeedComponent::GetPhysLocation() const
 {
 	// Keep the historical-frame selection used by the complete origin getter.
-	const SKinematic& COMState = ReadPhysicsKinematicStateForFrame(NumFrame());
+	const SKinematic& COMState = GetKinematicStateForFrame(NumFrame());
 	return FOriginKinematicView(COMState, GetPhysCenterOfMassLocal()).Location();
 }
 
@@ -619,12 +609,12 @@ void ISpeedComponent::SetPhysCOMLocation(const FVector& NewCOMLocation)
 
 void ISpeedComponent::SetPhysLocation(const FVector& NewLocation)
 {
-	SetPhysCOMLocation(NewLocation + GetPhysRotation().RotateVector(GetPhysCenterOfMassLocal()));
+	SetPhysCOMLocation(NewLocation + Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().RotateVector(Speed::NativeKinematics::FComponentRead::Of(*this).LocalCOM()));
 }
 
 const FQuat& ISpeedComponent::GetPhysRotation() const
 {
-    return ReadPhysicsKinematicState().Rotation;
+    return GetKinematicState().Rotation;
 }
 
 void ISpeedComponent::SetPhysRotation(const FQuat& NewRotation)
@@ -643,7 +633,7 @@ void ISpeedComponent::SetPhysRotationPreserveCOM(const FQuat& NewRotation)
 
 FVector ISpeedComponent::GetPhysVelocity() const
 {
-	const SKinematic& COMState = ReadPhysicsKinematicStateForFrame(NumFrame());
+	const SKinematic& COMState = GetKinematicStateForFrame(NumFrame());
 	return FOriginKinematicView(COMState, GetPhysCenterOfMassLocal()).Velocity();
 }
 
@@ -654,8 +644,8 @@ void ISpeedComponent::SetPhysVelocity(const FVector& NewVelocity)
 		return;
 	}
 
-	const FVector OriginToCOM = GetPhysRotation().RotateVector(GetPhysCenterOfMassLocal());
-	SetPhysCOMVelocity(NewVelocity + FVector::CrossProduct(GetPhysAngularVelocity(), OriginToCOM));
+	const FVector OriginToCOM = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation().RotateVector(Speed::NativeKinematics::FComponentRead::Of(*this).LocalCOM());
+	SetPhysCOMVelocity(NewVelocity + FVector::CrossProduct(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity(), OriginToCOM));
 }
 
 void ISpeedComponent::SetPhysCOMVelocity(const FVector& NewCOMVelocity)
@@ -678,12 +668,12 @@ FVector ISpeedComponent::GetPhysVelocityAtPoint(const FVector& Point) const
 
 const FVector& ISpeedComponent::GetPhysCOMVelocity() const
 {
-	return ReadPhysicsKinematicState().Velocity;
+	return GetKinematicState().Velocity;
 }
 
 const FVector& ISpeedComponent::GetPhysAngularVelocity() const
 {
-	return ReadPhysicsKinematicState().AngularVelocity;
+	return GetKinematicState().AngularVelocity;
 }
 
 void ISpeedComponent::SetPhysAngularVelocity(const FVector& NewAngularVelocity)
@@ -698,20 +688,20 @@ void ISpeedComponent::SetPhysAngularVelocity(const FVector& NewAngularVelocity)
 void ISpeedComponent::SetPhysVelocityAtPoint(const FVector& NewVelocity, const FVector& Point)
 {
     // v + w x r
-    const FVector R = Point - GetPhysCOM();
-    const FVector NewAngularVelocity = FVector::CrossProduct(R, NewVelocity - GetPhysCOMVelocity()).GetSafeNormal() * GetPhysAngularVelocity().Size();
+    const FVector R = Point - Speed::NativeKinematics::FComponentRead::Of(*this).COM();
+    const FVector NewAngularVelocity = FVector::CrossProduct(R, NewVelocity - Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity()).GetSafeNormal() * Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity().Size();
     SetPhysAngularVelocity(NewAngularVelocity);
     SetPhysCOMVelocity(NewVelocity - FVector::CrossProduct(NewAngularVelocity, R));
 }
 
 const FVector& ISpeedComponent::GetPhysAcceleration() const
 {
-    return ReadPhysicsKinematicState().Acceleration;
+    return GetKinematicState().Acceleration;
 }
 
 const FVector& ISpeedComponent::GetPhysAngularAcceleration() const
 {
-	return ReadPhysicsKinematicState().AngularAcceleration;
+	return GetKinematicState().AngularAcceleration;
 }
 
 void ISpeedComponent::SetPhysAcceleration(const FVector& NewAcceleration)
@@ -749,7 +739,7 @@ void ISpeedComponent::AddPhysVelocity(const FVector& DeltaVelocity)
 {
 	FVector ProjectedDeltaVelocity = DeltaVelocity;
 	ProjectLinearDeltaAgainstConstraints(ProjectedDeltaVelocity);
-	SetPhysCOMVelocity(GetPhysCOMVelocity() + ProjectedDeltaVelocity);
+	SetPhysCOMVelocity(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity() + ProjectedDeltaVelocity);
 }
 
 FVector ISpeedComponent::AddPhysLocation(const FVector& DeltaLocation)
@@ -758,7 +748,7 @@ FVector ISpeedComponent::AddPhysLocation(const FVector& DeltaLocation)
 	ProjectLinearDeltaAgainstConstraints(ProjectedDeltaLocation);
 	if (!ProjectedDeltaLocation.IsNearlyZero())
 	{
-		SetPhysCOMLocation(GetPhysCOM() + ProjectedDeltaLocation);
+		SetPhysCOMLocation(Speed::NativeKinematics::FComponentRead::Of(*this).COM() + ProjectedDeltaLocation);
 	}
 	return ProjectedDeltaLocation;
 }
@@ -794,34 +784,34 @@ FQuat ISpeedComponent::AddPhysRotation(const FQuat& DeltaRotation)
 	}
 
 	const FQuat AppliedDeltaRotation(DeltaAngular / ProjectedAngle, ProjectedAngle);
-	SetPhysRotation((GetPhysRotation() * AppliedDeltaRotation).GetNormalized());
+	SetPhysRotation((Speed::NativeKinematics::FComponentRead::Of(*this).Rotation() * AppliedDeltaRotation).GetNormalized());
 	return AppliedDeltaRotation;
 }
 void ISpeedComponent::AddPhysAngularVelocity(const FVector& DeltaAngularVelocity)
 {
 	FVector ProjectedDeltaAngularVelocity = DeltaAngularVelocity;
 	ProjectAngularDeltaAgainstConstraints(ProjectedDeltaAngularVelocity);
-	SetPhysAngularVelocity(GetPhysAngularVelocity() + ProjectedDeltaAngularVelocity);
+	SetPhysAngularVelocity(Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity() + ProjectedDeltaAngularVelocity);
 }
 
 void ISpeedComponent::AddPhysAcceleration(const FVector& DeltaAcceleration)
 {
 	FVector ProjectedDeltaAcceleration = DeltaAcceleration;
 	ProjectLinearDeltaAgainstConstraints(ProjectedDeltaAcceleration);
-    SetPhysAcceleration(GetPhysAcceleration() + ProjectedDeltaAcceleration);
+    SetPhysAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() + ProjectedDeltaAcceleration);
 }
 
 void ISpeedComponent::AddPhysAngularAcceleration(const FVector& DeltaAngularAcceleration)
 {
 	FVector ProjectedDeltaAngularAcceleration = DeltaAngularAcceleration;
 	ProjectAngularDeltaAgainstConstraints(ProjectedDeltaAngularAcceleration);
-    SetPhysAngularAcceleration(GetPhysAngularAcceleration() + ProjectedDeltaAngularAcceleration);
+    SetPhysAngularAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration() + ProjectedDeltaAngularAcceleration);
 }
 
 void ISpeedComponent::AddPhysAngularAccelerationLocal(const FVector& LocalAngularAccel)
 {
     // alpha_world = R * alpha_local
-    const FQuat Rot = GetPhysRotation();
+    const FQuat Rot = Speed::NativeKinematics::FComponentRead::Of(*this).Rotation();
     const FVector DeltaAngularAccelWorld = Rot.RotateVector(LocalAngularAccel);
 	AddPhysAngularAcceleration(DeltaAngularAccelWorld);
 }
@@ -832,14 +822,14 @@ void ISpeedComponent::AddPhysImpulseAtPoint(const FVector& Impulse, const FVecto
     float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f; // avoid divide by zero
     FVector DeltaV = Impulse / PhysMass;
     // delta w = I^-1 * (r x impulse)
-	const FVector COM = GetPhysCOM();
+	const FVector COM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
     const FVector R = Point - COM;
 	const FMatrix WorldInvInertiaTensor = SubBody? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
     FVector DeltaW = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Impulse));
 
 	ProjectPointDeltaAgainstConstraints(DeltaV, DeltaW);
-	const FVector NewCOMVelocity = GetPhysCOMVelocity() + DeltaV;
-	SetPhysAngularVelocityRaw((GetPhysAngularVelocity() + DeltaW).GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
+	const FVector NewCOMVelocity = Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity() + DeltaV;
+	SetPhysAngularVelocityRaw((Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity() + DeltaW).GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
 	SetPhysCOMVelocity(NewCOMVelocity);
 }
 
@@ -853,7 +843,7 @@ void ISpeedComponent::AddPhysImpulseBatchAtPoints(
 	}
 
 	const float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f;
-	const FVector COM = GetPhysCOM();
+	const FVector COM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 	const FMatrix WorldInvInertiaTensor = SubBody
 		? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
 	FVector DeltaV = FVector::ZeroVector;
@@ -868,9 +858,9 @@ void ISpeedComponent::AddPhysImpulseBatchAtPoints(
 	// The complete point-impulse set is one physical transaction. Projecting
 	// each wheel separately makes the result depend on wheel iteration order.
 	ProjectPointDeltaAgainstConstraints(DeltaV, DeltaW);
-	SetPhysAngularVelocityRaw((GetPhysAngularVelocity() + DeltaW)
+	SetPhysAngularVelocityRaw((Speed::NativeKinematics::FComponentRead::Of(*this).AngularVelocity() + DeltaW)
 		.GetClampedToMaxSize(GetPhysMaxAngularSpeed()));
-	SetPhysCOMVelocity(GetPhysCOMVelocity() + DeltaV);
+	SetPhysCOMVelocity(Speed::NativeKinematics::FComponentRead::Of(*this).COMVelocity() + DeltaV);
 }
 
 void ISpeedComponent::AddPhysForceAtPoint(const FVector& Force, const FVector& WorldPoint, const USolidSubBody* SubBody)
@@ -879,14 +869,14 @@ void ISpeedComponent::AddPhysForceAtPoint(const FVector& Force, const FVector& W
     float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f; // avoid divide by zero
     FVector DeltaA = Force / PhysMass;
     // alpha = I^-1 * (r x F)
-	const FVector COM = GetPhysCOM();
+	const FVector COM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
     const FVector R = WorldPoint - COM;
 	const FMatrix WorldInvInertiaTensor = SubBody? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
     FVector DeltaAlpha = WorldInvInertiaTensor.TransformVector(FVector::CrossProduct(R, Force));
 
 	ProjectPointDeltaAgainstConstraints(DeltaA, DeltaAlpha);
-    SetPhysAcceleration(GetPhysAcceleration() + DeltaA);
-	SetPhysAngularAcceleration(GetPhysAngularAcceleration() + DeltaAlpha);
+    SetPhysAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() + DeltaA);
+	SetPhysAngularAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration() + DeltaAlpha);
 }
 
 void ISpeedComponent::AddPhysForceBatchAtPoints(
@@ -899,7 +889,7 @@ void ISpeedComponent::AddPhysForceBatchAtPoints(
 	}
 
 	const float PhysMass = GetPhysMass() > 0.f ? GetPhysMass() : 1.f;
-	const FVector COM = GetPhysCOM();
+	const FVector COM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 	const FMatrix WorldInvInertiaTensor = SubBody
 		? SubBody->ComputeWorldInvInertiaTensor() : ComputeWorldInvInertiaTensor();
 	FVector DeltaA = FVector::ZeroVector;
@@ -912,8 +902,8 @@ void ISpeedComponent::AddPhysForceBatchAtPoints(
 	}
 
 	ProjectPointDeltaAgainstConstraints(DeltaA, DeltaAlpha);
-	SetPhysAcceleration(GetPhysAcceleration() + DeltaA);
-	SetPhysAngularAcceleration(GetPhysAngularAcceleration() + DeltaAlpha);
+	SetPhysAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).Acceleration() + DeltaA);
+	SetPhysAngularAcceleration(Speed::NativeKinematics::FComponentRead::Of(*this).AngularAcceleration() + DeltaAlpha);
 }
 
 void ISpeedComponent::SetPhysCOMVelocityRaw(const FVector& NewVelocity)
@@ -997,13 +987,13 @@ bool ISpeedComponent::IsPhysicalConstraintStillRelevant(const FPhysicalContactCo
 		return false;
 	}
 
-	const float SignedDist = FVector::DotProduct(GetPhysCOM() - Constraint.ContactPoint, Normal);
+	const float SignedDist = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).COM() - Constraint.ContactPoint, Normal);
 	if (SignedDist > ConstraintPersistSignedDistCm)
 	{
 		return false;
 	}
 
-	const float PointSpeedAlongNormal = FVector::DotProduct(GetPhysVelocityAtPoint(Constraint.ContactPoint), Normal);
+	const float PointSpeedAlongNormal = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*this).VelocityAtPoint(Constraint.ContactPoint), Normal);
 	return PointSpeedAlongNormal <= ConstraintPersistSeparatingSpeed;
 }
 
@@ -1047,7 +1037,7 @@ void ISpeedComponent::ProjectAngularDeltaAgainstConstraints(FVector& DeltaAngula
 		return;
 	}
 
-	const FVector COM = GetPhysCOM();
+	const FVector COM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 	for (int32 PassIdx = 0; PassIdx < ConstraintProjectionPasses; ++PassIdx)
 	{
 		bool bChanged = false;
@@ -1088,7 +1078,7 @@ void ISpeedComponent::ProjectPointDeltaAgainstConstraints(FVector& DeltaLinear, 
 		return;
 	}
 
-	const FVector COM = GetPhysCOM();
+	const FVector COM = Speed::NativeKinematics::FComponentRead::Of(*this).COM();
 
 	for (int32 PassIdx = 0; PassIdx < ConstraintProjectionPasses; ++PassIdx)
 	{

@@ -1,4 +1,5 @@
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "RayWheelSubBody.h"
 #include "CylinderSubBody.h"
@@ -44,7 +45,7 @@ bool USWheelSubBody::TryGetPrescribedSupportVelocity(const FVector& Point,FVecto
 bool USWheelSubBody::SweepSuspensionOnCylinders(SHitResult& Out,const float& Delta)
 {
     if(!ParentComponent||ExternalCylinderSubBodies.IsEmpty()||Delta<=0.f)return false;
-    const FTransform Chassis(ParentComponent->GetPhysRotation(),ParentComponent->GetPhysLocation());
+    const FTransform Chassis(Speed::NativeKinematics::FComponentRead::Of(*ParentComponent).Rotation(),Speed::NativeKinematics::FComponentRead::Of(*ParentComponent).Location());
     const FVector Up=Chassis.GetUnitAxis(EAxis::Z),Start=Chassis.TransformPosition(GetLocalOffset())+SuspensionMaxRaise()*Up;
     const FVector End=WorldPos()+(PredictNextDisplacement(Delta)-SpringDisplacement()-CollisionMargin())*Up;
     if(!Speed::NativeKinematics::FCylinderSuspensionQuery::Hit(*this,ExternalCylinderSubBodies,Start,End,Radius(),Delta,Out))return false;

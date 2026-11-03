@@ -264,11 +264,13 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     const auto CheckPublicComponentViews=[&](const P::FPrivateRoadPublication& Publication)
     {
         for(const auto& Actor:Publication.Actors)
-            if(!TestTrue(TEXT("six public COM and twenty-five actual body/sweeper views under original routing point only to legacy"),
+            if(!TestTrue(TEXT("six COM, twenty-five body/sweeper and twenty-four actual GetPhys submember/alias references point only to legacy"),
                 Actor.PublicComponentKinematicViews==6&&Actor.PublicComponentKinematicFacadeViews==6
                 &&Actor.PublicComponentKinematicOriginalViews==0
                 &&Actor.PublicBodyKinematicViews==25&&Actor.PublicBodyKinematicFacadeViews==25
-                &&Actor.PublicBodyKinematicOriginalViews==0))return false;
+                &&Actor.PublicBodyKinematicOriginalViews==0
+                &&Actor.PublicPhysReferenceViews==24&&Actor.PublicPhysReferenceFacadeViews==24
+                &&Actor.PublicPhysReferenceOriginalViews==0))return false;
         return !Publication.Actors.empty();
     };
     if(!CheckPublicComponentViews(*OriginalZero)||!CheckPublicComponentViews(*ControlZero))return false;

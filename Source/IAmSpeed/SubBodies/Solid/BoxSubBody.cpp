@@ -231,7 +231,7 @@ namespace
             return;
         }
 
-        const FVector V = GutterParentComponent->GetPhysCOMVelocity();
+        const FVector V = Speed::NativeKinematics::FComponentRead::Of(*GutterParentComponent).COMVelocity();
         const FVector VT = V - FVector::DotProduct(V, N) * N;
         const float TangentSpeed = VT.Size();
         const float MinSpeed = FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<65>([](){ return CVarIAmSpeedGutterSlideMinSpeedCmS.GetValueOnAnyThread(); }));
@@ -501,7 +501,7 @@ FVector UBoxSubBody::GetStaticRestingReaction(const Speed::IStaticCollisionWorld
 {
     if (!ParentComponentBodyDomainStorage() || !HasToApplyRestForce()) return FVector::ZeroVector;
     Speed::FBoxRestingSupport Support;
-    if (!EvaluateStaticBoxSupport(World, ParentComponentBodyDomainStorage()->GetPhysAcceleration(), Support, true,
+    if (!EvaluateStaticBoxSupport(World, Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Acceleration(), Support, true,
         ParentComponentBodyDomainStorage()->GetStaticSupportFrameHorizon())) return FVector::ZeroVector;
     if (StopAfterSeconds) *StopAfterSeconds = Support.StopAfterSeconds;
     return Support.ResultantAcceleration;
@@ -600,7 +600,7 @@ Speed::Analytic::FWorldQuery UBoxSubBody::MakeSupportBoxQuery(const SKinematic& 
 {
     // Read current COM state, not a recorded frame or a previous contact pose.
     SKinematic Origin = State;
-    Origin.Location = State.Location - State.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal());
+    Origin.Location = State.Location - State.Rotation.RotateVector(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).LocalCOM());
     const SKinematic Box = GetKinematicsFromOwnerKS(Origin);
     Speed::Analytic::FWorldQuery Query;
     Query.Shape = Speed::Analytic::EQueryShape::Box;
@@ -985,10 +985,10 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
             if (ParentComponentBodyDomainStorage()->HasExactStaticFaceSupport()) return false;
             const FVector Correction = FindBoxPlanarRoundoffCorrection(
                 *ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame(), MakeSupportBoxQuery(Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage())),
-                !ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().IsZero() || !ParentComponentBodyDomainStorage()->GetPhysAngularVelocity().IsZero());
+                !Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity().IsZero() || !Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity().IsZero());
             if (!Correction.IsZero())
             {
-                ParentComponentBodyDomainStorage()->SetPhysCOMLocation(ParentComponentBodyDomainStorage()->GetPhysCOMLocation() + Correction);
+                ParentComponentBodyDomainStorage()->SetPhysCOMLocation(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM() + Correction);
                 ParentComponentBodyDomainStorage()->UpdateSubBodiesKinematics();
                 return true;
             }
@@ -1057,7 +1057,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
             if (D < Gap) { Gap = D; Lowest = P; }
         }
         const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
-        const bool bRotating = !ParentComponentBodyDomainStorage()->GetPhysAngularVelocity().IsZero();
+        const bool bRotating = !Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity().IsZero();
         // Different inlined scalar/SIMD corner evaluations may fuse different
         // operations. Reserve exterior roundoff while transporting rotation;
         // never move a certified stationary face merely to add this reserve.
@@ -1097,14 +1097,14 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     if (bExactPlanarSeed && !Correction.IsZero())
     {
         const double Scale = FMath::Max(1.0, Query.Start.GetAbsMax() + Query.HalfExtent.GetMax());
-        const double RoundingFactor = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity().IsZero() ? 2.0 : 16.0;
+        const double RoundingFactor = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity().IsZero() ? 2.0 : 16.0;
         Correction += FVector(Projection.Hit.Normal) * (RoundingFactor * DBL_EPSILON * Scale);
     }
     const bool bHasCorrection = bExactPlanarSeed ? !Correction.IsZero() : !Correction.IsNearlyZero();
     if (bHasCorrection)
     {
         ParentComponentBodyDomainStorage()->SetPhysCOMLocation(
-            ParentComponentBodyDomainStorage()->GetPhysCOM() + Correction);
+            Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM() + Correction);
     }
 
     if (bExactPlanarSeed)
@@ -1190,10 +1190,10 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
     {
 		const FVector RotationalPointVelocity =
 			GetVelocityAtPoint(ContactPoint) -
-			ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+			Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
 		const FVector TransportedLinearVelocity =
 			Speed::TransportEstablishedContactVelocity(
-				ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(),
+				Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(),
 				RotationalPointVelocity, PreviousNormal, Normal);
 		ParentComponentBodyDomainStorage()->SetPhysCOMVelocity(TransportedLinearVelocity);
 		bVelocityProjected = true;
@@ -1559,7 +1559,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
         Broad.Shape = Speed::Analytic::EQueryShape::Sphere;
         Broad.Start = OwnerState.Location;
         Broad.End = OwnerState.Integrate(Delta).Location;
-        Broad.Radius = BoxExtentBoxDomainStorage().Size() + (GetLocalOffset() - ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal()).Size() +
+        Broad.Radius = BoxExtentBoxDomainStorage().Size() + (GetLocalOffset() - Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).LocalCOM()).Size() +
             OwnerState.Acceleration.Size() * (0.125 * double(Delta) * Delta);
         Broad.bApplyCollisionFilter = true; Broad.bAuthorityOnly = true; Broad.bIncludeCompactPatches = true;
         Broad.TraceChannel = static_cast<uint8>(GetCollisionChannel());
@@ -1677,8 +1677,8 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     const FVector RawN = CurrentHitStorage().ImpactNormal.GetSafeNormal();
     const float RawUpDot = FVector::DotProduct(RawN, FVector::UpVector);
-    const FVector VelBeforeResolve = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
-    const FVector AngBeforeResolve = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity();
+    const FVector VelBeforeResolve = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
+    const FVector AngBeforeResolve = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity();
 
     SHitResult EffectiveHit = CurrentHitStorage();
     FVector EffectiveN = RawN;
@@ -1908,7 +1908,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
                 EffectiveHit.SurfaceId,
                 EffectiveHit.CanonicalGroupId,
                 *EffectiveN.ToString(),
-                *ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().ToString());
+                *Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity().ToString());
         }
 #endif
         return;
@@ -1918,7 +1918,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     {
         if (bRoofSurfaceTraversalActive)
         {
-            const float SeparationSpeed = FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), EffectiveN);
+            const float SeparationSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), EffectiveN);
             if (SeparationSpeed > RoofTraversalTargetNormalSpeed)
             {
                 ParentComponentBodyDomainStorage()->AddPhysVelocity(
@@ -1950,7 +1950,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
         if (bRoofSurfaceTraversalActive)
         {
             const float SeparationSpeed =
-                FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), EffectiveN);
+                FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), EffectiveN);
             if (SeparationSpeed > RoofTraversalTargetNormalSpeed)
             {
                 ParentComponentBodyDomainStorage()->AddPhysVelocity(
@@ -2203,10 +2203,10 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 
 #if !UE_BUILD_SHIPPING
     const ISpeedComponent* SphereParentForDebug = Sphere.GetParentComponent();
-    const FVector BoxCOMVPre = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
-    const FVector BoxWPre = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() : FVector::ZeroVector;
-    const FVector SphereCOMVPre = SphereParentForDebug ? SphereParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
-    const FVector SphereWPre = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
+    const FVector BoxCOMVPre = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() : FVector::ZeroVector;
+    const FVector BoxWPre = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity() : FVector::ZeroVector;
+    const FVector SphereCOMVPre = SphereParentForDebug ? Speed::NativeKinematics::FComponentRead::Of(*SphereParentForDebug).COMVelocity() : FVector::ZeroVector;
+    const FVector SphereWPre = SphereParentForDebug ? Speed::NativeKinematics::FComponentRead::Of(*SphereParentForDebug).AngularVelocity() : FVector::ZeroVector;
 #endif
         // --- Apply impulses ---
     ApplyImpulse(ImpThis, CurrentHitStorage().ImpactPoint);
@@ -2221,10 +2221,10 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
 #if !UE_BUILD_SHIPPING
     if (Speed::RoadSettings::ReadOriginalOrLegacy<11>([](){ return CVarIAmSpeedCollisionDebugSphereBoxImpulse.GetValueOnAnyThread(); }) != 0)
     {
-        const FVector BoxCOMVPost = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
-        const FVector BoxWPost = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() : FVector::ZeroVector;
-        const FVector SphereCOMVPost = SphereParentForDebug ? SphereParentForDebug->GetPhysCOMVelocity() : FVector::ZeroVector;
-        const FVector SphereWPost = SphereParentForDebug ? SphereParentForDebug->GetPhysAngularVelocity() : FVector::ZeroVector;
+        const FVector BoxCOMVPost = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() : FVector::ZeroVector;
+        const FVector BoxWPost = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity() : FVector::ZeroVector;
+        const FVector SphereCOMVPost = SphereParentForDebug ? Speed::NativeKinematics::FComponentRead::Of(*SphereParentForDebug).COMVelocity() : FVector::ZeroVector;
+        const FVector SphereWPost = SphereParentForDebug ? Speed::NativeKinematics::FComponentRead::Of(*SphereParentForDebug).AngularVelocity() : FVector::ZeroVector;
 
         SPEED_NATIVE_LOG(
             BoxSubBodyLog,
@@ -2698,7 +2698,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         const bool bStalledUnsupportedShallowContact =
             Hit.PenetrationDepth <= Slop &&
             !HasPersistentGroundContact() &&
-            ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().SizeSquared() <= FMath::Square(5.f) &&
+            Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity().SizeSquared() <= FMath::Square(5.f) &&
             vN >= -VN_EPS;
         const float pushOut = bStalledUnsupportedShallowContact
             ? Hit.PenetrationDepth + 0.1f
@@ -2708,10 +2708,10 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
             const float PositionScale =
                 bStalledUnsupportedShallowContact ? 1.f : BetaPos;
             ParentComponentBodyDomainStorage()->SetPhysLocation(
-                ParentComponentBodyDomainStorage()->GetPhysLocation() + DepenDir * (PositionScale * pushOut));
+                Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location() + DepenDir * (PositionScale * pushOut));
 
             // Kill inward velocity along depen dir
-            const FVector V = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+            const FVector V = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
             if (vIn < 0.f && !bHardVerticalWallImpact)
             {
@@ -3013,8 +3013,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         UpDot < 0.97f &&
         ContactPtsWS.Num() >= 2;
     const FVector TangentialVelocity =
-        ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() -
-        FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N) * N;
+        Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() -
+        FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), N) * N;
     constexpr float MinTraversalLatchSpeedCmS = 1000.f;
     const bool bCanStartRoofTraversal =
         !ParentComponentBodyDomainStorage()->IsInAutoRecover() &&
@@ -3138,7 +3138,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     if ((bFreshSweepSupport || bInFreshSupportClampWindow) && NumC >= 3)
     {
         const float MaxFreshSupportDeltaVCmS = bRecentlyHadWallOrGutter ? 10.f : 25.f;
-        const float VnCom = FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N);
+        const float VnCom = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), N);
         RemainingFreshSupportImpulse =
             GetMass() * FMath::Min(FMath::Max(-VnCom, 0.f), MaxFreshSupportDeltaVCmS);
 
@@ -3163,7 +3163,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 
     const float InvMass = 1.f / GetMass();
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
-    const FVector COMVelocityBeforeSolve = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+    const FVector COMVelocityBeforeSolve = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
     FVector TotalNormalImpulse = FVector::ZeroVector;
     FVector TotalTangentialImpulse = FVector::ZeroVector;
     // (BoxSubBodyLog, Log, TEXT("[CCDBox] ResolveDirectGroundSupport for frame = %d CurrentGroundContactsWS.Num = %d, ImpactNormal = %s, Kinematic = %s"),
@@ -3270,8 +3270,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 const FVector SinglePoint[1] = { P };
                 const auto Coupled = Speed::SolvePlanarCoulombImpulse(
                     MakeArrayView(SinglePoint, 1), N, COM,
-                    ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(),
-                    ParentComponentBodyDomainStorage()->GetPhysAngularVelocity(),
+                    Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(),
+                    Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity(),
                     double(InvMass), InvI, double(Rest), double(mu));
                 if (Coupled.bSolved)
                 {
@@ -3300,8 +3300,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 const double ParentMass = ParentComponentBodyDomainStorage()->GetPhysMass();
                 const FVector ExpectedDV = ParentMass > 0 ? J / ParentMass : FVector::ZeroVector;
                 const FVector ExpectedDW = InvI.TransformVector(FVector::CrossProduct(P - COM, J));
-                const FVector ExpectedV = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() + ExpectedDV;
-                const FVector ExpectedW = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity() + ExpectedDW;
+                const FVector ExpectedV = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() + ExpectedDV;
+                const FVector ExpectedW = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity() + ExpectedDW;
                 bool bCertifiedScope = ParentMass > 0 && ParentMass == double(GetMass()) &&
                     ExpectedV.SizeSquared() <= FMath::Square(double(ParentComponentBodyDomainStorage()->GetPhysMaxSpeed())) &&
                     ExpectedW.SizeSquared() <= FMath::Square(double(ParentComponentBodyDomainStorage()->GetPhysMaxAngularSpeed())) &&
@@ -3321,7 +3321,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                     const FVector ConstraintN = Constraint.Normal.GetSafeNormal();
                     const FVector Arm = Constraint.ContactPoint - COM;
                     const double BeforeNormalSpeed = FVector::DotProduct(
-                        ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(Constraint.ContactPoint), ConstraintN);
+                        Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(Constraint.ContactPoint), ConstraintN);
                     // Match the existing owner's float delta predicate exactly.
                     const float DeltaNormalSpeed = FVector::DotProduct(
                         ExpectedDV + FVector::CrossProduct(ExpectedDW, Arm), ConstraintN);
@@ -3383,7 +3383,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 #if !UE_BUILD_SHIPPING
     if (Speed::RoadSettings::ReadOriginalOrLegacy<2>([](){ return CVarIAmSpeedBoxGroundSupportDebug.GetValueOnAnyThread(); }) != 0)
     {
-        const FVector COMVelocityAfterSolve = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+        const FVector COMVelocityAfterSolve = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
         SPEED_NATIVE_LOG(
             BoxSubBodyLog,
             Log,
@@ -3414,9 +3414,9 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         const float pushOut = FMath::Max(Hit.PenetrationDepth - Slop, 0.f);
         if (pushOut > 0.f)
         {
-            ParentComponentBodyDomainStorage()->SetPhysLocation(ParentComponentBodyDomainStorage()->GetPhysLocation() + DepenDir * (BetaPos * pushOut));
+            ParentComponentBodyDomainStorage()->SetPhysLocation(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location() + DepenDir * (BetaPos * pushOut));
 
-            const FVector V = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+            const FVector V = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
             const float vIn = FVector::DotProduct(V, DepenDir);
             if (vIn < 0.f)
                 ParentComponentBodyDomainStorage()->AddPhysVelocity(-vIn * DepenDir);
@@ -3619,10 +3619,10 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     if (minDist < -PenTol)
     {
         const float pushOut = (-PenTol - minDist);
-        ParentComponentBodyDomainStorage()->SetPhysLocation(ParentComponentBodyDomainStorage()->GetPhysLocation() + N * (BetaPos * pushOut));
+        ParentComponentBodyDomainStorage()->SetPhysLocation(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location() + N * (BetaPos * pushOut));
 
         // Kill inward normal component at COM
-        const FVector Vcm = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+        const FVector Vcm = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
         const float vIn = FVector::DotProduct(Vcm, N);
         if (vIn < 0.f)
             ParentComponentBodyDomainStorage()->AddPhysVelocity(-vIn * N);
@@ -3633,9 +3633,9 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
         if (bRoofSurfaceTraversalActive && minDist <= MaxRoofTraversalDrift)
         {
             ParentComponentBodyDomainStorage()->SetPhysLocation(
-                ParentComponentBodyDomainStorage()->GetPhysLocation() - N * (minDist - ContactTol));
+                Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location() - N * (minDist - ContactTol));
 
-            const FVector Vcm = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+            const FVector Vcm = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
             const float vOut = FVector::DotProduct(Vcm, N);
             if (vOut > 0.f)
             {
@@ -3843,7 +3843,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     {
         constexpr float TargetRoofTraversalDistance = 0.5f;
         ParentComponentBodyDomainStorage()->SetPhysLocation(
-            ParentComponentBodyDomainStorage()->GetPhysLocation() -
+            Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location() -
             N * (minDist - TargetRoofTraversalDistance));
         minDist = TargetRoofTraversalDistance;
     }
@@ -3853,7 +3853,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
     {
         constexpr float TargetRoofTraversalPenetration = -0.5f;
         ParentComponentBodyDomainStorage()->SetPhysLocation(
-            ParentComponentBodyDomainStorage()->GetPhysLocation() +
+            Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location() +
             N * (TargetRoofTraversalPenetration - minDist));
         minDist = TargetRoofTraversalPenetration;
     }
@@ -3866,7 +3866,7 @@ void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDir
         (minDist >= -PenTolReject);
 
     const float MeasuredSupportSeparatingSpeed = bRoofSurfaceTraversalActive
-        ? FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N)
+        ? FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), N)
         : worstVN;
     const float SupportSeparatingSpeed =
         bRoofSurfaceTraversalActive && bDirectSupportSolved
@@ -4221,7 +4221,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic) return false;
     const SKinematic& State = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     const FVector N = CurrentHitStorage().ImpactNormal;
-    const FVector Center = State.Location + State.Rotation.RotateVector(GetLocalOffset() - ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal());
+    const FVector Center = State.Location + State.Rotation.RotateVector(GetLocalOffset() - Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).LocalCOM());
     const FQuat Q = State.Rotation * GetLocalRotation();
     const double Roundoff = 64 * DBL_EPSILON * FMath::Max(1.0, Center.GetAbsMax() + BoxExtentBoxDomainStorage().GetMax());
     const double SpeedRoundoff = 4096 * DBL_EPSILON * FMath::Max(1.0, State.Velocity.Size() + State.AngularVelocity.Size() * BoxExtentBoxDomainStorage().Size());
@@ -4318,7 +4318,7 @@ bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
 {
     const SKinematic Initial = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     const FVector N = Hit.ImpactNormal;
-    const FVector LocalCOM = ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal();
+    const FVector LocalCOM = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).LocalCOM();
     const FVector LocalCenter = GetLocalOffset();
     const FQuat LocalQ = GetLocalRotation();
     const auto PoseAt = [&](float Time)
@@ -4480,7 +4480,7 @@ void UBoxSubBody::ProjectPlanarEventRoundoff(SKinematic& State, const SHitResult
     const FQuat Correction(Cross.X, Cross.Y, Cross.Z, 1 + FVector::DotProduct(From, To));
     SKinematic Candidate = State;
     Candidate.Rotation = (Correction.GetNormalized() * State.Rotation).GetNormalized();
-    const FVector Center = Candidate.Location - Candidate.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal()) +
+    const FVector Center = Candidate.Location - Candidate.Rotation.RotateVector(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).LocalCOM()) +
         Candidate.Rotation.RotateVector(GetLocalOffset());
     const FQuat CandidateQ = Candidate.Rotation * GetLocalRotation();
     double Gap = DBL_MAX;
@@ -4512,7 +4512,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         return false;
     SKinematic State = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     if (bNotifyImpact) ProjectPlanarEventRoundoff(State, CurrentHitStorage());
-    const FVector BoxCenter = State.Location - State.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal()) +
+    const FVector BoxCenter = State.Location - State.Rotation.RotateVector(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).LocalCOM()) +
         State.Rotation.RotateVector(GetLocalOffset());
     const FQuat BoxQ = State.Rotation * GetLocalRotation();
     const FVector N = CurrentHitStorage().ImpactNormal;
@@ -4665,7 +4665,7 @@ bool UBoxSubBody::TryResolveExactFaceImpact()
         !(State.Velocity - VN * N).IsZero()) return false;
 
     SKinematic Origin = State;
-    Origin.Location -= State.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal());
+    Origin.Location -= State.Rotation.RotateVector(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).LocalCOM());
     const SKinematic Box = GetKinematicsFromOwnerKS(Origin);
     double Gap = DBL_MAX;
     for (int32 Corner = 0; Corner < 8; ++Corner)
@@ -4733,7 +4733,7 @@ SKinematic UBoxSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) con
 {
     if (!ParentComponentBodyDomainStorage())
         return SKinematic();
-    return GetKinematicsFromOwnerKS(ParentComponentBodyDomainStorage()->GetOriginKinematicStateForFrame(NumFrame));
+    return GetKinematicsFromOwnerKS(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).OriginForFrame(NumFrame));
 }
 SKinematic UBoxSubBody::GetKinematicsFromOwnerKS(const SKinematic& CarKinematicState) const
 {
@@ -5122,7 +5122,7 @@ FVector UBoxSubBody::GetCOM() const
     // Using the box's local offset here was only valid while the COM happened
     // to coincide with the component origin; it produces incorrect lever arms
     // as soon as a vehicle defines an offset CenterOfMass.
-    return ParentComponentBodyDomainStorage()->GetPhysCOM();
+    return Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM();
 }
 
 FVector UBoxSubBody::GetBoxExtent() const
@@ -5308,7 +5308,7 @@ bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVe
         return false;
     }
 
-    const FVector Vcm = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+    const FVector Vcm = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
     const float Vz = Vcm.Z;
 
     // Velocity normal to the support plane.
@@ -5391,8 +5391,8 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     if (FMath::Abs(FVector::DotProduct(EdgeDir, N)) > 0.95f)
         return false;
 
-    const FVector COM = ParentComponentBodyDomainStorage()->GetPhysCOM();
-    const FVector COMVelocity = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity();
+    const FVector COM = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM();
+    const FVector COMVelocity = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
     const float vN_com = FVector::DotProduct(COMVelocity, N);
     const bool bIsInAutoRecover = ParentComponentBodyDomainStorage()->IsInAutoRecover();
 
@@ -5462,7 +5462,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     {
         const float MaxSeparationSpeed =
             FMath::Max(0.f, Speed::RoadSettings::ReadOriginalOrLegacy<52>([](){ return CVarIAmSpeedFaceSupportSeparatingSpeedCmS.GetValueOnAnyThread(); }));
-        const float SeparationSpeed = FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), N);
+        const float SeparationSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), N);
         if (SeparationSpeed > MaxSeparationSpeed)
         {
             ParentComponentBodyDomainStorage()->AddPhysVelocity((MaxSeparationSpeed - SeparationSpeed) * N);
@@ -5492,7 +5492,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
     {
         if (!bIsInAutoRecover && IsMainSubBody())
         {
-            const FVector Omega = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity();
+            const FVector Omega = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity();
             const float wEdge = FVector::DotProduct(Omega, EdgeDir);
 
             // Project angular velocity onto edge axis
@@ -5514,7 +5514,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
         {
             // Mode auto-recover :
             // enable rotation only on Fall axis
-            const FVector Omega = ParentComponentBodyDomainStorage()->GetPhysAngularVelocity();
+            const FVector Omega = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity();
 
             const FVector FallAxis =
                 FVector::CrossProduct(EdgeDir, N).GetSafeNormal();
@@ -5544,8 +5544,8 @@ FMatrix UBoxSubBody::InitInvInertiaTensor() const
     FQuat HitboxRelRot = GetLocalRotation();
 
     // 1. Compute the box-center-to-COM offset in hitbox local space.
-    const FVector COMLocal = ParentComponentBodyDomainStorage()->GetPhysRotation().UnrotateVector(
-        ParentComponentBodyDomainStorage()->GetPhysCOM() - ParentComponentBodyDomainStorage()->GetPhysLocation()
+    const FVector COMLocal = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation().UnrotateVector(
+        Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM() - Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location()
     );
     const FVector d_localChassis = HitboxRelLoc - COMLocal;
     FVector d_in_box = HitboxRelRot.UnrotateVector(d_localChassis);
@@ -5565,7 +5565,7 @@ FMatrix UBoxSubBody::ComputeWorldInvInertiaTensor() const
 {
     if (!ParentComponentBodyDomainStorage())
         return FMatrix::Identity;
-    const FQuat ChassisQ = ParentComponentBodyDomainStorage()->GetPhysRotation();
+    const FQuat ChassisQ = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation();
     const FQuat HitboxRelQ = GetLocalRotation();
 
     // Hitbox local -> world

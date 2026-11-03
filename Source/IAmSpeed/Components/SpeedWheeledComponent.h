@@ -58,6 +58,8 @@ UCLASS()
 class IAMSPEED_API USpeedWheeledComponent : public UChaosWheeledVehicleMovementComponent, public ISpeedWheeledComponent
 {
 	GENERATED_BODY()
+    virtual const FVector& PublicPhysCOMView() const { return BasePhysicsStateStorage().Kinematic.Location; }
+    virtual const FVector& PublicPhysLocalCOMView() const { return CenterOfMassWheeledDomainStorage(); }
     friend class USpeedBranchWheeledComponent;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
 #if WITH_DEV_AUTOMATION_TESTS

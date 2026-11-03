@@ -1612,3 +1612,19 @@ prior unexecuted draft had malformed C++ quote escaping; it is preserved as a
 preparation finding, not a native failure. Actual new compilation is required.
 
 The unexecuted r04 draft used the SDK FALSE macro in a new BOOL comparison; Unreal hides that macro. The next draft uses !=0, preserving the actual BOOL result without depending on the standalone SDK wrapper. No r04 native failure or success is inferred.
+
+### Private GetPhys submember routing (source107 draft, NOT applied/native)
+
+Seven public reference getters and the public COM-location alias select legacy storage, including their actually
+available direct/interface/qualified-base paths. Module-internal named physical
+readers retain the original native references. Position, origin, velocity at
+points, direction and acceleration reads must migrate coherently with the fixed
+local COM offset; the single origin-formula implementation is shared unchanged.
+Generic public-only overrides retain default virtual dispatch. Only the final
+private native type selects original COM/local-COM backing through private reads.
+The proposed owner diagnostic records24 actual submember/alias paths alongside COM6
+and body/sweeper25 and retains existing reentrant positive facade/physics tests.
+This draft is uncompiled and unexecuted; no source/borrow/lifetime, hidden-state,
+authoritative-K or localized-restoration coverage follows. All guards stay closed.
+
+The unexecuted r04 draft missed the physical GetPhysCOMLocation alias inside a planar roundoff correction. The native read now uses the same private COM reference, before adding the unchanged Correction and calling the original setter. Three real alias paths are included in the24 diagnostics. Other exact-class-gated joined/shadow kinematic paths remain outside this private-native migration scope; no exhaustive alias or restore lease follows.

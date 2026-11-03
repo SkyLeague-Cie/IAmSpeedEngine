@@ -392,11 +392,11 @@ SKinematic USWheelSubBody::GetKinematicsFromOwner(const unsigned int& NumFrame) 
     SKinematic WheelKinematics;
     if (!ParentComponentBodyDomainStorage())
         return WheelKinematics;
-    SKinematic CarKinematics = ParentComponentBodyDomainStorage()->GetOriginKinematicStateForFrame(NumFrame);
+    SKinematic CarKinematics = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).OriginForFrame(NumFrame);
     FTransform ChassisTM(CarKinematics.Rotation, CarKinematics.Location);
     auto WheelPos = WorldPosFromCarTransform(ChassisTM);
-    auto WheelVel = ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(WheelPos);
-    auto WheelAcc = ParentComponentBodyDomainStorage()->GetPhysAccelerationAtPoint(WheelPos);
+    auto WheelVel = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(WheelPos);
+    auto WheelAcc = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AccelerationAtPoint(WheelPos);
 
     WheelKinematics.Location = WheelPos;
     WheelKinematics.Velocity = WheelVel;
@@ -482,7 +482,7 @@ bool USWheelSubBody::SweepSuspensionAlongNormal(
 		const SHitResult& PreviousHit = GetHit();
 		const FVector PreviousNormal = PreviousHit.ImpactNormal.GetSafeNormal();
 		const float InwardSpeed = FVector::DotProduct(
-			ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), PreviousNormal);
+			Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), PreviousNormal);
 		if (!PreviousNormal.IsNearlyZero() && InwardSpeed < 0.0f &&
 			PreviousHit.SourceId != 0)
 		{
@@ -522,7 +522,7 @@ void USWheelSubBody::GetSuspensionSweepSegment(
     const float Delta, FVector& OutStart, FVector& OutEnd) const
 {
     const FTransform ChassisTM(
-        ParentComponentBodyDomainStorage()->GetPhysRotation(), ParentComponentBodyDomainStorage()->GetPhysLocation());
+        Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector CarUp = ChassisTM.GetUnitAxis(EAxis::Z);
     const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
     OutStart = WorldRest + SuspensionMaxRaise() * CarUp;
@@ -584,7 +584,7 @@ bool USWheelSubBody::ProbeSuspensionOnGround(
 		const SHitResult& PreviousHit = GetHit();
 		const FVector PreviousNormal = PreviousHit.ImpactNormal.GetSafeNormal();
 		const float InwardSpeed = FVector::DotProduct(
-			ParentComponentBodyDomainStorage()->GetPhysCOMVelocity(), PreviousNormal);
+			Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), PreviousNormal);
 		if (!PreviousNormal.IsNearlyZero() && InwardSpeed < 0.0f &&
 			PreviousHit.SourceId != 0)
 		{
@@ -640,7 +640,7 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
     FVector CurrentPos = WorldPos();
     const bool bWasOnGround = IsOnGround();
 
-    FTransform ChassisTM(ParentComponentBodyDomainStorage()->GetPhysRotation(), ParentComponentBodyDomainStorage()->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     FVector WorldRestingPos = ChassisTM.TransformPosition(GetLocalOffset());
     FVector CarUpVector = ChassisTM.GetUnitAxis(EAxis::Z);
     FVector Start = FVector::ZeroVector;
@@ -692,7 +692,7 @@ bool USWheelSubBody::SweepSuspensionOnGround(SHitResult& OutHit, const float& de
                 Radius(),
                 *OldCurrentHit.ImpactNormal.ToString(),
                 *OldCurrentHit.Location.ToString(),
-                *ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().ToString());
+                *Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity().ToString());
         }
 #endif
         SetOnGround(false);
@@ -709,7 +709,7 @@ bool USWheelSubBody::SweepSuspensionOnSpheres(SHitResult& OutHit,  const float& 
     // --------------------------------------------------
     // Build suspension sweep segment
     // --------------------------------------------------
-    FTransform ChassisTM(ParentComponentBodyDomainStorage()->GetPhysRotation(), ParentComponentBodyDomainStorage()->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector CarUp = ChassisTM.GetUnitAxis(EAxis::Z);
 
     const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
@@ -796,7 +796,7 @@ bool USWheelSubBody::SweepSuspensionOnBoxes(SHitResult& OutHit, const float& del
     // --------------------------------------------------
     // Build suspension sweep segment
     // --------------------------------------------------
-    FTransform ChassisTM(ParentComponentBodyDomainStorage()->GetPhysRotation(), ParentComponentBodyDomainStorage()->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector CarUp = ChassisTM.GetUnitAxis(EAxis::Z);
 
     const FVector WorldRest = ChassisTM.TransformPosition(GetLocalOffset());
@@ -883,7 +883,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 
     bCrossedIntoCompressionThisFrameRuntimeStorage() = false;
 
-    FTransform ChassisTM(ParentComponentBodyDomainStorage()->GetPhysRotation(), ParentComponentBodyDomainStorage()->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector Up = ChassisTM.GetUnitAxis(EAxis::Z);
     // update steering angle
     UpdateSteerAngle(delta);
@@ -906,7 +906,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         bCrossedIntoCompressionThisFrameRuntimeStorage() = LastDisplacement < 0.0f &&
             CurrentDisplacement >= 0.0f;
         FSuspensionForceDebugData ForceDebugData;
-		FVector RelativePointVelocity=ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(CurrentHitStorage().ImpactPoint);
+		FVector RelativePointVelocity=Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(CurrentHitStorage().ImpactPoint);
         FVector SurfaceVelocity;
         if(TryGetPrescribedSupportVelocity(CurrentHitStorage().ImpactPoint,SurfaceVelocity))RelativePointVelocity-=SurfaceVelocity;
         const float ProjectedVelocity = RelativePointVelocity.Dot(CurrentHitStorage().ImpactNormal);
@@ -981,7 +981,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 #if !(UE_BUILD_SHIPPING)
         if (Speed::RoadSettings::ReadOriginalOrLegacy<161>([](){ return CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread(); }) != 0)
         {
-            const FVector ParentVelocity = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
+            const FVector ParentVelocity = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() : FVector::ZeroVector;
             SPEED_NATIVE_LOG(WheelSubBodyLog, Log,
                 TEXT("[SuspensionForce] Frame=%d Wheel=%d Dt=%.5f SuspDt=%.5f HitTOI=%.5f PenDepth=%.3f LastDisp=%.3f CurDisp=%.3f ForceLastDisp=%.3f ForceCurDisp=%.3f SpringLen=%.3f NewDesiredLen=%.3f ProjectedCompression=%.3f Rest=%.1f Stiff=%.1f Damp=%.1f WheelRelativeVelocity=%.3f Damping=%.1f Compress=%d PreRestCompress=%d Raw=%.1f Quant=%.1f Scale=%.3f Final=%.1f VelZ=%.3f HitN=%s HitLoc=%s"),
                 ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
@@ -1028,8 +1028,8 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
         if (Speed::RoadSettings::ReadOriginalOrLegacy<161>([](){ return CVarSkyLeagueSuspensionForceDebug.GetValueOnAnyThread(); }) != 0)
         {
             const float CurrentDisplacement = QuantizeSuspensionDisplacement(SpringDisplacement());
-            const FVector ParentVelocity = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysCOMVelocity() : FVector::ZeroVector;
-            const FVector ParentUp = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetPhysUpVector().GetSafeNormal() : FVector::UpVector;
+            const FVector ParentVelocity = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() : FVector::ZeroVector;
+            const FVector ParentUp = ParentComponentBodyDomainStorage() ? Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up().GetSafeNormal() : FVector::UpVector;
             SPEED_NATIVE_LOG(WheelSubBodyLog, Log,
                 TEXT("[SuspensionAir] Frame=%d Wheel=%d Dt=%.5f LastDisp=%.3f CurDisp=%.3f NextAirLength=%.3f SpringLen=%.3f WorldPos=%s CarUp=%s Vel=%s PrevHitN=%s PrevHitLoc=%s"),
                 ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->NumFrame() : INDEX_NONE,
@@ -1104,9 +1104,9 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
     {
         const FVector ContactNormal = CurrentHitStorage().ImpactNormal.GetSafeNormal();
         const float ContactGroundDot = FVector::DotProduct(ContactNormal, FVector::UpVector);
-        const float CarUpGroundDot = FVector::DotProduct(WheelComponentWheelDomainStorage()->GetPhysUpVector().GetSafeNormal(), FVector::UpVector);
-        FVector VelAtPoint = WheelComponentWheelDomainStorage()->GetPhysVelocityAtPoint(WorldPoint);
-        FVector BodyVelocity=WheelComponentWheelDomainStorage()->GetPhysCOMVelocity(),SurfaceVelocity;
+        const float CarUpGroundDot = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).Up().GetSafeNormal(), FVector::UpVector);
+        FVector VelAtPoint = Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).VelocityAtPoint(WorldPoint);
+        FVector BodyVelocity=Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).COMVelocity(),SurfaceVelocity;
         if(TryGetPrescribedSupportVelocity(WorldPoint,SurfaceVelocity)){VelAtPoint-=SurfaceVelocity;BodyVelocity-=SurfaceVelocity;}
         const float vN = FVector::DotProduct(VelAtPoint, ContactNormal);
         const float BodyVN = FVector::DotProduct(BodyVelocity, ContactNormal);
@@ -1131,7 +1131,7 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
                     CarUpGroundDot,
                     vN,
                     BodyVN,
-                    WheelComponentWheelDomainStorage()->GetPhysCOMVelocity().Z);
+                    Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).COMVelocity().Z);
             }
 #endif
             return;
@@ -1141,7 +1141,7 @@ void USWheelSubBody::ApplyImpulse(const FVector& LinearImpulse, const FVector& W
         UpdateContactVelocityLock();
 
         const FVector ContactPoint = GetContactImpulseApplicationPoint();
-        const FVector r = ContactPoint - WheelComponentWheelDomainStorage()->GetPhysCOM();
+        const FVector r = ContactPoint - Speed::NativeKinematics::FComponentRead::Of(*WheelComponentWheelDomainStorage()).COM();
         const FMatrix InvI = WheelComponentWheelDomainStorage()->ComputeWorldInvInertiaTensor();
         const FVector rxn = FVector::CrossProduct(r, N);
         const FVector term = FVector::CrossProduct(
@@ -1197,9 +1197,9 @@ void USWheelSubBody::HandleTimers()
 void USWheelSubBody::UpdatePhysicsState(const float& delta)
 {
     // --- 1. Base axes from chassis ---
-    const FVector CarUp = ParentComponentBodyDomainStorage()->GetPhysUpVector();
-    const FVector CarFwd = ParentComponentBodyDomainStorage()->GetPhysForwardVector();
-    const FVector CarRight = ParentComponentBodyDomainStorage()->GetPhysRightVector();
+    const FVector CarUp = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
+    const FVector CarFwd = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Forward();
+    const FVector CarRight = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Right();
 
     UpAxisRuntimeStorage() = CarUp; // stays constant
 
@@ -1215,7 +1215,7 @@ void USWheelSubBody::UpdatePhysicsState(const float& delta)
 
     // --- 5. Update rolling angle (rotation around RightAxis) ---
     // update omega
-    OmegaRuntimeStorage() = ParentComponentBodyDomainStorage()->GetPhysForwardSpeed() / FMath::Max(Radius(), KINDA_SMALL_NUMBER);
+    OmegaRuntimeStorage() = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).ForwardSpeed() / FMath::Max(Radius(), KINDA_SMALL_NUMBER);
     float angVel = AngularVelocity(); // rad/s
     RollAngleRuntimeStorage() += angVel * delta;
     RollAngleRuntimeStorage() = FMath::Fmod(RollAngleRuntimeStorage(), 2.f * PI);
@@ -1245,7 +1245,7 @@ void USWheelSubBody::UpdateSteerAngle(const float& delta)
 
     if (IsSteeringEnabled())
     {
-        float speed = ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().Size();
+        float speed = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity().Size();
 
         // saturation max speed
         float normSpeed = FMath::Clamp(speed / ParentComponentBodyDomainStorage()->GetPhysMaxSpeed(), 0.f, 1.f);
@@ -1269,19 +1269,19 @@ void USWheelSubBody::UpdateSteerAngle(const float& delta)
 
 FVector USWheelSubBody::WorldPos() const
 {
-    FTransform ChassisTM(ParentComponentBodyDomainStorage()->GetPhysRotation(), ParentComponentBodyDomainStorage()->GetPhysLocation());
+    FTransform ChassisTM(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     return WorldPosFromCarTransform(ChassisTM);
 }
 
 FVector USWheelSubBody::SteeringPos() const
 {
-    const FVector ChassisUp = ParentComponentBodyDomainStorage()->GetPhysUpVector();
+    const FVector ChassisUp = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
 
     // Compute world position of the wheel
     const FVector WheelPosWS = WorldPos();
 
     // Get the world center of mass of the vehicle
-    const FVector CoMWorld = ParentComponentBodyDomainStorage()->GetPhysCOM();
+    const FVector CoMWorld = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COM();
 
     // Compute the vertical distance between the wheel and the center of mass
     const float VerticalDist = FVector::DotProduct((WheelPosWS - CoMWorld), ChassisUp);
@@ -1300,7 +1300,7 @@ FVector USWheelSubBody::WorldPosFromCarTransform(const FTransform& CarTransform)
 
 FVector USWheelSubBody::GetSuspensionDirectionWS() const
 {
-    return -ParentComponentBodyDomainStorage()->GetPhysUpVector();
+    return -Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
 }
 
 float USWheelSubBody::Radius() const
@@ -1348,7 +1348,7 @@ float USWheelSubBody::ContactSpringDisplacement(const SHitResult& ContactHit) co
         return SpringDisplacement();
     }
     const FTransform ChassisTM(
-        ParentComponentBodyDomainStorage()->GetPhysRotation(), ParentComponentBodyDomainStorage()->GetPhysLocation());
+        Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Rotation(), Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Location());
     const FVector Up = ChassisTM.GetUnitAxis(EAxis::Z);
     const FVector SuspensionAnchor = ChassisTM.TransformPosition(
         GetLocalOffset() + PSuspensionWheelDomainStorage()->Setup().MaxLength * FVector::UpVector);
@@ -1517,7 +1517,7 @@ FVector USWheelSubBody::GetSuspensionForceApplicationPoint() const
 	case 2:
 		return WorldPos();
 	case 3:
-		return WorldPos() - SpringDisplacement() * ParentComponentBodyDomainStorage()->GetPhysUpVector();
+		return WorldPos() - SpringDisplacement() * Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
 	default:
 		return CurrentHitStorage().ImpactPoint;
 	}
@@ -1530,7 +1530,7 @@ FVector USWheelSubBody::GetContactImpulseApplicationPoint() const
 	case 1:
 		return CurrentHitStorage().ImpactPoint;
 	case 3:
-		return WorldPos() - SpringDisplacement() * ParentComponentBodyDomainStorage()->GetPhysUpVector();
+		return WorldPos() - SpringDisplacement() * Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).Up();
 	default:
 		return WorldPos();
 	}
@@ -1604,7 +1604,7 @@ void USWheelSubBody::SetOnGround(const bool& on_ground)
 
     if (!bWasOnGround && on_ground)
     {
-        const float NormalSpeed = FVector::DotProduct(ParentComponentBodyDomainStorage()->GetPhysVelocityAtPoint(WorldPos()), CurrentHitStorage().ImpactNormal);
+        const float NormalSpeed = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).VelocityAtPoint(WorldPos()), CurrentHitStorage().ImpactNormal);
 
         // Real impact
         if (NormalSpeed < -5.0f) // cm/s, to tune
