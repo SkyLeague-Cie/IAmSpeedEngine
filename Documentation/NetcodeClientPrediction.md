@@ -1508,3 +1508,19 @@ borrow, configuration/source/lifetime path or authorize restoration. This
 fixed stock private profile authors identity local rotations; changed valid
 subbody configurations and Engine rotation-cache history are not qualified. Native
 results from source99 or earlier never transfer to this proposed source.
+
+
+## Source102 proposed finite code-admission refusal diagnostics (native NOT_RUN)
+
+Native94 passed the scene-pose isolation control and normal finite two-client /
+dedicated fixture, but its cancellation cohort failed: role7 refused code-pin
+admission before its first physical tick. The current combined error does not
+distinguish code-pin status from original-PID mismatch. That subcause remains
+UNKNOWN; the whole native94 chain remains FAIL and all actual drains are retained.
+
+The proposed diagnostic includes the original pin status/error/process, expected
+process and observed module count from that same refusing report. The predicate,
+immediate refusal, module-pin algorithm and service lifetime are unchanged. There
+is no retry, roster-stability assumption, missing-state substitution or positive
+lease. A later successful cohort cannot erase this failure. Numeric diagnostics
+are observations only, never full state or authoritative-K/localized admission.

@@ -2,6 +2,7 @@
 #include "Misc/CoreMisc.h"
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <utility>
 
 namespace Speed::Netcode
@@ -41,7 +42,17 @@ std::unique_ptr<FNativeFiniteProcessRetention> FNativeFiniteProcessRetention::Cr
     {Why="finite retention requires its own absolute E report path";return {};}
     auto Code=Prediction::FNativeProcessCodePins::PinObservedProcessModules();
     if(Code->Status()!=Prediction::EProcessCodePinStatus::PinnedBaseSetAtPinTimes||Code->OriginalProcess()!=OriginalPid)
-    {Why="actual process PIN-time code retention failed or original PID differs";return {};}
+    {
+        // Preserve the actual refusing report before it retires. This is only
+        // diagnostic data: the same condition still refuses before service
+        // acquisition or private coroutine birth, with no retry or relaxation.
+        Why="actual process PIN-time code retention refused: pin_status="+std::to_string(unsigned(Code->Status()))
+            +" pin_error="+std::to_string(Code->OriginalError())
+            +" actual_pid="+std::to_string(Code->OriginalProcess())
+            +" expected_pid="+std::to_string(OriginalPid)
+            +" observed_modules="+std::to_string(Code->Records().size());
+        return {};
+    }
     auto Root=std::unique_ptr<FNativeFiniteProcessRetention>(new FNativeFiniteProcessRetention(Path,std::move(Code)));
     Root->Before=ObserveFrameExecutorServiceForDiagnostics();
     if(Root->Before.Stopping||(!Root->Before.Configured&&EnsurePrivateFrameWorkers(1)<=0))
