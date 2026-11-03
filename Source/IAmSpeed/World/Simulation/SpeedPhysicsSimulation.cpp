@@ -194,6 +194,8 @@ namespace
 		TEXT("Warns when one physical step exceeds this fraction of its simulated delta time."));
 }
 
+#include "SpeedPhysicsSimulationPrivateInputStartup.inl"
+
 unsigned int ASpeedPhysicsSimulation::EngineFPS = 120; // Default value, can be overridden by config or in-game
 
 // Sets default values
@@ -455,6 +457,7 @@ void ASpeedPhysicsSimulation::Tick(const float DeltaSeconds)
 	Speed::OwnedFrameAudit::TryExportForHostOnGameThread(this);
 #endif
 	RefreshExecutionMode();
+    ObservePrivateInputStartup(EPrivateInputStartupObservation::Tick);
     if(HasReplayStartupHoldOnGameThread(this))return;
 	if (HostTransitionDelayTicks > 0)
 	{
@@ -560,12 +563,16 @@ void ASpeedPhysicsSimulation::TransitionExecutionMode(
 
 void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 {
-    if(HasReplayStartupHoldOnGameThread(this))return;
-	if (SimulationWorker || bOwnedWorkerTerminal.Load() ||
-		!EnsureSimulationWorldReady())
-	{
-		return;
-	}
+    if(HasReplayStartupHoldOnGameThread(this))
+    { ObservePrivateInputStartup(EPrivateInputStartupObservation::ReplayHold); return; }
+    // Same short-circuit order and exactly the existing readiness call. The
+    // observer labels only the branch already selected by the original guards.
+	if (SimulationWorker)
+    { ObservePrivateInputStartup(EPrivateInputStartupObservation::WorkerPresent); return; }
+    if (bOwnedWorkerTerminal.Load())
+    { ObservePrivateInputStartup(EPrivateInputStartupObservation::WorkerTerminal); return; }
+    if (!EnsureSimulationWorldReady())
+    { ObservePrivateInputStartup(EPrivateInputStartupObservation::WorldNotReady); return; }
 	InitializeCanonicalFrame(0.0f);
 	OnOwnedWorkerStarting();
 #if WITH_DEV_AUTOMATION_TESTS
@@ -663,7 +670,9 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
 		SimulationWorker.Reset();
 		bOwnedWorkerTerminal.Store(true);
 		UE_LOG(LogTemp, Error, TEXT("[SimulationWorkerStartFailed]"));
+        ObservePrivateInputStartup(EPrivateInputStartupObservation::StartFailed);
 	}
+    else ObservePrivateInputStartup(EPrivateInputStartupObservation::Started);
 }
 
 void ASpeedPhysicsSimulation::StopOwnedWorker()

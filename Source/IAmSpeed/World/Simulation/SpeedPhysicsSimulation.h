@@ -34,6 +34,12 @@ struct FSimulationPresentationBinding
 	uint64 FirstFrame = 0;
 };
 
+// Observer events only; these do not represent or change startup admission.
+enum class EPrivateInputStartupObservation : uint8
+{
+    BindEnqueued, Tick, ReplayHold, WorkerPresent, WorkerTerminal, WorldNotReady, StartFailed, Started
+};
+
 /*
 * ASpeedPhysicsSimulation : Actor responsible for ticking the IAmSpeed Engine simulation.
 * It is the one that calls Step() on the SpeedWorldSubsystem every physics frame.
@@ -148,6 +154,9 @@ public:
 	std::shared_ptr<const Speed::Input::V2::FInputRegistryView> ReadInputRegistryView() const;
 	std::shared_ptr<const Speed::Input::V2::FRegistryFrame> ReadCompletedInputFrame() const;
 	uint64 GetInputWorkerGeneration() const { return InputWorkerGeneration; }
+	/** GT opt-in private observer. Reads existing state; never submits/ACKs input or changes a gate. */
+	void ObservePrivateInputStartup(EPrivateInputStartupObservation Observation,
+		uint64 Command = 0, uint64 Session = 0, uint64 Epoch = 0) const;
 	bool InputOwnersRetiredAfterJoin(uint64 Generation) const
 	{ return Generation == InputWorkerGeneration && bInputOwnerRetired.Load() && bInputOwnersClosedOnWorker.Load() && !SimulationWorker; }
 	/** Pauses the owned execution lane without changing the canonical frame. */
