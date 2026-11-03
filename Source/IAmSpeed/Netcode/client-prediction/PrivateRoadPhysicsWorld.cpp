@@ -1142,17 +1142,17 @@ bool FPrivateRoadPhysicsWorld::StepRetained(const std::shared_ptr<FImpl>& Root,c
         {BodyReferencesComplete=false;break;}
         for(uint16 W=0;W<4;++W)
         {
-            const auto& Root=N->NativeWheelRoots[W];
-            if(!Root){BodyReferencesComplete=false;break;}
-            const auto& Domain=std::get<3>(Root->Parts);
+            const auto& WheelRoot=N->NativeWheelRoots[W];
+            if(!WheelRoot){BodyReferencesComplete=false;break;}
+            const auto& Domain=std::get<3>(WheelRoot->Parts);
             auto* OriginalWheelObject=N->OriginalWheelObjects[W].Get();
             auto* Body=Cast<USpeedBranchWheelSubBody>(Wheels[W].Get());
-            if(Root->Vehicle!=N->NativeVehicleRoot||!Body||Body->OwnedBodyValues.get()!=std::get<0>(Root->Parts).get()
+            if(WheelRoot->Vehicle!=N->NativeVehicleRoot||!Body||Body->OwnedBodyValues.get()!=std::get<0>(WheelRoot->Parts).get()
                 ||Body->StorageAccess.lock()!=I.Access
-                ||Body->OwnedSolidValues.get()!=std::get<1>(Root->Parts).get()
-                ||Body->OwnedWheelRuntime.get()!=std::get<2>(Root->Parts).get()
+                ||Body->OwnedSolidValues.get()!=std::get<1>(WheelRoot->Parts).get()
+                ||Body->OwnedWheelRuntime.get()!=std::get<2>(WheelRoot->Parts).get()
                 ||Body->OwnedWheelDomain.get()!=Domain.get()
-                ||Body->OwnedSphereDomain.get()!=std::get<4>(Root->Parts).get()
+                ||Body->OwnedSphereDomain.get()!=std::get<4>(WheelRoot->Parts).get()
                 ||!Domain||!OriginalWheelObject||Domain->ChaosWheel!=OriginalWheelObject
                 ||Domain->PWheel!=&NativeVehicle->Wheels[W]||Domain->PSuspension!=&NativeVehicle->Suspension[W]
                 ||NativeVehicle->Wheels[W].SetupPtr!=&N->NativeConfiguration->Wheel
@@ -1232,9 +1232,9 @@ bool FPrivateRoadPhysicsWorld::StepRetained(const std::shared_ptr<FImpl>& Root,c
                 AppendPart(std::get<2>(N->NativeBoxRoot->Parts));
                 for(uint16 Index=0;Index<4;++Index)
                 {
-                    const auto& Root=N->NativeWheelRoots[Index];W.Value(uint16(BodyRole::Wheel));W.Value(Index);
-                    AppendPart(std::get<0>(Root->Parts));AppendPart(std::get<1>(Root->Parts));
-                    AppendPart(std::get<2>(Root->Parts));AppendPart(std::get<3>(Root->Parts));AppendPart(std::get<4>(Root->Parts));
+                    const auto& WheelRoot=N->NativeWheelRoots[Index];W.Value(uint16(BodyRole::Wheel));W.Value(Index);
+                    AppendPart(std::get<0>(WheelRoot->Parts));AppendPart(std::get<1>(WheelRoot->Parts));
+                    AppendPart(std::get<2>(WheelRoot->Parts));AppendPart(std::get<3>(WheelRoot->Parts));AppendPart(std::get<4>(WheelRoot->Parts));
                 }
                 Out->Actors.back().OriginalBodyDomainValues=W.Bytes();
                 Out->Actors.back().OriginalBodyDomainsAvailable=true;
