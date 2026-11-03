@@ -1,4 +1,5 @@
 #include "SolidSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "SWheelSubBody.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
 bool USolidSubBody::ResolvePrescribedContact(USolidSubBody& A,USolidSubBody& B,const SHitResult& Hit,double Penetration)
@@ -8,7 +9,7 @@ bool USolidSubBody::ResolvePrescribedContact(USolidSubBody& A,USolidSubBody& B,c
     if(PA==PB)return true;
     const FVector N=Hit.ImpactNormal.GetSafeNormal();if(N.IsNearlyZero())return false;
     const FVector Point=Hit.ImpactPoint;
-    const SKinematic KA=PA->GetKinematicState(),KB=PB->GetKinematicState();
+    const SKinematic KA=Speed::NativeKinematics::FComponentRead::Current(*PA),KB=Speed::NativeKinematics::FComponentRead::Current(*PB);
     const FMatrix IA=A.ComputeWorldInvInertiaTensor(),IB=B.ComputeWorldInvInertiaTensor();
     const float MA=PA->GetPhysMass(),MB=PB->GetPhysMass();
     // No gameplay shot/bump model on an authored mechanical obstacle. The

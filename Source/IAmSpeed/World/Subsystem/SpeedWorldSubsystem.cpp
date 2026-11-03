@@ -1,4 +1,5 @@
 #include "SpeedWorldSubsystem.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include <stdexcept>
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
@@ -1506,11 +1507,11 @@ void USpeedWorldSubsystem::SolveDynamicContactPairs(
 		if (bUseRollingManifold)
 		{
 			RollingFakePhysicsContext.SelfParentKinematics = Sphere == BodyA
-				? CompA->GetKinematicState()
-				: CompB->GetKinematicState();
+				? Speed::NativeKinematics::FComponentRead::Current(*CompA)
+				: Speed::NativeKinematics::FComponentRead::Current(*CompB);
 			RollingFakePhysicsContext.OtherParentKinematics = Sphere == BodyA
-				? CompB->GetKinematicState()
-				: CompA->GetKinematicState();
+				? Speed::NativeKinematics::FComponentRead::Current(*CompB)
+				: Speed::NativeKinematics::FComponentRead::Current(*CompA);
 			RollingFakePhysicsContext.FakeImpulseScale = FMath::Max(
 				0.0f,
 				Speed::RoadSettings::ReadOriginalOrLegacy<21>([](){ return CVarIAmSpeedRollingTangentialFakePhysicsScale.GetValueOnAnyThread(); }));

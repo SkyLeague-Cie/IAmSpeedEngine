@@ -1,5 +1,6 @@
 #pragma once
 namespace Speed { struct FCommonComponentValueAccess; }
+namespace Speed::NativeKinematics { class FComponentRead; }
 #include "IAmSpeed/World/Simulation/PreparedSimulationRestore.h"
 
 #include "CoreMinimal.h"
@@ -90,6 +91,12 @@ namespace Speed { struct FNativeBallMechanicalWitnessForTesting; }
 #endif
 class IAMSPEED_API ISpeedComponent
 {
+    friend class Speed::NativeKinematics::FComponentRead;
+    // Default adapters retain their existing virtual getter semantics. The
+    // private native car overrides these without exporting its storage.
+    virtual const SKinematic& ReadPhysicsKinematicState() const { return GetKinematicState(); }
+    virtual const SKinematic& ReadPhysicsKinematicStateForFrame(const unsigned int& Frame) const
+    { return GetKinematicStateForFrame(Frame); }
 #if !UE_BUILD_SHIPPING
     friend struct Speed::FNativeBallMechanicalWitnessForTesting;
 #endif
@@ -248,6 +255,8 @@ public:
 	virtual FMatrix ComputeWorldInvInertiaTensorOfSubBody(const USSubBody& SubBody) const = 0;
 
 	// =========== Kinematics getters and setters =================
+    // Public views remain legacy references. Private owner storage uses a
+    // separate module-internal reader; these references are not snapshots.
 	virtual const SKinematic& GetKinematicState() const = 0;
 	virtual const SKinematic& GetKinematicStateForFrame(const unsigned int& NumFrame) const = 0;
 	// Derives the component/mesh-origin state for rendering and local sub-body geometry.

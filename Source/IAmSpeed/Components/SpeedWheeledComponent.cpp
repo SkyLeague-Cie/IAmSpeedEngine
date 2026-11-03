@@ -1,4 +1,5 @@
 #include "IAmSpeed/Components/SpeedWheeledComponent.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include <stdexcept>
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
@@ -1268,17 +1269,17 @@ FMatrix USpeedWheeledComponent::ComputeWorldInvInertiaTensorOfSubBody(const USSu
 
 const SKinematic& USpeedWheeledComponent::GetKinematicState() const
 {
-	return BasePhysicsStateStorage().Kinematic;
+    return BasePhysicsState.Kinematic;
 }
 
 const SKinematic& USpeedWheeledComponent::GetKinematicStateForFrame(const unsigned int& LocalFrame) const
 {
-	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
-	if (RecordedBaseFramesWheeledDomainStorage()[Idx] == LocalFrame)
-	{
-		return RecordedBaseStatesWheeledDomainStorage()[Idx].Kinematic;
-	}
-	return BasePhysicsStateStorage().Kinematic;
+    const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+    if (RecordedBaseFrames[Idx] == LocalFrame)
+    {
+        return RecordedBaseStates[Idx].Kinematic;
+    }
+    return BasePhysicsState.Kinematic;
 }
 
 float USpeedWheeledComponent::GetPhysMaxSpeed() const
@@ -3093,7 +3094,7 @@ void USpeedWheeledComponent::HandleGroundFriction(const float& delta)
 		/*if (CanMove() && CVarIAmSpeedDebugKinematics.GetValueOnAnyThread() != 0 && NumFrame() % 30 == 0)
 		{
 			UE_LOG(SpeedPhysicsLog, Log, TEXT("[%s(%s)][End HandleGroundFriction] SinceCanMove=%d Wheels=%d COMKinematic=(%s)"),
-				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *GetKinematicState().ToString());
+				*GetOwner()->GetName(), *GetRole(), NbFramesSinceCanMove(), NbWheelsOnGround, *Speed::NativeKinematics::FComponentRead::Current(*this).ToString());
 		}*/
 	}
 }
@@ -5120,7 +5121,7 @@ void USpeedWheeledComponent::QuantizePhysicalState()
 		return;
 
 	// Quantize kinematic state to reduce precision errors on client and server
-	QuantizeKinematicState(BasePhysicsStateStorage().Kinematic, GetKinematicStateForFrame(NumFrame() - 1).Rotation);
+	QuantizeKinematicState(BasePhysicsStateStorage().Kinematic, Speed::NativeKinematics::FComponentRead::ForFrame(*this, NumFrame() - 1).Rotation);
 
 	// round trip on last suspension length to avoid precision drift on client and server
 	for (const auto W : ReadWheelSubBodiesForPhysics())

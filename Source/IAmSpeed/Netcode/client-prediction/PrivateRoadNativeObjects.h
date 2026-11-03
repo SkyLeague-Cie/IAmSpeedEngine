@@ -555,6 +555,10 @@ UCLASS(NotBlueprintable,Transient)
 class IAMSPEED_API USpeedBranchWheeledComponent final : public USpeedWheeledComponent
 {
     GENERATED_BODY()
+    // Only this final private subtype bypasses public facade kinematics.
+    // Ordinary/custom wheeled adapters retain public virtual dispatch.
+    const SKinematic& ReadPhysicsKinematicState() const override;
+    const SKinematic& ReadPhysicsKinematicStateForFrame(const unsigned int& Frame) const override;
     friend class Speed::Netcode::Prediction::FPrivateRoadPhysicsWorld;
     std::weak_ptr<Speed::Netcode::Prediction::FPrivateRoadAccess> Access;
     bool HasIsolatedNativeConstruction() const;

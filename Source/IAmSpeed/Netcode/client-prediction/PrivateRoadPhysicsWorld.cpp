@@ -1058,6 +1058,34 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
         auto State=N->Filter->Capture();if(!State||State->Next!=Frame+1)return Fail(TEXT("private filter publication mismatch"));
         Out->Actors.push_back({N->Seed.Actor,N->Seed.Incarnation,N->StableId,*State,I.Access->Slots.FindChecked(N->Component).Input,
             N->Component->CanMove(),N->Component->IsFrozen(),N->Component->WheeledPhysicsStateStorage().nbFramesbeforeCanMove});
+        {
+            // This code runs inside the actual original storage scope above.
+            // Compare to the actual retained fields, not an assumed copy or
+            // a caller-supplied certificate. Only diagnostic counts escape.
+            const auto* C=N->Component;
+            const ISpeedComponent& Interface=*C;
+            const unsigned int LocalFrame=static_cast<unsigned int>(Frame);
+            const int32 Idx=LocalFrame % SpeedConstants::RecordedHistorySize;
+            const SKinematic* FacadeCurrent=&C->BasePhysicsState.Kinematic;
+            const SKinematic* FacadeFrame=C->RecordedBaseFrames[Idx]==LocalFrame
+                ? &C->RecordedBaseStates[Idx].Kinematic : FacadeCurrent;
+            const SKinematic* OriginalCurrent=&C->BasePhysicsStateStorage().Kinematic;
+            const SKinematic* OriginalFrame=C->RecordedBaseFramesWheeledDomainStorage()[Idx]==LocalFrame
+                ? &C->RecordedBaseStatesWheeledDomainStorage()[Idx].Kinematic : OriginalCurrent;
+            const SKinematic* Views[]={&C->GetKinematicState(),&Interface.GetKinematicState(),
+                &C->USpeedWheeledComponent::GetKinematicState(),&C->GetKinematicStateForFrame(LocalFrame),
+                &Interface.GetKinematicStateForFrame(LocalFrame),&C->USpeedWheeledComponent::GetKinematicStateForFrame(LocalFrame)};
+            auto& Observation=Out->Actors.back();
+            for(int32 Index=0;Index<6;++Index)
+            {
+                const SKinematic* ExpectedFacade=Index<3?FacadeCurrent:FacadeFrame;
+                const SKinematic* ExpectedOriginal=Index<3?OriginalCurrent:OriginalFrame;
+                ++Observation.PublicComponentKinematicViews;
+                if(Views[Index]==ExpectedFacade && Views[Index]!=ExpectedOriginal)
+                    ++Observation.PublicComponentKinematicFacadeViews;
+                if(Views[Index]==ExpectedOriginal)++Observation.PublicComponentKinematicOriginalViews;
+            }
+        }
         if(BodyReferencesComplete)
         {
             try
@@ -2191,6 +2219,22 @@ const SBaseGameState& USpeedBranchWheeledComponent::BaseGameStateStorage() const
 {
     return UsesOriginalComponentStorage()?OwnedComponentValues->BaseGameState:USpeedWheeledComponent::BaseGameStateStorage();
 }
+const SKinematic& USpeedBranchWheeledComponent::ReadPhysicsKinematicState() const
+{
+	return BasePhysicsStateStorage().Kinematic;
+}
+
+const SKinematic& USpeedBranchWheeledComponent::ReadPhysicsKinematicStateForFrame(const unsigned int& LocalFrame) const
+{
+	const int32 Idx = LocalFrame % SpeedConstants::RecordedHistorySize;
+	if (RecordedBaseFramesWheeledDomainStorage()[Idx] == LocalFrame)
+	{
+		return RecordedBaseStatesWheeledDomainStorage()[Idx].Kinematic;
+	}
+	return BasePhysicsStateStorage().Kinematic;
+}
+
+
 FBasePhysicsState& USpeedBranchWheeledComponent::BasePhysicsStateStorage()
 {
     return UsesOriginalComponentStorage()?OwnedComponentValues->BasePhysicsState:USpeedWheeledComponent::BasePhysicsStateStorage();

@@ -261,6 +261,15 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
     if(!Control||!Isolated->Step(IsolatedFirst,false,Why)||!Control->Step(IsolatedFirst,false,Why))return false;
     const auto OriginalZero=Isolated->ReadLatest(),ControlZero=Control->ReadLatest();
     if(!OriginalZero||!ControlZero)return false;
+    const auto CheckPublicComponentViews=[&](const P::FPrivateRoadPublication& Publication)
+    {
+        for(const auto& Actor:Publication.Actors)
+            if(!TestTrue(TEXT("six actual public COM views under original routing point to legacy, never original storage"),
+                Actor.PublicComponentKinematicViews==6&&Actor.PublicComponentKinematicFacadeViews==6
+                &&Actor.PublicComponentKinematicOriginalViews==0))return false;
+        return !Publication.Actors.empty();
+    };
+    if(!CheckPublicComponentViews(*OriginalZero)||!CheckPublicComponentViews(*ControlZero))return false;
     ISpeedComponent& FacadeBase=*EscapedFacade;
     const SKinematic& RetainedFacadeView=FacadeBase.GetKinematicState();
     SKinematic Intrusion=RetainedFacadeView;Intrusion.Location.X+=123456;
@@ -384,6 +393,7 @@ bool FIASPrivateRoadRegistryBoundary::RunTest(const FString&)
         const auto* R=MotionReference->Physics.PresentationBodies.FindByPredicate([&](const auto& V){return V.StableId==MotionReference->Actors[0].NativeStableId;});
         if(!M||!R)return false;
         const auto Difference=P::MeasurePrivateRoadKinematics(M->COMState,R->COMState);
+        if(!CheckPublicComponentViews(*MotionCut)||!CheckPublicComponentViews(*MotionReference))return false;
         if(!TestTrue(TEXT("every actual motion followup keeps native COM and declared state exact to independent control"),
             Difference.Valid&&!Difference.Different&&P::ComparePrivateRoadPartialValues(MotionCut->Actors[0],MotionReference->Actors[0])==P::EPrivateRoadPartialComparison::Equal
             &&MotionCut->Actors[0].OriginalBodyDomainsAvailable&&MotionReference->Actors[0].OriginalBodyDomainsAvailable

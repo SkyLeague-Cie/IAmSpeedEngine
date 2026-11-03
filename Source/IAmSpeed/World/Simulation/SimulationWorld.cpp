@@ -1,4 +1,5 @@
 #include "SimulationWorld.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #if !UE_BUILD_SHIPPING
 #include "FrameAppliedCommandWitness.h"
 #endif
@@ -332,7 +333,7 @@ namespace Speed
 		for (const FSimulationBodyRecord& Body : Bodies)
 		{
 			if (!Body.Adapter) continue;
-			const SKinematic& State = Body.Adapter->GetKinematicState();
+			const SKinematic& State = Speed::NativeKinematics::FComponentRead::Current(*Body.Adapter);
 			if (bIncludePresentation)
 			{
 				FSimulationPresentationBody& Pose = Snapshot.PresentationBodies.AddDefaulted_GetRef();

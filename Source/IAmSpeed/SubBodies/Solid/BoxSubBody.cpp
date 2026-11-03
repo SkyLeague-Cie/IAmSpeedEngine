@@ -1,4 +1,5 @@
 #include "BoxSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/WeakContactReference.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
@@ -508,7 +509,7 @@ FVector UBoxSubBody::GetStaticRestingReaction(const Speed::IStaticCollisionWorld
 double UBoxSubBody::GetStaticSupportStopTimeCandidate() const
 {
     if (!ParentComponentBodyDomainStorage() || !HasToApplyRestForce() || GetDynamicFriction() <= 0) return TNumericLimits<double>::Max();
-    const SKinematic& State = ParentComponentBodyDomainStorage()->GetKinematicState();
+    const SKinematic& State = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     const double Load = State.Acceleration.Size(), Speed = State.Velocity.Size();
     if (Load == 0 || Speed == 0 || !State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero() ||
         FVector::DotProduct(State.Velocity, State.Acceleration) != 0) return TNumericLimits<double>::Max();
@@ -549,7 +550,7 @@ bool UBoxSubBody::HasCurrentExactPlanarContact() const
         return Decision(false, TEXT("frame_or_provider_metadata"));
     const auto* World = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame();
     if (!World) return Decision(false, TEXT("no_static_world"));
-    const auto Query = MakeSupportBoxQuery(ParentComponentBodyDomainStorage()->GetKinematicState());
+    const auto Query = MakeSupportBoxQuery(Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage()));
     const FVector N = GroundHitStorage().ImpactNormal;
     if (N.ContainsNaN() || GroundHitStorage().ImpactPoint.ContainsNaN() ||
         !FMath::IsNearlyEqual(N.SizeSquared(), 1.0, 32 * DBL_EPSILON)) return Decision(false, TEXT("nonfinite_or_nonunit_plane"));
@@ -698,7 +699,7 @@ bool UBoxSubBody::EvaluateStaticBoxSupport(const Speed::IStaticCollisionWorld& W
 {
     OutSupport = {};
     if (!ParentComponentBodyDomainStorage()) return false;
-    const SKinematic& State = ParentComponentBodyDomainStorage()->GetKinematicState();
+    const SKinematic& State = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     const auto Query = MakeSupportBoxQuery(State);
     return !bIncludeMotion || State.Velocity.IsZero()
         ? Speed::TryBuildBoxRestingSupport(World, Query, State.Location, ExternalAcceleration, OutSupport)
@@ -716,7 +717,7 @@ bool UBoxSubBody::PublishExactStaticSupport()
 {
     const Speed::IStaticCollisionWorld* World = ParentComponentBodyDomainStorage() ? ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame() : nullptr;
     if (!World || !HasToApplyRestForce() || ParentComponentBodyDomainStorage()->IsFrozen()) return false;
-    const SKinematic& State = ParentComponentBodyDomainStorage()->GetKinematicState();
+    const SKinematic& State = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     const FVector Load = ParentComponentBodyDomainStorage()->GetNominalGravityAcceleration();
     if (Load.IsZero() || !State.AngularVelocity.IsZero() || FVector::DotProduct(State.Velocity, Load) != 0) return false;
     Speed::FBoxRestingSupport Support;
@@ -982,7 +983,7 @@ bool UBoxSubBody::ProjectEstablishedStaticContactImpl(
             // tangential travel changes the world-coordinate roundoff scale.
             if (ParentComponentBodyDomainStorage()->HasExactStaticFaceSupport()) return false;
             const FVector Correction = FindBoxPlanarRoundoffCorrection(
-                *ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame(), MakeSupportBoxQuery(ParentComponentBodyDomainStorage()->GetKinematicState()),
+                *ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame(), MakeSupportBoxQuery(Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage())),
                 !ParentComponentBodyDomainStorage()->GetPhysCOMVelocity().IsZero() || !ParentComponentBodyDomainStorage()->GetPhysAngularVelocity().IsZero());
             if (!Correction.IsZero())
             {
@@ -1547,7 +1548,7 @@ bool UBoxSubBody::SweepVsGround(UWorld* World, SHitResult& OutHit, const float& 
         Hit.ContactFeatureOther == Speed::EContactFeatureKind::Face;
     if (bExactPlanarContact && !RefineExactPlanarTOI(Hit, Delta)) bFoundGroundHit = false;
     const Speed::IStaticCollisionWorld* StaticWorld = ParentComponentBodyDomainStorage()->GetStaticCollisionWorldForFrame();
-    const SKinematic& OwnerState = ParentComponentBodyDomainStorage()->GetKinematicState();
+    const SKinematic& OwnerState = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     if (StaticWorld && (!OwnerState.AngularVelocity.IsZero() || !OwnerState.AngularAcceleration.IsZero()))
     {
         // A fixed-orientation box sweep cannot discover rotation-only first
@@ -2048,10 +2049,10 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     const SKinematic& SphereKS0 =
         Sphere.GetKinematicState();
     FFakePhysicsImpactContext FakePhysicsContext;
-    FakePhysicsContext.SelfParentKinematics = ParentComponentBodyDomainStorage()->GetKinematicState();
+    FakePhysicsContext.SelfParentKinematics = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     if (const ISpeedComponent* SphereParent = Sphere.GetParentComponent())
     {
-        FakePhysicsContext.OtherParentKinematics = SphereParent->GetKinematicState();
+        FakePhysicsContext.OtherParentKinematics = Speed::NativeKinematics::FComponentRead::Current(*SphereParent);
     }
     // const SKinematic SphereKSAtTOI = SphereKS0.Integrate(TimePassed);
 
@@ -2302,9 +2303,9 @@ void UBoxSubBody::ResolveHitVsBox(
     // callback. Role exchange must not sample a state modified by callback1.
     FFakePhysicsImpactContext FakePhysicsContext;
     FakePhysicsContext.SelfParentKinematics = ParentComponentBodyDomainStorage()
-        ? ParentComponentBodyDomainStorage()->GetKinematicState() : KA;
+        ? Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage()) : KA;
     FakePhysicsContext.OtherParentKinematics = OtherBox.GetParentComponent()
-        ? OtherBox.GetParentComponent()->GetKinematicState() : KB;
+        ? Speed::NativeKinematics::FComponentRead::Current(*OtherBox.GetParentComponent()) : KB;
     const FFakePhysicsImpactContext InverseContext = FakePhysicsContext.Inverted();
 
     // Both callbacks describe this one contact, even when the reciprocal
@@ -2319,8 +2320,8 @@ void UBoxSubBody::ResolveHitVsBox(
             !ParentComponentBodyDomainStorage() || !OtherParent) return;
         FVector CorrectA, CorrectB;
         if (Speed::SImpulseSolver::ComputeCollisionImpulse(P,N,
-            ParentComponentBodyDomainStorage()->GetKinematicState(),GetMass(),ComputeWorldInvInertiaTensor(),
-            OtherParent->GetKinematicState(),OtherBox.GetMass(),OtherBox.ComputeWorldInvInertiaTensor(),
+            Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage()),GetMass(),ComputeWorldInvInertiaTensor(),
+            Speed::NativeKinematics::FComponentRead::Current(*OtherParent),OtherBox.GetMass(),OtherBox.ComputeWorldInvInertiaTensor(),
             0.f,0.f,CorrectA,CorrectB,0.f))
         {
             ApplyImpulse(CorrectA,P);
@@ -4217,7 +4218,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
         CurrentHitStorage().SourceId == 0 || CurrentHitStorage().bSurfaceNormalMayVary || CurrentHitStorage().GeometricErrorBoundCm != 0 ||
         CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face || !CurrentHitStorage().Component.IsValid() ||
         CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic) return false;
-    const SKinematic& State = ParentComponentBodyDomainStorage()->GetKinematicState();
+    const SKinematic& State = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     const FVector N = CurrentHitStorage().ImpactNormal;
     const FVector Center = State.Location + State.Rotation.RotateVector(GetLocalOffset() - ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal());
     const FQuat Q = State.Rotation * GetLocalRotation();
@@ -4314,7 +4315,7 @@ bool UBoxSubBody::TryGetStaticContactAcceleration(FVector& Linear, FVector& Angu
 
 bool UBoxSubBody::RefineExactPlanarTOI(SHitResult& Hit, float Delta) const
 {
-    const SKinematic Initial = ParentComponentBodyDomainStorage()->GetKinematicState();
+    const SKinematic Initial = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     const FVector N = Hit.ImpactNormal;
     const FVector LocalCOM = ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal();
     const FVector LocalCenter = GetLocalOffset();
@@ -4508,7 +4509,7 @@ bool UBoxSubBody::TryResolveExactPlanarImpact(bool bNotifyImpact)
         CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face ||
         !CurrentHitStorage().Component.IsValid() || CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic)
         return false;
-    SKinematic State = ParentComponentBodyDomainStorage()->GetKinematicState();
+    SKinematic State = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     if (bNotifyImpact) ProjectPlanarEventRoundoff(State, CurrentHitStorage());
     const FVector BoxCenter = State.Location - State.Rotation.RotateVector(ParentComponentBodyDomainStorage()->GetPhysCenterOfMassLocal()) +
         State.Rotation.RotateVector(GetLocalOffset());
@@ -4656,7 +4657,7 @@ bool UBoxSubBody::TryResolveExactFaceImpact()
         CurrentHitStorage().ContactFeatureOther != Speed::EContactFeatureKind::Face ||
         !CurrentHitStorage().Component.IsValid() || CurrentHitStorage().Component->GetCollisionObjectType() != ECC_WorldStatic)
         return false;
-    const SKinematic State = ParentComponentBodyDomainStorage()->GetKinematicState();
+    const SKinematic State = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     const FVector N = CurrentHitStorage().ImpactNormal;
     const double VN = FVector::DotProduct(State.Velocity, N);
     if (VN >= 0 || !State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero() ||

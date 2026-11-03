@@ -1,4 +1,5 @@
 #include "SWheelSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
@@ -1052,7 +1053,7 @@ void USWheelSubBody::UpdateSuspension(const float& delta)
 /*SSphere USWheelSubBody::MakeSphere(const unsigned int& NumFrame, const float& RemainingDelta, const float& TimePassed) const
 {
     // --- 1) Car kinematics ---
-    SKinematic CarKS0 = ParentComponent->GetKinematicStateForFrame(NumFrame);
+    SKinematic CarKS0 = Speed::NativeKinematics::FComponentRead::ForFrame(*ParentComponent, NumFrame);
     SKinematic CarKS1 = CarKS0.Integrate(TimePassed);
     SKinematic CarKS2 = CarKS1.Integrate(RemainingDelta);
 

@@ -1524,3 +1524,30 @@ immediate refusal, module-pin algorithm and service lifetime are unchanged. Ther
 is no retry, roster-stability assumption, missing-state substitution or positive
 lease. A later successful cohort cannot erase this failure. Numeric diagnostics
 are observations only, never full state or authoritative-K/localized admission.
+
+### Component kinematic reference separation (source103 draft)
+
+The public current/frame COM getters on the wheeled adapter read the actual
+legacy fields, including qualified base calls during private original routing.
+Public signatures remain const references; these are mutable facade views, not
+immutable snapshots. A module-internal, non-exported reader with private entry
+points retains the original live-reference operations at their existing native
+call sites. Its private virtual dispatch is access control, not an owner lease.
+
+Actual-owner diagnostics compare six direct/interface/qualified-base current
+and frame references with the real legacy and original field addresses. The
+registry boundary scenario checks these counts and retains its physical-control
+comparisons after real facade mutations. New native execution is still required.
+
+This tranche covers the named component getters only. Subbody/sweeper getters,
+public GetPhys submember references, existing protected storage hooks, mutable
+operations and escaped wheel/configuration/source views remain open. Complete
+causal state, source/lifetime exclusion, authoritative-K restore, localized
+resimulation and rendered device-client acceptance are not admitted. All restore
+guards stay closed. No native95 result transfers to this changed source.
+
+The internal native-read overrides live only on the final private road subtype.
+Ordinary and custom wheeled adapters retain the original public virtual getter
+dispatch through the ISpeedComponent default. The six observations above query
+the current capture frame; they do not qualify all historical ring hit/miss or
+overwrite branches. Other alias families and restore guards remain unchanged.

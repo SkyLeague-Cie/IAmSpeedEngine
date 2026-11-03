@@ -1,4 +1,5 @@
 #include "SphereSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/RoadSettings/NativeRoadSettingsRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 // Fill out your copyright notice in the Description page of Project Settings.
@@ -358,10 +359,10 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
     // Sphere state at TOI (already integrated)
     const SKinematic& SphereKS = KinematicsStorage();
     FFakePhysicsImpactContext FakePhysicsContext;
-    FakePhysicsContext.SelfParentKinematics = ParentComponentBodyDomainStorage()->GetKinematicState();
+    FakePhysicsContext.SelfParentKinematics = Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage());
     if (const ISpeedComponent* BoxParent = OtherBox.GetParentComponent())
     {
-        FakePhysicsContext.OtherParentKinematics = BoxParent->GetKinematicState();
+        FakePhysicsContext.OtherParentKinematics = Speed::NativeKinematics::FComponentRead::Current(*BoxParent);
     }
     /*
     // --- Overlap branch sphere-box ---

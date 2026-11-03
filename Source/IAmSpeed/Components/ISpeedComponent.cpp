@@ -123,7 +123,7 @@ void ISpeedComponent::IntegrateKinematicsPrv(const float& SubDelta)
 {
     // BasePhysicsState is the rigid body's COM state. No origin compensation
     // belongs in the integrator; origin data is derived at the geometry boundary.
-    SetKinematicState(GetKinematicState().Integrate(SubDelta));
+    SetKinematicState(ReadPhysicsKinematicState().Integrate(SubDelta));
 #if !UE_BUILD_SHIPPING
 	if (IsPhysicsPhaseObservationEnabled())
 		ObservePhysicsPhase(ESpeedPhysicsObservationPhase::PostForcePredictor, SubDelta);
@@ -132,18 +132,18 @@ void ISpeedComponent::IntegrateKinematicsPrv(const float& SubDelta)
 
 bool ISpeedComponent::IsPhysicsSleeping() const
 {
-	return !IsFrozen() && SleepStateStorage().CanSleep(GetKinematicState(), HasStableSleepSupport());
+	return !IsFrozen() && SleepStateStorage().CanSleep(ReadPhysicsKinematicState(), HasStableSleepSupport());
 }
 
 bool ISpeedComponent::HasExactStaticRestingSupport() const
 {
-	return GetKinematicState().Velocity.IsZero() && HasExactStaticFaceSupport();
+	return ReadPhysicsKinematicState().Velocity.IsZero() && HasExactStaticFaceSupport();
 }
 
 bool ISpeedComponent::HasExactStaticFaceSupport() const
 {
 	if (!StaticRestingWorldStorage() || IsFrozen()) return false;
-	const SKinematic& State = GetKinematicState();
+	const SKinematic& State = ReadPhysicsKinematicState();
 	if (!State.AngularVelocity.IsZero() || !State.AngularAcceleration.IsZero()) return false;
 	const FVector Load = GetNominalGravityAcceleration();
 	if (Load.IsZero() || FVector::DotProduct(State.Velocity, Load) != 0) return false;
@@ -179,7 +179,7 @@ FVector ISpeedComponent::GetStaticRestingReaction(double* StopAfterSeconds) cons
 #else
 	if (!StaticRestingWorldStorage()) return FVector::ZeroVector;
 #endif
-	const SKinematic& State = GetKinematicState();
+	const SKinematic& State = ReadPhysicsKinematicState();
 	// Shape-independent rejection is cheap in the ordinary moving-body path.
 	// No closing/separating motion or spin is accepted. Each shape must also
 	// certify its material law before admitting tangential motion; no damping
@@ -219,7 +219,7 @@ FVector ISpeedComponent::GetStaticRestingReaction(double* StopAfterSeconds) cons
 bool ISpeedComponent::IsSpeedLimitPreservedByExactSupport(float Delta) const
 {
 	if (!StaticRestingWorldStorage() || Delta <= 0 || StaticSupportFrameHorizonStorage() < Delta) return false;
-	const SKinematic& State = GetKinematicState();
+	const SKinematic& State = ReadPhysicsKinematicState();
 	const double MaxSpeedSquared = FMath::Square(double(GetPhysMaxSpeed()));
 	// Squaring a normalized/clamped oblique vector can exceed the squared cap
 	// by one ULP (2300 at 40 degrees is a regression). Bound only double
@@ -286,7 +286,7 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 		// Integrate the exact Coulomb stop event. The remainder of this float
 		// interval is rest, not reversed slip; no velocity threshold or sleep
 		// is involved. The world split CCD at this event before reaching here.
-		SKinematic State = GetKinematicState();
+		SKinematic State = ReadPhysicsKinematicState();
 		State.Location += State.Velocity * (0.5 * StopAfterSeconds);
 		State.Velocity = FVector::ZeroVector;
 		SetKinematicState(State);
@@ -353,7 +353,7 @@ void ISpeedComponent::IntegrateKinematics(const float& SubDelta)
 
 	// update physics state after integrating kinematics to the time of impact (e.g update suspension traces for wheels, update hit info for hitboxes, etc.)
 	PostIntegrateKinematics(SubDelta);
-    // UE_LOG(LogTemp, Log, TEXT("[IntegrateKinematics] NumFrame = %d, SubDelta = %f. Kinematics = %s"), NumFrame(), SubDelta, *GetKinematicState().ToString());
+    // UE_LOG(LogTemp, Log, TEXT("[IntegrateKinematics] NumFrame = %d, SubDelta = %f. Kinematics = %s"), NumFrame(), SubDelta, *ReadPhysicsKinematicState().ToString());
 }
 
 bool ISpeedComponent::ProjectEstablishedStaticContacts(const float& Delta)
@@ -391,7 +391,7 @@ SKinematic ISpeedComponent::GetOriginKinematicState() const
 
 SKinematic ISpeedComponent::GetOriginKinematicStateForFrame(const unsigned int& NumFrameToRead) const
 {
-	const SKinematic& COMState = GetKinematicStateForFrame(NumFrameToRead);
+	const SKinematic& COMState = ReadPhysicsKinematicStateForFrame(NumFrameToRead);
 	SKinematic OriginState = COMState;
 	const FOriginKinematicView Origin(COMState, GetPhysCenterOfMassLocal());
 	OriginState.Location = Origin.Location();
@@ -599,20 +599,20 @@ void ISpeedComponent::PostPhysicsUpdate(const float& delta)
 	}
 
     PostPhysicsUpdatePrv(delta);
-	SleepStateStorage().ObserveCompletedPose(GetKinematicState());
+	SleepStateStorage().ObserveCompletedPose(ReadPhysicsKinematicState());
 }
 
 // ===================== Kinematics getters and setters =================
 FVector ISpeedComponent::GetPhysLocation() const
 {
 	// Keep the historical-frame selection used by the complete origin getter.
-	const SKinematic& COMState = GetKinematicStateForFrame(NumFrame());
+	const SKinematic& COMState = ReadPhysicsKinematicStateForFrame(NumFrame());
 	return FOriginKinematicView(COMState, GetPhysCenterOfMassLocal()).Location();
 }
 
 void ISpeedComponent::SetPhysCOMLocation(const FVector& NewCOMLocation)
 {
-	SKinematic K = GetKinematicState();
+	SKinematic K = ReadPhysicsKinematicState();
 	K.Location = NewCOMLocation;
 	SetKinematicState(K);
 }
@@ -624,12 +624,12 @@ void ISpeedComponent::SetPhysLocation(const FVector& NewLocation)
 
 const FQuat& ISpeedComponent::GetPhysRotation() const
 {
-    return GetKinematicState().Rotation;
+    return ReadPhysicsKinematicState().Rotation;
 }
 
 void ISpeedComponent::SetPhysRotation(const FQuat& NewRotation)
 {
-    SKinematic K = GetKinematicState();
+    SKinematic K = ReadPhysicsKinematicState();
     K.Rotation = NewRotation;
 	SetKinematicState(K);
 }
@@ -643,7 +643,7 @@ void ISpeedComponent::SetPhysRotationPreserveCOM(const FQuat& NewRotation)
 
 FVector ISpeedComponent::GetPhysVelocity() const
 {
-	const SKinematic& COMState = GetKinematicStateForFrame(NumFrame());
+	const SKinematic& COMState = ReadPhysicsKinematicStateForFrame(NumFrame());
 	return FOriginKinematicView(COMState, GetPhysCenterOfMassLocal()).Velocity();
 }
 
@@ -678,12 +678,12 @@ FVector ISpeedComponent::GetPhysVelocityAtPoint(const FVector& Point) const
 
 const FVector& ISpeedComponent::GetPhysCOMVelocity() const
 {
-	return GetKinematicState().Velocity;
+	return ReadPhysicsKinematicState().Velocity;
 }
 
 const FVector& ISpeedComponent::GetPhysAngularVelocity() const
 {
-	return GetKinematicState().AngularVelocity;
+	return ReadPhysicsKinematicState().AngularVelocity;
 }
 
 void ISpeedComponent::SetPhysAngularVelocity(const FVector& NewAngularVelocity)
@@ -706,12 +706,12 @@ void ISpeedComponent::SetPhysVelocityAtPoint(const FVector& NewVelocity, const F
 
 const FVector& ISpeedComponent::GetPhysAcceleration() const
 {
-    return GetKinematicState().Acceleration;
+    return ReadPhysicsKinematicState().Acceleration;
 }
 
 const FVector& ISpeedComponent::GetPhysAngularAcceleration() const
 {
-	return GetKinematicState().AngularAcceleration;
+	return ReadPhysicsKinematicState().AngularAcceleration;
 }
 
 void ISpeedComponent::SetPhysAcceleration(const FVector& NewAcceleration)
@@ -721,7 +721,7 @@ void ISpeedComponent::SetPhysAcceleration(const FVector& NewAcceleration)
 		return;
 	}
 
-    SKinematic K = GetKinematicState();
+    SKinematic K = ReadPhysicsKinematicState();
     K.Acceleration = NewAcceleration;
 	SetKinematicState(K);
 }
@@ -733,7 +733,7 @@ void ISpeedComponent::SetPhysAngularAcceleration(const FVector& NewAngularAccele
 		return;
 	}
 
-    SKinematic K = GetKinematicState();
+    SKinematic K = ReadPhysicsKinematicState();
     K.AngularAcceleration = NewAngularAcceleration;
 	SetKinematicState(K);
 }
@@ -918,14 +918,14 @@ void ISpeedComponent::AddPhysForceBatchAtPoints(
 
 void ISpeedComponent::SetPhysCOMVelocityRaw(const FVector& NewVelocity)
 {
-    SKinematic K = GetKinematicState();
+    SKinematic K = ReadPhysicsKinematicState();
     K.Velocity = NewVelocity;
 	SetKinematicState(K);
 }
 
 void ISpeedComponent::SetPhysAngularVelocityRaw(const FVector& NewAngularVelocity)
 {
-    SKinematic K = GetKinematicState();
+    SKinematic K = ReadPhysicsKinematicState();
     K.AngularVelocity = NewAngularVelocity;
 	SetKinematicState(K);
 }

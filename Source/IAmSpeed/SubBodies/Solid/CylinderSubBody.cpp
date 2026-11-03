@@ -1,4 +1,5 @@
 #include "CylinderSubBody.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "CylinderSweep.h"
 #include "BoxSubBody.h"
 #include "SphereSubBody.h"
@@ -7,7 +8,7 @@
 #include "IAmSpeed/Components/ISpeedComponent.h"
 #include <limits>
 #include <stdexcept>
-namespace
+namespace Speed::NativeKinematics
 {
 struct FCylinderRigidTrajectory
 {
@@ -16,7 +17,7 @@ struct FCylinderRigidTrajectory
     double Delta=0.,Span=0.,Motion=0.,Acceleration=0.,Error=0.;
     FCylinderRigidTrajectory(const USolidSubBody& Body,double Dt,double ShapeRadius)
     {
-        const auto& Parent=*Body.GetParentComponent();Owner=Parent.GetKinematicState();Delta=Dt;
+        const auto& Parent=*Body.GetParentComponent();Owner=Speed::NativeKinematics::FComponentRead::Current(Parent);Delta=Dt;
         const auto& K=Body.GetKinematicState();Offset=Owner.Rotation.UnrotateVector(K.Location-Owner.Location);LocalRotation=Owner.Rotation.Inverse()*K.Rotation;
         Span=Offset.Size()+ShapeRadius;const double W=Owner.AngularVelocity.Size()+Owner.AngularAcceleration.Size()*Dt;
         Motion=Dt*(Owner.Velocity.Size()+Owner.Acceleration.Size()*Dt+W*Span);
@@ -27,6 +28,7 @@ struct FCylinderRigidTrajectory
     {const auto K=Owner.Integrate(float(T*Delta));return FTransform(K.Rotation*LocalRotation,K.Location+K.Rotation.RotateVector(Offset));}
 };
 }
+using Speed::NativeKinematics::FCylinderRigidTrajectory;
 UCylinderSubBody::UCylinderSubBody(const FObjectInitializer& I):Super(I)
 {
     SubBodyType=ESubBodyType::Cylinder;bApplyRestForceSolidStorage()=false;bEnableConstraintOnSubBodyHitSolidStorage()=false;EnableFakePhysicsSolidStorage()=false;

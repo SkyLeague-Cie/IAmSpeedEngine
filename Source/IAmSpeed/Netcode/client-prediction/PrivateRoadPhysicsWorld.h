@@ -46,6 +46,11 @@ struct FPrivateRoadActorFrame
     std::shared_ptr<const FBranchProcessedInput> Input;
     bool CanMove=false,Frozen=false;
     uint16 CountdownFrames=0; // actual native values, diagnostics only
+    // Identity observations at the real owner capture, under its original
+    // routing scope. No reference escapes; these counts grant no lease.
+    uint8 PublicComponentKinematicViews=0;
+    uint8 PublicComponentKinematicFacadeViews=0;
+    uint8 PublicComponentKinematicOriginalViews=0;
     // Declared PARTIAL observation only. Missing is UNKNOWN, never zero/full.
     bool NativePartialValuesAvailable=false;
     CommonState::FSleepValues NativeSleep;

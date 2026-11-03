@@ -1,4 +1,5 @@
 #include "ISolidSweeper.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/NativeEpochDiagnostics.h"
 #include "IAmSpeed/SubBodies/Solid/SolidSubBody.h"
 #include "IAmSpeed/Components/ISpeedComponent.h"
@@ -17,7 +18,7 @@ bool ISolidSweeper::InternalSweep(UWorld* World, const FVector& Start, const FVe
     const bool bTorusTrajectory=Owner && Owner->GetStaticCollisionWorldForFrame();
     if (bTorusTrajectory)
     {
-        Trajectory.Owner=Owner->GetKinematicState();Trajectory.DeltaSeconds=delta;
+        Trajectory.Owner=Speed::NativeKinematics::FComponentRead::Current(*Owner);Trajectory.DeltaSeconds=delta;
         // Current physical offset includes centre of mass and wheel suspension.
         Trajectory.LocalOffset=Trajectory.Owner.Rotation.UnrotateVector(KS.Location-Trajectory.Owner.Location);
         Trajectory.LocalRotation=Trajectory.Owner.Rotation.Inverse()*KS.Rotation;
