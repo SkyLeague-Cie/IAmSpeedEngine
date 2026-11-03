@@ -1437,3 +1437,25 @@ The original owner thread and called facade/export objects must stay alive
 through every call/return; shared FImpl does not legalize concurrent destruction
 of the same C++ object or prevent std::thread::id reuse after the original thread
 exits. Host module lifetime remains required through all object destructors.
+
+
+## Source90 candidate: read-only original component values
+
+The private native completed publication additionally captures the eleven
+top-level members of its actual FOwnedComponentValues: published binding, base
+game/physics state, wheeled game/physics/input state, ordered constraints, actual
+sleep and quantization caches, actual static resting-world binding and support
+horizon. Typed nested fields are serialized without pointers or padding. A
+constraint PairKey is canonicalized only after validating its exact native
+HIGH32|LOW32 derivation against the original weak references. Unknown/stale
+references, foreign static worlds, changed bindings and nonfinite values leave
+this domain explicitly unavailable. They never become zero divergence.
+
+Native per-input tests require actual paired component captures on every frame,
+and an independent neutral trajectory must expose each input, including camera
+state which need not change COM kinematics. Separate typed codec refusal controls
+do not qualify a physical snapshot or owner. This candidate does not supply the
+driver/native-vehicle/world/configuration closure, a restore boundary lease,
+full-state synchronization, authoritative-K restore or localized rollback.
+Existing restoration guards are unchanged. Fresh native results are required;
+source89/native87 results do not transfer. Native90 is NOT_RUN at preparation.

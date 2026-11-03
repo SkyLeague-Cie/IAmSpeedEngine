@@ -3,9 +3,11 @@
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadKinematicDiagnostics.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateRoadPartialStateComparison.h"
 #include "IAmSpeed/Netcode/client-prediction/OriginalRoadBodyValueCapture.h"
+#include "IAmSpeed/Netcode/client-prediction/OriginalRoadComponentValueCapture.h"
 #include <array>
 #include <cstddef>
 #include <type_traits>
+#include <limits>
 #include "IAmSpeed/Driving/DrivingInput.h"
 #include "Misc/AutomationTest.h"
 #include "HAL/IConsoleManager.h"
@@ -324,6 +326,45 @@ bool TestResponseChannelCapture(FAutomationTestBase& Test)
         uint64(C::StoredResponseChannels),Changed,int(X.Bytes()==Y.Bytes())));
     return OK;
 }
+bool TestComponentValueCodecRefusals(FAutomationTestBase& Test)
+{
+    namespace B=Speed::Netcode::Prediction::OriginalBodyCapture;
+    namespace C=Speed::Netcode::Prediction::OriginalComponentCapture;
+    // Codec controls use real typed values/weak identities. They are not a
+    // physical component snapshot or admission of an authored graph.
+    TStrongObjectPtr<UBoxComponent> Known(NewObject<UBoxComponent>(GetTransientPackage()));
+    TStrongObjectPtr<UBoxComponent> Unknown(NewObject<UBoxComponent>(GetTransientPackage()));
+    if(!Known.IsValid()||!Unknown.IsValid())return false;
+    B::FReferences Refs;
+    if(!Refs.Add(Known.Get(),{0,0,uint16(B::EReferenceRole::StaticSource),0,1})||!Refs.Seal())return false;
+    const auto Refused=[&](const auto& Operation)
+    {try{B::FWriter W(Refs);Operation(W);return false;}catch(const Speed::Replay::FFieldError&){return true;}};
+    FPhysicalContactConstraint Constraint;Constraint.OtherComponent=Known.Get();
+    Constraint.PairKey=Speed::CommonState::ConstraintPairKey(0,Known->GetUniqueID());
+    B::FWriter A(Refs),Repeat(Refs);C::AppendConstraint(A,Constraint);C::AppendConstraint(Repeat,Constraint);
+    const bool KnownPair=A.Bytes()==Repeat.Bytes();
+    ++Constraint.PairKey;
+    const bool BadPair=Refused([&](auto& W){C::AppendConstraint(W,Constraint);});
+    Constraint.OtherComponent=Unknown.Get();Constraint.PairKey=Speed::CommonState::ConstraintPairKey(0,Unknown->GetUniqueID());
+    const bool UnknownWeak=Refused([&](auto& W){C::AppendConstraint(W,Constraint);});
+    auto* Garbage=NewObject<UBoxComponent>(GetTransientPackage());if(!Garbage)return false;
+    Constraint.OtherComponent=Garbage;Constraint.PairKey=Speed::CommonState::ConstraintPairKey(0,Garbage->GetUniqueID());Garbage->MarkAsGarbage();Garbage=nullptr;
+    const bool InvalidWeak=Refused([&](auto& W){C::AppendConstraint(W,Constraint);});
+    FWheeledPhysicsState Nonfinite;Nonfinite.AllowedAngularVelocity.X=std::numeric_limits<double>::quiet_NaN();
+    const bool NonfiniteRefusal=Refused([&](auto& W){C::Append(W,Nonfinite);});
+    FWheeledInputState Before,After;After.Camera.Yaw=1;
+    B::FWriter X(Refs),Y(Refs);C::Append(X,Before);C::Append(Y,After);
+    const bool CameraSensitivity=X.Bytes()!=Y.Bytes();
+    bool OK=Test.TestTrue(TEXT("typed native pair derivation and real known weak reference serialize repeatably"),KnownPair);
+    OK=Test.TestTrue(TEXT("undeclared native pair key refuses instead of losing its value"),BadPair)&&OK;
+    OK=Test.TestTrue(TEXT("unknown real weak identity refuses"),UnknownWeak)&&OK;
+    OK=Test.TestTrue(TEXT("genuine invalid weak identity refuses before canonical null"),InvalidWeak)&&OK;
+    OK=Test.TestTrue(TEXT("nonfinite typed component value refuses"),NonfiniteRefusal)&&OK;
+    OK=Test.TestTrue(TEXT("camera state remains in component data even without a COM change"),CameraSensitivity)&&OK;
+    Test.AddInfo(FString::Printf(TEXT("[OriginalComponentCodecControls] knownWeakPair=%d badPairRefusal=%d unknownWeakRefusal=%d invalidWeakRefusal=%d nonfiniteRefusal=%d cameraSensitivity=%d authoredCodecValuesOnly=1 fullState=0 restore=0"),
+        int(KnownPair),int(BadPair),int(UnknownWeak),int(InvalidWeak),int(NonfiniteRefusal),int(CameraSensitivity)));
+    return OK;
+}
 bool RunCase(FAutomationTestBase& Test,const FCase& Case)
 {
     auto Contract=Speed::Driving::MakeContract(Speed::Driving::FBindings{});if(!Contract)return false;
@@ -374,6 +415,7 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     P::FRemoteRequestHistory H(Seed.Remote,Actions,256,Retention),Z(Seed.Remote,Actions,256,Retention);
     uint32 PartialMissing=0,PartialDifferent=0,PartialResponse=0;
     uint32 BodyMissing=0,BodyDifferent=0,BodyNeutralResponse=0;
+    uint32 ComponentMissing=0,ComponentDifferent=0,ComponentNeutralResponse=0;
     FMaxima StiffnessResponse;uint32 StiffnessPartialResponse=0;
     FMaxima Difference,Response;uint32 FilterDifferences=0,StartupDifferences=0;int64 FirstLocalCanMove=-1,FirstAuthorityCanMove=-1;
     const auto Body=[](const P::FPrivateRoadPublication& Pub)->const FSimulationPresentationBody*
@@ -442,6 +484,14 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
             if(LF.OriginalBodyDomainValues!=AF.OriginalBodyDomainValues)++BodyDifferent;
             if(AF.OriginalBodyDomainValues!=B->Actors[0].OriginalBodyDomainValues)++BodyNeutralResponse;
         }
+        const auto& NF=B->Actors[0];
+        if(!LF.OriginalComponentDomainAvailable||!AF.OriginalComponentDomainAvailable||!NF.OriginalComponentDomainAvailable
+            ||LF.OriginalComponentDomainValues.empty()||AF.OriginalComponentDomainValues.empty()||NF.OriginalComponentDomainValues.empty())++ComponentMissing;
+        else
+        {
+            if(LF.OriginalComponentDomainValues!=AF.OriginalComponentDomainValues)++ComponentDifferent;
+            if(AF.OriginalComponentDomainValues!=NF.OriginalComponentDomainValues)++ComponentNeutralResponse;
+        }
         const auto Partial=P::ComparePrivateRoadPartialValues(LF,AF);
         const auto Control=P::ComparePrivateRoadPartialValues(AF,B->Actors[0]);
         if(Partial==P::EPrivateRoadPartialComparison::Unknown||Control==P::EPrivateRoadPartialComparison::Unknown)++PartialMissing;
@@ -458,7 +508,13 @@ bool RunCase(FAutomationTestBase& Test,const FCase& Case)
     Test.AddInfo(FString::Printf(TEXT("[NativePartialStateMeasure] case=%s action=%u frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u complete_causal_state=0 sockets=0 hardware=0"),Case.Name,Case.Action,uint32(Case.FrameCount),PartialMissing,PartialDifferent,PartialResponse));
     Test.AddInfo(FString::Printf(TEXT("[OriginalBodyDomainMeasure] case=%s fieldsPerStructSet=125 frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u completeEpoch=0 restore=0"),
         Case.Name,uint32(Case.FrameCount),BodyMissing,BodyDifferent,BodyNeutralResponse));
+    Test.AddInfo(FString::Printf(TEXT("[OriginalComponentDomainMeasure] case=%s topMembers=11 frames=%u unknownFrames=%u differingFrames=%u neutralResponseFrames=%u completeEpoch=0 restore=0"),
+        Case.Name,uint32(Case.FrameCount),ComponentMissing,ComponentDifferent,ComponentNeutralResponse));
     bool OK=Test.TestEqual(TEXT("actual declared native cache/wheel subset observed; missing is unknown"),PartialMissing,uint32(0));
+    OK=Test.TestEqual(TEXT("actual original component domain captured without unknown references"),ComponentMissing,uint32(0))&&OK;
+    if(!Case.ExpectMismatch)
+        OK=Test.TestEqual(TEXT("same inputs yield identical original component values at the same frame"),ComponentDifferent,uint32(0))&&OK;
+    OK=Test.TestTrue(TEXT("each isolated input changes component data against the independent neutral graph"),ComponentNeutralResponse>0)&&OK;
     OK=Test.TestEqual(TEXT("actual original six body domains captured without unknown references"),BodyMissing,uint32(0))&&OK;
     if(!Case.ExpectMismatch)
         OK=Test.TestEqual(TEXT("matched actual original body domains equal at every paired frame"),BodyDifferent,uint32(0))&&OK;
@@ -566,6 +622,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIASNativeInitialPublicationGate,"IAmSpeed.Netc
 bool FIASNativeInitialPublicationGate::RunTest(const FString&)
 {
     if(!IASAtomicRoadCampaign::TestResponseChannelCapture(*this))return false;
+    if(!IASAtomicRoadCampaign::TestComponentValueCodecRefusals(*this))return false;
     if(!TestActualIgnoredWeakEquality(*this))return false;
     namespace P=Speed::Netcode::Prediction;namespace V=Speed::Input::V2;
     using namespace Speed::Netcode;

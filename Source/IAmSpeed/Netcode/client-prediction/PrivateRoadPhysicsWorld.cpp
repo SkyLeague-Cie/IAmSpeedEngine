@@ -2,6 +2,7 @@
 #include "PrivateRoadNativeObjects.h"
 #include "PrivateRoadPartialStateObservation.h"
 #include "OriginalRoadBodyValueCapture.h"
+#include "OriginalRoadComponentValueCapture.h"
 #include "IAmSpeed/Driving/StockRoadCar.h"
 #include "IAmSpeed/Netcode/presentation-client/PresentationClientWorld.h"
 #include "IAmSpeed/World/Subsystem/SpeedWorldSubsystem.h"
@@ -1067,6 +1068,25 @@ bool FPrivateRoadPhysicsWorld::Step(const std::vector<FPrivateRoadRequest>& Requ
                 Out->Actors.back().OriginalBodyDomainsAvailable=true;
             }
             catch(const Replay::FFieldError&){} // explicit UNKNOWN, never a full-state admission
+        }
+        if(BodyReferencesComplete)
+        {
+            try
+            {
+                const auto* C=N->ComponentWeak.Get();
+                const auto* StaticWorld=I.Bridge->GetStaticCollisionWorld();
+                if(!C||!C->OwnedComponentValues||!StaticWorld
+                    ||!(StaticWorld->GetImmutableQueryIdentity1075()==I.Access->OriginalQueryIdentity)
+                    ||!I.AcquiredGraphStillLive())
+                    throw Replay::FFieldError("original component capture graph changed");
+                OriginalBodyCapture::FWriter W(BodyReferences);
+                W.Value(uint32(0x31434749));W.Value(uint16(1));W.Value(N->Seed.Actor);W.Value(N->Seed.Incarnation);
+                OriginalComponentCapture::AppendOwned(W,*C->OwnedComponentValues,N->StableId,
+                    StaticWorld,Geometry->Planes[0].SourceId);
+                Out->Actors.back().OriginalComponentDomainValues=W.Bytes();
+                Out->Actors.back().OriginalComponentDomainAvailable=true;
+            }
+            catch(const Replay::FFieldError&){} // UNKNOWN, no restore/exclusion authority
         }
         const auto* Hitbox=N->Component->GetHitboxSubBodyForConfiguration();
         if(!Hitbox)return Fail(TEXT("native hitbox diagnostics missing"));

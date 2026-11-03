@@ -56,6 +56,11 @@ struct FPrivateRoadActorFrame
     // Component, driver, native vehicle, source and lifetime domains are NOT covered.
     bool OriginalBodyDomainsAvailable=false;
     std::vector<uint8> OriginalBodyDomainValues;
+    // Actual eleven top-level private component value members. References use
+    // the original graph table; missing/stale/nonfinite remains UNKNOWN.
+    // This read-only domain is not the driver/world/config/lifetime closure.
+    bool OriginalComponentDomainAvailable=false;
+    std::vector<uint8> OriginalComponentDomainValues;
     bool NativeSolidInitializationWitness=false; // actual same-run recipe/value/binding witness only
     std::vector<uint8> NativeSolidValues; // twenty-one declared solid fields, not complete configuration
     std::vector<uint8> NativeWheelRuntimeValues; // fifteen declared runtime blocks only
