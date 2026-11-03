@@ -1,4 +1,5 @@
 #include "PrivateRoadPhysicsWorld.h"
+#include "IAmSpeed/Base/SpeedConstant.h"
 #include "PrivateRoadNativeObjects.h"
 #include "PrivateRoadPartialStateObservation.h"
 #include "OriginalRoadBodyValueCapture.h"

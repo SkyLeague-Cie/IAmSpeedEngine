@@ -1551,3 +1551,10 @@ Ordinary and custom wheeled adapters retain the original public virtual getter
 dispatch through the ISpeedComponent default. The six observations above query
 the current capture frame; they do not qualify all historical ring hit/miss or
 overwrite branches. Other alias families and restore guards remain unchanged.
+
+Source103/native96 did not compile: the moved history reader and its capture
+diagnostic used SpeedConstants without including its declaring SpeedConstant.h.
+Native compiler exit6, outer wrapper1, natural Job drain and zero source/Engine
+audit drift are preserved. QA and runtime96 were not run. Source104 adds that
+existing declaration header explicitly; it does not hard-code a history size,
+change a reader body or relax any restoration guard. A fresh tuple is required.
