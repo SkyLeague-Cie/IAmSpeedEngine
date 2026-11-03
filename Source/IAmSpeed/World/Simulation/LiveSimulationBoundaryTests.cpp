@@ -85,8 +85,12 @@ bool FIAmSpeedLiveBoundary01621Test::RunTest(const FString&)
     const auto WaitFor = [&](TFunctionRef<bool()> Predicate)
     {
         const double Deadline = FPlatformTime::Seconds() + 2.;
-        while (!Predicate() && FPlatformTime::Seconds() < Deadline) FPlatformProcess::SleepNoStats(.001f);
-        return Predicate();
+        for (;;)
+        {
+            if (Predicate()) return true;
+            if (FPlatformTime::Seconds() >= Deadline) return false;
+            FPlatformProcess::SleepNoStats(.001f);
+        }
     };
     TestFalse(TEXT("missing real publication does not park or pause"), bool(Driver->RequestLiveBoundary(Failure)));
     TestFalse(TEXT("refusal preserves running user intent"), Driver->IsOwnedSimulationPaused());
