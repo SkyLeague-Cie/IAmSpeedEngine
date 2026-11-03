@@ -1659,3 +1659,12 @@ remain explicitly outside this getter-reference tranche. They keep their exact
 existing storage/pose dispatch; no facade-array/native-pose hybrid is introduced.
 New compilation and native tests are required. Source108/build100 is a distinct
 frozen tuple; no historical result transfers to this draft.
+
+Source109/native101 failed compilation at the newly added constraint-reference
+diagnostic: PrivateRoadPhysicsWorld.cpp had only the forward declaration of
+FComponentRead. Native exit6/root1, natural drain, two real Job0 observations
+and zero input/protected/unexpected-output drift are retained; QA/runtime101
+were not run. Source110 adds the defining ComponentKinematicRead.h directly
+after the translation unit's own header. It changes no method, friend, equation,
+contact order, predicate or restoration guard. A new frozen tuple must compile
+and run; no source108/native100 result transfers to these changed sources.

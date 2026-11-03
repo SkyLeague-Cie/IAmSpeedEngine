@@ -1,4 +1,5 @@
 #include "PrivateRoadPhysicsWorld.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/Base/SpeedConstant.h"
 #include "PrivateRoadNativeObjects.h"
