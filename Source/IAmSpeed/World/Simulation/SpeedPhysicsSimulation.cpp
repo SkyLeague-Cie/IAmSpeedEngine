@@ -321,7 +321,7 @@ bool ASpeedPhysicsSimulation::UnbindPresentationAtFrameBoundary(
 		return false;
 	}
 	const bool bSuspensionLease = bOwnedLane && Boundary == ESimulationQuiescence::BoundaryAcknowledged;
-	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused) ResumeOwnedSimulation(); };
+	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused && !(LiveBoundaryControl && LiveBoundaryControl->ScopeActive)) ResumeOwnedSimulation(); };
 	FScopeLock Lock(&PresentationProducerMutex);
 	const int32 Index = PresentationProducers.IndexOfByKey(Producer);
 	ReleaseAtBoundary();
@@ -370,7 +370,7 @@ TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> ASpeedPhysicsSi
 		return Refuse(__LINE__);
 	}
 	const bool bSuspensionLease = bOwnedLane && Boundary == ESimulationQuiescence::BoundaryAcknowledged;
-	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused) ResumeOwnedSimulation(); };
+	ON_SCOPE_EXIT { if (bSuspensionLease) ResumeOwnedBoundaryService(); if (!bWasPaused && !(LiveBoundaryControl && LiveBoundaryControl->ScopeActive)) ResumeOwnedSimulation(); };
 	InitializeCanonicalFrame(0);
 	FSimulationPresentationBinding Binding;
 	Binding.OwnerStableId = SpeedWorldSubsystem->GetSimulationStableId(OwnerComponent);
@@ -664,7 +664,12 @@ void ASpeedPhysicsSimulation::StartOwnedWorkerIfReady()
             if(IsA<ARealTimeSimulation>())Speed::ActorDiagnostics::EndRun();
 #endif
 			CloseInputSessionsOnWorker();
-		});
+		}, [this]()
+        {
+            // Real structural ACK/release only: discard pacing debt through the
+            // existing pacing hook, without changing the user's pause intent.
+            OnOwnedSimulationPaused();
+        });
 	if (!SimulationWorker->Start(bOwnedSimulationPaused.Load() || Speed::CanonicalFrameDriver::IsOwnedThreadPaused()))
 	{
 		SimulationWorker.Reset();
@@ -682,6 +687,7 @@ void ASpeedPhysicsSimulation::StopOwnedWorker()
 		SimulationWorker->StopAndJoin();
 		SimulationWorker.Reset();
 	}
+    RetireLiveBoundaryRequest();
 }
 
 bool ASpeedPhysicsSimulation::PrepareControlledInputRun()
@@ -752,6 +758,21 @@ ESimulationQuiescence ASpeedPhysicsSimulation::TrySuspendOwnedBoundaryService(co
 	check(IsInGameThread());
 	if (GetActiveExecutionMode() != ESimulationExecutionMode::IAmSpeedThread)
 		return ESimulationQuiescence::Failed;
+    if (LiveBoundaryControl && LiveBoundaryControl->ScopeActive)
+    {
+        if (!HasLiveBoundaryScope() || OwnedBoundarySuspendDepth == MAX_uint32) return ESimulationQuiescence::Failed;
+        ++OwnedBoundarySuspendDepth;
+        return ESimulationQuiescence::BoundaryAcknowledged;
+    }
+    // A GT lifecycle/actor operation outside the callback may need the original
+    // legacy barrier. Cancel this driver's pending live request first, so it
+    // cannot park ahead of that legacy ACK and turn an ordinary bind/cleanup
+    // into a timeout. The worker disposes it before servicing the legacy park.
+    if (LiveBoundaryControl)
+    {
+        Speed::SimulationBoundary::Detail::RequestLiveBoundaryCancellation(LiveBoundaryControl);
+        if (SimulationWorker) SimulationWorker->WakeLiveBoundaryControl();
+    }
 	if (OwnedBoundarySuspendDepth)
 	{
 		// Joining while a recreation lease is held supersedes the parked
@@ -777,13 +798,22 @@ void ASpeedPhysicsSimulation::ResumeOwnedBoundaryService()
 {
 	check(IsInGameThread());
 	if (!OwnedBoundarySuspendDepth) return;
-	if (--OwnedBoundarySuspendDepth == 0 && SimulationWorker)
-		SimulationWorker->ResumeBoundaryService();
+    if (--OwnedBoundarySuspendDepth == 0 && SimulationWorker && !HasLiveBoundaryScope())
+    {
+        using namespace Speed::SimulationBoundary::Detail;
+        if (LiveBoundaryControl && LiveBoundaryControl->CallbackRan && !LiveBoundaryControl->ScopeActive
+            && LiveBoundaryControl->Phase.load() == ELiveBoundaryPhase::Executing)
+        {
+            LiveBoundaryControl->Phase.store(ELiveBoundaryPhase::ReleaseRequested);
+            SimulationWorker->WakeLiveBoundaryControl();
+        }
+        else SimulationWorker->ResumeBoundaryService();
+    }
 }
 
 bool ASpeedPhysicsSimulation::IsOwnedBoundaryServiceSuspended() const
 {
-	return OwnedBoundarySuspendDepth && SimulationWorker && SimulationWorker->IsBoundaryServiceSuspended();
+	return HasLiveBoundaryScope() || (OwnedBoundarySuspendDepth && SimulationWorker && SimulationWorker->IsBoundaryServiceSuspended());
 }
 
 void ASpeedPhysicsSimulation::PauseOwnedSimulation()
@@ -1926,4 +1956,179 @@ void ASpeedPhysicsSimulation::ServiceReplayCapture(const FSimulationSnapshot& Sn
         // Do not disable a newer GT registration while retiring this generation.
         if (ReplaySink==Sink) {ReplaySink.Reset();bReplayCaptureRequested.Store(false);}
     }
+}
+
+namespace Speed::SimulationBoundary
+{
+void Detail::RequestLiveBoundaryCancellation(const std::shared_ptr<Detail::FLiveBoundaryControl>& Control) noexcept
+{
+    if (!Control) return;
+    auto Phase = Control->Phase.load();
+    if (Phase == Detail::ELiveBoundaryPhase::Disposed || Phase == Detail::ELiveBoundaryPhase::Retired) return;
+    Control->CancelRequested.store(true);
+    while (Phase == Detail::ELiveBoundaryPhase::Requested || Phase == Detail::ELiveBoundaryPhase::Acknowledged)
+        if (Control->Phase.compare_exchange_weak(Phase, Detail::ELiveBoundaryPhase::ReleaseRequested)) break;
+}
+FLiveBoundaryRequest::~FLiveBoundaryRequest() { Detail::RequestLiveBoundaryCancellation(Control); }
+ASpeedPhysicsSimulation* FLiveBoundaryLease::Driver() const { return Control->Driver.Get(); }
+UWorld* FLiveBoundaryLease::World() const { return Control->World.Get(); }
+uint64 FLiveBoundaryLease::WorkerGeneration() const { return Control->Generation; }
+uint64 FLiveBoundaryLease::CompletedFrame() const { return Control->Snapshot.NumFrame; }
+uint64 FLiveBoundaryLease::NextFrame() const { return Control->NextFrame; }
+uint64 FLiveBoundaryLease::PublicationSerial() const { return Control->Snapshot.PublicationSerial; }
+const FSimulationSnapshot& FLiveBoundaryLease::Snapshot() const { return Control->Snapshot; }
+bool FLiveBoundaryLease::IsCurrent(const ASpeedPhysicsSimulation& Host) const { return Host.ValidateLiveBoundaryLease(*this); }
+}
+
+bool ASpeedPhysicsSimulation::HasLiveBoundaryScope() const
+{
+    using namespace Speed::SimulationBoundary::Detail;
+    return IsInGameThread() && IsValid(this) && !IsActorBeingDestroyed() && LiveBoundaryControl && LiveBoundaryControl->ScopeActive
+        && LiveBoundaryControl->Driver.Get() == this && LiveBoundaryControl->World.IsValid()
+        && LiveBoundaryControl->World.Get() == GetWorld() && !LiveBoundaryControl->World->bIsTearingDown
+        && LiveBoundaryControl->Generation == InputWorkerGeneration && IsOwnedWorkerExecutionMode()
+        && LiveBoundaryControl->Phase.load() == ELiveBoundaryPhase::Executing
+        && SimulationWorker && SimulationWorker->OwnsAcknowledgedLiveBoundary(LiveBoundaryControl);
+}
+
+bool ASpeedPhysicsSimulation::ValidateLiveBoundaryLease(const Speed::SimulationBoundary::FLiveBoundaryLease& Lease) const
+{
+    if (!HasLiveBoundaryScope() || Lease.Control != LiveBoundaryControl || LiveBoundaryControl->CancelRequested.load()) return false;
+    const auto& Control = *LiveBoundaryControl;
+    if (Control.Driver.Get() != this || !Control.World.IsValid() || Control.World.Get() != GetWorld()
+        || Control.World->bIsTearingDown || Control.Generation != InputWorkerGeneration
+        || !IsOwnedWorkerExecutionMode() || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load()
+        || bCanonicalPublicationTerminal.Load() || SimulationWorker->IsBoundaryServiceSuspendRequested()) return false;
+    FSimulationSnapshot Current;
+    return Control.Snapshot.NumFrame > 0 && Control.Snapshot.NumFrame != MAX_uint64
+        && Control.Snapshot.PublicationSerial && ReadLatestSimulationSnapshot(Current)
+        && Current.NumFrame == Control.Snapshot.NumFrame && Current.PublicationSerial == Control.Snapshot.PublicationSerial
+        && Control.NextFrame == CanonicalNumFrame && Control.NextFrame == Current.NumFrame + 1;
+}
+
+TUniquePtr<Speed::SimulationBoundary::FLiveBoundaryRequest> ASpeedPhysicsSimulation::RequestLiveBoundary(FString& Failure)
+{
+    using namespace Speed::SimulationBoundary;
+    Failure.Empty();
+    if (!IsInGameThread() || !IsValid(this) || IsActorBeingDestroyed() || !HasActorBegunPlay() || !GetWorld() || GetWorld()->bIsTearingDown
+        || !IsOwnedWorkerExecutionMode() || !SimulationWorker || !SimulationWorker->IsRunning()
+        || bInputOwnerRetired.Load() || bOwnedWorkerTerminal.Load() || bCanonicalPublicationTerminal.Load()
+        || OwnedBoundarySuspendDepth || SimulationWorker->IsBoundaryServiceSuspendRequested())
+    { Failure = TEXT("Live boundary requires an available owned worker without a legacy suspension"); return {}; }
+    if (LiveBoundaryControl)
+    {
+        const auto Phase = LiveBoundaryControl->Phase.load();
+        if (Phase != Detail::ELiveBoundaryPhase::Disposed && Phase != Detail::ELiveBoundaryPhase::Retired)
+        { Failure = TEXT("A live boundary request still owns its disposition"); return {}; }
+        LiveBoundaryControl.reset();
+    }
+    FSimulationSnapshot Current;
+    if (!ReadLatestSimulationSnapshot(Current) || !Current.PublicationSerial || !Current.NumFrame || Current.NumFrame == MAX_uint64)
+    { Failure = TEXT("Live boundary requires a real completed frame after frame zero"); return {}; }
+    auto Control = std::make_shared<Detail::FLiveBoundaryControl>();
+    Control->Driver = this; Control->World = GetWorld(); Control->Generation = InputWorkerGeneration;
+    auto Request = TUniquePtr<FLiveBoundaryRequest>(new FLiveBoundaryRequest(Control));
+    if (!SimulationWorker->RequestLiveBoundaryControl(Control))
+    { Failure = TEXT("Live boundary worker refused the structural request"); return {}; }
+    LiveBoundaryControl = std::move(Control);
+    return Request;
+}
+
+Speed::SimulationBoundary::ELiveBoundaryResult ASpeedPhysicsSimulation::PollLiveBoundary(
+    Speed::SimulationBoundary::FLiveBoundaryRequest& Request,
+    TFunctionRef<bool(const Speed::SimulationBoundary::FLiveBoundaryLease&, FString&)> AtBoundary, FString& Failure)
+{
+    using namespace Speed::SimulationBoundary;
+    using namespace Speed::SimulationBoundary::Detail;
+    Failure.Empty();
+    const auto Control = Request.Control;
+    if (!IsInGameThread() || !Control || Control->Driver.Get() != this)
+    { Failure = TEXT("Live boundary request belongs to another owner or thread"); return ELiveBoundaryResult::Rejected; }
+    const bool CurrentOwner = IsValid(this) && !IsActorBeingDestroyed() && HasActorBegunPlay() && Control->World.IsValid() && Control->World.Get() == GetWorld()
+        && !Control->World->bIsTearingDown && Control->Generation == InputWorkerGeneration
+        && IsOwnedWorkerExecutionMode() && SimulationWorker && SimulationWorker->IsRunning() && !SimulationWorker->bStopRequested.Load() && !bInputOwnerRetired.Load()
+        && !bOwnedWorkerTerminal.Load() && !bCanonicalPublicationTerminal.Load();
+    if (!CurrentOwner)
+    {
+        Control->RetirementRequested = true;
+        Control->Failure = TEXT("Live boundary owner/world/generation was retired before disposition");
+        RequestLiveBoundaryCancellation(Control);
+        if (SimulationWorker) SimulationWorker->WakeLiveBoundaryControl();
+    }
+    auto Phase = Control->Phase.load();
+    if (Phase == ELiveBoundaryPhase::Retired)
+    { Failure = Control->Failure; return ELiveBoundaryResult::Retired; }
+    if (Phase == ELiveBoundaryPhase::Disposed)
+    {
+        Failure = Control->Failure;
+        if (LiveBoundaryControl == Control) LiveBoundaryControl.reset();
+        if (Control->RetirementRequested) return ELiveBoundaryResult::Retired;
+        if (Control->CancelRequested.load()) return ELiveBoundaryResult::Cancelled;
+        return Control->CallbackRan && Control->CallbackAccepted ? ELiveBoundaryResult::Completed : ELiveBoundaryResult::Rejected;
+    }
+    if (!CurrentOwner || Control->CancelRequested.load() || Phase != ELiveBoundaryPhase::Acknowledged)
+        return ELiveBoundaryResult::Waiting;
+    if (LiveBoundaryControl != Control || OwnedBoundarySuspendDepth || SimulationWorker->IsBoundaryServiceSuspendRequested()
+        || !SimulationWorker->OwnsAcknowledgedLiveBoundary(Control))
+    {
+        Control->Failure = TEXT("Live boundary ACK overlaps another structural owner");
+        Control->CallbackRan = true;
+        Control->Phase.store(ELiveBoundaryPhase::ReleaseRequested);
+        SimulationWorker->WakeLiveBoundaryControl();
+        return ELiveBoundaryResult::Waiting;
+    }
+    FSimulationSnapshot Current;
+    if (!ReadLatestSimulationSnapshot(Current) || !Current.PublicationSerial || !Current.NumFrame || Current.NumFrame == MAX_uint64
+        || CanonicalNumFrame != Current.NumFrame + 1)
+    {
+        Control->Failure = TEXT("Live boundary ACK has no exact completed publication/next frame");
+        Control->CallbackRan = true;
+        Control->Phase.store(ELiveBoundaryPhase::ReleaseRequested);
+        SimulationWorker->WakeLiveBoundaryControl();
+        return ELiveBoundaryResult::Waiting;
+    }
+    Control->Snapshot = std::move(Current); Control->NextFrame = CanonicalNumFrame;
+    Control->Phase.store(ELiveBoundaryPhase::Executing); Control->ScopeActive = true; Control->CallbackRan = true;
+    FLiveBoundaryLease Lease(Control);
+    try { Control->CallbackAccepted = Lease.IsCurrent(*this) && AtBoundary(Lease, Control->Failure); }
+    catch (...) { Control->CallbackAccepted = false; Control->Failure = TEXT("Live boundary callback failed"); }
+    if (!Lease.IsCurrent(*this))
+    { Control->CallbackAccepted = false; Control->RetirementRequested = !Control->CancelRequested.load(); Control->Failure = TEXT("Live boundary identity changed or cancellation requested during callback"); }
+    Control->ScopeActive = false;
+    // Admission required zero preexisting legacy depth, and every nested call
+    // borrowed this request's ACK without sending a legacy worker request.
+    // Those borrows expire with the callback. Reject a leaked borrow without
+    // retaining a physical hold or releasing an independent legacy suspension.
+    if (OwnedBoundarySuspendDepth)
+    {
+        OwnedBoundarySuspendDepth = 0;
+        Control->CallbackAccepted = false;
+        Control->Failure = TEXT("Live boundary callback retained an expired nested borrow");
+    }
+    if (Control->Phase.load() == ELiveBoundaryPhase::Retired) return ELiveBoundaryResult::Retired;
+    Control->Phase.store(ELiveBoundaryPhase::ReleaseRequested);
+    if (SimulationWorker) SimulationWorker->WakeLiveBoundaryControl();
+    return ELiveBoundaryResult::Waiting;
+}
+
+Speed::SimulationBoundary::ELiveBoundaryResult ASpeedPhysicsSimulation::CancelLiveBoundary(
+    Speed::SimulationBoundary::FLiveBoundaryRequest& Request, FString& Failure)
+{
+    using namespace Speed::SimulationBoundary;
+    if (!IsInGameThread() || !Request.Control || Request.Control->Driver.Get() != this)
+    { Failure = TEXT("Live boundary cancellation belongs to another owner or thread"); return ELiveBoundaryResult::Rejected; }
+    Detail::RequestLiveBoundaryCancellation(Request.Control);
+    if (SimulationWorker) SimulationWorker->WakeLiveBoundaryControl();
+    return PollLiveBoundary(Request, [](const FLiveBoundaryLease&, FString&) { return false; }, Failure);
+}
+
+void ASpeedPhysicsSimulation::RetireLiveBoundaryRequest()
+{
+    if (!LiveBoundaryControl) return;
+    // StopOwnedWorker has joined: no service callback or physical frame can
+    // borrow this request after its actor/world/input generation is retired.
+    LiveBoundaryControl->ScopeActive = false;
+    LiveBoundaryControl->RetirementRequested = true;
+    LiveBoundaryControl->Phase.store(Speed::SimulationBoundary::Detail::ELiveBoundaryPhase::Retired);
+    LiveBoundaryControl.reset();
 }

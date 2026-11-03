@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
+#include "LiveSimulationBoundary.h"
+#include <mutex>
 
 #if WITH_DEV_AUTOMATION_TESTS
 namespace Speed::Testing
@@ -68,16 +70,18 @@ private:
 	FSimulationWorkerWaitContext(
 		FEvent& InWakeEvent,
 		const TAtomic<bool>& InStopRequested,
-		const TAtomic<bool>& InPaused)
+		const TAtomic<bool>& InPaused, const TAtomic<bool>& InLiveBoundaryRequested)
 		: WakeEvent(InWakeEvent)
 		, StopRequested(InStopRequested)
 		, Paused(InPaused)
+        , LiveBoundaryRequested(InLiveBoundaryRequested)
 	{
 	}
 
 	FEvent& WakeEvent;
 	const TAtomic<bool>& StopRequested;
 	const TAtomic<bool>& Paused;
+    const TAtomic<bool>& LiveBoundaryRequested;
 };
 
 /**
@@ -94,7 +98,7 @@ public:
 	using FCloseOnWorker = TFunction<void()>;
 
 	FSimulationWorker(FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames,
-		FServiceBoundary InServiceBoundary = {}, FCloseOnWorker InCloseOnWorker = {});
+		FServiceBoundary InServiceBoundary = {}, FCloseOnWorker InCloseOnWorker = {}, FCloseOnWorker InStructuralBoundaryReleased = {});
 	~FSimulationWorker();
 
 	/** Starts the one worker thread; subsequent calls are rejected. */
@@ -124,6 +128,17 @@ public:
 	bool IsPaused() const { return bPaused.Load(); }
 
 private:
+    friend class ASpeedPhysicsSimulation;
+    friend class FIAmSpeedLiveBoundary01621Test;
+    bool RequestLiveBoundaryControl(const std::shared_ptr<Speed::SimulationBoundary::Detail::FLiveBoundaryControl>& Control);
+    bool OwnsAcknowledgedLiveBoundary(const std::shared_ptr<Speed::SimulationBoundary::Detail::FLiveBoundaryControl>& Control) const;
+    void WakeLiveBoundaryControl();
+    bool ServiceLiveBoundaryControl();
+    mutable std::mutex LiveBoundaryMutex;
+    std::shared_ptr<Speed::SimulationBoundary::Detail::FLiveBoundaryControl> LiveBoundaryControl;
+    TAtomic<bool> bLiveBoundaryRequested = false;
+    uint64 LiveBoundaryRequestSerial = 0;
+    FCloseOnWorker StructuralBoundaryReleased;
 	uint32 Run() override;
 	void Stop() override;
 

@@ -46,8 +46,9 @@ static void ObserveSimulationWait(ESimulationWaitAuditEvent Event,
 
 FSimulationWorker::FSimulationWorker(
 	FWork&& InWork, FWaitBetweenFrames&& InWaitBetweenFrames,
-	FServiceBoundary InServiceBoundary, FCloseOnWorker InCloseOnWorker)
-	: Work(MoveTemp(InWork))
+	FServiceBoundary InServiceBoundary, FCloseOnWorker InCloseOnWorker, FCloseOnWorker InStructuralBoundaryReleased)
+	: StructuralBoundaryReleased(MoveTemp(InStructuralBoundaryReleased))
+    , Work(MoveTemp(InWork))
 	, WaitBetweenFrames(MoveTemp(InWaitBetweenFrames))
 	, ServiceBoundary(MoveTemp(InServiceBoundary))
 	, CloseOnWorker(MoveTemp(InCloseOnWorker))
@@ -67,7 +68,7 @@ ESimulationWaitResult FSimulationWorkerWaitContext::WaitUntil(
         Speed::Testing::ObserveSimulationWait(Speed::Testing::ESimulationWaitAuditEvent::Entry,
             DeadlineSeconds, ClampedPrecisionWindowSeconds, 0.0, 0, -1);
 #endif
-	while (!StopRequested.Load() && !Paused.Load())
+	while (!StopRequested.Load() && !Paused.Load() && !LiveBoundaryRequested.Load())
 	{
 		const double RemainingSeconds = DeadlineSeconds - FPlatformTime::Seconds();
 #if WITH_DEV_AUTOMATION_TESTS
@@ -295,12 +296,24 @@ void FSimulationWorker::StopAndJoin()
 uint32 FSimulationWorker::Run()
 {
 	FSimulationWorkerWaitContext WaitContext(
-		*WakeEvent, bStopRequested, bPaused);
+		*WakeEvent, bStopRequested, bPaused, bLiveBoundaryRequested);
 	uint32 ExitCode = 0;
 	try
 	{
 		while (!bStopRequested.Load())
 		{
+            if (ServiceLiveBoundaryControl())
+            {
+                // The acknowledged structural park is also a real pause ACK,
+                // without changing the user-owned pause request or its serial.
+                if (bPaused.Load())
+                {
+                    PauseAckSerial.Store(PauseRequestSerial.Load());
+                    PauseAcknowledgedEvent->Trigger();
+                }
+                WakeEvent->Wait(1);
+                continue;
+            }
 			if (bBoundaryServiceSuspended.Load())
 			{
 				const uint64 Request = BoundarySuspendRequestSerial.Load();
@@ -382,9 +395,93 @@ uint32 FSimulationWorker::Run()
 	// join can let the GT release their storage, on every exit path.
 	try { if (CloseOnWorker) CloseOnWorker(); }
 	catch (...) { ExitCode = 1; }
+    {
+        std::lock_guard<std::mutex> Lock(LiveBoundaryMutex);
+        if (LiveBoundaryControl)
+        {
+            LiveBoundaryControl->Phase.store(Speed::SimulationBoundary::Detail::ELiveBoundaryPhase::Retired);
+            LiveBoundaryControl.reset();
+        }
+        bLiveBoundaryRequested.Store(false);
+    }
 	bStopRequested.Store(true);
 	bRunning.Store(false);
 	PauseAcknowledgedEvent->Trigger();
 	BoundarySuspendedEvent->Trigger();
 	return ExitCode;
+}
+
+bool FSimulationWorker::RequestLiveBoundaryControl(
+    const std::shared_ptr<Speed::SimulationBoundary::Detail::FLiveBoundaryControl>& Control)
+{
+    std::lock_guard<std::mutex> Lock(LiveBoundaryMutex);
+    if (!Control || LiveBoundaryControl || bBoundaryServiceSuspended.Load()
+        || !bRunning.Load() || bStopRequested.Load() || LiveBoundaryRequestSerial == MAX_uint64) return false;
+    Control->RequestSerial = ++LiveBoundaryRequestSerial;
+    LiveBoundaryControl = Control;
+    bLiveBoundaryRequested.Store(true);
+    WakeEvent->Trigger();
+    return true;
+}
+
+bool FSimulationWorker::OwnsAcknowledgedLiveBoundary(
+    const std::shared_ptr<Speed::SimulationBoundary::Detail::FLiveBoundaryControl>& Control) const
+{
+    using namespace Speed::SimulationBoundary::Detail;
+    std::lock_guard<std::mutex> Lock(LiveBoundaryMutex);
+    if (!Control || LiveBoundaryControl != Control || !Control->RequestSerial
+        || !bRunning.Load() || bStopRequested.Load()) return false;
+    const auto Phase = Control->Phase.load();
+    return Phase == ELiveBoundaryPhase::Acknowledged || Phase == ELiveBoundaryPhase::Executing;
+}
+
+void FSimulationWorker::WakeLiveBoundaryControl()
+{
+    if (WakeEvent) WakeEvent->Trigger();
+}
+
+bool FSimulationWorker::ServiceLiveBoundaryControl()
+{
+    using namespace Speed::SimulationBoundary::Detail;
+    bool Parked = false, ResetPacing = false;
+    std::shared_ptr<FLiveBoundaryControl> Releasing;
+    {
+        std::lock_guard<std::mutex> Lock(LiveBoundaryMutex);
+        if (!LiveBoundaryControl) return false;
+        const auto Control = LiveBoundaryControl;
+        auto Phase = Control->Phase.load();
+        if (Control->CancelRequested.load() && Phase != ELiveBoundaryPhase::Executing)
+        {
+            if (Phase == ELiveBoundaryPhase::Requested || Phase == ELiveBoundaryPhase::Acknowledged)
+                Control->Phase.compare_exchange_strong(Phase, ELiveBoundaryPhase::ReleaseRequested);
+            Phase = Control->Phase.load();
+        }
+        if (Phase == ELiveBoundaryPhase::ReleaseRequested)
+        {
+            ResetPacing = Control->WasAcknowledged.load();
+            Releasing = Control;
+        }
+        else
+        {
+            if (Phase == ELiveBoundaryPhase::Requested)
+            {
+                if (Control->Phase.compare_exchange_strong(Phase, ELiveBoundaryPhase::Acknowledged))
+                    Control->WasAcknowledged.store(true);
+            }
+            Phase = Control->Phase.load();
+            Parked = Phase == ELiveBoundaryPhase::Acknowledged || Phase == ELiveBoundaryPhase::Executing;
+        }
+    }
+    // Only an actually acknowledged structural interruption resets wall-clock
+    // pacing. The hook changes no user pause flag or canonical frame.
+    if (Releasing)
+    {
+        try { if (ResetPacing && StructuralBoundaryReleased) StructuralBoundaryReleased(); }
+        catch (...) { Releasing->Phase.store(ELiveBoundaryPhase::Retired); throw; }
+        std::lock_guard<std::mutex> Lock(LiveBoundaryMutex);
+        if (LiveBoundaryControl == Releasing) LiveBoundaryControl.reset();
+        bLiveBoundaryRequested.Store(false);
+        Releasing->Phase.store(bStopRequested.Load() ? ELiveBoundaryPhase::Retired : ELiveBoundaryPhase::Disposed);
+    }
+    return Parked;
 }

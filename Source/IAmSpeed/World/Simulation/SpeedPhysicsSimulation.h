@@ -8,6 +8,7 @@
 #include "CanonicalFrameDriver.h"
 #include "SimulationFrameJournal.h"
 #include "SimulationWorker.h"
+#include "LiveSimulationBoundary.h"
 #include "IAmSpeed/World/Analytic/AnalyticCaseSatDiagnostics.h"
 #include "FrameParallelTiming.h"
 #include "CaseCallerCoverage276.h"
@@ -71,6 +72,8 @@ class IAMSPEED_API ASpeedPhysicsSimulation : public ASpeedSimulation
 	friend class FIAmSpeedProducedDeviceLifecycleTest;
 	friend class FIAmSpeedControllerInputLifecycleTest;
 	friend class FIAmSpeedAdapterRespawnBoundaryTest;
+    friend class FIAmSpeedLiveBoundary01621Test;
+    friend class FSkyReplayLiveFreeplayHelpers01621Test;
 #endif
 
 public:
@@ -128,6 +131,17 @@ public:
 			const FSimulationPresentationBinding&)> Factory,
 		TSharedPtr<ISimulationPresentationProducer, ESPMode::ThreadSafe> Previous = nullptr,
 		ISimulationPresentationAdapterCommit* AdapterCommit = nullptr);
+    /** GT-only live structural transaction. It never changes user pause intent,
+     * input generations or frame addressing. Non-owned/legacy hosts are refused.
+     * Callback runs at most once under the actual ACK and must not retain Lease.
+     * Waiting also covers cancellation/release until the worker proves disposal. */
+    TUniquePtr<Speed::SimulationBoundary::FLiveBoundaryRequest> RequestLiveBoundary(FString& Failure);
+    Speed::SimulationBoundary::ELiveBoundaryResult PollLiveBoundary(
+        Speed::SimulationBoundary::FLiveBoundaryRequest& Request,
+        TFunctionRef<bool(const Speed::SimulationBoundary::FLiveBoundaryLease&, FString&)> AtBoundary,
+        FString& Failure);
+    Speed::SimulationBoundary::ELiveBoundaryResult CancelLiveBoundary(
+        Speed::SimulationBoundary::FLiveBoundaryRequest& Request, FString& Failure);
 	/** Reads an exact physics-side camera sample; never interpolates. */
 	bool ReadCanonicalCameraSample(uint64 NumFrame, FCameraCanonicalSample& Out) const;
 	/** Reads a contiguous exact-frame camera range; never interpolates. */
@@ -288,6 +302,11 @@ protected:
 	Speed::SimulationBoundary::FFrameHashJournal FrameHashes;
 
 private:
+    friend class Speed::SimulationBoundary::FLiveBoundaryLease;
+    bool ValidateLiveBoundaryLease(const Speed::SimulationBoundary::FLiveBoundaryLease& Lease) const;
+    bool HasLiveBoundaryScope() const;
+    void RetireLiveBoundaryRequest();
+    std::shared_ptr<Speed::SimulationBoundary::Detail::FLiveBoundaryControl> LiveBoundaryControl;
 #if !UE_BUILD_SHIPPING
     Speed::Analytic::CaseSatDiagnostics::FCaseIdentity CaseSatDiagnosticIdentity;
     Speed::FNativeFrameWitnessCaseIdentity NativeWitnessCase;
