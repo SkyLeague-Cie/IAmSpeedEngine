@@ -131,6 +131,7 @@ struct FPrivateRoadBirthInitializationProbe
 
     bool ActualBirthOperation=false,ForeignBodyRefused=false,ForeignParentRefused=false,ForeignInverseRefused=false;
     bool StepHitRefusedInBirth=false,OwnBodyUnchangedAfterRefusals=false;
+    bool StepResetRefusedInBirth=false,StepResolveRefusedInBirth=false;
     bool FaultAfterFirstInitializerReached=false,CreateReturnedNull=false;
     // Only existing independent actual constructor/destructor counters escape.
     // No own graph, simulation, configuration, UObject or native view retained.
@@ -148,6 +149,9 @@ struct FPrivateRoadHitAcceptanceProbe
     bool BirthInitializationRefusedDuringStep=false;
     bool BirthWheelBindingRefusedDuringStep=false;
     bool BirthOwnerTraversalRefusedDuringStep=false;
+    uint32 MassBoundaryRefusals=0,MassLegacyResetReturns=0,MassNativeResetReturns=0,MassNoHitResolveReturns=0;
+    bool MassRefusalsBeforeWrite=false,MassResetLegacyNativeEqual=false,MassResetDistinctBoxWheel=false,MassNoHitUnchanged=false;
+
 };
 #endif
 // Experimental finite native flat-road kernel. Creates actual, private native
@@ -167,6 +171,7 @@ class IAMSPEED_API FPrivateRoadPhysicsWorld final
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     struct FHitAcceptanceDiagnosticContext;
     static bool ProbeHitAcceptanceRetained(FImpl& I,const FPrivateNativeOperation& Operation,FHitAcceptanceDiagnosticContext& Context);
+    static bool ProbeMassResponseRetained(FImpl& I,const FPrivateNativeOperation& Operation,FHitAcceptanceDiagnosticContext& Context);
 #endif
     static bool StepRetained(const std::shared_ptr<FImpl>& Root,const std::vector<FPrivateRoadRequest>& Requests,bool Resimulation,FString& Why
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING

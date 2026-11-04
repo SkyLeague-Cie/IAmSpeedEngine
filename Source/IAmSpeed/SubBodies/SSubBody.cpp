@@ -453,3 +453,11 @@ const TArray<TWeakObjectPtr<USWheelSubBody>>& USSubBody::GetExternalWheelSubBodi
 }
 
 
+
+// Unsupported native dispatch stays closed. No public operation issuer.
+void USSubBody::ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{(void)Operation;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USSubBody::ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta)
+{(void)Operation;(void)Delta;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}
+void USSubBody::ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime)
+{(void)Operation;(void)Delta;(void)SimTime;throw Speed::Netcode::Prediction::FPrivateNativeStorageUnavailable{};}

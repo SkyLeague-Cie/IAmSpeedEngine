@@ -52,6 +52,18 @@ bool FIASPrivateRoadShapeHitAcceptance::RunTest(const FString&)
     TestTrue(TEXT("unchanged base differs from Box and Wheel"),Probe.BaseBehaviorDistinguished);
     TestEqual(TEXT("foreign subject, peer and parent rejected"),Probe.Refusals,uint32(3));
     TestTrue(TEXT("each rejection precedes that entry's first write"),Probe.AllRefusalsBeforeWrite);
+    TestEqual(TEXT("twelve actual mass/reset/resolve boundary refusals"),Probe.MassBoundaryRefusals,uint32(12));
+    TestTrue(TEXT("foreign/null/wrong-parent/late-roster refusals precede named buffer writes"),Probe.MassRefusalsBeforeWrite);
+    TestEqual(TEXT("one genuine legacy component reset returned"),Probe.MassLegacyResetReturns,uint32(1));
+    TestEqual(TEXT("one genuine typed component reset returned"),Probe.MassNativeResetReturns,uint32(1));
+    TestTrue(TEXT("same authored persistent/transient constraints and body buffers after legacy/native reset"),Probe.MassResetLegacyNativeEqual);
+    TestTrue(TEXT("Box clears current hit while real Wheel reset keeps current hit"),Probe.MassResetDistinctBoxWheel);
+    TestEqual(TEXT("two actual nonblocking native response entries returned"),Probe.MassNoHitResolveReturns,uint32(2));
+    TestTrue(TEXT("nonblocking native response leaves named buffers unchanged"),Probe.MassNoHitUnchanged);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadMassResponseBoundary] refusals=%u beforeWrite=%d legacyResetReturns=%u nativeResetReturns=%u resetEqual=%d distinctBoxWheel=%d noHitReturns=%u noHitUnchanged=%d. Actual Step controls and named fixture buffers only; not complete state or restoration."),
+        Probe.MassBoundaryRefusals,int(Probe.MassRefusalsBeforeWrite),Probe.MassLegacyResetReturns,Probe.MassNativeResetReturns,
+        int(Probe.MassResetLegacyNativeEqual),int(Probe.MassResetDistinctBoxWheel),Probe.MassNoHitResolveReturns,int(Probe.MassNoHitUnchanged)));
+
     if(!TestTrue(TEXT("foreign graph remains usable"),Foreign->Step(Requests,false,Why))
         ||!TestTrue(TEXT("independent unchanged reference advances"),Reference->Step(Requests,false,Why)))return false;
     auto O=Own->ReadLatest(),F=Foreign->ReadLatest(),R=Reference->ReadLatest();

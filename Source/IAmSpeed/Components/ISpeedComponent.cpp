@@ -2,6 +2,7 @@
 #include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
+#include "IAmSpeed/Netcode/client-prediction/PrivateRoadNativeObjects.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/ComponentKinematicRead.h"
 #include "IAmSpeed/World/Simulation/Internal/OriginKinematicView.h"
@@ -431,31 +432,73 @@ SKinematic ISpeedComponent::GetOriginKinematicStateForFrame(const unsigned int& 
 	return OriginState;
 }
 
-void ISpeedComponent::ResetForFrame(const float& Delta)
+class ISpeedComponent::FLegacyFrameResetAccess final
 {
-	for (int32 ConstraintIdx = PhysicalConstraintsStorage().Num() - 1; ConstraintIdx >= 0; --ConstraintIdx)
+    ISpeedComponent& Owner;
+public:
+    explicit FLegacyFrameResetAccess(ISpeedComponent& Value):Owner(Value){}
+    auto& Constraints() const {return Owner.PhysicalConstraintsStorage();}
+    const TArray<USSubBody*>& Bodies() const {return Owner.GetSubBodies();}
+    bool StillRelevant(const FPhysicalContactConstraint& Value) const {return Owner.IsPhysicalConstraintStillRelevant(Value);}
+    void ResetChild(USSubBody& Body,const float& Delta) const {Body.ResetForFrame(Delta);}
+};
+class ISpeedComponent::FNativeFrameResetAccess final
+{
+    ISpeedComponent& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+public:
+    FNativeFrameResetAccess(ISpeedComponent& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Op):Owner(Value),Operation(Op)
+    {
+        namespace P=Speed::Netcode::Prediction;
+        P::FPrivateNativeStorageAccess::RequireStep(Operation);
+        Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,&Owner);
+        // Preflight the entire actual roster before constraints or an earlier
+        // child can be written. Each dispatch revalidates its original subject.
+        for(const USSubBody* Body:Bodies())
+        {
+            Speed::NativeKinematics::FBodyWrite::ValidateResetFrame(Operation,Body);
+            if(Speed::NativeKinematics::FBodyRead::Parent(Operation,*Body)!=&Owner)
+                throw P::FPrivateNativeStorageUnavailable{};
+        }
+    }
+    FNativeFrameResetAccess(const FNativeFrameResetAccess&)=delete;
+    FNativeFrameResetAccess& operator=(const FNativeFrameResetAccess&)=delete;
+    auto& Constraints() const
+    {return Speed::NativeKinematics::FComponentWrite::FrameConstraints(Operation,Owner);}
+    const TArray<USSubBody*>& Bodies() const {return Speed::NativeKinematics::FComponentRead::SubBodies(Operation,Owner);}
+    bool StillRelevant(const FPhysicalContactConstraint& Value) const {return Owner.IsPhysicalConstraintStillRelevantNative(Operation,Value);}
+    void ResetChild(USSubBody& Body,const float& Delta) const {Speed::NativeKinematics::FBodyWrite::ResetFrame(Operation,&Body,Delta);}
+};
+template<class TAccess>
+void ISpeedComponent::ResetForFrameBody(TAccess& Storage,const float& Delta)
+{
+	for (int32 ConstraintIdx = Storage.Constraints().Num() - 1; ConstraintIdx >= 0; --ConstraintIdx)
 	{
-		FPhysicalContactConstraint& Constraint = PhysicalConstraintsStorage()[ConstraintIdx];
+		FPhysicalContactConstraint& Constraint = Storage.Constraints()[ConstraintIdx];
 
 		if (!Constraint.bPersistent)
 		{
-			PhysicalConstraintsStorage().RemoveAtSwap(ConstraintIdx);
+			Storage.Constraints().RemoveAtSwap(ConstraintIdx);
 			continue;
 		}
 
 		Constraint.FramesSinceSeen++;
 		if (Constraint.FramesSinceSeen > MaxConstraintPersistenceFrames ||
-			!IsPhysicalConstraintStillRelevant(Constraint))
+			!Storage.StillRelevant(Constraint))
 		{
-			PhysicalConstraintsStorage().RemoveAtSwap(ConstraintIdx);
+			Storage.Constraints().RemoveAtSwap(ConstraintIdx);
 		}
 	}
 
-	for (USSubBody* SubBody : GetSubBodies())
+	for (USSubBody* SubBody : Storage.Bodies())
 	{
-		SubBody->ResetForFrame(Delta);
+		Storage.ResetChild(*SubBody,Delta);
 	}
 }
+void ISpeedComponent::ResetForFrame(const float& Delta)
+{FLegacyFrameResetAccess Storage(*this);ResetForFrameBody(Storage,Delta);}
+void ISpeedComponent::ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta)
+{FNativeFrameResetAccess Storage(*this,Operation);ResetForFrameBody(Storage,Delta);}
+
 
 SComponentTOI ISpeedComponent::SweepTOISubBodies(
 	const float& RemainingDelta, const float& LastSubDelta

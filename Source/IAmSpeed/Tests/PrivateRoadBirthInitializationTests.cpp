@@ -33,9 +33,12 @@ bool FIASPrivateRoadBirthInitialization::RunTest(const FString&)
         TestTrue(*(FString(Name)+TEXT(" foreign parent refused")),Probe.ForeignParentRefused);
         TestTrue(*(FString(Name)+TEXT(" foreign inverse subject refused")),Probe.ForeignInverseRefused);
         TestTrue(*(FString(Name)+TEXT(" Step-only hit route refuses actual Birth")),Probe.StepHitRefusedInBirth);
+        TestTrue(*(FString(Name)+TEXT(" Step-only reset refuses actual Birth")),Probe.StepResetRefusedInBirth);
+        TestTrue(*(FString(Name)+TEXT(" Step-only response refuses actual Birth")),Probe.StepResolveRefusedInBirth);
         TestTrue(*(FString(Name)+TEXT(" original named body values unchanged by refusals")),Probe.OwnBodyUnchangedAfterRefusals);
     };
     CheckBirth(TEXT("observed"),ObservedProbe);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadMassPhaseBoundary] resetRefusedInBirth=%d resolveRefusedInBirth=%d beforeWrite=%d. Genuine Birth operation; no minted diagnostic authority."),int(ObservedProbe.StepResetRefusedInBirth),int(ObservedProbe.StepResolveRefusedInBirth),int(ObservedProbe.OwnBodyUnchangedAfterRefusals)));
     TestEqual(TEXT("ten actual initializer returns for two stock cars"),ObservedProbe.InitializersReturned,uint32(10));
     TestFalse(TEXT("observation does not force factory failure"),ObservedProbe.FaultAfterFirstInitializerReached||ObservedProbe.CreateReturnedNull);
     std::array<Consumed::FActionPolicy,ActionCount> Actions{};

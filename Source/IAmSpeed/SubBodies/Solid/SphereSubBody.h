@@ -37,6 +37,12 @@ class IAMSPEED_API USphereSubBody : public USolidSubBody, public ISphereSweeper,
 {
     GENERATED_UCLASS_BODY()
 private:
+    class FLegacyResponseMassAccess;class FNativeResponseMassAccess;
+    template<class TAccess> void ResolveCurrentHitPrvMassResponseBody(TAccess& Storage,const float& delta, const float& SimTime);
+    template<class TAccess> void ResolveHitVsGroundMassResponseBody(TAccess& Storage,const float& delta, const float& SimTime);
+    template<class TAccess> void ResolveHitVsBoxMassResponseBody(TAccess& Storage,UBoxSubBody& OtherBox, const float& delta, const float& SimTime);
+    template<class TAccess> void ResolveHitVsSphereMassResponseBody(TAccess& Storage,USphereSubBody& OtherSphere, const float& delta, const float& SimTime);
+    void ResolveNativeSphereCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime);
     friend class USWheelSubBody;friend class USpeedBranchWheelSubBody;
     class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;
     class FLegacyInitialInertiaAccess;class FNativeInitialInertiaAccess;

@@ -25,6 +25,9 @@ class FBodyWrite final
     static void FakePhysics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody* Body,USolidSubBody* Other,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext);
     static void Initialize(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,ISpeedComponent* Parent);
     static void AcceptHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body);
+    static void ValidateResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody* Body);
+    static void ResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const float& Delta);
+    static void ResolveCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const float& Delta,const float& SimTime);
     static void UpdateFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const SKinematic& ParentKinematic);
     static void Impulse(USolidSubBody& Body,const FVector& Impulse,const FVector& Point);
     static void Impulse(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& Body,const FVector& Impulse,const FVector& Point);

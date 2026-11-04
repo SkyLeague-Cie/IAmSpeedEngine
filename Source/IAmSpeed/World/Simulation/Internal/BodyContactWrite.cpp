@@ -76,4 +76,31 @@ void FBodyWrite::UpdateFromOwner(const Speed::Netcode::Prediction::FPrivateNativ
     Body->UpdateNativeKinematicsFromOwner(Operation,ParentKinematic);
 }
 
+void FBodyWrite::ValidateResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USSubBody* Body)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    const auto& Values=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,Body);
+    FComponentRead::ValidateCurrentAndSubBodies(Operation,Values.ParentComponent);
+    bool InParentRoster=false;
+    for(const USSubBody* Original:FComponentRead::SubBodies(Operation,*Values.ParentComponent))
+        if(Original==Body){InParentRoster=true;break;}
+    if(!InParentRoster)throw FPrivateNativeStorageUnavailable{};
+    Body->ValidateNativeResetFrame(Operation);
+}
+void FBodyWrite::ResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const float& Delta)
+{ValidateResetFrame(Operation,Body);Body->ResetNativeForFrame(Operation,Delta);}
+void FBodyWrite::ResolveCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USSubBody* Body,const float& Delta,const float& SimTime)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    const auto& Values=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,Body);
+    FComponentRead::ValidateCurrentAndSubBodies(Operation,Values.ParentComponent);
+    bool InParentRoster=false;
+    for(const USSubBody* Original:FComponentRead::SubBodies(Operation,*Values.ParentComponent))
+        if(Original==Body){InParentRoster=true;break;}
+    if(!InParentRoster)throw FPrivateNativeStorageUnavailable{};
+    Body->ResolveNativeCurrentHit(Operation,Delta,SimTime);
+}
+
 }

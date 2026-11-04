@@ -51,6 +51,9 @@ private:
     void InitializeNativeBase(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
     virtual void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent);
     virtual void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation);
+    virtual void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
+    virtual void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta);
+    virtual void ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime);
     template<class TAccess> void UpdateKinematicsFromOwnerBody(TAccess& Storage,const SKinematic& ParentKinematic);
     void UpdateNativeBaseKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);
     virtual void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic);

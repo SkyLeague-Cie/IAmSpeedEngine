@@ -265,6 +265,27 @@ protected:
     const TArray<TWeakObjectPtr<USphereSubBody>>& GetExternalSphereSubBodies() const { return USolidSubBody::GetExternalSphereSubBodies(); }
     const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 private:
+    class FLegacyResponseMassAccess;class FNativeResponseMassAccess;
+    template<class TAccess> void ResetForFrameMassResponseBody(TAccess& Storage,const float& Delta);
+    template<class TAccess> void ResolveCurrentHitPrvMassResponseBody(TAccess& Storage,const float& delta, const float& SimTime);
+    template<class TAccess> void ResolveHitVsGroundMassResponseBody(TAccess& Storage,const float& Dt);
+    template<class TAccess> void ResolveHitVsSphereMassResponseBody(TAccess& Storage,USphereSubBody& Sphere, const float& delta);
+    template<class TAccess> void ResolveHitVsBoxMassResponseBody(TAccess& Storage,
+    UBoxSubBody& OtherBox,
+    const float& delta
+);
+    template<class TAccess> void ResolveWallOrGutterMassResponseBody(TAccess& Storage,const float& Dt, const SHitResult& Hit);
+    template<class TAccess> void ResolveDirectGroundSupportMassResponseBody(TAccess& Storage,const float& Dt, const SHitResult& Hit);
+    template<class TAccess> void ApplyPersistentSupportConstraintMassResponseBody(TAccess& Storage,const float& Dt);
+    template<class TAccess> bool SolveEdgeSupportConstraintMassResponseBody(TAccess& Storage,
+    const FVector& SupportN,
+    const TArray<FVector>& SupportPts,
+    const float Dt,
+    const bool bDoFriction /*= false*/,
+    const float Mu /*= 0.0f*/,
+    const bool bAllowTraversalTorque /*= false*/);
+    void ResolveNativeBoxCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime);
+    void ResetNativeBoxForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta);
     friend class USpeedBranchBoxSubBody;
     friend class Speed::NativeKinematics::FBodyRead;
     class FLegacyStoredInverseAccess;class FNativeStoredInverseAccess;

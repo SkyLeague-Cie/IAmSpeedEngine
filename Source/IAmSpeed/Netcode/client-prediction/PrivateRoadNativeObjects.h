@@ -434,6 +434,9 @@ private:
     void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;
     FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
     void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) override;
+    void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+    void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta) override;
+    void ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime) override;
     void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic) override;
     void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) override;
     FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
@@ -690,6 +693,9 @@ private:
     void InitializeNative(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Parent) override;
     FMatrix ComputeNativeInitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
     void AcceptNativeHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) override;
+    void ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;
+    void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta) override;
+    void ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime) override;
     void UpdateNativeKinematicsFromOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const SKinematic& ParentKinematic) override;
     void ApplyNativeFakePhysicsOn(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,USolidSubBody& OtherSubBody,const SHitResult& Hit,const float& DeltaTime,const FFakePhysicsImpactContext* ImpactContext) override;
     FMatrix ComputeNativeWorldInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const override;

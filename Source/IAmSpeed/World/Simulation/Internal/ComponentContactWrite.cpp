@@ -69,4 +69,21 @@ void FComponentWrite::UpdateSubBodies(const Speed::Netcode::Prediction::FPrivate
     Component->UpdateSubBodiesKinematicsNative(Operation);
 }
 
+void FComponentWrite::ResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const float& Delta)
+{
+    Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireStep(Operation);
+    FComponentRead::ValidateCurrentAndSubBodies(Operation,Component);
+    Component->ResetNativeForFrame(Operation,Delta);
+}
+
+// Private synchronous owner borrow. FComponentWrite already owns access to the
+// derived native value type; the base/nested policy never names that private type.
+TArray<FPhysicalContactConstraint>& FComponentWrite::FrameConstraints(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent& Component)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    FComponentRead::ValidateCurrentAndSubBodies(Operation,&Component);
+    return FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component).PhysicalConstraints;
+}
+
 }

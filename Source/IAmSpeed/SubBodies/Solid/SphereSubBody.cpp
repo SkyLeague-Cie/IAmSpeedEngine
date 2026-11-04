@@ -259,7 +259,53 @@ bool USphereSubBody::SweepTOI(const float& RemainingDelta, float& OutTOI)
 // Hit resolution
 //======================================================
 
-void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
+// Explicit private numerical policy only; no source/lifetime or restore lease.
+class USphereSubBody::FLegacyResponseMassAccess final
+{
+public:
+    float Mass(const USolidSubBody& Body) const
+    {return Speed::NativeKinematics::FSolidMassAccess::Read(Body);}
+};
+class USphereSubBody::FNativeResponseMassAccess final
+{
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    void ValidateMassBody(const USolidSubBody& Body) const
+    {
+        namespace P=Speed::Netcode::Prediction;
+        const auto& Values=P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,&Body);
+        (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSolidValues>(Operation,&Body);
+        if(!Values.ParentComponent)throw P::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,Values.ParentComponent);
+        bool InParentRoster=false;
+        for(const USSubBody* Original:Speed::NativeKinematics::FComponentRead::SubBodies(Operation,*Values.ParentComponent))
+            if(Original==static_cast<const USSubBody*>(&Body)){InParentRoster=true;break;}
+        if(!InParentRoster)throw P::FPrivateNativeStorageUnavailable{};
+    }
+public:
+    FNativeResponseMassAccess(const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,const USphereSubBody& Body):Operation(Op)
+    {
+        namespace P=Speed::Netcode::Prediction;
+        P::FPrivateNativeStorageAccess::RequireStep(Operation);
+        ValidateMassBody(Body);
+        (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSphereDomain>(Operation,&Body);
+    }
+    FNativeResponseMassAccess(const FNativeResponseMassAccess&)=delete;
+    FNativeResponseMassAccess& operator=(const FNativeResponseMassAccess&)=delete;
+    FNativeResponseMassAccess(FNativeResponseMassAccess&&)=delete;
+    FNativeResponseMassAccess& operator=(FNativeResponseMassAccess&&)=delete;
+    void ValidateCurrentHitPeers(const USSubBody& Body) const
+    {
+        const auto& Hit=Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,Body);
+        if(!Hit.bBlockingHit)return;
+        if(const auto* Peer=Cast<USolidSubBody>(Hit.SubBody.Get()))ValidateMassBody(*Peer);
+        if(const auto* Peer=Cast<USolidSubBody>(Hit.Component.Get()))ValidateMassBody(*Peer);
+    }
+    float Mass(const USolidSubBody& Body) const
+    {ValidateMassBody(Body);return Speed::NativeKinematics::FSolidMassAccess::Read(Operation,Body);}
+};
+
+template<class TAccess>
+void USphereSubBody::ResolveCurrentHitPrvMassResponseBody(TAccess& Storage,const float& delta, const float& SimTime)
 {
     if (!Speed::NativeKinematics::FBodyRead::HasHit(*this) || !ParentComponentBodyDomainStorage())
     {
@@ -287,11 +333,11 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
 
     if (Sphere)
     {
-        ResolveHitVsSphere(*Sphere, delta, SimTime);
+        ResolveHitVsSphereMassResponseBody(Storage,*Sphere, delta, SimTime);
     }
     else if (Box)
     {
-        ResolveHitVsBox(*Box, delta, SimTime);
+        ResolveHitVsBoxMassResponseBody(Storage,*Box, delta, SimTime);
     }
     // Analytical static-world hits intentionally carry no UObject component.
     // SurfaceId is the engine-independent static-provider identity, so it must
@@ -300,11 +346,15 @@ void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTi
     else if (CurrentHitStorage().SurfaceId != 0 ||
         (OtherComponent && OtherComponent->GetCollisionObjectType() == ECC_WorldStatic))
     {
-        ResolveHitVsGround(delta, SimTime);
+        ResolveHitVsGroundMassResponseBody(Storage,delta, SimTime);
     }
 }
+void USphereSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
+{FLegacyResponseMassAccess Storage;ResolveCurrentHitPrvMassResponseBody(Storage,delta,SimTime);}
 
-void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime)
+
+template<class TAccess>
+void USphereSubBody::ResolveHitVsGroundMassResponseBody(TAccess& Storage,const float& delta, const float& SimTime)
 {
     const FVector N = CurrentHitStorage().ImpactNormal.GetSafeNormal();
     const FVector P = IAmSpeedSphereStaticResponsePoint(
@@ -327,7 +377,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 		const float Rest = Speed::NativeKinematics::FSolidPropertiesAccess::GetRestitution(*this);
 
         // For a sphere vs plane: no angular coupling on normal
-        const float jn = -(1.f + Rest) * vN * Speed::NativeKinematics::FSolidMassAccess::Read(*this);
+        const float jn = -(1.f + Rest) * vN * Storage.Mass(*this);
         ApplyImpulse(jn * N, P);
         // ParentComponent->NotifyLocalImpulseEvent();
 
@@ -345,7 +395,7 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 
             // Effective mass for solid sphere rolling friction impulse
             // m_eff = 2m / 7
-            const float mEff = (2.f / 7.f) * Speed::NativeKinematics::FSolidMassAccess::Read(*this);
+            const float mEff = (2.f / 7.f) * Storage.Mass(*this);
 
             float jt = -vTmag * mEff;
 
@@ -379,8 +429,12 @@ void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime
 		ParentComponentBodyDomainStorage()->AddPhysAcceleration(-NormalAcceleration * N);
 	}
 }
+void USphereSubBody::ResolveHitVsGround(const float& delta, const float& SimTime)
+{FLegacyResponseMassAccess Storage;ResolveHitVsGroundMassResponseBody(Storage,delta,SimTime);}
 
-void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, const float& SimTime)
+
+template<class TAccess>
+void USphereSubBody::ResolveHitVsBoxMassResponseBody(TAccess& Storage,UBoxSubBody& OtherBox, const float& delta, const float& SimTime)
 {
     //===============================
     // 1) Access kinematics at TOI
@@ -478,8 +532,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
         CurrentHitStorage().ImpactPoint,
         CurrentHitStorage().ImpactNormal,   // Other -> Sphere
 
-        ImpulseSphereKS, Speed::NativeKinematics::FSolidMassAccess::Read(*this), ComputeWorldInvInertiaTensor(),
-        ImpulseBoxKS, Speed::NativeKinematics::FSolidMassAccess::Read(OtherBox), OtherBox.ComputeWorldInvInertiaTensor(),
+        ImpulseSphereKS, Storage.Mass(*this), ComputeWorldInvInertiaTensor(),
+        ImpulseBoxKS, Storage.Mass(OtherBox), OtherBox.ComputeWorldInvInertiaTensor(),
 
 		MixedRestitution,
         MixedFriction,
@@ -541,8 +595,8 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
                 *BoxKSAtTOI.AngularVelocity.ToString(),
                 *SphereVp.ToString(),
                 *BoxVp.ToString(),
-                Speed::NativeKinematics::FSolidMassAccess::Read(*this),
-                Speed::NativeKinematics::FSolidMassAccess::Read(OtherBox));
+                Storage.Mass(*this),
+                Storage.Mass(OtherBox));
         }
 #endif
 
@@ -640,8 +694,12 @@ void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, 
 		}
 	}
 }
+void USphereSubBody::ResolveHitVsBox(UBoxSubBody& OtherBox, const float& delta, const float& SimTime)
+{FLegacyResponseMassAccess Storage;ResolveHitVsBoxMassResponseBody(Storage,OtherBox,delta,SimTime);}
 
-void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta, const float& SimTime)
+
+template<class TAccess>
+void USphereSubBody::ResolveHitVsSphereMassResponseBody(TAccess& Storage,USphereSubBody& OtherSphere, const float& delta, const float& SimTime)
 {
     const float TOI = CurrentHitStorage().TOI;
 
@@ -716,8 +774,8 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
         CurrentHitStorage().ImpactPoint,
         CurrentHitStorage().ImpactNormal, // Other -> This
 
-        ThisKS, Speed::NativeKinematics::FSolidMassAccess::Read(*this), ComputeWorldInvInertiaTensor(),
-        OtherKS, Speed::NativeKinematics::FSolidMassAccess::Read(OtherSphere), OtherSphere.ComputeWorldInvInertiaTensor(),
+        ThisKS, Storage.Mass(*this), ComputeWorldInvInertiaTensor(),
+        OtherKS, Storage.Mass(OtherSphere), OtherSphere.ComputeWorldInvInertiaTensor(),
 
         MixRestitution(Speed::NativeKinematics::FSolidPropertiesAccess::GetRestitution(*this), Speed::NativeKinematics::FSolidPropertiesAccess::GetRestitution(OtherSphere), EMixMode::E_Min),
         MixFriction(Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(*this), Speed::NativeKinematics::FSolidPropertiesAccess::GetStaticFriction(OtherSphere), EMixMode::E_Min),
@@ -762,6 +820,9 @@ void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float
         OtherSphere.ApplyFakePhysicsOn(*this, Speed::NativeKinematics::FBodyRead::CurrentHit(OtherSphere), delta);
 	}
 }
+void USphereSubBody::ResolveHitVsSphere(USphereSubBody& OtherSphere, const float& delta, const float& SimTime)
+{FLegacyResponseMassAccess Storage;ResolveHitVsSphereMassResponseBody(Storage,OtherSphere,delta,SimTime);}
+
 
 void USphereSubBody::HandleMicroOscillation()
 {
@@ -1485,3 +1546,11 @@ bool FIAmSpeedSphereStaticResponseWitnessTest::RunTest(const FString& Parameters
     return true;
 }
 #endif
+
+void USphereSubBody::ResolveNativeSphereCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime)
+{
+    FNativeResponseMassAccess Storage(Operation,*this);
+    Storage.ValidateCurrentHitPeers(*this);
+    if(Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*this).bBlockingHit)
+        ResolveCurrentHitPrvMassResponseBody(Storage,Delta,SimTime);
+}

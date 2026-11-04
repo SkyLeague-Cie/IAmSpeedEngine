@@ -29,6 +29,8 @@ class FComponentWrite final
     static void ForceBatch(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const TArray<FVector>& Forces,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
     static void FrameStaticWorld(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon);
     static void UpdateSubBodies(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component);
+    static void ResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const float& Delta);
+    static TArray<FPhysicalContactConstraint>& FrameConstraints(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent& Component);
     static void BirthPose(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const FQuat& Rotation,const FVector& Location);
     static void Kinematic(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent& Component,const SKinematic& State);
     static void RegisterConstraint(ISpeedComponent& Component,const FPhysicalContactConstraint& Constraint);

@@ -1180,7 +1180,7 @@ bool FPrivateRoadPhysicsWorld::ProbeBirthInitializationGuards(FImpl& I,const FPr
     Values.CurrentHit.FrameTag=17;Values.FutureHit.FrameTag=29;Values.FutureHit.bBlockingHit=true;
     const auto Capture=[&](){TArray<uint8> Bytes;Body->AppendEpisodeStateForTesting(Bytes);return Bytes;};
     Out.OwnBodyUnchangedAfterRefusals=true;
-    for(int32 Case=0;Case<4;++Case)
+    for(int32 Case=0;Case<6;++Case)
     {
         const auto Before=Capture();bool Refused=false;
         try
@@ -1189,6 +1189,8 @@ bool FPrivateRoadPhysicsWorld::ProbeBirthInitializationGuards(FImpl& I,const FPr
             if(Case==1)Speed::NativeKinematics::FBodyWrite::Initialize(Operation,Body,ForeignParent);
             if(Case==2)(void)Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Operation,ForeignBox);
             if(Case==3)Speed::NativeKinematics::FBodyWrite::AcceptHit(Operation,Body);
+            if(Case==4)Speed::NativeKinematics::FBodyWrite::ResetFrame(Operation,Body,1.f/300.f);
+            if(Case==5)Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,Body,1.f/300.f,0.f);
         }
         catch(const FPrivateNativeStorageUnavailable&){Refused=true;}
         Out.OwnBodyUnchangedAfterRefusals=Out.OwnBodyUnchangedAfterRefusals&&Before==Capture();
@@ -1196,10 +1198,12 @@ bool FPrivateRoadPhysicsWorld::ProbeBirthInitializationGuards(FImpl& I,const FPr
         if(Case==1)Out.ForeignParentRefused=Refused;
         if(Case==2)Out.ForeignInverseRefused=Refused;
         if(Case==3)Out.StepHitRefusedInBirth=Refused;
+        if(Case==4)Out.StepResetRefusedInBirth=Refused;
+        if(Case==5)Out.StepResolveRefusedInBirth=Refused;
     }
     Out.ActualBirthOperation=true;
     return Out.ForeignBodyRefused&&Out.ForeignParentRefused&&Out.ForeignInverseRefused
-        &&Out.StepHitRefusedInBirth&&Out.OwnBodyUnchangedAfterRefusals;
+        &&Out.StepHitRefusedInBirth&&Out.StepResetRefusedInBirth&&Out.StepResolveRefusedInBirth&&Out.OwnBodyUnchangedAfterRefusals;
 }
 std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
     std::vector<FPrivateRoadCarSeed> Seeds,FPrivateRoadPhysicsWorld& Foreign,EPrivateRoadBirthProbeMode Mode,
@@ -1324,6 +1328,7 @@ bool FPrivateRoadPhysicsWorld::StepRetained(const std::shared_ptr<FImpl>& Root,c
     {
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
     if(HitContext&&!ProbeHitAcceptanceRetained(I,Operation,*HitContext))return Fail(TEXT("native shape hit acceptance controls refused"));
+    if(HitContext&&!ProbeMassResponseRetained(I,Operation,*HitContext))return Fail(TEXT("native mass response boundary controls refused"));
 #endif
     if(!I.Driver->AdvancePrivate(Operation,Resimulation))return Fail(TEXT("private canonical native step failed"));
     for(size_t N=0;N<I.Cars.size();++N)
@@ -1808,6 +1813,122 @@ bool FPrivateRoadPhysicsWorld::ProbeHitAcceptanceRetained(FImpl& I,const FPrivat
         &&Result.BirthInitializationRefusedDuringStep&&Result.BaseBehaviorDistinguished&&Result.Refusals==3&&Result.AllRefusalsBeforeWrite
         &&std::all_of(Result.Cases.begin(),Result.Cases.end(),[](const auto& X){return X.LegacyExpected&&X.NativeExpected&&X.LegacyNativeEqual;});
 }
+bool FPrivateRoadPhysicsWorld::ProbeMassResponseRetained(FImpl& I,const FPrivateNativeOperation& Operation,FHitAcceptanceDiagnosticContext& Context)
+{
+    auto& Result=Context.Result;const auto& Foreign=*Context.ForeignRoot;
+    FPrivateNativeStorageAccess::RequireStep(Operation);
+    if(I.Cars.size()!=2||Foreign.Cars.empty()||I.OriginalWheelsWeak.Num()!=8||Foreign.OriginalBoxesWeak.IsEmpty())return false;
+    auto* Component=I.Cars[0]->Component;auto* OtherParent=I.Cars[1]->Component;
+    auto* ForeignBox=Foreign.OriginalBoxesWeak[0].Get();auto* ForeignParent=Foreign.Cars[0]->Component;
+    auto* Box=I.OriginalBoxesWeak[0].Get();auto* Wheel=I.OriginalWheelsWeak[0].Get();auto* Floor=I.OriginalFloorWeak.Get();
+    auto* SameGraphOtherWheel=I.OriginalWheelsWeak[4].Get();
+    if(!Component||!OtherParent||!ForeignBox||!ForeignParent||!Box||!Wheel||!Floor||!SameGraphOtherWheel||!ForeignBox->OwnedBodyValues)return false;
+    if(Speed::NativeKinematics::FBodyRead::Parent(Operation,*SameGraphOtherWheel)!=static_cast<ISpeedComponent*>(OtherParent)
+        ||!Speed::NativeKinematics::FComponentRead::SubBodies(Operation,*OtherParent).Contains(SameGraphOtherWheel))return false;
+    auto& D=FPrivateNativeStorageAccess::Part<USpeedWheeledComponent::FOriginalWheeledDomain>(Operation,static_cast<ISpeedComponent*>(Component));
+    auto& C=FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,static_cast<ISpeedComponent*>(Component));
+    if(D.SubBodies.Num()!=5)return false;
+    const auto SavedRoster=D.SubBodies;const auto SavedConstraints=C.PhysicalConstraints;
+    auto& BoxDomain=FPrivateNativeStorageAccess::Part<FPrivateRoadBoxDomain>(Operation,Box);const auto SavedBoxDomain=BoxDomain;
+    std::vector<FPrivateRoadSubBodyValues> SavedBodies;
+    std::vector<FPrivateRoadWheelRuntimeValues> SavedRuntime;
+    for(USSubBody* Body:SavedRoster)SavedBodies.push_back(FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,Body));
+    for(int32 Index=0;Index<4;++Index)
+    {
+        auto* Body=I.OriginalWheelsWeak[Index].Get();if(!Body)return false;
+        SavedRuntime.push_back(FPrivateNativeStorageAccess::Part<FPrivateRoadWheelRuntimeValues>(Operation,Body));
+    }
+    // Named test-domain cleanup only. This never captures a complete world,
+    // supplies a restore provider, opens a guard or acknowledges rollback.
+    const auto Cleanup=[&]()
+    {
+        D.SubBodies=SavedRoster;C.PhysicalConstraints=SavedConstraints;BoxDomain=SavedBoxDomain;
+        for(int32 Index=0;Index<5;++Index)FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,SavedRoster[Index])=SavedBodies[size_t(Index)];
+        for(int32 Index=0;Index<4;++Index)FPrivateNativeStorageAccess::Part<FPrivateRoadWheelRuntimeValues>(Operation,I.OriginalWheelsWeak[Index].Get())=SavedRuntime[size_t(Index)];
+    };
+    ON_SCOPE_EXIT{Cleanup();};
+    auto& BV=FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Box));
+    auto& WV=FPrivateNativeStorageAccess::Part<FPrivateRoadSubBodyValues>(Operation,static_cast<USSubBody*>(Wheel));
+    using Bytes=Speed::FEpisodeStateBytesForTesting;
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Out;
+        for(USSubBody* Body:SavedRoster)Body->AppendEpisodeStateForTesting(Out);
+        Bytes::Array(Out,D.SubBodies);Bytes::Add(Out,C.PhysicalConstraints.Num());
+        for(const auto& V:C.PhysicalConstraints)
+        {
+            Bytes::Add(Out,V.Normal);Bytes::Add(Out,V.ContactPoint);Bytes::Add(Out,V.OtherComponent);Bytes::Add(Out,V.SourceSubBody);
+            Bytes::Add(Out,V.PenetrationDepth);Bytes::Add(Out,V.TOI);Bytes::Add(Out,V.PairKey);Bytes::Add(Out,V.FramesSinceSeen);Bytes::Add(Out,V.bPersistent);
+        }
+        return Out;
+    };
+    const auto Prime=[&]()
+    {
+        Cleanup();BV.CurrentHit={};BV.FutureHit={};WV.CurrentHit={};WV.FutureHit={};
+        BV.CurrentHit.FrameTag=731;BV.FutureHit.FrameTag=733;
+        WV.CurrentHit.FrameTag=991;WV.FutureHit.FrameTag=997;
+        FPhysicalContactConstraint Transient;Transient.FramesSinceSeen=37;Transient.bPersistent=false;
+        C.PhysicalConstraints.Add(Transient);
+        // Both programs must actually reach the persistent relevance consumer:
+        // increment0->1 is within the unchanged one-frame persistence bound.
+        FPhysicalContactConstraint Persistent;Persistent.Normal=FVector::UpVector;Persistent.ContactPoint=FVector(1,2,3);
+        Persistent.OtherComponent=Floor;Persistent.SourceSubBody=Box;Persistent.FramesSinceSeen=0;Persistent.bPersistent=true;
+        C.PhysicalConstraints.Add(Persistent);
+    };
+    constexpr float Delta=1.f/300.f;
+    Prime();Component->ResetForFrame(Delta);++Result.MassLegacyResetReturns;const auto LegacyReset=Capture();
+    Prime();Speed::NativeKinematics::FComponentWrite::ResetFrame(Operation,Component,Delta);++Result.MassNativeResetReturns;
+    Result.MassResetLegacyNativeEqual=LegacyReset==Capture();
+    Result.MassResetDistinctBoxWheel=BV.CurrentHit.FrameTag==0&&BV.FutureHit.FrameTag==0
+        &&WV.CurrentHit.FrameTag==991&&WV.FutureHit.FrameTag==0;
+    Cleanup();BV.CurrentHit.FrameTag=53;BV.CurrentHit.bBlockingHit=false;WV.CurrentHit.FrameTag=59;WV.CurrentHit.bBlockingHit=false;
+    const auto NoHitBefore=Capture();
+    Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,Box,Delta,0.f);++Result.MassNoHitResolveReturns;
+    Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,Wheel,Delta,0.f);++Result.MassNoHitResolveReturns;
+    Result.MassNoHitUnchanged=NoHitBefore==Capture();
+    const auto ForeignCurrent=ForeignBox->OwnedBodyValues->CurrentHit,ForeignFuture=ForeignBox->OwnedBodyValues->FutureHit;
+    const auto ForeignIgnored=ForeignBox->OwnedBodyValues->IgnoredComponents;
+    const auto HitEqual=[](const SHitResult& X,const SHitResult& Y)
+    {TArray<uint8> A,B;Bytes::Add(A,X);Bytes::Add(B,Y);return A==B;};
+    Result.MassRefusalsBeforeWrite=true;
+    for(int32 Case=0;Case<12;++Case)
+    {
+        Prime();
+        if(Case==3)D.SubBodies.Last()=ForeignBox;
+        if(Case==4||Case==9)BV.ParentComponent=nullptr;
+        if(Case==5||Case==10)BV.ParentComponent=OtherParent;
+        if(Case>=6&&Case<=8)
+        {
+            BV.CurrentHit.bHit=BV.CurrentHit.bBlockingHit=true;
+            BV.CurrentHit.Component=Case==6?static_cast<UPrimitiveComponent*>(ForeignBox):static_cast<UPrimitiveComponent*>(Wheel);
+            BV.CurrentHit.SubBody=Case==6?static_cast<USSubBody*>(ForeignBox):static_cast<USSubBody*>(Wheel);
+            if(Case==7)WV.ParentComponent=nullptr;
+            if(Case==8)WV.ParentComponent=OtherParent;
+        }
+        if(Case==11)D.SubBodies.Last()=SameGraphOtherWheel;
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==0)Speed::NativeKinematics::FBodyWrite::ResetFrame(Operation,ForeignBox,Delta);
+            else if(Case==1)Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,ForeignBox,Delta,0.f);
+            else if(Case==2)Speed::NativeKinematics::FComponentWrite::ResetFrame(Operation,ForeignParent,Delta);
+            else if(Case==3||Case==11)Speed::NativeKinematics::FComponentWrite::ResetFrame(Operation,Component,Delta);
+            else if(Case==4||Case==5)Speed::NativeKinematics::FBodyWrite::ResetFrame(Operation,Box,Delta);
+            else Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,Box,Delta,0.f);
+        }
+        catch(const FPrivateNativeStorageUnavailable&){Refused=true;}
+        if(Refused)++Result.MassBoundaryRefusals;
+        Result.MassRefusalsBeforeWrite=Result.MassRefusalsBeforeWrite&&Refused&&Before==Capture()
+            &&HitEqual(ForeignCurrent,ForeignBox->OwnedBodyValues->CurrentHit)
+            &&HitEqual(ForeignFuture,ForeignBox->OwnedBodyValues->FutureHit)
+            &&ForeignIgnored==ForeignBox->OwnedBodyValues->IgnoredComponents;
+    }
+    Cleanup();
+    return Result.MassLegacyResetReturns==1&&Result.MassNativeResetReturns==1&&Result.MassResetLegacyNativeEqual
+        &&Result.MassResetDistinctBoxWheel&&Result.MassNoHitResolveReturns==2&&Result.MassNoHitUnchanged
+        &&Result.MassBoundaryRefusals==12&&Result.MassRefusalsBeforeWrite;
+}
+
 bool FPrivateRoadPhysicsWorld::StepWithHitAcceptanceProbeForDiagnostics(const std::vector<FPrivateRoadRequest>& Requests,
     bool Resimulation,FPrivateRoadPhysicsWorld& Foreign,FPrivateRoadHitAcceptanceProbe& Result,FString& Why)
 {
@@ -4053,3 +4174,55 @@ void USpeedBranchWheelSubBody::ApplyPublicSuspensionSim(Chaos::FSimpleSuspension
 {
     PSuspension=Value;
 }
+
+void USpeedBranchBoxSubBody::ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime)
+{
+    // Capture the genuine dispatch participant before Super can update caches.
+    // Weak validity after the synchronous call never invents a lifetime lease.
+    const bool Blocking=Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*this).bBlockingHit;
+    if(!Blocking)return;
+    const auto Peer=Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*this).Component;
+    const bool WasSolid=Cast<USolidSubBody>(Peer.Get())!=nullptr;
+    ResolveNativeBoxCurrentHit(Operation,Delta,SimTime); // shared original program, once
+    if(Blocking&&WasSolid&&Peer.IsValid())
+    {
+        // ISpeedComponent is native C++, NOT a UObject/UInterface. Resolve
+        // through the genuine owning actor, then verify the adjusted native
+        // base address rather than performing an invalid Unreal Cast.
+        const auto A=StorageAccess.lock();
+        auto* Owner=A?A->FindOriginalComponentAlias(GetParentComponent(),GetOwner()):nullptr;
+        if(Owner&&GetParentComponent()==static_cast<ISpeedComponent*>(Owner))
+            if(auto* SolidPeer=Cast<USolidSubBody>(Peer.Get()))
+                Owner->ObserveContactPair(*this,*SolidPeer,Cast<UBoxSubBody>(SolidPeer)?0:1);
+    }
+}
+void USpeedBranchBoxSubBody::ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireStep(Operation);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSolidValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadBoxDomain>(Operation,this);
+}
+void USpeedBranchBoxSubBody::ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta)
+{
+    ValidateNativeResetFrame(Operation);
+    ResetNativeBoxForFrame(Operation,Delta);
+}
+void USpeedBranchWheelSubBody::ValidateNativeResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{
+    namespace P=Speed::Netcode::Prediction;
+    P::FPrivateNativeStorageAccess::RequireStep(Operation);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSolidValues>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSphereDomain>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadWheelDomain>(Operation,this);
+    (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadWheelRuntimeValues>(Operation,this);
+}
+void USpeedBranchWheelSubBody::ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta)
+{
+    ValidateNativeResetFrame(Operation);
+    USWheelSubBody::ResetForFrame(Delta); // no mass read/write in this unchanged wheel reset
+}
+void USpeedBranchWheelSubBody::ResolveNativeCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime)
+{ResolveNativeSphereCurrentHit(Operation,Delta,SimTime);}

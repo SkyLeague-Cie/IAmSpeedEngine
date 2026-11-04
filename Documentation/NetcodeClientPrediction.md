@@ -1867,3 +1867,36 @@ wheel controls must distinguish it from the base-only shortcut. All other
 strict first-owner assertions, physical programs, tolerances and restoration
 guards remain unchanged. This correction still requires fresh native validation;
 it supplies no complete causal-state, source/lifetime or localized rollback proof.
+
+
+### Proposed Step mass response and reset propagation (source120)
+
+This candidate carries the real private Step operation through both world roots:
+component reset and resolved-hit dispatch. Thirteen box/sphere response/reset
+methods and the component constraint-reset program share the original numerical
+bodies with ordinary/custom legacy policies. The native reset relevance consumer
+uses its existing operation-bearing constraint program. Twenty-six response mass
+reads validate actual backing, non-null parent and parent roster membership.
+The reset owner preflights all children before constraint or earlier-child writes.
+Private constraint borrowing stays in the existing friend helper; no private
+derived type or operation issuer is made public. The single box contact
+observation remains after the single response. Wheel reset retains its distinct
+current-hit behavior; its other legacy field accesses remain explicitly open.
+
+Proposed native controls run inside actual factory Birth and canonical Step
+operations. They compare real ordinary/native reset outputs from authored
+persistent/transient constraints and hit canaries, distinguish Box from Wheel,
+and reject foreign subjects/components/peers, null and wrong same-graph parents,
+and late-invalid child rosters before named-buffer writes. Two nonblocking
+responses must return unchanged. Named test-domain cleanup is neither a complete
+world snapshot nor an authoritative restoration provider. These controls have
+not run on this candidate; source reversibility checks and119 results are not
+native120 qualification.
+
+The four protected mass overrides remain unchanged. Constructor, public setup,
+activation, retirement, other key-free operations, escaped views and complete
+source/lifetime exclusion still require review. No restore guard opens. Full
+causal initial sync/CanMove activation agreement, authoritative-K localized
+resimulation and two rendered playable clients plus a dedicated server remain
+unfinished. No physical coefficient, floating-point program, contact order,
+geometry or tolerance is intentionally changed by this access migration.

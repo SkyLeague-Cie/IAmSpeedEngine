@@ -1075,6 +1075,8 @@ public:
     }
     void WriteBodyFutureHit(USSubBody& Body,const SHitResult& Hit) const {Speed::NativeKinematics::FBodyWrite::FutureHit(Body,Hit);}
     void AcceptBodyHit(USSubBody& Body) const {Body.AcceptHit();}
+    void ResetComponent(ISpeedComponent& Component,const float& Delta) const {Component.ResetForFrame(Delta);}
+    void ResolveBodyHit(USSubBody& Body,const float& Delta,const float& SimTime) const {Body.ResolveCurrentHit(Delta,SimTime);}
     const SHitResult& ReadBodyCurrentHit(const USSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::CurrentHit(Body);}
     bool BodyIgnoresComponent(const USSubBody& Body,const UPrimitiveComponent& Other) const {return Body.ComponentHasBeenIgnored(Other);}
     void SetFrameStaticWorld(ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon) const {Component->SetStaticCollisionWorldForFrame(World,FrameHorizon);}
@@ -1139,6 +1141,8 @@ public:
     void UpdateComponentChildrenWithJoined(Speed::FrameParallel::FJoinedActorKinematics1213& Wave,ISpeedComponent& Actor,int32 LaneLimit,int32 MinPrepareItems) const {Wave.InstallOrUpdateNative(Operation,Actor,LaneLimit,MinPrepareItems);}
     void WriteBodyFutureHit(USSubBody& Body,const SHitResult& Hit) const {Speed::NativeKinematics::FBodyWrite::FutureHit(Operation,Body,Hit);}
     void AcceptBodyHit(USSubBody& Body) const {Speed::NativeKinematics::FBodyWrite::AcceptHit(Operation,&Body);}
+    void ResetComponent(ISpeedComponent& Component,const float& Delta) const {Speed::NativeKinematics::FComponentWrite::ResetFrame(Operation,&Component,Delta);}
+    void ResolveBodyHit(USSubBody& Body,const float& Delta,const float& SimTime) const {Speed::NativeKinematics::FBodyWrite::ResolveCurrentHit(Operation,&Body,Delta,SimTime);}
     const SHitResult& ReadBodyCurrentHit(const USSubBody& Body) const {return Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,Body);}
     bool BodyIgnoresComponent(const USSubBody& Body,const UPrimitiveComponent& Other) const {return Speed::NativeKinematics::FBodyRead::ComponentIgnored(Operation,Body,&Other);}
     void SetFrameStaticWorld(ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon) const {Speed::NativeKinematics::FComponentWrite::FrameStaticWorld(Operation,Component,World,FrameHorizon);}
@@ -2463,7 +2467,7 @@ void USpeedWorldSubsystem::StepBody(TAccess& Storage,const float& Dt,const float
         // fallback choice. Shadow only observes around this original block.
         Storage.UpdateComponentChildrenWithJoined(JoinedActors1213,*Comp,
             ParallelPreparationSettings.LaneLimit,ParallelPreparationSettings.MinPrepareItems);
-        Comp->ResetForFrame(Dt);
+        Storage.ResetComponent(*Comp,Dt);
 		Storage.SetFrameStaticWorld(Comp,RestingWorld, Dt);
     }
 
@@ -2741,7 +2745,7 @@ void USpeedWorldSubsystem::StepBody(TAccess& Storage,const float& Dt,const float
             auto MatrixResolution042 = Speed::CollisionMatrix042::FObserver::Before(
                 Frame, TimePassed, *Resolver, Hit.Hit);
 #endif
-			Resolver->ResolveCurrentHit(SubDelta, SimTime);
+			Storage.ResolveBodyHit(*Resolver,SubDelta,SimTime);
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
             Speed::CollisionMatrix042::FObserver::After(MatrixResolution042);
 #endif

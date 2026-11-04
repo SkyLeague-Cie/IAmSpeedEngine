@@ -697,7 +697,53 @@ bool UBoxSubBody::PublishExactStaticSupport()
     return true;
 }
 
-void UBoxSubBody::ResetForFrame(const float& Delta)
+// Explicit private numerical policy only; no source/lifetime or restore lease.
+class UBoxSubBody::FLegacyResponseMassAccess final
+{
+public:
+    float Mass(const USolidSubBody& Body) const
+    {return Speed::NativeKinematics::FSolidMassAccess::Read(Body);}
+};
+class UBoxSubBody::FNativeResponseMassAccess final
+{
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation;
+    void ValidateMassBody(const USolidSubBody& Body) const
+    {
+        namespace P=Speed::Netcode::Prediction;
+        const auto& Values=P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSubBodyValues>(Operation,&Body);
+        (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadSolidValues>(Operation,&Body);
+        if(!Values.ParentComponent)throw P::FPrivateNativeStorageUnavailable{};
+        Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,Values.ParentComponent);
+        bool InParentRoster=false;
+        for(const USSubBody* Original:Speed::NativeKinematics::FComponentRead::SubBodies(Operation,*Values.ParentComponent))
+            if(Original==static_cast<const USSubBody*>(&Body)){InParentRoster=true;break;}
+        if(!InParentRoster)throw P::FPrivateNativeStorageUnavailable{};
+    }
+public:
+    FNativeResponseMassAccess(const Speed::Netcode::Prediction::FPrivateNativeOperation& Op,const UBoxSubBody& Body):Operation(Op)
+    {
+        namespace P=Speed::Netcode::Prediction;
+        P::FPrivateNativeStorageAccess::RequireStep(Operation);
+        ValidateMassBody(Body);
+        (void)P::FPrivateNativeStorageAccess::Part<const P::FPrivateRoadBoxDomain>(Operation,&Body);
+    }
+    FNativeResponseMassAccess(const FNativeResponseMassAccess&)=delete;
+    FNativeResponseMassAccess& operator=(const FNativeResponseMassAccess&)=delete;
+    FNativeResponseMassAccess(FNativeResponseMassAccess&&)=delete;
+    FNativeResponseMassAccess& operator=(FNativeResponseMassAccess&&)=delete;
+    void ValidateCurrentHitPeers(const USSubBody& Body) const
+    {
+        const auto& Hit=Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,Body);
+        if(!Hit.bBlockingHit)return;
+        if(const auto* Peer=Cast<USolidSubBody>(Hit.SubBody.Get()))ValidateMassBody(*Peer);
+        if(const auto* Peer=Cast<USolidSubBody>(Hit.Component.Get()))ValidateMassBody(*Peer);
+    }
+    float Mass(const USolidSubBody& Body) const
+    {ValidateMassBody(Body);return Speed::NativeKinematics::FSolidMassAccess::Read(Operation,Body);}
+};
+
+template<class TAccess>
+void UBoxSubBody::ResetForFrameMassResponseBody(TAccess& Storage,const float& Delta)
 {
     Super::ResetForFrame(Delta);
 
@@ -724,7 +770,7 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
         if (HasPersistentGroundContact() &&
 			!bNativeAnalyticEstablishedContact)
         {
-            ApplyPersistentSupportConstraint(Delta);
+            ApplyPersistentSupportConstraintMassResponseBody(Storage,Delta);
         }
     }
 
@@ -775,6 +821,9 @@ void UBoxSubBody::ResetForFrame(const float& Delta)
         bGroundPlaneValidBoxDomainStorage();
     bFreshEdgeRecoverCandidateBoxDomainStorage() = false;
 }
+void UBoxSubBody::ResetForFrame(const float& Delta)
+{FLegacyResponseMassAccess Storage;ResetForFrameMassResponseBody(Storage,Delta);}
+
 
 bool UBoxSubBody::UsesNativeAnalyticEstablishedContact() const
 {
@@ -1668,7 +1717,8 @@ bool UBoxSubBody::SweepVsBoxes(UWorld* World, SHitResult& OutHit, const float& D
 // ======= ResolveHit Methods =================================================
 // ============================================================================
 
-void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
+template<class TAccess>
+void UBoxSubBody::ResolveCurrentHitPrvMassResponseBody(TAccess& Storage,const float& delta, const float& SimTime)
 {
     if (!CurrentHitStorage().bBlockingHit || !ParentComponentBodyDomainStorage())
         return;
@@ -1685,18 +1735,21 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 
     if (Sphere)
     {
-        ResolveHitVsSphere(*Sphere, delta);
+        ResolveHitVsSphereMassResponseBody(Storage,*Sphere, delta);
     }
     else if (Box)
     {
-        ResolveHitVsBox(*Box, delta);
+        ResolveHitVsBoxMassResponseBody(Storage,*Box, delta);
     }
     else if (CurrentHitStorage().Component.IsValid() &&
         CurrentHitStorage().Component->GetCollisionObjectType() == ECC_WorldStatic)
     {
-        ResolveHitVsGround(delta);
+        ResolveHitVsGroundMassResponseBody(Storage,delta);
     }
 }
+void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
+{FLegacyResponseMassAccess Storage;ResolveCurrentHitPrvMassResponseBody(Storage,delta,SimTime);}
+
 
 
 // ============================================================================
@@ -1704,7 +1757,8 @@ void UBoxSubBody::ResolveCurrentHitPrv(const float& delta, const float& SimTime)
 //     - Orchestrates: classify -> event solve -> update persistence -> apply support.
 //     - Handles concave rule consistently.
 // ============================================================================
-void UBoxSubBody::ResolveHitVsGround(const float& Dt)
+template<class TAccess>
+void UBoxSubBody::ResolveHitVsGroundMassResponseBody(TAccess& Storage,const float& Dt)
 {
     if (!ParentComponentBodyDomainStorage()) return;
 
@@ -1975,7 +2029,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
         if (HasPersistentGroundContact() && bIsSupportingContact && !bGroundHitFromSweepBoxDomainStorage())
         {
-            ApplyPersistentSupportConstraint(Dt);
+            ApplyPersistentSupportConstraintMassResponseBody(Storage,Dt);
         }
 
         return;
@@ -1983,7 +2037,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     if (bIsSupportingContact)
     {
-        ResolveDirectGroundSupport(Dt, EffectiveHit);
+        ResolveDirectGroundSupportMassResponseBody(Storage,Dt, EffectiveHit);
         bDidDirectSupportSolve = true;
         if (bRoofSurfaceTraversalActive)
         {
@@ -1998,7 +2052,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
     }
     else
     {
-        ResolveWallOrGutter(Dt, EffectiveHit);
+        ResolveWallOrGutterMassResponseBody(Storage,Dt, EffectiveHit);
 
         const bool bHasFacePersistentSupport = PrevGroundContactsLSBoxDomainStorage().Num() >= 3;
         const bool bSteepWallOrGutterHit = EffectiveUpDot < 0.5f;
@@ -2043,7 +2097,7 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
 
     if (!bDidDirectSupportSolve && HasPersistentGroundContact() && bIsSupportingContact)
     {
-        ApplyPersistentSupportConstraint(Dt);
+        ApplyPersistentSupportConstraintMassResponseBody(Storage,Dt);
     }
 
     PrevContactNormalBoxDomainStorage() = EffectiveN;
@@ -2075,9 +2129,13 @@ void UBoxSubBody::ResolveHitVsGround(const float& Dt)
             *(AngAfterResolve - AngBeforeResolve).ToString());
     }*/
 }
+void UBoxSubBody::ResolveHitVsGround(const float& Dt)
+{FLegacyResponseMassAccess Storage;ResolveHitVsGroundMassResponseBody(Storage,Dt);}
 
 
-void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
+
+template<class TAccess>
+void UBoxSubBody::ResolveHitVsSphereMassResponseBody(TAccess& Storage,USphereSubBody& Sphere, const float& delta)
 {
     // --- Box kinematics at TOI ---
     // Kinematics = GetKinematicsFromOwner(ParentComponent->NumFrame());
@@ -2162,8 +2220,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
         CurrentHitStorage().ImpactPoint,
 		CurrentHitStorage().ImpactNormal,   // Sphere -> Box
 
-        ImpulseBoxKS, Speed::NativeKinematics::FSolidMassAccess::Read(*this), ComputeWorldInvInertiaTensor(),
-        ImpulseSphereKS, Speed::NativeKinematics::FSolidMassAccess::Read(Sphere), Sphere.ComputeWorldInvInertiaTensor(),
+        ImpulseBoxKS, Storage.Mass(*this), ComputeWorldInvInertiaTensor(),
+        ImpulseSphereKS, Storage.Mass(Sphere), Sphere.ComputeWorldInvInertiaTensor(),
 
 		MixedRestitution,
         MixedFriction,
@@ -2224,8 +2282,8 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
             *SphereKS0.AngularVelocity.ToString(),
             *BoxVp.ToString(),
             *SphereVp.ToString(),
-            Speed::NativeKinematics::FSolidMassAccess::Read(*this),
-            Speed::NativeKinematics::FSolidMassAccess::Read(Sphere));
+            Storage.Mass(*this),
+            Storage.Mass(Sphere));
     }
 #endif
 
@@ -2324,8 +2382,12 @@ void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
     // --- Gameplay hooks ---
     ParentComponentBodyDomainStorage()->RcvImpactOnSubBody(*this, CurrentHitStorage().ImpactPoint);
 }
+void UBoxSubBody::ResolveHitVsSphere(USphereSubBody& Sphere, const float& delta)
+{FLegacyResponseMassAccess Storage;ResolveHitVsSphereMassResponseBody(Storage,Sphere,delta);}
 
-void UBoxSubBody::ResolveHitVsBox(
+
+template<class TAccess>
+void UBoxSubBody::ResolveHitVsBoxMassResponseBody(TAccess& Storage,
     UBoxSubBody& OtherBox,
     const float& delta
 )
@@ -2359,8 +2421,8 @@ void UBoxSubBody::ResolveHitVsBox(
             !ParentComponentBodyDomainStorage() || !OtherParent) return;
         FVector CorrectA, CorrectB;
         if (Speed::SImpulseSolver::ComputeCollisionImpulse(P,N,
-            Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage()),Speed::NativeKinematics::FSolidMassAccess::Read(*this),ComputeWorldInvInertiaTensor(),
-            Speed::NativeKinematics::FComponentRead::Current(*OtherParent),Speed::NativeKinematics::FSolidMassAccess::Read(OtherBox),OtherBox.ComputeWorldInvInertiaTensor(),
+            Speed::NativeKinematics::FComponentRead::Current(*ParentComponentBodyDomainStorage()),Storage.Mass(*this),ComputeWorldInvInertiaTensor(),
+            Speed::NativeKinematics::FComponentRead::Current(*OtherParent),Storage.Mass(OtherBox),OtherBox.ComputeWorldInvInertiaTensor(),
             0.f,0.f,CorrectA,CorrectB,0.f))
         {
             ApplyImpulse(CorrectA,P);
@@ -2379,8 +2441,8 @@ void UBoxSubBody::ResolveHitVsBox(
         if (pen > Slop)
         {
             ISpeedComponent* OtherComp = OtherBox.GetParentComponent();
-            SolveOverlap(*ParentComponentBodyDomainStorage(), Speed::NativeKinematics::FSolidMassAccess::Read(*this), ComputeWorldInvInertiaTensor(), KA,
-                OtherComp, Speed::NativeKinematics::FSolidMassAccess::Read(OtherBox), OtherBox.ComputeWorldInvInertiaTensor(), KB,
+            SolveOverlap(*ParentComponentBodyDomainStorage(), Storage.Mass(*this), ComputeWorldInvInertiaTensor(), KA,
+                OtherComp, Storage.Mass(OtherBox), OtherBox.ComputeWorldInvInertiaTensor(), KB,
                 P, N, pen, Slop, bCarPair?1.f:0.8f, bCarPair?0.f:GetImpactThreshold());
             if (Speed::NativeKinematics::FSolidPropertiesAccess::IsFakePhysicsEnabled(*this))
             {
@@ -2403,8 +2465,8 @@ void UBoxSubBody::ResolveHitVsBox(
 
     if (!Speed::SImpulseSolver::ComputeCollisionImpulse(
         P, N,
-        KA, Speed::NativeKinematics::FSolidMassAccess::Read(*this), ComputeWorldInvInertiaTensor(),
-        KB, Speed::NativeKinematics::FSolidMassAccess::Read(OtherBox), OtherBox.ComputeWorldInvInertiaTensor(),
+        KA, Storage.Mass(*this), ComputeWorldInvInertiaTensor(),
+        KB, Storage.Mass(OtherBox), OtherBox.ComputeWorldInvInertiaTensor(),
         e, mu,
         ImpA, ImpB,
         Speed::NativeKinematics::FSolidPropertiesAccess::GetImpactThreshold(*this)))
@@ -2431,6 +2493,12 @@ void UBoxSubBody::ResolveHitVsBox(
     }
     EnforceNonclosingContact();
 }
+void UBoxSubBody::ResolveHitVsBox(
+    UBoxSubBody& OtherBox,
+    const float& delta
+)
+{FLegacyResponseMassAccess Storage;ResolveHitVsBoxMassResponseBody(Storage,OtherBox,delta);}
+
 
 // ============================================================================
 // ================= Helper Methods for ResolveHitVsGround ====================
@@ -2442,7 +2510,8 @@ void UBoxSubBody::ResolveHitVsBox(
 //     - Only prevents penetration along N and applies optional friction.
 //     - Uses sequential impulse with minimal policy decisions.
 // ============================================================================
-void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
+template<class TAccess>
+void UBoxSubBody::ResolveWallOrGutterMassResponseBody(TAccess& Storage,const float& Dt, const SHitResult& Hit)
 {
     if (!ParentComponentBodyDomainStorage()) return;
 
@@ -2481,7 +2550,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 
     const FVector r = SolveP - COM;
 
-    const float InvMass = 1.f / Speed::NativeKinematics::FSolidMassAccess::Read(*this);
+    const float InvMass = 1.f / Storage.Mass(*this);
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
 
     const float denomN = EffectiveMassAlongDir(InvMass, InvI, r, N);
@@ -2642,7 +2711,7 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
     }
 
     const float jnMaxByMass =
-        (bUseSoftWallResponse ? SoftWallMassScale : 5.0f) * Speed::NativeKinematics::FSolidMassAccess::Read(*this);
+        (bUseSoftWallResponse ? SoftWallMassScale : 5.0f) * Storage.Mass(*this);
 
     const float jnMaxByDeltaV = MaxWallDeltaVCmS / FMath::Max(denomN, KINDA_SMALL_NUMBER);
 
@@ -2817,6 +2886,9 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
         }
     }
 }
+void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
+{FLegacyResponseMassAccess Storage;ResolveWallOrGutterMassResponseBody(Storage,Dt,Hit);}
+
 
 // ============================================================================
 //  ResolveDirectGroundSupport
@@ -2825,7 +2897,8 @@ void UBoxSubBody::ResolveWallOrGutter(const float& Dt, const SHitResult& Hit)
 //     - Coulomb friction only for support contacts
 //     - Stores plane for persistence when appropriate
 // ============================================================================
-void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& Hit)
+template<class TAccess>
+void UBoxSubBody::ResolveDirectGroundSupportMassResponseBody(TAccess& Storage,const float& Dt, const SHitResult& Hit)
 {
     if (!ParentComponentBodyDomainStorage()) return;
 
@@ -2997,7 +3070,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             *ImpactP.ToString(),
             Hit.TOI);*/
 
-        ResolveWallOrGutter(Dt, Hit);
+        ResolveWallOrGutterMassResponseBody(Storage,Dt, Hit);
         return;
     }
 
@@ -3024,7 +3097,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
             *ImpactP.ToString(),
             Hit.TOI);*/
 
-        ResolveWallOrGutter(Dt, Hit);
+        ResolveWallOrGutterMassResponseBody(Storage,Dt, Hit);
         return;
     }
 
@@ -3178,7 +3251,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
         const float MaxFreshSupportDeltaVCmS = bRecentlyHadWallOrGutter ? 10.f : 25.f;
         const float VnCom = FVector::DotProduct(Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity(), N);
         RemainingFreshSupportImpulse =
-            Speed::NativeKinematics::FSolidMassAccess::Read(*this) * FMath::Min(FMath::Max(-VnCom, 0.f), MaxFreshSupportDeltaVCmS);
+            Storage.Mass(*this) * FMath::Min(FMath::Max(-VnCom, 0.f), MaxFreshSupportDeltaVCmS);
 
         /*UE_LOG(BoxSubBodyLog, Warning,
             TEXT("[CCDBoxFreshSupportClamp] Frame=%d Fresh=%d Window=%d Until=%d Contacts=%d vNCom=%.2f MaxImpulse=%.3f N=%s HitP=%s RecentlyHadWallOrGutter=%d"),
@@ -3199,7 +3272,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     for (int32 i = 0; i < NumC; ++i)
         LambdaN[i] = (i < PrevLambdaNBoxDomainStorage().Num()) ? PrevLambdaNBoxDomainStorage()[i] : 0.f;
 
-    const float InvMass = 1.f / Speed::NativeKinematics::FSolidMassAccess::Read(*this);
+    const float InvMass = 1.f / Storage.Mass(*this);
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
     const FVector COMVelocityBeforeSolve = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity();
     FVector TotalNormalImpulse = FVector::ZeroVector;
@@ -3213,7 +3286,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     {
         if (NumC == 2)
         {
-            SolveEdgeSupportConstraint(
+            SolveEdgeSupportConstraintMassResponseBody(Storage,
                 N, CurrentGroundContactsWSBoxDomainStorage(), Dt, /*bDoFriction=*/false, /*Mu=*/0.f, bRoofSurfaceTraversalActive);
             break;
         }
@@ -3340,7 +3413,7 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
                 const FVector ExpectedDW = InvI.TransformVector(FVector::CrossProduct(P - COM, J));
                 const FVector ExpectedV = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).COMVelocity() + ExpectedDV;
                 const FVector ExpectedW = Speed::NativeKinematics::FComponentRead::Of(*ParentComponentBodyDomainStorage()).AngularVelocity() + ExpectedDW;
-                bool bCertifiedScope = ParentMass > 0 && ParentMass == double(Speed::NativeKinematics::FSolidMassAccess::Read(*this)) &&
+                bool bCertifiedScope = ParentMass > 0 && ParentMass == double(Storage.Mass(*this)) &&
                     ExpectedV.SizeSquared() <= FMath::Square(double(ParentComponentBodyDomainStorage()->GetPhysMaxSpeed())) &&
                     ExpectedW.SizeSquared() <= FMath::Square(double(ParentComponentBodyDomainStorage()->GetPhysMaxAngularSpeed())) &&
                     FVector::DotProduct(ExpectedDV, N) >= 0;
@@ -3465,6 +3538,9 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
     PrevContactNormalBoxDomainStorage() = N;
     bHadContactPrevFrameBoxDomainStorage() = true;
 }
+void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& Hit)
+{FLegacyResponseMassAccess Storage;ResolveDirectGroundSupportMassResponseBody(Storage,Dt,Hit);}
+
 
 // ============================================================================
 //  ApplyPersistentSupportConstraint
@@ -3474,7 +3550,8 @@ void UBoxSubBody::ResolveDirectGroundSupport(const float& Dt, const SHitResult& 
 //     - Applies a small corrective impulse to kill normal velocity into the plane,
 //       and a small positional correction to stay within tolerance.
 // ============================================================================
-void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
+template<class TAccess>
+void UBoxSubBody::ApplyPersistentSupportConstraintMassResponseBody(TAccess& Storage,const float& Dt)
 {
     if (!ParentComponentBodyDomainStorage()) return;
 
@@ -3595,7 +3672,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
 
     // Apply a *distributed* correction impulse across manifold points.
     // Physics-style: sequential impulses over points, targeting vN -> 0.
-    const float InvMass = 1.f / Speed::NativeKinematics::FSolidMassAccess::Read(*this);
+    const float InvMass = 1.f / Storage.Mass(*this);
     const FMatrix InvI = ComputeWorldInvInertiaTensor();
 
     // Debug
@@ -3608,7 +3685,7 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     {
         if (SupportPts.Num() == 2)
         {
-            SolveEdgeSupportConstraint(
+            SolveEdgeSupportConstraintMassResponseBody(Storage,
                 N, SupportPts, Dt, /*bDoFriction=*/false, /*Mu=*/0.f, bRoofSurfaceTraversalActive);
             break;
         }
@@ -3703,6 +3780,9 @@ void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
     bHadGroundContactPrevFrameBoxDomainStorage() = true;
     PrevGroundNormalBoxDomainStorage() = N;
 }
+void UBoxSubBody::ApplyPersistentSupportConstraint(const float& Dt)
+{FLegacyResponseMassAccess Storage;ApplyPersistentSupportConstraintMassResponseBody(Storage,Dt);}
+
 
 void UBoxSubBody::UpdatePersistentGroundContact(const float& Dt, const bool bDirectSupportSolved)
 {
@@ -5386,7 +5466,8 @@ bool UBoxSubBody::ShouldPromoteWallHitToSupport(const SHitResult& Hit, const FVe
 }
 
 
-bool UBoxSubBody::SolveEdgeSupportConstraint(
+template<class TAccess>
+bool UBoxSubBody::SolveEdgeSupportConstraintMassResponseBody(TAccess& Storage,
     const FVector& SupportN,
     const TArray<FVector>& SupportPts,
     const float Dt,
@@ -5469,7 +5550,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
                 const FVector EdgeMidpoint = 0.5f * (P1 + P2);
                 const FVector R = EdgeMidpoint - COM;
                 const float Denominator = EffectiveMassAlongDir(
-                    1.f / Speed::NativeKinematics::FSolidMassAccess::Read(*this), ComputeWorldInvInertiaTensor(), R, N);
+                    1.f / Storage.Mass(*this), ComputeWorldInvInertiaTensor(), R, N);
                 if (Denominator > KINDA_SMALL_NUMBER)
                 {
                     ApplyImpulse((-vN / Denominator) * N, EdgeMidpoint);
@@ -5477,7 +5558,7 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
             }
             else
             {
-                const float lambdaN = -vN * Speed::NativeKinematics::FSolidMassAccess::Read(*this);
+                const float lambdaN = -vN * Storage.Mass(*this);
                 ApplyImpulse(lambdaN * N, COM);
             }
 #if !UE_BUILD_SHIPPING
@@ -5566,6 +5647,15 @@ bool UBoxSubBody::SolveEdgeSupportConstraint(
 
     return true;
 }
+bool UBoxSubBody::SolveEdgeSupportConstraint(
+    const FVector& SupportN,
+    const TArray<FVector>& SupportPts,
+    const float Dt,
+    const bool bDoFriction /*= false*/,
+    const float Mu /*= 0.0f*/,
+    const bool bAllowTraversalTorque /*= false*/)
+{FLegacyResponseMassAccess Storage;return SolveEdgeSupportConstraintMassResponseBody(Storage,SupportN,SupportPts,Dt,bDoFriction,Mu,bAllowTraversalTorque);}
+
 
 class UBoxSubBody::FLegacyInitialInertiaAccess final
 {
@@ -5987,4 +6077,18 @@ void FGutterSlideDamping::Apply(
         }
 #endif
     }
+}
+
+void UBoxSubBody::ResolveNativeBoxCurrentHit(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta,const float& SimTime)
+{
+    FNativeResponseMassAccess Storage(Operation,*this);
+    Storage.ValidateCurrentHitPeers(*this);
+    if(Speed::NativeKinematics::FBodyRead::CurrentHit(Operation,*this).bBlockingHit)
+        ResolveCurrentHitPrvMassResponseBody(Storage,Delta,SimTime);
+}
+
+void UBoxSubBody::ResetNativeBoxForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta)
+{
+    FNativeResponseMassAccess Storage(Operation,*this);
+    ResetForFrameMassResponseBody(Storage,Delta);
 }
