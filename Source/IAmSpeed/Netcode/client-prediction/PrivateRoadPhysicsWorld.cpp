@@ -1,5 +1,6 @@
 #include "PrivateRoadPhysicsWorld.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
 #include "Math/QuatRotationTranslationMatrix.h"
 #include "PrivateNativeOperation.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"

@@ -1913,3 +1913,15 @@ only by its existing authorized reader. The failed114 build, natural dual drains
 and clean audits are preserved; QA and native tests did not run. This correction
 requires a distinct fresh compilation and native run, including source120's
 pending controls and measured trajectories. Earlier119 results do not qualify it.
+
+
+The source121/build115 compilation advanced past the two private-access errors
+but failed on six C2027/C3861 diagnostics at the three new component-reset probe
+calls: the physics-world translation unit had only a forward declaration of
+FComponentWrite. Source122 includes its existing private ComponentContactWrite.h
+definition. Its existing friendship already admits these world-owned calls;
+no helper interface, friend list, arithmetic, native control, or restoration
+guard is changed. Build115 exited6 with natural dual drains and clean audits;
+QA and native tests did not run. The failed114 and115 builds are retained.
+A distinct fresh build and native run are required; earlier119 successes do
+not qualify source122 or the still-pending mass-response controls.
