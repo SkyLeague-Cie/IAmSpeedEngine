@@ -55,8 +55,8 @@ struct Fixture
         if(!Reset)
         {
             std::uint32_t Ordinal=0;
-            for(const auto& P:In->Publications)for(auto C:P->Sample.Changes)
-            {C.Order={S.Sequence,Ordinal++};S.Changes.push_back(C);}
+            for(const auto& Publication:In->Publications)for(auto Change:Publication->Sample.Changes)
+            {Change.Order={S.Sequence,Ordinal++};S.Changes.push_back(Change);}
         }
         S.DesktopIngress=std::move(In);Check(S.IsValid(),"typed physical packet is structurally valid");return S;
     }

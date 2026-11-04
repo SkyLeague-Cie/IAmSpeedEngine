@@ -120,12 +120,16 @@ public:
             {
                 TComPtr<IUnknown> Identity;
                 if(FAILED(Q.Reading.As(&Identity)))return Fail(EStatus::Rejected,E_UNEXPECTED);
-                Result->Consumed.push_back(Q.Arrival);
                 bool Duplicate=Seen(*Q.Reader,Identity.Get());
                 std::uint64_t Sequence=Q.Reader->Sequence,Stamp=Q.Reader->Timestamp;
                 for(const auto& Before:Result->Accepted)if(Before.Reader==Q.Reader)
                 {Sequence=Before.Observation.LocalSequence;Stamp=Before.Observation.OsTimestampUs;if(Before.Identity==Identity)Duplicate=true;}
-                if(Duplicate)continue;
+                if(Duplicate){Result->Consumed.push_back(Q.Arrival);continue;}
+                // Schema1 orders sources within one publication. Keep actual
+                // callback order: accept its longest compatible prefix and
+                // leave the entire suffix queued for the next publication.
+                if(!Batch.Observations.empty()&&Q.Reader->Source<Batch.Observations.back().Source)break;
+                Result->Consumed.push_back(Q.Arrival);
                 FAccepted A;const auto H=Decode(Q.Reader,Q.Reading.Get(),Sequence+1,A);
                 if(FAILED(H)||A.Observation.OsTimestampUs<Stamp)return Fail(EStatus::Rejected,FAILED(H)?H:E_UNEXPECTED);
                 Batch.Observations.push_back(A.Observation);Result->Accepted.push_back(std::move(A));

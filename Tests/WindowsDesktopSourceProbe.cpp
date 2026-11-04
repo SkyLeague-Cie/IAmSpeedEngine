@@ -10,7 +10,10 @@ struct Fixture
     ComPtr<FakeDevice> Keyboard,Mouse,Pad;
     std::unique_ptr<FGameInputDiscovery> Discovery;
     std::unique_ptr<FGameInputDesktopSource> Collector;
-    Fixture(bool HaveKeyboard=true,bool HaveMouse=true)
+    const char* DiagnosticPhase;
+    unsigned PreparationCount=0;
+    Fixture(bool HaveKeyboard=true,bool HaveMouse=true,const char* InPhase="unspecified")
+        :DiagnosticPhase(InPhase)
     {
         Api.Attach(new DesktopApi);
         MouseInfo.supportedButtons=GameInputMouseLeftButton|GameInputMouseRightButton|GameInputMouseMiddleButton;
@@ -27,7 +30,11 @@ struct Fixture
     ~Fixture(){Check(Collector->Close(),"collector callbacks truly closed");Check(Discovery->Shutdown(),"discovery callback truly closed");}
     FGameInputDesktopSource::FPreparation Prepare(bool Fresh=false)
     {
-        auto R=Collector->Prepare(Fresh);
+        auto R=Collector->Prepare(Fresh);++PreparationCount;
+        if(R.Status!=FGameInputDesktopSource::EStatus::Prepared||!R.Prepared)
+            std::cerr<<"[WindowsDesktopSourceProbe] phase="<<DiagnosticPhase<<" prepare="<<PreparationCount
+                <<" fresh="<<Fresh<<" status="<<static_cast<unsigned>(R.Status)<<" hr=0x"<<std::hex
+                <<static_cast<unsigned long>(R.Error)<<std::dec<<'\n';
         Check(R.Status==FGameInputDesktopSource::EStatus::Prepared&&bool(R.Prepared),"collector has typed prepared publication");
         Check(bool(R.Prepared->Inspect())&&ValidateDesktopPublication(*R.Prepared->Inspect()),"complete publication validates");return R;
     }
@@ -147,7 +154,7 @@ int main()
 {
     Composed(false);Composed(true);
     {
-        Fixture F;
+        Fixture F(true,true,"interleaved-transaction");
         Check(!FGameInputDesktopSource::Create(nullptr,F.Discovery.get(),1)&&!FGameInputDesktopSource::Create(F.Api.Get(),nullptr,1)
             &&!FGameInputDesktopSource::Create(F.Api.Get(),F.Discovery.get(),0),"no implicit API/catalogue/session");
         const auto Catalogue=F.Discovery->CaptureDesktop();
@@ -169,22 +176,31 @@ int main()
         F.Api->Push(K1);F.Api->Push(M1);F.Api->Push(K0);F.Api->Push(M0);
         auto Changes=F.Prepare();const auto P=Changes.Prepared->Inspect();
         Check(Changes.Prepared->MouseActivity(),"only observed hardware mouse press claims desktop activity");
-        Check(P->Changes.size()==4,"short keyboard and mouse taps retained between polls");
-        Check(P->Changes[0].Origin.Control.Kind==ERawControlKind::KeyboardUsage&&P->Changes[0].Value==1&&
-            P->Changes[1].Origin.Control.Kind==ERawControlKind::MouseButton&&P->Changes[1].Value==1&&
-            P->Changes[2].Origin.Control.Kind==ERawControlKind::KeyboardUsage&&P->Changes[2].Value==0&&
-            P->Changes[3].Origin.Control.Kind==ERawControlKind::MouseButton&&P->Changes[3].Value==0,"actual callback observation order retained across kinds despite equal SDK timestamps");
-        Check(P->Changes[0].GlobalSequence<P->Changes[1].GlobalSequence&&P->Changes[1].GlobalSequence<P->Changes[2].GlobalSequence,
-            "accepted ingress sequence, not timestamp tie guessing");
+        Check(P->Changes.size()==2&&P->Changes[0].Origin.Control.Kind==ERawControlKind::KeyboardUsage&&P->Changes[0].Value==1&&
+            P->Changes[1].Origin.Control.Kind==ERawControlKind::MouseButton&&P->Changes[1].Value==1,
+            "first callback prefix retains keyboard then mouse press without reordering");
+        Check(Value(*P,ERawControlKind::KeyboardUsage,0x1a)==1&&Value(*P,ERawControlKind::MouseButton,0)==1,
+            "first publication reports the actual intermediate held union");
+        Check(!F.Collector->Commit(*Changes.Prepared,[]()noexcept{return false;}),"refused prefix installation consumes no callback");
+        auto PrefixRetry=F.Prepare();
+        Check(PrefixRetry.Prepared->Inspect()->Baseline.AcceptedThrough==P->Baseline.AcceptedThrough&&
+            PrefixRetry.Prepared->Inspect()->Changes.size()==2,"rejected prefix retries the same observations without advancing source");
+        F.Accept(PrefixRetry);auto Releases=F.Prepare();const auto Q=Releases.Prepared->Inspect();
+        Check(Q->Changes.size()==2&&Q->Changes[0].Origin.Control.Kind==ERawControlKind::KeyboardUsage&&Q->Changes[0].Value==0&&
+            Q->Changes[1].Origin.Control.Kind==ERawControlKind::MouseButton&&Q->Changes[1].Value==0&&!Releases.Prepared->MouseActivity(),
+            "untouched callback suffix retains keyboard then mouse release in next publication");
+        Check(P->Changes[0].GlobalSequence<P->Changes[1].GlobalSequence&&P->Changes[1].GlobalSequence<Q->Changes[0].GlobalSequence&&
+            Q->Changes[0].GlobalSequence<Q->Changes[1].GlobalSequence,
+            "all four callbacks keep one accepted ingress order across publications, not timestamp tie guessing");
         Check(K1->KeyReads&&M1->MouseReads,"collector decodes real SDK GetKeyState and GetMouseState methods");
-        Check(Value(*P,ERawControlKind::KeyboardUsage,0x1a)==0&&Value(*P,ERawControlKind::MouseButton,0)==0,"both final releases retained");
-        F.Accept(Changes);
+        Check(Value(*Q,ERawControlKind::KeyboardUsage,0x1a)==0&&Value(*Q,ERawControlKind::MouseButton,0)==0,"both final releases retained");
+        F.Accept(Releases);
         Check(F.Collector->Prepare(false).Status==FGameInputDesktopSource::EStatus::NoChange,"quiet source creates no duplicate edges");
         F.Api->Push(K0);F.Api->Push(M0);
         Check(F.Collector->Prepare(false).Status==FGameInputDesktopSource::EStatus::NoChange,"repeated accepted COM identities do not duplicate input");
     }
     {
-        Fixture F(false,true);
+        Fixture F(false,true,"current-callback-race");
         F.Api->DuringCurrent=[&]()
         {F.Api->Push(F.Api->Mouse(F.Mouse.Get(),1,GameInputMouseLeftButton));F.Api->Push(F.Api->Mouse(F.Mouse.Get(),2,GameInputMouseNone));};
         auto Base=F.Prepare(true);
@@ -198,7 +214,7 @@ int main()
             "mouse-only source produces typed middle-button input and activity");F.Accept(Middle);
     }
     {
-        Fixture F;auto Base=F.Prepare(true);F.Accept(Base);
+        Fixture F(true,true,"hotplug-preserves-keyboard");auto Base=F.Prepare(true);F.Accept(Base);
         F.Api->Push(F.Api->Keyboard(F.Keyboard.Get(),2,true));F.Api->Push(F.Api->Mouse(F.Mouse.Get(),2,GameInputMouseRightButton));
         auto Held=F.Prepare();const auto P=F.Accept(Held);
         const auto K=Member(*P,EDesktopSubsourceKind::Keyboard),M=Member(*P,EDesktopSubsourceKind::Mouse);
@@ -218,7 +234,7 @@ int main()
         Check(F.Discovery->CaptureDesktop()->Revision==Revision,"obsolete object disconnect cannot remove its replacement");
     }
     {
-        Fixture F;auto Base=F.Prepare(true);const auto B=F.Accept(Base);
+        Fixture F(true,true,"stale-catalogue-ticket");auto Base=F.Prepare(true);const auto B=F.Accept(Base);
         F.Api->Push(F.Api->Keyboard(F.Keyboard.Get(),2,true));auto Candidate=F.Prepare();
         F.Api->FireDevice(F.Mouse.Get(),2,false);unsigned Install=0;
         Check(!F.Collector->Commit(*Candidate.Prepared,[&]()noexcept{++Install;return true;})&&Install==0,
@@ -228,7 +244,7 @@ int main()
             "rejected catalogue receipt did not advance portable source revision");F.Accept(Recovered);
     }
     {
-        Fixture F(false,true);auto Base=F.Prepare(true);F.Accept(Base);
+        Fixture F(false,true,"callback-loss-or-invalid");auto Base=F.Prepare(true);F.Accept(Base);
         for(unsigned I=0;I<257;++I)F.Api->Push(F.Api->Mouse(F.Mouse.Get(),I+2,(I&1)?GameInputMouseLeftButton:GameInputMouseNone));
         auto Overflow=F.Collector->Prepare(false);
         Check(Overflow.Status==FGameInputDesktopSource::EStatus::Unavailable&&!Overflow.Prepared,"bounded callback overflow publishes no guessed state");
@@ -237,7 +253,7 @@ int main()
         F.Api->FailReadUnregister=false;Check(F.Collector->Close()&&F.Api->ReadingCallbacks.empty(),"retry really fences all callbacks before release");
     }
     {
-        Fixture F(false,true);auto Base=F.Prepare(true);F.Accept(Base);
+        Fixture F(false,true,"callback-loss-or-invalid");auto Base=F.Prepare(true);F.Accept(Base);
         const auto Callback=*F.Api->ReadingCallbacks.begin();
         Callback.second.Function(Callback.first,Callback.second.Context,nullptr);
         const auto Bad=F.Collector->Prepare(false);
@@ -251,7 +267,7 @@ int main()
         Check(F.Collector->Close()&&F.Api->ReadingCallbacks.empty(),"partial setup closes earlier successfully registered contexts");
     }
     {
-        Fixture F(true,false);auto Base=F.Prepare(true);F.Accept(Base);
+        Fixture F(true,false,"callback-close-fence");auto Base=F.Prepare(true);F.Accept(Base);
         std::atomic<bool> Entered{false},Release{false};
         F.Api->BeforeReading=[&](){Entered=true;Await([&](){return Release.load();});};
         std::thread Callback([&](){F.Api->Push(F.Api->Keyboard(F.Keyboard.Get(),2,true));});
