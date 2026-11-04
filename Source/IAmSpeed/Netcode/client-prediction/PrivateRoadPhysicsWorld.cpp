@@ -556,6 +556,15 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         if(!Node->Filter){Refuse(Why,TEXT("private input filter configuration refused"));return {};}
         I.NativeConfigurationLifetime.push_back(Node->NativeConfiguration->Lifetime);
         I.NativeConfigurationLifetime.push_back(Node->ReferenceConfiguration->Lifetime);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+        {
+            // Actual newly allocated independent counters, retained immediately.
+            // Preserve partial/early refusal observations too, never a fake zero.
+            BirthContext->Result.LifetimeObservers.push_back(Node->NativeConfiguration->Lifetime);
+            BirthContext->Result.LifetimeObservers.push_back(Node->ReferenceConfiguration->Lifetime);
+        }
+#endif
         I.Cars.push_back(std::move(Node));
     }
     I.Access->ContactDispatches.reserve(I.Cars.size()*(I.Cars.size()-1)/2);
@@ -790,12 +799,24 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
         {
             // Actual actor authoring/capture, outside original math/GC scopes.
-            N.Actor->SetActorLocation(FVector(123,-47,89));N.Actor->SetActorRotation(FRotator(-29,43,11));
-            if(!I.AcquiredGraphStillLive()||N.Actor->GetActorLocation()!=FVector(123,-47,89)
-                ||N.Actor->GetActorRotation().IsNearlyZero())return false;
+            auto& Attempt=BirthContext->Result;Attempt.FirstOwnerLastStage=TEXT("actor-pose-api-entered");
+            Attempt.FirstOwnerActorLocationSet=N.Actor->SetActorLocation(FVector(123,-47,89));
+            Attempt.FirstOwnerActorRotationSet=N.Actor->SetActorRotation(FRotator(-29,43,11));
+            Attempt.FirstOwnerActorLocationReadback=N.Actor->GetActorLocation();
+            Attempt.FirstOwnerActorRotationReadback=N.Actor->GetActorRotation();
+            Attempt.FirstOwnerLastStage=TEXT("actor-pose-readback-returned");
+            if(!I.AcquiredGraphStillLive())return Refuse(Why,TEXT("first owner fixture graph unavailable after actor pose API"));
+            if(Attempt.FirstOwnerActorLocationReadback!=FVector(123,-47,89))
+                return Refuse(Why,TEXT("first owner fixture actual actor location differs from authored pose"));
+            if(Attempt.FirstOwnerActorRotationReadback.IsNearlyZero())
+                return Refuse(Why,TEXT("first owner fixture actual actor rotation remained zero"));
         }
 #endif
         C->SetOwner(N.Actor);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+            BirthContext->Result.FirstOwnerLastStage=TEXT("reference-owner-call-returned");
+#endif
         if(!I.AcquiredGraphStillLive())return false;
         const TArray<USSubBody*> FacadeTopology=C->GetSubBodies(); // owned identity list, never a physical-state import
         const auto FacadeTopologyStillMatches=[&]() -> bool
@@ -872,6 +893,10 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         N.NativeConfiguration->Suspension.SpringRate=5000;N.NativeConfiguration->Suspension.RestingForce=250000;
         N.NativeConfiguration->Suspension.CompressionDamping=1000;N.NativeConfiguration->Suspension.ReboundDamping=1000;
         BuildReferenceVehicle(*C,N.ReferenceConfiguration,ReferenceWheels);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+            BirthContext->Result.FirstOwnerLastStage=TEXT("reference-vehicle-call-returned");
+#endif
         if(!FacadeTopologyStillMatches()){Refuse(Why,TEXT("private facade wheel topology changed"));return false;}
         for(int32 W=0;W<4;++W)
         {
@@ -889,6 +914,8 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         I.NativeCppKeepAlive.push_back(N.NativeCommonValues);
         if(!BindComponentPart(N.NativeCommonValues))return false;
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+            BirthContext->Result.FirstOwnerLastStage=TEXT("original-common-domain-bound");
         // Witness only: actual legacy values from the original setup. These
         // are NEVER imported into physical storage or a restore certificate.
         TArray<uint8> OriginalSolidRecipe;
@@ -939,32 +966,40 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         USpeedWheeledComponent::FNativeOwnerBirthObservation FirstOwnerObservation;
         if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
         {
+            BirthContext->Result.FirstOwnerLastStage=TEXT("foreign-admission-entered");
             auto& Foreign=*BirthContext->ForeignRoot;
             if(Foreign.Closed||Foreign.Failed||Foreign.RetirementRequested.load()
-                ||Foreign.NativeOperationIdentity->ActiveGTActualOperation||!Foreign.AcquiredGraphStillLive()||Foreign.Cars.empty())return {};
+                ||Foreign.NativeOperationIdentity->ActiveGTActualOperation||!Foreign.AcquiredGraphStillLive()||Foreign.Cars.empty())
+                return Refuse(Why,TEXT("first owner fixture foreign graph admission refused"));
             const auto& FN=*Foreign.Cars.front();
             if(!FN.Component||!FN.NativeVehicleRoot||!FN.NativeVehicleRoot->Domain||!FN.NativeCommonValues
                 ||!FN.Component->OriginalWheeledDomain||FN.Component->OriginalWheeledDomain.get()!=FN.NativeVehicleRoot->Domain.get()
                 ||FN.Component->OriginalWheeledDomain.owner_before(FN.NativeVehicleRoot)||FN.NativeVehicleRoot.owner_before(FN.Component->OriginalWheeledDomain)
                 ||FN.Component->OwnedComponentValues!=FN.NativeCommonValues
-                ||FN.Component->OwnedComponentValues.owner_before(FN.NativeCommonValues)||FN.NativeCommonValues.owner_before(FN.Component->OwnedComponentValues))return {};
+                ||FN.Component->OwnedComponentValues.owner_before(FN.NativeCommonValues)||FN.NativeCommonValues.owner_before(FN.Component->OwnedComponentValues))
+                return Refuse(Why,TEXT("first owner fixture foreign typed-root aliases refused"));
             // The already retained ForeignCall.Root owns this actual typed
             // node and both original aliases for the WHOLE closed diagnostic
             // call. This const six-field borrow never escapes or grants an Op,
             // mutable view, source exclusion, snapshot or lifetime lease.
-            if(!C->ProbeNativeFirstOwnerBirthForDiagnostics(Operation,N.Actor,OriginalOwnerRotation,OriginalOwnerLocation,
+            auto& Result=BirthContext->Result;
+            Result.FirstOwnerLastStage=TEXT("closed-first-owner-probe-entered");Result.FirstOwnerProbeCallEntered=true;
+            const bool ProbeSucceeded=C->ProbeNativeFirstOwnerBirthForDiagnostics(Operation,N.Actor,OriginalOwnerRotation,OriginalOwnerLocation,
                 N.OriginalHitboxBirth,N.OriginalWheelBodyBirth,N.OriginalWheelObjects,ReferenceWheelBirths,
                 FN.Component,FN.Actor,FN.OriginalHitboxBirth,FN.OriginalWheelBodyBirth,FN.OriginalWheelObjects,
-                FN.OriginalNativeSimulation,FN.NativeCommonValues->BasePhysicsState.Kinematic,FirstOwnerObservation))return Refuse(Why,TEXT("actual first owner Birth controls refused"));
-            auto& Result=BirthContext->Result;
+                FN.OriginalNativeSimulation,FN.NativeCommonValues->BasePhysicsState.Kinematic,FirstOwnerObservation);
+            Result.FirstOwnerProbeCallReturned=true;Result.FirstOwnerProbeSucceeded=ProbeSucceeded;
+            Result.FirstOwnerLastStage=TEXT("closed-first-owner-probe-returned");
+            // Copy actual partial observations on BOTH true and false returns.
+            // A false result remains a failure and grants no positive coverage.
             Result.FirstOwnerInitializersReturned=FirstOwnerObservation.InitializersReturned;
             Result.FirstOwnerInitialNullParents=FirstOwnerObservation.InitialNullParents;Result.FirstOwnerGuardRefusals=FirstOwnerObservation.Refusals;
             Result.FirstOwnerAllRefusalsBeforeWrite=FirstOwnerObservation.AllRefusalsBeforeWrite;Result.FirstOwnerPoseAndCOMMatch=FirstOwnerObservation.PoseAndCOMMatch;
             Result.FirstOwnerClearKeepsConfigurations=FirstOwnerObservation.ClearKeepsCanonicalConfigurations;
             Result.FirstOwnerStoredChassisTensorMatch=FirstOwnerObservation.StoredChassisTensorMatch;
             Result.FirstOwnerStoredTensorDistinguished=FirstOwnerObservation.StoredTensorDistinguished;Result.FirstOwnerChildrenMatch=FirstOwnerObservation.ChildrenMatch;
+            if(!ProbeSucceeded)return Refuse(Why,TEXT("actual first owner Birth controls refused after closed probe returned"));
             Result.FirstOwnerProbeReturned=true;
-            for(const auto& Trace:I.NativeConfigurationLifetime)Result.LifetimeObservers.push_back(Trace);
             Result.FirstOwnerAbortReached=true; // genuine first pass returned, before original vehicle/SECOND pass
             return Refuse(Why,TEXT("explicit first owner constructor fixture abort before original vehicle construction"));
         }
@@ -1180,7 +1215,9 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateWithBi
     // Actual retained foreign root only. No foreign mutex or operation is
     // acquired across callback-capable creation, GC, logging or owner unwind.
     FBirthInitializationDiagnosticContext Context{ForeignCall.Root,Mode,Result};
+    if(Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)Result.FirstOwnerLastStage=TEXT("create-core-call-entered");
     auto Owner=CreateCore(std::move(Seeds),Why,&Context);
+    if(Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)Result.FirstOwnerCreateWhy=Why;
     Result.CreateReturnedNull=!Owner; // actual return, never a guessed drain
     return Owner;
 }

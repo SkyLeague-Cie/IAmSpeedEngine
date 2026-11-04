@@ -25,8 +25,13 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     P::FPrivateRoadBirthInitializationProbe Abort;
     auto Aborted=P::FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
         Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort,Abort,Why);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadFirstOwnerBirthAbortAttempt] null=%d stage=%s probeEntered=%d probeReturned=%d probeSucceeded=%d locationApi=%d rotationApi=%d location=%s rotation=%s why=%s"),
+        int(Abort.CreateReturnedNull),*Abort.FirstOwnerLastStage,int(Abort.FirstOwnerProbeCallEntered),int(Abort.FirstOwnerProbeCallReturned),
+        int(Abort.FirstOwnerProbeSucceeded),int(Abort.FirstOwnerActorLocationSet),int(Abort.FirstOwnerActorRotationSet),
+        *Abort.FirstOwnerActorLocationReadback.ToString(),*Abort.FirstOwnerActorRotationReadback.ToString(),*Abort.FirstOwnerCreateWhy));
     TestFalse(TEXT("nondefault first-owner fixture actually aborts before original vehicle construction"),bool(Aborted));
-    TestTrue(TEXT("actual first-owner forced abort returned no owner"),Abort.FirstOwnerProbeReturned&&Abort.FirstOwnerAbortReached&&Abort.CreateReturnedNull);
+    TestTrue(*FString::Printf(TEXT("actual first-owner forced abort returned no owner after complete probe (stage=%s why=%s)"),
+        *Abort.FirstOwnerLastStage,*Abort.FirstOwnerCreateWhy),Abort.FirstOwnerProbeReturned&&Abort.FirstOwnerAbortReached&&Abort.CreateReturnedNull);
     TestEqual(TEXT("first five actual initializers returned"),Abort.FirstOwnerInitializersReturned,uint32(5));
     TestEqual(TEXT("second original initializer loop never entered in this early fixture"),Abort.InitializersReturned,uint32(0));
     TestEqual(TEXT("all five original parents really began null"),Abort.FirstOwnerInitialNullParents,uint32(5));

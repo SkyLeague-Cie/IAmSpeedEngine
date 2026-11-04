@@ -112,6 +112,13 @@ struct FPrivateRoadPublication
 enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitializer,ProbeFirstOwnerAndAbort };
 struct FPrivateRoadBirthInitializationProbe
 {
+    // Diagnostic VALUES only: entered/returned stages and actual pose API results.
+    // These do not grant operation, source/lifetime or restore authority.
+    FString FirstOwnerLastStage=TEXT("not-entered"),FirstOwnerCreateWhy;
+    bool FirstOwnerProbeCallEntered=false,FirstOwnerProbeCallReturned=false,FirstOwnerProbeSucceeded=false;
+    bool FirstOwnerActorLocationSet=false,FirstOwnerActorRotationSet=false;
+    FVector FirstOwnerActorLocationReadback=FVector::ZeroVector;
+    FRotator FirstOwnerActorRotationReadback=FRotator::ZeroRotator;
     uint32 InitializersReturned=0; // SECOND pass, after native vehicle/shape authoring
     uint32 FirstOwnerInitializersReturned=0,FirstOwnerInitialNullParents=0,FirstOwnerGuardRefusals=0;
     bool FirstOwnerProbeReturned=false,FirstOwnerAbortReached=false,FirstOwnerAllRefusalsBeforeWrite=false;
