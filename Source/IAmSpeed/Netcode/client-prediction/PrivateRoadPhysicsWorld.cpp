@@ -998,6 +998,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
             Result.FirstOwnerClearKeepsConfigurations=FirstOwnerObservation.ClearKeepsCanonicalConfigurations;
             Result.FirstOwnerStoredChassisTensorMatch=FirstOwnerObservation.StoredChassisTensorMatch;
             Result.FirstOwnerStoredTensorDistinguished=FirstOwnerObservation.StoredTensorDistinguished;Result.FirstOwnerChildrenMatch=FirstOwnerObservation.ChildrenMatch;
+            Result.FirstOwnerWheelVelocityOrderDistinguished=FirstOwnerObservation.WheelVelocityOrderDistinguished;
             if(!ProbeSucceeded)return Refuse(Why,TEXT("actual first owner Birth controls refused after closed probe returned"));
             Result.FirstOwnerProbeReturned=true;
             Result.FirstOwnerAbortReached=true; // genuine first pass returned, before original vehicle/SECOND pass

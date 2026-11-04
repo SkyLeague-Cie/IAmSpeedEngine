@@ -41,6 +41,8 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     TestTrue(TEXT("empty live configuration roster still retains original born Chaos configs"),Abort.FirstOwnerClearKeepsConfigurations);
     TestTrue(TEXT("chassis uses rotated actual stored tensor and distinguishes recomputation"),Abort.FirstOwnerStoredChassisTensorMatch&&Abort.FirstOwnerStoredTensorDistinguished);
     TestTrue(TEXT("all five children receive the original origin-derived kinematics"),Abort.FirstOwnerChildrenMatch);
+    TestTrue(TEXT("actual wheel velocity matches original wheel FP order and distinguishes base-only shortcut"),Abort.FirstOwnerWheelVelocityOrderDistinguished);
+    AddInfo(FString::Printf(TEXT("[PrivateRoadFirstOwnerChildArithmetic] actualWheelOrderDistinguished=%d"),int(Abort.FirstOwnerWheelVelocityOrderDistinguished)));
     TestEqual(TEXT("only genuine preexisting counters retained"),Abort.LifetimeObservers.size(),size_t(4));
     uint64 Constructors=0;
     for(const auto& Trace:Abort.LifetimeObservers)

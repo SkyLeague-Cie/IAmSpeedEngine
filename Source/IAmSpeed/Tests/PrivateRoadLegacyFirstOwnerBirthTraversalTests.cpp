@@ -64,6 +64,29 @@ bool FIASLegacyFirstOwnerBirthTraversal::RunTest(const FString&)
             &&C->GetChaosWheelConfiguration()==CC.Get()&&!A->GetWheelSim()&&!C->GetWheelSim()&&!A->GetSuspensionSim()&&!C->GetSuspensionSim());
         TestTrue(TEXT("all actual bodies initialized against this parent"),Box->GetParentComponent()==Parent.Get()&&A->GetParentComponent()==Parent.Get()&&C->GetParentComponent()==Parent.Get());
     }
+    // Independent real legacy virtual calls, with no live suspension. Check
+    // the original second velocity write at nontrivial pose/spin exactly.
+    SKinematic ParentState;ParentState.Location=ActorLocation;ParentState.Rotation=ActorRotation;
+    ParentState.Velocity=FVector(3,5,7);ParentState.AngularVelocity=FVector(0.1,0.2,0.3);
+    ParentState.Acceleration=FVector(11,13,17);ParentState.AngularAcceleration=FVector(0.4,0.5,0.6);
+    uint32 ActualLegacyUpdates=0;bool LegacyOrderDistinguished=false;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        const FVector AuthoredOffset(21+Index*7,-31+Index*11,-9+Index);
+        A->SetLocalOffset(AuthoredOffset);A->UpdateKinematicsFromOwner(ParentState);++ActualLegacyUpdates;
+        const auto Actual=A->CopyKinematicsForFixture();
+        const FVector Offset=ParentState.Rotation.RotateVector(AuthoredOffset);
+        const FVector ExpectedLocation=ParentState.Location+Offset;
+        const FVector ExpectedWheelVelocity=ParentState.Velocity+FVector::CrossProduct(
+            ParentState.AngularVelocity,ExpectedLocation-ParentState.Location);
+        const FVector BaseOnlyVelocity=ParentState.Velocity+FVector::CrossProduct(ParentState.AngularVelocity,Offset);
+        TestTrue(TEXT("real legacy wheel exact authored world location"),Actual.Location==ExpectedLocation);
+        TestTrue(TEXT("real legacy wheel exact original second-write velocity"),Actual.Velocity==ExpectedWheelVelocity);
+        LegacyOrderDistinguished=LegacyOrderDistinguished||(ExpectedWheelVelocity!=BaseOnlyVelocity&&Actual.Velocity==ExpectedWheelVelocity);
+    }
+    TestEqual(TEXT("four real legacy wheel update calls returned"),ActualLegacyUpdates,uint32(4));
+    TestTrue(TEXT("real legacy wheel distinguishes base-only velocity shortcut"),LegacyOrderDistinguished);
+    AddInfo(FString::Printf(TEXT("[LegacyFirstOwnerChildArithmetic] actualUpdates=%u orderDistinguished=%d"),ActualLegacyUpdates,int(LegacyOrderDistinguished)));
     TestFalse(TEXT("authored fixture remains unregistered"),Parent->IsRegistered());
     AddInfo(TEXT("[LegacyFirstOwnerBirthTraversal] cases=2 customBodiesEach=3 subbodyQueriesEachCase=9 wheelQueriesEachCase=2 inverseCallsEachCase=6 nonzeroCOMPose=1 rotatedStoredTensor=1 clearKeepsConfig=1 orderedPartialRoster=1. Real legacy helper/custom dispatch fixtures; ordinary SetOwner source/tick/register order remains unchanged, no native lease or network claim."));
     return !HasAnyErrors();

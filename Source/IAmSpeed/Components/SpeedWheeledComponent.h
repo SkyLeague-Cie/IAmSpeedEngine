@@ -863,6 +863,7 @@ private:
         bool AllRefusalsBeforeWrite=false,PositiveEntryReturned=false,PoseAndCOMMatch=false;
         bool ClearKeepsCanonicalConfigurations=false,StoredTensorFixtureInstalled=false;
         bool StoredChassisTensorMatch=false,StoredTensorDistinguished=false,ChildrenMatch=false;
+        bool WheelVelocityOrderDistinguished=false; // actual wheel matches its original FP order and differs from base-only oracle
     };
     template<class TAccess> void ResolveFixedCenterOfMassBody(TAccess& Storage);
     template<class TAccess> void InitializeBoundSubBodiesForPhysicalOwnerBody(TAccess& Storage);

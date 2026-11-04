@@ -882,11 +882,21 @@ bool USpeedWheeledComponent::ProbeNativeFirstOwnerBirthForDiagnostics(
         const USSubBody* Body=Index?static_cast<USSubBody*>(BodyBirths[Index-1].Get()):static_cast<USSubBody*>(HitboxBirth.Get());
         const auto& Values=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,Body);
         const FVector Offset=Origin.Rotation.RotateVector(Values.LocalPose.GetLocation());
+        const FVector ExpectedLocation=Origin.Location+Offset;
+        const FVector BaseExpectedVelocity=Origin.Velocity+FVector::CrossProduct(Origin.AngularVelocity,Offset);
+        // The unchanged shared wheel program performs a second velocity write
+        // AFTER its base update, using world location minus parent location.
+        // Preserve that exact FP order in this diagnostic oracle; do not make
+        // the physical program use a mathematically equivalent base shortcut.
+        const FVector ExpectedVelocity=Index?Origin.Velocity+FVector::CrossProduct(
+            Origin.AngularVelocity,ExpectedLocation-Origin.Location):BaseExpectedVelocity;
+        if(Index&&ExpectedVelocity!=BaseExpectedVelocity&&Values.Kinematics.Velocity==ExpectedVelocity)
+            Out.WheelVelocityOrderDistinguished=true; // actual native wheel observation, not a tolerance
         const FVector ExpectedAcceleration=Origin.Acceleration+FVector::CrossProduct(Origin.AngularAcceleration,Offset)
             +FVector::CrossProduct(Origin.AngularVelocity,FVector::CrossProduct(Origin.AngularVelocity,Offset));
         Out.ChildrenMatch=Out.ChildrenMatch&&Values.ParentComponent==static_cast<ISpeedComponent*>(this)
-            &&Values.Kinematics.Location==Origin.Location+Offset
-            &&Values.Kinematics.Velocity==Origin.Velocity+FVector::CrossProduct(Origin.AngularVelocity,Offset)
+            &&Values.Kinematics.Location==ExpectedLocation
+            &&Values.Kinematics.Velocity==ExpectedVelocity
             &&Values.Kinematics.Acceleration==ExpectedAcceleration
             &&Values.Kinematics.Rotation==Origin.Rotation*Values.LocalEulerRotation.Quaternion()
             &&Values.Kinematics.AngularVelocity==Origin.AngularVelocity&&Values.Kinematics.AngularAcceleration==Origin.AngularAcceleration;
@@ -898,7 +908,8 @@ bool USpeedWheeledComponent::ProbeNativeFirstOwnerBirthForDiagnostics(
         }
     }
     return Out.InitializersReturned==5&&Out.InitialNullParents==5&&Out.PositiveEntryReturned&&Out.PoseAndCOMMatch
-        &&Out.ClearKeepsCanonicalConfigurations&&Out.StoredChassisTensorMatch&&Out.StoredTensorDistinguished&&Out.ChildrenMatch;
+        &&Out.ClearKeepsCanonicalConfigurations&&Out.StoredChassisTensorMatch&&Out.StoredTensorDistinguished&&Out.ChildrenMatch
+        &&Out.WheelVelocityOrderDistinguished;
 }
 
 bool USpeedWheeledComponent::ProbeNativeFirstOwnerStepRefusalForDiagnostics(

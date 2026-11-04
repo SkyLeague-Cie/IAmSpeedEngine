@@ -124,6 +124,7 @@ struct FPrivateRoadBirthInitializationProbe
     bool FirstOwnerProbeReturned=false,FirstOwnerAbortReached=false,FirstOwnerAllRefusalsBeforeWrite=false;
     bool FirstOwnerPoseAndCOMMatch=false,FirstOwnerClearKeepsConfigurations=false;
     bool FirstOwnerStoredChassisTensorMatch=false,FirstOwnerStoredTensorDistinguished=false,FirstOwnerChildrenMatch=false;
+    bool FirstOwnerWheelVelocityOrderDistinguished=false;
     uint32 WheelBindingFactoryReturns=0,WheelBindingGuardRefusals=0,WheelBindingPositiveEntryReturns=0;
     bool WheelBindingProbeReturned=false,WheelBindingAllRefusalsBeforeWrite=false;
     bool WheelBindingPositiveValuesMatch=false,WheelBindingOverridePredicatesMatch=false;

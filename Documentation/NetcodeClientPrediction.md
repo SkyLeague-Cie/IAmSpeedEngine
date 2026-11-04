@@ -1853,3 +1853,17 @@ ordinary/custom helper controls. New source/native qualification is required;
 none of109's results transfer. Complete causal state, source/lifetime closure,
 full effective-state CanMove, authoritative-K localized resimulation and two
 rendered playable clients with a dedicated server remain unfinished.
+
+### Proposed first-owner child velocity oracle correction (source119)
+
+Fresh source118 diagnostics isolate the failed first-owner fixture to its child
+kinematic comparison; the probe returns false after the real initializers and
+nine before-write refusals. The original wheel update performs a second velocity
+write from world child position minus parent position, after the base update.
+The fixture incorrectly compared every child against the base-only expression.
+The proposed diagnostic oracle retains the original exact wheel FP order, with
+an independently computed expected position. Actual native and real legacy
+wheel controls must distinguish it from the base-only shortcut. All other
+strict first-owner assertions, physical programs, tolerances and restoration
+guards remain unchanged. This correction still requires fresh native validation;
+it supplies no complete causal-state, source/lifetime or localized rollback proof.
