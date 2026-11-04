@@ -104,15 +104,15 @@ private:
 		: Contract(std::move(C)), Journal(std::move(J)), Producer(P), Bindings(std::move(B)), Cursor{Session, 0} {}
 	bool Evaluate(const FAcquiredRawState& R, std::uint32_t& Mask) const
 	{
-		if (!R.State.IsValid(R.Kind)) return false;
+        if(R.Kind==ERawDeviceKind::Desktop?!HasValidDesktopProvenance(R):!R.State.IsValid(R.Kind))return false;
 		Mask = 0;
 		for (const auto& B : Bindings)
 			for (const auto& M : Contract->GetDescription().Mapping)
 			{
-				if (M.Action != B.Action || ((M.Control.Kind == ERawControlKind::KeyboardUsage) != (R.Kind == ERawDeviceKind::Keyboard))) continue;
+				if(M.Action!=B.Action||!IsControlKindForDevice(M.Control.Kind,R.Kind))continue;
 				const FRawValue* Found = nullptr;
 				for (std::size_t I = 0; I < R.State.Count; ++I) if (R.State.Values[I].Control == M.Control) { Found = &R.State.Values[I]; break; }
-				if (!Found) return false;
+                if(!Found){if(R.Kind==ERawDeviceKind::Desktop)continue;return false;}
 				if (Found->Value != 0) Mask |= std::uint32_t{1} << B.Action;
 			}
 		return true;

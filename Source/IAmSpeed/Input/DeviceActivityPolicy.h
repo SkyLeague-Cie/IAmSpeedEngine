@@ -19,7 +19,8 @@ struct FActivityConfig
 	// One local player retains a healthy gamepad owner when an emulator
 	// mirrors its activity as another GameInput gamepad.
 	bool RetainSameKindOwner = false;
-    // Explicit product policy: readable gamepads precede keyboard fallback.
+    // Product preference at startup/fallback and simultaneous claims. A real
+    // newer keyboard command remains eligible while a pad is connected.
     bool GamepadPriority = false;
 };
 struct FActivityState
@@ -82,7 +83,8 @@ public:
 		for (auto& Item : Trackers) ResetDevice(Item.first);
 	}
 	void SetLock(std::optional<FDeviceId> Id) { Locked = Id; }
-	bool Observe(const FDeviceId& Id, std::uint64_t Revision, std::uint64_t Timestamp, const FActivityState& State)
+	bool Observe(const FDeviceId& Id, std::uint64_t Revision, std::uint64_t Timestamp, const FActivityState& State,
+        bool SelectedByUpstreamActivity = false)
 	{
 		if (Failed || Paused) return false;
 		const auto It = Trackers.find(Id);
@@ -92,7 +94,9 @@ public:
 			if (!std::isfinite(State.Axes[I]) || State.Axes[I] > 1 || State.Axes[I] < (I < 2 ? 0 : -1))
 			{ ResetDevice(Id); return false; }
 		if (T.Timestamp && Timestamp < *T.Timestamp) { ResetDevice(Id); return false; }
-		bool Activity = false;
+        // A composed backend may relay its exact selected-device activity
+        // receipt in THIS observation. Baseline/readability alone never sets it.
+		bool Activity = SelectedByUpstreamActivity;
 		if (T.HasBaseline)
 			for (std::size_t I = 0; I < State.Buttons.size(); ++I)
 				Activity = Activity || (State.Buttons[I] && !T.Previous.Buttons[I]); // Releases never reclaim ownership.
@@ -126,11 +130,6 @@ public:
 		{ Failed = true; return std::nullopt; }
 		std::optional<FDeviceId> Winner;
 		bool StartupChoice = false;
-		bool PrioritizeReadablePad = false;
-		if (Config.GamepadPriority)
-			for (const auto& Item : Trackers)
-				if (Item.second.Kind == EDeviceKind::Gamepad && Item.second.HasBaseline)
-				{ PrioritizeReadablePad = true; break; }
 		if (!Paused)
 		{
 			if (Locked) { if (Trackers.count(*Locked)) Winner = Locked; }
@@ -142,11 +141,12 @@ public:
 				for (const auto& Item : Trackers)
 				{
 					const auto Stamp = Item.second.Pending;
-					// Keyboard activity cannot hide a real pad claim while the
-					// product's preferred kind has a readable current baseline.
-					if (!Stamp || (PrioritizeReadablePad && Item.second.Kind != EDeviceKind::Gamepad)) continue;
-					if (!Best || *Stamp > *Best || (*Stamp == *Best
-						&& (!Winner || (Remembered && Item.first == *Remembered))))
+					if (!Stamp) continue;
+                    const bool DifferentKinds = Winner && Trackers.at(*Winner).Kind != Item.second.Kind;
+                    const bool PreferredTie = Config.GamepadPriority && DifferentKinds
+                        ? Item.second.Kind == EDeviceKind::Gamepad
+                        : (!Winner || (Remembered && Item.first == *Remembered));
+					if (!Best || *Stamp > *Best || (*Stamp == *Best && PreferredTie))
 					{ Best = Stamp; Winner = Item.first; }
 				}
 				if (Winner && Remembered && *Winner != *Remembered && Trackers.count(*Remembered)
@@ -166,8 +166,9 @@ public:
 				{
 					// Stable ID order within the preferred kind. A connected device with
 					// no readable OS state cannot acknowledge a fresh resume.
-					for (const auto Kind : {*Config.StartupPreferredKind,
-						*Config.StartupPreferredKind == EDeviceKind::Keyboard ? EDeviceKind::Gamepad : EDeviceKind::Keyboard})
+                    const auto Preferred = Config.GamepadPriority ? EDeviceKind::Gamepad : *Config.StartupPreferredKind;
+					for (const auto Kind : {Preferred,
+						Preferred == EDeviceKind::Keyboard ? EDeviceKind::Gamepad : EDeviceKind::Keyboard})
 					{
 						for (const auto& Item : Trackers)
 							if (Item.second.Kind == Kind && Item.second.HasBaseline)
@@ -179,9 +180,9 @@ public:
 		}
         if (!Paused && !Locked && Config.GamepadPriority)
         {
-            // Preserve the pad selected by real activity. A readable startup or
-            // removal fallback stays provisional until it earns its own claim.
-            // After removal choose another readable pad, then a keyboard.
+            // Readability grants a startup/removal fallback, never a permanent
+            // veto over a keyboard selected by real newer activity. Preserve a
+            // healthy current owner; after removal prefer a readable pad.
             const auto Pick=[&](EDeviceKind Kind)->std::optional<FDeviceId>
             {
                 if (Remembered)
@@ -191,10 +192,14 @@ public:
                     if (I.second.Kind==Kind && I.second.HasBaseline) return I.first;
                 return {};
             };
-            if (!Winner || Trackers.at(*Winner).Kind!=EDeviceKind::Gamepad
-                || !Trackers.at(*Winner).HasBaseline) Winner=Pick(EDeviceKind::Gamepad);
-            if (!Winner) Winner=Pick(EDeviceKind::Keyboard);
+            if (!Winner || !Trackers.at(*Winner).HasBaseline)
+            {
+                Winner=Pick(EDeviceKind::Gamepad);
+                if (!Winner) Winner=Pick(EDeviceKind::Keyboard);
+            }
         }
+        LastChoiceByActivity = !Paused && Winner && Trackers.at(*Winner).Pending
+            && (!LastClaimTimestamp || *Trackers.at(*Winner).Pending >= *LastClaimTimestamp);
 		if (Winner && Trackers.at(*Winner).Pending
 			&& (!LastClaimTimestamp || *Trackers.at(*Winner).Pending >= *LastClaimTimestamp))
 			Trackers.at(*Winner).HasClaimedOwnership = true;
@@ -208,6 +213,9 @@ public:
 		if (Winner) LastChoice = FActivityChoice{*Winner, Trackers.at(*Winner).Kind};
 		LastFrame = Frame; return LastChoice;
 	}
+    // Receipt for the exact latest Decide. No held baseline, suppressed losing
+    // device, or old lifetime claim can turn into a new claim through this API.
+    bool SelectedByActivity() const { return LastChoiceByActivity; }
     std::pair<std::size_t, std::size_t> ReadableDeviceCounts() const
     {
         std::pair<std::size_t, std::size_t> Counts{};
@@ -236,6 +244,6 @@ private:
 	std::optional<FFrameNumber> LastFrame, LastSwitch;
 	std::optional<std::uint64_t> LastClaimTimestamp;
 	std::optional<FActivityChoice> LastChoice;
-	bool Failed = false, Paused = false;
+	bool Failed = false, Paused = false, LastChoiceByActivity = false;
 };
 }

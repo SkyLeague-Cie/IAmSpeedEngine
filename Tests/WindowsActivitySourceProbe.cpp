@@ -2,6 +2,7 @@
 #include "IAmSpeed/Input/Windows/GameInputWarmContext.h"
 #include "IAmSpeed/Input/Windows/GameInputSelectedSource.h"
 #include "IAmSpeed/Input/Windows/GameInputRawAcquisition.h"
+#include "IAmSpeed/Input/InputProducerV2.h"
 using Speed::Input::Windows::FGameInputSelectedSource;
 class HistoryApi final : public DiscoveryApi
 {
@@ -13,7 +14,7 @@ public:
 	{
 		ComPtr<FakeReading> R; R.Attach(new FakeReading); R->Stamp = Stamp; R->ObservedDevice = D;
 		if (D->Info.supportedInput & GameInputKindKeyboard)
-		{ if (Held) { GameInputKeyState K{}; K.virtualKey = 'W'; R->Keys.push_back(K); } }
+		{ if (Held) { GameInputKeyState K{}; K.virtualKey = 'W'; K.scanCode=0x11; R->Keys.push_back(K); } }
 		else { R->Pad.buttons = Held ? GameInputGamepadA : GameInputGamepadNone; R->Pad.leftThumbstickX = Stick; R->Pad.rightTrigger = Held ? 1.f : 0.f; }
 		History[D].push_back(R);
 	}
@@ -47,6 +48,47 @@ static std::unique_ptr<FGameInputSelectedSource> Source(HistoryApi* Api)
 }
 int main()
 {
+    // Full native composition: SDK history -> activity -> selected raw source
+    // -> independent journal -> physical producer/mapper. No direct policy or
+    // raw-state publication stands in for the device path in this regression.
+    for(bool Reverse:{false,true})
+    {
+        using namespace Speed::Input::Windows;using namespace Speed::Input::V2;
+        ComPtr<HistoryApi> Api;Api.Attach(new HistoryApi);
+        auto Pad=MakeDevice(1);auto Keyboard=MakeDevice(2,GameInputKindKeyboard);
+        Api->Initial={{Pad,1,true},{Keyboard,1,true}};if(Reverse)std::reverse(Api->Initial.begin(),Api->Initial.end());
+        Api->Sample(Pad.Get(),100,false);Api->Sample(Keyboard.Get(),100,false);
+        auto Policy=Config();Policy.StartupPreferredKind=EDeviceKind::Gamepad;
+        Policy.GamepadPriority=true;Policy.RetainSameKindOwner=true;
+        auto Journal=std::make_shared<FRawAcquisitionJournal>(991);
+        FGameInputRawAcquisition Acquisition(FGameInputSelectedSource::CreateRaw(Api.Get(),991,Policy),Journal);
+        FInputActionContractDescription D;D.Revision={1};D.Actions=FInputActionContract::BaseActions();
+        D.Mapping={{{ERawControlKind::KeyboardUsage,0x1a},Throttle,1},
+            {{ERawControlKind::PadAxis,std::uint16_t(EPadAxis::RightTrigger)},Throttle,1}};
+        D.Physical={{0,EPhysicalDestination::Throttle},{1,EPhysicalDestination::Brake},{2,EPhysicalDestination::Steering}};
+        const auto C=FInputActionContract::Create(D);Check(bool(C), "native coexistence contract is valid");
+        auto Producer=FDeviceInputProducer::Create(Journal,C,{991},{EProducerKind::Device,991});
+        Check(bool(Producer), "native coexistence has a real physical producer");
+        Check(Acquisition.Pump()==ERawPumpResult::Installed, "startup reads neutral actual pad baseline");
+        auto Frame=Producer->Produce(0);Check(Frame&&Frame->GetData().Reset&&Frame->GetData().Values[Throttle]==0,
+            "startup preferred pad maps to a neutral physical frame");
+        Api->Sample(Keyboard.Get(),101,true);
+        Check(Acquisition.Pump()==ERawPumpResult::Installed, "first actual keyboard press selects keyboard despite attached idle pad");
+        auto Base=Journal->ReadControlBaseline();Frame=Producer->Produce(1);
+        Check(Base&&Base->State.Kind==ERawDeviceKind::Keyboard&&Base->State.FreshBaseline&&Base->State.SelectedByActivity
+            &&Frame&&Frame->GetData().Reset&&Frame->GetData().Values[Throttle]==255,
+            "keyboard handover preserves held first command through real canonical mapper");
+        Api->Sample(Keyboard.Get(),102,false);Acquisition.Pump();Frame=Producer->Produce(2);
+        Check(Frame&&!Frame->GetData().Reset&&Frame->GetData().Values[Throttle]==0
+            &&!Journal->ReadControlBaseline()->State.SelectedByActivity,
+            "real keyboard release is delivered without a sticky activity receipt or idle-pad takeover");
+        Api->Sample(Pad.Get(),103,true);Acquisition.Pump();Base=Journal->ReadControlBaseline();Frame=Producer->Produce(3);
+        Check(Base&&Base->State.Kind==ERawDeviceKind::Gamepad&&Frame&&Frame->GetData().Reset
+            &&Frame->GetData().Values[Throttle]==255,"new real pad trigger reclaims with a new physical baseline");
+        Api->Sample(Pad.Get(),104,false);Acquisition.Pump();Frame=Producer->Produce(4);
+        Check(Frame&&Frame->GetData().Values[Throttle]==0,"pad release remains delivered after keyboard coexistence");
+        Check(Acquisition.Close(),"coexistence closes the same source and callback owner");
+    }
     {
         using namespace Speed::Input::Windows;
         using namespace Speed::Input::V2;

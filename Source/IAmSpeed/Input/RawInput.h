@@ -5,9 +5,11 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <memory>
 
 namespace Speed::Input::V2
 {
+struct FDesktopFrameIngress;
 // These clocks are deliberately different types. None is a render frame.
 struct FStreamEpoch { std::uint64_t Value = 0; };
 struct FMappingRevision { std::uint64_t Value = 0; };
@@ -106,6 +108,7 @@ struct FRawInputSample
 	ERawSampleStatus Status = ERawSampleStatus::Unsupported;
 	std::vector<FRawValue> FinalState;
 	std::vector<FRawChange> Changes;
+    std::shared_ptr<const FDesktopFrameIngress> DesktopIngress;
 	bool IsValid() const
 	{
 		if (!DeviceId || !Generation.Value || !Sequence || Kind > ERawDeviceKind::Desktop

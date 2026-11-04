@@ -38,8 +38,8 @@ class FNativeGameInputAcquisition final : public IInputAcquisition
 {
 public:
     FNativeGameInputAcquisition(uint64_t Id, FActivityConfig Config, std::shared_ptr<FRawAcquisitionJournal> J,
-        std::shared_ptr<Windows::FGameInputWarmContext> InWarm)
-        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)) {}
+        std::shared_ptr<Windows::FGameInputWarmContext> InWarm,bool Desktop)
+        : Producer(Id), Activity(Config), Journal(std::move(J)), Warm(std::move(InWarm)),EnableDesktop(Desktop) {}
     EAcquisitionPumpResult Pump() override
     {
         if (Closed) return EAcquisitionPumpResult::Closed;
@@ -86,7 +86,7 @@ public:
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStage] session=%llu stage=discovery_exit source=%d"), Producer, int32(bool(Raw)));
             if (!Raw)
             { ReportWarmFailure(); UE_LOG(LogTemp, Error, TEXT("Independent input GameInput discovery rejected")); return EAcquisitionPumpResult::RetryableUnavailable; }
-            Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal);
+            Source=std::make_unique<Windows::FGameInputRawAcquisition>(std::move(Raw),Journal,EnableDesktop);
 #if !UE_BUILD_SHIPPING
             UE_LOG(LogTemp, Display, TEXT("[InputAcquisitionStartup] game_input_create_ms=%.3f discovery_ms=%.3f catalogue_reused=%d"),
                 1000.0 * (CreatedAt - StartedAt), 1000.0 * (FPlatformTime::Seconds() - CreatedAt), int32(Reused));
@@ -159,7 +159,7 @@ private:
 #if !UE_BUILD_SHIPPING
     std::optional<FDeviceId> LastReportedDevice;
 #endif
-    bool Closed=false;
+    bool Closed=false,EnableDesktop=false;
 };
 }
 #endif
@@ -205,7 +205,7 @@ static std::shared_ptr<IInputAcquisition> CreateNativeDeviceRawAcquisition(std::
     // The concrete source defers GameInput creation and all native access to
     // Pump on its acquisition worker, exactly as in the existing device host.
     return std::make_shared<FNativeGameInputAcquisition>(ProducerId, Config.Activity,
-        std::move(Journal), std::move(Warm));
+        std::move(Journal), std::move(Warm),Config.EnableDesktop);
 #else
     (void)ProducerId; (void)Journal; (void)Config;
     return {};
@@ -234,7 +234,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 #if PLATFORM_WINDOWS && !UE_SERVER
 	if (!Config.Contract)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: contract missing")); return {}; }
-	if (const auto Unsupported = FActionMapper::UnsupportedContract(*Config.Contract))
+	if (const auto Unsupported = Config.EnableDesktop?FActionMapper::UnsupportedDesktopContract(*Config.Contract):FActionMapper::UnsupportedContract(*Config.Contract))
 	{
 		const auto* Action = Config.Contract->Find(Unsupported->Action);
 		const FString Name = Action ? UTF8_TO_TCHAR(Action->Name.c_str()) : TEXT("<unknown>");
@@ -267,7 +267,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	Binding.Id = Binding.Epoch = Binding.Controller = Binding.Producer = Binding.Journal = Epoch.Value;
 	Binding.First = Config.FirstFrame; Binding.Kind = EProducerContract::Device;
 	Binding.Contract = Config.Contract; Binding.Processing = Config.Processing;
-	Binding.ResumeRearmMask = Config.ResumeRearmMask;
+	Binding.ResumeRearmMask = Config.ResumeRearmMask;Binding.EnableDesktop=Config.EnableDesktop;
 	// Producer construction is deferred to the physical registry worker.
 	auto Host = FInputHostSession::CreateDescriptor(std::move(Binding));
 	if (!Host)
@@ -284,7 +284,7 @@ std::shared_ptr<FInputHostSession> CreateDeviceInputHost(const FDeviceInputHostC
 	if (Config.WarmContext && !Warm)
 	{ UE_LOG(LogTemp, Error, TEXT("Independent input host rejected: warm context already closed")); return {}; }
 	FDeviceRawAcquisitionConfig RawConfig;
-    RawConfig.Activity = Config.Activity; RawConfig.WarmContext = Config.WarmContext;
+    RawConfig.Activity = Config.Activity; RawConfig.WarmContext = Config.WarmContext;RawConfig.EnableDesktop=Config.EnableDesktop;
     auto Acquisition = CreateDeviceRawAcquisition(Identity.Id, Journal, RawConfig);
     if (!Acquisition) return {};
 	Host->Acquisition = std::make_unique<FInputAcquisitionWorker>(std::move(Acquisition));
