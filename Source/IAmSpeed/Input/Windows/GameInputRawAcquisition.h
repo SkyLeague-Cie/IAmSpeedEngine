@@ -94,6 +94,8 @@ public:
 				R.DeviceId = Id; R.Generation = {NewGeneration}; R.Sequence = Sequence + I + 1;
 				R.Kind = Batch.Ticket->Kind == EDeviceKind::Keyboard ? V2::ERawDeviceKind::Keyboard : V2::ERawDeviceKind::Gamepad;
 				R.TimestampMicroseconds = Batch.Readings.States[I].TimestampMicroseconds;
+                R.PadFamily=R.Kind==V2::ERawDeviceKind::Gamepad
+                    ?V2::RawPadFamilyFromVendor(Batch.VendorId):V2::ERawPadFamily::Unknown;
 				R.FreshBaseline = Fresh && I == 0;
 				if (!Canonicalize(Batch.Readings.States[I], R.Kind, R.State))
 				{ SinkReject = ESinkReject::Canonicalization; return false; }
@@ -160,6 +162,7 @@ private:
 			|| Generation == std::numeric_limits<std::uint64_t>::max()) return false;
 		Prepared.Count = 1; auto& R = Prepared.Readings[0]; R = LastState.value_or(V2::FAcquiredRawState{});
 		R.DeviceId = FDeviceDiscovery::Capacity + 1; // Reserved neutral source, never a real registry index.
+        R.PadFamily=V2::ERawPadFamily::Unknown; // No real selected device owns this neutral source.
 		R.Generation = {Generation + 1}; R.Sequence = Sequence + 1; R.FreshBaseline = true;
 		if (!R.State.Count)
 		{

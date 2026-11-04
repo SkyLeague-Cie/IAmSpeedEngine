@@ -49,4 +49,24 @@ bool FDeviceRawAcquisitionFactoryTest::RunTest(const FString&)
 #endif
     return !HasAnyErrors();
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRawPadFamilyMetadataTest,
+    "IAmSpeed.Input.RawPadFamilyMetadata01621",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FRawPadFamilyMetadataTest::RunTest(const FString&)
+{
+    using namespace Speed::Input::V2;
+    TestTrue(TEXT("Sony vendor metadata identifies the PlayStation family"),RawPadFamilyFromVendor(0x054c)==ERawPadFamily::PlayStation);
+    TestTrue(TEXT("Microsoft vendor metadata identifies the Xbox family"),RawPadFamilyFromVendor(0x045e)==ERawPadFamily::Xbox);
+    for(const std::uint16_t Vendor:{std::uint16_t(0),std::uint16_t(0x057e),std::uint16_t(0xffff)})
+        TestTrue(TEXT("unrecognized metadata stays Unknown"),RawPadFamilyFromVendor(Vendor)==ERawPadFamily::Unknown);
+    FAcquiredRawState State;
+    TestTrue(TEXT("default raw-state display family is Unknown"),State.PadFamily==ERawPadFamily::Unknown);
+    State.PadFamily=RawPadFamilyFromVendor(0x054c);
+    FAcquisitionBaseline Copy;Copy.State=State;
+    TestTrue(TEXT("values-only observer copies preserve family metadata"),Copy.State.PadFamily==ERawPadFamily::PlayStation);
+    TestTrue(TEXT("classifying display metadata invents no device report or input value"),
+        State.DeviceId==0&&State.Sequence==0&&State.TimestampMicroseconds==0&&State.State.Count==0);
+    return !HasAnyErrors(); // No OS calls, journal publication, sample, host or physical frame.
+}
 #endif

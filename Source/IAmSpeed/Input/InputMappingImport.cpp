@@ -63,13 +63,72 @@ bool PadControl(const FKey& Key, FRawControl& Out)
 }
 
 static bool ImportInputMappingValues(const UInputMappingContext* Context, const TMap<const UInputAction*, FActionId>& Actions,
-	FInputActionContractDescription& Description, FString& Error, bool PresentationOnly)
+	FInputActionContractDescription& Description, FString& Error, bool PresentationOnly,
+    const TSet<FActionId>* UnboundActions=nullptr)
 {
 	check(IsInGameThread());
 	auto Reject = [&](const TCHAR* Reason) { Error = Reason; return false; };
 	if (!Context || !Description.Mapping.empty()) return Reject(TEXT("Missing context or nonempty import destination"));
 	auto Result = Description;
 	TSet<FActionId> Seen;
+
+    if(UnboundActions)
+    {
+        // This opt-in path distinguishes an authored cleared slot from unknown
+        // metadata. The original strict entry points retain their exact path.
+        for(const auto& Mapping:Context->GetMappings())
+        {
+            const auto* Id=Actions.Find(Mapping.Action);
+            if(!Mapping.Action||!Id||*Id>=Result.Actions.size()||Result.Actions[*Id].Id!=*Id)
+                return Reject(TEXT("Unidentified action asset in explicit-unbound snapshot"));
+            if(!Mapping.Key.IsValid()&&!Mapping.Key.GetFName().IsNone())
+                return Reject(TEXT("Unknown named key is not an intentionally unbound slot"));
+            if(!Mapping.Key.IsValid()&&(!Mapping.Action->Triggers.IsEmpty()||!Mapping.Triggers.IsEmpty()))
+                return Reject(TEXT("Unsupported trigger on an unbound mapping"));
+        }
+        for(const FActionId Id:*UnboundActions)
+        {
+            if(Id>=Result.Actions.size()||Result.Actions[Id].Id!=Id||Result.Actions[Id].Wiring!=EActionWiring::Wired)
+                return Reject(TEXT("Explicit unbound action is not a Wired catalogue action"));
+            auto& Definition=Result.Actions[Id];
+            const UInputAction* Asset=nullptr;int32 Matches=0;
+            for(const auto& Entry:Actions)if(Entry.Value==Id){Asset=Entry.Key;++Matches;}
+            const bool Boolean=Definition.Type==EActionType::Bool;
+            if(Matches!=1||!IsValid(Asset)||Asset->ValueType!=(Boolean?EInputActionValueType::Boolean:EInputActionValueType::Axis1D)
+                ||!Asset->Triggers.IsEmpty())
+                return Reject(TEXT("Unbound action asset is missing, ambiguous or has an unsupported type/trigger"));
+            if(Boolean&&!Asset->Modifiers.IsEmpty())return Reject(TEXT("Boolean action modifiers unsupported"));
+            std::vector<FScalarModifier> ActionModifiers;
+            if(!ImportModifiers(Asset->Modifiers,ActionModifiers))return Reject(TEXT("Unsupported unbound action modifier"));
+            ActionModifiers.insert(ActionModifiers.end(),Definition.Modifiers.begin(),Definition.Modifiers.end());
+            Definition.Modifiers=std::move(ActionModifiers);
+            if(Asset->AccumulationBehavior==EInputActionAccumulationBehavior::TakeHighestAbsoluteValue)
+                Definition.Accumulation=EActionAccumulation::HighestAbsolute;
+            else if(Asset->AccumulationBehavior==EInputActionAccumulationBehavior::Cumulative)
+                Definition.Accumulation=EActionAccumulation::Sum;
+            else return Reject(TEXT("Unsupported unbound action accumulation"));
+            bool Present=false;
+            for(const auto& Mapping:Context->GetMappings())if(Mapping.Action==Asset)
+            {
+                Present=true;
+                if(Mapping.Key.IsValid()||!Mapping.Key.GetFName().IsNone())
+                    return Reject(TEXT("Explicit unbound action still has an assigned key"));
+                if(!Mapping.Triggers.IsEmpty()||(Boolean&&!Mapping.Modifiers.IsEmpty()))
+                    return Reject(TEXT("Unsupported unbound mapping trigger/modifier"));
+                std::vector<FScalarModifier> RowModifiers;
+                if(!ImportModifiers(Mapping.Modifiers,RowModifiers))return Reject(TEXT("Unsupported unbound mapping modifier"));
+                if(!RowModifiers.empty())
+                {
+                    // Reuse the native scalar metadata validator without
+                    // inventing a raw binding, sample, host or physical frame.
+                    auto Probe=Result;Probe.Actions[Id].Modifiers=std::move(RowModifiers);
+                    if(!FInputActionContract::Create(std::move(Probe)))
+                        return Reject(TEXT("Unbound mapping modifier exceeds native contract bounds"));
+                }
+            }
+            if(!Present)return Reject(TEXT("Explicit unbound action has no authored mapping row"));
+        }
+    }
 #if PLATFORM_WINDOWS && !UE_SERVER
 	const HKL Layout = GetKeyboardLayout(0); // Frozen for this session; never queried by physical polling.
 #endif
@@ -143,7 +202,8 @@ static bool ImportInputMappingValues(const UInputMappingContext* Context, const 
 		Result.Mapping.push_back(std::move(Binding));
 	}
 	for (const auto& Definition : Result.Actions)
-		if (Definition.Wiring == EActionWiring::Wired && !Seen.Contains(Definition.Id))
+		if (Definition.Wiring == EActionWiring::Wired && !Seen.Contains(Definition.Id)
+            && (!UnboundActions||!UnboundActions->Contains(Definition.Id)))
 			return Reject(TEXT("A required game action has no binding"));
     if (PresentationOnly ? !FInputActionContract::ValidatePresentationDescription(Result) : !FInputActionContract::Create(Result))
         return Reject(TEXT("Imported mapping exceeds supported response or capacity"));
@@ -152,6 +212,9 @@ static bool ImportInputMappingValues(const UInputMappingContext* Context, const 
 bool ImportInputMappings(const UInputMappingContext* Context,const TMap<const UInputAction*,FActionId>& Actions,
     FInputActionContractDescription& Description,FString& Error)
 { return ImportInputMappingValues(Context,Actions,Description,Error,false); }
+bool ImportInputMappingsAllowUnbound(const UInputMappingContext* Context,const TMap<const UInputAction*,FActionId>& Actions,
+    const TSet<FActionId>& UnboundActions,FInputActionContractDescription& Description,FString& Error)
+{ return ImportInputMappingValues(Context,Actions,Description,Error,false,&UnboundActions); }
 bool ImportPresentationInputMappings(const UInputMappingContext* Context,const TMap<const UInputAction*,FActionId>& Actions,
     FInputActionContractDescription& Description,FString& Error)
 { return ImportInputMappingValues(Context,Actions,Description,Error,true); }

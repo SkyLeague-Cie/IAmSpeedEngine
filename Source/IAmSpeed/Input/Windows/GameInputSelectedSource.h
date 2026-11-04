@@ -26,6 +26,7 @@ public:
 		FRawDeviceReadBatch Readings;
 		EPollStatus Status = EPollStatus::Disconnected;
 		std::uint64_t AcquisitionTick = 0;
+        std::uint16_t VendorId = 0; // Display metadata from the same selected lease.
 	};
 	struct FSelectedRawDeviceDiagnostic
 	{
@@ -129,7 +130,7 @@ public:
 		}
 		const auto Lease = Discovery->AcquireSelected();
 		FSelectedRawBatch Batch; Batch.AcquisitionTick = AcquisitionTick;
-		if (!Lease) { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; }
+		if (!Lease) { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; ActiveVendorId = 0; }
 		else
 		{
 			Batch.Ticket = Lease->Ticket;
@@ -138,7 +139,17 @@ public:
 			{
 				Disconnected.reset();
 				if (!Active || !Same(*Active, *Lease))
-				{ if (!ResetCursorsLocked()) return false; Active = Lease; LastSuccessfulRawReadTick = 0; }
+				{
+                    if (!ResetCursorsLocked()) return false; Active = Lease; LastSuccessfulRawReadTick = 0;
+                    ActiveVendorId=0;
+                    // The acquisition worker reads static device metadata
+                    // once per selected lease, never from GT or a sink
+                    // callback that would reenter this object's mutex.
+                    const GameInput::v3::GameInputDeviceInfo* Info=nullptr;
+                    if(Lease->Ticket.Kind==EDeviceKind::Gamepad
+                        &&SUCCEEDED(Lease->Device->GetDeviceInfo(&Info))&&Info)ActiveVendorId=Info->vendorId;
+                }
+                Batch.VendorId=ActiveVendorId;
 				FTooOldReadDiagnostic TooOld;
 				const auto Kind = Lease->Ticket.Kind == EDeviceKind::Keyboard
 					? GameInput::v3::GameInputKindKeyboard : GameInput::v3::GameInputKindGamepad;
@@ -500,6 +511,7 @@ private:
 	bool RawMode = false;
 	std::uint64_t LastAcquisitionTick = 0;
 	std::optional<FLease> Active;
+    std::uint16_t ActiveVendorId=0;
 	std::optional<std::pair<FDeviceId, std::uint64_t>> Disconnected;
 	std::optional<FFrameNumber> LastFrame;
 	std::uint64_t Sequence = 0;

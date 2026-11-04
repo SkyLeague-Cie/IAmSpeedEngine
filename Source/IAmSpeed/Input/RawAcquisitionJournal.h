@@ -8,6 +8,14 @@
 
 namespace Speed::Input::V2
 {
+// Values-only display metadata. It never participates in raw-state
+// admission, device selection, physical mapping, frame values or hashes.
+enum class ERawPadFamily : std::uint8_t { Unknown, PlayStation, Xbox };
+constexpr ERawPadFamily RawPadFamilyFromVendor(std::uint16_t VendorId) noexcept
+{
+    return VendorId==0x054c?ERawPadFamily::PlayStation
+        :(VendorId==0x045e?ERawPadFamily::Xbox:ERawPadFamily::Unknown);
+}
 // Acquisition order is independent of simulation and presentation clocks.
 // DeviceId is a collision-free registry index owned by the platform session.
 struct FAcquiredRawState
@@ -17,6 +25,7 @@ struct FAcquiredRawState
 	ERawDeviceKind Kind = ERawDeviceKind::Keyboard;
 	bool FreshBaseline = false;
 	FCanonicalRawState State;
+    ERawPadFamily PadFamily=ERawPadFamily::Unknown; // Not copied into a physical FRawInputSample.
 };
 struct FRawAcquisitionBatch
 {
