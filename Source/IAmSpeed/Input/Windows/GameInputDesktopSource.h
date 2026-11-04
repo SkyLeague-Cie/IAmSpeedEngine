@@ -97,7 +97,7 @@ public:
                 if(!Reading)
                 {
                     const auto H=Api->GetCurrentReading(Kind(*R),R->Lease.Device.Get(),Reading.GetAddressOf());
-                    if(H==GAMEINPUT_E_READING_NOT_FOUND)return {};
+                    if(H==GameInput::v3::GAMEINPUT_E_READING_NOT_FOUND)return {};
                     if(FAILED(H)||!Reading)return Fail(H==E_INVALIDARG||(SUCCEEDED(H)&&!Reading)?EStatus::Rejected:EStatus::Unavailable,FAILED(H)?H:E_UNEXPECTED);
                     // Callbacks may arrive during the current snapshot. Their
                     // earliest retained state, not the later current snapshot,
