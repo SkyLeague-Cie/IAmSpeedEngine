@@ -854,9 +854,41 @@ private:
     // Shared value/body operation only. The public facade retains its original
     // Engine tick/registration path; the private factory supplies real captured
     // actor pose and explicitly registers its original bridge separately.
+    class FLegacyOwnerBirthAccess;class FNativeOwnerBirthAccess;
+    struct FNativeOwnerBirthObservation
+    {
+        enum class EMode : uint8 { CountOnly,StoredTensorFixtureAndAbort };
+        EMode Mode=EMode::CountOnly; // diagnostic choice only, never admission
+        uint32 InitializersReturned=0,InitialNullParents=0,Refusals=0;
+        bool AllRefusalsBeforeWrite=false,PositiveEntryReturned=false,PoseAndCOMMatch=false;
+        bool ClearKeepsCanonicalConfigurations=false,StoredTensorFixtureInstalled=false;
+        bool StoredChassisTensorMatch=false,StoredTensorDistinguished=false,ChildrenMatch=false;
+    };
+    template<class TAccess> void ResolveFixedCenterOfMassBody(TAccess& Storage);
+    template<class TAccess> void InitializeBoundSubBodiesForPhysicalOwnerBody(TAccess& Storage);
     void InitializeBoundSubBodiesForPhysicalOwner();
-    void InitializeOriginalOwnerFromCapturedPose(AActor* OriginalOwner,
-        const FQuat& OriginalRotation,const FVector& OriginalLocation);
+    void InitializeOriginalOwnerFromCapturedPose(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        AActor* OriginalOwner,const FQuat& OriginalRotation,const FVector& OriginalLocation,
+        const TWeakObjectPtr<UBoxSubBody>& ActualHitboxBirth,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths,
+        FNativeOwnerBirthObservation* Observation=nullptr);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+    friend class FIASLegacyFirstOwnerBirthTraversal;
+    bool ProbeNativeFirstOwnerBirthForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        AActor* ActualActor,const FQuat& Rotation,const FVector& Location,
+        const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualReferenceBirths,
+        USpeedWheeledComponent* ForeignComponent,AActor* ForeignActor,
+        const TWeakObjectPtr<UBoxSubBody>& ForeignHitbox,TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ForeignBodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ForeignConfigurationBirths,
+        USpeedSimulation* ForeignSimulation,const SKinematic& ForeignOriginalKinematic,FNativeOwnerBirthObservation& Out);
+    bool ProbeNativeFirstOwnerStepRefusalForDiagnostics(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        AActor* ActualActor,const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths);
+#endif
 
 
 	void SetupSpeedSuspension(TUniquePtr<Chaos::FSimpleWheeledVehicle>& PVehicle);

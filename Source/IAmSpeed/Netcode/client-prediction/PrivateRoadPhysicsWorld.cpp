@@ -758,7 +758,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         // Revalidate before constructing any child in the acquired component.
         if(!N.OriginalWheelClassBirth.IsValid()||!I.AcquiredGraphStillLive()||!N.OriginalWheelClassBirth.IsValid())
         {Refuse(Why,TEXT("original graph/class invalidated before prepared wheel creation"));return {};}
-        const auto PrepareWheelObjects=[&]()
+        const auto PrepareWheelObjects=[&](TArray<TWeakObjectPtr<UChaosVehicleWheel>>& ActualBirths)
         {
             TArray<UChaosVehicleWheel*> Result;
             for(int32 W=0;W<4;++W)
@@ -766,13 +766,18 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
                 auto* Wheel=NewObject<UChaosVehicleWheel>(C);
                 if(!Wheel||!I.AcquiredGraphStillLive())return TArray<UChaosVehicleWheel*>{};
                 I.Pin(Wheel); // BEFORE the next genuine NewObject callback can collect this wheel
+                ActualBirths.Add(Wheel); // capture actual fresh birth once, before the next allocation
                 Wheel->WheelRadius=30;Wheel->SuspensionMaxRaise=10;Wheel->SuspensionMaxDrop=25;Result.Add(Wheel);
             }
             return Result;
         };
-        const auto ReferenceWheels=PrepareWheelObjects(),OriginalWheels=PrepareWheelObjects();
-        if(ReferenceWheels.Num()!=4||OriginalWheels.Num()!=4)return {};
-        for(auto* Wheel:OriginalWheels)N.OriginalWheelObjects.Add(Wheel);
+        TArray<TWeakObjectPtr<UChaosVehicleWheel>> ReferenceWheelBirths;
+        const auto ReferenceWheels=PrepareWheelObjects(ReferenceWheelBirths),OriginalWheels=PrepareWheelObjects(N.OriginalWheelObjects);
+        if(ReferenceWheels.Num()!=4||OriginalWheels.Num()!=4||ReferenceWheelBirths.Num()!=4||N.OriginalWheelObjects.Num()!=4)return {};
+        N.NativeVehicleRoot->BirthIdentities=std::shared_ptr<FPrivateRoadBirthIdentities>(
+            new FPrivateRoadBirthIdentities(N.ActorWeak,N.ComponentWeak,N.OriginalHitboxBirth,
+                N.OriginalWheelBodyBirth,N.OriginalWheelObjects,N.OriginalWheelClassBirth));
+        if(!BindComponentPart(RetirementDraft::AliasExistingPart(N.NativeVehicleRoot,N.NativeVehicleRoot->BirthIdentities)))return {};
         if(!I.Diagnostics->Begin()){Refuse(Why,TEXT("native birth diagnostics unavailable"));return {};}
         bool BirthOutboxActive=true;ON_SCOPE_EXIT{if(BirthOutboxActive)I.Diagnostics->End();};
         const bool BirthConfigured=[&]() -> bool
@@ -781,6 +786,15 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         // Ordinary reference/facade lifecycle is callback-capable. No GC,
         // original recipe or original storage scope is held here. The same
         // owned diagnostic outbox remains active until after native birth.
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+        {
+            // Actual actor authoring/capture, outside original math/GC scopes.
+            N.Actor->SetActorLocation(FVector(123,-47,89));N.Actor->SetActorRotation(FRotator(-29,43,11));
+            if(!I.AcquiredGraphStillLive()||N.Actor->GetActorLocation()!=FVector(123,-47,89)
+                ||N.Actor->GetActorRotation().IsNearlyZero())return false;
+        }
+#endif
         C->SetOwner(N.Actor);
         if(!I.AcquiredGraphStillLive())return false;
         const TArray<USSubBody*> FacadeTopology=C->GetSubBodies(); // owned identity list, never a physical-state import
@@ -921,7 +935,46 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
             OriginalTopology.Add(Body);
         }
         C->SetSubBodies(OriginalTopology);
-        C->InitializeOriginalOwnerFromCapturedPose(N.Actor,OriginalOwnerRotation,OriginalOwnerLocation);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        USpeedWheeledComponent::FNativeOwnerBirthObservation FirstOwnerObservation;
+        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+        {
+            auto& Foreign=*BirthContext->ForeignRoot;
+            if(Foreign.Closed||Foreign.Failed||Foreign.RetirementRequested.load()
+                ||Foreign.NativeOperationIdentity->ActiveGTActualOperation||!Foreign.AcquiredGraphStillLive()||Foreign.Cars.empty())return {};
+            const auto& FN=*Foreign.Cars.front();
+            if(!FN.Component||!FN.NativeVehicleRoot||!FN.NativeVehicleRoot->Domain||!FN.NativeCommonValues
+                ||!FN.Component->OriginalWheeledDomain||FN.Component->OriginalWheeledDomain.get()!=FN.NativeVehicleRoot->Domain.get()
+                ||FN.Component->OriginalWheeledDomain.owner_before(FN.NativeVehicleRoot)||FN.NativeVehicleRoot.owner_before(FN.Component->OriginalWheeledDomain)
+                ||FN.Component->OwnedComponentValues!=FN.NativeCommonValues
+                ||FN.Component->OwnedComponentValues.owner_before(FN.NativeCommonValues)||FN.NativeCommonValues.owner_before(FN.Component->OwnedComponentValues))return {};
+            // The already retained ForeignCall.Root owns this actual typed
+            // node and both original aliases for the WHOLE closed diagnostic
+            // call. This const six-field borrow never escapes or grants an Op,
+            // mutable view, source exclusion, snapshot or lifetime lease.
+            if(!C->ProbeNativeFirstOwnerBirthForDiagnostics(Operation,N.Actor,OriginalOwnerRotation,OriginalOwnerLocation,
+                N.OriginalHitboxBirth,N.OriginalWheelBodyBirth,N.OriginalWheelObjects,ReferenceWheelBirths,
+                FN.Component,FN.Actor,FN.OriginalHitboxBirth,FN.OriginalWheelBodyBirth,FN.OriginalWheelObjects,
+                FN.OriginalNativeSimulation,FN.NativeCommonValues->BasePhysicsState.Kinematic,FirstOwnerObservation))return Refuse(Why,TEXT("actual first owner Birth controls refused"));
+            auto& Result=BirthContext->Result;
+            Result.FirstOwnerInitializersReturned=FirstOwnerObservation.InitializersReturned;
+            Result.FirstOwnerInitialNullParents=FirstOwnerObservation.InitialNullParents;Result.FirstOwnerGuardRefusals=FirstOwnerObservation.Refusals;
+            Result.FirstOwnerAllRefusalsBeforeWrite=FirstOwnerObservation.AllRefusalsBeforeWrite;Result.FirstOwnerPoseAndCOMMatch=FirstOwnerObservation.PoseAndCOMMatch;
+            Result.FirstOwnerClearKeepsConfigurations=FirstOwnerObservation.ClearKeepsCanonicalConfigurations;
+            Result.FirstOwnerStoredChassisTensorMatch=FirstOwnerObservation.StoredChassisTensorMatch;
+            Result.FirstOwnerStoredTensorDistinguished=FirstOwnerObservation.StoredTensorDistinguished;Result.FirstOwnerChildrenMatch=FirstOwnerObservation.ChildrenMatch;
+            Result.FirstOwnerProbeReturned=true;
+            for(const auto& Trace:I.NativeConfigurationLifetime)Result.LifetimeObservers.push_back(Trace);
+            Result.FirstOwnerAbortReached=true; // genuine first pass returned, before original vehicle/SECOND pass
+            return Refuse(Why,TEXT("explicit first owner constructor fixture abort before original vehicle construction"));
+        }
+        C->InitializeOriginalOwnerFromCapturedPose(Operation,N.Actor,OriginalOwnerRotation,OriginalOwnerLocation,
+            N.OriginalHitboxBirth,N.OriginalWheelBodyBirth,N.OriginalWheelObjects,BirthContext?&FirstOwnerObservation:nullptr);
+        if(BirthContext)BirthContext->Result.FirstOwnerInitializersReturned+=FirstOwnerObservation.InitializersReturned;
+#else
+        C->InitializeOriginalOwnerFromCapturedPose(Operation,N.Actor,OriginalOwnerRotation,OriginalOwnerLocation,
+            N.OriginalHitboxBirth,N.OriginalWheelBodyBirth,N.OriginalWheelObjects);
+#endif
         I.Bridge->RegisterOriginalComponentForPrivateOwner(C);
         if(!BuildOriginalVehicle(*C,N.NativeConfiguration,OriginalWheels,N.OriginalWheelBodyBirth,N.OriginalWheelObjects))return {};
         N.OriginalNativeSimulation=C->SkySimulationWheeledDomainStorage();
@@ -1118,7 +1171,7 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateWithBi
 {
     Result={};Why.Empty();
     if(!IsInGameThread()||OriginalComponentStorageOwner||Speed::Input::FPresentationInputScope::IsActive()
-        ||(Mode!=EPrivateRoadBirthProbeMode::Observe&&Mode!=EPrivateRoadBirthProbeMode::FailAfterFirstInitializer))
+        ||(Mode!=EPrivateRoadBirthProbeMode::Observe&&Mode!=EPrivateRoadBirthProbeMode::FailAfterFirstInitializer&&Mode!=EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort))
     {Refuse(Why,TEXT("native birth diagnostic requires a valid GT test mode"));return {};}
     FRetainedNativeCall ForeignCall(Foreign.Impl);
     if(!ForeignCall.Root||ForeignCall.Root->Closed||ForeignCall.Root->Failed
@@ -1604,6 +1657,9 @@ bool FPrivateRoadPhysicsWorld::ProbeHitAcceptanceRetained(FImpl& I,const FPrivat
     if(!BindingNode.Component||!BindingNode.Component->ProbeNativeWheelBindingStepRefusalForDiagnostics(
         Operation,BindingNode.OriginalNativeVehicle,BindingNode.OriginalWheelBodyBirth,BindingNode.OriginalWheelObjects))return false;
     Result.BirthWheelBindingRefusedDuringStep=true; // only after real Step guard test returned true
+    if(!BindingNode.Component->ProbeNativeFirstOwnerStepRefusalForDiagnostics(Operation,BindingNode.Actor,
+        BindingNode.OriginalHitboxBirth,BindingNode.OriginalWheelBodyBirth,BindingNode.OriginalWheelObjects))return false;
+    Result.BirthOwnerTraversalRefusedDuringStep=true;
     const auto SavedBoxBody=BV;const auto SavedWheelBody=WV;const auto SavedBoxDomain=BD;
     const auto* SavedStaticWorld=CV.StaticRestingWorld;
     // These are exact C++ value fixtures for named contact caches only. This

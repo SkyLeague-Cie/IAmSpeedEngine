@@ -109,10 +109,14 @@ struct FPrivateRoadPublication
     std::vector<FPrivateRoadActorFrame> Actors;
 };
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
-enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitializer };
+enum class EPrivateRoadBirthProbeMode : uint8 { Observe,FailAfterFirstInitializer,ProbeFirstOwnerAndAbort };
 struct FPrivateRoadBirthInitializationProbe
 {
-    uint32 InitializersReturned=0;
+    uint32 InitializersReturned=0; // SECOND pass, after native vehicle/shape authoring
+    uint32 FirstOwnerInitializersReturned=0,FirstOwnerInitialNullParents=0,FirstOwnerGuardRefusals=0;
+    bool FirstOwnerProbeReturned=false,FirstOwnerAbortReached=false,FirstOwnerAllRefusalsBeforeWrite=false;
+    bool FirstOwnerPoseAndCOMMatch=false,FirstOwnerClearKeepsConfigurations=false;
+    bool FirstOwnerStoredChassisTensorMatch=false,FirstOwnerStoredTensorDistinguished=false,FirstOwnerChildrenMatch=false;
     uint32 WheelBindingFactoryReturns=0,WheelBindingGuardRefusals=0,WheelBindingPositiveEntryReturns=0;
     bool WheelBindingProbeReturned=false,WheelBindingAllRefusalsBeforeWrite=false;
     bool WheelBindingPositiveValuesMatch=false,WheelBindingOverridePredicatesMatch=false;
@@ -135,6 +139,7 @@ struct FPrivateRoadHitAcceptanceProbe
     bool BaseBehaviorDistinguished=false,AllRefusalsBeforeWrite=false,ActualStepOperation=false;
     bool BirthInitializationRefusedDuringStep=false;
     bool BirthWheelBindingRefusedDuringStep=false;
+    bool BirthOwnerTraversalRefusedDuringStep=false;
 };
 #endif
 // Experimental finite native flat-road kernel. Creates actual, private native

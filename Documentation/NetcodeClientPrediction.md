@@ -1819,3 +1819,37 @@ Its reference/facade caller explicitly retains ordinary wheel binding with the
 reference configuration. Only the later original storage caller selects the
 actual Birth binding route and its original captured identities. No permission
 boolean or reference-to-native fallback selects those routes.
+
+### First original owner Birth traversal (source candidate117)
+
+The actual FIRST factory owner traversal now obtains a closed immutable roster
+of original actor/component/hitbox/wheel/configuration weak births from its
+genuine typed owner map. The record copies already observed weak identities and
+is retained by an alias of the actual vehicle root; it is not physical state,
+caller permission, a completeness mask or a source/lifetime lease. Same-Outer
+reference configurations are not interchangeable with the original cohort.
+
+Before owner/COM/pose writes, the specific Birth entry preflights the actual
+complete roster and body/common/shape/runtime parts. Initially null parents are
+allowed; foreign parents refuse. A distinct true no-vehicle clear keeps Chaos
+configuration while clearing wheel/suspension pointers; the116 actual-vehicle
+binder still refuses null. Legacy/custom dispatch, COM precedence, ordered
+children and row-vector chassis R.Transposed()*STORED InvInertiaLocal*R share
+their existing programs. The SECOND initializer loop stays after vehicle
+binding and authored offsets/radius/travel. No global phase restriction is
+added to ordinary or Retirement entries; four protected mass overrides and all
+restoration guards remain unchanged.
+
+Prepared controls distinguish ten first and ten second normal initializer
+returns. A separate real constructor fixture uses actual nontrivial captured
+actor pose, nonzero COM and rotated hitbox, nine before-write refusals including
+same-owner reference configuration, an actual stored-tensor sentinel that
+distinguishes recomputation, and all five child kinematics. That fixture MUST
+abort after five first returns and before original vehicle construction/Step;
+its actual reference-constructor/destructor returns are counted separately.
+It is neither restoration nor complete coverage of constructor failures.
+Real Step refusal and independent normal COM parity remain required, plus
+ordinary/custom helper controls. New source/native qualification is required;
+none of109's results transfer. Complete causal state, source/lifetime closure,
+full effective-state CanMove, authoritative-K localized resimulation and two
+rendered playable clients with a dedicated server remain unfinished.

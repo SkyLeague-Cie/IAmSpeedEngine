@@ -11,6 +11,37 @@ namespace Speed::Netcode::Prediction { struct FPrivateRoadAccess;class FPrivateR
 namespace Speed::CommonState {struct FSleepValues;struct FQuantizationValues;}
 namespace Speed::Netcode::Prediction
 {
+// Actual original birth identities only; no physical-state capture, completeness
+// mask, source/lifetime lease or authority outside the private original map.
+class FPrivateRoadBirthIdentities final{
+    friend class FPrivateRoadPhysicsWorld;
+    friend class ::USpeedWheeledComponent;
+    const TWeakObjectPtr<AActor> Actor;
+    const TWeakObjectPtr<USpeedWheeledComponent> Component;
+    const TWeakObjectPtr<UBoxSubBody> Hitbox;
+    const TArray<TWeakObjectPtr<USWheelSubBody>> WheelBodies;
+    const TArray<TWeakObjectPtr<UChaosVehicleWheel>> WheelConfigurations;
+    const TWeakObjectPtr<UClass> WheelClass;
+
+    // The owner factory supplies its existing captured weak births, copying
+    // weak identity/index/serial directly. No raw-to-weak reconstruction.
+    FPrivateRoadBirthIdentities(const TWeakObjectPtr<AActor>& ActualActor,
+        const TWeakObjectPtr<USpeedWheeledComponent>& ActualComponent,
+        const TWeakObjectPtr<UBoxSubBody>& ActualHitbox,
+        const TArray<TWeakObjectPtr<USWheelSubBody>>& ActualWheelBodies,
+        const TArray<TWeakObjectPtr<UChaosVehicleWheel>>& ActualConfigurations,
+        const TWeakObjectPtr<UClass>& ActualWheelClass)
+      :Actor(ActualActor),Component(ActualComponent),Hitbox(ActualHitbox),
+       WheelBodies(ActualWheelBodies),WheelConfigurations(ActualConfigurations),
+       WheelClass(ActualWheelClass) {}
+public:
+    ~FPrivateRoadBirthIdentities()=default;
+    FPrivateRoadBirthIdentities(const FPrivateRoadBirthIdentities&)=delete;
+    FPrivateRoadBirthIdentities& operator=(const FPrivateRoadBirthIdentities&)=delete;
+    FPrivateRoadBirthIdentities(FPrivateRoadBirthIdentities&&)=delete;
+    FPrivateRoadBirthIdentities& operator=(FPrivateRoadBirthIdentities&&)=delete;
+};
+
 // Seven declared value blocks only. Shape configuration, parent/registry,
 // ignored/external lists, solid/wheel/suspension extra state remain separate.
 struct FPrivateRoadSubBodyValues

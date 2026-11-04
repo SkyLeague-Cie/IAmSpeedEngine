@@ -2,7 +2,7 @@
 // Private native mutations; no exported issuer or restoration/source lease.
 #include "IAmSpeed/Base/SHitResult.h"
 #include "IAmSpeed/Base/Kinematic.h"
-class USSubBody;
+class USSubBody;class USpeedWheeledComponent;
 class UBoxSubBody;
 class ISpeedWheeledComponent;
 class ISpeedComponent;
@@ -15,6 +15,7 @@ namespace Speed::NativeKinematics
 class FBodyWrite final
 {
     friend class ::UBoxSubBody;
+    friend class ::USpeedWheeledComponent;
     friend class ::ISpeedWheeledComponent;
     friend class ::ISpeedComponent;
     friend class ::USolidSubBody;

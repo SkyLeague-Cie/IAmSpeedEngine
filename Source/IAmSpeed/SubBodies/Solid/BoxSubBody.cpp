@@ -5658,14 +5658,39 @@ FMatrix UBoxSubBody::ComputeChassisLocalInvInertiaTensor() const
     return RotateLocalInverseInertia(GetLocalRotation());
 }
 
-FMatrix UBoxSubBody::RotateLocalInverseInertia(const FQuat& BoxToFrame) const
+class UBoxSubBody::FLegacyStoredInverseAccess final
 {
-    // FMatrix transforms row vectors: first unrotate a frame-space torque,
-    // apply the local tensor, then rotate its angular response back. Avoid an
-    // Euler conversion, which snaps finite near-pole inclinations to +/-90deg.
+    const UBoxSubBody& Owner;
+public:
+    explicit FLegacyStoredInverseAccess(const UBoxSubBody& Value):Owner(Value){}
+    decltype(auto) Stored() const {return (Owner.InvInertiaLocalSolidStorage());}
+};
+class UBoxSubBody::FNativeStoredInverseAccess final
+{
+    const UBoxSubBody& Owner;const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+public:
+    FNativeStoredInverseAccess(const UBoxSubBody& Value,const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation):Owner(Value),Op(Operation)
+    {
+        using namespace Speed::Netcode::Prediction;FPrivateNativeStorageAccess::RequireBirth(Op);
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Op,&Owner);
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Op,&Owner);
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Op,&Owner);
+    }
+    FQuat LocalRotation() const {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Op,&Owner).LocalPose.GetRotation();}
+    decltype(auto) Stored() const {return (Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,&Owner).InvInertiaLocal);}
+};
+template<class TAccess>
+FMatrix UBoxSubBody::RotateStoredInverseInertiaBody(TAccess& Storage,const FQuat& BoxToFrame)
+{
+    // Exact row-vector program: construct R, then read the actual stored
+    // tensor. Even the ordinary virtual storage getter keeps its old order.
     const FMatrix R = FQuatRotationMatrix(BoxToFrame);
-    return R.GetTransposed() * InvInertiaLocalSolidStorage() * R;
+    return R.GetTransposed() * Storage.Stored() * R;
 }
+FMatrix UBoxSubBody::RotateLocalInverseInertia(const FQuat& BoxToFrame) const
+{FLegacyStoredInverseAccess Storage(*this);return RotateStoredInverseInertiaBody(Storage,BoxToFrame);}
+FMatrix UBoxSubBody::ComputeNativeChassisLocalInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const
+{FNativeStoredInverseAccess Storage(*this,Operation);return RotateStoredInverseInertiaBody(Storage,Storage.LocalRotation());}
 
 
 #if WITH_EDITOR

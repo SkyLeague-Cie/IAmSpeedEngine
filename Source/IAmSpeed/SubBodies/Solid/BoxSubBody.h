@@ -266,6 +266,10 @@ protected:
     const TArray<TWeakObjectPtr<USWheelSubBody>>& GetExternalWheelSubBodies() const { return USolidSubBody::GetExternalWheelSubBodies(); }
 private:
     friend class USpeedBranchBoxSubBody;
+    friend class Speed::NativeKinematics::FBodyRead;
+    class FLegacyStoredInverseAccess;class FNativeStoredInverseAccess;
+    template<class TAccess> static FMatrix RotateStoredInverseInertiaBody(TAccess& Storage,const FQuat& BoxToFrame);
+    FMatrix ComputeNativeChassisLocalInvInertiaTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation) const;
     class FLegacyBoxHitAccess;class FNativeBoxHitAccess;class FLegacyRepeatedContactAccess;
     class FLegacyInitialInertiaAccess;class FNativeInitialInertiaAccess;
     class FLegacyBirthInitializeAccess;class FNativeBirthInitializeAccess;

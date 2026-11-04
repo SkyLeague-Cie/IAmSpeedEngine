@@ -12,6 +12,14 @@ void FComponentWrite::ClearConstraints(ISpeedComponent& Component)
 {
     Component.ClearPhysicalConstraintsForPhysics();
 }
+void FComponentWrite::BirthPose(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const FQuat& Rotation,const FVector& Location)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,Component);
+    Component->SetPhysRotationNative(Operation,Rotation);
+    Component->SetPhysLocationNative(Operation,Location);
+}
 void FComponentWrite::Kinematic(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent& Component,const SKinematic& State)
 {
     // Exactly the final native wheeled SetKinematicState assignment. The

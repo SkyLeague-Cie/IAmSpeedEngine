@@ -51,6 +51,15 @@ ISpeedComponent* FBodyRead::Parent(const Speed::Netcode::Prediction::FPrivateNat
     return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadSubBodyValues>(Operation,&Body).ParentComponent;
 }
 
+FMatrix FBodyRead::ChassisLocalInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const UBoxSubBody& Body)
+{
+    using namespace Speed::Netcode::Prediction;
+    FPrivateNativeStorageAccess::RequireBirth(Operation);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Operation,&Body);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Operation,&Body);
+    (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Operation,&Body);
+    return Body.ComputeNativeChassisLocalInvInertiaTensor(Operation);
+}
 FMatrix FBodyRead::InitialInverseTensor(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const USolidSubBody* Body)
 {
     using namespace Speed::Netcode::Prediction;

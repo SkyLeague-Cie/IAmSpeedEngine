@@ -30,6 +30,7 @@ struct FVehicleConfiguration final {
 // Domain owns native VehicleSimulationPT. Config must outlive that destructor.
 template<class TDomain> struct TVehicleRoot final {
     std::shared_ptr<FVehicleConfiguration> Configuration; // destroyed LAST
+    std::shared_ptr<FPrivateRoadBirthIdentities> BirthIdentities; // immutable real births, destroyed after domain
     std::shared_ptr<TDomain> Domain;                      // destroyed FIRST
     TVehicleRoot(std::shared_ptr<FVehicleConfiguration> C,std::shared_ptr<TDomain> D)
       :Configuration(std::move(C)),Domain(std::move(D)) {}

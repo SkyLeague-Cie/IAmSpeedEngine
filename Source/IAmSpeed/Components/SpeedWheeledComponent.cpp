@@ -2,6 +2,9 @@
 #include "IAmSpeed/Netcode/client-prediction/PrivateNativeStorageMap.h"
 #include "IAmSpeed/Netcode/client-prediction/NativeRetirementStorage.h"
 #include "IAmSpeed/World/Simulation/Internal/BodyKinematicRead.h"
+#include "IAmSpeed/World/Simulation/Internal/BodyContactWrite.h"
+#include "IAmSpeed/World/Simulation/Internal/ComponentContactWrite.h"
+#include "IAmSpeed/Base/EpisodeShapeFieldsForTesting.h"
 #include "Misc/ScopeExit.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidPropertiesAccess.h"
 #include "IAmSpeed/World/Simulation/Internal/SolidMassAccess.h"
@@ -508,19 +511,177 @@ void USpeedWheeledComponent::OnRegister()
     }
 }
 
+class USpeedWheeledComponent::FLegacyOwnerBirthAccess final
+{
+    USpeedWheeledComponent& Owner;
+public:
+    explicit FLegacyOwnerBirthAccess(USpeedWheeledComponent& Value):Owner(Value){}
+    decltype(auto) COM() const {return (Owner.CenterOfMassWheeledDomainStorage());}
+    decltype(auto) COMOverride() const {return (Owner.CenterOfMassOverrideWheeledDomainStorage());}
+    decltype(auto) EnableCOMOverride() const {return (Owner.bEnableCenterOfMassOverrideWheeledDomainStorage());}
+    decltype(auto) Bodies() const {return (Owner.SubBodiesWheeledDomainStorage());}
+    decltype(auto) Hitbox() const {return (Owner.HitboxSubBodyWheeledDomainStorage());}
+    decltype(auto) Wheels() const {return (Owner.WheelSubBodiesWheeledDomainStorage());}
+    UBoxSubBody* AsBox(USSubBody* Body) const {return Cast<UBoxSubBody>(Body);}
+    USWheelSubBody* AsWheel(USSubBody* Body) const {return Cast<USWheelSubBody>(Body);}
+    UBoxSubBody* ReadHitbox() const {return Owner.ReadHitboxForPhysics().Get();}
+    auto ReadWheels() const {return Owner.ReadWheelSubBodiesForPhysics();}
+    void BindInitial() const {Owner.BindWheelSimulationPointers();}
+    void Initialize(USSubBody* Body) const {Body->Initialize(&Owner);}
+    void AfterInitializers() const {}
+    FMatrix ChassisTensor() const {return ReadHitbox()->ComputeChassisLocalInvInertiaTensor();}
+    decltype(auto) ChassisInverse() const {return (Owner.CarLocalInvIWheeledDomainStorage());}
+    void UpdateChildren() const {Owner.UpdateSubBodiesKinematics();}
+};
+
+class USpeedWheeledComponent::FNativeOwnerBirthAccess final
+{
+    USpeedWheeledComponent& Owner;
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Op;
+    FNativeOwnerBirthObservation* const Observation;
+    const Speed::Netcode::Prediction::FPrivateRoadBirthIdentities& Births;
+    decltype(auto) Domain() const
+    {return Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Op,&Owner);}
+    void CheckWholeRoster() const
+    {
+        using namespace Speed::Netcode::Prediction;
+        FPrivateNativeStorageAccess::RequireBirth(Op);
+        Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Op,&Owner);
+        auto& D=Domain();
+        if(!Births.Actor.IsValid()||!Births.Component.IsValid()||Births.Component.Get()!=&Owner
+            ||Owner.GetOwner()!=Births.Actor.Get()||!Births.Hitbox.IsValid()||!Births.WheelClass.IsValid()
+            ||Births.WheelBodies.Num()!=4||Births.WheelConfigurations.Num()!=4
+            ||D.SubBodies.Num()!=5||D.SubBodies[0]!=Births.Hitbox.Get()
+            ||D.SkySimulation||D.VehicleSimulationPT||!D.Wheels.IsEmpty()
+            ||(!D.WheelSubBodies.IsEmpty()&&D.WheelSubBodies.Num()!=4)
+            ||(D.HitboxSubBody&&!Speed::NativeObjectRead::MatchesOriginalBirth(D.HitboxSubBody,Births.Hitbox)))
+            throw FPrivateNativeStorageUnavailable{};
+        const auto& BoxBody=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Op,Births.Hitbox.Get());
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Op,Births.Hitbox.Get());
+        (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadBoxDomain>(Op,Births.Hitbox.Get());
+        if((BoxBody.ParentComponent&&BoxBody.ParentComponent!=static_cast<ISpeedComponent*>(&Owner))
+            ||BoxBody.LocalPose.ContainsNaN()||!BoxBody.LocalPose.GetRotation().IsNormalized()
+            ||D.CenterOfMass.ContainsNaN()||D.CenterOfMassOverride.ContainsNaN())
+            throw FPrivateNativeStorageUnavailable{};
+        for(int32 Index=0;Index<4;++Index)
+        {
+            const auto& BornBody=Births.WheelBodies[Index];const auto& BornConfiguration=Births.WheelConfigurations[Index];
+            if(!BornBody.IsValid()||!BornConfiguration.IsValid()
+                ||D.SubBodies[Index+1]!=BornBody.Get()
+                ||(!D.WheelSubBodies.IsEmpty()&&!Speed::NativeObjectRead::MatchesOriginalBirth(D.WheelSubBodies[Index],BornBody))
+                ||BornConfiguration.Get()->GetOuter()!=&Owner
+                ||BornConfiguration.Get()->GetClass()!=Births.WheelClass.Get())
+                throw FPrivateNativeStorageUnavailable{};
+            const auto& Body=FPrivateNativeStorageAccess::Part<const FPrivateRoadSubBodyValues>(Op,BornBody.Get());
+            (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSolidValues>(Op,BornBody.Get());
+            (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadSphereDomain>(Op,BornBody.Get());
+            (void)FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelRuntimeValues>(Op,BornBody.Get());
+            const auto& Wheel=FPrivateNativeStorageAccess::Part<const FPrivateRoadWheelDomain>(Op,BornBody.Get());
+            // Initial parents really may be null. Refuse a foreign relationship,
+            // without pretending the later initialized own-parent relation exists.
+            if((Body.ParentComponent&&Body.ParentComponent!=static_cast<ISpeedComponent*>(&Owner))
+                ||Body.LocalPose.ContainsNaN()||!Body.LocalPose.GetRotation().IsNormalized()
+                ||Wheel.PWheel||Wheel.PSuspension
+                ||(Wheel.ChaosWheel&&Wheel.ChaosWheel!=BornConfiguration.Get()))
+                throw FPrivateNativeStorageUnavailable{};
+        }
+    }
+public:
+    FNativeOwnerBirthAccess(USpeedWheeledComponent& Value,
+        const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,
+        AActor* ActualActor,const FQuat& Rotation,const FVector& Location,
+        const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,
+        TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+        TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+        FNativeOwnerBirthObservation* Witness)
+      :Owner(Value),Op(Operation),Observation(Witness),
+       Births(Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<const Speed::Netcode::Prediction::FPrivateRoadBirthIdentities>(Operation,&Value))
+    {
+        using namespace Speed::Netcode::Prediction;
+        FPrivateNativeStorageAccess::RequireBirth(Op);
+        CheckWholeRoster(); // all real subjects/parts BEFORE owner, COM or pose writes
+        if(ActualActor!=Births.Actor.Get()||HitboxBirth!=Births.Hitbox
+            ||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4
+            ||Rotation.ContainsNaN()||!Rotation.IsNormalized()||Location.ContainsNaN())
+            throw FPrivateNativeStorageUnavailable{};
+        for(int32 Index=0;Index<4;++Index)
+            if(BodyBirths[Index]!=Births.WheelBodies[Index]||ConfigurationBirths[Index]!=Births.WheelConfigurations[Index])
+                throw FPrivateNativeStorageUnavailable{};
+    }
+    FNativeOwnerBirthAccess(const FNativeOwnerBirthAccess&)=delete;
+    FNativeOwnerBirthAccess& operator=(const FNativeOwnerBirthAccess&)=delete;
+    FNativeOwnerBirthAccess(FNativeOwnerBirthAccess&&)=delete;
+    FNativeOwnerBirthAccess& operator=(FNativeOwnerBirthAccess&&)=delete;
+    void SetActor() const {Domain().SpeedCarOwner=Cast<ASpeedCar>(Births.Actor.Get());}
+    decltype(auto) COM() const {return (Domain().CenterOfMass);}
+    decltype(auto) COMOverride() const {return (Domain().CenterOfMassOverride);}
+    decltype(auto) EnableCOMOverride() const {return (Domain().bEnableCenterOfMassOverride);}
+    decltype(auto) Bodies() const {return (Domain().SubBodies);}
+    decltype(auto) Hitbox() const {return (Domain().HitboxSubBody);}
+    decltype(auto) Wheels() const {return (Domain().WheelSubBodies);}
+    UBoxSubBody* AsBox(USSubBody* Body) const
+    {return static_cast<USSubBody*>(Births.Hitbox.Get())==Body?Births.Hitbox.Get():nullptr;}
+    USWheelSubBody* AsWheel(USSubBody* Body) const
+    {
+        for(const auto& Born:Births.WheelBodies)if(static_cast<USSubBody*>(Born.Get())==Body)return Born.Get();
+        return nullptr;
+    }
+    UBoxSubBody* ReadHitbox() const {return Births.Hitbox.Get();}
+    auto ReadWheels() const {return Speed::NativeObjectRead::TView<USWheelSubBody>{Domain().WheelSubBodies,true};}
+    void BindInitial() const
+    {
+        CheckWholeRoster(); // distinct true initial no-vehicle clear, not116's non-null binder
+        for(const auto& Born:Births.WheelBodies)
+        {
+            Speed::NativeKinematics::FWheelBindingAccess::BindWheel(Op,*Born.Get(),nullptr);
+            Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(Op,*Born.Get(),nullptr);
+        } // Chaos configuration retained exactly, including an empty D.Wheels
+    }
+    void Initialize(USSubBody* Body) const
+    {
+        Speed::NativeKinematics::FBodyWrite::Initialize(Op,Body,&Owner);
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Observation)++Observation->InitializersReturned; // actual return only
+#endif
+    }
+    void AfterInitializers() const
+    {
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+        if(Observation&&Observation->Mode==FNativeOwnerBirthObservation::EMode::StoredTensorFixtureAndAbort)
+        {
+            // Named constructor fixture on a graph that the factory MUST abort
+            // before vehicle creation/Step. This is not historical restoration.
+            auto& Solid=Speed::Netcode::Prediction::FPrivateNativeStorageAccess::Part<Speed::Netcode::Prediction::FPrivateRoadSolidValues>(Op,ReadHitbox());
+            FMatrix Fixture=FMatrix::Identity;Fixture.M[0][0]=0.11;Fixture.M[1][1]=0.23;Fixture.M[2][2]=0.37;
+            Fixture.M[0][1]=Fixture.M[1][0]=0.015;Solid.InvInertiaLocal=Fixture;
+            Observation->StoredTensorFixtureInstalled=true;
+        }
+#endif
+    }
+    FMatrix ChassisTensor() const
+    {return Speed::NativeKinematics::FBodyRead::ChassisLocalInverseTensor(Op,*ReadHitbox());}
+    decltype(auto) ChassisInverse() const {return (Domain().CarLocalInvI);}
+    void UpdateChildren() const {Speed::NativeKinematics::FComponentWrite::UpdateSubBodies(Op,&Owner);}
+};
+
+template<class TAccess>
+void USpeedWheeledComponent::ResolveFixedCenterOfMassBody(TAccess& Storage)
+{
+    if (!Storage.COMOverride().IsNearlyZero())
+    {
+        Storage.COM() = Storage.COMOverride();
+    }
+    else
+    {
+        Storage.COMOverride() = Storage.COM();
+    }
+    Storage.EnableCOMOverride() = true;
+}
 void USpeedWheeledComponent::ResolveFixedCenterOfMassFromConfiguration()
 {
-	// Keep the same precedence and zero fallback as SetOwner.
-	if (!CenterOfMassOverrideWheeledDomainStorage().IsNearlyZero())
-	{
-		CenterOfMassWheeledDomainStorage() = CenterOfMassOverrideWheeledDomainStorage();
-	}
-	else
-	{
-		CenterOfMassOverrideWheeledDomainStorage() = CenterOfMassWheeledDomainStorage();
-	}
-	bEnableCenterOfMassOverrideWheeledDomainStorage() = true;
+    FLegacyOwnerBirthAccess Storage(*this);ResolveFixedCenterOfMassBody(Storage);
 }
+
 
 void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 {
@@ -548,51 +709,220 @@ void USpeedWheeledComponent::SetOwner(AActor* NewOwner)
 }
 
 
+template<class TAccess>
+void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwnerBody(TAccess& Storage)
+{
+    if (Storage.Bodies().Num() > 0)
+    {
+        Storage.Hitbox() = Storage.AsBox(Storage.Bodies()[0]);
+    }
+    Storage.Wheels().Empty();
+    for (USSubBody* SubBody : Storage.Bodies())
+    {
+        if (USWheelSubBody* WheelSubBody = Storage.AsWheel(SubBody))
+        {
+            Storage.Wheels().Add(WheelSubBody);
+        }
+    }
+    Storage.BindInitial();
+    Storage.Initialize(Storage.ReadHitbox());
+    for (auto WheelSubBody : Storage.ReadWheels())
+    {
+        Storage.Initialize(WheelSubBody.Get());
+    }
+    Storage.AfterInitializers(); // fixed diagnostic hook only; ordinary/prod no-op
+    Storage.ChassisInverse() = Storage.ChassisTensor();
+    Storage.UpdateChildren();
+}
 void USpeedWheeledComponent::InitializeBoundSubBodiesForPhysicalOwner()
 {
-	if (SubBodiesWheeledDomainStorage().Num() > 0)
-	{
-		HitboxSubBodyWheeledDomainStorage() = Cast<UBoxSubBody>(SubBodiesWheeledDomainStorage()[0]);
-	}
-
-	WheelSubBodiesWheeledDomainStorage().Empty();
-	for (USSubBody* SubBody : SubBodiesWheeledDomainStorage())
-	{
-		if (USWheelSubBody* WheelSubBody = Cast<USWheelSubBody>(SubBody))
-		{
-			WheelSubBodiesWheeledDomainStorage().Add(WheelSubBody);
-		}
-	}
-
-	BindWheelSimulationPointers();
-
-	// init all sub-bodies with the owner
-	ReadHitboxForPhysics()->Initialize(this);
-	for (auto WheelSubBody : ReadWheelSubBodiesForPhysics())
-	{
-		WheelSubBody->Initialize(this);
-	}
-	// The hitbox owns the rigid body's inertia convention. Reuse that tensor so
-	// custom hitboxes and the vehicle force solvers cannot disagree.
-	CarLocalInvIWheeledDomainStorage() = ReadHitboxForPhysics()->ComputeChassisLocalInvInertiaTensor();
-
-	UpdateSubBodiesKinematics();
-
+    FLegacyOwnerBirthAccess Storage(*this);InitializeBoundSubBodiesForPhysicalOwnerBody(Storage);
 }
-
-void USpeedWheeledComponent::InitializeOriginalOwnerFromCapturedPose(AActor* OriginalOwner,
-    const FQuat& OriginalRotation,const FVector& OriginalLocation)
+void USpeedWheeledComponent::InitializeOriginalOwnerFromCapturedPose(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,AActor* OriginalOwner,
+    const FQuat& OriginalRotation,const FVector& OriginalLocation,
+    const TWeakObjectPtr<UBoxSubBody>& ActualHitboxBirth,
+    TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ActualBodyBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualConfigurationBirths,
+    FNativeOwnerBirthObservation* Observation)
 {
-    // Actual private route selection is required. This check is NOT a
-    // lifetime/view exclusion lease or admission to restore any state.
-    if(!UsesOriginalWheeledDomain()||!OriginalOwner)
-        throw std::logic_error("original owner initialization outside its actual route");
-    SpeedCarOwnerWheeledDomainStorage()=Cast<ASpeedCar>(OriginalOwner);
-    ResolveFixedCenterOfMassFromConfiguration();
-    SetPhysRotation(OriginalRotation);
-    SetPhysLocation(OriginalLocation);
-    InitializeBoundSubBodiesForPhysicalOwner();
+    FNativeOwnerBirthAccess Storage(*this,Operation,OriginalOwner,OriginalRotation,OriginalLocation,
+        ActualHitboxBirth,ActualBodyBirths,ActualConfigurationBirths,Observation);
+    Storage.SetActor();
+    ResolveFixedCenterOfMassBody(Storage);
+    Speed::NativeKinematics::FComponentWrite::BirthPose(Operation,this,OriginalRotation,OriginalLocation);
+    InitializeBoundSubBodiesForPhysicalOwnerBody(Storage);
 }
+
+#if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
+bool USpeedWheeledComponent::ProbeNativeFirstOwnerBirthForDiagnostics(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,AActor* ActualActor,
+    const FQuat& Rotation,const FVector& Location,
+    const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,
+    TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ActualReferenceBirths,
+    USpeedWheeledComponent* ForeignComponent,AActor* ForeignActor,
+    const TWeakObjectPtr<UBoxSubBody>& ForeignHitbox,
+    TConstArrayView<TWeakObjectPtr<USWheelSubBody>> ForeignBodyBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ForeignConfigurationBirths,
+    USpeedSimulation* ForeignSimulation,const SKinematic& ForeignOriginalKinematic,FNativeOwnerBirthObservation& Out)
+{
+    namespace P=Speed::Netcode::Prediction;using B=Speed::FEpisodeStateBytesForTesting;
+    P::FPrivateNativeStorageAccess::RequireBirth(Operation);
+    if(!ActualActor||!ForeignComponent||!ForeignActor||!ForeignSimulation||!ForeignHitbox.IsValid()
+        ||BodyBirths.Num()!=4||ConfigurationBirths.Num()!=4||ActualReferenceBirths.Num()!=4
+        ||ForeignBodyBirths.Num()!=4||ForeignConfigurationBirths.Num()!=4)return false;
+    auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    const SKinematic& ActualKinematic=Speed::NativeKinematics::FComponentRead::Current(Operation,*this);
+    if(D.SubBodies.Num()!=5||!HitboxBirth.IsValid()||!ForeignComponent->OriginalWheeledDomain)return false;
+    Out={};Out.Mode=FNativeOwnerBirthObservation::EMode::StoredTensorFixtureAndAbort;
+    D.CenterOfMass=FVector(13,17,-2);D.CenterOfMassOverride=FVector(7,-11,5);
+    D.bEnableCenterOfMassOverride=false;D.CarLocalInvI=FMatrix::Identity;D.CarLocalInvI.M[0][0]=19;
+    SKinematic AuthoredKinematic=ActualKinematic;
+    AuthoredKinematic.Location=FVector(-17,-23,29);AuthoredKinematic.Velocity=FVector(3,5,7);AuthoredKinematic.Acceleration=FVector(11,13,17);
+    AuthoredKinematic.AngularVelocity=FVector(0.1,0.2,0.3);AuthoredKinematic.AngularAcceleration=FVector(0.4,0.5,0.6);
+    Speed::NativeKinematics::FComponentWrite::Kinematic(Operation,*this,AuthoredKinematic); // named fresh-constructor fixture only
+    const SKinematic BeforePose=ActualKinematic;
+    auto& BoxBody=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,HitboxBirth.Get());
+    const FRotator HitboxRotation(17,31,-23);BoxBody.LocalEulerRotation=HitboxRotation;
+    BoxBody.LocalPose.SetRotation(HitboxRotation.Quaternion());BoxBody.LocalPose.SetLocation(FVector(5,3,2));
+    if(!BoxBody.ParentComponent)++Out.InitialNullParents;
+    for(int32 Index=0;Index<4;++Index)
+    {
+        if(!BodyBirths[Index].IsValid()||!ConfigurationBirths[Index].IsValid()||!ActualReferenceBirths[Index].IsValid()
+            ||!ForeignBodyBirths[Index].IsValid()||!ForeignConfigurationBirths[Index].IsValid())return false;
+        // These eight real UObjects share Outer/class. Actual weak membership
+        // in the original cohort must distinguish the reference cohort.
+        if(ActualReferenceBirths[Index].Get()==ConfigurationBirths[Index].Get()
+            ||ActualReferenceBirths[Index].Get()->GetOuter()!=this
+            ||ActualReferenceBirths[Index].Get()->GetClass()!=ConfigurationBirths[Index].Get()->GetClass())return false;
+        auto& Body=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,BodyBirths[Index].Get());
+        if(!Body.ParentComponent)++Out.InitialNullParents;
+        Body.LocalPose.SetLocation(FVector(21+Index*7,-31+Index*11,-9+Index));
+        auto& Wheel=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,BodyBirths[Index].Get());
+        Wheel.ChaosWheel=ConfigurationBirths[Index].Get(); // named initial constructor fixture
+    }
+    const auto CaptureComponent=[&](USpeedWheeledComponent& C,const SKinematic& OriginalKinematic,TArray<uint8>& Bytes)
+    {
+        if(!C.OriginalWheeledDomain)throw P::FPrivateNativeStorageUnavailable{};
+        const auto& Domain=*C.OriginalWheeledDomain;
+        B::Add(Bytes,Domain.SpeedCarOwner);B::Add(Bytes,Domain.CenterOfMass);B::Add(Bytes,Domain.CenterOfMassOverride);
+        B::Add(Bytes,bool(Domain.bEnableCenterOfMassOverride));B::Add(Bytes,Domain.CarLocalInvI);
+        B::Add(Bytes,OriginalKinematic);
+        B::Add(Bytes,Domain.HitboxSubBody);B::Add(Bytes,Domain.SkySimulation);B::Add(Bytes,Domain.VehicleSimulationPT.Get());
+        B::Add(Bytes,Domain.SubBodies.Num());for(auto* Body:Domain.SubBodies)B::Add(Bytes,Body);
+        B::Add(Bytes,Domain.WheelSubBodies.Num());for(const auto& Wheel:Domain.WheelSubBodies)B::Add(Bytes,Wheel);
+        B::Add(Bytes,Domain.Wheels.Num());for(const auto& Wheel:Domain.Wheels)B::Add(Bytes,Wheel);
+        // Ordinary facade values are also named witnesses for the foreign
+        // member-call control. Neither snapshot is imported as physical state.
+        B::Add(Bytes,C.SpeedCarOwnerWheeledDomainStorage());B::Add(Bytes,C.CenterOfMassWheeledDomainStorage());
+        B::Add(Bytes,C.BasePhysicsStateStorage().Kinematic);
+    };
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;CaptureComponent(*this,ActualKinematic,Bytes);
+        // Fixed const borrow of the actual typed foreign root's six-field
+        // kinematic witness, supplied by its retaining factory context only.
+        // No issuer, mutable view, callback, storage or return of this borrow.
+        CaptureComponent(*ForeignComponent,ForeignOriginalKinematic,Bytes);
+        HitboxBirth.Get()->AppendEpisodeStateForTesting(Bytes);
+        for(int32 Index=0;Index<4;++Index)
+        {
+            BodyBirths[Index].Get()->AppendEpisodeStateForTesting(Bytes);
+            B::Add(Bytes,ConfigurationBirths[Index].Get()->SuspensionMaxRaise);B::Add(Bytes,ConfigurationBirths[Index].Get()->SuspensionMaxDrop);
+            B::Add(Bytes,ActualReferenceBirths[Index].Get()->SuspensionMaxRaise);B::Add(Bytes,ActualReferenceBirths[Index].Get()->SuspensionMaxDrop);
+        }
+        return Bytes;
+    };
+    auto& LastBody=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,BodyBirths[3].Get());
+    const auto SavedTail=D.SubBodies[4];auto* const SavedParent=LastBody.ParentComponent;
+    auto* const SavedSimulation=D.SkySimulation;
+    for(int32 Case=0;Case<9;++Case)
+    {
+        TArray<TWeakObjectPtr<USWheelSubBody>> CandidateBodies;CandidateBodies.Append(BodyBirths.GetData(),BodyBirths.Num());
+        TArray<TWeakObjectPtr<UChaosVehicleWheel>> CandidateConfigurations;CandidateConfigurations.Append(ConfigurationBirths.GetData(),ConfigurationBirths.Num());
+        if(Case==3)CandidateBodies[3]=ForeignBodyBirths[3];
+        if(Case==4)CandidateConfigurations[3]=ForeignConfigurationBirths[3];
+        if(Case==5)CandidateConfigurations[3]=ActualReferenceBirths[3];
+        if(Case==6)D.SubBodies[4]=ForeignBodyBirths[3].Get();
+        if(Case==7)LastBody.ParentComponent=ForeignComponent;
+        if(Case==8)D.SkySimulation=ForeignSimulation;
+        const auto Before=Capture();bool Refused=false;
+        try
+        {
+            if(Case==1)ForeignComponent->InitializeOriginalOwnerFromCapturedPose(Operation,ActualActor,Rotation,Location,HitboxBirth,CandidateBodies,CandidateConfigurations);
+            else InitializeOriginalOwnerFromCapturedPose(Operation,Case==0?ForeignActor:ActualActor,Rotation,Location,
+                Case==2?ForeignHitbox:HitboxBirth,CandidateBodies,CandidateConfigurations);
+        }
+        catch(const P::FPrivateNativeStorageUnavailable&){Refused=true;}
+        const bool Unchanged=Before==Capture();D.SubBodies[4]=SavedTail;LastBody.ParentComponent=SavedParent;D.SkySimulation=SavedSimulation;
+        if(!Refused||!Unchanged)return false;
+        ++Out.Refusals; // actual refusal and named before/after equality only
+    }
+    Out.AllRefusalsBeforeWrite=true;
+    InitializeOriginalOwnerFromCapturedPose(Operation,ActualActor,Rotation,Location,HitboxBirth,BodyBirths,ConfigurationBirths,&Out);
+    Out.PositiveEntryReturned=true;
+    const auto& K=ActualKinematic;
+    Out.PoseAndCOMMatch=!Location.IsNearlyZero()&&!Rotation.Equals(FQuat::Identity)
+        &&D.SpeedCarOwner==Cast<ASpeedCar>(ActualActor)&&D.CenterOfMass==FVector(7,-11,5)
+        &&D.CenterOfMassOverride==D.CenterOfMass&&D.bEnableCenterOfMassOverride
+        &&K.Location==Location+Rotation.RotateVector(D.CenterOfMass)&&K.Rotation==Rotation
+        &&K.Velocity==BeforePose.Velocity&&K.Acceleration==BeforePose.Acceleration
+        &&K.AngularVelocity==BeforePose.AngularVelocity&&K.AngularAcceleration==BeforePose.AngularAcceleration;
+    const auto& Stored=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSolidValues>(Operation,HitboxBirth.Get()).InvInertiaLocal;
+    const FMatrix R=FQuatRotationMatrix(BoxBody.LocalPose.GetRotation());const FMatrix Expected=R.GetTransposed()*Stored*R;
+    Out.StoredChassisTensorMatch=D.CarLocalInvI==Expected;
+    Out.StoredTensorDistinguished=Out.StoredTensorFixtureInstalled&&D.CarLocalInvI!=Stored
+        &&Stored!=Speed::NativeKinematics::FBodyRead::InitialInverseTensor(Operation,HitboxBirth.Get());
+    Out.ClearKeepsCanonicalConfigurations=D.Wheels.IsEmpty()&&!D.SkySimulation&&!D.VehicleSimulationPT;
+    const SKinematic Origin=Speed::NativeKinematics::FComponentRead::Origin(Operation,*this);Out.ChildrenMatch=true;
+    for(int32 Index=0;Index<5;++Index)
+    {
+        const USSubBody* Body=Index?static_cast<USSubBody*>(BodyBirths[Index-1].Get()):static_cast<USSubBody*>(HitboxBirth.Get());
+        const auto& Values=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadSubBodyValues>(Operation,Body);
+        const FVector Offset=Origin.Rotation.RotateVector(Values.LocalPose.GetLocation());
+        const FVector ExpectedAcceleration=Origin.Acceleration+FVector::CrossProduct(Origin.AngularAcceleration,Offset)
+            +FVector::CrossProduct(Origin.AngularVelocity,FVector::CrossProduct(Origin.AngularVelocity,Offset));
+        Out.ChildrenMatch=Out.ChildrenMatch&&Values.ParentComponent==static_cast<ISpeedComponent*>(this)
+            &&Values.Kinematics.Location==Origin.Location+Offset
+            &&Values.Kinematics.Velocity==Origin.Velocity+FVector::CrossProduct(Origin.AngularVelocity,Offset)
+            &&Values.Kinematics.Acceleration==ExpectedAcceleration
+            &&Values.Kinematics.Rotation==Origin.Rotation*Values.LocalEulerRotation.Quaternion()
+            &&Values.Kinematics.AngularVelocity==Origin.AngularVelocity&&Values.Kinematics.AngularAcceleration==Origin.AngularAcceleration;
+        if(Index)
+        {
+            const auto& Wheel=P::FPrivateNativeStorageAccess::Part<P::FPrivateRoadWheelDomain>(Operation,BodyBirths[Index-1].Get());
+            Out.ClearKeepsCanonicalConfigurations=Out.ClearKeepsCanonicalConfigurations
+                &&Wheel.ChaosWheel==ConfigurationBirths[Index-1].Get()&&!Wheel.PWheel&&!Wheel.PSuspension;
+        }
+    }
+    return Out.InitializersReturned==5&&Out.InitialNullParents==5&&Out.PositiveEntryReturned&&Out.PoseAndCOMMatch
+        &&Out.ClearKeepsCanonicalConfigurations&&Out.StoredChassisTensorMatch&&Out.StoredTensorDistinguished&&Out.ChildrenMatch;
+}
+
+bool USpeedWheeledComponent::ProbeNativeFirstOwnerStepRefusalForDiagnostics(
+    const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,AActor* ActualActor,
+    const TWeakObjectPtr<UBoxSubBody>& HitboxBirth,TConstArrayView<TWeakObjectPtr<USWheelSubBody>> BodyBirths,
+    TConstArrayView<TWeakObjectPtr<UChaosVehicleWheel>> ConfigurationBirths)
+{
+    namespace P=Speed::Netcode::Prediction;using B=Speed::FEpisodeStateBytesForTesting;
+    auto& D=P::FPrivateNativeStorageAccess::Part<FOriginalWheeledDomain>(Operation,this);
+    const SKinematic& ActualKinematic=Speed::NativeKinematics::FComponentRead::Current(Operation,*this);
+    const auto Capture=[&]()
+    {
+        TArray<uint8> Bytes;B::Add(Bytes,D.SpeedCarOwner);B::Add(Bytes,D.CenterOfMass);B::Add(Bytes,D.CenterOfMassOverride);
+        B::Add(Bytes,bool(D.bEnableCenterOfMassOverride));B::Add(Bytes,D.CarLocalInvI);B::Add(Bytes,ActualKinematic);
+        B::Add(Bytes,D.HitboxSubBody);for(auto* Body:D.SubBodies)B::Add(Bytes,Body);for(const auto& Wheel:D.WheelSubBodies)B::Add(Bytes,Wheel);
+        HitboxBirth.Get()->AppendEpisodeStateForTesting(Bytes);for(const auto& Born:BodyBirths)Born.Get()->AppendEpisodeStateForTesting(Bytes);
+        return Bytes;
+    };
+    const auto Before=Capture();bool Refused=false;
+    try{InitializeOriginalOwnerFromCapturedPose(Operation,ActualActor,FQuat::Identity,FVector(91,37,11),HitboxBirth,BodyBirths,ConfigurationBirths);}
+    catch(const P::FPrivateNativeStorageUnavailable&){Refused=true;}
+    return Refused&&Before==Capture();
+}
+#endif
 
 bool USpeedWheeledComponent::ValidateSimulationBindings(FString& OutReason) const
 {
@@ -668,7 +998,7 @@ public:
     void BindWheel(USWheelSubBody& Body,Chaos::FSimpleWheelSim* Value) const {Speed::NativeKinematics::FWheelBindingAccess::BindWheel(Body,Value);}
     void BindSuspension(USWheelSubBody& Body,Chaos::FSimpleSuspensionSim* Value) const {Speed::NativeKinematics::FWheelBindingAccess::BindSuspension(Body,Value);}
 };
-// Unapplied candidate. Complete factory wiring and real controls before review/application.
+// Specific original factory binding entry; ordinary and Retirement routes remain separate.
 // These borrowed views are supplied only by the actual factory's existing birth
 // weak identities, under its genuine retained operation. No permission boolean,
 // synthetic root or source/lifetime/complete-state claim is supplied.

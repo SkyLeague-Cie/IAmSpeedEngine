@@ -4,7 +4,7 @@ namespace Speed::FrameParallel {class FJoinedActorKinematics1213;}
 // Private native mutations only; no exported issuer or source/restore lease.
 #include "IAmSpeed/Base/PhysicalContactConstraint.h"
 #include "IAmSpeed/Base/Kinematic.h"
-class ISpeedComponent;
+class ISpeedComponent;class USpeedWheeledComponent;
 class USolidSubBody;
 class UBoxSubBody;
 class USpeedWorldSubsystem;
@@ -16,6 +16,7 @@ class FBodyWrite;
 class FComponentWrite final
 {
     friend class ::ISpeedComponent;
+    friend class ::USpeedWheeledComponent;
     friend class FBodyWrite;
     friend class ::USolidSubBody;
     friend class ::UBoxSubBody;
@@ -28,6 +29,7 @@ class FComponentWrite final
     static void ForceBatch(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const TArray<FVector>& Forces,const TArray<FVector>& WorldPoints,const USolidSubBody* SubBody);
     static void FrameStaticWorld(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const Speed::IStaticCollisionWorld* World,float FrameHorizon);
     static void UpdateSubBodies(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component);
+    static void BirthPose(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const FQuat& Rotation,const FVector& Location);
     static void Kinematic(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent& Component,const SKinematic& State);
     static void RegisterConstraint(ISpeedComponent& Component,const FPhysicalContactConstraint& Constraint);
     static void ClearConstraints(ISpeedComponent& Component);
