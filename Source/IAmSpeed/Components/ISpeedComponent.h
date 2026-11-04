@@ -97,6 +97,7 @@ class IAMSPEED_API ISpeedComponent
     class FLegacyFrameResetAccess;class FNativeFrameResetAccess;
     template<class TAccess> void ResetForFrameBody(TAccess& Storage,const float& Delta);
     void ResetNativeForFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const float& Delta);
+    static void ValidateNativeFrameOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent* Component);
     void RegisterPhysicalConstraintForPhysics(const FPhysicalContactConstraint& Constraint);
     void ClearPhysicalConstraintsForPhysics();
     // Default adapters retain their existing virtual getter semantics. The

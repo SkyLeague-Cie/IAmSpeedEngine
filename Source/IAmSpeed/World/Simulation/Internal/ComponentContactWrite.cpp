@@ -72,7 +72,7 @@ void FComponentWrite::UpdateSubBodies(const Speed::Netcode::Prediction::FPrivate
 void FComponentWrite::ResetFrame(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,ISpeedComponent* Component,const float& Delta)
 {
     Speed::Netcode::Prediction::FPrivateNativeStorageAccess::RequireStep(Operation);
-    FComponentRead::ValidateCurrentAndSubBodies(Operation,Component);
+    ISpeedComponent::ValidateNativeFrameOwner(Operation,Component);
     Component->ResetNativeForFrame(Operation,Delta);
 }
 
@@ -82,7 +82,7 @@ TArray<FPhysicalContactConstraint>& FComponentWrite::FrameConstraints(const Spee
 {
     using namespace Speed::Netcode::Prediction;
     FPrivateNativeStorageAccess::RequireStep(Operation);
-    FComponentRead::ValidateCurrentAndSubBodies(Operation,&Component);
+    ISpeedComponent::ValidateNativeFrameOwner(Operation,&Component);
     return FPrivateNativeStorageAccess::Part<USpeedBranchWheeledComponent::FOwnedComponentValues>(Operation,&Component).PhysicalConstraints;
 }
 

@@ -1814,3 +1814,10 @@ void ISpeedComponent::UnFreezeMovement()
 {
 	SetIsFrozen(false);
 }
+
+// Private static bridge: this existing friend may call the private reader.
+// The caller passes the actual raw interface address; validation itself uses
+// the unchanged two typed Parts before any target dereference or mutation.
+// No operation issuer, virtual callback or additional friendship is introduced.
+void ISpeedComponent::ValidateNativeFrameOwner(const Speed::Netcode::Prediction::FPrivateNativeOperation& Operation,const ISpeedComponent* Component)
+{Speed::NativeKinematics::FComponentRead::ValidateCurrentAndSubBodies(Operation,Component);}

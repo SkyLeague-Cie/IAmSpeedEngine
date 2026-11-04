@@ -1900,3 +1900,16 @@ causal initial sync/CanMove activation agreement, authoritative-K localized
 resimulation and two rendered playable clients plus a dedicated server remain
 unfinished. No physical coefficient, floating-point program, contact order,
 geometry or tolerance is intentionally changed by this access migration.
+
+
+The source120/build114 compilation failed with two C2248 diagnostics: the writer
+helper could not call a private reader helper. Source121 keeps both helpers
+private and adds a private static validator on ISpeedComponent, which already
+has reader friendship and already grants writer friendship. The static bridge
+delegates to the unchanged two typed raw-owner checks; it does not dereference
+the caller pointer before those checks. Neither helper visibility nor any friend
+list is expanded. In particular the private wheeled-domain type is still named
+only by its existing authorized reader. The failed114 build, natural dual drains
+and clean audits are preserved; QA and native tests did not run. This correction
+requires a distinct fresh compilation and native run, including source120's
+pending controls and measured trajectories. Earlier119 results do not qualify it.
