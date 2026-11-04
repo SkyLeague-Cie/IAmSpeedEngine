@@ -169,6 +169,18 @@ int main()
         Check(Held&&Held->GetData().Transitions.empty()&&Held->GetData().Values[3]==0,"resume-held action is suppressed without a fake Started");
         auto A=F.Publish(EDesktopBatchMode::Poll,{F.MouseRead(2)});auto B=F.Publish(EDesktopBatchMode::Poll,{F.MouseRead(3)});
         Raw->Samples.push_back(F.Packet({A,B}));auto Repress=Producer->Produce(2);
+        if(!Repress||Repress->GetData().Transitions.size()!=2)
+        {
+            std::cerr<<"DETAIL rearm frame_present="<<bool(Repress);
+            if(Repress)
+            {
+                const auto& Data=Repress->GetData();std::cerr<<" value3="<<Data.Values[3]<<" value4="<<Data.Values[4]
+                    <<" active="<<Data.ActiveMask<<" transitions="<<Data.Transitions.size();
+                for(const auto& Edge:Data.Transitions)std::cerr<<" edge="<<unsigned(Edge.Action)<<":"<<unsigned(Edge.State)
+                    <<":"<<Edge.Order.Sequence<<":"<<Edge.Order.WithinSequence;
+            }
+            std::cerr<<'\n';
+        }
         Check(Repress&&Repress->GetData().Transitions.size()==2&&Repress->GetData().Transitions[0].Action==4
             &&Repress->GetData().Transitions[1].Action==3,"release/repress rearms while preserving another action in the final frame");
         const auto OtherEdge=IdentifyEdge(*Repress,0),BoostEdge=IdentifyEdge(*Repress,1);

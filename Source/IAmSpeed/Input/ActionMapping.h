@@ -166,7 +166,12 @@ private:
         // The physical result and all terminal metadata have passed validation.
         // These moves cannot allocate: no rejected frame can retire the ledger.
         if(Metadata&&!Desktop.Commit(std::move(*Metadata)))return Reject(EMappingStatus::InvalidRaw);
-		Held = std::move(Working); HeldActive = Output.ActiveMask; HeldValues = Output.Values;
+        // Resume suppression is an output policy. Keep canonical raw/action
+        // history internally so the genuine release still emits Completed for
+        // the producer to consume as rearm, even when the previous final frame
+        // deliberately exposed a neutral value. Metadata identities refer to
+        // the validated final frame; these held values refer to the raw mapper.
+		Held = std::move(Working); HeldActive = BeforeFinalization.ActiveMask; HeldValues = BeforeFinalization.Values;
 		LastDevice = Sample.DeviceId; Kind = Sample.Kind; Generation = Sample.Generation; LastSequence = Sample.Sequence;
 		HasBaseline = true; NeedsResync = false;
 		Exhausted = Frame == std::numeric_limits<FFrameNumber>::max();
