@@ -48,6 +48,46 @@ static std::unique_ptr<FGameInputSelectedSource> Source(HistoryApi* Api)
 int main()
 {
     {
+        using namespace Speed::Input::Windows;
+        using namespace Speed::Input::V2;
+        ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);
+        auto Policy = Config(); Policy.StartupPreferredKind = EDeviceKind::Gamepad; Policy.GamepadPriority = true;
+        auto Selected = FGameInputSelectedSource::CreateRaw(Api.Get(), 990, Policy);
+        auto Journal = std::make_shared<FRawAcquisitionJournal>(990);
+        FGameInputRawAcquisition Owner(std::move(Selected), Journal);
+        Check(Owner.Pump() == ERawPumpResult::Installed, "availability empty catalogue installs only startup neutral");
+        const auto Empty = Owner.ReadNativeAvailabilityDiagnostic();
+        Check(Empty && Empty->CatalogueObserved && Empty->ConnectedDevices == 0
+            && !Empty->HasCurrentReadingHResult && !Empty->SelectedTicketPresent && Api->ReadCalls == 0,
+            "real cache distinguishes empty catalogue without reading a fabricated device");
+        Check(Journal->ReadControlBaseline() && !Journal->ReadControlBaseline()->State.HasSelectedDevice,
+            "real native no-owner report carries no selected-device provenance");
+        auto Keyboard = MakeDevice(9, GameInputKindKeyboard);
+        Api->FireDevice(Keyboard.Get(), 1, true);
+        Check(Owner.Pump() == ERawPumpResult::NoChange, "connected unreadable device creates no actual input report");
+        const auto Unreadable = Owner.ReadNativeAvailabilityDiagnostic();
+        Check(Unreadable && Unreadable->ConnectedDevices == 1 && Unreadable->KeyboardDevices == 1
+            && Unreadable->GamepadDevices == 0 && Unreadable->HybridDevices == 0
+            && Unreadable->ReadableKeyboards == 0 && Unreadable->HasCurrentReadingHResult
+            && Unreadable->LastCurrentReadingHResult == GAMEINPUT_E_READING_NOT_FOUND
+            && Unreadable->LastCurrentReadingKind == 1 && !Unreadable->LastCurrentReadingSelected
+            && !Unreadable->SelectedTicketPresent && Api->CurrentCalls == 1,
+            "real current-reading HRESULT survives NoChange conversion in actual availability cache");
+        const auto Calls = Api->ReadCalls.load();
+        Owner.ReadNativeAvailabilityDiagnostic();
+        Check(Api->ReadCalls == Calls, "reading the availability cache is passive");
+        Api->Sample(Keyboard.Get(), 10, false);
+        Check(Owner.Pump() == ERawPumpResult::Installed, "a real readable neutral keyboard is selected as fallback");
+        const auto Ready = Owner.ReadNativeAvailabilityDiagnostic();
+        Check(Ready && Ready->ReadableKeyboards == 1 && Ready->ReadableGamepads == 0
+            && Ready->SelectedTicketPresent && Ready->LastCurrentReadingHResult == S_OK
+            && Ready->LastCurrentReadingSelected && Ready->CurrentReadingCalls == 3,
+            "actual activity baseline and selected snapshot update the same cache");
+        const auto Real = Journal->ReadControlBaseline();
+        Check(Real && Real->State.HasSelectedDevice, "a real all-neutral device retains selected-device provenance");
+        Check(Owner.Close(), "availability fixture closes its actual selected source");
+    }
+    {
     using namespace Speed::Input::Windows;
     using namespace Speed::Input::V2;
     ComPtr<HistoryApi> Api; Api.Attach(new HistoryApi);

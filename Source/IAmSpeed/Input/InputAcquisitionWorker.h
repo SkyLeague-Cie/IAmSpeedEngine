@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -11,11 +12,26 @@ namespace Speed::Input::V2
 {
 enum class EAcquisitionPumpResult { Installed, NoChange, Neutralized, Rejected, Closed, RetryableUnavailable };
 enum class EAcquisitionStartup { Waiting, Ready, Failed };
+// Passive native-availability metadata; never an input value, identity,
+// selection request or admission/physical-lifecycle decision.
+struct FNativeInputAvailability
+{
+    std::uint32_t ConnectedDevices = 0, KeyboardDevices = 0, GamepadDevices = 0, HybridDevices = 0;
+    std::uint32_t ReadableKeyboards = 0, ReadableGamepads = 0;
+    std::uint64_t CurrentReadingCalls = 0;
+    std::int32_t LastCurrentReadingHResult = 0;
+    std::uint8_t LastCurrentReadingKind = 0; // 0 none, 1 keyboard, 2 gamepad.
+    bool CatalogueObserved = false, HasCurrentReadingHResult = false;
+    bool LastCurrentReadingSelected = false, SelectedTicketPresent = false;
+};
 class IInputAcquisition
 {
 public:
 	virtual ~IInputAcquisition() = default;
 	virtual EAcquisitionPumpResult Pump() = 0;
+    // Existing acquisition owner only, after Pump. Defaults inert for backends
+    // without this optional diagnostic; no platform call is permitted here.
+    virtual std::optional<FNativeInputAvailability> ReadNativeAvailabilityDiagnostic() { return {}; }
 	// Must invalidate consumer-visible cached data before attempting platform
 	// teardown. False may retain callback resources for retry, never live input.
 	virtual bool Close() = 0;

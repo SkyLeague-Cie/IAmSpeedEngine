@@ -148,6 +148,11 @@ public:
         std::lock_guard<std::mutex> Lock(Gate);
         return Source ? Source->ReadFailureDiagnostics() : FGameInputFailureDiagnostics{};
     }
+    std::optional<V2::FNativeInputAvailability> ReadNativeAvailabilityDiagnostic() override
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        return Source ? std::optional<V2::FNativeInputAvailability>(Source->ReadNativeAvailabilityDiagnostic()) : std::nullopt;
+    }
 	bool Close() override
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
@@ -163,6 +168,7 @@ private:
 		Prepared.Count = 1; auto& R = Prepared.Readings[0]; R = LastState.value_or(V2::FAcquiredRawState{});
 		R.DeviceId = FDeviceDiscovery::Capacity + 1; // Reserved neutral source, never a real registry index.
         R.PadFamily=V2::ERawPadFamily::Unknown; // No real selected device owns this neutral source.
+        R.HasSelectedDevice=false;
 		R.Generation = {Generation + 1}; R.Sequence = Sequence + 1; R.FreshBaseline = true;
 		if (!R.State.Count)
 		{

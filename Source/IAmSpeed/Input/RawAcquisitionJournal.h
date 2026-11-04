@@ -26,6 +26,7 @@ struct FAcquiredRawState
 	bool FreshBaseline = false;
 	FCanonicalRawState State;
     ERawPadFamily PadFamily=ERawPadFamily::Unknown; // Not copied into a physical FRawInputSample.
+    bool HasSelectedDevice=true; // UI admission provenance only; never copied into FRawInputSample/ACK.
 };
 struct FRawAcquisitionBatch
 {

@@ -138,6 +138,10 @@ public:
 #endif
 		return Result;
     }
+    std::optional<FNativeInputAvailability> ReadNativeAvailabilityDiagnostic() override
+    {
+        return Source ? Source->ReadNativeAvailabilityDiagnostic() : std::nullopt;
+    }
     bool Close() override
     {
         Journal->Close();

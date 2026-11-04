@@ -129,6 +129,7 @@ public:
 			HasPending = false;
 		}
 		const auto Lease = Discovery->AcquireSelected();
+        Availability.SelectedTicketPresent = bool(Lease);
 		FSelectedRawBatch Batch; Batch.AcquisitionTick = AcquisitionTick;
 		if (!Lease) { if (!ResetCursorsLocked()) return false; Active.reset(); LastSuccessfulRawReadTick = 0; ActiveVendorId = 0; }
 		else
@@ -154,8 +155,8 @@ public:
 				const auto Kind = Lease->Ticket.Kind == EDeviceKind::Keyboard
 					? GameInput::v3::GameInputKindKeyboard : GameInput::v3::GameInputKindGamepad;
 				Batch.Readings = CallbackCursor
-					? CallbackCursor->PollRaw(*Api.Get(), Lease->Device.Get(), Kind)
-					: Cursor.PollRaw(*Api.Get(), Lease->Device.Get(), Kind, &TooOld);
+					? CallbackCursor->PollRaw(*Api.Get(), Lease->Device.Get(), Kind, &Availability)
+					: Cursor.PollRaw(*Api.Get(), Lease->Device.Get(), Kind, &TooOld, &Availability);
 				Error = Batch.Readings.Result.Error;
 				if (Batch.Readings.Result.Status == EReadBatchStatus::Error
 					|| Batch.Readings.Result.Status == EReadBatchStatus::Resynchronize)
@@ -211,6 +212,11 @@ public:
 		if (Batch.Readings.Count) LastSuccessfulRawReadTick = AcquisitionTick;
 		Status = Batch.Status; return true;
 	}
+    V2::FNativeInputAvailability ReadNativeAvailabilityDiagnostic() const
+    {
+        std::lock_guard<std::mutex> Lock(Gate);
+        return Availability; // Copy only; no discovery refresh or OS call.
+    }
 	ERawPollReject GetLastRawPollReject() const
 	{
 		std::lock_guard<std::mutex> Lock(Gate);
@@ -383,6 +389,18 @@ private:
 		Status = EPollStatus::Resynchronized;
 		return true;
 	}
+    void ObserveCatalogueAvailability(const std::vector<FDiscoveredDevice>& Devices)
+    {
+        Availability.CatalogueObserved = true;
+        Availability.ConnectedDevices = Availability.KeyboardDevices = Availability.GamepadDevices = Availability.HybridDevices = 0;
+        for (const auto& Device : Devices) if (Device.Connected)
+        {
+            ++Availability.ConnectedDevices;
+            if (Device.SupportedKinds & 1) ++Availability.KeyboardDevices;
+            if (Device.SupportedKinds & 2) ++Availability.GamepadDevices;
+            if ((Device.SupportedKinds & 3) == 3) ++Availability.HybridDevices;
+        }
+    }
 	bool PollActivityLocked(FFrameNumber Frame)
 	{
 		using namespace GameInput::v3;
@@ -392,6 +410,7 @@ private:
 			AppliedLock.reset(); HasPendingLock = false;
 		}
 		const auto Devices = Discovery->Snapshot();
+        ObserveCatalogueAvailability(Devices);
 		if (!Activity->Sync(Devices)) { Discovery->FailAcquisition(E_OUTOFMEMORY); return false; }
 		std::map<FDeviceId, FActivityCursor> Retained;
 		if (!bPaused) for (const auto& D : Devices)
@@ -414,7 +433,7 @@ private:
 						if (*Kind == EDeviceKind::Keyboard) Sample.Buttons = Raw.VirtualKeys;
 						else for (std::size_t B = 0; B < 32; ++B) Sample.Buttons[B] = (Raw.GamepadButtons & (std::uint32_t(1) << B)) != 0;
 						return Activity->Observe(D.Id, D.Revision, Raw.TimestampMicroseconds, Sample);
-					}, [](const FActionValues&) { return true; });
+					}, [](const FActionValues&) { return true; }, nullptr, nullptr, &Availability);
 				if (Result.Status == EReadBatchStatus::Resynchronize || Result.Status == EReadBatchStatus::Error)
 				{
 					Activity->ResetDevice(D.Id); Reading.Cursor.Reset();
@@ -435,6 +454,10 @@ private:
 				D.Connected = false;
 		}
 		if (!Activity->Sync(Latest)) { Discovery->FailAcquisition(E_FAIL); return false; }
+        ObserveCatalogueAvailability(Latest);
+        const auto Readable = Activity->ReadableDeviceCounts();
+        Availability.ReadableKeyboards = static_cast<std::uint32_t>(Readable.first);
+        Availability.ReadableGamepads = static_cast<std::uint32_t>(Readable.second);
 		const auto Choice = Activity->Decide(Frame);
 		if (Activity->IsFailed()) { Discovery->FailAcquisition(E_FAIL); return false; }
 		Pending.reset();
@@ -511,6 +534,7 @@ private:
 	bool RawMode = false;
 	std::uint64_t LastAcquisitionTick = 0;
 	std::optional<FLease> Active;
+    V2::FNativeInputAvailability Availability;
     std::uint16_t ActiveVendorId=0;
 	std::optional<std::pair<FDeviceId, std::uint64_t>> Disconnected;
 	std::optional<FFrameNumber> LastFrame;

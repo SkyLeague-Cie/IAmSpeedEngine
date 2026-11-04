@@ -208,6 +208,13 @@ public:
 		if (Winner) LastChoice = FActivityChoice{*Winner, Trackers.at(*Winner).Kind};
 		LastFrame = Frame; return LastChoice;
 	}
+    std::pair<std::size_t, std::size_t> ReadableDeviceCounts() const
+    {
+        std::pair<std::size_t, std::size_t> Counts{};
+        for (const auto& Item : Trackers) if (Item.second.HasBaseline)
+            Item.second.Kind == EDeviceKind::Keyboard ? ++Counts.first : ++Counts.second;
+        return Counts; // Values already admitted by Observe; no device read.
+    }
 	bool IsFailed() const { return Failed; }
 private:
 	struct FAnalog { bool Active = false; float X = 0, Y = 0; };
