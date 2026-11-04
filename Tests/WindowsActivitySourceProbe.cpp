@@ -67,7 +67,7 @@ int main()
             {{ERawControlKind::PadAxis,std::uint16_t(EPadAxis::RightTrigger)},Throttle,1}};
         D.Physical={{0,EPhysicalDestination::Throttle},{1,EPhysicalDestination::Brake},{2,EPhysicalDestination::Steering}};
         const auto C=FInputActionContract::Create(D);Check(bool(C), "native coexistence contract is valid");
-        auto Producer=FDeviceInputProducer::Create(Journal,C,{991},{EProducerKind::Device,991});
+        auto Producer=Speed::Input::V2::FDeviceInputProducer::Create(Journal,C,{991},{EProducerKind::Device,991});
         Check(bool(Producer), "native coexistence has a real physical producer");
         Check(Acquisition.Pump()==ERawPumpResult::Installed, "startup reads neutral actual pad baseline");
         auto Frame=Producer->Produce(0);Check(Frame&&Frame->GetData().Reset&&Frame->GetData().Values[Throttle]==0,

@@ -60,9 +60,9 @@ struct Fixture
         }
         S.DesktopIngress=std::move(In);Check(S.IsValid(),"typed physical packet is structurally valid");return S;
     }
-    FInputFrame Map(FRawInputSample S,FFrameNumber Frame)
+    Speed::Input::V2::FInputFrame Map(FRawInputSample S,FFrameNumber Frame)
     {auto R=Mapper->MapDesktop(S,Frame);Check(R.Status==EMappingStatus::Mapped&&R.Frame&&R.Frame->IsValidFor(*C),"typed physical frame maps");return *R.Frame;}
-    FInputFrame Baseline(unsigned Keys=0,unsigned Buttons=0)
+    Speed::Input::V2::FInputFrame Baseline(unsigned Keys=0,unsigned Buttons=0)
     {auto P=Publish(EDesktopBatchMode::FreshBaseline,{Key(Keys),MouseRead(Buttons)});return Map(Packet({P},true),0);}
     FRawInputSample Pad()
     {
@@ -161,7 +161,7 @@ int main()
     }
     {
         Fixture F;auto Raw=std::make_shared<QueueRaw>();
-        auto Producer=FDeviceInputProducer::CreateDesktop(Raw,F.C,{77},{EProducerKind::Device,77},0,std::uint32_t(1)<<3);
+        auto Producer=Speed::Input::V2::FDeviceInputProducer::CreateDesktop(Raw,F.C,{77},{EProducerKind::Device,77},0,std::uint32_t(1)<<3);
         Check(bool(Producer),"opt-in physical producer composes the Desktop participant");
         auto P=F.Publish(EDesktopBatchMode::FreshBaseline,{F.Key(0),F.MouseRead(0)});Raw->Samples.push_back(F.Packet({P},true));Check(bool(Producer->Produce(0)),"physical baseline produced");
         Check(Producer->SetLifecyclePaused(true)==ELifecycleResult::Applied&&Producer->SetLifecyclePaused(false)==ELifecycleResult::Applied,"physical producer retains its existing rearm lifecycle");

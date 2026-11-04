@@ -92,8 +92,8 @@ public:
         {
             for(const auto& R:Readers)
             {
-                TComPtr<FReading> Reading;std::uint64_t Arrival=0;
-                for(const auto& Q:Observed)if(Q.Reader==R){Reading=Q.Reading;Arrival=Q.Arrival;break;}
+                TComPtr<FReading> Reading;std::uint64_t ObservedArrival=0;
+                for(const auto& Q:Observed)if(Q.Reader==R){Reading=Q.Reading;ObservedArrival=Q.Arrival;break;}
                 if(!Reading)
                 {
                     const auto H=Api->GetCurrentReading(Kind(*R),R->Lease.Device.Get(),Reading.GetAddressOf());
@@ -106,12 +106,12 @@ public:
                     if(CallbackInvalid)return Fail(EStatus::Rejected,E_UNEXPECTED);
                     if(Overflow)return Fail(EStatus::Unavailable,E_BOUNDS);
                     for(const auto& Q:Pending)if(Q.Reader==R)
-                    {Reading=Q.Reading;Arrival=Q.Arrival;break;}
+                    {Reading=Q.Reading;ObservedArrival=Q.Arrival;break;}
                 }
                 FAccepted A;const auto H=Decode(R,Reading.Get(),R->Sequence+1,A);
                 if(FAILED(H))return Fail(EStatus::Rejected,H);
                 Batch.Observations.push_back(A.Observation);Result->Accepted.push_back(std::move(A));
-                if(Arrival)Result->Consumed.push_back(Arrival);
+                if(ObservedArrival)Result->Consumed.push_back(ObservedArrival);
             }
         }
         else
