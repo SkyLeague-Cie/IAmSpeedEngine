@@ -33,19 +33,26 @@ bool FIASPrivateRoadFirstOwnerBirthTraversal::RunTest(const FString&)
     TestEqual(TEXT("three invalid actor/component early entries refused"),EarlyAbort.EarlyReferenceGuardRefusals,uint32(3));
     TestTrue(TEXT("early refusals keep named own/reference/original and foreign owner targets"),EarlyAbort.EarlyReferenceRefusalsBeforeWrite);
     TestTrue(TEXT("real callback-boundary checks returned"),EarlyAbort.EarlyReferenceBoundaryChecks>0);
-    uint64 EarlyNativeConstructors=0;
-    TestEqual(TEXT("four actual configuration observers retained after pre-vehicle abort"),EarlyAbort.LifetimeObservers.size(),size_t(4));
+    if(!TestEqual(TEXT("four actual configuration observers retained after pre-vehicle abort"),EarlyAbort.LifetimeObservers.size(),size_t(4)))
+    {
+        AddInfo(TEXT("[PrivateRoadEarlyReferenceOwnerAbortUnknown] reason=missing-actual-lifetime-observers nativeConstructors=UNKNOWN"));
+        return false;
+    }
+    uint64 EarlyNativeConstructors=0,EarlyConfigurationDestructions=0;
     for(const auto& Trace:EarlyAbort.LifetimeObservers)
     {
-        if(!Trace)return false;const auto V=Trace->Read();EarlyNativeConstructors+=V.NativeConstructionReturns;
+        if(!TestTrue(TEXT("actual early configuration observer is populated"),bool(Trace)))return false;
+        const auto V=Trace->Read();EarlyNativeConstructors+=V.NativeConstructionReturns;
+        EarlyConfigurationDestructions+=V.ConfigurationDestructionEntries;
         TestEqual(TEXT("pre-vehicle abort has no native destructor invented"),V.NativeBaseDestructionReturns,V.NativeConstructionReturns);
         TestEqual(TEXT("actual preexisting configuration destructor returned"),V.ConfigurationDestructionEntries,uint64(1));
         TestFalse(TEXT("configuration did not precede actual native destructor return"),V.ConfigurationDestructionBeforeNativeReturn);
     }
     TestEqual(TEXT("neither reference nor original vehicle was constructed"),EarlyNativeConstructors,uint64(0));
-    AddInfo(FString::Printf(TEXT("[PrivateRoadEarlyReferenceOwnerAbort] ownerReturns=%u twoNullReturns=%u initializers=%u boundaryChecks=%u refusals=%u beforeWrite=%d nativeConstructors=%llu. Two-null returns include null-to-null; no transition or lifetime completeness claim."),
+    AddInfo(FString::Printf(TEXT("[PrivateRoadEarlyReferenceOwnerAbort] ownerReturns=%u twoNullReturns=%u initializers=%u boundaryChecks=%u refusals=%u beforeWrite=%d nativeConstructors=%llu lifetimeObservers=%llu configurationDestructionEntries=%llu. Actual nonempty independent observers read only after real partial-owner unwind. Two-null returns include null-to-null; no transition or lifetime completeness claim."),
         EarlyAbort.EarlyReferenceOwnerReturns,EarlyAbort.EarlyReferenceTwoNullReturns,EarlyAbort.EarlyReferenceInitializers,
-        EarlyAbort.EarlyReferenceBoundaryChecks,EarlyAbort.EarlyReferenceGuardRefusals,int(EarlyAbort.EarlyReferenceRefusalsBeforeWrite),EarlyNativeConstructors));
+        EarlyAbort.EarlyReferenceBoundaryChecks,EarlyAbort.EarlyReferenceGuardRefusals,int(EarlyAbort.EarlyReferenceRefusalsBeforeWrite),EarlyNativeConstructors,
+        static_cast<uint64>(EarlyAbort.LifetimeObservers.size()),EarlyConfigurationDestructions));
     P::FPrivateRoadBirthInitializationProbe Abort;
     auto Aborted=P::FPrivateRoadPhysicsWorld::CreateWithBirthInitializationProbeForDiagnostics(
         Seeds,*Foreign,P::EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort,Abort,Why);

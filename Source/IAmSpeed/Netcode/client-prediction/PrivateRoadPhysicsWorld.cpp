@@ -564,7 +564,8 @@ std::unique_ptr<FPrivateRoadPhysicsWorld> FPrivateRoadPhysicsWorld::CreateCore(s
         I.NativeConfigurationLifetime.push_back(Node->NativeConfiguration->Lifetime);
         I.NativeConfigurationLifetime.push_back(Node->ReferenceConfiguration->Lifetime);
 #if WITH_DEV_AUTOMATION_TESTS && !UE_BUILD_SHIPPING
-        if(BirthContext&&BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort)
+        if(BirthContext&&(BirthContext->Mode==EPrivateRoadBirthProbeMode::ProbeFirstOwnerAndAbort
+            ||BirthContext->Mode==EPrivateRoadBirthProbeMode::AbortAfterEarlyReferenceOwner))
         {
             // Actual newly allocated independent counters, retained immediately.
             // Preserve partial/early refusal observations too, never a fake zero.

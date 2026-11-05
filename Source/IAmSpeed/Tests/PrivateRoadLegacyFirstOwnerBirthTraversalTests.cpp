@@ -48,6 +48,11 @@ bool FIASLegacyFirstOwnerBirthTraversal::RunTest(const FString&)
         A->SetChaosWheel(CA.Get());C->SetChaosWheel(CC.Get());A->SetWheelSim(&SA);C->SetWheelSim(&SC);A->SetSuspensionSim(&UA);C->SetSuspensionSim(&UC);
         TestTrue(TEXT("actual legacy actor location API returned"),Actor->SetActorLocation(ActorLocation));
         TestTrue(TEXT("actual legacy actor rotation API returned"),Actor->SetActorRotation(ActorRotation));
+        // Independent oracle uses the actual actor API inputs consumed by SetOwnerBody.
+        // Authored quaternion may change bits through the actor rotator round trip.
+        const FQuat ActualActorRotation=Actor->GetActorRotation().Quaternion();
+        const FVector ActualActorLocation=Actor->GetActorLocation();
+        TestTrue(TEXT("actual actor API retains authored location exactly"),ActualActorLocation==ActorLocation);
         uint32 RealReallocations=0;bool DifferentAllocationSameRoster=false;
         Trace->AfterChildUpdate=[&]() {
             if(RealReallocations==0)
@@ -69,7 +74,18 @@ bool FIASLegacyFirstOwnerBirthTraversal::RunTest(const FString&)
         const FVector ExpectedCOM=Override?FVector(7,-11,5):FVector(13,17,-2);
         TestTrue(TEXT("override precedence / zero override fallback unchanged"),Parent->CenterOfMassWheeledDomainStorage()==ExpectedCOM
             &&Parent->CenterOfMassOverrideWheeledDomainStorage()==ExpectedCOM&&Parent->bEnableCenterOfMassOverrideWheeledDomainStorage());
-        TestTrue(TEXT("actual COM pose remains origin plus rotated local COM"),Parent->GetPhysCOM()==ActorLocation+ActorRotation.RotateVector(ExpectedCOM));
+        const bool ActorPoseStable=Actor->GetActorLocation()==ActualActorLocation
+            &&Actor->GetActorRotation().Quaternion()==ActualActorRotation;
+        TestTrue(TEXT("actual actor API pose remains stable through first owner callbacks"),ActorPoseStable);
+        TestTrue(TEXT("actual physical rotation equals consumed actor API rotation exactly"),Parent->GetPhysRotation()==ActualActorRotation);
+        const FVector ActualAPIExpectedCOM=ActualActorLocation+ActualActorRotation.RotateVector(ExpectedCOM);
+        const FVector AuthoredExpectedCOM=ActorLocation+ActorRotation.RotateVector(ExpectedCOM);
+        const FVector ActualError=Parent->GetPhysCOM()-ActualAPIExpectedCOM;
+        const FVector AuthoredError=Parent->GetPhysCOM()-AuthoredExpectedCOM;
+        TestTrue(TEXT("actual COM pose remains origin plus rotated local COM"),Parent->GetPhysCOM()==ActualAPIExpectedCOM);
+        AddInfo(FString::Printf(TEXT("[LegacyFirstOwnerActualPoseOracle] case=%d actorPoseStable=%d actualAPIErrorX=%.17g actualAPIErrorY=%.17g actualAPIErrorZ=%.17g authoredErrorX=%.17g authoredErrorY=%.17g authoredErrorZ=%.17g actualQuatX=%.17g actualQuatY=%.17g actualQuatZ=%.17g actualQuatW=%.17g authoredQuatX=%.17g authoredQuatY=%.17g authoredQuatZ=%.17g authoredQuatW=%.17g. Exact actual API oracle; no tolerance or numerical-program change."),
+            Override,int(ActorPoseStable),ActualError.X,ActualError.Y,ActualError.Z,AuthoredError.X,AuthoredError.Y,AuthoredError.Z,
+            ActualActorRotation.X,ActualActorRotation.Y,ActualActorRotation.Z,ActualActorRotation.W,ActorRotation.X,ActorRotation.Y,ActorRotation.Z,ActorRotation.W));
         TestTrue(TEXT("actual ordered partial roster retained"),Parent->ReadHitboxForPhysics().Get()==Box.Get()
             &&Parent->GetWheelSubBodies().Num()==2&&Parent->GetWheelSubBodies()[0].Get()==A.Get()&&Parent->GetWheelSubBodies()[1].Get()==C.Get());
         TestEqual(TEXT("three real subbody queries per custom body"),Trace->SubBodyQueries,uint32(9));
